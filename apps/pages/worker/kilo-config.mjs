@@ -7,6 +7,17 @@ const MIN_SECRET_LENGTH = 32;
 // A name Kilo can hold for a deployment, such as `pages-dev`.
 const AUDIENCE = /^\S{1,200}$/;
 
+/** How long, from the exchange that reported it, Pages trusts what Kilo said
+ * about the organizations an account belongs to. It equals a Kilo browser
+ * session's length (`SESSION_SECONDS` in kilo-handoff.mjs), which is already
+ * how long a person Kilo has blocked keeps a session here: someone removed
+ * from an organization keeps its access for at most as long. */
+export const KILO_MEMBERSHIP_SECONDS = 8 * 60 * 60;
+
+/** The principal namespace Kilo accounts sign in under on this deployment. */
+export const kiloPrincipalNamespace = (env) =>
+  env?.PAGES_KILO_PRINCIPAL_NAMESPACE?.trim() || "user:kilo";
+
 /** This deployment's Kilo sign-in settings, or null when it doesn't use Kilo.
  * `PAGES_KILO_APP_URL` turns it on and must be a bare `https:` origin; a
  * loopback `http:` origin is accepted only beside the local test issuer flag.
@@ -44,13 +55,16 @@ export function kiloSignIn(env, request) {
     appUrl: app.origin,
     audience,
     origin: new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin,
-    namespace: env.PAGES_KILO_PRINCIPAL_NAMESPACE?.trim() || "user:kilo",
+    namespace: kiloPrincipalNamespace(env),
     secret,
   };
 }
 
-/** The identity a Kilo account stands for: its id and, when it has one, its
- * name. */
+/** The identity a Kilo account stands for: its id and, when it has them, its
+ * name and the address Kilo verified for it (`account.verifiedEmail`, from
+ * kilo-exchange.mjs). That address is marked verified, so a browser session
+ * made from this identity carries the signed email proof (app-session.ts) and
+ * can claim an invitation sent to it. */
 export function kiloIdentity(config, account) {
   const principal = `${config.namespace}:${encodeURIComponent(account.id)}`;
   return {
@@ -64,6 +78,7 @@ export function kiloIdentity(config, account) {
       transport: "host-session-cookie",
       principalNamespace: config.namespace,
       ...(account.name ? { displayName: account.name } : {}),
+      ...(account.verifiedEmail ? { email: account.verifiedEmail, emailVerified: true } : {}),
     },
   };
 }

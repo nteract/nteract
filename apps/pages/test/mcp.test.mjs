@@ -50,7 +50,7 @@ test("tool schemas use only the JSON Schema subset clients forward as written", 
 
 test("tool catalog has a deliberate size ceiling", () => {
   assert.ok(
-    JSON.stringify(tools).length <= 36417,
+    JSON.stringify(tools).length <= 36900,
     "Tool catalog grew; raise the ceiling on purpose when a tool grows",
   );
 });
@@ -362,7 +362,10 @@ test("sharing tools preserve access guards and require separate OAuth consent", 
   }
   assert.deepEqual(
     tools.find((tool) => tool.name === "manage_project_access").inputSchema.properties.action,
-    { type: "string", enum: ["invite", "set_role", "revoke_invite"] },
+    {
+      type: "string",
+      enum: ["invite", "set_role", "revoke_invite", "set_organization_access"],
+    },
   );
 });
 

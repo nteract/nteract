@@ -20,12 +20,22 @@
  * doesn't answer is not resumed: the person starts again, which costs one
  * redirect while they are signed in at Kilo.
  *
- * Pages is given identity only: an account id and a name. It holds no Kilo
- * token, so a session has nothing to renew with. It ends after
- * `SESSION_SECONDS` and the browser signs in again; that is also how long a
- * person Kilo has blocked can keep a session here. Kilo gives no email
- * address, so inviting by email, company-domain view and email quota rules
- * stay off for these identities. */
+ * Pages is given an account id, a name, the account's primary email address
+ * when Kilo holds proof the account controls it, and the account's
+ * organizations, which it records as membership evidence
+ * (kilo-membership.mjs). It holds no Kilo token, so a session has nothing to
+ * renew with. It ends after `SESSION_SECONDS` and the browser signs in again; that is also how long a
+ * person Kilo has blocked can keep a session here.
+ *
+ * The address goes into the session as signed email proof (app-session.ts),
+ * never as the address itself. The proof is good for
+ * `NOTEBOOK_CLOUD_IDENTITY_PROOF_MAX_AGE_SECONDS` (6 hours) from sign-in, so
+ * for the first 6 of a session's 8 hours the person can claim an invitation
+ * to a Page or a Project sent to that address, and email quota rules apply to
+ * them. After that they sign in again to claim one. Without an address from
+ * Kilo they can't claim an invitation by email. Company-domain view stays off
+ * for Kilo deployments whatever Kilo sends: the Kilo provider reviews no
+ * company domains (identity-provider.mjs). */
 import { createServerSession, ServerSessionGrantRejected } from "@cloud/server-oidc.ts";
 import {
   cookieValue,
@@ -37,6 +47,7 @@ import { recordOidcEvent } from "./auth-events.mjs";
 import { migrateSchema } from "./catalog-index.mjs";
 import { isolateSetup } from "./isolate-setup.mjs";
 import { kiloIdentity, kiloSignIn } from "./kilo-config.mjs";
+import { recordKiloMembership } from "./kilo-membership.mjs";
 import {
   exchangeKiloCode,
   KILO_CALLBACK_PATH,
@@ -212,6 +223,7 @@ async function completeHandoff(request, env, config) {
     return signInFailed(400, "binding_mismatch");
   const returnTo = safeReturnTo(row.return_to, config.origin);
   let account;
+  const sentAt = Date.now();
   try {
     account = await exchangeKiloCode(fetch, {
       appUrl: config.appUrl,
@@ -229,11 +241,20 @@ async function completeHandoff(request, env, config) {
   if (account.refused === "client") return signInFailed(503, "exchange_refused_client", returnTo);
   if (account.refused === "account") return signInFailed(403, "exchange_refused_account", returnTo);
   if (account.refused) return signInFailed(400, "exchange_refused_code", returnTo);
+  const identity = kiloIdentity(config, account);
+  // A session is created only over a stored answer: a session over a failed
+  // write would read an older listing, one this answer may have removed
+  // organizations from.
+  try {
+    await recordKiloMembership(env, identity.principal, account.organizations, sentAt);
+  } catch {
+    return signInFailed(503, "membership_unrecorded", returnTo);
+  }
   const sessionCookie = await createServerSession(
     request,
     env,
     {
-      identity: kiloIdentity(config, account),
+      identity,
       expiresAt: Math.floor(Date.now() / 1000) + SESSION_SECONDS,
       bundle: { kind: "kilo-handoff", appUrl: config.appUrl, userId: account.id },
     },

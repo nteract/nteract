@@ -8,6 +8,7 @@ export const ELIGIBLE_IDS = new Set([
   "261289082", // Quillaid
   "3131401", // FabioRosado
   "25752941", // JoshuaLowe1002
+  "6687139", // intentionally-left-nil
 ]);
 export const SERVICES = ["main", "outputs", "renderer-assets"];
 

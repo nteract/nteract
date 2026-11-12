@@ -534,6 +534,79 @@ test("Back from a Page paints the library from memory and lists it once", async 
   history.replaceState(null, "", "/");
 });
 
+// A Page whose host refuses its format shows a stopped screen
+// (UnopenedPage.jsx). It is what the Page route shows: every route change
+// leaves it, and it never stays over the library.
+test("the stopped screen for a Page in an unopened format leaves with its route", async (t) => {
+  t.after(() => delete globalThis.__openPage);
+  globalThis.__openPage = () =>
+    Promise.reject(
+      Object.assign(Error("This Page is stored in a format this version of Pages doesn't open."), {
+        status: 409,
+        code: "document_format_unsupported",
+      }),
+    );
+  history.replaceState(null, "", "/pages");
+  await boot(signedIn, gatedCatalog({}), {
+    paths: {
+      "/api/access": () =>
+        Response.json({ access: { role: "owner", canRead: true, canDelete: true } }),
+    },
+  });
+  await settle();
+  const stopped = () => document.querySelector("main.unopened-page")?.dataset.state ?? null;
+  const open = () =>
+    click(
+      [...document.querySelectorAll(".index-row-link")].find((l) => l.textContent === "Roadmap"),
+    );
+  await open();
+  await settle();
+  assert.equal(location.pathname, `/p/${ROADMAP}`);
+  assert.equal(stopped(), "owner");
+  assert.deepEqual(rows(), [], "the library left the screen");
+  // Back to the library: the stopped screen goes with its Page.
+  history.back();
+  await settle();
+  assert.equal(location.pathname, "/pages");
+  assert.equal(stopped(), null);
+  assert.deepEqual(rows(), ["Roadmap"]);
+  // Forward to the Page again shows it again.
+  history.forward();
+  await settle();
+  assert.equal(location.pathname, `/p/${ROADMAP}`);
+  assert.equal(stopped(), "owner");
+  // An address that isn't a Page link leaves it too.
+  history.pushState(null, "", "/p/not-a-page");
+  await act(() => window.dispatchEvent(new window.PopStateEvent("popstate")));
+  await settle();
+  assert.equal(stopped(), null);
+  history.replaceState(null, "", "/");
+});
+
+test("the stopped screen asks the host again for an account that signs in over it", async (t) => {
+  t.after(() => delete globalThis.__openPage);
+  globalThis.__openPage = () =>
+    Promise.reject(
+      Object.assign(Error("Refused"), { status: 409, code: "document_format_unsupported" }),
+    );
+  const who = { current: "one" };
+  history.replaceState(null, "", `/p/${ROADMAP}`);
+  await boot(accountSession(who), catalog, {
+    paths: {
+      "/api/access": () =>
+        Response.json({ access: { canRead: true, canDelete: who.current === "one" } }),
+    },
+  });
+  await settle();
+  const stopped = () => document.querySelector("main.unopened-page")?.dataset.state ?? null;
+  assert.equal(stopped(), "owner");
+  who.current = "two";
+  await sessionCheck();
+  assert.equal(location.pathname, `/p/${ROADMAP}`);
+  assert.equal(stopped(), "reader", "the other account is asked, and isn't the owner");
+  history.replaceState(null, "", "/");
+});
+
 // The boot preview in the real shell: the head script's discovery, the
 // session check, and an editor whose Page open never finishes, so the shell
 // stays in "Opening" where the preview may show.

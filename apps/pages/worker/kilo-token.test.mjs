@@ -14,6 +14,7 @@ import { kiloToken, MAX_KILO_TOKEN_LENGTH, unverifiedClaims } from "./kilo-token
 import { receiptKey } from "./operation-journal.mjs";
 import { plainStub } from "./plain-stub.mjs";
 import { DocumentPolicy } from "./policy.mjs";
+import { sqliteD1 } from "../test/sqlite-d1.mjs";
 
 const origin = "https://pages.invalid";
 const audience = "pages-test";
@@ -32,6 +33,7 @@ const unique = () => ({ iat: Math.floor(Date.now() / 1000) - (++minted % 500) })
 async function fixture(t, extra = {}) {
   const kilo = await startLocalKiloHandoff({ deployments: { [audience]: origin }, secret });
   const env = {
+    DB: sqliteD1(t).open(),
     NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin,
     NOTEBOOK_CLOUD_LOCAL_OIDC: "true",
     PAGES_KILO_APP_URL: kilo.origin,
@@ -159,7 +161,7 @@ test("the exchange sends exactly the token and audience, with the deployment's s
     token: "header.payload.signature",
     audience,
   });
-  assert.deepEqual(account, { id: "person:1", name: "Example" });
+  assert.deepEqual(account, { id: "person:1", name: "Example", organizations: [] });
   assert.equal(calls.length, 1);
   const [{ url, init }] = calls;
   assert.equal(url, `https://kilo.invalid${KILO_EXCHANGE_PATH}`);
@@ -649,4 +651,51 @@ test("a token Kilo accepts but Pages doesn't lease still authorizes its request"
   );
   assert.ok(identity.expiresAt > Date.now());
   assert.ok(identity.expiresAt <= Date.now() + 30_000 && identity.expiresAt >= before + 30_000);
+});
+
+test("a member of the organization a Page is shared with edits it through edit_page at the grant's role", async (t) => {
+  const { env, kilo } = await fixture(t);
+  const owner = person();
+  const w = pageWorld(t, { env, holder: owner });
+  const organization = { id: "org-agents", name: "Agent Guild" };
+  const share = (role) =>
+    (w.page.metadata = {
+      ...w.page.metadata,
+      acl: {
+        ...w.page.metadata.acl,
+        organizationAccess: role ? { ...organization, namespace: "user:kilo", role } : null,
+      },
+    });
+  const holder = { ...person(), organizations: [{ ...organization, role: "member" }] };
+  const outsider = person();
+  const edit = async (token, title) => {
+    const read = await w.tools(token, "read_page", {});
+    return worker.fetch(
+      toolCall(token, "edit_page", {
+        page_id: pageId,
+        operations: [{ op: "set_title", title }],
+        revision: read.revision,
+        nonce: crypto.randomUUID(),
+      }),
+      env,
+    );
+  };
+  share("editor");
+  const token = kilo.mintToken(holder, { audience });
+  assert.equal((await edit(token, "Edited by the guild")).status, 200);
+  assert.equal(w.doc().title, "Edited by the guild");
+  assert.deepEqual(w.page.metadata.acl.members, {});
+  for (const role of ["commenter", "viewer"]) {
+    share(role);
+    const refused = await edit(token, `Edited as ${role}`);
+    assert.equal(refused.status, 403, role);
+    assert.match((await refused.json()).error, /read-only/);
+    assert.equal(w.doc().title, "Edited by the guild");
+  }
+  const stranger = kilo.mintToken(outsider, { audience });
+  const denied = await worker.fetch(toolCall(stranger, "read_page", { page_id: pageId }), env);
+  assert.equal(denied.status, 403);
+  share(null);
+  const withdrawn = await worker.fetch(toolCall(token, "read_page", { page_id: pageId }), env);
+  assert.equal(withdrawn.status, 403);
 });

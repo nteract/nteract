@@ -77,6 +77,16 @@ else replaces the screen with a Reload notice and leaves the Page unchanged.
   letter or digit (`snake_case_name`, `2*3*4`), an escaped one, and one inside
   code stay literal; undo restores the typed delimiters. `---` alone in a
   paragraph inserts a horizontal rule. Cmd/Ctrl+Shift+X toggles strikethrough.
+- **Code blocks:** Tab indents and Shift+Tab removes one level, for the caret's
+  line or every selected line. One level is four spaces in Python and Rust, two
+  elsewhere, and a tab in a block whose lines already start with tabs. Enter
+  keeps the indentation of the line it leaves; three Enters, or Mod-Enter, leave
+  the block. Outside a code block Tab moves focus as usual. A word in code is an
+  identifier: letters, digits and underscores, plus `$` in JavaScript and
+  TypeScript and `-` in CSS. A double-click selects it whole, and Wordgard's
+  word motion and word deletion move over it whole. Code text carries no
+  marks, so a selection inside one code block gets a toolbar with the text style
+  and Comment only, placed outside the block.
 - **Mark registry:** [`model/marks.json`](model/marks.json) lists every inline
   mark with its value shape, expand rule, and Markdown projection. Validation,
   the Wordgard binding, Markdown import/export, and the MCP `format_match`
@@ -1048,7 +1058,12 @@ is the same principal either way. It needs no settings beyond the three
 `kilo-token` and the driver an API key records; other routes refuse it with
 403 before Kilo is asked. Like an API key, it meets the argument check, can't
 send `delete_page`'s browser-only `base_heads`, and keys receipts on that
-principal, so a person's browser and agent share one receipt namespace. Kilo's refusals become 401 `invalid_kilo_token`, 403
+principal, so a person's browser and agent share one receipt namespace. When
+Kilo's answer carries `verified_email`, the address Kilo holds proof the
+account controls, the identity presents it as an API key does and claims
+email invitations to it for the lease; a browser session keeps it as signed
+email proof for six hours from sign-in. A value that can't be an invitation
+address is treated as absent ([worker/kilo-exchange.mjs](worker/kilo-exchange.mjs)). Kilo's refusals become 401 `invalid_kilo_token`, 403
 `account_unavailable` or 503 `sign_in_unavailable` (`retryable: true`); the
 caller never sees Kilo's body. Each isolate leases an accepted token by its
 SHA-256 until the earliest of its `exp` less 30 seconds, its whole lifetime

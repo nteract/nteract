@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Copy, Share2 } from "lucide-react";
 import { SharingPanel, nativePrimitives } from "../../../src/components/sharing/SharingPanel.tsx";
 
@@ -21,7 +21,8 @@ const primitives = {
 };
 import "./sharing-panel.css";
 import { createSharingAccess, sharingAvailable, SHARING_FRESH_MS } from "./sharing-access.mjs";
-import { domainSharingProjection } from "./sharing-projection.mjs";
+import { linkAccessProjection } from "./sharing-projection.mjs";
+import { LinkAccess } from "./LinkAccess.jsx";
 import { pageMarkdown } from "../model/markdown-export.mjs";
 
 function projection(value, manage) {
@@ -122,7 +123,6 @@ function PageSharing({
     busy = state.busy,
     error = state.error?.message || copyError,
     loading = available && !value && !state.error;
-  const domainId = useId();
   const controlled = requested !== undefined;
   const open = controlled ? requested : own;
   const changeOpen = useRef(null);
@@ -238,8 +238,8 @@ function PageSharing({
       !!session.canManageAccess &&
       session.access?.role === "owner" &&
       ![401, 403, 404].includes(state.error?.status));
-  const domainSharing = manage ? domainSharingProjection(value) : null;
-  proofExpired.current = !!domainSharing?.expired;
+  const linkAccess = manage ? linkAccessProjection(value) : null;
+  proofExpired.current = !!linkAccess?.expired;
   return (
     <div className="page-sharing" ref={root}>
       {trigger && (
@@ -328,8 +328,8 @@ function PageSharing({
           />
           {inheritedProject && (
             <p className="page-sharing-note">
-              If {inheritedProject} has members, they also have access through the Project. These
-              settings manage this Page's direct grants only.
+              If {inheritedProject} has members or is shared with an organization, they also have
+              access through the Project. These settings manage this Page's direct grants only.
             </p>
           )}
           {state.error && available && (
@@ -341,77 +341,15 @@ function PageSharing({
               Retry sharing settings
             </button>
           )}
-          {domainSharing && (
-            <section className="page-domain-sharing" aria-labelledby={domainId}>
-              <label id={domainId} htmlFor={`${domainId}-select`}>
-                Link access
-              </label>
-              <select
-                id={`${domainId}-select`}
-                value={domainSharing.selected}
-                disabled={!!busy}
-                onChange={(event) =>
-                  void mutate(
-                    { action: "set_domain_view", domain: event.target.value || null },
-                    "domain-view",
-                  )
-                }
-              >
-                {domainSharing.options.map(({ value, label, disabled }) => (
-                  <option key={value} value={value} disabled={disabled}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-              <p>
-                {domainSharing.selected ? (
-                  <>
-                    <strong>Can view.</strong> Sign in with a verified {domainSharing.selected}{" "}
-                    email.
-                  </>
-                ) : (
-                  "Only you and invited people can open this Page."
-                )}
-              </p>
-              {domainSharing.expired ? (
-                <div className="page-domain-sharing-note" role="note">
-                  <p>
-                    Your company email verification expired. Sign in again with the same account to
-                    enable company sharing.
-                  </p>
-                  {domainSharing.unverified && (
-                    <p>
-                      People at {domainSharing.selected} can still view this Page. Choose Restricted
-                      to stop sharing with them.
-                    </p>
-                  )}
-                  <div className="page-domain-sharing-actions">
-                    {/* The same sign-in the session uses; a separate tab keeps
-                        this Page open and its edits running. */}
-                    <a href="/api/auth/login" target="_blank" rel="noopener noreferrer">
-                      Sign in again
-                    </a>
-                    <button
-                      type="button"
-                      className="subtle-button"
-                      disabled={state.refreshing || !!busy}
-                      onClick={() => void cache.read({ force: true }).catch(() => {})}
-                    >
-                      Refresh sharing settings
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                domainSharing.unverified && (
-                  <p className="page-domain-sharing-note" role="note">
-                    You are not signed in with a verified {domainSharing.selected} email. People at{" "}
-                    {domainSharing.selected} can still view this Page. Choose Restricted to stop
-                    sharing with them; sharing again needs a verified {domainSharing.selected}{" "}
-                    email.
-                  </p>
-                )
-              )}
-            </section>
+          {linkAccess && (
+            <LinkAccess
+              linkAccess={linkAccess}
+              resource="Page"
+              busy={!!busy}
+              refreshing={!!state.refreshing}
+              onChange={(change) => void mutate(change, "domain-view")}
+              onRefresh={() => void cache.read({ force: true }).catch(() => {})}
+            />
           )}
           <div className="page-sharing-export">
             <button

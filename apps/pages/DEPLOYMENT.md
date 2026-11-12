@@ -1237,8 +1237,41 @@ A Kilo deployment differs in three ways:
   deployment is refused with `api_keys_unsupported` (401) before the Worker
   makes any outbound request. A Kilo credential is never forwarded anywhere
   but Kilo's own exchange.
-- Email invitations cannot be accepted, because Kilo accounts carry no
-  verified email.
+- A person can accept an email invitation only when Kilo vouches for their
+  address. Kilo's exchange answers `{"user": {"id", "name", "verified_email"?}}`
+  and sends `verified_email`, the account's primary address, only when it
+  holds proof the account controls it. Pages keeps it only when an invitation
+  could name it (the check inviting by email uses); any other value is
+  treated as absent and the sign-in still succeeds. The exception is size:
+  Pages refuses any exchange answer over 16 KiB before reading a field, so an
+  answer made that large by `verified_email` fails the browser sign-in
+  (`kilo_protocol_error`) and the token exchange (503
+  `sign_in_unavailable`). Without a usable address, invitations by email
+  can't be accepted and email quota rules don't apply.
+
+A browser session keeps the address as signed email proof, not as the
+address. The proof is good for 6 hours from sign-in
+(`NOTEBOOK_CLOUD_IDENTITY_PROOF_MAX_AGE_SECONDS`), so a Kilo session claims
+invitations for the first 6 of its 8 hours; after that the person signs in
+again.
+
+Claiming an invitation keeps the invitation's address with the claimant. The
+member entry stores the principal, the display name and that address, and
+the owner sees the three together in Page sharing, Project sharing and the
+list of collaborators who lose access when a Page or Project is deleted. That
+entry stays after the proof expires and after the session ends, until the
+owner removes the member; it is the address the owner invited, as Kilo
+verified it at the claim.
+
+An OAuth client connected from that session keeps the same proof, and
+claims invitations until 6 hours after the sign-in that approved it, whatever
+its own grant's lifetime. Quota rules read the proof at its own verification
+time, so they apply for the session's whole life and the grant's. A Kilo
+agent token (below) carries the address for its lease and claims
+invitations with it; quota rules read only API-key addresses and browser or
+OAuth proof, so a Kilo token gets the default quota. Company-domain view
+stays off on a Kilo deployment whatever Kilo sends: the Kilo provider
+reviews no company domains.
 
 ### Kilo agent tokens
 
@@ -1265,8 +1298,8 @@ Content-Type: application/json
 {"token": "<token>", "audience": "<PAGES_KILO_AUDIENCE>"}
 ```
 
-Kilo answers `200 {"user": {"id", "name"}, "organizations": [...]}`, and the
-person is `<PAGES_KILO_PRINCIPAL_NAMESPACE or user:kilo>:<user.id>`, the
+Kilo answers `200 {"user": {"id", "name", "verified_email"?}, "organizations": [...]}`,
+and the person is `<PAGES_KILO_PRINCIPAL_NAMESPACE or user:kilo>:<user.id>`, the
 principal the browser sign-in gives them. The call times out after 10 seconds.
 The token reaches `/mcp`, `/api/tools`, `GET /whoami` and the internal hops
 they forward to, with the reach an API key has there. Every other route
@@ -1329,6 +1362,83 @@ The lease is the limit of this design: an account Kilo blocks keeps working
 here until its lease ends. A lease can outlast the token by the clock
 difference between Pages and Kilo, and never by more than the token's whole
 lifetime.
+
+### Kilo organizations
+
+Both exchanges, the browser code and the agent token, answer with the
+account's `organizations`. Pages keeps each entry's `id` and `name` (Kilo's
+`role` is not read), at most 50, and drops malformed entries and repeated ids;
+an answer without a usable list counts as no organizations and never fails a
+sign-in ([worker/kilo-exchange.mjs](worker/kilo-exchange.mjs)).
+
+Every successful exchange writes the principal's membership record in D1
+(`kilo_memberships`, migrated through `kilo_membership_schema`): the
+organizations and `verified_at_ms`, when Pages sent that exchange, in
+milliseconds by its own clock. One statement orders each write against the
+stored record, so the newest answer wins whichever isolate received it: a
+later answer replaces the record and an earlier one changes nothing. In the
+same millisecond, an answer whose stored text equals the record's changes
+nothing, and any other answer leaves the record with no organizations until
+the next exchange: two different answers that close can't be ordered, so a
+tie never adds one. `verified_at_ms` never moves back. That is one D1 write
+per browser sign-in, and for an agent token at least one per exchange in each
+isolate: requests that arrive together at the start of a lease each write the
+same answer, which leaves the record as it is
+([worker/kilo-membership.mjs](worker/kilo-membership.mjs)). Schema version 2
+drops the table and creates it again with `verified_at_ms`: a version 1 row
+was timed in seconds and can't be ordered by the millisecond, so it is gone
+and that principal's next exchange writes a new one.
+
+A sign-in whose write fails gets the retryable failure page (503,
+`membership_unrecorded`) and no session. An agent request on a token answer
+not yet recorded in its isolate writes it itself; no request waits on
+another's write. A request whose write fails gets a retryable 503
+`sign_in_unavailable`, and the next request writes again. Once one write of
+an answer succeeds, later requests on it write nothing. No request goes on
+over a record older than the answer it holds.
+
+The record is evidence for 8 hours from `verified_at_ms`
+(`KILO_MEMBERSHIP_SECONDS`), the length of a Kilo browser session. Every Kilo
+identity reads it by principal, whichever credential it arrived with: the
+browser cookie, a Pages OAuth access token, or a Kilo agent token. Each
+organization becomes a lease that ends with the identity or the evidence,
+whichever is first. Nothing is copied into a session or an OAuth grant, so an
+agent connected by OAuth holds its person's organizations while that person's
+evidence is fresh, and loses them at most 8 hours after the person's last Kilo
+sign-in or agent-token exchange. Refreshing an OAuth token does not renew them.
+
+An owner can share a Page with one organization they hold a lease for, as Can
+view, Can comment or Can edit. Members who open the link get that role and are
+not added to the Page's member list. Someone Kilo no longer lists keeps that
+access until their evidence ends: up to 8 hours after their last exchange, or
+sooner when a newer exchange no longer names the organization. Each isolate
+caches a record for at most 30 seconds, so a request sees a new record at
+most 30 seconds after the exchange that wrote it, and an open sync socket,
+which re-authenticates every 15 seconds, at most 45 seconds after.
+
+A Project's owner can share it with one organization the same way
+(`acl.organizationAccess` on the Project record, set through
+`manage_project_access`). Its members hold that role on the Project and on
+every Page in it, through the Project as a member does, and only while both
+their lease and the Page host's 15-second Project lease are current. Nobody
+is added to the Project's members, and nothing is written on its Pages.
+There is no member list to send discovery hints to, so a member who opens
+the Project records an opened hint in their own Catalog
+(`project-opened/<space_id>`, [worker/project-opened.mjs](worker/project-opened.mjs)),
+apart from member hints. The list reads owned Projects, member hints and
+opened hints, each Project once, and shows one only while the person can read
+it. The owner sends members the Project's link. Writing an opened hint does
+storage operations only: a re-open within a day writes nothing, and a Catalog
+keeps the newest 200 by when they were written, so the oldest goes first. An
+opened hint never counts against the 500 member hints and never refuses a
+write. A member removed from a Project with an organization grant gets an
+opened hint in place of their member hint. Deleting the Project or clearing
+the grant sends nothing to the organization's members: their opened hints stay
+hidden and age out. A Project with an organization grant is shared, so a Page
+can't be moved across its boundary.
+
+The auth log's `kilo_token.accepted` line carries how many organizations the
+exchange reported (`organizations`). No organization id or name reaches a log.
 
 ## Outbound requests
 
@@ -1432,7 +1542,7 @@ only with `PAGES_OAUTH_ANY_CLIENT_DOCUMENT` ([Outbound requests](#outbound-reque
 | `oauth.code_replayed` | An authorization code was presented twice. Its grant is revoked. | `grant` |
 | `oauth.refresh_reused` | A spent refresh token was presented again. Within 30 seconds of its first use, new tokens are issued and the grant stays; this is what overlapping refreshes from one client's processes look like. After that, the grant is revoked. | `grant`, `reason` (`within_window` when tokens were issued; absent when the grant was revoked) |
 | `api_key.accepted` | An Anaconda API key authenticated. One line per key per isolate per 60 s cache window, not per request. | `scope` (`editor` or `viewer`) |
-| `kilo_token.accepted` | Kilo accepted a Kilo agent token. One line per token per isolate lease, not per request. | |
+| `kilo_token.accepted` | Kilo accepted a Kilo agent token. One line per token per isolate lease, not per request. | `organizations`: how many organizations the exchange reported |
 | `kilo_token.refused` | A Kilo agent token was refused or couldn't be checked. No principal. | `reason`: `exchange_refused_token`, `exchange_refused_account`, `exchange_refused_client`, `kilo_unavailable`, `kilo_protocol_error`, `exchange_failed`, and for a 503 before any exchange `exchanges_in_flight`, `lease_capacity` or `wait_timeout` |
 | `invitation.created`, `invitation.revoked` | A Project owner invited an email or revoked an invitation. `principal` is the owner. | `project_id`, `invite`, `role` |
 | `invitation.accepted` | A verified recipient claimed a Project invitation. `principal` is the recipient. | `project_id`, `invite`, `role` |

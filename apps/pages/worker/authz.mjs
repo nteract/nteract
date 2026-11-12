@@ -117,7 +117,8 @@ const subjects = (value) => (Array.isArray(value) ? value : []);
 const user = (id) => ({ type: "user", id });
 
 /** A leased membership counts only while its lease is current. Built-in
- * company view memberships always carry the email-domain lease's expiry. */
+ * company view memberships always carry the email-domain lease's expiry, and
+ * organization memberships the organization lease's. */
 function membershipUntil(principal, subject, now) {
   for (const membership of subjects(principal.memberships)) {
     if (
@@ -174,9 +175,15 @@ function relationPaths(principal, object, now) {
   const removed = subjects(relations.removed).some(
     (subject) => subject?.type === "user" && subject.id === principal.id,
   );
+  // A removed principal holds no direct row in these relations, so excluding
+  // them drops only the paths through an organization.
   add("owner", GRANTS.page.owner, reach(principal, relations.owner, now));
-  add("editor", GRANTS.page.editor, reach(principal, relations.editor, now));
-  add("commenter", GRANTS.page.commenter, reach(principal, relations.commenter, now));
+  add("editor", GRANTS.page.editor, reach(principal, relations.editor, now, { exclude: removed }));
+  add(
+    "commenter",
+    GRANTS.page.commenter,
+    reach(principal, relations.commenter, now, { exclude: removed }),
+  );
   add("viewer", GRANTS.page.viewer, reach(principal, relations.viewer, now, { exclude: removed }));
   const container = placed ? containerFor(object, now) : null;
   if (container) {
@@ -329,15 +336,26 @@ const companyOrganization = (namespace, domain) =>
     ? JSON.stringify([namespace, domain])
     : null;
 
+/** A provider-reported organization as an organization subject: a Page's
+ * organization grant and a credential's organization lease name the same one
+ * when namespace and id both match. Its three-element key never equals a
+ * two-element company key. */
+const accountOrganization = (namespace, id) =>
+  typeof namespace === "string" && typeof id === "string" && id
+    ? JSON.stringify(["organization", namespace, id])
+    : null;
+const LINK_ROLES = new Set(["viewer", "commenter", "editor"]);
+
 /**
  * decide()'s object for a Page record, scoped to one principal.
  *
- * The relations hold the owner, company view, and only the principal's own
- * member row, so building one costs a single member lookup however many
- * grants and tombstones the ACL has collected. A viewer, commenter or editor
- * row grants.
+ * The relations hold the owner, company view, the organization grant in the
+ * relation its role names, and only the principal's own member row, so
+ * building one costs a single member lookup however many grants and
+ * tombstones the ACL has collected. A viewer, commenter or editor row grants.
  * Any other row (a removal tombstone or an unreadable row) becomes `removed`,
- * which blocks company view, not Project membership. The optional transient
+ * which blocks company view and the organization grant, not Project
+ * membership. The optional transient
  * projectAccess comes only from the owner's Catalog placement. The immutable
  * Page owner retains direct authority even when the Project lease expires.
  */
@@ -358,6 +376,11 @@ export function pageObject(metadata, principal) {
   const domainView = metadata?.acl?.domainView;
   const company = domainView && companyOrganization(domainView.namespace, domainView.domain);
   if (company) viewer.push({ type: "organization", id: company });
+  const shared = metadata?.acl?.organizationAccess;
+  const organization =
+    shared && LINK_ROLES.has(shared.role) && accountOrganization(shared.namespace, shared.id);
+  const byRole = { editor, commenter, viewer };
+  if (organization) byRole[shared.role].push({ type: "organization", id: organization });
   const container = principal === metadata?.owner ? null : metadata?.projectAccess;
   return {
     type: "page",
@@ -376,7 +399,11 @@ export function pageObject(metadata, principal) {
   };
 }
 
-/** decide()'s object for the authoritative Project record. */
+/** decide()'s object for the authoritative Project record: the owner, each
+ * member row in the relation its role names, and the organization grant in
+ * the relation its role names. A Page in the Project reaches all of them
+ * through its `project` container. Projects have no removal tombstone, so a
+ * member row and the organization grant combine and the higher role wins. */
 export function projectObject(record) {
   const relations = {
     owner: record ? [user(record.owner)] : [],
@@ -388,6 +415,10 @@ export function projectObject(record) {
     const row = memberRow(record.acl.members, principal);
     if (row && relations[row.role]) relations[row.role].push(user(principal));
   }
+  const shared = record?.acl?.organizationAccess;
+  const organization =
+    shared && LINK_ROLES.has(shared.role) && accountOrganization(shared.namespace, shared.id);
+  if (organization) relations[shared.role].push({ type: "organization", id: organization });
   return {
     type: "project",
     id: record?.space_id ?? null,
@@ -400,25 +431,43 @@ export function projectObject(record) {
 
 /**
  * decide()'s principal for an authenticated identity. The credential's write
- * scope is its ceiling. A verified company email-domain lease is the only
- * membership built-in mode knows; it counts only when it was issued for the
- * identity's own namespace.
+ * scope is its ceiling. Its memberships are its leases: a verified company
+ * email-domain lease and one lease per organization the provider reported.
+ * Each counts only when it was issued for the identity's own namespace.
  */
 export function principalOf(identity) {
+  const memberships = [];
   const evidence = identity?.domainAccess;
   const company =
     evidence &&
     identity.namespace === evidence.namespace &&
     Number.isFinite(evidence.expiresAt) &&
     companyOrganization(evidence.namespace, evidence.domain);
+  if (company)
+    memberships.push({ type: "organization", id: company, expires_at: evidence.expiresAt });
+  for (const lease of subjects(identity?.organizations)) {
+    const organization =
+      identity.namespace === lease?.namespace &&
+      Number.isFinite(lease.expiresAt) &&
+      accountOrganization(lease.namespace, lease.id);
+    if (organization)
+      memberships.push({ type: "organization", id: organization, expires_at: lease.expiresAt });
+  }
   return {
     id: identity?.principal,
     expires_at: identity?.expiresAt,
     can_write: !!identity?.canWrite,
-    memberships: company
-      ? [{ type: "organization", id: company, expires_at: evidence.expiresAt }]
-      : [],
+    memberships,
   };
+}
+
+/** Whether `identity` holds a current lease for the Page's organization
+ * grant: what tells a role held through it from one held through company
+ * view, which reach the principal by the same `organization` path. */
+export function holdsOrganizationGrant(metadata, identity, now) {
+  const shared = metadata?.acl?.organizationAccess;
+  const id = shared && accountOrganization(shared.namespace, shared.id);
+  return !!id && membershipUntil(principalOf(identity), { type: "organization", id }, now) !== null;
 }
 
 /** No verified delegation exists in this build. Driver labels (`x-operator`,

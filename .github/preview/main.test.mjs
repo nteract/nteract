@@ -117,7 +117,7 @@ test("main checks both original and rerun actors for source and deployment runs"
 });
 
 test("PR-only eligibility does not authorize main deployment", () => {
-  for (const id of [261289082, 3131401, 25752941]) {
+  for (const id of [261289082, 3131401, 25752941, 6687139]) {
     for (const target of ["deployment", "build", "event"]) {
       for (const actor of ["actor", "triggering_actor"]) {
         const f = fixture();

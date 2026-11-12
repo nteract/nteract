@@ -137,6 +137,12 @@ const SUITES = Object.freeze([
     optIn: true,
   },
   { name: "trash", harness: sharing("--trash"), timeout: 4 * minute },
+  {
+    name: "unopened-page",
+    harness: sharing("--unopened"),
+    timeout: 4 * minute,
+    optIn: true,
+  },
   { name: "revocation", harness: sharing("--revocation"), timeout: 4 * minute },
   { name: "projects", harness: sharing("--projects"), timeout: 6 * minute },
   {

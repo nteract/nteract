@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { domainSharingProjection } from "./sharing-projection.mjs";
+import {
+  domainSharingProjection,
+  linkAccessProjection,
+  organizationSharingProjection,
+} from "./sharing-projection.mjs";
 
 const owner = {
   access: { canManageAccess: true },
@@ -111,4 +115,118 @@ test("expired company proof keeps the company choice visible but disabled; missi
   });
   assert.equal(verified.expired, null);
   assert.equal(verified.options[1].disabled, false);
+});
+
+const acme = { id: "org-acme", name: "Acme Research" };
+const organizationOwner = {
+  access: { canManageAccess: true },
+  domainOptions: [],
+  domainView: null,
+  organizationOptions: [acme],
+  organizationProof: { [acme.id]: "verified" },
+  organizationAccess: null,
+};
+test("organization link access offers only proven organizations, keyed so no domain can collide", () => {
+  const view = organizationSharingProjection(organizationOwner);
+  assert.equal(view.selected, "");
+  assert.deepEqual(view.options, [
+    {
+      value: "org:org-acme",
+      label: "Anyone in Acme Research with the link",
+      disabled: false,
+      id: acme.id,
+    },
+  ]);
+  assert.equal(
+    organizationSharingProjection({
+      ...organizationOwner,
+      organizationOptions: [{ id: "a:b", name: "Colon" }],
+    }).options[0].value,
+    "org:a%3Ab",
+  );
+  for (const value of [
+    { ...organizationOwner, organizationOptions: [] },
+    { ...organizationOwner, organizationOptions: undefined },
+    { ...organizationOwner, organizationOptions: [{ id: "", name: "x" }, { id: "y" }] },
+    { ...organizationOwner, access: { canManageAccess: false } },
+  ])
+    assert.equal(organizationSharingProjection(value), null);
+  assert.equal(
+    organizationSharingProjection({
+      ...organizationOwner,
+      organizationOptions: [acme, { ...acme, name: "Again" }],
+    }).options.length,
+    1,
+  );
+});
+test("a stored organization the owner can't prove stays visible, flagged and withdrawable", () => {
+  const stored = { ...acme, role: "editor" };
+  const proven = organizationSharingProjection({
+    ...organizationOwner,
+    organizationAccess: stored,
+    organizationAccessOwnerVerified: true,
+  });
+  assert.equal(proven.selected, "org:org-acme");
+  assert.deepEqual(proven.stored, stored);
+  assert.equal(proven.unverified, false);
+  for (const [proof, expired] of [
+    ["expired", acme.name],
+    ["missing", null],
+  ]) {
+    const lapsed = organizationSharingProjection({
+      ...organizationOwner,
+      organizationOptions: [],
+      organizationProof: { [acme.id]: proof },
+      organizationAccess: stored,
+      organizationAccessOwnerVerified: false,
+    });
+    assert.equal(lapsed.selected, "org:org-acme");
+    assert.equal(lapsed.unverified, true);
+    assert.equal(lapsed.expired, expired);
+    assert.equal(lapsed.options[0].disabled, true);
+  }
+});
+test("one Link access control lists Restricted, organizations, then domains, one kind at a time", () => {
+  const both = {
+    ...organizationOwner,
+    domainOptions: ["anaconda.com"],
+    domainProof: { "anaconda.com": "verified" },
+  };
+  const open = linkAccessProjection(both);
+  assert.deepEqual(
+    open.options.map(({ value, kind, disabled }) => [value, kind, disabled]),
+    [
+      ["", undefined, false],
+      ["org:org-acme", "organization", false],
+      ["anaconda.com", "domain", false],
+    ],
+  );
+  assert.equal(open.selected, "");
+  const organizationSet = linkAccessProjection({
+    ...both,
+    organizationAccess: { ...acme, role: "commenter" },
+    organizationAccessOwnerVerified: true,
+  });
+  assert.equal(organizationSet.selected, "org:org-acme");
+  assert.deepEqual(organizationSet.organization, { ...acme, role: "commenter" });
+  assert.equal(organizationSet.options.find(({ kind }) => kind === "domain").disabled, true);
+  const domainSet = linkAccessProjection({
+    ...both,
+    domainView: { domain: "anaconda.com" },
+    domainViewOwnerVerified: true,
+  });
+  assert.equal(domainSet.selected, "anaconda.com");
+  assert.equal(domainSet.domain, "anaconda.com");
+  assert.equal(domainSet.options.find(({ kind }) => kind === "organization").disabled, true);
+  assert.equal(linkAccessProjection({ access: { canManageAccess: true } }), null);
+  assert.deepEqual(
+    linkAccessProjection({
+      ...organizationOwner,
+      organizationOptions: [],
+      organizationProof: { [acme.id]: "expired" },
+      organizationAccess: { ...acme, role: "viewer" },
+      organizationAccessOwnerVerified: false,
+    }).expired,
+    { kind: "organization", name: acme.name },
+  );
 });

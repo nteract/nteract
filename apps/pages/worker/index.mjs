@@ -123,6 +123,7 @@ import {
   logFailure,
   json,
   readJson,
+  withDomainAccess,
 } from "./auth.mjs";
 import {
   incompleteHistory,
@@ -178,6 +179,7 @@ import {
 } from "./mutations.mjs";
 
 import { claimInvitation, proposeSharingMutation, sharingProjection } from "./sharing.mjs";
+import { identityAudienceKeys, openedAudienceKey } from "./organization-access.mjs";
 import { pageAccess, pageRelation, pageState, restrictAccessDuringCommit } from "./access.mjs";
 
 import {
@@ -295,6 +297,7 @@ import {
   resolveProjectAccess,
 } from "./project-access.mjs";
 import { invitedProjects } from "./project-invitations.mjs";
+import { openedProjects, recordOpenedProject } from "./project-opened.mjs";
 import {
   FORWARD_REJECTED_HEADER,
   PROJECT_CREATE_PATH,
@@ -1857,6 +1860,20 @@ export class Catalog {
           throw new HttpError(403, "Host only");
         const value = await readJson(request);
         requireSpaceIdArgument(value.space_id);
+        // An opened hint (project-opened.mjs) is written with storage
+        // operations only: this route runs outside the queue, inside the
+        // Project host's read, so it never awaits another host. A body that
+        // also says `remove` drops the member hint in the same request, for a
+        // member removed from a Project with an organization grant. The
+        // opened hint goes first: a failure after it leaves the member hint,
+        // which the list re-checks and the member reclaim drops, never
+        // neither.
+        if (value.opened === true) {
+          await recordOpenedProject(this.storage, value);
+          if (value.remove === true)
+            await this.storage.delete(`project-discovery/${value.space_id}`);
+          return json({ ok: true });
+        }
         if (value.remove === true) {
           await this.storage.delete(`project-discovery/${value.space_id}`);
           return json({ ok: true });
@@ -3180,9 +3197,12 @@ export class Catalog {
         if (!response.ok)
           return refuse("project_policy_unavailable", "Project access cannot be verified");
         const policy = await response.json();
+        // A Project with members, invitations or an organization grant is
+        // shared: someone besides its owner reaches the Pages in it.
         if (
           Object.keys(policy.acl?.members ?? {}).length ||
-          Object.keys(policy.acl?.invites ?? {}).length
+          Object.keys(policy.acl?.invites ?? {}).length ||
+          policy.acl?.organizationAccess
         )
           return refuse(
             "shared_project_move_unsupported",
@@ -3811,6 +3831,13 @@ export class Catalog {
    * supplies what is returned. */
   async listSpaces(request, identity, args) {
     const storage = this.storage;
+    if (!args || typeof args !== "object" || Array.isArray(args))
+      throw new HttpError(400, "Invalid list arguments", "invalid_list_arguments");
+    const limit = args.limit ?? 50;
+    if ((args.limit !== undefined && !Number.isSafeInteger(args.limit)) || limit < 1 || limit > 100)
+      throw new HttpError(400, "limit must be an integer from 1 to 100", "invalid_list_arguments");
+    if (args.cursor !== undefined && args.cursor !== null && typeof args.cursor !== "string")
+      throw new HttpError(400, "Invalid cursor; restart from the first page", "invalid_cursor");
     for (const spaceId of await invitedProjects(this.env, identity)) {
       // An invitation is an untrusted candidate, not an existing membership.
       // Capacity conflicts or unavailable candidate hosts must not prevent
@@ -3825,13 +3852,19 @@ export class Catalog {
       }
     }
     const discovered = await storage.list({ prefix: "project-discovery/" });
-    if (discovered.size) {
-      const candidates = [
+    const opened = await openedProjects(storage);
+    if (discovered.size || opened.length) {
+      // Owned Projects, member hints and opened hints, one candidate per
+      // Project, so a Project with more than one is read once.
+      const candidates = new Map();
+      for (const candidate of [
         ...(await storage.list({ prefix: "space/" })).values(),
         ...discovered.values(),
-      ];
+        ...opened,
+      ])
+        if (!candidates.has(candidate.space_id)) candidates.set(candidate.space_id, candidate);
       const spaces = [];
-      for (const candidate of candidates) {
+      for (const candidate of candidates.values()) {
         if (candidate.pending || candidate.deletion) continue;
         const response = await this.env.PROJECTS.getByName(candidate.space_id).fetch(
           forwarded(request, "/internal/space/read", { space_id: candidate.space_id }),
@@ -3840,13 +3873,6 @@ export class Catalog {
         else if (![403, 404, 409].includes(response.status))
           throw new HttpError(503, "Project access is temporarily unavailable");
       }
-      const limit = args.limit ?? 50;
-      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
-        throw new HttpError(
-          400,
-          "limit must be an integer from 1 to 100",
-          "invalid_list_arguments",
-        );
       const context = {
         principal: identity.principal,
         needle: null,
@@ -3883,20 +3909,6 @@ export class Catalog {
         principal: identity.principal,
       });
     }
-    if (!args || typeof args !== "object" || Array.isArray(args))
-      throw new HttpError(400, "Invalid list arguments", "invalid_list_arguments");
-    let limit = 50;
-    if (args.limit !== undefined) {
-      if (!Number.isSafeInteger(args.limit) || args.limit < 1 || args.limit > 100)
-        throw new HttpError(
-          400,
-          "limit must be an integer from 1 to 100",
-          "invalid_list_arguments",
-        );
-      limit = args.limit;
-    }
-    if (args.cursor !== undefined && args.cursor !== null && typeof args.cursor !== "string")
-      throw new HttpError(400, "Invalid cursor; restart from the first page", "invalid_cursor");
     const context = {
       principal: identity.principal,
       needle: null,
@@ -4164,7 +4176,6 @@ export class Catalog {
           epoch,
           verify: (pageId) => this.verifyShared(request, pageId),
         });
-        const evidence = identity.domainAccess;
         // While D1 may miss a Catalog write, a walk over it would end
         // early with no cursor; the Catalog entries serve while the pass
         // and the Page marks settle. A walk continues on the source that
@@ -4175,7 +4186,7 @@ export class Catalog {
         if (pinned === "index" || (pinned === null && ready))
           source = indexSource(db, {
             principal: identity.principal,
-            domain: evidence?.expiresAt > Date.now() ? evidence.domain : null,
+            audiences: identityAudienceKeys(identity),
             inTrash: options.inTrash,
             needle: options.needle,
             access: options.access,
@@ -4460,15 +4471,15 @@ export class Catalog {
  * (`{ at, keep }`). */
 function catalogAnswer(metadata, identity, { title, observed, contentUpdatedAt }) {
   const access = pageAccess(metadata, identity);
-  const domain = access.source === "domain";
+  const audience = openedAudienceKey(metadata, identity, access);
   return {
     page_id: metadata.pageId,
     title: catalogTitle(title),
     shared: true,
     owner: metadata.owner,
     role: access.role,
-    source: domain ? "domain_opened" : "member",
-    ...(domain && { domain: identity.domainAccess?.domain }),
+    source: audience ? "domain_opened" : "member",
+    ...(audience && { domain: audience }),
     revision: metadata.acl?.revision ?? 0,
     lifecycle_revision: metadata.lifecycleRevision ?? 0,
     state: indexedState(metadata),
@@ -4863,11 +4874,14 @@ export class Page {
     const identity =
       capability === undefined
         ? await authenticate(request, this.env)
-        : uploadIdentity(
-            await verifyAssetUpload(this.ctx.storage, capability, {
-              pageId: this.metadata?.pageId,
-              grantActive: (grantId) => oauthGrantActive(this.env, grantId),
-            }),
+        : await withDomainAccess(
+            uploadIdentity(
+              await verifyAssetUpload(this.ctx.storage, capability, {
+                pageId: this.metadata?.pageId,
+                grantActive: (grantId) => oauthGrantActive(this.env, grantId),
+              }),
+            ),
+            this.env,
           );
     if (identity.principal !== this.metadata?.owner) {
       const metadata = this.metadata;
@@ -5473,10 +5487,12 @@ export class Page {
     // projected, and nothing when it never projected one.
     if (!this.handle && this.pageTitle() === undefined) return;
     const title = catalogTitle(this.pageTitle());
-    const observedReader =
-      identity && pageAccess(this.metadata, identity).source === "domain"
-        ? identity.principal
-        : null;
+    // A link audience's reader: someone who opened the Page through company
+    // view or its organization grant.
+    const audience = identity
+      ? openedAudienceKey(this.metadata, identity, pageAccess(this.metadata, identity))
+      : null;
+    const observedReader = audience ? identity.principal : null;
     const effects = this.advanceTitleProjection({
       type: "project",
       title,
@@ -5542,9 +5558,8 @@ export class Page {
       const reported = this.indexedReaders.get(observedReader);
       const reader =
         observedReader &&
-        identity.domainAccess &&
         (reported === undefined || (contentUpdatedAt !== null && contentUpdatedAt !== reported))
-          ? { principal: observedReader, domain: identity.domainAccess.domain }
+          ? { principal: observedReader, domain: audience }
           : undefined;
       if (fanout || reader) {
         if (reader) this.indexedReaders.set(reader.principal, contentUpdatedAt);

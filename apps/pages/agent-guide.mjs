@@ -56,8 +56,8 @@ export function agentGuide(env) {
     ? ""
     : `
 
-Accounts on this deployment carry no verified email, so an invitation by email
-cannot be accepted here yet.`;
+Only an account whose email address ${provider.label} has verified can accept an
+invitation by email here. Invite the address the person's ${provider.label} account uses.`;
   return `# ${PRODUCT_NAME}
 
 ${part.opening}
@@ -283,6 +283,10 @@ ${part.authErrorItems}
   shorter ID or a larger budget.
 - company_email_proof_required (403): sharing with a company domain needs a
   verified email at that domain. Sign in again with it.
+- organization_proof_required (403): sharing with an organization needs your
+  own current membership in it. Sign in again with the same account.
+- link_audience_set (409): a Page has one link audience. Set the current one
+  (company domain or organization) to null first.
 - page_recovery_blocked: a pending edit exceeds the Page's history capacity;
   accepted content stays readable. Tell the person.
 - shared_page_unavailable (503, retryable:true): a listing met a shared Page,
@@ -485,7 +489,12 @@ people as viewers, commenters or editors. If enabled by the deployment, the owne
 allow signed-in people with a verified company email domain to view by link.
 Pages stay Restricted until the owner chooses that audience. Personal email
 providers are never offered, and only an owner signed in with a verified email at
-that company domain can choose it. Editors
+that company domain can choose it. Where the deployment's sign-in reports
+organizations, the owner can instead let members of one organization they
+belong to open the Page, or a whole Project, by link as viewers, commenters or
+editors. Nobody is
+added to the member list; a person keeps that access only while their
+membership is current. Editors
 can write and comment, commenters can read and comment, viewers can read, and
 only the owner can manage access,
 move a Page to Trash, restore it, or delete it permanently. Credential scope
@@ -528,8 +537,19 @@ ${part.sharingScopeParagraph}${emailInviteNote}
   a pending invitation. Use action: set_role with an accepted member's returned
   principal and role (or null to remove) to manage that membership. Project
   company-domain sharing is not supported.
+  Where the deployment's sign-in reports organizations, get_project_access also
+  returns organizationOptions, organizationProof and organizationAccess, and
+  manage_project_access takes action: set_organization_access with
+  organization_id and role, or organization_id null, as manage_page_access does.
+  Members of that organization reach the Project and every Page in it at that
+  role while their own membership is current; nobody is added to members. A
+  member's list_projects shows the Project only after they open its url once,
+  so send them the link yourself. A Project with an organization grant is
+  shared: move_page refuses to move a Page across its boundary with
+  shared_project_move_unsupported.
 - get_page_access takes page_id and returns effective access; owners also get
-  members, pending invitations, domainOptions and domainView.
+  members, pending invitations, domainOptions, domainView, organizationOptions
+  and organizationAccess.
   manage_page_access takes page_id, action, expected_revision from access.revision,
   a nonce, and the action's fields described below.
 
@@ -1443,6 +1463,22 @@ export function agentGuideResponse(request, env) {
   });
 }
 
+/** Organization sharing in the access tools, the same for every provider:
+ * whether the deployment reports organizations shows in organizationOptions. */
+const organizationSharing = `organizationOptions lists the organizations
+({ id, name }) you belong to now, empty where the deployment's sign-in reports
+none. set_organization_access takes organization_id from organizationOptions and
+role (viewer, commenter or editor), or organization_id null for Restricted; an
+organization you can't prove now returns 403 with code
+organization_proof_required, and organizationProof says whether signing in again
+renews it (expired) or not (missing). organizationAccess is { id, name, role }
+or null; organizationAccessOwnerVerified: false means it still applies but you
+can't prove membership now, and you can set Restricted. A Page has one link
+audience: set a domain or organization while the other is set and you get 409
+link_audience_set. Members reach the Page only while their own membership is
+current, which a sign-in or an agent token exchange confirms for eight hours; an
+agent connected by OAuth holds its person's organizations on the same terms.`;
+
 /** The OAuth clients a deployment admits besides the ones Pages names. */
 const acceptedOAuthClients = (anyClientDocument) =>
   anyClientDocument
@@ -1528,8 +1564,8 @@ from domainOptions, or null for Restricted; a company domain you cannot prove
 returns 403 with code company_email_proof_required). Company access is always view-only;
 individual editor grants still work, and explicit removals override the domain.
 Browser/OAuth company proof expires after six hours without fresh sign-in;
-refreshing an OAuth token does not renew that identity proof. A 409 requires reading
-access again. An uncertain request can be retried with its identical nonce and body.`,
+refreshing an OAuth token does not renew that identity proof. ${organizationSharing}
+A 409 requires reading access again. An uncertain request can be retried with its identical nonce and body.`,
     importPageImageParagraph: `import_page_image requires pages:read and pages:write plus current Page edit
 access. It copies the bytes into private Page storage and returns asset_id,
 asset_url, mime_type, size, width, and height. It does not insert content.
@@ -1936,7 +1972,7 @@ domain you cannot prove returns 403 with code company_email_proof_required).
 Company access is always view-only; individual editor grants still work, and
 explicit removals override the domain. Browser/OAuth company proof expires after
 six hours without fresh sign-in; refreshing an OAuth token does not renew that
-identity proof. A 409 requires reading access again. An uncertain request can be
+identity proof. ${organizationSharing} A 409 requires reading access again. An uncertain request can be
 retried with its identical nonce and body.`,
     importPageImageParagraph: `import_page_image requires pages:read and pages:write plus current Page edit
 access. It copies the bytes into private Page storage and returns asset_id,

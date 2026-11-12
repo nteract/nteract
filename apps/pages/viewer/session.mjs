@@ -64,7 +64,7 @@ import {
 } from "./reconnect-machine.mjs";
 import { commentsOpenMachine } from "./comments-open-machine.mjs";
 import { fullStatus, overlayStatus, viewerSyncStatusMachine } from "./sync-status-machine.mjs";
-import { FORMAT_GATE_INITIAL, formatGateStep } from "./format-gate.mjs";
+import { FORMAT_GATE_INITIAL, PAGE_FORMAT_UNSUPPORTED, formatGateStep } from "./format-gate.mjs";
 import { validNonce } from "../model/nonce.mjs";
 import {
   acknowledgedHeads,
@@ -138,12 +138,7 @@ const UNRETRYABLE_CODES = new Set([
   "stored_form_unsupported",
   "document_format_unsupported",
 ]);
-/** Shown when the host closes a socket as document_format_unsupported, which
- * carries no message: the Page's host record names document formats the
- * host doesn't open. Reloading can't help, so it doesn't say to. Discovery's
- * refusal carries the same text from the host. */
-export const PAGE_FORMAT_UNSUPPORTED =
-  "This Page is stored in a format this version of Pages doesn't open. Its owner can delete it.";
+export { PAGE_FORMAT_UNSUPPORTED };
 /** Shown when the host refuses to register a draft an earlier version of
  * Pages saved in a form this build doesn't read. */
 export const DRAFT_FORM_UNSUPPORTED =

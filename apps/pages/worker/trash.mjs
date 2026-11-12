@@ -83,6 +83,12 @@ export function purgeImpact(metadata, doc, commentsDoc, title) {
     collaborators: collaboratorsOf(metadata.acl),
     pending_invitations: pendingInvitations(metadata.acl),
     domain_view: metadata.acl?.domainView?.domain ?? null,
+    organization_access: metadata.acl?.organizationAccess
+      ? {
+          name: metadata.acl.organizationAccess.name,
+          role: metadata.acl.organizationAccess.role,
+        }
+      : null,
   };
 }
 

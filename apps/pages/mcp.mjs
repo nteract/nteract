@@ -433,7 +433,7 @@ const tool = (name, description, properties, required, annotations, share = fals
 export const tools = [
   tool(
     "get_page_access",
-    "Read your Page access; owners also get members, invites and domain options. Needs pages:share consent.",
+    "Read your Page access; owners also get members, invites, domain and organization options (organizationOptions, organizationProof, organizationAccess). Needs pages:share consent.",
     { page_id: page },
     ["page_id"],
     READ,
@@ -441,12 +441,12 @@ export const tools = [
   ),
   tool(
     "manage_page_access",
-    "Change direct Page sharing as its owner, at access.revision from get_page_access. invite: email and role. set_role: principal and role (null removes). revoke_invite: invite_id. set_domain_view: a domain from domainOptions, or null. Grants never cover sub-pages. Needs pages:share consent.",
+    "Change direct Page sharing as its owner, at access.revision from get_page_access. invite: email and role. set_role: principal and role (null removes). revoke_invite: invite_id. set_domain_view: a domain from domainOptions, or null. set_organization_access: organization_id from organizationOptions and role, or null. Grants never cover sub-pages. Needs pages:share consent.",
     {
       page_id: page,
       action: {
         type: "string",
-        enum: ["invite", "set_role", "revoke_invite", "set_domain_view"],
+        enum: ["invite", "set_role", "revoke_invite", "set_domain_view", "set_organization_access"],
       },
       email: {
         ...string,
@@ -456,6 +456,7 @@ export const tools = [
       role: accessRole,
       invite_id: string,
       domain: { type: ["string", "null"] },
+      organization_id: { type: ["string", "null"] },
       expected_revision: accessRevision,
       nonce,
     },
@@ -465,7 +466,7 @@ export const tools = [
   ),
   tool(
     "get_project_access",
-    "As a Project's owner, read its sharing revision (not get_project's), members keyed by principal, and invites with expiresAt (epoch milliseconds). Needs pages:share consent.",
+    "As a Project's owner, read its sharing revision (not get_project's), members keyed by principal, invites with expiresAt (epoch milliseconds), and organization options (organizationOptions, organizationProof, organizationAccess). Needs pages:share consent.",
     { project_id: project },
     ["project_id"],
     READ,
@@ -473,10 +474,12 @@ export const tools = [
   ),
   tool(
     "manage_project_access",
-    "Share a whole Project as its owner, at the revision from get_project_access. invite takes an exact known email and role; no email is sent. set_role takes a member's principal (null removes). revoke_invite takes invite_id. Project access covers content and all Pages; direct Page grants stay separate. Needs pages:share consent.",
+    "Share a whole Project as its owner, at the revision from get_project_access. invite takes an exact known email and role; no email is sent. set_role takes a member's principal (null removes). revoke_invite takes invite_id. set_organization_access: organization_id from organizationOptions and role, or null. Project access covers content and all Pages; direct Page grants stay separate. Needs pages:share consent.",
     {
       project_id: project,
-      action: { ...choice("invite", "set_role", "revoke_invite") },
+      action: {
+        ...choice("invite", "set_role", "revoke_invite", "set_organization_access"),
+      },
       email: {
         ...string,
         description: "Exact known email for invite; never guessed.",
@@ -487,6 +490,7 @@ export const tools = [
       },
       principal: accessPrincipal,
       role: accessRole,
+      organization_id: { type: ["string", "null"] },
       expected_revision: accessRevision,
       nonce,
     },

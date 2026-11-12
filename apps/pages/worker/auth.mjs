@@ -11,6 +11,7 @@ import { clientProvenance } from "./client-provenance.mjs";
 import { REVISION_PATTERN } from "./revisions.mjs";
 import { kiloIdentity } from "./kilo-config.mjs";
 import { kiloToken, kiloTokenAccount } from "./kilo-token.mjs";
+import { organizationLeases, recordKiloMembership } from "./kilo-membership.mjs";
 
 export class HttpError extends Error {
   constructor(status, message, code) {
@@ -178,9 +179,55 @@ function onAgentRoute(request, extra = []) {
   );
 }
 
-async function withDomainAccess(identity, env) {
+/** Kilo token answers whose membership evidence is in D1. The token lease
+ * hands every request the same answer object until it ends, so once one
+ * request's write of an answer succeeds, later requests on it write nothing.
+ *
+ * Only that settled fact is shared, never a pending write: a gateway request
+ * that awaited another request's promise could be cut off when that request
+ * responds (isolate-setup.mjs says why). So, as with the token lease
+ * (kilo-token-lease.mjs), each request does its own waiting. A request that
+ * finds its answer not yet recorded writes it itself and marks the answer
+ * only after its own write succeeds. Requests that arrive together at the
+ * start of a lease each write the same answer with the same send time, which
+ * the fenced write leaves as it is.
+ *
+ * A request whose write fails gets a retryable 503 `sign_in_unavailable` and
+ * marks nothing, so the next request writes again. It does not go on without
+ * organization leases instead: that would answer the person's organization
+ * Pages with access denials a retry would reverse. Either way no request
+ * authenticates with evidence older than the answer it holds. */
+const recordedAnswers = new WeakSet();
+async function recordExchange(env, principal, account) {
+  if (recordedAnswers.has(account)) return;
+  try {
+    await recordKiloMembership(env, principal, account.organizations, account.verifiedAt);
+  } catch (cause) {
+    throw withAdmissionReason(
+      Object.assign(new Error("Kilo sign-in is unavailable. Retry the request."), {
+        status: 503,
+        code: "sign_in_unavailable",
+        retryable: true,
+        cause,
+      }),
+      "credential_unverified",
+    );
+  }
+  recordedAnswers.add(account);
+}
+
+/** The identity with the audience leases its evidence supports: a company
+ * domain lease and one lease per organization. Each host derives them again
+ * from the credential; no identity carries them between hosts. A Page host
+ * applies it to an upload capability's identity too (index.mjs `identify`). */
+export async function withDomainAccess(identity, env) {
   const domainAccess = await domainAccessForIdentity(env, identity);
-  return Object.freeze({ ...identity, ...(domainAccess && { domainAccess }) });
+  const organizations = await organizationLeases(env, identity);
+  return Object.freeze({
+    ...identity,
+    ...(domainAccess && { domainAccess }),
+    ...(organizations.length && { organizations: Object.freeze(organizations) }),
+  });
 }
 
 export async function authenticate(request, env) {
@@ -268,6 +315,7 @@ export async function authenticate(request, env) {
         );
       const account = await kiloTokenAccount(kilo, token);
       const { principal, metadata } = kiloIdentity(kilo.config, account);
+      await recordExchange(env, principal, account);
       return withDomainAccess(
         {
           principal,
@@ -280,6 +328,11 @@ export async function authenticate(request, env) {
           canWrite: true,
           credentialKind: "kilo-token",
           namespace: metadata.principalNamespace,
+          // Kilo sends it only with proof the account controls it, and the
+          // exchange keeps it only when an invitation could name it
+          // (kilo-exchange.mjs). Like an API key's, it lasts as long as this
+          // identity does.
+          verifiedEmail: metadata.emailVerified === true ? metadata.email : undefined,
           expiresAt: account.until,
         },
         env,
@@ -443,6 +496,8 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "invalid_cursor",
   "invalid_list_arguments",
   "company_email_proof_required",
+  "organization_proof_required",
+  "link_audience_set",
   "project_id_as_page_id",
   "page_id_as_project_id",
   "project_not_found",

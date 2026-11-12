@@ -41,10 +41,13 @@ import {
 import { HttpError } from "./auth.mjs";
 import { catalogTitle, listAll, trashTime } from "./catalog.mjs";
 import { acceptedTime, validTime } from "./content-activity.mjs";
-import { configuredDomainView } from "./domain-access.mjs";
+import { migrateSchema } from "./d1-schema.mjs";
+import { configuredOrganizationAccess, pageAudienceKey } from "./organization-access.mjs";
 import { validPageId } from "./registration.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
 import { requirePageIdArgument, requireSpaceIdArgument, validSpaceId } from "./spaces.mjs";
+
+export { migrateSchema };
 
 export const CATALOG_MIGRATIONS = Object.freeze([
   Object.freeze({
@@ -69,6 +72,9 @@ export const CATALOG_MIGRATIONS = Object.freeze([
         principal TEXT NOT NULL,
         role TEXT NOT NULL CHECK (role IN ('owner', 'editor', 'viewer')),
         source TEXT NOT NULL CHECK (source IN ('owner', 'member', 'domain_opened')),
+        -- A domain_opened row's link audience key: a company domain, or
+        -- org:<encodeURIComponent(id)> for an organization. A domain holds no
+        -- colon. Null on owner and member rows.
         domain TEXT,
         updated_revision INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL,
@@ -276,42 +282,6 @@ export async function migrateCatalogIndex(
   return migrateSchema(db, { table: "pages_catalog_schema", migrations, now });
 }
 
-/** Apply `migrations` in order, recording each version in `table`. Each
- * schema keeps its own version table, so its migrations number from 1. */
-export async function migrateSchema(
-  db,
-  { table, migrations, now = () => new Date().toISOString() },
-) {
-  if (!/^[a-z_]+$/.test(table)) throw new TypeError("Invalid schema table name");
-  await db
-    .prepare(
-      `CREATE TABLE IF NOT EXISTS ${table} (
-        version INTEGER PRIMARY KEY,
-        name TEXT NOT NULL,
-        applied_at TEXT NOT NULL
-      )`,
-    )
-    .run();
-  const current = async () =>
-    (await db.prepare(`SELECT max(version) AS version FROM ${table}`).first())?.version ?? 0;
-  let version = await current();
-  for (const migration of migrations) {
-    if (migration.version <= version) continue;
-    try {
-      await db.batch([
-        ...migration.statements.map((sql) => db.prepare(sql)),
-        db
-          .prepare(`INSERT INTO ${table} (version, name, applied_at) VALUES (?, ?, ?)`)
-          .bind(migration.version, migration.name, now()),
-      ]);
-    } catch (error) {
-      if ((await current()) < migration.version) throw error;
-    }
-    version = migration.version;
-  }
-  return version;
-}
-
 /**
  * The D1 binding, once its catalog index schema is current.
  *
@@ -450,8 +420,10 @@ const trashedAt = (metadata) =>
  * sort by its spelling. Neither can be sealed into a cursor. */
 const firstTime = (...values) => values.find(validTime) ?? null;
 
-/** Principals a Page's host record lists. Domain readers appear only when
- * observed opening the Page through the current domain view. */
+/** Principals a Page's host record lists. A link audience's readers (company
+ * view or an organization grant, `domain_opened` rows keyed by the audience)
+ * appear only when observed opening the Page through the current audience.
+ * An organization reader lists with the grant's role. */
 export function accessRows(metadata, env, reader) {
   const members = metadata?.acl?.members ?? {};
   const rows = [{ principal: metadata.owner, role: "owner", source: "owner", domain: null }];
@@ -467,7 +439,7 @@ export function accessRows(metadata, env, reader) {
         domain: null,
       });
   }
-  const domain = configuredDomainView(metadata, env)?.domain ?? null;
+  const domain = pageAudienceKey(metadata, env);
   if (
     reader &&
     domain &&
@@ -475,13 +447,21 @@ export function accessRows(metadata, env, reader) {
     reader.principal !== metadata.owner &&
     !Object.hasOwn(members, reader.principal)
   )
-    rows.push({ principal: reader.principal, role: "viewer", source: "domain_opened", domain });
+    rows.push({
+      principal: reader.principal,
+      role: configuredOrganizationAccess(metadata, env)?.role === "editor" ? "editor" : "viewer",
+      source: "domain_opened",
+      domain,
+    });
   return { rows, memberKeys: Object.keys(members), domain };
 }
 
 /** True when moving from `previous` to `next` removes a listed principal,
- * clears or changes the domain view, or tombstones a principal who could be a
- * domain reader. Pure grants never need a pre-commit index write. */
+ * clears or changes the link audience, or tombstones a principal who could be
+ * one of its readers. Pure grants never need a pre-commit index write. An
+ * organization grant's role change keeps its readers' rows until the next
+ * report rewrites their role: the index lists, and each shared row is
+ * verified with its Page host before it is shown. */
 export function listingRestricted(previous, next, env) {
   if (indexedState(next) !== "active") return true;
   const before = accessRows(previous, env),
@@ -590,7 +570,7 @@ function deleteUnlisted(db, pageId, rows, revision, lifecycle) {
     );
 }
 
-/** Domain-reader rows survive only under the same active domain view, and
+/** Link-audience reader rows survive only under the same active audience, and
  * never for a principal with any explicit member record (including removal). */
 function deleteDomainReaders(db, pageId, domain, memberKeys, revision, lifecycle) {
   return db
@@ -1365,7 +1345,7 @@ const before = (row, after) =>
  * is a bound parameter. `after` is null or a `positionOf(sort, …)`. */
 export function listingQuery({
   principal,
-  domain,
+  audiences = [],
   inTrash,
   needle,
   after,
@@ -1400,7 +1380,7 @@ export function listingQuery({
         AND CASE WHEN ? = 1 THEN a.source = 'owner' AND p.state = 'trashed'
           ELSE a.source != 'owner' OR p.state = 'active' END
         ${accessFilter}
-        AND (a.source != 'domain_opened' OR a.domain = ?)
+        AND (a.source != 'domain_opened' OR a.domain IN (SELECT value FROM json_each(?)))
         AND (? IS NULL OR a.title_search LIKE ? ESCAPE '\\')
         ${keyset}
       ORDER BY ${order}
@@ -1408,7 +1388,7 @@ export function listingQuery({
     params: [
       principal,
       inTrash ? 1 : 0,
-      domain ?? null,
+      JSON.stringify(audiences),
       pattern,
       pattern,
       ...(continued ? [key, after.page_id] : []),

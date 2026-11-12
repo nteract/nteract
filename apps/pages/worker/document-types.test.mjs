@@ -507,6 +507,28 @@ test("the owner lists, trashes, restores and permanently deletes a Page in a for
   assert.equal(loads(), 0);
 });
 
+// The browser's stopped screen for such a Page offers Move to Trash, or Trash
+// once it's there, only from this answer (viewer/unopened-page.mjs).
+test("the access read says who may trash a Page in a format this build doesn't write", async (t) => {
+  const { f, loads } = await storedPage(t);
+  const access = async (who) => {
+    const response = await f.pageCall(who, "/internal/access", { read: true });
+    assert.equal(response.status, 200, `${who}: ${JSON.stringify(response.body)}`);
+    return response.body.access;
+  };
+  assert.equal((await access("owner")).canDelete, true);
+  assert.equal((await access("member")).canDelete, false);
+  const trashed = await f.catalogCall("owner", "delete_page", {
+    page_id: pageId,
+    nonce: "trash-for-access",
+  });
+  assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
+  const inTrash = await access("owner");
+  assert.equal(inTrash.trashed, true);
+  assert.equal(inTrash.canRestore, true);
+  assert.equal(loads(), 0);
+});
+
 // Durable Object storage in memory that deletes key lists, as plain sync's
 // purge does.
 class PlainStorage extends Storage {
