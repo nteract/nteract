@@ -883,7 +883,7 @@ export class PageSession {
   }
   #release() {
     this.#stop();
-    this.checkpointSnapshot = this.checkpointHeads = undefined;
+    this.checkpointSnapshot = this.checkpointHeads = this.writtenCheckpoint = undefined;
     this.commentsCheckpointSnapshot = this.commentsCheckpointHeads = undefined;
     return this.releaseLocal();
   }
@@ -2084,11 +2084,21 @@ export class PageSession {
   persistLocal(patch = {}, { allowClosed = false } = {}) {
     if (this.hidden || (!this.alive && !allowClosed) || !this.localPage || !this.handle)
       return Promise.resolve();
-    const heads = A.getHeads(this.doc).join(",");
+    const headList = A.getHeads(this.doc),
+      heads = headList.join(",");
     if (this.checkpointHeads !== heads) {
       this.checkpointSnapshot = encodeSnapshot(A.save(this.doc));
       this.checkpointHeads = heads;
     }
+    // The snapshot this session wrote last, when the one written now holds
+    // its history: the document is at the new snapshot's heads here, so
+    // hasHeads answers exactly. writeLocalPage then skips loading both.
+    const written = this.writtenCheckpoint;
+    const covers =
+      written && written.snapshot !== this.checkpointSnapshot && A.hasHeads(this.doc, written.heads)
+        ? written.snapshot
+        : undefined;
+    const snapshot = this.checkpointSnapshot;
     // The comments document checkpoints beside the Page, with its own heads,
     // so a comment typed offline survives a reload or a recovery archive.
     const comments = this.commentsDoc;
@@ -2116,8 +2126,11 @@ export class PageSession {
         this.localPage = await writeLocalPage(
           this.identity,
           { ...this.localPage, ...value },
-          { replica: this.replicaId },
+          { replica: this.replicaId, covers: value.snapshot === snapshot ? covers : undefined },
         );
+        // A merge with another tab's copy stores a snapshot with other heads.
+        this.writtenCheckpoint =
+          this.localPage?.snapshot === snapshot ? { snapshot, heads: headList } : undefined;
       });
     this.cacheTail = work;
     return work;

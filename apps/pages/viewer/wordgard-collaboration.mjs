@@ -63,10 +63,25 @@ export function wordgardCommentSelection(replica, id, editor, map) {
   return { text, occurrence };
 }
 
-export function wordgardCommentRanges(doc, id, map, threads) {
+/** Editor ranges for the threads anchored in block `id`. A thread anchored in
+ * another block is skipped before its cursors are resolved. `cache` (a
+ * WeakMap) keeps each target's resolution for as long as the block's
+ * projection map is the same object: the binding replaces the map whenever
+ * this block's text changes, so selection changes and edits to other blocks
+ * reuse it. */
+export function wordgardCommentRanges(doc, id, map, threads, cache = null) {
   if (!textObject(doc, id)) return [];
+  const resolve = (target) => {
+    if (!cache || !target || typeof target !== "object") return selectionContext(doc, target);
+    const hit = cache.get(target);
+    if (hit && hit.map === map) return hit.context;
+    const context = selectionContext(doc, target);
+    cache.set(target, { map, context });
+    return context;
+  };
   return threads.flatMap((thread) => {
-    const context = selectionContext(doc, thread.target);
+    if (thread.target?.anchor?.blockId !== id) return [];
+    const context = resolve(thread.target);
     if (context?.status !== "attached" || context.start.blockId !== id) return [];
     const from = mapped(map?.amToWg, context.start.offsetUtf16);
     const to = mapped(map?.amToWg, context.end.offsetUtf16);
@@ -109,8 +124,9 @@ export function createWordgardCollaboration({
     const target = getTarget();
     return typeof target === "string" ? target : (target?.id ?? target?.thread_id);
   };
+  const anchors = new WeakMap();
   const commentRanges = () =>
-    wordgardCommentRanges(replica.doc, id, getCurrent()?.map, getThreads());
+    wordgardCommentRanges(replica.doc, id, getCurrent()?.map, getThreads(), anchors);
 
   function peers() {
     const doc = replica.doc;
