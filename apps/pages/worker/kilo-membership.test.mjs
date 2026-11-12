@@ -290,7 +290,10 @@ test("the fence orders exchanges by the millisecond, and a tie never adds an org
   await recordKiloMembership(env, principal, [second, { id: "org-third", name: "Third" }], tie);
   assert.deepEqual(await stored(env, principal), [], "two answers in one millisecond: none");
   resetMembershipCache();
-  assert.deepEqual(await membershipRecord(env, principal), { organizations: [], verifiedAtMs: tie });
+  assert.deepEqual(await membershipRecord(env, principal), {
+    organizations: [],
+    verifiedAtMs: tie,
+  });
   await recordKiloMembership(env, principal, [second], tie + 1);
   assert.deepEqual(await stored(env, principal), [second], "the next exchange sets it again");
 });
