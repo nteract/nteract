@@ -135,9 +135,19 @@ function wrapSelection(state, open, close) {
   });
 }
 
-/** Move over `length` characters of an inserted closer at the caret. */
+/** Move over `length` characters of an inserted closer at the caret.
+ *
+ * A select event, not an input one: until the view flushes, Wordgard places
+ * the next typed key at the DOM caret unless a pending transaction moved the
+ * selection with a non-input event. Typed fast, the key after the closer would
+ * otherwise land in front of it. */
 function passOver(at, length) {
-  return typed({ selection: GardSelection.cursor(at + length), effects: passCloser.of(at) });
+  return {
+    selection: GardSelection.cursor(at + length),
+    effects: passCloser.of(at),
+    scrollIntoView: true,
+    userEvent: "select",
+  };
 }
 
 function typeOpen(state, code, open) {
