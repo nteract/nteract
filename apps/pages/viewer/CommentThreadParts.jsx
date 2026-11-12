@@ -194,8 +194,9 @@ export function Message({ message, source, now, continued = false, clamp = true 
 }
 
 /** Messages grouped into same-author runs, joined by a thin line in each
- * author's color. `sourceOf(message)` gives each message's stored source. */
-export function MessageRuns({ messages, sourceOf, now }) {
+ * author's color. `sourceOf(message)` gives each message's stored source.
+ * `clamp` puts long bodies behind Show more. */
+export function MessageRuns({ messages, sourceOf, now, clamp = true }) {
   const runs = messageRuns(messages);
   return runs.map((run, index) => (
     <div
@@ -211,6 +212,7 @@ export function MessageRuns({ messages, sourceOf, now }) {
           source={sourceOf(message)}
           now={now}
           continued={position > 0}
+          clamp={clamp}
         />
       ))}
     </div>
