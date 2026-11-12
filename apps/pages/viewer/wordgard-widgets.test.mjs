@@ -4,12 +4,19 @@ import { JSDOM } from "jsdom";
 import { Leaf } from "wordgard/doc";
 import { GardState, GardSelection, Transaction } from "wordgard/state";
 import { history, undo } from "wordgard/history";
-import { schema, CodeBlock, CodeBlockLanguage } from "./wordgard-model.mjs";
+import { Decoration } from "wordgard/editor";
+import { schema, CodeBlock, CodeBlockLanguage, LineBreak } from "./wordgard-model.mjs";
 
 // These tests exercise native editor transactions; styles and SVG mounting
 // are qualified separately by the real-browser Wordgard smoke.
-const { wordgardWidgets, selectCodeLanguage, diagramFrame, maximizeButton, renderedSvg } =
-  await import("./wordgard-widgets.mjs");
+const {
+  wordgardWidgets,
+  wordgardCodeLanguages,
+  selectCodeLanguage,
+  diagramFrame,
+  maximizeButton,
+  renderedSvg,
+} = await import("./wordgard-widgets.mjs");
 
 function withDocument(run) {
   const { window } = new JSDOM("<!doctype html><body></body>");
@@ -154,4 +161,30 @@ test("read-only language selection cannot mutate or focus the editor", () => {
   assert.equal(selectCodeLanguage(editor, block(), "mermaid"), false);
   assert.equal(editor.state, before);
   assert.equal(editor.focused, null);
+});
+
+// On an empty last line the caret is at the end of the content. A control
+// drawn there would follow the caret in the DOM, and Chromium addresses a
+// paste to the node after the caret.
+test("a code block's controls are drawn before its content, with none at its end", () => {
+  const block = CodeBlock.withMarks([CodeBlockLanguage.of("mermaid")]).create([
+    Leaf.text("graph TD"),
+    LineBreak,
+  ]);
+  let state = GardState.create({
+    doc: schema.doc([block]),
+    config: [
+      schema.elements.map((e) => GardState.schemaElement.of(e)),
+      wordgardWidgets(),
+      wordgardCodeLanguages(["Python"]),
+    ],
+  });
+  // The caret on the empty last line opens the diagram's source.
+  const end = block.length - 1;
+  state = state.update({ selection: GardSelection.cursor(end) }).state;
+  const sets = state.facet(Decoration.Point.source).map((source) => source(state));
+  const controls = sets.map((set) => set.at(1)).filter(Boolean);
+  assert.equal(controls.length, 2, "the language menu and the Preview button");
+  for (const control of controls) assert.ok(control.side < 0);
+  for (const set of sets) assert.equal(set.at(end), undefined);
 });

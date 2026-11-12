@@ -77,6 +77,13 @@ else replaces the screen with a Reload notice and leaves the Page unchanged.
   letter or digit (`snake_case_name`, `2*3*4`), an escaped one, and one inside
   code stay literal; undo restores the typed delimiters. `---` alone in a
   paragraph inserts a horizontal rule. Cmd/Ctrl+Shift+X toggles strikethrough.
+- **Code blocks:** Tab indents and Shift+Tab removes one level, for the caret's
+  line or every selected line. One level is four spaces in Python and Rust, two
+  elsewhere, and a tab in a block whose lines already start with tabs. Enter
+  keeps the indentation of the line it leaves; three Enters, or Mod-Enter, leave
+  the block. Outside a code block Tab moves focus as usual. Code text carries no
+  marks, so a selection inside one code block gets a toolbar with the text style
+  and Comment only, placed outside the block.
 - **Mark registry:** [`model/marks.json`](model/marks.json) lists every inline
   mark with its value shape, expand rule, and Markdown projection. Validation,
   the Wordgard binding, Markdown import/export, and the MCP `format_match`

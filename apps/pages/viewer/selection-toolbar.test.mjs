@@ -73,3 +73,43 @@ test("visual viewport offsets still constrain the entire toolbar", () => {
   assert.ok(result.top >= viewport.top + 12);
   assert.ok(result.top + fixture.height <= viewport.bottom - 12);
 });
+
+// A selection inside a code block: lines 24px tall, the block from 280 to 520.
+const inCode = (line, block = { top: 280, bottom: 520 }) => ({
+  ...fixture,
+  start: { ...fixture.start, top: line, bottom: line + 24 },
+  end: { ...fixture.end, top: line, bottom: line + 24 },
+  block,
+});
+
+test("a selection in a code block puts the toolbar outside the block, at the nearer edge", () => {
+  // Near the top: above the block, clear of its first lines and its controls.
+  const upper = selectionToolbarPosition(inCode(330));
+  assert.deepEqual(upper, { left: 260, top: 222 });
+  assert.ok(upper.top + fixture.height < 280);
+  // Near the bottom: below the block.
+  assert.deepEqual(selectionToolbarPosition(inCode(480)), { left: 260, top: 530 });
+});
+
+test("a code block edge without room gives way to the other edge, then to the selection", () => {
+  // The block starts under the page bar: no room above it, so below.
+  assert.deepEqual(selectionToolbarPosition(inCode(120, { top: 90, bottom: 400 })), {
+    left: 260,
+    top: 410,
+  });
+  // The block runs past the viewport's end: the nearer edge is out of reach.
+  assert.deepEqual(selectionToolbarPosition(inCode(600, { top: 280, bottom: 1400 })), {
+    left: 260,
+    top: 222,
+  });
+  // Neither edge is in view: beside the selection, as in prose.
+  assert.deepEqual(
+    selectionToolbarPosition(inCode(400, { top: -300, bottom: 1400 })),
+    selectionToolbarPosition({ ...inCode(400), block: undefined }),
+  );
+  // A box that couldn't be measured changes nothing.
+  assert.deepEqual(
+    selectionToolbarPosition(inCode(400, { top: NaN, bottom: NaN })),
+    selectionToolbarPosition({ ...inCode(400), block: undefined }),
+  );
+});
