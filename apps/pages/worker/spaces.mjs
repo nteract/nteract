@@ -306,11 +306,11 @@ export class Space {
       if (!record || !can("read", record, identity)) throw spaceNotFound();
       if (path === "/internal/space/read") {
         // An organization has no member list to fan out to, so a person who
-        // opens the Project through its organization grant records their own
-        // discovery hint. Like every hint it is a candidate: the listing
-        // reads the Project again, so a person whose lease ends, or whose
-        // grant clears, stops seeing it. The hint only lists the Project, so
-        // a failure to write it never fails the open.
+        // opens the Project through its organization grant records an opened
+        // hint (project-opened.mjs) in their own Catalog. Like every hint it
+        // is a candidate: the list reads the Project again, so a person whose
+        // lease ends, or whose grant clears, stops seeing it. The hint only
+        // lists the Project, so a failure to write it never fails the open.
         if (
           args.claim !== false &&
           projectDecision(record, identity).basis.via === "organization"
@@ -319,7 +319,11 @@ export class Space {
             const discovered = await this.env.CATALOGS.getByName(identity.principal).fetch(
               new Request("https://pages.internal/internal/project-discovery", {
                 method: "POST",
-                body: JSON.stringify({ space_id: record.space_id, owner: record.owner }),
+                body: JSON.stringify({
+                  space_id: record.space_id,
+                  owner: record.owner,
+                  opened: true,
+                }),
               }),
             );
             await discovered.body?.cancel();
@@ -452,15 +456,19 @@ export class Space {
           // replaced) go after the audit line, so a failure here leaves the
           // retry, which replays the receipt above, to finish the removal.
           if (indexedAction(args.action)) await pruneProjectInvitations(this.env, next);
-          // While the Project has an organization grant, the removed person
-          // may still read it through the organization, so their hint stays:
-          // the listing checks access on every read, and a full Catalog
-          // evicts it before any member's hint.
-          if (args.action === "set_role" && args.role === null && !next.acl.organizationAccess)
+          // The removed person's member hint goes. While the Project has an
+          // organization grant they may still read it through the
+          // organization, so the same request records an opened hint: the
+          // list re-checks it on every read, and it is bounded and evictable.
+          if (args.action === "set_role" && args.role === null)
             await this.env.CATALOGS.getByName(args.principal).fetch(
               new Request("https://pages.internal/internal/project-discovery", {
                 method: "POST",
-                body: JSON.stringify({ space_id: record.space_id, remove: true }),
+                body: JSON.stringify(
+                  next.acl.organizationAccess
+                    ? { space_id: record.space_id, owner: record.owner, remove: true, opened: true }
+                    : { space_id: record.space_id, remove: true },
+                ),
               }),
             );
           return answer(receipt, next);

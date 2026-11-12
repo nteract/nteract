@@ -1422,16 +1422,19 @@ A Project's owner can share it with one organization the same way
 every Page in it, through the Project as a member does, and only while both
 their lease and the Page host's 15-second Project lease are current. Nobody
 is added to the Project's members, and nothing is written on its Pages.
-There is no member list to send discovery hints to, so the first time a
-member opens the Project their own Catalog records a hint, and the Project
-appears in their list from then on while the listing's check of their access
-passes. The owner sends them the Project's link. A Catalog holds at most 500
-discovery hints. When it is full, hints for Projects that are gone go first;
-hints for Projects this account is a member of always stay; then hints for
-Projects reached only through an organization grant go, oldest first, until
-the new hint fits. Such a hint comes back the next time the person opens the
-Project, so a member grant or an invitation never fails because of
-organization hints. A Project with an organization grant is shared, so a Page
+There is no member list to send discovery hints to, so a member who opens
+the Project records an opened hint in their own Catalog
+(`project-opened/<space_id>`, [worker/project-opened.mjs](worker/project-opened.mjs)),
+apart from member hints. The list reads owned Projects, member hints and
+opened hints, each Project once, and shows one only while the person can read
+it. The owner sends members the Project's link. Writing an opened hint does
+storage operations only: a re-open within a day writes nothing, and a Catalog
+keeps the newest 200 by when they were written, so the oldest goes first. An
+opened hint never counts against the 500 member hints and never refuses a
+write. A member removed from a Project with an organization grant gets an
+opened hint in place of their member hint. Deleting the Project or clearing
+the grant sends nothing to the organization's members: their opened hints stay
+hidden and age out. A Project with an organization grant is shared, so a Page
 can't be moved across its boundary.
 
 The auth log's `kilo_token.accepted` line carries how many organizations the

@@ -287,6 +287,7 @@ import {
   resolveProjectAccess,
 } from "./project-access.mjs";
 import { invitedProjects } from "./project-invitations.mjs";
+import { openedProjects, recordOpenedProject } from "./project-opened.mjs";
 import {
   FORWARD_REJECTED_HEADER,
   PROJECT_CREATE_PATH,
@@ -1833,26 +1834,26 @@ export class Catalog {
           throw new HttpError(403, "Host only");
         const value = await readJson(request);
         requireSpaceIdArgument(value.space_id);
+        // An opened hint (project-opened.mjs) is written with storage
+        // operations only: this route runs outside the queue, inside the
+        // Project host's read, so it never awaits another host. A body that
+        // also says `remove` drops the member hint in the same request, for a
+        // member removed from a Project with an organization grant.
+        if (value.opened === true) {
+          if (value.remove === true)
+            await this.storage.delete(`project-discovery/${value.space_id}`);
+          await recordOpenedProject(this.storage, value);
+          return json({ ok: true });
+        }
         if (value.remove === true) {
           await this.storage.delete(`project-discovery/${value.space_id}`);
           return json({ ok: true });
         }
         const known = await this.storage.get(`project-discovery/${value.space_id}`);
-        // An organization member's every open sends this; an unchanged hint
-        // is not written again, so `at` is when it was first written.
-        if (known?.owner === value.owner) return json({ ok: true });
-        const full = async () =>
-          (await this.storage.list({ prefix: "project-discovery/", limit: 500 })).size >= 500;
-        if (!known && (await full())) {
-          // Reclaim before refusing. A hint for a Project that is gone goes,
-          // and a hint this account holds a member row for stays. A hint for
-          // a Project with an organization grant and no member row here stays
-          // in this pass, but yields if the Catalog is still full: those go
-          // oldest first (`at`, a hint without one first) until this hint
-          // fits. Such a hint comes back the next time the person opens the
-          // Project, so only a list entry is lost, and a member grant or an
-          // invitation claim never fails because of organization hints.
-          const yielding = [];
+        if (
+          !known &&
+          (await this.storage.list({ prefix: "project-discovery/", limit: 500 })).size >= 500
+        ) {
           for (const [key, hint] of await this.storage.list({ prefix: "project-discovery/" })) {
             const response = await this.env.PROJECTS.getByName(hint.space_id).fetch(
               new Request("https://pages.internal/internal/space/policy", {
@@ -1860,31 +1861,21 @@ export class Catalog {
                 body: JSON.stringify({ space_id: hint.space_id, owner: hint.owner }),
               }),
             );
-            if (response.status === 404) {
+            if (
+              response.status === 404 ||
+              (response.ok &&
+                !["viewer", "commenter", "editor"].includes(
+                  (await response.json()).acl?.members?.[this.ctx.id.name]?.role,
+                ))
+            )
               await this.storage.delete(key);
-              continue;
-            }
-            if (!response.ok) continue;
-            const acl = (await response.json()).acl;
-            if (["viewer", "commenter", "editor"].includes(acl?.members?.[this.ctx.id.name]?.role))
-              continue;
-            if (acl?.organizationAccess) yielding.push([key, hint.at ?? 0]);
-            else await this.storage.delete(key);
           }
-          yielding.sort(([, a], [, b]) => a - b);
-          let count = (await this.storage.list({ prefix: "project-discovery/", limit: 500 })).size;
-          for (const [key] of yielding) {
-            if (count < 500) break;
-            await this.storage.delete(key);
-            count--;
-          }
-          if (count >= 500)
+          if ((await this.storage.list({ prefix: "project-discovery/", limit: 500 })).size >= 500)
             throw new HttpError(409, "This account already has 500 shared Projects");
         }
         await this.storage.put(`project-discovery/${value.space_id}`, {
           space_id: value.space_id,
           owner: value.owner,
-          at: Date.now(),
         });
         return json({ ok: true });
       }
@@ -3825,13 +3816,19 @@ export class Catalog {
       }
     }
     const discovered = await storage.list({ prefix: "project-discovery/" });
-    if (discovered.size) {
-      const candidates = [
+    const opened = await openedProjects(storage);
+    if (discovered.size || opened.length) {
+      // Owned Projects, member hints and opened hints, one candidate per
+      // Project, so a Project with more than one is read once.
+      const candidates = new Map();
+      for (const candidate of [
         ...(await storage.list({ prefix: "space/" })).values(),
         ...discovered.values(),
-      ];
+        ...opened,
+      ])
+        if (!candidates.has(candidate.space_id)) candidates.set(candidate.space_id, candidate);
       const spaces = [];
-      for (const candidate of candidates) {
+      for (const candidate of candidates.values()) {
         if (candidate.pending || candidate.deletion) continue;
         const response = await this.env.PROJECTS.getByName(candidate.space_id).fetch(
           forwarded(request, "/internal/space/read", { space_id: candidate.space_id }),
