@@ -14,7 +14,8 @@ import { languageFor } from "./code-highlight.mjs";
 // position long, so an offset into the source text is an offset from the
 // block's start.
 
-const sourceOf = (node) =>
+/** A code block's source text. */
+export const sourceOf = (node) =>
   node.content.map((child) => (child.isText ? String(child.param) : "\n")).join("");
 
 const lineStart = (source, offset) => source.lastIndexOf("\n", offset - 1) + 1;
