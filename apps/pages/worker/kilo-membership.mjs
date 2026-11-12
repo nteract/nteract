@@ -150,11 +150,11 @@ export async function membershipRecord(env, principal, now = Date.now()) {
  * against the stored row, so the newest answer wins across isolates:
  *
  * - sent later than the row: it replaces the row;
- * - sent in the same millisecond: the row keeps only the organizations both
- *   answers list. Two answers that close can't be ordered, and keeping the
- *   intersection means a tie never adds an organization, only drops one. A
- *   stored value `parseRecord` would refuse counts as listing none, so the
- *   tie keeps none and the write never fails on it;
+ * - sent in the same millisecond with the stored text: nothing changes, so
+ *   the same answer written twice is a no-op;
+ * - sent in the same millisecond with other text: the row lists no
+ *   organizations. Two different answers that close can't be ordered, so the
+ *   person holds none until their next exchange. A tie never adds one;
  * - sent earlier: nothing changes.
  *
  * The row's `verified_at_ms` never moves back. Every exchange writes, equal
@@ -172,36 +172,25 @@ export async function recordKiloMembership(env, principal, organizations, sentAt
   }
 }
 
+/** The stored text of an answer's organizations. Invariant: the same answer
+ * always yields the same text, because this is the one function that
+ * serializes it, and it writes each entry's `id` then `name` and nothing
+ * else, in the answer's order. The tie rule compares this text. The same
+ * organizations in another order yield other text, which a tie reads as a
+ * differing answer: the safe direction. */
+const storedOrganizations = (organizations) =>
+  JSON.stringify(organizations.map(({ id, name }) => ({ id, name })));
+
 async function write(env, principal, organizations, sentAt) {
   await ready(env.DB);
-  const stored = JSON.stringify(organizations.map(({ id, name }) => ({ id, name })));
+  const stored = storedOrganizations(organizations);
   await env.DB.prepare(
     `INSERT INTO kilo_memberships (principal, organizations, verified_at_ms) VALUES (?, ?, ?)
     ON CONFLICT (principal) DO UPDATE SET
       organizations = CASE
         WHEN excluded.verified_at_ms > kilo_memberships.verified_at_ms THEN excluded.organizations
-        -- A stored value parseRecord would refuse lists no organizations.
-        -- Each test runs only when the ones before it passed, so no JSON
-        -- function sees text it can't parse.
-        WHEN NOT json_valid(kilo_memberships.organizations) THEN '[]'
-        WHEN json_type(kilo_memberships.organizations) IS NOT 'array' THEN '[]'
-        WHEN EXISTS (
-          SELECT 1 FROM json_each(kilo_memberships.organizations) AS kept
-          WHERE CASE
-            WHEN kept.type IS NOT 'object' THEN 1
-            WHEN json_type(kept.value, '$.id') IS NOT 'text' THEN 1
-            WHEN json_extract(kept.value, '$.id') = '' THEN 1
-            ELSE json_type(kept.value, '$.name') IS NOT 'text'
-          END
-        ) THEN '[]'
-        ELSE (
-          SELECT coalesce(json_group_array(json(answer.value)), '[]')
-          FROM json_each(excluded.organizations) AS answer
-          WHERE json_extract(answer.value, '$.id') IN (
-            SELECT json_extract(kept.value, '$.id')
-            FROM json_each(kilo_memberships.organizations) AS kept
-          )
-        )
+        WHEN excluded.organizations = kilo_memberships.organizations THEN kilo_memberships.organizations
+        ELSE '[]'
       END,
       verified_at_ms = excluded.verified_at_ms
     WHERE excluded.verified_at_ms >= kilo_memberships.verified_at_ms`,

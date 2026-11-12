@@ -1376,9 +1376,11 @@ Every successful exchange writes the principal's membership record in D1
 organizations and `verified_at_ms`, when Pages sent that exchange, in
 milliseconds by its own clock. One statement orders each write against the
 stored record, so the newest answer wins whichever isolate received it: a
-later answer replaces the record, an earlier one changes nothing, and two sent
-in the same millisecond leave only the organizations both list, so a tie never
-adds one. `verified_at_ms` never moves back. That is one D1 write per browser
+later answer replaces the record and an earlier one changes nothing. In the
+same millisecond, an answer whose stored text equals the record's changes
+nothing, and any other answer leaves the record with no organizations until
+the next exchange: two different answers that close can't be ordered, so a
+tie never adds one. `verified_at_ms` never moves back. That is one D1 write per browser
 sign-in and one per agent token exchange in each isolate
 ([worker/kilo-membership.mjs](worker/kilo-membership.mjs)). Schema version 2
 drops the table and creates it again with `verified_at_ms`: a version 1 row

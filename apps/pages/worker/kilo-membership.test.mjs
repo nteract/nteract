@@ -280,12 +280,43 @@ test("the fence orders exchanges by the millisecond, and a tie never adds an org
   await recordKiloMembership(env, principal, [], second0 + 800);
   assert.deepEqual(await stored(env, principal), [], "a later answer in the same second wins");
   const tie = second0 + 5000;
-  await recordKiloMembership(env, principal, [sentinel, second], tie - 1);
-  await recordKiloMembership(env, principal, [second, { id: "org-third", name: "Third" }], tie);
   await recordKiloMembership(env, principal, [sentinel, second], tie);
-  assert.deepEqual(await stored(env, principal), [second], "same millisecond: only what both list");
+  await recordKiloMembership(env, principal, [sentinel, second], tie);
+  assert.deepEqual(
+    await stored(env, principal),
+    [sentinel, second],
+    "the same answer written twice changes nothing",
+  );
+  await recordKiloMembership(env, principal, [second, { id: "org-third", name: "Third" }], tie);
+  assert.deepEqual(await stored(env, principal), [], "two answers in one millisecond: none");
   resetMembershipCache();
-  assert.deepEqual((await membershipRecord(env, principal)).organizations, [second]);
+  assert.deepEqual(await membershipRecord(env, principal), { organizations: [], verifiedAtMs: tie });
+  await recordKiloMembership(env, principal, [second], tie + 1);
+  assert.deepEqual(await stored(env, principal), [second], "the next exchange sets it again");
+});
+
+test("one answer is stored as one text, whatever its key order; another order is another answer", async (t) => {
+  const { env } = await fixture(t);
+  const principal = "user:kilo:serialized";
+  const at = Date.now();
+  await recordKiloMembership(env, principal, [sentinel, second], at);
+  // Kilo's entries carry other keys, in any order. Only id then name is kept.
+  await recordKiloMembership(
+    env,
+    principal,
+    [
+      { role: "owner", name: sentinel.name, id: sentinel.id },
+      { name: second.name, id: second.id },
+    ],
+    at,
+  );
+  assert.deepEqual(await stored(env, principal), [sentinel, second], "the same text: no change");
+  await recordKiloMembership(env, principal, [second, sentinel], at);
+  assert.deepEqual(
+    await stored(env, principal),
+    [],
+    "the same organizations in another order differ, and a differing tie holds none",
+  );
 });
 
 test("a stored value the reader can't use counts as no organizations on a tie, and a later answer replaces it", async (t) => {
@@ -306,8 +337,8 @@ test("a stored value the reader can't use counts as no organizations on a tie, a
     await recordKiloMembership(env, principal, [sentinel], at);
     await corrupt();
     assert.equal(await membershipRecord(env, principal), null, `${label}: the reader skips it`);
-    // The answer lists the organization the unusable value names: a tie
-    // keeps only what both list, and the stored value lists nothing.
+    // The answer lists the organization the unusable value names, but its
+    // text differs from the stored text, so the tie holds none.
     await recordKiloMembership(env, principal, [sentinel], at);
     assert.deepEqual(
       await membershipRecord(env, principal),
