@@ -3682,6 +3682,105 @@ tombstones remain permanent; Trash writes none. See the
 [operation journal](worker/operation-journal.mjs) and its tests
 ([unit](worker/operation-journal.test.mjs), [capacity](worker/receipt-capacity.test.mjs)).
 
+### Page tags
+
+A Page carries a set of tags: short, lowercase, freeform labels that agents set
+on their own work and other agents search. Tags mean nothing to Pages and grant
+no access, and anyone who can see a Page sees its tags. They are rows in the D1
+table `pages_catalog_tags` (`page_id`, `tag`, `added_by`, `added_at`; primary key
+`(page_id, tag)`, plus an index on `(tag, page_id)`), added by catalog migration
+9. They are not in the Page's Automerge document, so changing them never moves
+its revision, and a document restore or export does not carry them.
+
+**Authority.** Every other table in the catalog index is a projection that
+reconciliation can rebuild from Catalog entries and Page host records. Tag rows
+are the only copy. Nothing clears or rebuilds them: not reconciliation, not a
+migration that resets `pages_catalog_accounts`. Only a Page's deletion tombstone
+(`tombstoneStatements`) deletes its rows. Trash keeps them, hidden with the
+Page; restore brings them back. On a celld target D1 is a SQLite file under
+celld's own directory, so recovery is whatever backs up that directory;
+[DEPLOYMENT.md](DEPLOYMENT.md) describes backups of Page records, not of D1.
+Tags need the index: with `PAGES_CATALOG_INDEX` unset, or D1 not answering, a
+tag write or a listing with `tags` answers 503 `tags_unavailable` (retryable)
+and never falls back to the Catalog entries, which hold no tags.
+
+**Alphabet.** A tag is trimmed and lowercased, then must match
+`[a-z0-9][a-z0-9._:/-]{0,63}`: lowercase letters, digits and `. _ : / -`,
+starting with a letter or digit, at most 64 characters. Every character is legal
+unescaped in a URL query. Space, parentheses, `+ & = # % ? ,`, `| ! * ~` and
+non-ASCII are refused: the first two structure an expression, the next group
+needs URL escaping, and the rest are held back for future operators. `and`, `or`
+and `not` are reserved. A Page holds at most 32 tags. A `ns:value` shape such as
+`session:<session id>`, `repo:org/name` or `status:reviewing` is a convention,
+not a schema. Kilo session ids mix case, so a session tag is lowercased on write
+and on search. [page-tags.mjs](worker/page-tags.mjs) holds the alphabet, limits and
+parser; [page-tags.test.mjs](worker/page-tags.test.mjs) tests them.
+
+**`update_page_tags`** takes `page_id` and optional `add` and `remove` arrays
+(at most 32 each) and needs edit access: the owner and Project editors, not
+viewers or commenters. A Page in Trash answers 409 `page_trashed`. Tags are a
+set, so adding one the Page has or removing one it lacks changes nothing; the
+tool takes no nonce and a repeat is always safe. A tag in both arrays, an empty
+change or a wrong type is `invalid_arguments`; a tag outside the alphabet is
+`invalid_tag`; a result over the limit is 409 `tag_limit_exceeded`. The limit is
+checked against the rows read and again inside the insert, so two writers racing
+can't pass it: the loser's adds are skipped and reported, its removals applied.
+The result is `{ page_id, tags }`, the full sorted set.
+
+**`list_pages` `tags`** is one boolean expression over a Page's tags:
+
+```
+expression = operand
+           | operand "AND" operand { "AND" operand }
+           | operand "OR"  operand { "OR"  operand }
+operand    = tag | "NOT" operand | "(" expression ")"
+```
+
+Operators are exactly uppercase `AND`, `OR` and `NOT`; every other word is a tag
+and is lowercased before it matches. AND and OR never mix at one level, so
+`a AND b OR c` is refused and the error says to add parentheses: no caller relies
+on a precedence rule it may misremember. `NOT` is a prefix (`hello AND NOT
+world`); a bare `NOT done` lists the caller's Pages without that tag. An
+expression is at most 256 characters, names at most 16 tags and nests at most 4
+levels. A contradiction such as `a AND NOT a` lists nothing. A syntax error is
+400 `invalid_list_arguments` naming the character position. In a URL, write
+spaces as `+` or `%20`; parentheses, `:` and `/` need no escaping. The expression
+is a string, not a nested argument, because tool schemas allow no recursion.
+
+A listing with `tags` adds `tags` to each Page (an array) and echoes the
+canonical expression, parsed and written back with normalized case and spacing,
+as `tag_filter`. A client that gets no `tag_filter` talked to a host that
+ignored the argument. `include_tags: true` adds `tags` to an unfiltered listing,
+which otherwise keeps its row shape; there `tags` is best effort, and a Page
+with no `tags` field means they could not be read. The cursor is sealed to the
+canonical expression, so it opens only under it (`invalid_cursor` otherwise); a
+listing with no `tags` seals the scope it always did, so earlier cursors still
+open.
+
+How a listing applies the filter depends on its source:
+
+- **D1 walk** (no `project_id` or `parent_id`, index ready): one `EXISTS` per tag
+  is added to the walk of the caller's own access rows, combined by the
+  expression's AND, OR and NOT (`tagPredicate`). The caller's access rows are the
+  candidates, so owned Pages, Project Pages, Pages shared with the caller and
+  company-viewable Pages all list, and non-owner rows are still verified by their
+  Page host. Tags are bound parameters, never interpolated. The scan bound, order
+  and keyset paging are unchanged.
+- **Catalog entries** (a Project or parent filter, a cooling index, or children of
+  a shared parent): the candidate IDs are checked against D1 in chunks of 400
+  (`tagMatchingIds`) before they become a source, so rows that fail never count
+  against the scan bound. That check uses the candidates' own IDs, never the tags
+  table, so a Page with no tags still matches `NOT x`. It decides nothing about
+  access: each candidate is verified as before.
+
+Measured locally on SQLite 3.51 (200k Pages, 600k tag rows, a caller who can see
+about 3,300 Pages, limit 50): common tags and NOT queries answered in under 1.1
+ms, and a tag the caller can't see anywhere read everything they can see in 5 to
+9 ms. Starting from the access rows keeps the cost bounded by what the caller can
+see, not by how many Pages carry a tag anywhere. D1 latency and rows-read billing
+are not measured; run the listing benchmark against D1 before relying on it for
+a caller who can see tens of thousands of Pages.
+
 ### Progress and presence
 
 `report_page_progress` creates an independent host-memory session with a private

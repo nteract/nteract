@@ -222,6 +222,7 @@ import {
   cardImageView,
   readCardImagePointer,
 } from "./card-images.mjs";
+import { MAX_TAGS_PER_PAGE, TagError, normalizeTag } from "./page-tags.mjs";
 import {
   CatalogIndexUnavailable,
   SHORT_CURSOR_MAX_LENGTH,
@@ -230,6 +231,8 @@ import {
   catalogIndexTimeouts,
   catalogSource,
   childIdSource,
+  tagMatchingIds,
+  writePageTags,
   indexOwnedEntries,
   indexSource,
   indexedState,
@@ -249,6 +252,7 @@ import {
   pruneIndexRows,
   readIndexCooldown,
   reconcileAccountIndex,
+  readPageTags,
   reportContentActivity,
   reportPageIndex,
   restrictPageIndex,
@@ -409,6 +413,7 @@ const operations = new Set([
   "edit_page",
   "manage_page_comment",
   "reply_page_comment",
+  "update_page_tags",
   "delete_page",
   "restore_page",
   "purge_page",
@@ -510,6 +515,25 @@ const sharedPagesUnavailable = ({ overloaded = false } = {}) =>
     ),
     { retryAfterMs: overloaded ? overloadRetryAfterMs() : 1000 },
   );
+/** A tag filter or a tag write needs the D1 index: tags live nowhere else, so
+ * a listing never falls back to the Catalog entries for one. Coded server
+ * failures are retryable. */
+const tagsUnavailable = () =>
+  new HttpError(
+    503,
+    "Page tags are temporarily unavailable: the tag index did not answer. Retry the request.",
+    "tags_unavailable",
+  );
+/** The D1 binding for a request that needs tags, or `tags_unavailable`. */
+async function tagIndex(env, ctx) {
+  if (!catalogIndexEpoch(env)) throw tagsUnavailable();
+  try {
+    return await withTimeout(catalogIndexDatabase(env, ctx), catalogIndexTimeouts.read);
+  } catch (error) {
+    logFailure(error, "page-tags");
+    throw tagsUnavailable();
+  }
+}
 /** The error an abandoned object refuses with when its reset gave no reason. */
 const abandonedError = () => Object.assign(Error("Page object was reset"), { status: 503 });
 /** Viewer builds that speak plain Automerge sync send `sync=automerge` on
@@ -945,6 +969,8 @@ const READ_OPERATIONS = [
 const safeToRepeat = (operation, args) => {
   // Issuing an upload URL changes nothing; a repeat issues another one.
   if (operation === ASSET_UPLOAD_OPERATION) return true;
+  // Tags are a set: adding or removing one twice changes nothing.
+  if (operation === "update_page_tags") return true;
   if (operation === "report_page_progress")
     return typeof args?.progress_id === "string" && typeof args?.lease_token === "string"
       ? true
@@ -4080,6 +4106,8 @@ export class Catalog {
   async listPages(request, identity, args, limit) {
     const options = parseListArguments(args);
     const storage = this.storage;
+    const tagDb = options.tags ? await this.tagDatabase() : null;
+    const keep = this.tagKeep(options, tagDb);
     if (options.inTrash) await pruneTombstonedTrash(storage);
     if (options.spaceId) {
       // Only the owner can see a Space in this build, and the owner's own
@@ -4114,6 +4142,7 @@ export class Catalog {
           options.access === "owned"
             ? []
             : await this.childIdsFromOwner(shared.page.owner, options.parentId);
+        if (keep) sharedChildren = [...(await keep(sharedChildren))];
       }
     }
     // A Project's top level (`project_id` with `parent_id: null`) is its
@@ -4191,6 +4220,7 @@ export class Catalog {
             needle: options.needle,
             access: options.access,
             sort: options.sort,
+            tags: options.tags?.ast ?? null,
           });
       } catch (error) {
         // Listing degrades to the Catalog entries; editing never waits on D1.
@@ -4234,6 +4264,7 @@ export class Catalog {
               inTrash: options.inTrash,
               needle: options.needle,
               sort: options.sort,
+              keep,
               owned: options.access === "shared" ? () => false : (entry) => located(entry.page_id),
               // Shared Pages are never in a Project here, and never under a
               // parent this account owns.
@@ -4247,6 +4278,7 @@ export class Catalog {
       )),
       source: "catalog",
     };
+    if (options.tags || options.includeTags) await this.attachTags(result.pages, tagDb ?? db);
     const response = json({
       pages: result.pages,
       limit: options.limit,
@@ -4261,9 +4293,52 @@ export class Catalog {
       quota,
       principal: identity.principal,
       account: accountIdentity(identity),
+      ...(options.tags && { tag_filter: options.tags.canonical }),
     });
     response.headers.set("x-pages-catalog-source", result.source);
     return response;
+  }
+
+  async tagDatabase() {
+    return tagIndex(this.env, this.ctx);
+  }
+
+  /** For a listing with a tag filter, `keep(pageIds)` answers the Set of IDs
+   * that satisfy it, read from D1. A failure is `tags_unavailable`: the
+   * Catalog entries have no tags, so the listing can't answer without it. */
+  tagKeep(options, db) {
+    if (!options.tags) return null;
+    return async (pageIds) => {
+      try {
+        return await tagMatchingIds(db, options.tags.ast, pageIds);
+      } catch (error) {
+        logFailure(error, "page-tags");
+        throw tagsUnavailable();
+      }
+    };
+  }
+
+  /** Set `tags` on each listed Page: an array, empty when it has none. Best
+   * effort without a tag filter: a listing never fails for want of tags, and
+   * a Page with no `tags` field means they could not be read. With a filter
+   * the database is known to work. */
+  async attachTags(pages, db) {
+    if (!pages.length) return;
+    try {
+      const handle =
+        db ??
+        (catalogIndexEpoch(this.env)
+          ? await withTimeout(catalogIndexDatabase(this.env, this.ctx), catalogIndexTimeouts.read)
+          : null);
+      if (!handle) return;
+      const tags = await readPageTags(
+        handle,
+        pages.map((page) => page.page_id),
+      );
+      for (const page of pages) page.tags = tags.get(page.page_id) ?? [];
+    } catch (error) {
+      logFailure(error, "page-tags");
+    }
   }
 
   /** Up to `options.limit` verified Pages after the position `after`, and the
@@ -4272,6 +4347,8 @@ export class Catalog {
    * and the next cursor resume from the order's key, never a row's own
    * `updated_at`. */
   async listSharedProjectPages(request, identity, options) {
+    const tagDb = options.tags ? await this.tagDatabase() : null;
+    const keep = this.tagKeep(options, tagDb);
     const response = await this.env.PROJECTS.getByName(options.spaceId).fetch(
       forwarded(request, "/internal/space/read", { space_id: options.spaceId }),
     );
@@ -4300,13 +4377,13 @@ export class Catalog {
     const { position: after } = options.cursor
       ? await openListingCursor(this.env, context, options.cursor, options.sort)
       : { position: null };
+    const candidates =
+      options.inTrash || options.access === "owned" ? [] : ids.map((e) => e.page_id);
+    const tagged = keep ? [...(await keep(candidates))] : candidates;
     const result = await this.scanCandidates(
       request,
       identity,
-      childIdSource(
-        options.inTrash || options.access === "owned" ? [] : ids.map((entry) => entry.page_id),
-        options.sort,
-      ),
+      childIdSource(tagged, options.sort),
       { ...options, spaceId: null },
       {
         locations: new Map(),
@@ -4317,17 +4394,20 @@ export class Catalog {
       after,
       null,
     );
+    const pages = result.pages.map((page) => ({
+      ...page,
+      space_id: options.spaceId,
+      parent_id: entries.find((entry) => entry.page_id === page.page_id)?.parent_id,
+    }));
+    if (options.tags || options.includeTags) await this.attachTags(pages, tagDb);
     return json({
-      pages: result.pages.map((page) => ({
-        ...page,
-        space_id: options.spaceId,
-        parent_id: entries.find((entry) => entry.page_id === page.page_id)?.parent_id,
-      })),
+      pages,
       limit: options.limit,
       next_cursor: result.next
         ? await sealPosition(this.env, { ...context, source: "catalog" }, options.sort, result.next)
         : null,
       principal: identity.principal,
+      ...(options.tags && { tag_filter: options.tags.canonical }),
     });
   }
 
@@ -6233,6 +6313,11 @@ export class Page {
         if (["manage_page_comment", "reply_page_comment"].includes(body.operation))
           return json(await this.writeComment(request, identity, body));
         this.policy.account(identity, true);
+        if (body.operation === "update_page_tags") {
+          if (state === "trashed")
+            throw new HttpError(409, "Restore this Page before changing its tags", "page_trashed");
+          return json(await this.updateTags(identity, body.arguments));
+        }
         if (body.operation === "report_page_progress") {
           const revision = body.arguments?.revision;
           // The targets' revision resolves before the snapshot it is checked in.
@@ -6446,6 +6531,55 @@ export class Page {
       error.details = details;
     }
     return error;
+  }
+
+  /**
+   * One update_page_tags call. The caller has edit access (checked above) and
+   * the Page is not in Trash. Tags are rows in D1, never part of the document:
+   * this changes neither the Page's content nor its revision. `add` and
+   * `remove` are sets, so a repeat changes nothing and needs no receipt.
+   */
+  async updateTags(identity, args) {
+    const names = (value, field) => {
+      if (value === undefined) return [];
+      if (!Array.isArray(value) || value.length > MAX_TAGS_PER_PAGE)
+        throw new HttpError(
+          400,
+          `${field} must be an array of at most ${MAX_TAGS_PER_PAGE} tags`,
+          "invalid_arguments",
+        );
+      try {
+        return [...new Set(value.map(normalizeTag))];
+      } catch (error) {
+        if (!(error instanceof TagError)) throw error;
+        throw new HttpError(400, `${field}: ${error.message}`, "invalid_tag");
+      }
+    };
+    const add = names(args.add, "add");
+    const remove = names(args.remove, "remove");
+    if (!add.length && !remove.length)
+      throw new HttpError(
+        400,
+        "update_page_tags needs a tag to add or remove",
+        "invalid_arguments",
+      );
+    if (add.some((tag) => remove.includes(tag)))
+      throw new HttpError(400, "A tag can't be in both add and remove", "invalid_arguments");
+    const db = await tagIndex(this.env, this.ctx);
+    try {
+      const tags = await writePageTags(db, {
+        pageId: this.metadata.pageId,
+        principal: identity.principal,
+        add,
+        remove,
+        now: new Date().toISOString(),
+      });
+      return { page_id: this.metadata.pageId, tags };
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      logFailure(error, "page-tags");
+      throw tagsUnavailable();
+    }
   }
 
   /**

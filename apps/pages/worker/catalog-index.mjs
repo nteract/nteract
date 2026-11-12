@@ -44,6 +44,7 @@ import { acceptedTime, validTime } from "./content-activity.mjs";
 import { migrateSchema } from "./d1-schema.mjs";
 import { configuredOrganizationAccess, pageAudienceKey } from "./organization-access.mjs";
 import { validPageId } from "./registration.mjs";
+import { MAX_TAGS_PER_PAGE, TagError, parseTagExpression, tagPredicate } from "./page-tags.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
 import { requirePageIdArgument, requireSpaceIdArgument, validSpaceId } from "./spaces.mjs";
 
@@ -207,6 +208,27 @@ export const CATALOG_MIGRATIONS = Object.freeze([
       "ALTER TABLE pages_catalog_spaces_v8 RENAME TO pages_catalog_spaces",
       `CREATE INDEX IF NOT EXISTS pages_catalog_spaces_listing
         ON pages_catalog_spaces (owner, updated_at DESC, space_id DESC)`,
+    ]),
+  }),
+  // A Page's tags: one row per (Page, tag). Unlike every other table here,
+  // nothing rebuilds these rows from a Catalog entry or a Page host record, so
+  // no migration or reconcile pass may clear them. Only a Page's deletion
+  // tombstone removes its rows. `added_by` is the principal that added the
+  // tag, a claim shown where trust matters. The second index answers "Pages
+  // with this tag".
+  Object.freeze({
+    version: 9,
+    name: "page_tags",
+    statements: Object.freeze([
+      `CREATE TABLE IF NOT EXISTS pages_catalog_tags (
+        page_id TEXT NOT NULL,
+        tag TEXT NOT NULL,
+        added_by TEXT NOT NULL,
+        added_at TEXT NOT NULL,
+        PRIMARY KEY (page_id, tag)
+      ) WITHOUT ROWID`,
+      `CREATE INDEX IF NOT EXISTS pages_catalog_tags_by_tag
+        ON pages_catalog_tags (tag, page_id)`,
     ]),
   }),
 ]);
@@ -791,6 +813,7 @@ function tombstoneStatements(db, pageId, owner, lifecycle, now = new Date().toIS
       )
       .bind(pageId, owner, now, now, lifecycle),
     db.prepare("DELETE FROM pages_catalog_access WHERE page_id = ?").bind(pageId),
+    db.prepare("DELETE FROM pages_catalog_tags WHERE page_id = ?").bind(pageId),
   ];
 }
 
@@ -1094,9 +1117,18 @@ export function parseListArguments(args = {}) {
     throw fail("Invalid list arguments");
   // null `access` or `sort` is the default, so it leaves a bare call bare.
   const legacy =
-    ["query", "cursor", "limit", "in_trash", "space_id", "parent_id", "kind"].every(
-      (key) => args[key] === undefined,
-    ) && ["access", "sort"].every((key) => args[key] == null);
+    [
+      "query",
+      "cursor",
+      "limit",
+      "in_trash",
+      "space_id",
+      "parent_id",
+      "kind",
+      "tags",
+      "include_tags",
+    ].every((key) => args[key] === undefined) &&
+    ["access", "sort"].every((key) => args[key] == null);
   const options = {
     limit: legacy ? LIST_LEGACY_LIMIT : LIST_DEFAULT_LIMIT,
     inTrash: false,
@@ -1108,7 +1140,23 @@ export function parseListArguments(args = {}) {
     kind: null,
     access: null,
     sort: "activity",
+    // null, or parseTagExpression's { ast, canonical, tags }.
+    tags: null,
+    // Whether each listed Page carries `tags`. A tag filter implies it.
+    includeTags: false,
   };
+  if (args.include_tags !== undefined && args.include_tags !== null) {
+    if (typeof args.include_tags !== "boolean") throw fail("include_tags must be a boolean");
+    options.includeTags = args.include_tags;
+  }
+  if (args.tags !== undefined && args.tags !== null) {
+    try {
+      options.tags = parseTagExpression(args.tags);
+    } catch (error) {
+      if (!(error instanceof TagError)) throw error;
+      throw fail(error.message);
+    }
+  }
   if (args.access !== undefined && args.access !== null) {
     if (args.access !== "owned" && args.access !== "shared")
       throw fail("access must be owned or shared");
@@ -1191,6 +1239,9 @@ export function listScope(options) {
     options.kind ?? null,
     options.access ?? null,
     SCOPE_SORTS[options.sort ?? "activity"],
+    // Only a tag filter adds an element, so a cursor sealed before tags
+    // existed still opens for a listing that has none.
+    ...(options.tags ? [options.tags.canonical] : []),
   ]);
 }
 
@@ -1352,9 +1403,11 @@ export function listingQuery({
   count,
   access = null,
   sort = "activity",
+  tags = null,
 }) {
   const pattern = needle ? likePattern(needle) : null;
-  if (sort === "trashed") return trashQuery({ principal, inTrash, pattern, after, count });
+  if (sort === "trashed") return trashQuery({ principal, inTrash, pattern, after, count, tags });
+  const tag = tags ? tagPredicate(tags, "a.page_id") : null;
   const title = sort === "title";
   const accessFilter =
     access === "owned"
@@ -1382,6 +1435,7 @@ export function listingQuery({
         ${accessFilter}
         AND (a.source != 'domain_opened' OR a.domain IN (SELECT value FROM json_each(?)))
         AND (? IS NULL OR a.title_search LIKE ? ESCAPE '\\')
+        ${tag ? `AND ${tag.sql}` : ""}
         ${keyset}
       ORDER BY ${order}
       LIMIT ?`,
@@ -1391,6 +1445,7 @@ export function listingQuery({
       JSON.stringify(audiences),
       pattern,
       pattern,
+      ...(tag ? tag.params : []),
       ...(continued ? [key, after.page_id] : []),
       count,
     ],
@@ -1404,9 +1459,10 @@ export function listingQuery({
  * under `in_trash`, owner rows of trashed Pages: an owner row's principal is
  * its Page row's `owner`. `access` needs no filter, since every row here is
  * an owner row. */
-function trashQuery({ principal, inTrash, pattern, after, count }) {
+function trashQuery({ principal, inTrash, pattern, after, count, tags = null }) {
   if (inTrash !== true) throw new TypeError("The trashed order lists only Trash");
   const continued = requirePosition("trashed", after) !== null;
+  const tag = tags ? tagPredicate(tags, "p.page_id") : null;
   return {
     sql: `SELECT a.page_id, a.source, a.updated_at, a.updated_revision, a.title, a.title_search,
         a.created_at, a.content_updated_at, a.activity_at, p.trashed_at
@@ -1414,6 +1470,7 @@ function trashQuery({ principal, inTrash, pattern, after, count }) {
       JOIN pages_catalog_access a ON a.page_id = p.page_id AND a.principal = ?
       WHERE p.owner = ? AND p.state = 'trashed' AND p.kind = 'page' AND a.source = 'owner'
         AND (? IS NULL OR a.title_search LIKE ? ESCAPE '\\')
+        ${tag ? `AND ${tag.sql}` : ""}
         ${continued ? "AND (p.trash_key, p.page_id) < (?, ?)" : ""}
       ORDER BY p.trash_key DESC, p.page_id DESC
       LIMIT ?`,
@@ -1422,6 +1479,7 @@ function trashQuery({ principal, inTrash, pattern, after, count }) {
       principal,
       pattern,
       pattern,
+      ...(tag ? tag.params : []),
       ...(continued ? [after.key, after.page_id] : []),
       count,
     ],
@@ -1485,7 +1543,7 @@ export async function queryCatalogIndex(db, query) {
  * Catalog's earlier creation time (README, "Catalog index"). */
 export async function catalogSource(
   storage,
-  { inTrash, needle, owned = () => true, shared = true, sort = "activity" },
+  { inTrash, needle, owned = () => true, shared = true, sort = "activity", keep = null },
 ) {
   const order = listOrder(sort);
   const list = async (prefix) => [...(await listAll(storage, prefix)).values()];
@@ -1517,7 +1575,9 @@ export async function catalogSource(
     })
     .filter((row) => titleMatches(row.title, needle))
     .sort(order.compare);
-  return memorySource(rows, sort);
+  // `keep(pageIds)` answers the Set of IDs that satisfy a tag filter.
+  const kept = keep ? await keep(rows.map((row) => row.page_id)) : null;
+  return memorySource(kept ? rows.filter((row) => kept.has(row.page_id)) : rows, sort);
 }
 
 /** Candidate source over the child IDs a shared parent's owner Catalog
@@ -1547,6 +1607,115 @@ function memorySource(rows, sort) {
 }
 
 export class CatalogIndexUnavailable extends Error {}
+
+/** Page IDs per D1 statement when a filter or a read names candidates. */
+const TAG_CHUNK = 400;
+
+/** The Set of `pageIds` whose tags satisfy `ast`. The IDs come from the
+ * caller's own candidate list, never from the tags table, so a Page with no
+ * tags and no index row still matches `NOT x`. This decides nothing about
+ * access: every candidate is still verified before it lists. */
+export async function tagMatchingIds(db, ast, pageIds) {
+  const matched = new Set();
+  const { sql, params } = tagPredicate(ast, "j.value");
+  for (let start = 0; start < pageIds.length; start += TAG_CHUNK) {
+    const chunk = pageIds.slice(start, start + TAG_CHUNK);
+    const result = await read(
+      db
+        .prepare(`SELECT j.value AS page_id FROM json_each(?) j WHERE ${sql}`)
+        .bind(JSON.stringify(chunk), ...params)
+        .all(),
+    );
+    for (const row of result.results ?? []) matched.add(row.page_id);
+  }
+  return matched;
+}
+
+/**
+ * Add and remove tags on one Page, and return the Page's tags afterwards.
+ * `add` and `remove` are normalized, distinct and disjoint (page-tags.mjs).
+ * Adding a tag the Page has, or removing one it lacks, changes nothing.
+ *
+ * The limit is checked against the rows read first and again inside the
+ * insert, so two writers racing can't pass it: the loser's adds are skipped
+ * and reported as `tag_limit_exceeded`, with its removals applied. A Page
+ * whose deletion tombstone is in D1 takes no tags.
+ */
+export async function writePageTags(db, { pageId, principal, add, remove, now }) {
+  const list = async () =>
+    (
+      (
+        await read(
+          db
+            .prepare("SELECT tag FROM pages_catalog_tags WHERE page_id = ? ORDER BY tag")
+            .bind(pageId)
+            .all(),
+        )
+      ).results ?? []
+    ).map((row) => row.tag);
+  const before = await list();
+  const after = new Set(before.filter((tag) => !remove.includes(tag)));
+  for (const tag of add) after.add(tag);
+  const full = (count) =>
+    new HttpError(
+      409,
+      `A Page holds at most ${MAX_TAGS_PER_PAGE} tags; this change would leave ${count}. Remove some first.`,
+      "tag_limit_exceeded",
+    );
+  if (after.size > MAX_TAGS_PER_PAGE) throw full(after.size);
+  const adds = JSON.stringify(add);
+  await withTimeout(
+    db.batch([
+      db
+        .prepare(
+          `DELETE FROM pages_catalog_tags
+            WHERE page_id = ? AND tag IN (SELECT value FROM json_each(?))`,
+        )
+        .bind(pageId, JSON.stringify(remove)),
+      db
+        .prepare(
+          `INSERT OR IGNORE INTO pages_catalog_tags (page_id, tag, added_by, added_at)
+          SELECT ?, j.value, ?, ? FROM json_each(?) j
+          WHERE NOT EXISTS (SELECT 1 FROM pages_catalog_pages p
+                             WHERE p.page_id = ? AND p.state = 'deleted')
+            AND (SELECT count(*) FROM pages_catalog_tags t WHERE t.page_id = ?)
+              + (SELECT count(*) FROM json_each(?) j2
+                  WHERE NOT EXISTS (SELECT 1 FROM pages_catalog_tags t2
+                                     WHERE t2.page_id = ? AND t2.tag = j2.value))
+              <= ?`,
+        )
+        .bind(pageId, principal, now, adds, pageId, pageId, adds, pageId, MAX_TAGS_PER_PAGE),
+    ]),
+    catalogIndexTimeouts.write,
+  );
+  const tags = await list();
+  if (add.some((tag) => !tags.includes(tag))) throw full(tags.length);
+  return tags;
+}
+
+/** The tags of each of `pageIds`, as a Map from Page ID to a sorted array. A
+ * Page with none has no entry. */
+export async function readPageTags(db, pageIds) {
+  const tags = new Map();
+  for (let start = 0; start < pageIds.length; start += TAG_CHUNK) {
+    const chunk = pageIds.slice(start, start + TAG_CHUNK);
+    const result = await read(
+      db
+        .prepare(
+          `SELECT page_id, tag FROM pages_catalog_tags
+            WHERE page_id IN (SELECT value FROM json_each(?)) ORDER BY page_id, tag`,
+        )
+        .bind(JSON.stringify(chunk))
+        .all(),
+    );
+    for (const row of result.results ?? []) {
+      const list = tags.get(row.page_id);
+      if (list) list.push(row.tag);
+      else tags.set(row.page_id, [row.tag]);
+    }
+  }
+  return tags;
+}
 
 /** Candidate source over D1. Its errors are marked so the listing can fall
  * back to the Catalog entries instead of failing. */
