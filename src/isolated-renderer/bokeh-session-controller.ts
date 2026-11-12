@@ -164,6 +164,11 @@ let warnedMissingDeserializerHooks = false;
  * omitted property is canonically at its default. Reference-valued
  * properties are left alone so a reset cannot detach models, and columnar
  * `data` is reconciled separately from `columns/`.
+ *
+ * A NaN default is BokehJS's "compute me" sentinel (`DataRange1d` start/end),
+ * not a value Python chose, so the browser's computed value is kept. Writing
+ * NaN would blank the plot, and since Bokeh 3.10.1 an explicit `DataRange1d`
+ * start/end write also switches auto-ranging off.
  */
 function withOmittedDefaults(model: BokehModel, attributes: unknown): unknown {
   if (!isRecord(attributes)) return attributes;
@@ -173,6 +178,7 @@ function withOmittedDefaults(model: BokehModel, attributes: unknown): unknown {
     const value = prop.default_value?.(model);
     // Required properties return BokehJS's `unset` symbol.
     if (value === undefined || typeof value === "symbol") continue;
+    if (typeof value === "number" && Number.isNaN(value)) continue;
     attributes[attr] = prop.kind?.coerce ? prop.kind.coerce(value) : value;
   }
   return attributes;
