@@ -176,8 +176,53 @@ function kindOf(type, parents) {
   return BLOCK_KINDS[parents[0] ?? type] ?? BLOCK_KINDS[type] ?? "Block";
 }
 
-// One pass over the Page in document order: each block's heading changes by
-// text offset and its first node's kind. Cached per document version.
+// One block's first node kind and its headings with text, as
+// `{ level, offset, text }` by text offset. Kept per block object: a change
+// gives new objects only along the paths it touched, so the blocks it left
+// aren't read again.
+const blockOutlines = new WeakMap();
+function blockOutline(block) {
+  let cached = blockOutlines.get(block);
+  if (cached) return cached;
+  let kind = "Block",
+    offset = 0,
+    first = true,
+    heading = null;
+  const headings = [];
+  for (const span of A.spans(block, ["richText"])) {
+    if (span.type === "block") {
+      const type = String(span.value?.type ?? "");
+      const parents = markerParents(span.value);
+      if (first) kind = kindOf(type, parents);
+      first = false;
+      heading = type === "heading" ? { level: Number(span.value?.attrs?.level) || 1 } : null;
+      if (heading) heading.offset = offset;
+      offset += 1;
+      continue;
+    }
+    if (span.type === "text") {
+      if (first) kind = "Paragraph";
+      first = false;
+      const text = String(span.value ?? "");
+      if (heading) {
+        heading.text = (heading.text ?? "") + text;
+        if (headings.at(-1) !== heading) headings.push(heading);
+      }
+      offset += text.length;
+    }
+  }
+  cached = { kind, headings };
+  try {
+    blockOutlines.set(block, cached);
+  } catch {
+    // A block that can't be a WeakMap key is read uncached.
+  }
+  return cached;
+}
+
+// The Page in document order: each block's heading path by text offset and
+// its first node's kind. Cached per document version; each block's part is
+// cached per block object.
 const outlines = new WeakMap();
 function outline(doc) {
   let cached = outlines.get(doc);
@@ -186,35 +231,12 @@ function outline(doc) {
   const path = [];
   const order = orderedBlockIds(doc);
   order.forEach((blockId, index) => {
-    const block = doc.blocks[blockId];
-    const entry = { index, before: [...path], changes: [], kind: "Block" };
-    let offset = 0,
-      first = true,
-      heading = null;
-    for (const span of A.spans(block, ["richText"])) {
-      if (span.type === "block") {
-        const type = String(span.value?.type ?? "");
-        const parents = markerParents(span.value);
-        if (first) entry.kind = kindOf(type, parents);
-        first = false;
-        heading = type === "heading" ? { level: Number(span.value?.attrs?.level) || 1 } : null;
-        if (heading) heading.offset = offset;
-        offset += 1;
-        continue;
-      }
-      if (span.type === "text") {
-        if (first) entry.kind = "Paragraph";
-        first = false;
-        const text = String(span.value ?? "");
-        if (heading) {
-          heading.text = (heading.text ?? "") + text;
-          const level = heading.level;
-          while (path.length && path.at(-1).level >= level) path.pop();
-          if (path.at(-1) !== heading) path.push(heading);
-          entry.changes.push({ offset: heading.offset, path: [...path] });
-        }
-        offset += text.length;
-      }
+    const { kind, headings } = blockOutline(doc.blocks[blockId]);
+    const entry = { index, before: [...path], changes: [], kind };
+    for (const heading of headings) {
+      while (path.length && path.at(-1).level >= heading.level) path.pop();
+      path.push(heading);
+      entry.changes.push({ offset: heading.offset, path: [...path] });
     }
     blocks.set(blockId, entry);
   });

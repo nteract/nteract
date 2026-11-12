@@ -117,11 +117,13 @@ export async function readLocalPage(identity, pageId, { markers = false } = {}) 
  * (local-edits.mjs). `regrant` says the host has just verified this account's
  * access, so the checkpoint may replace an access marker. `replace` says the
  * stored copy had no checkpoint this build can read and was discarded: the
- * host's copy replaces it without a merge. A marker still wins. */
+ * host's copy replaces it without a merge. A marker still wins. `covers` is
+ * an earlier snapshot string whose history `page.snapshot` holds; when the
+ * stored snapshot is exactly that string, the merge check loads neither. */
 export async function writeLocalPage(
   identity,
   page,
-  { replica, regrant = false, replace = false } = {},
+  { replica, regrant = false, replace = false, covers } = {},
 ) {
   if (!identity?.principal || page.principal !== identity.principal)
     throw Error("Local Page account does not match");
@@ -209,7 +211,13 @@ export async function writeLocalPage(
           )
             next = { ...next, access: previous.access, canWrite: false };
           let diverged = false;
-          if (!previous.resetReplica && previous.snapshot !== page.snapshot) {
+          if (
+            !previous.resetReplica &&
+            previous.snapshot !== page.snapshot &&
+            // The writer vouches that its snapshot holds the stored one's
+            // history: nothing to merge, and nothing to load.
+            !(covers !== undefined && previous.snapshot === covers)
+          ) {
             const incoming = A.load(decodeSnapshot(page.snapshot));
             const existing = A.load(decodeSnapshot(previous.snapshot));
             if (!A.hasHeads(incoming, A.getHeads(existing))) {

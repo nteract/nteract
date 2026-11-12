@@ -875,3 +875,46 @@ test("two unlabeled MCP sessions get different colors", async () => {
     presenceColor("user:kyle", "Kilo", null, null).background,
   );
 });
+
+test("comment anchors resolve once per projection map, and only for their own block", () => {
+  let doc = fixture("Same passage here and same passage again");
+  doc = A.change(doc, (d) => {
+    for (const [block_id, selected_text] of [
+      ["first", "here"],
+      ["second", "again"],
+    ])
+      applyComment(d, { action: "add", block_id, selected_text, body: selected_text });
+  });
+  const threads = projectComments(doc);
+  const cache = new WeakMap();
+  let map = current(doc).map;
+  const resolutions = () => {
+    let count = 0;
+    const proto = Object.getPrototypeOf(A.getBackend(doc));
+    const original = proto.getCursorPosition;
+    proto.getCursorPosition = function (...args) {
+      count++;
+      return original.apply(this, args);
+    };
+    try {
+      return { ranges: wordgardCommentRanges(doc, "first", map, threads, cache), count };
+    } finally {
+      proto.getCursorPosition = original;
+    }
+  };
+  const first = resolutions();
+  assert.equal(first.ranges.length, 1);
+  assert.equal(first.count, 2, "the thread in this block resolves its two cursors");
+  // An update with no change to this block: the same map, nothing resolved.
+  const again = resolutions();
+  assert.equal(again.count, 0);
+  assert.deepEqual(again.ranges, first.ranges);
+  // An edit before the passage gives the block a new map; the range moves.
+  const at = doc.blocks.first.richText.indexOf("Same");
+  doc = A.change(doc, (d) => A.splice(d, textPath("first"), at, 0, "More "));
+  map = current(doc).map;
+  const moved = resolutions();
+  assert.equal(moved.count, 2);
+  assert.equal(moved.ranges[0].from, first.ranges[0].from + 5);
+  assert.equal(moved.ranges[0].to, first.ranges[0].to + 5);
+});
