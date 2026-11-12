@@ -288,6 +288,42 @@ test("the fence orders exchanges by the millisecond, and a tie never adds an org
   assert.deepEqual((await membershipRecord(env, principal)).organizations, [second]);
 });
 
+test("a stored value the reader can't use counts as no organizations on a tie, and a later answer replaces it", async (t) => {
+  const { env } = await fixture(t);
+  const unusable = {
+    "not JSON": "[{not json",
+    "a JSON object": JSON.stringify({ id: sentinel.id, name: sentinel.name }),
+    "an array holding a non-object": JSON.stringify([sentinel, sentinel.id]),
+    "an array holding an entry without a string id": JSON.stringify([sentinel, { id: 7 }]),
+  };
+  const at = Date.now();
+  for (const [label, value] of Object.entries(unusable)) {
+    const principal = `user:kilo:${encodeURIComponent(label)}`;
+    const corrupt = () =>
+      env.DB.prepare("UPDATE kilo_memberships SET organizations = ? WHERE principal = ?")
+        .bind(value, principal)
+        .run();
+    await recordKiloMembership(env, principal, [sentinel], at);
+    await corrupt();
+    assert.equal(await membershipRecord(env, principal), null, `${label}: the reader skips it`);
+    // The answer lists the organization the unusable value names: a tie
+    // keeps only what both list, and the stored value lists nothing.
+    await recordKiloMembership(env, principal, [sentinel], at);
+    assert.deepEqual(
+      await membershipRecord(env, principal),
+      { organizations: [], verifiedAtMs: at },
+      `${label}: a tie drops every organization and doesn't throw`,
+    );
+    await corrupt();
+    await recordKiloMembership(env, principal, [sentinel], at + 1);
+    assert.deepEqual(
+      await membershipRecord(env, principal),
+      { organizations: [sentinel], verifiedAtMs: at + 1 },
+      `${label}: a later answer replaces it`,
+    );
+  }
+});
+
 test("every exchange writes, even with an unchanged answer", async (t) => {
   const { env } = await fixture(t);
   const principal = "user:kilo:rewrites";
