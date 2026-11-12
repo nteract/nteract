@@ -179,37 +179,41 @@ function onAgentRoute(request, extra = []) {
   );
 }
 
-/** Each Kilo token answer's membership evidence write, keyed by the answer.
- * The token lease hands every request the same answer object until it ends,
- * so evidence is written once per exchange, and every request on that answer
- * awaits that one write before it reads leases.
+/** Kilo token answers whose membership evidence is in D1. The token lease
+ * hands every request the same answer object until it ends, so once one
+ * request's write of an answer succeeds, later requests on it write nothing.
  *
- * A failed write is forgotten, so the next request on the answer writes again,
- * and every request that awaited it fails with a retryable 503
- * `sign_in_unavailable`. It does not go on without organization leases
- * instead: that would answer the person's organization Pages with access
- * denials that a retry would reverse. Either way no request authenticates
- * with evidence older than an answer this isolate has received. */
-const exchangeWrites = new WeakMap();
-function recordExchange(env, principal, account) {
-  let write = exchangeWrites.get(account);
-  if (write) return write;
-  write = recordKiloMembership(env, principal, account.organizations, account.verifiedAt).catch(
-    (cause) => {
-      if (exchangeWrites.get(account) === write) exchangeWrites.delete(account);
-      throw withAdmissionReason(
-        Object.assign(new Error("Kilo sign-in is unavailable. Retry the request."), {
-          status: 503,
-          code: "sign_in_unavailable",
-          retryable: true,
-          cause,
-        }),
-        "credential_unverified",
-      );
-    },
-  );
-  exchangeWrites.set(account, write);
-  return write;
+ * Only that settled fact is shared, never a pending write: a gateway request
+ * that awaited another request's promise could be cut off when that request
+ * responds (isolate-setup.mjs says why). So, as with the token lease
+ * (kilo-token-lease.mjs), each request does its own waiting. A request that
+ * finds its answer not yet recorded writes it itself and marks the answer
+ * only after its own write succeeds. Requests that arrive together at the
+ * start of a lease each write the same answer with the same send time, which
+ * the fenced write leaves as it is.
+ *
+ * A request whose write fails gets a retryable 503 `sign_in_unavailable` and
+ * marks nothing, so the next request writes again. It does not go on without
+ * organization leases instead: that would answer the person's organization
+ * Pages with access denials a retry would reverse. Either way no request
+ * authenticates with evidence older than the answer it holds. */
+const recordedAnswers = new WeakSet();
+async function recordExchange(env, principal, account) {
+  if (recordedAnswers.has(account)) return;
+  try {
+    await recordKiloMembership(env, principal, account.organizations, account.verifiedAt);
+  } catch (cause) {
+    throw withAdmissionReason(
+      Object.assign(new Error("Kilo sign-in is unavailable. Retry the request."), {
+        status: 503,
+        code: "sign_in_unavailable",
+        retryable: true,
+        cause,
+      }),
+      "credential_unverified",
+    );
+  }
+  recordedAnswers.add(account);
 }
 
 /** The identity with the audience leases its evidence supports: a company

@@ -378,39 +378,30 @@ function failEvidenceWrites(t, env, count) {
   return () => attempts;
 }
 
-test("requests on one leased answer share its write, and none goes on past a failed one", async (t) => {
+test("each request on a leased answer writes for itself until one write succeeds", async (t) => {
   const { env, kilo } = await fixture(t);
   const account = person([sentinel]);
   // An older exchange listed an organization the new answer leaves out.
   await recordKiloMembership(env, principalOf(account), [second], Date.now() - 5000);
   const attempts = failEvidenceWrites(t, env, 1);
   const token = kilo.mintToken(account, { audience });
-  const [first, concurrent] = await Promise.allSettled([
+  const [failed, written] = await Promise.allSettled([
     authenticate(bearer(token), env),
     authenticate(bearer(token), env),
   ]);
-  for (const result of [first, concurrent]) {
-    assert.equal(result.status, "rejected", "no request goes on with the older listing");
-    const { status, code, retryable } = result.reason;
-    assert.deepEqual(
-      { status, code, retryable },
-      {
-        status: 503,
-        code: "sign_in_unavailable",
-        retryable: true,
-      },
-    );
-  }
-  assert.equal(attempts(), 1, "the concurrent request awaited the first request's write");
-  assert.equal(kilo.exchanges().length, 1);
-  const [retried, alongside] = await Promise.all([
-    authenticate(bearer(token), env),
-    authenticate(bearer(token), env),
-  ]);
-  assert.equal(attempts(), 2, "the failed write was forgotten and tried once more");
-  assert.deepEqual(named(retried), [sentinel]);
-  assert.deepEqual(named(alongside), [sentinel]);
-  assert.equal(kilo.exchanges().length, 1, "the retry reused the lease, not Kilo");
+  assert.equal(failed.status, "rejected", "the request whose write failed doesn't go on");
+  const { status, code, retryable } = failed.reason;
+  assert.deepEqual(
+    { status, code, retryable },
+    { status: 503, code: "sign_in_unavailable", retryable: true },
+  );
+  assert.equal(written.status, "fulfilled", "the other request's own write succeeded");
+  assert.deepEqual(named(written.value), [sentinel]);
+  assert.equal(attempts(), 2, "each request made its own write");
+  const third = await authenticate(bearer(token), env);
+  assert.equal(attempts(), 2, "a request after a successful write writes nothing");
+  assert.deepEqual(named(third), [sentinel]);
+  assert.equal(kilo.exchanges().length, 1, "every request used the one lease");
 });
 
 test("a browser sign-in whose evidence write fails gets a retryable failure page and no session", async (t) => {

@@ -1386,10 +1386,12 @@ was timed in seconds and can't be ordered by the millisecond, so it is gone
 and that principal's next exchange writes a new one.
 
 A sign-in whose write fails gets the retryable failure page (503,
-`membership_unrecorded`) and no session. Every agent request on a token
-answer awaits that answer's one write; when it fails, each of them gets a
-retryable 503 `sign_in_unavailable`, and the next request writes again. No
-request goes on over a record older than an answer its isolate received.
+`membership_unrecorded`) and no session. An agent request on a token answer
+not yet recorded in its isolate writes it itself; no request waits on
+another's write. A request whose write fails gets a retryable 503
+`sign_in_unavailable`, and the next request writes again. Once one write of
+an answer succeeds, later requests on it write nothing. No request goes on
+over a record older than the answer it holds.
 
 The record is evidence for 8 hours from `verified_at_ms`
 (`KILO_MEMBERSHIP_SECONDS`), the length of a Kilo browser session. Every Kilo
