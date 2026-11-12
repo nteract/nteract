@@ -484,7 +484,8 @@ Pages stay Restricted until the owner chooses that audience. Personal email
 providers are never offered, and only an owner signed in with a verified email at
 that company domain can choose it. Where the deployment's sign-in reports
 organizations, the owner can instead let members of one organization they
-belong to open the Page by link as viewers, commenters or editors. Nobody is
+belong to open the Page, or a whole Project, by link as viewers, commenters or
+editors. Nobody is
 added to the member list; a person keeps that access only while their
 membership is current. Editors
 can write and comment, commenters can read and comment, viewers can read, and
@@ -529,6 +530,16 @@ ${part.sharingScopeParagraph}${emailInviteNote}
   a pending invitation. Use action: set_role with an accepted member's returned
   principal and role (or null to remove) to manage that membership. Project
   company-domain sharing is not supported.
+  Where the deployment's sign-in reports organizations, get_project_access also
+  returns organizationOptions, organizationProof and organizationAccess, and
+  manage_project_access takes action: set_organization_access with
+  organization_id and role, or organization_id null, as manage_page_access does.
+  Members of that organization reach the Project and every Page in it at that
+  role while their own membership is current; nobody is added to members. A
+  member's list_projects shows the Project only after they open its url once,
+  so send them the link yourself. A Project with an organization grant is
+  shared: move_page refuses to move a Page across its boundary with
+  shared_project_move_unsupported.
 - get_page_access takes page_id and returns effective access; owners also get
   members, pending invitations, domainOptions, domainView, organizationOptions
   and organizationAccess.

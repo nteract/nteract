@@ -1416,6 +1416,18 @@ caches a record for at most 30 seconds, so a request sees a new record at
 most 30 seconds after the exchange that wrote it, and an open sync socket,
 which re-authenticates every 15 seconds, at most 45 seconds after.
 
+A Project's owner can share it with one organization the same way
+(`acl.organizationAccess` on the Project record, set through
+`manage_project_access`). Its members hold that role on the Project and on
+every Page in it, through the Project as a member does, and only while both
+their lease and the Page host's 15-second Project lease are current. Nobody
+is added to the Project's members, and nothing is written on its Pages.
+There is no member list to send discovery hints to, so the first time a
+member opens the Project their own Catalog records a hint, and the Project
+appears in their list from then on while the listing's check of their access
+passes. The owner sends them the Project's link. A Project with an
+organization grant is shared, so a Page can't be moved across its boundary.
+
 The auth log's `kilo_token.accepted` line carries how many organizations the
 exchange reported (`organizations`). No organization id or name reaches a log.
 
