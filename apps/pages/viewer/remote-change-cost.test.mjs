@@ -26,6 +26,13 @@ import { threadLocation } from "./comment-thread-display.mjs";
 // writer through the real path (host, backend, Repo, PageSession, one
 // binding per block, comment anchors), and the test counts whole-document
 // loads, whole-block span reads and cursor resolutions per change.
+//
+// Scope: sync, the local checkpoint, each block's binding and its comment
+// decorations, heading anchors and the comments panel's thread locations.
+// The App's render is not driven here. Its session.snapshot() projects the
+// comments (model/page.mjs projectComments), which resolves every selection
+// thread's cursors on each render, in every block; that work is outside
+// these bounds.
 
 // Counts Automerge backend calls through the prototype every document
 // shares. A load materializes a document's root; an empty document (A.init)
