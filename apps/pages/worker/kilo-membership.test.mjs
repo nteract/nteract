@@ -16,6 +16,7 @@ import {
   resetMembershipCache,
 } from "./kilo-membership.mjs";
 import { exchangeAuthorizationCode, issueAuthorizationCode } from "./oauth-store.mjs";
+import { invitationMatches } from "./sharing.mjs";
 
 const origin = "http://127.0.0.1:9477";
 const audience = "pages-test";
@@ -185,6 +186,62 @@ test("the evidence record is replaced only by a report sent later", async (t) =>
   });
 });
 
+const columns = async (env) =>
+  (await env.DB.prepare("SELECT name FROM pragma_table_info('kilo_memberships')").all()).results
+    .map(({ name }) => name)
+    .sort();
+const versions = async (env) =>
+  (
+    await env.DB.prepare("SELECT version FROM kilo_membership_schema ORDER BY version").all()
+  ).results.map(({ version }) => version);
+
+test("a fresh database gets the millisecond evidence table", async (t) => {
+  const { env } = await fixture(t);
+  const at = Date.now();
+  await recordKiloMembership(env, "user:kilo:fresh", [sentinel], at);
+  assert.deepEqual(await versions(env), [1, 2]);
+  assert.deepEqual(await columns(env), ["organizations", "principal", "verified_at_ms"]);
+  assert.deepEqual(await membershipRecord(env, "user:kilo:fresh"), {
+    organizations: [sentinel],
+    verifiedAtMs: at,
+  });
+});
+
+test("a database that ran the seconds table drops its rows and takes millisecond evidence", async (t) => {
+  const { env } = await fixture(t);
+  // The first migration as it shipped, with one row written under it.
+  for (const sql of [
+    `CREATE TABLE kilo_membership_schema (
+      version INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      applied_at TEXT NOT NULL
+    )`,
+    `CREATE TABLE kilo_memberships (
+      principal TEXT PRIMARY KEY,
+      organizations TEXT NOT NULL,
+      verified_at INTEGER NOT NULL
+    )`,
+    `INSERT INTO kilo_membership_schema VALUES (1, 'memberships', '2026-11-11T00:00:00.000Z')`,
+  ])
+    await env.DB.prepare(sql).run();
+  await env.DB.prepare("INSERT INTO kilo_memberships VALUES (?, ?, ?)")
+    .bind("user:kilo:upgraded", JSON.stringify([second]), Math.floor(Date.now() / 1000))
+    .run();
+  assert.equal(
+    await membershipRecord(env, "user:kilo:upgraded"),
+    null,
+    "a seconds row is not evidence",
+  );
+  assert.deepEqual(await versions(env), [1, 2]);
+  assert.deepEqual(await columns(env), ["organizations", "principal", "verified_at_ms"]);
+  const at = Date.now();
+  await recordKiloMembership(env, "user:kilo:upgraded", [sentinel], at);
+  assert.deepEqual(await membershipRecord(env, "user:kilo:upgraded"), {
+    organizations: [sentinel],
+    verifiedAtMs: at,
+  });
+});
+
 /** A second isolate: its own copy of the module, so its own cache. */
 const otherIsolate = () => import(`./kilo-membership.mjs?isolate=${Math.random()}`);
 const stored = async (env, principal) => {
@@ -223,12 +280,82 @@ test("the fence orders exchanges by the millisecond, and a tie never adds an org
   await recordKiloMembership(env, principal, [], second0 + 800);
   assert.deepEqual(await stored(env, principal), [], "a later answer in the same second wins");
   const tie = second0 + 5000;
-  await recordKiloMembership(env, principal, [sentinel, second], tie - 1);
-  await recordKiloMembership(env, principal, [second, { id: "org-third", name: "Third" }], tie);
   await recordKiloMembership(env, principal, [sentinel, second], tie);
-  assert.deepEqual(await stored(env, principal), [second], "same millisecond: only what both list");
+  await recordKiloMembership(env, principal, [sentinel, second], tie);
+  assert.deepEqual(
+    await stored(env, principal),
+    [sentinel, second],
+    "the same answer written twice changes nothing",
+  );
+  await recordKiloMembership(env, principal, [second, { id: "org-third", name: "Third" }], tie);
+  assert.deepEqual(await stored(env, principal), [], "two answers in one millisecond: none");
   resetMembershipCache();
-  assert.deepEqual((await membershipRecord(env, principal)).organizations, [second]);
+  assert.deepEqual(await membershipRecord(env, principal), {
+    organizations: [],
+    verifiedAtMs: tie,
+  });
+  await recordKiloMembership(env, principal, [second], tie + 1);
+  assert.deepEqual(await stored(env, principal), [second], "the next exchange sets it again");
+});
+
+test("one answer is stored as one text, whatever its key order; another order is another answer", async (t) => {
+  const { env } = await fixture(t);
+  const principal = "user:kilo:serialized";
+  const at = Date.now();
+  await recordKiloMembership(env, principal, [sentinel, second], at);
+  // Kilo's entries carry other keys, in any order. Only id then name is kept.
+  await recordKiloMembership(
+    env,
+    principal,
+    [
+      { role: "owner", name: sentinel.name, id: sentinel.id },
+      { name: second.name, id: second.id },
+    ],
+    at,
+  );
+  assert.deepEqual(await stored(env, principal), [sentinel, second], "the same text: no change");
+  await recordKiloMembership(env, principal, [second, sentinel], at);
+  assert.deepEqual(
+    await stored(env, principal),
+    [],
+    "the same organizations in another order differ, and a differing tie holds none",
+  );
+});
+
+test("a stored value the reader can't use counts as no organizations on a tie, and a later answer replaces it", async (t) => {
+  const { env } = await fixture(t);
+  const unusable = {
+    "not JSON": "[{not json",
+    "a JSON object": JSON.stringify({ id: sentinel.id, name: sentinel.name }),
+    "an array holding a non-object": JSON.stringify([sentinel, sentinel.id]),
+    "an array holding an entry without a string id": JSON.stringify([sentinel, { id: 7 }]),
+  };
+  const at = Date.now();
+  for (const [label, value] of Object.entries(unusable)) {
+    const principal = `user:kilo:${encodeURIComponent(label)}`;
+    const corrupt = () =>
+      env.DB.prepare("UPDATE kilo_memberships SET organizations = ? WHERE principal = ?")
+        .bind(value, principal)
+        .run();
+    await recordKiloMembership(env, principal, [sentinel], at);
+    await corrupt();
+    assert.equal(await membershipRecord(env, principal), null, `${label}: the reader skips it`);
+    // The answer lists the organization the unusable value names, but its
+    // text differs from the stored text, so the tie holds none.
+    await recordKiloMembership(env, principal, [sentinel], at);
+    assert.deepEqual(
+      await membershipRecord(env, principal),
+      { organizations: [], verifiedAtMs: at },
+      `${label}: a tie drops every organization and doesn't throw`,
+    );
+    await corrupt();
+    await recordKiloMembership(env, principal, [sentinel], at + 1);
+    assert.deepEqual(
+      await membershipRecord(env, principal),
+      { organizations: [sentinel], verifiedAtMs: at + 1 },
+      `${label}: a later answer replaces it`,
+    );
+  }
 });
 
 test("every exchange writes, even with an unchanged answer", async (t) => {
@@ -259,6 +386,158 @@ test("a leased agent token writes its exchange's evidence once, not once per req
   assert.equal(inserts(), 1);
   await authenticate(bearer(kilo.mintToken(account, { audience, claims: { n: 1 } })), env);
   assert.equal(inserts(), 2, "a new exchange writes again, even with the same answer");
+});
+
+/** Makes the next `count` evidence writes fail as an unreachable D1 would,
+ * 50 ms after they start so concurrent requests meet them in flight, and
+ * counts every evidence write attempted. */
+function failEvidenceWrites(t, env, count) {
+  const prepare = env.DB.prepare.bind(env.DB);
+  let failures = count;
+  let attempts = 0;
+  t.mock.method(env.DB, "prepare", (sql) => {
+    if (!sql.startsWith("INSERT INTO kilo_memberships ")) return prepare(sql);
+    attempts++;
+    if (failures-- > 0)
+      return {
+        bind: () => ({
+          run: () =>
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error("D1 is unreachable")), 50),
+            ),
+        }),
+      };
+    return prepare(sql);
+  });
+  return () => attempts;
+}
+
+test("a read that overlapped a write in this isolate is not cached", async (t) => {
+  const { env } = await fixture(t);
+  const principal = "user:kilo:overlapped";
+  const at = Date.now();
+  await recordKiloMembership(env, principal, [sentinel, second], at - 1000);
+  resetMembershipCache();
+  // The next read takes the row as it is now and returns it only on release,
+  // as a D1 read that started before a write and answers after it would.
+  const prepare = env.DB.prepare.bind(env.DB);
+  let release;
+  const released = new Promise((resolve) => (release = resolve));
+  let hold = true;
+  t.mock.method(env.DB, "prepare", (sql) => {
+    const statement = prepare(sql);
+    if (!hold || !sql.startsWith("SELECT organizations")) return statement;
+    hold = false;
+    return {
+      bind: (...values) => ({
+        first: async () => {
+          const row = await statement.bind(...values).first();
+          await released;
+          return row;
+        },
+      }),
+    };
+  });
+  const before = membershipRecord(env, principal);
+  // Let the read reach D1 before the write starts.
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await recordKiloMembership(env, principal, [sentinel], at);
+  release();
+  assert.deepEqual((await before).organizations, [sentinel, second], "it answers as it read");
+  assert.deepEqual(
+    await membershipRecord(env, principal),
+    { organizations: [sentinel], verifiedAtMs: at },
+    "the next read goes to D1, not to what the overlapping read saw",
+  );
+});
+
+/** Resolves once `ready()` holds, polling on this test's own timer; rejects
+ * after `ms` so a request that never gets there fails the test. */
+async function until(ready, ms, what) {
+  const deadline = Date.now() + ms;
+  while (!ready()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+}
+
+test("each request on a leased answer writes for itself until one write succeeds", async (t) => {
+  const { env, kilo } = await fixture(t);
+  const account = person([sentinel]);
+  // An older exchange listed an organization the new answer leaves out.
+  await recordKiloMembership(env, principalOf(account), [second], Date.now() - 5000);
+  // Each evidence write waits for the test to settle it: the first fails, the
+  // ones after it run against D1.
+  const prepare = env.DB.prepare.bind(env.DB);
+  const pending = [];
+  let inFlight = 0;
+  let mostInFlight = 0;
+  t.mock.method(env.DB, "prepare", (sql) => {
+    if (!sql.startsWith("INSERT INTO kilo_memberships ")) return prepare(sql);
+    const statement = prepare(sql);
+    return {
+      bind: (...values) => ({
+        run: async () => {
+          const attempt = pending.length;
+          let settle;
+          const settled = new Promise((resolve) => (settle = resolve));
+          pending.push(settle);
+          mostInFlight = Math.max(mostInFlight, ++inFlight);
+          try {
+            await settled;
+            if (attempt === 0) throw new Error("D1 is unreachable");
+            return await statement.bind(...values).run();
+          } finally {
+            inFlight--;
+          }
+        },
+      }),
+    };
+  });
+  const token = kilo.mintToken(account, { audience });
+  const requests = Promise.allSettled([
+    authenticate(bearer(token), env),
+    authenticate(bearer(token), env),
+  ]);
+  // The first write stays pending until the second request has started its
+  // own: a request that waited on the first one's write would never get here.
+  await until(() => pending.length === 2, 2000, "the second request's own write");
+  assert.equal(mostInFlight, 2, "both writes were in flight at once");
+  pending[0]();
+  pending[1]();
+  const [failed, written] = await requests;
+  assert.equal(failed.status, "rejected", "the request whose write failed doesn't go on");
+  const { status, code, retryable } = failed.reason;
+  assert.deepEqual(
+    { status, code, retryable },
+    { status: 503, code: "sign_in_unavailable", retryable: true },
+  );
+  assert.equal(written.status, "fulfilled", "the other request's own write succeeded");
+  assert.deepEqual(named(written.value), [sentinel]);
+  const third = await authenticate(bearer(token), env);
+  assert.equal(pending.length, 2, "a request after a successful write writes nothing");
+  assert.deepEqual(named(third), [sentinel]);
+  assert.equal(kilo.exchanges().length, 1, "every request used the one lease");
+});
+
+test("a browser sign-in whose evidence write fails gets a retryable failure page and no session", async (t) => {
+  const { env, kilo } = await fixture(t);
+  const account = person([sentinel]);
+  failEvidenceWrites(t, env, 1);
+  kilo.signIn(account);
+  const started = await handleKiloSignIn(request("/api/auth/login"), env);
+  const binding = setCookie(started, "__Host-pages_kilo_handoff");
+  const atKilo = await fetch(started.headers.get("location"), { redirect: "manual" });
+  const failed = await handleKiloSignIn(
+    request(atKilo.headers.get("location"), { cookie: binding }),
+    env,
+  );
+  assert.equal(failed.status, 503);
+  assert.equal(setCookie(failed, SERVER_SESSION_COOKIE), undefined);
+  assert.match(await failed.text(), /Try again/);
+  const cookie = await browserSignIn(env, kilo, account);
+  const identity = await authenticate(request("/whoami", { cookie }), env);
+  assert.deepEqual(named(identity), [sentinel]);
 });
 
 test("a browser cookie, a Pages OAuth token and a Kilo agent token carry the same organizations", async (t) => {
@@ -351,4 +630,23 @@ test("no organization id or name reaches a log line", async (t) => {
     })
     .find((event) => event?.action === "kilo_token.accepted");
   assert.equal(accepted.organizations, 2);
+});
+
+test("one Kilo sign-in gives both an email proof and organization leases, in a browser and to an agent token", async (t) => {
+  const { env, kilo } = await fixture(t);
+  const account = { ...person([sentinel]), verifiedEmail: "Member@Example.TEST" };
+  const invite = (identity) => ({
+    email: "member@example.test",
+    namespace: identity.namespace,
+    expiresAt: Date.now() + 60_000,
+  });
+  const cookie = await browserSignIn(env, kilo, account);
+  const browser = await authenticate(request("/", { cookie }), env);
+  assert.ok(Number.isSafeInteger(browser.emailProof.identityVerifiedAt));
+  assert.equal(await invitationMatches(browser, invite(browser), env), true);
+  assert.deepEqual(named(browser), [sentinel]);
+  const agent = await authenticate(bearer(kilo.mintToken(account, { audience })), env);
+  assert.equal(agent.verifiedEmail, "member@example.test");
+  assert.equal(await invitationMatches(agent, invite(agent), env), true);
+  assert.deepEqual(named(agent), [sentinel]);
 });

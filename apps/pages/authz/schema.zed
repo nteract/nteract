@@ -24,8 +24,9 @@ definition user {}
 
 /**
  * organization is the tenant a host supplies. Built-in mode has no tenants:
- * there, company view stands in for organization membership, proven by a
- * short-lived verified email-domain lease rather than a stored relationship.
+ * there, membership is a short-lived lease rather than a stored relationship,
+ * proven by a verified email domain (company view) or by the organizations
+ * the identity provider reported at sign-in (an organization grant).
  */
 definition organization {
 	/** admin manages the organization. A host writes admins as members too. */
@@ -139,7 +140,10 @@ definition page {
 	/** administer is the proposal's item.administer: owner + project.owner. */
 	permission administer = owner + project->administer
 
-	/** edit is the proposal's item.edit: administer + editor + project.contribute. */
+	/**
+	 * edit is the proposal's item.edit: administer + editor + project.contribute,
+	 * with removed subtracted from the direct editor path.
+	 */
 	permission edit = administer + (editor - removed) + project->contribute
 
 	/**

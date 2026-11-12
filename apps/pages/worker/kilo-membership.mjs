@@ -8,8 +8,9 @@
  * that reported them, in milliseconds by Pages' clock. Every successful
  * exchange writes, in one statement (`recordKiloMembership`), so the row
  * always holds the newest answer any isolate received, and a slow exchange
- * can't undo a newer one. That costs one D1 write per browser sign-in and one
- * per agent token exchange in each isolate.
+ * can't undo a newer one. That costs one D1 write per browser sign-in, and
+ * for an agent token at least one per exchange in each isolate: requests that
+ * arrive together at the start of a lease each write the same answer.
  *
  * `authenticate` (auth.mjs) reads the row by principal for every Kilo
  * identity, whichever credential it arrived with: a browser cookie, a Pages
@@ -20,11 +21,14 @@
  *
  * Every host a request crosses authenticates it again, so reads go through a
  * small per-isolate cache. An entry answers for at most `CACHE_MS` from its
- * read, and never past the end of the leases it yields; a write drops the
- * writing isolate's entry. So a request sees a new report at most 30 seconds
- * after it is written, and an open sync socket, which re-authenticates every
- * 15 seconds, at most 45 seconds after. Only settled values are cached, never
- * a pending read (isolate-setup.mjs says why).
+ * read, and never past the end of the leases it yields. When a write in this
+ * isolate ends, no entry read before that end survives it, and the writing
+ * request's own next read goes to D1. (A read that ran wholly inside a
+ * pending write may be cached until the write ends.) So a request sees a new
+ * report at most 30 seconds after it is written, and an open sync socket,
+ * which re-authenticates every 15 seconds, at most 45 seconds after. Only
+ * settled values are cached, never a pending read (isolate-setup.mjs says
+ * why).
  *
  * No organization id or name reaches a log line from here. */
 import { identityProvider } from "../identity-provider.mjs";
@@ -45,6 +49,21 @@ const MIGRATIONS = Object.freeze([
       `CREATE TABLE IF NOT EXISTS kilo_memberships (
         principal TEXT PRIMARY KEY,
         organizations TEXT NOT NULL,
+        verified_at INTEGER NOT NULL
+      )`,
+    ]),
+  }),
+  // The fence compares send times by the millisecond. A row timed in seconds
+  // can't be ordered against one, so its evidence is dropped; every
+  // principal's next exchange writes it again.
+  Object.freeze({
+    version: 2,
+    name: "memberships_by_millisecond",
+    statements: Object.freeze([
+      "DROP TABLE IF EXISTS kilo_memberships",
+      `CREATE TABLE kilo_memberships (
+        principal TEXT PRIMARY KEY,
+        organizations TEXT NOT NULL,
         verified_at_ms INTEGER NOT NULL
       )`,
     ]),
@@ -57,6 +76,17 @@ const ready = isolateSetup((db) =>
 /** principal -> { record, readAt }, oldest first. `record` is
  * `{ organizations, verifiedAtMs }` or null when the principal has none. */
 const cache = new Map();
+
+/** Counts each write's start and each write's end in this isolate. A read is
+ * cached only when this count didn't change while it ran, and a write drops
+ * the principal's entry when it ends. Together: no entry read before a
+ * write's end survives that end, and the writing request's own next read
+ * goes to D1. A read that ran wholly inside a pending write may be cached
+ * until the write ends. One isolate-wide count rather
+ * than one per principal: writes come once per exchange, so a read that loses
+ * its cache entry to another principal's write costs one more D1 read, and
+ * there is no second table to bound. */
+let writes = 0;
 
 /** When `record`'s evidence stops counting, in milliseconds. */
 const evidenceEnd = (record) => record.verifiedAtMs + KILO_MEMBERSHIP_SECONDS * 1000;
@@ -106,6 +136,7 @@ function parseRecord(row) {
 export async function membershipRecord(env, principal, now = Date.now()) {
   const hit = cached(principal, now);
   if (hit) return hit.record;
+  const writesBefore = writes;
   await ready(env.DB);
   const record = parseRecord(
     await env.DB.prepare(
@@ -114,7 +145,7 @@ export async function membershipRecord(env, principal, now = Date.now()) {
       .bind(principal)
       .first(),
   );
-  remember(principal, record, now);
+  if (writes === writesBefore) remember(principal, record, now);
   return record;
 }
 
@@ -124,38 +155,53 @@ export async function membershipRecord(env, principal, now = Date.now()) {
  * against the stored row, so the newest answer wins across isolates:
  *
  * - sent later than the row: it replaces the row;
- * - sent in the same millisecond: the row keeps only the organizations both
- *   answers list. Two answers that close can't be ordered, and keeping the
- *   intersection means a tie never adds an organization, only drops one;
+ * - sent in the same millisecond with the stored text: nothing changes, so
+ *   the same answer written twice is a no-op;
+ * - sent in the same millisecond with other text: the row lists no
+ *   organizations. Two different answers that close can't be ordered, so the
+ *   person holds none until their next exchange. A tie never adds one;
  * - sent earlier: nothing changes.
  *
  * The row's `verified_at_ms` never moves back. Every exchange writes, equal
  * answer or not, so that time always reaches the newest exchange seen.
  */
 export async function recordKiloMembership(env, principal, organizations, sentAt) {
+  writes++;
+  try {
+    await write(env, principal, organizations, sentAt);
+  } finally {
+    writes++;
+    // The row may now differ from both this answer and this isolate's view,
+    // so the writing request's own next read goes to D1.
+    cache.delete(principal);
+  }
+}
+
+/** The stored text of an answer's organizations. Invariant: the same answer
+ * always yields the same text, because this is the one function that
+ * serializes it, and it writes each entry's `id` then `name` and nothing
+ * else, in the answer's order. The tie rule compares this text. The same
+ * organizations in another order yield other text, which a tie reads as a
+ * differing answer: the safe direction. */
+const storedOrganizations = (organizations) =>
+  JSON.stringify(organizations.map(({ id, name }) => ({ id, name })));
+
+async function write(env, principal, organizations, sentAt) {
   await ready(env.DB);
-  const stored = JSON.stringify(organizations.map(({ id, name }) => ({ id, name })));
+  const stored = storedOrganizations(organizations);
   await env.DB.prepare(
     `INSERT INTO kilo_memberships (principal, organizations, verified_at_ms) VALUES (?, ?, ?)
     ON CONFLICT (principal) DO UPDATE SET
       organizations = CASE
         WHEN excluded.verified_at_ms > kilo_memberships.verified_at_ms THEN excluded.organizations
-        ELSE (
-          SELECT coalesce(json_group_array(json(answer.value)), '[]')
-          FROM json_each(excluded.organizations) AS answer
-          WHERE json_extract(answer.value, '$.id') IN (
-            SELECT json_extract(kept.value, '$.id')
-            FROM json_each(kilo_memberships.organizations) AS kept
-          )
-        )
+        WHEN excluded.organizations = kilo_memberships.organizations THEN kilo_memberships.organizations
+        ELSE '[]'
       END,
       verified_at_ms = excluded.verified_at_ms
     WHERE excluded.verified_at_ms >= kilo_memberships.verified_at_ms`,
   )
     .bind(principal, stored, Math.floor(sentAt))
     .run();
-  // The row may now differ from both this answer and this isolate's view.
-  cache.delete(principal);
 }
 
 /** Whether `identity` is a Kilo account on this deployment, the only kind of

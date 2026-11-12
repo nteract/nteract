@@ -86,6 +86,8 @@ import { focusCreatedPageTitle, titleHandsOffToBody } from "./title-navigation.m
 import { BuildUpdate, buildMonitor } from "./BuildUpdate.jsx";
 import { SchemaNotice } from "./SchemaNotice.jsx";
 import { RetiredPage } from "./RetiredPage.jsx";
+import { UnopenedPage } from "./UnopenedPage.jsx";
+import { formatRefused, sessionFormatStopped, trashArguments } from "./unopened-page.mjs";
 import { reloadGate } from "./build-freshness.mjs";
 import { EditorLoader } from "./editor-loader.mjs";
 import { SessionHost } from "./session-host.mjs";
@@ -229,6 +231,9 @@ function App() {
     // the last refresh read it. The library and the picker show its drafts.
     [localPages, setLocalPages] = useState([]),
     [trashOpen, setTrashOpen] = useState(false),
+    // A Page the host refused to open for its document format, with no
+    // session: { pageId, principal } for its stopped screen, or null.
+    [unopened, setUnopened] = useState(null),
     // list_pages' `quota` for the signed-in account, from the library's
     // latest answer, or null.
     [quota, setQuota] = useState(null),
@@ -316,7 +321,7 @@ function App() {
     titleCompositionRef = useRef(null),
     activeBlock = useRef(null),
     commentsButton = useRef(null);
-  screen.current = { index, projectOpen, trashOpen, opening, placement };
+  screen.current = { index, projectOpen, trashOpen, opening, placement, unopened };
   // The inline comment composer. It outlives Pages; resetDocumentUI resets it,
   // and a send that settles after the reset is ignored by its key.
   const [composer] = useState(
@@ -603,6 +608,7 @@ function App() {
     bootPreview.dispatch({ type: "navigated", pageId: id });
     picker.close();
     setNotice("");
+    setUnopened(null);
     setProjectOpen(projectId);
     if (id && host.current?.pageId === id) {
       const placed = screen.current.placement;
@@ -646,7 +652,12 @@ function App() {
       } else await install(next, revision, { focus, project });
     } catch (error) {
       if (host.isCurrent(revision)) bootPreview.dispatch({ type: "refused" });
-      if (host.isCurrent(revision) && !bannerShows(error)) showError(error);
+      // A Page in a format the host doesn't open gets its own screen, where
+      // its owner can move it to Trash. Project content is left to its
+      // Project.
+      if (host.isCurrent(revision) && !projectId && formatRefused(error))
+        setUnopened({ pageId: id, principal: authentication.current?.identity?.principal });
+      else if (host.isCurrent(revision) && !bannerShows(error)) showError(error);
     } finally {
       host.finishRequest(controller);
       if (host.isCurrent(revision)) setOpening(false);
@@ -671,6 +682,7 @@ function App() {
     setOpening(false);
     picker.close();
     setTrashOpen(false);
+    setUnopened(null);
     setProjectOpen(null);
     setIndex(listingVisit("home", library));
     if (historyMode !== "none")
@@ -797,12 +809,16 @@ function App() {
       !shown.opening &&
       !shown.projectOpen &&
       !shown.trashOpen &&
+      !shown.unopened &&
       isLibraryRoute(shown.index) &&
       shown.index.principal === authentication.current?.identity?.principal
     );
   }
   function followRoute() {
     const route = readPageRoute(location.href);
+    // The stopped screen belongs to the address that showed it; a Page
+    // route that still refuses shows it again from open().
+    setUnopened(null);
     // Back or Forward from one library address to another: the mounted
     // library takes the view, so a grouping alone asks for nothing and focus
     // stays put. The address keeps the canonical form.
@@ -874,6 +890,8 @@ function App() {
           host.navigate();
           // Attempts to replay belong to the account that made them.
           creations.account(result.identity?.principal ?? null);
+          // The stopped screen answered for the account that opened it.
+          setUnopened(null);
           catalogRevision.current++;
           // Rows and Projects remembered for one account never show another.
           forgetAccountData();
@@ -1296,13 +1314,17 @@ function App() {
       if (deleting.identity.principal !== authentication.current?.identity?.principal)
         throw Error("Sign in with this Page's original account to move it to Trash.");
       // The heads this tab shows guard the move: a peer's edit that lands first
-      // refuses it (BROWSER_TRASH_GUARD in worker/tool-arguments.mjs).
-      const trashed = await tool("delete_page", {
-        page_id: deleting.pageId,
-        expected_principal: deleting.identity.principal,
-        base_heads: editor.module.pageHeads(deleting.doc),
-        nonce: crypto.randomUUID(),
-      }).catch((error) => {
+      // refuses it (BROWSER_TRASH_GUARD in worker/tool-arguments.mjs). A Page
+      // the host stopped for its format has no heads the host can match.
+      const trashed = await tool(
+        "delete_page",
+        trashArguments({
+          pageId: deleting.pageId,
+          principal: deleting.identity.principal,
+          nonce: crypto.randomUUID(),
+          heads: sessionFormatStopped(deleting) ? undefined : editor.module.pageHeads(deleting.doc),
+        }),
+      ).catch((error) => {
         throw moveToTrashError(error);
       });
       if (trashed?.superseded)
@@ -1550,12 +1572,14 @@ function App() {
             icon: FilePlus,
             run: () => createIn({ parent_id: session.pageId }),
           },
+        // read_page never answers for a Page the host stopped for its format,
+        // so its placement stays unknown and the host decides.
         session.canDelete &&
           !projectOpen &&
           (placement
             ? placement.kind !== "project"
-            : session.localPage?.registration &&
-              !session.localPage.registered &&
+            : (sessionFormatStopped(session) ||
+                (session.localPage?.registration && !session.localPage.registered)) &&
               !session.authRequired &&
               session.identity?.principal === authentication.current?.identity?.principal) && {
             key: "trash",
@@ -2057,6 +2081,22 @@ function App() {
                 <p role="status">Opening…</p>
               </main>
             )
+          ) : unopened && unopened.principal === account.principal ? (
+            <UnopenedPage
+              key={`${unopened.pageId}:${unopened.principal}`}
+              pageId={unopened.pageId}
+              principal={unopened.principal}
+              request={request}
+              tool={tool}
+              onTrashed={(pageId) => {
+                // A return to the library mustn't paint it from memory.
+                listingCache.forget(pageId);
+                home(null, { historyMode: "replace" });
+                setNotice("Moved to Trash");
+              }}
+              onOpenTrash={showTrash}
+              onHome={() => home(null)}
+            />
           ) : projectOpen ? (
             <main className="welcome">
               <button

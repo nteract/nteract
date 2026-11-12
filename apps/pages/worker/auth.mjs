@@ -179,19 +179,41 @@ function onAgentRoute(request, extra = []) {
   );
 }
 
-/** Kilo token answers whose membership evidence this isolate has written.
- * The token lease hands every request the same answer object until it ends,
- * so evidence is written once per exchange, not once per request. */
-const recordedExchanges = new WeakSet();
+/** Kilo token answers whose membership evidence is in D1. The token lease
+ * hands every request the same answer object until it ends, so once one
+ * request's write of an answer succeeds, later requests on it write nothing.
+ *
+ * Only that settled fact is shared, never a pending write: a gateway request
+ * that awaited another request's promise could be cut off when that request
+ * responds (isolate-setup.mjs says why). So, as with the token lease
+ * (kilo-token-lease.mjs), each request does its own waiting. A request that
+ * finds its answer not yet recorded writes it itself and marks the answer
+ * only after its own write succeeds. Requests that arrive together at the
+ * start of a lease each write the same answer with the same send time, which
+ * the fenced write leaves as it is.
+ *
+ * A request whose write fails gets a retryable 503 `sign_in_unavailable` and
+ * marks nothing, so the next request writes again. It does not go on without
+ * organization leases instead: that would answer the person's organization
+ * Pages with access denials a retry would reverse. Either way no request
+ * authenticates with evidence older than the answer it holds. */
+const recordedAnswers = new WeakSet();
 async function recordExchange(env, principal, account) {
-  if (recordedExchanges.has(account)) return;
-  recordedExchanges.add(account);
+  if (recordedAnswers.has(account)) return;
   try {
     await recordKiloMembership(env, principal, account.organizations, account.verifiedAt);
-  } catch (error) {
-    recordedExchanges.delete(account);
-    throw error;
+  } catch (cause) {
+    throw withAdmissionReason(
+      Object.assign(new Error("Kilo sign-in is unavailable. Retry the request."), {
+        status: 503,
+        code: "sign_in_unavailable",
+        retryable: true,
+        cause,
+      }),
+      "credential_unverified",
+    );
   }
+  recordedAnswers.add(account);
 }
 
 /** The identity with the audience leases its evidence supports: a company
@@ -306,6 +328,11 @@ export async function authenticate(request, env) {
           canWrite: true,
           credentialKind: "kilo-token",
           namespace: metadata.principalNamespace,
+          // Kilo sends it only with proof the account controls it, and the
+          // exchange keeps it only when an invitation could name it
+          // (kilo-exchange.mjs). Like an API key's, it lasts as long as this
+          // identity does.
+          verifiedEmail: metadata.emailVerified === true ? metadata.email : undefined,
           expiresAt: account.until,
         },
         env,

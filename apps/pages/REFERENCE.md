@@ -1048,7 +1048,12 @@ is the same principal either way. It needs no settings beyond the three
 `kilo-token` and the driver an API key records; other routes refuse it with
 403 before Kilo is asked. Like an API key, it meets the argument check, can't
 send `delete_page`'s browser-only `base_heads`, and keys receipts on that
-principal, so a person's browser and agent share one receipt namespace. Kilo's refusals become 401 `invalid_kilo_token`, 403
+principal, so a person's browser and agent share one receipt namespace. When
+Kilo's answer carries `verified_email`, the address Kilo holds proof the
+account controls, the identity presents it as an API key does and claims
+email invitations to it for the lease; a browser session keeps it as signed
+email proof for six hours from sign-in. A value that can't be an invitation
+address is treated as absent ([worker/kilo-exchange.mjs](worker/kilo-exchange.mjs)). Kilo's refusals become 401 `invalid_kilo_token`, 403
 `account_unavailable` or 503 `sign_in_unavailable` (`retryable: true`); the
 caller never sees Kilo's body. Each isolate leases an accepted token by its
 SHA-256 until the earliest of its `exp` less 30 seconds, its whole lifetime
