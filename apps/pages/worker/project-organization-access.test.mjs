@@ -139,8 +139,14 @@ const share = (w, projectId, organization_id, role, expected_revision) =>
     ...(role !== undefined && { role }),
     expected_revision,
   });
-const listed = async (w, who) =>
-  (await w.call(who, "list_projects")).body.projects?.map(({ project_id }) => project_id) ?? [];
+/** The Project ids `who`'s list_projects returns. Any answer but a 200 with a
+ * `projects` array fails, so an empty list always means an empty listing. */
+const listed = async (w, who) => {
+  const response = await w.call(who, "list_projects");
+  assert.equal(response.status, 200, JSON.stringify(response.body));
+  assert.ok(Array.isArray(response.body.projects), JSON.stringify(response.body));
+  return response.body.projects.map(({ project_id }) => project_id);
+};
 
 test("an owner shares a Project only with an organization they hold a lease for, and the name is the lease's", async (t) => {
   const w = await world(t, { kilo: { owner: [acme], member: [acme], stranger: [other] } });
