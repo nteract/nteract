@@ -140,8 +140,22 @@ try {
   await reader.screenshot({ path: `${output}/unopened-collaborator.png` });
   complete("A collaborator sees the refusal and no action, with or without a local copy");
 
-  await owner.goto(`${origin}/p/${pageId}`);
+  // From the library to the Page and Back: the stopped screen leaves with
+  // its address, and Forward shows it again.
+  await owner.goto(`${origin}/`);
+  await owner
+    .getByRole("link", { name: new RegExp(title) })
+    .first()
+    .click();
   await expect(stopped(owner)).toHaveAttribute("data-state", "owner", { timeout: 30000 });
+  await owner.goBack();
+  await expect(stopped(owner)).toHaveCount(0);
+  assert.equal(new URL(owner.url()).pathname, "/");
+  await expect(owner.getByRole("link", { name: new RegExp(title) }).first()).toBeVisible();
+  await owner.goForward();
+  assert.equal(new URL(owner.url()).pathname, `/p/${pageId}`);
+  await expect(stopped(owner)).toHaveAttribute("data-state", "owner", { timeout: 30000 });
+  complete("Back from the stopped screen shows the library; Forward shows it again");
   await expect(stopped(owner)).toContainText(MESSAGE);
   await owner.screenshot({ path: `${output}/unopened-owner.png` });
   await owner.setViewportSize({ width: 390, height: 844 });

@@ -321,7 +321,7 @@ function App() {
     titleCompositionRef = useRef(null),
     activeBlock = useRef(null),
     commentsButton = useRef(null);
-  screen.current = { index, projectOpen, trashOpen, opening, placement };
+  screen.current = { index, projectOpen, trashOpen, opening, placement, unopened };
   // The inline comment composer. It outlives Pages; resetDocumentUI resets it,
   // and a send that settles after the reset is ignored by its key.
   const [composer] = useState(
@@ -809,12 +809,16 @@ function App() {
       !shown.opening &&
       !shown.projectOpen &&
       !shown.trashOpen &&
+      !shown.unopened &&
       isLibraryRoute(shown.index) &&
       shown.index.principal === authentication.current?.identity?.principal
     );
   }
   function followRoute() {
     const route = readPageRoute(location.href);
+    // The stopped screen belongs to the address that showed it; a Page
+    // route that still refuses shows it again from open().
+    setUnopened(null);
     // Back or Forward from one library address to another: the mounted
     // library takes the view, so a grouping alone asks for nothing and focus
     // stays put. The address keeps the canonical form.
@@ -886,6 +890,8 @@ function App() {
           host.navigate();
           // Attempts to replay belong to the account that made them.
           creations.account(result.identity?.principal ?? null);
+          // The stopped screen answered for the account that opened it.
+          setUnopened(null);
           catalogRevision.current++;
           // Rows and Projects remembered for one account never show another.
           forgetAccountData();
@@ -2075,7 +2081,7 @@ function App() {
                 <p role="status">Opening…</p>
               </main>
             )
-          ) : unopened ? (
+          ) : unopened && unopened.principal === account.principal ? (
             <UnopenedPage
               key={`${unopened.pageId}:${unopened.principal}`}
               pageId={unopened.pageId}
