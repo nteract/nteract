@@ -170,7 +170,7 @@ test("a move to Trash names heads unless the host stopped the Page for its forma
 test("the format refusal is recognized from discovery and from the socket", () => {
   assert.equal(formatRefused({ status: 409, code: "document_format_unsupported" }), true);
   assert.equal(formatRefused(signingKeyRefused({ code: "document_format_unsupported" })), true);
-  assert.equal(formatRefused(signingKeyRefused({ code: "signing_key_rejected" })), false);
+  assert.equal(formatRefused(signingKeyRefused({ code: "schema_unsupported" })), false);
   assert.equal(formatRefused({ status: 409, code: "stored_form_unsupported" }), false);
   assert.equal(formatRefused(undefined), false);
 });
