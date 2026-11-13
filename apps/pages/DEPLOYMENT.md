@@ -786,7 +786,9 @@ Automerge sync. The migrations that got them there are in
 
 Leftover records from the migrations (`host/comments-migration/*`, converted
 Subduction records under `repo/`, `host/actor/`, `host/binding/`,
-`host/signer`) stay until a purge deletes them. Nothing reads them. The
+`host/signer`) stay until a purge deletes them. Nothing reads them. Purging a
+Page whose record carries `recordStorageMigratedFrom` deletes its converted
+Subduction records from the Page's own storage (`purgeConvertedRecords`). The
 root-only `/etc/<service>/operator-secret` file is unused.
 
 For a separately created v2 namespace, document its own format and rollback
@@ -795,11 +797,11 @@ are absent.
 
 ### Old PageRecords objects
 
-The `PageRecords` class and `PAGE_RECORDS` binding are delete-only
-(`worker/page-records.mjs`): `inspect` counts keys and bytes, `clear` deletes
-everything. Purge uses it to clear a Page converted from `buffered` storage
-(`purgeConvertedRecords`). No read or write path is left, and the operator
-sweep left both targets empty.
+The `PageRecords` class and `PAGE_RECORDS` binding are declared with an empty
+class body (`worker/page-records.mjs`). No code calls the binding: purge
+does not call a Page's `PageRecords` object, and no path reads, writes or
+clears an object's storage. The operator sweep left both targets empty, and
+no release-package build writes a `buffered` Page.
 
 Removing the class needs a `deleted_classes` migration. celld 0.6.3 knows
 `new_sqlite_classes`, `old_tag`, `new_tag` and `steps`, not `deleted_classes`,

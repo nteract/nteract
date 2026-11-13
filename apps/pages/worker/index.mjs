@@ -152,7 +152,6 @@ import {
 } from "./operation-journal.mjs";
 import { fencedHeads, headsFor, revisionPlan } from "./revisions.mjs";
 import { STORAGE_KEYS_PER_CALL, guardContext } from "./storage-guard.mjs";
-import { pageRecordsCall } from "./page-records.mjs";
 export { PageRecords } from "./page-records.mjs";
 import {
   COMMENTS_MODULE,
@@ -524,15 +523,6 @@ const lifecycleFingerprint = {
   restore_page: "restore_page",
   purge_page: "purge_page",
 };
-/** Whether `metadata`'s Page has a PageRecords object, and whether it may be
- * cleared: `clear` for a Page converted from `buffered` storage or a deleted
- * `buffered` Page, `held` for a live `buffered` one (its records are its only
- * history), undefined for a Page that never had one. */
-function pageRecordsHolder(metadata) {
-  if (metadata?.recordStorageMigratedFrom === "buffered") return "clear";
-  if (metadata?.recordStorage !== "buffered") return undefined;
-  return pageState(metadata) === "deleted" ? "clear" : "held";
-}
 const noop = async () => {};
 /** A listing that met a shared Page (or its owner's Catalog) that did not
  * answer. A listing is a read, so it is retryable; an overloaded host asks
@@ -6303,26 +6293,15 @@ export class Page {
     return refusal ? errorResponse(refusal, "page") : this.enqueue(request);
   }
 
-  /** What a Page converted from Subduction still holds of it, which the
-   * plain host never reads: native records, actor entries, signing-key
-   * bindings, the signer seed, and its PageRecords object when
-   * pageRecordsHolder says `clear`. A live or trashed `buffered` Page's
-   * records are its only history (`held`), so they stay. Deleting the Page
-   * deletes the rest. Each step is idempotent, so a repeated deletion
-   * finishes the job. */
+  /** What a Page converted from Subduction still holds of it in its own
+   * storage, which the plain host never reads: native records under `repo/`,
+   * actor entries, signing-key bindings and the signer seed. A permanent
+   * deletion deletes them with the rest of the Page. Each step is idempotent,
+   * so a repeated deletion finishes the job. The Page's `PageRecords` object
+   * is not called. */
   async purgeConvertedRecords() {
-    if (pageRecordsHolder(this.metadata) === "clear") await this.pageRecords("clear");
     await clearPrefixes(this.ctx.storage, ["repo/", "host/actor/", "host/binding/"]);
     await this.ctx.storage.delete("host/signer");
-  }
-
-  /** `inspect` or `clear` this Page's PageRecords object
-   * (worker/page-records.mjs). The abandoned-object gate refuses it like any
-   * other storage write. */
-  async pageRecords(action) {
-    const refusal = this.storageRefusal();
-    if (refusal) throw refusal;
-    return pageRecordsCall(this.env.PAGE_RECORDS.getByName(this.metadata.pageId), action);
   }
 
   async run(request) {
