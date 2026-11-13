@@ -56,10 +56,13 @@ Source layout under this directory:
 ### Charts
 
 `viewer/vega-chart.mjs` draws a Vega-Lite spec over datasets the caller
-supplies, in the Page's own document. Vega runs in a Worker
-(`viewer/chart-worker.mjs`): it compiles the spec, runs the dataflow and posts
-the finished scenegraph back, and the page draws it with Vega's SVG renderer
-and keeps the hover tooltip. Nothing in production loads it yet.
+supplies (rows, Arrow IPC bytes or an Arrow table), in the Page's own
+document. Vega runs in a Worker (`viewer/chart-worker.mjs`): it compiles the
+spec, runs the dataflow and posts the finished scenegraph back, and the page
+draws it with Vega's SVG renderer and keeps the hover tooltip. The charts on a
+Page share one Worker (`viewer/chart-pool.mjs`), which runs one draw at a time,
+first draws ahead of redraws. The page never runs the dataflow itself: a
+Worker that can't start fails its charts. Nothing in production loads it yet.
 
 A chart is static: marks, axes, legends and Vega's hover tooltip. Selections,
 bindings, `param` predicates, hover encodings and every other event stream are
@@ -75,8 +78,10 @@ underflows to 0; the Worker turns a smaller number in the data into 0 and a
 larger or non-finite one into null. The Worker refuses a compiled Vega
 dataflow, root or subflow, with any event stream, binding or unlisted
 operator, checks every compiled expression again, runs expressions through
-Vega's interpreter and denies every load; the page cleans each paint, font and
-cursor before it writes them.
+Vega's interpreter and denies every load. The page treats the scene a Worker
+returns as untrusted too: it rebuilds it from known mark types and keys within
+mark and nesting bounds (`viewer/chart-scene.mjs`), and cleans each paint,
+font and cursor before it writes them.
 
 A dataset may hold at most 100,000 rows and 2,000,000 cells, nested values
 included. Vega's bin, kde and regression transforms check the values they read
@@ -85,11 +90,15 @@ the spec check never sees.
 
 A spec that passes every check can still fail to terminate: the guards cover
 the cases reviews have found, and Vega's and d3's numeric loops aren't proven
-to end. A draw that takes longer than 8 seconds terminates its Worker and
-shows `This chart took too long to draw.`; the page keeps painting meanwhile.
-The largest chart the budgets admit, 100,000 points from 2,000,000 cells, draws
-in about 2 seconds in Chromium, Firefox and WebKit. Drawing that many SVG
-marks still costs the page's own thread time.
+to end. A draw that runs longer than 8 seconds in its Worker shows `This chart
+took too long to draw.`; that Worker is replaced, and the other charts draw on
+the replacement. The timer starts when the Worker begins the draw, so waiting
+behind other charts doesn't count against it. A chart that timed out isn't
+drawn again until its spec or data changes, so ten hung charts on one Page cost
+at most 80 seconds of Worker time, once. The page keeps painting meanwhile. While the Page is hidden, draws wait and a Worker running
+one is terminated. The largest chart the budgets admit, 100,000 points from
+2,000,000 cells, draws in about 2 seconds in Chromium, Firefox and WebKit.
+Drawing that many SVG marks still costs the page's own thread time.
 
 ## Run locally
 

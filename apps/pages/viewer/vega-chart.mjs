@@ -9,11 +9,12 @@
 //
 // Vega runs in a Worker (viewer/chart-worker.mjs, viewer/chart-dataflow.mjs):
 // it compiles the spec, checks the compiled dataflow, runs it and posts the
-// finished scenegraph back. This page draws that scenegraph with Vega's SVG
-// renderer and keeps the tooltip; it never holds a Vega View. A draw that
-// outlasts CHART_TIMEOUT_MS terminates its Worker and shows the chart's error
-// state, so a spec that never terminates costs the reader a sentence, not the
-// tab.
+// finished scenegraph back. The charts on a Page share at most CHART_WORKERS
+// Workers (viewer/chart-pool.mjs). This page draws the scenegraph with Vega's
+// SVG renderer and keeps the tooltip; it never holds a Vega View and never
+// runs the dataflow itself. A draw that outlasts CHART_TIMEOUT_MS from its
+// start shows the chart's error state and its Worker is replaced, so a spec
+// that never terminates costs the reader a sentence, not the tab.
 //
 // The spec and the rows are both untrusted:
 // - shared/chart-spec.mjs refuses a spec here before any Worker starts, with
@@ -24,8 +25,10 @@
 //   compiled dataflow (`runtimeProblem`), guards the transforms that loop on
 //   derived values, runs expressions through Vega's interpreter and denies
 //   every load.
-// - The "pages-svg" renderer cleans each item's fill, stroke, font, blend and
-//   cursor before it writes them, so a data value can't put `url(...)` into a
+// - The page rebuilds the returned scene from known marks and keys within
+//   bounds (viewer/chart-scene.mjs), and the "pages-svg" renderer cleans each
+//   item's fill, stroke, font, blend and cursor before it writes them, so
+//   neither a data value nor a Worker's answer can put `url(...)` into a
 //   style.
 //
 // The look is bare: the caller's title above, one thin rounded border around
@@ -34,7 +37,7 @@
 // the same expanded viewer.
 import { SVGHandler, SVGRenderer, sceneFromJSON } from "vega-scenegraph";
 import { Handler as TooltipHandler } from "vega-tooltip";
-import { BehaviorSubject, Observable, Subscription, combineLatest, concat } from "rxjs";
+import { BehaviorSubject, Subscription, combineLatest, concat, from } from "rxjs";
 import { debounceTime, distinctUntilChanged, skip, switchMap, take } from "rxjs/operators";
 import {
   CHART_CURSORS,
@@ -44,42 +47,56 @@ import {
   loadsResource,
 } from "../shared/chart-spec.mjs";
 import { cellCount, isArrowTable, rowCount, tooManyCells } from "./chart-data.mjs";
+import { CHART_READY_MS, CHART_WORKERS, TIMED_OUT, createChartPool } from "./chart-pool.mjs";
+import { pageScene } from "./chart-scene.mjs";
 import { maximizeButton } from "./diagram-icons.mjs";
 import { openDiagramViewer } from "./diagram-viewer.mjs";
 
 /** Wait after the last width change before redrawing, so a drag-resize draws
  * once at its end. */
 export const RESIZE_SETTLE_MS = 120;
-/** How long one draw may take in the Worker, from posting it to its scene. */
+/** How long one draw may take in its Worker, from its start to its scene. */
 export const CHART_TIMEOUT_MS = 8_000;
-export const TIMED_OUT = "This chart took too long to draw.";
-// How late the timer may fire before the page counts itself as the one that
-// was busy, and how long it then waits for a queued answer.
-const LATE_MS = 250;
-const GRACE_MS = 50;
+export { TIMED_OUT };
 
 // The Worker script, a content-hashed chunk the build names (scripts/build.mjs).
 const WORKER_URL =
   typeof __PAGES_CHART_WORKER_URL__ === "string" ? __PAGES_CHART_WORKER_URL__ : null;
-let workers = {
+const defaultWorkers = Object.freeze({
   create: () => {
     if (!WORKER_URL) throw new Error("This build has no chart Worker.");
     return new Worker(WORKER_URL, { name: "chart" });
   },
   timeoutMs: CHART_TIMEOUT_MS,
+  readyMs: CHART_READY_MS,
+  size: CHART_WORKERS,
   checkSpec: true,
+});
+let workers = defaultWorkers;
+// One pool per document, made when its first chart mounts.
+let pools = new WeakMap();
+const poolFor = (doc) => {
+  let pool = pools.get(doc);
+  if (!pool) {
+    pool = createChartPool({ ...workers, doc });
+    pools.set(doc, pool);
+  }
+  return pool;
 };
 
-/** Replace how charts start their Worker and how long a draw may take: for
- * tests in a DOM without Workers, and for the smoke's fixture Worker.
- * `checkSpec: false` skips the page's spec check, so the smoke can prove the
- * timer cuts off a spec the checks would refuse. Returns a function that
- * restores the previous setting. */
-export function setChartWorker(create, { timeoutMs = CHART_TIMEOUT_MS, checkSpec = true } = {}) {
+/** Replace how charts start their Workers, how long a draw may take and how
+ * many Workers a document shares: for tests in a DOM without Workers, and
+ * for the smoke's fixture Worker. `checkSpec: false` skips the page's spec
+ * check, so the smoke can prove the timer cuts off a spec the checks would
+ * refuse. Charts mounted after the call use a new pool. Returns a function
+ * that restores the previous setting. */
+export function setChartWorker(create, options = {}) {
   const previous = workers;
-  workers = { create, timeoutMs, checkSpec };
+  workers = { ...defaultWorkers, ...options, create };
+  pools = new WeakMap();
   return () => {
     workers = previous;
+    pools = new WeakMap();
   };
 }
 
@@ -319,7 +336,12 @@ function contentWidth(element) {
  * which stops listening and hides the tooltip.
  */
 export function drawScene(target, { scene, width, height, origin, background }, tooltip) {
-  const root = sceneFromJSON(scene);
+  const size = (value) => (Number.isFinite(value) ? Math.min(Math.max(value, 0), 100_000) : 0);
+  width = size(width);
+  height = size(height);
+  origin = Array.isArray(origin) ? [size(origin[0]), size(origin[1])] : [0, 0];
+  background = typeof background === "string" && background.length <= 256 ? background : null;
+  const root = sceneFromJSON(pageScene(scene));
   const renderer = new PagesSVGRenderer(deniedLoader)
     .initialize(target, width, height, origin)
     .background(background ?? null);
@@ -333,11 +355,23 @@ export function drawScene(target, { scene, width, height, origin, background }, 
   };
 }
 
-/** What crosses to the Worker for one dataset: rows by structured clone, or
- * an Arrow table's IPC bytes, transferred. `transfer` collects the buffers;
- * `arrow` is the apache-arrow module, loaded only when a dataset needs it. */
+/** A real apache-arrow Table: Arrow's shape with record batches behind it.
+ * A wrapper that only looks like one can't be serialized for a Worker. */
+const isArrowBacked = (dataset) => isArrowTable(dataset) && Array.isArray(dataset.batches);
+
+/** What crosses to a Worker for one dataset, built for each Worker that
+ * needs it: rows by structured clone; Arrow IPC bytes as this chart's own
+ * copy, transferred, since the caller's bytes may back other views and
+ * tables; an Arrow table serialized to fresh IPC bytes, transferred.
+ * `transfer` collects the buffers; `arrow` is the apache-arrow module,
+ * loaded only when a table needs it. */
 function crossing(dataset, transfer, arrow) {
-  if (isArrowTable(dataset)) {
+  if (dataset instanceof Uint8Array) {
+    const ipc = dataset.slice();
+    transfer.push(ipc.buffer);
+    return { ipc };
+  }
+  if (isArrowBacked(dataset)) {
     const ipc = arrow.tableToIPC(dataset);
     transfer.push(ipc.buffer);
     return { ipc };
@@ -347,14 +381,16 @@ function crossing(dataset, transfer, arrow) {
 
 /**
  * Mount a chart in `container`. `spec` is a parsed Vega-Lite spec. `datasets`
- * maps each data name the spec reads to rows or an Arrow table; the chart
+ * maps each data name the spec reads to rows, Arrow IPC bytes (a Uint8Array
+ * the chart copies, never transfers) or an apache-arrow Table; the chart
  * never fetches. `title` is shown above the chart. Returns `{ destroy }`.
  *
  * A Page theme change or a new container width redraws the chart, so text
  * keeps its size at any width; a draw still in flight is abandoned, so a slow
  * earlier draw never replaces a newer one. A spec the checks refuse, one Vega
- * can't draw, or one that outlasts CHART_TIMEOUT_MS shows one sentence inside
- * the border instead.
+ * can't draw, one that outlasts CHART_TIMEOUT_MS, or a Worker that can't
+ * start shows one sentence inside the border instead. A chart that timed
+ * out doesn't redraw; the caller mounts it again for a new spec or data.
  */
 export function mount(container, { spec, datasets = {}, title = "" }) {
   const doc = container.ownerDocument;
@@ -439,8 +475,10 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
   if (!refusal)
     for (const name of checked.names) {
       const dataset = given(name);
-      if (!Array.isArray(dataset) && !isArrowTable(dataset)) {
-        refusal = `The dataset "${name}" must be rows or an Arrow table.`;
+      // IPC bytes are counted in the Worker, as they decode.
+      if (dataset instanceof Uint8Array) continue;
+      if (!Array.isArray(dataset) && !isArrowBacked(dataset)) {
+        refusal = `The dataset "${name}" must be rows, Arrow IPC bytes or an Arrow table.`;
         break;
       }
       const rows = rowCount(dataset);
@@ -487,31 +525,23 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
     }
   };
 
-  // One Worker per chart, holding the data, reused across redraws. It is
-  // terminated when a draw outlasts the timer, when a newer draw supersedes a
-  // running one, and on destroy; the next draw starts a fresh one and sends
-  // the data again.
-  let worker = null;
-  let drawId = 0;
-  const dropWorker = () => {
-    worker?.terminate();
-    worker = null;
-  };
-  // Arrow serializes a table for the Worker; a chart over rows never loads it.
-  const arrow = checked.names.some((name) => isArrowTable(given(name)))
-    ? import("apache-arrow")
-    : Promise.resolve(null);
-  const takeWorker = async () => {
-    const module = await arrow;
-    if (!mounted) throw new Error("This chart was removed.");
-    if (worker) return worker;
-    worker = workers.create();
-    const transfer = [];
-    const sent = Object.create(null);
-    for (const name of checked.names) sent[name] = crossing(given(name), transfer, module);
-    worker.postMessage({ type: "data", datasets: sent }, transfer);
-    return worker;
-  };
+  // The chart's place in its document's Worker pool, once Arrow (needed only
+  // to serialize a table) has loaded.
+  let client = null;
+  const attached = (
+    checked.names.some((name) => isArrowBacked(given(name)))
+      ? import("apache-arrow")
+      : Promise.resolve(null)
+  ).then((arrow) => {
+    if (!mounted) return null;
+    client = poolFor(doc).attach(() => {
+      const transfer = [];
+      const datasets = Object.create(null);
+      for (const name of checked.names) datasets[name] = crossing(given(name), transfer, arrow);
+      return { datasets, transfer };
+    });
+    return client;
+  });
 
   const themes = new BehaviorSubject(pageTheme(container));
   const watchTheme = win?.MutationObserver
@@ -529,73 +559,24 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
     widths.pipe(skip(1), debounceTime(RESIZE_SETTLE_MS)),
   ).pipe(distinctUntilChanged());
 
+  // One draw: the Worker's answer drawn into a fresh target, or the error.
   const draw = ([theme, width]) =>
-    new Observable((subscriber) => {
-      const id = ++drawId;
-      let settled = false;
-      let cancelled = false;
-      let current;
-      const finish = (result) => {
-        settled = true;
-        clearTimeout(timer);
-        current?.removeEventListener("message", onMessage);
-        current?.removeEventListener("error", onError);
-        subscriber.next(result);
-        subscriber.complete();
-      };
-      const onMessage = ({ data }) => {
-        if (data?.id !== id) return;
-        if (data.error) return finish({ error: data.error });
+    from(attached).pipe(
+      switchMap((pooled) => {
+        if (!pooled) return [];
+        // A chart already on screen redraws behind charts not yet drawn.
+        return pooled.draw({ spec: plain, theme, width, redraw: drawing !== null });
+      }),
+      switchMap((answer) => {
+        if (answer.error) return [{ error: answer.error, timedOut: answer.timedOut === true }];
         const target = doc.createElement("div");
         try {
-          finish({ target, drawing: drawScene(target, data, showTooltip) });
+          return [{ target, drawing: drawScene(target, answer, showTooltip) }];
         } catch (error) {
-          finish({ error });
+          return [{ error }];
         }
-      };
-      const onError = (event) => {
-        event.preventDefault?.();
-        dropWorker();
-        finish({ error: { message: event.message || "The chart Worker failed." } });
-      };
-      // A timer that fires late means the page's own thread was busy (drawing
-      // a large chart, say), not the Worker; an answer may already be
-      // queued behind it, so it waits one more beat before cutting off.
-      const due = performance.now() + workers.timeoutMs;
-      let graced = false;
-      const expire = () => {
-        if (!graced && performance.now() - due > LATE_MS) {
-          graced = true;
-          timer = setTimeout(expire, GRACE_MS);
-          return;
-        }
-        dropWorker();
-        finish({ error: { message: TIMED_OUT, refusal: true } });
-      };
-      let timer = setTimeout(expire, workers.timeoutMs);
-      takeWorker().then(
-        (taken) => {
-          if (cancelled) return;
-          current = taken;
-          current.addEventListener("message", onMessage);
-          current.addEventListener("error", onError);
-          current.postMessage({ type: "draw", id, spec: plain, theme, width });
-        },
-        (error) => {
-          if (cancelled) return;
-          dropWorker();
-          finish({ error });
-        },
-      );
-      return () => {
-        cancelled = true;
-        clearTimeout(timer);
-        current?.removeEventListener("message", onMessage);
-        current?.removeEventListener("error", onError);
-        // A superseded draw still running holds the Worker; cut it off.
-        if (!settled && current === worker) dropWorker();
-      };
-    });
+      }),
+    );
 
   const subscription = new Subscription();
   subscription.add(
@@ -607,6 +588,16 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
         canvas.replaceChildren(...(result.target ? [result.target] : []));
         if (result.error) show("error", errorSentence(result.error));
         else show("rendered");
+        // A chart that timed out stays in its error state: a resize or theme
+        // change doesn't run it again, and its data leaves the Worker. A new
+        // spec or data revision mounts it anew. Ten hung charts on one Page
+        // then cost the Worker at most ten timers, once.
+        if (result.timedOut) {
+          subscription.unsubscribe();
+          watchTheme?.disconnect();
+          watchSize?.disconnect();
+          client?.detach();
+        }
       }),
   );
 
@@ -616,7 +607,7 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
       subscription.unsubscribe();
       watchTheme?.disconnect();
       watchSize?.disconnect();
-      dropWorker();
+      client?.detach();
       teardown();
     },
   };

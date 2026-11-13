@@ -9,6 +9,7 @@ import { expressionInterpreter } from "vega-interpreter";
 import {
   CHART_EXPRESSION_FUNCTIONS,
   CHART_MAX_CELLS,
+  CHART_MAX_ROWS,
   chartNumber,
   checkChartSpec,
   checkFormatCall,
@@ -16,6 +17,7 @@ import {
 } from "../shared/chart-spec.mjs";
 import { tableFromIPC } from "apache-arrow";
 import { datasetRows, ownRows, spentCellBudget, tooManyCells } from "./chart-data.mjs";
+import { SCENE_KEYS } from "./chart-scene.mjs";
 
 export const CHART_RENDERER = `vega-lite@${vl.version} vega@${vega.version}`;
 const DEFAULT_HEIGHT = 260;
@@ -351,79 +353,6 @@ export function installTextMetrics(scope = globalThis) {
   return true;
 }
 
-// The scenegraph keys the page draws: Vega's own serialization keys, less
-// image and link keys, plus the tooltip and cursor it leaves out.
-const SCENE_KEYS = [
-  "marktype",
-  "name",
-  "role",
-  "interactive",
-  "clip",
-  "items",
-  "zindex",
-  "x",
-  "y",
-  "width",
-  "height",
-  "align",
-  "baseline",
-  "fill",
-  "fillOpacity",
-  "opacity",
-  "blend",
-  "stroke",
-  "strokeOpacity",
-  "strokeWidth",
-  "strokeCap",
-  "strokeDash",
-  "strokeDashOffset",
-  "strokeForeground",
-  "strokeOffset",
-  "startAngle",
-  "endAngle",
-  "innerRadius",
-  "outerRadius",
-  "cornerRadius",
-  "padAngle",
-  "cornerRadiusTopLeft",
-  "cornerRadiusTopRight",
-  "cornerRadiusBottomLeft",
-  "cornerRadiusBottomRight",
-  "interpolate",
-  "tension",
-  "orient",
-  "defined",
-  "path",
-  "scaleX",
-  "scaleY",
-  "x2",
-  "y2",
-  "size",
-  "shape",
-  "text",
-  "angle",
-  "theta",
-  "radius",
-  "dir",
-  "dx",
-  "dy",
-  "ellipsis",
-  "limit",
-  "lineBreak",
-  "lineHeight",
-  "font",
-  "fontSize",
-  "fontWeight",
-  "fontStyle",
-  "fontVariant",
-  "description",
-  "aria",
-  "ariaRole",
-  "ariaRoleDescription",
-  "tooltip",
-  "cursor",
-];
-
 /** A tooltip value as plain JSON, or null if it isn't JSON. */
 function plainTooltip(value) {
   if (value === null || typeof value !== "object") return value;
@@ -495,17 +424,31 @@ export function plainScene(node) {
   return out;
 }
 
+/** The sentence for a dataset over the row budget. */
+export const tooManyRows = (name, rows) =>
+  `The dataset "${name}" has ${rows.toLocaleString("en-US")} rows; a chart reads at most ${CHART_MAX_ROWS.toLocaleString("en-US")}.`;
+
 /** A dataset as it crosses to the Worker: `{ rows }` from structured clone,
- * or `{ ipc }`, an Arrow table's IPC bytes. Normalized under the cell budget. */
+ * or `{ ipc }`, Arrow IPC bytes the page copied for this Worker. Normalized
+ * under the row and cell budgets. */
 function readDataset(name, dataset) {
   try {
-    if (Array.isArray(dataset?.rows)) return ownRows(dataset.rows);
-    if (dataset?.ipc instanceof Uint8Array) return datasetRows(tableFromIPC(dataset.ipc));
+    if (Array.isArray(dataset?.rows)) {
+      if (dataset.rows.length > CHART_MAX_ROWS)
+        throw new ChartRefusal(tooManyRows(name, dataset.rows.length));
+      return ownRows(dataset.rows);
+    }
+    if (dataset?.ipc instanceof Uint8Array) {
+      const table = tableFromIPC(dataset.ipc);
+      if (table.numRows > CHART_MAX_ROWS) throw new ChartRefusal(tooManyRows(name, table.numRows));
+      return datasetRows(table);
+    }
   } catch (error) {
     if (spentCellBudget(error)) throw new ChartRefusal(tooManyCells(name));
-    throw error;
+    if (error instanceof ChartRefusal) throw error;
+    throw new ChartRefusal(`The dataset "${name}" couldn't be read.`);
   }
-  throw new ChartRefusal(`The dataset "${name}" must be rows or an Arrow table.`);
+  throw new ChartRefusal(`The dataset "${name}" must be rows, Arrow IPC bytes or an Arrow table.`);
 }
 
 /** Every dataset the page sent, normalized: name → rows. */
@@ -576,34 +519,78 @@ const failure = (error) => ({
 });
 
 /**
- * Answer the page's messages in `scope` (the Worker's global):
- * `{ type: "data", datasets }` once per Worker, then `{ type: "draw", id,
- * spec, theme, width }` per draw, answered with `{ id, scene, width, height,
- * origin, background }` or `{ id, error }`. A dataset that can't be read
- * fails every draw with its sentence.
+ * Answer the page's messages in `scope` (the Worker's global). One Worker
+ * serves several charts, each under its own `key`:
+ *
+ * - `{ type: "data", key, datasets }` stores a chart's data; a dataset that
+ *   can't be read fails that chart's draws with its sentence. `{ type:
+ *   "data", key, failed }` says the page couldn't send it.
+ * - `{ type: "drop", key }` forgets it.
+ * - `{ type: "draw", id, key, spec, theme, width, redraw }` queues a draw.
+ *   Draws run one at a time, in order, except that first draws go ahead of
+ *   redraws (`redraw: true`, a chart already on screen at a new width or
+ *   theme). Each posts `{ type: "start", id }` as it begins,
+ *   so the page times the draw, not the queue, and then `{ type: "answer",
+ *   id, scene, width, height, origin, background }` or `{ type: "answer", id,
+ *   error }`.
+ * - `{ type: "cancel", id }` drops a draw that hasn't started.
+ *
+ * `{ type: "ready" }` is posted once, when the script has loaded.
  */
 export function serveCharts(scope, options = {}) {
-  let data = null;
-  let dataError = null;
-  scope.addEventListener("message", async ({ data: message }) => {
-    if (message?.type === "data") {
-      try {
-        data = readDatasets(message.datasets);
-        dataError = null;
-      } catch (error) {
-        data = null;
-        dataError = error;
-      }
-      return;
-    }
-    if (message?.type !== "draw") return;
-    const { id, spec, theme, width } = message;
+  const charts = new Map();
+  const queue = [];
+  let running = false;
+  const pump = async () => {
+    if (running) return;
+    running = true;
     try {
-      if (dataError) throw dataError;
-      if (!data) throw new ChartRefusal("This chart has no data yet.");
-      scope.postMessage({ id, ...(await runChart({ spec, data, theme, width }, options)) });
-    } catch (error) {
-      scope.postMessage({ id, error: failure(error) });
+      while (queue.length) {
+        // First come, first served, except that a chart's first draw goes
+        // ahead of a redraw of one already on screen.
+        const first = queue.findIndex((draw) => !draw.redraw);
+        const [{ id, key, spec, theme, width }] = queue.splice(Math.max(first, 0), 1);
+        scope.postMessage({ type: "start", id });
+        try {
+          const chart = charts.get(key);
+          if (!chart) throw new ChartRefusal("This chart has no data yet.");
+          if (chart.error) throw chart.error;
+          const result = await runChart({ spec, data: chart.data, theme, width }, options);
+          scope.postMessage({ type: "answer", id, ...result });
+        } catch (error) {
+          scope.postMessage({ type: "answer", id, error: failure(error) });
+        }
+      }
+    } finally {
+      running = false;
+    }
+  };
+  scope.addEventListener("message", ({ data: message }) => {
+    switch (message?.type) {
+      case "data":
+        if (typeof message.failed === "string") {
+          charts.set(message.key, { data: null, error: new Error(message.failed) });
+          return;
+        }
+        try {
+          charts.set(message.key, { data: readDatasets(message.datasets), error: null });
+        } catch (error) {
+          charts.set(message.key, { data: null, error });
+        }
+        return;
+      case "drop":
+        charts.delete(message.key);
+        return;
+      case "draw":
+        queue.push(message);
+        pump();
+        return;
+      case "cancel": {
+        const index = queue.findIndex((draw) => draw.id === message.id);
+        if (index >= 0) queue.splice(index, 1);
+        return;
+      }
     }
   });
+  scope.postMessage({ type: "ready" });
 }

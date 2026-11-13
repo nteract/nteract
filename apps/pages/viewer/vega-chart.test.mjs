@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { Vector, tableFromJSON } from "apache-arrow";
+import { Vector, tableFromIPC, tableFromJSON, tableToIPC } from "apache-arrow";
 import { JSDOM } from "jsdom";
 import * as vega from "vega";
 import { SVGHandler } from "vega-scenegraph";
@@ -31,6 +31,8 @@ const {
 } = await import("./chart-dataflow.mjs");
 const { datasetRows, ownRows } = await import("./chart-data.mjs");
 const { plainScene, readDatasets } = await import("./chart-dataflow.mjs");
+const { SCENE_MALFORMED, SCENE_MAX_ITEMS, SCENE_TOO_BIG } = await import("./chart-scene.mjs");
+const { WORKER_DIDNT_START } = await import("./chart-pool.mjs");
 const { checkChartSpec, CHART_MAX_ROWS, CHART_MAX_CELLS, CHART_EXPRESSION_FUNCTIONS } =
   await import("../shared/chart-spec.mjs");
 const vl = await import("vega-lite");
@@ -171,32 +173,45 @@ async function countViews(run) {
 
 /**
  * A Worker that runs the chart Worker's own message loop (serveCharts) in
- * this process, a task later, with structured clones crossing as they would.
- * `workers` counts the Workers charts start and those still running, and the
- * draws they are sent.
+ * this process, a task later, with structured clones (and transfers)
+ * crossing as they would. `workers` counts the Workers charts start, those
+ * still running, and the draws they are sent. `workers.hang(message)` marks
+ * a draw that hangs: it starts, never answers, and its Worker sends nothing
+ * after, as a Worker stuck in a loop. `workers.silent` makes new Workers
+ * whose script never runs: no `ready`, no answers.
  */
-const workers = { created: 0, live: new Set(), draws: 0, hold: false };
+const workers = { created: 0, live: new Set(), draws: 0, hang: null, silent: false };
 class InProcessWorker extends EventTarget {
   constructor() {
     super();
     workers.created++;
     workers.live.add(this);
+    this.hangs = new Set();
+    this.stuck = false;
     this.scope = new EventTarget();
     // Clone on send, as a real Worker's postMessage does: a value that can't
     // cross throws inside the Worker.
     this.scope.postMessage = (message) => {
+      if (this.stuck) return;
+      if (message.type === "answer" && this.hangs.has(message.id)) {
+        this.stuck = true;
+        return;
+      }
       const data = structuredClone(message);
       setTimeout(() => {
         if (workers.live.has(this)) this.dispatchEvent(new MessageEvent("message", { data }));
       });
     };
-    serveCharts(this.scope);
+    if (!workers.silent) serveCharts(this.scope);
   }
-  postMessage(message) {
-    if (message.type === "draw") workers.draws++;
-    const data = structuredClone(message);
+  postMessage(message, transfer = []) {
+    if (message.type === "draw") {
+      workers.draws++;
+      if (workers.hang?.(message)) this.hangs.add(message.id);
+    }
+    const data = structuredClone(message, { transfer });
     setTimeout(() => {
-      if (!workers.hold && workers.live.has(this))
+      if (workers.live.has(this) && !this.stuck)
         this.scope.dispatchEvent(new MessageEvent("message", { data }));
     });
   }
@@ -208,7 +223,7 @@ setChartWorker(() => new InProcessWorker());
 
 /** Count chart Workers and draws while `run` runs. */
 async function countWorkers(run) {
-  Object.assign(workers, { created: 0, draws: 0, hold: false });
+  Object.assign(workers, { created: 0, draws: 0, hang: null, silent: false });
   workers.live.clear();
   return run(workers);
 }
@@ -519,7 +534,7 @@ test("each refusal shows one sentence inside the frame and draws nothing", () =>
       );
       assert.equal(
         await refusalIn(window, stacked, { calls: "not rows" }),
-        'The dataset "calls" must be rows or an Arrow table.',
+        'The dataset "calls" must be rows, Arrow IPC bytes or an Arrow table.',
       );
       assert.equal(views.created, 0);
     }),
@@ -1281,29 +1296,38 @@ test("an expression that throws while the chart runs shows an error, not a drawn
     chart.destroy();
   }));
 
-test("a draw that outlasts the timer ends in the error state and its Worker is terminated", () =>
+test("a draw that outlasts the timer ends in the error state, terminates its Worker and isn't retried", () =>
   withWindow((window, { observers }) =>
     countWorkers(async (workers) => {
       const restore = setChartWorker(() => new InProcessWorker(), { timeoutMs: 60 });
       try {
         const { element, resize } = container(window, 600);
-        workers.hold = true;
+        workers.hang = () => true;
         const chart = mount(element, { spec: stacked, datasets: { calls } });
         await settle(30);
         const figure = element.querySelector("figure");
         assert.equal(figure.dataset.chartStatus, "drawing");
-        await settle(80);
-        assert.equal(figure.dataset.chartStatus, "error");
+        assert.ok(await until(() => figure.dataset.chartStatus === "error"));
         assert.equal(figure.querySelector(".pages-chart-message").textContent, TIMED_OUT);
+        // The hung Worker is gone, and nothing replaces it for this chart.
+        assert.equal(workers.created, 1);
         assert.equal(workers.live.size, 0);
-        // The next draw starts a fresh Worker, sends the data again, and draws.
-        workers.hold = false;
+        // A resize or a theme change doesn't run it again.
+        workers.hang = null;
         resize(400);
         observers.resize[0].callback();
-        assert.ok(await until(() => figure.dataset.chartStatus === "rendered"));
-        assert.equal(workers.created, 2);
-        assert.equal(bars(element).length, 5);
+        window.document.documentElement.classList.add("dark");
+        await settle(RESIZE_SETTLE_MS + 60);
+        assert.equal(figure.dataset.chartStatus, "error");
+        assert.equal(workers.draws, 1);
+        assert.equal(workers.created, 1);
         chart.destroy();
+        // A new revision mounts the chart again, and it draws.
+        const { element: next } = container(window, 600);
+        const again = mount(next, { spec: stacked, datasets: { calls } });
+        assert.equal(await drawn(next), "rendered");
+        assert.equal(workers.created, 2);
+        again.destroy();
         assert.equal(workers.live.size, 0);
       } finally {
         restore();
@@ -1369,10 +1393,10 @@ test("a newer draw cuts off a running one and its Worker", () =>
   withWindow((window, { observers }) =>
     countWorkers(async (workers) => {
       const { element, resize } = container(window, 600);
-      workers.hold = true;
+      workers.hang = () => true;
       const chart = mount(element, { spec: stacked, datasets: { calls } });
       await settle(20);
-      workers.hold = false;
+      workers.hang = null;
       resize(400);
       observers.resize[0].callback();
       await until(() => element.querySelector("figure").dataset.chartStatus === "rendered");
@@ -1912,39 +1936,71 @@ test("the Worker normalizes the rows it receives in place, under the cell budget
     message: /The dataset "d" has more than 2,000,000 cells/,
   });
   assert.throws(() => readDatasets({ d: { neither: true } }), {
-    message: 'The dataset "d" must be rows or an Arrow table.',
+    message: 'The dataset "d" must be rows, Arrow IPC bytes or an Arrow table.',
   });
 });
 
-test("the Worker's message loop answers each draw by id, and a bad dataset fails every draw", async () => {
-  const answers = [];
+test("the Worker's message loop says ready, runs draws one at a time by key, and answers by id", async () => {
+  const posted = [];
   const scope = new EventTarget();
-  scope.postMessage = (data) => answers.push(data);
+  scope.postMessage = (data) => posted.push(data);
   serveCharts(scope);
+  assert.deepEqual(posted, [{ type: "ready" }]);
   const send = (data) => scope.dispatchEvent(new MessageEvent("message", { data }));
+  const answers = () => posted.filter((message) => message.type === "answer");
   const wait = async (count) => {
-    for (let i = 0; i < 200 && answers.length < count; i++) await settle(10);
+    for (let i = 0; i < 300 && answers().length < count; i++) await settle(10);
   };
-  send({ type: "draw", id: 1, spec: stacked, theme, width: 300 });
+  send({ type: "draw", id: 1, key: "a", spec: stacked, theme, width: 300 });
   await wait(1);
-  assert.deepEqual(answers[0], {
+  assert.deepEqual(answers()[0], {
+    type: "answer",
     id: 1,
     error: { message: "This chart has no data yet.", refusal: true },
   });
-  send({ type: "data", datasets: { calls: { rows: structuredClone(calls) } } });
-  send({ type: "draw", id: 2, spec: stacked, theme, width: 300 });
-  await wait(2);
-  assert.equal(answers[1].id, 2);
-  assert.ok(
-    answers[1].scene && answers[1].width > 0 && answers[1].height > 0,
-    JSON.stringify(answers[1]).slice(0, 200),
-  );
-  send({ type: "data", datasets: { calls: { rows: [{ payload: Array(3_000_000).fill(1) }] } } });
-  send({ type: "draw", id: 3, spec: stacked, theme, width: 300 });
+  // Two charts' data, two draws and a third cancelled before it starts: each
+  // draw starts, then answers, before the next starts.
+  send({ type: "data", key: "a", datasets: { calls: { rows: structuredClone(calls) } } });
+  send({
+    type: "data",
+    key: "b",
+    datasets: { calls: { rows: [{ payload: Array(3_000_000).fill(1) }] } },
+  });
+  send({ type: "draw", id: 2, key: "a", spec: stacked, theme, width: 300 });
+  send({ type: "draw", id: 3, key: "b", spec: stacked, theme, width: 300 });
+  send({ type: "draw", id: 4, key: "a", spec: stacked, theme, width: 300 });
+  send({ type: "cancel", id: 4 });
   await wait(3);
-  assert.equal(answers[2].id, 3);
-  assert.equal(answers[2].error.refusal, true);
-  assert.match(answers[2].error.message, /more than 2,000,000 cells/);
+  await settle(50);
+  const order = posted.slice(1).map((message) => `${message.type}:${message.id}`);
+  assert.deepEqual(order, ["start:1", "answer:1", "start:2", "answer:2", "start:3", "answer:3"]);
+  const [, drawnA, refusedB] = answers();
+  assert.ok(drawnA.scene && drawnA.width > 0 && drawnA.height > 0);
+  assert.equal(refusedB.error.refusal, true);
+  assert.match(refusedB.error.message, /more than 2,000,000 cells/);
+  // Dropped data draws nothing; data the page couldn't send fails with why.
+  send({ type: "drop", key: "a" });
+  send({ type: "data", key: "c", failed: "Function object could not be cloned." });
+  send({ type: "draw", id: 5, key: "a", spec: stacked, theme, width: 300 });
+  send({ type: "draw", id: 6, key: "c", spec: stacked, theme, width: 300 });
+  await wait(5);
+  assert.equal(answers()[3].error.message, "This chart has no data yet.");
+  assert.deepEqual(answers()[4].error, {
+    message: "Function object could not be cloned.",
+    refusal: false,
+  });
+  // While one draw runs, a redraw and then a first draw queue: the first
+  // draw goes ahead.
+  posted.length = 0;
+  send({ type: "data", key: "a", datasets: { calls: { rows: structuredClone(calls) } } });
+  send({ type: "draw", id: 7, key: "a", spec: stacked, theme, width: 300 });
+  send({ type: "draw", id: 8, key: "a", spec: stacked, theme, width: 200, redraw: true });
+  send({ type: "draw", id: 9, key: "a", spec: stacked, theme, width: 300 });
+  await wait(3);
+  assert.deepEqual(
+    posted.filter((message) => message.type === "start").map((message) => message.id),
+    [7, 9, 8],
+  );
 });
 
 test("the scene that crosses to the page keeps tooltips and cursors, and nothing that links or loads", () => {
@@ -2035,4 +2091,289 @@ test("a gradient legend and a geoshape cross to the page and draw", () =>
       .filter((d) => d.startsWith("M"));
     assert.equal(shapes.length, 2, "each feature draws as a path");
     map.finalize();
+  }));
+
+test("Arrow IPC bytes are a dataset; two views and a table over the same bytes all draw", () =>
+  withWindow((window) =>
+    countWorkers(async () => {
+      const bytes = tableToIPC(tableFromJSON(calls));
+      const length = bytes.byteLength;
+      // A table embed decodes the same bytes and keeps reading them.
+      const table = tableFromIPC(bytes);
+      const views = [container(window), container(window)].map(({ element }) => ({
+        element,
+        chart: mount(element, { spec: stacked, datasets: { calls: bytes } }),
+      }));
+      for (const { element } of views) {
+        assert.equal(await drawn(element), "rendered");
+        assert.equal(bars(element).length, 5);
+      }
+      // Each chart sent its own copy: the caller's bytes are still whole.
+      assert.equal(bytes.byteLength, length);
+      assert.equal(table.numRows, calls.length);
+      assert.equal(table.getChild("tool").get(4), "move_page");
+      for (const { chart } of views) chart.destroy();
+    }),
+  ));
+
+test("a dataset that only looks like an Arrow table is refused with one sentence", () =>
+  withWindow(async (window) => {
+    const table = tableFromJSON(calls);
+    const wrapper = Object.freeze({
+      schema: table.schema,
+      numRows: table.numRows,
+      numCols: table.numCols,
+      getChildAt: (index) => table.getChildAt(index),
+    });
+    assert.equal(
+      await refusalIn(window, stacked, { calls: wrapper }),
+      'The dataset "calls" must be rows, Arrow IPC bytes or an Arrow table.',
+    );
+  }));
+
+for (const size of [1, 2]) {
+  test(`ten charts on ${size} Worker(s): a hung chart fails alone and its Worker is replaced`, () =>
+    withWindow(async (window) => {
+      const restore = setChartWorker(() => new InProcessWorker(), { timeoutMs: 80, size });
+      try {
+        await countWorkers(async (workers) => {
+          // Chart 3 hangs; at both sizes, others are pinned to its Worker and
+          // wait behind it.
+          const HUNG = 3;
+          workers.hang = (message) => message.spec.description === "hang";
+          const charts = Array.from({ length: 10 }, (_, index) => {
+            const { element } = container(window);
+            const spec = index === HUNG ? { ...stacked, description: "hang" } : stacked;
+            return { element, chart: mount(element, { spec, datasets: { calls } }) };
+          });
+          const statuses = () =>
+            charts.map(({ element }) => element.querySelector("figure").dataset.chartStatus);
+          assert.ok(await until(() => !statuses().includes("drawing")), statuses().join());
+          statuses().forEach((status, index) =>
+            assert.equal(status, index === HUNG ? "error" : "rendered", `chart ${index}`),
+          );
+          assert.equal(
+            charts[HUNG].element.querySelector(".pages-chart-message").textContent,
+            TIMED_OUT,
+          );
+          // `size` Workers, and one replacement for the hung chart's.
+          assert.equal(workers.created, size + 1);
+          assert.equal(workers.live.size, size);
+          for (const { chart } of charts) chart.destroy();
+          assert.equal(workers.live.size, 0, "no Worker outlives its last chart");
+        });
+      } finally {
+        restore();
+      }
+    }));
+}
+
+test("a hidden document holds its draws: the running Worker is terminated, and the draw runs again on show", () =>
+  withWindow((window) =>
+    countWorkers(async (workers) => {
+      let state = "visible";
+      Object.defineProperty(window.document, "visibilityState", {
+        configurable: true,
+        get: () => state,
+      });
+      const toggle = (next) => {
+        state = next;
+        window.document.dispatchEvent(new window.Event("visibilitychange"));
+      };
+      const { element } = container(window);
+      workers.hang = () => true;
+      const chart = mount(element, { spec: stacked, datasets: { calls } });
+      assert.ok(await until(() => workers.draws === 1));
+      await settle(20);
+      toggle("hidden");
+      assert.equal(workers.live.size, 0, "the draw in flight is terminated");
+      assert.equal(element.querySelector("figure").dataset.chartStatus, "drawing");
+      workers.hang = null;
+      toggle("visible");
+      assert.equal(await drawn(element), "rendered");
+      assert.equal(workers.created, 2);
+      chart.destroy();
+      assert.equal(workers.live.size, 0);
+    }),
+  ));
+
+test("a Worker that never says ready fails its chart; the page never draws without one", () =>
+  withWindow((window) =>
+    countViews(async (views) => {
+      for (const [create, options, before] of [
+        [() => new InProcessWorker(), { readyMs: 50 }, () => (workers.silent = true)],
+        [
+          () => {
+            throw new Error("Workers are off.");
+          },
+          {},
+          () => {},
+        ],
+      ]) {
+        const restore = setChartWorker(create, options);
+        try {
+          await countWorkers(async () => {
+            before();
+            const { element } = container(window);
+            const chart = mount(element, { spec: stacked, datasets: { calls } });
+            assert.notEqual(await drawn(element), "drawing");
+            const figure = element.querySelector("figure");
+            assert.equal(figure.dataset.chartStatus, "error");
+            assert.match(
+              figure.querySelector(".pages-chart-message").textContent,
+              /^This chart couldn't be drawn: (The chart Worker didn't start|Workers are off)\.$/,
+            );
+            assert.equal(workers.live.size, 0);
+            chart.destroy();
+          });
+        } finally {
+          restore();
+        }
+      }
+      assert.equal(views.created, 0, "no View ran in the page");
+      assert.ok(WORKER_DIDNT_START);
+    }),
+  ));
+
+/** A Worker that answers every draw with `answer()`, as a compromised or
+ * buggy Worker could. */
+class SceneWorker extends EventTarget {
+  constructor(answer) {
+    super();
+    this.answer = answer;
+    setTimeout(() => this.emit({ type: "ready" }));
+  }
+  emit(data) {
+    this.dispatchEvent(new MessageEvent("message", { data }));
+  }
+  postMessage(message) {
+    if (message.type !== "draw") return;
+    setTimeout(() => {
+      this.emit({ type: "start", id: message.id });
+      this.emit({ type: "answer", id: message.id, ...this.answer() });
+    });
+  }
+  terminate() {}
+}
+
+const frameOf = (marks) => ({
+  marktype: "group",
+  items: [{ x: 0, y: 0, width: 200, height: 100, items: marks }],
+});
+
+test("the page draws a Worker's scene as untrusted: known marks and keys, cleaned, bounded", () =>
+  withWindow(async (window) => {
+    const polluting = JSON.parse(
+      '{"__proto__": {"polluted": true}, "x": 30, "y": 1, "width": 5, "height": 5}',
+    );
+    const hostile = frameOf([
+      {
+        marktype: "rect",
+        role: "mark",
+        items: [
+          {
+            x: 1,
+            y: 1,
+            width: 10,
+            height: 10,
+            fill: "url(https://evil.test/fill)",
+            stroke: {
+              gradient: "linear",
+              id: 'g") url(https://evil.test/id',
+              stops: [
+                { offset: 0, color: "url(https://evil.test/stop)" },
+                { offset: 1, color: "red" },
+              ],
+            },
+            cursor: "url(https://evil.test/cursor), auto",
+            font: "12px url(https://evil.test/font)",
+            href: "https://evil.test/href",
+            url: "https://evil.test/image.png",
+            onload: "alert(1)",
+            tooltip: { note: "x".repeat(100_000) },
+          },
+          { x: 15, y: 1, width: 5, height: 5, fill: () => "red", text: { toString: () => "x" } },
+          polluting,
+        ],
+      },
+    ]);
+    const cases = [
+      [
+        () => ({
+          scene: hostile,
+          width: 1e12,
+          height: -5,
+          origin: "nope",
+          background: "url(https://evil.test/bg)",
+        }),
+        "rendered",
+      ],
+      [
+        () => ({
+          scene: frameOf([{ marktype: "image", items: [{ url: "https://evil.test/i.png" }] }]),
+          width: 200,
+          height: 100,
+          origin: [0, 0],
+        }),
+        SCENE_MALFORMED,
+      ],
+      [
+        () => ({
+          scene: frameOf([
+            {
+              marktype: "symbol",
+              items: Array.from({ length: SCENE_MAX_ITEMS + 1 }, () => ({ x: 1, y: 1 })),
+            },
+          ]),
+          width: 200,
+          height: 100,
+          origin: [0, 0],
+        }),
+        SCENE_TOO_BIG,
+      ],
+      [
+        () => {
+          let scene = { marktype: "rect", items: [] };
+          for (let i = 0; i < 10_000; i++) scene = frameOf([scene]);
+          return { scene, width: 200, height: 100, origin: [0, 0] };
+        },
+        SCENE_MALFORMED,
+      ],
+      [
+        () => ({ scene: "<svg onload=alert(1)>", width: 200, height: 100, origin: [0, 0] }),
+        SCENE_MALFORMED,
+      ],
+    ];
+    for (const [answer, expected] of cases) {
+      const restore = setChartWorker(() => new SceneWorker(answer));
+      try {
+        const { element } = container(window);
+        const chart = mount(element, { spec: stacked, datasets: { calls } });
+        const status = await drawn(element);
+        if (expected === "rendered") {
+          assert.equal(status, "rendered");
+          const html = element.innerHTML;
+          assert.doesNotMatch(html, /evil\.test|onload|href=/);
+          const gradient = element.querySelector("linearGradient");
+          assert.match(gradient.id, /^pages-chart-gradient-\d+$/);
+          assert.equal({}.polluted, undefined);
+          assert.equal(element.querySelectorAll("path, rect").length > 0, true);
+          // The tooltip shows bounded text.
+          element
+            .querySelector(".mark-rect path")
+            .dispatchEvent(
+              new window.MouseEvent("pointermove", { bubbles: true, clientX: 2, clientY: 2 }),
+            );
+          const tip = window.document.querySelector(".vg-tooltip.visible");
+          assert.ok(tip && tip.textContent.length < 1_000, tip?.textContent.length);
+        } else {
+          assert.equal(status, "error");
+          assert.equal(element.querySelector(".pages-chart-message").textContent, expected);
+        }
+        chart.destroy();
+        element.remove();
+      } finally {
+        restore();
+      }
+    }
   }));

@@ -352,7 +352,12 @@ async function freezeCheck(engine) {
     const statuses = await freeze
       .locator("figure.pages-chart")
       .evaluateAll((figures) => figures.map((figure) => figure.dataset.chartStatus));
-    assert.deepEqual(statuses, ["drawing", "drawing"], `${engine}: still drawing`);
+    // The first bar chart drew; the hung charts and the chart behind them wait.
+    assert.deepEqual(
+      statuses,
+      ["rendered", "drawing", "drawing", "drawing"],
+      `${engine}: still drawing`,
+    );
     const framesBefore = await freeze.evaluate(() => window.chartFrames());
     const started = Date.now();
     await freeze.evaluate(() => 1);
@@ -361,33 +366,52 @@ async function freezeCheck(engine) {
     const painted = (await freeze.evaluate(() => window.chartFrames())) - framesBefore;
     assert.ok(roundTrip < 100, `${engine}: an evaluate round trip took ${roundTrip} ms`);
     assert.ok(painted > 20, `${engine}: ${painted} frames in a second while the Workers spun`);
-    // Both end in the error state within the timer and a second.
+    // Each hung chart ends in the error state within its timer and a second,
+    // one after the other on the one Worker; the last chart draws on the
+    // second replacement.
     const elapsed = await freeze.evaluate(async () => {
       const figures = [...document.querySelectorAll("figure.pages-chart")];
       while (figures.some((figure) => figure.dataset.chartStatus === "drawing"))
         await new Promise((resolve) => setTimeout(resolve, 25));
       return performance.now() - Number(document.body.dataset.started);
     });
-    assert.ok(elapsed <= timeout + 1000, `${engine}: ended after ${Math.round(elapsed)} ms`);
-    const messages = await freeze
-      .locator("figure.pages-chart .pages-chart-message")
-      .allInnerTexts();
+    const ended = await freeze.evaluate(() => window.chartEnded);
+    assert.ok(ended["log-base"] <= timeout + 1000, `${engine}: ${JSON.stringify(ended)}`);
+    assert.ok(ended["derived-bin"] <= 2 * timeout + 2000, `${engine}: ${JSON.stringify(ended)}`);
+    assert.ok(ended["bars-b"] >= ended["derived-bin"], `${engine}: ${JSON.stringify(ended)}`);
+    assert.ok(elapsed <= 2 * timeout + 3000, `${engine}: ended after ${Math.round(elapsed)} ms`);
+    const messages = (
+      await freeze.locator("figure.pages-chart .pages-chart-message").allInnerTexts()
+    ).filter(Boolean);
+    const final = await freeze
+      .locator("figure.pages-chart")
+      .evaluateAll((figures) => figures.map((figure) => figure.dataset.chartStatus));
+    assert.deepEqual(final, ["rendered", "error", "error", "rendered"], `${engine}: ended`);
     assert.deepEqual(messages, [
       "This chart took too long to draw.",
       "This chart took too long to draw.",
     ]);
+    // One Worker for four charts, and a replacement for each hung one.
     assert.deepEqual(
       await freeze.evaluate(() => window.chartWorkers),
-      { started: 2, terminated: 2 },
-      `${engine}: each Worker was terminated`,
+      { started: 3, terminated: 2 },
+      `${engine}: each hung Worker was terminated and replaced`,
+    );
+    await freeze.evaluate(() => window.destroyCharts());
+    assert.deepEqual(
+      await freeze.evaluate(() => window.chartWorkers),
+      { started: 3, terminated: 3 },
+      `${engine}: no Worker outlives its charts`,
     );
     await expect.poll(() => freeze.workers().length, { timeout: 15_000 }).toBe(0);
     assert.deepEqual(errors, [], `${engine}: page errors`);
     report.freeze ??= {};
-    report.freeze[engine] = { timeout, elapsed: Math.round(elapsed), roundTrip, painted };
+    report.freeze[engine] = { timeout, ended, roundTrip, painted };
     complete(
-      `${engine}: charts that never finish end as an error in ${Math.round(elapsed)} ms ` +
-        `(timer ${timeout} ms), the page painting ${painted} frames a second and answering in ${roundTrip} ms`,
+      `${engine}: charts that never finish end as an error at ${ended["log-base"]} and ` +
+        `${ended["derived-bin"]} ms (timer ${timeout} ms each, one Worker), the chart behind ` +
+        `them draws at ${ended["bars-b"]} ms, the page painting ${painted} frames a second ` +
+        `and answering in ${roundTrip} ms`,
     );
   } catch (error) {
     await freeze
