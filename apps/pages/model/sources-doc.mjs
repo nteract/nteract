@@ -1,4 +1,5 @@
 import * as A from "@automerge/automerge/slim";
+import { WRITER_LIMITS, boundedWriter } from "./author.mjs";
 import { validAssetId } from "../shared/image-assets.mjs";
 import {
   MAX_SOURCE_NAME,
@@ -95,22 +96,10 @@ const AUTHOR_FIELDS = ["principal", "displayName", "driver", "agent"];
 const AGENT_FIELDS = ["name", "model"];
 const validTime = (value) =>
   typeof value === "string" && value.length <= 64 && !Number.isNaN(Date.parse(value));
-/**
- * The longest attribution labels a source stores, in UTF-16 code units. Each
- * of a source's 50 history states repeats its writer, so these keep a
- * single-source read inside read_page's default byte budget. They are the
- * bounds those values already have where they enter: an agent's name and
- * model (shared/client-provenance.mjs), a driver label (worker/auth.mjs and
- * worker/oauth-clients.mjs), and a display name as the Kilo exchange keeps it
- * (worker/kilo-exchange.mjs). The account principal is the authenticated
- * identity and is stored whole.
- */
-export const WRITER_LIMITS = Object.freeze({
-  displayName: 200,
-  driver: 80,
-  agentName: 80,
-  agentModel: 120,
-});
+// A writer's labels are stored within WRITER_LIMITS (model/author.mjs). Each
+// of a source's 50 history states repeats its writer, so the limits keep a
+// single-source read inside read_page's default byte budget.
+export { WRITER_LIMITS };
 const within = (value, max) => typeof value === "string" && value.length <= max;
 /** Whether `by` is a writer author.mjs builds, within WRITER_LIMITS. */
 const validWriter = (by) =>
@@ -125,20 +114,6 @@ const validWriter = (by) =>
       (by.agent.name === undefined || within(by.agent.name, WRITER_LIMITS.agentName)) &&
       (by.agent.model === undefined || within(by.agent.model, WRITER_LIMITS.agentModel))));
 
-/**
- * `by` with its display name cut to WRITER_LIMITS.displayName. A display name
- * comes from the identity provider, not from the request, so a long one is
- * cut as the Kilo exchange cuts one, never refused: refusing would lock the
- * account out of setting sources. Cutting never leaves half a surrogate pair.
- * The driver and agent labels are refused at the request's edge when over
- * their bounds, so one that arrives here over its bound fails validWriter.
- */
-function boundedWriter(by) {
-  if (!isMap(by) || typeof by.displayName !== "string") return by;
-  let displayName = by.displayName.slice(0, WRITER_LIMITS.displayName);
-  if (/[\ud800-\udbff]$/.test(displayName)) displayName = displayName.slice(0, -1);
-  return { ...by, displayName };
-}
 /** A plain copy of a stored writer. */
 const writerCopy = (by) => ({
   principal: by.principal,

@@ -381,6 +381,11 @@ export class PlainSync {
     return result;
   }
 
+  /** The stored claim on `actor`, or undefined. */
+  claim(actor) {
+    return this.host.actor(actor);
+  }
+
   /** Claimed actors and recently attested change hashes. */
   actorSnapshot() {
     const actorProfiles = {};

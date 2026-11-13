@@ -1142,9 +1142,26 @@ before_node_id, the block after it now (null when last). Read its outline to
 choose a node.
 
 This is a complete net-state comparison, not an event or audit log. An edit that
-was undone can leave no net difference. Historical attribution is unavailable:
-do not infer people or client names from raw Automerge actor IDs. Comment author
-labels remain document content. comments defaults to summary; none omits threads,
+was undone can leave no net difference.
+
+The response says who wrote what, by block. writers lists each distinct writer
+once. Every content change carries written_by, and a title change
+title_written_by: indexes into writers of everyone whose edits since your
+baseline wrote that change's block (or the title). A node change names every
+writer of its block, not only the one who wrote that node. A writer is
+{principal, displayName, driver, agent?, via}: the account, the labels its
+client presented, agent {name?, model?} when a tool client asserted one, and via
+"tool" for an edit_page call or "sync" for a browser session. agent is what the
+client said about itself, under the authenticated account; it grants and
+verifies nothing. {recorded: false} stands for edits with no recorded writer:
+the host's own edits, host edits made before writers were recorded, and edits
+by an actor with no recorded claim. A browser session's edits keep its claim
+however old they are. Don't
+guess a writer for those, and don't read people or clients from raw Automerge
+actor IDs or change authors. Comment authors are on the comments themselves. When more than
+10,000 edits separate your baseline from now, the response has every change
+but no writers: attribution is "unavailable" with attribution_reason
+"too_many_changes". Read again from a newer baseline when you need writers. comments defaults to summary; none omits threads,
 and all includes new/changed current messages, without deleted historical bodies.
 
 Only advance your saved revision after consuming a successful complete response.

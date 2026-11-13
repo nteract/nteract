@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
-import { projectReadChanges } from "./read-changes.mjs";
+import { ATTRIBUTION_MAX_CHANGES, changeHistory, projectReadChanges } from "./read-changes.mjs";
 import { projectReadContent } from "./read-content.mjs";
 import { setRichMarkdown, textPath } from "./richtext.mjs";
 import { richFromSource } from "./richtext-test-support.mjs";
@@ -104,6 +104,150 @@ test("an unchanged revision returns an empty net feed without author inference",
     comments_mode: "summary",
     attribution: "unavailable",
   });
+});
+
+test("each change names the writers of its block; a deleted block and the title name theirs", () => {
+  let doc = A.change(page(), (draft) => {
+    draft.blocks.two = { position: new A.RawString("a1"), markdown: "Other block." };
+    richFromSource(draft, "two");
+  });
+  const before = A.getHeads(doc);
+  const actors = { agent: "aa".repeat(16), person: "bb".repeat(16), old: "cc".repeat(16) };
+  const by = (actor, fn) => {
+    const next = A.change(A.clone(doc, { actor }), fn);
+    doc = A.merge(doc, next);
+    A.free(next);
+  };
+  by(actors.agent, (draft) =>
+    replaceMatch(draft, "one", { match_text: "Second", replacement: "Changed" }),
+  );
+  by(actors.person, (draft) =>
+    replaceMatch(draft, "one", { match_text: "First", replacement: "Also changed" }),
+  );
+  by(actors.old, (draft) => {
+    delete draft.blocks.two;
+  });
+  by(actors.person, (draft) => A.updateText(draft, ["title"], "New title"));
+  const writers = {
+    [actors.agent]: {
+      principal: "user:a",
+      displayName: "A",
+      driver: "Kilo",
+      agent: { name: "Rel" },
+      via: "tool",
+    },
+    [actors.person]: { principal: "user:b", displayName: "B", driver: "Browser", via: "sync" },
+  };
+  const result = projectReadChanges(doc, { since_heads: before, comments: "none" }, undefined, {
+    writerOf: ({ actor }) => writers[actor] ?? null,
+  });
+  assert.equal(result.attribution, "block");
+  const named = (indexes) => indexes.map((index) => result.writers[index]);
+  assert.equal(result.writers.length, 3);
+  const deleted = result.changes.find((change) => change.change === "deleted");
+  assert.deepEqual(named(deleted.written_by), [{ recorded: false }]);
+  const updated = result.changes.filter((change) => change.change === "updated");
+  assert.equal(updated.length, 2);
+  // Block granularity: both node changes in block one name both writers.
+  for (const change of updated)
+    assert.deepEqual(named(change.written_by), [writers[actors.agent], writers[actors.person]]);
+  assert.deepEqual(named(result.title_written_by), [writers[actors.person]]);
+  // Without a resolver the projection makes no attribution claim.
+  const plain = projectReadChanges(doc, { since_heads: before, comments: "none" });
+  assert.equal(plain.attribution, "unavailable");
+  assert.equal(plain.writers, undefined);
+  assert.ok(plain.changes.every((change) => !("written_by" in change)));
+});
+
+test("the writers table holds only writers a reported change or the title names", () => {
+  let doc = page();
+  const before = A.getHeads(doc);
+  const by = (actor, fn) => {
+    const next = A.change(A.clone(doc, { actor }), fn);
+    doc = A.merge(doc, next);
+    A.free(next);
+  };
+  // A block inserted and deleted again since the baseline reports nothing,
+  // so its writers don't reach the table.
+  by("aa".repeat(16), (draft) => {
+    draft.blocks.gone = { position: new A.RawString("a5"), markdown: "Brief" };
+    richFromSource(draft, "gone");
+  });
+  by("bb".repeat(16), (draft) => {
+    delete draft.blocks.gone;
+  });
+  by("cc".repeat(16), (draft) =>
+    replaceMatch(draft, "one", { match_text: "Second", replacement: "Kept" }),
+  );
+  const result = projectReadChanges(doc, { since_heads: before, comments: "none" }, undefined, {
+    writerOf: ({ actor }) => ({ principal: actor, displayName: actor, driver: "API", via: "tool" }),
+  });
+  assert.deepEqual(
+    result.writers.map((writer) => writer.principal),
+    ["cc".repeat(16)],
+  );
+  assert.ok(result.changes.every((change) => change.written_by.join() === "0"));
+});
+
+test("a change that replaces the blocks map writes every block the delta reports", () => {
+  let doc = page();
+  const before = A.getHeads(doc);
+  const next = A.change(A.clone(doc, { actor: "dd".repeat(16) }), (draft) => {
+    draft.blocks = {};
+  });
+  doc = A.merge(doc, next);
+  A.free(next);
+  const result = projectReadChanges(doc, { since_heads: before, comments: "none" }, undefined, {
+    writerOf: () => ({ principal: "user:d", displayName: "D", driver: "Browser", via: "sync" }),
+  });
+  assert.ok(result.changes.length > 0);
+  assert.deepEqual(result.writers, [
+    { principal: "user:d", displayName: "D", driver: "Browser", via: "sync" },
+  ]);
+  for (const change of result.changes) assert.deepEqual(change.written_by, [0]);
+});
+
+test("exactly ATTRIBUTION_MAX_CHANGES changes are attributed; one more comes whole, without writers", () => {
+  let doc = page();
+  const before = A.getHeads(doc);
+  doc = A.change(doc, (draft) =>
+    replaceMatch(draft, "one", { match_text: "Second", replacement: "Late" }),
+  );
+  for (let n = 1; n < ATTRIBUTION_MAX_CHANGES; n++)
+    doc = A.change(doc, (draft) => {
+      draft.counter = n;
+    });
+  const writer = { principal: "user:w", displayName: "W", driver: "API", via: "tool" };
+  let resolved = 0;
+  const writerOf = () => {
+    resolved++;
+    return writer;
+  };
+  const read = () =>
+    projectReadChanges(doc, { since_heads: before, comments: "none" }, undefined, { writerOf });
+
+  assert.equal(A.getChangesSince(doc, before).length, ATTRIBUTION_MAX_CHANGES);
+  const at = read();
+  assert.equal(at.attribution, "block");
+  assert.equal(at.attribution_reason, undefined);
+  assert.deepEqual(at.writers, [writer]);
+  assert.deepEqual(at.changes[0].written_by, [0]);
+  assert.ok(resolved > 0);
+
+  doc = A.change(doc, (draft) => {
+    draft.counter = ATTRIBUTION_MAX_CHANGES;
+  });
+  assert.equal(A.getChangesSince(doc, before).length, ATTRIBUTION_MAX_CHANGES + 1);
+  resolved = 0;
+  const past = read();
+  assert.equal(past.attribution, "unavailable");
+  assert.equal(past.attribution_reason, "too_many_changes");
+  assert.equal(past.writers, undefined);
+  assert.equal(resolved, 0);
+  assert.equal(past.changes.length, 1);
+  assert.equal(past.changes[0].markdown, "Late paragraph.");
+  assert.ok(!("written_by" in past.changes[0]));
+  assert.deepEqual(changeHistory(doc, before), { tooMany: true });
 });
 
 test("one native paragraph edit returns only its current Markdown and revision-bound address", () => {

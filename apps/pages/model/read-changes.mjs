@@ -14,6 +14,7 @@ import {
 } from "./native-read.mjs";
 import { blockMarkdown } from "./richtext-page.mjs";
 import { blockAddress } from "./addresses.mjs";
+import { changeWrites } from "./block-shape.mjs";
 
 export const CHANGE_READ_DEFAULT_BYTES = 128 * 1024;
 const encoder = new TextEncoder();
@@ -185,10 +186,15 @@ function nodeChanges(block, before, after) {
   return changes;
 }
 
-function contentChanges(before, after) {
+function contentChanges(before, after, writtenBy) {
   const previous = index(before),
     current = index(after),
     changes = [];
+  // Each change names the writers of its block (attribution below).
+  const push = (id, ...entries) => {
+    const by = writtenBy?.(id);
+    changes.push(...(by ? entries.map((entry) => ({ ...entry, written_by: by })) : entries));
+  };
   // An inserted or moved block's place: the id of the block after it at this
   // revision, null when it is last.
   const order = [...current.values()].map((entry) => entry.address);
@@ -196,27 +202,26 @@ function contentChanges(before, after) {
   // A block is named by its id; a deleted one by the id it had at the
   // baseline, which is the id it always had.
   for (const [id, prior] of previous)
-    if (!current.has(id))
-      changes.push({ node_id: prior.address, scope: "block", change: "deleted" });
+    if (!current.has(id)) push(id, { node_id: prior.address, scope: "block", change: "deleted" });
   for (const [id, entry] of current) {
     const prior = previous.get(id);
     if (!prior) {
-      changes.push({
+      push(id, {
         node_id: entry.address,
         scope: "block",
         change: "inserted",
         ...placed(entry),
         ...(entry.nodes ? {} : { markdown: blockMarkdown(entry.block, entry.pageId) }),
       });
-      if (entry.nodes) changes.push(...nodeChanges(entry.address, [], entry.nodes));
+      if (entry.nodes) push(id, ...nodeChanges(entry.address, [], entry.nodes));
       continue;
     }
     if (String(prior.block.position ?? "") !== String(entry.block.position ?? ""))
-      changes.push({ node_id: entry.address, scope: "block", change: "moved", ...placed(entry) });
+      push(id, { node_id: entry.address, scope: "block", change: "moved", ...placed(entry) });
     if (prior.nodes && entry.nodes)
-      changes.push(...nodeChanges(entry.address, prior.nodes, entry.nodes));
+      push(id, ...nodeChanges(entry.address, prior.nodes, entry.nodes));
     else if (blockMarkdown(prior.block, prior.pageId) !== blockMarkdown(entry.block, entry.pageId))
-      changes.push({
+      push(id, {
         node_id: entry.address,
         scope: "block",
         change: "updated",
@@ -334,11 +339,110 @@ function commentsDocChanges(page, commentsDoc, since, mode) {
   }
 }
 
-/** Bounded net changes between one known historical view and one captured
- * current revision. No actor/display-name inference or historical body export.
- * The caller names these heads as revision handles.
+/** The most changes between a baseline and the current heads that a read
+ * attributes. Past it the delta is returned without writers. */
+export const ATTRIBUTION_MAX_CHANGES = 10_000;
+
+/**
+ * The Page changes after `since`, decoded once for the host to resolve their
+ * actors and authors into writers and for the projection to map onto blocks
+ * (projectReadChanges' `history`). Null when `since` isn't in the
+ * document's history: the projection refuses that itself. `{ tooMany: true }`
+ * when more than ATTRIBUTION_MAX_CHANGES changes follow `since`; nothing is
+ * decoded then.
  */
-export function projectReadChanges(doc, args, commentsDoc) {
+export function changeHistory(doc, since) {
+  if (!A.hasHeads(doc, since)) return null;
+  const bytes = A.getChangesSince(doc, since);
+  if (bytes.length > ATTRIBUTION_MAX_CHANGES) return { tooMany: true };
+  return { changes: bytes.map((change) => A.decodeChange(change)) };
+}
+
+const UNRECORDED = Object.freeze({ recorded: false });
+
+/**
+ * Who wrote what in `changes` (changeHistory), at block granularity.
+ * `writerOf(change)` is the host's answer for one decoded change, from its
+ * actor and author: a writer, or null when none is recorded
+ * (worker/host-writers.mjs), which reads as
+ * `{ recorded: false }`. `writtenBy(blockId)` and `title` are writer keys, the
+ * canonical JSON of each writer, with `writer(key)` the writer itself.
+ *
+ * A block's writers are the authors of every change since the baseline that
+ * wrote anything in it, so a node change names everyone who wrote its block,
+ * not only its node. A change that writes the blocks map itself
+ * (`_root.blocks`) writes every block.
+ */
+function attribution(doc, changes, writerOf) {
+  const backend = A.getBackend(doc),
+    paths = new Map(),
+    writers = new Map(),
+    blocks = new Map(),
+    everyBlock = new Set(),
+    title = new Set();
+  const keyOf = (change) => {
+    const writer = writerOf(change) ?? UNRECORDED;
+    const key = canonical(writer);
+    writers.set(key, writer);
+    return key;
+  };
+  for (const change of changes) {
+    const { touched, root } = changeWrites(backend, change, paths);
+    const replacesBlocks = change.ops.some((op) => op.obj === "_root" && op.key === "blocks");
+    if (!touched.size && !replacesBlocks && !root.has("title")) continue;
+    const key = keyOf(change);
+    for (const id of touched) {
+      if (!blocks.has(id)) blocks.set(id, new Set());
+      blocks.get(id).add(key);
+    }
+    if (replacesBlocks) everyBlock.add(key);
+    if (root.has("title")) title.add(key);
+  }
+  return {
+    writer: (key) => writers.get(key),
+    writtenBy: (id) => [...new Set([...(blocks.get(id) ?? []), ...everyBlock])],
+    title: [...title],
+  };
+}
+
+/**
+ * `changes` and the title's writer keys as indexes into one `writers` table
+ * holding only the writers they name, numbered in the order first named. Each
+ * change's indexes are sorted.
+ */
+function writerTable(changes, title, writerOf) {
+  const writers = [],
+    index = new Map();
+  const indexes = (keys) =>
+    keys
+      .map((key) => {
+        if (!index.has(key)) {
+          index.set(key, writers.length);
+          writers.push(writerOf(key));
+        }
+        return index.get(key);
+      })
+      .sort((a, b) => a - b);
+  const named = changes.map(({ written_by, ...change }) => ({
+    ...change,
+    written_by: indexes(written_by),
+  }));
+  return { writers, changes: named, title: title && indexes(title) };
+}
+
+/** Bounded net changes between one known historical view and one captured
+ * current revision. No historical body export. The caller names these heads
+ * as revision handles.
+ *
+ * With `writerOf` (see attribution), the result says who wrote each change:
+ * `attribution: "block"`, a `writers` table, `written_by` on each content
+ * change and `title_written_by` beside a title change. `history` is
+ * changeHistory's result when the caller already has it. Past
+ * ATTRIBUTION_MAX_CHANGES the delta comes without writers, with
+ * `attribution: "unavailable"` and `attribution_reason: "too_many_changes"`.
+ * Without `writerOf`, `attribution: "unavailable"`.
+ */
+export function projectReadChanges(doc, args, commentsDoc, { writerOf, history } = {}) {
   const settings = options(args),
     heads = A.getHeads(doc);
   // Pinned Automerge diff tolerates unknown heads and may return root-to-tip
@@ -349,6 +453,8 @@ export function projectReadChanges(doc, args, commentsDoc) {
       "resync_required",
       "The baseline revision is unavailable. Read the current Page or outline to establish a new baseline.",
     );
+  history = writerOf ? (history ?? changeHistory(doc, settings.heads)) : undefined;
+  const attributed = !!history && !history.tooMany;
   let payload = {
     page_id: doc.page_id,
     since_heads: settings.heads,
@@ -358,7 +464,9 @@ export function projectReadChanges(doc, args, commentsDoc) {
     comments: [],
     comments_mode: settings.comments,
     ...(commentsDoc && { comment_heads: A.getHeads(commentsDoc) }),
-    attribution: "unavailable",
+    attribution: attributed ? "block" : "unavailable",
+    ...(history?.tooMany && { attribution_reason: "too_many_changes" }),
+    ...(attributed && { writers: [] }),
   };
   if (commentsDoc)
     payload = {
@@ -375,9 +483,10 @@ export function projectReadChanges(doc, args, commentsDoc) {
         "The baseline revision cannot be opened. Read the current Page or outline to establish a new baseline.",
       );
     try {
-      let changes;
+      let changes, written;
       try {
-        changes = contentChanges(before.view, doc);
+        written = attributed && attribution(doc, history.changes, writerOf);
+        changes = contentChanges(before.view, doc, written?.writtenBy);
       } catch {
         fail(
           409,
@@ -385,11 +494,15 @@ export function projectReadChanges(doc, args, commentsDoc) {
           "Content changes cannot be projected from this baseline. Read the current Page or outline to establish a new baseline. No partial delta was returned.",
         );
       }
+      const titleChanged = before.view.title !== doc.title;
+      const table = written && writerTable(changes, titleChanged && written.title, written.writer);
       payload = {
         ...payload,
-        title_changed: before.view.title !== doc.title,
-        ...(before.view.title !== doc.title ? { title: doc.title } : {}),
-        changes,
+        title_changed: titleChanged,
+        ...(titleChanged ? { title: doc.title } : {}),
+        ...(table?.title && { title_written_by: table.title }),
+        changes: table ? table.changes : changes,
+        ...(table && { writers: table.writers }),
       };
     } finally {
       A.free(before.owned);
