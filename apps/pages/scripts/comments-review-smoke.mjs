@@ -1,11 +1,12 @@
 // Comment review mode against the running local fixture, at a wide and a
 // narrow width. Review shows each thread's messages whole, with no Show more,
-// through J and Resolve and next. While review is open the Page behind it
-// holds still: wheel over every part of the workspace and its margins, and a
-// touch drag over the conversation, leave the document's scroll where it was,
-// including when a column is already at its top or bottom. Exiting review
-// leaves the Page at that same position. Measurements are written to
-// review-report.json before any assertion fails.
+// through J, K and Resolve and next, and each lands on the thread it names.
+// While review is open the Page behind it holds still: after every wheel over
+// each part of the workspace and its margins, and every touch drag over the
+// conversation, the document's scroll is where it was, including when a
+// column is already at its top or bottom. Exiting review leaves the Page at
+// that same position. Measurements are written to review-report.json before
+// any assertion fails.
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
@@ -95,10 +96,13 @@ async function centerOf(selector) {
     ? { x: box.x + box.width / 2, y: box.y + Math.min(box.height / 2, 40) }
     : null;
 }
+// Each gesture returns the Page's scroll after it settles. Callers compare
+// every gesture, since a later gesture in the other direction can undo a move.
 async function wheel(at, deltaY) {
   await page.mouse.move(at.x, at.y);
   await page.mouse.wheel(0, deltaY);
   await rest();
+  return scrollY();
 }
 // A one-finger drag through Chromium's gesture pipeline, the way a phone scrolls.
 async function touchDrag(cdp, at, distance) {
@@ -110,6 +114,7 @@ async function touchDrag(cdp, at, distance) {
     speed: 2000,
   });
   await rest();
+  return scrollY();
 }
 async function messagesClamped() {
   return page.locator("#page-comments .thread-view").evaluate((view) => ({
@@ -145,8 +150,10 @@ try {
   pageId = created.page_id;
   report.pageId = pageId;
   const document = await call("read_page", { page_id: pageId });
-  for (const quote of ["first passage for review", "second passage for review"])
-    await mutate("manage_page_comment", {
+  // Thread IDs in document order: review opens on the first, J moves to the second.
+  const threadIds = [];
+  for (const quote of ["first passage for review", "second passage for review"]) {
+    const added = await mutate("manage_page_comment", {
       page_id: pageId,
       action: "add",
       node_id: document.blocks.find((block) => JSON.stringify(block).includes(quote)).node_id,
@@ -154,6 +161,9 @@ try {
       body: longBody(quote),
       body_format: "plain",
     });
+    threadIds.push(added.result.thread_id);
+  }
+  const reviewed = page.locator("#page-comments .thread-view");
   await page.goto(origin + "/p/" + pageId);
   await expect(page.locator("wg-content").first()).toContainText("reading column");
 
@@ -200,26 +210,34 @@ try {
     for (const [name, selector] of Object.entries(regions)) {
       const point = await centerOf(selector);
       if (!point) continue;
-      for (const delta of [-1200, 2400, 2400, -2400, -2400]) await wheel(point, delta);
-      entry.wheel[name] = await scrollY();
-      check(entry.wheel[name] === start, `${at}: wheel over ${name} moved the Page`);
+      entry.wheel[name] = [];
+      for (const delta of [-1200, 2400, 2400, -2400, -2400])
+        entry.wheel[name].push(await wheel(point, delta));
+      check(
+        entry.wheel[name].every((y) => y === start),
+        `${at}: wheel over ${name} moved the Page (${start} -> ${entry.wheel[name]})`,
+      );
     }
     // The margin around the workspace, where the Page itself shows.
     const panel = await page.locator("#page-comments").boundingBox();
     if (panel.y > 20) {
       const margin = { x: Math.max(4, panel.x / 2), y: panel.y / 2 + 4 };
-      for (const delta of [800, -800]) await wheel(margin, delta);
-      entry.wheel.margin = await scrollY();
-      check(entry.wheel.margin === start, `${at}: wheel over the margin moved the Page`);
+      entry.wheel.margin = [];
+      for (const delta of [800, -800]) entry.wheel.margin.push(await wheel(margin, delta));
+      check(
+        entry.wheel.margin.every((y) => y === start),
+        `${at}: wheel over the margin moved the Page (${start} -> ${entry.wheel.margin})`,
+      );
     }
 
     const cdp = await context.newCDPSession(page);
     const conversation = await centerOf(".review-conversation .thread-view-scroll");
-    for (const distance of [-1200, 1200, -1200]) await touchDrag(cdp, conversation, distance);
-    entry.touch.conversation = await scrollY();
+    entry.touch.conversation = [];
+    for (const distance of [-1200, 1200, -1200])
+      entry.touch.conversation.push(await touchDrag(cdp, conversation, distance));
     check(
-      entry.touch.conversation === start,
-      `${at}: a touch drag over the conversation moved the Page`,
+      entry.touch.conversation.every((y) => y === start),
+      `${at}: a touch drag over the conversation moved the Page (${start} -> ${entry.touch.conversation})`,
     );
     await cdp.detach();
 
@@ -248,13 +266,31 @@ try {
     await page.emulateMedia({ colorScheme: null });
     await page.mouse.move(4, 4);
 
+    await expect(reviewed).toHaveAttribute("data-thread-id", threadIds[0]);
     await page.keyboard.press("j");
+    await expect(reviewed).toHaveAttribute("data-thread-id", threadIds[1]);
     await rest();
     const next = await messagesClamped();
     entry.afterNext = next;
     check(next.clamped === 0 && next.more === 0, `${at}: J keeps the next thread whole`);
     await page.keyboard.press("k");
+    await expect(reviewed).toHaveAttribute("data-thread-id", threadIds[0]);
+
+    // Resolve and next resolves the first thread and lands on the second, whole.
+    await page.locator(".review-resolve-next").click();
+    await expect(reviewed).toHaveAttribute("data-thread-id", threadIds[1]);
     await rest();
+    const resolvedNext = await messagesClamped();
+    entry.afterResolveNext = resolvedNext;
+    check(
+      resolvedNext.bodies > 0 && resolvedNext.clamped === 0 && resolvedNext.more === 0,
+      `${at}: Resolve and next keeps the next thread whole ${JSON.stringify(resolvedNext)}`,
+    );
+    entry.afterResolveNextScroll = await scrollY();
+    check(
+      entry.afterResolveNextScroll === start,
+      `${at}: Resolve and next moved the Page (${start} -> ${entry.afterResolveNextScroll})`,
+    );
 
     await page.getByRole("button", { name: "Exit review", exact: true }).click();
     await expect(page.locator("#page-comments.comments-review")).toHaveCount(0);
@@ -271,6 +307,12 @@ try {
     const clampedAgain = await messagesClamped();
     check(clampedAgain.more > 0, `${at}: the panel's thread view still offers Show more`);
     await page.screenshot({ path: `${output}/review-${at}-exited.png` });
+    // The next width reviews both threads again.
+    await mutate("manage_page_comment", {
+      page_id: pageId,
+      action: "reopen",
+      thread_id: threadIds[0],
+    });
     console.log(`review ${at}: ${JSON.stringify(entry)}`);
   }
   check(report.errors.length === 0, `page errors: ${report.errors.join("; ")}`);

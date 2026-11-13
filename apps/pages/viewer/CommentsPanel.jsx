@@ -298,6 +298,15 @@ export function CommentsPanel({
       dialog.current?.querySelector(".thread-view")?.focus({ preventScroll: true }),
     );
   }
+  // Each thread's view is keyed by its ID, so stepping in review replaces the
+  // view that held focus and focus falls to the body, out of reach of the
+  // dialog's review keys. Hand it to the new thread's view.
+  useLayoutEffect(() => {
+    if (!reviewing) return;
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    dialog.current?.querySelector(".thread-view")?.focus({ preventScroll: true });
+  }, [reviewing, current?.id]);
   function reviewCommand(command) {
     switch (command) {
       case "next":
