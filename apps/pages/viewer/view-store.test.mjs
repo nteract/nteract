@@ -40,6 +40,7 @@ test("a ready view document projects its title, parsed spec, bindings and revisi
   const { view } = projection;
   assert.equal(view.view_id, "sales");
   assert.equal(view.title, "Sales by region");
+  assert.equal(projectView("sales", viewDoc({ title: " Sales " })).view.title, "Sales");
   assert.equal(view.media_type, VIEW_MEDIA_TYPE);
   assert.deepEqual(view.spec, spec);
   assert.deepEqual({ ...view.data }, { sales: { source_id: "sales" } });
@@ -77,6 +78,8 @@ test("a malformed view document draws nothing and says it can't be read", () => 
   const malformed = [
     viewDoc({ title: "" }),
     viewDoc({ title: "x".repeat(201) }),
+    viewDoc({ title: `x${" ".repeat(200)}` }),
+    viewDoc({ title: `x${" ".repeat(10_000)}` }),
     viewDoc({ title: 7 }),
     viewDoc({ spec: "{not json" }),
     viewDoc({ spec: "[1, 2]" }),

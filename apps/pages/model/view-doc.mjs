@@ -88,8 +88,9 @@ export function viewSummary(doc, viewId) {
   return { view_id, title, media_type, revision, data };
 }
 
-// A title a write may set; a stored title is read with validTitle alone, as
-// a source name is (model/sources-doc.mjs).
+// A title a write may set holds no control characters; a stored title is
+// read by its length and trimmed text alone (model/view-record.mjs), as a
+// source name is (model/sources-doc.mjs).
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001f\u007f]/;
 

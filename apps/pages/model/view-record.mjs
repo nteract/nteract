@@ -25,8 +25,16 @@ export function fail(code, message, details) {
 export const isMap = (value) => !!value && typeof value === "object" && !Array.isArray(value);
 export const validRevision = (value) =>
   typeof value === "string" && REVISION.test(value) && Number.isSafeInteger(Number(value));
+/** A title a set_view may send; the writer stores it trimmed. */
 export const validTitle = (title) =>
   typeof title === "string" && !!title.trim() && title.trim().length <= MAX_VIEW_TITLE;
+/** A stored title as the writer stores it (trimmed), or undefined. The raw
+ * string is bounded before any trim, so padding can't carry an unbounded
+ * string past the check into the reader's result. */
+const storedTitle = (title) =>
+  typeof title === "string" && title.length <= MAX_VIEW_TITLE && title.trim()
+    ? title.trim()
+    : undefined;
 export const validTime = (value) =>
   typeof value === "string" && value.length <= 64 && !Number.isNaN(Date.parse(value));
 
@@ -64,6 +72,7 @@ export function readView(doc, viewId) {
   if (!doc || doc.revision === undefined) return undefined;
   const producer = doc.producer;
   const data = dataOf(doc.data);
+  const title = storedTitle(doc.title);
   let spec;
   try {
     spec = JSON.parse(String(doc.spec ?? ""));
@@ -72,7 +81,7 @@ export function readView(doc, viewId) {
   }
   if (
     !validRevision(doc.revision) ||
-    !validTitle(doc.title) ||
+    !title ||
     typeof doc.media_type !== "string" ||
     !data ||
     !isMap(spec) ||
@@ -84,7 +93,7 @@ export function readView(doc, viewId) {
     fail("invalid_view", "Malformed view record");
   return {
     view_id: viewId,
-    title: doc.title,
+    title,
     media_type: doc.media_type,
     revision: doc.revision,
     data,

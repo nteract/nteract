@@ -19,7 +19,7 @@ import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 import { PageSourceStore } from "./page-source-store.mjs";
 import { decodeArrow } from "./view-arrow.mjs";
 import { DATAFRAME_LIMITS } from "./sift-dataset.mjs";
-import { VIEW_MEDIA_TYPE } from "./view-store.mjs";
+import { VIEW_MEDIA_TYPE, projectView } from "./view-store.mjs";
 
 const require = createRequire(import.meta.url);
 const duck = require("@duckdb/duckdb-wasm/dist/duckdb-node-blocking.cjs");
@@ -314,6 +314,47 @@ test("an embed draws its view, redraws on a new source version, and shows its se
     assert.equal(root.querySelector(".pages-view-chart").childElementCount, 0);
     embed.destroy();
     assert.equal(container.childElementCount, 0);
+  }));
+
+test("a padded stored title reaches the chart and its label trimmed, and an unbounded one is refused", () =>
+  withDom(async (window) => {
+    const { mountViewEmbed } = await import("./view-embed.mjs");
+    const { mount } = await import("./vega-chart.mjs");
+    const { store } = storeOver(sourcesOf({ sales: asset("a") }), { [asset("a")]: files.small });
+    const stored = (title) =>
+      A.from({
+        title,
+        media_type: VIEW_MEDIA_TYPE,
+        spec: JSON.stringify(spec),
+        data: { sales: { source_id: "sales" } },
+        revision: "1",
+        producer: { kind: "agent", at: "2026-11-12T00:00:00.000Z", by: { principal: "a" } },
+      });
+    const view$ = new BehaviorSubject(projectView("sales", stored(`  Sales${" ".repeat(150)}`)));
+    const container = window.document.body.appendChild(window.document.createElement("div"));
+    const embed = mountViewEmbed(container, {
+      view$,
+      sources: store,
+      decode: decodeArrow,
+      checkChartSpec,
+      mount,
+    });
+    const root = container.querySelector(".pages-view");
+    await until(() => root.dataset.viewState === "drawn", "the draw");
+    const figure = root.querySelector(".pages-view-chart figure.pages-chart");
+    assert.equal(figure.querySelector(".pages-chart-title").textContent, "Sales");
+    assert.equal(root.querySelector(".pages-view-placeholder").getAttribute("aria-label"), "Sales");
+
+    view$.next(projectView("sales", stored(`S${" ".repeat(10_000_000)}`)));
+    await until(() => root.dataset.viewState === "blocked", "the refusal");
+    assert.equal(
+      root.querySelector(".pages-view-placeholder .pages-chart-message").textContent,
+      "This chart's view can't be read.",
+    );
+    const placeholder = root.querySelector(".pages-view-placeholder");
+    assert.equal(placeholder.getAttribute("aria-label"), "Chart");
+    assert.ok(!root.textContent.includes("   "), "no padding reaches the DOM");
+    embed.destroy();
   }));
 
 test("a 100,000-row source decodes and draws, and the cost is reported", () =>

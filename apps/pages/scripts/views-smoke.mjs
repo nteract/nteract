@@ -257,6 +257,34 @@ try {
   await reader.screenshot({ path: `${output}/views-drawn.png`, fullPage: true });
   complete("set_source, set_view and insert_node draw the chart from the source's rows");
 
+  // The Page's grid card draws each view as the node's figure and loads no
+  // chart code. The chart chunk is the only bundle holding Vega-Lite.
+  {
+    const deadline = Date.now() + 30_000;
+    while (!(await tool(owner, "page_cards", { page_ids: [pageA] })).body.cards?.[pageA]) {
+      assert.ok(Date.now() < deadline, "page_cards never answered the Page's card");
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    const grid = await signIn("dev@localhost");
+    const chunks = [];
+    grid.on("response", (response) => {
+      if (new URL(response.url()).pathname.startsWith("/chunks/"))
+        chunks.push(response.text().catch(() => ""));
+    });
+    await grid.goto(`${origin}/?grid=1`);
+    const card = grid
+      .locator(".index-card-link")
+      .filter({ has: grid.locator(`.index-card-title[title="Views qualification"]`) });
+    const figures = card.locator(".page-card-preview [data-card-placeholder=view]");
+    await expect(figures.first()).toContainText(/follows|pinned/, { timeout: 30000 });
+    await expect(card.locator(".pages-chart, .wordgard-view-embed")).toHaveCount(0);
+    const bodies = await Promise.all(chunks);
+    assert.ok(bodies.length > 0, "the grid loads its chunks");
+    assert.ok(!bodies.some((body) => body.includes("vega-lite")), "a card loads no chart code");
+    await grid.context().close();
+  }
+  complete("a grid card shows each view as its figure and loads no chart code");
+
   // (c) A second source revision redraws the following view and leaves the
   // pinned one.
   await setSource(pageA, "sales", second, "1");
