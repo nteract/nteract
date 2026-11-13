@@ -9,6 +9,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium, expect } from "@playwright/test";
+import { CHART_WORKER_CSP, CHUNK_PATH } from "../shared/chart-worker-csp.mjs";
 import { decodeFrame } from "../sync/wire.mjs";
 import { purgeTrashedFixture } from "./purge-fixture.mjs";
 
@@ -104,6 +105,42 @@ function watchFrames(page) {
       });
   });
   return frames;
+}
+
+/** Evaluate `expression` in the running Worker whose script is `url`, over
+ * a browser DevTools session, and return its value. */
+async function evaluateInWorker(url, expression) {
+  const cdp = await browser.newBrowserCDPSession();
+  try {
+    const { targetInfos } = await cdp.send("Target.getTargets");
+    const target = targetInfos.find((info) => info.type === "worker" && info.url === url);
+    assert.ok(target, `no Worker target at ${url}`);
+    const { sessionId } = await cdp.send("Target.attachToTarget", {
+      targetId: target.targetId,
+      flatten: false,
+    });
+    const reply = new Promise((resolve) =>
+      cdp.on("Target.receivedMessageFromTarget", (event) => {
+        const message = JSON.parse(event.message);
+        if (event.sessionId === sessionId && message.id === 1) resolve(message);
+      }),
+    );
+    await cdp.send("Target.sendMessageToTarget", {
+      sessionId,
+      message: JSON.stringify({
+        id: 1,
+        method: "Runtime.evaluate",
+        // DevTools lets its own evaluations eval past a CSP unless told not to.
+        params: { expression, returnByValue: true, allowUnsafeEvalBlockedByCSP: false },
+      }),
+    });
+    const { result, error } = await reply;
+    assert.equal(error, undefined, JSON.stringify(error));
+    assert.equal(result.exceptionDetails, undefined, JSON.stringify(result.exceptionDetails));
+    return result.result.value;
+  } finally {
+    await cdp.detach();
+  }
 }
 
 async function signIn(email) {
@@ -256,6 +293,66 @@ try {
   await expectDrawn(embed(reader, "pinned"), ["east", "west", "north"]);
   await reader.screenshot({ path: `${output}/views-drawn.png`, fullPage: true });
   complete("set_source, set_view and insert_node draw the chart from the source's rows");
+
+  // The chart Worker this Page runs is the built chunk, served through the
+  // Pages Worker (worker/index.mjs) with the chart Worker's own CSP. Inside
+  // it, the lockdown (viewer/chart-lockdown.mjs) has removed fetch and
+  // EventSource; code from a string is refused only by that CSP, since the
+  // lockdown alone leaves a function's constructor (scripts/chart-smoke.mjs).
+  {
+    const workers = reader.workers().filter((worker) => {
+      const url = new URL(worker.url());
+      return url.origin === origin && CHUNK_PATH.test(url.pathname);
+    });
+    assert.equal(
+      workers.length,
+      1,
+      reader
+        .workers()
+        .map((worker) => worker.url())
+        .join(" "),
+    );
+    const [chartWorker] = workers;
+    const response = await reader.request.get(chartWorker.url());
+    assert.equal(response.status(), 200);
+    assert.equal(response.headers()["content-security-policy"], CHART_WORKER_CSP);
+    const csp = report.csp.length;
+    // Evaluated through the DevTools protocol, attached to the Worker's
+    // target: Playwright's own worker.evaluate calls the global eval, which
+    // the lockdown has replaced.
+    const probed = await evaluateInWorker(
+      chartWorker.url(),
+      `(() => {
+        const attempt = (run) => {
+          try {
+            run();
+            return "open";
+          } catch (error) {
+            return error.name;
+          }
+        };
+        return {
+          fetch: typeof self.fetch,
+          EventSource: typeof self.EventSource,
+          "fetch()": attempt(() => self.fetch("/escape/fetch")),
+          "new EventSource()": attempt(() => new self.EventSource("/escape/events")),
+          "Function from a string": attempt(() => (() => {}).constructor("return 1")()),
+        };
+      })()`,
+    );
+    assert.deepEqual(probed, {
+      fetch: "undefined",
+      EventSource: "undefined",
+      "fetch()": "TypeError",
+      "new EventSource()": "TypeError",
+      "Function from a string": "EvalError",
+    });
+    // The refused string may report itself as a CSP violation; it's this probe's.
+    report.csp.splice(csp);
+  }
+  complete(
+    "the Page's chart Worker is the built chunk with its own CSP: no fetch or EventSource, no code from strings",
+  );
 
   // The Page's grid card draws each view as the node's figure and loads no
   // chart code. The chart chunk is the only bundle holding Vega-Lite.
