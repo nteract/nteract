@@ -9,14 +9,14 @@ import { createViewDraw } from "./view-draw.mjs";
 
 /**
  * Mount the view `view$` projects (view-store.mjs) into `container`.
- * `sources` is the Page's source store, and `sourcesKnown$` whether its
- * document's lookup has an answer (view-draw.mjs); `decode`,
+ * `sources` is the Page's source store, and `sourcesAnswer$` what the Page
+ * knows about its document (view-draw.mjs); `decode`,
  * `checkChartSpec` and `mount` are the chart chunk's (view-chart.mjs).
  * Returns `{ destroy }`.
  */
 export function mountViewEmbed(
   container,
-  { view$, sources, sourcesKnown$, decode, checkChartSpec, mount },
+  { view$, sources, sourcesAnswer$, decode, checkChartSpec, mount },
 ) {
   const doc = container.ownerDocument;
   const root = container.appendChild(doc.createElement("div"));
@@ -42,7 +42,7 @@ export function mountViewEmbed(
   const draw = createViewDraw({
     view$,
     sources,
-    ...(sourcesKnown$ && { sourcesKnown$ }),
+    ...(sourcesAnswer$ && { sourcesAnswer$ }),
     decode,
     checkChartSpec,
     render: {

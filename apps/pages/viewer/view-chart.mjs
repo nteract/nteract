@@ -14,13 +14,13 @@ import { mountViewEmbed } from "./view-embed.mjs";
 
 setWasmUrl(SIFT_WASM_URL);
 
-/** Mount a view embed: `{ view$, sources, sourcesKnown$ }` as
+/** Mount a view embed: `{ view$, sources, sourcesAnswer$ }` as
  * view-embed.mjs takes them. Returns `{ destroy }`. */
-export function mount(container, { view$, sources, sourcesKnown$ = null }) {
+export function mount(container, { view$, sources, sourcesAnswer$ = null }) {
   return mountViewEmbed(container, {
     view$,
     sources,
-    sourcesKnown$,
+    sourcesAnswer$,
     decode: decodeArrow,
     checkChartSpec,
     mount: mountChart,

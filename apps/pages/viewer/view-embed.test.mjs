@@ -322,6 +322,76 @@ test("an embed draws its view, redraws on a new source version, and shows its se
     assert.equal(container.childElementCount, 0);
   }));
 
+/** wordgard.css's reserve rule: the selector an embed matches while it
+ * holds `--pages-view-reserve`. */
+const RESERVED = (() => {
+  const css = readFileSync(new URL("./wordgard.css", import.meta.url), "utf8");
+  const at = css.indexOf("min-height: var(--pages-view-reserve");
+  const open = css.lastIndexOf("{", at);
+  const start = css.lastIndexOf("}", open) + 1;
+  return css
+    .slice(start, open)
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .trim();
+})();
+
+test("an embed holds its reserve while its sources are unknown, unreachable, and until the chart draws", () =>
+  withDom(async (window) => {
+    const { mountViewEmbed } = await import("./view-embed.mjs");
+    const { mount } = await import("./vega-chart.mjs");
+    const sources = sourcesOf({ sales: asset("a") });
+    const doc$ = new BehaviorSubject(undefined);
+    const store = new PageSourceStore({
+      pageId: PAGE,
+      doc$,
+      request: async () =>
+        new Response(files.small, { headers: { "content-type": PARQUET_MEDIA_TYPE } }),
+    });
+    const answer$ = new BehaviorSubject("unknown");
+    const section = window.document.body.appendChild(window.document.createElement("section"));
+    section.className = "wordgard-widget wordgard-view-embed";
+    const canvas = section.appendChild(window.document.createElement("div"));
+    canvas.className = "wordgard-view-canvas";
+    const view$ = new BehaviorSubject(ready());
+    const embed = mountViewEmbed(canvas, {
+      view$,
+      sources: store,
+      sourcesAnswer$: answer$,
+      decode: decodeArrow,
+      checkChartSpec,
+      mount,
+    });
+    const root = canvas.querySelector(".pages-view");
+    const message = () => root.querySelector(".pages-view-placeholder .pages-chart-message");
+    const note = root.querySelector(".pages-view-note");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(root.dataset.viewState, "waiting");
+    assert.equal(message().textContent, "Loading chart…");
+    assert.ok(section.matches(RESERVED), "unknown: reserved");
+    answer$.next("unreachable");
+    await until(() => root.dataset.viewState === "unreachable", "unreachable");
+    assert.equal(
+      message().textContent,
+      "This chart's data isn't on this device yet. It draws when Pages reconnects.",
+    );
+    assert.equal(note.hidden, true, "nothing claims the source is missing");
+    assert.ok(section.matches(RESERVED), "unreachable: reserved");
+    // The connection opens the sources document.
+    doc$.next(sources.doc);
+    answer$.next("known");
+    await until(() => root.dataset.viewState === "drawn", "the draw");
+    assert.ok(section.matches(RESERVED), "drawing: still reserved");
+    await until(
+      () => root.querySelector(".pages-view-chart .pages-chart[data-chart-status=rendered]"),
+      "the rendered chart",
+    );
+    assert.equal(section.matches(RESERVED), false, "rendered: the chart holds the space");
+    assert.equal(note.hidden, true);
+    assert.equal(root.querySelectorAll(".pages-view-chart figure.pages-chart").length, 1);
+    embed.destroy();
+    section.remove();
+  }));
+
 test("a padded stored title reaches the chart and its label trimmed, and an unbounded one is refused", () =>
   withDom(async (window) => {
     const { mountViewEmbed } = await import("./view-embed.mjs");

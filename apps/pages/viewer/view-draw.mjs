@@ -19,6 +19,7 @@ import { viewDrawMachine } from "./view-draw-machine.mjs";
 export const VIEW_STATUS = Object.freeze({
   waiting: "Loading chart…",
   failed: "This chart's data couldn't be loaded.",
+  unreachable: "This chart's data isn't on this device yet. It draws when Pages reconnects.",
   broken: "This chart couldn't be drawn.",
 });
 
@@ -96,10 +97,11 @@ export function viewPlan(view, names, sources, serial) {
  *   resolves with is the dataset the chart reads.
  * - `checkChartSpec(spec, { datasets })`: shared/chart-spec.mjs. It runs
  *   before every plan, so a refused spec loads nothing.
- * - `sourcesKnown$`: whether the sources document's lookup has an answer
- *   (page-source-store.mjs `sourcesKnown`). Until it does, a source the store
- *   doesn't hold may be one it hasn't read yet, so a plan with a missing
- *   source waits instead of drawing without it. Omitted, the store's
+ * - `sourcesAnswer$`: what the Page knows about its sources document
+ *   (page-source-store.mjs `sourcesAnswer`). A plan that names a source the
+ *   store doesn't hold draws without it only once the answer is `known`;
+ *   while it is `unknown` the embed waits, and while it is `unreachable` it
+ *   waits saying it draws when Pages reconnects. Omitted, the store's
  *   contents are the answer.
  * - `render.draw({ view, datasets, note })` mounts a chart and returns
  *   `{ destroy }`; `render.show({ state, sentence, note, title })` shows the
@@ -108,11 +110,12 @@ export function viewPlan(view, names, sources, serial) {
  */
 const BROKEN = Object.freeze({ type: "blocked", sentence: VIEW_STATUS.broken });
 const PENDING = Object.freeze({ type: "pending" });
+const UNREACHABLE = Object.freeze({ type: "unreachable" });
 
 export function createViewDraw({
   view$,
   sources,
-  sourcesKnown$ = of(true),
+  sourcesAnswer$ = of("known"),
   decode,
   checkChartSpec,
   render,
@@ -135,9 +138,11 @@ export function createViewDraw({
             ? model.cause === "draw"
               ? VIEW_STATUS.broken
               : VIEW_STATUS.failed
-            : model.name === "waiting" || (model.name === "loading" && !chart)
-              ? VIEW_STATUS.waiting
-              : null,
+            : model.name === "unreachable"
+              ? VIEW_STATUS.unreachable
+              : model.name === "waiting" || (model.name === "loading" && !chart)
+                ? VIEW_STATUS.waiting
+                : null,
       note: shown?.note ?? null,
       title,
     });
@@ -290,15 +295,16 @@ export function createViewDraw({
         }
         if (!checked.ok) return of({ type: "blocked", sentence: checked.error });
         const ids = [...new Set(checked.names.map((name) => view.data[name].source_id))];
-        return combineLatest([sources.versions(ids), sourcesKnown$]).pipe(
-          map(([, known]) => {
+        return combineLatest([sources.versions(ids), sourcesAnswer$]).pipe(
+          map(([, answer]) => {
             let plan;
             try {
               plan = viewPlan(view, checked.names, sources, number);
             } catch {
               return BROKEN;
             }
-            if (plan.missing && !known) return PENDING;
+            if (plan.missing && answer === "unknown") return PENDING;
+            if (plan.missing && answer === "unreachable") return UNREACHABLE;
             latest = plan;
             return { type: "plan", key: latest.key };
           }),

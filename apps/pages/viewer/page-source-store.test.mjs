@@ -10,11 +10,13 @@ import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 import {
   PageSourceStore,
   SourceUnavailable,
-  knownSources$,
   projectSources,
-  sourcesKnown,
+  sourcesAnswer,
+  sourcesAnswer$,
 } from "./page-source-store.mjs";
 import { STATES as OPEN_STATES } from "./host-doc-open-machine.mjs";
+import { HostDocReplica } from "./host-doc-replica.mjs";
+import { Store } from "./store.mjs";
 import { followSource, markDrawnVersion, versionKey } from "./source-follow.mjs";
 
 const PAGE = "0b9f2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f";
@@ -382,13 +384,72 @@ test("a followed table redraws on a refresh, frees the version it replaced, and 
   assert.equal(renders.length, 3, "a destroyed table follows nothing");
 });
 
-test("the sources document is known once its lookup has an answer", () => {
-  const unanswered = OPEN_STATES.filter((name) => !sourcesKnown({ name }));
-  assert.deepEqual(unanswered, ["closed", "opening", "retrying"]);
-  const states = new BehaviorSubject({ name: "closed" });
+test("what the Page knows about its sources document, by lookup state and link", () => {
+  const answers = Object.fromEntries(
+    OPEN_STATES.map((name) => [name, sourcesAnswer({ name }, "connected")]),
+  );
+  assert.deepEqual(answers, {
+    closed: "unknown",
+    absent: "known",
+    unserved: "known",
+    unreadable: "known",
+    opening: "unknown",
+    retrying: "unknown",
+    failed: "unreachable",
+    ready: "known",
+    retired: "known",
+  });
+  const checked = { name: "closed", checked: true };
+  for (const link of ["connecting", "reconnecting", "connected"])
+    assert.equal(sourcesAnswer(checked, link), "unknown", link);
+  assert.equal(sourcesAnswer(checked, "offline"), "unreachable");
+  assert.equal(sourcesAnswer({ name: "closed" }, "offline"), "unknown", "not read yet");
+});
+
+test("a stored miss reads as unreachable only while the Page shows Offline, and known once a connection opens it", async () => {
+  const tick = () => new Promise((resolve) => setImmediate(resolve));
+  const finds = [];
+  let up = false;
+  const replica = new HostDocReplica({
+    find: (id, { signal } = {}) =>
+      new Promise((resolve, reject) => {
+        finds.push({ id, resolve, reject });
+        signal?.addEventListener("abort", () => reject(signal.reason ?? Error("aborted")));
+      }),
+    link: () => (up ? 1 : undefined),
+    linked: () => up,
+    stored: () => true,
+    derive: async () => "sources-derived",
+  });
+  const sync = new Store({ name: "idle", revision: 0, pending: false, link: "connecting" });
   const seen = [];
-  const subscription = knownSources$(states).subscribe((known) => seen.push(known));
-  for (const name of ["opening", "retrying", "opening", "ready", "absent"]) states.next({ name });
+  const subscription = sourcesAnswer$(replica.state$.state$, sync.state$).subscribe((answer) =>
+    seen.push(answer),
+  );
+  // A view asks: this tab's stored copy is read, and holds no sources.
+  const stop = replica.demand();
+  await tick();
+  assert.equal(replica.state$.snapshot().name, "opening");
+  finds[0].reject(Error("Document sources-derived is unavailable"));
+  await tick();
+  assert.deepEqual(replica.state$.snapshot(), { name: "closed", checked: true });
+  assert.deepEqual(seen, ["unknown"], "a new tab still connecting says nothing new");
+  // The connection attempt fails: the Page shows Offline.
+  sync.update((state) => ({ ...state, link: "offline" }));
+  assert.deepEqual(seen, ["unknown", "unreachable"]);
+  // Back online: the lookup runs on the connection and opens the document.
+  up = true;
+  sync.update((state) => ({ ...state, link: "connected" }));
+  replica.connected();
+  await tick();
+  finds.at(-1).resolve({
+    doc: () => A.from({ sources: {} }),
+    on() {},
+    off() {},
+  });
+  await tick();
+  assert.equal(replica.state$.snapshot().name, "ready");
+  assert.deepEqual(seen, ["unknown", "unreachable", "unknown", "known"]);
   subscription.unsubscribe();
-  assert.deepEqual(seen, [false, true], "on change only");
+  stop();
 });
