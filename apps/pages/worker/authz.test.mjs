@@ -1,8 +1,20 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { CAPABILITIES, OBJECT_CAPABILITIES, decide } from "./authz.mjs";
@@ -268,11 +280,72 @@ function validationFile(schemaText, relationships, assertTrue, assertFalse) {
   ].join("\n");
 }
 
-const zedAvailable = spawnSync("zed", ["version"], { encoding: "utf8" }).status === 0;
+/**
+ * The `zed` on `path` when it is SpiceDB's CLI, otherwise why it is not.
+ * The Zed editor also installs a `zed` command, and it opens whatever
+ * argument it is given, so a binary inside an `.app` bundle is never run.
+ * SpiceDB's `zed version` prints `client: zed v0.x.y` (or `zed (devel)`).
+ */
+function findSpicedbZed(path = process.env.PATH ?? "") {
+  let command;
+  for (const directory of path.split(delimiter).filter(Boolean)) {
+    try {
+      accessSync(join(directory, "zed"), constants.X_OK);
+      command = realpathSync(join(directory, "zed"));
+      break;
+    } catch {}
+  }
+  if (!command) return { reason: "zed is not installed" };
+  if (/\.app(\/|$)/i.test(command))
+    return { reason: `zed is the Zed editor (${command}), not SpiceDB's CLI` };
+  const probe = spawnSync(command, ["version"], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: path },
+  });
+  if (probe.status === 0 && /^(?:client: )?zed (?:v?\d|\(devel\))/m.test(probe.stdout))
+    return { command };
+  return { reason: `zed at ${command} is not SpiceDB's CLI` };
+}
+
+const spicedbZed = findSpicedbZed();
+
+test("findSpicedbZed accepts only SpiceDB's zed and never runs an editor bundle", () => {
+  const directory = mkdtempSync(join(tmpdir(), "pages-zed-"));
+  try {
+    const install = (name, script) => {
+      const bin = join(directory, name);
+      const file = join(bin, "zed");
+      mkdirSync(bin, { recursive: true });
+      writeFileSync(file, `#!/bin/sh\n${script}\n`);
+      chmodSync(file, 0o755);
+      return bin;
+    };
+    const marker = join(directory, "editor-ran");
+    const spicedb = install("spicedb", 'echo "client: zed v0.30.0"');
+    const devel = install("devel", 'echo "client: zed (devel)"');
+    const other = install("other", 'echo "something else"');
+    const failing = install("failing", 'echo "client: zed v0.30.0"; exit 1');
+    const editor = install("Zed.app/Contents/MacOS", `touch ${marker}`);
+    assert.equal(findSpicedbZed(spicedb).command, realpathSync(join(spicedb, "zed")));
+    assert.equal(findSpicedbZed(devel).command, realpathSync(join(devel, "zed")));
+    assert.match(findSpicedbZed(other).reason, /not SpiceDB's CLI/);
+    assert.match(findSpicedbZed(failing).reason, /not SpiceDB's CLI/);
+    // The editor's `zed` is a symlink into the bundle, as Homebrew installs it.
+    const linked = join(directory, "linked");
+    mkdirSync(linked);
+    symlinkSync(join(editor, "zed"), join(linked, "zed"));
+    assert.match(findSpicedbZed(linked).reason, /Zed editor/);
+    assert.match(findSpicedbZed(editor).reason, /Zed editor/);
+    assert.equal(existsSync(marker), false, "the editor binary must not be executed");
+    assert.equal(findSpicedbZed(join(directory, "missing")).reason, "zed is not installed");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test(
   "SpiceDB computes the same relation decisions as decide() on every fixture",
-  { skip: !zedAvailable && "zed is not installed; schema.zed was only parsed structurally" },
+  { skip: spicedbZed.reason && `${spicedbZed.reason}; schema.zed was only parsed structurally` },
   (t) => {
     const directory = mkdtempSync(join(tmpdir(), "pages-authz-"));
     try {
@@ -313,7 +386,7 @@ test(
         );
         files.push(file);
       }
-      const result = spawnSync("zed", ["validate", "--fail-on-warn", ...files], {
+      const result = spawnSync(spicedbZed.command, ["validate", "--fail-on-warn", ...files], {
         encoding: "utf8",
       });
       assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
