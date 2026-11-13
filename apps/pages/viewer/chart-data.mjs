@@ -124,15 +124,53 @@ export const tooManyCells = (name) =>
 export const rowCount = (dataset) =>
   Array.isArray(dataset) ? dataset.length : isArrowTable(dataset) ? dataset.numRows : 0;
 
-/** Cells a copy of the dataset would hold, counted without copying: an Arrow
- * table's rows × columns, or each row's own keys, stopping once past `limit`. */
+/**
+ * Cells a copy of the dataset would hold, counted without copying, before
+ * the page posts it to a Worker. Rows count the way the Worker's copy spends
+ * them (`plainValue`): each row's own keys, and every nested array element
+ * and object key, MAX_NESTING levels deep; a Map or Set counts its size and a
+ * typed array its length, since structured clone copies them whole. An
+ * object met twice in one row counts once, so a cycle ends. Stops once past
+ * `limit`. An Arrow table counts rows × columns; its nested values are
+ * charged in the Worker as they decode.
+ */
 export function cellCount(dataset, limit) {
   if (isArrowTable(dataset)) return dataset.numRows * dataset.schema.fields.length;
   if (!Array.isArray(dataset)) return 0;
   let cells = 0;
   for (const row of dataset) {
-    if (row && typeof row === "object") cells += Object.keys(row).length;
-    if (cells > limit) break;
+    if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+    const seen = new Set([row]);
+    const stack = [[row, 0]];
+    while (stack.length) {
+      const [value, depth] = stack.pop();
+      if (value instanceof Map || value instanceof Set) {
+        cells += value.size;
+        continue;
+      }
+      if (ArrayBuffer.isView(value)) {
+        cells += value.length ?? value.byteLength;
+        continue;
+      }
+      const keys = Array.isArray(value) ? null : Object.keys(value);
+      const size = keys ? keys.length : value.length;
+      cells += size;
+      if (cells > limit) return cells;
+      if (depth + 1 >= MAX_NESTING) continue;
+      for (let index = 0; index < size; index++) {
+        let child;
+        try {
+          child = keys ? value[keys[index]] : value[index];
+        } catch {
+          continue;
+        }
+        if (child && typeof child === "object" && !seen.has(child)) {
+          seen.add(child);
+          stack.push([child, depth + 1]);
+        }
+      }
+    }
+    if (cells > limit) return cells;
   }
   return cells;
 }

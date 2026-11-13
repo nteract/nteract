@@ -1807,35 +1807,48 @@ test("tooltip work stops when its text is full, however big the value", () => {
   assert.equal(tooltipText("x".repeat(1_000_000)).length, 400);
 });
 
-test("nested values count against the dataset's cell budget", () =>
-  withWindow(async (window) => {
-    const payload = Array(1_000_000).fill(1);
-    const shared = Array.from({ length: 3 }, (_, i) => ({ ...calls[i], payload }));
-    assert.match(
-      await refusalIn(window, stacked, { calls: shared }),
-      /has more than 2,000,000 cells \(rows × columns, nested values included\)/,
-    );
-    // One such row fits, and its tooltip stays bounded.
-    const { element } = container(window);
-    const chart = mount(element, {
-      spec: { ...stacked, mark: { type: "bar", tooltip: { content: "data" } } },
-      datasets: { calls: [{ ...calls[0], payload }] },
-    });
-    assert.equal(await drawn(element), "rendered");
-    bars(element)[0].dispatchEvent(
-      new window.MouseEvent("pointermove", { bubbles: true, clientX: 5, clientY: 5 }),
-    );
-    await settle();
-    assert.ok((window.document.querySelector(".vg-tooltip")?.textContent.length ?? 0) < 2000);
-    chart.destroy();
-    // Deep nesting stops at 32 levels instead of overflowing.
-    let deep = 1;
-    for (let i = 0; i < 100_000; i++) deep = [deep];
-    const [row] = datasetRows([{ deep }]);
-    let depth = 0;
-    for (let node = row.deep; Array.isArray(node); node = node[0]) depth++;
-    assert.equal(depth, 32);
-  }));
+test("nested values count against the dataset's cell budget, in the page, before anything is posted", () =>
+  withWindow((window) =>
+    countWorkers(async (workers) => {
+      const payload = Array(1_000_000).fill(1);
+      const shared = Array.from({ length: 3 }, (_, i) => ({ ...calls[i], payload }));
+      assert.match(
+        await refusalIn(window, stacked, { calls: shared }),
+        /has more than 2,000,000 cells \(rows × columns, nested values included\)/,
+      );
+      assert.match(
+        await refusalIn(window, stacked, { calls: [{ payload: Array(3_000_000).fill(1) }] }),
+        /has more than 2,000,000 cells/,
+      );
+      let nested = {};
+      for (let i = 0; i < 31; i++) nested = { a: nested, b: Array(70_000).fill(0) };
+      assert.match(
+        await refusalIn(window, stacked, { calls: [{ nested }] }),
+        /has more than 2,000,000 cells/,
+      );
+      assert.equal(workers.created, 0, "an oversized dataset never reaches a Worker");
+      // One such row fits, and its tooltip stays bounded.
+      const { element } = container(window);
+      const chart = mount(element, {
+        spec: { ...stacked, mark: { type: "bar", tooltip: { content: "data" } } },
+        datasets: { calls: [{ ...calls[0], payload }] },
+      });
+      assert.equal(await drawn(element), "rendered");
+      bars(element)[0].dispatchEvent(
+        new window.MouseEvent("pointermove", { bubbles: true, clientX: 5, clientY: 5 }),
+      );
+      await settle();
+      assert.ok((window.document.querySelector(".vg-tooltip")?.textContent.length ?? 0) < 2000);
+      chart.destroy();
+      // Deep nesting stops at 32 levels instead of overflowing.
+      let deep = 1;
+      for (let i = 0; i < 100_000; i++) deep = [deep];
+      const [row] = datasetRows([{ deep }]);
+      let depth = 0;
+      for (let node = row.deep; Array.isArray(node); node = node[0]) depth++;
+      assert.equal(depth, 32);
+    }),
+  ));
 
 test("Arrow lists, structs and maps are charged before they are read", () =>
   withWindow(async (window) => {
