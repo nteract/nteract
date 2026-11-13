@@ -51,6 +51,11 @@ const SUITES = Object.freeze([
     timeout: 3 * minute,
   },
   {
+    name: "page-scrollbar",
+    script: "scripts/page-scrollbar-smoke.mjs",
+    timeout: 2 * minute,
+  },
+  {
     name: "comments-review",
     script: "scripts/comments-review-smoke.mjs",
     timeout: 3 * minute,
