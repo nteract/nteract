@@ -1180,7 +1180,7 @@ test("storage keeps the fields Page hosts read; location and Project records use
   // Builds that know fewer migrations reach the same version: migrations
   // are applied once, by version.
   const latest = CATALOG_MIGRATIONS.at(-1).version;
-  assert.equal(latest, 8);
+  assert.equal(CATALOG_MIGRATIONS[7].version, 8);
   assert.equal(await migrateCatalogIndex(w.db), latest);
   const columns = w.db.rows("PRAGMA table_info(pages_catalog_spaces)").map((column) => column.name);
   assert.deepEqual(columns.sort(), [

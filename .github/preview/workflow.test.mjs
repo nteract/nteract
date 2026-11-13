@@ -6,12 +6,12 @@ import {spawnSync} from "node:child_process";
 import {test} from "node:test";
 
 const workflow = readFileSync(new URL("../workflows/preview-reusable.yml", import.meta.url), "utf8");
-const helperSha = "745935af5fdfcf15424c59d52cbccc629a260d50";
+const helperSha = "7797fcba934c467f966bc91856e8c6ce817eb8e8";
 
 test("the caller skips unsupported fork previews without changing deployment authority", () => {
   const caller = readFileSync(new URL("../workflows/preview.yml", import.meta.url), "utf8");
   assert.match(caller, /^    if: github\.event\.pull_request\.head\.repo\.full_name == github\.repository$/m);
-  assert.match(caller, /^    uses: nteract\/nteract\/\.github\/workflows\/preview-reusable.yml@fcdfb358876ec0a690c865dce49ef4adc7efeb33$/m);
+  assert.match(caller, /^    uses: nteract\/nteract\/\.github\/workflows\/preview-reusable.yml@4fb475a139a78a7fe78ecfe6b5f87b7035ca77f3$/m);
   assert.doesNotMatch(caller, /pull_request_target:|secrets: inherit/);
 });
 // This workflow intentionally uses plain, one-line job names. Fail on layout
@@ -70,10 +70,10 @@ test("trusted jobs execute only reviewed helper entry points at the published re
 test("build tools come from merged helper A, independently of authorized application source", () => {
   const build = jobs.get("build");
   assert.deepEqual([...build.matchAll(/^          ref: (.+)$/gm)].map(match => match[1]), [
-    "339ec9a383dc6bfad3c791d773d5ce18757b2f1e # Reviewed preview helpers",
+    `${helperSha} # Reviewed preview helpers`,
     "${{ needs.authorize.outputs.sha }}",
   ]);
-  assert.match(build, /ref: 339ec9a383dc6bfad3c791d773d5ce18757b2f1e # Reviewed preview helpers\n          path: helpers\n          persist-credentials: false\n          sparse-checkout: \.github\/preview/);
+  assert.match(build, new RegExp(`ref: ${helperSha} # Reviewed preview helpers\n          path: helpers\n          persist-credentials: false\n          sparse-checkout: \.github\/preview`));
   assert.match(build, /path: source\n          lfs: true\n          persist-credentials: false/);
 });
 

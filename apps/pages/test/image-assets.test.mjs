@@ -10,7 +10,7 @@ import {
   serverSessionId,
 } from "@cloud/oidc-session-store.ts";
 import { createAuthFixture } from "../auth-fixtures.mjs";
-import { WRITTEN_FORMATS } from "../model/document-types.mjs";
+import { MEMBER_FORMATS } from "../model/document-types.mjs";
 import worker, { Page } from "../worker/index.mjs";
 import { DocumentPolicy } from "../worker/policy.mjs";
 import {
@@ -145,7 +145,7 @@ async function fixture(t) {
       env,
       ready: Promise.resolve(),
       tail: Promise.resolve(),
-      metadata: { pageId: id, documentFormats: WRITTEN_FORMATS, owner: principal, deleted: false },
+      metadata: { pageId: id, documentFormats: MEMBER_FORMATS, owner: principal, deleted: false },
       async installAccess(metadata) {
         this.metadata = metadata;
       },

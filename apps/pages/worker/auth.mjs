@@ -481,6 +481,9 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "resync_required",
   "image_not_found",
   "dataset_not_found",
+  "invalid_source",
+  "source_not_found",
+  "stale_source",
   "upload_capability_invalid",
   "upload_capability_expired",
   "upload_mismatch",
@@ -529,12 +532,16 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "comment_not_author",
   "comment_access_denied",
   "operation_pending",
+  "invalid_tag",
+  "tag_limit_exceeded",
 ]);
 
 export const RETRYABLE_SERVER_CODES = Object.freeze([
   "request_timeout",
   // A listing met a shared Page or owner Catalog that did not answer.
   "shared_page_unavailable",
+  // Page tags live only in D1, which did not answer (a tag filter or write).
+  "tags_unavailable",
   // Kilo could not check an agent token (kilo-token.mjs).
   "sign_in_unavailable",
 ]);
@@ -641,6 +648,16 @@ export function errorResponse(error, stage = "request") {
           unsupported_features: error.details.features
             .slice(0, 32)
             .map((id) => String(id).slice(0, 64)),
+        }),
+      // A refused source write names the source and its current revision,
+      // null when the source doesn't exist.
+      ...(["stale_source", "source_not_found"].includes(error?.code) &&
+        typeof error.details?.source_id === "string" && {
+          source_id: error.details.source_id.slice(0, 64),
+          source_revision:
+            typeof error.details.source_revision === "string"
+              ? error.details.source_revision.slice(0, 16)
+              : null,
         }),
       // A thread batch is bounded to 100 IDs of at most 256 bytes each.
       ...(error?.code === "invalid_comment_selector" &&

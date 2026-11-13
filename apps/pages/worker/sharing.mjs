@@ -24,21 +24,16 @@ const stronger = (a, b) => (MEMBER_ROLES.indexOf(a) >= MEMBER_ROLES.indexOf(b) ?
  * organizationAccess the owner cannot prove now is flagged with
  * organizationAccessOwnerVerified: false.
  */
-export async function sharingProjection(metadata, identity, env = {}, now = Date.now()) {
-  const access = pageAccess(metadata, identity, { now });
-  if (!access.canRead) throw new HttpError(403, "You no longer have access to this Page");
-  if (!access.canManageAccess) return { access };
-  const acl = metadata.acl ?? {};
-  const domainProof = await companyDomainProof(env, identity, now);
-  const domainOptions = Object.keys(domainProof).filter(
-    (domain) => domainProof[domain] === "verified",
-  );
-  const domainView = configuredDomainView(metadata, env);
+/** The owner's organization sharing state for a Page or Project record
+ * (`acl.organizationAccess` on either): the organizations `identity` proves
+ * membership in now, the proof state of each and of the stored grant, the
+ * stored grant, and whether the owner can prove it now. */
+export async function organizationSharing(metadata, identity, env, now = Date.now()) {
   const organizationOptions = (await organizationLeases(env, identity, now)).map(
     ({ id, name }) => ({ id, name }),
   );
   const organization = configuredOrganizationAccess(metadata, env);
-  const organizationProofs = await organizationProof(
+  const proof = await organizationProof(
     env,
     identity,
     [
@@ -50,20 +45,35 @@ export async function sharingProjection(metadata, identity, env = {}, now = Date
     now,
   );
   return {
+    organizationOptions,
+    organizationProof: proof,
+    organizationAccess: organization
+      ? { id: organization.id, name: organization.name, role: organization.role }
+      : null,
+    ...(organization && {
+      organizationAccessOwnerVerified: proof[organization.id] === "verified",
+    }),
+  };
+}
+
+export async function sharingProjection(metadata, identity, env = {}, now = Date.now()) {
+  const access = pageAccess(metadata, identity, { now });
+  if (!access.canRead) throw new HttpError(403, "You no longer have access to this Page");
+  if (!access.canManageAccess) return { access };
+  const acl = metadata.acl ?? {};
+  const domainProof = await companyDomainProof(env, identity, now);
+  const domainOptions = Object.keys(domainProof).filter(
+    (domain) => domainProof[domain] === "verified",
+  );
+  const domainView = configuredDomainView(metadata, env);
+  return {
     access,
     owner: { principal: metadata.owner, displayName: metadata.ownerName },
     domainOptions,
     domainProof,
     domainView,
     ...(domainView && { domainViewOwnerVerified: domainOptions.includes(domainView.domain) }),
-    organizationOptions,
-    organizationProof: organizationProofs,
-    organizationAccess: organization
-      ? { id: organization.id, name: organization.name, role: organization.role }
-      : null,
-    ...(organization && {
-      organizationAccessOwnerVerified: organizationProofs[organization.id] === "verified",
-    }),
+    ...(await organizationSharing(metadata, identity, env, now)),
     members: Object.entries(acl.members ?? {})
       .filter(([, member]) => roleValid(member.role))
       .map(([principal, member]) => ({ principal, ...member })),

@@ -316,6 +316,14 @@ const diagram = Widget.define({
   propagateEvent: false,
 });
 
+// A code block's controls (the language menu, a diagram's Preview button) are
+// point widgets at the start of its content, before the caret. CSS positions
+// them, so their place in the DOM is free. It must not be the end of the
+// content: on an empty last line the caret would sit directly before the
+// control, Chromium would address paste and beforeinput to it, and Wordgard
+// drops events aimed at a widget, so the paste would insert nothing.
+const CODE_CONTROL = Object.freeze({ side: -1 });
+
 const previewDiagram = Widget.create({
   render(_value, editor) {
     const button = diagramButton("Preview diagram", "preview", "wordgard-diagram-preview");
@@ -375,10 +383,7 @@ export function wordgardWidgets() {
         if (!isMermaid(node)) return;
         if (showCode(state, node, pos)) {
           if (!state.readOnly && codeSource(node).trim())
-            entries.push([
-              Decoration.Point.widget(previewDiagram, { side: 1 }),
-              pos + node.length - 1,
-            ]);
+            entries.push([Decoration.Point.widget(previewDiagram, CODE_CONTROL), pos + 1]);
         } else {
           entries.push([
             Decoration.Point.shape(
@@ -387,8 +392,6 @@ export function wordgardWidgets() {
               // Selection entering source reveals it in the same transaction.
               Elt.mk("div", { class: "wordgard-diagram-block" }, [
                 diagram.of({ source: codeSource(node), editable: !state.readOnly }),
-                // The content hole must stay last: Wordgard 0.6.2 reparents
-                // trailing widgets into it when range decorations change.
                 Elt.mk("pre", { hidden: "", "aria-hidden": "true" }, [0]),
               ]),
             ),
@@ -401,9 +404,10 @@ export function wordgardWidgets() {
   ];
 }
 
-// Wordgard 0.6.2's end-tag widget renders twice for an empty code block and
-// intercepts native clipboard paste. A point widget appears only once source
-// exists; a ```language fence still chooses the language before any text.
+// The language menu is a point widget at the start of the content, before the
+// caret, so it never sits where Chromium sends a native paste. It appears
+// only once source exists; a ```language fence still chooses the language
+// before any text.
 const languageMenu = Widget.define({
   eq: (a, b) => a.value === b.value && a.languages === b.languages,
   render({ value, languages }, editor) {
@@ -442,9 +446,9 @@ export function wordgardCodeLanguages(languages) {
           entries.push([
             Decoration.Point.widget(
               languageMenu.of({ languages, value: node.mark(CodeBlockLanguage) ?? "" }),
-              { side: 1 },
+              CODE_CONTROL,
             ),
-            pos + node.length - 1,
+            pos + 1,
           ]);
       });
       return Decoration.Point.set(entries);

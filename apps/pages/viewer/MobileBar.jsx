@@ -44,6 +44,8 @@ export const TABLE_ACTIONS = [
   ["row-delete", "Delete row", Trash2],
   ["column-delete", "Delete column", Trash2],
 ];
+// Off inside a code block: code text carries no marks.
+const MARKS = new Set(["bold", "italic", "strike", "code", "highlight", "link"]);
 const HINT_MS = 3000;
 
 /**
@@ -107,8 +109,10 @@ export function MobileBar({
   // it, and the marks don't apply to it. That includes an image inside a
   // table cell, so row and column actions are off then too, as on desktop.
   const nodeSelected = !!format?.atom || !!format?.nodeSelected;
+  const inCode = (name) => !!format?.codeBlock && MARKS.has(name);
   const enabled = (name) =>
     editable &&
+    !inCode(name) &&
     (name === "undo" || name === "redo"
       ? !!format?.[name]
       : !nodeSelected && (name === "link" ? !!format?.link : name !== "table" || !format?.table));
@@ -155,7 +159,7 @@ export function MobileBar({
           className={`mobile-bar-button${format?.[name] ? " is-active" : ""}`}
           aria-label={label}
           aria-pressed={!!format?.[name]}
-          disabled={!editable || nodeSelected}
+          disabled={!editable || nodeSelected || inCode(name)}
           onPointerDown={keep}
           onClick={() => onRun(name)}
         >

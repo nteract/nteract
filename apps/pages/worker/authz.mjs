@@ -409,7 +409,11 @@ export function pageObject(metadata, principal) {
   };
 }
 
-/** decide()'s object for the authoritative Project record. */
+/** decide()'s object for the authoritative Project record: the owner, each
+ * member row in the relation its role names, and the organization grant in
+ * the relation its role names. A Page in the Project reaches all of them
+ * through its `project` container. Projects have no removal tombstone, so a
+ * member row and the organization grant combine and the higher role wins. */
 export function projectObject(record) {
   const relations = {
     owner: record ? [user(record.owner)] : [],
@@ -421,6 +425,10 @@ export function projectObject(record) {
     const row = memberRow(record.acl.members, principal);
     if (row && relations[row.role]) relations[row.role].push(user(principal));
   }
+  const shared = record?.acl?.organizationAccess;
+  const organization =
+    shared && LINK_ROLES.has(shared.role) && accountOrganization(shared.namespace, shared.id);
+  if (organization) relations[shared.role].push({ type: "organization", id: organization });
   return {
     type: "project",
     id: record?.space_id ?? null,

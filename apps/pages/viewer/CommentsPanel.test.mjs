@@ -449,9 +449,13 @@ test("review is a workspace: navigator, passage, conversation; J/K move, E resol
     f.container.querySelector(".review-up-next").textContent,
     /Up next.*Full first comment next/,
   );
+  f.view().focus();
   await f.key("j", f.view());
   assert.equal(f.view().dataset.threadId, "next");
+  assert.equal(document.activeElement, f.view(), "J hands focus to the next thread");
   await f.key("k", f.view());
+  assert.equal(f.view().dataset.threadId, "first");
+  assert.equal(document.activeElement, f.view(), "K hands focus to the previous thread");
   await f.key("e", f.view());
   assert.deepEqual(f.calls, [{ action: "resolve", thread_id: "first" }]);
   assert.equal(f.view().dataset.threadId, "next", "resolve-and-next");
@@ -471,6 +475,36 @@ test("review is a workspace: navigator, passage, conversation; J/K move, E resol
   await f.key("Escape", f.view());
   assert.equal(dialogOf(f).classList.contains("comments-review"), false);
   assert.ok(f.view(), "exit lands on the thread in the panel");
+});
+
+test("review shows long messages whole; the panel's thread view still clamps them", async (t) => {
+  const long = (id) => {
+    const value = thread(id, "open", 1);
+    value.messages = value.messages.map((message) => ({
+      ...message,
+      body: `${message.body}\n${"A long line of review notes.\n".repeat(8)}`,
+    }));
+    return value;
+  };
+  const f = await fixture(t, { threads: [long("first"), long("next")] });
+  await f.open("first");
+  assert.equal(f.view().querySelectorAll(".message-body-clamped").length, 2);
+  assert.equal(f.view().querySelectorAll(".message-more").length, 2);
+  await f.key("Escape", f.view());
+  await f.click(f.container.querySelector(".comments-review-start"));
+  const whole = () => [
+    f.view().querySelectorAll(".message-body-clamped").length,
+    f.view().querySelectorAll(".message-more").length,
+  ];
+  assert.deepEqual(whole(), [0, 0], "entering review");
+  await f.key("j", f.view());
+  assert.equal(f.view().dataset.threadId, "next");
+  assert.deepEqual(whole(), [0, 0], "after J");
+  await f.key("e", f.view());
+  assert.deepEqual(whole(), [0, 0], "after resolve and next");
+  await f.key("Escape", f.view());
+  assert.equal(dialogOf(f).classList.contains("comments-review"), false);
+  assert.equal(f.view().querySelectorAll(".message-body-clamped").length, 2, "exit clamps again");
 });
 
 test("Resolve and next button and Open in Page", async (t) => {

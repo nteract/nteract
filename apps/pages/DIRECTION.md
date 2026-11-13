@@ -16,9 +16,9 @@ stays in this directory of the nteract monorepo.
 | --- | --- | --- |
 | Topology | Hub and spoke | The host holds the auditable record. No peer-to-peer sync |
 | Offline work | Each client's local replica | Edits made offline merge when the client reconnects |
-| Stored content | Automerge documents | The only source of truth. No stored Markdown |
+| Stored content | Automerge documents | The only source of truth for document content. No stored Markdown. Page tags are not content: they live only in D1 ([Where state lives](DEPLOYMENT.md#where-state-lives)) |
 | Sync | Plain Automerge sync messages over a WebSocket | No Repo layer, no Subduction |
-| Host | One host per document family: a Page's host holds the Page and its comments documents | Identity, access, admission, persistence, receipts |
+| Host | One host per document family: a Page's host holds the Page, its comments and its sources documents | Identity, access, admission, persistence, receipts |
 | Document type | A type module: `type` plus integer `format` | Genesis, admission checks, projections for readers |
 | Rich text | Wordgard tree, memory only | Decoded from Automerge spans. No ProseMirror |
 | Change flow | Automerge bytes, then patches, then a projection stream, then views | The same shape as nteract notebooks. Derived state lives in RxJS streams outside React |
@@ -146,7 +146,9 @@ Comments live in their own document and anchor to the Page with cursors.
    host runs on it: plain sync asks each document's type module for its
    write access, feature gates, admission and revision handles
    ([worker/document-modules.mjs](worker/document-modules.mjs)), with the
-   Page and comments documents as its first two modules.
+   Page and comments documents as its first two modules. Started: a Page's
+   named sources are a third module, `pages.sources`, a document only the
+   host writes ([model/sources-doc.mjs](model/sources-doc.mjs)).
 
 ### Delete
 

@@ -77,6 +77,21 @@ else replaces the screen with a Reload notice and leaves the Page unchanged.
   letter or digit (`snake_case_name`, `2*3*4`), an escaped one, and one inside
   code stay literal; undo restores the typed delimiters. `---` alone in a
   paragraph inserts a horizontal rule. Cmd/Ctrl+Shift+X toggles strikethrough.
+- **Code blocks:** Tab indents and Shift+Tab removes one level, for the caret's
+  line or every selected line. One level is four spaces in Python and Rust, two
+  elsewhere, and a tab in a block whose lines already start with tabs. Enter
+  keeps the indentation of the line it leaves; three Enters, or Mod-Enter, leave
+  the block. Outside a code block Tab moves focus as usual. A word in code is an
+  identifier: letters, digits and underscores, plus `$` in JavaScript and
+  TypeScript and `-` in CSS. A double-click selects it whole, and Wordgard's
+  word motion and word deletion move over it whole. Brackets and quotes close
+  themselves as in CodeMirror: typing the inserted closer moves over it,
+  Backspace inside an empty pair deletes both, and a selection gets wrapped.
+  Cmd/Ctrl+/ comments or uncomments the touched lines with the language's line
+  comment, or one block comment in CSS and HTML; JSON and blocks with no language
+  have none. Both read the highlighter's language data. Code text carries no
+  marks, so a selection inside one code block gets a toolbar with the text style
+  and Comment only, placed outside the block.
 - **Mark registry:** [`model/marks.json`](model/marks.json) lists every inline
   mark with its value shape, expand rule, and Markdown projection. Validation,
   the Wordgard binding, Markdown import/export, and the MCP `format_match`
@@ -491,6 +506,12 @@ entries into D1 tables (`pages_catalog_pages`, `pages_catalog_access`) so
 `list_pages` can paginate by cursor and search titles without opening every
 shared Page. Migrations are versioned in
 [catalog-index.mjs](worker/catalog-index.mjs) and applied lazily on first use.
+
+These `pages_catalog_*` tables are a projection: the Durable Objects are the
+source of truth and reconciliation can rebuild the rows. The same D1 database
+holds normative tables too, such as `page_tags`, which are the only copy of their
+data and are never rebuilt or cleared by the index
+([Where state lives](DEPLOYMENT.md#where-state-lives)).
 
 Durable Objects in one isolate share module state but not I/O contexts. If the
 object that started a migration resets mid-flight, its D1 call and its expiry
@@ -1398,6 +1419,96 @@ document. A Page without it holds threads in a form an earlier build wrote;
 comment reads and writes on it answer `409 stored_form_unsupported`, and the
 viewer shows no comments.
 
+## Sources document
+
+A Page's named sources live in a third Automerge document, `pages.sources`
+format 1 ([model/sources-doc.mjs](model/sources-doc.mjs)), owned by the same
+Page Durable Object. Only the host writes it. Its root is `sources`, a map
+from `source_id` to `{ name, revision, current: { media_type, asset_id },
+producer: { kind, at, by }, history }`. `revision` is a decimal string the host
+mints, `"1"` and then one more per accepted write; `media_type` comes from the
+stored asset's record; `producer.kind` is `upload`. `producer.at` is the
+host's ISO 8601 time for the write, read once per batch, and `producer.by`
+the writer in a comment author's shape ([model/author.mjs](model/author.mjs)):
+the account `principal`, `displayName`, `driver`, and `agent` `{ name?,
+model? }` when the client asserted one. The asserted agent is part of the
+write's retry fingerprint, so a retry that changes it is `409
+nonce_conflict`. `current` and `producer` are each replaced as one map. A
+Page holds up to 64 sources. Nothing on the Page draws from a source yet.
+
+`history` is an Automerge list of the source's newest states, oldest first,
+each `{ revision, name, media_type, asset_id, at, by }`. The write that
+creates or changes a source appends its state in the same change and deletes
+from the front past 50 states, so the last state always equals the entry's
+present name, revision, `current` and `producer` as a whole, and revisions
+strictly rise along the list; a read refuses an entry where either doesn't
+hold as `invalid_source`, and so does a write to it. Its name is still in the
+document, but no read returns it; a new `source_id` can be set beside it,
+while `sources: true` refuses until the entry is gone. `history_truncated` is true when
+`revision` exceeds the list's length: each write raises the revision by one
+and appends one state, so only the cap makes the list shorter. Older states
+remain in the document's Automerge history, but no read returns them. The
+host builds every source write in the Page's queue, so two writes never share
+a base; a document merged from two such candidates holds two states for one
+revision and reads as `invalid_source`, never as a state neither wrote.
+
+Each state repeats its writer, so a source stores bounded labels: a display
+name cut to 200 UTF-16 code units, as the Kilo exchange keeps one; a driver
+up to 80 and an agent name up to 80 and model up to 120, the bounds those
+already have where a request brings them, over which the write is refused.
+At those bounds a full history reads in about 122 KB, inside `read_page`'s
+128 KiB default.
+
+A full list costs about 12 KiB in `A.save` for one source with 50 writes and
+693 KiB for 64 sources with 50 writes each. The document keeps every change,
+deleted states included, so it grows by about 0.2 KiB per write whatever the
+cap; 64 sources with 100 writes each save to 1.4 MiB.
+
+A Page has at most one sources document, and a Page with no sources has none.
+Its id is derived from the Page ID with its own label, as the comments
+document's is, and its genesis is fixed, so creating it twice stores one
+document. The host creates it on the first source write
+([worker/sources-lifecycle.mjs](worker/sources-lifecycle.mjs)): it stores the
+genesis, then writes the host record with `pages.sources` in
+`documentFormats`. A restart before the record names it starts over on the
+next write; a restart after it loads the document and replays its journal.
+`pages.sources` is not a member type: a new record doesn't name it, and a
+record that does is still held to format 1.
+
+Browsers read it and never write it. Its type module declares no browser
+write access and refuses rather than strips a browser frame that changes it:
+`request_rejected`, not fatal, and the principal isn't blocked. Host writes
+go through the journal and `admitTrusted`. The socket serves it only to a
+client that declared `pages.sources:1`; discovery names it in
+`documents.sources` once it exists. The viewer doesn't open it yet. A
+reader that syncs it sees each source's `producer.by` and every earlier
+writer in its changes, as comment authors are visible to comment readers.
+
+Agents write it with `edit_page` `set_source` operations (`source_id`,
+`name`, `asset_id`, `source_revision`) in a batch with no other operation;
+a mixed batch is `400 invalid_arguments`. `source_revision` is null to
+create, or the revision the caller read. A mismatch is `409 stale_source`
+and an unknown source with a non-null revision `404 source_not_found`, each
+carrying `source_id` and the current `source_revision`. The asset must be a
+dataset stored on this Page (`dataset_not_found` otherwise). The batch names
+the Page `revision` it read and is fenced like any edit, but a newer Page
+revision doesn't refuse it. The receipt carries `sources_revision` and
+`result.edits` of `{ op, source_id, source_revision }`; the nonce shares
+`edit_page`'s lane. A write is checked against the sources the Page holds
+before the host creates the document, so a refused first write creates
+nothing, and a journaled source write whose apply didn't finish is replayed
+before a new one is built. `read_page` takes `sources: true`, which lists
+`source_id`, `name`, `source_revision`, `asset_id` and `media_type`, and
+`source_id`, which reads one source with `producer`, `history` and
+`history_truncated`; both together return
+both. Alone they read no Page content; beside other selectors they add to
+them. Reads name `sources_revision` once the document exists.
+
+Trash and restore keep the document. Permanent deletion deletes its stored
+bytes with the Page's. Page assets are never collected, so a source's
+current and earlier assets stay stored until the Page is purged.
+`scripts/project-transfer.mjs` doesn't copy sources.
+
 ## Authorization
 
 ### Current behavior
@@ -1941,9 +2052,12 @@ Discovery and the socket carry `sync=automerge`; a build without it gets
 document formats the build reads, as sorted `type:format` pairs
 (`pages.comments:1,pages.page:2`). The Page's host record names its
 documents' formats (below). A socket whose `formats` lacks one of the
-record's is closed as `schema_unsupported`, and the viewer shows "Reload to
-update". Every type the record names is required, because a Page can gain
-its comments document while a socket is open. A socket with no `formats` is
+record's member types is closed as `schema_unsupported`, and the viewer shows
+"Reload to update". Every member type the record names is required, because a
+Page can gain its comments document while a socket is open. A type a Page may
+hold beside them, `pages.sources`, isn't: a socket without it opens the Page
+and its comments, and plain sync doesn't serve it the sources document (a
+frame naming it is answered as for an unknown document). A socket with no `formats` is
 a 400, as is a repeated or malformed `formats`. Discovery takes no `formats`
 and stays open to every reader; its `documents` descriptors carry the
 record's formats. Presence ids are per tab (`sender`), stamped by the host
@@ -1956,7 +2070,8 @@ document types as `documentFormats`, `{ "pages.page": 3, "pages.comments":
 2 }`. Creation, registration and a Project's content document all stamp the
 formats the build writes ([model/document-types.mjs](model/document-types.mjs)),
 the comments format included, since the comments document is created at
-boot. `recordDocumentFormats` is the one reader; it reads a record without
+boot. The host adds `"pages.sources": 1` once it creates the Page's sources
+document. `recordDocumentFormats` is the one reader; it reads a record without
 the field as naming no formats.
 
 A record without the field, or whose formats aren't exactly the ones the
@@ -3515,9 +3630,11 @@ different request"). `purge_page` and `delete_project` keep their
 #### Revision handles
 
 Agents never see Automerge heads. A read, receipt or refusal names a Page
-document revision as `r<n>` and a comments document revision as `c<n>`
-([revisions.mjs](worker/revisions.mjs)). Results carry `revision` and
-`comment_revision`; revision refusals (`stale_revision`, `edit_conflict`,
+document revision as `r<n>`, a comments document revision as `c<n>` and a
+sources document revision as `s<n>` ([revisions.mjs](worker/revisions.mjs));
+the letters come from the host's type modules. Results carry `revision`,
+`comment_revision` and, once the Page has sources, `sources_revision`;
+revision refusals (`stale_revision`, `edit_conflict`,
 `resync_required`) carry `current_revision` and `comment_revision`; a
 target-scoped edit's `concurrency` is `{rebased, base_revision,
 observed_revision}`. Arguments are `revision`, `since_revision` and
@@ -3533,7 +3650,7 @@ Each document's host keeps a counter, its latest handle and a table:
 | `host/revision/<doc>/latest` | `{ n, heads, at }` of that number |
 | `host/revision/<doc>/h/<n>` | `{ heads, at }`, `n` zero-padded to 16 digits |
 
-`<doc>` is `page` or `comments`. Minting writes all three in one put, and a
+`<doc>` is `page`, `comments` or `sources`. Minting writes all three in one put, and a
 handle reaches a caller only after a sync barrier. Heads that equal the latest
 handle's reuse it while that handle is newer than the receipt horizon; otherwise
 the host mints the next number, so a read never hands out a handle the fence
@@ -3583,6 +3700,175 @@ whether to send it again. Browser edits consume no receipts. Catalog deletion
 tombstones remain permanent; Trash writes none. See the
 [operation journal](worker/operation-journal.mjs) and its tests
 ([unit](worker/operation-journal.test.mjs), [capacity](worker/receipt-capacity.test.mjs)).
+
+### Page tags
+
+A Page carries a set of tags: short, lowercase, freeform labels that agents set
+on their own work and other agents search. Tags mean nothing to Pages and grant
+no access, and anyone who can see a Page sees its tags. They are rows in the D1
+table `page_tags` (`page_id`, `tag`, `added_by`, `added_at`; primary key
+`(page_id, tag)`, plus a lookup index on `(tag, page_id)`), created by its own migration
+list (`PAGE_TAGS_MIGRATIONS`), recorded in its own version table, `page_tags_schema`.
+They are not in the Page's Automerge document, so changing them never moves its revision, and a document restore or export does not carry them.
+
+**Source of truth.** `page_tags` is the single normative record of a Page's
+tags. It is not an index and not a projection. No Durable Object, Page host
+record, Catalog entry or document holds a copy, so there is nothing to rebuild
+it from, and there is no Durable Object for tags and none planned: tags have no
+real-time part, and a REST-style write plus a searchable read is all they need.
+D1 is the only place that can search tags across Pages, so it is also where they
+live. This differs from the `pages_catalog_*` tables, which project each
+account's Catalog and Page host Durable Objects into D1 for listing
+([Catalog index](#catalog-index)) and can be cleared and rebuilt. The table
+shares D1's database with them, but not their migration chain or their rules: its
+schema versions live in `page_tags_schema`, apart from `pages_catalog_schema`, so a
+change to the catalog's migrations can't reset or renumber it.
+Nothing clears or rebuilds `page_tags`: not reconciliation, not a cooled index,
+not a migration that resets `pages_catalog_accounts`. Only a Page's permanent
+deletion deletes its rows, and the Page host does that itself
+(`deletePageTags`, after the catalog tombstone is written), whether or not
+`PAGES_CATALOG_INDEX` is set: the tombstone is a projection and never touches
+the table. If D1 fails the delete, the purge step fails and the lifecycle repeats
+it. Trash keeps them, hidden with the Page; restore brings them back. The Page host decides who may edit and
+holds no tag state. The read and write code is in
+[page-tags-store.mjs](worker/page-tags-store.mjs); the projection supplies only
+candidate Pages, and the table decides which candidates match. On a celld target
+D1 and each Page's storage sit under the same versioned fleet prefix, so the
+restore points in [DEPLOYMENT.md](DEPLOYMENT.md#restore-points) cover both for 14
+days. Past that, nothing can rebuild tags. See
+[Where state lives](DEPLOYMENT.md#where-state-lives).
+Tags need D1: with `PAGES_CATALOG_INDEX` unset (that variable also turns on the
+D1 binding, though tags are not part of the index) or D1 not answering, a tag
+write or a listing with `tags` answers 503 `tags_unavailable` (retryable) and
+never falls back to the Catalog entries, which hold no tags.
+
+**Alphabet.** A tag is trimmed and lowercased, then must match
+`[a-z0-9][a-z0-9._:/-]{0,63}`: lowercase letters, digits and `. _ : / -`,
+starting with a letter or digit, at most 64 characters. Every character is legal
+unescaped in a URL query. Space, parentheses, `+ & = # % ? ,`, `| ! * ~` and
+non-ASCII are refused: the first two structure an expression, the next group
+needs URL escaping, and the rest are held back for future operators. `and`, `or`
+and `not` are reserved. A Page holds at most 32 tags. A `ns:value` shape such as
+`session:<session id>`, `repo:org/name` or `status:reviewing` is a convention,
+not a schema. Kilo session ids mix case, so a session tag is lowercased on write
+and on search. [page-tags.mjs](worker/page-tags.mjs) holds the alphabet, limits and
+parser; [page-tags.test.mjs](worker/page-tags.test.mjs) tests them.
+
+**`update_page_tags`** takes `page_id` and optional `add` and `remove` arrays
+(at most 32 each) and needs edit access: the owner and Project editors, not
+viewers or commenters. A Page in Trash answers 409 `page_trashed`. Tags are a
+set, so adding one the Page has or removing one it lacks changes nothing; the
+tool takes no nonce and a repeat is always safe. A tag in both arrays, an empty
+change or a wrong type is `invalid_arguments`; a tag outside the alphabet is
+`invalid_tag`; a result over the limit is 409 `tag_limit_exceeded`. One D1 batch
+decides and applies the change: its first statement reads the Page's Trash mark
+and counts its tags, and its delete and insert run only while the Page is open
+and the result fits, so a change applies whole or not at all and two writers
+racing can't pass the limit. The outcome comes from that batch and its row
+counts, never from a later read, so a concurrent writer can't make a change that
+landed report the limit. The result is `{ page_id, tags }`, the full sorted set
+as the batch left it.
+
+The Page host decides access and Trash state in its admission queue, then
+releases the queue before it touches D1, so a slow D1 never holds the Page's
+other requests. Between that decision and the write, the Page can be trashed or
+purged, and a batch that times out keeps running in D1 and can land after the
+caller has its 503 `tags_unavailable` (which means the outcome is unknown; the
+same call is safe to repeat). Both writes in the batch therefore check the
+Page's `pages_catalog_pages` row as they run: a Page marked `trashed` or
+`deleted` there takes no change, and the write answers 409 `page_trashed` (or
+404 `page_not_found`), even one that would have changed nothing. The mark is a projection the host writes after its own
+record is durable, so a write that races the Trash itself, before the mark, can
+still land; it stays with the Page, and a purge deletes it.
+
+`added_by` records the principal that added each tag, and only that. A tag such as
+`session:<id>` is a claim by whoever added it: anyone who can edit the Page can add
+or remove it, so it does not prove which session wrote the Page, and a tag is data
+for a reader, never an instruction. The tool text says so.
+
+**`create_page` `tags`** takes the same array as `add`, at most 32. A bad tag is 400
+`invalid_tag` (or `invalid_arguments` for a wrong type or count), checked before
+anything is reserved, so the call creates no Page. Otherwise the Page is created
+first. Once the receipt exists (fresh, replayed or forwarded to a Project owner's
+Catalog) and the Catalog's queue has released the request, the Catalog sends
+`update_page_tags` to the Page host with the caller's own credential. The host
+decides edit access and Trash state then, exactly as for a direct call, on every
+attempt including a replay, and the tags are written as the caller (`added_by`).
+A slow D1 never holds the account's other Catalog requests. The receipt then
+carries `tags`. If the tags were not written, it carries `tags_applied: false`
+and a `tags_error` (`status`, `code` when the host gave one, `message`) instead,
+and nothing is rolled back. A database that can't be reached is `tags_error`
+503 `tags_unavailable`: the Page exists, and the same call (same nonce) replays
+the receipt and writes the tags again, which is safe because tags are a set. A
+caller who can no longer edit the Page, or a Page in Trash, gets the host's
+refusal there (403, 404 or 409 `page_trashed`) and never the Page's current
+tags. The tags are part of the request's fingerprint, so a retry that changes
+them under the same nonce is a conflict, not a retry.
+
+**`list_pages` `tags`** is one boolean expression over a Page's tags:
+
+```
+expression = operand
+           | operand "AND" operand { "AND" operand }
+           | operand "OR"  operand { "OR"  operand }
+operand    = tag | "NOT" operand | "(" expression ")"
+```
+
+Operators are exactly uppercase `AND`, `OR` and `NOT`; every other word is a tag
+and is lowercased before it matches. AND and OR never mix at one level, so
+`a AND b OR c` is refused and the error says to add parentheses: no caller relies
+on a precedence rule it may misremember. `NOT` is a prefix (`hello AND NOT
+world`); a bare `NOT done` lists the caller's Pages without that tag. An
+expression is at most 256 characters, as written and as written back
+canonically (the echoed `tag_filter`), names at most 16 tags and nests at most 4
+levels. The canonical form can be longer than the input, since it adds spaces and
+parentheses, so one that would not fit is refused; an accepted expression's
+`tag_filter` is always accepted when sent back. A contradiction such as `a AND NOT a` lists nothing. A syntax error is
+400 `invalid_list_arguments` naming the character position. In a URL, write
+spaces as `+` or `%20`; parentheses, `:` and `/` need no escaping. The expression
+is a string, not a nested argument, because tool schemas allow no recursion.
+
+A listing with `tags` adds `tags` to each Page (an array) and echoes the
+canonical expression, parsed and written back with normalized case and spacing,
+as `tag_filter`. A client that gets no `tag_filter` talked to a host that
+ignored the argument. `include_tags: true` adds `tags` to an unfiltered listing,
+which otherwise keeps its row shape; there `tags` is best effort, and a Page
+with no `tags` field means they could not be read. With a `tags` filter, every
+Page carries `tags`: if they can't be read the listing is 503 `tags_unavailable`,
+not Pages without them. The cursor is sealed to the
+canonical expression, so it opens only under it (`invalid_cursor` otherwise); a
+listing with no `tags` seals the scope it always did, so earlier cursors still
+open.
+
+How a listing applies the filter depends on its source:
+
+- **D1 walk** (no `project_id` or `parent_id`, index ready): one `EXISTS` per tag
+  is added to the walk of the caller's own access rows, combined by the
+  expression's AND, OR and NOT (`tagPredicate`). The caller's access rows are the
+  candidates, so owned Pages, Project Pages, Pages shared with the caller and
+  company-viewable Pages all list, and non-owner rows are still verified by their
+  Page host. Tags are bound parameters, never interpolated. The scan bound, order
+  and keyset paging are unchanged.
+- **Catalog entries** (a Project or parent filter, or a cooling index): the
+  caller's own candidate IDs are checked against D1 in chunks of 400
+  (`tagMatchingIds`) before they become a source, so rows that fail never count
+  against the scan bound. That check uses the candidates' own IDs, never the tags
+  table, so a Page with no tags still matches `NOT x`. It decides nothing about
+  access: each candidate is verified as before.
+- **Children of a shared parent, and a Project's Pages seen by a member**: the
+  owner's Catalog names these whether or not the caller can read them, so they are
+  checked for access first and the filter runs only on the Pages that passed
+  (`keepVerified` in `scanCandidates`). A tag never decides anything about a Page
+  the caller can't open, and a filtered listing is the same whether or not an
+  unreadable child matches. Filtered-out Pages count against the scan bound.
+
+Measured locally on SQLite 3.51 (200k Pages, 600k tag rows, a caller who can see
+about 3,300 Pages, limit 50): common tags and NOT queries answered in under 1.1
+ms, and a tag the caller can't see anywhere read everything they can see in 5 to
+9 ms. Starting from the access rows keeps the cost bounded by what the caller can
+see, not by how many Pages carry a tag anywhere. D1 latency and rows-read billing
+are not measured; run the listing benchmark against D1 before relying on it for
+a caller who can see tens of thousands of Pages.
 
 ### Progress and presence
 

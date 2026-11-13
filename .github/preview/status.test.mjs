@@ -34,7 +34,7 @@ test("status identity uses the immutable run revision for all supported event ty
 });
 
 test("PR-only teammates may report deployment and cleanup status", async () => {
-  for (const id of [261289082, 3131401, 25752941]) {
+  for (const id of [261289082, 3131401, 25752941, 6687139]) {
     for (const action of ["synchronize", "closed"]) {
       const f = fixture(action);
       f.run.actor.id = id;

@@ -60,6 +60,7 @@ export async function createAuthFixture() {
       claimedSubject = "untrusted-token-subject",
       status = 200,
       email = "fixture@example.invalid",
+      profile = { first_name: "Fixture", last_name: "Person", email },
     } = {}) {
       // This deliberately is not signed. Provider whoami, not unverified token
       // claims, establishes API-key identity in the real production validator.
@@ -71,11 +72,7 @@ export async function createAuthFixture() {
             user_id: userId,
             source,
             scopes,
-            profile: {
-              first_name: "Fixture",
-              last_name: "Person",
-              email,
-            },
+            profile,
           },
         },
       });

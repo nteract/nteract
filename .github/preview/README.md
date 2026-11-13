@@ -24,17 +24,13 @@ bytes are published, exclusively, through a private temporary file in the
 destination filesystem. Existing files and symlinks are never overwritten.
 The helper does not extract or execute the archive.
 
-This helper is inactive until the publication sequence below is completed.
-The current PR caller pins reusable workflow
-`fcdfb358876ec0a690c865dce49ef4adc7efeb33`; its build job checks out helper
-revision `745935af5fdfcf15424c59d52cbccc629a260d50`. After this helper lands as
-revision A, a separate workflow change must pin the build job's helper checkout
-to A and replace its inline download with
-`node helpers/.github/preview/download-wasm-pack.mjs "$RUNNER_TEMP/wasm-pack.tar.gz"`.
-Extraction follows only a successful helper exit. Keep the other trusted-job
-helper pins unchanged. Then review and authorize that workflow revision B in
-the controller before changing the PR caller pin. Neither the global installer
-nor any live deployment is changed by this helper.
+Every trusted job and the build job check out the helpers at one reviewed
+revision, `7797fcba934c467f966bc91856e8c6ce817eb8e8`. The build job runs
+`node helpers/.github/preview/download-wasm-pack.mjs "$RUNNER_TEMP/wasm-pack.tar.gz"`
+and extracts only after a successful helper exit. A new helper pin is a new
+reusable workflow revision: the controller must authorize it before the PR
+caller pin moves. Neither the global installer nor any live deployment is
+changed by this helper.
 
 ## Pages Status Polling
 
@@ -97,11 +93,11 @@ The publication sequence deliberately separates three reviewed revisions:
 The reusable workflow accepts no caller inputs or inherited secrets. It derives
 the PR number and action from the original event and checks live GitHub metadata.
 Only same-repository PRs targeting `main` from the explicitly configured maintainers are eligible
-for deployment: Kyle (`836375`), Utkarsh (`107147005`), Quillaid (`261289082`), FabioRosado (`3131401`), and JoshuaLowe1002 (`25752941`). Both the original actor
+for deployment: Kyle (`836375`), Utkarsh (`107147005`), Quillaid (`261289082`), FabioRosado (`3131401`), JoshuaLowe1002 (`25752941`), and intentionally-left-nil (`6687139`). Both the original actor
 and rerun initiator must also be eligible. The controller independently enforces
 its current policy before a build and again before deployment.
 
-Quillaid, FabioRosado, and JoshuaLowe1002 are eligible for PR previews and their cleanup/status reporting.
+Quillaid, FabioRosado, JoshuaLowe1002, and intentionally-left-nil are eligible for PR previews and their cleanup/status reporting.
 Main deployment retains its separate Kyle/Utkarsh actor list. Forks remain ineligible.
 
 The source revision must equal both the event run's `head_sha` and the current

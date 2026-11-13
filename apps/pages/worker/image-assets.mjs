@@ -236,8 +236,10 @@ export async function requireStoredImageAsset(bucket, { pageId, assetId }) {
   return storedImageMetadata(stored, pageId, assetId);
 }
 
-/** Resolve a validated dataset asset in this Page for insert_node, with HEAD
- * only. Like requireStoredImageAsset, the caller enforces Page access. */
+/** Resolve a validated dataset asset in this Page for insert_node and
+ * set_source, with HEAD only. Like requireStoredImageAsset, the caller
+ * enforces Page access. `mediaType`, when given, is the one the dataset must
+ * be stored as; without it the stored record's `mime_type` is the answer. */
 export async function requireStoredDatasetAsset(bucket, { pageId, assetId, mediaType }) {
   if (!validPageId(pageId) || !validAssetId(assetId))
     throw new HttpError(400, "Invalid dataset reference");
@@ -247,7 +249,7 @@ export async function requireStoredDatasetAsset(bucket, { pageId, assetId, media
   if (!isDataset(stored))
     throw new HttpError(415, "This asset is an image, not a dataset. Place it with insert_image.");
   const dataset = storedDatasetMetadata(stored, pageId, assetId);
-  if (dataset.mime_type !== mediaType)
+  if (mediaType !== undefined && dataset.mime_type !== mediaType)
     throw new HttpError(415, `This dataset is ${dataset.mime_type}, not ${mediaType}`);
   return dataset;
 }

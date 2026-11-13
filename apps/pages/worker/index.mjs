@@ -29,12 +29,21 @@ import {
   schemaUnsupported,
 } from "../model/schema-features.mjs";
 import { unsupportedMarkdown, unsupportedMarkdownError } from "../model/markdown-scan.mjs";
-import { commentsGenesis } from "../model/comments-doc.mjs";
 import { applyComment, commentsMigrated } from "../model/comments.mjs";
 import { guardCommentIntent, passageComment } from "../model/comment-guard.mjs";
-import { commentsDocUuid, commentsDocumentId } from "./comments-store.mjs";
+import { authorOf } from "../model/author.mjs";
+import { checkSources, setSources, validateSourceBatch } from "../model/sources-doc.mjs";
+import {
+  commentsDocUuid,
+  commentsDocumentId,
+  derivedDocUuid,
+  derivedDocumentId,
+} from "./comments-store.mjs";
+import { SOURCES_ABSENT, sourcesStep } from "./sources-lifecycle.mjs";
 import {
   MEMBER_FORMATS,
+  MEMBER_TYPES,
+  WRITTEN_FORMATS,
   documentFormatsUnsupported,
   formatPairs,
   missingFormats,
@@ -134,7 +143,7 @@ import { fencedHeads, headsFor, revisionPlan } from "./revisions.mjs";
 import { STORAGE_KEYS_PER_CALL, guardContext } from "./storage-guard.mjs";
 import { pageRecordsCall } from "./page-records.mjs";
 export { PageRecords } from "./page-records.mjs";
-import { COMMENTS_MODULE, PAGE_MODULE } from "./document-modules.mjs";
+import { COMMENTS_MODULE, PAGE_MODULE, SOURCES_MODULE } from "./document-modules.mjs";
 import { HOST_SENDER_ID, PlainSync, clearPrefixes, plainSessionReplaced } from "./plain-sync.mjs";
 import { logSyncRefused, logSyncRounds } from "./plain-sync-log.mjs";
 import { BLOCKING as BLOCKING_COMMENT_CODES } from "../sync/comments.mjs";
@@ -161,6 +170,7 @@ import {
 import {
   COMMENTS_DOC,
   PAGE_DOC,
+  SOURCES_DOC,
   documentMutation,
   recoverDocumentMutations,
   operationKey,
@@ -213,6 +223,14 @@ import {
   cardImageView,
   readCardImagePointer,
 } from "./card-images.mjs";
+import { MAX_TAGS_PER_PAGE, TagError, normalizeTag } from "./page-tags.mjs";
+import {
+  deletePageTags,
+  pageTagsDatabase as openPageTags,
+  readPageTags,
+  tagMatchingIds,
+  writePageTags,
+} from "./page-tags-store.mjs";
 import {
   CatalogIndexUnavailable,
   SHORT_CURSOR_MAX_LENGTH,
@@ -288,6 +306,7 @@ import {
   resolveProjectAccess,
 } from "./project-access.mjs";
 import { invitedProjects } from "./project-invitations.mjs";
+import { openedProjects, recordOpenedProject } from "./project-opened.mjs";
 import {
   FORWARD_REJECTED_HEADER,
   PROJECT_CREATE_PATH,
@@ -399,6 +418,7 @@ const operations = new Set([
   "edit_page",
   "manage_page_comment",
   "reply_page_comment",
+  "update_page_tags",
   "delete_page",
   "restore_page",
   "purge_page",
@@ -500,6 +520,58 @@ const sharedPagesUnavailable = ({ overloaded = false } = {}) =>
     ),
     { retryAfterMs: overloaded ? overloadRetryAfterMs() : 1000 },
   );
+/** A tag filter or a tag write needs D1: the `page_tags` table is the only
+ * record of tags (no Durable Object, Catalog entry or Page record holds a
+ * copy), so a listing never falls back to the Catalog entries for one. Coded
+ * server failures are retryable. */
+const tagsUnavailable = () =>
+  new HttpError(
+    503,
+    "Page tags are temporarily unavailable: the tag database did not answer. Retry the request.",
+    "tags_unavailable",
+  );
+/** The D1 binding for a request that needs tags, or `tags_unavailable`. D1 is
+ * reached through the catalog index's binding and its `PAGES_CATALOG_INDEX`
+ * gate; that makes the database available to tags, not an index of them. The
+ * tag table's own schema is brought current here (page-tags-store.mjs). */
+async function pageTagsDatabase(env, ctx) {
+  if (!catalogIndexEpoch(env)) throw tagsUnavailable();
+  try {
+    return await openPageTags(env, ctx);
+  } catch (error) {
+    logFailure(error, "page-tags");
+    throw tagsUnavailable();
+  }
+}
+/** `value` as distinct normalized tags: an array of at most 32 valid tags, or
+ * nothing. Refuses with `invalid_arguments` or `invalid_tag`, naming `field`. */
+function tagList(value, field) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_TAGS_PER_PAGE)
+    throw new HttpError(
+      400,
+      `${field} must be an array of at most ${MAX_TAGS_PER_PAGE} tags`,
+      "invalid_arguments",
+    );
+  try {
+    return [...new Set(value.map(normalizeTag))];
+  } catch (error) {
+    if (!(error instanceof TagError)) throw error;
+    throw new HttpError(400, `${field}: ${error.message}`, "invalid_tag");
+  }
+}
+const requestedTags = (value) => tagList(value, "tags");
+/** What a Page's or a Catalog's `run` returns for a request whose queue work
+ * is done: `work` answers the request once the queue has released it (Page
+ * `enqueue`, Catalog `fetch`). */
+class AfterQueue {
+  constructor(work) {
+    this.work = work;
+  }
+  finish() {
+    return this.work();
+  }
+}
 /** The error an abandoned object refuses with when its reset gave no reason. */
 const abandonedError = () => Object.assign(Error("Page object was reset"), { status: 503 });
 /** Viewer builds that speak plain Automerge sync send `sync=automerge` on
@@ -512,15 +584,31 @@ function requirePlainSyncClient(request) {
 }
 
 /** A socket's client declares the document formats it reads as `formats`;
- * `record` is the formats the Page's host record names. Every type the
- * record names is required of every socket, including a comments document
- * the Page gains while the socket is open. A client that lacks one is
- * refused as schema_unsupported, which its viewer shows as "Reload to
- * update". */
+ * `record` is the formats the Page's host record names. Every member type
+ * the record names is required of every socket, including a comments
+ * document the Page gains while the socket is open. A client that lacks one
+ * is refused as schema_unsupported, which its viewer shows as "Reload to
+ * update". A type a Page may hold beside them, such as `pages.sources`, is
+ * not required: a socket that doesn't declare it opens the Page and its
+ * comments, and is not served that document (plain-sync.mjs). */
 function requireReadableDocuments(declared, record) {
-  if (!missingFormats(declared, formatPairs(record)).length) return;
+  const members = formatPairs(record).filter(({ type }) => MEMBER_TYPES.includes(type));
+  if (!missingFormats(declared, members).length) return;
   throw withAdmissionReason(schemaUnsupported(["document-formats"]), "schema_unsupported");
 }
+
+/** Whether a Page's host record names its sources document: the record
+ * names `pages.sources` once the host created it (sources-lifecycle.mjs). */
+const recordNamesSources = (record) =>
+  Object.hasOwn(recordDocumentFormats(record ?? {}) ?? {}, SOURCES_MODULE.type);
+
+/** A sources document refusal (model/sources-doc.mjs) as the agent edge
+ * answers it, with its source_id and current source_revision. */
+const sourceRefusal = (error) =>
+  Object.assign(
+    new HttpError(error.status ?? 400, error.message, error.code ?? "invalid_source"),
+    error.details && { details: error.details },
+  );
 
 /** Page host routes a record in a format this build doesn't write still
  * answers once the caller may read it: the shared-Page check and sharing
@@ -919,6 +1007,8 @@ const READ_OPERATIONS = [
 const safeToRepeat = (operation, args) => {
   // Issuing an upload URL changes nothing; a repeat issues another one.
   if (operation === ASSET_UPLOAD_OPERATION) return true;
+  // Tags are a set: adding or removing one twice changes nothing.
+  if (operation === "update_page_tags") return true;
   if (operation === "report_page_progress")
     return typeof args?.progress_id === "string" && typeof args?.lease_token === "string"
       ? true
@@ -1632,7 +1722,13 @@ export class Catalog {
     // each other.
     if (new URL(request.url).pathname === "/internal/location") return this.location(request);
     if (new URL(request.url).pathname === "/internal/project-discovery") return this.run(request);
-    return this.queue(() => this.run(request));
+    // A request whose `run` returns `AfterQueue` finishes after the queue has
+    // released it, and holds itself open until then (request-hold.mjs).
+    const answer = this.queue(() => this.run(request)).then((result) =>
+      result instanceof AfterQueue ? result.finish() : result,
+    );
+    holdUntilSettled(this.ctx, answer);
+    return answer;
   }
   /**
    * Host-only location route: the gateway never forwards /internal/* paths.
@@ -1834,6 +1930,20 @@ export class Catalog {
           throw new HttpError(403, "Host only");
         const value = await readJson(request);
         requireSpaceIdArgument(value.space_id);
+        // An opened hint (project-opened.mjs) is written with storage
+        // operations only: this route runs outside the queue, inside the
+        // Project host's read, so it never awaits another host. A body that
+        // also says `remove` drops the member hint in the same request, for a
+        // member removed from a Project with an organization grant. The
+        // opened hint goes first: a failure after it leaves the member hint,
+        // which the list re-checks and the member reclaim drops, never
+        // neither.
+        if (value.opened === true) {
+          await recordOpenedProject(this.storage, value);
+          if (value.remove === true)
+            await this.storage.delete(`project-discovery/${value.space_id}`);
+          return json({ ok: true });
+        }
         if (value.remove === true) {
           await this.storage.delete(`project-discovery/${value.space_id}`);
           return json({ ok: true });
@@ -2016,7 +2126,18 @@ export class Catalog {
             "purge_preview_required",
           );
       }
-      if (body.operation === "create_page") validateCreateInput(args);
+      // The tags a create_page asks for are checked before anything is
+      // reserved: an invalid tag creates nothing. They are written once the
+      // receipt exists, after the queue has released the request (tagCreated).
+      let createTags = [];
+      if (body.operation === "create_page") {
+        validateCreateInput(args);
+        createTags = requestedTags(args.tags);
+      }
+      const withTags = (response) =>
+        createTags.length
+          ? new AfterQueue(() => this.tagCreated(request, response, createTags))
+          : response;
       if (registering) {
         requireRegistrationAccount(args, identity);
         // A retry of a registration this Catalog already recorded resends the
@@ -2060,14 +2181,16 @@ export class Catalog {
         body.operation === "create_page" &&
         (inspected.entry ? !!inspected.entry.forward : await this.placedElsewhere(args))
       )
-        return await this.forwardCreate(request, identity, args, { key, digest, inspected });
+        return withTags(
+          await this.forwardCreate(request, identity, args, { key, digest, inspected }),
+        );
       let intent = inspected.entry;
       if (intent && !intent.pending) {
         // A previous attempt may have stored its receipt before sync failed.
         await this.storage.sync();
         const replay = json(intent.receipt);
         replay.headers.set(REPLAYED_RECEIPT_HEADER, "1");
-        return replay;
+        return withTags(replay);
       }
       if (!intent) {
         await this.requirePageRoom(limit);
@@ -2104,17 +2227,73 @@ export class Catalog {
           },
         });
       }
-      return await this.completeCreation(request, {
-        key,
-        intent,
-        args,
-        registering,
-        resumed: !!inspected.entry,
-        owner: identity.principal,
-      });
+      return withTags(
+        await this.completeCreation(request, {
+          key,
+          intent,
+          args,
+          registering,
+          resumed: !!inspected.entry,
+          owner: identity.principal,
+        }),
+      );
     } catch (error) {
       return errorResponse(error, "catalog");
     }
+  }
+
+  /**
+   * Tag the Page a create_page made, once its receipt exists and this
+   * Catalog's queue has released the request. `response` is the receipt
+   * (fresh, replayed or forwarded); a failed one passes through. The tags are
+   * an update_page_tags call to the Page host with the caller's own
+   * credential, so the host decides edit access and Trash state now, as for a
+   * direct call, on every attempt including a replay. A caller who can no
+   * longer edit the Page gets the receipt with the host's refusal code and no
+   * tags. The Page exists by now and the receipt is recorded, so a write that
+   * fails doesn't undo the creation: the receipt says `tags_applied: false`,
+   * and repeating the same call (same nonce) replays the receipt and writes
+   * the tags again, which is safe because tags are a set.
+   */
+  async tagCreated(request, response, add) {
+    if (!response.ok) return response;
+    const receipt = await response.clone().json();
+    let outcome;
+    try {
+      const reply = await this.env.PAGES.getByName(receipt.page_id).fetch(
+        forwarded(request, "/internal/tool", {
+          operation: "update_page_tags",
+          arguments: { page_id: receipt.page_id, add },
+        }),
+      );
+      const answer = await reply.json().catch(() => ({}));
+      if (!reply.ok) throw new HttpError(reply.status, answer.error, answer.code);
+      outcome = { tags: answer.tags };
+    } catch (error) {
+      if (!(error instanceof HttpError)) logFailure(error, "page-tags");
+      // The refusal a direct update_page_tags call would get: its status, and
+      // its code when it has one. A failure with no answer is an outage.
+      const refusal = error instanceof HttpError && error.status < 500;
+      outcome = {
+        tags_applied: false,
+        tags_error: refusal
+          ? {
+              status: error.status,
+              ...(error.code && { code: error.code }),
+              message: `The Page was created but its tags were not written: ${error.message}`,
+            }
+          : {
+              status: 503,
+              code: "tags_unavailable",
+              message:
+                "The Page was created but its tags were not written. Send the same create_page again to retry them, or use update_page_tags.",
+            },
+      };
+    }
+    const tagged = json({ ...receipt, ...outcome }, response.status);
+    if (response.headers.has(REPLAYED_RECEIPT_HEADER))
+      tagged.headers.set(REPLAYED_RECEIPT_HEADER, response.headers.get(REPLAYED_RECEIPT_HEADER));
+    return tagged;
   }
 
   /** Finish a reserved create_page or register_page: the Page host creates
@@ -3157,9 +3336,12 @@ export class Catalog {
         if (!response.ok)
           return refuse("project_policy_unavailable", "Project access cannot be verified");
         const policy = await response.json();
+        // A Project with members, invitations or an organization grant is
+        // shared: someone besides its owner reaches the Pages in it.
         if (
           Object.keys(policy.acl?.members ?? {}).length ||
-          Object.keys(policy.acl?.invites ?? {}).length
+          Object.keys(policy.acl?.invites ?? {}).length ||
+          policy.acl?.organizationAccess
         )
           return refuse(
             "shared_project_move_unsupported",
@@ -3788,6 +3970,13 @@ export class Catalog {
    * supplies what is returned. */
   async listSpaces(request, identity, args) {
     const storage = this.storage;
+    if (!args || typeof args !== "object" || Array.isArray(args))
+      throw new HttpError(400, "Invalid list arguments", "invalid_list_arguments");
+    const limit = args.limit ?? 50;
+    if ((args.limit !== undefined && !Number.isSafeInteger(args.limit)) || limit < 1 || limit > 100)
+      throw new HttpError(400, "limit must be an integer from 1 to 100", "invalid_list_arguments");
+    if (args.cursor !== undefined && args.cursor !== null && typeof args.cursor !== "string")
+      throw new HttpError(400, "Invalid cursor; restart from the first page", "invalid_cursor");
     for (const spaceId of await invitedProjects(this.env, identity)) {
       // An invitation is an untrusted candidate, not an existing membership.
       // Capacity conflicts or unavailable candidate hosts must not prevent
@@ -3802,13 +3991,19 @@ export class Catalog {
       }
     }
     const discovered = await storage.list({ prefix: "project-discovery/" });
-    if (discovered.size) {
-      const candidates = [
+    const opened = await openedProjects(storage);
+    if (discovered.size || opened.length) {
+      // Owned Projects, member hints and opened hints, one candidate per
+      // Project, so a Project with more than one is read once.
+      const candidates = new Map();
+      for (const candidate of [
         ...(await storage.list({ prefix: "space/" })).values(),
         ...discovered.values(),
-      ];
+        ...opened,
+      ])
+        if (!candidates.has(candidate.space_id)) candidates.set(candidate.space_id, candidate);
       const spaces = [];
-      for (const candidate of candidates) {
+      for (const candidate of candidates.values()) {
         if (candidate.pending || candidate.deletion) continue;
         const response = await this.env.PROJECTS.getByName(candidate.space_id).fetch(
           forwarded(request, "/internal/space/read", { space_id: candidate.space_id }),
@@ -3817,13 +4012,6 @@ export class Catalog {
         else if (![403, 404, 409].includes(response.status))
           throw new HttpError(503, "Project access is temporarily unavailable");
       }
-      const limit = args.limit ?? 50;
-      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
-        throw new HttpError(
-          400,
-          "limit must be an integer from 1 to 100",
-          "invalid_list_arguments",
-        );
       const context = {
         principal: identity.principal,
         needle: null,
@@ -3860,20 +4048,6 @@ export class Catalog {
         principal: identity.principal,
       });
     }
-    if (!args || typeof args !== "object" || Array.isArray(args))
-      throw new HttpError(400, "Invalid list arguments", "invalid_list_arguments");
-    let limit = 50;
-    if (args.limit !== undefined) {
-      if (!Number.isSafeInteger(args.limit) || args.limit < 1 || args.limit > 100)
-        throw new HttpError(
-          400,
-          "limit must be an integer from 1 to 100",
-          "invalid_list_arguments",
-        );
-      limit = args.limit;
-    }
-    if (args.cursor !== undefined && args.cursor !== null && typeof args.cursor !== "string")
-      throw new HttpError(400, "Invalid cursor; restart from the first page", "invalid_cursor");
     const context = {
       principal: identity.principal,
       needle: null,
@@ -4045,6 +4219,8 @@ export class Catalog {
   async listPages(request, identity, args, limit) {
     const options = parseListArguments(args);
     const storage = this.storage;
+    const tagDb = options.tags ? await this.tagDatabase() : null;
+    const keep = this.tagKeep(options, tagDb);
     if (options.inTrash) await pruneTombstonedTrash(storage);
     if (options.spaceId) {
       // Only the owner can see a Space in this build, and the owner's own
@@ -4094,12 +4270,17 @@ export class Catalog {
     const filtered = options.spaceId !== null || options.parentId !== undefined;
     // Children of a shared parent come from its owner's Catalog, so a
     // rejected one may be a Page the caller can't see at all. That listing
-    // checks every child before it paginates; see scanCandidates.
+    // checks every child before it paginates or filters by tag; see
+    // scanCandidates.
     const scope = {
       locations,
       located,
       sharedChildren: sharedChildren && new Set(sharedChildren),
       exhaustive: !!sharedChildren,
+      // The owner's Catalog names these children whether or not the caller
+      // can read them, so the tag filter runs only on the ones that passed
+      // the access check (scanCandidates).
+      keepVerified: sharedChildren ? keep : null,
     };
     const context = {
       principal: identity.principal,
@@ -4156,6 +4337,7 @@ export class Catalog {
             needle: options.needle,
             access: options.access,
             sort: options.sort,
+            tags: options.tags?.ast ?? null,
           });
       } catch (error) {
         // Listing degrades to the Catalog entries; editing never waits on D1.
@@ -4199,6 +4381,7 @@ export class Catalog {
               inTrash: options.inTrash,
               needle: options.needle,
               sort: options.sort,
+              keep,
               owned: options.access === "shared" ? () => false : (entry) => located(entry.page_id),
               // Shared Pages are never in a Project here, and never under a
               // parent this account owns.
@@ -4212,6 +4395,8 @@ export class Catalog {
       )),
       source: "catalog",
     };
+    if (options.tags || options.includeTags)
+      await this.attachTags(result.pages, tagDb, !!options.tags);
     const response = json({
       pages: result.pages,
       limit: options.limit,
@@ -4226,9 +4411,56 @@ export class Catalog {
       quota,
       principal: identity.principal,
       account: accountIdentity(identity),
+      ...(options.tags && { tag_filter: options.tags.canonical }),
     });
     response.headers.set("x-pages-catalog-source", result.source);
     return response;
+  }
+
+  async tagDatabase() {
+    return pageTagsDatabase(this.env, this.ctx);
+  }
+
+  /** For a listing with a tag filter, `keep(pageIds)` answers the Set of IDs
+   * that satisfy it, read from the `page_tags` table in D1. A failure is `tags_unavailable`: the
+   * Catalog entries have no tags, so the listing can't answer without it. */
+  tagKeep(options, db) {
+    if (!options.tags) return null;
+    return async (pageIds) => {
+      try {
+        return await tagMatchingIds(db, options.tags.ast, pageIds);
+      } catch (error) {
+        logFailure(error, "page-tags");
+        throw tagsUnavailable();
+      }
+    };
+  }
+
+  /** Set `tags` on each listed Page: an array, empty when it has none. Best
+   * effort without a tag filter: a listing never fails for want of tags, and
+   * a Page with no `tags` field means they could not be read. A tag filter
+   * promises `tags` on every Page it returns, so when it can't read them the
+   * listing is `tags_unavailable`, never Pages without their tags (`strict`).
+   * `tagDb` is a handle from `tagDatabase`, or null to open one here: either
+   * way the tag schema is current before the read. */
+  async attachTags(pages, tagDb, strict = false) {
+    if (!pages.length) return;
+    try {
+      const handle =
+        tagDb ?? (catalogIndexEpoch(this.env) ? await openPageTags(this.env, this.ctx) : null);
+      if (!handle) {
+        if (strict) throw tagsUnavailable();
+        return;
+      }
+      const tags = await readPageTags(
+        handle,
+        pages.map((page) => page.page_id),
+      );
+      for (const page of pages) page.tags = tags.get(page.page_id) ?? [];
+    } catch (error) {
+      logFailure(error, "page-tags");
+      if (strict) throw tagsUnavailable();
+    }
   }
 
   /** Up to `options.limit` verified Pages after the position `after`, and the
@@ -4237,6 +4469,8 @@ export class Catalog {
    * and the next cursor resume from the order's key, never a row's own
    * `updated_at`. */
   async listSharedProjectPages(request, identity, options) {
+    const tagDb = options.tags ? await this.tagDatabase() : null;
+    const keep = this.tagKeep(options, tagDb);
     const response = await this.env.PROJECTS.getByName(options.spaceId).fetch(
       forwarded(request, "/internal/space/read", { space_id: options.spaceId }),
     );
@@ -4265,34 +4499,38 @@ export class Catalog {
     const { position: after } = options.cursor
       ? await openListingCursor(this.env, context, options.cursor, options.sort)
       : { position: null };
+    const candidates =
+      options.inTrash || options.access === "owned" ? [] : ids.map((e) => e.page_id);
     const result = await this.scanCandidates(
       request,
       identity,
-      childIdSource(
-        options.inTrash || options.access === "owned" ? [] : ids.map((entry) => entry.page_id),
-        options.sort,
-      ),
+      childIdSource(candidates, options.sort),
       { ...options, spaceId: null },
       {
         locations: new Map(),
         located: () => false,
         sharedChildren: new Set(ids.map((entry) => entry.page_id)),
         exhaustive: true,
+        // Filtered after each Page's access check, never before it.
+        keepVerified: keep,
       },
       after,
       null,
     );
+    const pages = result.pages.map((page) => ({
+      ...page,
+      space_id: options.spaceId,
+      parent_id: entries.find((entry) => entry.page_id === page.page_id)?.parent_id,
+    }));
+    if (options.tags || options.includeTags) await this.attachTags(pages, tagDb, !!options.tags);
     return json({
-      pages: result.pages.map((page) => ({
-        ...page,
-        space_id: options.spaceId,
-        parent_id: entries.find((entry) => entry.page_id === page.page_id)?.parent_id,
-      })),
+      pages,
       limit: options.limit,
       next_cursor: result.next
         ? await sealPosition(this.env, { ...context, source: "catalog" }, options.sort, result.next)
         : null,
       principal: identity.principal,
+      ...(options.tags && { tag_filter: options.tags.canonical }),
     });
   }
 
@@ -4399,7 +4637,17 @@ export class Catalog {
     while (verified.length <= limit && scanned < scanBound) {
       const want = Math.min(limit + 1 - verified.length, scanBound - scanned);
       const rows = await source.next(position, want);
-      const checked = await boundedMap(rows, sharedCheckBounds.concurrency, check);
+      let checked = await boundedMap(rows, sharedCheckBounds.concurrency, check);
+      // A tag filter on candidates the caller may not be able to see runs on
+      // the ones that passed their check, so a tag never decides what a
+      // refused Page reveals, and a Page that fails the filter still counts
+      // as scanned.
+      if (scope.keepVerified && checked.some(Boolean)) {
+        const matched = await scope.keepVerified(
+          checked.filter(Boolean).map((page) => page.page_id),
+        );
+        checked = checked.map((page) => (page && matched.has(page.page_id) ? page : null));
+      }
       for (const [index, page] of checked.entries())
         if (page) verified.push({ page, row: rows[index] });
       scanned += rows.length;
@@ -4909,6 +5157,7 @@ export class Page {
       } else throw error;
     }
     await this.loadComments();
+    await this.sourcesEvent({ type: "boot", recorded: recordNamesSources(this.metadata) });
     await this.restoreTitleProjection();
     // After recovery: a replayed journal entry was accepted before the
     // restart, not now.
@@ -5128,11 +5377,7 @@ export class Page {
    * no-op once it exists, so this also creates it the first time. */
   async loadComments() {
     if (this.commentsHandle || !this.commentsUuid) return;
-    const documentId = commentsDocumentId(this.commentsUuid);
-    this.plain.serve(documentId, COMMENTS_MODULE.kind);
-    this.commentsHandle = await this.repo.import(A.save(commentsGenesis(this.commentsUuid)), {
-      docId: documentId,
-    });
+    this.commentsHandle = await this.importDerived(COMMENTS_MODULE, this.commentsUuid);
     this.assertNotAbandoned();
     await recoverDocumentMutations(
       this.ctx.storage,
@@ -5140,6 +5385,93 @@ export class Page {
       () => this.flush(),
       COMMENTS_DOC,
     );
+  }
+
+  /** Serve the document `module` derives for this Page (`module.derived`)
+   * under UUID `uuid`, and import its fixed genesis. Importing is a no-op
+   * once the document is stored, so this also creates it. Returns its
+   * handle; the caller replays its journal. */
+  async importDerived(module, uuid) {
+    const documentId = derivedDocumentId(uuid);
+    this.plain.serve(documentId, module.kind);
+    return this.repo.import(A.save(module.derived.genesis(uuid)), { docId: documentId });
+  }
+
+  /** The id of this Page's sources document, derived from the Page id
+   * whether or not the document exists. */
+  async sourcesDocumentId() {
+    this.sourcesUuid ??= await derivedDocUuid(SOURCES_MODULE.derived.label, this.metadata.pageId);
+    return derivedDocumentId(this.sourcesUuid);
+  }
+
+  /** Step the sources lifecycle (sources-lifecycle.mjs) and run its effects
+   * in order. A failed effect leaves the lifecycle where the next write
+   * starts over, and throws. */
+  async sourcesEvent(event) {
+    const result = sourcesStep(this.sourcesState ?? SOURCES_ABSENT, event);
+    if (result.rejected)
+      throw Error(`The sources lifecycle refused ${event.type} in ${this.sourcesState?.name}`);
+    this.sourcesState = result.state;
+    for (const effect of result.effects) {
+      let done;
+      try {
+        done = await this.sourcesEffect(effect);
+      } catch (error) {
+        this.sourcesState = sourcesStep(this.sourcesState, { type: "failed" }).state;
+        throw error;
+      }
+      await this.sourcesEvent(done);
+    }
+  }
+
+  /** One sources lifecycle effect. Returns the event that reports it. */
+  async sourcesEffect(effect) {
+    switch (effect) {
+      case "load":
+      case "store": {
+        const documentId = await this.sourcesDocumentId();
+        this.sourcesHandle = await this.importDerived(SOURCES_MODULE, this.sourcesUuid);
+        this.assertNotAbandoned();
+        if (effect === "load") {
+          await recoverDocumentMutations(
+            this.ctx.storage,
+            this.sourcesHandle,
+            () => this.flush(),
+            SOURCES_DOC,
+          );
+          return { type: "loaded" };
+        }
+        await this.plain.flush([documentId]);
+        await this.ctx.storage.sync();
+        return { type: "stored" };
+      }
+      case "record": {
+        const metadata = {
+          ...this.metadata,
+          documentFormats: {
+            ...recordDocumentFormats(this.metadata),
+            [SOURCES_MODULE.type]: WRITTEN_FORMATS[SOURCES_MODULE.type],
+          },
+        };
+        await this.ctx.storage.put("host/document", metadata);
+        await this.ctx.storage.sync();
+        this.metadata = metadata;
+        return { type: "recorded" };
+      }
+      default:
+        throw Error(`Unknown sources effect ${effect}`);
+    }
+  }
+
+  /** Forget the sources document: the Page's documents are gone. */
+  dropSources() {
+    this.sourcesHandle = undefined;
+    this.sourcesState = sourcesStep(this.sourcesState ?? SOURCES_ABSENT, { type: "drop" }).state;
+  }
+
+  /** The Page's sources document, or undefined while it doesn't exist. */
+  sourcesView() {
+    return this.sourcesState?.name === "ready" ? this.sourcesHandle?.doc() : undefined;
   }
 
   /** Boot plain Automerge sync for the Page: DocumentPolicy for access, and
@@ -5532,17 +5864,25 @@ export class Page {
 
   /** Lifecycle state for the index, after the host record is durable. */
   async retireIndex() {
-    if (!catalogIndexEpoch(this.env)) return;
-    try {
-      await withTimeout(
-        retirePageIndex(this.env, this.ctx, this.metadata),
-        catalogIndexTimeouts.write,
-      );
-    } catch (error) {
-      // Owner rows are confirmed against the Catalog and non-owner rows were
-      // removed before commit, so a missed retirement cannot list the Page.
-      logFailure(error, "catalog-index-retire");
+    if (catalogIndexEpoch(this.env)) {
+      try {
+        await withTimeout(
+          retirePageIndex(this.env, this.ctx, this.metadata),
+          catalogIndexTimeouts.write,
+        );
+      } catch (error) {
+        // Owner rows are confirmed against the Catalog and non-owner rows were
+        // removed before commit, so a missed retirement cannot list the Page.
+        logFailure(error, "catalog-index-retire");
+      }
     }
+    // A permanent deletion deletes the Page's tag rows itself, after the
+    // tombstone above fences late tag writes, and whether or not the catalog
+    // index is on. Unlike the projection it is not best-effort: the rows are
+    // the only record, so a failure fails this step and the lifecycle repeats
+    // it. Trash keeps tags.
+    if (pageState(this.metadata) === "deleted")
+      await deletePageTags(this.env, this.ctx, this.metadata.pageId);
   }
 
   async installAccess(metadata) {
@@ -5592,13 +5932,14 @@ export class Page {
   }
 
   /** The repo document IDs this Page host holds: the Page and, once open,
-   * its comments document. A record in a format this build doesn't write
-   * holds none. */
+   * its comments and sources documents. A record in a format this build
+   * doesn't write holds none. */
   documentIds() {
     if (this.formatRefusal()) return [];
     return [
       this.metadata.documentId,
       ...(this.commentsHandle ? [commentsDocumentId(this.commentsUuid)] : []),
+      ...(this.sourcesHandle ? [derivedDocumentId(this.sourcesUuid)] : []),
     ];
   }
 
@@ -5627,11 +5968,13 @@ export class Page {
     return settle(this.enqueue(request));
   }
 
-  /** Run `request` in admission order. */
+  /** Run `request` in admission order. A request that returns `AfterQueue`
+   * has decided its admission in the queue and finishes its work here, after
+   * the queue has moved on, so a slow dependency can't hold later requests. */
   enqueue(request) {
     const next = this.tail.then(() => this.run(request));
     this.tail = next.catch(() => {});
-    return next;
+    return next.then((result) => (result instanceof AfterQueue ? result.finish() : result));
   }
 
   /** An upload capability's screen (asset-uploads.mjs uploadScreen): only the
@@ -6007,10 +6350,14 @@ export class Page {
           documentId: this.metadata.documentId,
           // The comments document syncs on the same socket.
           ...(this.commentsHandle && { commentsDocumentId: commentsId }),
+          // The sources document, once it exists, syncs on the same socket
+          // to a client that declares its format; nothing in the viewer
+          // reads it yet.
           documents: pageDocuments(
             recordDocumentFormats(this.metadata),
             this.metadata.documentId,
             commentsId,
+            this.sourcesView() ? derivedDocumentId(this.sourcesUuid) : undefined,
           ),
           recordStorage: "automerge",
           serverSenderId: this.serverSenderId,
@@ -6075,6 +6422,7 @@ export class Page {
             historyIncomplete: incompleteHistory(this.handle.doc()),
             getPresence: (doc) => this.activityState().read(doc),
             commentsDoc: this.commentsView(),
+            sourcesDoc: this.sourcesView(),
             revisions: this.revisionTable(),
           };
           const result =
@@ -6108,6 +6456,23 @@ export class Page {
         if (["manage_page_comment", "reply_page_comment"].includes(body.operation))
           return json(await this.writeComment(request, identity, body));
         this.policy.account(identity, true);
+        if (body.operation === "update_page_tags") {
+          if (state === "trashed")
+            throw new HttpError(409, "Restore this Page before changing its tags", "page_trashed");
+          // Access and Trash state are decided here, in the queue. The write
+          // is D1 work, so it runs after the queue releases this request
+          // (updateTags).
+          const change = this.tagChange(body.arguments);
+          const pageId = this.metadata.pageId;
+          return new AfterQueue(async () => {
+            try {
+              return json(await this.updateTags(identity, pageId, change));
+            } catch (error) {
+              if ((error.status ?? 500) >= 500) logFailure(error, "page");
+              return errorResponse(await this.agentRefusal(error), "page");
+            }
+          });
+        }
         if (body.operation === "report_page_progress") {
           const revision = body.arguments?.revision;
           // The targets' revision resolves before the snapshot it is checked in.
@@ -6134,6 +6499,16 @@ export class Page {
           );
         if (body.operation !== "edit_page") throw new HttpError(400, "Unknown document operation");
         const ops = Array.isArray(body.arguments?.operations) ? body.arguments.operations : [];
+        // One journal entry writes one document: a batch with a set_source
+        // writes the sources document and nothing else.
+        const sourceOps = ops.filter((op) => op?.op === "set_source").length;
+        if (sourceOps && sourceOps !== ops.length)
+          throw new HttpError(
+            400,
+            "A batch with set_source holds only set_source operations. Send the other operations in a second edit_page request.",
+            "invalid_arguments",
+          );
+        if (sourceOps) return json(await this.writeSources(request, identity, body));
         // Ops that create a node naming a stored asset (model/node-registry.mjs).
         const inserts = ops.filter((op) => insertOperation(op?.op) || op?.op === "set_image");
         // Where this batch landed, captured inside the change so the cursors
@@ -6316,6 +6691,54 @@ export class Page {
   }
 
   /**
+   * The validated change of one update_page_tags call: `{ add, remove }`,
+   * normalized sets that don't overlap. Pure, so it runs in the Page's queue.
+   */
+  tagChange(args = {}) {
+    const add = tagList(args.add, "add");
+    const remove = tagList(args.remove, "remove");
+    if (!add.length && !remove.length)
+      throw new HttpError(
+        400,
+        "update_page_tags needs a tag to add or remove",
+        "invalid_arguments",
+      );
+    if (add.some((tag) => remove.includes(tag)))
+      throw new HttpError(400, "A tag can't be in both add and remove", "invalid_arguments");
+    return { add, remove };
+  }
+
+  /**
+   * One update_page_tags call, after the queue has released it. The caller has
+   * edit access and the Page was not in Trash when the queue admitted it. The
+   * Page host only authorizes the call; it keeps no tag state, and no Durable
+   * Object does. Tags are rows in the D1 `page_tags` table, the only record of
+   * them (page-tags-store.mjs), and never part of the document: this changes
+   * neither the Page's content nor its revision. `add` and `remove` are sets,
+   * so a repeat changes nothing and needs no receipt. A Trash or purge between
+   * the admission and the write is fenced in D1 (writePageTags); a timeout
+   * answers `tags_unavailable`, which doesn't say whether the write landed, and
+   * the same call is safe to repeat.
+   */
+  async updateTags(identity, pageId, { add, remove }) {
+    const db = await pageTagsDatabase(this.env, this.ctx);
+    try {
+      const tags = await writePageTags(db, {
+        pageId,
+        principal: identity.principal,
+        add,
+        remove,
+        now: new Date().toISOString(),
+      });
+      return { page_id: pageId, tags };
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      logFailure(error, "page-tags");
+      throw tagsUnavailable();
+    }
+  }
+
+  /**
    * One manage_page_comment or reply_page_comment call, written to the
    * comments document. It needs `comment`, never `edit`, and never changes
    * the Page document. The receipt's `comment_revision` names the comments
@@ -6402,6 +6825,98 @@ export class Page {
       comments: true,
     });
     return receipt;
+  }
+
+  /**
+   * One edit_page batch of set_source operations, written to the sources
+   * document (model/sources-doc.mjs) through the journal. The caller holds
+   * edit access. The request names the Page `revision` it read, fenced like
+   * any edit_page write, but a source write never conflicts with a Page
+   * change: a Page revision that isn't current still writes. Each operation
+   * names the source revision its caller saw instead.
+   *
+   * A journaled source write whose apply didn't finish (its barrier failed)
+   * is replayed first, so a new write checks source revisions against every
+   * write that has a receipt. For a new intent, `prepare` checks the batch
+   * against the sources the Page holds (none before its document exists),
+   * checks that every named asset is a dataset stored on this Page, takes its
+   * media type from the stored record, and only then creates the sources
+   * document when the Page has none (sources-lifecycle.mjs), so a refused
+   * write creates nothing. Until then the journal reads the fixed genesis.
+   * The receipt's `sources_revision` names the sources document after the
+   * write; an exact retry replays it.
+   */
+  async writeSources(request, identity, body) {
+    const args = body.arguments ?? {};
+    const mediaTypes = new Map();
+    // Stored on the source as its writer's agent, so the retry fingerprint
+    // covers it, as a comment's does.
+    const agent = agentFromProvenance(identity.clientProvenance);
+    await this.sourcesDocumentId();
+    if (this.sourcesView())
+      await recoverDocumentMutations(
+        this.ctx.storage,
+        this.sourcesHandle,
+        () => this.flush(),
+        SOURCES_DOC,
+      );
+    let genesis;
+    const handle = {
+      doc: () =>
+        this.sourcesView() ?? (genesis ??= SOURCES_MODULE.derived.genesis(this.sourcesUuid)),
+      update: (fn, options) => this.sourcesHandle.update(fn, options),
+    };
+    try {
+      return await documentMutation({
+        storage: this.ctx.storage,
+        hostActorPrefix: this.plain.hostActorPrefix,
+        handle,
+        doc: SOURCES_DOC,
+        // edit_page's nonces share one lane, whichever document a batch writes.
+        lane: PAGE_DOC,
+        pageId: this.metadata.pageId,
+        operation: body.operation,
+        args,
+        identity,
+        agent,
+        guard: (input) => input,
+        pageHeads: () => A.getHeads(this.handle.doc()),
+        prepare: async () => {
+          let assetIds;
+          try {
+            assetIds = validateSourceBatch(args.operations);
+            checkSources(handle.doc(), args.operations);
+          } catch (error) {
+            throw sourceRefusal(error);
+          }
+          for (const assetId of assetIds) {
+            const dataset = await requireStoredDatasetAsset(this.env.PAGES_ASSETS, {
+              pageId: this.metadata.pageId,
+              assetId,
+            });
+            mediaTypes.set(assetId, dataset.mime_type);
+          }
+          // Access can change while the asset records are read.
+          this.policy.account(await authenticate(request, this.env), true);
+          await this.sourcesEvent({ type: "create", recorded: recordNamesSources(this.metadata) });
+        },
+        apply: (draft, effectiveArgs) => {
+          try {
+            return {
+              edits: setSources(draft, effectiveArgs.operations, {
+                mediaTypes,
+                by: authorOf(publicIdentity(identity), agent),
+              }),
+            };
+          } catch (error) {
+            throw sourceRefusal(error);
+          }
+        },
+        flush: () => this.flush(),
+      });
+    } finally {
+      if (genesis) A.free(genesis);
+    }
   }
 
   /** Owner or a valid viewer/editor grant on the deleted metadata. A role
@@ -6776,21 +7291,29 @@ export class Page {
         this.activity?.close();
         this.plain.disconnectAll();
         return;
-      case "deleteDocument":
+      case "deleteDocument": {
         await this.forgetContent();
-        // Both documents go together: the Page and its comments.
+        // Every document goes together: the Page, its comments and its
+        // sources. From metadata, not loaded handles: a deleted Page boots
+        // without them.
+        const sourcesId =
+          (recordNamesSources(this.metadata) || this.sourcesHandle) &&
+          (await this.sourcesDocumentId());
         await this.repo.delete(this.metadata.documentId);
         if (this.commentsUuid) await this.repo.delete(commentsDocumentId(this.commentsUuid));
+        if (sourcesId) await this.repo.delete(sourcesId);
+        this.dropSources();
         await this.deleteAssets();
-        // From metadata, not loaded handles: a deleted Page boots without them.
         await this.plain.forget(
           [
             this.metadata.documentId,
             this.commentsUuid && commentsDocumentId(this.commentsUuid),
+            sourcesId,
           ].filter(Boolean),
         );
         if (this.metadata.recordStorageMigratedFrom) await this.purgeConvertedRecords();
         return;
+      }
       case "flush":
         // A deleted document has nothing left to flush; the barrier stays.
         await this.plain.flush(pageState(this.metadata) === "deleted" ? [] : this.documentIds());
@@ -6804,6 +7327,7 @@ export class Page {
         await this.forgetContent();
         this.handle = undefined;
         this.commentsHandle = undefined;
+        this.dropSources();
         return;
       case "loadDocument":
         await this.loadDocument();
@@ -7127,14 +7651,15 @@ export class Page {
     } catch (error) {
       return refuseSocket(error, identity);
     }
-    return this.connectPlain(request, identity, features, sender);
+    return this.connectPlain(request, identity, features, sender, readable);
   }
 
   /** connect()'s socket. HTTP authentication already named the
    * principal; the socket speaks plain Automerge sync (sync/wire.mjs), and
    * PlainSync checks access on every frame. No handshake, no signing key.
-   * `sender` is PlainSync.sender's decision for this socket's presence id. */
-  connectPlain(request, identity, features, sender) {
+   * `sender` is PlainSync.sender's decision for this socket's presence id, and
+   * `formats` the document formats its client declared it reads. */
+  connectPlain(request, identity, features, sender, formats) {
     const pair = new WebSocketPair();
     const client = pair[0],
       socket = pair[1];
@@ -7150,7 +7675,11 @@ export class Page {
     try {
       // The tab's presence id (plainSender): it keys presence labels, and the
       // host stamps every relay with it.
-      conn = this.plain.accept(socket, identity, { features, senderId: sender.senderId });
+      conn = this.plain.accept(socket, identity, {
+        features,
+        formats,
+        senderId: sender.senderId,
+      });
     } catch (error) {
       logAdmissionDenied(error, { stage: "native", identity });
       logUsage(

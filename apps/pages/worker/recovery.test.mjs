@@ -7,7 +7,7 @@ import { Catalog, Page } from "./index.mjs";
 import { documentMutation, operationKey, recoverDocumentMutations } from "./mutations.mjs";
 import { headsFor } from "./revisions.mjs";
 import { plainStub } from "./plain-stub.mjs";
-import { WRITTEN_FORMATS } from "../model/document-types.mjs";
+import { MEMBER_FORMATS } from "../model/document-types.mjs";
 
 class Storage {
   values = new Map();
@@ -84,7 +84,7 @@ test("Page restart recovers an intent based on an unflushed WebSocket edit", asy
   await storage.put("fixture/document", A.save(doc));
   await storage.put("host/document", {
     pageId,
-    documentFormats: WRITTEN_FORMATS,
+    documentFormats: MEMBER_FORMATS,
     documentId: "fixture",
     deleted: false,
   });
@@ -300,7 +300,7 @@ test("a new purge key completes failed deletion barriers before clearing its cat
     ctx: contextFor(storage),
     metadata: {
       pageId,
-      documentFormats: WRITTEN_FORMATS,
+      documentFormats: MEMBER_FORMATS,
       documentId: "fixture",
       owner: `user:anaconda-fixture:${auth.subject}`,
       deleted: false,

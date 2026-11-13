@@ -5,6 +5,7 @@ import { PRODUCT_NAME } from "./shared/product.mjs";
 import { HIGHLIGHT_COLORS, MARK_NAMES, formatAddSchema } from "./model/marks.mjs";
 import { SETTABLE_ATTRS, retypeTargets } from "./model/node-registry.mjs";
 import { richContentInstructions } from "./model/rich-content-guide.mjs";
+import { MAX_SOURCE_NAME, SOURCE_ID_PATTERN, SOURCE_REVISION_PATTERN } from "./shared/sources.mjs";
 import {
   RENAMED_TOOLS,
   refusalCode,
@@ -152,6 +153,15 @@ const readSelectors = {
     maximum: 100,
     description: "Outline entries (default 100). Follow next_offset until null.",
   },
+  sources: {
+    type: "boolean",
+    description: "true lists the Page's named sources. Alone, skips content.",
+  },
+  source_id: {
+    type: "string",
+    pattern: SOURCE_ID_PATTERN,
+    description: "Reads one source, who set it when, and its history. Alone, skips content.",
+  },
   max_bytes: readBudget,
 };
 const nonce = {
@@ -237,9 +247,10 @@ const editOperation = {
         "replace_match",
         "format_match",
         "set_node",
+        "set_source",
       ),
       description:
-        "set_title: title. replace_block_markdown: node_id, markdown. insert_markdown: markdown, after_node_id. move_block: node_id, after_node_id. delete_block: node_id. insert_image: asset_id, alt; optional dark_asset_id, title, after_node_id. set_image: node_id and the fields to change. insert_node: node, after_node_id. delete_node: node_id. replace_match: node_id, match_text, replacement or replacement_markdown. format_match: node_id, match_text, add or remove; optional all. set_node: node_id, match_text, type or attrs.",
+        "set_title: title. replace_block_markdown: node_id, markdown. insert_markdown: markdown, after_node_id. move_block: node_id, after_node_id. delete_block: node_id. insert_image: asset_id, alt; optional dark_asset_id, title, after_node_id. set_image: node_id and the fields to change. insert_node: node, after_node_id. delete_node: node_id. replace_match: node_id, match_text, replacement or replacement_markdown. format_match: node_id, match_text, add or remove; optional all. set_node: node_id, match_text, type or attrs. set_source: source_id, name, asset_id, source_revision; alone in its batch.",
     },
     node_id: {
       ...address,
@@ -261,7 +272,19 @@ const editOperation = {
     asset_id: {
       ...assetId,
       description:
-        "Image ops: asset uploaded to this Page (create_page_asset_upload or import_page_image).",
+        "Image ops and set_source: asset uploaded to this Page (create_page_asset_upload or import_page_image).",
+    },
+    source_id: { type: "string", pattern: SOURCE_ID_PATTERN, description: "set_source: its ID." },
+    name: {
+      ...string,
+      minLength: 1,
+      maxLength: MAX_SOURCE_NAME,
+      description: "set_source: its name.",
+    },
+    source_revision: {
+      type: ["string", "null"],
+      pattern: SOURCE_REVISION_PATTERN,
+      description: "set_source: source_revision you read; null creates. Else stale_source.",
     },
     dark_asset_id: {
       ...assetId,
@@ -367,6 +390,12 @@ const WRITE = {
   openWorldHint: false,
 };
 const DESTRUCTIVE = { ...WRITE, destructiveHint: true };
+const tagList = {
+  type: "array",
+  items: { type: "string", maxLength: 64 },
+  maxItems: 32,
+  uniqueItems: true,
+};
 const accessRevision = {
   type: "integer",
   minimum: 0,
@@ -443,7 +472,7 @@ export const tools = [
   ),
   tool(
     "get_project_access",
-    "As a Project's owner, read its sharing revision (not get_project's), members keyed by principal, and invites with expiresAt (epoch milliseconds). Needs pages:share consent.",
+    "As a Project's owner, read its sharing revision (not get_project's), members keyed by principal, invites with expiresAt (epoch milliseconds), and organization options (organizationOptions, organizationProof, organizationAccess). Needs pages:share consent.",
     { project_id: project },
     ["project_id"],
     READ,
@@ -451,10 +480,12 @@ export const tools = [
   ),
   tool(
     "manage_project_access",
-    "Share a whole Project as its owner, at the revision from get_project_access. invite takes an exact known email and role; no email is sent. set_role takes a member's principal (null removes). revoke_invite takes invite_id. Project access covers content and all Pages; direct Page grants stay separate. Needs pages:share consent.",
+    "Share a whole Project as its owner, at the revision from get_project_access. invite takes an exact known email and role; no email is sent. set_role takes a member's principal (null removes). revoke_invite takes invite_id. set_organization_access: organization_id from organizationOptions and role, or null. Project access covers content and all Pages; direct Page grants stay separate. Needs pages:share consent.",
     {
       project_id: project,
-      action: { ...choice("invite", "set_role", "revoke_invite") },
+      action: {
+        ...choice("invite", "set_role", "revoke_invite", "set_organization_access"),
+      },
       email: {
         ...string,
         description: "Exact known email for invite; never guessed.",
@@ -465,6 +496,7 @@ export const tools = [
       },
       principal: accessPrincipal,
       role: accessRole,
+      organization_id: { type: ["string", "null"] },
       expected_revision: accessRevision,
       nonce,
     },
@@ -474,7 +506,7 @@ export const tools = [
   ),
   tool(
     "list_pages",
-    "List Pages this account can open, with account and quota. Without project_id, Project Pages you never opened may be missing: use list_projects, then list_pages with project_id. Each Page has content_updated_at (null means unknown, not empty). in_trash:true lists your trashed Pages instead. Pass next_cursor back as cursor until null; pages are not a snapshot, and a short result doesn't prove a Page is absent.",
+    "List Pages this account can open, with account and quota. Without project_id, Project Pages you never opened may be missing: use list_projects, then list_pages with project_id. Each Page has content_updated_at (null means unknown, not empty) and tags (an array; missing means they could not be read). tags filters by a boolean expression over them. in_trash:true lists your trashed Pages instead. Pass next_cursor back as cursor until null; pages are not a snapshot, and a short result doesn't prove a Page is absent.",
     {
       query: {
         ...string,
@@ -519,13 +551,34 @@ export const tools = [
         description:
           "activity (default): last edited by content_updated_at (last trashed with in_trash). created lists the newest first. title: by lowercased code point.",
       },
+      include_tags: {
+        type: "boolean",
+        description: "Add each Page's tags (an array) to the result. Implied by tags.",
+      },
+      tags: {
+        ...string,
+        maxLength: 256,
+        description:
+          "Only Pages whose tags satisfy this expression: tags joined by AND or OR, NOT before a tag or group, parentheses to group. Operators are uppercase; tags are lowercase a-z 0-9 . _ : / - (case is folded). AND and OR can't mix at one level: write (a OR b) AND c. Examples: hello AND world; hello OR world; hello AND NOT world; (repo:nteract OR repo:kilo) AND status:reviewing. The result echoes the canonical expression as tag_filter; if it is missing, the host ignored the filter.",
+      },
     },
     [],
     READ,
   ),
   tool(
+    "update_page_tags",
+    "Add and remove tags on a Page you can edit. A tag is a lowercase label (a-z, 0-9 and . _ : / -, starting with a letter or digit, up to 64 characters; case is folded; and, or and not are reserved). Other agents find Pages with list_pages tags. A tag such as session:<id> is a claim by whoever added it, not proof of who wrote the Page: anyone who can edit the Page can add or remove it. A Page holds at most 32. Adding a tag it has, or removing one it lacks, changes nothing, so a retry is safe and needs no nonce. Tags are stored apart from the Page's content: this never changes its revision. Anyone who can see a Page sees its tags, so put no secrets in them. Returns the Page's full tag set.",
+    {
+      page_id: page,
+      add: { ...tagList, description: "Tags to add." },
+      remove: { ...tagList, description: "Tags to remove." },
+    },
+    ["page_id"],
+    WRITE,
+  ),
+  tool(
     "create_page",
-    "Create a rich-text Page. Returns url and revision, so the first edit needs no read. Omit project_id and parent_id for Your items; parent_id makes a sub-page (max 9 levels). Project owners and editors can add Pages; a Page added to someone else's Project is owned by its owner.",
+    "Create a rich-text Page. Returns url and revision, so the first edit needs no read. Omit project_id and parent_id for Your items; parent_id makes a sub-page (max 9 levels). Project owners and editors can add Pages; a Page added to someone else's Project is owned by its owner. tags adds tags as update_page_tags does; if the Page is created but its tags are not written the result says tags_applied:false; only for tags_unavailable does the same call again retry them.",
     {
       title,
       markdown: markdownBody,
@@ -535,6 +588,7 @@ export const tools = [
         type: "string",
         description: "Parent Page ID; implies its Project.",
       },
+      tags: { ...tagList, description: "Tags to put on the new Page." },
       nonce,
     },
     ["title", "nonce"],
@@ -1048,6 +1102,13 @@ export async function handleMcp(request, invoke, env, { onInitialize } = {}) {
           code: "outcome_unknown",
           error:
             "Upload URL request failed; nothing was stored and the document was not edited. Request a new upload URL.",
+          retryable: true,
+        });
+      if (params.name === "update_page_tags")
+        return failed({
+          code: "outcome_unknown",
+          error:
+            "Request failed; the tags may or may not have changed. Send the same request again: adding or removing a tag twice changes nothing.",
           retryable: true,
         });
       return failed(

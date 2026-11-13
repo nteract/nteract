@@ -250,7 +250,11 @@ for (const fails of [true, false])
             options.releaseFiles,
             releaseFilesOf(options.viewerChunks, options.viewerAssets),
           );
-          assert.deepEqual(options.documentFormats, { "pages.page": [3], "pages.comments": [2] });
+          assert.deepEqual(options.documentFormats, {
+            "pages.page": [3],
+            "pages.comments": [2],
+            "pages.sources": [1],
+          });
           assert.ok(options.releaseFiles.includes("index.js"));
           assert.ok(options.releaseFiles.includes("public/chunks/ABCDEFGH.js"));
           assert.ok(!options.releaseFiles.includes("build-receipt.json"));

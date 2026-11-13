@@ -163,9 +163,11 @@ function mountShell(frame, { blocks, pageId, theme }) {
     const editor = Wordgard.create({
       parent: wrap,
       doc: decode(block.spans).doc,
-      config: readOnlyPageConfig({ pageId, eagerDataframes: true }),
+      config: [
+        readOnlyPageConfig({ pageId, eagerDataframes: true }),
+        Wordgard.editorAttributes.of({ class: "wordgard-document" }),
+      ],
     });
-    editor.dom.classList.add("wordgard-document");
     editors.push(editor);
   }
   return { shell, editors };

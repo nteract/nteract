@@ -88,6 +88,10 @@ import { DATASET_ACCEPT } from "../shared/dataset-assets.mjs";
 import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
 import { displaySymbols } from "./wordgard-symbols.mjs";
 import { clickBelowFinalBlock, exitBlock, leaveFinalBlock } from "./wordgard-leave-block.mjs";
+import { codeIndentation, selectedCodeBlock } from "./wordgard-code-indent.mjs";
+import { codeBrackets } from "./wordgard-code-brackets.mjs";
+import { codeComments } from "./wordgard-code-comments.mjs";
+import { codeWords } from "./wordgard-code-words.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 import {
   createWordgardCollaboration,
@@ -369,6 +373,11 @@ export function WordgardEditor(props) {
         markdownShortcuts(),
         tables({ cellContent: "inline", cellSpanning: false }),
         tablePresentation,
+        // Before the table keys: in a code block Tab indents.
+        codeIndentation,
+        codeBrackets,
+        codeComments,
+        codeWords,
         tableKeys,
         GardState.schemaElement.of(elements),
         // A link to another Page or a Project gets its glyph and the hover
@@ -449,6 +458,9 @@ export function WordgardEditor(props) {
             (latest.current.editable && Command.dispatch(editor, toggleHighlight)),
         }),
         Wordgard.contentAttributes.of({ "aria-label": "Document text", ...PROSE_ENTRY_ATTRIBUTES }),
+        // Wordgard rewrites the editor element's class on focus, so classes
+        // added to editor.dom directly don't last. Add them here.
+        Wordgard.editorAttributes.of({ class: "wordgard-document" }),
         // On phones the compact bar and the header cover the visual viewport's
         // edges; keep the caret clear of both when scrolling it into view.
         Wordgard.coveredMargins.of(() => {
@@ -464,7 +476,7 @@ export function WordgardEditor(props) {
             bottom: bar ? Math.max(0, bottomEdge - bar.top) : 0,
           };
         }),
-        // Wordgard 0.6.2's scrollTo shrinks the caret's rect by the covered
+        // Wordgard 0.7.0's scrollTo shrinks the caret's rect by the covered
         // margins where it should grow it, so with any covered margin the
         // caret can stop under the header or the bar; margins taller than a
         // line flip the rect and skip the scroll entirely. Desktop's header
@@ -564,7 +576,6 @@ export function WordgardEditor(props) {
       },
     });
     imageUploader.current = uploader;
-    editor.dom.classList.add("wordgard-document");
     let caretFrame = null,
       beatTimer;
     const reducedMotion = glide.enabled && matchMedia("(prefers-reduced-motion: reduce)");
@@ -808,6 +819,10 @@ export function WordgardEditor(props) {
               ? "image"
               : null,
         table: !!selectedTable(state),
+        // A selection inside one code block. Code text carries no marks
+        // (wordgardCodeNewlines), so the mark controls don't apply. `code`
+        // itself is the inline code mark's state.
+        codeBlock: !!selectedCodeBlock(state),
         // Any node selection (an image, a dataframe, an unknown block, a
         // rule): commands that format, wrap or replace the selection don't
         // apply. `atom` only names the kinds that have a label.
@@ -1038,12 +1053,14 @@ export function WordgardEditor(props) {
       setContextualToolbar(contextual);
       if (contextual && !toolbarOpen) {
         const viewport = window.visualViewport,
-          box = element.getBoundingClientRect();
+          box = element.getBoundingClientRect(),
+          code = selectedCodeBlock(editor.state);
         next = selectionToolbarPosition({
           start: editor.coordsAtPos(selection.from),
           end: editor.coordsAtPos(selection.to),
           width: box.width,
           height: box.height,
+          block: code ? editor.nodeDOM(code.before)?.getBoundingClientRect() : undefined,
           viewport: {
             left: viewport?.offsetLeft ?? 0,
             top: Math.max(
@@ -1219,8 +1236,16 @@ export function WordgardEditor(props) {
                   ? "Image actions"
                   : format?.nodeSelected
                     ? "Block actions"
-                    : "Text formatting"
+                    : format?.codeBlock
+                      ? "Code block actions"
+                      : "Text formatting"
             }
+            // A press on the bar itself, between its controls, would start a
+            // native selection behind it and take focus from the editor.
+            onPointerDown={(event) => {
+              if (!event.target.closest("button,select,input,[role='menu']"))
+                event.preventDefault();
+            }}
             onKeyDown={toolbarKeys}
           >
             {toolbarOpen &&
@@ -1273,20 +1298,22 @@ export function WordgardEditor(props) {
                   ))}
                 </select>
                 <span className="toolbar-separator" role="separator" />
-                {markControls.map((control) => (
-                  <Fragment key={control[0]}>
-                    {formatButton(control)}
-                    {control[0] === "code" && (
-                      <HighlightMenu
-                        editor={view.current}
-                        current={format?.highlight ?? null}
-                        present={!!format?.highlightPresent}
-                        editable={editable}
-                        onError={report}
-                      />
-                    )}
-                  </Fragment>
-                ))}
+                {/* In a code block the text style and Comment are what apply. */}
+                {!format?.codeBlock &&
+                  markControls.map((control) => (
+                    <Fragment key={control[0]}>
+                      {formatButton(control)}
+                      {control[0] === "code" && (
+                        <HighlightMenu
+                          editor={view.current}
+                          current={format?.highlight ?? null}
+                          present={!!format?.highlightPresent}
+                          editable={editable}
+                          onError={report}
+                        />
+                      )}
+                    </Fragment>
+                  ))}
                 {toolbarOpen && listControls.map(formatButton)}
                 {(toolbarOpen || format?.table) && (
                   <>

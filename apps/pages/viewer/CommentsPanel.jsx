@@ -298,6 +298,15 @@ export function CommentsPanel({
       dialog.current?.querySelector(".thread-view")?.focus({ preventScroll: true }),
     );
   }
+  // Each thread's view is keyed by its ID, so stepping in review replaces the
+  // view that held focus and focus falls to the body, out of reach of the
+  // dialog's review keys. Hand it to the new thread's view.
+  useLayoutEffect(() => {
+    if (!reviewing) return;
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    dialog.current?.querySelector(".thread-view")?.focus({ preventScroll: true });
+  }, [reviewing, current?.id]);
   function reviewCommand(command) {
     switch (command) {
       case "next":
@@ -365,6 +374,7 @@ export function CommentsPanel({
       now={now}
       excerpt={passageExcerpt(session.doc, thread)}
       location={locate(thread)}
+      clamp={!reviewing}
       changing={changing === thread.id}
       sending={Boolean(sending[thread.id])}
       value={drafts[thread.id] || ""}
@@ -1013,6 +1023,8 @@ function ThreadRow({ thread, now, location, active, hovered = false, draft, onOp
 /**
  * One thread, opened: its title, state and Resolve; the passage in its
  * paragraph; the conversation; and a reply composer docked at the bottom.
+ * `clamp` puts long message bodies behind Show more. Review shows them whole,
+ * since each thread there is read through before it is resolved.
  */
 function ThreadView({
   thread,
@@ -1020,6 +1032,7 @@ function ThreadView({
   now,
   excerpt,
   location,
+  clamp,
   changing,
   sending,
   value,
@@ -1106,6 +1119,7 @@ function ThreadView({
               message={first}
               source={session.commentMessage(thread.id, first.id)}
               now={now}
+              clamp={clamp}
             />
           )}
           {replies.length > 0 && (
@@ -1118,6 +1132,7 @@ function ThreadView({
                   messages={replies}
                   sourceOf={(message) => session.commentMessage(thread.id, message.id)}
                   now={now}
+                  clamp={clamp}
                 />
               </div>
             </>

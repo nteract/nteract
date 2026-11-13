@@ -373,6 +373,9 @@ test("guide distinguishes whole Project sharing from direct Page grants and edit
   assert.match(prose, /Invites contain id, email, role and expiresAt \(epoch milliseconds\)/);
   assert.match(prose, /an old receipt is not a fresh roster/);
   assert.match(prose, /Project company-domain sharing is not supported/);
+  assert.match(prose, /manage_project_access takes action: set_organization_access/);
+  assert.match(prose, /list_projects shows the Project only after they open its url once/);
+  assert.match(prose, /send them the link yourself/);
   assert.match(prose, /up to 15 seconds after revocation/);
   assert.match(prose, /preserve the original nonce and payload rather than guessing success/);
   assert.doesNotMatch(

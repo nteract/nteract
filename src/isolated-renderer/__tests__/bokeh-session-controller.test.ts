@@ -1806,6 +1806,53 @@ describe("deferExistingModelUpdates", () => {
     expect(slider.values.required).toBe("local");
   });
 
+  it("keeps the ranges BokehJS computed when a full-state definition omits them", () => {
+    const deserializer = new FakeDeserializer();
+    const range = new FakeModel("range", "DataRange1d", deserializer.log);
+    deserializer.references.set("range", range);
+    range.properties = {
+      start: fakeProperty(Number.NaN),
+      end: fakeProperty(Number.NaN),
+      range_padding: fakeProperty(0.1),
+    };
+    range.values = { start: -0.1, end: 2.1, range_padding: 0.5 };
+
+    deferExistingModelUpdates(
+      fakeRuntime(),
+      () =>
+        deserializer.decode([{ type: "object", name: "DataRange1d", id: "range", attributes: {} }]),
+      { fullState: true },
+    );
+
+    expect(range.changes).toEqual([{ range_padding: 0.1 }]);
+    expect(range.values).toMatchObject({ start: -0.1, end: 2.1 });
+  });
+
+  it("still applies ranges a full-state definition sets, and resets other models' start/end", () => {
+    const deserializer = new FakeDeserializer();
+    const range = new FakeModel("range", "DataRange1d", deserializer.log);
+    const slider = new FakeModel("slider", "Slider", deserializer.log);
+    deserializer.references.set("range", range);
+    deserializer.references.set("slider", slider);
+    range.properties = { start: fakeProperty(Number.NaN), end: fakeProperty(Number.NaN) };
+    range.values = { start: -0.1, end: 2.1 };
+    slider.properties = { start: fakeProperty(0), end: fakeProperty(1) };
+    slider.values = { start: 5, end: 6 };
+
+    deferExistingModelUpdates(
+      fakeRuntime(),
+      () =>
+        deserializer.decode([
+          { type: "object", name: "DataRange1d", id: "range", attributes: { start: 0, end: 4 } },
+          { type: "object", name: "Slider", id: "slider", attributes: {} },
+        ]),
+      { fullState: true },
+    );
+
+    expect(range.values).toMatchObject({ start: 0, end: 4 });
+    expect(slider.values).toMatchObject({ start: 0, end: 1 });
+  });
+
   it("keeps columnar data, which reconciles from columns/, out of the reset", () => {
     const deserializer = new FakeDeserializer();
     const source = new FakeModel("source", "ColumnDataSource", deserializer.log);

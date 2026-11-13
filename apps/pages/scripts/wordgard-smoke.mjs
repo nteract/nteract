@@ -1023,6 +1023,31 @@ try {
   await saved(a);
   checkpoint(stage);
 
+  stage = "code brackets close themselves and Mod-/ toggles a line comment";
+  await create("", "Wordgard code keys fixture " + Date.now());
+  await content(a).click();
+  await a.keyboard.type("```python");
+  await a.keyboard.press("Enter");
+  await expect(content(a).locator("pre")).toBeVisible();
+  // Each opener inserts its closer; typing the closer moves over it.
+  await a.keyboard.type('print("hi")');
+  for (const page of [a, b]) await expect.poll(() => textOf(page)).toBe('print("hi")');
+  // Backspace inside an empty pair deletes both.
+  await a.keyboard.type(" [");
+  await expect.poll(() => textOf(a)).toBe('print("hi") []');
+  await a.keyboard.press("Backspace");
+  await expect.poll(() => textOf(a)).toBe('print("hi") ');
+  await a.keyboard.press("Backspace");
+  await a.keyboard.press("ControlOrMeta+/");
+  for (const page of [a, b]) await expect.poll(() => textOf(page)).toBe('# print("hi")');
+  await a.keyboard.press("ControlOrMeta+/");
+  for (const page of [a, b]) await expect.poll(() => textOf(page)).toBe('print("hi")');
+  // Each toggle is one undo step.
+  await a.keyboard.press("ControlOrMeta+z");
+  for (const page of [a, b]) await expect.poll(() => textOf(page)).toBe('# print("hi")');
+  await saved(a);
+  checkpoint(stage);
+
   stage = "code fence, remote language change preserves active source, Mermaid rendering";
   const code = await create("", "Wordgard rich fixture " + Date.now());
   await content(a).click();
@@ -1030,9 +1055,14 @@ try {
   await a.keyboard.press("Enter");
   await expect(content(a).locator("pre")).toBeVisible();
   // Chromium's insertText is not paste: enter line breaks through keyboard events.
+  // Enter carries the indentation of the line it leaves, so each line types
+  // only what follows that.
+  let carried = "";
   for (const [index, line] of diagram.split("\n").entries()) {
     if (index) await a.keyboard.press("Enter");
-    await a.keyboard.insertText(line);
+    assert.ok(line.startsWith(carried), "the fixture never dedents");
+    await a.keyboard.insertText(line.slice(carried.length));
+    carried = /^[ \t]*/.exec(line)[0];
   }
   await expect.poll(() => textOf(a)).toBe(diagram);
   await expect.poll(() => textOf(b)).toBe(diagram);
@@ -1233,6 +1263,74 @@ try {
   await a.keyboard.press("ControlOrMeta+v");
   for (const page of [a, b]) await expect.poll(() => textOf(page, pastedIndex)).toBe(pastedDiagram);
   await expect(pastedEditor.locator("select.wg-code-language")).toHaveCount(1);
+  // A paste on a new, empty last line lands in the text. A control drawn at
+  // the end of the code would take the paste event there and drop it.
+  // Shift-Tab removes the indentation Enter carried down, so the line is empty.
+  const pastedLine = " Y --> Z[Pasted on a new line]";
+  await a.keyboard.press("Enter");
+  await a.keyboard.press("Shift+Tab");
+  await a.evaluate((text) => navigator.clipboard.writeText(text), pastedLine);
+  await a.keyboard.press("ControlOrMeta+v");
+  for (const page of [a, b])
+    await expect.poll(() => textOf(page, pastedIndex)).toBe(pastedDiagram + "\n" + pastedLine);
+  // In code, Enter keeps the line's indentation, Tab adds to it and Shift-Tab
+  // takes a level back. The keys stay in the editor.
+  await a.keyboard.press("Enter");
+  await a.keyboard.type("Z --> A");
+  await a.keyboard.press("Enter");
+  await a.keyboard.press("Tab");
+  await a.keyboard.type("A --> B");
+  const indented = pastedDiagram + "\n" + pastedLine + "\n Z --> A\n  A --> B";
+  for (const page of [a, b]) await expect.poll(() => textOf(page, pastedIndex)).toBe(indented);
+  await a.keyboard.press("Shift+Tab");
+  const dedented = indented.replace("\n  A --> B", "\nA --> B");
+  for (const page of [a, b]) await expect.poll(() => textOf(page, pastedIndex)).toBe(dedented);
+  assert.equal(
+    await pastedEditor.evaluate((element) => element.contains(document.activeElement)),
+    true,
+    "Tab and Shift-Tab keep focus in the code block",
+  );
+  // A double-click in code selects the whole identifier, underscores included,
+  // and word deletion removes it whole.
+  await a.keyboard.press("Enter");
+  await a.keyboard.type("pages_catalog_tags");
+  const inIdentifier = await pastedEditor.locator("pre").evaluate((pre) => {
+    const walker = document.createTreeWalker(pre, NodeFilter.SHOW_TEXT);
+    for (let node; (node = walker.nextNode()); ) {
+      const index = node.data.indexOf("catalog");
+      if (index < 0) continue;
+      const range = document.createRange();
+      range.setStart(node, index);
+      range.setEnd(node, index + "catalog".length);
+      const box = range.getBoundingClientRect();
+      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    }
+    return null;
+  });
+  await a.mouse.dblclick(inIdentifier.x, inIdentifier.y);
+  await expect.poll(() => a.evaluate(() => getSelection().toString())).toBe("pages_catalog_tags");
+  await a.keyboard.press("ArrowRight");
+  await a.keyboard.press(process.platform === "darwin" ? "Alt+Backspace" : "Control+Backspace");
+  // The emptied last line draws a filler break after its own, so the text
+  // ends in two newlines until Backspace removes the line.
+  for (const page of [a, b])
+    await expect.poll(() => textOf(page, pastedIndex)).toBe(dedented + "\n\n");
+  await a.keyboard.press("Backspace");
+  for (const page of [a, b]) await expect.poll(() => textOf(page, pastedIndex)).toBe(dedented);
+  // A selection in code gets the code block's toolbar: no marks, and placed
+  // outside the block so it covers neither the code nor the language menu.
+  await a.keyboard.press("Shift+ArrowLeft");
+  const codeBar = a.getByRole("toolbar", { name: "Code block actions" });
+  await expect(codeBar).toHaveClass(/is-floating/);
+  await expect(codeBar.getByRole("combobox", { name: "Text style" })).toBeVisible();
+  await expect(codeBar.getByRole("button", { name: "Bold", exact: true })).toHaveCount(0);
+  const barBox = await codeBar.boundingBox(),
+    codeBox = await pastedEditor.locator("pre").boundingBox();
+  assert.ok(
+    barBox.y + barBox.height <= codeBox.y || barBox.y >= codeBox.y + codeBox.height,
+    "the code block's toolbar sits outside the block",
+  );
+  await a.keyboard.press("ArrowRight");
   await pastedEditor.locator("select.wg-code-language").selectOption("mermaid");
   for (const page of [a, b]) {
     await expect(content(page).nth(pastedIndex).locator(".wordgard-diagram svg.pele")).toBeVisible({

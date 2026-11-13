@@ -11,6 +11,11 @@ import { DocumentPolicy } from "./policy.mjs";
 import { plainStub } from "./plain-stub.mjs";
 import { operationKey } from "./mutations.mjs";
 import { LOCATION_SHAPE_KEY, shapeState } from "./location-shape.mjs";
+import { startLocalKiloHandoff } from "../scripts/fixtures/local-kilo-handoff.mjs";
+import { resetMembershipCache } from "./kilo-membership.mjs";
+
+const KILO_AUDIENCE = "pages-projects-test";
+const KILO_SECRET = "kilo-projects-fixture-secret-0123456789";
 
 /** A response as a Durable Object stub returns it on Cloudflare Workers: its
  * headers refuse writes. Node's own responses allow them, so code that sets a
@@ -52,17 +57,58 @@ export class Storage {
 /** Real Catalog, Project and Page hosts over in-memory storage. Page hosts stub
  * only native sync: documents load from the bytes the Page records. */
 /** `storage(principal)` builds a Catalog's storage; the default has no
- * transactions, as the lightest storage above does. */
-export async function world(t, { index = "1", storage: newStorage = () => new Storage() } = {}) {
+ * transactions, as the lightest storage above does.
+ *
+ * With `kilo`, the deployment signs in with Kilo beside a fake Kilo, and
+ * owner, member and stranger call with Kilo agent tokens. `kilo` maps each of
+ * them to the organizations (`[{ id, name }]`) Kilo reports for them;
+ * `organizations(who, list)` changes that list and mints a new token, so the
+ * next call makes a new exchange. */
+export async function world(
+  t,
+  { index = "1", storage: newStorage = () => new Storage(), kilo: kiloPeople } = {},
+) {
   const auth = await createAuthFixture();
-  t.mock.method(globalThis, "fetch", auth.fetch);
-  const owner = `user:anaconda-fixture:${auth.subject}`;
-  const member = "user:anaconda-fixture:member-user";
-  const tokens = {
-    owner: auth.apiKey(),
-    member: auth.apiKey({ userId: "member-user" }),
-    stranger: auth.apiKey({ userId: "stranger-user" }),
-    reader: auth.apiKey({ scopes: ["cloud:read"] }),
+  const kilo = kiloPeople
+    ? await startLocalKiloHandoff({
+        deployments: { [KILO_AUDIENCE]: "https://pages.invalid" },
+        secret: KILO_SECRET,
+      })
+    : null;
+  if (kilo) {
+    t.after(() => kilo.close());
+    resetMembershipCache();
+    const send = globalThis.fetch;
+    t.mock.method(globalThis, "fetch", (input, init) =>
+      String(input?.url ?? input).startsWith(kilo.origin)
+        ? send(input, init)
+        : auth.fetch(input, init),
+    );
+  } else t.mock.method(globalThis, "fetch", auth.fetch);
+  const owner = kilo ? "user:kilo:owner-person" : `user:anaconda-fixture:${auth.subject}`;
+  const member = kilo ? "user:kilo:member-person" : "user:anaconda-fixture:member-user";
+  let minted = 0;
+  const kiloToken = (who, organizations) =>
+    kilo.mintToken(
+      {
+        id: `${who}-person`,
+        name: `${who[0].toUpperCase()}${who.slice(1)} Person`,
+        organizations: organizations.map((organization) => ({ ...organization, role: "member" })),
+      },
+      { audience: KILO_AUDIENCE, claims: { n: ++minted } },
+    );
+  const tokens = kilo
+    ? Object.fromEntries(
+        ["owner", "member", "stranger"].map((who) => [who, kiloToken(who, kiloPeople[who] ?? [])]),
+      )
+    : {
+        owner: auth.apiKey(),
+        member: auth.apiKey({ userId: "member-user" }),
+        stranger: auth.apiKey({ userId: "stranger-user" }),
+        reader: auth.apiKey({ scopes: ["cloud:read"] }),
+      };
+  const organizations = (who, list) => {
+    tokens[who] = kiloToken(who, list);
   };
   const db = sqliteD1(t).open();
   const pages = new Map();
@@ -96,6 +142,13 @@ export async function world(t, { index = "1", storage: newStorage = () => new St
   });
   const env = {
     ...auth.env,
+    ...(kilo && {
+      NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.invalid",
+      NOTEBOOK_CLOUD_LOCAL_OIDC: "true",
+      PAGES_KILO_APP_URL: kilo.origin,
+      PAGES_KILO_AUDIENCE: KILO_AUDIENCE,
+      PAGES_KILO_EXCHANGE_SECRET: KILO_SECRET,
+    }),
     DB: db,
     ...(index && { PAGES_CATALOG_INDEX: index }),
     PAGES: { getByName: (id) => faulty(id, () => pageHost(id)) },
@@ -255,6 +308,7 @@ export async function world(t, { index = "1", storage: newStorage = () => new St
   return {
     settle,
     auth,
+    organizations,
     owner,
     member,
     env,

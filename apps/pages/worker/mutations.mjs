@@ -20,6 +20,7 @@ import { fencedHeads, parseRevision, revisionPlan } from "./revisions.mjs";
 /** The document a journal entry writes. */
 export const PAGE_DOC = "page";
 export const COMMENTS_DOC = "comments";
+export const SOURCES_DOC = "sources";
 const entryDoc = (entry) => entry?.doc ?? PAGE_DOC;
 
 function reject(status, message, code, details) {
@@ -101,11 +102,12 @@ const requiredRevision = (args) => {
  * holds the change bytes and the revision handles its receipt reports, all
  * in one multi-key put; a restart replays it (recoverDocumentMutations).
  *
- * `doc` names the document `handle` holds (PAGE_DOC or COMMENTS_DOC); the
+ * `doc` names the document `handle` holds (PAGE_DOC, COMMENTS_DOC or
+ * SOURCES_DOC); the
  * entry records it, so startup recovery replays each entry into its own
  * document, and its receipt names the after-revision in the revision field
- * of the document's type module: `revision` (Page) or `comment_revision`
- * (comments). `lane` scopes the nonce (defaults to
+ * of the document's type module: `revision` (Page), `comment_revision`
+ * (comments) or `sources_revision` (sources). `lane` scopes the nonce (defaults to
  * `doc`). `baseRevision(args)` returns the Page revision handle the intent
  * depends on, or undefined for one that depends on none; edit_page requires
  * one. A named revision is fenced by the journal's horizon (fencedHeads),

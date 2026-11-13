@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { createAuthFixture } from "../auth-fixtures.mjs";
-import { WRITTEN_FORMATS } from "../model/document-types.mjs";
+import { MEMBER_FORMATS } from "../model/document-types.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { startLocalKiloHandoff } from "../scripts/fixtures/local-kilo-handoff.mjs";
 import { authenticate } from "./auth.mjs";
@@ -495,7 +495,7 @@ function pageWorld(t, { env, holder }) {
     ctx: { storage: new Storage() },
     metadata: {
       pageId,
-      documentFormats: WRITTEN_FORMATS,
+      documentFormats: MEMBER_FORMATS,
       owner: kiloIdentity(kiloSignIn(env, request("x")), holder).principal,
       deleted: false,
       acl: { revision: 0, members: {}, invites: {} },

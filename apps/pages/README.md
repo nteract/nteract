@@ -29,8 +29,14 @@ before changing the document model, sync, or agent tools.
 | Comments document | Automerge | Threads and messages anchored by cursors into the Page document |
 | Wordgard tree | Memory only | `decode(spans)` of one block; the editor renders it, readers and export walk it |
 | Page host | celld Durable Object | Admission, authorization, persistence, durable receipts, plain Automerge sync |
-| Catalog | celld Durable Object + D1 | Per-account Page and Project listings, Trash, quotas |
+| Catalog | celld Durable Object (source of truth) + D1 projection | Per-account Page and Project entries, Trash, quotas. The D1 `pages_catalog_*` tables are a rebuildable index of them for listing and search |
+| Page tags | D1 table `page_tags` (source of truth, no Durable Object) | Each Page's tags. Not a projection and not in the document; searched with `list_pages tags` |
 | Agent edge | `/api/tools`, `/mcp` | Markdown and outline reads, node operations, idempotent receipts |
+
+Each fact has one normative home: a Durable Object, or, for Page tags, quotas
+and sign-in state, a D1 table. D1 also holds projections of the Durable Objects,
+which can be rebuilt; see [Where state
+lives](DEPLOYMENT.md#where-state-lives).
 
 Browser replicas and UI state never confer access or prove durability. The host
 decides both. Pages has its own documents; notebook `NotebookDoc`,
@@ -145,6 +151,7 @@ build-update check.
 | Cold first open of a 300-paragraph Page with images on Fast 3G and 4x CPU, phase by phase (records timings, gates on nothing) | `node scripts/local-sharing-e2e.mjs --cold-open` | Starts an isolated fixture behind a brotli proxy; writes `report.json` |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
 | Comments panel placement at 1920/1440/1100/800px | `PAGES_ORIGIN=http://localhost:9894 node scripts/comments-layout-smoke.mjs` | Uses the running Wordgard fixture |
+| Comment review at 1440/800px: whole messages through J and Resolve and next, the Page behind holds still under wheel and touch and keeps its scroll after Exit review, Resolve and next hovers green in light and dark | `PAGES_ORIGIN=http://localhost:9894 node scripts/comments-review-smoke.mjs` | Uses the running Wordgard fixture |
 | Schema-feature gate: a Page stamped with an unknown feature opens read-only and refuses tool writes | `PAGES_ORIGIN=http://localhost:9894 node scripts/schema-features-smoke.mjs` | Uses the running Wordgard fixture |
 | Native table editing | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:tables` | Uses the running Wordgard fixture |
 | Passage edits and revision deltas | `PAGES_ORIGIN=http://localhost:9894 node scripts/passages-changes-smoke.mjs` | Uses the running Wordgard fixture |
