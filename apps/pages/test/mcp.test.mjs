@@ -50,7 +50,7 @@ test("tool schemas use only the JSON Schema subset clients forward as written", 
 
 test("tool catalog has a deliberate size ceiling", () => {
   assert.ok(
-    JSON.stringify(tools).length <= 39500,
+    JSON.stringify(tools).length <= 40665,
     "Tool catalog grew; raise the ceiling on purpose when a tool grows",
   );
 });

@@ -25,6 +25,7 @@ import {
   Aside,
   BulletList,
   Paragraph,
+  PagesView,
   pastedCommentHTML,
   pastedPageHTML,
 } from "./wordgard-model.mjs";
@@ -193,6 +194,33 @@ test("an unwrapped aside keeps its text apart from the blocks around it", (t) =>
       ["composer", pastedCommentHTML(html, parser)],
     ])
       assert.deepEqual(read(filtered), expected, `${where}: ${html}`);
+});
+
+// A view copies as a figure naming it. A Page block pastes it back as the
+// node; the comment composer, which can't hold one, pastes its text.
+test("a copied view pastes into a Page block as the node and into a comment as text", (t) => {
+  const dom = new JSDOM();
+  t.after(() => dom.window.close());
+  const parser = new dom.window.DOMParser();
+  const html = serialize(schema.doc([PagesView.of({ view_id: "daily" })])).toDOM(
+    dom.window.document,
+  ).firstChild.outerHTML;
+  assert.match(html, /data-pages-view/);
+  assert.match(html, /data-view-id="daily"/);
+  const read = (filtered) => {
+    const body = dom.window.document.createElement("body");
+    body.innerHTML = filtered;
+    return parse(schema, body).content;
+  };
+  const [block] = read(pastedPageHTML(html, "page_fixture", parser));
+  assert.equal(block.type, PagesView);
+  assert.deepEqual(block.param, { view_id: "daily" });
+  const [comment] = read(pastedCommentHTML(html, parser));
+  assert.equal(comment.type, Paragraph.type);
+  assert.equal(comment.textContent(), "daily");
+  // A figure whose view id isn't one pastes as nothing it can't read.
+  const forged = html.replace('data-view-id="daily"', 'data-view-id="Not An Id"');
+  assert.notEqual(read(pastedPageHTML(forged, "page_fixture", parser))[0]?.type, PagesView);
 });
 
 test("comment Markdown from an agent refuses math and HTML, as a Page body's does", () => {

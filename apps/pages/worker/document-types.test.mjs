@@ -300,6 +300,27 @@ test("a client that doesn't read pages.sources opens a Page that holds sources",
   );
 });
 
+test("a client that doesn't read pages.view opens a Page that holds views", async (t) => {
+  const f = await fixture(t);
+  f.page.metadata = {
+    ...f.page.metadata,
+    documentFormats: { ...MEMBER_FORMATS, "pages.sources": 1, "pages.view": 1 },
+  };
+  const { sockets, accepted } = fakeSockets(t, f.page);
+  const old = openSocket(f, sockets, "pages.comments:2,pages.page:3,pages.sources:1");
+  assert.equal(old.closed, undefined);
+  const current = openSocket(f, sockets, BUILD_FORMATS);
+  assert.equal(current.closed, undefined);
+  assert.equal(accepted.mock.callCount(), 2);
+  assert.ok(!accepted.mock.calls[0].arguments[4].some(({ type }) => type === "pages.view"));
+  assert.ok(
+    accepted.mock.calls[1].arguments[4].some(
+      ({ type, format }) => type === "pages.view" && format === 1,
+    ),
+    "this build declares the view format",
+  );
+});
+
 test("a malformed or repeated formats parameter is a 400", async (t) => {
   const f = await fixture(t);
   const { sockets } = fakeSockets(t, f.page);

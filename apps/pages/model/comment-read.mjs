@@ -4,14 +4,21 @@ import * as A from "@automerge/automerge/slim";
 import { codeTextUnmarked, markerParents } from "./richtext-format.mjs";
 import { PLAIN_FORMAT, plainCommentText } from "./comment-text.mjs";
 import { nativeReadSpans, readChildren, readKind, readMarkdown } from "./native-read.mjs";
-import { isKnownBlock, nodeType, TEXT_CONTAINERS, markerType } from "./node-registry.mjs";
+import {
+  DATA_LEAVES,
+  isKnownBlock,
+  nodeType,
+  TEXT_CONTAINERS,
+  markerType,
+} from "./node-registry.mjs";
 import { unknownNodeNotice } from "./richtext-notices.mjs";
 
 const unreadable = () => {
   throw Object.assign(Error("Unreadable comment spans"), { code: "unreadable_comment_spans" });
 };
+// A dataframe or view stored in a text container, which no reader draws.
 const dataframeInText = (type, parents) =>
-  type === "dataframe" && parents.some((parent) => TEXT_CONTAINERS.has(parent));
+  DATA_LEAVES.has(type) && parents.some((parent) => TEXT_CONTAINERS.has(parent));
 const marker = (type, parents = [], attrs = {}, isEmbed = false) => ({
   type: "block",
   value: { type, parents, attrs, isEmbed },
@@ -99,7 +106,7 @@ function commentReadSpans(spans) {
         }
         if (
           ["table", "table-row"].includes(context.at(-1)) ||
-          !["paragraph", "heading", "code-block", "horizontal-rule", "dataframe"].includes(type)
+          !["paragraph", "heading", "code-block", "horizontal-rule", ...DATA_LEAVES].includes(type)
         )
           unreadable();
         return [
@@ -167,6 +174,7 @@ function commentNodes(nodes) {
       (node.param.src === undefined || node.param.media_type === undefined)
     )
       unreadable();
+    if (kind === "view" && node.param.view_id === undefined) unreadable();
     commentNodes(children);
   }
   return nodes;
@@ -203,7 +211,7 @@ export function commentBodyProjection(message) {
         const type = markerType(span.value),
           parents = markerParents(span.value);
         unknown = dataframeInText(type, parents)
-          ? "dataframe"
+          ? type
           : [type, ...parents].find((name) => !isKnownBlock(name));
         if (unknown !== undefined) break;
       }

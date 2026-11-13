@@ -169,6 +169,13 @@ export function renderNode(node, overrides, metadata) {
         ],
       ];
     }
+    // A figure naming the view, as the editor draws a view it has no chart
+    // for. The chart reads the view's own document.
+    case "view": {
+      const { view_id } = node.param;
+      if (typeof view_id !== "string") throw Error("Unreadable view id");
+      return [["figure", { "data-view": view_id }, view_id]];
+    }
     case "unknown":
       return [["div", { "data-unknown-block": "true" }, ...children()]];
     case "unknown-inline":

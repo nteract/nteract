@@ -12,6 +12,9 @@ export const DOCUMENT_TYPES = Object.freeze({
   "pages.sources": Object.freeze({
     1: Object.freeze({ type: "pages.sources", format: 1 }),
   }),
+  "pages.view": Object.freeze({
+    1: Object.freeze({ type: "pages.view", format: 1 }),
+  }),
 });
 
 /** The format this build writes for `type`: the highest one registered. */
@@ -25,8 +28,9 @@ export const WRITTEN_FORMATS = Object.freeze(
 );
 
 /** The types every Page holds a document of. A type registered beside them
- * is one a Page may hold, such as `pages.sources`: its record names the type
- * once the document exists, and a record without it is still opened. */
+ * is one a Page may hold, such as `pages.sources` or `pages.view`: its record
+ * names the type once a document of it exists, and a record without it is
+ * still opened. */
 export const MEMBER_TYPES = Object.freeze(["pages.page", "pages.comments"]);
 
 /** `documentFormats` for a new Page: each member type at its written format.
@@ -78,8 +82,16 @@ export function formatPairs(formats) {
 /** Project the host's existing IDs at `formats` (a record's, from
  * recordDocumentFormats) without minting, persisting or converting
  * documents. Omit comments when the host has no comments handle to
- * advertise, and sources when the Page has no sources document. */
-export function pageDocuments(formats, documentId, commentsDocumentId, sourcesDocumentId) {
+ * advertise, sources when the Page has no sources document, and views when
+ * it has none. `viewDocumentIds` is `{ [view_id]: documentId }`, every view
+ * document of format `formats["pages.view"]`. */
+export function pageDocuments(
+  formats,
+  documentId,
+  commentsDocumentId,
+  sourcesDocumentId,
+  viewDocumentIds,
+) {
   return {
     page: { id: documentId, type: "pages.page", format: formats["pages.page"] },
     ...(commentsDocumentId !== undefined && {
@@ -96,6 +108,7 @@ export function pageDocuments(formats, documentId, commentsDocumentId, sourcesDo
         format: formats["pages.sources"],
       },
     }),
+    ...(viewDocumentIds && Object.keys(viewDocumentIds).length && { views: viewDocumentIds }),
   };
 }
 

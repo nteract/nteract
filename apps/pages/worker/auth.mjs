@@ -484,6 +484,13 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "invalid_source",
   "source_not_found",
   "stale_source",
+  "invalid_view",
+  "view_not_found",
+  "stale_view",
+  "unknown_source",
+  "unknown_source_revision",
+  "view_limit",
+  "unknown_view",
   "upload_capability_invalid",
   "upload_capability_expired",
   "upload_mismatch",
@@ -658,6 +665,21 @@ export function errorResponse(error, stage = "request") {
             typeof error.details.source_revision === "string"
               ? error.details.source_revision.slice(0, 16)
               : null,
+        }),
+      // A refused view write names the view and its current revision, null
+      // when the view doesn't exist.
+      ...(["stale_view", "view_not_found"].includes(error?.code) &&
+        typeof error.details?.view_id === "string" && {
+          view_id: error.details.view_id.slice(0, 64),
+          view_revision:
+            typeof error.details.view_revision === "string"
+              ? error.details.view_revision.slice(0, 16)
+              : null,
+        }),
+      // The view cap names the Page's views, at most ten.
+      ...(error?.code === "view_limit" &&
+        Array.isArray(error.details?.view_ids) && {
+          view_ids: error.details.view_ids.slice(0, 10).map((id) => String(id).slice(0, 64)),
         }),
       // A thread batch is bounded to 100 IDs of at most 256 bytes each.
       ...(error?.code === "invalid_comment_selector" &&

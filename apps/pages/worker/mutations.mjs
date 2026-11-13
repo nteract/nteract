@@ -14,7 +14,7 @@ import {
   revisionClock,
   validNonce,
 } from "./operation-journal.mjs";
-import { PAGE_FAMILY } from "./document-modules.mjs";
+import { documentModule } from "./document-modules.mjs";
 import { fencedHeads, parseRevision, revisionPlan } from "./revisions.mjs";
 import { hostWriter, recordWriter } from "./host-writers.mjs";
 
@@ -22,6 +22,8 @@ import { hostWriter, recordWriter } from "./host-writers.mjs";
 export const PAGE_DOC = "page";
 export const COMMENTS_DOC = "comments";
 export const SOURCES_DOC = "sources";
+// A view's entries name its document `view:<view_id>` (document-modules.mjs
+// keyedDoc).
 const entryDoc = (entry) => entry?.doc ?? PAGE_DOC;
 
 function reject(status, message, code, details) {
@@ -103,12 +105,12 @@ const requiredRevision = (args) => {
  * holds the change bytes and the revision handles its receipt reports, all
  * in one multi-key put; a restart replays it (recoverDocumentMutations).
  *
- * `doc` names the document `handle` holds (PAGE_DOC, COMMENTS_DOC or
- * SOURCES_DOC); the
+ * `doc` names the document `handle` holds (PAGE_DOC, COMMENTS_DOC,
+ * SOURCES_DOC or a view's `view:<view_id>`); the
  * entry records it, so startup recovery replays each entry into its own
  * document, and its receipt names the after-revision in the revision field
  * of the document's type module: `revision` (Page), `comment_revision`
- * (comments) or `sources_revision` (sources). `lane` scopes the nonce (defaults to
+ * (comments) or `sources_revision` (sources), or none for a view. `lane` scopes the nonce (defaults to
  * `doc`). `baseRevision(args)` returns the Page revision handle the intent
  * depends on, or undefined for one that depends on none; edit_page requires
  * one. A named revision is fenced by the journal's horizon (fencedHeads),
@@ -160,6 +162,8 @@ export async function documentMutation({
     : await operationKey(args, identity, lane);
   const digest = await fingerprint(operation, args, identity, agent);
   const inspected = await inspectOperation(storage, { key, digest });
+  const module = documentModule(doc);
+  if (!module) throw new TypeError(`Unknown journal document ${doc}`);
   let entry = inspected.entry;
   if (entry && entryDoc(entry) !== doc)
     throw new Error("A journal entry names another document than its lane");
@@ -296,7 +300,9 @@ export async function documentMutation({
         guarded && (guarded.rebased ? await plan.handle(PAGE_DOC, guarded.current_heads) : base);
       entry.receipt = {
         page_id: pageId,
-        [PAGE_FAMILY.get(doc).revisionField]: await plan.handle(doc, heads),
+        // A document the agent edge names by its own revision (a view) gets
+        // no handle; its receiptFields carry that revision.
+        ...(module.revisionField && { [module.revisionField]: await plan.handle(doc, heads) }),
         result: result ?? null,
         ...(guarded && {
           concurrency: {

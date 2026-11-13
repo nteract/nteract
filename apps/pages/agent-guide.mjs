@@ -262,6 +262,9 @@ ${part.authErrorItems}
   create it, send set_source with source_revision null.
 - stale_source (409): the source changed since you read it, or exists
   already. The refusal carries source_id and its current source_revision.
+- invalid_view, unknown_source, unknown_source_revision, view_limit (400),
+  view_not_found (404), stale_view (409): a set_view refusal; unknown_view
+  (400): insert_node named a view this Page doesn't hold. See Charts below.
 - unsupported_media_type (415): import_page_image or a byte upload got bytes
   that aren't a PNG, JPEG or static WebP (or, for a byte upload, an
   unencrypted Parquet file), or don't match their Content-Type. Convert the
@@ -786,6 +789,48 @@ both for both. Alone, they skip the Page's content; beside other selectors,
 such as include_content:false, they add to them. A Page with no sources lists
 none. Once a Page has sources, every read names sources_revision.
 
+### Charts
+
+A chart is a view: a Vega-Lite spec stored apart from the Page body, drawing
+the Page's sources. Make one in three calls:
+
+1. Upload Parquet and name it with set_source (above).
+2. Create the view with an edit_page batch holding one set_view and nothing
+   else:
+
+\`\`\`json
+{"op": "set_view", "view_id": "daily", "title": "Daily usage", "media_type": "application/vnd.vegalite.v6+json", "spec": {"data": {"name": "usage"}, "mark": "line", "encoding": {"x": {"field": "day", "type": "temporal"}, "y": {"field": "count", "type": "quantitative"}}}, "data": {"usage": {"source_id": "daily"}}, "view_revision": null}
+\`\`\`
+
+3. Place it with insert_node:
+
+\`\`\`json
+{"op": "insert_node", "node": {"type": "view", "attrs": {"view_id": "daily"}}, "after_node_id": "<block's id>"}
+\`\`\`
+
+view_id follows the source_id rules. The spec reads data only by name,
+{"name": "<data name>"}, and data maps exactly those names to sources:
+{source_id} follows the source's current revision, {source_id, revision} pins
+one its history still holds. view_revision is null to create, or the
+view_revision you read to rewrite the view; the receipt names the new
+view_revision. A Page holds up to 10 views.
+
+Refusals create nothing: invalid_view (a malformed field, a spec over 64 KiB or
+one a chart can't draw, or data that doesn't match the names the spec reads),
+unknown_source (data names a source this Page doesn't have),
+unknown_source_revision (a pinned revision its history no longer holds),
+stale_view (409, the view changed or exists), view_not_found (404, a
+view_revision for a view that doesn't exist) and view_limit (an eleventh view;
+the refusal names the ten). insert_node with a view_id this Page doesn't hold
+is unknown_view.
+
+read_page with views:true lists each view's view_id, title, media_type,
+revision and data; view_id:"<view_id>" reads one with its spec and producer.
+The outline shows a view node with attrs {view_id} and summary {title,
+media_type}, and Markdown shows it as [View: <view_id>](/p/<page_id>/view/<view_id>).
+That line keeps the node through replace_block_markdown, as a dataframe's
+does. delete_node removes the node and keeps the view.
+
 ## JSON tools
 
 ${part.jsonToolsParagraph}
@@ -868,7 +913,8 @@ page_quota_exceeded with limit and count; tell the person rather than retrying.
   The same operations list also takes set_title, replace_block_markdown, insert_markdown, insert_image,
   insert_node, move_block, delete_block, or delete_node operations. Every
   operation names what it acts on by node_id; see Addresses below. A batch of
-  set_source operations sets the Page's named sources; see Named sources.
+  set_source operations sets the Page's named sources; see Named sources. One
+  set_view creates or rewrites a chart; see Charts.
 - manage_page_comment: add, reply, resolve, reopen, edit, or delete_message. resolve and
   reopen also take thread_ids to change up to 100 threads in one call. See Comments below.
 - import_page_image: page_id and a ChatGPT-supplied file descriptor; returns a

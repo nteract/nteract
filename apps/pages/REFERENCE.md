@@ -1588,6 +1588,120 @@ bytes with the Page's. Page assets are never collected, so a source's
 current and earlier assets stay stored until the Page is purged.
 `scripts/project-transfer.mjs` doesn't copy sources.
 
+## Views
+
+A view is one chart, stored in its own Automerge document of type
+`pages.view` format 1 ([model/view-doc.mjs](model/view-doc.mjs)) and owned by
+one Page. A Page holds up to 10. Only the host writes them. The document's
+root is:
+
+```
+{
+  title:      string, 1 to 200 characters
+  media_type: "application/vnd.vegalite.v6+json"
+  spec:       text, the Vega-Lite spec as JSON
+  data:       { [data_name]: { source_id } | { source_id, revision } }
+  revision:   decimal string: "1", then one more per write
+  producer:   { kind: "edit_page", at, by }
+}
+```
+
+`spec` is collaborative text: a rewrite replaces it with `updateText`. `data`
+names exactly the data the spec reads, each bound to one of the Page's
+sources. `{ source_id }` follows the source's current revision;
+`{ source_id, revision }` names a revision the source's `history` held when
+the view was written. `producer` has a source's meaning
+([Sources document](#sources-document)). `data` and `producer` are each
+replaced as one map. The genesis holds an empty `spec` and `data` and no
+`revision`; a document with no `revision` holds no view.
+
+### Identity and storage
+
+A view is named by a `view_id` its writer chooses, with the `source_id`
+rules. Its document id is derived from the Page ID and the view id: the
+UUID of `pages-view\0<page_id>\0<view_id>`, as the comments and sources
+documents derive theirs ([shared/document-ids.mjs](shared/document-ids.mjs)
+`viewDocumentId`, which the host and the viewer both import). The id is never
+stored. Its genesis is fixed by that id, so creating a view twice stores one
+document. A view, once created, stays for the life of the Page and can be
+rewritten; there is no delete.
+
+The host lists its views under `host/view/<view_id>`, one key per view whose
+document it created, so it never reads the Page body to find them. The key
+is normative: written in the same put as the host record that names
+`pages.view` in `documentFormats` (for the Page's first view), and read at
+boot, for discovery, for the cap and on purge. Each view has its own
+lifecycle ([worker/view-lifecycle.mjs](worker/view-lifecycle.mjs)), the
+sources document's steps per view id: `absent`, then `storing` (serve, import
+the genesis, flush), `recording` (the key and record), `ready`; at boot, a
+listed view goes through `loading` (serve, import, replay its journal) to
+`ready`. A restart before the key is written starts over on the next write.
+The host serves a view's document from `storing` on, so any open socket can
+sync it once the Page body names it; nothing waits for a reconnect.
+
+Browsers read views and never write them: the type module declares no
+browser write access and refuses a frame that changes one
+(`request_rejected`, not fatal). A socket syncs a view only when it declared
+`pages.view:1`; a client that doesn't still opens the Page. Discovery lists
+the views that exist as `documents.views`, `{ [view_id]: documentId }`.
+
+### Writes
+
+`edit_page` `set_view` writes one view: `{ op: "set_view", view_id, title,
+media_type, spec, data, view_revision }`, alone in its batch (otherwise
+`400 invalid_arguments`). It names the Page `revision` it read, fenced like
+any edit; a newer Page revision doesn't refuse it. `view_revision` is null to
+create, or the view's current `revision`. The receipt carries
+`view_revision`, the view's revision after the write, and `result.edits` of
+`{ op, view_id, view_revision }`; it names no revision handle for the view.
+The nonce shares `edit_page`'s lane, and the writer is recorded as for any
+edit ([Edit writers](#edit-writers)) and as `producer.by`.
+
+The spec passes `checkViewSpec` ([shared/view-spec.mjs](shared/view-spec.mjs)):
+a JSON object of at most 64 KiB, accepted by `checkChartSpec`
+([shared/chart-spec.mjs](shared/chart-spec.mjs)) with `datasets` the keys of
+`data`, whose refusal sentence reaches the caller as it is, and reading every
+name `data` binds. Refused, creating no document, no listed view and no
+writer record:
+
+| Request | Result |
+| --- | --- |
+| malformed `view_id`, `title`, `media_type`, `data` or `view_revision` | `400 invalid_view` |
+| spec not an object, over 64 KiB, or refused by `checkChartSpec` | `400 invalid_view` |
+| `data` binds a name the spec doesn't read, or lacks one it reads | `400 invalid_view` |
+| `data` names a source this Page doesn't hold | `400 unknown_source` |
+| a pinned `revision` the source's `history` doesn't hold | `400 unknown_source_revision` |
+| `view_revision` not the stored one, or null for an existing view | `409 stale_view` |
+| a non-null `view_revision` for a view that doesn't exist | `404 view_not_found` |
+| an eleventh view | `400 view_limit`, naming the ten in `details.view_ids` |
+
+A pinned revision is checked against `history` because it holds the asset of
+each revision it keeps; a source keeps its newest 50.
+
+### The Page body
+
+A `view` node is a top-level leaf with one attr, `view_id`; feature `view`
+gates it ([model/features.json](model/features.json)), so a build without it
+opens a Page with one read-only. Its DOM form is `figure[data-pages-view]`
+with `data-view-id`. `insert_node` with `{ type: "view", attrs: { view_id }
+}` places one; the view must exist on the Page (`400 unknown_view`).
+`delete_node` removes the node and keeps the view. Markdown reads it as
+`[View: <view_id>](/p/<page_id>/view/<view_id>)`, from the node alone, and
+`replace_block_markdown` keeps the node for that exact line as it keeps a
+dataframe's. An outline entry has `type: "view"`, `attrs: { view_id }`, and
+`summary: { title, media_type }` when the view exists. Comments refuse a view
+node. A view stored inside a text container reads as a notice. Until the
+viewer draws charts, the editor, cards and previews show a view as a figure
+naming its view id.
+
+`read_page` takes `views: true`, listing `{ view_id, title, media_type,
+revision, data }` for each view, and `view_id`, which reads one with its
+`spec` and `producer` (`404 view_not_found`, `400 invalid_view` for a
+malformed id). Alone they read no Page content.
+
+Trash and restore keep the views. Permanent deletion deletes every listed
+view's document with the Page's, then the `host/view/` keys.
+
 ## Authorization
 
 ### Current behavior
@@ -2141,8 +2255,8 @@ documents' formats (below). A socket whose `formats` lacks one of the
 record's member types is closed as `schema_unsupported`, and the viewer shows
 "Reload to update". Every member type the record names is required, because a
 Page can gain its comments document while a socket is open. A type a Page may
-hold beside them, `pages.sources`, isn't: a socket without it opens the Page
-and its comments, and plain sync doesn't serve it the sources document (a
+hold beside them, `pages.sources` or `pages.view`, isn't: a socket without it opens the Page
+and its comments, and plain sync doesn't serve it that type's documents (a
 frame naming it is answered as for an unknown document). A socket with no `formats` is
 a 400, as is a repeated or malformed `formats`. Discovery takes no `formats`
 and stays open to every reader; its `documents` descriptors carry the
@@ -2157,7 +2271,7 @@ document types as `documentFormats`, `{ "pages.page": 3, "pages.comments":
 formats the build writes ([model/document-types.mjs](model/document-types.mjs)),
 the comments format included, since the comments document is created at
 boot. The host adds `"pages.sources": 1` once it creates the Page's sources
-document. `recordDocumentFormats` is the one reader; it reads a record without
+document, and `"pages.view": 1` with its first view. `recordDocumentFormats` is the one reader; it reads a record without
 the field as naming no formats.
 
 A record without the field, or whose formats aren't exactly the ones the

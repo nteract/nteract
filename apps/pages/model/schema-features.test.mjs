@@ -78,7 +78,7 @@ const stamped = (features) =>
     draft.schema = { features };
   });
 
-test("today's registry: strikethrough, horizontal rules, dataframes and the preserved-block conversion", () => {
+test("today's registry: strikethrough, horizontal rules, dataframes, views and the preserved-block conversion", () => {
   assert.deepEqual(BUILD_FEATURES, [
     "comment-agent",
     "comments-doc",
@@ -87,6 +87,7 @@ test("today's registry: strikethrough, horizontal rules, dataframes and the pres
     "image-theme-variants",
     "preserved-markdown-converted",
     "strike",
+    "view",
   ]);
   assert.deepEqual(
     MARK_REGISTRY.marks.filter((mark) => mark.feature).map((mark) => [mark.name, mark.feature]),
@@ -98,6 +99,7 @@ test("today's registry: strikethrough, horizontal rules, dataframes and the pres
     [
       ["horizontal-rule", "horizontal-rule"],
       ["dataframe", "dataframe"],
+      ["view", "view"],
     ],
   );
 });

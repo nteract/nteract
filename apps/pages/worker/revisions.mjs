@@ -40,9 +40,14 @@ import { PAGE_FAMILY } from "./document-modules.mjs";
  * mutation queue.
  */
 export const REVISION_LIMIT = 2000;
-/** `kind → handle letter` for each document of a Page, from its type module. */
+/** `kind → handle letter` for each document of a Page the agent edge names
+ * by handle, from its type module. */
 export const REVISION_DOCS = Object.freeze(
-  Object.fromEntries([...PAGE_FAMILY].map(([kind, module]) => [kind, module.revisionLetter])),
+  Object.fromEntries(
+    [...PAGE_FAMILY]
+      .filter(([, module]) => module.revisionLetter !== null)
+      .map(([kind, module]) => [kind, module.revisionLetter]),
+  ),
 );
 export const REVISION_PATTERN = new RegExp(
   `^[${Object.values(REVISION_DOCS).join("")}][1-9][0-9]{0,15}$`,

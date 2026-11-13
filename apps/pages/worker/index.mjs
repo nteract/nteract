@@ -18,6 +18,7 @@ import {
   initializePage,
   applyPageOperation,
   insertedAssets,
+  insertedViews,
   orderedBlockIds,
 } from "../model/page.mjs";
 import { insertOperation } from "../model/node-registry.mjs";
@@ -33,6 +34,9 @@ import { applyComment, commentsMigrated } from "../model/comments.mjs";
 import { guardCommentIntent, passageComment } from "../model/comment-guard.mjs";
 import { authorOf } from "../model/author.mjs";
 import { checkSources, setSources, validateSourceBatch } from "../model/sources-doc.mjs";
+import { checkView, setView, validateViewOperation } from "../model/view-doc.mjs";
+import { MAX_VIEWS, validViewId } from "../shared/views.mjs";
+import { viewDocUuid } from "../shared/document-ids.mjs";
 import {
   commentsDocUuid,
   commentsDocumentId,
@@ -40,6 +44,7 @@ import {
   derivedDocumentId,
 } from "./comments-store.mjs";
 import { SOURCES_ABSENT, sourcesStep } from "./sources-lifecycle.mjs";
+import { VIEW_ABSENT, viewStep } from "./view-lifecycle.mjs";
 import {
   MEMBER_FORMATS,
   MEMBER_TYPES,
@@ -142,7 +147,13 @@ import { fencedHeads, headsFor, revisionPlan } from "./revisions.mjs";
 import { STORAGE_KEYS_PER_CALL, guardContext } from "./storage-guard.mjs";
 import { pageRecordsCall } from "./page-records.mjs";
 export { PageRecords } from "./page-records.mjs";
-import { COMMENTS_MODULE, PAGE_MODULE, SOURCES_MODULE } from "./document-modules.mjs";
+import {
+  COMMENTS_MODULE,
+  PAGE_MODULE,
+  SOURCES_MODULE,
+  VIEW_MODULE,
+  keyedDoc,
+} from "./document-modules.mjs";
 import { HOST_SENDER_ID, PlainSync, clearPrefixes, plainSessionReplaced } from "./plain-sync.mjs";
 import { logSyncRefused, logSyncRounds } from "./plain-sync-log.mjs";
 import { BLOCKING as BLOCKING_COMMENT_CODES } from "../sync/comments.mjs";
@@ -609,6 +620,21 @@ const sourceRefusal = (error) =>
     new HttpError(error.status ?? 400, error.message, error.code ?? "invalid_source"),
     error.details && { details: error.details },
   );
+/** A view refusal (model/view-doc.mjs) as the agent edge answers it, with
+ * its view_id and current view_revision where it has them. */
+const viewRefusal = (error) =>
+  Object.assign(
+    new HttpError(error.status ?? 400, error.message, error.code ?? "invalid_view"),
+    error.details && { details: error.details },
+  );
+
+/** The Page host's list of its views: one key per view whose document the
+ * host created, `host/view/<view_id>` → `{ format }`. Normative: written in
+ * the same put as the record step of the view's lifecycle
+ * (view-lifecycle.mjs), read at boot, for /api/connect, the view cap and
+ * purge, so the host never reads the Page body to find its views. */
+const VIEW_KEY_PREFIX = "host/view/";
+const viewKey = (viewId) => `${VIEW_KEY_PREFIX}${viewId}`;
 
 /** Page host routes a record in a format this build doesn't write still
  * answers once the caller may read it: the shared-Page check and sharing
@@ -5161,6 +5187,8 @@ export class Page {
     }
     await this.loadComments();
     await this.sourcesEvent({ type: "boot", recorded: recordNamesSources(this.metadata) });
+    for (const viewId of await this.storedViewIds())
+      await this.viewEvent(viewId, { type: "boot", recorded: true });
     await this.restoreTitleProjection();
     // After recovery: a replayed journal entry was accepted before the
     // restart, not now.
@@ -5475,6 +5503,137 @@ export class Page {
   /** The Page's sources document, or undefined while it doesn't exist. */
   sourcesView() {
     return this.sourcesState?.name === "ready" ? this.sourcesHandle?.doc() : undefined;
+  }
+
+  /** The view ids the host lists (VIEW_KEY_PREFIX), sorted. At most
+   * MAX_VIEWS, so one list call reads them all. */
+  async storedViewIds() {
+    const keys = await this.ctx.storage.list({ prefix: VIEW_KEY_PREFIX });
+    return [...keys.keys()].map((key) => key.slice(VIEW_KEY_PREFIX.length)).sort();
+  }
+
+  /** The host's entry for view `viewId`: its document UUID, handle and
+   * lifecycle state (view-lifecycle.mjs), created on first use. `views` is
+   * keyed by view id. */
+  async viewEntry(viewId) {
+    this.views ??= new Map();
+    let entry = this.views.get(viewId);
+    if (!entry) {
+      entry = { uuid: undefined, handle: undefined, state: VIEW_ABSENT };
+      this.views.set(viewId, entry);
+    }
+    entry.uuid ??= await viewDocUuid(this.metadata.pageId, viewId);
+    return entry;
+  }
+
+  /** Step view `viewId`'s lifecycle and run its effects in order. A failed
+   * effect leaves the lifecycle where the next write starts over, and
+   * throws. */
+  async viewEvent(viewId, event) {
+    const entry = await this.viewEntry(viewId);
+    const result = viewStep(entry.state, event);
+    if (result.rejected)
+      throw Error(`The view lifecycle refused ${event.type} in ${entry.state.name}`);
+    entry.state = result.state;
+    for (const effect of result.effects) {
+      let done;
+      try {
+        done = await this.viewEffect(viewId, entry, effect);
+      } catch (error) {
+        entry.state = viewStep(entry.state, { type: "failed" }).state;
+        throw error;
+      }
+      await this.viewEvent(viewId, done);
+    }
+  }
+
+  /** One view lifecycle effect. Returns the event that reports it. */
+  async viewEffect(viewId, entry, effect) {
+    switch (effect) {
+      case "load":
+      case "store": {
+        // Served from here on: a tab the Page body tells about the view can
+        // sync it at once.
+        entry.handle = await this.importDerived(VIEW_MODULE, entry.uuid);
+        this.assertNotAbandoned();
+        if (effect === "load") {
+          await recoverDocumentMutations(
+            this.ctx.storage,
+            entry.handle,
+            () => this.flush(),
+            keyedDoc(VIEW_MODULE, viewId),
+          );
+          return { type: "loaded" };
+        }
+        await this.plain.flush([derivedDocumentId(entry.uuid)]);
+        await this.ctx.storage.sync();
+        return { type: "stored" };
+      }
+      case "record": {
+        const formats = recordDocumentFormats(this.metadata);
+        const named = Object.hasOwn(formats ?? {}, VIEW_MODULE.type);
+        const metadata = named
+          ? this.metadata
+          : {
+              ...this.metadata,
+              documentFormats: {
+                ...formats,
+                [VIEW_MODULE.type]: WRITTEN_FORMATS[VIEW_MODULE.type],
+              },
+            };
+        await this.ctx.storage.put({
+          [viewKey(viewId)]: { format: WRITTEN_FORMATS[VIEW_MODULE.type] },
+          ...(!named && { "host/document": metadata }),
+        });
+        await this.ctx.storage.sync();
+        this.metadata = metadata;
+        return { type: "recorded" };
+      }
+      default:
+        throw Error(`Unknown view effect ${effect}`);
+    }
+  }
+
+  /** Forget every view: the Page's documents are gone. */
+  dropViews() {
+    for (const entry of this.views?.values() ?? []) {
+      entry.handle = undefined;
+      entry.state = viewStep(entry.state, { type: "drop" }).state;
+    }
+  }
+
+  /** View `viewId`'s document, or undefined while it doesn't exist. */
+  viewDoc(viewId) {
+    const entry = this.views?.get(viewId);
+    return entry?.state.name === "ready" ? entry.handle?.doc() : undefined;
+  }
+
+  /** `[viewId, entry]` of each view whose document is served, by id. */
+  servedViews() {
+    return [...(this.views ?? [])]
+      .filter(([, entry]) => entry.handle)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  }
+
+  /** `{ [view_id]: documentId }` of each view that exists. */
+  viewDocumentIds() {
+    return Object.fromEntries(
+      this.servedViews()
+        .filter(([viewId]) => this.viewDoc(viewId))
+        .map(([viewId, entry]) => [viewId, derivedDocumentId(entry.uuid)]),
+    );
+  }
+
+  /** What a read sees of the Page's views: the ids of the views that hold
+   * one, and each one's document. */
+  viewReads() {
+    return {
+      ids: () =>
+        this.servedViews()
+          .map(([viewId]) => viewId)
+          .filter((viewId) => this.viewDoc(viewId)?.revision !== undefined),
+      doc: (viewId) => this.viewDoc(viewId),
+    };
   }
 
   /** Boot plain Automerge sync for the Page: DocumentPolicy for access, and
@@ -5935,7 +6094,7 @@ export class Page {
   }
 
   /** The repo document IDs this Page host holds: the Page and, once open,
-   * its comments and sources documents. A record in a format this build
+   * its comments and sources documents and its views. A record in a format this build
    * doesn't write holds none. */
   documentIds() {
     if (this.formatRefusal()) return [];
@@ -5943,6 +6102,7 @@ export class Page {
       this.metadata.documentId,
       ...(this.commentsHandle ? [commentsDocumentId(this.commentsUuid)] : []),
       ...(this.sourcesHandle ? [derivedDocumentId(this.sourcesUuid)] : []),
+      ...this.servedViews().map(([, entry]) => derivedDocumentId(entry.uuid)),
     ];
   }
 
@@ -6353,14 +6513,14 @@ export class Page {
           documentId: this.metadata.documentId,
           // The comments document syncs on the same socket.
           ...(this.commentsHandle && { commentsDocumentId: commentsId }),
-          // The sources document, once it exists, syncs on the same socket
-          // to a client that declares its format; nothing in the viewer
-          // reads it yet.
+          // The sources document and each view, once they exist, sync on
+          // the same socket to a client that declares their formats.
           documents: pageDocuments(
             recordDocumentFormats(this.metadata),
             this.metadata.documentId,
             commentsId,
             this.sourcesView() ? derivedDocumentId(this.sourcesUuid) : undefined,
+            this.viewDocumentIds(),
           ),
           recordStorage: "automerge",
           serverSenderId: this.serverSenderId,
@@ -6426,6 +6586,7 @@ export class Page {
             getPresence: (doc) => this.activityState().read(doc),
             commentsDoc: this.commentsView(),
             sourcesDoc: this.sourcesView(),
+            views: this.viewReads(),
             revisions: this.revisionTable(),
             writers: (changes) =>
               resolveWriters(
@@ -6519,6 +6680,16 @@ export class Page {
             "invalid_arguments",
           );
         if (sourceOps) return json(await this.writeSources(request, identity, body));
+        // A set_view writes one view's document: its batch holds it alone.
+        if (ops.some((op) => op?.op === "set_view")) {
+          if (ops.length !== 1)
+            throw new HttpError(
+              400,
+              "A batch with set_view holds only that one operation. Send the other operations in a second edit_page request.",
+              "invalid_arguments",
+            );
+          return json(await this.writeView(request, identity, body));
+        }
         // Ops that create a node naming a stored asset (model/node-registry.mjs).
         const inserts = ops.filter((op) => insertOperation(op?.op) || op?.op === "set_image");
         // Where this batch landed, captured inside the change so the cursors
@@ -6553,6 +6724,14 @@ export class Page {
                     assetId,
                     ...(mediaType && { mediaType }),
                   });
+                // Each view node names a view this Page holds.
+                for (const viewId of insertedViews(inserts))
+                  if (this.viewDoc(viewId)?.revision === undefined)
+                    throw new HttpError(
+                      400,
+                      `No view "${viewId}" on this Page. Create it with set_view, then insert its node.`,
+                      "unknown_view",
+                    );
                 // The Page queue orders ACL changes; OAuth/key expiry and revocation
                 // can still happen while immutable object metadata is being read.
                 this.policy.account(await authenticate(request, this.env), true);
@@ -6926,6 +7105,99 @@ export class Page {
             throw sourceRefusal(error);
           }
         },
+        flush: () => this.flush(),
+      });
+    } finally {
+      if (genesis) A.free(genesis);
+    }
+  }
+
+  /**
+   * One edit_page set_view: the view's document (model/view-doc.mjs),
+   * written through the journal. The caller holds edit access. Like a source
+   * write, it names the Page `revision` it read, fenced like any edit_page
+   * write, and never conflicts with a Page change; the operation's
+   * `view_revision` is the revision it checks instead.
+   *
+   * A journaled write to this view whose apply didn't finish is replayed
+   * first. For a new intent, `prepare` checks the operation, its spec
+   * (shared/view-spec.mjs), its bindings against the Page's sources and the
+   * view cap, and only then creates the view's document when the Page has
+   * none under this id (view-lifecycle.mjs), so a refused write creates no
+   * document, no listed view and no writer record. Until then the journal
+   * reads the fixed genesis. The receipt's `view_revision` is the view's
+   * revision after the write; an exact retry replays it.
+   */
+  async writeView(request, identity, body) {
+    const args = body.arguments ?? {};
+    const op = args.operations[0];
+    // The view id names the document, so it is checked before anything
+    // else; the rest is checked in `prepare`, against the stored view.
+    try {
+      if (!validViewId(op?.view_id)) validateViewOperation(op);
+    } catch (error) {
+      throw viewRefusal(error);
+    }
+    const viewId = op.view_id;
+    const doc = keyedDoc(VIEW_MODULE, viewId);
+    // Stored as the view's producer, so the retry fingerprint covers it, as
+    // a source's does.
+    const agent = agentFromProvenance(identity.clientProvenance);
+    const entry = await this.viewEntry(viewId);
+    if (this.viewDoc(viewId))
+      await recoverDocumentMutations(this.ctx.storage, entry.handle, () => this.flush(), doc);
+    let genesis;
+    let viewRevision;
+    const handle = {
+      doc: () => this.viewDoc(viewId) ?? (genesis ??= VIEW_MODULE.derived.genesis(entry.uuid)),
+      update: (fn, options) => entry.handle.update(fn, options),
+    };
+    try {
+      return await documentMutation({
+        storage: this.ctx.storage,
+        hostActorPrefix: this.plain.hostActorPrefix,
+        handle,
+        doc,
+        // edit_page's nonces share one lane, whichever document a batch writes.
+        lane: PAGE_DOC,
+        pageId: this.metadata.pageId,
+        operation: body.operation,
+        args,
+        identity,
+        agent,
+        guard: (input) => input,
+        pageHeads: () => A.getHeads(this.handle.doc()),
+        prepare: async () => {
+          try {
+            checkView(handle.doc(), op, { sourcesDoc: this.sourcesView() });
+          } catch (error) {
+            throw viewRefusal(error);
+          }
+          const listed = await this.storedViewIds();
+          if (!listed.includes(viewId) && listed.length >= MAX_VIEWS)
+            throw Object.assign(
+              new HttpError(
+                400,
+                `A Page holds up to ${MAX_VIEWS} views, and this one holds ${listed.join(", ")}. Rewrite one of them with set_view and its view_revision.`,
+                "view_limit",
+              ),
+              { details: { view_ids: listed } },
+            );
+          await this.viewEvent(viewId, { type: "create", recorded: listed.includes(viewId) });
+        },
+        apply: (draft, effectiveArgs) => {
+          try {
+            const edit = setView(draft, effectiveArgs.operations[0], {
+              sourcesDoc: this.sourcesView(),
+              by: authorOf(publicIdentity(identity), agent),
+            });
+            viewRevision = edit.view_revision;
+            return { edits: [edit] };
+          } catch (error) {
+            throw viewRefusal(error);
+          }
+        },
+        receiptFields: async () => ({ view_revision: viewRevision }),
         flush: () => this.flush(),
       });
     } finally {
@@ -7307,24 +7579,38 @@ export class Page {
         return;
       case "deleteDocument": {
         await this.forgetContent();
-        // Every document goes together: the Page, its comments and its
-        // sources. From metadata, not loaded handles: a deleted Page boots
-        // without them.
+        // Every document goes together: the Page, its comments, its sources
+        // and its views. From metadata and the view list, not loaded
+        // handles: a deleted Page boots without them.
         const sourcesId =
           (recordNamesSources(this.metadata) || this.sourcesHandle) &&
           (await this.sourcesDocumentId());
+        // Every listed view, and any served whose record step didn't finish.
+        const viewIds = new Set([
+          ...(await this.storedViewIds()),
+          ...this.servedViews().map(([viewId]) => viewId),
+        ]);
+        const viewDocumentIds = [];
+        for (const viewId of viewIds)
+          viewDocumentIds.push(derivedDocumentId((await this.viewEntry(viewId)).uuid));
         await this.repo.delete(this.metadata.documentId);
         if (this.commentsUuid) await this.repo.delete(commentsDocumentId(this.commentsUuid));
         if (sourcesId) await this.repo.delete(sourcesId);
+        for (const documentId of viewDocumentIds) await this.repo.delete(documentId);
         this.dropSources();
+        this.dropViews();
         await this.deleteAssets();
         await this.plain.forget(
           [
             this.metadata.documentId,
             this.commentsUuid && commentsDocumentId(this.commentsUuid),
             sourcesId,
+            ...viewDocumentIds,
           ].filter(Boolean),
         );
+        // After the documents: a restart that still finds the list repeats
+        // the deletes above.
+        await clearPrefixes(this.ctx.storage, [VIEW_KEY_PREFIX]);
         if (this.metadata.recordStorageMigratedFrom) await this.purgeConvertedRecords();
         return;
       }
@@ -7342,6 +7628,7 @@ export class Page {
         this.handle = undefined;
         this.commentsHandle = undefined;
         this.dropSources();
+        this.dropViews();
         return;
       case "loadDocument":
         await this.loadDocument();
