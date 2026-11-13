@@ -119,6 +119,7 @@ import { signInCallbackOptions } from "./sign-in-failure.mjs";
 import { localOidcStore } from "./local-oidc-store.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { openingTitleWarning } from "../model/title-warning.mjs";
+import { listStartWarning } from "../model/list-start-warning.mjs";
 import { blockAddress, nodeAddresses } from "../model/addresses.mjs";
 import { pagePreview } from "../model/page-preview.mjs";
 import { cardKey, pageCard } from "../model/page-card.mjs";
@@ -6426,7 +6427,9 @@ export class Page {
               (draft) => initializePage(draft, args.markdown ?? ""),
             );
             assertDocumentLimits(doc);
-            const warning = openingTitleWarning(doc);
+            const warnings = [openingTitleWarning(doc), listStartWarning(args.markdown)].filter(
+              Boolean,
+            );
             const documentId = interpretAsDocumentId(generateAutomergeUrl());
             const metadata = {
               recordStorage: "automerge",
@@ -6455,7 +6458,7 @@ export class Page {
                 title: doc.title,
                 heads: A.getHeads(doc),
                 ...firstBlockAddresses(doc),
-                ...(warning ? { warnings: [warning] } : {}),
+                ...(warnings.length ? { warnings } : {}),
               },
             };
             // The receipt's revision is minted in the put that records the

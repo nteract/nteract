@@ -28,6 +28,15 @@ before anything is written. Export escapes literal `$` and `<`, so every read is
 writable. A node from a newer build opens read-only through its feature stamp;
 reads project `[Unsupported node: <type>]`.
 
+Ordered lists are stored without a start number, so every list starts at 1.
+A Markdown write whose list starts elsewhere keeps the items and renumbers
+them. The write's receipt carries a `list_numbers_reset` warning
+([list-start-warning.mjs](model/list-start-warning.mjs)): each such list's
+`start` and the start of its first item's text (`first_item`), capped at 32
+lists (`lists_truncated`). It covers `create_page`, `insert_markdown` and
+`replace_block_markdown`. The editor resets a typed start to 1 too
+(`wordgardListStarts`), with no warning.
+
 The interface keeps navigation and account actions outside the document, with
 contextual formatting, a searchable Pages list, and System/Light/Dark appearance
 using nteract's shared tokens. Theme preferences are browser-local. **Copy as

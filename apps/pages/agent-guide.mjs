@@ -1147,6 +1147,7 @@ The heading may be a bounded preview (heading_truncated:true). Warnings are part
 of the exact stored receipt and describe its revision, even on retries after later
 edits. A warning means the write succeeded; it is not a reason to repeat it.
 edit_page receipts use the same list for marks_dropped (see Guarded edits).
+create_page and Markdown edits use it for list_numbers_reset.
 
 The detector checks only the first nonempty top-level body node. It compares
 opening headings with the title using conservative Unicode/case/punctuation
@@ -1505,6 +1506,12 @@ link uses, or anything else that would drop a link, image or text
 ("unrepresentable"). Put it in a code
 span or code block, or escape $ as \\$ and < as \\<, then retry. Reads escape
 literal $ and < the same way, so Markdown you read is always writable.
+
+Pages numbers every ordered list from 1. A list written as 3. 4. 5. keeps its
+items and reads back as 1. 2. 3. The write succeeds, and its receipt carries a
+list_numbers_reset warning naming each such list by its start and the text of
+its first item. If your text refers to the old numbers, relabel the items or
+the references.
 
 To restructure a block (headings, lists, tables), replace it with
 edit_page replace_block_markdown, or insert, move and delete whole blocks.

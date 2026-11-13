@@ -73,12 +73,16 @@ for (const fault of ["metadata", "flush", "final-sync"]) {
         body: JSON.stringify({
           page_id: pageId,
           title: "Test",
-          markdown: "# Test\n\nOriginal content",
+          markdown: "# Test\n\nOriginal content\n\n4. Fourth step",
         }),
       });
     assert.equal((await page.run(request())).status, 500);
     const receipt = structuredClone(page.metadata.createdReceipt);
-    assert.equal(receipt.warnings.length, 1);
+    assert.deepEqual(
+      receipt.warnings.map(({ code }) => code),
+      ["opening_heading_repeats_title", "list_numbers_reset"],
+    );
+    assert.deepEqual(receipt.warnings[1].lists, [{ start: 4, first_item: "Fourth step" }]);
     assert.equal(receipt.warnings[0].code, "opening_heading_repeats_title");
     assert.equal(receipt.warnings[0].heading, "Test");
     // The first block's id and its nodes' ids, so the first edit needs no
@@ -86,7 +90,7 @@ for (const fault of ["metadata", "flush", "final-sync"]) {
     const key = Object.keys(doc.blocks)[0];
     assert.equal(receipt.node_id, blockAddress(doc, key));
     assert.deepEqual(receipt.nodes, nodeAddresses(doc, key));
-    assert.equal(receipt.nodes.length, 2);
+    assert.equal(receipt.nodes.length, 3);
     assert.equal(receipt.warnings[0].node_id, receipt.nodes[0]);
     const recordedCreation = await storage.get("host/creation");
     assert.deepEqual(
