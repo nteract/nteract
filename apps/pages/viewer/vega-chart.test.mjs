@@ -248,7 +248,7 @@ test("an untitled chart shows a title row only to hold Maximize", () =>
     assert.equal(element.querySelector(".pages-chart-header").hidden, true);
     refused.destroy();
     const chart = mount(element, { spec: stacked, datasets: { calls } });
-    await settle();
+    assert.equal(await drawn(element), "rendered");
     assert.equal(element.querySelector(".pages-chart-header").hidden, false);
     assert.equal(element.querySelector(".pages-chart-title"), null);
     assert.equal(element.querySelector("figure").getAttribute("aria-label"), "Chart");
@@ -1206,7 +1206,7 @@ test("hovering a value with no usable toString shows a tooltip, and the chart st
       },
       datasets: { calls: rows },
     });
-    await settle();
+    assert.equal(await drawn(element), "rendered");
     const figure = element.querySelector("figure");
     const point = element.querySelector(".pages-chart-canvas path[role='graphics-symbol']");
     point.dispatchEvent(
