@@ -1,10 +1,13 @@
 import * as A from "@automerge/automerge/slim";
 import { boundedWriter } from "./author.mjs";
 import { readSource, validSourceId } from "./sources-doc.mjs";
+import { SOURCE_ID_PATTERN } from "../shared/sources.mjs";
 import { checkViewSpec } from "../shared/view-spec.mjs";
 import {
   MAX_VIEW_DATA,
   MAX_VIEW_TITLE,
+  RESERVED_DATA_NAMES,
+  RESERVED_VIEW_IDS,
   VIEW_DATA_NAME_PATTERN,
   VIEW_ID_PATTERN,
   VIEW_MEDIA_TYPES,
@@ -161,6 +164,11 @@ export function viewSummary(doc, viewId) {
   return { view_id, title, media_type, revision, data };
 }
 
+// A title a write may set; a stored title is read with validTitle alone, as
+// a source name is (model/sources-doc.mjs).
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u001f\u007f]/;
+
 /** Refuse a set_view operation with an unknown or malformed field. Returns
  * the data map, checked as bindings. */
 export function validateViewOperation(op) {
@@ -168,9 +176,11 @@ export function validateViewOperation(op) {
   const unknown = Object.keys(op).find((field) => !FIELDS.includes(field));
   if (unknown) fail("invalid_view", `set_view does not take ${String(unknown).slice(0, 64)}`);
   if (!validViewId(op.view_id))
-    fail("invalid_view", `view_id must match ${VIEW_ID_PATTERN} and not be a reserved name`);
+    fail("invalid_view", `view_id must match ${VIEW_ID_PATTERN}, not ${RESERVED_VIEW_IDS}`);
   if (!validTitle(op.title))
     fail("invalid_view", `title must be 1 to ${MAX_VIEW_TITLE} characters, not only spaces`);
+  if (CONTROL.test(op.title))
+    fail("invalid_view", "title can't hold control characters such as a newline or NUL");
   if (!VIEW_MEDIA_TYPES.includes(op.media_type))
     fail("invalid_view", `media_type must be ${VIEW_MEDIA_TYPES.join(" or ")}`);
   if (!(op.view_revision === null || validRevision(op.view_revision)))
@@ -186,12 +196,12 @@ export function validateViewOperation(op) {
     if (!validDataName(name))
       fail(
         "invalid_view",
-        `data can't name "${name.slice(0, 64)}": a data name matches ${VIEW_DATA_NAME_PATTERN} and isn't a reserved name`,
+        `data can't name "${name.slice(0, 64)}": a data name matches ${VIEW_DATA_NAME_PATTERN}, not ${RESERVED_DATA_NAMES}`,
       );
     if (isMap(binding) && !validSourceId(binding.source_id))
       fail(
         "invalid_view",
-        `data.${name} names source_id "${String(binding.source_id).slice(0, 64)}", which isn't a source id`,
+        `data.${name}.source_id must match ${SOURCE_ID_PATTERN}, not "${String(binding.source_id).slice(0, 64)}"`,
       );
     if (!bindingOf(binding))
       fail(

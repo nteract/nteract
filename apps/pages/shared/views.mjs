@@ -27,10 +27,19 @@ export const VIEW_ID_ATTR = "data-view-id";
 const VIEW_ID = new RegExp(VIEW_ID_PATTERN);
 const RESERVED = new Set(["constructor", "prototype", "__proto__"]);
 
+/** The reserved names a view id could otherwise take, for a refusal; the
+ * rest fail the pattern. */
+export const RESERVED_VIEW_IDS = [...RESERVED].filter((id) => VIEW_ID.test(id)).join(" or ");
+
 /** Whether `id` is a well-formed view id. */
 export const validViewId = (id) => typeof id === "string" && VIEW_ID.test(id) && !RESERVED.has(id);
 
 const DATA_NAME = new RegExp(VIEW_DATA_NAME_PATTERN);
+/** The reserved names a data name could otherwise take, for a refusal. */
+export const RESERVED_DATA_NAMES = [...RESERVED]
+  .filter((name) => DATA_NAME.test(name))
+  .join(" or ");
+
 /** Whether `name` is a data name a view may bind: a safe object key. */
 export const validDataName = (name) =>
   typeof name === "string" && DATA_NAME.test(name) && !RESERVED.has(name);

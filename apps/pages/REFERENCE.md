@@ -1603,7 +1603,7 @@ root is:
 
 ```
 {
-  title:      string, 1 to 200 characters
+  title:      string, 1 to 200 characters; a write refuses control characters
   media_type: "application/vnd.vegalite.v6+json"
   spec:       text, the Vega-Lite spec as JSON
   data:       { [data_name]: { source_id } | { source_id, revision } }
