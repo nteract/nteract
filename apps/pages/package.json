@@ -22,7 +22,7 @@
   "dependencies": {
     "@automerge/automerge": "3.5.0",
     "@automerge/automerge-repo": "3.0.0-experimental.1",
-    "@modelcontextprotocol/sdk": "1.29.0",
+    "@modelcontextprotocol/server": "2.4.0",
     "@nteract/sift": "0.6.0",
     "@types/node": "22.20.0",
     "diff": "8.0.2",
@@ -40,6 +40,8 @@
     "wordgard": "0.6.2"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "2.4.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@playwright/test": "1.59.1",
     "@types/debug": "4.1.12",
     "esbuild": "0.28.0",
