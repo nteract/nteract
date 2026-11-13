@@ -10,6 +10,8 @@
 // readers. It stays visible with `unverified: true` so the owner can see it
 // and switch to Restricted; choosing it again needs fresh proof.
 const domainName = (domain) => typeof domain === "string" && !!domain;
+/** The roles a link audience grants, weakest first. */
+const LINK_ROLES = ["viewer", "commenter", "editor"];
 
 export function domainSharingProjection(value) {
   if (!value?.access?.canManageAccess || !Array.isArray(value.domainOptions)) return null;
@@ -28,8 +30,15 @@ export function domainSharingProjection(value) {
   const choices = [...verified, ...expired];
   if (unverified && !choices.includes(stored)) choices.push(stored);
   if (!choices.length) return null;
+  const selected = choices.includes(stored) ? stored : "";
   return {
-    selected: choices.includes(stored) ? stored : "",
+    selected,
+    // The stored grant's role; a grant without one is a viewer grant.
+    role: selected
+      ? LINK_ROLES.includes(value.domainView.role)
+        ? value.domainView.role
+        : "viewer"
+      : null,
     unverified,
     // The domain whose proof a fresh sign-in with the same account restores.
     expired: expired.includes(stored) ? stored : (expired[0] ?? null),
@@ -53,7 +62,6 @@ export function domainSharingProjection(value) {
 const organizationValue = (id) => `org:${encodeURIComponent(id)}`;
 const organizationEntry = (value) =>
   typeof value?.id === "string" && !!value.id && typeof value.name === "string" && !!value.name;
-const ORGANIZATION_ROLES = ["viewer", "commenter", "editor"];
 
 export function organizationSharingProjection(value) {
   if (!value?.access?.canManageAccess || !Array.isArray(value.organizationOptions)) return null;
@@ -69,7 +77,7 @@ export function organizationSharingProjection(value) {
       : {};
   const stored =
     organizationEntry(value.organizationAccess) &&
-    ORGANIZATION_ROLES.includes(value.organizationAccess.role)
+    LINK_ROLES.includes(value.organizationAccess.role)
       ? {
           id: value.organizationAccess.id,
           name: value.organizationAccess.name,
@@ -101,8 +109,11 @@ export function organizationSharingProjection(value) {
  * then each company domain. A Page has one link audience at a time, so while
  * one kind is stored the other kind's options are disabled; choosing
  * Restricted clears whichever is stored. `organization` is the stored
- * organization grant, `domain` the stored company domain, and `expired` names
- * the audience whose proof a fresh sign-in restores.
+ * organization grant, `domain` the stored company domain, `role` the stored
+ * audience's role (null when Restricted), and `expired` names the audience
+ * whose proof a fresh sign-in restores. `narrowOnly` is true for a stored
+ * company domain the owner can't prove now: the host still lets the owner
+ * lower its role (or choose Restricted), never raise it.
  */
 export function linkAccessProjection(value) {
   const domain = domainSharingProjection(value);
@@ -114,7 +125,9 @@ export function linkAccessProjection(value) {
     selected: organization?.selected || storedDomain || "",
     organization: stored,
     domain: storedDomain,
+    role: stored?.role ?? domain?.role ?? null,
     unverified: stored ? organization.unverified : !!domain?.unverified,
+    narrowOnly: !stored && !!storedDomain && !!domain?.unverified,
     expired: organization?.expired
       ? { kind: "organization", name: organization.expired }
       : domain?.expired && !stored

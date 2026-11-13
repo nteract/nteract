@@ -1214,13 +1214,16 @@ principal grants only after verified provider email admission, and do not send
 email. Pending invitations cannot authorize sockets or override a newer role.
 There is no public/anonymous access, guest commenting, or ownership transfer.
 
-Company-domain viewing is an optional, read-only fallback. Deployment configuration
-and the owner's Page setting must both allow it; only `anaconda.com` is currently
-recognized. New Pages start Restricted. Existing company audiences remain active.
-Enabling a company audience requires fresh owner proof. Browser and OAuth proof
-expires after six hours. API-key access uses bounded leases backed by provider
-verification. Explicit revocation overrides domain access; removing the audience
-revokes fallback access without creating permanent members.
+Company-domain sharing is optional. Deployment configuration and the owner's Page
+setting must both allow it; only `anaconda.com` is currently recognized
+([Company domains](DEPLOYMENT.md#company-domains)). The owner picks the
+audience's role: Can view, Can comment or Can edit. A grant stored without a
+role is a viewer grant. New Pages start Restricted. Existing company audiences
+remain active. Enabling a company audience or raising its role requires fresh
+owner proof; lowering its role or choosing Restricted does not. Browser and OAuth proof expires after six hours. API-key access uses
+bounded leases backed by provider verification. A higher direct grant wins and
+explicit revocation overrides domain access; removing the audience revokes it
+without creating permanent members.
 
 ACL updates use a revision and idempotency key. Increases wait for durable
 confirmation; reductions apply immediately. A downgrade or removal ends the
@@ -1625,10 +1628,11 @@ yet. Execute is out of scope for Pages.
 decide() runs three steps, in this order:
 
 1. **Relations.** A viewer, commenter or editor member row grants, and a removal
-   tombstone becomes `removed`. Company view is the `organization#member`
-   userset. Built-in mode has no tenants, so the verified email-domain lease
-   stands in for organization membership. A tombstone subtracts from the
-   item's own viewer path, so it beats company view. A Page placed in a
+   tombstone becomes `removed`. A company domain grant is an
+   `organization#member` userset in the relation its role names. Built-in mode
+   has no tenants, so the verified email-domain lease stands in for
+   organization membership. A tombstone subtracts from the item's own viewer,
+   commenter and editor paths, so it beats a company grant at any role. A Page placed in a
    Project has the `project` relation instead of `owner`.
 2. **Lifecycle overlay.** A trashed item keeps `read`, `administer`, `restore`
    and `purge`, and only for principals who may restore it. A deleted or
@@ -1683,9 +1687,10 @@ leaves the person's decision unchanged.
 
 SpiceDB matches 14 fixture cases after removing local overlays. Writers enforce
 owner/project exclusivity; the malformed case tests JavaScript rejection only.
-When `zed` is installed, the test runs `zed validate` with the lifecycle,
+When SpiceDB's `zed` is installed (not the Zed editor's command of the same
+name, which the test never runs), the test runs `zed validate` with the lifecycle,
 credential ceiling and project lease removed, so SpiceDB computes the same
-relation decision as decide() for every principal. Without `zed`, the test
+relation decision as decide() for every principal. Without it, the test
 parses the schema structurally.
 
 [authz-equivalence.test.mjs](worker/authz-equivalence.test.mjs) compares
@@ -1843,8 +1848,12 @@ host's existing retry-token key ([operation-journal.mjs](worker/operation-journa
 `pages-asset-upload-v1`, ahead of the payload, and the payload repeats it, so a
 retry token never verifies as a capability or the reverse. The payload names
 the Page, principal, credential kind, OAuth grant ID (for OAuth), issue and
-expiry times (10 minutes) and the optional binding. No server state is
-created.
+expiry times, the issuer's company domain lease when it holds one, and the
+optional binding. The expiry is 10 minutes after issue, or the end of the
+company domain or organization lease the caller edits through when that comes
+first; a caller who edits without one (owner, member, Project member) gets the
+full 10 minutes. `expires_at` in the answer is that same expiry. No server
+state is created.
 
 The upload sends it as `Authorization: Pages-Upload <token>`, a header rather
 than a query parameter so access logs and `Referer` don't carry it. The gateway

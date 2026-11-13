@@ -2,19 +2,28 @@ import { useId } from "react";
 import { ROLE_LABELS } from "./sharing-roles.mjs";
 
 const roleLabel = (role) => ROLE_LABELS[role] ?? ROLE_LABELS.viewer;
+/** Grantable roles, weakest first. */
+const ROLES = Object.keys(ROLE_LABELS);
 
 /**
  * The owner's "Link access" control for a Page or a Project: Restricted, then
  * each organization, then each company domain, from `linkAccess`
- * (`linkAccessProjection` in sharing-projection.mjs), and the role an
- * organization grant gives. `resource` names what is shared ("Page" or
- * "Project"). `onChange` receives the sharing action to send: choosing an
- * audience sets it, an organization at its current role or Can view, and
- * Restricted clears whichever audience is stored. `onRefresh` reads sharing
- * again after the owner signs in again in another tab.
+ * (`linkAccessProjection` in sharing-projection.mjs), and the role the stored
+ * audience gives. `resource` names what is shared ("Page" or "Project").
+ * `onChange` receives the sharing action to send: choosing an audience sets
+ * it at the stored audience's role or Can view, choosing a role sets it on
+ * the stored audience, and Restricted clears whichever audience is stored.
+ * When the owner can't prove a stored company domain now (`narrowOnly`), only
+ * lower roles are offered, as the host allows.
+ * `onRefresh` reads sharing again after the owner signs in again in another
+ * tab.
  */
 export function LinkAccess({ linkAccess, resource, busy, refreshing, onChange, onRefresh }) {
   const id = useId();
+  const grant = (option, role) =>
+    option.kind === "domain"
+      ? { action: "set_domain_view", domain: option.value, role }
+      : { action: "set_organization_access", organization_id: option.id, role };
   function choose(selected) {
     const option = linkAccess.options.find((candidate) => candidate.value === selected);
     if (!option?.kind)
@@ -23,13 +32,11 @@ export function LinkAccess({ linkAccess, resource, busy, refreshing, onChange, o
           ? { action: "set_organization_access", organization_id: null }
           : { action: "set_domain_view", domain: null },
       );
-    if (option.kind === "domain")
-      return onChange({ action: "set_domain_view", domain: option.value });
-    onChange({
-      action: "set_organization_access",
-      organization_id: option.id,
-      role: linkAccess.organization?.role ?? "viewer",
-    });
+    onChange(grant(option, linkAccess.role ?? "viewer"));
+  }
+  function chooseRole(role) {
+    const option = linkAccess.options.find((candidate) => candidate.value === linkAccess.selected);
+    if (option?.kind) onChange(grant(option, role));
   }
   return (
     <section className="page-domain-sharing" aria-labelledby={id}>
@@ -48,24 +55,24 @@ export function LinkAccess({ linkAccess, resource, busy, refreshing, onChange, o
           </option>
         ))}
       </select>
-      {linkAccess.organization && (
+      {linkAccess.role && (
         <>
-          <label htmlFor={`${id}-role`}>Members can</label>
+          <label htmlFor={`${id}-role`}>
+            {linkAccess.organization ? "Members can" : "People can"}
+          </label>
           <select
             id={`${id}-role`}
             className="page-organization-role"
-            value={linkAccess.organization.role}
-            disabled={busy || linkAccess.unverified}
-            onChange={(event) =>
-              onChange({
-                action: "set_organization_access",
-                organization_id: linkAccess.organization.id,
-                role: event.target.value,
-              })
-            }
+            value={linkAccess.role}
+            disabled={busy || (linkAccess.unverified && !linkAccess.narrowOnly)}
+            onChange={(event) => chooseRole(event.target.value)}
           >
-            {Object.entries(ROLE_LABELS).map(([role, label]) => (
-              <option key={role} value={role}>
+            {Object.entries(ROLE_LABELS).map(([role, label], rank) => (
+              <option
+                key={role}
+                value={role}
+                disabled={linkAccess.narrowOnly && rank > ROLES.indexOf(linkAccess.role)}
+              >
                 {label}
               </option>
             ))}
@@ -81,7 +88,8 @@ export function LinkAccess({ linkAccess, resource, busy, refreshing, onChange, o
           </>
         ) : linkAccess.domain ? (
           <>
-            <strong>Can view.</strong> Sign in with a verified {linkAccess.domain} email.
+            <strong>{roleLabel(linkAccess.role)}.</strong> People who sign in with a verified{" "}
+            {linkAccess.domain} email can open the link. They are not added to the people list.
           </>
         ) : (
           `Only you and invited people can open this ${resource}.`
@@ -98,8 +106,10 @@ export function LinkAccess({ linkAccess, resource, busy, refreshing, onChange, o
             <p>
               {linkAccess.organization
                 ? `Members of ${linkAccess.organization.name} can still open this ${resource}.`
-                : `People at ${linkAccess.domain} can still view this ${resource}.`}{" "}
-              Choose Restricted to stop sharing with them.
+                : `People at ${linkAccess.domain} can still open this ${resource}.`}{" "}
+              {linkAccess.narrowOnly
+                ? "You can lower their role, or choose Restricted to stop sharing with them."
+                : "Choose Restricted to stop sharing with them."}
             </p>
           )}
           <div className="page-domain-sharing-actions">
@@ -129,8 +139,9 @@ export function LinkAccess({ linkAccess, resource, busy, refreshing, onChange, o
         ) : (
           <p className="page-domain-sharing-note" role="note">
             You are not signed in with a verified {linkAccess.domain} email. People at{" "}
-            {linkAccess.domain} can still view this {resource}. Choose Restricted to stop sharing
-            with them; sharing again needs a verified {linkAccess.domain} email.
+            {linkAccess.domain} can still open this {resource}. You can lower their role, or choose
+            Restricted to stop sharing with them; a higher role or sharing again needs a verified{" "}
+            {linkAccess.domain} email.
           </p>
         ))
       )}

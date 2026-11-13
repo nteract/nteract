@@ -311,19 +311,45 @@ test("an organization link grants tag changes by its role, only to that organiza
   );
 });
 
-test("a company-domain link only views, so its members can't change tags", async (t) => {
+test("a company-domain link grants tag changes by its role; one stored without a role only views", async (t) => {
   const principal = `${namespace}:employee`;
-  const { f, rows } = await tagged(t);
-  f.page.metadata.acl.domainView = { domain: "anaconda.com", namespace };
-  actingAs(f, principal, {
-    domainAccess: { domain: "anaconda.com", namespace, expiresAt: future() },
-  });
-  // The link does open the Page to them: they can read it.
-  const read = await f.tool("stranger", "read_page", { comments: "none" });
-  assert.equal(read.status, 200, JSON.stringify(read.body));
-  const refused = await update(f, "stranger", { add: ["plan"] });
-  assert.equal(refused.status, 403, JSON.stringify(refused.body));
-  assert.deepEqual(rows(), []);
+  const lease = { domainAccess: { domain: "anaconda.com", namespace, expiresAt: future() } };
+  for (const [role, status] of [
+    ["editor", 200],
+    ["commenter", 403],
+    ["viewer", 403],
+    [undefined, 403],
+  ]) {
+    const { f, rows } = await tagged(t);
+    f.page.metadata.acl.domainView = {
+      domain: "anaconda.com",
+      namespace,
+      ...(role && { role }),
+    };
+    actingAs(f, principal, lease);
+    // The link opens the Page to every role: they can read it.
+    const read = await f.tool("stranger", "read_page", { comments: "none" });
+    assert.equal(read.status, 200, JSON.stringify(read.body));
+    const changed = await update(f, "stranger", { add: ["Plan"] });
+    assert.equal(changed.status, status, `${role}: ${JSON.stringify(changed.body)}`);
+    assert.deepEqual(rows(), status === 200 ? [{ tag: "plan", added_by: principal }] : []);
+  }
+  // Another domain's lease, a lapsed lease and no lease get nothing from an
+  // editor link, and a removal tombstone beats it.
+  for (const [label, identity, members] of [
+    ["other domain", { domainAccess: { ...lease.domainAccess, domain: "example.com" } }, {}],
+    ["lapsed", { domainAccess: { ...lease.domainAccess, expiresAt: Date.now() - 1 } }, {}],
+    ["no lease", {}, {}],
+    ["removed", lease, { [principal]: { role: "none", generation: 2 } }],
+  ]) {
+    const { f, rows } = await tagged(t);
+    f.page.metadata.acl.domainView = { domain: "anaconda.com", namespace, role: "editor" };
+    f.page.metadata.acl.members = { ...f.page.metadata.acl.members, ...members };
+    actingAs(f, principal, identity);
+    const refused = await update(f, "stranger", { add: ["shared"] });
+    assert.equal(refused.status, 403, `${label}: ${JSON.stringify(refused.body)}`);
+    assert.deepEqual(rows(), []);
+  }
 });
 
 test("without the catalog index flag (no D1 binding), a tag change is refused and nothing is written", async (t) => {

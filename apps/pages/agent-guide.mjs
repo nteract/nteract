@@ -1531,6 +1531,22 @@ export function agentGuideResponse(request, env) {
   });
 }
 
+/** Company domain sharing in the access tools, the same for every provider:
+ * whether the deployment allows a domain shows in domainOptions. */
+const companyDomainSharing = `set_domain_view takes domain from
+domainOptions and role (viewer, commenter or editor; viewer when omitted), or
+domain null for Restricted. Choosing a domain, or the stored domain's role
+again or a higher one, needs your own fresh company email proof, else 403 with
+code company_email_proof_required. Lowering the stored domainView's role (its
+domain need not be in domainOptions) and Restricted need none. domainView is { domain, namespace, role } or null. A
+higher individual grant still wins, and an explicit removal overrides the
+domain. Browser/OAuth company proof expires after six hours without fresh
+sign-in; refreshing an OAuth token does not renew that identity proof. A
+deployment allows a domain only when its sign-in provider's reviewed list names
+it and the deployment's PAGES_COMPANY_VIEW_DOMAINS setting turns it on; one
+value that isn't a lower-case hostname of two or more labels turns company
+sharing off.`;
+
 /** Organization sharing in the access tools, the same for every provider:
  * whether the deployment reports organizations shows in organizationOptions. */
 const organizationSharing = `organizationOptions lists the organizations
@@ -1627,12 +1643,8 @@ Page is still shared with that company but you cannot currently prove it; you ca
 set Restricted. Owners may POST to the same endpoint with
 an action, expected_revision from access.revision, and a new nonce.
 Actions are invite (email, role: viewer, commenter or editor), set_role (principal,
-role: viewer, commenter, editor or null to remove), revoke_invite (invite_id), and set_domain_view (domain
-from domainOptions, or null for Restricted; a company domain you cannot prove
-returns 403 with code company_email_proof_required). Company access is always view-only;
-individual editor grants still work, and explicit removals override the domain.
-Browser/OAuth company proof expires after six hours without fresh sign-in;
-refreshing an OAuth token does not renew that identity proof. ${organizationSharing}
+role: viewer, commenter, editor or null to remove), revoke_invite (invite_id), and
+set_domain_view. ${companyDomainSharing} ${organizationSharing}
 A 409 requires reading access again. An uncertain request can be retried with its identical nonce and body.`,
     importPageImageParagraph: `import_page_image requires pages:read and pages:write plus current Page edit
 access. It copies the bytes into private Page storage and returns asset_id,
@@ -1651,7 +1663,8 @@ OAuth clients upload with create_page_asset_upload instead: its Pages-Upload
 capability is a separate, Page-scoped credential, not the OAuth token, and
 revoking the connection also ends the upload URLs it issued. Revoking an API
 key doesn't end upload URLs it already issued; they stop at expires_at, at
-most 10 minutes. Removing the principal's Page access ends them at once. MCP can import
+most 10 minutes, and sooner when the caller edits only through a company
+domain or organization grant. Removing the principal's Page access ends them at once. MCP can import
 files and preserve image references, but it does not return image pixels. Pages
 has no tool that fetches an arbitrary remote URL, and image bytes don't go in
 tool arguments. A reference from read_page is not evidence that an
@@ -1955,7 +1968,8 @@ config.
    - Repeating an upload is safe: the same bytes always return the same
      asset_id.
    - One URL takes several files until its expires_at, 10 minutes after you
-     asked; then request another.
+     asked, or sooner when you edit only through a company domain or
+     organization grant: then it ends with that access. Request another after.
    - Optional content_type and size arguments bind the URL to one type and length.
    - The Pages-Upload header works only on that upload route. Never send your
      own API key there, and keep the token out of Page content and comments.
@@ -2035,12 +2049,7 @@ it; you can set Restricted. Owners call manage_page_access with an action,
 expected_revision from access.revision, and a new nonce. Actions are
 invite (email, role: viewer, commenter or editor), set_role (principal, role:
 viewer, commenter, editor or null to remove), revoke_invite (invite_id), and
-set_domain_view (domain from domainOptions, or null for Restricted; a company
-domain you cannot prove returns 403 with code company_email_proof_required).
-Company access is always view-only; individual editor grants still work, and
-explicit removals override the domain. Browser/OAuth company proof expires after
-six hours without fresh sign-in; refreshing an OAuth token does not renew that
-identity proof. ${organizationSharing} A 409 requires reading access again. An uncertain request can be
+set_domain_view. ${companyDomainSharing} ${organizationSharing} A 409 requires reading access again. An uncertain request can be
 retried with its identical nonce and body.`,
     importPageImageParagraph: `import_page_image requires pages:read and pages:write plus current Page edit
 access. It copies the bytes into private Page storage and returns asset_id,
@@ -2058,7 +2067,8 @@ the asset route.
 OAuth clients upload with create_page_asset_upload instead: its Pages-Upload
 capability is a separate, Page-scoped credential, not the OAuth token, and
 revoking the connection also ends the upload URLs it issued. They stop at
-expires_at, at most 10 minutes. Removing the principal's Page access ends them
+expires_at, at most 10 minutes, and sooner when the caller edits only through
+a company domain or organization grant. Removing the principal's Page access ends them
 at once. MCP can import files and preserve image references, but it does not
 return image pixels. Pages has no tool that fetches an arbitrary remote URL, and
 image bytes don't go in tool arguments. A reference from read_page is not
@@ -2178,7 +2188,8 @@ or a permission grant.`,
    - Repeating an upload is safe: the same bytes always return the same
      asset_id.
    - One URL takes several files until its expires_at, 10 minutes after you
-     asked; then request another.
+     asked, or sooner when you edit only through a company domain or
+     organization grant: then it ends with that access. Request another after.
    - Optional content_type and size arguments bind the URL to one type and length.
    - The Pages-Upload header works only on that upload route. Never send your
      own OAuth token there, and keep the token out of Page content and comments.

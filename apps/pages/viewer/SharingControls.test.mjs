@@ -306,7 +306,7 @@ test("an unproven stored company audience shows a note and can be switched to Re
   );
   const note = f.container.querySelector(".page-domain-sharing-note");
   assert.match(note.textContent, /not signed in with a verified anaconda\.com email/);
-  assert.match(note.textContent, /can still view/);
+  assert.match(note.textContent, /can still open/);
   await act(() => {
     select.value = "";
     select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
@@ -494,6 +494,114 @@ test("an owner shares with an organization, sets its role, and Restricted withdr
     { action: "set_organization_access", organization_id: null },
   );
   assert.equal(linkSelect(f.container).value, "");
+  assert.equal(roleSelect(f.container), null);
+});
+
+test("an owner who can't prove a stored company domain may only lower its role or withdraw it", async (t) => {
+  const posts = [];
+  let current = {
+    ...companyLedger("expired"),
+    domainView: { domain: "anaconda.com", namespace: "fixture", role: "commenter" },
+    domainViewOwnerVerified: false,
+  };
+  const f = await fixture(t, async (_url, options) => {
+    if (options.method === "POST") {
+      const body = JSON.parse(options.body);
+      posts.push(body);
+      current = {
+        ...current,
+        ...ledger(current.access.revision + 1),
+        domainView: body.domain ? { ...current.domainView, role: body.role } : null,
+        ...(!body.domain && { domainViewOwnerVerified: undefined }),
+      };
+      return json({ ...current, receipt: { revision: current.access.revision } });
+    }
+    return json(current);
+  });
+  await f.toggle();
+  const select = roleSelect(f.container);
+  assert.equal(select.disabled, false);
+  assert.deepEqual(
+    [...select.options].map((option) => [option.value, option.disabled]),
+    [
+      ["viewer", false],
+      ["commenter", false],
+      ["editor", true],
+    ],
+  );
+  assert.match(
+    f.container.querySelector(".page-domain-sharing-note").textContent,
+    /You can lower their role, or choose Restricted/,
+  );
+  await choose(select, "viewer");
+  await flush();
+  assert.deepEqual(
+    { action: posts[0].action, domain: posts[0].domain, role: posts[0].role },
+    { action: "set_domain_view", domain: "anaconda.com", role: "viewer" },
+  );
+  assert.deepEqual(
+    [...roleSelect(f.container).options].map((option) => option.disabled),
+    [false, true, true],
+  );
+  // Restricted withdraws it, with no proof either.
+  await choose(linkSelect(f.container), "");
+  await flush();
+  assert.deepEqual(
+    { action: posts[1].action, domain: posts[1].domain },
+    { action: "set_domain_view", domain: null },
+  );
+  assert.equal(roleSelect(f.container), null);
+});
+
+test("an owner shares with a company domain, sets its role, and Restricted withdraws it", async (t) => {
+  const posts = [];
+  let current = companyLedger("verified");
+  const f = await fixture(t, async (_url, options) => {
+    if (options.method === "POST") {
+      const body = JSON.parse(options.body);
+      posts.push(body);
+      current = {
+        ...companyLedger("verified", current.access.revision + 1),
+        domainView: body.domain
+          ? { domain: body.domain, namespace: "fixture", role: body.role }
+          : null,
+        ...(body.domain && { domainViewOwnerVerified: true }),
+      };
+      return json({ ...current, receipt: { revision: current.access.revision } });
+    }
+    return json(current);
+  });
+  await f.toggle();
+  assert.equal(roleSelect(f.container), null);
+  await choose(linkSelect(f.container), "anaconda.com");
+  await flush();
+  const { action, domain, role } = posts[0];
+  assert.deepEqual(
+    { action, domain, role },
+    { action: "set_domain_view", domain: "anaconda.com", role: "viewer" },
+  );
+  assert.match(f.container.textContent, /People can/);
+  assert.match(
+    f.container.textContent,
+    /Can view\. People who sign in with a verified anaconda\.com email can open the link/,
+  );
+  await choose(roleSelect(f.container), "editor");
+  await flush();
+  assert.deepEqual(
+    { action: posts[1].action, domain: posts[1].domain, role: posts[1].role },
+    { action: "set_domain_view", domain: "anaconda.com", role: "editor" },
+  );
+  assert.equal(roleSelect(f.container).value, "editor");
+  assert.match(
+    f.container.textContent,
+    /Can edit\. People who sign in with a verified anaconda\.com/,
+  );
+  await choose(linkSelect(f.container), "");
+  await flush();
+  assert.deepEqual(
+    { action: posts[2].action, domain: posts[2].domain },
+    { action: "set_domain_view", domain: null },
+  );
   assert.equal(roleSelect(f.container), null);
 });
 

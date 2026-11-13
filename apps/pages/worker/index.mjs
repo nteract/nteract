@@ -99,6 +99,7 @@ import {
   openUploadCapability,
   uploadCapabilityToken,
   uploadIdentity,
+  uploaderEditUntil,
   uploadRefusal,
   uploadScreen,
   verifyAssetUpload,
@@ -6505,7 +6506,8 @@ export class Page {
           );
         }
         // An upload URL needs what an upload needs: write scope (checked by
-        // the gateway) and current edit access (just above).
+        // the gateway) and current edit access (just above). It lasts no
+        // longer than the access of the identity the upload will stand for.
         if (body.operation === ASSET_UPLOAD_OPERATION)
           return json(
             await issueAssetUpload(this.ctx.storage, {
@@ -6513,6 +6515,7 @@ export class Page {
               identity,
               args: body.arguments,
               origin: pagesPublicOrigin(this.env),
+              accessUntil: (claims) => uploaderEditUntil(this.policy.metadata(), claims, this.env),
             }),
           );
         if (body.operation !== "edit_page") throw new HttpError(400, "Unknown document operation");

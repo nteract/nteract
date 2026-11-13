@@ -78,6 +78,9 @@ export interface AuthenticatedConnectionMetadata {
   avatarUrl?: string;
   email?: string;
   emailVerified?: boolean;
+  /** When the provider answer that verified `email` stops being current
+   * (epoch ms). Set for an Anaconda API key with an email. */
+  emailVerifiedUntil?: number;
   identityVerifiedAt?: number;
   verifiedEmailBinding?: string;
   verifiedEmailDomainBinding?: string;
@@ -147,6 +150,11 @@ interface AnacondaApiKeyUserInfo {
   email?: string;
   scopes: Set<string>;
   subject: string;
+}
+
+/** A cached account lookup and when it stops being current (epoch ms). */
+interface CachedAnacondaApiKeyUserInfo extends AnacondaApiKeyUserInfo {
+  currentUntil: number;
 }
 
 interface JsonWebKeySet {
@@ -235,7 +243,7 @@ const jwksLookup = createSettledLookup<string, JsonWebKeySet>({
   waitMs: OIDC_JWKS_ATTEMPT_MS,
   timeoutError: () => new AuthError("OIDC JWKS fetch timed out", 503),
 });
-const anacondaApiKeyLookup = createSettledLookup<string, AnacondaApiKeyUserInfo>({
+const anacondaApiKeyLookup = createSettledLookup<string, CachedAnacondaApiKeyUserInfo>({
   attemptMs: ANACONDA_API_KEY_ATTEMPT_MS,
   waitMs: ANACONDA_API_KEY_ATTEMPT_MS,
   maxEntries: ANACONDA_API_KEY_CACHE_MAX_ENTRIES,
@@ -477,6 +485,8 @@ export async function authenticateAnacondaApiKeyRequest(
       ...(userInfo.displayName ? { displayName: userInfo.displayName } : {}),
       ...(userInfo.email ? { email: userInfo.email } : {}),
       ...(userInfo.email ? { emailVerified: true } : {}),
+      // A cached answer keeps the deadline of the lookup that fetched it.
+      ...(userInfo.email ? { emailVerifiedUntil: userInfo.currentUntil } : {}),
     },
   };
 }
@@ -484,11 +494,14 @@ export async function authenticateAnacondaApiKeyRequest(
 async function loadAnacondaApiKeyUserInfo(
   token: string,
   config: AnacondaApiKeyConfig,
-): Promise<AnacondaApiKeyUserInfo> {
-  return anacondaApiKeyLookup.get(`${config.userinfoUrl}:${token}`, async (signal, startedAt) => ({
-    value: await fetchAnacondaApiKeyUserInfo(token, config, signal),
-    expiresAt: startedAt + ANACONDA_API_KEY_CACHE_TTL_MS,
-  }));
+): Promise<CachedAnacondaApiKeyUserInfo> {
+  return anacondaApiKeyLookup.get(`${config.userinfoUrl}:${token}`, async (signal, startedAt) => {
+    const currentUntil = startedAt + ANACONDA_API_KEY_CACHE_TTL_MS;
+    return {
+      value: { ...(await fetchAnacondaApiKeyUserInfo(token, config, signal)), currentUntil },
+      expiresAt: currentUntil,
+    };
+  });
 }
 
 async function fetchAnacondaApiKeyUserInfo(
