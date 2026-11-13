@@ -112,6 +112,8 @@ const SUITES = Object.freeze([
     timeout: 2 * minute,
   },
   { name: "smoke", script: "scripts/smoke.mjs", timeout: 2 * minute },
+  // Draws viewer/vega-chart.mjs from a fixture page; needs no celld.
+  { name: "chart", harness: ["scripts/chart-smoke.mjs"], timeout: 2 * minute },
   {
     name: "schema-features",
     script: "scripts/schema-features-smoke.mjs",
