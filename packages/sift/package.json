@@ -15,7 +15,8 @@
     "./worker": "./src/worker/entry.ts",
     "./style.css": "./src/style.css",
     "./handoff.css": "./src/handoff.css",
-    "./sift.wasm": "./public/wasm/sift_wasm_bg.wasm"
+    "./sift.wasm": "./public/wasm/sift_wasm_bg.wasm",
+    "./wasm": "./public/wasm/sift_wasm.js"
   },
   "publishConfig": {
     "main": "./lib/index.js",
@@ -35,7 +36,11 @@
       },
       "./style.css": "./lib/style.css",
       "./handoff.css": "./lib/handoff.css",
-      "./sift.wasm": "./lib/wasm/sift_wasm_bg.wasm"
+      "./sift.wasm": "./lib/wasm/sift_wasm_bg.wasm",
+      "./wasm": {
+        "types": "./lib/wasm/sift_wasm.d.ts",
+        "import": "./lib/wasm/sift_wasm.js"
+      }
     }
   },
   "files": [

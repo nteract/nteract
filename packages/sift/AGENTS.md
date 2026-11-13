@@ -99,6 +99,11 @@ const explorer = engineStateToExplorerState(engine.getState()) // → SQL, panda
 
 - `vite.lib.config.ts` externalizes every declared dependency and peer; only
   first-party code and the private `@nteract/odometer` are inlined.
+- `@nteract/sift/wasm` is wasm-pack's glue for hosts with no DOM, such as a
+  Cloudflare Worker: `initSync({ module })` with `@nteract/sift/sift.wasm`,
+  then call sift-wasm's exports directly (`parquet_footer_summary`,
+  `write_parquet_from_sqlite`). Its functions are the crate's, so a renamed
+  or removed `#[wasm_bindgen]` export is a breaking change to the package.
 - `scripts/test-package.mjs` packs the library and tests it from outside the
   workspace. It fails on undeclared imports and on declared dependencies that
   nothing imports.
