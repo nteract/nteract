@@ -3,7 +3,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
-import { checkView, readView, setView, viewGenesis, viewSummary } from "./view-doc.mjs";
+import {
+  checkView,
+  readView,
+  setView,
+  validateViewOperation,
+  viewGenesis,
+  viewSummary,
+} from "./view-doc.mjs";
 import { setSources, sourcesGenesis } from "./sources-doc.mjs";
 import { checkChartSpec } from "../shared/chart-spec.mjs";
 import { VIEW_SPEC_MAX_BYTES, checkViewSpec } from "../shared/view-spec.mjs";
@@ -171,11 +178,13 @@ test("checkViewSpec runs checkChartSpec and its refusal reaches the caller as it
     assert.equal(chart.ok, false);
     assert.deepEqual(checkViewSpec(spec, data), chart);
   }
-  // A name the spec reads that data lacks: checkChartSpec's sentence.
-  assert.deepEqual(
-    checkViewSpec(SPEC, { other: { source_id: "usage" } }),
-    checkChartSpec(SPEC, { datasets: ["other"] }),
-  );
+  // A name the spec reads that data lacks.
+  assert.deepEqual(checkViewSpec(SPEC, { other: { source_id: "usage" } }), {
+    ok: false,
+    error: 'The spec reads "usage", but data doesn\'t map it to a source.',
+  });
+  // Without data, the spec alone.
+  assert.deepEqual(checkViewSpec(SPEC), { ok: true, names: ["usage"] });
   // A name data binds that the spec doesn't read.
   assert.deepEqual(checkViewSpec(SPEC, { ...data, extra: { source_id: "usage" } }), {
     ok: false,
@@ -188,4 +197,48 @@ test("checkViewSpec runs checkChartSpec and its refusal reaches the caller as it
     ok: false,
     error: "spec must be 64 KiB or smaller.",
   });
+});
+
+test("a set_view refusal names the field it is about and the rule it broke", () => {
+  const message = (fields) => {
+    try {
+      validateViewOperation(op(fields));
+    } catch (error) {
+      assert.equal(error.code, "invalid_view");
+      return error.message;
+    }
+    assert.fail(`expected a refusal for ${JSON.stringify(fields)}`);
+  };
+  // A spec that can't draw is the problem, whatever data holds.
+  for (const data of [{}, null, undefined, { usage: { source_id: "usage" } }]) {
+    assert.equal(
+      message({ spec: { ...SPEC, data: { url: "https://example.com/x.json" } }, data }),
+      "A chart can't load data from a URL (at data).",
+    );
+    assert.equal(
+      message({ spec: { ...SPEC, data: { values: [] } }, data }),
+      "A chart reads named data, not inline values (at data).",
+    );
+    assert.match(message({ spec: { ...SPEC, mark: "bogus" }, data }), /^A chart's mark must be /);
+  }
+  // Empty data names what the spec reads.
+  assert.equal(
+    message({ data: {} }),
+    'data must map each data name the spec reads ("usage") to a source: {"usage": {"source_id": "<source_id>"}}',
+  );
+  // A binding without a source_id says so, and never prints "undefined".
+  assert.equal(
+    message({ data: { usage: {} } }),
+    "data.usage needs a source_id: a source this Page holds",
+  );
+  assert.equal(
+    message({ data: { usage: { source_id: 7 } } }),
+    "data.usage.source_id must be a string matching ^[a-z][a-z0-9_-]{0,63}$",
+  );
+  for (const fields of [{ data: { usage: {} } }, { data: { usage: { source_id: null } } }])
+    assert.doesNotMatch(message(fields), /undefined|null/);
+  assert.equal(
+    message({ data: { other: { source_id: "usage" } } }),
+    'The spec reads "usage", but data doesn\'t map it to a source.',
+  );
 });

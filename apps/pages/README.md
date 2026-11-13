@@ -82,7 +82,8 @@ refused, because each review of the interactive surface found another way
 through it.
 
 The spec and the rows are both untrusted. `shared/chart-spec.mjs` checks a
-spec against allowlists: data by name only, transforms and their parameters
+spec against allowlists: data by name only, Vega-Lite's marks (not `image`)
+and encoding types, transforms and their parameters
 with ranged numbers, expression functions, keyword cursors, and no CSS `url()`
 in any string. Every number, in the spec and in the data, is 0 or between
 1e-150 and 1e150 in size, since Vega's bin loop never ends once its step
