@@ -53,7 +53,7 @@ test("a spec that isn't a JSON object is refused", () => {
   for (const spec of [null, "bar", 3, [stacked]]) assert.match(refusal(spec), /JSON object/);
   const cyclic = { data: { name: "calls" } };
   cyclic.self = cyclic;
-  assert.match(refusal(cyclic), /plain JSON/);
+  assert.match(refusal(cyclic), /nest at most|plain JSON/);
 });
 
 test("a spec over the byte limit is refused", () => {
@@ -138,12 +138,54 @@ test("anything that would fetch or navigate is refused", () => {
   assert.match(refusal({ ...stacked, config: { mark: { href: "https://x.test" } } }), /link/);
 });
 
-test("input controls are refused; scale and legend bindings are allowed", () => {
-  const param = (bind) => ({ ...stacked, params: [{ name: "p", select: "interval", bind }] });
-  assert.match(refusal(param({ input: "range", min: 0, max: 9 })), /input controls/);
-  assert.match(refusal(param({ element: "#comments" })), /input controls/);
-  for (const bind of ["scales", "legend", { legend: "dblclick" }])
-    assert.equal(checkChartSpec(param(bind)).ok, true, JSON.stringify(bind));
+test("the interactive surface is refused: selections, bindings and raw signals", () => {
+  const select = (select, extra = {}) => ({
+    ...stacked,
+    params: [{ name: "p", select, ...extra }],
+  });
+  for (const spec of [
+    select("interval"),
+    select({ type: "point", toggle: "modify('calls', null, true)" }),
+    select({ type: "point", on: "window:keydown!" }),
+    select({ type: "interval", translate: "[mousedown, mouseup] > mousemove", zoom: "wheel!" }),
+    select("interval", { bind: "scales" }),
+    select({ type: "point", fields: ["client"] }, { bind: "legend" }),
+    { ...stacked, params: [{ name: "p", value: 1, bind: { input: "range", min: 0, max: 9 } }] },
+    { ...stacked, params: [{ name: "p", value: 1, bind: { element: "#comments" } }] },
+    { ...stacked, selection: { brush: { type: "interval" } } },
+    { ...stacked, config: { selection: { interval: { on: "click" } } } },
+    {
+      ...stacked,
+      encoding: {
+        ...stacked.encoding,
+        color: { condition: { param: "p", field: "client" }, value: "grey" },
+      },
+    },
+    { ...stacked, transform: [{ filter: { param: "p" } }] },
+    { ...stacked, transform: [{ filter: { and: [{ param: "p", empty: false }] } }] },
+    { ...stacked, transform: [{ lookup: "tool", from: { param: "p", key: "tool" } }] },
+    {
+      ...stacked,
+      config: { signals: [{ name: "s", on: [{ events: "window:keydown", update: "1" }] }] },
+    },
+    { ...stacked, width: "container" },
+  ])
+    assert.match(
+      refusal(spec),
+      /static|selection|container|out-of-range from|can't use "(empty|signals)"/,
+      JSON.stringify(spec).slice(0, 200),
+    );
+  // Value parameters stay.
+  assert.equal(
+    checkChartSpec({
+      ...stacked,
+      params: [
+        { name: "cut", value: 5 },
+        { name: "k", expr: "cut * 2" },
+      ],
+    }).ok,
+    true,
+  );
 });
 
 test("expressions may call only allowlisted functions", () => {
@@ -221,39 +263,10 @@ test("every Vega-Lite expression position is checked", () => {
         },
       },
     },
-    { ...stacked, params: [{ name: "p", select: { type: "point", on: `click[${bad}]` } }] },
-    {
-      ...stacked,
-      params: [
-        {
-          name: "p",
-          select: { type: "point", on: "click", clear: `[mousedown[${bad}], mouseup] > mousemove` },
-        },
-      ],
-    },
-    {
-      ...stacked,
-      params: [{ name: "p", select: { type: "point", on: { type: "click", filter: [bad] } } }],
-    },
   ])
     assert.match(refusal(spec), /calls warn\(\)/, JSON.stringify(spec).slice(0, 200));
   assert.equal(
     checkChartSpec({ ...stacked, transform: [{ filter: { field: "a", equal: 1 } }] }).ok,
-    true,
-  );
-  assert.equal(
-    checkChartSpec({
-      ...stacked,
-      params: [
-        {
-          name: "p",
-          select: {
-            type: "interval",
-            on: "[pointerdown[event.shiftKey], pointerup] > pointermove",
-          },
-        },
-      ],
-    }).ok,
     true,
   );
 });
@@ -261,7 +274,7 @@ test("every Vega-Lite expression position is checked", () => {
 test("raw Vega signals and custom format functions are refused", () => {
   assert.match(
     refusal({ ...stacked, config: { signals: [{ name: "s", init: "1" }] } }),
-    /Vega signals/,
+    /"signals"; charts are static/,
   );
   assert.match(
     refusal({
@@ -409,20 +422,23 @@ test("transforms that multiply rows or cost are bounded or refused", () => {
   const t = (transform) => ({ ...stacked, transform: [transform] });
   const fields = (n) => Array.from({ length: n }, (_, i) => `f${i}`);
   const cases = [
-    [{ flatten: ["xs"] }, /flatten/],
-    [{ loess: "y", on: "x" }, /loess/],
+    [{ flatten: ["xs"] }, /can't use the flatten transform/],
+    [{ loess: "y", on: "x" }, /can't use the loess transform/],
     [{ impute: "y", key: "x", keyvals: { start: 0, stop: 1e9 } }, /impute/],
-    [{ fold: fields(33) }, /fold at most 32/],
-    [{ window: [{ op: "mean", field: "calls", as: "m" }], frame: [-500, 500] }, /window frame/],
+    [{ fold: fields(33) }, /fold at most 32 fields/],
+    [
+      { window: [{ op: "mean", field: "calls", as: "m" }], frame: [-500, 500], ignorePeers: true },
+      /window frame/,
+    ],
     [{ window: [{ op: "mean", field: "calls", as: "m" }], frame: [0, null] }, /window frame/],
     [{ density: "calls", steps: 10_000 }, /density/],
     [{ density: "calls", maxsteps: 10_000 }, /density/],
     [{ regression: "y", on: "x", method: "poly", order: 50 }, /order/],
-    [{ quantile: "calls", step: 1e-9 }, /quantile step/],
-    [{ quantile: "calls", probs: Array.from({ length: 1001 }, () => 0.5) }, /probabilities/],
+    [{ quantile: "calls", step: 1e-9 }, /quantile transform has an out-of-range step/],
+    [{ quantile: "calls", probs: Array.from({ length: 1001 }, () => 0.5) }, /out-of-range probs/],
     [{ pivot: "client", value: "calls" }, /pivot/],
     [{ pivot: "client", value: "calls", limit: 5000 }, /pivot/],
-    [{ bin: { maxbins: 1e6 }, field: "calls", as: "b" }, /bins/],
+    [{ bin: { maxbins: 1e6 }, field: "calls", as: "b" }, /maxbins is out of range/],
     [{ bin: { step: 0.001 }, field: "calls", as: "b" }, /literal extent/],
     [{ bin: { step: 0.001, extent: [0, 100] }, field: "calls", as: "b" }, /literal extent/],
   ];
@@ -440,13 +456,13 @@ test("transforms that multiply rows or cost are bounded or refused", () => {
       ...stacked,
       encoding: { ...stacked.encoding, x: { field: "calls", bin: { maxbins: 1e6 } } },
     }),
-    /bins/,
+    /maxbins is out of range/,
   );
   for (const transform of [
     { fold: fields(32) },
     { window: [{ op: "rank", as: "r" }] },
     { window: [{ op: "sum", field: "calls", as: "s" }], frame: [null, 0] },
-    { window: [{ op: "mean", field: "calls", as: "m" }], frame: [-100, 100] },
+    { window: [{ op: "mean", field: "calls", as: "m" }], frame: [-100, 100], ignorePeers: true },
     { density: "calls", steps: 200 },
     { regression: "y", on: "x", method: "poly", order: 3 },
     { quantile: "calls", step: 0.01 },
@@ -461,20 +477,325 @@ test("the row cap is a named limit", () => {
   assert.equal(CHART_MAX_ROWS, 100_000);
 });
 
-test("the allowlist leaves out writes, lasso helpers and window geometry", () => {
+test("the allowlist leaves out writes, paths, generators and geometry", () => {
   for (const name of [
     "modify",
+    "pluck",
+    "data",
+    "indata",
+    "merge",
+    "sequence",
+    "timeSequence",
+    "utcSequence",
+    "pad",
+    "join",
+    "split",
+    "regexp",
+    "test",
+    "random",
     "lassoAppend",
     "intersectLasso",
     "windowSize",
     "containerSize",
     "warn",
-    "regexp",
-    "test",
   ])
     assert.equal(CHART_EXPRESSION_FUNCTIONS.has(name), false, name);
+  assert.match(
+    refusal({
+      ...stacked,
+      transform: [{ calculate: "toString(pluck(datum, 'constructor.constructor'))", as: "v" }],
+    }),
+    /calls pluck\(\)/,
+  );
 });
 
 test("usermeta is the spec author's own and isn't checked", () => {
   assert.equal(checkChartSpec({ ...stacked, usermeta: { url: "https://x.test" } }).ok, true);
+});
+
+test("a bound refuses a number written as a string", () => {
+  const t = (transform) => ({ ...stacked, transform: [transform] });
+  for (const transform of [
+    { density: "calls", steps: "1000000000", extent: [0, 1] },
+    { density: "calls", maxsteps: "1e9" },
+    { regression: "y", on: "x", method: "poly", order: "50" },
+    { quantile: "calls", step: "1e-9" },
+    { pivot: "client", value: "calls", limit: "5" },
+    { bin: { maxbins: "1e9" }, field: "calls", as: "b" },
+    { bin: { step: "0.001", extent: [0, 100] }, field: "calls", as: "b" },
+    { window: [{ op: "sum", field: "calls", as: "s" }], frame: ["-5", 5], ignorePeers: true },
+  ])
+    assert.equal(checkChartSpec(t(transform)).ok, false, JSON.stringify(transform));
+});
+
+test("folds are bounded along a view's whole path", () => {
+  const chained = {
+    ...stacked,
+    transform: Array.from({ length: 30 }, () => ({ fold: ["a", "b"] })),
+  };
+  assert.match(refusal(chained), /folds can multiply its rows at most 32 times/);
+  const nested = {
+    data: { name: "calls" },
+    transform: [{ fold: ["a", "b", "c", "d"] }],
+    layer: [
+      { mark: "bar" },
+      { transform: [{ fold: ["e", "f", "g", "h", "i", "j", "k", "l", "m"] }], mark: "point" },
+    ],
+  };
+  assert.match(refusal(nested), /folds can multiply/);
+  assert.equal(
+    checkChartSpec({
+      ...stacked,
+      transform: [{ fold: ["a", "b"] }, { fold: ["c", "d"] }, { fold: ["e", "f", "g", "h"] }],
+    }).ok,
+    true,
+  );
+});
+
+test("windows can't rescan the frame for every row", () => {
+  const w = (window, extra = {}) => ({
+    ...stacked,
+    transform: [{ window, sort: [{ field: "calls" }], ...extra }],
+  });
+  for (const op of ["ci0", "ci1", "median", "q1", "q3", "values"])
+    assert.match(
+      refusal(w([{ op, field: "calls", as: "v" }], { frame: [null, 0], ignorePeers: true })),
+      new RegExp(`can't compute ${op}`),
+    );
+  assert.match(
+    refusal(w([{ op: "max", field: "calls", as: "v" }], { frame: [-5, 5] })),
+    /ignorePeers/,
+  );
+  assert.equal(
+    checkChartSpec(
+      w([{ op: "max", field: "calls", as: "v" }], { frame: [-5, 5], ignorePeers: true }),
+    ).ok,
+    true,
+  );
+  assert.equal(
+    checkChartSpec(w([{ op: "mean", field: "calls", as: "v" }], { frame: [null, 0] })).ok,
+    true,
+  );
+});
+
+test("a tick count is a number up to 1,000, never a time interval", () => {
+  const axis = (tickCount) => ({
+    ...stacked,
+    encoding: { ...stacked.encoding, x: { ...stacked.encoding.x, axis: { tickCount } } },
+  });
+  for (const tickCount of [1e9, "1e9", "millisecond", { interval: "millisecond", step: 1 }])
+    assert.match(refusal(axis(tickCount)), /tick count/, JSON.stringify(tickCount));
+  assert.match(refusal({ ...stacked, config: { legend: { tickCount: 5000 } } }), /tick count/);
+  assert.equal(checkChartSpec(axis(8)).ok, true);
+});
+
+test("checkChartSpec never throws, however deep or strange the spec", () => {
+  let predicate = "true";
+  for (let i = 0; i < 10_000; i++) predicate = { and: [predicate] };
+  let array = [];
+  for (let i = 0; i < 10_000; i++) array = [array];
+  let object = { mark: "bar" };
+  for (let i = 0; i < 10_000; i++) object = { layer: [object] };
+  const throwing = {
+    data: { name: "calls" },
+    get mark() {
+      throw new Error("boom");
+    },
+  };
+  const explosive = {
+    data: { name: "calls" },
+    toJSON: () => {
+      throw new Error("boom");
+    },
+  };
+  for (const spec of [
+    { ...stacked, transform: [{ filter: predicate }] },
+    {
+      ...stacked,
+      encoding: { ...stacked.encoding, x: { ...stacked.encoding.x, axis: { values: array } } },
+    },
+    { ...object, data: { name: "calls" } },
+    throwing,
+    explosive,
+  ]) {
+    let result;
+    assert.doesNotThrow(() => (result = checkChartSpec(spec)));
+    assert.equal(result.ok, false);
+    assert.match(result.error, /^[A-Z].*\.$/);
+  }
+});
+
+test("transforms come from an allowlist, and so do their parameters", () => {
+  const t = (transform) => ({ ...stacked, transform: [transform] });
+  assert.match(
+    refusal(t({ sequence: { start: 0, stop: 1e9 } })),
+    /can't use the sequence transform/,
+  );
+  assert.match(refusal(t({ graticule: true })), /can't use the graticule transform/);
+  assert.match(
+    refusal(t({ calculate: "1", as: "v", sneaky: true })),
+    /calculate transform can't use "sneaky"/,
+  );
+  assert.match(
+    refusal(t({ aggregate: [{ op: "values", field: "calls", as: "v" }] })),
+    /out-of-range aggregate/,
+  );
+  assert.match(
+    refusal(t({ lookup: "tool", from: { data: { url: "/x.json" }, key: "tool" } })),
+    /lookup transform has an out-of-range from|URL/,
+  );
+  assert.equal(
+    checkChartSpec(t({ window: [{ op: "ntile", param: 4, as: "q" }], sort: [{ field: "calls" }] }))
+      .ok,
+    true,
+  );
+  assert.equal(
+    checkChartSpec(t({ aggregate: [{ op: "median", field: "calls", as: "m" }], groupby: ["tool"] }))
+      .ok,
+    true,
+  );
+});
+
+test("a bin's base, divide and every other parameter are ranged", () => {
+  const b = (bin) => ({
+    ...stacked,
+    encoding: { ...stacked.encoding, x: { field: "calls", type: "quantitative", bin } },
+  });
+  // Vega's bin loop never ends with a base below 2.
+  assert.match(refusal(b({ base: 0.5, maxbins: 20, extent: [0, 11] })), /base is out of range/);
+  assert.match(refusal(b({ base: 1 })), /base is out of range/);
+  assert.match(refusal(b({ divide: [0.5] })), /divide is out of range/);
+  assert.match(refusal(b({ maxbins: 20, unknown: 1 })), /bin can't use "unknown"/);
+  assert.match(refusal(b({ extent: { param: "brush" } })), /extent is out of range/);
+  assert.equal(checkChartSpec(b({ base: 10, divide: [5, 2], maxbins: 20, nice: true })).ok, true);
+});
+
+test("folds compose across layers, inner specs and repeats", () => {
+  const two = { fold: ["a", "b"] };
+  assert.match(
+    refusal({ ...stacked, transform: Array.from({ length: 26 }, () => two) }),
+    /folds can multiply/,
+  );
+  // Parent folds apply to a repeat's inner spec and to each layer.
+  assert.match(
+    refusal({
+      data: { name: "calls" },
+      transform: [two, two, two],
+      repeat: ["a", "b"],
+      spec: { transform: [two, two, two], mark: "bar" },
+    }),
+    /folds can multiply/,
+  );
+  assert.match(
+    refusal({
+      data: { name: "calls" },
+      transform: [two, two],
+      layer: [{ mark: "bar" }, { transform: [two, two, two, two], mark: "point" }],
+    }),
+    /folds can multiply/,
+  );
+  // A pivot makes columns, at most 100, from rows; it never multiplies rows.
+  assert.equal(
+    checkChartSpec({
+      ...stacked,
+      transform: [two, two, { pivot: "key", value: "value", limit: 100 }, two, two, two],
+    }).ok,
+    true,
+  );
+});
+
+test("a number format pads at most 64 characters, in a spec and in an expression", () => {
+  assert.match(
+    refusal({
+      ...stacked,
+      encoding: {
+        ...stacked.encoding,
+        x: { ...stacked.encoding.x, axis: { format: "1000000000" } },
+      },
+    }),
+    /pads a number to 1000000000 characters/,
+  );
+  assert.match(
+    refusal({ ...stacked, transform: [{ calculate: "format(datum.calls, '>99999')", as: "v" }] }),
+    /pads a number/,
+  );
+  assert.match(
+    refusal({ ...stacked, transform: [{ calculate: "format(datum.calls, datum.tool)", as: "v" }] }),
+    /isn't a literal string/,
+  );
+  assert.equal(
+    checkChartSpec({
+      ...stacked,
+      encoding: { ...stacked.encoding, x: { ...stacked.encoding.x, axis: { format: "08,.2f" } } },
+    }).ok,
+    true,
+  );
+  assert.equal(
+    checkChartSpec({
+      ...stacked,
+      encoding: { ...stacked.encoding, x: { ...stacked.encoding.x, axis: { format: "%b %Y" } } },
+    }).ok,
+    true,
+  );
+});
+
+test("sizes are numbers up to 10,000, or a step", () => {
+  for (const spec of [
+    { ...stacked, width: 1e9 },
+    { ...stacked, height: { step: 1e6 } },
+    { ...stacked, width: "1e9" },
+    { ...stacked, config: { view: { continuousWidth: 1e9 } } },
+  ])
+    assert.match(refusal(spec), /must be a number up to/, JSON.stringify(spec).slice(-60));
+  assert.equal(checkChartSpec({ ...stacked, width: 600, height: { step: 24 } }).ok, true);
+  assert.equal(
+    checkChartSpec({ ...stacked, mark: { type: "bar", width: { band: 0.6 } } }).ok,
+    true,
+  );
+});
+
+test("a spec can't look up a scale by name or pass a format specifier from data", () => {
+  const calc = (expr) => ({ ...stacked, transform: [{ calculate: expr, as: "v" }] });
+  for (const name of ["scale", "invert", "bandwidth"]) {
+    assert.equal(CHART_EXPRESSION_FUNCTIONS.has(name), false, name);
+    assert.match(refusal(calc(`${name}('x', datum.calls)`)), new RegExp(`calls ${name}\\(\\)`));
+  }
+  for (const name of ["timeFormat", "utcFormat", "timeParse", "utcParse"]) {
+    assert.match(refusal(calc(`${name}(datum.day, datum.tool)`)), /isn't a literal string/, name);
+    assert.equal(checkChartSpec(calc(`${name}(datum.day, '%Y-%m-%d')`)).ok, true, name);
+  }
+});
+
+test("a time unit's step and maxbins are ranged, in an encoding and a transform", () => {
+  const enc = (timeUnit) => ({
+    ...stacked,
+    encoding: { ...stacked.encoding, x: { field: "day", type: "temporal", timeUnit } },
+  });
+  assert.match(
+    refusal(enc({ unit: "yearmonthdate", step: 0.000001 })),
+    /time unit's step is out of range/,
+  );
+  assert.match(
+    refusal(enc({ unit: "hours", maxbins: 1e9 })),
+    /time unit's maxbins is out of range/,
+  );
+  assert.match(refusal(enc({ unit: "hours", sneaky: 1 })), /time unit can't use "sneaky"/);
+  assert.match(
+    refusal({
+      ...stacked,
+      transform: [{ timeUnit: { unit: "hours", step: 0 }, field: "day", as: "h" }],
+    }),
+    /time unit's step is out of range/,
+  );
+  assert.match(
+    refusal({
+      ...stacked,
+      transform: [
+        { filter: { and: [{ field: "day", timeUnit: { unit: "hours", step: 0.5 }, equal: 3 }] } },
+      ],
+    }),
+    /time unit's step is out of range/,
+  );
+  assert.equal(checkChartSpec(enc("yearmonth")).ok, true);
+  assert.equal(checkChartSpec(enc({ unit: "hours", step: 6, utc: true })).ok, true);
 });

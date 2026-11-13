@@ -220,14 +220,14 @@ async function hostileCheck(engine) {
       [],
       `${engine}: requests from outside the fixture's layers`,
     );
-    // Through mount, a url() or a non-keyword cursor in the spec is refused;
-    // one in the data draws, cleaned.
+    // Through mount, a url() or a non-keyword cursor in the spec is refused,
+    // and so is data() in an expression; a value a field carries into a paint
+    // channel draws, cleaned.
     const drawsThroughMount = new Set([
       "fill-data",
       "stroke-data",
       "gradient-data",
-      "font-data",
-      "background-data",
+      "text-fill-data",
     ]);
     for (const { layer, position, status } of outcomes.filter((o) => o.layer === "mount"))
       assert.equal(

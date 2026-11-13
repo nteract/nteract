@@ -1,26 +1,26 @@
-// The checks a Vega-Lite chart spec passes before Pages draws it. No DOM and
-// no Vega runtime, so the viewer and the host can run the same function: the
-// viewer runs it before every draw (viewer/vega-chart.mjs), and a host write
-// path can run it to refuse a spec with the same sentence. Both the spec and
-// the data it reads are untrusted.
+// The checks a Vega-Lite chart spec passes before Pages draws it. No DOM, no
+// Node built-ins and no Vega runtime, so the viewer and a Cloudflare Worker
+// run the same function: the viewer before every draw (viewer/vega-chart.mjs),
+// the Page host on write. Both the spec and the data it reads are untrusted.
 //
-// A chart reads only named data the caller supplies. Every `data` in a spec is
-// `{ "name": ... }`: no URL, no inline values, no generator. Nothing in a spec
-// may fetch or navigate: no `url` or `href` key, no image mark, no CSS
-// `url(...)` in any string, and a cursor is a keyword. It may not add input
-// controls or Vega signals, name a custom format function, or bind events to
-// the Page. Every expression is parsed and checked against
-// CHART_EXPRESSION_FUNCTIONS (see `expressionProblem`).
+// The first version of a chart is static: marks, axes, legends and Vega's
+// hover tooltip, and nothing else interactive. Selections, bindings and raw
+// signals are refused here, because each review of the interactive surface
+// found another way through it. What a spec may use is listed, not excluded:
+// data is `{ "name": ... }` only, transforms and their parameters come from
+// TRANSFORMS with ranged numbers, expressions call only
+// CHART_EXPRESSION_FUNCTIONS, a cursor is a keyword, and no string may hold a
+// CSS url(). `checkChartSpec` never throws; anything it can't check is a
+// refusal.
 //
-// Cost: views, nesting and spec bytes are bounded here, rows per dataset in
-// CHART_MAX_ROWS, and the transforms that multiply rows or cost are bounded or
-// refused in TRANSFORM_BOUNDS. What remains unbounded is still the reader's
-// own tab: facets (one cell per distinct value), marks per row (up to
-// CHART_MAX_ROWS SVG elements), and window, density and regression work
-// within their bounds. Running Vega in a Worker with a kill timer is what
-// would bound those; nothing here does.
+// Cost: spec bytes, views, nesting, rows per dataset (CHART_MAX_ROWS), folds,
+// bins, steps, windows, ticks and sizes are bounded. A chart still runs on the
+// reader's main thread, and these bounds limit its work without capping it: a
+// facet draws a cell per distinct value, a density or quantile emits rows per
+// group, and an SVG mark per row is slow at 100,000 rows. A spec within every
+// bound can still freeze the tab for seconds. A Worker with a kill timer would
+// bound that; nothing here does.
 import { parseExpression } from "vega-expression";
-import { parseSelector } from "vega-event-selector";
 
 export const CHART_SPEC_LIMITS = Object.freeze({
   /** UTF-8 bytes of the spec as JSON. */
@@ -33,17 +33,19 @@ export const CHART_SPEC_LIMITS = Object.freeze({
   maxDepth: 32,
 });
 
-/** Rows a chart reads from one dataset. viewer/vega-chart.mjs refuses more. */
+/** Rows a chart reads from one dataset. viewer/vega-chart.mjs refuses more.
+ * Transforms can still emit more rows than this, within their own bounds. */
 export const CHART_MAX_ROWS = 100_000;
 
 /**
- * Vega expression functions a spec may call. Vega's own codegen already
- * refuses anything that isn't a Vega function; this list leaves out the ones
- * a chart over a Page's sources doesn't need or that let a small spec do
- * unbounded work: dataset writes (`modify`), lasso and tree helpers, event and
- * window geometry, logging, regular expressions, and the generators
- * `sequence`, `timeSequence`, `utcSequence` and `pad`, which build arrays or
- * strings of any length.
+ * Vega expression functions a spec may call, in `calculate`, `filter`, `test`,
+ * `labelExpr` and `expr`. Each group is what static charts use. Left out:
+ * anything that writes (`modify`), reads by a path or another dataset's name
+ * (`pluck`, `data`, `indata`, `merge`), looks up a scale by name
+ * (`scale`, `invert`, `bandwidth`), builds an array or string whose length
+ * the data or an argument sets (`sequence`, `timeSequence`, `utcSequence`,
+ * `pad`, `join`, `split`), regular expressions, randomness, event and window
+ * geometry, and logging.
  */
 export const CHART_EXPRESSION_FUNCTIONS = Object.freeze(
   new Set([
@@ -65,129 +67,115 @@ export const CHART_EXPRESSION_FUNCTIONS = Object.freeze(
     "isNaN",
     "isFinite",
     "abs",
-    "acos",
-    "asin",
-    "atan",
-    "atan2",
     "ceil",
     "clamp",
-    "cos",
     "exp",
     "floor",
-    "hypot",
     "log",
     "max",
     "min",
     "pow",
-    "random",
     "round",
-    "sin",
     "sqrt",
-    "tan",
-    // Statistics
-    "sampleNormal",
-    "cumulativeNormal",
-    "densityNormal",
-    "quantileNormal",
-    "sampleLogNormal",
-    "cumulativeLogNormal",
-    "densityLogNormal",
-    "quantileLogNormal",
-    "sampleUniform",
-    "cumulativeUniform",
-    "densityUniform",
-    "quantileUniform",
     // Dates and times
     "now",
     "datetime",
     "date",
     "day",
-    "dayofyear",
     "year",
     "quarter",
     "month",
-    "week",
     "hours",
     "minutes",
     "seconds",
     "milliseconds",
     "time",
-    "timezoneoffset",
-    "timeOffset",
     "utc",
     "utcdate",
     "utcday",
-    "utcdayofyear",
     "utcyear",
     "utcquarter",
     "utcmonth",
-    "utcweek",
     "utchours",
     "utcminutes",
     "utcseconds",
     "utcmilliseconds",
+    "timeOffset",
     "utcOffset",
-    // Arrays and strings
-    "extent",
-    "clampRange",
-    "indexof",
-    "inrange",
-    "join",
-    "lastindexof",
+    // Strings, each no longer than its input
     "length",
-    "peek",
-    "pluck",
-    "reverse",
-    "slice",
-    "sort",
-    "span",
     "lower",
+    "upper",
+    "trim",
+    "slice",
+    "substring",
+    "indexof",
+    "lastindexof",
+    "replace",
+    "truncate",
     "parseFloat",
     "parseInt",
-    "replace",
-    "split",
-    "substring",
-    "trim",
-    "truncate",
-    "upper",
-    "merge",
-    // Formatting
+    // Two-number arrays
+    "extent",
+    "span",
+    "inrange",
+    "clampRange",
+    "peek",
+    // Formatting and parsing, each with a literal specifier (checkFormatCall)
+    "format",
+    "timeFormat",
+    "utcFormat",
+    "timeParse",
+    "utcParse",
     "dayFormat",
     "dayAbbrevFormat",
-    "format",
     "monthFormat",
     "monthAbbrevFormat",
-    "timeUnitSpecifier",
-    "timeFormat",
-    "timeParse",
-    "utcFormat",
-    "utcParse",
-    // Color
+    // Color, for label contrast
     "rgb",
     "hsl",
     "lab",
     "hcl",
     "luminance",
     "contrast",
-    // Scales and data in the chart itself
-    "scale",
-    "invert",
-    "bandwidth",
-    "domain",
-    "range",
-    "data",
-    "indata",
   ]),
 );
 
 // Names an expression may not use as an identifier, a property or an object
 // key, written plainly or as a string.
 const FORBIDDEN_NAMES = new Set(["constructor", "__proto__", "prototype"]);
+const MAX_FORMAT_WIDTH = 64;
+// d3-format's specifier grammar; group 6 is the padded width.
+const NUMBER_FORMAT = /^(?:(.)?([<>=^]))?([+\-( ])?([$#])?(0)?(\d+)?(,)?(\.\d+)?(~)?([a-z%])?$/i;
+
+/** Why a d3 number format would build a long string, or null. */
+export function formatProblem(specifier) {
+  const width = NUMBER_FORMAT.exec(specifier)?.[6];
+  return width && Number(width) > MAX_FORMAT_WIDTH
+    ? `pads a number to ${width} characters, more than ${MAX_FORMAT_WIDTH}`
+    : null;
+}
+
+/** Calls whose second argument is a format or parse specifier. A literal
+ * specifier keeps the output's shape in the spec, not the data. */
+const SPECIFIED_CALLS = new Set(["format", "timeFormat", "utcFormat", "timeParse", "utcParse"]);
+
+/** `format(value, specifier)` needs a literal specifier that pads at most
+ * MAX_FORMAT_WIDTH characters. Other calls pass. */
+export function checkFormatCall(call) {
+  if (!SPECIFIED_CALLS.has(call.callee.name)) return null;
+  const specifier = call.arguments[1];
+  if (specifier === undefined) return null;
+  if (specifier.type !== "Literal" || typeof specifier.value !== "string")
+    return "formats with a specifier that isn't a literal string";
+  return call.callee.name === "format" ? formatProblem(specifier.value) : null;
+}
 
 /**
  * Why a parsed Vega expression can't run, or null. `functions` is the set a
- * call may name. The viewer runs the same policy over Vega's own parsed
- * dataflow with a wider set for the code Vega-Lite generates.
+ * call may name, and `checkCall(node)` may refuse an allowed call by its
+ * arguments. The viewer runs the same policy over Vega's own parsed dataflow
+ * with a wider set for the code Vega-Lite generates.
  *
  * - A call's callee is a plain identifier in `functions`.
  * - No forbidden name as an identifier, a property or an object key.
@@ -195,8 +183,14 @@ const FORBIDDEN_NAMES = new Set(["constructor", "__proto__", "prototype"]);
  *   vega-expression parses `datum[x]` and `datum["constructor"]` alike, as
  *   an identifier, so this also refuses prototype names written as strings.
  * - No regular expression literal.
+ *
+ * Iterative, so a deep expression can't overflow the stack.
  */
-export function expressionProblem(ast, functions = CHART_EXPRESSION_FUNCTIONS) {
+export function expressionProblem(
+  ast,
+  functions = CHART_EXPRESSION_FUNCTIONS,
+  checkCall = checkFormatCall,
+) {
   const stack = [ast];
   while (stack.length) {
     const node = stack.pop();
@@ -206,11 +200,14 @@ export function expressionProblem(ast, functions = CHART_EXPRESSION_FUNCTIONS) {
       continue;
     }
     switch (node.type) {
-      case "CallExpression":
+      case "CallExpression": {
         if (node.callee?.type !== "Identifier") return "calls something that isn't a function name";
         if (!functions.has(node.callee.name)) return `calls ${node.callee.name}()`;
+        const problem = checkCall?.(node);
+        if (problem) return problem;
         stack.push(...node.arguments);
         continue;
+      }
       case "Identifier":
         if (FORBIDDEN_NAMES.has(node.name)) return `uses "${node.name}"`;
         continue;
@@ -240,44 +237,36 @@ export function expressionProblem(ast, functions = CHART_EXPRESSION_FUNCTIONS) {
 }
 
 /*
- * Where Vega-Lite 6.5.0 turns a spec string into a Vega expression or a call,
- * and what this module does with each:
+ * Where Vega-Lite 6.5.0 turns a spec string into a Vega expression, a call or
+ * an event listener, and what this module does with each:
  *
- * | Position                                   | Check                    |
- * | ------------------------------------------ | ------------------------ |
- * | `{ "expr": ... }` anywhere (ExprRef), a     | parsed, policy           |
- * |   parameter's `expr`                        |                          |
- * | transform `calculate`, `filter` (string,    | parsed, policy           |
- * |   and strings inside `and`/`or`/`not`)      |                          |
- * | condition `test`                            | parsed, policy           |
- * | axis, legend and header `labelExpr`         | parsed, policy           |
- * | `signal` (Vega `encode` passthrough in      | parsed, policy           |
- * |   axis, legend, title and header `encode`)  |                          |
- * | signal `init` and `update` strings          | parsed, policy           |
- * | selection `on` and `clear` event streams    | parsed as event selectors|
- * |   (string filters `[...]` are expressions)  |   and each filter checked|
- * | event-stream objects' `filter`              | parsed, policy           |
- * | `signals` in `config` (raw Vega signals)    | refused                  |
- * | `formatType` other than number, time, utc;  | refused: each names a    |
- * |   `customFormatTypes`, `numberFormatType`,  |   function Vega-Lite     |
- * |   `normalizedNumberFormatType`,             |   calls                  |
- * |   `timeFormatType`                          |                          |
- * | `bind` with an input or element             | refused                  |
+ * | Position                                        | Check                  |
+ * | ----------------------------------------------- | ---------------------- |
+ * | `{ "expr": ... }` anywhere (ExprRef), a value   | parsed, policy         |
+ * |   parameter's `expr`                            |                        |
+ * | transform `calculate`; `filter` and `test`,     | parsed, policy         |
+ * |   with strings inside `and`/`or`/`not`          |                        |
+ * | axis, legend and header `labelExpr`             | parsed, policy         |
+ * | `signal` in `encode` passthrough                | parsed, policy         |
+ * | number `format` (d3-format width pads a string) | width at most 64       |
+ * | `formatType` other than number, time, utc;      | refused: each names a  |
+ * |   `customFormatTypes`, `numberFormatType`,      |   function Vega-Lite   |
+ * |   `normalizedNumberFormatType`, `timeFormatType`|   calls                |
+ * | a parameter's `select` and everything in it     | refused: charts are    |
+ * |   (`on`, `clear`, `translate`, `zoom`,          |   static               |
+ * |   `toggle`, `resolve`), legacy `selection`,     |                        |
+ * |   `config.selection`, every `bind`, a `param`   |                        |
+ * |   predicate or condition, `empty`               |                        |
+ * | `config.signals` (raw Vega signals)             | refused                |
+ * | `width` or `height` "container" (a resize       | refused                |
+ * |   listener)                                     |                        |
  *
- * The viewer checks every expression in the compiled dataflow as well, so a
- * position missing here is refused before it runs.
+ * The viewer checks the compiled dataflow as well: no event stream, signal
+ * handler or binding, operator types from a static list, and every expression
+ * against the same policy.
  */
-const EXPRESSION_KEYS = new Set([
-  "expr",
-  "calculate",
-  "filter",
-  "test",
-  "labelExpr",
-  "signal",
-  "init",
-  "update",
-]);
-const EVENT_STREAM_KEYS = new Set(["on", "clear"]);
+const EXPRESSION_KEYS = new Set(["expr", "calculate", "labelExpr", "signal"]);
+const STATIC_ONLY_KEYS = new Set(["selection", "bind", "empty", "signals"]);
 const FORMAT_TYPES = new Set(["number", "time", "utc"]);
 const CUSTOM_FORMAT_KEYS = new Set([
   "customFormatTypes",
@@ -285,6 +274,17 @@ const CUSTOM_FORMAT_KEYS = new Set([
   "normalizedNumberFormatType",
   "timeFormatType",
 ]);
+const SIZE_KEYS = new Set([
+  "width",
+  "height",
+  "continuousWidth",
+  "continuousHeight",
+  "discreteWidth",
+  "discreteHeight",
+]);
+const MAX_SIZE = 10_000;
+const MAX_STEP = 1_000;
+const MAX_TICKS = 1_000;
 
 /** CSS cursor keywords. A cursor is never a URL or an expression. */
 export const CHART_CURSORS = Object.freeze(
@@ -341,41 +341,6 @@ const CSS_RESOURCE = /(?:^|[^\w-])(?:url|src|image-set|-webkit-image-set)\(/i;
  * style or presentation attribute. */
 export const loadsResource = (text) => CSS_RESOURCE.test(cssText(text));
 
-/*
- * Transforms that multiply rows or cost, and what this module does:
- *
- * | Transform          | Rule      | Why                                      |
- * | ------------------ | --------- | ---------------------------------------- |
- * | fold               | bounded   | at most 32 fields: rows × fields         |
- * | flatten            | refused   | rows × array length, which data controls |
- * | window             | bounded   | a sliding frame spans at most 200 rows;  |
- * |                    |           | cumulative frames add and never re-scan  |
- * | density            | bounded   | steps, minsteps, maxsteps at most 500:   |
- * |                    |           | rows × steps kernel evaluations          |
- * | regression         | bounded   | order at most 10                         |
- * | loess              | refused   | work grows with rows × bandwidth × rows  |
- * | impute (transform  | refused   | output is groups × keys, up to rows²     |
- * |   and encoding)    |           |                                          |
- * | bin                | bounded   | maxbins at most 1,000; `step` or `steps` |
- * |                    |           | only with a literal extent giving at     |
- * |                    |           | most 1,000 bins                          |
- * | quantile           | bounded   | step at least 0.001, at most 1,000 probs |
- * | pivot              | bounded   | needs a limit of at most 100 columns     |
- * | lookup             | accepted  | one match per key; never multiplies rows |
- * | aggregate, joinaggregate, stack, timeUnit, calculate, filter, sample,    |
- * |   extent           | accepted  | linear or n log n in rows                |
- */
-const TRANSFORM_BOUNDS = {
-  maxFoldFields: 32,
-  maxWindowSpan: 200,
-  maxDensitySteps: 500,
-  maxRegressionOrder: 10,
-  maxBins: 1000,
-  minQuantileStep: 0.001,
-  maxQuantileProbs: 1000,
-  maxPivotLimit: 100,
-};
-
 const VIEW_ARRAYS = ["layer", "concat", "hconcat", "vconcat"];
 const isObject = (value) => !!value && typeof value === "object" && !Array.isArray(value);
 const at = (path) => (path.length ? ` (at ${path.join(".")})` : "");
@@ -384,6 +349,20 @@ class Refusal extends Error {}
 const refuse = (sentence) => {
   throw new Refusal(sentence);
 };
+
+const number = (value) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+/** A finite number in [min, max]. Vega coerces strings, so a bound compares
+ * numbers only and refuses anything else. */
+const within = (value, min, max) => number(value) !== null && value >= min && value <= max;
+const integerWithin = (value, min, max) => within(value, min, max) && Number.isInteger(value);
+const isString = (value) => typeof value === "string";
+const isBoolean = (value) => typeof value === "boolean";
+const isStringList = (value, max = 64) =>
+  Array.isArray(value) && value.length <= max && value.every(isString);
+const isPair = (value) =>
+  Array.isArray(value) && value.length === 2 && value.every((v) => number(v) !== null);
+const isNamePair = (value) => isStringList(value, 2);
+const any = () => true;
 
 function checkExpression(text, path) {
   let ast;
@@ -396,34 +375,19 @@ function checkExpression(text, path) {
   if (problem) refuse(`A chart expression ${problem}${at(path)}.`);
 }
 
-/** A filter or test: an expression string, a list of them (an event
- * stream's filter), or `and`/`or`/`not` over predicates. Field predicates are
- * plain data. */
+/** A filter or test: an expression string, or `and`/`or`/`not` over
+ * predicates. Field predicates are plain data; a `param` predicate names a
+ * selection and is refused with the rest of the interactive surface. Depth is
+ * bounded by the depth pass that runs first. */
 function checkPredicate(predicate, path) {
-  if (typeof predicate === "string") return checkExpression(predicate, path);
-  if (Array.isArray(predicate))
-    return predicate.forEach((item, index) => checkPredicate(item, [...path, index]));
+  if (isString(predicate)) return checkExpression(predicate, path);
   if (!isObject(predicate)) return;
+  if ("param" in predicate) refuse(`A chart can't test a selection; charts are static${at(path)}.`);
+  if ("timeUnit" in predicate) checkTimeUnit(predicate.timeUnit, [...path, "timeUnit"]);
   for (const key of ["and", "or"])
     if (Array.isArray(predicate[key]))
       predicate[key].forEach((item, index) => checkPredicate(item, [...path, key, index]));
   if (predicate.not !== undefined) checkPredicate(predicate.not, [...path, "not"]);
-}
-
-function checkEventStream(text, path) {
-  let streams;
-  try {
-    streams = parseSelector(text, "view");
-  } catch {
-    refuse(`A chart event stream doesn't parse${at(path)}.`);
-  }
-  const visit = (stream) => {
-    if (!isObject(stream)) return;
-    for (const filter of stream.filter ?? []) checkExpression(filter, path);
-    for (const inner of [...(stream.between ?? []), ...(stream.merge ?? []), stream.stream])
-      visit(inner);
-  };
-  streams.forEach(visit);
 }
 
 function checkData(data, path, names) {
@@ -435,7 +399,7 @@ function checkData(data, path, names) {
     for (const generator of ["sequence", "sphere", "graticule"])
       if (generator in data) refuse(`A chart reads named data, not generated data${at(path)}.`);
     const keys = Object.keys(data);
-    if (keys.length === 1 && keys[0] === "name" && typeof data.name === "string" && data.name) {
+    if (keys.length === 1 && keys[0] === "name" && isString(data.name) && data.name) {
       if (!names.includes(data.name)) names.push(data.name);
       return;
     }
@@ -443,99 +407,307 @@ function checkData(data, path, names) {
   refuse(`Chart data must be {"name": "<dataset>"}${at(path)}.`);
 }
 
-const isInteractionBinding = (bind) =>
-  bind === "scales" ||
-  bind === "legend" ||
-  (isObject(bind) && Object.keys(bind).length === 1 && "legend" in bind);
+/** A parameter: a name with a plain value or an expression, never a
+ * selection or a binding. */
+function checkParam(param, path) {
+  if (!isObject(param)) refuse(`A chart parameter must be an object${at(path)}.`);
+  if ("select" in param) refuse(`A chart can't have selections; charts are static${at(path)}.`);
+  if ("bind" in param)
+    refuse(`A chart can't bind a parameter to an input; charts are static${at(path)}.`);
+  for (const key of Object.keys(param))
+    if (!["name", "value", "expr", "description"].includes(key))
+      refuse(`A chart parameter can't use "${key}"${at(path)}.`);
+  if (!isString(param.name)) refuse(`A chart parameter needs a name${at(path)}.`);
+}
 
-const number = (value) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+// Bin parameters, transform or encoding. Vega's bin multiplies or divides its
+// step in loops driven by `base` and `divide`, so each is ranged: a base below
+// 2 never leaves the loop.
+const BIN_PARAMS = {
+  maxbins: (v) => integerWithin(v, 1, 1000),
+  extent: isPair,
+  step: (v) => within(v, Number.MIN_VALUE, Number.MAX_VALUE),
+  steps: (v) =>
+    Array.isArray(v) &&
+    v.length <= 32 &&
+    v.every((step) => within(step, Number.MIN_VALUE, Number.MAX_VALUE)),
+  minstep: (v) => within(v, 0, Number.MAX_VALUE),
+  base: (v) => within(v, 2, 100),
+  divide: (v) => Array.isArray(v) && v.length <= 8 && v.every((d) => within(d, 1.001, 100)),
+  nice: isBoolean,
+  anchor: (v) => number(v) !== null,
+  binned: isBoolean,
+};
+const MAX_BINS = 1000;
 
 function checkBin(bin, path) {
-  if (!isObject(bin)) return;
-  if (bin.maxbins !== undefined && !(number(bin.maxbins) <= TRANSFORM_BOUNDS.maxBins))
-    refuse(`A chart can use at most ${TRANSFORM_BOUNDS.maxBins} bins${at(path)}.`);
-  const steps = [bin.step, ...(Array.isArray(bin.steps) ? bin.steps : [])].filter(
-    (step) => step !== undefined,
-  );
-  if (bin.steps !== undefined && !Array.isArray(bin.steps))
-    refuse(`Chart bin steps must be a list of numbers${at(path)}.`);
+  if (bin === true || bin === false || bin === null || bin === "binned") return;
+  if (!isObject(bin)) refuse(`A chart bin must be true, "binned" or an object${at(path)}.`);
+  for (const [key, value] of Object.entries(bin)) {
+    const valid = BIN_PARAMS[key];
+    if (!valid) refuse(`A chart bin can't use "${key}"${at(path)}.`);
+    if (!valid(value)) refuse(`A chart bin's ${key} is out of range${at([...path, key])}.`);
+  }
+  const steps = [bin.step, ...(bin.steps ?? [])].filter((step) => step !== undefined);
   if (!steps.length) return;
-  const extent = Array.isArray(bin.extent) ? bin.extent.map(number) : [];
-  const span =
-    extent.length === 2 && extent.every((v) => v !== null) ? extent[1] - extent[0] : null;
+  const span = bin.extent ? Math.abs(bin.extent[1] - bin.extent[0]) : null;
   for (const step of steps)
-    if (!(number(step) > 0) || span === null || Math.abs(span) / step > TRANSFORM_BOUNDS.maxBins)
+    if (span === null || span / step > MAX_BINS)
       refuse(
-        `A chart bin step needs a literal extent that gives at most ${TRANSFORM_BOUNDS.maxBins} bins${at(path)}.`,
+        `A chart bin step needs a literal extent that gives at most ${MAX_BINS} bins${at(path)}.`,
       );
 }
+
+// A time unit's parameters. A step below 1 has no interval in d3-time.
+const TIME_UNIT_PARAMS = {
+  unit: isString,
+  utc: isBoolean,
+  binned: isBoolean,
+  step: (v) => integerWithin(v, 1, MAX_BINS),
+  maxbins: (v) => integerWithin(v, 1, MAX_BINS),
+};
+
+function checkTimeUnit(timeUnit, path) {
+  if (timeUnit === undefined || isString(timeUnit)) return;
+  if (!isObject(timeUnit)) refuse(`A chart time unit must be a name or an object${at(path)}.`);
+  for (const [key, value] of Object.entries(timeUnit)) {
+    const valid = TIME_UNIT_PARAMS[key];
+    if (!valid) refuse(`A chart time unit can't use "${key}"${at(path)}.`);
+    if (!valid(value)) refuse(`A chart time unit's ${key} is out of range${at([...path, key])}.`);
+  }
+}
+
+// Aggregate ops for `aggregate`, `joinaggregate` and `pivot`, which compute
+// once per group.
+const AGGREGATE_OPS = new Set([
+  "count",
+  "valid",
+  "missing",
+  "distinct",
+  "sum",
+  "product",
+  "mean",
+  "average",
+  "variance",
+  "variancep",
+  "stdev",
+  "stdevp",
+  "stderr",
+  "median",
+  "q1",
+  "q3",
+  "ci0",
+  "ci1",
+  "min",
+  "max",
+  "argmin",
+  "argmax",
+]);
+// Window ops Vega updates as rows enter and leave the frame. Left out: ci0,
+// ci1, median, q1, q3 and values, which Vega recomputes from every value in
+// the frame, for every row.
+const WINDOW_OPS = new Set([
+  "row_number",
+  "rank",
+  "dense_rank",
+  "percent_rank",
+  "cume_dist",
+  "ntile",
+  "lag",
+  "lead",
+  "first_value",
+  "last_value",
+  "nth_value",
+  "count",
+  "valid",
+  "missing",
+  "sum",
+  "product",
+  "mean",
+  "average",
+  "variance",
+  "variancep",
+  "stdev",
+  "stdevp",
+  "stderr",
+  "min",
+  "max",
+  "argmin",
+  "argmax",
+]);
+const MAX_WINDOW_SPAN = 200;
+const MAX_FOLD_FIELDS = 32;
+const MAX_STEPS = 500;
+
+const opList = (ops) => (value) =>
+  Array.isArray(value) &&
+  value.length <= 32 &&
+  value.every(
+    (op) =>
+      isObject(op) &&
+      ops.has(op.op) &&
+      (op.param === undefined || integerWithin(op.param, -CHART_MAX_ROWS, CHART_MAX_ROWS)) &&
+      Object.keys(op).every((key) => ["op", "field", "as", "param"].includes(key)),
+  );
+const sortList = (value) =>
+  Array.isArray(value) &&
+  value.length <= 16 &&
+  value.every(
+    (sort) =>
+      isObject(sort) && Object.keys(sort).every((key) => key === "field" || key === "order"),
+  );
+const frame = (value) =>
+  Array.isArray(value) &&
+  value.length === 2 &&
+  value.every((v) => v === null || integerWithin(v, -CHART_MAX_ROWS, CHART_MAX_ROWS));
+const lookupFrom = (value) =>
+  isObject(value) &&
+  Object.keys(value).every((key) => ["data", "key", "fields"].includes(key)) &&
+  isString(value.key) &&
+  (value.fields === undefined || isStringList(value.fields));
+
+/*
+ * Transforms a chart may use, each with the parameters it may set and the
+ * range of each number. Anything else is refused.
+ *
+ * | Transform     | Bound                                                    |
+ * | ------------- | -------------------------------------------------------- |
+ * | aggregate     | ops from AGGREGATE_OPS; once per group                   |
+ * | joinaggregate | ops from AGGREGATE_OPS; once per group                   |
+ * | bin           | BIN_PARAMS: base 2 to 100, at most 1,000 bins            |
+ * | calculate     | parsed expression                                        |
+ * | density       | steps, minsteps, maxsteps 1 to 500                       |
+ * | extent        | a field and a parameter name                             |
+ * | filter        | parsed predicate                                         |
+ * | fold          | at most 32 fields across all folds on a view's path      |
+ * | lookup        | a named dataset, a key and fields; one match per key     |
+ * | pivot         | limit 1 to 100 columns, required                         |
+ * | quantile      | step 0.001 to 1, at most 1,000 probs                     |
+ * | regression    | order 0 to 10                                            |
+ * | sample        | 1 to CHART_MAX_ROWS                                      |
+ * | stack         | fields, an offset and a sort                             |
+ * | timeUnit      | a unit; step and maxbins 1 to 1,000                      |
+ * | window        | WINDOW_OPS; a sliding frame spans at most 200 rows and   |
+ * |               | sets ignorePeers; a frame starting at null only adds     |
+ *
+ * Refused: flatten (rows × array length, which the data sets), impute
+ * (groups × keys, up to rows²), loess (work grows with rows² × bandwidth).
+ */
+const TRANSFORMS = {
+  aggregate: { aggregate: opList(AGGREGATE_OPS), groupby: isStringList },
+  joinaggregate: { joinaggregate: opList(AGGREGATE_OPS), groupby: isStringList },
+  bin: { bin: any, field: isString, as: (v) => isString(v) || isNamePair(v) },
+  calculate: { calculate: isString, as: isString },
+  density: {
+    density: isString,
+    groupby: isStringList,
+    cumulative: isBoolean,
+    counts: isBoolean,
+    bandwidth: (v) => within(v, 0, Number.MAX_VALUE),
+    extent: isPair,
+    minsteps: (v) => integerWithin(v, 1, MAX_STEPS),
+    maxsteps: (v) => integerWithin(v, 1, MAX_STEPS),
+    steps: (v) => integerWithin(v, 1, MAX_STEPS),
+    as: isNamePair,
+  },
+  extent: { extent: isString, param: isString },
+  filter: { filter: any },
+  fold: { fold: (v) => isStringList(v, MAX_FOLD_FIELDS), as: isNamePair },
+  lookup: {
+    lookup: isString,
+    from: lookupFrom,
+    as: (v) => isString(v) || isStringList(v),
+    default: (v) => v === null || ["string", "number", "boolean"].includes(typeof v),
+  },
+  pivot: {
+    pivot: isString,
+    value: isString,
+    groupby: isStringList,
+    limit: (v) => integerWithin(v, 1, 100),
+    op: (v) => AGGREGATE_OPS.has(v),
+  },
+  quantile: {
+    quantile: isString,
+    groupby: isStringList,
+    probs: (v) => Array.isArray(v) && v.length <= 1000 && v.every((p) => within(p, 0, 1)),
+    step: (v) => within(v, 0.001, 1),
+    as: isNamePair,
+  },
+  regression: {
+    regression: isString,
+    on: isString,
+    groupby: isStringList,
+    method: (v) => ["linear", "log", "exp", "pow", "quad", "poly"].includes(v),
+    order: (v) => integerWithin(v, 0, 10),
+    extent: isPair,
+    params: isBoolean,
+    as: isNamePair,
+  },
+  sample: { sample: (v) => integerWithin(v, 1, CHART_MAX_ROWS) },
+  stack: {
+    stack: isString,
+    groupby: isStringList,
+    offset: (v) => ["zero", "center", "normalize"].includes(v),
+    sort: sortList,
+    as: isNamePair,
+  },
+  timeUnit: { timeUnit: any, field: isString, as: isString },
+  window: {
+    window: opList(WINDOW_OPS),
+    frame,
+    ignorePeers: isBoolean,
+    groupby: isStringList,
+    sort: sortList,
+  },
+};
+const REQUIRED = { pivot: ["limit"] };
 
 function checkTransform(transform, path) {
-  if (!isObject(transform)) return;
-  if ("flatten" in transform) refuse(`A chart can't flatten arrays into rows${at(path)}.`);
-  if ("loess" in transform) refuse(`A chart can't use loess; use a regression${at(path)}.`);
-  if ("impute" in transform) refuse(`A chart can't impute missing rows${at(path)}.`);
-  if (Array.isArray(transform.fold) && transform.fold.length > TRANSFORM_BOUNDS.maxFoldFields)
-    refuse(`A chart can fold at most ${TRANSFORM_BOUNDS.maxFoldFields} fields${at(path)}.`);
-  if ("window" in transform && transform.frame !== undefined) {
-    const [start, end] = Array.isArray(transform.frame) ? transform.frame : [];
-    const sliding = start !== null;
-    if (
-      sliding &&
-      !(
-        number(start) !== null &&
-        number(end) !== null &&
-        end - start <= TRANSFORM_BOUNDS.maxWindowSpan
-      )
-    )
-      refuse(
-        `A chart window frame must start at null or span at most ${TRANSFORM_BOUNDS.maxWindowSpan} rows${at(path)}.`,
-      );
+  if (!isObject(transform)) refuse(`A chart transform must be an object${at(path)}.`);
+  const type = Object.keys(TRANSFORMS).find((name) => name in transform);
+  if (!type) {
+    const name = Object.keys(transform)[0] ?? "empty";
+    refuse(`A chart can't use the ${name} transform${at(path)}.`);
   }
-  if ("density" in transform)
-    for (const key of ["steps", "minsteps", "maxsteps"])
-      if (
-        transform[key] !== undefined &&
-        !(number(transform[key]) <= TRANSFORM_BOUNDS.maxDensitySteps)
-      )
+  const params = TRANSFORMS[type];
+  if (type === "window")
+    for (const op of Array.isArray(transform.window) ? transform.window : [])
+      if (isObject(op) && !WINDOW_OPS.has(op.op))
         refuse(
-          `A chart density can use at most ${TRANSFORM_BOUNDS.maxDensitySteps} steps${at(path)}.`,
+          `A chart window can't compute ${op.op}; it would rescan the frame for every row${at(path)}.`,
         );
-  if (
-    "regression" in transform &&
-    transform.order !== undefined &&
-    !(number(transform.order) <= TRANSFORM_BOUNDS.maxRegressionOrder)
-  )
-    refuse(
-      `A chart regression can have order at most ${TRANSFORM_BOUNDS.maxRegressionOrder}${at(path)}.`,
-    );
-  if ("quantile" in transform) {
-    if (
-      transform.step !== undefined &&
-      !(number(transform.step) >= TRANSFORM_BOUNDS.minQuantileStep)
-    )
-      refuse(
-        `A chart quantile step must be at least ${TRANSFORM_BOUNDS.minQuantileStep}${at(path)}.`,
-      );
-    if (
-      Array.isArray(transform.probs) &&
-      transform.probs.length > TRANSFORM_BOUNDS.maxQuantileProbs
-    )
-      refuse(
-        `A chart quantile can use at most ${TRANSFORM_BOUNDS.maxQuantileProbs} probabilities${at(path)}.`,
-      );
+  if (type === "fold" && Array.isArray(transform.fold) && transform.fold.length > MAX_FOLD_FIELDS)
+    refuse(`A chart can fold at most ${MAX_FOLD_FIELDS} fields${at(path)}.`);
+  for (const [key, value] of Object.entries(transform)) {
+    if (!Object.hasOwn(params, key))
+      refuse(`A chart's ${type} transform can't use "${key}"${at(path)}.`);
+    if (!params[key](value))
+      refuse(`A chart's ${type} transform has an out-of-range ${key}${at([...path, key])}.`);
   }
-  if (
-    "pivot" in transform &&
-    !(number(transform.limit) > 0 && transform.limit <= TRANSFORM_BOUNDS.maxPivotLimit)
-  )
-    refuse(
-      `A chart pivot needs a limit of at most ${TRANSFORM_BOUNDS.maxPivotLimit} columns${at(path)}.`,
-    );
+  for (const key of REQUIRED[type] ?? [])
+    if (!(key in transform)) refuse(`A chart's ${type} transform needs a ${key}${at(path)}.`);
+  if (type === "bin") checkBin(transform.bin, [...path, "bin"]);
+  if (type === "timeUnit") checkTimeUnit(transform.timeUnit, [...path, "timeUnit"]);
+  if (type === "filter") checkPredicate(transform.filter, [...path, "filter"]);
+  if (type === "calculate") checkExpression(transform.calculate, [...path, "calculate"]);
+  if (type === "lookup") checkData(transform.from.data, [...path, "from", "data"], []);
+  if (type === "window" && Array.isArray(transform.frame)) {
+    const [start, end] = transform.frame;
+    if (start !== null) {
+      if (end === null || end - start > MAX_WINDOW_SPAN)
+        refuse(
+          `A chart window frame must start at null or span at most ${MAX_WINDOW_SPAN} rows${at(path)}.`,
+        );
+      if (transform.ignorePeers !== true)
+        refuse(
+          `A chart's sliding window must set ignorePeers, or ties widen it to the whole partition${at(path)}.`,
+        );
+    }
+  }
 }
 
-/** How many copies of its inner spec a facet or repeat draws, as far as the
- * spec says. A facet's cells come from the data, so it counts once. */
+/** How many copies of its inner spec a repeat draws. A facet's cells come
+ * from the data, so it counts once. */
 function repeatFactor(repeat) {
   if (Array.isArray(repeat)) return repeat.length;
   if (!isObject(repeat)) return 1;
@@ -545,25 +717,54 @@ function repeatFactor(repeat) {
   return factor;
 }
 
-/** Views a spec expands to: itself, its layers and concatenations, and each
- * repeated copy of an inner spec. */
-function viewCount(spec, depth = 0) {
-  if (!isObject(spec) || depth > CHART_SPEC_LIMITS.maxDepth) return 1;
-  let count = 1;
+/** The views a spec expands to, and the largest product of fold field counts
+ * on any view's path (a view's transforms apply to its layers and inner
+ * specs). Depth is bounded by the depth pass. */
+function viewShape(spec, folds = 1) {
+  if (!isObject(spec)) return { views: 1, folds };
+  let product = folds;
+  for (const transform of Array.isArray(spec.transform) ? spec.transform : [])
+    if (Array.isArray(transform?.fold)) product *= Math.max(1, transform.fold.length);
+  let views = 1;
+  let largest = product;
   for (const key of VIEW_ARRAYS)
     if (Array.isArray(spec[key]))
       for (const child of spec[key]) {
-        count += viewCount(child, depth + 1);
-        if (count > CHART_SPEC_LIMITS.maxViews) return count;
+        const shape = viewShape(child, product);
+        views += shape.views;
+        largest = Math.max(largest, shape.folds);
       }
-  if (isObject(spec.spec)) count += repeatFactor(spec.repeat) * viewCount(spec.spec, depth + 1);
-  return count;
+  if (isObject(spec.spec)) {
+    const shape = viewShape(spec.spec, product);
+    views += repeatFactor(spec.repeat) * shape.views;
+    largest = Math.max(largest, shape.folds);
+  }
+  return { views, folds: largest };
+}
+
+/** Refuse any string under `value` that holds a CSS url(). */
+function checkStrings(value, path) {
+  if (isString(value)) {
+    if (loadsResource(value)) refuse(`A chart can't load anything from a URL${at(path)}.`);
+  } else if (value && typeof value === "object")
+    for (const [key, child] of Object.entries(value)) checkStrings(child, [...path, key]);
+}
+
+/** A width, height or default view size: a number, `{step}` for a discrete
+ * axis, or `{band}` for a bar's share of its band. */
+function sizeAllowed(value) {
+  if (isObject(value)) {
+    const keys = Object.keys(value);
+    if (keys.length !== 1) return false;
+    if (keys[0] === "step") return within(value.step, 0, MAX_STEP);
+    if (keys[0] === "band") return within(value.band, 0, 1);
+    return false;
+  }
+  return within(value, 0, MAX_SIZE);
 }
 
 function walk(value, path, names) {
-  if (path.length > CHART_SPEC_LIMITS.maxDepth)
-    refuse(`A chart spec can nest at most ${CHART_SPEC_LIMITS.maxDepth} levels deep.`);
-  if (typeof value === "string") {
+  if (isString(value)) {
     if (loadsResource(value)) refuse(`A chart can't load anything from a URL${at(path)}.`);
     return;
   }
@@ -579,30 +780,68 @@ function walk(value, path, names) {
     if (key === "url") refuse(`A chart can't load anything from a URL${at(here)}.`);
     if (key === "href") refuse(`A chart can't link anywhere${at(here)}.`);
     if (key === "datasets") refuse(`A chart reads named data, not inline datasets${at(here)}.`);
-    if (key === "signals") refuse(`A chart can't define Vega signals; use params${at(here)}.`);
+    if (STATIC_ONLY_KEYS.has(key) || (key === "param" && isString(child)))
+      refuse(`A chart can't use "${key}"; charts are static, with hover tooltips${at(here)}.`);
     if (key === "impute") refuse(`A chart can't impute missing rows${at(here)}.`);
     if (CUSTOM_FORMAT_KEYS.has(key))
       refuse(`A chart can't use custom format functions${at(here)}.`);
     if (key === "formatType" && !FORMAT_TYPES.has(child))
       refuse(`A chart format type must be number, time or utc${at(here)}.`);
+    if (key === "format" && isString(child)) {
+      const problem = formatProblem(child);
+      if (problem) refuse(`A chart format ${problem}${at(here)}.`);
+    }
     if (key === "cursor" && !CHART_CURSORS.has(child))
       refuse(`A chart cursor must be a CSS cursor keyword${at(here)}.`);
+    if (key === "tickCount" && !within(child, 0, MAX_TICKS))
+      refuse(`A chart tick count must be a number up to ${MAX_TICKS}${at(here)}.`);
+    if (SIZE_KEYS.has(key) && child === "container")
+      refuse(
+        `A chart can't size to its container; charts are static, with hover tooltips${at(here)}.`,
+      );
+    if (SIZE_KEYS.has(key) && !sizeAllowed(child))
+      refuse(`A chart ${key} must be a number up to ${MAX_SIZE}, or a step${at(here)}.`);
     if (key === "data") {
       checkData(child, here, names);
       continue;
     }
-    if (key === "bind" && !isInteractionBinding(child))
-      refuse(`A chart can't add input controls${at(here)}.`);
+    if (key === "transform") {
+      if (!Array.isArray(child)) refuse(`A chart transform must be a list${at(here)}.`);
+      child.forEach((transform, index) => {
+        checkTransform(transform, [...here, index]);
+        if (isObject(transform.from?.data)) checkData(transform.from.data, [...here, index], names);
+      });
+      // Transform parameters are checked by TRANSFORMS; only their strings
+      // remain to check for url().
+      checkStrings(child, here);
+      continue;
+    }
+    if (key === "params") {
+      if (!Array.isArray(child)) refuse(`Chart params must be a list${at(here)}.`);
+      child.forEach((param, index) => checkParam(param, [...here, index]));
+    }
     if (key === "mark" && (child === "image" || (isObject(child) && child.type === "image")))
       refuse(`A chart can't draw image marks${at(here)}.`);
-    if (key === "transform" && Array.isArray(child))
-      child.forEach((transform, index) => checkTransform(transform, [...here, index]));
     if (key === "bin") checkBin(child, here);
-    if (key === "filter" || key === "test") checkPredicate(child, here);
-    else if (EXPRESSION_KEYS.has(key) && typeof child === "string") checkExpression(child, here);
-    if (EVENT_STREAM_KEYS.has(key) && typeof child === "string") checkEventStream(child, here);
+    if (key === "timeUnit") checkTimeUnit(child, here);
+    if (key === "test") checkPredicate(child, here);
+    else if (EXPRESSION_KEYS.has(key) && isString(child)) checkExpression(child, here);
     walk(child, here, names);
   }
+}
+
+/** Whether `value` nests at most `max` levels, checked without recursion so a
+ * spec can't overflow the stack of any later pass. Cycles count as too deep. */
+function nestsWithin(value, max) {
+  const stack = [[value, 0]];
+  let visited = 0;
+  while (stack.length) {
+    const [node, depth] = stack.pop();
+    if (depth > max || ++visited > CHART_SPEC_LIMITS.maxBytes) return false;
+    for (const child of Array.isArray(node) ? node : Object.values(node))
+      if (child && typeof child === "object") stack.push([child, depth + 1]);
+  }
+  return true;
 }
 
 /**
@@ -610,40 +849,55 @@ function walk(value, path, names) {
  * the caller can supply; a spec that reads any other name is refused.
  *
  * Returns `{ ok: true, names }`, the data names the spec reads in first-use
- * order, or `{ ok: false, error }`, one sentence saying what is wrong. Whether
- * the fields a spec encodes exist in the data is Vega-Lite's to report.
+ * order, or `{ ok: false, error }`, one sentence saying what is wrong. Never
+ * throws. Whether the fields a spec encodes exist in the data is Vega-Lite's
+ * to report.
  */
 export function checkChartSpec(spec, { datasets } = {}) {
-  if (!isObject(spec)) return { ok: false, error: "A chart spec must be a JSON object." };
-  let json;
   try {
-    json = JSON.stringify(spec);
-  } catch {
-    return { ok: false, error: "A chart spec must be plain JSON." };
-  }
-  if (new TextEncoder().encode(json).byteLength > CHART_SPEC_LIMITS.maxBytes)
-    return {
-      ok: false,
-      error: `A chart spec must be ${CHART_SPEC_LIMITS.maxBytes / 1024} KiB or smaller.`,
-    };
-  if (typeof spec.$schema === "string" && !spec.$schema.includes("/vega-lite/"))
-    return { ok: false, error: "A chart spec must be Vega-Lite, not another schema." };
-  const plain = JSON.parse(json);
-  const { $schema: _schema, ...rest } = plain;
-  const names = [];
-  try {
+    if (!isObject(spec)) return { ok: false, error: "A chart spec must be a JSON object." };
+    if (!nestsWithin(spec, CHART_SPEC_LIMITS.maxDepth))
+      return {
+        ok: false,
+        error: `A chart spec can nest at most ${CHART_SPEC_LIMITS.maxDepth} levels deep.`,
+      };
+    let json;
+    try {
+      json = JSON.stringify(spec);
+    } catch {
+      return { ok: false, error: "A chart spec must be plain JSON." };
+    }
+    if (new TextEncoder().encode(json).byteLength > CHART_SPEC_LIMITS.maxBytes)
+      return {
+        ok: false,
+        error: `A chart spec must be ${CHART_SPEC_LIMITS.maxBytes / 1024} KiB or smaller.`,
+      };
+    if (isString(spec.$schema) && !spec.$schema.includes("/vega-lite/"))
+      return { ok: false, error: "A chart spec must be Vega-Lite, not another schema." };
+    const plain = JSON.parse(json);
+    const { $schema: _schema, ...rest } = plain;
+    const names = [];
     walk(rest, [], names);
+    const shape = viewShape(plain);
+    if (shape.views > CHART_SPEC_LIMITS.maxViews)
+      return { ok: false, error: `A chart can have at most ${CHART_SPEC_LIMITS.maxViews} views.` };
+    if (shape.folds > MAX_FOLD_FIELDS)
+      return {
+        ok: false,
+        error: `A chart's folds can multiply its rows at most ${MAX_FOLD_FIELDS} times.`,
+      };
+    if (!names.length) return { ok: false, error: 'A chart needs data: {"name": "<dataset>"}.' };
+    if (datasets) {
+      const missing = names.find((name) => !datasets.includes(name));
+      if (missing !== undefined)
+        return {
+          ok: false,
+          error: `This chart reads "${missing}", but no dataset has that name.`,
+        };
+    }
+    return { ok: true, names };
   } catch (error) {
     if (error instanceof Refusal) return { ok: false, error: error.message };
-    throw error;
+    return { ok: false, error: "This chart spec couldn't be checked." };
   }
-  if (viewCount(plain) > CHART_SPEC_LIMITS.maxViews)
-    return { ok: false, error: `A chart can have at most ${CHART_SPEC_LIMITS.maxViews} views.` };
-  if (!names.length) return { ok: false, error: 'A chart needs data: {"name": "<dataset>"}.' };
-  if (datasets) {
-    const missing = names.find((name) => !datasets.includes(name));
-    if (missing !== undefined)
-      return { ok: false, error: `This chart reads "${missing}", but no dataset has that name.` };
-  }
-  return { ok: true, names };
 }

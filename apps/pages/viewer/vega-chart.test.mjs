@@ -424,9 +424,20 @@ test("Vega's loader refuses every URL, and the compiled check refuses image mark
     }),
   ));
 
-test("the compiled dataflow is checked before it runs, with Vega-Lite's own functions allowed", () =>
+const draws = (window, spec, extra = {}) =>
+  drawChart(window.document.createElement("div"), {
+    spec,
+    data: { calls },
+    theme,
+    width: 300,
+    ...extra,
+  });
+
+test("the compiled check refuses what static charts don't compile to, before it runs", () =>
   withWindow((window) =>
     countViews(async (views) => {
+      // drawChart skips the spec check, so each of these is the compiled
+      // check alone.
       const labelled = {
         ...stacked,
         encoding: {
@@ -434,39 +445,80 @@ test("the compiled dataflow is checked before it runs, with Vega-Lite's own func
           y: { ...stacked.encoding.y, axis: { labelExpr: "warn(datum.label)" } },
         },
       };
-      // The spec check refuses it first; drawChart skips that check, so this
-      // is the compiled check alone.
       assert.equal(checkChartSpec(labelled).ok, false);
-      await assert.rejects(
-        drawChart(window.document.createElement("div"), {
-          spec: labelled,
-          data: { calls },
-          theme,
-          width: 300,
-        }),
-        { message: "This chart's compiled code calls warn()." },
-      );
-      for (const calculate of [
-        "sequence(0, 1e9)",
-        "datum['__proto__']",
-        "replace(datum.tool, /a+/, '')",
+      await assert.rejects(draws(window, labelled), {
+        message: "This chart's compiled code calls warn().",
+      });
+      for (const [calculate, sentence] of [
+        ["sequence(0, 1e9)", /calls sequence\(\)/],
+        ["pluck(datum, 'constructor.constructor')", /calls pluck\(\)/],
+        ["datum['__proto__']", /uses "__proto__"/],
+        ["replace(datum.tool, /a+/, '')", /uses a regular expression/],
+        ["format(datum.calls, '1000000000')", /pads a number/],
       ])
         await assert.rejects(
-          drawChart(window.document.createElement("div"), {
-            spec: { ...stacked, transform: [{ calculate, as: "v" }] },
-            data: { calls },
-            theme,
-            width: 300,
-          }),
-          /^Error: This chart's compiled code (calls sequence|uses "__proto__"|uses a regular)/,
+          draws(window, { ...stacked, transform: [{ calculate, as: "v" }] }),
+          sentence,
         );
+      // A selection compiles to event streams: refused whole.
+      for (const select of [
+        { type: "point", toggle: "modify('calls', null, true)" },
+        { type: "point", on: "window:keydown!" },
+        { type: "interval", bind: "scales" },
+      ])
+        await assert.rejects(draws(window, { ...stacked, params: [{ name: "p", select }] }), {
+          message: "This chart listens for events; charts are static, with hover tooltips.",
+        });
       assert.equal(views.created, 0, "no refused dataflow ever ran");
     }),
   ));
 
-// Specs across marks, selections, bindings, transforms and composition. Every
-// call Vega-Lite generates for them must be in VEGA_LITE_FUNCTIONS; a new
-// Vega-Lite version that emits another one fails here, not in a reader's tab.
+test("a hand-built dataflow with a stream, an unlisted operator or call is refused", () => {
+  const vega = globalThis.__vega;
+  const runtime = () =>
+    vega.parse(vl.compile(stacked, { config: themeConfig(theme) }).spec, null, { ast: true });
+  assert.equal(runtimeProblem(runtime()), null);
+  const streamed = runtime();
+  streamed.streams.push({ id: 999, source: "window", type: "keydown" });
+  assert.match(runtimeProblem(streamed), /listens for events/);
+  const updated = runtime();
+  updated.updates.push({
+    source: 999,
+    target: 1,
+    update: { $expr: { code: "1", ast: { type: "Literal", value: 1 } } },
+  });
+  assert.match(runtimeProblem(updated), /listens for events/);
+  const bound = runtime();
+  bound.bindings.push({ signal: "x", input: "range" });
+  assert.match(runtimeProblem(bound), /listens for events/);
+  const voronoi = runtime();
+  voronoi.operators.push({ id: 998, type: "voronoi", params: {} });
+  assert.match(runtimeProblem(voronoi), /uses a voronoi operator/);
+  const plucked = runtime();
+  const formula = {
+    id: 997,
+    type: "formula",
+    params: {
+      expr: {
+        $expr: {
+          code: "",
+          ast: {
+            type: "CallExpression",
+            callee: { type: "Identifier", name: "pluck" },
+            arguments: [],
+          },
+        },
+      },
+    },
+  };
+  plucked.operators.push(formula);
+  assert.match(runtimeProblem(plucked), /calls pluck\(\)/);
+});
+
+// Static specs across marks, transforms and composition. Every operator type
+// and call Vega-Lite generates for them must be in STATIC_OPERATORS and
+// VEGA_LITE_FUNCTIONS, with no event stream; a new Vega-Lite version that
+// emits more fails here, not in a reader's tab.
 const CORPUS = (() => {
   const d = { name: "c" };
   const enc = { x: { field: "a", type: "nominal" }, y: { field: "n", type: "quantitative" } };
@@ -478,6 +530,15 @@ const CORPUS = (() => {
   };
   return [
     { data: d, mark: "bar", encoding: enc },
+    {
+      data: d,
+      mark: "bar",
+      encoding: {
+        y: { field: "a", type: "nominal" },
+        x: { field: "n", type: "quantitative", aggregate: "sum" },
+        color: { field: "b" },
+      },
+    },
     {
       data: d,
       mark: "bar",
@@ -497,61 +558,12 @@ const CORPUS = (() => {
     {
       data: d,
       mark: "point",
-      params: [{ name: "brush", select: "interval" }],
-      encoding: { ...xy, color: { condition: { param: "brush", field: "a" }, value: "grey" } },
-    },
-    {
-      data: d,
-      mark: "point",
-      params: [
-        { name: "p", select: { type: "point", on: "pointerover", nearest: true, fields: ["a"] } },
-      ],
-      encoding: { ...xy, opacity: { condition: { param: "p", value: 1 }, value: 0.3 } },
-    },
-    {
-      data: d,
-      mark: "point",
-      params: [{ name: "g", select: "interval", bind: "scales" }],
-      encoding: xy,
-    },
-    {
-      data: d,
-      mark: "point",
-      params: [{ name: "g", select: "interval", bind: "scales" }],
-      encoding: { x: { ...xy.x, scale: { type: "log" } }, y: { ...xy.y, scale: { type: "pow" } } },
-    },
-    {
-      data: d,
-      mark: "point",
-      params: [{ name: "g", select: "interval", bind: "scales" }],
-      encoding: { x: { ...xy.x, scale: { type: "symlog" } }, y: xy.y },
-    },
-    {
-      data: d,
-      mark: "line",
-      params: [{ name: "l", select: { type: "point", fields: ["a"] }, bind: "legend" }],
-      encoding: { ...time, opacity: { condition: { param: "l", value: 1 }, value: 0.2 } },
-    },
-    {
-      data: d,
-      mark: "bar",
-      params: [{ name: "h", select: { type: "point", on: "pointerover", clear: "pointerout" } }],
-      encoding: { ...enc, fillOpacity: { condition: { param: "h", value: 1 }, value: 0.5 } },
-    },
-    {
-      data: d,
-      mark: "point",
-      params: [
-        {
-          name: "s",
-          select: {
-            type: "interval",
-            encodings: ["x"],
-            on: "[pointerdown[event.shiftKey], pointerup] > pointermove",
-          },
-        },
-      ],
-      encoding: xy,
+      encoding: {
+        ...xy,
+        color: { field: "a" },
+        size: { field: "m", type: "quantitative" },
+        shape: { field: "a" },
+      },
     },
     {
       data: d,
@@ -580,6 +592,7 @@ const CORPUS = (() => {
     },
     { data: d, mark: "bar", encoding: { ...enc, facet: { field: "b", columns: 2 } } },
     { data: d, facet: { row: { field: "b" } }, spec: { mark: "bar", encoding: enc } },
+    { data: d, mark: "bar", encoding: { ...enc, row: { field: "b" }, column: { field: "c" } } },
     {
       data: d,
       repeat: ["n", "m"],
@@ -591,6 +604,13 @@ const CORPUS = (() => {
     {
       data: d,
       hconcat: [
+        { mark: "bar", encoding: enc },
+        { mark: "point", encoding: enc },
+      ],
+    },
+    {
+      data: d,
+      vconcat: [
         { mark: "bar", encoding: enc },
         { mark: "point", encoding: enc },
       ],
@@ -672,6 +692,12 @@ const CORPUS = (() => {
     },
     {
       data: d,
+      transform: [{ sample: 500 }, { extent: "n", param: "ext" }],
+      mark: "point",
+      encoding: xy,
+    },
+    {
+      data: d,
       mark: "bar",
       encoding: {
         x: { field: "a", sort: "-y" },
@@ -706,8 +732,6 @@ const CORPUS = (() => {
       encoding: {
         x: { field: "t", type: "temporal", scale: { type: "utc" }, axis: { format: "%b %Y" } },
         y: { field: "n", type: "quantitative", scale: { zero: false } },
-        size: { field: "m", type: "quantitative" },
-        shape: { field: "a" },
       },
     },
     {
@@ -715,13 +739,18 @@ const CORPUS = (() => {
       mark: "text",
       encoding: { text: { field: "t", type: "temporal", format: "%Y" }, x: { field: "a" } },
     },
-    { data: d, width: "container", mark: "bar", encoding: enc },
     {
       data: d,
       params: [{ name: "cut", value: 5 }],
       transform: [{ filter: "datum.n > cut" }],
       mark: "bar",
       encoding: enc,
+    },
+    {
+      data: d,
+      params: [{ name: "k", expr: "2 * 3" }],
+      mark: "bar",
+      encoding: { ...enc, opacity: { value: { expr: "k / 10" } } },
     },
     {
       data: d,
@@ -762,19 +791,32 @@ const CORPUS = (() => {
       mark: "bar",
       encoding: { ...enc, color: { field: "a", type: "nominal", scale: null } },
     },
+    {
+      data: d,
+      mark: "bar",
+      encoding: {
+        ...enc,
+        color: { condition: { test: "datum.n > 3", value: "red" }, value: "grey" },
+      },
+    },
+    { data: d, title: { text: "T", subtitle: "S" }, mark: "bar", encoding: enc },
+    { data: d, mark: "bar", encoding: { ...enc, color: { field: "n", type: "quantitative" } } },
+    { data: d, mark: "bar", encoding: { ...enc, x: { ...enc.x, title: ["Two", "lines"] } } },
   ];
 })();
 
-test("everything Vega-Lite generates for the corpus passes the compiled check", () => {
+test("every static spec in the corpus passes both checks", () => {
   const vega = globalThis.__vega;
   for (const [index, spec] of CORPUS.entries()) {
-    assert.equal(checkChartSpec(spec).ok, true, `${index}: ${checkChartSpec(spec).error}`);
-    const runtime = vega.parse(vl.compile(spec, { config: themeConfig(theme) }).spec, null, {
-      ast: true,
-    });
+    const checked = checkChartSpec(spec);
+    assert.equal(checked.ok, true, `${index}: ${checked.error}`);
+    const runtime = vega.parse(
+      vl.compile(sizedSpec(spec, 400), { config: themeConfig(theme) }).spec,
+      null,
+      { ast: true },
+    );
     assert.equal(runtimeProblem(runtime), null, `${index}: ${JSON.stringify(spec).slice(0, 160)}`);
   }
-  assert.ok(VEGA_LITE_FUNCTIONS.has("vlSelectionTest") && VEGA_LITE_FUNCTIONS.has("modify"));
 });
 
 test("paint is a color or a gradient of colors; anything else is dropped", () => {
@@ -841,11 +883,9 @@ test("data that carries url() never reaches a drawn attribute or the cursor", ()
           { offset: 1, color: "red" },
         ],
       },
-      cur: `${probe}, auto`,
     }));
-    const spec = {
+    const byField = {
       data: { name: "calls" },
-      background: { expr: "data('calls')[0].paint" },
       layer: [
         {
           mark: { type: "bar", cursor: "pointer" },
@@ -860,37 +900,66 @@ test("data that carries url() never reaches a drawn attribute or the cursor", ()
           encoding: { ...stacked.encoding, fill: { field: "grad", type: "nominal", scale: null } },
         },
         {
-          mark: { type: "text", font: { expr: "data('calls')[0].paint" } },
-          encoding: { ...stacked.encoding, text: { field: "tool" } },
+          mark: { type: "text" },
+          encoding: {
+            ...stacked.encoding,
+            text: { field: "tool" },
+            fill: { field: "paint", type: "nominal", scale: null },
+          },
         },
       ],
     };
-    assert.equal(checkChartSpec(spec).ok, true, checkChartSpec(spec).error);
-    const { element } = container(window);
-    const chart = mount(element, { spec, datasets: { calls: rows } });
-    await settle(120);
-    const figure = element.querySelector("figure");
-    assert.equal(figure.dataset.chartStatus, "rendered", figure.textContent);
-    const svg = figure.querySelector(".pages-chart-canvas svg");
+    assert.equal(checkChartSpec(byField).ok, true, checkChartSpec(byField).error);
     // Attributes that take CSS. Vega's own gradients are url(<this document>#id).
     const own = new RegExp(
       `url\\((?:#|${window.location.href.split("#")[0].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}#)`,
       "gi",
     );
-    const references = [svg, ...svg.querySelectorAll("*")].flatMap((node) =>
-      [...node.attributes]
-        .filter(
-          (attr) => !attr.name.startsWith("aria-") && /url\(/i.test(attr.value.replace(own, "")),
-        )
-        .map((attr) => `${node.tagName} ${attr.name}=${attr.value}`),
-    );
-    assert.deepEqual(references, []);
+    const references = (svg) =>
+      [svg, ...svg.querySelectorAll("*")].flatMap((node) =>
+        [...node.attributes]
+          .filter(
+            (attr) => !attr.name.startsWith("aria-") && /url\(/i.test(attr.value.replace(own, "")),
+          )
+          .map((attr) => `${node.tagName} ${attr.name}=${attr.value}`),
+      );
+    const { element } = container(window);
+    const chart = mount(element, { spec: byField, datasets: { calls: rows } });
+    await settle(120);
+    const figure = element.querySelector("figure");
+    assert.equal(figure.dataset.chartStatus, "rendered", figure.textContent);
+    assert.deepEqual(references(figure.querySelector(".pages-chart-canvas svg")), []);
     const target = figure.querySelector(".pages-chart-canvas > div");
     target.style.cursor = `${probe}, auto`;
     assert.equal(target.style.cursor, "");
     target.style.cursor = "pointer";
     assert.equal(target.style.cursor, "pointer");
     chart.destroy();
+    // Past the spec check, Vega-Lite's own data() can carry a row's value into
+    // a font, a background or a cursor; the renderer still cleans them.
+    const target2 = window.document.body.appendChild(window.document.createElement("div"));
+    const view = await drawChart(target2, {
+      spec: {
+        data: { name: "calls" },
+        background: { expr: "data('calls')[0].paint" },
+        layer: [
+          {
+            mark: { type: "bar", cursor: { expr: "data('calls')[0].paint" } },
+            encoding: stacked.encoding,
+          },
+          {
+            mark: { type: "text", font: { expr: "data('calls')[0].paint" } },
+            encoding: { ...stacked.encoding, text: { field: "tool" } },
+          },
+        ],
+      },
+      data: { calls: rows },
+      theme,
+      width: 300,
+    });
+    assert.deepEqual(references(target2.querySelector("svg")), []);
+    assert.doesNotMatch(target2.querySelector("svg").getAttribute("style") ?? "", /url\(/);
+    view.finalize();
   }));
 
 test("an expression that throws while the chart runs shows an error, not a drawn chart", () =>
@@ -909,6 +978,34 @@ test("an expression that throws while the chart runs shows an error, not a drawn
     assert.equal(figure.querySelector(".pages-chart-canvas svg"), null);
     chart.destroy();
   }));
+
+test("an error in a later run moves a drawn chart to its error state", () =>
+  withWindow((window) =>
+    countViews(async (views) => {
+      const { element } = container(window);
+      const chart = mount(element, {
+        spec: {
+          ...stacked,
+          transform: [{ calculate: "datum.calls > 1000 ? datum.missing.x : 0", as: "v" }],
+        },
+        datasets: { calls },
+      });
+      await settle(120);
+      const figure = element.querySelector("figure");
+      assert.equal(figure.dataset.chartStatus, "rendered");
+      const [view] = views.live;
+      await view.insert("calls", [{ tool: "read_page", client: "Claude", calls: 5000 }]).runAsync();
+      await settle(10);
+      assert.equal(figure.dataset.chartStatus, "error");
+      assert.match(
+        figure.querySelector(".pages-chart-message").textContent,
+        /^This chart couldn't be drawn: /,
+      );
+      assert.equal(figure.querySelector(".pages-chart-canvas svg"), null);
+      assert.equal(views.live.size, 0);
+      chart.destroy();
+    }),
+  ));
 
 test("the tooltip shows fields and drops an image URL", () => {
   const html = formatTooltip(

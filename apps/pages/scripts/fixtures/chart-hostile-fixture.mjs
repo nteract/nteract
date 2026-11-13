@@ -59,6 +59,51 @@ const POSITIONS = {
   background: (u) => ({ ...base, background: u }),
   "view-stroke": (u) => ({ ...base, config: { view: { stroke: u, strokeWidth: 3 } } }),
   "axis-color": (u) => ({ ...base, config: { axis: { domainColor: u, gridColor: u } } }),
+  "title-color": (u) => ({
+    ...base,
+    title: { text: "Calls", color: u, subtitle: "by tool", subtitleColor: u },
+  }),
+  "legend-colors": (u) => ({
+    ...base,
+    encoding: {
+      ...base.encoding,
+      color: {
+        field: "tool",
+        type: "nominal",
+        legend: {
+          fillColor: u,
+          strokeColor: u,
+          labelColor: u,
+          titleColor: u,
+          symbolStrokeColor: u,
+        },
+      },
+    },
+  }),
+  "header-color": (u) => ({
+    data: { name: "d" },
+    facet: { row: { field: "tool", type: "nominal", header: { labelColor: u, titleColor: u } } },
+    spec: { mark: "bar", encoding: base.encoding, width: 220 },
+  }),
+  "axis-text-color": (u) => ({
+    ...base,
+    config: { axis: { labelColor: u, titleColor: u, tickColor: u } },
+  }),
+  "scale-range": (u) => ({
+    ...base,
+    encoding: {
+      ...base.encoding,
+      color: { field: "tool", type: "nominal", scale: { range: [u, "red"] } },
+    },
+  }),
+  "rule-stroke": (u) => ({ ...base, mark: { type: "rule", stroke: u, strokeWidth: 4 } }),
+  "text-fill-literal": (u) => ({
+    ...base,
+    mark: { type: "text", color: u },
+    encoding: { ...base.encoding, text: { field: "tool" } },
+  }),
+  "view-fill": (u) => ({ ...base, config: { view: { fill: u } } }),
+  "config-mark": (u) => ({ ...base, config: { mark: { color: u }, bar: { fill: u } } }),
   "fill-data": () => ({
     ...base,
     encoding: { ...base.encoding, fill: { field: "paint", type: "nominal", scale: null } },
@@ -71,6 +116,15 @@ const POSITIONS = {
   "gradient-data": () => ({
     ...base,
     encoding: { ...base.encoding, fill: { field: "grad", type: "nominal", scale: null } },
+  }),
+  "text-fill-data": () => ({
+    ...base,
+    mark: "text",
+    encoding: {
+      ...base.encoding,
+      text: { field: "tool" },
+      fill: { field: "paint", type: "nominal", scale: null },
+    },
   }),
   "cursor-data": () => ({ ...base, mark: { type: "bar", cursor: { expr: "data('d')[0].cur" } } }),
   "font-data": () => text({ expr: "data('d')[0].paint" }),

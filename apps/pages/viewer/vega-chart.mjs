@@ -2,24 +2,32 @@
 // chunk: load it with `import("./vega-chart.mjs")` where a chart is shown, the
 // way wordgard-dataframes.mjs loads sift-table.jsx for tables.
 //
+// A chart is static: marks, axes, legends and Vega's hover tooltip. Nothing
+// else listens to the reader; selections, bindings and every other event
+// stream are refused, because each review of the interactive surface found
+// another way through it.
+//
 // The spec and the rows are both untrusted. Four layers keep a chart from
 // running code, fetching or navigating:
 // - shared/chart-spec.mjs refuses a spec before anything compiles, with one
-//   sentence: named data only, no URL anywhere, keyword cursors, and an
-//   allowlist of expression functions checked on parsed expressions.
-// - `runtimeProblem` checks every expression in the compiled Vega dataflow
-//   against the same policy, with VEGA_LITE_FUNCTIONS for the code
-//   Vega-Lite generates, before the dataflow runs.
+//   sentence: allowlists for data, transforms, parameters and expression
+//   functions, no URL anywhere, keyword cursors.
+// - `runtimeProblem` is the boundary on what runs. It refuses a compiled Vega
+//   dataflow that has any event stream, signal handler or binding, any
+//   operator type outside STATIC_OPERATORS, or any expression outside the
+//   policy with VEGA_LITE_FUNCTIONS, before the dataflow runs.
 // - The viewer CSP has no 'unsafe-eval', so Vega runs with its expression
 //   interpreter, and `deniedLoader` refuses every load and link.
 // - The "pages-svg" renderer cleans each item's fill, stroke, font, blend and
 //   cursor before Vega writes them, and the container's cursor setter takes
 //   keywords only, so a data value can't put `url(...)` into a style.
 //
-// What stays unbounded is the reader's own tab: facets draw a cell per
-// distinct value, a chart may draw up to CHART_MAX_ROWS marks, and the bounded
-// transforms still do real work. A Worker with a kill timer would bound that;
-// nothing here does.
+// A chart still runs on the reader's main thread. The spec check bounds its
+// work without capping it: a facet draws a cell per distinct value, and an
+// SVG mark per row is slow at CHART_MAX_ROWS rows, so a spec within every
+// bound can still freeze the tab for seconds. A Worker with a kill timer would
+// bound that; nothing here does. An error after the first draw moves the
+// chart to its error state.
 //
 // The look is bare: the caller's title above, one thin rounded border around
 // the drawing, and Vega-Lite's own axes, legend and hover tooltip inside it.
@@ -36,6 +44,7 @@ import {
   CHART_EXPRESSION_FUNCTIONS,
   CHART_MAX_ROWS,
   checkChartSpec,
+  checkFormatCall,
   expressionProblem,
   loadsResource,
 } from "../shared/chart-spec.mjs";
@@ -199,53 +208,132 @@ export const formatTooltip = (value, valueToHtml, maxDepth, baseURL) => {
 let tooltipCount = 0;
 
 /**
- * Functions the code Vega-Lite 6.5.0 generates calls, beyond the ones a spec
- * may call itself: selections, scale bindings, layout and gradients. The
- * corpus test in viewer/vega-chart.test.mjs compiles specs across marks,
- * selections, bindings, transforms and composition and fails if Vega-Lite
- * emits a call outside this set.
+ * Functions a static chart's compiled dataflow may call: the ones a spec may
+ * call itself, plus what Vega-Lite 6.5.0 generates for static charts. The
+ * corpus test in viewer/vega-chart.test.mjs compiles static specs across
+ * marks, transforms and composition and fails if Vega-Lite emits a call
+ * outside this set.
  */
 export const VEGA_LITE_FUNCTIONS = Object.freeze(
   new Set([
     ...CHART_EXPRESSION_FUNCTIONS,
+    // A scale by its name in the chart's own scope, for band offsets and
+    // label positions.
+    "bandwidth",
+    "scale",
+    // Scale lookups by Vega's internal scale reference, for encodings.
     "_bandwidth",
     "_range",
     "_scale",
+    // Band and point scale layout: padding as a fraction of the step.
     "bandspace",
-    "containerSize",
+    // A facet's cell count and a layout's extent read the chart's own data.
+    "data",
+    // A scale's domain and range, for axis and legend layout.
+    "domain",
+    "range",
+    // Legend symbol layout by column.
     "flush",
+    // A continuous color legend's gradient.
     "gradient",
-    "group",
-    "inScope",
-    "isTuple",
-    "item",
+    // Multi-line titles and labels, joined from the spec's own strings.
+    "join",
+    // Linear interpolation for legend gradients and offsets.
     "lerp",
-    "modify",
-    "panLinear",
-    "panLog",
-    "panPow",
-    "panSymlog",
-    "vlSelectionIdTest",
-    "vlSelectionResolve",
-    "vlSelectionTest",
-    "vlSelectionTuples",
-    "x",
-    "y",
-    "zoomLinear",
-    "zoomLog",
-    "zoomPow",
-    "zoomSymlog",
+    // Time-unit labels for temporal axes.
+    "timeUnitSpecifier",
+  ]),
+);
+
+/**
+ * Operator types a static chart's compiled dataflow uses, from the corpus
+ * test. Interaction adds others (selection tuples, Voronoi for nearest
+ * points), and those never run.
+ */
+export const STATIC_OPERATORS = Object.freeze(
+  new Set([
+    "aggregate",
+    "axisticks",
+    "bin",
+    "bound",
+    "collect",
+    "datajoin",
+    "encode",
+    "extent",
+    "facet",
+    "filter",
+    "fold",
+    "formula",
+    "geoshape",
+    "impute",
+    "joinaggregate",
+    "kde",
+    "legendentries",
+    "lookup",
+    "mark",
+    "multiextent",
+    "operator",
+    "overlap",
+    "pivot",
+    "prefacet",
+    "projection",
+    "proxy",
+    "quantile",
+    "regression",
+    "relay",
+    "render",
+    "sample",
+    "scale",
+    "sequence",
+    "sieve",
+    "sortitems",
+    "stack",
+    "timeunit",
+    "tupleindex",
+    "values",
+    "viewlayout",
+    "window",
   ]),
 );
 
 /** A refusal whose message is the sentence a reader sees. */
 class ChartRefusal extends Error {}
 
+const STATIC = "charts are static, with hover tooltips";
+
+/** True for `timeUnitSpecifier(...)` over literals, which Vega-Lite passes
+ * as a temporal axis's label specifier. */
+const literalTimeUnitSpecifier = (node) =>
+  node?.type === "CallExpression" &&
+  node.callee?.type === "Identifier" &&
+  node.callee.name === "timeUnitSpecifier" &&
+  node.arguments.every(function literal(arg) {
+    if (arg.type === "Literal") return true;
+    if (arg.type === "ArrayExpression") return arg.elements.every(literal);
+    if (arg.type === "ObjectExpression")
+      return arg.properties.every((property) => literal(property.value));
+    return false;
+  });
+
+/** The spec's call check, except that a format specifier may also be a
+ * literal `timeUnitSpecifier(...)`. */
+const checkCompiledCall = (call) =>
+  literalTimeUnitSpecifier(call.arguments[1]) ? null : checkFormatCall(call);
+
 /**
- * Why a parsed Vega dataflow can't run, or null: an expression outside the
- * policy (expressionProblem with VEGA_LITE_FUNCTIONS), or an image mark.
+ * Why a parsed Vega dataflow can't run, or null. Structural first: a static
+ * chart has no event streams, signal handlers or bindings, and only
+ * STATIC_OPERATORS. Then every expression against the policy with
+ * VEGA_LITE_FUNCTIONS, and no image mark.
  */
 export function runtimeProblem(runtime) {
+  if (!runtime || typeof runtime !== "object") return "This chart didn't compile.";
+  for (const key of ["streams", "updates", "bindings"])
+    if (Array.isArray(runtime[key]) && runtime[key].length)
+      return `This chart listens for events; ${STATIC}.`;
+  for (const operator of Array.isArray(runtime.operators) ? runtime.operators : [])
+    if (!STATIC_OPERATORS.has(operator?.type))
+      return `This chart uses a ${operator?.type} operator; ${STATIC}.`;
   const seen = new Set();
   const stack = [runtime];
   while (stack.length) {
@@ -254,7 +342,7 @@ export function runtimeProblem(runtime) {
     seen.add(node);
     if (node.marktype === "image") return "This chart can't draw image marks.";
     if (node.ast) {
-      const problem = expressionProblem(node.ast, VEGA_LITE_FUNCTIONS);
+      const problem = expressionProblem(node.ast, VEGA_LITE_FUNCTIONS, checkCompiledCall);
       if (problem) return `This chart's compiled code ${problem}.`;
     }
     for (const child of Object.values(node))
@@ -352,13 +440,14 @@ function guardCursor(element) {
   });
 }
 
-/** Vega's logger, also keeping each error. An operator that throws during a
- * run logs and lets the run finish; the chart treats that as a failed draw. */
-function keepingLogger(errors) {
+/** Vega's logger, handing each error to `onError`. An operator that throws
+ * during a run logs and lets the run finish, so the logger is how a chart
+ * learns it failed, on the first draw or any later run. */
+function reportingLogger(onError) {
   const logger = vega.logger(vega.Warn);
   const error = logger.error;
   logger.error = (...args) => {
-    errors.push(args.map((arg) => arg?.message ?? String(arg)).join(" "));
+    onError(new Error(args.map((arg) => arg?.message ?? String(arg)).join(" ")));
     return error.apply(logger, args);
   };
   return logger;
@@ -367,14 +456,16 @@ function keepingLogger(errors) {
 /**
  * Draw `spec` over `data` (name → plain rows) into `target`. Resolves with the
  * Vega view; rejects with Vega's error after finalizing a half-built view.
+ * `onError(error)` hears an error from any run after the first.
  */
-export async function drawChart(target, { spec, data, theme, width, tooltip }) {
+export async function drawChart(target, { spec, data, theme, width, tooltip, onError }) {
   const compiled = vl.compile(sizedSpec(spec, width), { config: themeConfig(theme) }).spec;
   const runtime = vega.parse(compiled, null, { ast: true });
   const problem = runtimeProblem(runtime);
   if (problem) throw new ChartRefusal(problem);
   guardCursor(target);
-  const errors = [];
+  let firstError = null;
+  let drawn = false;
   const view = new vega.View(runtime, {
     expr: expressionInterpreter,
     loader: deniedLoader,
@@ -382,12 +473,16 @@ export async function drawChart(target, { spec, data, theme, width, tooltip }) {
     container: target,
     hover: true,
     ...(tooltip && { tooltip }),
-    logger: keepingLogger(errors),
+    logger: reportingLogger((error) => {
+      if (!drawn) firstError ??= error;
+      else onError?.(error);
+    }),
   });
   try {
     for (const [name, rows] of Object.entries(data)) view.data(name, rows);
     await view.runAsync();
-    if (errors.length) throw new Error(errors[0]);
+    if (firstError) throw firstError;
+    drawn = true;
     return view;
   } catch (error) {
     view.finalize();
@@ -525,7 +620,18 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
     new Observable((subscriber) => {
       let cancelled = false;
       const target = doc.createElement("div");
-      drawChart(target, { spec: plain, data, theme, width, tooltip: showTooltip }).then(
+      // A later run that fails (a hover, a redraw of this view) leaves the
+      // chart in its error state. Deferred, so the view isn't finalized
+      // inside its own run.
+      const onError = (error) =>
+        queueMicrotask(() => {
+          if (!mounted || canvas.firstChild !== target) return;
+          view?.finalize();
+          view = null;
+          canvas.replaceChildren();
+          show("error", errorSentence(error));
+        });
+      drawChart(target, { spec: plain, data, theme, width, tooltip: showTooltip, onError }).then(
         (drawn) => {
           if (cancelled) drawn.finalize();
           else subscriber.next({ view: drawn, target });

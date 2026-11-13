@@ -56,15 +56,25 @@ Source layout under this directory:
 ### Charts
 
 `viewer/vega-chart.mjs` draws a Vega-Lite spec over datasets the caller
-supplies, in the Page's own document. Nothing in production loads it yet. The
-spec and the rows are both untrusted. `shared/chart-spec.mjs` refuses a spec
-that could fetch, navigate, run an expression outside its allowlist, or
-multiply rows past fixed bounds; the viewer checks the compiled Vega dataflow
-again, cleans every paint, font and cursor before Vega writes it, and runs
-expressions through Vega's interpreter. A chart can still keep the reader's
-tab busy within those bounds: a facet draws a cell per distinct value, up to
-100,000 rows can each draw a mark, and windows, densities and regressions do
-real work. A Worker or a separate frame with a kill timer would bound that;
+supplies, in the Page's own document. Nothing in production loads it yet.
+
+A chart is static: marks, axes, legends and Vega's hover tooltip. Selections,
+bindings, `param` predicates and every other event stream are refused, because
+each review of the interactive surface found another way through it.
+
+The spec and the rows are both untrusted. `shared/chart-spec.mjs` checks a
+spec against allowlists: data by name only, transforms and their parameters
+with ranged numbers, expression functions, keyword cursors, and no CSS `url()`
+in any string. The viewer refuses a compiled Vega dataflow with any event
+stream, binding or unlisted operator, checks every compiled expression again,
+runs expressions through Vega's interpreter, denies every load, and cleans
+each paint, font and cursor before Vega writes it.
+
+A chart runs on the reader's main thread, and nothing stops it there. The
+bounds limit its work without capping it: a facet draws a cell per distinct
+value, a density or quantile emits rows per group, and an SVG mark per row is
+slow at 100,000 rows. A spec within every bound can still freeze the tab for
+seconds. A Worker or a separate frame with a kill timer would bound that;
 nothing does today.
 
 ## Run locally
