@@ -117,13 +117,10 @@ const CATEGORY = {
   dark: ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"],
 };
 
-/** Vega-Lite config from a theme, for a chart drawn `width` wide. A spec's
- * own config wins over it. The font is the stack the page chose for this
- * Worker (chart-font.mjs). A title and subtitle are limited to the width
- * inside the padding, an x-axis title to its view's width and a y-axis
- * title to its view's height, so Vega cuts a long one short with an ellipsis
- * by its measured width instead of drawing it past the chart. */
-export function themeConfig(theme, width = 0) {
+/** Vega-Lite config from a theme and a chart's `textLimits`. A spec's own
+ * config wins over it. The font is the stack the page chose for this Worker
+ * (chart-font.mjs). */
+export function themeConfig(theme, limits = {}) {
   const category = theme.dark ? CATEGORY.dark : CATEGORY.light;
   return {
     background: null,
@@ -138,15 +135,15 @@ export function themeConfig(theme, width = 0) {
       labelFontSize: 11,
       titleFontWeight: 500,
     },
-    axisX: { titleLimit: { expr: "width" } },
-    axisY: { titleLimit: { expr: "height" } },
+    ...(limits.axisX && { axisX: limits.axisX }),
+    ...(limits.axisY && { axisY: limits.axisY }),
     legend: { labelColor: theme.muted, titleColor: theme.text },
     title: {
       color: theme.text,
       anchor: "start",
       fontSize: 14,
       fontWeight: 600,
-      ...(width > 2 * PADDING && { limit: width - 2 * PADDING }),
+      ...limits.title,
     },
     header: { labelColor: theme.muted, titleColor: theme.text },
     range: { category },
@@ -163,6 +160,32 @@ const isComposite = (spec) =>
   ["concat", "hconcat", "vconcat", "facet", "repeat"].some((key) => key in spec) ||
   ["row", "column", "facet"].some((key) => key in (spec.encoding ?? {}));
 const DISCRETE = new Set(["nominal", "ordinal"]);
+
+/**
+ * Config that limits `spec`'s title and axis titles when it's drawn `width`
+ * wide, so Vega cuts a long one short with an ellipsis by its measured width
+ * instead of drawing it past the chart: a title and subtitle to the width
+ * inside the padding, an x-axis title to the view's width and a y-axis title
+ * to its height. Only for a single view sized from its container
+ * (`sizedSpec`), and only where the spec's config sets no limit of its own;
+ * Vega-Lite gives `axisX` and `axisY` precedence over a spec's `axis`. A
+ * chart with its own width, or a composed one, whose children's sizes aren't
+ * `width` and `height`, draws as Vega-Lite draws it.
+ */
+export function textLimits(spec, width) {
+  if (isComposite(spec) || spec.width !== undefined || !(width > 2 * PADDING)) return {};
+  const config = spec.config ?? {};
+  const limits = {};
+  if (config.title?.limit === undefined) limits.title = { limit: width - 2 * PADDING };
+  const ownAxisLimit = Object.entries(config).some(
+    ([key, value]) => key.startsWith("axis") && value?.titleLimit !== undefined,
+  );
+  if (!ownAxisLimit) {
+    limits.axisX = { titleLimit: { expr: "width" } };
+    limits.axisY = { titleLimit: { expr: "height" } };
+  }
+  return limits;
+}
 
 /** A spec sized for `width`, when it doesn't size itself. A discrete y axis
  * keeps Vega-Lite's own step height. */
@@ -496,7 +519,9 @@ export async function runChart(
     const checked = checkChartSpec(spec, { datasets: Object.keys(data) });
     if (!checked.ok) throw new ChartRefusal(checked.error);
   }
-  const compiled = vl.compile(sizedSpec(spec, width), { config: themeConfig(theme, width) }).spec;
+  const compiled = vl.compile(sizedSpec(spec, width), {
+    config: themeConfig(theme, textLimits(spec, width)),
+  }).spec;
   const runtime = vega.parse(compiled, null, { ast: true });
   if (checkDataflow) {
     const problem = runtimeProblem(runtime);

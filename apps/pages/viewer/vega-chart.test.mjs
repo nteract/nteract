@@ -25,6 +25,7 @@ const {
   serveCharts,
   sizedSpec,
   themeConfig,
+  textLimits,
   deniedLoader,
   runtimeProblem,
   VEGA_LITE_FUNCTIONS,
@@ -744,35 +745,63 @@ test("the structural checks reach every subflow, and hover encodings anywhere", 
 
 test("a title and axis titles are cut short with an ellipsis to the room they have", () =>
   withWindow(async (window) => {
-    const config = themeConfig(theme, 300);
     // Vega-Lite's padding is 5 on each side of the width a chart draws at.
+    assert.deepEqual(textLimits(stacked, 300), {
+      title: { limit: 290 },
+      axisX: { titleLimit: { expr: "width" } },
+      axisY: { titleLimit: { expr: "height" } },
+    });
+    const config = themeConfig(theme, textLimits(stacked, 300));
     assert.equal(config.title.limit, 290);
-    assert.deepEqual(config.axisX.titleLimit, { expr: "width" });
-    assert.deepEqual(config.axisY.titleLimit, { expr: "height" });
+    assert.equal(config.title.fontSize, 14);
     assert.equal(themeConfig(theme).title.limit, undefined);
+    assert.equal(themeConfig(theme).axisX, undefined);
 
     const long = "a title far longer than any chart this narrow has room to draw ".repeat(3);
-    const target = window.document.body.appendChild(window.document.createElement("div"));
-    const drawing = await drawChart(target, {
-      spec: {
-        ...stacked,
-        title: long,
-        encoding: {
-          ...stacked.encoding,
-          x: { ...stacked.encoding.x, title: long },
-          y: { ...stacked.encoding.y, title: long },
-        },
+    const titled = (spec) => ({
+      ...spec,
+      title: long,
+      encoding: {
+        ...stacked.encoding,
+        x: { ...stacked.encoding.x, title: long },
+        y: { ...stacked.encoding.y, title: long },
       },
-      data: { calls },
-      theme,
-      width: 300,
     });
-    const texts = (role) =>
-      [...target.querySelectorAll(`.role-${role} text`)].map((text) => text.textContent);
-    const titles = [...texts("title-text"), ...texts("axis-title")];
-    assert.equal(titles.length, 3, JSON.stringify(titles));
-    for (const title of titles) assert.ok(title.endsWith("\u2026"), title);
-    drawing.finalize();
+    const titles = async (spec) => {
+      const target = window.document.body.appendChild(window.document.createElement("div"));
+      const drawing = await drawChart(target, { spec, data: { calls }, theme, width: 300 });
+      const texts = (role) =>
+        [...target.querySelectorAll(`.role-${role} text`)].map((text) => text.textContent);
+      const found = { title: texts("title-text"), axes: texts("axis-title") };
+      drawing.finalize();
+      target.remove();
+      return found;
+    };
+    const cut = (text) => text.endsWith("\u2026");
+
+    const sized = await titles(titled(stacked));
+    assert.equal(sized.title.length + sized.axes.length, 3, JSON.stringify(sized));
+    assert.ok([...sized.title, ...sized.axes].every(cut), JSON.stringify(sized));
+
+    // A limit of the spec's own wins, generic or directional.
+    for (const own of [{ axis: { titleLimit: 0 } }, { axisY: { titleLimit: 50 } }]) {
+      const limits = textLimits({ ...stacked, config: own }, 300);
+      assert.equal(limits.axisX, undefined, JSON.stringify(own));
+      assert.equal(limits.axisY, undefined, JSON.stringify(own));
+      assert.deepEqual(limits.title, { limit: 290 });
+    }
+    assert.equal(textLimits({ ...stacked, config: { title: { limit: 0 } } }, 300).title, undefined);
+    const ownAxis = await titles({ ...titled(stacked), config: { axis: { titleLimit: 0 } } });
+    assert.ok(cut(ownAxis.title[0]));
+    assert.deepEqual(ownAxis.axes, [long.trim(), long.trim()]);
+
+    // A chart with its own width, or a composed one, draws as Vega-Lite draws it.
+    assert.deepEqual(textLimits({ ...stacked, width: 1000 }, 300), {});
+    const composed = { hconcat: [titled(stacked), stacked], data: stacked.data };
+    assert.deepEqual(textLimits(composed, 300), {});
+    const drawnComposed = await titles({ ...composed, title: long });
+    assert.ok(!cut(drawnComposed.title[0]), drawnComposed.title[0]);
+    assert.ok(drawnComposed.axes.includes(long.trim()), JSON.stringify(drawnComposed.axes));
   }));
 
 test("hovering a drawn chart only shows its tooltip", () =>
