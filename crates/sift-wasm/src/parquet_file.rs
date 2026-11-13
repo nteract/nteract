@@ -1012,7 +1012,7 @@ mod tests {
     use crate::column_stats::StatValue;
     use crate::store::{free, get_cell_string, is_null, num_rows};
     use crate::test_footers::{
-        group_footer, int96_footer, parquet_with_footer_total, thrift_footer,
+        group_footer, int96_footer, list_root_footer, parquet_with_footer_total, thrift_footer,
     };
     use arrow::array::{ArrayRef, Int64Array, StringArray};
     use arrow::record_batch::RecordBatch;
@@ -1526,6 +1526,17 @@ mod tests {
         let (tail, file_len) = group_footer(Some(parquet::format::FieldRepetitionType::REQUIRED));
         let summary = footer_summary(&tail, file_len).unwrap();
         assert_eq!(summary.columns[0].name, "g");
+    }
+
+    #[test]
+    fn a_root_annotated_as_a_list_is_an_error_not_an_abort() {
+        for logical in [false, true] {
+            let (tail, file_len) = list_root_footer(logical);
+            let summary = footer_summary(&tail, file_len).unwrap_err();
+            assert!(summary.contains("list"), "{logical}: {summary}");
+            let open = open_parquet_file(&tail, file_len, limits()).unwrap_err();
+            assert!(open.contains("list"), "{logical}: {open}");
+        }
     }
 
     fn write_parquet(

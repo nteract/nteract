@@ -120,6 +120,46 @@ pub(crate) fn group_footer(
     footer_with_schema(schema, &["g", "x"], Type::INT32, statistics)
 }
 
+/// A one-row footer whose root carries a list annotation, as a converted
+/// type or a logical type, over a repeated INT32 `x`. Parquet never gives the
+/// root a repetition, so nothing that reads one may see this root as a list.
+pub(crate) fn list_root_footer(logical: bool) -> (Vec<u8>, u64) {
+    use parquet::format::{
+        ConvertedType, FieldRepetitionType, ListType, LogicalType, SchemaElement, Statistics, Type,
+    };
+    let (converted, logical) = if logical {
+        (None, Some(LogicalType::LIST(ListType {})))
+    } else {
+        (Some(ConvertedType::LIST), None)
+    };
+    let root = SchemaElement::new(
+        None,
+        None,
+        None,
+        "schema".to_string(),
+        1,
+        converted,
+        None,
+        None,
+        None,
+        logical,
+    );
+    let leaf = SchemaElement::new(
+        Type::INT32,
+        None,
+        FieldRepetitionType::REPEATED,
+        "x".to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    let statistics = Statistics::new(None, None, 0, None, None, None, None, None);
+    footer_with_schema(vec![root, leaf], &["x"], Type::INT32, statistics)
+}
+
 /// Serialize a one-row-group footer over `schema`, with one column chunk at
 /// `path` of type `physical` carrying `statistics`. Returns the tail and a
 /// file length that fits the chunk.
