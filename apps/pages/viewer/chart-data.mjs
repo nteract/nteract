@@ -143,6 +143,16 @@ const isScalar = (value) =>
   value instanceof Date ||
   ["string", "number", "boolean", "bigint", "undefined"].includes(typeof value);
 
+/** Whether an array has an own enumerable property besides its entries,
+ * which structured clone would carry. Array indices list first among own
+ * keys, so any other key is last. Lists the array's keys: called only once
+ * its entries have been charged. */
+const ARRAY_INDEX = /^(?:0|[1-9]\d*)$/;
+const hasKeysPastEntries = (array) => {
+  const last = Object.keys(array).at(-1);
+  return last !== undefined && !(ARRAY_INDEX.test(last) && Number(last) < 2 ** 32 - 1);
+};
+
 /** Thrown by `cellCount` for a value it can't account for. */
 export class UnreadableDataset extends Error {}
 
@@ -156,12 +166,14 @@ export class UnreadableDataset extends Error {}
  *
  * Throws UnreadableDataset for a row the count can't fully account for, so
  * it never crosses: a container nested more than MAX_NESTING levels deep
- * (the Worker's copy would drop it), or a value that isn't a scalar
- * (`isScalar`), a plain object, an array or a typed array.
+ * (the Worker's copy would drop it), a value that isn't a scalar
+ * (`isScalar`), a plain object, an array or a typed array, or an array,
+ * the dataset's own included, with a property besides its entries.
  */
 export function cellCount(dataset, limit) {
   if (isArrowTable(dataset)) return dataset.numRows * dataset.schema.fields.length;
   if (!Array.isArray(dataset)) return 0;
+  if (hasKeysPastEntries(dataset)) throw new UnreadableDataset();
   let cells = 0;
   for (const row of dataset) {
     if (isScalar(row)) continue;
@@ -179,6 +191,7 @@ export function cellCount(dataset, limit) {
       const size = keys ? keys.length : value.length;
       cells += size;
       if (cells > limit) return cells;
+      if (!keys && hasKeysPastEntries(value)) throw new UnreadableDataset();
       for (let index = 0; index < size; index++) {
         let child;
         try {

@@ -178,24 +178,40 @@ function spend(budget, kind, amount) {
 const plainContainer = (value) =>
   Array.isArray(value) || [Object.prototype, null].includes(Object.getPrototypeOf(value));
 
+/** An empty copy of a tooltip container. */
+const emptyLike = (container) => (Array.isArray(container) ? [] : {});
+/** Put `value` at `key` in `copy` as an own property, `__proto__` too. */
+const put = (copy, key, value) =>
+  Object.defineProperty(copy, key, { value, enumerable: true, writable: true, configurable: true });
+
 /**
- * Spend a tooltip value's size from the budget, or refuse the scene. Every
- * entry is charged before it's read: the tooltip itself on entry, and an
- * array's or object's entries all at once, from its length, before the walk
- * descends. Each frame on the stack walks one container by index, so the
- * stack holds at most TOOLTIP_MAX_DEPTH frames whatever the width. An
+ * A copy of a tooltip value built from what the walk charged, or a refusal
+ * of the scene. Every entry is charged before it's read: the tooltip itself
+ * on entry, and an array's entries (indices below its length) or an object's
+ * own enumerable keys all at once, before the walk descends. Nothing else on
+ * a received value, such as a property set on an array past its entries,
+ * is read or kept. Each frame on the stack walks one container by index, so
+ * the stack holds at most TOOLTIP_MAX_DEPTH frames whatever the width. An
  * object's keys are listed before they're charged; a container over
- * TOOLTIP_MAX_ENTRIES is refused on its first visit, so that listing is never
- * repeated past what was charged.
+ * TOOLTIP_MAX_ENTRIES is refused on its first visit, so that listing is
+ * never repeated past what was charged.
  */
-function spendTooltip(budget, value) {
+function copyTooltip(budget, value) {
   spend(budget, "tooltipEntries", 1);
   const frames = [];
+  const root = { value: undefined };
+  // Where the value being visited goes: a container copy and its key.
+  let into = root;
+  let key = "value";
   let next = value;
   for (;;) {
-    if (typeof next === "string") spend(budget, "tooltip", Math.max(1, next.length));
-    else if (next === null || typeof next !== "object") spend(budget, "tooltip", 8);
-    else {
+    if (typeof next === "string") {
+      spend(budget, "tooltip", Math.max(1, next.length));
+      put(into, key, next);
+    } else if (next === null || typeof next !== "object") {
+      spend(budget, "tooltip", 8);
+      put(into, key, next);
+    } else {
       if (!plainContainer(next)) throw new SceneRefusal(SCENE_MALFORMED);
       if (frames.length >= TOOLTIP_MAX_DEPTH) throw new SceneRefusal(SCENE_MALFORMED);
       const keys = Array.isArray(next) ? null : Object.keys(next);
@@ -203,19 +219,22 @@ function spendTooltip(budget, value) {
       if (length > TOOLTIP_MAX_ENTRIES) throw new SceneRefusal(SCENE_TOO_LARGE);
       spend(budget, "tooltipEntries", length);
       spend(budget, "tooltip", 8);
-      frames.push({ container: next, keys, index: 0, length });
+      const copy = emptyLike(next);
+      put(into, key, copy);
+      frames.push({ container: next, copy, keys, index: 0, length });
     }
     // Step to the next entry, leaving each finished container.
     for (;;) {
       const frame = frames.at(-1);
-      if (!frame) return;
+      if (!frame) return root.value;
       if (frame.index < frame.length) {
         const index = frame.index++;
+        into = frame.copy;
         if (frame.keys) {
-          const key = frame.keys[index];
+          key = frame.keys[index];
           spend(budget, "tooltip", Math.max(1, key.length));
-          next = frame.container[key];
-        } else next = frame.container[index];
+        } else key = String(index);
+        next = frame.container[key];
         break;
       }
       frames.pop();
@@ -421,12 +440,10 @@ function copyFields(from, into, renamed, budget) {
     }
   }
   // The tooltip's value reaches the reader only through the bounded
-  // formatter (vega-chart.mjs formatTooltip), as text; its size is spent
-  // here, since the page holds it.
-  if (own(from, "tooltip") && from.tooltip !== undefined && typeof from.tooltip !== "function") {
-    spendTooltip(budget, from.tooltip);
-    into.tooltip = from.tooltip;
-  }
+  // formatter (vega-chart.mjs formatTooltip), as text. The page keeps a copy
+  // built as its size is spent, never the received value.
+  if (own(from, "tooltip") && from.tooltip !== undefined && typeof from.tooltip !== "function")
+    into.tooltip = copyTooltip(budget, from.tooltip);
 }
 
 /** A fill or stroke: a color string, or a gradient with its stops, renamed

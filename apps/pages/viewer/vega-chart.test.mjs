@@ -1595,6 +1595,11 @@ test("a dataset the page can't fully count is refused before anything is posted"
         ["a boxed string", { s: new String("x") }],
         ["a function", { f: () => 1 }],
         ["a symbol", { s: Symbol("x") }],
+        [
+          "an array with a property past its entries",
+          { a: Object.assign([1, 2], { hidden: new Map([[1, 2]]) }) },
+        ],
+        ["an array with a property only", { a: Object.assign([], { n: 1 }) }],
       ];
       for (const [what, row] of unreadable)
         assert.match(
@@ -1602,6 +1607,12 @@ test("a dataset the page can't fully count is refused before anything is posted"
           /The dataset "calls" holds a value a chart can't read/,
           what,
         );
+      // The dataset itself is an array too; structured clone would carry its
+      // extra properties.
+      assert.match(
+        await refusalIn(window, stacked, { calls: Object.assign([...calls], { extra: 1 }) }),
+        /The dataset "calls" holds a value a chart can't read/,
+      );
       assert.equal(workers.created, 0, "an unreadable dataset never reaches a Worker");
       // Plain data, dates, typed arrays, bigints and 32 levels of nesting
       // are read.
@@ -2122,6 +2133,25 @@ test("a symbol draws one of Vega's own shapes, never a custom path", () => {
       Object.hasOwn(pageScene(sceneOf(shape)).items[0].items[0].items[0], "shape"),
       false,
     );
+});
+
+test("the page keeps a copy of each tooltip built from what it charged", () => {
+  const received = Object.assign(["a", { b: [1, 2] }], { hidden: new Map([[1, 2]]) });
+  const polluting = JSON.parse('{"__proto__": {"polluted": true}, "n": 1}');
+  const scene = frameOf([
+    { marktype: "rect", items: [{ tooltip: received }, { tooltip: polluting }, { tooltip: "t" }] },
+  ]);
+  const [first, second, third] = pageScene(scene).items[0].items[0].items.map(
+    (item) => item.tooltip,
+  );
+  assert.notEqual(first, received);
+  assert.notEqual(first[1], received[1]);
+  assert.deepEqual(first, ["a", { b: [1, 2] }]);
+  assert.equal(Object.hasOwn(first, "hidden"), false);
+  assert.equal(Object.getPrototypeOf(second), Object.prototype);
+  assert.equal(second.n, 1);
+  assert.equal({}.polluted, undefined);
+  assert.equal(third, "t");
 });
 
 test("a tooltip walk reads no more entries than it has charged", () => {
