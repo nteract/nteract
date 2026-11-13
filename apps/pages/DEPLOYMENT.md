@@ -19,6 +19,11 @@ carrying compatibility code. Deployment never copies data between targets.
 | pages | Holds documents people use. No reset and no migration from it. A format 1 release is built from the maintenance branch and promoted by hand; a build of `main` never deploys here |
 | pages2, page10 | Demos. Reset freely; confirm the target a command addresses first |
 
+These are the targets the helpers deploy. A deployment an operator makes from
+the [release package](#deployment-neutral-release-package) is not one of them
+and is not a demo: it can hold documents people use, so nothing here is
+permission to reset it.
+
 The procedures below promote a format 1 release to `pages`. Run them from a
 checkout of the maintenance branch. They are not
 permission to reset it or to deploy later formats to it; that work uses a
