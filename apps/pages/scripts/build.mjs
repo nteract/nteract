@@ -8,6 +8,7 @@ import { sourceFingerprint, writeBuildReceipt } from "./source-fingerprint.mjs";
 import { releaseFilesOf } from "./stage-artifacts.mjs";
 import {
   VIEWER_ASSETS,
+  VIEWER_CSP,
   hashedAssetPath,
   headersFile,
   publicUrl,
@@ -165,7 +166,7 @@ await writeFile(
     [
       "X-Content-Type-Options: nosniff",
       "Referrer-Policy: same-origin",
-      "Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+      `Content-Security-Policy: ${VIEWER_CSP}`,
     ],
     [...viewerChunks, ...Object.values(assets)],
   ),

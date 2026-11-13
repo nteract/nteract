@@ -3,7 +3,7 @@ import { GardState, GardSelection, Transaction } from "wordgard/state";
 import { Elt } from "wordgard/doc";
 import { CodeBlock, CodeBlockLanguage } from "./wordgard-model.mjs";
 import { mermaidTitle } from "./mermaid-title.mjs";
-import { diagramIcon } from "./diagram-icons.mjs";
+import { diagramButton, diagramIcon, maximizeButton } from "./diagram-icons.mjs";
 import { isDiagramLanguage } from "../shared/code-languages.mjs";
 import { openDiagramViewer } from "./diagram-viewer.mjs";
 
@@ -129,16 +129,6 @@ function openDiagram(editor, dom) {
   editor.focus();
 }
 
-function diagramButton(label, icon, className = "") {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = `icon-button wordgard-diagram-action ${className}`;
-  button.setAttribute("aria-label", label);
-  button.title = label;
-  button.append(diagramIcon(icon));
-  return button;
-}
-
 function diagramActions(editor, dom, toggle, extra) {
   const actions = document.createElement("div");
   actions.className = "wordgard-diagram-actions";
@@ -191,19 +181,10 @@ function diagramActions(editor, dom, toggle, extra) {
   return actions;
 }
 
+export { maximizeButton };
+
 /** The SVG Pele rendered into `canvas`, if it has rendered one. */
 export const renderedSvg = (canvas) => canvas.querySelector(":scope > svg");
-
-/**
- * Maximize opens the rendered diagram in the expanded viewer. It stays hidden
- * until there is a rendered SVG to show.
- */
-export function maximizeButton() {
-  const button = diagramButton("Maximize diagram", "maximize", "wordgard-diagram-maximize");
-  button.setAttribute("aria-haspopup", "dialog");
-  button.hidden = true;
-  return button;
-}
 
 /**
  * The rendered diagram's container and header. The header holds only the
