@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
-import { Repo, documentIdToBinary, interpretAsDocumentId } from "@automerge/automerge-repo";
+import { Repo, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { VirtualTimeScheduler } from "rxjs";
 import { AutomergeSyncBackend } from "../sync/backend.mjs";
 import { DocStore, MemoryByteStore } from "../sync/doc-store.mjs";
@@ -18,14 +18,7 @@ import { BUILD_FEATURES } from "../model/schema-features.mjs";
 import { readableFormats } from "../model/document-types.mjs";
 import { setSources, sourcesGenesis } from "../model/sources-doc.mjs";
 import { retryDelay } from "./sources-open-machine.mjs";
-import {
-  SOURCES_FORGET_TIMEOUT_MS,
-  SOURCES_LOOKUP_TIMEOUT_MS,
-  SourcesReplica,
-  UNAVAILABLE,
-} from "./sources-replica.mjs";
-import { IdbByteStore } from "../sync/idb-byte-store.mjs";
-import "fake-indexeddb/auto";
+import { SOURCES_LOOKUP_TIMEOUT_MS, SourcesReplica, UNAVAILABLE } from "./sources-replica.mjs";
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const ID = "sources-1";
@@ -257,35 +250,9 @@ test("automerge-repo's unknown-document error is the one the replica reads as an
   assert.match(error.message, UNAVAILABLE);
 });
 
-test("retirement removes the sources document's synced bytes from the replica's storage", async (t) => {
-  const bytes = new IdbByteStore(`pages-plain-test-${crypto.randomUUID()}`);
-  t.after(() => bytes.destroy());
-  const h = await hostWithSources(t, { bytes });
-  await h.write("usage", "a".repeat(64));
-  const tree = treeOf(h.sourcesId);
-  const stored = async () => (await bytes.list("")).filter((key) => key.includes(tree));
-  const sources = new SourcesReplica({
-    find: (id, options) => h.repo.find(id, options),
-    forget: (id) => h.backend.deleteLocal(documentIdToBinary(id)),
-  });
-  sources.discovered(named(h.sourcesId));
-  await until(() => sources.state$.snapshot().name === "ready", { label: "sources open" });
-  await h.backend.flush();
-  assert.ok((await stored()).length > 0, "the synced document is stored");
-
-  // A closed replica keeps its bytes for its successor.
-  sources.close();
-  assert.ok((await stored()).length > 0);
-
-  sources.discovered(named(h.sourcesId));
-  await until(() => sources.state$.snapshot().name === "ready", { label: "sources reopen" });
-  await sources.retire();
-  assert.deepEqual(await stored(), [], "nothing of it is left in the tab's database");
-});
-
 // Over a real host: PlainSync serving the Page family, and a browser repo
 // with this build's formats.
-async function hostWithSources(t, { bytes = new MemoryByteStore() } = {}) {
+async function hostWithSources(t) {
   const pageId = crypto.randomUUID();
   const uuid = crypto.randomUUID();
   const sourcesId = interpretAsDocumentId(
@@ -338,7 +305,7 @@ async function hostWithSources(t, { bytes = new MemoryByteStore() } = {}) {
       senderId: `b-${crypto.randomUUID()}`,
     },
   );
-  const backend = await AutomergeSyncBackend.load({ store: new DocStore(bytes) });
+  const backend = await AutomergeSyncBackend.load({ store: new DocStore(new MemoryByteStore()) });
   backend.addConnection(transport, { hostId: "pages-host" });
   const repo = new Repo({ backend });
   t.after(() => repo.shutdown?.());
@@ -364,7 +331,7 @@ async function hostWithSources(t, { bytes = new MemoryByteStore() } = {}) {
       ),
     );
   };
-  return { pageId, sourcesId, repo, backend, sent, write };
+  return { pageId, sourcesId, repo, sent, write };
 }
 
 test("over a real host the replica syncs the document and never sends a change for it", async (t) => {
@@ -398,39 +365,4 @@ test("over a real host, a document it doesn't serve reads as an older host's ans
   assert.deepEqual(sources.state$.snapshot(), { name: "unserved", id: missing });
   assert.equal(sources.doc, undefined);
   sources.close();
-});
-
-test("retire() resolves at the bound when a removal never settles, and its late result changes nothing", async () => {
-  const scheduler = new VirtualTimeScheduler();
-  const repo = heldFind();
-  let settleLate;
-  const sources = new SourcesReplica({
-    find: repo.find,
-    forget: () => new Promise((resolve) => (settleLate = resolve)),
-    scheduler,
-  });
-  const advance = (ms) => {
-    const target = scheduler.frame + ms;
-    scheduler.maxFrames = target;
-    scheduler.flush();
-    scheduler.frame = target;
-    scheduler.maxFrames = Infinity;
-  };
-  sources.discovered(named());
-  await tick();
-  repo.calls[0].resolve(handleOf(sourcesDoc()));
-  await tick();
-  let done = false;
-  sources.retire().then(() => (done = true));
-  await tick();
-  advance(SOURCES_FORGET_TIMEOUT_MS - 1);
-  await tick();
-  assert.equal(done, false, "it waits for the removal up to the bound");
-  advance(1);
-  await tick();
-  assert.equal(done, true, "the bound releases it");
-  settleLate();
-  await tick();
-  assert.deepEqual(sources.state$.snapshot(), { name: "retired" });
-  assert.equal(sources.doc, undefined);
 });

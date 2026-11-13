@@ -535,9 +535,6 @@ export class PageSession {
       find: (id, options) => this.repo.find(id, options),
       // A lookup's connection: the admitted one, or none while disconnected.
       link: () => (this.sockets.size ? this.connectionGeneration : undefined),
-      // A retirement removes the document's synced bytes: nothing in them is
-      // the reader's to recover.
-      forget: (id) => this.backend?.deleteLocal?.(documentIdToBinary(id)),
       scheduler,
     });
     this.recoveryCapture = new RecoveryCapture({
@@ -966,6 +963,11 @@ export class PageSession {
    * and Try again captures again. */
   async #retire() {
     const { reason, released } = this.phase$.snapshot();
+    // The sources document retires on every path, a failed capture included:
+    // nothing in it is this replica's own, so it never waits on capture or
+    // the archive. Its synced bytes stay in the replica's database, as the
+    // Page's and comments' do.
+    this.sources.retire();
     let live = this.closedRecovery;
     if (!live) {
       try {
@@ -980,11 +982,6 @@ export class PageSession {
     // only reopen what is being archived, so it stops here and its late
     // result never installs (comments-open-machine.mjs).
     this.commentsOpen({ type: "close" });
-    // The sources document retires with them. Nothing in it is this
-    // replica's own, so none of it is archived, and its synced bytes are
-    // removed from this replica's storage, beside the archive and before the
-    // release closes it.
-    const forgetting = this.sources.retire();
     let archived = false;
     try {
       await this.retireLocal(reason, live);
@@ -993,7 +990,6 @@ export class PageSession {
     } catch (error) {
       this.retireProblem = error instanceof Error ? error.message : String(error);
     }
-    await forgetting;
     if (this.phase$.snapshot().name !== "retiring") return this.#whenReleased();
     const { done } = this.dispatch({
       type: archived ? "retireOk" : "retireFail",

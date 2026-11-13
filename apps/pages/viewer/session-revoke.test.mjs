@@ -21,10 +21,9 @@ import {
   listLocalPages,
   signingKeyRefused,
 } from "./session.mjs";
-import { VirtualTimeScheduler } from "rxjs";
-import { SOURCES_FORGET_TIMEOUT_MS, SourcesReplica } from "./sources-replica.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { applyComment } from "../model/comments.mjs";
+import { setSources, sourcesGenesis } from "../model/sources-doc.mjs";
 import { COMMENTS_FEATURE } from "../model/comments-doc.mjs";
 import { comment, newCommentsDoc } from "../model/comments-test-support.mjs";
 import { stampFeatures } from "../model/schema-features.mjs";
@@ -1297,6 +1296,29 @@ test("a comments serialization that throws fails the retirement and keeps both d
   // The comments document can still be read, but not serialized.
   let broken = true;
   handle.doc = () => (broken ? JSON.parse(JSON.stringify(real())) : real());
+  // The Page's sources document is open, with one source.
+  const { lookups } = await openSourcesOf(copy);
+  const sources = A.change(sourcesGenesis(crypto.randomUUID()), (draft) =>
+    setSources(
+      draft,
+      [
+        {
+          op: "set_source",
+          source_id: "usage",
+          name: "Usage",
+          asset_id: "a".repeat(64),
+          source_revision: null,
+        },
+      ],
+      {
+        mediaTypes: new Map([["a".repeat(64), "application/vnd.apache.parquet"]]),
+        by: { principal: "agent", displayName: "Agent", driver: "MCP" },
+      },
+    ),
+  );
+  lookups[0].resolve({ doc: () => sources, on() {}, off() {} });
+  await tick();
+  assert.deepEqual(Object.keys(session.pageSources.snapshot()), ["usage"]);
   const releases = t.mock.method(session, "releaseLocal", async () => {});
   const before = await readLocalPage(auth.identity, pageId, { markers: true });
   await session.revoke();
@@ -1305,6 +1327,10 @@ test("a comments serialization that throws fails the retirement and keeps both d
     reason: "access",
     held: true,
   });
+  // The sources document retires anyway: nothing in it waits on capture.
+  assert.deepEqual(session.sources.state$.snapshot(), { name: "retired" });
+  assert.equal(session.sources.doc, undefined);
+  assert.deepEqual(session.pageSources.snapshot(), {});
   assert.equal(session.hidden, true, "the Page stays hidden");
   assert.equal(session.recoveryArchived, false);
   assert.match(session.retireProblem, /couldn't copy the Page/);
@@ -1550,8 +1576,7 @@ async function openSourcesOf(copy) {
       lookups.push({ id, signal, resolve });
       signal?.addEventListener("abort", () => reject(signal.reason ?? Error("aborted")));
     });
-  const forgotten = [];
-  session.backend = { deleteLocal: async (id) => forgotten.push(id) };
+  session.backend ??= {};
   session.sockets.add({ close() {} });
   const sourcesId = interpretAsDocumentId(generateAutomergeUrl());
   session.connection = {
@@ -1560,14 +1585,14 @@ async function openSourcesOf(copy) {
   };
   session.openSources();
   await tick();
-  return { lookups, sourcesId, forgotten };
+  return { lookups, sourcesId };
 }
 
 test("revocation retires the sources replica with the Page's others and archives none of it", async (t) => {
   browser(t);
   const copy = await openCopy();
   const { session, auth, pageId } = copy;
-  const { lookups, sourcesId, forgotten } = await openSourcesOf(copy);
+  const { lookups, sourcesId } = await openSourcesOf(copy);
   assert.equal(lookups.length, 1);
   assert.equal(lookups[0].id, sourcesId);
   let sources = A.from({ sources: {} });
@@ -1601,11 +1626,6 @@ test("revocation retires the sources replica with the Page's others and archives
     "the archive carries no sources field",
   );
   assert.deepEqual(versions, [null]);
-  // Its synced bytes leave the replica's storage, as the document it named.
-  assert.deepEqual(
-    forgotten.map((id) => Buffer.from(id).toString("hex")),
-    [Buffer.from(documentIdToBinary(sourcesId)).toString("hex")],
-  );
 });
 
 test("a sources lookup running at retirement is cancelled and never installs", async (t) => {
@@ -1646,42 +1666,4 @@ test("a revoked Page doesn't open its sources document on reopen", async (t) => 
   assert.equal(session.sources.state$.snapshot().name, "retired", "a hidden Page opens nothing");
   assert.equal(session.sources.doc, undefined);
   assert.deepEqual(session.pageSources.snapshot(), {});
-});
-
-test("a removal of the sources bytes that never settles doesn't hold retirement past its bound", async (t) => {
-  browser(t);
-  const copy = await openCopy();
-  const { session } = copy;
-  // The session's sources replica, on virtual time, over a backend whose
-  // removal never settles (IndexedDB blocked by another tab, say).
-  const scheduler = new VirtualTimeScheduler();
-  const removals = [];
-  session.sources = new SourcesReplica({
-    find: (id, options) => session.repo.find(id, options),
-    forget: (id) => new Promise(() => removals.push(id)),
-    scheduler,
-  });
-  const { lookups } = await openSourcesOf(copy);
-  lookups[0].resolve({ doc: () => A.from({ sources: {} }), on() {}, off() {} });
-  await tick();
-  assert.equal(session.sources.state$.snapshot().name, "ready");
-  const advance = (ms) => {
-    const target = scheduler.frame + ms;
-    scheduler.maxFrames = target;
-    scheduler.flush();
-    scheduler.frame = target;
-    scheduler.maxFrames = Infinity;
-  };
-  const revoking = session.revoke();
-  for (let turn = 0; turn < 20 && !removals.length; turn++) await tick();
-  assert.equal(removals.length, 1, "the removal started");
-  advance(SOURCES_FORGET_TIMEOUT_MS - 1);
-  for (let turn = 0; turn < 20; turn++) await tick();
-  assert.equal(session.phase$.snapshot().name, "retiring", "it waits for the removal first");
-  advance(1);
-  await revoking;
-  await session.closeSettled();
-  assert.equal(session.revoked, true);
-  assert.equal(session.phase$.snapshot().name, "retired", "the session reaches its released state");
-  assert.equal(session.recoveryArchived, true);
 });

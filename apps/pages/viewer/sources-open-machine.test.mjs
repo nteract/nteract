@@ -35,7 +35,6 @@ const lookup = (attempt, id = S1) => ({ type: "lookup", attempt, id });
 const cancel = (attempt) => ({ type: "cancel", attempt });
 const clearTimer = { type: "clearTimer" };
 const uninstall = { type: "uninstall" };
-const forget = { type: "forget" };
 
 const go = (state, effects = []) => ({ state, effects });
 const no = (state, rejected) => ({ state, effects: [], rejected });
@@ -68,7 +67,7 @@ function quiet(state, { none, unaware, unreadable: unread, close: closing }) {
     row(`${state.name}: an older host`, state, answer("unaware"), unaware, "unaware"),
     row(`${state.name}: an unreadable format`, state, answer("unreadable"), unread, "unreadable"),
     ...lateAnswers(state),
-    row(`${state.name}: retire`, state, retire, go(retired, [forget])),
+    row(`${state.name}: retire`, state, retire, go(retired)),
     row(`${state.name}: close`, state, close, closing),
   ];
 }
@@ -93,7 +92,7 @@ function leaving(state, stop, sameRow) {
       go(unreadable, stop),
       "unreadable",
     ),
-    row(`${state.name}: retire`, state, retire, go(retired, [...stop, forget])),
+    row(`${state.name}: retire`, state, retire, go(retired, stop)),
     row(`${state.name}: close`, state, close, go(closed, stop)),
   ];
 }
@@ -263,7 +262,6 @@ test("the table's effects only find, wait, adopt and drop: none writes the docum
   assert.deepEqual([...new Set(effects.map((effect) => effect.type))].sort(), [
     "cancel",
     "clearTimer",
-    "forget",
     "install",
     "lookup",
     "schedule",

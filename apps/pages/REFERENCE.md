@@ -1484,14 +1484,11 @@ connection. The replica exposes only its state and the document's value as
 `doc$`; nothing in the viewer changes the document, and the host refuses any
 change a browser sends for it. The document isn't in the local checkpoint or
 the recovery archive: the host holds all of it. A retirement (access removed,
-Page deleted) cancels a lookup, drops the document and moves the machine to
-`retired`, from which nothing opens it again; a reopened retired Page opens
-nothing either. It also removes, best effort, the synced bytes of the sources
-documents this session looked up from the tab's replica database, waiting at
-most 2 s so retirement always finishes (the Page's and comments' bytes stay
-there for recovery). A replaced replica, a tab that closes mid-retire, a
-removal that times out, another tab's replica, and a revoked Page reopened
-before any discovery keep their copy, like the Page's other synced bytes. A
+Page deleted) cancels a lookup, drops the document from memory and moves the
+machine to `retired`, from which nothing opens it again; a reopened retired
+Page opens nothing either. It does this on every path, a failed recovery
+capture included. The document's synced bytes stay in the tab's replica
+database, the same as the Page's and comments' synced bytes. A
 document the host creates while a tab is open reaches that tab at its next
 admitted connection: the host tells no open socket that the record gained
 the type.

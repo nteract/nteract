@@ -3,11 +3,9 @@
 // names, retries a failed lookup on a timer, and publishes the open
 // document's current value as `doc$`, the only thing it exposes. Nothing
 // here writes the document; the host refuses any change a browser sends for
-// it. A retirement removes the synced bytes of the documents this session
-// looked up, best effort and with a bounded wait. A tab that closes
-// mid-retire, a removal that times out, another tab's replica, and a revoked
-// Page reopened before any discovery keep their copy, like the Page's other
-// synced bytes.
+// it. On retirement the replica drops the document from memory; its synced
+// bytes stay in the tab's replica database, the same as the Page's and
+// comments' synced bytes.
 import { BehaviorSubject, asyncScheduler, timer } from "rxjs";
 import { parseDocumentDescriptor } from "../model/document-types.mjs";
 import { Store } from "./store.mjs";
@@ -15,9 +13,6 @@ import { discoveryEvent, sourcesOpenMachine } from "./sources-open-machine.mjs";
 
 /** How long one lookup may take before it counts as failed. */
 export const SOURCES_LOOKUP_TIMEOUT_MS = 15_000;
-
-/** How long a retirement waits for the sources bytes to leave storage. */
-export const SOURCES_FORGET_TIMEOUT_MS = 2_000;
 
 /** Repo's answer when the host said it holds no such document. */
 export const UNAVAILABLE = /^Document \S+ is unavailable$/;
@@ -36,36 +31,26 @@ export class SourcesReplica {
   #retry;
   #find;
   #link;
-  #forget;
   #scheduler;
   #lookupTimeout;
-  #forgetTimeout;
-  // Every document this replica looked up: a retirement forgets their bytes.
-  #lookedUp = new Set();
-  #forgetting = Promise.resolve();
 
   /**
    * `find(id, { signal })` looks a document up in the replica's repo.
    * `link()` names the connection a lookup runs on (undefined while none is
    * up): an unavailable answer on a link that is still up is the host's
    * answer, and one after the link changed is a lost connection.
-   * `forget(id)` removes a document's synced bytes from the replica's
-   * storage. `scheduler` runs the retry, lookup and forget timers.
+   * `scheduler` runs the retry and lookup timers.
    */
   constructor({
     find,
     link = () => true,
-    forget = async () => {},
     scheduler = asyncScheduler,
     lookupTimeout = SOURCES_LOOKUP_TIMEOUT_MS,
-    forgetTimeout = SOURCES_FORGET_TIMEOUT_MS,
   }) {
     this.#find = find;
     this.#link = link;
-    this.#forget = forget;
     this.#scheduler = scheduler;
     this.#lookupTimeout = lookupTimeout;
-    this.#forgetTimeout = forgetTimeout;
   }
 
   /** The open document's value, or undefined. */
@@ -78,13 +63,10 @@ export class SourcesReplica {
     return this.step(discoveryEvent(connection, parseDocumentDescriptor));
   }
 
-  /** The replica is retiring with the Page's other documents. Resolves once
-   * the documents it looked up are gone from its storage, or after
-   * SOURCES_FORGET_TIMEOUT_MS at most; a removal that failed or didn't finish
-   * by then leaves them there. */
+  /** The replica is retiring with the Page's other documents: a lookup is
+   * cancelled and the document dropped from memory. */
   retire() {
-    this.step({ type: "retire" });
-    return this.#forgetting;
+    return this.step({ type: "retire" });
   }
 
   /** The replica closed or is being replaced. */
@@ -124,25 +106,6 @@ export class SourcesReplica {
         return this.#install();
       case "uninstall":
         return this.#uninstall();
-      case "forget": {
-        // Best effort, and bounded: retirement runs when access is revoked
-        // and must finish, so a removal that hasn't settled within
-        // SOURCES_FORGET_TIMEOUT_MS is abandoned and its bytes stay, like the
-        // Page's other synced bytes. A late result changes nothing.
-        const ids = [...this.#lookedUp];
-        this.#lookedUp.clear();
-        const removed = Promise.allSettled(
-          ids.map((id) => Promise.resolve().then(() => this.#forget(id))),
-        );
-        this.#forgetting = new Promise((resolve) => {
-          const bound = timer(this.#forgetTimeout, this.#scheduler).subscribe(() => resolve());
-          removed.then(() => {
-            bound.unsubscribe();
-            resolve();
-          });
-        });
-        return;
-      }
     }
     throw new Error(`unknown effect ${effect.type}`);
   }
@@ -153,7 +116,6 @@ export class SourcesReplica {
     this.#lookup?.abort();
     const lookup = new AbortController();
     this.#lookup = lookup;
-    this.#lookedUp.add(id);
     const link = this.#link();
     const deadline = timer(this.#lookupTimeout, this.#scheduler).subscribe(() =>
       lookup.abort(Object.assign(Error("The sources lookup timed out"), { name: "TimeoutError" })),

@@ -36,6 +36,9 @@
  *   isn't the current one was cancelled, so its result is ignored.
  * - timer: the retry timer for `attempt` fired.
  * - retire: the replica is being retired with the Page's other documents.
+ *   It drops the sources document from memory; its synced bytes stay in the
+ *   tab's replica database, the same as the Page's and comments' synced
+ *   bytes.
  * - close: the replica closed or was replaced; everything stops.
  *
  * Effects:
@@ -45,14 +48,6 @@
  * - clearTimer: disarm the retry timer.
  * - install: adopt the handle lookup `attempt` found.
  * - uninstall: drop the installed handle; readers see no document.
- * - forget: remove the synced bytes of every document this session looked
- *   up from the replica's storage. Only a retirement forgets: the copy holds
- *   nothing of the reader's, so there is nothing to recover. It is best
- *   effort, and the interpreter waits for it a bounded time so retirement
- *   always finishes. A closed replica, a tab that closes mid-retire, a
- *   removal that times out, another tab's replica, and a revoked Page
- *   reopened before any discovery keep their copy, like the Page's other
- *   synced bytes.
  *
  * No effect writes the document. It has no local change to queue, retry or
  * resend.
@@ -153,7 +148,6 @@ export const sourcesOpenSpec = Object.freeze({
       clearTimer: shape("type", []),
       install: shape("type", ["attempt"], attempt),
       uninstall: shape("type", []),
-      forget: shape("type", []),
     },
   },
 });
@@ -230,7 +224,7 @@ function transition(state, event) {
       ]);
     case "retire":
       if (state.name === "retired") return reject(state, REJECT.retired);
-      return ok({ name: "retired" }, [...leave(state), { type: "forget" }]);
+      return ok({ name: "retired" }, leave(state));
     case "close":
       if (state.name === "retired") return reject(state, REJECT.retired);
       if (state.name === "closed") return reject(state, REJECT.closed);
