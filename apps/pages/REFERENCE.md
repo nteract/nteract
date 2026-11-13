@@ -1831,10 +1831,14 @@ node is `400 invalid_edit_selector`, naming the field and its rule.
 `delete_node` removes the node and keeps the view. Markdown reads it as the
 text `[View: <view_id>]` (brackets escaped), from the node alone, with no
 link: a view has no address of its own. `replace_block_markdown` keeps the
-node for that exact line at the view's own place: the same container, after
-as many identical lines as stood before it. Any other paragraph with that text
-is prose and is never refused, so a block can hold `[View: x]` as text beside
-a dataframe or a view. An outline entry has
+node for that exact line at the view's own place: the same count of that text
+in the block, in the same container instance (a quote or list item is told
+from others of its kind by order). A paragraph whose text names no stored view
+is prose and is never refused, so a block can hold `[View: x]` as text beside a
+dataframe. A rewrite that adds or removes a copy of a stored view's line
+anywhere in the block, or puts it in another quote or list item (a container
+added before the view's shifts its place), is refused with `markdownless_node`;
+the view never moves. An outline entry has
 `type: "view"`, `attrs: { view_id }`, and
 `summary: { title, media_type }` when the view exists. Comments refuse a view
 node. A view stored inside a text container reads as a notice.

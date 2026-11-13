@@ -175,11 +175,17 @@ const blockTypes = (doc, id) =>
   A.spans(doc, textPath(id))
     .filter((span) => span.type === "block")
     .map((span) => String(span.value.type));
-// The node_id of the block's first paragraph, from read_page's outline.
-const projectReadNodeId = (doc, id) =>
-  projectReadContent(doc, { include_content: false }).outline.find(
-    (entry) => entry.block === blockAddress(doc, id) && entry.type === "paragraph",
-  ).node_id;
+// The node_id of the block's first paragraph, from read_page's outline. Only
+// a block's first entry names its block; the entries after it, until the
+// next block's, are its own.
+const projectReadNodeId = (doc, id) => {
+  const outline = projectReadContent(doc, { include_content: false }).outline;
+  const start = outline.findIndex((entry) => entry.block === blockAddress(doc, id));
+  const end = outline.findIndex((entry, index) => index > start && entry.block);
+  return outline
+    .slice(start, end === -1 ? undefined : end)
+    .find((entry) => entry.type === "paragraph").node_id;
+};
 const rewrite = (doc, node, markdown) =>
   edit(doc, [{ op: "replace_block_markdown", node_id: node, markdown }]).doc;
 
@@ -218,37 +224,165 @@ test("prose naming a view the block doesn't store creates nothing", () => {
 });
 
 test("prose with a stored view's own text stays prose beside the view's line", () => {
-  // The view, then a paragraph whose text reads the same.
-  const { doc, id, node } = withProse(view("daily"), (line) => `${line}\n\n[View: daily]`);
-  assert.deepEqual(blockTypes(doc, id), ["view", "paragraph"]);
-  const markdown = projectPage(doc).blocks[1].markdown;
-  assert.equal(markdown, `${line("daily")}\n\n${line("daily")}`);
-  const viewSpan = (d) =>
-    A.spans(d, textPath(id)).findIndex((span) => String(span.value?.type) === "view");
-  const same = rewrite(doc, node, markdown);
-  assert.deepEqual(blockTypes(same, id), ["view", "paragraph"]);
-  assert.equal(viewSpan(same), viewSpan(doc));
-  // Prose first, written by a text edit: the view keeps its place after it.
-  // (A rewrite that adds the line ahead of the view gives the view to the
-  // first line at its count, and the later one reads as prose.)
-  const placed = withProse(view("daily"), (l) => `Intro\n\n${l}`);
-  const intro = projectReadNodeId(placed.doc, placed.id);
-  const before = {
-    ...placed,
-    doc: edit(placed.doc, [
+  // The view, then a paragraph a text edit turns into the same text.
+  const placed = (markdown) => {
+    const made = withProse(view("daily"), markdown);
+    const intro = projectReadNodeId(made.doc, made.id);
+    const doc = edit(made.doc, [
       { op: "replace_match", node_id: intro, match_text: "Intro", replacement: "[View: daily]" },
-    ]).doc,
+    ]).doc;
+    return { ...made, doc };
   };
-  assert.deepEqual(blockTypes(before.doc, before.id), ["paragraph", "view"]);
-  const again = rewrite(before.doc, before.node, projectPage(before.doc).blocks[1].markdown);
-  assert.deepEqual(blockTypes(again, before.id), ["paragraph", "view"]);
-  // Dropping the prose that stood before the view leaves no line at the
-  // view's place: refused, as a dropped line is.
-  assert.throws(
-    () => rewrite(before.doc, before.node, line("daily")),
-    (error) =>
-      error.code === "markdownless_node" && /holds a view with no line/.test(error.message),
+  const viewSpan = (d, id) =>
+    A.spans(d, textPath(id)).findIndex((span) => String(span.value?.type) === "view");
+  for (const [order, types] of [
+    [(line) => `${line}\n\nIntro`, ["view", "paragraph"]],
+    [(line) => `Intro\n\n${line}`, ["paragraph", "view"]],
+  ]) {
+    const { doc, id, node } = placed(order);
+    assert.deepEqual(blockTypes(doc, id), types);
+    const markdown = projectPage(doc).blocks[1].markdown;
+    assert.equal(markdown, `${line("daily")}\n\n${line("daily")}`);
+    // An unchanged round trip keeps the view on its own line.
+    const same = rewrite(doc, node, markdown);
+    assert.deepEqual(blockTypes(same, id), types);
+    assert.equal(viewSpan(same, id), viewSpan(doc, id));
+    // Edits elsewhere keep it too.
+    const more = rewrite(doc, node, `${markdown}\n\nAfter`);
+    assert.deepEqual(blockTypes(more, id), [...types, "paragraph"]);
+    // Removing either identical line leaves the view's line unclear: refused.
+    assert.throws(
+      () => rewrite(doc, node, line("daily")),
+      (error) => error.code === "markdownless_node",
+    );
+  }
+});
+
+test("an identical line added anywhere in the block is refused, never given the view", () => {
+  const { doc, node } = withProse(view("daily"), (line) => `${line}\n\nIntro`);
+  for (const markdown of [
+    `${line("daily")}\n\n${line("daily")}\n\nIntro`,
+    `[View: daily]\n\n${line("daily")}\n\nIntro`,
+    `${line("daily")}\n\nIntro\n\n> [View: daily]`,
+    `${line("daily")}\n\nIntro\n\n- [View: daily]`,
+  ])
+    assert.throws(
+      () => rewrite(doc, node, markdown),
+      (error) => error.code === "markdownless_node" && /unclear/.test(error.message),
+      markdown,
+    );
+});
+
+// A block written as raw spans, for views inside quotes and list items.
+const marker = (type, attrs = {}, parents = []) => ({
+  type: "block",
+  value: { type: S(type), parents: parents.map(S), attrs, isEmbed: false },
+});
+const viewIn = (viewId, parents = []) => marker("view", { view_id: S(viewId) }, parents);
+const paragraph = (text, parents = []) => [
+  marker("paragraph", {}, parents),
+  { type: "text", value: text },
+];
+const spansBlock = (spans) => {
+  const doc = fresh();
+  const [id] = orderedBlockIds(doc);
+  const next = A.change(A.clone(doc), (draft) =>
+    A.updateSpans(draft, textPath(id), spans, { expand: "none" }),
   );
+  return { doc: next, id, node: blockAddress(next, id) };
+};
+// Each view's view_id with its parents, in reading order.
+const viewsAt = (doc, id) =>
+  A.spans(doc, textPath(id))
+    .filter((span) => span.type === "block" && String(span.value.type) === "view")
+    .map(
+      (span) => `${String(span.value.attrs.view_id)}@${span.value.parents.map(String).join("/")}`,
+    );
+const Q = ["blockquote"];
+const LI = ["unordered-list-item"];
+
+test("a view in one quote stays there; prose in another quote never takes it", () => {
+  const { doc, id, node } = spansBlock([
+    marker("blockquote"),
+    ...paragraph("First quote", Q),
+    ...paragraph("Between"),
+    marker("blockquote"),
+    viewIn("daily", Q),
+  ]);
+  const markdown = projectPage(doc).blocks[0].markdown;
+  assert.equal(markdown, `> First quote\n\nBetween\n\n> ${line("daily")}`);
+  const same = rewrite(doc, node, markdown);
+  assert.deepEqual(viewsAt(same, id), ["daily@blockquote"]);
+  assert.deepEqual(blockTypes(same, id), blockTypes(doc, id));
+  // A paragraph added outside the quotes leaves each quote its place.
+  const above = rewrite(doc, node, `Above\n\n${markdown}`);
+  assert.deepEqual(viewsAt(above, id), ["daily@blockquote"]);
+  assert.equal(projectPage(above).blocks[0].markdown, `Above\n\n${markdown}`);
+  // The view's text added to the first quote: refused, the view not moved.
+  assert.throws(
+    () => rewrite(doc, node, `> First quote\n>\n> [View: daily]\n\nBetween\n\n> ${line("daily")}`),
+    (error) => error.code === "markdownless_node" && /unclear/.test(error.message),
+  );
+  // The view's line moved to the first quote, its own quote emptied: refused.
+  assert.throws(
+    () => rewrite(doc, node, `> First quote\n>\n> ${line("daily")}\n\nBetween\n\n> Emptied`),
+    (error) => error.code === "markdownless_node" && /can't go inside a quote/.test(error.message),
+  );
+  // A quote added before the view's quote shifts which quote it is in:
+  // refused, never moved into the new quote.
+  assert.throws(
+    () => rewrite(doc, node, `> New quote\n\n${markdown}`),
+    (error) => error.code === "markdownless_node" && /can't go inside a quote/.test(error.message),
+  );
+});
+
+test("two views in two quotes keep their quotes through an unchanged rewrite", () => {
+  const { doc, id, node } = spansBlock([
+    marker("blockquote"),
+    viewIn("daily", Q),
+    ...paragraph("Between"),
+    marker("blockquote"),
+    viewIn("weekly", Q),
+  ]);
+  const markdown = projectPage(doc).blocks[0].markdown;
+  const same = rewrite(doc, node, markdown);
+  assert.deepEqual(viewsAt(same, id), ["daily@blockquote", "weekly@blockquote"]);
+  assert.equal(projectPage(same).blocks[0].markdown, markdown);
+  // Swapping the two lines moves each view to the other quote: refused.
+  const swapped = markdown
+    .replace("daily", "TMP")
+    .replace("weekly", "daily")
+    .replace("TMP", "weekly");
+  assert.throws(
+    () => rewrite(doc, node, swapped),
+    (error) => error.code === "markdownless_node",
+  );
+});
+
+test("a view in one list item stays there; prose in another item, at any depth, never takes it", () => {
+  const { doc, id, node } = spansBlock([
+    marker("unordered-list-item"),
+    ...paragraph("First item", LI),
+    marker("unordered-list-item", {}, LI),
+    ...paragraph("Nested item", [...LI, ...LI]),
+    marker("unordered-list-item"),
+    viewIn("daily", LI),
+  ]);
+  const markdown = projectPage(doc).blocks[0].markdown;
+  const same = rewrite(doc, node, markdown);
+  assert.deepEqual(viewsAt(same, id), ["daily@unordered-list-item"]);
+  assert.equal(projectPage(same).blocks[0].markdown, markdown);
+  for (const added of [
+    markdown.replace("First item", "First item\n\n  [View: daily]"),
+    markdown.replace("Nested item", "Nested item\n\n    [View: daily]"),
+  ]) {
+    assert.notEqual(added, markdown);
+    assert.throws(
+      () => rewrite(doc, node, added),
+      (error) => error.code === "markdownless_node" && /unclear/.test(error.message),
+      added,
+    );
+  }
 });
 
 test("a stored view whose line is edited or dropped is still refused", () => {

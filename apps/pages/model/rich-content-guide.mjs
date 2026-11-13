@@ -139,8 +139,9 @@ of quote or list item. It refuses with markdownless_node a rewrite that drops or
 line, takes it into or out of a quote, list, table or heading, has more copies
 of a dataframe's line than the block has such dataframes, or adds a line that
 reads like a dataframe the block doesn't hold: Markdown never creates or copies
-a node. A view's line is plain text, so another copy, or one naming a view the
-block doesn't hold, stays text; the view keeps the copy at its own place.
+a node. A view's line is plain text: one naming a view the block doesn't hold
+stays text, and adding or removing a copy of a stored view's line is refused,
+since it leaves the view's line unclear.
 Moving the line among its neighbours keeps the node's attrs but writes it as a
 new node.
 ${typedReadFields()}

@@ -207,17 +207,21 @@ const capital = (text) => text[0].toUpperCase() + text.slice(1);
  * the same kind of quote or list item it's stored in. That line becomes the
  * original node again, unknown attrs included. A dataframe's line (a link)
  * may move among its siblings. A view's line is text a paragraph can also
- * hold, so it brings the view back only at the view's own place: the same
- * container, after as many identical lines as stood before the view (so an
- * identical line added ahead of it takes the view's place). Every other
- * paragraph with that text is prose. Throws `markdownless_node`, rather
- * than dropping or inventing a node, when a line:
+ * hold, so the view keeps the line at its own place: the same count of that
+ * text in the whole block, in its own container (the same quote or list
+ * item, told apart from others of its kind by order), and it may move among
+ * its siblings there. A paragraph with text no stored view reads as is
+ * prose. Throws `markdownless_node`, rather than dropping, inventing or
+ * moving a node, when a line:
  *
- * - moves into or out of a quote, list or table, or sits in a heading;
- * - is missing or edited (for a view, also when identical lines before it
- *   are removed, so none stands at its count);
+ * - moves into or out of a quote, list or table, into another quote or list
+ *   item, or sits in a heading (a quote or list item added before a view's
+ *   container moves its place too);
+ * - is missing or edited;
  * - outnumbers the block's dataframes with that line;
- * - reads like a dataframe the block doesn't hold.
+ * - reads like a dataframe the block doesn't hold;
+ * - for a view, has its text added or removed anywhere in the block, which
+ *   leaves the view's line unclear.
  */
 export function setRichMarkdownKeepingNodes(doc, id, source) {
   const block = doc.blocks[id];
@@ -265,32 +269,47 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
     if (link) return { href: link.href, text: only.param };
     return only.marks.length ? null : { href: null, text: only.param };
   };
-  // A text line (a view's) reads the same as a paragraph of that text, so
-  // its place is counted among both: `occurrence` is how many paragraphs and
-  // kept nodes with the same text line come before it in its container.
-  const textKey = (path, text) => `${path}\n${text}`;
+  // A container's place: its kind and its ordinal among same-kind siblings,
+  // under its parent's place. Two quotes, or two list items, never share
+  // one; a paragraph added beside a container leaves its place unchanged.
+  const containers = (node, parent) => {
+    const ordinals = new Map();
+    return (node.content ?? []).map((child) => {
+      if (!child.isPlot || child.type.spec.inlineContent) return null;
+      const kind = readKind(child);
+      const n = ordinals.get(kind) ?? 0;
+      ordinals.set(kind, n + 1);
+      return `${parent}/${kind}#${n}`;
+    });
+  };
+  // A view's line is text a textblock can also hold. `occurrence` is how
+  // many textblocks and kept nodes reading that same text come before the
+  // view in the whole block, in reading order, and `instance` is its
+  // container's place.
+  const storedTexts = new Map();
+  const countText = (counts, text) => {
+    const n = counts.get(text) ?? 0;
+    counts.set(text, n + 1);
+    return n;
+  };
   // Each kept node with its container path: the node types from the block's
   // root down to it, "" at the top level.
   const existing = [];
-  (function collect(node, path, seen = new Map()) {
-    const count = (text) => {
-      const n = seen.get(textKey(path, text)) ?? 0;
-      seen.set(textKey(path, text), n + 1);
-      return n;
-    };
-    for (const child of node.content ?? []) {
+  (function collect(node, path, instance) {
+    const places = containers(node, instance);
+    (node.content ?? []).forEach((child, index) => {
       const kind = keptKind(child);
       if (kind) {
         const own = kind.line(child.param);
-        const occurrence = own?.href === null ? count(own.text) : null;
-        existing.push({ node: child, path, kind, occurrence });
-      } else if (child.type === Paragraph.type) {
+        const occurrence = own?.href === null ? countText(storedTexts, own.text) : null;
+        existing.push({ node: child, path, instance, kind, occurrence });
+      } else if (child.type.spec.inlineContent) {
         const line = lineLink(child);
-        if (line?.href === null) count(line.text);
-      } else if (child.isPlot && !child.type.spec.inlineContent)
-        collect(child, path ? `${path}/${readKind(child)}` : readKind(child), seen);
-    }
-  })(richDoc(block), "");
+        if (line?.href === null) countText(storedTexts, line.text);
+      } else if (places[index])
+        collect(child, path ? `${path}/${readKind(child)}` : readKind(child), places[index]);
+    });
+  })(richDoc(block), "", "");
   // Every stored one counts, readable or not: one whose attrs this build
   // can't read never matches a line, so the rewrite is refused rather than
   // dropping it.
@@ -315,29 +334,27 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
     const own = entry.kind.line(entry.node.param);
     return !!own && own.href === line.href && own.text === line.text;
   };
-  // Text lines the walk has passed, per container and text, and the kept
-  // nodes whose text line stood somewhere it can't bring them back.
-  const textSeen = new Map();
+  // Text lines the walk has read, by text, and the kept nodes whose line
+  // stood at their count but not in their own container.
+  const sourceTexts = new Map();
   const textElsewhere = new Set();
-  const restore = (node, path) => {
+  const restore = (node, path, instance) => {
     const line = node.type.spec.inlineContent ? lineLink(node) : null;
-    // A text line is a kept node's only at that node's own place: the same
-    // container and the same count of identical lines before it. Any other
-    // such paragraph is prose, as it reads, and never refused.
+    // A text line brings a view back only as the same count of that text in
+    // the block and in the view's own container instance, as a paragraph.
+    // A line reading as no stored view's is prose.
     if (line?.href === null) {
-      if (node.type !== Paragraph.type) {
-        for (const entry of existing) if (sameNode(entry, line)) textElsewhere.add(entry);
+      const n = countText(sourceTexts, line.text);
+      const entry = unmatched.find(
+        (candidate) => candidate.occurrence === n && sameNode(candidate, line),
+      );
+      if (!entry) return node;
+      if (node.type !== Paragraph.type || entry.path !== path || entry.instance !== instance) {
+        textElsewhere.add(entry);
         return node;
       }
-      const n = textSeen.get(textKey(path, line.text)) ?? 0;
-      textSeen.set(textKey(path, line.text), n + 1);
-      const index = unmatched.findIndex(
-        (entry) => entry.path === path && entry.occurrence === n && sameNode(entry, line),
-      );
-      if (index !== -1) return unmatched.splice(index, 1)[0].node;
-      for (const entry of existing)
-        if (entry.path !== path && sameNode(entry, line)) textElsewhere.add(entry);
-      return node;
+      unmatched.splice(unmatched.indexOf(entry), 1);
+      return entry.node;
     }
     if (line) {
       const matches = existing.filter((entry) => entry.path === path && sameNode(entry, line));
@@ -368,11 +385,29 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
     }
     if (!node.isPlot || node.type.spec.inlineContent) return node;
     const inner = node === tree ? "" : path ? `${path}/${readKind(node)}` : readKind(node);
-    const children = node.content.map((child) => restore(child, inner));
+    const places = containers(node, instance);
+    // A container passes down its own place; any other child sits in this one.
+    const children = node.content.map((child, index) =>
+      restore(child, inner, places[index] ?? instance),
+    );
     return node === tree ? schema.doc(children) : node.tag.create(children);
   };
   // Without stored kept nodes, lines that look like them are ordinary links.
-  const kept = existing.length ? restore(tree, "") : tree;
+  const kept = existing.length ? restore(tree, "", "") : tree;
+  // A view's text added or removed anywhere in the block leaves no way to
+  // tell which line is the view's: refused, never guessed. A view left with
+  // no line at all is refused below with what it needs.
+  const textOf = (entry) => entry.kind.line(entry.node.param).text;
+  const ambiguous = existing.find(
+    (entry) =>
+      entry.occurrence !== null &&
+      (!unmatched.includes(entry) || textElsewhere.has(entry)) &&
+      (sourceTexts.get(textOf(entry)) ?? 0) !== storedTexts.get(textOf(entry)),
+  );
+  if (ambiguous)
+    refuse(
+      `This block's Markdown has ${sourceTexts.get(textOf(ambiguous)) ?? 0} lines reading ${textOf(ambiguous)}, where the block stores ${storedTexts.get(textOf(ambiguous))}, its view's line included, so the view's line is unclear. Keep those lines as read_page shows them; change the text around them, or use replace_match for that text.`,
+    );
   const movedText = unmatched.find((entry) => textElsewhere.has(entry));
   if (movedText) problems.set("moved", movedText.kind);
   if (problems.has("moved"))
