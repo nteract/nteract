@@ -48,13 +48,18 @@ export function bearerDriver(driver) {
  * A blank label means no label. Clients fill the header from config
  * templates such as `{env:PAGES_AGENT}`, which send "" when the variable is
  * unset. */
+const MAX_AGENT_LABEL = 80;
 export function agentLabel(request) {
   const value =
     request.headers.get("x-pages-agent") ?? new URL(request.url).searchParams.get("agent");
   if (value === null || !value.trim()) return undefined;
   // eslint-disable-next-line no-control-regex
-  if (value.length > 80 || /[\x00-\x1f\x7f]/.test(value))
-    throw new HttpError(400, "Invalid agent label");
+  if (value.length > MAX_AGENT_LABEL || /[\x00-\x1f\x7f]/.test(value))
+    throw new HttpError(
+      400,
+      `The X-Pages-Agent label is at most ${MAX_AGENT_LABEL} characters, with no control characters; this one has ${value.length}`,
+      "invalid_agent_label",
+    );
   return value.trim();
 }
 
@@ -548,6 +553,7 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "operation_pending",
   "invalid_tag",
   "tag_limit_exceeded",
+  "invalid_agent_label",
 ]);
 
 export const RETRYABLE_SERVER_CODES = Object.freeze([

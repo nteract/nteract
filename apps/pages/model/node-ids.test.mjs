@@ -340,12 +340,17 @@ test("delete_node removes a dataframe and an unknown node, which have no text", 
   const block = orderedBlockIds(doc)[1];
   const [frame] = outline(doc, block);
   assert.equal(frame.type, "dataframe");
+  // The block stays, holding one empty paragraph: deleting the block's map
+  // entry would discard what a peer writes into it at the same time.
   const emptied = edit(doc, [{ op: "delete_node", node_id: frame.node_id }]).doc;
   assert.equal(blockMarkdown(emptied.blocks[block]), "");
   assert.deepEqual(
     A.spans(emptied, textPath(block)).map((span) => String(span.value.type)),
     ["paragraph"],
   );
+  // delete_block, by the block's id, removes the block insert_node made.
+  const removed = patch(doc, [{ op: "delete_block", node_id: frame.block }]);
+  assert.deepEqual(orderedBlockIds(removed), [orderedBlockIds(doc)[0]]);
 
   const unknown = fixture("Before\n\nAfter");
   const withChart = A.change(unknown.doc, (draft) =>
@@ -439,6 +444,21 @@ test("delete_node refuses an id that doesn't name a live node", () => {
   refuses(doc, [{ op: "delete_node", node_id: A.getCursor(doc, textPath(id), 2) }], notFound);
   for (const node_id of [undefined, null, "", 7, id, `1@${"a".repeat(MAX_NODE_ID)}`])
     refuses(doc, [{ op: "delete_node", node_id }], /node_id must be an id from read_page/);
+  // Each refusal names the field that holds the bad id.
+  for (const op of ["insert_markdown", "move_block"])
+    refuses(
+      doc,
+      [{ op, after_node_id: "nope", markdown: "x", node_id: blockAddress(doc, id) }].map(
+        ({ markdown, node_id, ...rest }) =>
+          op === "move_block" ? { ...rest, node_id } : { ...rest, markdown },
+      ),
+      /^Error: after_node_id must be an id from read_page/,
+    );
+  refuses(
+    doc,
+    [{ op: "insert_markdown", markdown: "x", after_node_id: "1@ab" }],
+    /^Error: after_node_id doesn't name a block, node or image in this Page/,
+  );
   // A block's id names a block, which delete_node doesn't take.
   refuses(
     doc,

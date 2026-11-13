@@ -272,8 +272,14 @@ test("a blank agent label means no label, so an unset {env:...} template still c
   assert.equal(agentLabel(request("")), undefined);
   assert.equal(agentLabel(request("   ")), undefined);
   assert.equal(agentLabel(request(" release agent ")), "release agent");
-  assert.throws(() => agentLabel(request("x".repeat(81))), /Invalid agent label/);
-  assert.throws(() => agentLabel(request("a\tb")), /Invalid agent label/);
+  assert.equal(agentLabel(request("x".repeat(80))), "x".repeat(80));
+  assert.throws(() => agentLabel(request("x".repeat(81))), {
+    status: 400,
+    code: "invalid_agent_label",
+    message:
+      "The X-Pages-Agent label is at most 80 characters, with no control characters; this one has 81",
+  });
+  assert.throws(() => agentLabel(request("a\tb")), { code: "invalid_agent_label" });
 });
 
 test("cookie writes and WebSocket upgrades require same-origin, API keys never permit foreign Origin", () => {

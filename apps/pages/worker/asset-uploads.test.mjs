@@ -527,6 +527,19 @@ test("a bound content type and size refuse any other file before storage", async
   // A dataset upload binds the same way.
   const dataset = await issued(w, { page_id: pageId, content_type: PARQUET_MEDIA_TYPE });
   assert.match(dataset.example, /@path\/to\/file\.parquet/);
+  // A file that is neither kind, sent to a Parquet upload, is told the
+  // upload takes Parquet; an image there is upload_mismatch, above.
+  const storedPuts = puts(bucket);
+  const notParquet = await upload(w, dataset, {
+    body: new TextEncoder().encode("date,count\n2026-11-12,3\n"),
+    headers: { "Content-Type": "application/octet-stream" },
+  });
+  assert.equal(notParquet.status, 415, JSON.stringify(notParquet.body));
+  assert.equal(
+    notParquet.body.error,
+    "This upload URL takes a Parquet file, and this file isn't one. Send a valid, unencrypted Parquet file.",
+  );
+  assert.equal(puts(bucket), storedPuts);
   const table = await upload(w, dataset, { body: parquet });
   assert.equal(table.status, 201, JSON.stringify(table.body));
   assert.equal(table.body.mime_type, PARQUET_MEDIA_TYPE);

@@ -87,9 +87,14 @@ export function requireHeads(doc, heads) {
     heads.length !== current.length ||
     [...heads].sort().some((head, index) => head !== current[index])
   )
-    reject(409, "Page changed; read_page again before editing", "stale_revision", {
-      current_heads: current,
-    });
+    reject(
+      409,
+      "Page changed since this revision, so the edit was not applied. The refusal carries current_revision: resend at it with a new nonce only if the edit doesn't depend on content that may have changed; otherwise read what you're replacing first",
+      "stale_revision",
+      {
+        current_heads: current,
+      },
+    );
 }
 /** edit_page's base revision: always required. */
 const requiredRevision = (args) => {

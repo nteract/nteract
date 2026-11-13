@@ -237,6 +237,27 @@ test("every malformed field is invalid_source, before anything is written", () =
   assert.deepEqual(validateSourceBatch([op(), op({ source_id: "b", asset_id: first })]), [first]);
 });
 
+test("a refusal names the rule the field broke", () => {
+  const refusal = (fields) => {
+    try {
+      validateSourceBatch([op(fields)]);
+    } catch (error) {
+      assert.equal(error.code, "invalid_source");
+      return error.message;
+    }
+    assert.fail(`${JSON.stringify(fields)} was accepted`);
+  };
+  // A control character anywhere in a name, even one a trim would remove.
+  for (const name of ["Tool\u0000usage", "Tool\nusage", "Tool usage\n", "\u007f"])
+    assert.equal(refusal({ name }), "name can't hold control characters such as a newline or NUL");
+  assert.match(refusal({ source_id: "constructor" }), /not constructor or prototype$/);
+  // An uppercase id is a malformed id, not a missing asset.
+  assert.equal(
+    refusal({ asset_id: "A".repeat(64) }),
+    "asset_id is 64 lowercase hex characters: the asset_id an upload returned",
+  );
+});
+
 test("a Page holds at most 64 sources; changing one at the cap still works", () => {
   const operations = Array.from({ length: MAX_SOURCES }, (_, i) =>
     op({ source_id: `s${i}`, asset_id: first }),

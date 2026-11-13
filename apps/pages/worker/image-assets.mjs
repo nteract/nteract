@@ -69,14 +69,22 @@ export function inspectParquet(bytes) {
 }
 
 /** The upload route's check: a raster image or a Parquet dataset, chosen by
- * the leading bytes. */
-export function inspectAsset(bytes) {
+ * the leading bytes. `expected` is the content type an upload capability
+ * bound, if any: bytes that are neither kind are refused with what that
+ * upload takes. */
+export function inspectAsset(bytes, expected) {
   if (bytes instanceof Uint8Array && bytes.length >= 4 && ascii(bytes, 0, 4) === PARQUET_MAGIC)
     return inspectParquet(bytes);
   try {
     return inspectImage(bytes);
   } catch (error) {
     if (error?.status !== 415) throw error;
+    if (expected === PARQUET_MEDIA_TYPE)
+      throw new HttpError(
+        415,
+        "This upload URL takes a Parquet file, and this file isn't one. Send a valid, unencrypted Parquet file.",
+      );
+    if (IMAGE_MEDIA_TYPES.includes(expected)) throw error;
     throw new HttpError(415, "Use a valid, static PNG, JPEG, or WebP image, or a Parquet file");
   }
 }
@@ -286,7 +294,8 @@ export async function persistPageAsset(
   if (!validPageId(pageId)) throw new HttpError(400, "Invalid image reference");
   if (bytes.byteLength > (accept === "image" ? IMAGE_MAX_BYTES : ASSET_MAX_BYTES))
     throw new HttpError(413, accept === "image" ? IMAGE_TOO_LARGE : FILE_TOO_LARGE);
-  const inspected = accept === "image" ? inspectImage(bytes) : inspectAsset(bytes);
+  const inspected =
+    accept === "image" ? inspectImage(bytes) : inspectAsset(bytes, expect?.content_type);
   const dataset = inspected.mime_type === PARQUET_MEDIA_TYPE;
   if (bytes.byteLength > (dataset ? DATASET_MAX_BYTES : IMAGE_MAX_BYTES))
     throw new HttpError(413, dataset ? "Datasets must be 5 MiB or smaller" : IMAGE_TOO_LARGE);
@@ -489,8 +498,13 @@ export async function handleImageAssets(
   { pageId, assetId, authorize, authorizeSource, identify },
 ) {
   try {
-    if (!validPageId(pageId) || (assetId !== undefined && !validAssetId(assetId)))
-      throw new HttpError(400, "Invalid image reference");
+    if (!validPageId(pageId)) throw new HttpError(400, "Invalid image reference");
+    if (assetId !== undefined && !validAssetId(assetId))
+      throw new HttpError(
+        400,
+        "An asset id is the 64 lowercase hex characters an upload returned as asset_id",
+        "invalid_arguments",
+      );
     const upload = assetId === undefined && request.method === "POST";
     const copy = assetId !== undefined && request.method === "POST" && !!authorizeSource;
     if (!upload && !copy && !(assetId && ["GET", "HEAD"].includes(request.method)))

@@ -67,6 +67,12 @@ export const validSourceId = (id) =>
   typeof id === "string" && SOURCE_ID.test(id) && !RESERVED.has(id);
 const validName = (name) =>
   typeof name === "string" && !!name.trim() && name.trim().length <= MAX_SOURCE_NAME;
+// A name a write may set. Stored names are read with validName alone, so an
+// entry a host stored before this check still reads.
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u001f\u007f]/;
+// The reserved ids an agent could otherwise write: the rest fail the pattern.
+const RESERVED_NAMED = [...RESERVED].filter((id) => SOURCE_ID.test(id)).join(" or ");
 
 /** Hex of 16 bytes: the genesis actor for a sources document. */
 function genesisActor(uuid) {
@@ -256,11 +262,16 @@ export function validateSourceOperation(op) {
   const unknown = Object.keys(op).find((field) => !FIELDS.includes(field));
   if (unknown) fail("invalid_source", `set_source does not take ${String(unknown).slice(0, 64)}`);
   if (!validSourceId(op.source_id))
-    fail("invalid_source", `source_id must match ${SOURCE_ID_PATTERN} and not be a reserved name`);
+    fail("invalid_source", `source_id must match ${SOURCE_ID_PATTERN}, not ${RESERVED_NAMED}`);
   if (!validName(op.name))
     fail("invalid_source", `name must be 1 to ${MAX_SOURCE_NAME} characters, not only spaces`);
+  if (CONTROL.test(op.name))
+    fail("invalid_source", "name can't hold control characters such as a newline or NUL");
   if (!validAssetId(op.asset_id))
-    fail("invalid_source", "asset_id must be a dataset asset uploaded to this Page");
+    fail(
+      "invalid_source",
+      "asset_id is 64 lowercase hex characters: the asset_id an upload returned",
+    );
   if (!(op.source_revision === null || validRevision(op.source_revision)))
     fail(
       "invalid_source",

@@ -594,7 +594,10 @@ in code point order, then Page ID, both ascending, so accented and non-Latin
 titles come after z. That is SQLite's `BINARY` order over the UTF-8 D1 stores,
 and the Catalog fallback compares the same way over keys computed as the index
 computes them. Listing titles are cut to 500 code units on a code point boundary
-with lone surrogates replaced, so a key reads back from D1 exactly as the
+(`MAX_PAGE_TITLE`, the longest title `create_page` and `set_title` write; plain
+sync admission still accepts a longer title merged from a browser, and
+`set_title` takes such a stored title back unchanged), with lone surrogates
+replaced, so a key reads back from D1 exactly as the
 fallback computes it. An empty title sorts first; a missing one is stored as
 "Untitled". Continuation pages compare a row value against the cursor's
 position, `(title_search, page_id) > (?, ?)`, `(activity_at, page_id) < (?, ?)`
