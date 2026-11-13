@@ -964,3 +964,81 @@ test("numbers in a spec are 0 or between 1e-150 and 1e150 in size, and so are bi
   assert.equal(checkChartSpec(b({ extent: [0, 1e-100], maxbins: 1000, base: 2 })).ok, true);
   assert.equal(checkChartSpec(b({ extent: [5, 5] })).ok, true);
 });
+
+test("scale, axis and legend counts, steps and bases are ranged literals", () => {
+  const x = (extra) => ({
+    ...stacked,
+    encoding: { ...stacked.encoding, x: { field: "calls", type: "quantitative", ...extra } },
+  });
+  const refused = [
+    [
+      x({ scale: { type: "log", base: 1e20, domain: [-2, -1], nice: false } }),
+      /base must be a number from 2 to 100/,
+    ],
+    [x({ scale: { type: "log", base: { expr: "1e20" } } }), /base must be/],
+    [x({ scale: { type: "log", base: 1 } }), /base must be/],
+    [{ ...stacked, config: { scale: { base: 1000 } } }, /base must be/],
+    [x({ scale: { type: "pow", exponent: 50 } }), /exponent must be/],
+    [x({ scale: { type: "symlog", constant: 0 } }), /symlog constant/],
+    [x({ scale: { nice: 1e9 } }), /nice must be/],
+    [x({ scale: { nice: { interval: "day", step: 1e6 } } }), /nice must be/],
+    [x({ scale: { bins: { step: 1 } } }), /bins must be/],
+    [x({ scale: { bins: { start: 0, stop: 1e9, step: 1 } } }), /bins must be/],
+    [
+      x({ scale: { domain: Array.from({ length: 1001 }, (_, i) => i) } }),
+      /domain can list at most/,
+    ],
+    [x({ axis: { values: Array.from({ length: 1001 }, (_, i) => i) } }), /values can list at most/],
+    [x({ axis: { tickCount: { expr: "1e9" } } }), /tick count/],
+    [{ ...stacked, config: { legend: { symbolLimit: 1e7 } } }, /symbol limit/],
+    [
+      {
+        ...stacked,
+        encoding: {
+          ...stacked.encoding,
+          color: {
+            field: "client",
+            type: "nominal",
+            scale: { scheme: { name: "blues", count: 1e6 } },
+          },
+        },
+      },
+      /scheme count/,
+    ],
+    [x({ bin: { binned: true, step: 1, extent: [0, 10] } }), /binned chart field can't set a step/],
+    [x({ axis: { labelAngle: 1e7 } }), /labelAngle must be at most 1e6/],
+    [{ ...stacked, mark: { type: "bar", size: 1e9 } }, /size must be at most 1e6/],
+  ];
+  for (const [spec, sentence] of refused)
+    assert.match(refusal(spec), sentence, JSON.stringify(spec).slice(-120));
+  for (const spec of [
+    x({ scale: { type: "log", base: 2, nice: true } }),
+    x({ scale: { type: "pow", exponent: 0.5, nice: 10 } }),
+    x({ scale: { type: "symlog", constant: 1 } }),
+    x({ scale: { bins: [0, 10, 20, 50] } }),
+    x({ scale: { bins: { start: 0, stop: 100, step: 10 } } }),
+    x({ axis: { tickCount: 5, tickMinStep: 1, values: [0, 100, 200] } }),
+    // Data values may be timestamps.
+    {
+      ...stacked,
+      encoding: {
+        ...stacked.encoding,
+        x: { field: "day", type: "temporal", scale: { domain: [1.7e12, 1.8e12] } },
+      },
+    },
+    { ...stacked, encoding: { ...stacked.encoding, x: { datum: 1.7e12, type: "temporal" } } },
+    {
+      ...stacked,
+      encoding: {
+        ...stacked.encoding,
+        opacity: { condition: { test: { field: "calls", lt: 1.7e12 }, value: 1 }, value: 0.5 },
+      },
+    },
+    { ...stacked, params: [{ name: "start", value: 1.7e12 }] },
+  ])
+    assert.equal(
+      checkChartSpec(spec).ok,
+      true,
+      `${JSON.stringify(spec).slice(-120)}: ${checkChartSpec(spec).error}`,
+    );
+});

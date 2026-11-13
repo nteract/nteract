@@ -14,15 +14,14 @@
 // CHART_NUMBER_RANGE. `checkChartSpec` never throws; anything it can't check
 // is a refusal.
 //
-// Cost: spec bytes, views, nesting, rows per dataset (CHART_MAX_ROWS), folds,
-// bins, steps, windows, ticks and sizes are bounded. A chart still runs on the
-// reader's main thread, and these bounds limit its work without capping it: a
-// facet draws a cell per distinct value, a density or quantile emits rows per
-// group, and an SVG mark per row is slow at 100,000 rows. A spec within every
-// bound can still freeze the tab for seconds. A Worker with a kill timer would
-// bound that; nothing here does. Listing inputs that stall Vega's numeric code
-// won't finish that class; the planned next change runs compile and the
-// dataflow in a Worker and renders the finished scenegraph in the Page.
+// Cost: spec bytes, views, nesting, rows and cells per dataset, folds, bins,
+// steps, windows, ticks, sizes and scale, axis and legend counts are
+// bounded, and every number is in CHART_NUMBER_RANGE. A chart still runs on
+// the reader's main thread. A spec that passes every check can still fail to
+// terminate there: the guards here and in viewer/vega-chart.mjs cover the
+// cases reviews have found, and Vega's and d3's numeric loops aren't proven to
+// end. Compiling and running the dataflow in a Worker with a kill timer is the
+// next change.
 import { parseExpression } from "vega-expression";
 
 export const CHART_SPEC_LIMITS = Object.freeze({
@@ -332,6 +331,123 @@ const MAX_SIZE = 10_000;
 const MAX_STEP = 1_000;
 const MAX_TICKS = 1_000;
 
+/*
+ * Scale, axis and legend numbers that set a count, a step or a base, by key,
+ * wherever the key sits (a scale, an axis, a legend or the same key under
+ * `config`). Each must be a literal: an `{expr}` there is refused, since its
+ * value is known only when the chart runs. d3 and Vega loop on these.
+ *
+ * | Key           | Allowed                                     | Why                                     |
+ * | ------------- | ------------------------------------------- | --------------------------------------- |
+ * | base          | 2 to 100                                    | log ticks count down from base - 1,     |
+ * |               |                                             | which 1e20 - 1 never leaves; bin, too   |
+ * | exponent      | -10 to 10                                   | pow scale                               |
+ * | constant      | 1e-6 to 1e6                                 | symlog scale; 0 divides by zero         |
+ * | nice          | true, false, 0 to 1,000, a time unit, or    | a nice count or step                    |
+ * |               | {interval, step 1 to 1,000}                 |                                         |
+ * | bins          | up to 1,000 numbers, or literal {start,     | a step alone bins the data's domain,    |
+ * |               | stop, step} giving at most 1,000 bins       | whose size the data sets                |
+ * | domain, range | a list of at most 1,000                     | each entry is a tick or a color         |
+ * | values        | a list of at most 1,000                     | axis and legend ticks                   |
+ * | unionWith     | a list of at most 1,000                     | added to a domain                       |
+ * | tickCount     | 0 to 1,000                                  | ticks; never a time interval            |
+ * | symbolLimit   | 0 to 1,000                                  | legend symbols                          |
+ * | columns       | 0 to 1,000                                  | legend and facet columns                |
+ * | count         | 1 to 256                                    | colors sampled from a scheme            |
+ *
+ * `tickMinStep` is a number in CHART_NUMBER_RANGE: Vega takes the smaller of
+ * the tick count and the domain over the step, so tickCount bounds it. A
+ * `binned` field with a `step` is refused in checkBin for the same reason as
+ * `bins`.
+ *
+ * Every other number is a data value or a layout value. Data values (keys in
+ * DATA_NUMBER_KEYS) may be anything in CHART_NUMBER_RANGE, so a timestamp
+ * fits. Layout values (sizes, offsets, angles, opacities, font sizes) must be
+ * at most 1e6 in size; an `{expr}` there can compute more, which reaches a
+ * drawn attribute and no loop.
+ */
+const TIME_UNITS = new Set([
+  "millisecond",
+  "second",
+  "minute",
+  "hour",
+  "day",
+  "week",
+  "month",
+  "year",
+]);
+const shortList = (value) => !Array.isArray(value) || value.length <= 1000;
+const KEY_RULES = Object.assign(Object.create(null), {
+  base: (v) => within(v, 2, 100),
+  exponent: (v) => within(v, -10, 10),
+  constant: (v) => within(v, 1e-6, 1e6),
+  nice: (v) =>
+    isBoolean(v) ||
+    integerWithin(v, 0, 1000) ||
+    TIME_UNITS.has(v) ||
+    (isObject(v) &&
+      Object.keys(v).every((key) => key === "interval" || key === "step") &&
+      TIME_UNITS.has(v.interval) &&
+      (v.step === undefined || integerWithin(v.step, 1, 1000))),
+  bins: (v) =>
+    (Array.isArray(v) && v.length <= 1000 && v.every(inRange)) ||
+    (isObject(v) &&
+      Object.keys(v).every((key) => ["start", "stop", "step"].includes(key)) &&
+      [v.start, v.stop].every(inRange) &&
+      positiveInRange(v.step) &&
+      (v.stop - v.start) / v.step <= 1000),
+  domain: shortList,
+  range: shortList,
+  values: shortList,
+  unionWith: shortList,
+  tickCount: (v) => within(v, 0, MAX_TICKS),
+  symbolLimit: (v) => within(v, 0, 1000),
+  columns: (v) => within(v, 0, 1000),
+  count: (v) => integerWithin(v, 1, 256),
+});
+const KEY_SENTENCES = Object.assign(Object.create(null), {
+  base: "a base must be a number from 2 to 100",
+  exponent: "an exponent must be a number from -10 to 10",
+  constant: "a symlog constant must be a number from 1e-6 to 1e6",
+  nice: "nice must be true, false, a count up to 1,000 or a time unit",
+  bins: "bins must be at most 1,000 numbers, or a literal start, stop and step giving at most 1,000",
+  domain: "a domain can list at most 1,000 values",
+  range: "a range can list at most 1,000 values",
+  values: "values can list at most 1,000 entries",
+  unionWith: "unionWith can list at most 1,000 values",
+  tickCount: `a tick count must be a number up to ${MAX_TICKS}`,
+  symbolLimit: "a symbol limit must be a number up to 1,000",
+  columns: "columns must be a number up to 1,000",
+  count: "a scheme count must be a whole number from 1 to 256",
+});
+const DATA_NUMBER_KEYS = new Set([
+  "datum",
+  "value",
+  "domain",
+  "domainMin",
+  "domainMax",
+  "domainMid",
+  "domainRaw",
+  "unionWith",
+  "values",
+  "range",
+  "equal",
+  "lt",
+  "lte",
+  "gt",
+  "gte",
+  "oneOf",
+  "extent",
+  "anchor",
+  "start",
+  "stop",
+  "step",
+  "steps",
+  "minstep",
+  "tickMinStep",
+]);
+const MAX_LAYOUT_NUMBER = 1e6;
+
 /** CSS cursor keywords. A cursor is never a URL or an expression. */
 export const CHART_CURSORS = Object.freeze(
   new Set([
@@ -502,6 +618,9 @@ function checkBin(bin, path) {
   }
   const steps = [bin.step, ...(bin.steps ?? [])].filter((step) => step !== undefined);
   if (!steps.length) return;
+  // Vega-Lite bins a binned field's scale by its step over the data's domain.
+  if (bin.binned === true)
+    refuse(`A binned chart field can't set a step; its bins would come from the data${at(path)}.`);
   const span = bin.extent ? Math.abs(bin.extent[1] - bin.extent[0]) : null;
   for (const step of steps)
     if (span === null || span / step > MAX_BINS)
@@ -843,6 +962,9 @@ function walk(value, path, names) {
   }
   if (typeof value === "number") {
     checkNumber(value, path);
+    const key = path.findLast((part) => typeof part === "string");
+    if (!DATA_NUMBER_KEYS.has(key) && Math.abs(value) > MAX_LAYOUT_NUMBER)
+      refuse(`A chart's ${key ?? "number"} must be at most 1e6 in size${at(path)}.`);
     return;
   }
   if (Array.isArray(value)) {
@@ -874,8 +996,8 @@ function walk(value, path, names) {
     }
     if (key === "cursor" && !CHART_CURSORS.has(child))
       refuse(`A chart cursor must be a CSS cursor keyword${at(here)}.`);
-    if (key === "tickCount" && !within(child, 0, MAX_TICKS))
-      refuse(`A chart tick count must be a number up to ${MAX_TICKS}${at(here)}.`);
+    if (key in KEY_RULES && !KEY_RULES[key](child))
+      refuse(`A chart's ${KEY_SENTENCES[key]}${at(here)}.`);
     if (SIZE_KEYS.has(key) && child === "container")
       refuse(
         `A chart can't size to its container; charts are static, with hover tooltips${at(here)}.`,

@@ -75,19 +75,18 @@ operator, checks every compiled expression again, runs expressions through
 Vega's interpreter, denies every load, and cleans each paint, font and cursor
 before Vega writes it.
 
-A chart runs on the reader's main thread, and nothing stops it there. The
-bounds limit its work without capping it: a facet draws a cell per distinct
-value, a density or quantile emits rows per group, and an SVG mark per row is
-slow at 100,000 rows. A dataset may hold at most 100,000 rows and 2,000,000
-cells, since the viewer copies every column before Vega runs. A spec within every bound can still freeze the tab for
-seconds. A Worker or a separate frame with a kill timer would bound that;
-nothing does today.
+A dataset may hold at most 100,000 rows and 2,000,000 cells, nested values
+included, since the viewer copies every value before Vega runs. Vega's bin,
+kde and regression transforms check the values they read at run time, since
+a formula, an aggregate or a window can compute a number the spec check never
+sees.
 
-Each review of Vega's numeric code finds another input that stalls it, and
-listing inputs won't finish that. The planned next change, after charts ship,
-compiles the spec and runs the dataflow in a Worker with a kill timer, then
-renders the finished scenegraph in the Page: no Vega View on the main thread,
-with native SVG and tooltips kept.
+A chart runs on the reader's main thread, and nothing stops it there. A spec
+that passes every check can still fail to terminate in a reader's tab: the
+guards above cover the cases reviews have found, and Vega's and d3's numeric
+loops aren't proven to end. Compiling the spec and running the dataflow in a
+Worker with a kill timer, then rendering the finished scenegraph in the Page
+with native SVG and tooltips, is the next change.
 
 ## Run locally
 

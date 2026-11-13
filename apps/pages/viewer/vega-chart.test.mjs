@@ -655,7 +655,7 @@ test("tooltip text is total: no toString, cycles, depth and length", () => {
       throw new Error("boom");
     },
   };
-  assert.equal(tooltipText(throwing), "[Value]");
+  assert.equal(tooltipText(throwing), '{"boom":"[Value]"}');
   for (const value of [
     hostile,
     { title: hostile, x: hostile },
@@ -665,7 +665,7 @@ test("tooltip text is total: no toString, cycles, depth and length", () => {
   ])
     assert.equal(typeof formatTooltip(value, escape, 2, ""), "string");
   const wide = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`c${i}`, i]));
-  assert.match(formatTooltip(wide, escape, 2, ""), /60 more/);
+  assert.match(formatTooltip(wide, escape, 2, ""), /more fields/);
   assert.equal((formatTooltip(wide, escape, 2, "").match(/<tr>/g) ?? []).length, 41);
 });
 
@@ -1385,6 +1385,72 @@ test("bin and time-unit extremes in the data or the spec never hang a draw", () 
     [t({ unit: "milliseconds", step: 1 }), rows(-8.64e15, 8.64e15), "rendered"],
     [t("utcyearmonthdate"), huge, "rendered"],
     [{ ...t("hours"), transform: [{ timeUnit: "hours", field: "x", as: "h" }] }, tiny, "rendered"],
+    // Derived values: a formula, an aggregate, a window and a joinaggregate
+    // each produce about 1e-323 from in-range inputs; the bin guard refuses.
+    ...[
+      [],
+      [{ aggregate: [{ op: "mean", field: "tiny", as: "v" }] }],
+      [{ window: [{ op: "sum", field: "tiny", as: "v" }] }],
+      [{ joinaggregate: [{ op: "mean", field: "tiny", as: "v" }] }],
+    ].map((then) => [
+      {
+        data: { name: "d" },
+        transform: [
+          { calculate: "datum.x / 1e150 / 1e150 / 1e23", as: "tiny" },
+          ...then,
+          { bin: { base: 2 }, field: then.length ? "v" : "tiny", as: "b" },
+        ],
+        mark: "point",
+        encoding: { x: { field: "b", type: "quantitative" } },
+      },
+      rows(0, 1),
+      "error",
+    ]),
+    // d3's negative-domain log ticks count down from base - 1, which 1e20 - 1
+    // never leaves; the spec check refuses the base.
+    [
+      {
+        data: { name: "d" },
+        mark: "point",
+        encoding: {
+          x: {
+            field: "x",
+            type: "quantitative",
+            scale: { type: "log", base: 1e20, domain: [-2, -1], nice: false },
+          },
+        },
+      },
+      rows(-1),
+      "error",
+    ],
+    [
+      {
+        data: { name: "d" },
+        mark: "point",
+        encoding: {
+          x: {
+            field: "x",
+            type: "quantitative",
+            scale: { type: "log", base: 100, domain: [-2, -1], nice: false },
+          },
+        },
+      },
+      rows(-1),
+      "rendered",
+    ],
+    [
+      {
+        data: { name: "d" },
+        transform: [{ calculate: "datum.x / 1e150 / 1e150 / 1e23", as: "tiny" }],
+        mark: "bar",
+        encoding: {
+          x: { field: "tiny", type: "quantitative", bin: true },
+          y: { aggregate: "count" },
+        },
+      },
+      rows(0, 1),
+      "error",
+    ],
   ];
   const run = drawInProcess(
     cases.map(([spec, data]) => ({ spec, rows: data })),
@@ -1418,7 +1484,7 @@ test("a dataset over the cell budget is refused before any row is copied", () =>
     const limit = CHART_MAX_CELLS.toLocaleString("en-US");
     assert.equal(
       await refusalIn(window, stacked, { calls: wide }),
-      `The dataset "calls" has more than ${limit} cells (rows × columns); a chart reads at most that many.`,
+      `The dataset "calls" has more than ${limit} cells (rows × columns, nested values included); a chart reads at most that many.`,
     );
     assert.equal(copied, false);
     // An Arrow table's cells are rows × fields, known before any row.
@@ -1468,4 +1534,122 @@ test("destroy empties the container even when Vega's finalize throws", () =>
       reported.map((error) => error.message),
       ["finalize broke"],
     );
+  }));
+
+test("tooltip work stops when its text is full, however big the value", () => {
+  let reads = 0;
+  const huge = new Proxy(Array(1_000_000).fill(1), {
+    get(target, key) {
+      if (key !== "length") reads++;
+      return target[key];
+    },
+  });
+  const text = tooltipText({ payload: huge });
+  assert.ok(text.length <= 400, text.length);
+  assert.ok(reads < 400, `${reads} array reads`);
+  // Keys are enumerated only as far as the table goes.
+  let getterReads = 0;
+  const wide = {};
+  for (let i = 0; i < 10_000; i++)
+    Object.defineProperty(wide, `c${i}`, {
+      enumerable: true,
+      get() {
+        getterReads++;
+        return i;
+      },
+    });
+  const escape = (value) => String(value).replace(/</g, "&lt;");
+  assert.match(formatTooltip(wide, escape, 2, ""), /more fields/);
+  assert.ok(getterReads <= 41, `${getterReads} key reads`);
+  assert.equal(tooltipText("x".repeat(1_000_000)).length, 400);
+});
+
+test("nested values count against the dataset's cell budget", () =>
+  withWindow(async (window) => {
+    const payload = Array(1_000_000).fill(1);
+    const shared = Array.from({ length: 3 }, (_, i) => ({ ...calls[i], payload }));
+    assert.match(
+      await refusalIn(window, stacked, { calls: shared }),
+      /has more than 2,000,000 cells \(rows × columns, nested values included\)/,
+    );
+    // One such row fits, and its tooltip stays bounded.
+    const { element } = container(window);
+    const chart = mount(element, {
+      spec: { ...stacked, mark: { type: "bar", tooltip: { content: "data" } } },
+      datasets: { calls: [{ ...calls[0], payload }] },
+    });
+    await settle(200);
+    assert.equal(element.querySelector("figure").dataset.chartStatus, "rendered");
+    bars(element)[0].dispatchEvent(
+      new window.MouseEvent("pointermove", { bubbles: true, clientX: 5, clientY: 5 }),
+    );
+    await settle();
+    assert.ok((window.document.querySelector(".vg-tooltip")?.textContent.length ?? 0) < 2000);
+    chart.destroy();
+    // Deep nesting stops at 32 levels instead of overflowing.
+    let deep = 1;
+    for (let i = 0; i < 100_000; i++) deep = [deep];
+    const [row] = datasetRows([{ deep }]);
+    let depth = 0;
+    for (let node = row.deep; Array.isArray(node); node = node[0]) depth++;
+    assert.equal(depth, 32);
+  }));
+
+test("bin, kde and regression refuse derived values a chart can't draw", () =>
+  withWindow(async (window) => {
+    const rows = [
+      { x: 0, g: "a" },
+      { x: 1, g: "a" },
+    ];
+    const tiny = { calculate: "datum.x / 1e150 / 1e150 / 1e23", as: "tiny" };
+    for (const spec of [
+      {
+        data: { name: "d" },
+        transform: [tiny, { bin: { base: 2 }, field: "tiny", as: "b" }],
+        mark: "point",
+        encoding: { x: { field: "b", type: "quantitative" } },
+      },
+      {
+        data: { name: "d" },
+        transform: [tiny],
+        mark: "bar",
+        encoding: {
+          x: { field: "tiny", type: "quantitative", bin: true },
+          y: { aggregate: "count" },
+        },
+      },
+      {
+        data: { name: "d" },
+        transform: [tiny, { density: "tiny" }],
+        mark: "line",
+        encoding: {
+          x: { field: "value", type: "quantitative" },
+          y: { field: "density", type: "quantitative" },
+        },
+      },
+      {
+        data: { name: "d" },
+        transform: [
+          tiny,
+          { calculate: "datum.x", as: "y" },
+          { regression: "y", on: "tiny", method: "poly" },
+        ],
+        mark: "line",
+        encoding: {
+          x: { field: "tiny", type: "quantitative" },
+          y: { field: "y", type: "quantitative" },
+        },
+      },
+    ]) {
+      const { element } = container(window);
+      const chart = mount(element, { spec, datasets: { d: rows } });
+      await settle(100);
+      const figure = element.querySelector("figure");
+      assert.equal(figure.dataset.chartStatus, "error", JSON.stringify(spec.transform));
+      assert.match(
+        figure.querySelector(".pages-chart-message").textContent,
+        /outside what a chart can draw/,
+      );
+      chart.destroy();
+    }
   }));

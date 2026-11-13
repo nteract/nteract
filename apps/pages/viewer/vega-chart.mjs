@@ -26,13 +26,15 @@
 //   cursor before Vega writes them, and the container's cursor setter takes
 //   keywords only, so a data value can't put `url(...)` into a style.
 //
-// A chart still runs on the reader's main thread. The spec check bounds its
-// work without capping it: a facet draws a cell per distinct value, and an
-// SVG mark per row is slow at CHART_MAX_ROWS rows, so a spec within every
-// bound can still freeze the tab for seconds. A Worker with a kill timer would
-// bound that; nothing here does, and the planned next change is to compile
-// and run the dataflow there and render its scenegraph here. An error after
-// the first draw moves the chart to its error state.
+// A chart still runs on the reader's main thread. `datasetRows` copies at
+// most CHART_MAX_CELLS cells per dataset, nested values included, and
+// `guardTransforms` checks the values bin, kde and regression read at run
+// time. A spec that passes every check can still fail to terminate in a
+// reader's tab: the guards cover the cases reviews have found, and Vega's and
+// d3's numeric loops aren't proven to end. Compiling and running the dataflow
+// in a Worker with a kill timer, and rendering its scenegraph here, is the
+// next change. An error after the first draw moves the chart to its error
+// state.
 //
 // The look is bare: the caller's title above, one thin rounded border around
 // the drawing, and Vega-Lite's own axes, legend and hover tooltip inside it.
@@ -65,6 +67,80 @@ const MIN_WIDTH = 120;
  * once at its end. */
 export const RESIZE_SETTLE_MS = 120;
 
+/**
+ * Guards on the values Vega's looping transforms read at run time. The spec
+ * check bounds literals and `datasetRows` bounds the data, but a `calculate`,
+ * an aggregate or a window can derive a number outside CHART_NUMBER_RANGE
+ * (`datum.x / 1e150 / 1e150 / 1e23` is about 1e-323), and these transforms
+ * loop on what they read:
+ *
+ * | Transform  | Reads                                  | Loop                                 |
+ * | ---------- | -------------------------------------- | ------------------------------------ |
+ * | bin        | extent (from data), span, step, steps, | vega-statistics bin multiplies a step |
+ * |            | minstep, anchor                        | that underflows to 0 forever         |
+ * | kde        | extent and the field's values          | sampleCurve subdivides to span/steps |
+ * | regression | extent and the x field's values        | sampleCurve, as kde                  |
+ *
+ * Each throws before the stock code runs when a value it reads isn't 0 or in
+ * CHART_NUMBER_RANGE, so the chart moves to its error state. With every input
+ * in range, a bin step is at least its span over 1e6 and a curve's stop is at
+ * least its span over 500, both far above 0. Checked and left alone:
+ * timeunit picks a unit from a fixed table, quantile's probabilities come
+ * from the spec, and d3's linear ticks return none for a span they can't
+ * step. Vega is bundled into this chunk alone, so the registry patch reaches
+ * charts and nothing else.
+ */
+const GUARDED = Symbol.for("pages.chart.guarded");
+
+const readable = (value) => {
+  if (value == null) return true;
+  let number;
+  try {
+    number = +value;
+  } catch {
+    return true;
+  }
+  return Number.isNaN(number) || chartNumber(number) === number;
+};
+
+function guardValues(values, transform) {
+  for (const value of values)
+    if (!readable(value))
+      throw new Error(
+        `A ${transform} read a computed value outside what a chart can draw: 0, or 1e-150 to 1e150 in size.`,
+      );
+}
+
+function guardTransforms(registry) {
+  if (registry[GUARDED]) return;
+  registry[GUARDED] = true;
+  const bin = registry.bin.prototype;
+  const stockBins = bin._bins;
+  bin._bins = function (_) {
+    if (!this.value || _.modified()) {
+      guardValues(_.extent ?? [], "bin");
+      guardValues([_.span, _.step, _.minstep, _.anchor, ...(_.steps ?? [])], "bin");
+    }
+    return stockBins.call(this, _);
+  };
+  for (const [name, field] of [
+    ["kde", "field"],
+    ["regression", "x"],
+  ]) {
+    const proto = registry[name].prototype;
+    const stock = proto.transform;
+    proto.transform = function (_, pulse) {
+      guardValues(_.extent ?? [], name);
+      const read = _[field];
+      if (typeof read === "function")
+        for (const tuple of pulse.materialize(pulse.SOURCE).source ?? [])
+          guardValues([read(tuple)], name);
+      return stock.call(this, _, pulse);
+    };
+  }
+}
+guardTransforms(vega.transforms);
+
 /** A loader that refuses every load and every link, so no spec can reach the
  * network or navigate. */
 export const deniedLoader = Object.freeze({
@@ -78,8 +154,7 @@ export const deniedLoader = Object.freeze({
  * One data value as a chart reads it. Numbers go through `chartNumber`
  * (bigints become numbers first). Vega coerces strings in arithmetic, so a
  * string that reads as a number outside CHART_NUMBER_RANGE, or as Infinity,
- * becomes that number's chart value. A nested value is copied the same way,
- * since a field path reaches it; one that isn't JSON (a cycle) becomes null.
+ * becomes that number's chart value.
  */
 function plainScalar(value) {
   if (typeof value === "bigint") return chartNumber(Number(value));
@@ -91,15 +166,77 @@ function plainScalar(value) {
   return value;
 }
 
-function plainValue(value) {
+/** Nesting a copied value keeps; anything deeper becomes null. */
+const MAX_NESTING = 32;
+
+/** A dataset that needs more than CHART_MAX_CELLS cells to copy. */
+class CellBudgetSpent extends Error {}
+
+/** The cells left for one dataset's copy, top-level and nested together. */
+function cellBudget(limit) {
+  let left = limit;
+  return (cells) => {
+    left -= cells;
+    if (left < 0) throw new CellBudgetSpent();
+  };
+}
+
+/**
+ * A copy of one data value, spending a cell for every array element and
+ * object key it copies, nested ones included, so a payload shared by every row
+ * counts once per row. A field path reaches nested values, so they get
+ * `plainScalar` too. Objects copy as plain objects, since Vega coerces some
+ * (a gradient paint) to strings; `toJSON` is honored,
+ * as Arrow's nested values need; a cycle, a value deeper than MAX_NESTING or
+ * a property that throws becomes null.
+ */
+function plainValue(value, spend, depth = 0, ancestors = []) {
   if (value instanceof Date || value === null || typeof value !== "object")
     return plainScalar(value);
+  if (typeof value.toJSON === "function" && !(value instanceof Date)) {
+    try {
+      value = value.toJSON();
+    } catch {
+      return null;
+    }
+    if (value === null || typeof value !== "object") return plainScalar(value);
+  }
+  if (depth >= MAX_NESTING || ancestors.includes(value)) return null;
+  ancestors.push(value);
   try {
-    return JSON.parse(JSON.stringify(value, (_key, item) => plainScalar(item)));
-  } catch {
-    return null;
+    if (Array.isArray(value) || ArrayBuffer.isView(value)) {
+      spend(value.length);
+      const copy = new Array(value.length);
+      for (let i = 0; i < value.length; i++)
+        copy[i] = plainValue(value[i], spend, depth + 1, ancestors);
+      return copy;
+    }
+    const copy = {};
+    for (const key of Object.keys(value)) {
+      spend(1);
+      let item;
+      try {
+        item = value[key];
+      } catch {
+        item = null;
+      }
+      // Defined, not assigned, so "__proto__" stays a key, as JSON.parse
+      // makes it.
+      Object.defineProperty(copy, key, {
+        value: plainValue(item, spend, depth + 1, ancestors),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
+    return copy;
+  } finally {
+    ancestors.pop();
   }
 }
+
+const tooManyCells = (name) =>
+  `The dataset "${name}" has more than ${CHART_MAX_CELLS.toLocaleString("en-US")} cells (rows × columns, nested values included); a chart reads at most that many.`;
 
 /** Rows in a dataset, before any are copied. */
 const rowCount = (dataset) =>
@@ -127,18 +264,26 @@ const isArrowTable = (value) =>
 
 /**
  * Plain rows for Vega from a dataset: an array of row objects, or an Arrow
- * table. Rows are copied, since Vega tags each row it ingests, and each value
- * goes through `plainValue`: 64-bit integers become numbers, since Vega's
- * scales take only numbers, and every number lands in CHART_NUMBER_RANGE or
- * becomes 0 or null. Each copy
- * has a null prototype, so a column named `__proto__` stays a column and a
- * missing `constructor` or `toString` column reads as undefined.
+ * table, or null for anything else. Rows are copied, since Vega tags each row
+ * it ingests, and each value goes through `plainValue`: 64-bit integers
+ * become numbers, since Vega's scales take only numbers, and every number
+ * lands in CHART_NUMBER_RANGE or becomes 0 or null. Each copy has a null
+ * prototype, so a column named `__proto__` stays a column and a missing
+ * `constructor` or `toString` column reads as undefined.
+ *
+ * The copy spends at most `limit` cells, top-level and nested together, and
+ * throws CellBudgetSpent past it.
  */
-export function datasetRows(dataset) {
+export function datasetRows(dataset, limit = CHART_MAX_CELLS) {
+  const spend = cellBudget(limit);
   if (Array.isArray(dataset))
     return dataset.map((row) => {
       const copy = Object.create(null);
-      for (const [key, value] of Object.entries(row ?? {})) copy[key] = plainValue(value);
+      if (!row || typeof row !== "object") return copy;
+      for (const key of Object.keys(row)) {
+        spend(1);
+        copy[key] = plainValue(row[key], spend);
+      }
       return copy;
     });
   if (isArrowTable(dataset)) {
@@ -146,16 +291,20 @@ export function datasetRows(dataset) {
       name: field.name,
       vector: dataset.getChildAt(index),
     }));
+    spend(dataset.numRows * columns.length);
     const rows = new Array(dataset.numRows);
     for (let r = 0; r < rows.length; r++) {
       const row = Object.create(null);
-      for (const { name, vector } of columns) row[name] = plainValue(vector?.get(r) ?? null);
+      for (const { name, vector } of columns) row[name] = plainValue(vector?.get(r) ?? null, spend);
       rows[r] = row;
     }
     return rows;
   }
   return null;
 }
+
+/** True when `error` is datasetRows running out of cells. */
+export const spentCellBudget = (error) => error instanceof CellBudgetSpent;
 
 /** The categorical palette, light and dark steps of the same eight hues
  * (validated for adjacent-pair color-vision separation). */
@@ -240,32 +389,78 @@ function errorSentence(error) {
 const TOOLTIP_TEXT_MAX = 400;
 const TOOLTIP_ROWS_MAX = 40;
 
-/** JSON.stringify's replacer for a tooltip: nested objects past `maxDepth`
- * and cycles become markers, bigints numbers. */
-function tooltipReplacer(maxDepth) {
-  const stack = [];
-  return function (_key, value) {
-    if (typeof value === "bigint") return Number(value);
-    if (typeof value !== "object" || value === null) return value;
-    stack.length = stack.indexOf(this) + 1;
-    if (stack.length > maxDepth) return "[Object]";
-    if (stack.includes(value)) return "[Circular]";
-    stack.push(value);
-    return value;
-  };
+/** Read `object[key]`, or `fallback` if a getter throws. */
+function readKey(object, key, fallback = "[Value]") {
+  try {
+    return object[key];
+  } catch {
+    return fallback;
+  }
 }
 
-/** Text for one tooltip value, whatever it holds. Never calls a value's own
- * `toString` or `valueOf`, never throws, and stops at TOOLTIP_TEXT_MAX
- * characters. */
+/**
+ * JSON-like text for a tooltip value that stops once it holds `max`
+ * characters: arrays are read only as far as the text reaches, object keys
+ * are enumerated only as far, nested objects past `maxDepth` become
+ * "[Object]" and cycles "[Circular]". Never calls a value's own `toString` or
+ * `valueOf`, and a getter that throws reads as "[Value]".
+ */
+function boundedText(root, maxDepth, max) {
+  let out = "";
+  const ancestors = [];
+  const full = () => out.length >= max;
+  const literal = (text) => JSON.stringify(text.length > max ? text.slice(0, max) : text);
+  const visit = (value, depth) => {
+    if (full()) return;
+    if (typeof value === "string") out += literal(value);
+    else if (typeof value === "number") out += Number.isFinite(value) ? String(value) : "null";
+    else if (typeof value === "boolean" || typeof value === "bigint") out += String(value);
+    else if (value === null || typeof value !== "object") out += "null";
+    else if (value instanceof Date)
+      out += literal(Number.isNaN(value.getTime()) ? "Invalid date" : value.toISOString());
+    else if (ancestors.includes(value)) out += '"[Circular]"';
+    else if (depth > maxDepth) out += '"[Object]"';
+    else {
+      ancestors.push(value);
+      if (Array.isArray(value) || ArrayBuffer.isView(value)) {
+        out += "[";
+        const length = readKey(value, "length", 0);
+        for (let i = 0; i < length && !full(); i++) {
+          if (i) out += ",";
+          visit(readKey(value, i), depth + 1);
+        }
+        out += "]";
+      } else {
+        out += "{";
+        let first = true;
+        for (const key in value) {
+          if (full()) break;
+          if (!Object.hasOwn(value, key)) continue;
+          const item = readKey(value, key);
+          if (item === undefined || typeof item === "function") continue;
+          out += `${first ? "" : ","}${literal(key)}:`;
+          first = false;
+          visit(item, depth + 1);
+        }
+        out += "}";
+      }
+      ancestors.pop();
+    }
+  };
+  visit(root, 0);
+  return out;
+}
+
+/** Text for one tooltip value, whatever it holds, at most TOOLTIP_TEXT_MAX
+ * characters. Strings show as they are; anything else as bounded JSON. */
 export function tooltipText(value, maxDepth = 2) {
   let text;
   try {
-    if (typeof value === "string") text = value;
+    if (typeof value === "string") text = value.slice(0, TOOLTIP_TEXT_MAX + 1);
     else if (value === null || typeof value !== "object") text = String(value);
     else if (value instanceof Date)
       text = Number.isNaN(value.getTime()) ? "Invalid date" : value.toISOString();
-    else text = JSON.stringify(value, tooltipReplacer(maxDepth)) ?? "";
+    else text = boundedText(value, maxDepth, TOOLTIP_TEXT_MAX + 1);
   } catch {
     text = "[Value]";
   }
@@ -274,34 +469,39 @@ export function tooltipText(value, maxDepth = 2) {
 
 /**
  * The tooltip's HTML: a title, then a table of the other fields, at most
- * TOOLTIP_ROWS_MAX of them. `valueToHtml` escapes each text. An `image` key is
- * dropped, since vega-tooltip would load its URL into an <img>; a chart's
- * tooltip shows its fields and nothing else.
+ * TOOLTIP_ROWS_MAX of them, enumerated no further than that. `valueToHtml`
+ * escapes each text. An `image` key is dropped, since vega-tooltip would load
+ * its URL into an <img>; a chart's tooltip shows its fields and nothing else.
  */
 export function formatTooltip(value, valueToHtml, maxDepth = 2) {
   const html = (item) => valueToHtml(tooltipText(item, maxDepth));
   if (!value || typeof value !== "object" || Array.isArray(value) || value instanceof Date)
     return html(value);
-  let entries;
+  let content = "";
+  let rows = "";
+  let shown = 0;
+  let more = false;
   try {
-    entries = Object.entries(value);
+    for (const key in value) {
+      if (!Object.hasOwn(value, key) || key === "image") continue;
+      const item = readKey(value, key);
+      if (item === undefined) continue;
+      if (key === "title") {
+        if (item) content += `<h2>${html(item)}</h2>`;
+        continue;
+      }
+      if (shown === TOOLTIP_ROWS_MAX) {
+        more = true;
+        break;
+      }
+      rows += `<tr><td class="key">${html(key)}</td><td class="value">${html(item)}</td></tr>`;
+      shown++;
+    }
   } catch {
     return html("[Value]");
   }
-  let content = "";
-  const title = entries.find(([key]) => key === "title")?.[1];
-  if (title) content += `<h2>${html(title)}</h2>`;
-  const rows = entries.filter(
-    ([key, item]) => key !== "title" && key !== "image" && item !== undefined,
-  );
-  if (rows.length) {
-    content += "<table>";
-    for (const [key, item] of rows.slice(0, TOOLTIP_ROWS_MAX))
-      content += `<tr><td class="key">${html(key)}</td><td class="value">${html(item)}</td></tr>`;
-    if (rows.length > TOOLTIP_ROWS_MAX)
-      content += `<tr><td class="key">…</td><td class="value">${rows.length - TOOLTIP_ROWS_MAX} more</td></tr>`;
-    content += "</table>";
-  }
+  if (more) rows += `<tr><td class="key">…</td><td class="value">more fields</td></tr>`;
+  if (rows) content += `<table>${rows}</table>`;
   return content || "{}";
 }
 
@@ -714,10 +914,16 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
         break;
       }
       if (cellCount(given(name), CHART_MAX_CELLS) > CHART_MAX_CELLS) {
-        refusal = `The dataset "${name}" has more than ${CHART_MAX_CELLS.toLocaleString("en-US")} cells (rows × columns); a chart reads at most that many.`;
+        refusal = tooManyCells(name);
         break;
       }
-      data[name] = datasetRows(given(name));
+      try {
+        data[name] = datasetRows(given(name));
+      } catch (error) {
+        if (!spentCellBudget(error)) throw error;
+        refusal = tooManyCells(name);
+        break;
+      }
       if (!data[name]) {
         refusal = `The dataset "${name}" must be rows or an Arrow table.`;
         break;
