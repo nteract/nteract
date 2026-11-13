@@ -1,9 +1,26 @@
+/**
+ * create_page_asset_upload's file mode: the Worker downloads a file the
+ * client attached to the call and stores it as a Page asset, under the same
+ * checks as an upload's bytes.
+ */
 import { HttpError, errorResponse } from "./auth.mjs";
 import { validPageId } from "./registration.mjs";
-import { persistImageAsset, privateImageResponse, readImageBody } from "./image-assets.mjs";
+import {
+  assetInsertOperation,
+  persistPageAsset,
+  privateImageResponse,
+  readAssetBody,
+} from "./image-assets.mjs";
 
-export const IMAGE_IMPORT_TIMEOUT_MS = 20_000;
+export const FILE_IMPORT_TIMEOUT_MS = 20_000;
 const fileFields = new Set(["download_url", "file_id", "mime_type", "file_name"]);
+/**
+ * The hosts a client's file argument may download from, by exact HTTPS
+ * hostname on the default port. ChatGPT's file handoff (openai/fileParams)
+ * serves from files.oaiusercontent.com. Another client's handoff adds its own
+ * host here, after its URLs are checked to be short-lived and per-file.
+ */
+const FILE_HOSTS = new Set(["files.oaiusercontent.com"]);
 const boundedText = (value, max) =>
   typeof value === "string" &&
   value.length > 0 &&
@@ -23,23 +40,26 @@ function fileDownloadUrl(file) {
     (file.mime_type !== undefined && !boundedText(file.mime_type, 127)) ||
     (file.file_name !== undefined && !boundedText(file.file_name, 512))
   )
-    throw new HttpError(400, "Use a ChatGPT file attachment with download_url and file_id");
+    throw new HttpError(400, "file takes the download_url and file_id your client supplied");
   let url;
   try {
     url = new URL(file.download_url);
   } catch {
-    throw new HttpError(400, "Invalid image download URL");
+    throw new HttpError(400, "Invalid file download URL");
   }
   if (
     url.protocol !== "https:" ||
-    url.hostname !== "files.oaiusercontent.com" ||
+    !FILE_HOSTS.has(url.hostname) ||
     url.port !== "" ||
     url.username ||
     url.password ||
     url.hash ||
     /[\\#\s]/.test(file.download_url)
   )
-    throw new HttpError(400, "Use a file attachment from ChatGPT's supported image host");
+    throw new HttpError(
+      400,
+      "Pages doesn't import from this file host; use create_page_asset_upload",
+    );
   return url;
 }
 
@@ -47,13 +67,13 @@ function cancelBody(response) {
   void response?.body?.cancel().catch(() => {});
 }
 
-async function downloadImage(request, url) {
+async function downloadFile(request, url) {
   const controller = new AbortController();
   const timeout = setTimeout(
-    () => controller.abort(new HttpError(504, "Image download timed out")),
-    IMAGE_IMPORT_TIMEOUT_MS,
+    () => controller.abort(new HttpError(504, "File download timed out")),
+    FILE_IMPORT_TIMEOUT_MS,
   );
-  const cancel = () => controller.abort(new HttpError(408, "Image import canceled"));
+  const cancel = () => controller.abort(new HttpError(408, "File import canceled"));
   request.signal.addEventListener("abort", cancel, { once: true });
   if (request.signal.aborted) cancel();
   let onAbort;
@@ -74,7 +94,10 @@ async function downloadImage(request, url) {
           credentials: "omit",
           referrerPolicy: "no-referrer",
           signal: controller.signal,
-          headers: { Accept: "image/png, image/jpeg, image/webp, application/octet-stream" },
+          headers: {
+            Accept:
+              "image/png, image/jpeg, image/webp, application/vnd.apache.parquet, application/octet-stream",
+          },
         });
         if (controller.signal.aborted) {
           cancelBody(response);
@@ -82,13 +105,13 @@ async function downloadImage(request, url) {
         }
         if (response.redirected || (response.status >= 300 && response.status < 400)) {
           cancelBody(response);
-          throw new HttpError(400, "Image download redirects are not supported");
+          throw new HttpError(400, "File download redirects are not supported");
         }
         if (!response.ok) {
           cancelBody(response);
-          throw new HttpError(502, "Image could not be downloaded");
+          throw new HttpError(502, "File could not be downloaded");
         }
-        const bytes = await readImageBody(response, { signal: controller.signal });
+        const bytes = await readAssetBody(response, { signal: controller.signal });
         return { bytes, contentType: response.headers.get("content-type") };
       })(),
       aborted,
@@ -97,7 +120,7 @@ async function downloadImage(request, url) {
     if (controller.signal.aborted) throw controller.signal.reason;
     if (error instanceof HttpError) throw error;
     // Fetch/stream exceptions can contain signed URLs. Keep them out of logs/results.
-    throw new HttpError(502, "Image could not be downloaded");
+    throw new HttpError(502, "File could not be downloaded");
   } finally {
     clearTimeout(timeout);
     controller.signal.removeEventListener("abort", onAbort);
@@ -105,16 +128,17 @@ async function downloadImage(request, url) {
   }
 }
 
-/** Called only by authenticated MCP dispatch. The callback rechecks grant and Page write access. */
-export async function handleImportPageImage(request, env, { pageId, file, authorize }) {
+/** Called only by authenticated tool dispatch. The callback rechecks grant and Page write access. */
+export async function handleFileImport(request, env, { pageId, file, authorize }) {
   try {
     if (!validPageId(pageId)) throw new HttpError(400, "Invalid page_id");
     const url = fileDownloadUrl(file);
     const access = await authorize(true);
     if (!access.ok) return privateImageResponse(access);
     if (!env.PAGES_ASSETS) throw new HttpError(503, "Image storage is unavailable");
-    const { bytes, contentType } = await downloadImage(request, url);
-    const { asset, duplicate } = await persistImageAsset(env.PAGES_ASSETS, {
+    const { bytes, contentType } = await downloadFile(request, url);
+    // An image or a Parquet dataset, as an upload admits.
+    const { asset, duplicate } = await persistPageAsset(env.PAGES_ASSETS, {
       pageId,
       bytes,
       contentTypes: [contentType, file.mime_type],
@@ -123,9 +147,12 @@ export async function handleImportPageImage(request, env, { pageId, file, author
     if (!current.ok) return privateImageResponse(current);
     const { url: asset_url, ...metadata } = asset;
     return privateImageResponse(
-      Response.json({ page_id: pageId, ...metadata, asset_url }, { status: duplicate ? 200 : 201 }),
+      Response.json(
+        { page_id: pageId, ...metadata, asset_url, insert: assetInsertOperation(asset) },
+        { status: duplicate ? 200 : 201 },
+      ),
     );
   } catch (error) {
-    return privateImageResponse(errorResponse(error, "import-page-image"));
+    return privateImageResponse(errorResponse(error, "import-page-file"));
   }
 }

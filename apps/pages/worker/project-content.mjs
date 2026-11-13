@@ -12,7 +12,6 @@ export const PROJECT_CONTENT_OPERATIONS = new Set([
   "manage_page_comment",
   "read_page_presence",
   "report_page_progress",
-  "import_page_image",
   "create_page_asset_upload",
   "reply_page_comment",
 ]);

@@ -97,10 +97,15 @@ test("authentication and write scopes precede Project lookup", async (t) => {
     "edit_page",
     "manage_page_comment",
     "report_page_progress",
-    "import_page_image",
     "create_page_asset_upload",
   ])
     assert.equal((await w.call("reader", operation, args)).status, 403, operation);
+  const file = { download_url: "https://files.oaiusercontent.com/fixture", file_id: "fixture" };
+  assert.equal(
+    (await w.call("reader", "create_page_asset_upload", { ...args, file })).status,
+    403,
+    "a file import needs write scope too",
+  );
 });
 
 test("Project content reads as the Project for a reader, by project_id or document_id", async (t) => {
@@ -448,7 +453,7 @@ test("revocation during alias resolution is enforced by final Page admission", a
   assert.equal(w.page(project.document_id).handle.doc().title, "Launch");
 });
 
-test("Project image imports preserve Page asset identity and recheck edit access", async (t) => {
+test("Project file imports preserve Page asset identity and recheck edit access", async (t) => {
   const w = await world(t);
   const project = await w.createProject();
   const objects = new Map();
@@ -481,7 +486,7 @@ test("Project image imports preserve Page asset identity and recheck edit access
     return w.auth.fetch(url, options);
   });
   const file = { download_url: "https://files.oaiusercontent.com/fixture", file_id: "fixture" };
-  const first = await w.call("owner", "import_page_image", {
+  const first = await w.call("owner", "create_page_asset_upload", {
     project_id: project.project_id,
     file,
   });
@@ -493,7 +498,7 @@ test("Project image imports preserve Page asset identity and recheck edit access
     first.body.asset_url,
     `/api/pages/${project.document_id}/assets/${first.body.asset_id}`,
   );
-  const replay = await w.call("owner", "import_page_image", {
+  const replay = await w.call("owner", "create_page_asset_upload", {
     page_id: project.document_id,
     file,
   });
@@ -503,14 +508,16 @@ test("Project image imports preserve Page asset identity and recheck edit access
   assert.equal(objects.size, 1);
   assert.equal((await grant(w, project, "commenter")).status, 200);
   assert.equal(
-    (await w.call("member", "import_page_image", { project_id: project.project_id, file })).status,
+    (await w.call("member", "create_page_asset_upload", { project_id: project.project_id, file }))
+      .status,
     403,
   );
   assert.equal(downloads, 2, "commenter cannot start a download");
   assert.equal((await grant(w, project, "editor", false, 1)).status, 200);
   revokeOnDownload = true;
   assert.equal(
-    (await w.call("member", "import_page_image", { project_id: project.project_id, file })).status,
+    (await w.call("member", "create_page_asset_upload", { project_id: project.project_id, file }))
+      .status,
     403,
   );
   assert.equal(downloads, 3);

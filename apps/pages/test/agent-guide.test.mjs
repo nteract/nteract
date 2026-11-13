@@ -168,7 +168,7 @@ test("GET llms.txt is readable without authentication and explains the supported
     "only the owner can manage access",
     "expected_revision",
     "No anonymous link access",
-    "import_page_image",
+    "create_page_asset_upload's file argument",
     "openai/fileParams",
     "do not invent a download URL from its file ID",
     "only HTTPS files.oaiusercontent.com downloads",
@@ -429,7 +429,8 @@ test("the Images section teaches which path to use and the end-to-end workflow",
     images.indexOf("### Add images"),
   );
   for (const fact of [
-    /^- ChatGPT, with an attached or generated file: import_page_image\.$/m,
+    /^- A client that attaches the file to the tool call itself: pass it as$/m,
+    /^ {2}create_page_asset_upload's file argument\. ChatGPT does, for an attached or$/m,
     /^- Any agent with a shell or HTTP client, signed in with an API key or OAuth$/m,
     /call create_page_asset_upload,\s+then send the file to the upload_url it returns with curl/,
     /^- An API-key script may also POST the file directly to$/m,

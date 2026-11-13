@@ -372,7 +372,7 @@ import {
   spaceCreationTransition,
   spaceDeletion,
 } from "./space-lifecycle.mjs";
-import { handleImportPageImage } from "./import-image.mjs";
+import { handleFileImport } from "./import-file.mjs";
 import {
   PROJECT_CONTENT_OPERATIONS,
   contentSelector,
@@ -444,7 +444,6 @@ const operations = new Set([
   "list_page_comments",
   "read_page_presence",
   "report_page_progress",
-  "import_page_image",
   ASSET_UPLOAD_OPERATION,
   "edit_page",
   "manage_page_comment",
@@ -1146,12 +1145,16 @@ async function invoke(request, env, operation, args = {}, seen, call) {
         await untilAborted(requireProjectReader(request, env, projectId), signal);
         args = await resolveProjectContent(env, args, signal);
       }
-      if (operation === "import_page_image") {
+      if (operation === ASSET_UPLOAD_OPERATION && Object.hasOwn(args, "file")) {
         if (Object.keys(args).some((key) => !["page_id", "file"].includes(key)))
-          throw new HttpError(400, "Invalid image import arguments");
+          throw new HttpError(
+            400,
+            `With file, ${ASSET_UPLOAD_OPERATION} takes page_id (or project_id) and file`,
+            "invalid_arguments",
+          );
         // Transfer bytes at the Worker edge; access stays with the Page host.
         const imported = await untilAborted(
-          handleImportPageImage(request, env, {
+          handleFileImport(request, env, {
             pageId: args.page_id,
             file: args.file,
             authorize: (write) => authorizeImage(request, env, args.page_id, write),

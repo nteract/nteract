@@ -1610,8 +1610,8 @@ sampled flag is clear. For a request with an unsampled parent, celld's default
 `parentbased_always_on` sampler records nothing, including the Worker's
 `console` lines.
 
-Spans record outbound fetch URLs in full. `import_page_image` fetches the
-caller's download URL, which can carry a short-lived signature in its query.
+Spans record outbound fetch URLs in full. `create_page_asset_upload` with
+`file` fetches the caller's download URL, which can carry a short-lived signature in its query.
 Telemetry lives under the fleet bucket's `telemetry/` prefix, so it has the same
 readers as the Page documents and storage beside it. Restrict bucket read access
 accordingly; retention is 30 days. Verify actual Parquet delivery under

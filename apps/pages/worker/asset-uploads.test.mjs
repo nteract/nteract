@@ -460,6 +460,7 @@ test("an API-key agent gets an upload URL and uploads with curl, never sending i
     width: 3,
     height: 2,
     size: png.length,
+    insert: { op: "insert_image", asset_id: await sha256(png) },
   });
   // Same bytes, same asset; one URL serves several files until it expires.
   const repeat = await upload(w, grant);
@@ -812,10 +813,9 @@ test("a Project's content takes project_id, over the JSON API and MCP", async (t
   assert.equal((await issue(w, "reader", { project_id: project.project_id })).status, 403);
 });
 
-test("the llms.txt image workflow: upload light and dark, interleave with text, verify", async (t) => {
-  const { w, pageId } = await setup(t);
-  // The fixture's Page hosts stub native sync; give this one mutable handles
-  // as project-content.test.mjs does, so edit_page can write.
+/** The fixture's Page hosts stub native sync; give this one mutable handles
+ * as project-content.test.mjs does, so edit_page can write. */
+function editable(w, pageId) {
   const page = w.page(pageId);
   let doc = page.handle.doc();
   let comments = newCommentsDoc();
@@ -828,6 +828,44 @@ test("the llms.txt image workflow: upload light and dark, interleave with text, 
   page.backend = undefined;
   page.admission = undefined;
   page.flush = () => page.ctx.storage.sync();
+}
+
+test("an upload's insert operation places each file as the block its type calls for", async (t) => {
+  const { w, pageId } = await setup(t);
+  editable(w, pageId);
+  const grant = await issued(w, { page_id: pageId });
+  const image = (await upload(w, grant)).body;
+  const table = (await upload(w, grant, { body: parquet })).body;
+  assert.deepEqual(image.insert, { op: "insert_image", asset_id: image.asset_id });
+  assert.deepEqual(table.insert, {
+    op: "insert_node",
+    node: { type: "dataframe", attrs: { asset_id: table.asset_id } },
+  });
+  const edit = async (operations) => {
+    const read = (await w.call("owner", "read_page", { page_id: pageId, comments: "none" })).body;
+    return w.call("owner", "edit_page", {
+      page_id: pageId,
+      revision: read.revision,
+      nonce: crypto.randomUUID(),
+      operations,
+    });
+  };
+  // Alt text is the caller's to write: sent bare, an image is refused.
+  const bare = await edit([image.insert]);
+  assert.equal(bare.status, 400, JSON.stringify(bare.body));
+  assert.match(bare.body.error, /alt text/);
+  const placed = await edit([{ ...image.insert, alt: "Mockup" }, table.insert]);
+  assert.equal(placed.status, 200, JSON.stringify(placed.body));
+  const [picture, dataframe] = placed.body.result.edits;
+  assert.equal(picture.asset_id, image.asset_id);
+  assert.equal(picture.alt, "Mockup");
+  assert.equal(dataframe.type, "dataframe");
+  assert.equal(dataframe.attrs.src, table.asset_url);
+});
+
+test("the llms.txt image workflow: upload light and dark, interleave with text, verify", async (t) => {
+  const { w, pageId } = await setup(t);
+  editable(w, pageId);
   const grant = await issued(w, { page_id: pageId });
   const light = (await upload(w, grant)).body.asset_id;
   const dark = (await upload(w, grant, { body: webp })).body.asset_id;
