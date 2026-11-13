@@ -88,6 +88,8 @@ async function call(page, operation, args = {}) {
     { operation, args },
   );
 }
+/** A write with retry authority: the catalog's for catalog writes, the Page's
+ * otherwise. Each call is a new request with its own key. */
 async function mutate(page, operation, args = {}) {
   const catalog = ["create_page", "delete_page"].includes(operation);
   const authority = await call(
@@ -97,11 +99,8 @@ async function mutate(page, operation, args = {}) {
   );
   return call(page, operation, {
     ...args,
-    revision:
-      operation === "delete_page"
-        ? (await call(page, "read_page", { page_id: args.page_id })).revision
-        : authority.revision,
-    nonce: crypto.randomUUID(),
+    retry_token: authority.retry_token,
+    idempotency_key: authority.retry_key_prefix + crypto.randomUUID(),
   });
 }
 
