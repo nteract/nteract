@@ -41,6 +41,12 @@ export function mountViewEmbed(container, { view$, sources, decode, checkChartSp
     checkChartSpec,
     render: {
       draw({ view, datasets }) {
+        // The chart measures its container's width as it mounts, so the
+        // container is laid out first: a hidden one is 0 wide, and the chart
+        // would draw at its own step width and redraw once it shows. `show`
+        // runs right after and settles both.
+        chart.hidden = false;
+        placeholder.hidden = true;
         return mount(chart, { spec: view.spec, datasets, title: view.title });
       },
       show(status) {
