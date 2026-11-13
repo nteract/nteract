@@ -1824,9 +1824,10 @@ leaves the person's decision unchanged.
 
 SpiceDB matches 14 fixture cases after removing local overlays. Writers enforce
 owner/project exclusivity; the malformed case tests JavaScript rejection only.
-When `zed` is installed, the test runs `zed validate` with the lifecycle,
+When SpiceDB's `zed` is installed (not the Zed editor's command of the same
+name, which the test never runs), the test runs `zed validate` with the lifecycle,
 credential ceiling and project lease removed, so SpiceDB computes the same
-relation decision as decide() for every principal. Without `zed`, the test
+relation decision as decide() for every principal. Without it, the test
 parses the schema structurally.
 
 [authz-equivalence.test.mjs](worker/authz-equivalence.test.mjs) compares
