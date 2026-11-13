@@ -3,7 +3,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { copyFile, cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -14,6 +14,7 @@ import { publicShellAssetDefine } from "./viewer-chunks.mjs";
 import { CELLD_RELEASE, parseRuntimeVersion } from "./deployment/profiles.mjs";
 import { fixtureWhoamiUrl, generateFixtureKeys } from "./fixtures/local-api-keys.mjs";
 import { runOAuthSmoke } from "./oauth-smoke.mjs";
+import { WORKER_MODULES, workerWasmPlugin } from "./worker-modules.mjs";
 
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const output = path.resolve(
@@ -82,7 +83,7 @@ try {
   const runtime = path.join(scratch, "runtime");
   await mkdir(runtime);
   // Whitelist build outputs. Never copy .dev.vars, .celld, or a deployable receipt.
-  for (const name of ["public", "automerge.wasm", "wrangler.json"])
+  for (const name of ["public", ...WORKER_MODULES, "wrangler.json"])
     await cp(path.join(app, "dist", name), path.join(runtime, name), { recursive: true });
   const { keys, responses } = generateFixtureKeys();
   await build({
@@ -100,21 +101,7 @@ try {
       PAGES_E2E_RESPONSES: JSON.stringify(responses),
       ...publicShellAssetDefine(path.join(runtime, "public")),
     },
-    plugins: [
-      celldCborPlugin(),
-      {
-        name: "e2e-compiled-wasm",
-        setup(b) {
-          b.onResolve({ filter: /\.wasm$/ }, async (args) => {
-            await copyFile(
-              path.resolve(args.resolveDir, args.path),
-              path.join(runtime, "automerge.wasm"),
-            );
-            return { path: "./automerge.wasm", external: true };
-          });
-        },
-      },
-    ],
+    plugins: [celldCborPlugin(), workerWasmPlugin(runtime)],
   });
   await writeFile(
     path.join(runtime, ".dev.vars"),

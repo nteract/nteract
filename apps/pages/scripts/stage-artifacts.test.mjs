@@ -60,11 +60,12 @@ test("staging copies exactly the certified files and the receipt", (t) => {
   );
 });
 
-// index.js, the WASM, wrangler.json and the shell's unhashed files carry no
-// digest in their names, so only the receipt's `files` catches a change.
+// index.js, the Worker's WASM, wrangler.json and the shell's unhashed files
+// carry no digest in their names, so only the receipt's `files` catches a change.
 for (const file of [
   "index.js",
   "automerge.wasm",
+  "sift.wasm",
   "wrangler.json",
   "public/index.html",
   "public/_headers",

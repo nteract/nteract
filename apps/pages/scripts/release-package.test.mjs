@@ -131,6 +131,7 @@ test("the release package holds exactly the package entries, no symlinks, and a 
   assert.deepEqual(readdirSync(path.join(extracted, "worker")).sort(), [
     "automerge.wasm",
     "index.js",
+    "sift.wasm",
   ]);
   assert.ok(files.every((file) => !file.includes(".dev.vars") && !file.includes(".celld")));
 });

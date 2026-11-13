@@ -1,6 +1,7 @@
 import { celldCborPlugin } from "./celld-cbor.mjs";
 import { AUTH_D1, USAGE_D1 } from "./deployment/profiles.mjs";
 import { workerShape } from "./worker-shape.mjs";
+import { workerWasmPlugin } from "./worker-modules.mjs";
 import { mermaidSource } from "./browser-mermaid.mjs";
 import { siftWasmPath } from "./browser-sift.mjs";
 import { formatsByType } from "../model/document-types.mjs";
@@ -165,21 +166,7 @@ await build({
   outfile: path.join(dist, "index.js"),
   // The Worker's own pages (/connect, OAuth) load the hashed theme and styles.
   define: { ...buildDefine, ...shellAssetDefine(Object.values(assets)) },
-  plugins: [
-    celldCborPlugin(),
-    {
-      name: "compiled-wasm",
-      setup(b) {
-        b.onResolve({ filter: /\.wasm$/ }, async (args) => {
-          await copyFile(
-            path.resolve(args.resolveDir, args.path),
-            path.join(dist, "automerge.wasm"),
-          );
-          return { path: "./automerge.wasm", external: true };
-        });
-      },
-    },
-  ],
+  plugins: [celldCborPlugin(), workerWasmPlugin(dist)],
 });
 await copyFile(path.join(app, "viewer/connect-agent.js"), path.join(dist, "public/connect.js"));
 await writeFile(

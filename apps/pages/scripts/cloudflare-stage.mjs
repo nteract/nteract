@@ -12,6 +12,7 @@ import { stageArtifacts } from "./stage-artifacts.mjs";
 import { sourceFingerprint } from "./source-fingerprint.mjs";
 import { AUTH_D1, USAGE_D1 } from "./deployment/profiles.mjs";
 import { workerShape } from "./worker-shape.mjs";
+import { WORKER_MODULES } from "./worker-modules.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 // Cloudflare's own limits: Worker names and R2 bucket names.
@@ -179,7 +180,7 @@ export function stageCloudflareFiles(dist, destination, profile) {
 export function stageWithConfig(dist, destination, config) {
   stageArtifacts(dist, destination);
   mkdirSync(path.join(destination, "worker"));
-  for (const file of ["index.js", "automerge.wasm"])
+  for (const file of ["index.js", ...WORKER_MODULES])
     renameSync(path.join(destination, file), path.join(destination, "worker", file));
   // Keeping the assets outside the entrypoint directory prevents Wrangler from
   // attaching the browser WASM copies as duplicate Worker modules.

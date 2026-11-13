@@ -801,7 +801,16 @@ source_revision. Resend the same nonce to retry.
 
 read_page with sources:true lists every source: source_id, name,
 source_revision, asset_id and media_type. source_id:"<source_id>" reads one
-with producer: kind, at (when it was set) and by (who set it: principal,
+with summary, what its dataset holds, read from the Parquet footer without
+downloading it: {rows, row_groups, created_by, column_count, columns}, each
+column {name, type, nullable, null_count, min, max, bounds_exact}. type is
+the Arrow type the file reads as. min and max bound the whole file, or are
+null when its statistics don't; dates are YYYY-MM-DD, timestamps ISO 8601
+in UTC, and an infinite bound "Infinity" or "-Infinity". bounds_exact is
+false when the writer cut a text bound short. columns stops early, with
+columns_truncated true, after 200 columns, 32 KiB, or what max_bytes
+leaves; column_count counts them all. summary is null when the footer can't
+be read. It also has producer: kind, at (when it was set) and by (who set it: principal,
 displayName, driver, and agent {name, model} when the writing client asserted
 one). Its history lists the source's newest 50 revisions, oldest first, each
 {revision, name, media_type, asset_id, at, by}; history_truncated is true
