@@ -1,6 +1,6 @@
 {
   "machine": "session-refresh",
-  "description": "The browser's session refreshes: one request in flight, renewals join it, and a refresh that can change the answer (visible, retry) supersedes it with one fresh request. A run of unreachable answers (a restart, a gateway error, a lost connection, the request deadline) is tracked from its first answer. A signed-in tab says nothing about it until it has lasted 20 s, then reports one outage; a tab with no account yet, and any failure the server answered, says so at once. Runs against viewer/session-refresh-machine.mjs and through maintainBrowserSession in viewer/browser-session.test.mjs.",
+  "description": "The browser's session refreshes: one request in flight, renewals join it, and a refresh that can change the answer (visible, retry) supersedes it with one fresh request. A run of unreachable answers (a restart, a gateway error, a lost connection, the request deadline) is tracked from its first answer. A signed-in tab says nothing about it until it has lasted 20 s, then reports one outage; a tab with no account yet says the error on every unanswered check, however long the run, as it does for any failure the server answered. Runs against viewer/session-refresh-machine.mjs and through maintainBrowserSession in viewer/browser-session.test.mjs.",
   "states": [
     "idle",
     "scheduled",
@@ -46,7 +46,8 @@
       "unreachable-brief",
       "unreachable-outage",
       "unreachable-idle",
-      "unreachable-no-account"
+      "unreachable-no-account",
+      "unreachable-no-account-long"
     ]
   },
   "rows": [
@@ -669,6 +670,42 @@
         "type": "settled",
         "outcome": "unreachable",
         "at": 30000
+      },
+      "expect": {
+        "state": {
+          "name": "scheduled",
+          "signedIn": false,
+          "failingSince": 30000
+        },
+        "effects": [
+          {
+            "type": "schedule",
+            "delayMs": 60000
+          },
+          {
+            "type": "answer"
+          },
+          {
+            "type": "apply",
+            "outcome": "unreachable",
+            "notice": "failure"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a tab with no account yet past the outage threshold still says the error, not the outage",
+      "case": "unreachable-no-account-long",
+      "state": {
+        "name": "requesting",
+        "keepAlive": true,
+        "signedIn": false,
+        "failingSince": 30000
+      },
+      "event": {
+        "type": "settled",
+        "outcome": "unreachable",
+        "at": 120000
       },
       "expect": {
         "state": {

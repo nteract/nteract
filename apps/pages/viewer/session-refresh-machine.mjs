@@ -47,11 +47,13 @@
  * - `quiet`: nothing. An unreachable answer for a tab that is signed in,
  *   before the run of them has lasted OUTAGE_MS. The Page keeps working on
  *   the session it has, and the next renewal asks again.
- * - `outage`: one notice that the server can't be reached, once the run of
- *   unreachable answers has lasted OUTAGE_MS, until any other answer ends
- *   the run.
- * - `failure`: the error itself. Any `failed` answer, and an unreachable one
- *   for a tab with no account yet, which has nothing else on screen.
+ * - `outage`: one notice that the server can't be reached, for a tab that is
+ *   signed in, once the run of unreachable answers has lasted OUTAGE_MS,
+ *   until any other answer ends the run. Its sentence says the person's
+ *   changes are saved on this device, which needs an account.
+ * - `failure`: the error itself. Any `failed` answer, and every unreachable
+ *   one for a tab with no account yet, however long the run, since nothing
+ *   else is on screen.
  * Page reconnects refresh the session too, so an open Page reaches the
  * threshold on its own cadence; a tab with only the renewal timer reaches it
  * on the next renewal.
@@ -123,6 +125,7 @@ export const sessionRefreshSpec = Object.freeze({
       "unreachable-outage",
       "unreachable-idle",
       "unreachable-no-account",
+      "unreachable-no-account-long",
     ],
   },
   validate: {
@@ -177,9 +180,8 @@ const SCHEDULE = Object.freeze({ type: "schedule", delayMs: RENEW_MS });
 /** What the viewer says about a failed or unreachable answer (see NOTICES),
  * `failingFor` ms into the run of unreachable answers. */
 function failureNotice(state, outcome, failingFor) {
-  if (outcome === "failed") return "failure";
-  if (failingFor >= OUTAGE_MS) return "outage";
-  return state.signedIn ? "quiet" : "failure";
+  if (outcome === "failed" || !state.signedIn) return "failure";
+  return failingFor >= OUTAGE_MS ? "outage" : "quiet";
 }
 
 // `apply` comes last: the viewer's callback may refresh again, and that

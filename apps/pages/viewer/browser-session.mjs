@@ -25,8 +25,9 @@ function outcomeOf(answer) {
  * `onError(error, { notice })` gets each other failure, with what the viewer
  * says about it (session-refresh-machine.mjs NOTICES): `quiet` while a
  * signed-in tab's checks go unanswered (isUnansweredFailure: a lost
- * connection, a restart or the request deadline), `outage` once they have
- * gone unanswered for OUTAGE_MS, and `failure` for anything else. `now` is
+ * connection, a restart or the request deadline), `outage` once a signed-in
+ * tab's checks have gone unanswered for OUTAGE_MS, and `failure` for
+ * anything else, including every unanswered check of a tab with no account. `now` is
  * the monotonic clock those runs are timed with (monotonic.mjs).
  */
 export function maintainBrowserSession({

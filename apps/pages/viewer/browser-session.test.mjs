@@ -99,10 +99,10 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 test("the session-refresh table runs through the pure machine", async () => {
   assert.deepEqual(await runTable(sessionRefreshMachine, loadTable(TABLE)), {
-    rows: 37,
+    rows: 38,
     pairs: 13,
     unreachable: 2,
-    cases: 16,
+    cases: 17,
   });
 });
 
@@ -600,6 +600,11 @@ test("a first session check that times out says so: nothing else is on screen", 
   await screen.expireRequest();
   await assert.rejects(first, { code: "REQUEST_TIMEOUT" });
   assert.deepEqual(screen.f.notices, ["failure"]);
+  assert.deepEqual(screen.banners(), ["The request timed out. Please try again."]);
+  // Past OUTAGE_MS it still says the error: the outage sentence promises
+  // changes saved on this device, and no account has loaded.
+  await screen.renewTimingOut(60_000);
+  assert.deepEqual(screen.f.notices, ["failure", "failure"]);
   assert.deepEqual(screen.banners(), ["The request timed out. Please try again."]);
   // It still renews, and the answer clears the notice.
   screen.set("ok");
