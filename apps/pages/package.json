@@ -30,7 +30,7 @@
     "@automerge/automerge-repo": "3.0.0-experimental.1",
     "@duckdb/duckdb-wasm": "1.32.0",
     "@modelcontextprotocol/sdk": "1.29.0",
-    "@nteract/sift": "0.7.0-nightly.43101001872",
+    "@nteract/sift": "0.7.0-nightly.43424567443",
     "@types/node": "22.20.0",
     "apache-arrow": "17.0.0",
     "diff": "8.0.2",
