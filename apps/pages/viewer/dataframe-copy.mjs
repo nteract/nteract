@@ -110,6 +110,8 @@ export function readsPastedHTML(state, transfer, { at, plain = false }) {
  * selected, `target.from` to `target.to` (two captured insertions,
  * image-upload.mjs), as Wordgard's own paste does. When an end no longer
  * resolves, the paste goes in at the end that does, the caret end first.
+ * The editor dispatches it in `{ correct, local: true }`, as Wordgard's own
+ * paste does.
  */
 export function heldPasteChange(replica, target, map, insert) {
   const resolve = (end) => {

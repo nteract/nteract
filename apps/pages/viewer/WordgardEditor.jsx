@@ -502,6 +502,9 @@ export function WordgardEditor(props) {
             (latest.current.editable && Command.dispatch(editor, toggleHighlight)),
         }),
         Wordgard.contentAttributes.of({ "aria-label": "Document text", ...PROSE_ENTRY_ATTRIBUTES }),
+        // Wordgard rewrites the editor element's class on focus, so classes
+        // added to editor.dom directly don't last. Add them here.
+        Wordgard.editorAttributes.of({ class: "wordgard-document" }),
         // On phones the compact bar and the header cover the visual viewport's
         // edges; keep the caret clear of both when scrolling it into view.
         Wordgard.coveredMargins.of(() => {
@@ -517,7 +520,7 @@ export function WordgardEditor(props) {
             bottom: bar ? Math.max(0, bottomEdge - bar.top) : 0,
           };
         }),
-        // Wordgard 0.6.2's scrollTo shrinks the caret's rect by the covered
+        // Wordgard 0.7.0's scrollTo shrinks the caret's rect by the covered
         // margins where it should grow it, so with any covered margin the
         // caret can stop under the header or the bar; margins taller than a
         // line flip the rect and skip the scroll entirely. Desktop's header
@@ -646,7 +649,9 @@ export function WordgardEditor(props) {
         const changes = heldPasteChange(replica, target, bound.current.map, slice);
         const local = new Set(copied.values());
         const before = blockDataframes(local);
-        editor.dispatch({ changes, userEvent: "input.paste" });
+        // The shape Wordgard's own paste dispatches: corrected as a whole
+        // and kept narrow, so an opened node doesn't swallow what follows.
+        editor.dispatch({ changes: { correct: changes, local: true }, userEvent: "input.paste" });
         // The editor reports a refused write through its exception sink; say
         // so rather than leave the person thinking the table landed.
         if (local.size && blockDataframes(local) <= before)
@@ -662,7 +667,6 @@ export function WordgardEditor(props) {
         ),
     });
     dataframeCopier.current = copier;
-    editor.dom.classList.add("wordgard-document");
     let caretFrame = null,
       beatTimer;
     const reducedMotion = glide.enabled && matchMedia("(prefers-reduced-motion: reduce)");

@@ -39,7 +39,7 @@
     "rxjs": "^7.8.2",
     "typescript": "6.0.3",
     "use-sync-external-store": "1.6.0",
-    "wordgard": "0.6.2"
+    "wordgard": "0.7.0"
   },
   "devDependencies": {
     "@playwright/test": "1.59.1",

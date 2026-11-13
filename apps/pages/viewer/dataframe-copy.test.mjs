@@ -605,7 +605,9 @@ test("a held paste replaces the selected text, or lands at the end that still re
   );
   const changes = heldPasteChange(replica, target, binding.current.map, slice);
   assert.deepEqual([changes.from, changes.to], [start, end]);
-  binding.applyEditorTransaction(state().update({ changes, userEvent: "input.paste" }));
+  binding.applyEditorTransaction(
+    state().update({ changes: { correct: changes, local: true }, userEvent: "input.paste" }),
+  );
   const markdown = blockMarkdown(doc.blocks[id]);
   assert.equal(markdown.includes("replace this"), false, markdown);
   assert.match(markdown, /Keep this, /);

@@ -263,10 +263,7 @@ const dataframeTable = Widget.define({
 
 /**
  * Editor config that draws every dataframe node as its table, reading only
- * datasets of `pageId`. This is a tag shape, the node type's own drawing, not
- * a point decoration. Wordgard 0.6.2 throws "Moving past end of document"
- * when a shaped point decoration first appears at an insertion boundary at
- * the end of a document, which is where a dropped dataset usually lands.
+ * datasets of `pageId`. This is a tag shape, the node type's own drawing.
  * `eager` loads each table at once rather than near the viewport.
  */
 export function wordgardDataframes({ pageId, eager = false } = {}) {

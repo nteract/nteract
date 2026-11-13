@@ -243,6 +243,17 @@ test("dragging a double-click extends by whole identifiers", () => {
   );
 });
 
+// Between two blocks there is no word, and Wordgard's wordAt returns null.
+test("dragging a double-click onto a block boundary keeps the first identifier", () => {
+  const { state, at } = fixture(SQL);
+  const style = codeWordMouseSelection(editorAt(state), press(at("pages_cat▮alog_tags")));
+  const between = at("▮Prose names") - 1;
+  assert.equal(state.wordAt(between, 1), null);
+  const selection = style.get(press(between), false);
+  assert.equal(selection.anchor, at("▮pages_catalog_tags"));
+  assert.ok(selection.head >= at("pages_catalog_tags▮"));
+});
+
 test("a Shift double-click extends the selection to the identifier", () => {
   const { state, at, drawn } = fixture(SQL);
   const from = at("▮CREATE");
