@@ -4,9 +4,10 @@
 // While review is open the Page behind it holds still: after every wheel over
 // each part of the workspace and its margins, and every touch drag over the
 // conversation, the document's scroll is where it was, including when a
-// column is already at its top or bottom. Exiting review leaves the Page at
-// that same position. Measurements are written to review-report.json before
-// any assertion fails.
+// column is already at its top or bottom. The account menu's appearance
+// controls open above review and change the theme without ending it. Exiting
+// review leaves the Page at that same position. Measurements are written to
+// review-report.json before any assertion fails.
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
@@ -265,6 +266,43 @@ try {
     }
     await page.emulateMedia({ colorScheme: null });
     await page.mouse.move(4, 4);
+
+    // The account menu's appearance controls switch the theme during review.
+    // Beside the Page the menu opens over the workspace and review stays up;
+    // a click back in the conversation returns the review keys. The sheet is
+    // modal, so a tap outside it closes it and Comments brings review back.
+    const sheet = await page
+      .locator("#page-comments")
+      .evaluate((dialog) => dialog.matches(":modal"));
+    entry.appearance = { sheet };
+    if (sheet) {
+      await page.mouse.click(width / 2, 20);
+      await expect(page.locator("#page-comments")).toBeHidden();
+    }
+    await page.locator("details.account-actions summary").click();
+    const dark = page.getByRole("button", { name: "Dark", exact: true });
+    await expect(dark).toBeVisible();
+    entry.appearance.menuOnTop = await dark.evaluate((button) => {
+      const box = button.getBoundingClientRect();
+      return button.contains(
+        document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2),
+      );
+    });
+    check(entry.appearance.menuOnTop, `${at}: the appearance controls open above review`);
+    await dark.click();
+    await expect(page.locator(":root.dark")).toHaveCount(1);
+    await page.screenshot({ path: `${output}/review-${at}-appearance.png` });
+    await page.getByRole("button", { name: "System", exact: true }).click();
+    await expect(page.locator(":root.light")).toHaveCount(1);
+    if (sheet) await page.getByRole("button", { name: "Comments", exact: true }).click();
+    else await page.locator("#page-comments .thread-view .message-body").first().click();
+    await expect(page.locator("details.account-actions[open]")).toHaveCount(0);
+    await expect(page.locator("#page-comments.comments-review")).toBeVisible();
+    entry.appearance.focusInReview = await page.evaluate(() =>
+      document.getElementById("page-comments").contains(document.activeElement),
+    );
+    check(entry.appearance.focusInReview, `${at}: review has the keyboard after a theme change`);
+    await rest();
 
     await expect(reviewed).toHaveAttribute("data-thread-id", threadIds[0]);
     await page.keyboard.press("j");
