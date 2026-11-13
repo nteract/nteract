@@ -436,6 +436,35 @@ test("a legacy client's responses are pinned", async () => {
         error: { code: -32700, message: "Parse error: Invalid JSON" },
       },
     },
+    // Bodies that claim no protocol revision stay legacy even where they are
+    // not valid JSON-RPC: the initialize-era transport answers them.
+    ...[
+      ["an object that is not a JSON-RPC message", {}],
+      ["a JSON-RPC 1.0 message", { jsonrpc: "1.0", id: 1, method: "ping" }],
+      ["a batch with an invalid message", [{ jsonrpc: "2.0", id: 1, method: "ping" }, {}]],
+      ["a JSON string", '"ping"'],
+    ].map(([name, body]) => ({
+      name,
+      request: post(typeof body === "string" ? body : JSON.stringify(body)),
+      status: 400,
+      body: {
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32700, message: "Parse error: Invalid JSON-RPC message" },
+      },
+    })),
+    {
+      name: "an empty batch",
+      request: post("[]"),
+      status: 202,
+    },
+    {
+      // Larger than the SDK's 4 MiB default: the legacy leg reads it.
+      name: "a body over 4 MiB",
+      request: legacy("ping", { _pad: "x".repeat(5 * 1024 * 1024) }),
+      status: 200,
+      body: { jsonrpc: "2.0", id: 1, result: {} },
+    },
     {
       name: "a missing Accept header",
       request: new Request("http://127.0.0.1:9477/mcp", {

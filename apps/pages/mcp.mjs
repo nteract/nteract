@@ -21,7 +21,9 @@ import {
 } from "./worker/asset-uploads.mjs";
 import {
   CLIENT_INFO_META_KEY,
+  PROTOCOL_VERSION_META_KEY,
   SERVER_INFO_META_KEY,
+  SUPPORTED_PROTOCOL_VERSIONS,
   Server,
   WebStandardStreamableHTTPServerTransport,
   createMcpHandler,
@@ -1078,6 +1080,37 @@ const CACHE_HINTS = Object.freeze({
 
 const SERVER_INFO = Object.freeze({ name: PRODUCT_NAME, version: "0.1.0" });
 
+/** Largest body the legacy leg reads. The legacy transport otherwise stops at
+ * 4 MiB; this bound is the Workers request limit, so the legacy leg refuses no
+ * body the runtime delivers. */
+const LEGACY_MAX_REQUEST_BODY_BYTES = 100 * 1024 * 1024;
+
+/** True when a request claims revision 2026-07-28 or later: a protocol version
+ * in some message's params._meta, or an MCP-Protocol-Version header naming a
+ * revision that initialize never negotiates. isLegacyRequest also hands the
+ * modern leg bodies with no such claim (malformed JSON-RPC, an empty batch, a
+ * body over 4 MiB); those stay on the legacy leg, which answers them with the
+ * initialize-era errors. */
+async function claimsModernRevision(request) {
+  const header = request.headers.get("mcp-protocol-version");
+  if (header && !SUPPORTED_PROTOCOL_VERSIONS.includes(header)) return true;
+  let body;
+  try {
+    body = await request.clone().json();
+  } catch {
+    return false;
+  }
+  return (Array.isArray(body) ? body : [body]).some((message) => {
+    const meta = message?.params?._meta;
+    return (
+      meta !== null &&
+      typeof meta === "object" &&
+      !Array.isArray(meta) &&
+      Object.hasOwn(meta, PROTOCOL_VERSION_META_KEY)
+    );
+  });
+}
+
 const securityHeaders = (response) => {
   response.headers.set("Cache-Control", "no-store");
   response.headers.set("X-Content-Type-Options", "nosniff");
@@ -1117,7 +1150,7 @@ export async function handleMcp(request, invoke, env, { onInitialize } = {}) {
     );
   let legacy;
   try {
-    legacy = await isLegacyRequest(request);
+    legacy = (await isLegacyRequest(request)) || !(await claimsModernRevision(request));
   } catch {
     // The legacy transport reports an unreadable body itself.
     legacy = true;
@@ -1141,6 +1174,7 @@ export async function handleMcp(request, invoke, env, { onInitialize } = {}) {
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     enableJsonResponse: true,
+    maxRequestBodySize: LEGACY_MAX_REQUEST_BODY_BYTES,
   });
   await server.connect(transport);
   let initialize;
