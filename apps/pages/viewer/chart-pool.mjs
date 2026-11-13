@@ -23,7 +23,8 @@
 // (`warm`): the Worker it will draw in starts, with no job, so it is ready
 // and probed by the time the chart's data is. While the pool is warm, a
 // Worker whose last chart leaves stays; `cool` stops a Worker no chart
-// holds.
+// holds. A warm pool starts nothing while its document is hidden, and on
+// `show` starts its Worker again when none is up.
 //
 // `chartPool` is the pure transition function over named Worker states and
 // job states (the table below); `createChartPool` runs its effects.
@@ -114,6 +115,19 @@ function start(state, slot) {
       { type: "timer", name: `ready:${slot}`, kind: "ready", slot, gen },
     ],
   };
+}
+
+/** In a warm, visible pool with no Worker up, start the Worker the first
+ * chart will join: slot 0, the least loaded. */
+function warmStart(state) {
+  if (
+    !state.warm ||
+    state.hidden ||
+    state.size < 1 ||
+    state.slots.some((slot) => slot.phase !== "down")
+  )
+    return unchanged(state);
+  return start(state.slots.length ? state : { ...state, slots: [newSlot()] }, 0);
 }
 
 const newSlot = () => ({ gen: 0, phase: "down", job: null, keys: [], loaded: [], font: null });
@@ -316,15 +330,9 @@ export function chartPool(state, event) {
         return unchanged(state);
       return stop(state, event.slot, failure(WORKER_DIDNT_START), { failWaiting: true });
     }
-    case "warm": {
-      // Start the Worker the first chart will join (slot 0, the least
-      // loaded), unless a Worker is already up.
+    case "warm":
       if (state.warm) return unchanged(state);
-      const next = { ...state, warm: true };
-      if (next.hidden || next.size < 1 || next.slots.some((slot) => slot.phase !== "down"))
-        return unchanged(next);
-      return start(next.slots.length ? next : { ...next, slots: [newSlot()] }, 0);
-    }
+      return warmStart({ ...state, warm: true });
     case "cool": {
       if (!state.warm) return unchanged(state);
       let result = unchanged({ ...state, warm: false });
@@ -356,7 +364,7 @@ export function chartPool(state, event) {
       state.slots.forEach((_, index) => {
         result = then(result, (next) => pump(next, index));
       });
-      return result;
+      return then(result, warmStart);
     }
   }
   throw new Error(`unknown chart pool event ${event.type}`);

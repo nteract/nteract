@@ -20,6 +20,7 @@
 import { Decoration, Widget } from "wordgard/editor";
 import { PagesView } from "../model/wordgard-doc.mjs";
 import { readViewNode } from "../shared/views.mjs";
+import { chartWarmupMachine } from "./chart-warmup-machine.mjs";
 import { viewHeight } from "./view-heights.mjs";
 import { dataframeLifecycle } from "./wordgard-dataframes.mjs";
 import { reportRendererUnavailable } from "./wordgard-widgets.mjs";
@@ -159,51 +160,77 @@ export function viewLifecycle({
 }
 
 /**
- * Warms the chart path for one editor's embeds: while at least one embed is
+ * Warms the chart path for one editor's embeds, running chartWarmupMachine
+ * (chart-warmup-machine.mjs) with its effects at the edge: while an embed is
  * connected, the chart chunk is loaded (`load`, the same import an embed's
- * lifecycle makes) and the document's chart Worker is kept started
+ * lifecycle makes) and one held document's chart Worker is kept started
  * (view-chart.mjs `warm`). It looks up no view or source, holds no view slot
- * and arms no timer of its own. A chunk that fails to load is ignored here;
- * the embed's own load reports it. The last embed's release lets the Worker
- * go a microtask later, so an embed Wordgard disconnects and connects again
- * in one turn keeps it.
+ * and arms no timer. A chunk that fails to load is ignored here; the embed's
+ * own load reports it. `defer` runs the machine's deferred settle.
  */
-export function chartWarmup({ load = VIEW_RENDERER } = {}) {
-  let holds = 0;
-  let release = null;
-  let loading = false;
-  const start = (doc) => {
-    if (release || loading) return;
-    loading = true;
-    Promise.resolve()
-      .then(load)
-      .then((chunk) => {
-        loading = false;
-        if (holds > 0 && !release) release = chunk.warm?.(doc) ?? null;
-      })
-      .catch(() => {
-        loading = false;
-      });
+export function chartWarmup({ load = VIEW_RENDERER, defer = queueMicrotask } = {}) {
+  let state = chartWarmupMachine.initial;
+  let chunk = null;
+  let count = 0;
+  const ids = new WeakMap();
+  const docs = new Map();
+  const releases = new Map();
+  const idOf = (doc) => {
+    let id = ids.get(doc);
+    if (!id) ids.set(doc, (id = `doc-${++count}`));
+    docs.set(id, doc);
+    return id;
   };
-  const settle = () => {
-    if (holds > 0 || !release) return;
-    const stop = release;
-    release = null;
-    try {
-      stop();
-    } catch {}
+  const dispatch = (event) => {
+    const result = chartWarmupMachine.step(state, event);
+    state = result.state;
+    for (const effect of result.effects) run(effect);
+    // Keep only the documents the machine still names.
+    for (const id of docs.keys())
+      if (!Object.hasOwn(state.holds ?? {}, id) && state.warm !== id) docs.delete(id);
   };
+  function run(effect) {
+    switch (effect.type) {
+      case "load":
+        Promise.resolve()
+          .then(load)
+          .then(
+            (loaded) => {
+              chunk = loaded;
+              dispatch({ type: "loaded" });
+            },
+            () => dispatch({ type: "loadFailed" }),
+          );
+        return;
+      case "warm":
+        try {
+          const release = chunk?.warm?.(docs.get(effect.doc));
+          if (typeof release === "function") releases.set(effect.doc, release);
+        } catch {}
+        return;
+      case "cool": {
+        const release = releases.get(effect.doc);
+        releases.delete(effect.doc);
+        try {
+          release?.();
+        } catch {}
+        return;
+      }
+      case "defer":
+        defer(() => dispatch({ type: "settle" }));
+        return;
+    }
+  }
   return {
     /** Hold the warm path for an embed in `doc`; returns its release. */
     hold(doc) {
+      const id = idOf(doc);
+      dispatch({ type: "hold", doc: id });
       let held = true;
-      holds++;
-      start(doc);
       return () => {
         if (!held) return;
         held = false;
-        holds--;
-        queueMicrotask(settle);
+        dispatch({ type: "release", doc: id });
       };
     },
   };
