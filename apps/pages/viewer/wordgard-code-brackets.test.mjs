@@ -119,6 +119,45 @@ test("a quote pairs where a string can start", () => {
   ]);
 });
 
+test("a quote that ends a string from an earlier line, or sits in a comment, inserts only itself", () => {
+  typing([
+    ["javascript", "const s = `hello\nworld ▮", "`", "const s = `hello\nworld `▮"],
+    ["javascript", "const s = `hello\n▮", "`", "const s = `hello\n`▮"],
+    ["python", 'x = """doc\nmore ▮', '"', 'x = """doc\nmore "▮'],
+    ["javascript", "// say ▮", '"', '// say "▮'],
+    ["python", "# say ▮", "'", "# say '▮"],
+    // A string that closed on an earlier line leaves the next quote free.
+    ["javascript", "const s = `a\nb`\n▮", "`", "const s = `a\nb`\n`▮`"],
+    ["javascript", "const s = `hello\n  ▮", "`", "const s = `hello\n  `▮"],
+    ["python", 'x = """\n▮', '"', 'x = """\n"▮'],
+    // Two quotes closing a docstring: the third closes it, no new triple.
+    ["python", 'x = """doc\n""▮', '"', 'x = """doc\n"""▮'],
+    ["python", "# ''▮", "'", "# '''▮"],
+    // Where a single probe character would start a string or comment itself.
+    ["css", "a { background: url(▮); }", '"', 'a { background: url("▮"); }'],
+    ["javascript", "--▮", '"', '--"▮"'],
+    ["html", "<a href=▮>", '"', '<a href="▮">'],
+    // Shell's backtick is a quote token, not a string one.
+    ["shell", "echo ▮", "`", "echo `▮`"],
+    // With no highlighter, the quotes on the caret's line decide.
+    ["", "say 'hi ▮", "'", "say 'hi '▮"],
+    ["", "say ▮", "'", "say '▮'"],
+  ]);
+});
+
+test("past the highlighter's 10,000 characters a quote inserts only itself", () => {
+  typing([
+    [
+      "javascript",
+      "const s = `" + "a".repeat(10_000) + "\n▮",
+      "`",
+      "const s = `" + "a".repeat(10_000) + "\n`▮",
+    ],
+    // Brackets still pair there.
+    ["javascript", "x".repeat(10_000) + "\n▮", "(", "x".repeat(10_000) + "\n(▮)"],
+  ]);
+});
+
 test("a third quote opens a triple-quoted string in Python", () => {
   typing([
     ["python", "▮", '"""', '"""▮"""'],

@@ -2,7 +2,7 @@ import { Leaf } from "wordgard/doc";
 import { Command, deleteUnit, insertText } from "wordgard/command";
 import { GardSelection, GardState, Transaction } from "wordgard/state";
 import { CodeBlock, CodeBlockLanguage } from "./wordgard-model.mjs";
-import { languageFor } from "./code-highlight.mjs";
+import { insideStringOrComment, languageFor } from "./code-highlight.mjs";
 import { lineEnd, lineStart, selectedCode, sourceOf } from "./wordgard-code-indent.mjs";
 
 // Closing brackets and quotes in a code block, following CodeMirror's
@@ -13,9 +13,10 @@ import { lineEnd, lineStart, selectedCode, sourceOf } from "./wordgard-code-inde
 // every command here returns false, so typing and Backspace stay Wordgard's.
 //
 // CodeMirror reads the syntax tree to tell a quote that opens a string from
-// one that ends it. Wordgard's highlighter keeps no tree, so a quote pairs
-// only when it doesn't follow a word character and the line before the caret
-// holds an even number of that quote.
+// one that ends it. Wordgard keeps no tree, so a quote pairs when it doesn't
+// follow a word character and the highlighter's tokenizer puts the caret
+// outside any string or comment, including one that began on an earlier line.
+// A block with no highlighter counts the quote on the caret's line instead.
 
 const DEFAULT_BRACKETS = ["(", "[", "{", "'", '"'];
 // An opener pairs only before one of these, whitespace, or the end of a line.
@@ -55,8 +56,8 @@ function stringStart(source, at, config) {
   return -1;
 }
 
-/** Whether the line before `at` leaves a `quote` string open: it holds an odd
- * number of unescaped `quote`s. */
+/** For a block with no highlighter: whether the line before `at` leaves a
+ * `quote` string open, holding an odd number of unescaped `quote`s. */
 function insideString(source, at, quote) {
   let open = false;
   for (let i = lineStart(source, at); i < at; i++) {
@@ -64,6 +65,14 @@ function insideString(source, at, quote) {
     else if (source[i] === quote) open = !open;
   }
   return open;
+}
+
+/** Whether `offset` lies outside every string and comment, where a quote can
+ * open a string. */
+function outsideStrings(code, offset, quote) {
+  const language = code.block.node.mark(CodeBlockLanguage);
+  const inside = insideStringOrComment(language, code.source, offset);
+  return !(inside ?? insideString(code.source, offset, quote));
 }
 
 // Closers the editor inserted, by document position. Typing a closer moves
@@ -175,7 +184,7 @@ function typeQuote(state, code, quote, config) {
     source.endsWith(quote + quote, from)
   ) {
     const opens = stringStart(source, from - 2, config);
-    if (opens >= 0 && source[opens - 1] !== quote) {
+    if (opens >= 0 && source[opens - 1] !== quote && outsideStrings(code, opens, quote)) {
       return typed({
         changes: { from: at, insert: [Leaf.text(quote.repeat(4))] },
         selection: GardSelection.cursor(at + 1),
@@ -184,7 +193,8 @@ function typeQuote(state, code, quote, config) {
     }
   }
   if (isWord(next, config)) return false;
-  if (stringStart(source, from, config) < 0 || insideString(source, from, quote)) return false;
+  const opens = stringStart(source, from, config);
+  if (opens < 0 || !outsideStrings(code, opens, quote)) return false;
   return insertPair(at, quote, quote);
 }
 

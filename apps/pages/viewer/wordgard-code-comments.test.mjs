@@ -92,6 +92,15 @@ test("CSS and HTML lines get one block comment around them", () => {
     ["css", "  «a {}»", "  «/* a {}» */"],
     ["html", "<p>x▮</p>", "<!-- <p>x▮</p> -->"],
     ["html", "<!--<p>x▮</p>-->", "<p>x▮</p>"],
+    // An empty comment's one space goes once.
+    ["css", "/* */▮", "▮"],
+    ["html", "«<!-- -->»", "▮"],
+    // Delimiters on their own lines around the touched lines.
+    ["css", "/*\na▮\n*/", "a▮"],
+    ["css", "/*\n  «a {}\n  b {}»\n*/", "  «a {}\n  b {}»"],
+    ["html", "<!--\n<p>x▮</p>\n-->", "<p>x▮</p>"],
+    // The whole comment selected, delimiters on their own lines.
+    ["css", "«/*\na\n*/»", "«a»"],
   ]);
 });
 
