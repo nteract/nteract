@@ -34,8 +34,11 @@ async function pages(path, key) {
 const run = (id, attempt) => json(`/actions/runs/${positive(id)}/attempts/${positive(attempt)}`);
 const artifacts = id => pages(`/actions/runs/${positive(id)}/artifacts`, 'artifacts');
 async function successfulJob(id, attempt, name) {
-  const jobs = await pages(`/actions/runs/${positive(id)}/attempts/${positive(attempt)}/jobs`, 'jobs');
-  return successfulJobAtAttempt(jobs, attempt, name);
+  const [jobs, attemptRun] = await Promise.all([
+    pages(`/actions/runs/${positive(id)}/attempts/${positive(attempt)}/jobs`, 'jobs'),
+    run(id, attempt),
+  ]);
+  return successfulJobAtAttempt(jobs, attempt, name, attemptRun);
 }
 async function zipEntries(artifact, names) {
   const bytes = Buffer.from(await (await request(`/actions/artifacts/${positive(artifact.id)}/zip`)).arrayBuffer());
