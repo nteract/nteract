@@ -1023,6 +1023,31 @@ try {
   await saved(a);
   checkpoint(stage);
 
+  stage = "code brackets close themselves and Mod-/ toggles a line comment";
+  await create("", "Wordgard code keys fixture " + Date.now());
+  await content(a).click();
+  await a.keyboard.type("```python");
+  await a.keyboard.press("Enter");
+  await expect(content(a).locator("pre")).toBeVisible();
+  // Each opener inserts its closer; typing the closer moves over it.
+  await a.keyboard.type('print("hi")');
+  for (const page of [a, b]) await expect.poll(() => textOf(page)).toBe('print("hi")');
+  // Backspace inside an empty pair deletes both.
+  await a.keyboard.type(" [");
+  await expect.poll(() => textOf(a)).toBe('print("hi") []');
+  await a.keyboard.press("Backspace");
+  await expect.poll(() => textOf(a)).toBe('print("hi") ');
+  await a.keyboard.press("Backspace");
+  await a.keyboard.press("ControlOrMeta+/");
+  for (const page of [a, b]) await expect.poll(() => textOf(page)).toBe('# print("hi")');
+  await a.keyboard.press("ControlOrMeta+/");
+  for (const page of [a, b]) await expect.poll(() => textOf(page)).toBe('print("hi")');
+  // Each toggle is one undo step.
+  await a.keyboard.press("ControlOrMeta+z");
+  for (const page of [a, b]) await expect.poll(() => textOf(page)).toBe('# print("hi")');
+  await saved(a);
+  checkpoint(stage);
+
   stage = "code fence, remote language change preserves active source, Mermaid rendering";
   const code = await create("", "Wordgard rich fixture " + Date.now());
   await content(a).click();

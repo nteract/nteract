@@ -1199,6 +1199,25 @@ button.anchor-chip:hover {
   z-index: 20;
   box-shadow: 0 16px 48px #00000040;
 }
+/* The Page behind review holds still. Wheel and touch over the workspace's
+   unscrollable parts or the margins around it would otherwise scroll the
+   Page, and a column scrolled to its end would hand its scroll to the Page.
+   Hiding the root's overflow keeps its scroll position for when review ends. */
+:root:has(.comments.comments-review[open]) {
+  overflow: hidden;
+}
+/* The header stays above the workspace, so its menus (account and
+   appearance, the Page's actions) open over review instead of under it.
+   The workspace starts below the header, so raising it covers nothing. At
+   sheet width review is a modal dialog in the top layer and this has no effect. */
+:root:has(.comments.comments-review[open]) .app-header {
+  z-index: 21;
+}
+.comments-review .comments-list,
+.comments-review .page-excerpt,
+.comments-review .thread-view-scroll {
+  overscroll-behavior: contain;
+}
 .review-heading {
   gap: 10px !important;
 }
@@ -1344,6 +1363,12 @@ button.anchor-chip:hover {
   border: 0;
   background: color-mix(in oklab, var(--background) 14%, transparent);
   color: inherit;
+}
+/* Hover turns the resolve green of the progress bar and Resolve's check. The
+   text keeps --background, which reads on --success in both themes. This
+   rule outranks the global button:hover fill. */
+.review-resolve-next:hover:not(:disabled) {
+  background: var(--success);
 }
 .review-resolve-next:disabled {
   opacity: 0.5;

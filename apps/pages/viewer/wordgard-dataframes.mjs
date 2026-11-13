@@ -12,10 +12,12 @@ import { reportRendererUnavailable } from "./wordgard-widgets.mjs";
 import { PARQUET_MEDIA_TYPE, readDataframe } from "../shared/dataset-assets.mjs";
 import { asyncScheduler, timer as rxTimer } from "rxjs";
 import { dataframeTableMachine } from "./dataframe-table-machine.mjs";
+import { bindingKey, pinnedBinding } from "./dataframe-binding.mjs";
 
 /** Media type -> lazily loaded renderer module with
- * `mount(container, { src, pageId })` returning `{ destroy }`. Each is its own
- * chunk, loaded only when a Page shows that kind of dataframe. */
+ * `mount(container, { src, pageId, binding?, sources? })` returning
+ * `{ destroy }`. Each is its own chunk, loaded only when a Page shows that
+ * kind of dataframe. */
 export const DATAFRAME_RENDERERS = Object.freeze({
   [PARQUET_MEDIA_TYPE]: () => import("./sift-table.jsx"),
 });
@@ -235,7 +237,9 @@ const dataframeTable = Widget.define({
     a.media_type === b.media_type &&
     a.title === b.title &&
     a.pageId === b.pageId &&
-    a.eager === b.eager,
+    a.eager === b.eager &&
+    bindingKey(a.binding) === bindingKey(b.binding) &&
+    a.sources === b.sources,
   render(attrs, editor) {
     const frame = dataframeFrame(attrs);
     leaveGridOnEscape(editor, frame.dom);
@@ -245,7 +249,12 @@ const dataframeTable = Widget.define({
       frame.dom,
       dataframeLifecycle({
         ...frame,
-        attrs: { src: attrs.src, pageId: attrs.pageId },
+        attrs: {
+          src: attrs.src,
+          pageId: attrs.pageId,
+          binding: attrs.binding,
+          sources: attrs.sources,
+        },
         onUnavailable: reportRendererUnavailable,
         ...(attrs.eager && { observe: alwaysNear }),
       }),
@@ -263,21 +272,38 @@ const dataframeTable = Widget.define({
 
 /**
  * Editor config that draws every dataframe node as its table, reading only
- * datasets of `pageId`. This is a tag shape, the node type's own drawing, not
- * a point decoration. Wordgard 0.6.2 throws "Moving past end of document"
- * when a shaped point decoration first appears at an insertion boundary at
- * the end of a document, which is where a dropped dataset usually lands.
+ * datasets of `pageId`. This is a tag shape, the node type's own drawing.
  * `eager` loads each table at once rather than near the viewport.
+ *
+ * `binding` maps a node's read attrs to what its table draws from:
+ * `{ asset_id }`, `{ source_id }` or null (dataframe-binding.mjs). Every node
+ * draws its pinned asset unless a caller supplies another. A source binding
+ * draws through `sources`, the Page's source store (page-source-store.mjs);
+ * without one, the node draws its pinned asset.
  */
-export function wordgardDataframes({ pageId, eager = false } = {}) {
+export function wordgardDataframes({
+  pageId,
+  eager = false,
+  sources = null,
+  binding = pinnedBinding,
+} = {}) {
   if (typeof pageId !== "string" || !pageId)
     throw Error("wordgardDataframes needs the Page id it shows");
   return [
     Decoration.Tag.shape(
       PagesDataframe,
       (tag) => {
-        const { src, media_type, title } = readDataframe(tag.param);
-        return dataframeTable.of({ src, media_type, title, pageId, eager });
+        const dataframe = readDataframe(tag.param);
+        const { src, media_type, title } = dataframe;
+        return dataframeTable.of({
+          src,
+          media_type,
+          title,
+          pageId,
+          eager,
+          binding: binding(dataframe),
+          sources,
+        });
       },
       { atom: true },
     ),

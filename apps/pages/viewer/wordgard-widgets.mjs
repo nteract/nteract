@@ -392,8 +392,6 @@ export function wordgardWidgets() {
               // Selection entering source reveals it in the same transaction.
               Elt.mk("div", { class: "wordgard-diagram-block" }, [
                 diagram.of({ source: codeSource(node), editable: !state.readOnly }),
-                // The content hole must stay last: Wordgard 0.6.2 reparents
-                // trailing widgets into it when range decorations change.
                 Elt.mk("pre", { hidden: "", "aria-hidden": "true" }, [0]),
               ]),
             ),
@@ -406,9 +404,10 @@ export function wordgardWidgets() {
   ];
 }
 
-// Wordgard 0.6.2's end-tag widget renders twice for an empty code block and
-// intercepts native clipboard paste. A point widget appears only once source
-// exists; a ```language fence still chooses the language before any text.
+// The language menu is a point widget at the start of the content, before the
+// caret, so it never sits where Chromium sends a native paste. It appears
+// only once source exists; a ```language fence still chooses the language
+// before any text.
 const languageMenu = Widget.define({
   eq: (a, b) => a.value === b.value && a.languages === b.languages,
   render({ value, languages }, editor) {

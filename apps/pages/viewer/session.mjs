@@ -63,6 +63,8 @@ import {
   viewerReconnectMachine,
 } from "./reconnect-machine.mjs";
 import { commentsOpenMachine } from "./comments-open-machine.mjs";
+import { SourcesReplica } from "./sources-replica.mjs";
+import { PageSourceStore } from "./page-source-store.mjs";
 import { fullStatus, overlayStatus, viewerSyncStatusMachine } from "./sync-status-machine.mjs";
 import { FORMAT_GATE_INITIAL, PAGE_FORMAT_UNSUPPORTED, formatGateStep } from "./format-gate.mjs";
 import { validNonce } from "../model/nonce.mjs";
@@ -447,6 +449,12 @@ export class PageSession {
   reconnect$ = new Store(viewerReconnectMachine.initial);
   // Opening the comments document (comments-open-machine.mjs).
   commentsOpen$ = new Store(commentsOpenMachine.initial);
+  /** The Page's sources document on this replica, read-only
+   * (sources-replica.mjs). It isn't part of the checkpoint or the recovery
+   * archive: the host holds all of it, and this replica never changes it. */
+  sources;
+  /** The Page's source store over `sources`, once something reads it. */
+  sourceStore;
   /** What the status line says about receipts and the connection (see
    * sync-status-machine.mjs). `status` renders it with the phase's pauses. */
   sync$ = new Store(viewerSyncStatusMachine.initial);
@@ -523,6 +531,12 @@ export class PageSession {
     // receipt outages, reconnect stability, and presence and agent-progress
     // lifetimes. Readers of `peers` and `agentProgress` use it too.
     this.now = now;
+    this.sources = new SourcesReplica({
+      find: (id, options) => this.repo.find(id, options),
+      // A lookup's connection: the admitted one, or none while disconnected.
+      link: () => (this.sockets.size ? this.connectionGeneration : undefined),
+      scheduler,
+    });
     this.recoveryCapture = new RecoveryCapture({
       capture: (id) => this.captureRecoveryCopy(id),
       persist: (copy) => saveRecoveryCopy({ principal: copy.principal }, copy),
@@ -582,6 +596,19 @@ export class PageSession {
     return thread?.messages && Object.hasOwn(thread.messages, messageId)
       ? thread.messages[messageId]
       : undefined;
+  }
+  /** The Page's source store (page-source-store.mjs): one per session, over
+   * the sources document alone. Made on first use; released with the
+   * session. */
+  get pageSources() {
+    this.sourceStore ??= new PageSourceStore({ pageId: this.pageId, doc$: this.sources.doc$ });
+    return this.sourceStore;
+  }
+  /** Look up the sources document the current discovery names, after a
+   * connection was admitted. A hidden Page opens nothing. */
+  openSources() {
+    if (this.hidden || !this.connection || !this.backend) return;
+    this.sources.discovered(this.connection);
   }
   get alive() {
     return isLive(this.phase$.snapshot());
@@ -878,6 +905,7 @@ export class PageSession {
   }
   #release() {
     this.#stop();
+    this.sourceStore?.destroy();
     this.checkpointSnapshot = this.checkpointHeads = this.writtenCheckpoint = undefined;
     this.commentsCheckpointSnapshot = this.commentsCheckpointHeads = undefined;
     return this.releaseLocal();
@@ -935,6 +963,11 @@ export class PageSession {
    * and Try again captures again. */
   async #retire() {
     const { reason, released } = this.phase$.snapshot();
+    // The sources document retires on every path, a failed capture included:
+    // nothing in it is this replica's own, so it never waits on capture or
+    // the archive. Its synced bytes stay in the replica's database, as the
+    // Page's and comments' do.
+    this.sources.retire();
     let live = this.closedRecovery;
     if (!live) {
       try {
@@ -1937,6 +1970,8 @@ export class PageSession {
     this.handle.on("change", (event) => this.receiveChange(event));
     this.handle.on("ephemeral-message", (event) => this.ephemeral(event));
     this.openComments();
+    // A connection admitted before the handle opened named the sources.
+    if (this.sockets.size) this.openSources();
     // A Trash pause keeps its own notice.
     if (this.accessDenied && pauseOf(this.phase$.snapshot()).access !== "trash")
       this.accessProblem = DENIED_COPY;
@@ -2378,6 +2413,7 @@ export class PageSession {
       if (this.handle) {
         this.openComments();
         this.commentsOpen({ type: "reconnected" });
+        this.openSources();
       }
       this.clearConnectionProblem();
       this.syncStatus({ type: "admitted" });
@@ -3538,8 +3574,9 @@ export class PageSession {
       await this.storage?.close();
     } finally {
       this.local?.release();
-      // The replica goes, and with it any comments lookup.
+      // The replica goes, and with it any comments or sources lookup.
       this.commentsOpen({ type: "close" });
+      this.sources.close();
       this.repo = this.backend = this.storage = this.local = undefined;
       this.commentsHandle = this.pendingComments = undefined;
     }

@@ -18,9 +18,7 @@ import {
 } from "wordgard/highlight-code";
 import { StringStream } from "@codemirror/streamparser";
 import { Leaf } from "wordgard/doc";
-import { Decoration } from "wordgard/editor";
-import { RangeSet } from "wordgard/set";
-import { GardState } from "wordgard/state";
+import { Decoration, decoratePlots } from "wordgard/editor";
 import { CodeBlock, CodeBlockLanguage, LineBreak } from "wordgard/types";
 
 // The code block language menu lives in shared/ so agent guidance lists it too.
@@ -69,17 +67,17 @@ export function languageFor(stored) {
   return byName.get(name) ?? null;
 }
 
-// Mermaid never gets token decorations. Its block renders through a shape with
-// a hidden native content hole, and range decorations inside that hole stop
-// remote source edits from reaching it (Wordgard 0.6.2; see wordgard-widgets).
-// Mermaid isn't in the highlighter list, and this keeps it that way.
+/** The CodeMirror language data the language's parser carries, such as
+ * `commentTokens` and `closeBrackets`. Empty for an unknown language. */
+export function languageData(stored) {
+  return languageFor(stored)?.parser.languageData ?? {};
+}
+
+// Mermaid never gets token decorations: it isn't in the highlighter list.
 // Tokenizing follows wordgard/highlight-code: the same language parsers, token
-// classes and 10,000-character cap. Pages keeps its own decoration field
-// because Wordgard 0.6.2's decoratePlots update replaces a code block once per
-// changed range. An edit with two changed ranges in one block (common for a
-// remote source edit) then replaces it twice, RangeSet.map throws "Replacing
-// ranges must be ordered and non-overlapping", and the edit never reaches the
-// editor. This field rebuilds each touched code block once, in document order.
+// classes and 10,000-character cap. Pages keeps its own language aliases and
+// token classes, so it feeds its tokenizer to decoratePlots rather than using
+// highlightCode, which also brings Wordgard's theme and language menu.
 const MAX_HIGHLIGHT = 10_000;
 const tokenClassCache = new Map();
 export function tokenClass(token) {
@@ -137,13 +135,53 @@ function readToken(token, stream, state) {
   return "";
 }
 
-/** Add token decorations for the code block at `pos`, in document positions. */
-export function addCodeBlockTokens(block, pos, add) {
+/** Whether `probe`, appended to `prefix`, joins a string, quote or comment
+ * token as `parser` reads it. */
+function probeJoinsString(parser, prefix, probe) {
+  const state = parser.startState ? parser.startState(2) : true;
+  const lines = (prefix + probe).split("\n");
+  const last = lines.pop();
+  for (const line of lines) {
+    const stream = new StringStream(line, 4, 2);
+    if (stream.eol()) parser.blankLine?.(state, 2);
+    while (!stream.eol()) readToken(parser.token, stream, state);
+  }
+  const stream = new StringStream(last, 4, 2);
+  for (;;) {
+    const token = readToken(parser.token, stream, state);
+    if (stream.eol()) return /string|quote|comment/.test(token || "");
+  }
+}
+
+/** Whether `offset` in code block `text` of `stored` language lies inside a
+ * string or a comment, as the highlighter's tokenizer reads the block up to
+ * it. The tokenizer reads a probe character placed at `offset`: inside a
+ * string or comment it joins that token. Each probe can start one by itself
+ * elsewhere (">" makes CSS `url(>` an unquoted string and JavaScript `-->` a
+ * comment; ")" is an unquoted HTML attribute value), so the offset counts as
+ * inside only when both join.
+ *
+ * Tokenizers that keep no state for an unfinished string read the probe as
+ * outside it: a multi-line YAML quoted scalar, an R backtick name, and Shell
+ * text right after `$` in a double-quoted string. Past the highlight cap the
+ * answer is true, so callers that pair quotes hold back. Null for a language
+ * with no highlighter. */
+export function insideStringOrComment(stored, text, offset) {
+  const language = languageFor(stored);
+  if (!language) return null;
+  if (offset >= MAX_HIGHLIGHT) return true;
+  const prefix = text.slice(0, offset);
+  return (
+    probeJoinsString(language.parser, prefix, ">") && probeJoinsString(language.parser, prefix, ")")
+  );
+}
+
+/** Add token decorations for a code block, relative to the start of its content. */
+function addCodeBlockTokens(block, add) {
   const language = languageFor(block.mark(CodeBlockLanguage));
   const text = language && blockText(block);
   if (!text) return;
   const { parser } = language;
-  const start = pos + 1;
   let offset = 0;
   const state = parser.startState ? parser.startState(2) : true;
   // The cap is applied before tokenizing: the tokenizer never sees text past
@@ -155,52 +193,10 @@ export function addCodeBlockTokens(block, pos, add) {
       while (!stream.eol()) {
         const token = readToken(parser.token, stream, state);
         const cls = token && tokenClass(token);
-        if (cls) add(decoFor(cls), start + offset + stream.start, start + offset + stream.pos);
+        if (cls) add(decoFor(cls), offset + stream.start, offset + stream.pos);
       }
     offset += line.length + 1;
   }
 }
 
-const allTokens = (doc) =>
-  RangeSet.create((add) =>
-    doc.iterate((node, pos) => {
-      if (node.type !== CodeBlock.type) return true;
-      addCodeBlockTokens(node, pos, add);
-      return false;
-    }),
-  );
-
-const tokens = GardState.Field.define({
-  create: (state) => allTokens(state.doc),
-  update(deco, tr) {
-    if (!tr.docChanged) return deco;
-    const doc = tr.newDoc;
-    const touched = new Map();
-    tr.changes.iterChangedRanges((_fromA, _toA, fromB, toB) => {
-      doc.iterate(Math.max(0, fromB - 1), Math.min(doc.length, toB + 1), (node, pos) => {
-        if (node.type !== CodeBlock.type) return true;
-        touched.set(pos, node);
-        return false;
-      });
-    });
-    if (!touched.size) return deco.map(tr.changes);
-    const replace = [...touched]
-      .sort((a, b) => a[0] - b[0])
-      .map(([pos, node]) => ({
-        from: pos,
-        to: pos + node.length,
-        add: (add) => addCodeBlockTokens(node, pos, add),
-      }));
-    try {
-      return deco.map(tr.changes, replace);
-    } catch {
-      // Never let decoration bookkeeping abort an edit: rebuild from scratch.
-      return allTokens(doc);
-    }
-  },
-});
-
-export const codeHighlighting = [
-  tokens,
-  Decoration.Range.source.of((state) => state.field(tokens)),
-];
+export const codeHighlighting = decoratePlots({ type: CodeBlock, ranges: addCodeBlockTokens });

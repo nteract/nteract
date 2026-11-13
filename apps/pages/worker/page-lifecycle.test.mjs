@@ -267,9 +267,13 @@ test("every mutation the lifecycle makes can reject before or after it applies, 
       // (projectionMark). A stale-revision trash names the live revisions in
       // its refusal, as an unknown-revision trash does: their put and barrier are
       // cut points (revisionTable). A receipt write that prunes raises the
-      // receipt horizon first, so its put and barrier are cut points too.
-      cuts: 246,
-      runs: 944,
+      // receipt horizon first, so its put and barrier are cut points too. A
+      // purge's and a tombstone's delete of the Page's tag rows in D1 is a
+      // cut point as well: a cut before it leaves the rows for the retry. The
+      // delete first brings the tag table's own schema current, so that
+      // migration's statements are cut points too.
+      cuts: 270,
+      runs: 1040,
       indexRetirement: 27,
       titleProjection: 18,
       titleRecord: 12,
