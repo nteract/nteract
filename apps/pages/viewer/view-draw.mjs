@@ -148,6 +148,17 @@ export function createViewDraw({ view$, sources, decode, checkChartSpec, render 
     for (const table of Object.values(datasets ?? {})) table?.dispose?.();
   };
 
+  /** Tear the drawn chart down. The embed lets go of it first, so a
+   * destructor that throws leaves nothing referenced and stops nothing
+   * after it. */
+  const tearDown = () => {
+    const previous = chart;
+    chart = null;
+    try {
+      previous?.instance.destroy();
+    } catch {}
+  };
+
   function run(effect) {
     switch (effect.type) {
       case "load":
@@ -168,9 +179,8 @@ export function createViewDraw({ view$, sources, decode, checkChartSpec, render 
       case "draw": {
         const load = loads.get(effect.generation);
         loads.delete(effect.generation);
-        chart?.instance.destroy();
-        chart = null;
         try {
+          tearDown();
           const instance = render.draw({
             view: load.plan.view,
             datasets: load.datasets,
@@ -187,9 +197,7 @@ export function createViewDraw({ view$, sources, decode, checkChartSpec, render 
         return;
       }
       case "clear":
-        chart?.instance.destroy();
-        chart = null;
-        return;
+        return tearDown();
     }
     throw new Error(`unknown effect ${effect.type}`);
   }
@@ -287,8 +295,11 @@ export function createViewDraw({ view$, sources, decode, checkChartSpec, render 
       return loads.size;
     },
     destroy() {
-      subscription.unsubscribe();
-      step({ type: "destroy" });
+      try {
+        subscription.unsubscribe();
+      } finally {
+        step({ type: "destroy" });
+      }
     },
   };
 }

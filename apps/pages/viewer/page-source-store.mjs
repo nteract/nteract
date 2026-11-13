@@ -15,11 +15,11 @@
 // A version is `{ source_id?, asset_id, media_type, revision }`. `revision`
 // is the source revision it reads, or null for a pinned asset.
 //
-// A store made with `want` calls it whenever a reader asks for a source it
-// doesn't hold, so a Page whose sources document isn't open yet can look for
-// it (host-doc-replica.mjs want). Nothing asks while every source read is
-// there.
-import { distinctUntilChanged, map, tap } from "rxjs";
+// A store made with `demand` asks for the sources document while a reader
+// waits on a source it doesn't hold, so a Page whose sources document isn't
+// open yet keeps looking for it (host-doc-replica.mjs demand). Nothing asks
+// while every source read is there.
+import { Observable, distinctUntilChanged, map } from "rxjs";
 import { readSource } from "../model/sources-doc.mjs";
 import { imageAssetUrl, validAssetId } from "../shared/image-assets.mjs";
 import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
@@ -99,20 +99,20 @@ export class PageSourceStore {
   #subscription;
   #bytes;
   #resolvers = new Map();
-  #want;
+  #demand;
   #destroyed = false;
   /** The sources by id, deduplicated per source. */
   sources$ = this.#sources.state$.pipe(distinctUntilChanged(sameSources));
 
   /** `doc$` emits the sources document, or undefined while there is none.
-   * `want()` is called when a reader asks for a source the store doesn't
-   * hold. */
-  constructor({ pageId, doc$, request, maxEntries = 4, want }) {
+   * `demand()` starts asking for it and returns the function that stops:
+   * the store asks while a reader waits on a source it doesn't hold. */
+  constructor({ pageId, doc$, request, maxEntries = 4, demand }) {
     if (typeof pageId !== "string" || !pageId) throw Error("A source store needs its Page id");
     this.pageId = pageId;
     this.request = request;
     this.maxEntries = maxEntries;
-    this.#want = want;
+    this.#demand = demand;
     this.#subscription = doc$.subscribe((doc) => {
       const next = projectSources(doc);
       this.#sources.update((current) => (sameSources(current, next) ? current : next));
@@ -126,19 +126,39 @@ export class PageSourceStore {
 
   /** `{ [id]: version | null }` for `ids`, now and on each change to one of
    * them. Other sources changing, or the document changing without a source
-   * changing, emits nothing. An emission with a null asks for the sources
-   * document (`want`). */
+   * changing, emits nothing. While the last emission holds a null, the
+   * subscriber asks for the sources document (`demand`); it stops when every
+   * source is there or it unsubscribes. */
   versions(ids) {
     const list = [...new Set(ids)];
-    return this.#sources.state$.pipe(
+    const versions$ = this.#sources.state$.pipe(
       map((sources) =>
         Object.fromEntries(list.map((id) => [id, Object.hasOwn(sources, id) ? sources[id] : null])),
       ),
       distinctUntilChanged((a, b) => list.every((id) => sameVersion(a[id], b[id]))),
-      tap((versions) => {
-        if (!this.#destroyed && list.some((id) => versions[id] === null)) this.#want?.();
-      }),
     );
+    return new Observable((subscriber) => {
+      let stop = null;
+      const settle = (waiting) => {
+        if (waiting && !stop && !this.#destroyed && this.#demand) stop = this.#demand();
+        else if (!waiting && stop) {
+          stop();
+          stop = null;
+        }
+      };
+      const subscription = versions$.subscribe({
+        next: (versions) => {
+          settle(list.some((id) => versions[id] === null));
+          subscriber.next(versions);
+        },
+        error: (error) => subscriber.error(error),
+        complete: () => subscriber.complete(),
+      });
+      return () => {
+        subscription.unsubscribe();
+        settle(false);
+      };
+    });
   }
 
   /** The version a binding reads now. Throws SourceUnavailable for a source
@@ -150,7 +170,9 @@ export class PageSourceStore {
     if (binding && typeof binding.source_id === "string") {
       const sources = this.#sources.snapshot();
       if (!Object.hasOwn(sources, binding.source_id)) {
-        this.#want?.();
+        // One ask; a reader that keeps waiting holds demand through
+        // versions().
+        this.#demand?.()?.();
         throw new SourceUnavailable("This table's source isn't on this Page.", binding, "missing");
       }
       const source = sources[binding.source_id];

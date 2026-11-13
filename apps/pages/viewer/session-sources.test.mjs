@@ -8,6 +8,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
 import * as A from "@automerge/automerge";
+import { VirtualTimeScheduler } from "rxjs";
+import { LOOK_AGAIN_MS, MISSING_ATTEMPTS, retryDelay } from "./host-doc-open-machine.mjs";
 import { PageSession } from "./session.mjs";
 import { sourcesDocumentId } from "./derived-documents.mjs";
 import { until } from "../sync/test-helpers.mjs";
@@ -172,6 +174,43 @@ test("a Page's first source, created while the tab is open, opens when a table a
     versions.map((v) => v && v.asset_id),
     [null, "a".repeat(64)],
   );
+});
+
+test("a table waiting for a Page's first source asks once per window until it stops waiting", async (t) => {
+  const scheduler = new VirtualTimeScheduler();
+  const advance = (ms) => {
+    const target = scheduler.frame + ms;
+    scheduler.maxFrames = target;
+    scheduler.flush();
+    scheduler.frame = target;
+    scheduler.maxFrames = Infinity;
+  };
+  const { session, admit } = fixture(t, { scheduler });
+  admit(withoutSources);
+  const waiting = session.pageSources.versions(["usage"]).subscribe(() => {});
+  const answer = async () => {
+    await until(() => session.repo.calls.some((call) => !call.answered), { label: "a lookup" });
+    for (const call of session.repo.calls.filter((each) => !each.answered)) {
+      call.answered = true;
+      call.reject(Error(`Document ${call.id} is unavailable`));
+    }
+    await tick();
+  };
+  for (let attempt = 1; attempt <= MISSING_ATTEMPTS; attempt++) {
+    await answer();
+    advance(retryDelay(attempt));
+  }
+  assert.equal(session.repo.calls.length, MISSING_ATTEMPTS);
+  for (const [index, window] of LOOK_AGAIN_MS.entries()) {
+    advance(window);
+    await answer();
+    assert.equal(session.repo.calls.length, MISSING_ATTEMPTS + index + 1, `after ${window} ms`);
+  }
+  // The table goes away: nothing asks after the window it is in.
+  waiting.unsubscribe();
+  advance(600_000);
+  await tick();
+  assert.equal(session.repo.calls.length, MISSING_ATTEMPTS + LOOK_AGAIN_MS.length);
 });
 
 test("a hidden Page asks for no sources document", async (t) => {

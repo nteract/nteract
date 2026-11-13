@@ -1,14 +1,21 @@
 // The Page's keyed view replicas: a replica opens while something holds its
 // view and closes VIEW_CLOSE_DELAY_MS after the last holder lets go, each
-// looks its document up by the derived id on each admitted connection, at
-// most MAX_VIEWS are open, a view that isn't on the Page rests as missing,
+// looks its document up by the derived id on each admitted connection, a
+// held view keeps asking once per look-again window, at most MAX_VIEWS have
+// a slot, a view whose document is missing gives its slot to one that waits,
 // and retirement stops every one. The holder machine's table is
 // view-hold-machine.test.mjs.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { VirtualTimeScheduler } from "rxjs";
-import { MISSING_ATTEMPTS, lookAgainDelay, retryDelay } from "./host-doc-open-machine.mjs";
+import {
+  LOOK_AGAIN_MS,
+  MISSING_ATTEMPTS,
+  lookAgainDelay,
+  retryDelay,
+} from "./host-doc-open-machine.mjs";
 import { MAX_VIEWS, VIEW_CLOSE_DELAY_MS, ViewReplicas } from "./view-replicas.mjs";
+import { VIEW_MEDIA_TYPE } from "./view-store.mjs";
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const PAGE = "0b9f2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f";
@@ -26,8 +33,11 @@ function fixture({ linked = true } = {}) {
     },
     find: (id, { signal } = {}) =>
       new Promise((resolve, reject) => {
-        calls.push({ id, signal, resolve, reject });
-        signal?.addEventListener("abort", () => reject(signal.reason ?? Error("aborted")));
+        const call = { id, signal, settled: false };
+        call.resolve = (value) => ((call.settled = true), resolve(value));
+        call.reject = (error) => ((call.settled = true), reject(error));
+        calls.push(call);
+        signal?.addEventListener("abort", () => call.reject(signal.reason ?? Error("aborted")));
       }),
     forget: async () => {},
     link: () => (connected ? 1 : undefined),
@@ -48,6 +58,8 @@ function fixture({ linked = true } = {}) {
     derivations,
     scheduler,
     advance,
+    /** Lookups still running. */
+    pending: () => calls.filter((call) => !call.settled),
     connect() {
       connected = true;
       views.connected();
@@ -57,11 +69,31 @@ function fixture({ linked = true } = {}) {
 
 const handle = (doc) => ({ doc: () => doc, on() {}, off() {} });
 const missing = (id) => Error(`Document ${id} is unavailable`);
+const viewDoc = (title) => ({
+  title,
+  media_type: VIEW_MEDIA_TYPE,
+  spec: JSON.stringify({ mark: "bar" }),
+  data: {},
+  revision: "1",
+});
 const latest = (held) => {
   let value;
   held.view$.subscribe((view) => (value = view)).unsubscribe();
   return value;
 };
+
+/** Answer every running lookup as a host holding the views in `existing`
+ * would, then let the retries and admissions that follow run. */
+async function serve(f, existing, ms = 1_000) {
+  for (const call of f.pending()) {
+    const viewId = call.id.slice(PAGE.length + 1);
+    if (existing.has(viewId)) call.resolve(handle(viewDoc(viewId)));
+    else call.reject(missing(call.id));
+  }
+  await tick();
+  f.advance(ms);
+  await tick();
+}
 
 test("a held view opens one replica, looked up by its derived id", async () => {
   const f = fixture();
@@ -109,54 +141,120 @@ test("a view held again within the close delay keeps its replica; after it, a ne
   third.release();
 });
 
-test("at most MAX_VIEWS views open; 1,000 view nodes cost ten lookups and nothing more", async () => {
+test("1,000 held view nodes keep at most MAX_VIEWS lookups in flight, and each is looked up", async () => {
   const f = fixture();
   const holds = Array.from({ length: 1_000 }, (_, i) => f.views.hold(`view-${i}`));
   await tick();
   assert.equal(f.views.open.length, MAX_VIEWS);
-  assert.equal(f.derivations.length, MAX_VIEWS, "only admitted views derive an id");
-  assert.equal(f.calls.length, MAX_VIEWS, "only admitted views look anything up");
-  // Every view misses; the admitted ones rest after their bursts.
-  for (let round = 1; round <= MISSING_ATTEMPTS; round++) {
-    for (const call of f.calls.slice(-MAX_VIEWS)) call.reject(missing(call.id));
-    await tick();
-    f.advance(retryDelay(round));
-    await tick();
-  }
-  assert.equal(f.calls.length, MAX_VIEWS * MISSING_ATTEMPTS);
-  // Timers: one look-again window per admitted view, none for the rest.
-  assert.equal(f.scheduler.actions.length, MAX_VIEWS);
-  f.advance(10 * lookAgainDelay(3));
-  await tick();
-  assert.equal(f.calls.length, MAX_VIEWS * MISSING_ATTEMPTS, "nothing polls");
-  assert.equal(f.scheduler.actions.length, 0);
-  const over = latest(holds[MAX_VIEWS]);
-  assert.deepEqual(over, {
+  assert.equal(f.derivations.length, MAX_VIEWS, "only views with a slot derive an id");
+  assert.equal(f.calls.length, MAX_VIEWS, "only views with a slot look anything up");
+  assert.deepEqual(latest(holds[MAX_VIEWS]), {
     status: "unavailable",
     reason: "limit",
     sentence: "A Page shows at most 10 charts.",
   });
+  // Every document is missing. Each view takes its turn; the cap bounds the
+  // work in flight, not which views are looked up.
+  let peak = 0;
+  for (let round = 0; f.views.waiting.some((id) => !f.derivations.includes(id)); round++) {
+    assert.ok(round < 1_000, "every view gets a slot");
+    peak = Math.max(peak, f.pending().length);
+    assert.ok(f.views.open.length <= MAX_VIEWS);
+    assert.ok(f.scheduler.actions.length <= 2 * MAX_VIEWS, "a timer and a deadline per slot");
+    await serve(f, new Set());
+  }
+  assert.equal(peak, MAX_VIEWS);
+  assert.equal(new Set(f.derivations).size, 1_000, "every view was looked up");
+  assert.equal(
+    latest(holds[MAX_VIEWS]).reason,
+    "missing",
+    "a view that had its turn reads missing",
+  );
   for (const hold of holds) hold.release();
+  f.advance(VIEW_CLOSE_DELAY_MS);
+  await tick();
+  assert.deepEqual([f.views.open, f.views.waiting, f.pending().length], [[], [], 0]);
 });
 
-test("a view held before a connection waits for one, and every view looks up on it", async () => {
-  const f = fixture({ linked: false });
-  const holds = Array.from({ length: 10 }, (_, i) => f.views.hold(`view-${i}`));
+test("a fresh view takes the slot of a view whose document is missing as soon as it settles", async () => {
+  const f = fixture();
+  const gone = Array.from({ length: MAX_VIEWS }, (_, i) => f.views.hold(`gone-${i}`));
   await tick();
-  assert.equal(f.calls.length, 0);
-  f.connect();
+  const real = f.views.hold("sales");
   await tick();
-  assert.equal(f.calls.length, 10, "ten embeds, ten lookups on the one connection");
-  for (const call of f.calls) call.resolve(handle({}));
-  await tick();
-  // A reconnect keeps every open document.
-  f.views.connected();
-  await tick();
-  assert.equal(f.calls.length, 10);
-  for (const hold of holds) hold.release();
+  assert.equal(latest(real).reason, "limit", "every slot is looking up a view");
+  // The missing views' first bursts run out; the first to settle gives way.
+  for (let attempt = 1; attempt <= MISSING_ATTEMPTS; attempt++)
+    await serve(f, new Set(["sales"]), retryDelay(attempt));
+  await serve(f, new Set(["sales"]));
+  assert.ok(f.views.open.includes("sales"), "admitted without a reload");
+  assert.equal(f.views.replica("sales").state$.snapshot().name, "ready");
+  assert.equal(latest(real).status, "ready");
+  assert.equal(f.views.waiting.length, 1, "the view that gave way waits");
+  assert.equal(latest(gone.find((held) => latest(held).reason === "missing")).reason, "missing");
+  for (const held of [...gone, real]) held.release();
 });
 
-test("a view that isn't on this Page rests as missing until something asks again", async () => {
+test("a Page naming many missing ids draws every existing view near the viewport", async () => {
+  // The host holds at most MAX_VIEWS views per Page. However many missing
+  // ids the body also names, and in whatever order embeds come near the
+  // viewport and stay mounted, every existing view draws.
+  const f = fixture();
+  const existing = new Set(Array.from({ length: MAX_VIEWS }, (_, i) => `real-${i}`));
+  const names = [];
+  for (let i = 0; i < 40; i++) {
+    names.push(`gone-${i}`);
+    if (i % 4 === 3) names.push(`real-${(i - 3) / 4}`);
+  }
+  const holds = [];
+  for (const name of names) {
+    holds.push([name, f.views.hold(name)]);
+    await serve(f, existing);
+  }
+  for (let round = 0; round < 40; round++) await serve(f, existing, 2_000);
+  for (const name of existing) {
+    assert.ok(f.views.open.includes(name), `${name} has a slot`);
+    assert.equal(f.views.replica(name).state$.snapshot().name, "ready", `${name} is open`);
+  }
+  for (const [name, held] of holds)
+    assert.equal(latest(held).status, existing.has(name) ? "ready" : "unavailable", name);
+  for (const [, held] of holds) held.release();
+});
+
+test("missing views take turns, so one the host makes later is found while it waits", async () => {
+  const f = fixture();
+  const ids = Array.from({ length: MAX_VIEWS + 2 }, (_, i) => `gone-${i}`);
+  const holds = ids.map((id) => f.views.hold(id));
+  for (let round = 0; round < 10; round++) await serve(f, new Set(), 2_000);
+  assert.equal(new Set(f.derivations).size, ids.length, "every view had a first turn");
+  const late = ids.find((id) => f.views.waiting.includes(id));
+  assert.ok(late, "a view whose turn passed waits");
+  const existing = new Set([late]);
+  for (let round = 0; round < 40 && !f.views.open.includes(late); round++)
+    await serve(f, existing, 10_000);
+  await serve(f, existing);
+  assert.equal(latest(holds[ids.indexOf(late)]).status, "ready", "found on its next turn");
+  for (const held of holds) held.release();
+});
+
+test("an embed replaced within the close delay frees its slot for the one that replaces it", async () => {
+  const f = fixture();
+  const holds = Array.from({ length: MAX_VIEWS }, (_, i) => f.views.hold(`view-${i}`));
+  await tick();
+  await serve(f, new Set(Array.from({ length: MAX_VIEWS }, (_, i) => `view-${i}`)));
+  // The last embed is removed; a different view's embed takes its place
+  // before the close delay ends.
+  holds.pop().release();
+  const replacement = f.views.hold("sales");
+  await tick();
+  assert.ok(f.views.open.includes("sales"), "the view in its close delay gave its slot up");
+  assert.ok(!f.views.open.includes(`view-${MAX_VIEWS - 1}`));
+  await serve(f, new Set(["sales"]));
+  assert.equal(latest(replacement).status, "ready");
+  for (const held of [...holds, replacement]) held.release();
+});
+
+test("a mounted view whose document is missing asks once per window until the host makes it", async () => {
   const f = fixture();
   const held = f.views.hold("elsewhere");
   const seen = [];
@@ -175,13 +273,38 @@ test("a view that isn't on this Page rests as missing until something asks again
     "no flash of missing while it retries",
   );
   assert.equal(seen.at(-1).sentence, "This chart isn't on this Page.");
-  f.advance(600_000);
+  // Held, the view is standing demand: one lookup at the end of each window.
+  for (const [index, window] of [...LOOK_AGAIN_MS, 60_000].entries()) {
+    f.advance(window);
+    await tick();
+    assert.equal(f.calls.length, MISSING_ATTEMPTS + index + 1, `window ${index + 1}`);
+    if (index < LOOK_AGAIN_MS.length) {
+      f.calls.at(-1).reject(missing(`${PAGE}/elsewhere`));
+      await tick();
+    }
+  }
+  // The host made the view: the running lookup finds it.
+  f.calls.at(-1).resolve(handle(viewDoc("Elsewhere")));
   await tick();
-  assert.equal(f.calls.length, MISSING_ATTEMPTS, "nothing polls");
-  held.want();
-  await tick();
-  assert.equal(f.calls.length, MISSING_ATTEMPTS + 1, "an ask after the window looks again");
+  assert.equal(seen.at(-1).status, "ready");
   held.release();
+});
+
+test("a view nothing holds stops asking", async () => {
+  const f = fixture();
+  const held = f.views.hold("elsewhere");
+  await tick();
+  for (let attempt = 1; attempt <= MISSING_ATTEMPTS; attempt++) {
+    f.calls.at(-1).reject(missing(`${PAGE}/elsewhere`));
+    await tick();
+    f.advance(retryDelay(attempt));
+    await tick();
+  }
+  held.release();
+  f.advance(10 * lookAgainDelay(3));
+  await tick();
+  assert.equal(f.calls.length, MISSING_ATTEMPTS);
+  assert.equal(f.scheduler.actions.length, 0);
 });
 
 test("an id the contract doesn't allow opens nothing and reads as missing", async () => {
@@ -203,7 +326,7 @@ test("retirement stops every view, a late lookup never installs, and nothing ope
   assert.equal(replica.state$.snapshot().name, "retired");
   assert.equal(replica.doc, undefined);
   f.views.connected();
-  held.want();
+  f.advance(10 * lookAgainDelay(3));
   await tick();
   assert.equal(f.calls.length, 1);
   held.release();
@@ -231,4 +354,21 @@ test("closing the Page's replica closes held views; the next connection reopens 
   await tick();
   assert.equal(f.calls.length, 3);
   held.release();
+});
+
+test("a view held before a connection waits for one, and every view looks up on it", async () => {
+  const f = fixture({ linked: false });
+  const holds = Array.from({ length: 10 }, (_, i) => f.views.hold(`view-${i}`));
+  await tick();
+  assert.equal(f.calls.length, 0);
+  f.connect();
+  await tick();
+  assert.equal(f.calls.length, 10, "ten embeds, ten lookups on the one connection");
+  for (const call of f.calls) call.resolve(handle({}));
+  await tick();
+  // A reconnect keeps every open document.
+  f.views.connected();
+  await tick();
+  assert.equal(f.calls.length, 10);
+  for (const hold of holds) hold.release();
 });

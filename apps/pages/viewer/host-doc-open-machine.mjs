@@ -18,8 +18,10 @@
  *   doesn't exist yet (or isn't on this Page). The lookup retries on a short
  *   backoff, then the replica rests in `absent`, counting `misses`. From
  *   there an ask runs one lookup per look-again window, and each miss
- *   widens the window (lookAgainDelay: 10 s, 30 s, then 60 s). A new
- *   connection starts over.
+ *   widens the window (lookAgainDelay: 10 s, 30 s, then 60 s). Something
+ *   that keeps asking (a view embed on the Page, a table waiting for a
+ *   source) is standing demand: one lookup runs at the end of each window
+ *   for as long as it asks. A new connection starts over.
  *
  * States:
  * - closed: no replica, or no connection admitted since it opened.
@@ -57,7 +59,8 @@
  *   failed, or the host answered it holds no such document. An attempt that
  *   isn't the current one was cancelled, so its result is ignored.
  * - timer: the retry timer for `attempt` fired.
- * - cooled: the look-again timer fired.
+ * - cooled: the look-again timer fired; `demanded` while something on the
+ *   Page still asks for the document.
  * - retire: the replica is being retired with the Page's other documents.
  *   It drops the document from memory; its synced bytes stay in the tab's
  *   replica database, the same as the Page's and comments' synced bytes.
@@ -194,7 +197,7 @@ export const hostDocOpenSpec = Object.freeze({
     "opening/lookupFailed": ["retry", "exhausted", "stale"],
     "opening/unknown": ["unserved", "retry", "missing", "again", "stale"],
     "retrying/timer": ["current", "stale"],
-    "absent/cooled": ["look", "rest", "stale"],
+    "absent/cooled": ["look", "demanded", "rest", "stale"],
   },
   validate: {
     states: {
@@ -215,7 +218,12 @@ export const hostDocOpenSpec = Object.freeze({
       lookupFailed: settled,
       unknown: settled,
       timer: settled,
-      cooled: shape("type", []),
+      cooled: shape("type", ["demanded"], (value) =>
+        check(
+          value.demanded === undefined || value.demanded === true,
+          "demanded is true or absent",
+        ),
+      ),
       retire: shape("type", []),
       close: shape("type", []),
     },
@@ -359,7 +367,7 @@ function transition(state, event) {
     case "cooled":
       if (state.name !== "absent" || !state.cooling) return reject(state, REJECT.stale);
       // The timer already fired: nothing is left to clear.
-      if (state.asked) return start(state, state.id, "derived", [], state.misses);
+      if (state.asked || event.demanded) return start(state, state.id, "derived", [], state.misses);
       return ok({ name: "absent", id: state.id, misses: state.misses });
     case "retire":
       if (state.name === "retired") return reject(state, REJECT.retired);

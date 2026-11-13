@@ -3,18 +3,32 @@
 // The host lists no view in discovery, so each view is found by the id it
 // derives from the Page id and the view id, on the live connection.
 //
-// Who holds each replica is view-hold-machine.mjs: a replica is open while
-// something names its view (an embed near the viewport, or the view's own
-// address) and closes `closeDelay` after the last holder lets go, so an
+// Who holds each view, and whether it has a slot, is view-hold-machine.mjs.
+// A held view with a slot has an open replica that asks for its document for
+// as long as it is held: one lookup per look-again window while the document
+// isn't there. The last holder letting go starts the close delay, so an
 // embed the editor moves keeps its document.
 //
-// A Page holds at most MAX_VIEWS views, so at most that many replicas are
-// open at once. A holder past the cap gets a view that reads as over the
-// limit: nothing is derived, looked up or timed for it. Nothing here writes
-// a view document.
-import { asyncScheduler, of, timer } from "rxjs";
+// At most `limit` views (MAX_VIEWS) have a slot at once. The cap bounds the
+// lookups and timers in flight; it is not a verdict on any view. A view
+// named while every slot is taken waits, and gets a slot when one frees:
+//
+// - a view in its close delay (no holder) gives its slot up first;
+// - a view whose document is missing gives its slot to a view that hasn't
+//   had one, and waits behind it;
+// - views whose documents are missing take turns: one that waited gets the
+//   slot of one whose look-again window ended, so each is still looked up.
+//
+// The host holds at most MAX_VIEWS views per Page, so a body can name more
+// than MAX_VIEWS ids only with ids whose documents are missing. Those are
+// the ones that give way: every existing view gets a slot, and draws, while
+// its embed holds it.
+//
+// A waiting view reads as over the limit, or as missing once it gave its
+// slot up for that. Nothing here writes a view document.
+import { BehaviorSubject, asyncScheduler, of, switchMap, timer } from "rxjs";
 import { HostDocReplica } from "./host-doc-replica.mjs";
-import { viewHoldMachine } from "./view-hold-machine.mjs";
+import { slotted, viewHoldMachine } from "./view-hold-machine.mjs";
 import { VIEW_SENTENCES, validViewId, viewStore } from "./view-store.mjs";
 
 /** The most views a Page holds (the contract's MAX_VIEWS). */
@@ -26,18 +40,38 @@ export const VIEW_CLOSE_DELAY_MS = 2_000;
 
 const unavailable = (reason) =>
   of(Object.freeze({ status: "unavailable", reason, sentence: VIEW_SENTENCES[reason] }));
+const LIMIT = unavailable("limit");
+const MISSING = unavailable("missing");
+const CLOSED = unavailable("closed");
+
+/** Whether a replica in `state` (host-doc-open-machine.mjs) runs a look-again
+ * lookup: its document was missing and its window ended. */
+export const lookingAgain = (state) =>
+  (state.name === "opening" || state.name === "retrying") && state.misses !== undefined;
+
+/** Whether a replica in `state` settled without its document: the host
+ * answered it holds none, or it is looking again for one it held none of. */
+export const settledMissing = (state) =>
+  state.name === "absent" ||
+  state.name === "unserved" ||
+  state.name === "unreadable" ||
+  lookingAgain(state);
 
 export class ViewReplicas {
   #entries = new Map();
   #retired = false;
   #options;
+  /** Orders waiting views: the first to wait is the first admitted. */
+  #arrivals = 0;
+  #scheduled = false;
 
   /**
    * `viewDocumentId(pageId, viewId)` derives a view's document id (it may
-   * return a promise). `find`, `forget`, `claims`, `link` and `scheduler`
-   * are each replica's (host-doc-replica.mjs). `linked()` says whether a
-   * connection is admitted now, so a replica opened while connected looks
-   * its view up at once; one opened before that waits for connected().
+   * return a promise). `find`, `forget`, `claims`, `link`, `linked` and
+   * `scheduler` are each replica's (host-doc-replica.mjs). `linked()` says
+   * whether a connection is admitted now, so a replica opened while
+   * connected looks its view up at once; one opened before that waits for
+   * connected().
    */
   constructor({
     pageId,
@@ -68,92 +102,173 @@ export class ViewReplicas {
     };
   }
 
-  /** View ids with an open replica, sorted. */
+  /** View ids with a slot, sorted. */
   get open() {
     return [...this.#entries]
-      .filter(([, entry]) => entry.replica && entry.state.name !== "retired")
+      .filter(([, entry]) => slotted(entry.state))
       .map(([viewId]) => viewId)
       .sort();
   }
 
-  /** The replica for `viewId`, while one is open or retired. */
+  /** View ids waiting for a slot, in the order they will get one. */
+  get waiting() {
+    return this.#queue().map((entry) => entry.viewId);
+  }
+
+  /** The replica for `viewId`, while it has one. */
   replica(viewId) {
-    return this.#entries.get(viewId)?.replica;
+    return this.#entries.get(viewId)?.replica ?? undefined;
   }
 
   /**
-   * Name view `viewId`. Returns `{ view$, want, release }`: the view's
-   * projection (view-store.mjs), a function that asks for the view again
-   * when its replica rests absent, and the function that lets go. An id the
-   * contract doesn't allow reads as missing, one past the cap as over the
-   * limit, and one named after retirement as closed; none of them opens
-   * anything.
+   * Name view `viewId`. Returns `{ view$, release }`: the view's projection
+   * (view-store.mjs), which follows the view from waiting to its slot, and
+   * the function that lets go. While held with a slot, the view asks for its
+   * document. An id the contract doesn't allow reads as missing, and one
+   * named after retirement as closed; neither opens anything.
    */
   hold(viewId) {
-    if (!validViewId(viewId)) return detached("missing");
+    if (!validViewId(viewId)) return detached(MISSING);
     let entry = this.#entries.get(viewId);
     if (!entry) {
-      if (!this.#retired && this.open.length >= this.#options.limit) return detached("limit");
-      entry = { state: viewHoldMachine.initial, replica: null, view$: null, timer: null };
+      entry = {
+        viewId,
+        state: viewHoldMachine.initial,
+        replica: null,
+        view$: null,
+        timer: null,
+        stopDemand: null,
+        arrival: 0,
+        shown$: new BehaviorSubject(CLOSED),
+        watch: null,
+      };
       this.#entries.set(viewId, entry);
-      if (this.#retired) this.#step(viewId, entry, { type: "retire" });
+      if (this.#retired) this.#step(entry, { type: "retire" });
     }
-    this.#step(viewId, entry, { type: "hold" });
-    const view$ = entry.view$ ?? unavailable("closed");
+    this.#step(entry, { type: "hold" });
+    this.#admit();
     let held = true;
     return {
-      view$,
-      want: () => {
-        if (held && entry.state.name === "held") entry.replica.want();
-      },
+      view$: entry.shown$.pipe(switchMap((view$) => view$)),
       release: () => {
         if (!held) return;
         held = false;
-        this.#step(viewId, entry, { type: "release" });
+        this.#step(entry, { type: "release" });
+        this.#admit();
       },
     };
   }
 
-  /** A connection was admitted: every open view not already open looks its
-   * document up on it. */
+  /** A connection was admitted: every view with a slot looks its document
+   * up on it. */
   connected() {
     for (const entry of this.#entries.values())
-      if (entry.state.name !== "retired") entry.replica?.connected();
+      if (slotted(entry.state)) entry.replica?.connected();
   }
 
   /** The Page's documents are retiring: every view replica retires with
    * them, and nothing opens again. */
   retire() {
     this.#retired = true;
-    for (const [viewId, entry] of this.#entries) this.#step(viewId, entry, { type: "retire" });
+    for (const entry of [...this.#entries.values()]) this.#step(entry, { type: "retire" });
   }
 
   /** The Page's replica closed or is being replaced: every view replica
    * closes, as the sources replica does. A view still held looks its
    * document up again on the next admitted connection. */
   close() {
-    for (const [viewId, entry] of this.#entries) this.#step(viewId, entry, { type: "close" });
+    for (const entry of [...this.#entries.values()]) this.#step(entry, { type: "close" });
+    this.#admit();
   }
 
-  #step(viewId, entry, event) {
+  /** Waiting views, fresh ones first, each kind in the order it began to
+   * wait. */
+  #queue() {
+    const waiting = [...this.#entries.values()].filter((entry) => entry.state.name === "waiting");
+    const fresh = waiting.filter((entry) => entry.state.rank === "fresh");
+    const missing = waiting.filter((entry) => entry.state.rank === "missing");
+    const byArrival = (a, b) => a.arrival - b.arrival;
+    return [...fresh.sort(byArrival), ...missing.sort(byArrival)];
+  }
+
+  /** Give free slots to waiting views. When none is free, a view in its
+   * close delay gives its slot up; a view whose document is missing gives
+   * its slot to a fresh one, or, once its window ended, to a missing one
+   * that waited. */
+  #admit() {
+    if (this.#retired) return;
+    for (;;) {
+      const [next] = this.#queue();
+      if (!next) return;
+      const slots = [...this.#entries.values()].filter((entry) => slotted(entry.state));
+      if (slots.length >= this.#options.limit) {
+        const yields = next.state.rank === "fresh" ? settledMissing : lookingAgain;
+        const victim =
+          slots.find((entry) => entry.state.name === "closing") ??
+          slots.find((entry) => entry.replica && yields(entry.replica.state$.snapshot()));
+        if (!victim) return;
+        this.#step(victim, { type: "evict" });
+      }
+      this.#step(next, { type: "admit" });
+    }
+  }
+
+  /** Run #admit after the current step: a replica that settles missing may
+   * free a slot for a waiting view. */
+  #admitSoon() {
+    if (this.#scheduled) return;
+    this.#scheduled = true;
+    queueMicrotask(() => {
+      this.#scheduled = false;
+      this.#admit();
+    });
+  }
+
+  #step(entry, event) {
     const result = viewHoldMachine.step(entry.state, event);
     if (result.rejected) return result;
+    const before = entry.state;
     entry.state = result.state;
-    for (const effect of result.effects) this.#run(viewId, entry, effect);
-    if (entry.state.name === "closed" && this.#entries.get(viewId) === entry)
-      this.#entries.delete(viewId);
+    if (entry.state.name === "waiting" && before.name !== "waiting")
+      entry.arrival = ++this.#arrivals;
+    for (const effect of result.effects) this.#run(entry, effect);
+    this.#show(entry);
+    if (entry.state.name === "closed" && this.#entries.get(entry.viewId) === entry) {
+      entry.watch?.unsubscribe();
+      this.#entries.delete(entry.viewId);
+    }
     return result;
   }
 
-  #run(viewId, entry, effect) {
+  /** What the view's holders read in its current state. */
+  #show(entry) {
+    const { state } = entry;
+    const next =
+      state.name === "waiting"
+        ? state.rank === "fresh"
+          ? LIMIT
+          : MISSING
+        : (entry.view$ ?? CLOSED);
+    if (entry.shown$.getValue() !== next) entry.shown$.next(next);
+  }
+
+  #run(entry, effect) {
     switch (effect.type) {
       case "open":
-        return this.#open(viewId, entry);
+        return this.#open(entry);
+      case "demand":
+        entry.stopDemand = entry.replica.demand();
+        return;
+      case "undemand":
+        entry.stopDemand?.();
+        entry.stopDemand = null;
+        return;
       case "arm":
         entry.timer?.unsubscribe();
         entry.timer = timer(this.#options.closeDelay, this.#options.scheduler).subscribe(() => {
           entry.timer = null;
-          this.#step(viewId, entry, { type: "closeTimer" });
+          this.#step(entry, { type: "closeTimer" });
+          this.#admit();
         });
         return;
       case "disarm":
@@ -171,22 +286,31 @@ export class ViewReplicas {
     throw new Error(`unknown effect ${effect.type}`);
   }
 
-  #open(viewId, entry) {
+  /** Make the view's replica on its first slot; a view that gave its slot
+   * up keeps its closed replica, and with it the miss it last saw. */
+  #open(entry) {
     const { pageId, viewDocumentId, find, forget, claims, link, linked, scheduler, lookupTimeout } =
       this.#options;
-    entry.replica = new HostDocReplica({
-      find,
-      forget,
-      claims,
-      link,
-      scheduler,
-      ...(lookupTimeout && { lookupTimeout }),
-      derive: () => viewDocumentId(pageId, viewId),
-    });
-    entry.view$ = viewStore(viewId, entry.replica);
+    if (!entry.replica) {
+      entry.replica = new HostDocReplica({
+        find,
+        forget,
+        claims,
+        link,
+        linked,
+        scheduler,
+        ...(lookupTimeout && { lookupTimeout }),
+        derive: () => viewDocumentId(pageId, entry.viewId),
+      });
+      entry.view$ = viewStore(entry.viewId, entry.replica);
+      // A replica that settles missing may free a slot for a waiting view.
+      entry.watch = entry.replica.state$.state$.subscribe((state) => {
+        if (settledMissing(state) && this.#queue().length) this.#admitSoon();
+      });
+    }
     if (linked()) entry.replica.connected();
   }
 }
 
 /** What a holder reads when no replica opens for it. */
-const detached = (reason) => ({ view$: unavailable(reason), want: () => {}, release: () => {} });
+const detached = (view$) => ({ view$, release: () => {} });

@@ -128,23 +128,39 @@ test("a pinned binding reads the history state its revision names", () => {
   );
 });
 
-test("a reader that asks for a source the store doesn't hold asks for the document", () => {
+test("a reader waiting on a source the store doesn't hold asks for the document while it waits", () => {
   const host = hostDoc();
   const doc$ = new BehaviorSubject(undefined);
   let asks = 0;
-  const store = new PageSourceStore({ pageId: PAGE, doc$, want: () => asks++ });
+  let standing = 0;
+  const demand = () => {
+    asks++;
+    standing++;
+    let held = true;
+    return () => {
+      if (held) standing--;
+      held = false;
+    };
+  };
+  const store = new PageSourceStore({ pageId: PAGE, doc$, demand });
   // Nothing reads a source: nothing asks.
   assert.equal(asks, 0);
   const seen = [];
-  store.versions(["usage"]).subscribe((v) => seen.push(v.usage));
-  assert.equal(asks, 1, "a follower of a missing source asks");
+  const follower = store.versions(["usage"]).subscribe((v) => seen.push(v.usage));
+  assert.deepEqual([asks, standing], [1, 1], "a follower of a missing source keeps asking");
   assert.throws(() => store.resolve({ source_id: "usage" }), SourceUnavailable);
-  assert.equal(asks, 2, "a resolve of a missing source asks");
+  assert.deepEqual([asks, standing], [2, 1], "a resolve of a missing source asks once");
   doc$.next(host.set("usage", asset("a")));
   assert.equal(seen.at(-1).asset_id, asset("a"));
-  assert.equal(asks, 2, "a source that arrived asks nothing");
+  assert.equal(standing, 0, "a source that arrived stops the asking");
   doc$.next(host.set("costs", asset("b")));
-  assert.equal(asks, 2, "a change to another source asks nothing");
+  assert.deepEqual([asks, standing], [2, 0], "a change to another source asks nothing");
+  follower.unsubscribe();
+
+  const waiting = store.versions(["gone"]).subscribe(() => {});
+  assert.equal(standing, 1);
+  waiting.unsubscribe();
+  assert.equal(standing, 0, "a reader that stops waiting stops asking");
 });
 
 test("each decoder gets its own resolver over the Page's one byte cache", async () => {

@@ -74,6 +74,21 @@ before(async () => {
       (NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
     ) t(price, big, unsigned, clock, span, day, stamp, region, list, "__proto__", "constructor")`,
   );
+  write(
+    "stamps",
+    `SELECT * FROM (VALUES
+      (TIMESTAMP_S '2024-01-02 03:04:05', TIMESTAMP_MS '2024-01-02 03:04:05.123',
+       TIMESTAMP '2024-01-02 03:04:05.123456', TIMESTAMP_NS '2024-01-02 03:04:05.123456789',
+       TIMESTAMPTZ '2024-01-02 03:04:05+02')
+    ) t(s, ms, us, ns, zoned)`,
+  );
+  write(
+    "nested",
+    `SELECT * FROM (VALUES
+      ({'count': 9007199254740993::BIGINT, 'price': 1.25::DECIMAL(5,2)},
+       [9007199254740993::BIGINT, NULL], [1.5::DECIMAL(4,1)], MAP {'k': 2::BIGINT})
+    ) t(record, counts, prices, lookup)`,
+  );
   connection.close();
 });
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -183,6 +198,28 @@ test("each column reaches a chart in a form Vega reads", async () => {
   assert.equal(row.constructor, 8);
   for (const name of ["price", "big", "unsigned", "clock", "span", "day", "stamp", "region"])
     assert.equal(empty[name], null, `${name} keeps its null`);
+});
+
+test("timestamps read as epoch milliseconds in every unit, a zoned one as its instant", async () => {
+  const { datasetRows } = await import("./vega-chart.mjs");
+  const [row] = datasetRows(await decodeArrow(files.stamps, DATAFRAME_LIMITS));
+  const at = Date.UTC(2024, 0, 2, 3, 4, 5);
+  assert.equal(row.s, at);
+  assert.equal(row.ms, at + 123);
+  assert.ok(Math.abs(row.us - (at + 123.456)) < 1e-3, "microseconds keep their fraction");
+  assert.ok(Math.abs(row.ns - (at + 123.456789)) < 1e-3, "nanoseconds keep their fraction");
+  assert.equal(row.zoned, Date.UTC(2024, 0, 2, 1, 4, 5), "+02:00 is two hours before UTC");
+});
+
+test("values inside lists, structs and maps read as numbers, and rows serialize", async () => {
+  const { datasetRows } = await import("./vega-chart.mjs");
+  const rows = datasetRows(await decodeArrow(files.nested, DATAFRAME_LIMITS));
+  const [row] = rows;
+  assert.deepEqual({ ...row.record }, { count: 9007199254740992, price: 1.25 });
+  assert.deepEqual(row.counts, [9007199254740992, null]);
+  assert.deepEqual(row.prices, [1.5]);
+  assert.deepEqual({ ...row.lookup }, { k: 2 });
+  assert.doesNotThrow(() => JSON.stringify(rows));
 });
 
 test("an embed draws its view, redraws on a new source version, and shows its sentences", () =>

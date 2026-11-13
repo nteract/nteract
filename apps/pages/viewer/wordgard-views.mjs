@@ -51,9 +51,11 @@ export function viewFrame({ viewId }) {
 /**
  * One embed's lifecycle, under dataframeLifecycle's rules: nothing happens
  * until the embed nears the viewport (or at once, `eager`). Then the chart
- * chunk loads and the embed holds its view (opening its replica) for as long
- * as the chart is mounted, so an offscreen embed costs no lookup and no
- * timer. The chart is mounted until the embed is disconnected past its park.
+ * chunk loads and the embed holds its view for as long as the chart is
+ * mounted, so an embed that never came near the viewport costs no lookup
+ * and no timer. The chart stays mounted until the embed is disconnected past
+ * its park, offscreen included; view-replicas.mjs takes the slot of a held
+ * view whose document is missing when another view needs it.
  */
 export function viewLifecycle({ viewId, views, sources, frame, load = VIEW_RENDERER, ...options }) {
   const lifecycle = dataframeLifecycle({
@@ -66,15 +68,26 @@ export function viewLifecycle({ viewId, views, sources, frame, load = VIEW_RENDE
             canvas.textContent = VIEW_NOT_HERE;
             return { destroy: () => (canvas.textContent = "") };
           }
+          // A held view asks for its document for as long as the chart is
+          // mounted (view-replicas.mjs).
           const held = views.hold(viewId);
-          // An embed that appears asks for its view again, if an earlier
-          // lookup found nothing.
-          held.want();
-          const chart = chunk.mount(canvas, { view$: held.view$, sources });
+          let chart;
+          try {
+            chart = chunk.mount(canvas, { view$: held.view$, sources });
+          } catch (error) {
+            held.release();
+            throw error;
+          }
           return {
             destroy() {
-              chart.destroy();
-              held.release();
+              // A chart that throws while tearing down still lets go of
+              // its view, so its slot frees.
+              try {
+                chart.destroy();
+              } catch {
+              } finally {
+                held.release();
+              }
             },
           };
         },

@@ -54,6 +54,9 @@ export class HostDocReplica {
   #derived;
   #scheduler;
   #lookupTimeout;
+  #linked;
+  /** How many things on the Page ask for the document now (demand()). */
+  #demand = 0;
   /** Advances on retire and close, so a derivation that settles after
    * either steps nothing. */
   #epoch = 0;
@@ -70,6 +73,9 @@ export class HostDocReplica {
    * answer, and one after the link changed is a lost connection.
    * `derive()` resolves with the document's derived id; without it the
    * replica opens only what discovery names.
+   * `linked()` says whether lookups may run now (a connection is admitted
+   * and the Page is shown); an ask while it is false waits for the next
+   * connection.
    * `scheduler` runs the retry, look-again and lookup timers.
    */
   constructor({
@@ -77,6 +83,7 @@ export class HostDocReplica {
     forget = async () => {},
     claims = new Set(),
     link = () => true,
+    linked = () => true,
     derive,
     scheduler = asyncScheduler,
     lookupTimeout = LOOKUP_TIMEOUT_MS,
@@ -85,6 +92,7 @@ export class HostDocReplica {
     this.#forget = forget;
     this.#claims = claims;
     this.#link = link;
+    this.#linked = linked;
     this.#derive = derive;
     this.#scheduler = scheduler;
     this.#lookupTimeout = lookupTimeout;
@@ -98,7 +106,11 @@ export class HostDocReplica {
   /** A connection was admitted with `connection` as its discovery, which
    * names the sources document. */
   discovered(connection) {
-    return this.step(discoveryEvent(connection, parseDocumentDescriptor));
+    const result = this.step(discoveryEvent(connection, parseDocumentDescriptor));
+    // Discovery that names no document leaves it absent; standing demand
+    // looks it up by its derived id.
+    if (this.#demand > 0) this.want();
+    return result;
   }
 
   /** A connection was admitted, and this document is found by its derived
@@ -111,8 +123,22 @@ export class HostDocReplica {
    * looked up again, at most once per look-again window. A replica in any
    * other state answers at once, without deriving anything. */
   want() {
-    if (this.state$.snapshot().name !== "absent") return;
+    if (this.state$.snapshot().name !== "absent" || !this.#linked()) return;
     this.#withId((id) => ({ type: "wanted", id }));
+  }
+
+  /** Something on the Page keeps asking for the document until it calls the
+   * function this returns: it asks now (want()), and while any demand
+   * stands, each look-again window that ends runs one lookup. */
+  demand() {
+    this.#demand++;
+    this.want();
+    let standing = true;
+    return () => {
+      if (!standing) return;
+      standing = false;
+      this.#demand--;
+    };
   }
 
   /** The replica is retiring with the Page's other documents: a lookup is
@@ -162,9 +188,12 @@ export class HostDocReplica {
         this.#lookup = undefined;
         return;
       case "schedule":
-        return this.#arm(effect.delay, { type: "timer", attempt: effect.attempt });
+        return this.#arm(effect.delay, () => ({ type: "timer", attempt: effect.attempt }));
       case "cool":
-        return this.#arm(effect.delay, { type: "cooled" });
+        return this.#arm(effect.delay, () => ({
+          type: "cooled",
+          ...(this.#demand > 0 && this.#linked() && { demanded: true }),
+        }));
       case "clearTimer":
         this.#timer?.unsubscribe();
         this.#timer = undefined;
@@ -180,11 +209,12 @@ export class HostDocReplica {
     throw new Error(`unknown effect ${effect.type}`);
   }
 
+  /** Arm the one timer; `event()` reads the event when it fires. */
   #arm(delay, event) {
     this.#timer?.unsubscribe();
     this.#timer = timer(delay, this.#scheduler).subscribe(() => {
       this.#timer = undefined;
-      this.step(event);
+      this.step(event());
     });
   }
 

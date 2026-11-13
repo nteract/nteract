@@ -212,6 +212,13 @@ const ROWS = [
     go(opening(1, S1, "derived", 1), [lookup(1)]),
     "look",
   ),
+  row(
+    "cooling: the timer fires while something still asks, and one lookup runs",
+    cooling,
+    { type: "cooled", demanded: true },
+    go(opening(1, S1, "derived", 1), [lookup(1)]),
+    "demanded",
+  ),
 
   // A lookup is running.
   ...leaving(

@@ -549,6 +549,8 @@ export class PageSession {
       claims: new Set(),
       // A lookup's connection: the admitted one, or none while disconnected.
       link: () => (this.sockets.size ? this.connectionGeneration : undefined),
+      // Whether an ask may look a document up now.
+      linked: () => this.lookupsOpen,
       scheduler,
     };
     this.sources = new HostDocReplica({
@@ -560,7 +562,6 @@ export class PageSession {
         ...lookups,
         pageId,
         viewDocumentId,
-        linked: () => this.lookupsOpen,
         closeDelay: VIEW_CLOSE_DELAY_MS,
       });
     this.recoveryCapture = new RecoveryCapture({
@@ -627,15 +628,14 @@ export class PageSession {
    * the sources document alone. Made on first use; released with the
    * session. */
   get pageSources() {
-    // A reader of a source the store doesn't hold asks for the sources
-    // document, so a Page's first source, created while this tab is open,
-    // is found without waiting for the next admitted connection.
+    // A reader waiting on a source the store doesn't hold asks for the
+    // sources document for as long as it waits, so a Page's first source,
+    // created while this tab is open, is found without waiting for the next
+    // admitted connection.
     this.sourceStore ??= new PageSourceStore({
       pageId: this.pageId,
       doc$: this.sources.doc$,
-      want: () => {
-        if (this.lookupsOpen) this.sources.want();
-      },
+      demand: () => this.sources.demand(),
     });
     return this.sourceStore;
   }

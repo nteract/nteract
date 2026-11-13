@@ -62,7 +62,7 @@ function handleOf(doc) {
   };
 }
 
-function replica({ link = () => 1, derive, ignoreAbort } = {}) {
+function replica({ link = () => 1, linked, derive, ignoreAbort } = {}) {
   const scheduler = new VirtualTimeScheduler();
   const repo = heldFind({ ignoreAbort });
   const forgotten = [];
@@ -71,6 +71,7 @@ function replica({ link = () => 1, derive, ignoreAbort } = {}) {
     find: repo.find,
     forget: async (id) => forgotten.push(id),
     link,
+    ...(linked && { linked }),
     scheduler,
     ...(derive !== null && {
       derive: async () => {
@@ -184,27 +185,46 @@ test("a derived miss is forgotten just before the next lookup, and the replica r
   assert.equal(r.forgotten.length, MISSING_ATTEMPTS);
 });
 
-test("with steady demand, a document that never appears is looked up at fixed times", async () => {
+test("standing demand looks a document that never appears up at fixed times, and stops with it", async () => {
   const r = replica();
   const times = [];
   const seen = new Set();
   r.sources.discovered(none);
-  // Something asks on every state change, as an embed that keeps asking would.
-  r.sources.state$.state$.subscribe(() => r.sources.want());
+  const stop = r.sources.demand();
   await tick();
-  const deadline = 200_000;
-  while (r.scheduler.frame <= deadline) {
-    for (const call of r.repo.calls) {
-      if (seen.has(call)) continue;
-      seen.add(call);
-      times.push(r.scheduler.frame);
-      call.reject(missing());
+  const run = async (deadline) => {
+    while (r.scheduler.frame <= deadline) {
+      for (const call of r.repo.calls) {
+        if (seen.has(call)) continue;
+        seen.add(call);
+        times.push(r.scheduler.frame);
+        call.reject(missing());
+      }
+      await tick();
+      r.advance(500);
+      await tick();
     }
-    await tick();
-    r.advance(500);
-    await tick();
-  }
+  };
+  await run(200_000);
   assert.deepEqual(times, [0, 1_000, 3_000, 13_000, 43_000, 103_000, 163_000]);
+  stop();
+  stop();
+  await run(600_000);
+  assert.equal(times.length, 7, "nothing asks once the demand stops");
+});
+
+test("standing demand made before a connection looks the document up when one is admitted", async () => {
+  let linked = false;
+  const r = replica({ linked: () => linked });
+  const stop = r.sources.demand();
+  r.sources.discovered(none);
+  await tick();
+  assert.equal(r.repo.calls.length, 0, "no lookup while nothing is linked");
+  linked = true;
+  r.sources.discovered(none);
+  await tick();
+  assert.equal(r.repo.calls.length, 1);
+  stop();
 });
 
 test("asks inside the look-again window run one lookup when it ends", async () => {

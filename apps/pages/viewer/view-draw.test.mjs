@@ -92,7 +92,12 @@ const view = ({ revision = "1", names = ["sales"], data, title = "Sales" } = {})
   },
 });
 
-function fixture({ sources: initial, check = checkChartSpec, throwOnDraw = () => false } = {}) {
+function fixture({
+  sources: initial,
+  check = checkChartSpec,
+  throwOnDraw = () => false,
+  throwOnDestroy = () => false,
+} = {}) {
   const host = hostSources();
   for (const [id, char] of Object.entries(initial ?? { sales: "a" })) host.set(id, asset(char));
   const doc$ = new BehaviorSubject(host.doc);
@@ -101,7 +106,7 @@ function fixture({ sources: initial, check = checkChartSpec, throwOnDraw = () =>
   const store = new PageSourceStore({
     pageId: PAGE,
     doc$,
-    want: () => asks.push(1),
+    demand: () => (asks.push(1), () => {}),
     request: async (url) => {
       fetches.push(url);
       return new Response(new TextEncoder().encode(url.slice(-64)), {
@@ -123,7 +128,12 @@ function fixture({ sources: initial, check = checkChartSpec, throwOnDraw = () =>
         if (throwOnDraw(input)) throw Error("mount threw");
         const entry = { ...input, destroyed: false };
         draws.push(entry);
-        return { destroy: () => (entry.destroyed = true) };
+        return {
+          destroy: () => {
+            entry.destroyed = true;
+            if (throwOnDestroy(entry)) throw Error("destroy threw");
+          },
+        };
       },
       show: (status) => shown.push(status),
     },
@@ -217,6 +227,27 @@ test("a source rewritten while the chart draws replaces the load; the drawn char
   assert.equal(f.draws[0].destroyed, true);
   assert.equal(f.draws[1].datasets.sales.asset, asset("c"));
   assert.equal(f.decoder.calls[1].table.freed, 1, "the replaced load's table is freed");
+});
+
+test("a chart that throws while tearing down neither blocks the redraw nor keeps its tables", async () => {
+  const f = fixture({ throwOnDestroy: () => true });
+  f.view$.next(view());
+  await settle();
+  f.decoder.calls[0].resolve();
+  await settle();
+  f.write("sales", "b");
+  await settle();
+  f.decoder.calls[1].resolve();
+  await settle();
+  assert.equal(f.draws[0].destroyed, true);
+  assert.equal(f.draws.length, 2, "the new version draws");
+  assert.equal(f.draws[1].datasets.sales.asset, asset("b"));
+  assert.equal(f.decoder.calls[1].table.freed, 1, "its tables are freed");
+  assert.equal(f.draw.state.name, "drawn");
+  assert.equal(f.draw.loads, 0);
+  assert.doesNotThrow(() => f.draw.destroy());
+  assert.equal(f.draws[1].destroyed, true);
+  assert.equal(f.draw.state.name, "destroyed");
 });
 
 test("destroy during a pending load cancels it and frees what it decoded", async () => {

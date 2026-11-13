@@ -1,32 +1,29 @@
 // A chart's decoder for a Parquet source: one Arrow table, columnar, in
-// JavaScript memory, with each column in a form Vega reads. The chart
-// renderer (vega-chart.mjs datasetRows) turns that table into the row
-// objects Vega reads in one pass, so the only other copy is a column this
-// module converts. Nothing stays in Sift's WASM store, so the table has
-// nothing to dispose.
+// JavaScript memory, read through a chart table that converts each value to
+// a form Vega reads as the renderer reads it. The chart renderer
+// (vega-chart.mjs datasetRows) reads that table into the row objects Vega
+// reads in one pass, so no column is copied first. Nothing stays in Sift's
+// WASM store, so the table has nothing to dispose.
 //
-// Columns, by Arrow type:
-// - Decimal: numbers, scaled by the field's scale (12.34, not 1234).
+// Values, by Arrow type:
+// - Decimal: numbers, scaled by the field's scale (12.34, not 1234; a
+//   negative scale multiplies).
 // - 64-bit integers: numbers. A value past Number.MAX_SAFE_INTEGER becomes
 //   the nearest double, as any chart axis would show it.
 // - Time of day: milliseconds since midnight, whatever the stored unit.
-// - Date and timestamp: kept; Arrow reads them as epoch milliseconds, which
-//   Vega takes as temporal values.
-// - Dictionary: kept; Arrow reads each value through its dictionary.
-// - List, struct and map: kept; the renderer passes each as plain JSON.
+// - Date and timestamp: epoch milliseconds, which Vega takes as temporal
+//   values. Arrow reads every unit (second to nanosecond) to milliseconds,
+//   keeping a fraction below one. A timestamp with a time zone is stored as
+//   the UTC instant; one without reads as that wall time in UTC.
+// - Dictionary: its values, converted by the dictionary's value type.
+// - List, struct and map: plain arrays and objects, each value converted by
+//   its own type, so a 64-bit integer or a decimal inside reads as a number.
 // - Interval and duration: null. A chart has no scale for them.
-// - A column named `__proto__` is dropped: as a row key it would set the
-//   row's prototype instead of a field.
+// - Anything else: as Arrow reads it.
+// A column or struct field named `__proto__` is dropped: as a key it would
+// set an object's prototype instead of a field.
 import { parquetToArrowStream } from "@nteract/sift";
-import {
-  DataType,
-  Float64,
-  Table,
-  TimeUnit,
-  tableFromIPC,
-  util,
-  vectorFromArray,
-} from "apache-arrow";
+import { DataType, TimeUnit, tableFromIPC } from "apache-arrow";
 
 /** Milliseconds per stored unit of a time-of-day column. */
 const MS_PER = {
@@ -36,44 +33,109 @@ const MS_PER = {
   [TimeUnit.NANOSECOND]: 1 / 1_000_000,
 };
 
-/** How to read one value of a column of `type` as a number, or null to keep
- * the column as it is. */
-function numberReader(type) {
-  if (DataType.isDecimal(type)) return (value) => util.bigNumToNumber(value, type.scale);
-  if (DataType.isInt(type) && type.bitWidth === 64) return (value) => Number(value);
-  if (DataType.isTime(type)) return (value) => Number(value) * MS_PER[type.unit];
-  if (DataType.isInterval(type) || DataType.isDuration(type)) return () => null;
-  return null;
+const DROPPED = "__proto__";
+
+/** A decimal's unscaled value `big` at `scale`, as the nearest number. The
+ * whole and fractional parts convert apart, so a wide decimal keeps its
+ * cents. */
+export function decimalNumber(big, scale) {
+  if (scale <= 0) return Number(big) * 10 ** -scale;
+  const unit = 10n ** BigInt(scale);
+  return Number(big / unit) + Number(big % unit) / Number(unit);
 }
 
-/** `table` with each column in the form a chart reads (see above). The
- * table is returned as it is when no column needs a change. */
-export function chartTable(table) {
-  let changed = false;
-  const columns = [];
-  for (const [index, field] of table.schema.fields.entries()) {
-    if (field.name === "__proto__") {
-      changed = true;
-      continue;
-    }
-    const vector = table.getChildAt(index);
-    const read = numberReader(field.type);
-    if (!read) {
-      columns.push([field.name, vector]);
-      continue;
-    }
-    changed = true;
-    const values = Array.from({ length: vector.length }, (_, row) => {
-      const value = vector.get(row);
-      return value === null || value === undefined ? null : read(value);
-    });
-    columns.push([field.name, vectorFromArray(values, new Float64())]);
+/** A decimal's stored words (32-bit, low first, two's complement) as the
+ * signed BigInt they hold. */
+const unscaled = (words) => {
+  let big = 0n;
+  for (let index = words.length - 1; index >= 0; index--) big = (big << 32n) | BigInt(words[index]);
+  return BigInt.asIntN(words.length * 32, big);
+};
+
+/** Any BigInt in `value`, nested or not, as a number. */
+const plain = (value) => {
+  if (typeof value === "bigint") return Number(value);
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(plain);
+  const out = Object.create(null);
+  for (const [key, item] of Object.entries(value)) if (key !== DROPPED) out[key] = plain(item);
+  return out;
+};
+
+const same = (value) => value;
+const nullable = (read) => (value) => (value === null || value === undefined ? null : read(value));
+
+/** How to read one value of `type` as a chart reads it. */
+export function chartReader(type) {
+  if (DataType.isDictionary(type)) return chartReader(type.dictionary);
+  if (DataType.isDecimal(type))
+    return nullable((value) => decimalNumber(unscaled(value), type.scale));
+  if (DataType.isInt(type) && type.bitWidth === 64) return nullable(Number);
+  if (DataType.isTime(type)) return nullable((value) => Number(value) * MS_PER[type.unit]);
+  if (DataType.isDate(type) || DataType.isTimestamp(type)) return nullable(Number);
+  if (DataType.isInterval(type) || DataType.isDuration(type)) return () => null;
+  if (DataType.isList(type) || DataType.isFixedSizeList(type)) {
+    const item = chartReader(type.children[0].type);
+    return nullable((list) =>
+      Array.from({ length: list.length }, (_, index) => item(list.get(index))),
+    );
   }
-  return changed ? new Table(Object.fromEntries(columns)) : table;
+  if (DataType.isStruct(type)) {
+    const fields = type.children
+      .filter((field) => field.name !== DROPPED)
+      .map((field) => [field.name, chartReader(field.type)]);
+    return nullable((row) => {
+      const out = Object.create(null);
+      for (const [name, read] of fields) out[name] = read(row[name]);
+      return out;
+    });
+  }
+  if (DataType.isMap(type)) {
+    const [keyField, valueField] = type.children[0].type.children;
+    const key = chartReader(keyField.type);
+    const item = chartReader(valueField.type);
+    return nullable((map) => {
+      const out = Object.create(null);
+      for (const [k, v] of map) {
+        const name = String(key(k));
+        if (name !== DROPPED) out[name] = item(v);
+      }
+      return out;
+    });
+  }
+  if (DataType.isUnion(type)) return nullable(plain);
+  return same;
+}
+
+/**
+ * `table` as a chart table: Arrow's shape (`schema.fields`, `numRows`,
+ * `getChildAt(index).get(row)`) with each value read as a chart reads it
+ * (see above), converted when the renderer reads it.
+ */
+export function chartTable(table) {
+  const columns = table.schema.fields
+    .map((field, index) => ({ field, vector: table.getChildAt(index) }))
+    .filter(({ field }) => field.name !== DROPPED)
+    .map(({ field, vector }) => {
+      const read = chartReader(field.type);
+      return {
+        field,
+        column:
+          read === same
+            ? vector
+            : { length: vector?.length ?? 0, get: (row) => read(vector?.get(row) ?? null) },
+      };
+    });
+  return Object.freeze({
+    schema: Object.freeze({ fields: columns.map(({ field }) => field) }),
+    numRows: table.numRows,
+    numCols: columns.length,
+    getChildAt: (index) => columns[index]?.column ?? null,
+  });
 }
 
 /** Decode Parquet `bytes` within `limits` (sift-dataset.mjs DATAFRAME_LIMITS)
- * into an Arrow table a chart reads. */
+ * into a chart table. */
 export async function decodeArrow(bytes, { maxBytes, maxRows, maxColumns, maxDecodedBytes } = {}) {
   const ipc = await parquetToArrowStream(bytes, { maxBytes, maxRows, maxColumns, maxDecodedBytes });
   return chartTable(tableFromIPC(ipc));

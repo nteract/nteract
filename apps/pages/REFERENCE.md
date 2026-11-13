@@ -1549,7 +1549,11 @@ and the machine is `absent`. A miss there is the host saying the document
 doesn't exist yet. The lookup retries twice on the backoff, then the machine
 rests in `absent` behind a look-again window: asks inside it run one lookup
 when it ends, and each further miss widens it (10 s, 30 s, then 60 s) until a
-new connection starts over. Before each lookup that follows a miss, the
+new connection starts over. A reader still waiting on a missing source is
+standing demand: while it waits, one lookup runs as each window ends, so a
+document the host creates later is found; when nothing waits, nothing runs.
+View documents work the same way, with a held view embed as the demand.
+Before each lookup that follows a miss, the
 repo's cached unavailable answer is evicted so the lookup asks the host;
 eviction runs only while the repo still holds that answer and no replica has
 the document installed. A Page with no sources and nothing asking looks
