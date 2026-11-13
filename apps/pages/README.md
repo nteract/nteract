@@ -69,9 +69,10 @@ the dataflow and posts the finished scenegraph back, and the page draws it
 with Vega's SVG renderer and keeps the hover tooltip. The charts on a Page
 share one Worker (`viewer/chart-pool.mjs`), which runs one draw at a time,
 first draws ahead of redraws. The page never runs the dataflow itself: a
-Worker that can't start fails its charts. The Worker removes its network,
-storage, channel and child-Worker capabilities before Vega loads
-(`viewer/chart-lockdown.mjs`), and the Pages Worker serves it under its own
+Worker that can't start fails its charts. Before Vega loads, the Worker
+removes every global and prototype member it doesn't read, navigator
+included, keeping an allowlist (`viewer/chart-lockdown.mjs`), and the Pages
+Worker serves it under its own
 `Content-Security-Policy: default-src 'none'`
 (`shared/chart-worker-csp.mjs`).
 

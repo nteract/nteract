@@ -28,6 +28,12 @@ import { chromium, expect, firefox, webkit } from "@playwright/test";
 import { build } from "esbuild";
 import { CHART_WORKER_CSP } from "../shared/chart-worker-csp.mjs";
 import { CODE, NETWORK, STORAGE } from "./fixtures/chart-escapes.mjs";
+import {
+  ECMASCRIPT_GLOBALS,
+  HOST_CONSTANTS,
+  NEUTERED,
+  WORKER_GLOBALS,
+} from "../viewer/chart-lockdown.mjs";
 import { VIEWER_CSP } from "./viewer-chunks.mjs";
 
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -62,11 +68,35 @@ const workerBuild = (entry, outfile) =>
 await workerBuild("viewer/chart-worker.mjs", "chart-worker.js");
 await workerBuild("scripts/fixtures/chart-worker-unguarded.mjs", "unguarded-worker.js");
 // The escape Workers: the real chart Worker with code after it that tries
-// every way out, served under its own CSP and (at /nocsp/) under the page's;
-// and the same attempts with no lockdown, under the chart Worker's CSP.
+// every way out, and the same attempts with no lockdown. Each is served under
+// the chart Worker's CSP, and under /open/ with no CSP at all.
 await workerBuild("scripts/fixtures/chart-worker-escape.mjs", "escape-worker.js");
-await workerBuild("scripts/fixtures/chart-worker-escape.mjs", "nocsp/escape-worker.js");
+await workerBuild("scripts/fixtures/chart-worker-escape.mjs", "open/escape-worker.js");
 await workerBuild("scripts/fixtures/chart-worker-escape-bare.mjs", "escape-bare-worker.js");
+await workerBuild("scripts/fixtures/chart-worker-escape-bare.mjs", "open/escape-bare-worker.js");
+// The chart Worker with a recorder in front of every host global it reads,
+// under the chart Worker's CSP. Its page builds Arrow IPC with code the
+// viewer CSP refuses, so the page is served under /open/.
+await workerBuild("scripts/fixtures/chart-worker-recorder.mjs", "recorder-worker.js");
+await build({
+  entryPoints: { fixture: path.join(app, "scripts/fixtures/chart-recorder-fixture.mjs") },
+  bundle: true,
+  format: "esm",
+  platform: "browser",
+  target: "es2022",
+  outdir: path.join(site, "open/recorder"),
+  define: { "process.env.NODE_ENV": '"production"' },
+  logLevel: "error",
+});
+await writeFile(
+  path.join(site, "open/recorder/index.html"),
+  `<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8" /><title>Chart Worker globals</title></head>
+  <body><script type="module" src="/open/recorder/fixture.js"></script></body>
+</html>
+`,
+);
 const workerBytes = await readFile(path.join(site, "chart-worker.js"));
 report.worker = {
   bytes: workerBytes.byteLength,
@@ -238,12 +268,13 @@ await writeFile(
 
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
 // Worker scripts carry the chart Worker's own CSP, as the Pages Worker serves
-// every /chunks/ script; everything else, and /nocsp/, carries the page's.
+// every /chunks/ script; everything else carries the page's, and /open/ none.
 const WORKER_SCRIPTS = new Set([
   "/chart-worker.js",
   "/unguarded-worker.js",
   "/escape-worker.js",
   "/escape-bare-worker.js",
+  "/recorder-worker.js",
 ]);
 // Requests from an escape Worker: none may arrive.
 report.escapeRequests = [];
@@ -260,7 +291,10 @@ const server = createServer(async (request, response) => {
     const body = await readFile(file);
     response.writeHead(200, {
       "Content-Type": types[path.extname(file)] ?? "application/octet-stream",
-      "Content-Security-Policy": WORKER_SCRIPTS.has(name) ? CHART_WORKER_CSP : VIEWER_CSP,
+      // /open/ has no CSP: the escape controls and the recorder page.
+      ...(!name.startsWith("/open/") && {
+        "Content-Security-Policy": WORKER_SCRIPTS.has(name) ? CHART_WORKER_CSP : VIEWER_CSP,
+      }),
     });
     response.end(body);
   } catch {
@@ -469,11 +503,19 @@ async function freezeCheck(engine) {
   }
 }
 
+// Ways out the chart Worker's CSP alone lets through, by engine; the
+// lockdown closes each. The smoke fails if this list is wrong either way.
+const KNOWN_CSP_LEAKS = { chromium: [], firefox: ["EventSource", "FontFace"], webkit: [] };
+// Code from strings the lockdown alone leaves: any function's constructor
+// compiles a string. The Worker's CSP closes it.
+const KNOWN_LOCKDOWN_LEAKS = ["Function"];
+
 /**
  * In `engine`, run code in a chart Worker that tries every way out
- * (scripts/fixtures/chart-escapes.mjs). The lockdown alone closes every way
- * but code from strings; the Worker's CSP alone closes the network and code
- * from strings; together they close all of it. No request reaches the server.
+ * (scripts/fixtures/chart-escapes.mjs), in four Workers: no lockdown and no
+ * CSP (the positive control: every way out present in the engine works),
+ * the real Worker under its own CSP, the lockdown alone, and the CSP alone.
+ * A network way out counts as open when the server received its request.
  */
 async function escapeCheck(engine) {
   const instance =
@@ -485,41 +527,110 @@ async function escapeCheck(engine) {
     await escape.goto(`${origin}/breakout/`, { waitUntil: "load" });
     await expect(escape.locator("body[data-fixture=ready]")).toBeAttached({ timeout: 60_000 });
     const escapes = await escape.evaluate(() => window.escapes);
+    const requests = report.escapeRequests.slice(before);
+    for (const variant of ["control", "both", "lockdown", "csp"])
+      assert.ok(
+        escapes[variant]?.results,
+        `${engine} ${variant}: ${JSON.stringify(escapes[variant])}`,
+      );
+    // A way out is open when its request reached the server (network) or
+    // its attempt worked (code, storage).
+    const open = (variant) => {
+      const { results } = escapes[variant];
+      const reached = new Set(
+        requests
+          .filter((path) => path.startsWith(`/escape/${variant}/`))
+          .map((path) => path.split("/").at(-1)),
+      );
+      return [
+        ...Object.entries(NETWORK)
+          .filter(([, [file]]) => reached.has(file))
+          .map(([name]) => name),
+        ...Object.keys({ ...CODE, ...STORAGE }).filter((name) => results[name] === "open"),
+      ].sort();
+    };
+    const absent = Object.keys(STORAGE).filter(
+      (name) => escapes.control.results[name] === "absent",
+    );
+    const present = [...Object.keys(NETWORK), ...Object.keys(CODE), ...Object.keys(STORAGE)]
+      .filter((name) => !absent.includes(name))
+      .sort();
+    assert.deepEqual(open("control"), present, `${engine}: the control must get out every way`);
+    assert.deepEqual(open("both"), [], `${engine}: lockdown and CSP together`);
+    assert.deepEqual(open("lockdown"), KNOWN_LOCKDOWN_LEAKS, `${engine}: the lockdown alone`);
+    const network = Object.keys(NETWORK);
+    assert.deepEqual(
+      open("csp").filter((name) => network.includes(name) || name in CODE),
+      [...KNOWN_CSP_LEAKS[engine]].sort(),
+      `${engine}: the CSP alone`,
+    );
+    // Nothing but the allowlist is left on the locked-down Worker.
+    const allowed = new Set([
+      ...ECMASCRIPT_GLOBALS,
+      ...WORKER_GLOBALS,
+      ...NEUTERED,
+      ...HOST_CONSTANTS,
+    ]);
+    assert.deepEqual(
+      escapes.both.remaining.filter((name) => !allowed.has(name)),
+      [],
+      `${engine}: unlisted names left on the Worker`,
+    );
     report.escapes ??= {};
-    report.escapes[engine] = escapes;
-    const open = (variant, names) =>
-      Object.keys(names).filter((name) => escapes[variant]?.[name] !== "blocked");
-    const all = { ...NETWORK, ...CODE, ...STORAGE };
-    assert.deepEqual(open("both", all), [], `${engine}: lockdown and CSP left ways out`);
-    assert.deepEqual(
-      open("lockdown", { ...NETWORK, ...STORAGE }),
-      [],
-      `${engine}: the lockdown alone left ways out`,
-    );
-    assert.deepEqual(
-      open("csp", { ...NETWORK, ...CODE }),
-      [],
-      `${engine}: the Worker's CSP alone left ways out`,
-    );
-    // Requests that reached the server, by variant. With both layers, and
-    // with the lockdown alone, none may; what the CSP alone lets through is
-    // recorded, since both layers ship.
-    const reached = (variant) =>
-      report.escapeRequests.slice(before).filter((path) => path.startsWith(`/escape/${variant}/`));
-    assert.deepEqual(reached("both"), [], `${engine}: requests escaped both layers`);
-    assert.deepEqual(reached("lockdown"), [], `${engine}: requests escaped the lockdown`);
-    report.cspOnlyRequests ??= {};
-    report.cspOnlyRequests[engine] = reached("csp");
-    const leaks = reached("csp").map((path) => path.split("/").at(-1));
+    report.escapes[engine] = { escapes, absent };
     complete(
-      `${engine}: code in the chart Worker reaches no network, storage, channel or string ` +
-        `code (${Object.keys(all).length} ways tried); the lockdown alone holds` +
-        (leaks.length
-          ? `; the Worker's CSP alone let through ${leaks.join(", ")}`
-          : `, and so does the Worker's CSP alone`),
+      `${engine}: code in the chart Worker reaches nothing (${present.length} ways out, each ` +
+        `shown open with no lockdown and no CSP${absent.length ? `; absent here: ${absent.join(", ")}` : ""}); ` +
+        `the lockdown alone leaves only ${KNOWN_LOCKDOWN_LEAKS.join(", ")}; the CSP alone leaves ` +
+        `${KNOWN_CSP_LEAKS[engine].join(", ") || "nothing on the network"}; ` +
+        `${escapes.both.remaining.length} names left, all on the allowlist`,
     );
   } finally {
     await escapeContext.close();
+    if (instance !== browser) await instance.close();
+  }
+}
+
+/**
+ * In `engine`, draw every corpus spec and the other chart kinds through the
+ * chart Worker with a recorder in front, and fail if its code read a host
+ * global the lockdown's allowlist (viewer/chart-lockdown.mjs) doesn't keep.
+ */
+async function globalsCheck(engine) {
+  const instance =
+    engine === "chromium" ? browser : await ENGINES[engine].launch({ headless: true });
+  const recordContext = await instance.newContext();
+  const recorder = await recordContext.newPage();
+  const errors = [];
+  recorder.on("pageerror", (error) => errors.push(error.message));
+  recorder.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  try {
+    await recorder.goto(`${origin}/open/recorder/`, { waitUntil: "load" });
+    await expect(recorder.locator("body[data-fixture=ready]"))
+      .toBeAttached({ timeout: 120_000 })
+      .catch((error) => {
+        throw new Error(`${engine}: the recorder page didn't finish: ${errors.join(" | ")}`, {
+          cause: error,
+        });
+      });
+    const { names, statuses } = await recorder.evaluate(() => window.recorded);
+    const drawn = statuses.filter((status) => status === "drawn").length;
+    assert.ok(drawn >= 90, `${engine}: ${drawn} drawn: ${[...new Set(statuses)].join(" | ")}`);
+    const kept = new Set([...WORKER_GLOBALS, ...NEUTERED]);
+    assert.deepEqual(
+      names.filter((name) => !kept.has(name)),
+      [],
+      `${engine}: the chart Worker reads host globals the lockdown removes`,
+    );
+    report.globals ??= {};
+    report.globals[engine] = names;
+    complete(
+      `${engine}: the chart Worker reads only allowlisted host globals (${names.join(", ")})`,
+    );
+  } finally {
+    await recordContext.close();
     if (instance !== browser) await instance.close();
   }
 }
@@ -642,6 +753,7 @@ try {
   assert.deepEqual(report.csp, []);
   complete("No page errors, Content-Security-Policy refusals or requests off the fixture origin");
 
+  for (const engine of engines) await globalsCheck(engine);
   for (const engine of engines) await escapeCheck(engine);
   for (const engine of engines) await hostileCheck(engine);
   for (const engine of engines) await freezeCheck(engine);

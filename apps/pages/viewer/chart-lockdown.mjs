@@ -1,49 +1,122 @@
 // What a chart Worker gives up before it reads a message. The Worker runs
 // with the reader's origin, so a spec that ever found a way to run code there
 // would hold the reader's cookies against authenticated Pages endpoints, and
-// their storage. `lockDown` removes every network, storage, channel and
-// child-Worker capability from the Worker's global object and its prototype
-// chain; `freezeScope` then freezes the global, its prototypes and its
-// navigator, so nothing can be put back. The Worker's own CSP
+// their storage. `lockDown` keeps an allowlist: ECMAScript's own globals and
+// the host globals the chart code reads. It removes every other own property
+// of the Worker's global and each prototype up its chain, navigator included,
+// so an API a browser adds later is gone too. `freezeScope` then freezes the
+// global and its prototypes, so nothing can be put back. The Worker's own CSP
 // (shared/chart-worker-csp.mjs) closes the network and code from strings a
-// second time. scripts/chart-smoke.mjs tries every way out directly, in each
-// engine, with each layer alone and both together. No DOM.
+// second time. scripts/chart-smoke.mjs records what the chart code reads in
+// every engine and fails on a name off the allowlist, and tries every way out
+// with each layer alone and both together. No DOM.
 
-/** Globals a chart never needs that reach the network, storage, another
- * context or a child Worker. */
-export const WORKER_CAPABILITIES = Object.freeze([
-  "fetch",
-  "XMLHttpRequest",
-  "WebSocket",
-  "WebSocketStream",
-  "WebTransport",
-  "EventSource",
-  "importScripts",
-  "Worker",
-  "SharedWorker",
-  "BroadcastChannel",
-  "indexedDB",
-  "IDBFactory",
-  "caches",
-  "CacheStorage",
-  "cookieStore",
-  "CookieStore",
-  "FontFace",
-  "fonts",
-  "Notification",
-  "RTCPeerConnection",
-  "RTCDataChannel",
-  "webkitRTCPeerConnection",
+/** ECMAScript's own globals (ES2025), which reach no network, storage or
+ * other context. `eval` is not among them: lockDown replaces it (NEUTERED). */
+export const ECMASCRIPT_GLOBALS = Object.freeze([
+  "globalThis",
+  "Infinity",
+  "NaN",
+  "undefined",
+  "isFinite",
+  "isNaN",
+  "parseFloat",
+  "parseInt",
+  "decodeURI",
+  "decodeURIComponent",
+  "encodeURI",
+  "encodeURIComponent",
+  "escape",
+  "unescape",
+  "AggregateError",
+  "Array",
+  "ArrayBuffer",
+  "Atomics",
+  "BigInt",
+  "BigInt64Array",
+  "BigUint64Array",
+  "Boolean",
+  "DataView",
+  "Date",
+  "Error",
+  "EvalError",
+  "FinalizationRegistry",
+  "Float16Array",
+  "Float32Array",
+  "Float64Array",
+  "Function",
+  "Int8Array",
+  "Int16Array",
+  "Int32Array",
+  "Intl",
+  "Iterator",
+  "JSON",
+  "Map",
+  "Math",
+  "Number",
+  "Object",
+  "Promise",
+  "Proxy",
+  "RangeError",
+  "ReferenceError",
+  "Reflect",
+  "RegExp",
+  "Set",
+  "SharedArrayBuffer",
+  "String",
+  "Symbol",
+  "SyntaxError",
+  "TypeError",
+  "Uint8Array",
+  "Uint8ClampedArray",
+  "Uint16Array",
+  "Uint32Array",
+  "URIError",
+  "WeakMap",
+  "WeakRef",
+  "WeakSet",
 ]);
 
-/** The same for the Worker's navigator. */
-export const NAVIGATOR_CAPABILITIES = Object.freeze([
-  "storage",
-  "locks",
-  "serviceWorker",
-  "permissions",
-  "sendBeacon",
+/** Host globals the chart Worker's code reads, each with why: the
+ * smoke's recorder (scripts/fixtures/chart-globals-recorder.mjs) finds them
+ * by drawing the chart corpus in every engine. A name the bundle starts
+ * reading belongs here, with its reason, after checking it reaches no
+ * network, storage or other context. */
+export const WORKER_GLOBALS = Object.freeze([
+  // The Worker's global, for the code that reaches it by name.
+  "self",
+  // Receives jobs (chart-dataflow.mjs serveCharts).
+  "addEventListener",
+  // Answers them.
+  "postMessage",
+  // Vega's and d3-timer's scheduling; vega-expression also lists them as
+  // functions an expression may never call.
+  "setTimeout",
+  "clearTimeout",
+  "setInterval",
+  "clearInterval",
+  // Text measurement (chart-dataflow.mjs installTextMetrics).
+  "OffscreenCanvas",
+  // Arrow's UTF-8 strings, and the spec check's byte count.
+  "TextDecoder",
+  "TextEncoder",
+  // Vega-Lite copies specs with it.
+  "structuredClone",
+  // d3-timer's clock.
+  "performance",
+  // Vega's and Vega-Lite's logger.
+  "console",
 ]);
+
+/** Globals the code reads but never calls, each replaced by a function that
+ * throws: vega-expression puts `eval` in its set of functions an expression
+ * may not call, as it loads. */
+export const NEUTERED = Object.freeze(["eval"]);
+
+/** Interface constants Chromium defines on the Worker global's prototype
+ * that can't be deleted or overwritten (the old file-system API's storage
+ * types). They're kept only while each holds a number. */
+export const HOST_CONSTANTS = Object.freeze(["TEMPORARY", "PERSISTENT"]);
 
 /** Every object from `target` up its prototype chain, Object.prototype
  * excluded. */
@@ -58,31 +131,41 @@ function chain(target) {
   return objects;
 }
 
-/** Remove `name` from every object on `target`'s chain that defines it, and
- * throw unless `target[name]` then reads as undefined. */
-function remove(target, name) {
-  for (const object of chain(target)) {
-    const descriptor = Object.getOwnPropertyDescriptor(object, name);
-    if (!descriptor) continue;
-    if (descriptor.configurable) delete object[name];
-    else if (descriptor.writable) object[name] = undefined;
-  }
-  if (target[name] !== undefined) throw new Error(`The chart Worker couldn't remove ${name}.`);
+const KEPT = new Set(["constructor", ...ECMASCRIPT_GLOBALS, ...WORKER_GLOBALS]);
+
+/** Remove `key` from `object`: delete it, or overwrite it with undefined
+ * when it can only be overwritten. Throws when it can be neither. */
+function remove(object, key) {
+  const descriptor = Object.getOwnPropertyDescriptor(object, key);
+  if (descriptor.configurable) delete object[key];
+  else if (descriptor.writable) object[key] = undefined;
+  const left = Object.getOwnPropertyDescriptor(object, key);
+  if (left && !("value" in left && left.value === undefined))
+    throw new Error(`The chart Worker couldn't remove ${String(key)}.`);
 }
 
-/** Remove the network, storage, channel and child-Worker capabilities from
- * `scope` (the Worker's global) and its navigator. Throws, so the Worker
- * never answers, if one can't be removed. */
+/** Keep only the allowlist on `scope` (the Worker's global) and each
+ * prototype up its chain, HOST_CONSTANTS that hold numbers aside, and
+ * replace NEUTERED with throwing functions.
+ * Throws, so the Worker never answers, if a name off the allowlist can't be
+ * removed. */
 export function lockDown(scope) {
-  for (const name of WORKER_CAPABILITIES) remove(scope, name);
-  const navigator = scope.navigator;
-  if (navigator) for (const name of NAVIGATOR_CAPABILITIES) remove(navigator, name);
+  for (const object of chain(scope))
+    for (const key of Reflect.ownKeys(object))
+      if (KEPT.has(key) || NEUTERED.includes(key)) continue;
+      else if (HOST_CONSTANTS.includes(key) && typeof object[key] === "number") continue;
+      else remove(object, key);
+  for (const name of NEUTERED) {
+    const refuse = () => {
+      throw new EvalError(`The chart Worker doesn't run ${name}.`);
+    };
+    Object.defineProperty(scope, name, { value: refuse, writable: false, configurable: false });
+    for (const object of chain(scope).slice(1))
+      if (Object.hasOwn(object, name)) remove(object, name);
+  }
 }
 
-/** Freeze `scope`, its prototypes and its navigator, so a removed capability
- * can't be put back on them. */
+/** Freeze `scope` and its prototypes, so a removed name can't be put back. */
 export function freezeScope(scope) {
-  const navigator = scope.navigator;
-  for (const object of [...chain(scope), ...(navigator ? chain(navigator) : [])])
-    Object.freeze(object);
+  for (const object of chain(scope)) Object.freeze(object);
 }
