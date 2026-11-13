@@ -38,7 +38,7 @@
 import { SVGHandler, SVGRenderer, sceneFromJSON } from "vega-scenegraph";
 import { Handler as TooltipHandler } from "vega-tooltip";
 import { BehaviorSubject, Subscription, combineLatest, concat, from } from "rxjs";
-import { debounceTime, distinctUntilChanged, skip, switchMap, take } from "rxjs/operators";
+import { debounceTime, distinctUntilChanged, filter, skip, switchMap, take } from "rxjs/operators";
 import {
   CHART_CURSORS,
   CHART_MAX_CELLS,
@@ -553,10 +553,15 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
     ? new win.ResizeObserver(() => widths.next(contentWidth(frame)))
     : null;
   watchSize?.observe(frame);
-  // The first width draws at once; later ones wait for the resize to settle.
+  // Only a measured width draws: a frame with no width yet (not laid out, or
+  // in a hidden tab) posts nothing until its first observed width, so no
+  // chart draws at Vega-Lite's default size first. The first width draws at
+  // once; later ones wait for the resize to settle. Without a ResizeObserver
+  // the width read at mount is the only one there will be.
+  const measured = watchSize ? widths.pipe(filter((width) => width > 0)) : widths;
   const settledWidths = concat(
-    widths.pipe(take(1)),
-    widths.pipe(skip(1), debounceTime(RESIZE_SETTLE_MS)),
+    measured.pipe(take(1)),
+    measured.pipe(skip(1), debounceTime(RESIZE_SETTLE_MS)),
   ).pipe(distinctUntilChanged());
 
   // One draw: the Worker's answer drawn into a fresh target, or the error.

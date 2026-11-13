@@ -296,6 +296,30 @@ test("mount redraws at a new width once a resize settles, in the same Worker", (
     }),
   ));
 
+test("a frame with no width at mount draws once, at the first width it gets", () =>
+  withWindow((window, { observers }) =>
+    countWorkers(async (workers) => {
+      // Not laid out yet, or in a background tab: no width, and nothing posted.
+      const { element, resize } = container(window, 0);
+      const chart = mount(element, { spec: stacked, datasets: { calls } });
+      await settle(RESIZE_SETTLE_MS + 60);
+      assert.equal(workers.draws, 0);
+      assert.equal(element.querySelector("figure").dataset.chartStatus, "drawing");
+      // An observer entry still at zero posts nothing either.
+      observers.resize[0].callback();
+      await settle(RESIZE_SETTLE_MS + 60);
+      assert.equal(workers.draws, 0);
+      resize(500);
+      observers.resize[0].callback();
+      assert.equal(await drawn(element), "rendered");
+      await settle(RESIZE_SETTLE_MS + 60);
+      assert.equal(workers.draws, 1, "exactly one draw");
+      const width = Number(element.querySelector(".pages-chart-canvas svg").getAttribute("width"));
+      assert.ok(width > 400 && width <= 500, `drawn at the frame's width, not a default: ${width}`);
+      chart.destroy();
+    }),
+  ));
+
 test("a Page theme change redraws with the dark palette", () =>
   withWindow((window) =>
     countWorkers(async (workers) => {
