@@ -133,7 +133,8 @@ export async function tagMatchingIds(db, ast, pageIds) {
  * batch that timed out here keeps running in D1 and can land later still. A
  * Page whose tombstone or Trash mark is in `pages_catalog_pages` takes no tag
  * changes: the writes check it as they run, so a late batch lands nothing on
- * a Page that took its Trash mark first. That row is a projection of the Page
+ * a Page that took its Trash mark first, and the write answers `page_trashed`
+ * (or `page_not_found` for a deleted mark) even when it would change nothing. That row is a projection of the Page
  * host's lifecycle, used here only as a fence; it is not tag data. The host
  * marks it after its own record is durable, so a write that races a Trash or
  * purge itself can land first. Trash keeps tags (a restored Page has them
@@ -186,12 +187,13 @@ export async function writePageTags(db, { pageId, principal, add, remove, now })
     TIMED_OUT,
   );
   const { state, removing, adding, total: size } = decided.results[0];
-  if (deleted.meta.changes === removing && inserted.meta.changes === adding)
-    return listed.results.map((row) => row.tag);
-  // The change didn't apply: the Page's lifecycle mark, or the limit.
+  // A marked Page answers its lifecycle refusal, even for a change that
+  // would have changed nothing.
   if (state === "deleted") throw new HttpError(404, "Page not found", "page_not_found");
   if (state === "trashed")
     throw new HttpError(409, "Restore this Page before changing its tags", "page_trashed");
+  if (deleted.meta.changes === removing && inserted.meta.changes === adding)
+    return listed.results.map((row) => row.tag);
   if (size > MAX_TAGS_PER_PAGE)
     throw new HttpError(
       409,

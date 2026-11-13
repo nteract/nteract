@@ -524,6 +524,38 @@ test("a write held in D1 and refused by Trash lands nothing and says why", async
   );
 });
 
+test("a held no-op write on a Page trashed meanwhile still answers page_trashed", async (t) => {
+  const { f, db, rows } = await tagged(t);
+  await project(f);
+  await update(f, "owner", { add: ["keep"] });
+  const release = holdBatch(db);
+  const writing = update(f, "owner", { add: ["keep"] });
+  await untilBatchHeld(db);
+  assert.equal((await trash(f)).status, 200);
+  release();
+  const refused = await writing;
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.code, "page_trashed");
+  assert.deepEqual(
+    rows().map((row) => row.tag),
+    ["keep"],
+  );
+});
+
+test("a held no-op write on a Page deleted meanwhile answers not found", async (t) => {
+  const { f, db, rows } = await tagged(t);
+  await project(f);
+  const release = holdBatch(db);
+  const writing = update(f, "owner", { remove: ["absent"] });
+  await untilBatchHeld(db);
+  assert.equal((await purge(f, "tags-noop-purge")).status, 200);
+  release();
+  const refused = await writing;
+  assert.equal(refused.status, 404, JSON.stringify(refused.body));
+  assert.equal(refused.body.code, "page_not_found");
+  assert.deepEqual(rows(), []);
+});
+
 test("a batch that timed out can't land on a Page trashed after the timeout", async (t) => {
   const { f, db, rows } = await tagged(t);
   await project(f);

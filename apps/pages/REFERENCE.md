@@ -3764,7 +3764,7 @@ caller has its 503 `tags_unavailable` (which means the outcome is unknown; the
 same call is safe to repeat). Both writes in the batch therefore check the
 Page's `pages_catalog_pages` row as they run: a Page marked `trashed` or
 `deleted` there takes no change, and the write answers 409 `page_trashed` (or
-404 `page_not_found`). The mark is a projection the host writes after its own
+404 `page_not_found`), even one that would have changed nothing. The mark is a projection the host writes after its own
 record is durable, so a write that races the Trash itself, before the mark, can
 still land; it stays with the Page, and a purge deletes it.
 
