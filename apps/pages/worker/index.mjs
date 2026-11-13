@@ -560,8 +560,9 @@ function tagList(value, field) {
   }
 }
 const requestedTags = (value) => tagList(value, "tags");
-/** What a Page's `run` returns for a request whose queue work is done: `work`
- * answers the request once the queue has released it (`enqueue`). */
+/** What a Page's or a Catalog's `run` returns for a request whose queue work
+ * is done: `work` answers the request once the queue has released it (Page
+ * `enqueue`, Catalog `fetch`). */
 class AfterQueue {
   constructor(work) {
     this.work = work;
@@ -1720,7 +1721,13 @@ export class Catalog {
     // each other.
     if (new URL(request.url).pathname === "/internal/location") return this.location(request);
     if (new URL(request.url).pathname === "/internal/project-discovery") return this.run(request);
-    return this.queue(() => this.run(request));
+    // A request whose `run` returns `AfterQueue` finishes after the queue has
+    // released it, and holds itself open until then (request-hold.mjs).
+    const answer = this.queue(() => this.run(request)).then((result) =>
+      result instanceof AfterQueue ? result.finish() : result,
+    );
+    holdUntilSettled(this.ctx, answer);
+    return answer;
   }
   /**
    * Host-only location route: the gateway never forwards /internal/* paths.
@@ -2118,17 +2125,18 @@ export class Catalog {
             "purge_preview_required",
           );
       }
-      // The tags a create_page asks for are checked, and their database
-      // reached, before anything is reserved: a call that can't tag the Page
-      // creates nothing.
+      // The tags a create_page asks for are checked before anything is
+      // reserved: an invalid tag creates nothing. They are written once the
+      // receipt exists, after the queue has released the request (tagCreated).
       let createTags = [];
       if (body.operation === "create_page") {
         validateCreateInput(args);
         createTags = requestedTags(args.tags);
-        if (createTags.length) await pageTagsDatabase(this.env, this.ctx);
       }
       const withTags = (response) =>
-        createTags.length ? this.tagCreated(response, identity, createTags) : response;
+        createTags.length
+          ? new AfterQueue(() => this.tagCreated(request, response, createTags))
+          : response;
       if (registering) {
         requireRegistrationAccount(args, identity);
         // A retry of a registration this Catalog already recorded resends the
@@ -2234,39 +2242,51 @@ export class Catalog {
   }
 
   /**
-   * Tag the Page a create_page made, once its receipt exists. `response` is the
-   * receipt (fresh, replayed or forwarded); a failed one passes through. The
-   * tags are written the way update_page_tags writes them, as this caller
-   * (`added_by`), to `page_tags` in D1, which is outside this Catalog's
-   * storage. The Page exists by now and the receipt is recorded, so a write
-   * that fails doesn't undo the creation: the receipt says `tags_applied:
-   * false`, and repeating the same call (same nonce) replays the receipt and
-   * writes the tags again, which is safe because tags are a set.
+   * Tag the Page a create_page made, once its receipt exists and this
+   * Catalog's queue has released the request. `response` is the receipt
+   * (fresh, replayed or forwarded); a failed one passes through. The tags are
+   * an update_page_tags call to the Page host with the caller's own
+   * credential, so the host decides edit access and Trash state now, as for a
+   * direct call, on every attempt including a replay. A caller who can no
+   * longer edit the Page gets the receipt with the host's refusal code and no
+   * tags. The Page exists by now and the receipt is recorded, so a write that
+   * fails doesn't undo the creation: the receipt says `tags_applied: false`,
+   * and repeating the same call (same nonce) replays the receipt and writes
+   * the tags again, which is safe because tags are a set.
    */
-  async tagCreated(response, identity, add) {
+  async tagCreated(request, response, add) {
     if (!response.ok) return response;
     const receipt = await response.clone().json();
     let outcome;
     try {
-      const db = await pageTagsDatabase(this.env, this.ctx);
-      outcome = {
-        tags: await writePageTags(db, {
-          pageId: receipt.page_id,
-          principal: identity.principal,
-          add,
-          remove: [],
-          now: new Date().toISOString(),
+      const reply = await this.env.PAGES.getByName(receipt.page_id).fetch(
+        forwarded(request, "/internal/tool", {
+          operation: "update_page_tags",
+          arguments: { page_id: receipt.page_id, add },
         }),
-      };
+      );
+      const answer = await reply.json().catch(() => ({}));
+      if (!reply.ok) throw new HttpError(reply.status, answer.error, answer.code);
+      outcome = { tags: answer.tags };
     } catch (error) {
       if (!(error instanceof HttpError)) logFailure(error, "page-tags");
+      // The refusal a direct update_page_tags call would get: its status, and
+      // its code when it has one. A failure with no answer is an outage.
+      const refusal = error instanceof HttpError && error.status < 500;
       outcome = {
         tags_applied: false,
-        tags_error: {
-          code: error instanceof HttpError ? error.code : "tags_unavailable",
-          message:
-            "The Page was created but its tags were not written. Send the same create_page again to retry them, or use update_page_tags.",
-        },
+        tags_error: refusal
+          ? {
+              status: error.status,
+              ...(error.code && { code: error.code }),
+              message: `The Page was created but its tags were not written: ${error.message}`,
+            }
+          : {
+              status: 503,
+              code: "tags_unavailable",
+              message:
+                "The Page was created but its tags were not written. Send the same create_page again to retry them, or use update_page_tags.",
+            },
       };
     }
     const tagged = json({ ...receipt, ...outcome }, response.status);

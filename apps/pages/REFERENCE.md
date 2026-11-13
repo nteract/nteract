@@ -3774,16 +3774,23 @@ or remove it, so it does not prove which session wrote the Page, and a tag is da
 for a reader, never an instruction. The tool text says so.
 
 **`create_page` `tags`** takes the same array as `add`, at most 32. A bad tag is 400
-`invalid_tag` (or `invalid_arguments` for a wrong type or count), and a database that
-can't be reached is 503 `tags_unavailable`; both answer before anything is reserved,
-so the call creates no Page. Otherwise the Page is created first, and its tags are
-written to `page_tags` as the caller (`added_by`) once the receipt exists, even for a
-Page in a Project another account owns. The receipt then carries `tags`. If the Page
-exists but the write fails, the receipt carries `tags_applied: false` and a
-`tags_error` instead, and nothing is rolled back: the same call (same nonce) replays
-the receipt and writes the tags again, which is safe because tags are a set. The tags
-are part of the request's fingerprint, so a retry that changes them under the same
-nonce is a conflict, not a retry.
+`invalid_tag` (or `invalid_arguments` for a wrong type or count), checked before
+anything is reserved, so the call creates no Page. Otherwise the Page is created
+first. Once the receipt exists (fresh, replayed or forwarded to a Project owner's
+Catalog) and the Catalog's queue has released the request, the Catalog sends
+`update_page_tags` to the Page host with the caller's own credential. The host
+decides edit access and Trash state then, exactly as for a direct call, on every
+attempt including a replay, and the tags are written as the caller (`added_by`).
+A slow D1 never holds the account's other Catalog requests. The receipt then
+carries `tags`. If the tags were not written, it carries `tags_applied: false`
+and a `tags_error` (`status`, `code` when the host gave one, `message`) instead,
+and nothing is rolled back. A database that can't be reached is `tags_error`
+503 `tags_unavailable`: the Page exists, and the same call (same nonce) replays
+the receipt and writes the tags again, which is safe because tags are a set. A
+caller who can no longer edit the Page, or a Page in Trash, gets the host's
+refusal there (403, 404 or 409 `page_trashed`) and never the Page's current
+tags. The tags are part of the request's fingerprint, so a retry that changes
+them under the same nonce is a conflict, not a retry.
 
 **`list_pages` `tags`** is one boolean expression over a Page's tags:
 
