@@ -56,9 +56,9 @@ const stacked = {
   },
 };
 const settle = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
-/** Wait until `check()` is true, up to five seconds. */
-async function until(check) {
-  for (let i = 0; i < 250 && !check(); i++) await settle(20);
+/** Wait until `check()` is true, up to `ms` (five seconds). */
+async function until(check, ms = 5_000) {
+  for (let i = 0; i < ms / 20 && !check(); i++) await settle(20);
   return check();
 }
 /** Wait until `element`'s chart has drawn or failed, up to five seconds. */
@@ -1351,9 +1351,8 @@ test("a Worker that fails to start or errors shows the error state", () =>
       try {
         const { element } = container(window);
         const chart = mount(element, { spec: stacked, datasets: { calls } });
-        await settle(60);
+        assert.equal(await drawn(element), "error");
         const figure = element.querySelector("figure");
-        assert.equal(figure.dataset.chartStatus, "error");
         assert.match(
           figure.querySelector(".pages-chart-message").textContent,
           /^This chart couldn't be drawn: /,
@@ -2116,7 +2115,9 @@ test("a dataset that only looks like an Arrow table is refused with one sentence
 for (const size of [1, 2]) {
   test(`ten charts on ${size} Worker(s): a hung chart fails alone and its Worker is replaced`, () =>
     withWindow(async (window) => {
-      const restore = setChartWorker(() => new InProcessWorker(), { timeoutMs: 80, size });
+      // The in-process Worker draws on this thread, so a timer that a loaded
+      // test run could outlast with an ordinary draw would fail a good chart.
+      const restore = setChartWorker(() => new InProcessWorker(), { timeoutMs: 1_500, size });
       try {
         await countWorkers(async (workers) => {
           // Chart 3 hangs; at both sizes, others are pinned to its Worker and
@@ -2130,7 +2131,7 @@ for (const size of [1, 2]) {
           });
           const statuses = () =>
             charts.map(({ element }) => element.querySelector("figure").dataset.chartStatus);
-          assert.ok(await until(() => !statuses().includes("drawing")), statuses().join());
+          assert.ok(await until(() => !statuses().includes("drawing"), 30_000), statuses().join());
           statuses().forEach((status, index) =>
             assert.equal(status, index === HUNG ? "error" : "rendered", `chart ${index}`),
           );
