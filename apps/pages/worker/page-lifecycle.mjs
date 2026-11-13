@@ -273,7 +273,7 @@ const HEADS_UNKNOWN = refused(
 );
 const HEADS_CHANGED = refused(
   409,
-  "Page changed; read_page again before editing",
+  "Page changed since this revision. Retry with current_revision; read_page first only when you need the changed text",
   "stale_revision",
 );
 const NOT_IN_TRASH = refused(

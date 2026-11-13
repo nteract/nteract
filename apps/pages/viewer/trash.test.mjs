@@ -129,10 +129,15 @@ test("the viewer's largest limit matches the Worker's", () => {
 });
 
 test("a peer's edit that beats Move to Trash gets a message a person can act on", () => {
-  const stale = Object.assign(Error("Page changed; read_page again before editing"), {
-    status: 409,
-    code: "stale_revision",
-  });
+  const stale = Object.assign(
+    Error(
+      "Page changed since this revision. Retry with current_revision; read_page first only when you need the changed text",
+    ),
+    {
+      status: 409,
+      code: "stale_revision",
+    },
+  );
   const mapped = moveToTrashError(stale);
   assert.equal(mapped.message, "Someone edited this Page while it was moving to Trash. Try again.");
   assert.equal(mapped.code, "stale_revision");

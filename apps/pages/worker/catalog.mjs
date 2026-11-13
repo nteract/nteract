@@ -18,6 +18,7 @@ import { markCatalogIndexDirty } from "./catalog-index.mjs";
 import { RECEIPT_LIFETIME_MS } from "./operation-journal.mjs";
 import { operationIntent } from "./operation-intent.mjs";
 import { locationEntries, projectOf, rekeyedEntries, restoreTarget } from "./catalog-location.mjs";
+import { MAX_PAGE_TITLE } from "../shared/page-title.mjs";
 
 /** Every entry under `prefix`, read in pages. An account's limit is set per
  * account (page-quota.mjs), so no fixed page size covers a whole prefix. */
@@ -37,15 +38,15 @@ export async function listAll(storage, prefix, pageSize = 500) {
 
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
 
-/** A title as listings store, order and show it: at most 500 UTF-16 code
- * units, cut on a code point boundary, with any lone surrogate replaced by
- * U+FFFD. D1 stores text as UTF-8, which has no lone surrogates, so this is
+/** A title as listings store, order and show it: at most MAX_PAGE_TITLE
+ * UTF-16 code units, cut on a code point boundary, with any lone surrogate
+ * replaced by U+FFFD. D1 stores text as UTF-8, which has no lone surrogates, so this is
  * the form that reads back the same from D1 and from Catalog entries. */
 export function catalogTitle(title) {
   if (typeof title !== "string") return "Untitled";
-  let cut = title.slice(0, 500);
+  let cut = title.slice(0, MAX_PAGE_TITLE);
   // A surrogate pair split at the limit drops its first half.
-  if (/[\uD800-\uDBFF]$/.test(cut) && /^[\uDC00-\uDFFF]/.test(title.slice(500)))
+  if (/[\uD800-\uDBFF]$/.test(cut) && /^[\uDC00-\uDFFF]/.test(title.slice(MAX_PAGE_TITLE)))
     cut = cut.slice(0, -1);
   return cut.replace(LONE_SURROGATE, "\uFFFD");
 }

@@ -6,6 +6,7 @@ import { HIGHLIGHT_COLORS, MARK_NAMES, formatAddSchema } from "./model/marks.mjs
 import { SETTABLE_ATTRS, retypeTargets } from "./model/node-registry.mjs";
 import { richContentInstructions } from "./model/rich-content-guide.mjs";
 import { MAX_SOURCE_NAME, SOURCE_ID_PATTERN, SOURCE_REVISION_PATTERN } from "./shared/sources.mjs";
+import { MAX_PAGE_TITLE } from "./shared/page-title.mjs";
 import {
   RENAMED_TOOLS,
   refusalCode,
@@ -33,6 +34,7 @@ const string = { type: "string" };
 const choice = (...values) => ({ type: "string", enum: values });
 const title = {
   ...string,
+  maxLength: MAX_PAGE_TITLE,
   description: "Page title, shown above the body. Don't repeat it as an opening heading.",
 };
 const markdownBody = {
@@ -78,11 +80,12 @@ const readBudget = {
   description:
     "Response byte budget (default 131072). Over budget returns read_budget_exceeded with an outline.",
 };
-/** A revision handle from a read or receipt: r… names a Page revision, c… its
- * comments. The host checks the letter for each argument (invalid_revision). */
+/** A Page revision handle (r…) from a read or receipt. since_comment_revision
+ * takes the comments' (c…). The host checks the letter for each argument
+ * (worker/revisions.mjs parseRevision, invalid_revision). */
 const revision = {
   type: "string",
-  pattern: "^[rc][1-9][0-9]{0,15}$",
+  pattern: "^r[1-9][0-9]{0,15}$",
   description: "revision from your last read or receipt. stale_revision carries current_revision.",
 };
 /** An id from a read or receipt: a block's, a node's or an image's. The host
@@ -250,7 +253,7 @@ const editOperation = {
         "set_source",
       ),
       description:
-        "set_title: title. replace_block_markdown: node_id, markdown. insert_markdown: markdown, after_node_id. move_block: node_id, after_node_id. delete_block: node_id. insert_image: asset_id, alt; optional dark_asset_id, title, after_node_id. set_image: node_id and the fields to change. insert_node: node, after_node_id. delete_node: node_id. replace_match: node_id, match_text, replacement or replacement_markdown. format_match: node_id, match_text, add or remove; optional all. set_node: node_id, match_text, type or attrs. set_source: source_id, name, asset_id, source_revision; alone in its batch.",
+        "set_title: title. replace_block_markdown: node_id, markdown. insert_markdown: markdown, after_node_id. move_block: node_id, after_node_id. delete_block: node_id. insert_image: asset_id, alt; optional dark_asset_id, title, after_node_id. set_image: node_id and the fields to change. insert_node: node, after_node_id. delete_node: node_id. replace_match: node_id, match_text, replacement or replacement_markdown. format_match: node_id, match_text, add or remove; optional all. set_node: node_id, match_text, type or attrs. set_source: source_id, name, asset_id, source_revision; in set_source-only batches.",
     },
     node_id: {
       ...address,
@@ -260,8 +263,7 @@ const editOperation = {
     title: {
       type: ["string", "null"],
       maxLength: 2048,
-      description:
-        "set_title: the Page title, shown above the body. Image ops: the image's title; null clears it.",
+      description: `set_title: the Page title, a string up to ${MAX_PAGE_TITLE} characters. Image ops: the image's title; null clears it.`,
     },
     markdown: markdownBody,
     after_node_id: {
@@ -390,11 +392,11 @@ const WRITE = {
   openWorldHint: false,
 };
 const DESTRUCTIVE = { ...WRITE, destructiveHint: true };
+/** Tags fold case, so the host takes duplicates and keeps one of each. */
 const tagList = {
   type: "array",
   items: { type: "string", maxLength: 64 },
   maxItems: 32,
-  uniqueItems: true,
 };
 const accessRevision = {
   type: "integer",
@@ -506,7 +508,7 @@ export const tools = [
   ),
   tool(
     "list_pages",
-    "List Pages this account can open, with account and quota. Without project_id, Project Pages you never opened may be missing: use list_projects, then list_pages with project_id. Each Page has content_updated_at (null means unknown, not empty) and tags (an array; missing means they could not be read). tags filters by a boolean expression over them. in_trash:true lists your trashed Pages instead. Pass next_cursor back as cursor until null; pages are not a snapshot, and a short result doesn't prove a Page is absent.",
+    "List Pages this account can open, with account and quota. Without project_id, Project Pages you never opened may be missing: use list_projects, then list_pages with project_id. Each Page has content_updated_at (null means unknown, not empty), and with include_tags or tags, tags (an array; missing means they could not be read). tags filters by a boolean expression over them. in_trash:true lists your trashed Pages instead. Pass next_cursor back as cursor until null; pages are not a snapshot, and a short result doesn't prove a Page is absent.",
     {
       query: {
         ...string,
@@ -609,6 +611,7 @@ export const tools = [
       since_revision: { ...revision, description: "revision from your last read or receipt." },
       since_comment_revision: {
         ...revision,
+        pattern: "^c[1-9][0-9]{0,15}$",
         description: "comment_revision from your last read or comment receipt.",
       },
       comments: {

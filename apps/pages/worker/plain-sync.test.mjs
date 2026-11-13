@@ -400,7 +400,7 @@ test("plain capacity refusal on restart preserves committed reads and the pendin
   const args = {
     revision: await revisionOf(f, A.getHeads(host.handle.doc())),
     nonce: "capacity-recovery",
-    operations: [{ op: "set_title", title: "Pending title " + "long ".repeat(100) }],
+    operations: [{ op: "set_title", title: "Pending title " + "long ".repeat(95) }],
   };
   const browser = rawSocket(
     host,

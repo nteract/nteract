@@ -85,9 +85,14 @@ export function requireHeads(doc, heads) {
     heads.length !== current.length ||
     [...heads].sort().some((head, index) => head !== current[index])
   )
-    reject(409, "Page changed; read_page again before editing", "stale_revision", {
-      current_heads: current,
-    });
+    reject(
+      409,
+      "Page changed since this revision. Retry with current_revision; read_page first only when you need the changed text",
+      "stale_revision",
+      {
+        current_heads: current,
+      },
+    );
 }
 /** edit_page's base revision: always required. */
 const requiredRevision = (args) => {

@@ -18,6 +18,7 @@ import { addressIndex, blockAddress, nodeAddresses, resolveAddressFor } from "./
 import { updateSpansConfig } from "./marks.mjs";
 import { stampSpans } from "./schema-features.mjs";
 import { imageAssetUrl, validAssetId } from "../shared/image-assets.mjs";
+import { MAX_PAGE_TITLE } from "../shared/page-title.mjs";
 import { DATAFRAME_BLOCK, dataframeFor } from "../shared/dataset-assets.mjs";
 import { projectComments } from "./comments.mjs";
 import { COMMENTS_FEATURE } from "./comments-doc.mjs";
@@ -264,8 +265,14 @@ const insertedBlock = (doc, op, key) => ({
 // added, moved or deleted, which the caller's address index forgets.
 function applyEdit(doc, op, at, { trace, touched, ...context }) {
   if (op.op === "set_title") {
-    if (typeof op.title !== "string") throw Error("set_title requires a title string");
-    A.updateText(doc, ["title"], String(op.title).slice(0, 1024));
+    // null clears an image's title; a Page always has a title, "" included.
+    if (typeof op.title !== "string")
+      throw Error('set_title takes title as a string; "" leaves the Page untitled');
+    if (op.title.length > MAX_PAGE_TITLE)
+      throw Error(
+        `set_title's title is at most ${MAX_PAGE_TITLE} characters; this one has ${op.title.length}`,
+      );
+    A.updateText(doc, ["title"], op.title);
     return;
   }
   if (op.op === "insert_markdown") {
@@ -380,9 +387,11 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
  * node's marker, so its text, marks and children go with it and its
  * neighbours keep their identity. Refused when the block ends up with fewer
  * than one node less: a list has no marker of its own to keep it apart, so
- * two alike on either side of the deleted node would join into one. (Deleting a
- * block's only node leaves the one empty paragraph a block always has, with
- * a marker of its own.) */
+ * two alike on either side of the deleted node would join into one.
+ * Deleting a block's only node leaves the one empty paragraph a block always
+ * has, with a marker of its own, and keeps the block: removing the block's
+ * map entry would discard what a peer writes into it concurrently. An agent
+ * that wants the block gone uses delete_block. */
 function deleteNode(doc, op, { key: id, index, start, end }, trace) {
   const tree = nativeRead(doc.blocks[id], doc.page_id);
   // The node's type comes from the readable tree, which must name the same

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { MAX_PAGE_TITLE } from "../shared/page-title.mjs";
 import { test } from "node:test";
 import { handleMcp as handleMcpRequest, tools } from "../mcp.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
@@ -71,7 +72,8 @@ test("MCP forwards authorized operations and preserves stale-write failure", asy
       calls.push({ op, args });
       return Response.json(
         {
-          error: "Page changed; read_page again before editing",
+          error:
+            "Page changed since this revision. Retry with current_revision; read_page first only when you need the changed text",
           code: "stale_revision",
           current_revision: "r9",
           comment_revision: "c4",
@@ -84,7 +86,8 @@ test("MCP forwards authorized operations and preserves stale-write failure", asy
   assert.equal(result.isError, true);
   // The service's revision fields ride along with retryable.
   const expected = {
-    error: "Page changed; read_page again before editing",
+    error:
+      "Page changed since this revision. Retry with current_revision; read_page first only when you need the changed text",
     code: "stale_revision",
     current_revision: "r9",
     comment_revision: "c4",
@@ -1298,9 +1301,42 @@ test("every write takes a nonce, a Page write a revision, and nothing takes head
   }
   const edit = tools.find((tool) => tool.name === "edit_page").inputSchema;
   assert.ok(edit.required.includes("revision"));
-  assert.equal(edit.properties.revision.pattern, "^[rc][1-9][0-9]{0,15}$");
+  assert.equal(edit.properties.revision.pattern, "^r[1-9][0-9]{0,15}$");
   const move = tools.find((tool) => tool.name === "move_page").inputSchema;
   assert.deepEqual(move.required, ["page_id", "nonce"]);
+});
+
+test("each schema accepts what its host accepts", () => {
+  const schema = (name) => tools.find((tool) => tool.name === name).inputSchema.properties;
+  // Every revision argument takes a Page revision but since_comment_revision,
+  // which takes the comments' (worker/revisions.mjs parseRevision).
+  const changes = schema("read_page_changes");
+  const pattern = (property) => new RegExp(property.pattern);
+  assert.ok(pattern(changes.since_revision).test("r1"));
+  assert.equal(pattern(changes.since_revision).test("c1"), false);
+  assert.ok(pattern(changes.since_comment_revision).test("c1"));
+  assert.equal(pattern(changes.since_comment_revision).test("r1"), false);
+  for (const tool of tools)
+    for (const [name, property] of Object.entries(tool.inputSchema.properties))
+      if (name.endsWith("revision") && property.pattern?.includes("[1-9]"))
+        assert.match(
+          property.pattern,
+          name === "since_comment_revision" ? /^\^c/ : /^\^r/,
+          `${tool.name}.${name}`,
+        );
+  // Tags fold case, so the host keeps one of each duplicate: no uniqueItems.
+  for (const [tool, field] of [
+    ["update_page_tags", "add"],
+    ["update_page_tags", "remove"],
+    ["create_page", "tags"],
+  ])
+    assert.equal(schema(tool)[field].uniqueItems, undefined, `${tool}.${field}`);
+  // A Page title has one limit for create_page and set_title.
+  assert.equal(schema("create_page").title.maxLength, MAX_PAGE_TITLE);
+  assert.match(
+    schema("edit_page").operations.items.properties.title.description,
+    /up to 500 characters/,
+  );
 });
 
 test("no MCP tool tells a caller to build its key from a prefix", () => {

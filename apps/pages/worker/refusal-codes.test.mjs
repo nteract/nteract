@@ -4,6 +4,10 @@ import * as A from "@automerge/automerge";
 import { fixture, trashArgs } from "./trash-fixture.mjs";
 import { proposeAccessUpdate } from "./access.mjs";
 
+// The refusal carries current_revision, so it never asks for a read first.
+const STALE =
+  "Page changed since this revision. Retry with current_revision; read_page first only when you need the changed text";
+
 test("guarded writes refuse a stale or malformed revision with a code, not just a message", async (t) => {
   const f = await fixture(t);
   // A revision this host named before the Page moved on.
@@ -29,7 +33,7 @@ test("guarded writes refuse a stale or malformed revision with a code, not just 
     // The refusal names both live revisions, so the next attempt needs no
     // read_page round trip.
     assert.deepEqual(refused.body, {
-      error: "Page changed; read_page again before editing",
+      error: STALE,
       code: "stale_revision",
       current_revision: await f.revision(),
       comment_revision: await f.commentRevision(),
@@ -63,6 +67,7 @@ test("guarded writes refuse a stale or malformed revision with a code, not just 
   });
   assert.equal(trash.status, 409);
   assert.equal(trash.body.code, "stale_revision");
+  assert.equal(trash.body.error, STALE);
   assert.equal(trash.body.current_revision, await f.revision());
   assert.equal(trash.body.comment_revision, await f.commentRevision());
 });

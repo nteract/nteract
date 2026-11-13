@@ -15,6 +15,7 @@ import {
   saveKeyCommand,
 } from "./agent-client-setup.mjs";
 import { PRODUCT_NAME } from "./shared/product.mjs";
+import { MAX_PAGE_TITLE } from "./shared/page-title.mjs";
 import { admitsAnyClientDocument } from "./worker/oauth-clients.mjs";
 import { richContentGuide, typedReadFields } from "./model/rich-content-guide.mjs";
 
@@ -127,25 +128,30 @@ ${part.authErrorItems}
 - invalid_cursor, invalid_list_arguments: restart the listing without the
   cursor, or fix query, limit, project_id, parent_id or tags. A tags error names
   the character position of the problem.
-- invalid_tag (400): a tag in add or remove isn't one: 1 to 64 characters of
-  a-z, 0-9 and . _ : / -, starting with a letter or digit; and, or and not are
-  reserved. tag_limit_exceeded (409): a Page holds at most 32 tags; remove some
+- invalid_tag (400): a tag in add or remove isn't one, and the message quotes
+  it: 1 to 64 characters of a-z, 0-9 and . _ : / -, starting with a letter or
+  digit; and, or and not are reserved. tag_limit_exceeded (409): a Page holds at most 32 tags; remove some
   first. tags_unavailable (503, retryable:true): tags are stored in a database
   table that did not answer; retry, and note that a listing with tags never falls
   back to a source without them.
+- invalid_agent_label (400): the X-Pages-Agent header is over 80 characters
+  or holds a control character. Shorten it or leave it blank.
 - invalid_nonce: nonce is missing, or isn't 6–64 letters, digits, underscores
   or hyphens. Send a new UUID.
-- invalid_revision: a revision argument isn't a revision handle: r… for
-  revision and since_revision, c… for since_comment_revision. Copy it from a
-  read or receipt.
+- invalid_revision: a revision argument is missing where it's required
+  (edit_page always takes one), or isn't a revision handle: r… for revision
+  and since_revision, c… for since_comment_revision. Copy it from a read or
+  receipt.
 - stale_revision (409): the Page changed since your read. MCP results add
   retryable:true. The refusal carries current_revision (and comment_revision
   when the Page has a comments document). Reconsider the edit against the
   current content, then send a new request with that revision and a new nonce;
   read again only when you need the changed text.
-- invalid_edit_selector: the request can't apply as written: a missing
-  revision, zero or multiple matches, an unknown block, operation or
-  mark. Fix the request; repeating it unchanged fails again.
+- invalid_edit_selector: the request can't apply as written: zero or
+  multiple matches, an unknown block, operation or mark, or an operation
+  field with a value it doesn't take, such as a dataframe title over 200
+  characters (the message names the field). Fix the request; repeating it
+  unchanged fails again.
 - replace_match_too_large: one replace_match changes more text than it can diff
   while keeping comment anchors on the words it leaves alone. Split it into
   smaller replace_match operations, or use replace_block_markdown if the block
@@ -350,7 +356,8 @@ Two optional headers name the agent in a Page:
 
 - X-Pages-Driver: the harness, such as Kilo, Codex or Claude Code.
 - X-Pages-Agent: a short session label, such as "release agent", at most 80
-  characters. A blank value means no label.
+  characters. A blank value means no label. A longer label, or one with a
+  control character, refuses every call with invalid_agent_label (400).
 
 A caret then reads "Kyle's Kilo · release agent". Both labels are
 self-declared. Pages always shows them under the account the credential
@@ -747,7 +754,10 @@ insert_node for a new one. Moving the line among its neighbours keeps the
 dataframe's attrs but writes it as a new node.
 In a block with no dataframe, such a line stays a link. replace_match and
 set_node edit around a dataframe without touching it; delete_node removes it
-by the node_id read_page's outline reports. A missing asset is dataset_not_found (404).
+by the node_id read_page's outline reports, and leaves its block holding one
+empty paragraph. To remove the block insert_node made for a dataframe, use
+delete_block with the block's id (the block field of its outline entry). A
+missing asset is dataset_not_found (404).
 
 ${part.datasetReaderParagraph}
 
@@ -765,7 +775,8 @@ that batch (a mixed batch is invalid_arguments; send two requests):
 \`\`\`
 
 source_id is 1 to 64 lowercase letters, digits, - and _, starting with a
-letter. source_revision is null to create the source, or the source_revision
+letter; a few names are reserved, and their refusal lists them. name is 1 to
+200 characters with no control characters such as a newline. source_revision is null to create the source, or the source_revision
 you last read to change it; anything else is stale_source with the current
 one. Pages counts revisions per source: "1", then one more per write. The
 asset is a dataset uploaded to this Page, and Pages records its media type.
@@ -1018,6 +1029,11 @@ body-only markdown: start with introductory prose or a real section heading,
 not another heading that repeats or paraphrases the Page title. The same applies
 when inserting or replacing opening content with edit_page. To rename the Page,
 use set_title rather than adding a new heading to its body.
+
+A title is a string of up to ${MAX_PAGE_TITLE} characters, for create_page and
+set_title alike; a longer one is refused, never cut. set_title takes "" and
+stores it: the Page then shows as Untitled in listings. null is refused, since
+a Page always has a title; null clears only an image's title.
 
 For example, a Page titled "Release plan" can start its body with "We are preparing
 the next release." followed by a "## Checklist" section. It should not also start
@@ -1438,7 +1454,9 @@ unique IDs, never both fields. The batch is one comments change under one
 nonce, and one receipt. result.threads lists each
 thread_id with its outcome: resolved, already_resolved, reopened or already_open.
 A thread already in the target state is a no-op success; if every thread is,
-the receipt's comment_revision is unchanged because nothing was written. The batch is
+the receipt's comment_revision is unchanged because nothing was written. A
+single thread_id works the same way: its result has the outcome beside
+thread_id. The batch is
 all-or-nothing: an unknown ID rejects it with invalid_comment_selector, and
 not_found_thread_ids names every unknown ID. Nothing changes, so drop those IDs
 and send a new request with a new nonce. Resolving needs comment access to the

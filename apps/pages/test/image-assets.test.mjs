@@ -898,3 +898,30 @@ test("a copy meets the destination's limits as an upload does", async (t) => {
   };
   assert.equal((await copyRequest(f, dataset.asset_id)).status, 403);
 });
+
+// A live target's tunnel answers these paths with an empty 404 before the
+// Worker sees them (scripts/deployment/routes.mjs admits an exact sha256
+// only); a target without a tunnel reaches this refusal.
+test("an asset path that names no asset is refused as JSON with a code, for every method", async (t) => {
+  const f = await fixture(t);
+  const message = "An asset id is the 64 lowercase hex characters an upload returned as asset_id";
+  for (const asset of ["ABC", "A".repeat(64), "a".repeat(63), `${"a".repeat(64)}.parquet`])
+    for (const method of ["GET", "POST"]) {
+      const response = await worker.fetch(
+        new Request(`http://127.0.0.1:9477/api/pages/${pageId}/assets/${asset}`, {
+          method,
+          headers: { authorization: f.bearer, "content-type": "application/json" },
+          ...(method === "POST" && { body: JSON.stringify({ from_page_id: otherId }) }),
+        }),
+        f.env,
+      );
+      assert.equal(response.status, 400, `${method} ${asset}`);
+      assert.deepEqual(
+        await response.json(),
+        { error: message, code: "invalid_arguments" },
+        `${method} ${asset}`,
+      );
+      privateHeaders(response);
+    }
+  assert.equal(f.forwarded.length, 0, "no Page is asked about a malformed path");
+});
