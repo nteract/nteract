@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
+import { deflateRawSync } from "node:zlib";
 import { Repo, generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { blockAddress } from "../model/addresses.mjs";
@@ -579,6 +580,135 @@ test("startup recovery of a pending edit applies its journaled bytes with their 
   assert.equal(applied.author, entry.writer);
   const read = await changesSince(f, r0);
   assert.deepEqual(writersOf(read, read.title_written_by)[0].agent, { name: "Rel" });
+});
+
+/** `change` (one change chunk) as a compressed change chunk: the same magic
+ * and checksum, chunk type 2 and the deflated body. */
+function compressedChange(change) {
+  let at = 9,
+    length = 0,
+    shift = 0;
+  for (;;) {
+    const byte = change[at++];
+    length |= (byte & 0x7f) << shift;
+    if (!(byte & 0x80)) break;
+    shift += 7;
+  }
+  const body = deflateRawSync(change.slice(at, at + length));
+  const uleb = [];
+  let n = body.length;
+  do {
+    let byte = n & 0x7f;
+    n >>>= 7;
+    if (n) byte |= 0x80;
+    uleb.push(byte);
+  } while (n);
+  return new Uint8Array([...change.slice(0, 8), 2, ...uleb, ...body]);
+}
+
+test("a forged host change is refused however a browser packs it", async (t) => {
+  const f = await fixture(t);
+  const r0 = await revision(f);
+  assert.equal(
+    (
+      await tool(
+        f,
+        "edit_page",
+        { revision: r0, nonce: "victim-packed", operations: [{ op: "set_title", title: "Agent" }] },
+        { agent: { name: "Rel" } },
+      )
+    ).status,
+    200,
+  );
+  await f.host.flush();
+  const base = await f.host.revisionTable().heads("page", r0, "r0");
+  const writer = A.decodeChange(A.getChangesSince(f.host.handle.doc(), base)[0]).author;
+  assert.match(writer, /^[0-9a-f]{16}$/);
+  const forged = A.change(
+    authoredClone(f.host.handle.doc(), f.host.plain.hostActorPrefix + "ef".repeat(8), writer),
+    (d) => A.updateText(d, ["title"], "Forged and packed ".repeat(20)),
+  );
+  t.after(() => A.free(forged));
+  const change = A.getChangesSince(forged, A.getHeads(f.host.handle.doc()))[0];
+  const packs = {
+    "whole-document snapshot": A.save(forged),
+    bundle: A.getBackend(forged).saveBundle(A.getHeads(forged)),
+    "compressed change": compressedChange(change),
+  };
+  // Each packing really carries the forged change: plain Automerge loads it.
+  for (const [name, bytes] of Object.entries(packs)) {
+    const loaded = A.loadIncremental(A.clone(f.host.handle.doc()), bytes);
+    assert.ok(A.hasHeads(loaded, A.getHeads(forged)), name);
+    A.free(loaded);
+  }
+  const before = structuredClone(f.storage.values);
+  const heads = A.getHeads(f.host.handle.doc());
+  for (const [name, bytes] of Object.entries(packs)) {
+    const link = socketFor(f.host, browserIdentity(owner, "Packer"), `b-pack-${name.length}`);
+    const frames = [];
+    link.client.onMessage((frame) => frames.push(frame));
+    const m = A.decodeSyncMessage(A.generateSyncMessage(A.init(), A.initSyncState())[1]);
+    m.changes = [bytes];
+    link.client.send({ t: "sync", doc: treeOf(f.documentId), m: A.encodeSyncMessage(m), r: 1 });
+    await until(() => frames.some((frame) => frame.t === "refused"));
+    assert.equal(frames.find((frame) => frame.t === "refused").code, "actor_claimed", name);
+    assert.deepEqual(A.getHeads(f.host.handle.doc()), heads, name);
+    assert.deepEqual(f.storage.values, before, `${name}: durable history is unchanged`);
+  }
+});
+
+test("authors survive the host's own compaction and a restart from the compacted snapshot", async (t) => {
+  const f = await fixture(t);
+  const r0 = await revision(f);
+  const base = await f.host.revisionTable().heads("page", r0, "r0");
+  const tree = treeOf(f.documentId);
+  const store = f.host.plain.host.store;
+  // More edits than COMPACT_MAX_CHUNKS (256) chunks: SyncHost compacts on
+  // its own after an append, as it does in production.
+  const agents = [{ name: "Rel", model: "m-1" }, { name: "Other" }];
+  for (let n = 0; n < 260; n++) {
+    const response = await tool(
+      f,
+      "edit_page",
+      {
+        revision: await revision(f),
+        nonce: `compact-${n}`,
+        operations: [{ op: "set_title", title: `Compacted ${n}` }],
+      },
+      { agent: agents[n % 2] },
+    );
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+  }
+  await f.host.flush();
+  assert.ok(f.host.plain.host.stats.compactions > 0, "the host compacted");
+  assert.ok(store.manifest(tree).snapshot, "history is a snapshot");
+  assert.ok(store.manifest(tree).chunks.length < 256);
+  const before = A.getChangesSince(f.host.handle.doc(), base).map(A.decodeChange);
+  assert.equal(before.length, 260);
+  const authorByHash = new Map(before.map((change) => [change.hash, change.author]));
+  assert.equal(new Set(authorByHash.values()).size, 2);
+
+  // A new host loads the compacted snapshot (and any later chunks) from storage.
+  await f.host.plain.close();
+  f.host = f.page();
+  await f.host.ready;
+  await f.host.documentReady();
+  const after = A.getChangesSince(f.host.handle.doc(), base).map(A.decodeChange);
+  assert.deepEqual(
+    after.map((change) => change.hash).sort(),
+    [...authorByHash.keys()].sort(),
+    "the same changes, by hash",
+  );
+  for (const change of after) {
+    assert.equal(change.author, authorByHash.get(change.hash));
+    assert.ok(await f.storage.get(WRITER_PREFIX + change.author));
+  }
+  const read = await changesSince(f, r0);
+  assert.equal(read.attribution, "block");
+  assert.deepEqual(
+    writersOf(read, read.title_written_by).map((writer) => writer.agent),
+    agents,
+  );
 });
 
 test("concurrent mutations by one writer from the same heads get distinct actors naming that writer", async (t) => {

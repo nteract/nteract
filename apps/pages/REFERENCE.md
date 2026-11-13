@@ -2155,8 +2155,11 @@ changes since the baseline once, and takes each change's actor and `author`
 from that decode. A host-prefixed change resolves through the record its
 author names (`via: "tool"`), any other through its actor's claim
 (`via: "sync"`). A host claim, an unclaimed actor, a host change without an
-author and an author without a record are `{ recorded: false }`. The response has `attribution: "block"`, a
-`writers` table, `written_by` on every content change and `title_written_by`
+author and an author without a record are `{ recorded: false }`. A browser
+actor's claim answers for its edits however old they are, so what reads
+unrecorded is the host's own edits, host edits made before writers were
+recorded, and edits by an actor with no recorded claim. The response has
+`attribution: "block"`, a `writers` table, `written_by` on every content change and `title_written_by`
 beside a title change: indexes into `writers` of the authors of every change
 since the baseline that wrote that block or the title. Ops resolve to blocks
 as admission resolves them ([model/block-shape.mjs](model/block-shape.mjs)

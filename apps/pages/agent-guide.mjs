@@ -1121,7 +1121,9 @@ client presented, agent {name?, model?} when a tool client asserted one, and via
 "tool" for an edit_page call or "sync" for a browser session. agent is what the
 client said about itself, under the authenticated account; it grants and
 verifies nothing. {recorded: false} stands for edits with no recorded writer:
-the host's own edits and every edit made before writers were recorded. Don't
+the host's own edits, host edits made before writers were recorded, and edits
+by an actor with no recorded claim. A browser session's edits keep its claim
+however old they are. Don't
 guess a writer for those, and don't read people or clients from raw Automerge
 actor IDs or change authors. Comment authors are on the comments themselves. When more than
 10,000 edits separate your baseline from now, the response has every change

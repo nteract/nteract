@@ -207,30 +207,46 @@ test("a change that replaces the blocks map writes every block the delta reports
   for (const change of result.changes) assert.deepEqual(change.written_by, [0]);
 });
 
-test("past ATTRIBUTION_MAX_CHANGES the delta comes whole, without writers", () => {
+test("exactly ATTRIBUTION_MAX_CHANGES changes are attributed; one more comes whole, without writers", () => {
   let doc = page();
   const before = A.getHeads(doc);
-  for (let n = 0; n <= ATTRIBUTION_MAX_CHANGES; n++)
-    doc = A.change(doc, (draft) => {
-      draft.counter = n;
-    });
   doc = A.change(doc, (draft) =>
     replaceMatch(draft, "one", { match_text: "Second", replacement: "Late" }),
   );
+  for (let n = 1; n < ATTRIBUTION_MAX_CHANGES; n++)
+    doc = A.change(doc, (draft) => {
+      draft.counter = n;
+    });
+  const writer = { principal: "user:w", displayName: "W", driver: "API", via: "tool" };
   let resolved = 0;
-  const result = projectReadChanges(doc, { since_heads: before, comments: "none" }, undefined, {
-    writerOf: () => {
-      resolved++;
-      return null;
-    },
+  const writerOf = () => {
+    resolved++;
+    return writer;
+  };
+  const read = () =>
+    projectReadChanges(doc, { since_heads: before, comments: "none" }, undefined, { writerOf });
+
+  assert.equal(A.getChangesSince(doc, before).length, ATTRIBUTION_MAX_CHANGES);
+  const at = read();
+  assert.equal(at.attribution, "block");
+  assert.equal(at.attribution_reason, undefined);
+  assert.deepEqual(at.writers, [writer]);
+  assert.deepEqual(at.changes[0].written_by, [0]);
+  assert.ok(resolved > 0);
+
+  doc = A.change(doc, (draft) => {
+    draft.counter = ATTRIBUTION_MAX_CHANGES;
   });
-  assert.equal(result.attribution, "unavailable");
-  assert.equal(result.attribution_reason, "too_many_changes");
-  assert.equal(result.writers, undefined);
+  assert.equal(A.getChangesSince(doc, before).length, ATTRIBUTION_MAX_CHANGES + 1);
+  resolved = 0;
+  const past = read();
+  assert.equal(past.attribution, "unavailable");
+  assert.equal(past.attribution_reason, "too_many_changes");
+  assert.equal(past.writers, undefined);
   assert.equal(resolved, 0);
-  assert.equal(result.changes.length, 1);
-  assert.equal(result.changes[0].markdown, "Late paragraph.");
-  assert.ok(!("written_by" in result.changes[0]));
+  assert.equal(past.changes.length, 1);
+  assert.equal(past.changes[0].markdown, "Late paragraph.");
+  assert.ok(!("written_by" in past.changes[0]));
   assert.deepEqual(changeHistory(doc, before), { tooMany: true });
 });
 
