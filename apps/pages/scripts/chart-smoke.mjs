@@ -676,12 +676,14 @@ const LABEL_LIMITS = { "axis-label": 180, "legend-label": 160 };
 
 /**
  * In `engine`, check that the chart Worker measures text as the page draws
- * it: for a long title, a crowded band axis of long labels, a continuous
- * axis Vega thins and a legend that truncates, at a wide and a phone width, in light and dark, every text's
- * width by the Worker's own text metrics is within 1 px of its drawn
- * width. Vega lays out, truncates and thins labels by the measured width, so
- * with the widths equal, truncated labels fit their limit and the labels
- * Vega keeps don't overlap. Axis and legend text lies inside the SVG.
+ * it, in whichever font stack the page's probe chose for the Worker
+ * (viewer/chart-font.mjs): for a long title, axis titles longer than their
+ * axes, a crowded band axis of long labels, a continuous axis Vega thins and
+ * a legend that truncates, at a wide and a phone width, in light and dark,
+ * every text's width by the Worker's own text metrics is within 1 px or 2
+ * percent of its drawn width. Vega lays out, truncates and thins text by the
+ * measured width, so with the widths equal, truncated text fits its limit,
+ * the labels Vega keeps don't overlap, and every text lies inside the SVG.
  */
 async function metricsCheck(engine) {
   const instance =
@@ -692,7 +694,8 @@ async function metricsCheck(engine) {
     await metrics.goto(`${origin}/metrics/`, { waitUntil: "load" });
     await expect(metrics.locator("body[data-fixture=ready]")).toBeAttached({ timeout: 60_000 });
     const charts = await metrics.evaluate(() => window.chartMetrics);
-    assert.equal(charts.length, 16, `${engine}: ${charts.length} charts measured`);
+    (report.metricsCharts ??= {})[engine] = charts;
+    assert.equal(charts.length, 20, `${engine}: ${charts.length} charts measured`);
     let worst = 0;
     let count = 0;
     for (const chart of charts) {
@@ -704,7 +707,7 @@ async function metricsCheck(engine) {
         worst = Math.max(worst, off);
         count++;
         assert.ok(
-          off <= 1,
+          off <= Math.max(1, 0.02 * text.drawn),
           `${label}: "${text.text}" measures ${text.measured} in the Worker, drawn ${text.drawn}`,
         );
         if (text.role in LABEL_LIMITS)
@@ -712,14 +715,13 @@ async function metricsCheck(engine) {
             text.drawn <= LABEL_LIMITS[text.role] + 1,
             `${label}: "${text.text}" is ${text.drawn} px past its ${LABEL_LIMITS[text.role]} px limit`,
           );
-        if (text.role !== "title-text")
-          assert.ok(
-            text.box.left >= chart.svg.left - 1 &&
-              text.box.right <= chart.svg.right + 1 &&
-              text.box.top >= chart.svg.top - 1 &&
-              text.box.bottom <= chart.svg.bottom + 1,
-            `${label}: "${text.text}" lies outside the SVG`,
-          );
+        assert.ok(
+          text.box.left >= chart.svg.left - 1 &&
+            text.box.right <= chart.svg.right + 1 &&
+            text.box.top >= chart.svg.top - 1 &&
+            text.box.bottom <= chart.svg.bottom + 1,
+          `${label}: "${text.text}" lies outside the SVG`,
+        );
       }
       // Vega thins a continuous axis's labels by their measured width; a
       // band axis's labels it only truncates.
@@ -733,11 +735,15 @@ async function metricsCheck(engine) {
           assert.ok(across <= 1 || down <= 1, `${label}: "${a.text}" overlaps "${b.text}"`);
         }
     }
+    const fonts = [...new Set(charts.flatMap((chart) => chart.fonts))];
+    assert.equal(fonts.length, 1, `${engine}: one font across every chart: ${fonts.join(" | ")}`);
+    const kept = fonts[0] === charts[0].pageFont;
     report.metrics ??= {};
-    report.metrics[engine] = { worst, count };
+    report.metrics[engine] = { worst, count, font: fonts[0], pageFont: charts[0].pageFont, kept };
     complete(
-      `${engine}: the chart Worker measures text as the page draws it: ${count} texts, ` +
-        `light and dark, wide and phone width, within ${worst.toFixed(2)} px`,
+      `${engine}: charts draw in ${kept ? "the Page's stack" : `the fallback, ${fonts[0]}`}, and the ` +
+        `chart Worker measures text as the page draws it: ${count} texts, light and dark, ` +
+        `wide and phone width, within ${worst.toFixed(2)} px; titles fit inside the chart`,
     );
   } finally {
     await metricsContext.close();

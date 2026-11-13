@@ -1,6 +1,7 @@
-// Charts whose text Vega lays out by measured width: a long title, long axis
-// labels it truncates on a crowded band axis, a continuous axis whose labels
-// it thins, and a legend whose labels it truncates. For each
+// Charts whose text Vega lays out by measured width: a long title, axis
+// titles longer than their axes, long axis labels it truncates on a crowded
+// band axis, a continuous axis whose labels it thins, and a legend whose
+// labels it truncates. For each
 // drawn chart, in light and dark and at a wide and a phone width, the page
 // records each text's drawn width and the width the chart Worker's own text
 // metrics give for it (chart-worker-metrics.mjs), in `window.chartMetrics`.
@@ -39,6 +40,31 @@ const SPECS = {
       tool: `a long category name that runs past the axis label limit, number ${i}`,
       n: (i * 7) % 13,
     })),
+  },
+  // A y-axis title longer than the chart is tall, and an x-axis title
+  // longer than it is wide.
+  axisTitles: {
+    spec: {
+      data: { name: "d" },
+      mark: "bar",
+      encoding: {
+        y: {
+          field: "tool",
+          type: "nominal",
+          title: "A y-axis title much longer than this short chart is tall, by a wide margin",
+        },
+        x: {
+          field: "n",
+          type: "quantitative",
+          title:
+            "An x-axis title that runs well past the width of a phone, and keeps going past a wide chart too, on and on",
+        },
+      },
+    },
+    rows: [
+      { tool: "read", n: 3 },
+      { tool: "edit", n: 5 },
+    ],
   },
   // A continuous axis whose labels Vega thins by their measured width.
   thinned: {
@@ -146,6 +172,12 @@ for (const dark of [false, true]) {
       width,
       dark,
       status: figure.dataset.chartStatus,
+      pageFont: getComputedStyle(document.body).fontFamily,
+      fonts: [
+        ...new Set(
+          [...svg.querySelectorAll("text")].map((text) => text.getAttribute("font-family")),
+        ),
+      ],
       svg: { left: box.left, right: box.right, top: box.top, bottom: box.bottom },
       texts: found.map((found, index) => ({ ...found, measured: widths[index] })),
     });
