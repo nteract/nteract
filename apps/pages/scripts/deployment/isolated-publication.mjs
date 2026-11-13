@@ -16,6 +16,7 @@ import {
   accountPaths,
   cardImagePaths,
   linkPreviewPaths,
+  pageSlugPaths,
   projectAssetPaths,
   restPaths,
   routesFor,
@@ -257,12 +258,19 @@ export function publishIsolated(
       ...extra,
     }) + "\n";
   const receipt = receiptFor(plan.config);
-  // The route set the last release sealed, before the REST routes (restPaths,
-  // admitted by every target).
-  const beforeRest = plan.config.replace(restPaths, "");
-  // The route set the release before it sealed, before link previews, card
-  // images and Project assets (linkPreviewPaths, cardImagePaths,
-  // projectAssetPaths). A target without those flags keeps beforeRest.
+  // The route sets earlier releases sealed, newest first. Each strips one
+  // group from this one, so every history keeps its exact bytes and migrates
+  // straight to plan.config:
+  // - beforeSlugs: without the Page slug routes (pageSlugPaths), what a
+  //   target that published between the REST routes and the slugs sealed;
+  // - beforeRest: without the REST routes (restPaths) either, what the last
+  //   package release sealed. A set with the slugs and without REST was never
+  //   published, so it is no predecessor.
+  // The route set before link previews, card images and Project assets
+  // (linkPreviewPaths, cardImagePaths, projectAssetPaths) strips those from
+  // beforeRest. A target without those flags keeps beforeRest.
+  const beforeSlugs = plan.config.replace(pageSlugPaths, "");
+  const beforeRest = beforeSlugs.replace(restPaths, "");
   const linkPreviews = profile.linkPreviews === true;
   const cardImages = profile.cardImages === true;
   const projectAssets = profile.projectAssets === true;
@@ -358,11 +366,13 @@ export function publishIsolated(
     predecessor(base, false);
     if (slotted) predecessor(base, true);
   }
-  // The installation the last release sealed: this route set without the REST
-  // routes, on slot units. A target still on its legacy unit at that route set
-  // migrates too. Units and every other route stay byte-identical.
-  predecessor(beforeRest, false);
-  if (slotted) predecessor(beforeRest, true);
+  // The installations the last two releases sealed, on slot units. A target
+  // still on its legacy unit at either route set migrates too. Units and
+  // every other route stay byte-identical.
+  for (const config of [beforeSlugs, beforeRest]) {
+    predecessor(config, false);
+    if (slotted) predecessor(config, true);
+  }
   if (sealedRoutes !== beforeRest) {
     // The installation the release before it sealed: the account route set,
     // without link previews, card images and Project assets, on slot units.
@@ -606,6 +616,11 @@ export function publishIsolated(
       ["/p/" + uuid + "/card.json", linkPreviews ? plan.listen : "http_status:404"],
       ["/project/prj_" + uuid + "/meta.json", linkPreviews ? plan.listen : "http_status:404"],
       ["/project/sp_" + uuid + "/card.json", linkPreviews ? plan.listen : "http_status:404"],
+      ["/p/" + uuid + "/Some-Title", plan.listen],
+      ["/p/" + uuid + "/Some-Title/", plan.listen],
+      ["/p/" + uuid + "/Some.Title", "http_status:404"],
+      ["/p/" + uuid + "/Some-Title/more", "http_status:404"],
+      ["/p/" + uuid + "/" + "a".repeat(81), "http_status:404"],
       ["/p/" + uuid + "/meta.json/", "http_status:404"],
       ["/p/" + uuid + "/other.json", "http_status:404"],
       ["/p/" + uuid.toUpperCase() + "/meta.json", "http_status:404"],

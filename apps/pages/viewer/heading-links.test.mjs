@@ -26,13 +26,15 @@ test("a fragment names its anchor, percent-decoded", () => {
 });
 
 test("links to this app's Pages and Projects open in place; everything else doesn't", () => {
-  const page = (pageId) => ({ kind: "page", pageId, path: `/p/${pageId}` });
+  const page = (pageId, slug = null) => ({ kind: "page", pageId, path: `/p/${pageId}`, slug });
   const rows = [
     ["#plan", { route: page(id), anchor: "plan", samePage: true }],
     [`${here}#plan`, { route: page(id), anchor: "plan", samePage: true }],
     [`/p/${id}#plan`, { route: page(id), anchor: "plan", samePage: true }],
     [`/p/${other}#plan`, { route: page(other), anchor: "plan", samePage: false }],
     [`/p/${other}`, { route: page(other), anchor: null, samePage: false }],
+    [`/p/${other}/Plan#goals`, { route: page(other, "Plan"), anchor: "goals", samePage: false }],
+    [`/p/${id}/Plan#goals`, { route: page(id, "Plan"), anchor: "goals", samePage: true }],
     [
       `/project/${project}#intro`,
       {

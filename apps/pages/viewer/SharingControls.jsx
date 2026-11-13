@@ -24,6 +24,7 @@ import { createSharingAccess, sharingAvailable, SHARING_FRESH_MS } from "./shari
 import { linkAccessProjection } from "./sharing-projection.mjs";
 import { LinkAccess } from "./LinkAccess.jsx";
 import { pageMarkdown } from "../model/markdown-export.mjs";
+import { copyLinkPath, readPageRoute } from "../shared/routes.mjs";
 
 function projection(value, manage) {
   const rows = [];
@@ -224,7 +225,11 @@ function PageSharing({
   async function copyLink() {
     const revision = epoch.current;
     try {
-      await navigator.clipboard.writeText(location.origin + location.pathname);
+      // The same link the document menu's Copy link gives (copyLinkPath):
+      // a Project's content copies its Project, and a Page keeps its slug.
+      const shown = readPageRoute(location.href);
+      const id = shown.kind === "project" ? shown.projectId : session.pageId;
+      await navigator.clipboard.writeText(location.origin + copyLinkPath(id, location.href));
       if (revision === epoch.current) setMessage("Link copied.");
     } catch {
       if (revision === epoch.current) setCopyError("Could not copy the link.");

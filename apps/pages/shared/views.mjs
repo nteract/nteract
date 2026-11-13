@@ -44,11 +44,9 @@ export const RESERVED_DATA_NAMES = [...RESERVED]
 export const validDataName = (name) =>
   typeof name === "string" && DATA_NAME.test(name) && !RESERVED.has(name);
 
-/** The address of one view on its Page. */
-export const viewPath = (pageId, viewId) => `/p/${pageId}/view/${viewId}`;
-
-/** The label of a view node's Markdown line, `[View: <view_id>](...)`. */
-export const viewLabel = (viewId) => `View: ${viewId}`;
+/** A view node's Markdown line: `[View: <view_id>]`, bracketed text and no
+ * link, as an unknown node's notice reads. A view has no address of its own. */
+export const viewLine = (viewId) => `[View: ${viewId}]`;
 
 /**
  * A stored view node's attrs, read leniently for decode and host

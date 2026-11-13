@@ -131,15 +131,23 @@ code block, table cell, image and dataframe is a node with typed attributes,
 and formatting is a native mark on its characters. Markdown is one way to read
 and write them; node operations (insert_image, insert_node, set_node, delete_node) are the
 other. Some nodes have no Markdown form: ${NODE_OPERATIONS.map(([, text]) => text).join("; ")}
-(see Datasets below). They read back as a labeled link on its own line, a
-view's as [View: <view_id>](/p/<page_id>/view/<view_id>);
+(see Datasets below). They read back as a line of their own: a dataframe's
+is a labeled link, a view's the text [View: <view_id>];
 replace_block_markdown keeps the node when that line is unchanged and stays
 where the node is stored: at the top level of the block, or inside the same kind
 of quote or list item. It refuses with markdownless_node a rewrite that drops or edits the
 line, takes it into or out of a quote, list, table or heading, has more copies
-of it than the block has such nodes, or adds a line that reads like a node the
-block doesn't hold: Markdown never creates or copies a node. Moving the line
-among its neighbours keeps the node's attrs but writes it as a new node.
+of a dataframe's line than the block has such dataframes, or adds a line that
+reads like a dataframe the block doesn't hold: Markdown never creates or copies
+a node. A view's line is plain text: one naming a view the block doesn't hold
+stays text. Views with different ids may be reordered among the paragraphs of
+one container by reordering their lines, but a view can't change container
+(another quote or list item, or one added or removed before its own), and
+adding or removing a copy of a stored view's line makes the rewrite ambiguous:
+both are refused. Make such structural changes with insert_node, move_block
+and delete_node.
+Moving the line among its neighbours keeps the node's attrs but writes it as a
+new node.
 ${typedReadFields()}
 ${richEditOperations()}
 These operations keep comment anchors and untouched characters in place, so

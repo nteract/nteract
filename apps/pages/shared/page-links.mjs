@@ -16,9 +16,10 @@
 // - It carries no user name or password. `https://pages.example@evil.example`
 //   already fails the origin test; this also refuses
 //   `https://someone@pages.example/p/<id>`, which nothing in Pages writes.
-// - readPageRoute reads its path as a Page (`/p/<uuid>`) or a Project
+// - readPageRoute reads its path as a Page (`/p/<uuid>`, or
+//   `/p/<uuid>/<slug>`, which names the same Page) or a Project
 //   (`/project/<prj_id>`, or the older `/s/<id>`, either with a `prj_` or an
-//   older `sp_` ID). Anything longer than the route, such as
+//   older `sp_` ID). Anything else after the route, such as
 //   `/p/<id>/meta.json` or `/project/<id>/meta.json`, reads as missing.
 //
 // This module has no DOM or editor dependencies; the Worker can import it.

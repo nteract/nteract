@@ -35,7 +35,7 @@
     },
     {
       "id": "view",
-      "description": "View nodes: a block with no text whose one attr, view_id, names one of the Page's views, a chart stored in its own pages.view document. It reads in Markdown as a [View: <view_id>](/p/<page_id>/view/<view_id>) line: agents write one with the insert_node operation.",
+      "description": "View nodes: a block with no text whose one attr, view_id, names one of the Page's views, a chart stored in its own pages.view document. It reads in Markdown as a [View: <view_id>] line of text: agents write one with the insert_node operation.",
       "blocks": ["view"]
     }
   ]

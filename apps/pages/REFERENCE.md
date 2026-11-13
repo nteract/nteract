@@ -162,7 +162,8 @@ else replaces the screen with a Reload notice and leaves the Page unchanged.
   this deployment's Pages and Projects: `safeUrl`, then exactly this origin
   once resolved (so `HTTPS://Host:443/p/<id>` and a relative `/p/<id>` count,
   and a look-alike host, user info, a trailing dot or another deployment
-  don't), then `readPageRoute` reads a Page (`/p/<uuid>`) or a Project
+  don't), then `readPageRoute` reads a Page (`/p/<uuid>`, with or without a
+  slug after it) or a Project
   (`/project/<prj_id>`, or the older `/s/<id>`, with a `prj_` or older `sp_`
   ID). `linkTarget` names either kind, and `linkedTarget` drops links to
   what's open: the open Page (its links are section links) and, on a
@@ -344,6 +345,22 @@ Canonical links are `/p/<page_id>`, with `#anchor` for a heading (see Heading
 links); browser Back/Forward restores the corresponding Page and heading, and
 legacy query links normalize, keeping the fragment. Direct links work independently of the
 catalog but never bypass Page permissions.
+
+A link may carry a slug after the id, `/p/<page_id>/<slug>`, for link
+previews. It opens the same Page; the id alone finds and authorizes it, and
+the address keeps the slug while the Page is open. A slug is 1 to 80 of
+`A-Z a-z 0-9 _ -`, holds a letter or digit, and isn't `view` in any case
+(`isPageSlug` in [shared/routes.mjs](shared/routes.mjs)); any other segment
+after the id is not a Page route. The gateway serves such a path the app
+shell with its `<title>` set to the slug's words (`-` and `_` become spaces,
+runs collapse, the ends trim) beside the product name, and an `og:title` of
+the words alone, HTML-escaped ([worker/page-shell.mjs](worker/page-shell.mjs)).
+It looks nothing up, so the shell is the same bytes whether the Page exists or
+the caller can read it, and it answers `Cache-Control: no-store` with no
+ETag. A signed-in reader's tab title is the Page's own. Both "Copy link"
+actions (the document menu and Share) copy `copyLinkPath`: the slug the
+address shows for that Page, or `/p/<page_id>` with none. Nothing derives a
+slug from a title, and the `url` fields tools return stay `/p/<page_id>`.
 
 Browser creation allocates the Page and history locally, persists them to
 IndexedDB, and opens the editor while authenticated registration proceeds.
@@ -1817,10 +1834,21 @@ with `data-view-id`. `insert_node` with `{ type: "view", attrs: { view_id }
 }` places one; the view must exist on the Page (`400 unknown_view`, naming
 the views it holds in the sentence and `details.view_ids`). A malformed view
 node is `400 invalid_edit_selector`, naming the field and its rule.
-`delete_node` removes the node and keeps the view. Markdown reads it as
-`[View: <view_id>](/p/<page_id>/view/<view_id>)`, from the node alone, and
-`replace_block_markdown` keeps the node for that exact line as it keeps a
-dataframe's. An outline entry has `type: "view"`, `attrs: { view_id }`, and
+`delete_node` removes the node and keeps the view. Markdown reads it as the
+text `[View: <view_id>]` (brackets escaped), from the node alone, with no
+link: a view has no address of its own. `replace_block_markdown` keeps the
+node for that exact line at the view's own place: the same count of that text
+in the block, in the same container instance (a quote or list item is told
+from others of its kind by order). A paragraph whose text names no stored view
+is prose and is never refused, so a block can hold `[View: x]` as text beside a
+dataframe. Views with different ids may be reordered among the paragraphs of
+one container by reordering their lines. A view can't change container: its
+line in another quote or list item, or a quote or list item of its kind added,
+removed or moved before its own, is refused with `markdownless_node`, naming
+the node operations (`insert_node`, `move_block`, `delete_node`) to use
+instead. Identical lines make a rewrite ambiguous, so adding or removing a copy
+of a stored view's line anywhere in the block is refused too. An outline entry has
+`type: "view"`, `attrs: { view_id }`, and
 `summary: { title, media_type }` when the view exists. Comments refuse a view
 node. A view stored inside a text container reads as a notice.
 

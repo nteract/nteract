@@ -868,7 +868,7 @@ is unknown_view, naming the views it holds.
 read_page with views:true lists each view's view_id, title, media_type,
 revision and data; view_id:"<view_id>" reads one with its spec and producer.
 The outline shows a view node with attrs {view_id} and summary {title,
-media_type}, and Markdown shows it as [View: <view_id>](/p/<page_id>/view/<view_id>).
+media_type}, and Markdown shows it as the text [View: <view_id>], with no link.
 That line keeps the node through replace_block_markdown, as a dataframe's
 does. delete_node removes the node and keeps the view.
 

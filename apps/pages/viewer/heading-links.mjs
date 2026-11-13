@@ -5,6 +5,7 @@
 // This module reaches neither Automerge nor the editor, so the shell
 // (main.jsx) can import it before the editor chunk loads.
 import { anchorFromHash, appRoute } from "../shared/page-links.mjs";
+import { readPageRoute } from "../shared/routes.mjs";
 
 export { anchorFromHash };
 
@@ -12,8 +13,9 @@ export { anchorFromHash };
  * Where a link in Page content goes, when this app can show it without a
  * reload: `{ route, anchor, samePage }`, or null for a link the browser
  * should follow. `route` is readPageRoute's answer (a Page or a Project);
- * `samePage` says the link only changes the fragment of `base`, the
- * address showing now. Which links count is shared/page-links.mjs's one
+ * `samePage` says the link names what `base`, the address showing now,
+ * shows, with the same search: only its fragment changes. A slug on either
+ * side doesn't count, since it names nothing. Which links count is shared/page-links.mjs's one
  * test (appRoute), so a link opens in place exactly when it gets the Page
  * glyph or is a Project link.
  */
@@ -22,10 +24,15 @@ export function inAppLink(href, base) {
   if (!target) return null;
   const { route, url } = target;
   const here = new URL(base);
+  const shown = readPageRoute(here.href);
+  const same =
+    route.kind === "page"
+      ? shown.kind === "page" && shown.pageId === route.pageId
+      : shown.kind === "project" && shown.projectId === route.projectId;
   return {
     route,
     anchor: anchorFromHash(url.hash),
-    samePage: url.pathname === here.pathname && url.search === here.search,
+    samePage: url.search === here.search && (same || url.pathname === here.pathname),
   };
 }
 

@@ -34,6 +34,14 @@ const ROWS = [
   // Backslashes are slashes in an http(s) URL: the browser follows this one
   // to the same Page.
   [`https:\\\\pages.runtimed.run\\p\\${id}`, page(id)],
+  // A slug names the same Page: a pasted link with one is a chip for it.
+  [`/p/${id}/My-Dashboard`, page(id)],
+  [`/p/${id}/My-Dashboard#goals`, page(id, "goals")],
+  [`/p/${id}/My-Dashboard/`, page(id)],
+  [`/p/${id}/view`, null],
+  [`/p/${id}/My.Dashboard`, null],
+  [`/p/${id}/My-Dashboard/more`, null],
+  [`/p/${id}/%3Cscript%3E`, null],
   // readPageRoute still reads the legacy address.
   [`https://pages.runtimed.run/?page=${id}`, page(id)],
   // Look-alike hosts, user info and a trailing dot are other origins.
@@ -117,6 +125,10 @@ test("links to the open Page are section links, not linked Pages", () => {
   assert.deepEqual(linkedPage(`/p/${id}#plan`, base), page(id, "plan"));
   assert.equal(linkedPage(`/p/${here}`, base), null);
   assert.equal(linkedPage(`/p/${here}#plan`, base), null);
+  // A slug on either side still names the open Page.
+  assert.equal(linkedPage(`/p/${here}/Notes`, base), null);
+  assert.equal(linkedPage(`/p/${here}`, `${base}/Notes`), null);
+  assert.deepEqual(linkedPage(`/p/${id}/Plan#goals`, `${base}/Notes`), page(id, "goals"));
   assert.equal(linkedPage("#plan", base), null);
   assert.equal(linkedPage(`https://pages.runtimed.run/p/${here}`, `${base}#elsewhere`), null);
   // The open Page can be named: a Project's content shows at its Project's
