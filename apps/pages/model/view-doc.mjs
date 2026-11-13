@@ -11,7 +11,12 @@ import {
   validTime,
 } from "./view-record.mjs";
 import { SOURCE_ID_PATTERN } from "../shared/sources.mjs";
-import { checkViewSpec } from "../shared/view-spec.mjs";
+import {
+  checkViewSpec,
+  quotedDataName,
+  quotedDataNames,
+  viewDataProblem,
+} from "../shared/view-spec.mjs";
 import {
   MAX_VIEW_DATA,
   MAX_VIEW_TITLE,
@@ -113,29 +118,40 @@ export function validateViewOperation(op) {
       "invalid_view",
       "view_revision is the view's revision from read_page, or null to create the view",
     );
+  // The spec first: a spec that can't draw is the problem to name, whatever
+  // data holds, and the names it reads say what data must map.
+  const checked = checkViewSpec(op.spec);
+  if (!checked.ok) fail("invalid_view", checked.error);
   if (!isMap(op.data) || !Object.keys(op.data).length)
-    fail("invalid_view", "data must map each data name the spec reads to a source");
+    fail(
+      "invalid_view",
+      `data must map each data name the spec reads (${quotedDataNames(checked.names)}) to a source: {${quotedDataName(checked.names[0])}: {"source_id": "<source_id>"}}`,
+    );
   if (Object.keys(op.data).length > MAX_VIEW_DATA)
     fail("invalid_view", `data can bind at most ${MAX_VIEW_DATA} data names`);
   for (const [name, binding] of Object.entries(op.data)) {
     if (!validDataName(name))
       fail(
         "invalid_view",
-        `data can't name "${name.slice(0, 64)}": a data name matches ${VIEW_DATA_NAME_PATTERN}, not ${RESERVED_DATA_NAMES}`,
+        `data can't name ${quotedDataName(name)}: a data name matches ${VIEW_DATA_NAME_PATTERN}, not ${RESERVED_DATA_NAMES}`,
       );
+    if (isMap(binding) && binding.source_id === undefined)
+      fail("invalid_view", `data.${name} needs a source_id: a source this Page holds`);
     if (isMap(binding) && !validSourceId(binding.source_id))
       fail(
         "invalid_view",
-        `data.${name}.source_id must match ${SOURCE_ID_PATTERN}, not "${String(binding.source_id).slice(0, 64)}"`,
+        typeof binding.source_id === "string"
+          ? `data.${name}.source_id must match ${SOURCE_ID_PATTERN}, not "${binding.source_id.slice(0, 64)}"`
+          : `data.${name}.source_id must be a string matching ${SOURCE_ID_PATTERN}`,
       );
     if (!bindingOf(binding))
       fail(
         "invalid_view",
-        `data.${name.slice(0, 64)} must be {source_id} or {source_id, revision}, revision a source revision from read_page`,
+        `data.${name} must be {source_id} or {source_id, revision}, revision a source revision from read_page`,
       );
   }
-  const checked = checkViewSpec(op.spec, op.data);
-  if (!checked.ok) fail("invalid_view", checked.error);
+  const problem = viewDataProblem(checked.names, op.data);
+  if (problem) fail("invalid_view", problem);
   return op;
 }
 

@@ -565,9 +565,19 @@ test("each refusal shows one sentence inside the frame and draws nothing", () =>
 
 test("a spec Vega-Lite can't compile shows its error as one sentence", () =>
   withWindow(async (window) => {
-    const text = await refusalIn(window, { data: { name: "calls" }, mark: "nonsense" });
+    // An empty facet passes the spec check and fails inside Vega-Lite.
+    const text = await refusalIn(window, {
+      data: { name: "calls" },
+      facet: {},
+      spec: { mark: "bar" },
+    });
     assert.match(text, /^This chart couldn't be drawn: .+\.$/);
     assert.doesNotMatch(text.slice(0, -1), /\.\s/);
+    // A mark Vega-Lite doesn't have is the spec check's refusal.
+    assert.match(
+      await refusalIn(window, { data: { name: "calls" }, mark: "nonsense" }),
+      /^A chart's mark must be arc, .+ \(at mark\)\.$/,
+    );
   }));
 
 test("Vega's loader refuses every URL, and the compiled check refuses image marks", () =>
