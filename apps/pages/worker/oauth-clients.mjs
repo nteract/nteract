@@ -21,6 +21,8 @@
  * There is no dynamic registration and no client secret. */
 
 export const CHATGPT_CLIENT = "https://chatgpt.com/oauth/client.json";
+// Codex publishes a distinct client metadata document with its loopback callback.
+export const CODEX_CLIENT = "https://chatgpt.com/oauth/codex/client.json";
 export const CHATGPT_REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect";
 export const KILO_REDIRECT = "http://127.0.0.1:19876/mcp/oauth/callback";
 
@@ -68,6 +70,7 @@ const PRIVATE_SUFFIXES = new Set([
 const CLIENT_NAMES = new Map([
   ["pages-chatgpt", "ChatGPT"],
   [CHATGPT_CLIENT, "ChatGPT"],
+  [CODEX_CLIENT, "Codex"],
   ["pages-kilo", "Kilo"],
   [LOCAL_TEST_CLIENT, "Local test client"],
   ["https://claude.ai/oauth/mcp-oauth-client-metadata", "Claude"],
