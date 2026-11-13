@@ -103,10 +103,33 @@ export function identityFromBuildTitle(title) {
   return {runId: match[1], runAttempt: match[2]};
 }
 
-// A failed-jobs rerun may carry an earlier successful job forward. Its own
-// run_attempt is the byte-producing attempt, not the endpoint being queried.
-export function successfulJobAtAttempt(jobs, attempt, name) {
-  return jobs.some(job => String(job.run_attempt) === String(attempt) && (job.name === name || job.name.endsWith(` / ${name}`)) && job.conclusion === 'success');
+// Failed-job reruns can clone successful jobs with a new ID and run_attempt,
+// but keep their original execution times. Only execution within the requested
+// attempt proves that the attempt produced bytes. Missing evidence fails closed.
+export function jobStatusAtAttempt(jobs, attempt, name, run) {
+  if (!run || String(run.run_attempt) !== positive(attempt)) throw new Error('Job attempt metadata mismatch');
+  const runId = positive(run.id);
+  const matches = jobs.filter(job => String(job.run_attempt) === String(attempt) && (job.name === name || job.name.endsWith(` / ${name}`)));
+  if (matches.length > 1) throw new Error(`Ambiguous job at attempt ${attempt}: ${name}`);
+  const job = matches[0];
+  if (!job) return 'missing';
+  if (String(job.run_id) !== runId) throw new Error('Job run identity mismatch');
+  if (job.status !== 'completed') {
+    if (job.conclusion === 'success') throw new Error('Successful job is not completed');
+    return 'pending';
+  }
+  if (job.conclusion !== 'success') return 'failed';
+  const timestamp = value => typeof value === 'string' ? Date.parse(value) : NaN;
+  const attemptStart = timestamp(run.run_started_at);
+  if (!Number.isFinite(attemptStart)) throw new Error('Missing/invalid attempt start time');
+  const started = timestamp(job.started_at), completed = timestamp(job.completed_at);
+  if (!Number.isFinite(started) || !Number.isFinite(completed) || completed < started) throw new Error('Missing/invalid successful job execution times');
+  if (completed < attemptStart) return 'missing';
+  if (started < attemptStart) throw new Error('Successful job execution overlaps attempt boundary');
+  return 'success';
+}
+export function successfulJobAtAttempt(jobs, attempt, name, run) {
+  return jobStatusAtAttempt(jobs, attempt, name, run) === 'success';
 }
 
 export async function resolveWasmCandidate(identity, api) {

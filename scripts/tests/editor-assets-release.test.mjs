@@ -184,9 +184,39 @@ test('a newer successful WASM job without retained bytes cannot fall back to an 
   const {api} = wasmServer(['1']); api.successfulJob = async () => true;
   await assert.rejects(resolveWasmCandidate(identity, api), /Successful WASM attempt 2 has no retained receipt/);
 });
-test('job identity follows its own attempt rather than the jobs endpoint used to retrieve it', () => {
-  const jobs = [{name: 'release / Build WASM artifacts', run_attempt: 1, conclusion: 'success'}];
-  assert.equal(successfulJobAtAttempt(jobs, '2', 'Build WASM artifacts'), false);
-  assert.equal(successfulJobAtAttempt(jobs, '1', 'Build WASM artifacts'), true);
-  assert.equal(successfulJobAtAttempt([{...jobs[0], conclusion: 'failure'}], '1', 'Build WASM artifacts'), false);
+// GitHub run 43313273495 reproduced these execution times: the attempt-2
+// jobs endpoint relabelled a completed attempt-1 job, including a new job ID.
+const attemptRun = attempt => ({id: 123, run_attempt: Number(attempt), run_started_at: attempt === '1' ? '2026-11-12T21:45:04Z' : '2026-11-12T23:07:55Z'});
+const wasmJob = attempt => ({id: attempt === '1' ? 131514752546 : 131559168413, run_id: 123, name: 'release / Build WASM artifacts', run_attempt: Number(attempt), status: 'completed', conclusion: 'success', started_at: '2026-11-12T21:45:10Z', completed_at: '2026-11-12T21:48:50Z'});
+const succeeds = (job, attempt, run = attemptRun(attempt)) => successfulJobAtAttempt([job], attempt, 'Build WASM artifacts', run);
+
+test('relabeled successful jobs must have executed within the requested attempt', () => {
+  assert.equal(succeeds(wasmJob('1'), '1'), true);
+  assert.equal(succeeds(wasmJob('1'), '2'), false);
+  assert.equal(succeeds(wasmJob('2'), '2'), false);
+  assert.equal(succeeds({...wasmJob('2'), started_at: '2026-11-12T23:08:10Z', completed_at: '2026-11-12T23:12:50Z'}, '2'), true);
+  assert.equal(succeeds({...wasmJob('2'), name: 'Build WASM artifacts', started_at: attemptRun('2').run_started_at, completed_at: attemptRun('2').run_started_at}, '2'), true);
+  assert.equal(succeeds({...wasmJob('1'), conclusion: 'failure'}, '1'), false);
+});
+test('successful job proof fails closed on missing, malformed, or ambiguous evidence', () => {
+  const job = wasmJob('1');
+  for (const run of [undefined, {...attemptRun('1'), run_attempt: 2}, {...attemptRun('1'), run_started_at: null}, {...attemptRun('1'), run_started_at: 'invalid'}]) {
+    assert.throws(() => successfulJobAtAttempt([job], '1', 'Build WASM artifacts', run), /attempt/);
+  }
+  assert.throws(() => succeeds({...job, run_id: 999}, '1'), /identity mismatch/);
+  assert.throws(() => successfulJobAtAttempt([job, {...job, id: 999}], '1', 'Build WASM artifacts', attemptRun('1')), /Ambiguous/);
+  for (const patch of [{started_at: null}, {completed_at: 'invalid'}, {completed_at: '2026-11-12T21:45:09Z'}]) {
+    assert.throws(() => succeeds({...job, ...patch}, '1'), /execution times/);
+  }
+  assert.throws(() => succeeds({...wasmJob('2'), completed_at: attemptRun('2').run_started_at}, '2'), /overlaps attempt boundary/);
+});
+test('real failed-job rerun shape selects the original receipt, not the relabeled job attempt', async () => {
+  const {api} = wasmServer();
+  api.successfulJob = async (_id, attempt) => succeeds(wasmJob(attempt), attempt);
+  const plan = await resolveWasmCandidate(identity, api);
+  assert.equal(plan.runAttempt, '2');
+  assert.equal(plan.wasm.runAttempt, '1');
+  assert.equal(plan.wasmArtifactId, '101');
+  api.successfulJob = async (_id, attempt) => succeeds({...wasmJob(attempt), started_at: '2026-11-12T23:08:10Z', completed_at: '2026-11-12T23:12:50Z'}, attempt);
+  await assert.rejects(resolveWasmCandidate(identity, api), /Successful WASM attempt 2 has no retained receipt/);
 });

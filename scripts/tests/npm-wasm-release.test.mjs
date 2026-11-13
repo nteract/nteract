@@ -252,13 +252,20 @@ test("visible candidate waits for its owning pack job; producers cannot repack i
   await assert.rejects(resolveCandidate(identity, api({packJobStatus: async () => "missing"})), /did not succeed/);
 });
 
-test("pack proof distinguishes pending, failed and carried-forward job attempts", () => {
-  const job = {name: "Pack WASM npm package", run_attempt: 1, status: "completed", conclusion: "success"};
-  assert.equal(packJobStatusAtAttempt([job], "1"), "success");
-  assert.equal(packJobStatusAtAttempt([job], "2"), "missing");
-  assert.equal(packJobStatusAtAttempt([{...job, status: "in_progress", conclusion: null}], "1"), "pending");
+test("pack proof distinguishes pending, failed and relabeled carried-forward jobs", () => {
+  const run = {id: 201, run_attempt: 1, run_started_at: "2026-11-12T21:45:04Z"};
+  const retry = {...run, run_attempt: 2, run_started_at: "2026-11-12T23:07:55Z"};
+  const job = {name: "Pack WASM npm package", run_id: 201, run_attempt: 1, status: "completed", conclusion: "success", started_at: "2026-11-12T21:45:10Z", completed_at: "2026-11-12T21:48:50Z"};
+  assert.equal(packJobStatusAtAttempt([job], "1", run), "success");
+  assert.equal(packJobStatusAtAttempt([job], "2", retry), "missing");
+  assert.equal(packJobStatusAtAttempt([{...job, run_attempt: 2}], "2", retry), "missing");
+  assert.equal(packJobStatusAtAttempt([{...job, run_attempt: 2, started_at: "2026-11-12T23:08:10Z", completed_at: "2026-11-12T23:12:50Z"}], "2", retry), "success");
+  for (const status of ["queued", "in_progress"]) {
+    assert.equal(packJobStatusAtAttempt([{...job, status, conclusion: null, started_at: null, completed_at: null}], "1", {...run, run_started_at: null}), "pending");
+  }
+  assert.equal(packJobStatusAtAttempt([], "1", {...run, run_started_at: null}), "missing");
   for (const conclusion of ["failure", "cancelled", "skipped"]) {
-    assert.equal(packJobStatusAtAttempt([{...job, conclusion}], "1"), "failed");
+    assert.equal(packJobStatusAtAttempt([{...job, conclusion}], "1", run), "failed");
   }
 });
 

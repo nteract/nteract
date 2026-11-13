@@ -2,7 +2,7 @@ import {createHash} from "node:crypto";
 import {gunzipSync} from "node:zlib";
 import {setTimeout as sleep} from "node:timers/promises";
 import {publicationDecision, registryPackage, releasePlan, stampManifest, verifyManifest} from "./npm-release.mjs";
-import {digest, positive, resolveWasmCandidate, successfulJobAtAttempt, validateArtifact, validateWasm} from "./editor-assets-release.mjs";
+import {digest, jobStatusAtAttempt, positive, resolveWasmCandidate, validateArtifact, validateWasm} from "./editor-assets-release.mjs";
 
 export const runtimeRoot = "apps/notebook/src/wasm/runtimed-wasm";
 export const runtimeFiles = ["runtimed_wasm.js", "runtimed_wasm.d.ts", "runtimed_wasm_bg.wasm", "runtimed_wasm_bg.wasm.d.ts"];
@@ -97,12 +97,8 @@ export function validateBuildRun(run, repository, defaultBranch) {
   if (run.repository?.full_name !== repository || run.head_repository?.full_name !== repository || run.path !== ".github/workflows/build-wasm-npm.yml" || run.head_branch !== defaultBranch || !["workflow_run", "workflow_dispatch"].includes(run.event)) throw new Error("Untrusted WASM npm build run");
 }
 
-export function packJobStatusAtAttempt(jobs, attempt) {
-  const name = "Pack WASM npm package";
-  if (successfulJobAtAttempt(jobs, attempt, name)) return "success";
-  const job = jobs.find(job => String(job.run_attempt) === String(attempt) && (job.name === name || job.name.endsWith(` / ${name}`)));
-  if (!job) return "missing";
-  return job.status === "completed" ? "failed" : "pending";
+export function packJobStatusAtAttempt(jobs, attempt, run) {
+  return jobStatusAtAttempt(jobs, attempt, "Pack WASM npm package", run);
 }
 
 export async function resolveCandidate(identity, api, current) {
