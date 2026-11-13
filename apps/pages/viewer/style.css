@@ -2626,14 +2626,6 @@ details.account-actions > div a:hover {
 html:has(.library-view) {
   scrollbar-gutter: stable;
 }
-/* A Page or a Project's content (and the preview shown while it opens) keeps
-   its scrollbar's room too, so the centered column and the header's actions
-   hold still when the Page grows past the window as its charts, images and
-   tables draw. A modal that hides the root's overflow (a maximized chart or
-   diagram, comment review) leaves the room in place rather than adding to it. */
-html:has(main.workspace.document) {
-  scrollbar-gutter: stable;
-}
 /* Group accents (library-groups.mjs groupAccent): six for Projects, and one
    each for Shared with you and On this device. Each reads as text at 4.5:1 or
    more on the page and on its heading's tint, in both themes
