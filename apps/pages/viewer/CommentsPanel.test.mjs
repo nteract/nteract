@@ -449,9 +449,13 @@ test("review is a workspace: navigator, passage, conversation; J/K move, E resol
     f.container.querySelector(".review-up-next").textContent,
     /Up next.*Full first comment next/,
   );
+  f.view().focus();
   await f.key("j", f.view());
   assert.equal(f.view().dataset.threadId, "next");
+  assert.equal(document.activeElement, f.view(), "J hands focus to the next thread");
   await f.key("k", f.view());
+  assert.equal(f.view().dataset.threadId, "first");
+  assert.equal(document.activeElement, f.view(), "K hands focus to the previous thread");
   await f.key("e", f.view());
   assert.deepEqual(f.calls, [{ action: "resolve", thread_id: "first" }]);
   assert.equal(f.view().dataset.threadId, "next", "resolve-and-next");

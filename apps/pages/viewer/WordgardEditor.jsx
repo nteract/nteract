@@ -89,6 +89,8 @@ import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
 import { displaySymbols } from "./wordgard-symbols.mjs";
 import { clickBelowFinalBlock, exitBlock, leaveFinalBlock } from "./wordgard-leave-block.mjs";
 import { codeIndentation, selectedCodeBlock } from "./wordgard-code-indent.mjs";
+import { codeBrackets } from "./wordgard-code-brackets.mjs";
+import { codeComments } from "./wordgard-code-comments.mjs";
 import { codeWords } from "./wordgard-code-words.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
 import {
@@ -373,6 +375,8 @@ export function WordgardEditor(props) {
         tablePresentation,
         // Before the table keys: in a code block Tab indents.
         codeIndentation,
+        codeBrackets,
+        codeComments,
         codeWords,
         tableKeys,
         GardState.schemaElement.of(elements),
