@@ -14,7 +14,7 @@ import { validSpaceId } from "./spaces.mjs";
 import { MAX_DEPTH, deriveLocation } from "../model/location.mjs";
 import { locationEntries } from "./catalog-location.mjs";
 import { tools } from "../mcp.mjs";
-import { invokeProjectApi } from "./project-api.mjs";
+import { invokeProjectApi, withBrowserLinks } from "./project-api.mjs";
 import { ids, locationOf, world } from "./projects-fixture.mjs";
 
 /** Object state for direct index calls; the test awaits each one. */
@@ -2021,13 +2021,25 @@ test("Page tools address Project content by project_id with the caller's own acc
       },
     };
   };
-  await w.call("owner", "edit_page", {
+  const edited = await w.call("owner", "edit_page", {
     project_id: project.project_id,
     revision: read.body.revision,
     nonce: w.key(),
     operations: [],
   });
   w.env.PAGES.getByName = original;
+  // The receipt names the Project as read_page does: the content document's
+  // page_id beside project_id and kind, so its link is the Project's.
+  assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  for (const body of [read.body, edited.body]) {
+    assert.equal(body.kind, "project");
+    assert.equal(body.project_id, project.project_id);
+    assert.equal(body.page_id, project.document_id);
+    assert.equal(
+      withBrowserLinks(body, "https://pages.invalid").url,
+      `https://pages.invalid/project/${project.project_id}`,
+    );
+  }
   assert.equal(routed.length, 1);
   assert.equal(routed[0].name, project.document_id);
   assert.equal(routed[0].body.arguments.page_id, project.document_id);

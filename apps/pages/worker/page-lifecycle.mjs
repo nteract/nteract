@@ -273,7 +273,7 @@ const HEADS_UNKNOWN = refused(
 );
 const HEADS_CHANGED = refused(
   409,
-  "Page changed; read_page again before editing",
+  "Page changed since this revision, so it was not moved to Trash. The refusal carries current_revision: look at the Page again before deleting it",
   "stale_revision",
 );
 const NOT_IN_TRASH = refused(

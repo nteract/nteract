@@ -135,6 +135,19 @@ test("insert_node refuses malformed operations before touching the Page", () => 
   }
 });
 
+test("a bad dataframe attr is refused with a message naming the attr", () => {
+  // The host answers these with invalid_edit_selector and this message
+  // (worker/index.mjs); the guide lists a field's bad value under that code.
+  for (const [attrs, message] of [
+    [{ title: "x".repeat(201) }, "A dataframe's title must be 200 characters or fewer"],
+    [
+      { media_type: "text/csv" },
+      "A dataframe's media_type must be one of application/vnd.apache.parquet",
+    ],
+  ])
+    assert.throws(() => validateNodeInsertion(dataframe(attrs)), { message });
+});
+
 test("a stored dataframe with a foreign src fails validation", () => {
   const { doc } = edit(fresh(), [dataframe()]);
   const [, id] = orderedBlockIds(doc);

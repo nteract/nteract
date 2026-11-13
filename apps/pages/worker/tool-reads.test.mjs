@@ -7,6 +7,8 @@ import { projectReadComments } from "../model/read-comments.mjs";
 import { blockAddress, nodeAddresses } from "../model/addresses.mjs";
 import { readTool } from "./tool-reads.mjs";
 import { revisionTable } from "./revisions-fixture.mjs";
+import { setSources, sourcesGenesis } from "../model/sources-doc.mjs";
+import { authorOf } from "../model/author.mjs";
 function fixture(t, markdown = "# First\n\nKeep this passage.\n\n# Second\n\nOther content.") {
   let doc = A.from(createPageData({ pageId: "read-fixture", title: "Read fixture" }));
   // The heads before the content: a revision the fixture Page has moved past.
@@ -287,4 +289,43 @@ test("ambiguous sections expose a flat candidate list with revision authority", 
   assert.equal(result.body.total, 2);
   assert.equal(result.body.candidates.length, 2);
   assert.deepEqual(A.getHeads(doc), await revisions.heads("page", result.body.revision));
+});
+
+test("a sources read over its budget names source reads, not the outline", async (t) => {
+  const { doc, revisions } = fixture(t);
+  const assetId = "a".repeat(64);
+  const by = authorOf({ principal: "user:one", displayName: "One", driver: "Test" });
+  const sourcesDoc = A.change(
+    A.clone(sourcesGenesis("5e0c1a4e-7d2b-4c1e-9f3a-0b1c2d3e4f50")),
+    (d) =>
+      setSources(
+        d,
+        Array.from({ length: 30 }, (_, i) => ({
+          op: "set_source",
+          source_id: `s${i}`,
+          name: "n".repeat(200),
+          asset_id: assetId,
+          source_revision: null,
+        })),
+        { mediaTypes: new Map([[assetId, "application/vnd.apache.parquet"]]), by },
+      ),
+  );
+  t.after(() => A.free(sourcesDoc));
+  for (const [args, advice] of [
+    [{ sources: true }, /read one source with source_id/],
+    [{ source_id: "s1", sources: true }, /read one source with source_id/],
+  ]) {
+    const { status, body } = await readTool(
+      doc,
+      "read_page",
+      { page_id: doc.page_id, ...args, max_bytes: 4096 },
+      { revisions, sourcesDoc },
+    );
+    assert.equal(status, 413, JSON.stringify(args));
+    assert.equal(body.code, "read_budget_exceeded");
+    assert.match(body.error, /^Sources exceed max_bytes \(4096\)\. Raise it, up to 262144, or/);
+    assert.match(body.error, advice);
+    assert.doesNotMatch(body.error, /outline/);
+    assert.equal(body.outline, undefined, "a sources read has no outline to offer");
+  }
 });

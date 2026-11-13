@@ -59,6 +59,18 @@ test("a tag is normalized to lowercase and checked against the alphabet", () => 
     assert.throws(() => normalizeTag(bad), TagError, JSON.stringify(bad));
   for (const word of ["and", "or", "not", "AND", "Or", "NoT"])
     assert.throws(() => normalizeTag(word), /reserved/, word);
+  // The refusal quotes the tag it refused, cut to a tag's length.
+  assert.throws(() => normalizeTag("has space"), {
+    message:
+      '"has space" isn\'t a tag: a tag is 1 to 64 characters of a-z, 0-9 and . _ : / -, starting with a letter or digit',
+  });
+  assert.throws(() => normalizeTag("x".repeat(70)), {
+    message: new RegExp(`^"${"x".repeat(64)}…" isn't a tag`),
+  });
+  assert.throws(() => normalizeTag("and"), {
+    message:
+      '"and" is reserved: AND, OR and NOT are operators, written uppercase, so it can\'t be a tag',
+  });
   assert.throws(() => normalizeTag(7), /must be a string/);
   assert.throws(() => normalizeTag(null), /must be a string/);
   assert.ok(TAG_PATTERN.test("a"));
@@ -129,6 +141,10 @@ test("a malformed expression is refused with the position of the problem", () =>
   refuses("a AND AND b", /found AND/, 6);
   refuses("a OR", /ended/, 4);
   refuses("a b", /Expected AND, OR or the end but found b/, 2);
+  // A lowercase operator is a word the caller meant as one.
+  refuses("hello and world", /^Operators are uppercase: write AND, not and \(at character 6\)$/, 6);
+  refuses("a Or b", /Operators are uppercase: write OR, not Or/, 2);
+  refuses("a AND not b", /written uppercase/, 6);
   refuses("a NOT b", /found NOT/, 2);
   refuses("NOT", /ended/, 3);
   refuses("NOT AND a", /found AND/, 4);
