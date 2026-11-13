@@ -23,6 +23,9 @@ import { CHART_FALLBACK_FONT, probeItems, usableFont } from "./chart-font.mjs";
 
 export const CHART_RENDERER = `vega-lite@${vl.version} vega@${vega.version}`;
 const DEFAULT_HEIGHT = 260;
+/** Vega-Lite's padding on each side. A single view's width includes it
+ * (`autosize` contains padding), and a title starts inside it. */
+const PADDING = 5;
 const MIN_WIDTH = 120;
 
 /**
@@ -114,9 +117,13 @@ const CATEGORY = {
   dark: ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"],
 };
 
-/** Vega-Lite config from a theme. A spec's own config wins over it. The font
- * is the stack the page chose for this Worker (chart-font.mjs). */
-export function themeConfig(theme) {
+/** Vega-Lite config from a theme, for a chart drawn `width` wide. A spec's
+ * own config wins over it. The font is the stack the page chose for this
+ * Worker (chart-font.mjs). A title and subtitle are limited to the width
+ * inside the padding, an x-axis title to its view's width and a y-axis
+ * title to its view's height, so Vega cuts a long one short with an ellipsis
+ * by its measured width instead of drawing it past the chart. */
+export function themeConfig(theme, width = 0) {
   const category = theme.dark ? CATEGORY.dark : CATEGORY.light;
   return {
     background: null,
@@ -131,8 +138,16 @@ export function themeConfig(theme) {
       labelFontSize: 11,
       titleFontWeight: 500,
     },
+    axisX: { titleLimit: { expr: "width" } },
+    axisY: { titleLimit: { expr: "height" } },
     legend: { labelColor: theme.muted, titleColor: theme.text },
-    title: { color: theme.text, anchor: "start", fontSize: 14, fontWeight: 600 },
+    title: {
+      color: theme.text,
+      anchor: "start",
+      fontSize: 14,
+      fontWeight: 600,
+      ...(width > 2 * PADDING && { limit: width - 2 * PADDING }),
+    },
     header: { labelColor: theme.muted, titleColor: theme.text },
     range: { category },
     // Every mark answers hover with its encoded fields; a spec's own
@@ -481,7 +496,7 @@ export async function runChart(
     const checked = checkChartSpec(spec, { datasets: Object.keys(data) });
     if (!checked.ok) throw new ChartRefusal(checked.error);
   }
-  const compiled = vl.compile(sizedSpec(spec, width), { config: themeConfig(theme) }).spec;
+  const compiled = vl.compile(sizedSpec(spec, width), { config: themeConfig(theme, width) }).spec;
   const runtime = vega.parse(compiled, null, { ast: true });
   if (checkDataflow) {
     const problem = runtimeProblem(runtime);

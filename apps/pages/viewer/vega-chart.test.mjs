@@ -742,6 +742,39 @@ test("the structural checks reach every subflow, and hover encodings anywhere", 
   assert.match(runtimeProblem(hovered), /changes on hover/);
 });
 
+test("a title and axis titles are cut short with an ellipsis to the room they have", () =>
+  withWindow(async (window) => {
+    const config = themeConfig(theme, 300);
+    // Vega-Lite's padding is 5 on each side of the width a chart draws at.
+    assert.equal(config.title.limit, 290);
+    assert.deepEqual(config.axisX.titleLimit, { expr: "width" });
+    assert.deepEqual(config.axisY.titleLimit, { expr: "height" });
+    assert.equal(themeConfig(theme).title.limit, undefined);
+
+    const long = "a title far longer than any chart this narrow has room to draw ".repeat(3);
+    const target = window.document.body.appendChild(window.document.createElement("div"));
+    const drawing = await drawChart(target, {
+      spec: {
+        ...stacked,
+        title: long,
+        encoding: {
+          ...stacked.encoding,
+          x: { ...stacked.encoding.x, title: long },
+          y: { ...stacked.encoding.y, title: long },
+        },
+      },
+      data: { calls },
+      theme,
+      width: 300,
+    });
+    const texts = (role) =>
+      [...target.querySelectorAll(`.role-${role} text`)].map((text) => text.textContent);
+    const titles = [...texts("title-text"), ...texts("axis-title")];
+    assert.equal(titles.length, 3, JSON.stringify(titles));
+    for (const title of titles) assert.ok(title.endsWith("\u2026"), title);
+    drawing.finalize();
+  }));
+
 test("hovering a drawn chart only shows its tooltip", () =>
   withWindow(async (window) => {
     const shown = [];
