@@ -283,8 +283,45 @@ else replaces the screen with a Reload notice and leaves the Page unchanged.
   same feature still decodes, draws "This build can't show…", and writes back
   unchanged; writers (`insert_node`, upload) check strictly. Copy writes a
   `figure[data-pages-dataframe]` with the attrs as JSON, and paste reads it
-  back only when its `src` is on the same Page. The table fetch refuses a
-  `src` on another Page too. A dataframe whose attrs this build can't read
+  back when its `src` is on the same Page.
+
+  Clipboard HTML is untrusted, so a table's data moves between Pages only
+  when this browser copied it. A copy or cut holding this Page's tables
+  writes a copy record to this origin's `localStorage`
+  ([`viewer/copy-registry.mjs`](viewer/copy-registry.mjs)): a random 128-bit
+  id, the Page, its title and the asset ids. The clipboard HTML gets one empty hidden
+  `span[data-pages-copy]` holding `{"v": 1, "id": …}`; other apps paste
+  nothing from it, and Pages strips it before reading a paste. The registry
+  keeps the 20 newest copies, each for one hour: long enough to paste in
+  another tab, and short, because the id leaves the browser with the
+  clipboard. Without `localStorage` nothing is recorded and nothing copies.
+
+  A paste or drop reading HTML that holds tables from another Page looks up
+  the clipboard's copy id. A table copies only when the record exists, names
+  the Page in the table's `src` and lists its asset; no other field of the
+  clipboard element counts. A record shows that this browser copied the
+  table, not that the person means to move its data here: another site that
+  saw the clipboard can hand the id back inside its own content. So the
+  paste is held while the Page asks, in the paste's status row, whether to
+  bring the data for the tables from the Page the record names, by the
+  record's title, never the clipboard's. Bring data starts the copies;
+  Paste titles only lands the paste now with those tables as titles; Cancel
+  drops it. Nothing is requested before Bring data. An answer counts only for
+  the question it was shown with, so a late answer can't start another
+  paste's copies; answering from the keyboard puts focus back in the Page. The paste then waits
+  while the host copies each dataset onto this Page (`POST /api/pages/:pageId/assets/:sha256` with
+  `{"from_page_id": …}`), at most 8 tables a paste and 2 at a time, and
+  lands with each `src` on this Page, replacing the selection as any paste
+  does, with the caret after it. Whether it landed is the transaction's own
+  answer: the Page reports it refused only when the binding refused it. A table that didn't copy (not this browser's copy, past the limit,
+  or refused by the host) lands as its title, and the Page says why. In a
+  code block and for paste-as-plain-text, Wordgard reads the clipboard's
+  text and nothing is held. A paste made while another is held takes the
+  editor's own path: its tables from other Pages land as titles, with no
+  message of its own. The lifecycle is
+  [`viewer/dataframe-copy-machine.mjs`](viewer/dataframe-copy-machine.mjs).
+  The node never names another Page, and the table fetch refuses a `src` on
+  another Page. A dataframe whose attrs this build can't read
   decodes as an unknown node (see above), and a Markdown rewrite of its block
   is refused. Each block editor also sits in an error boundary
   (`viewer/BlockBoundary.jsx`), so any other failure to draw one block can't
@@ -1730,7 +1767,19 @@ million pixels; the HTTP request ceiling is 6 MiB. SVG, HTML, GIF, APNG, and ani
 accepted. Container validation is not full pixel decoding. Removed images and
 interrupted uploads may leave private objects: immediate deletion would break
 undo or offline references. Asset garbage collection and copying assets between
-Pages/deployments require a separate lifecycle implementation.
+deployments require a separate lifecycle implementation.
+
+A dataset copies between Pages with `POST /api/pages/:pageId/assets/:sha256`
+and a JSON body `{"from_page_id": "<source Page>"}`. The Worker asks the
+destination's host for edit access first and the source's host for read
+access second, as a read of the source asset would, and touches neither
+Page's storage until both pass. A caller who can't read the source gets that
+read's refusal whether or not the dataset is there. The source object must be
+a Parquet dataset; its bytes go through the upload's own checks and limits,
+are stored under the same id, and edit access is checked again before the
+answer. A dataset already on the destination is `200` with no second write;
+a new copy is `201`. Upload capabilities can't copy. Images don't copy: an
+image pasted from another Page keeps its `src` there.
 
 For agents, importing bytes and inserting content are separate operations:
 

@@ -1635,6 +1635,9 @@ const gateway = {
             pageId,
             assetId,
             authorize: (write) => authorizeImage(request, env, pageId, write),
+            // A dataset copied from another Page: the source's own read check,
+            // exactly as a read of its asset URL asks it.
+            authorizeSource: (sourceId) => authorizeImage(request, env, sourceId, false),
           }),
         );
       }

@@ -17,6 +17,10 @@ export const DATAFRAME_TITLE_MAX = 200;
 
 const PAGE_ID = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const ASSET_PATH = new RegExp(`^/api/pages/(${PAGE_ID})/assets/([a-f0-9]{64})$`);
+const PAGE_ID_ONLY = new RegExp(`^${PAGE_ID}$`);
+
+/** True for a Page id as an asset path names one. */
+export const assetPageId = (id) => typeof id === "string" && PAGE_ID_ONLY.test(id);
 
 /** `{ pageId, assetId }` for a same-origin Page asset path, otherwise null. */
 export function parseAssetPath(src) {

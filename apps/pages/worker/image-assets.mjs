@@ -398,22 +398,120 @@ async function readUploadBody(request, expect) {
   }
 }
 
+const COPY_BODY_MAX_BYTES = 1024;
+
+/** The source Page a copy request names: `{"from_page_id": "<page id>"}`. */
+async function readCopySource(request) {
+  const type = request.headers.get("content-type")?.split(";")[0].trim().toLowerCase();
+  if (type !== "application/json")
+    throw new HttpError(415, "Send the source Page as JSON", "invalid_arguments");
+  let args;
+  try {
+    const bytes = await readImageBody(request, {
+      maxBytes: COPY_BODY_MAX_BYTES,
+      tooLarge: "The copy request is too large",
+    });
+    args = JSON.parse(new TextDecoder().decode(bytes));
+  } catch (error) {
+    if (error instanceof HttpError && error.status === 413) throw error;
+    throw new HttpError(400, "The copy request must be JSON", "invalid_arguments");
+  }
+  if (
+    !args ||
+    typeof args !== "object" ||
+    Array.isArray(args) ||
+    Object.keys(args).some((key) => key !== "from_page_id") ||
+    !validPageId(args.from_page_id)
+  )
+    throw new HttpError(
+      400,
+      "A copy takes from_page_id, the Page the dataset is on",
+      "invalid_arguments",
+    );
+  return args.from_page_id;
+}
+
+/**
+ * Copy the dataset `assetId` from `sourceId` onto `pageId`, under the same
+ * id: the id is the SHA-256 of the bytes, so the copy is the same asset. The
+ * caller has edit access to `pageId` and read access to `sourceId`; nothing
+ * here looks at `sourceId`'s storage before that. The bytes go through
+ * persistPageAsset, so a copy meets every check and limit an upload does, and
+ * a dataset already on `pageId` is the answer without a second write.
+ */
+async function copyDatasetAsset(bucket, { pageId, assetId, sourceId }) {
+  const source = await bucket.head(imageAssetKey(sourceId, assetId));
+  if (!source)
+    throw new HttpError(404, "Dataset not found in the source Page", "dataset_not_found");
+  if (!isDataset(source))
+    throw new HttpError(415, "This asset is an image, not a dataset. Only datasets copy.");
+  const stored = await bucket.head(imageAssetKey(pageId, assetId));
+  if (stored) {
+    if (!isDataset(stored)) throw new Error("A stored asset's type disagrees with its id");
+    const { asset_url, ...dataset } = storedDatasetMetadata(stored, pageId, assetId);
+    return { asset: { ...dataset, url: asset_url }, duplicate: true };
+  }
+  if (!Number.isSafeInteger(source.size) || source.size > DATASET_MAX_BYTES)
+    throw new HttpError(413, "Datasets must be 5 MiB or smaller");
+  const object = await bucket.get(imageAssetKey(sourceId, assetId));
+  if (!object)
+    throw new HttpError(404, "Dataset not found in the source Page", "dataset_not_found");
+  const bytes = new Uint8Array(await new Response(object.body).arrayBuffer());
+  const copied = await persistPageAsset(bucket, {
+    pageId,
+    bytes,
+    contentTypes: [PARQUET_MEDIA_TYPE],
+    accept: "any",
+    expect: { content_type: PARQUET_MEDIA_TYPE },
+  });
+  if (copied.asset.asset_id !== assetId)
+    throw new Error("A stored dataset's bytes disagree with its id");
+  return copied;
+}
+
 /**
  * The authorize callback is a short Page-DO request; byte transfer stays
  * outside its queue. `identify` checks the caller's credential before any
  * Page is asked; it defaults to authenticate(). An upload capability
  * (asset-uploads.mjs) replaces it with the Origin check alone, and its
  * authorize callback carries the capability to the Page host instead.
+ *
+ * `POST` to an asset's own URL copies a dataset from another Page, named by
+ * `from_page_id`. `authorizeSource(sourceId)` asks that Page whether the
+ * caller can read it, as a read of its asset would. The destination's edit
+ * check comes first and the source's second, and neither Page's storage is
+ * touched until both pass: a caller who can't read the source learns only
+ * what a read of the source's asset URL would tell them.
  */
-export async function handleImageAssets(request, env, { pageId, assetId, authorize, identify }) {
+export async function handleImageAssets(
+  request,
+  env,
+  { pageId, assetId, authorize, authorizeSource, identify },
+) {
   try {
     if (!validPageId(pageId) || (assetId !== undefined && !validAssetId(assetId)))
       throw new HttpError(400, "Invalid image reference");
     const upload = assetId === undefined && request.method === "POST";
-    if (!upload && !(assetId && ["GET", "HEAD"].includes(request.method)))
+    const copy = assetId !== undefined && request.method === "POST" && !!authorizeSource;
+    if (!upload && !copy && !(assetId && ["GET", "HEAD"].includes(request.method)))
       throw new HttpError(405, assetId ? "Use GET or HEAD" : "Use POST");
     // In particular this does not widen the MCP-only OAuth token audience.
     await (identify ? identify() : authenticateAssets(request, env, upload));
+    if (copy) {
+      const sourceId = await readCopySource(request);
+      const target = await authorize(true);
+      if (!target.ok) return privateImageResponse(target);
+      const source = await authorizeSource(sourceId);
+      if (!source.ok) return privateImageResponse(source);
+      const bucket = env.PAGES_ASSETS;
+      if (!bucket) throw new HttpError(503, "Image storage is unavailable");
+      const { asset, duplicate } = await copyDatasetAsset(bucket, { pageId, assetId, sourceId });
+      const current = await authorize(true);
+      if (!current.ok) return privateImageResponse(current);
+      return privateImageResponse(
+        Response.json({ ...asset, asset_url: asset.url }, { status: duplicate ? 200 : 201 }),
+      );
+    }
     const access = await authorize(upload);
     if (!access.ok) return privateImageResponse(access);
     const expect = upload ? await grantedExpectation(access) : undefined;
