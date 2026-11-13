@@ -463,12 +463,17 @@ test("a tag write waits on D1 outside the Page's queue", async (t) => {
   assert.equal(state.status, 200, JSON.stringify(state));
   const edit = await Promise.race([
     f.tool("owner", "edit_page", {
-      operations: [{ op: "append_paragraph", text: "More" }],
+      operations: [{ op: "insert_markdown", markdown: "Written while D1 stalls." }],
+      revision: state.body.revision,
+      nonce: "tags-queue-edit",
     }),
     settled(2000).then(() => "queued behind the tag write"),
   ]);
-  assert.notEqual(typeof edit, "string", edit);
-  assert.deepEqual(rows(), []);
+  assert.equal(edit.status, 200, JSON.stringify(edit));
+  const after = await f.tool("owner", "read_page", { comments: "none" });
+  assert.notEqual(after.body.revision, state.body.revision);
+  assert.match(JSON.stringify(after.body), /Written while D1 stalls\./);
+  assert.deepEqual(rows(), [], "the tag batch is still held");
   release();
   const written = await writing;
   assert.equal(written.status, 200, JSON.stringify(written.body));
