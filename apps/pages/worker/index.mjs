@@ -6290,9 +6290,10 @@ export class Page {
           operation: body.operation,
           args: body.arguments,
           identity,
-          // The edit's writer keeps what the client said about itself, and
-          // the retry fingerprint covers it, as a comment's does.
-          agent: agentFromProvenance(identity.clientProvenance),
+          // The edit's writer keeps what the client said about itself. The
+          // labels stay out of the fingerprint: a retry under the same nonce
+          // replays the first attempt and keeps its writer.
+          writerAgent: agentFromProvenance(identity.clientProvenance),
           prepare: inserts.length
             ? async () => {
                 if (inserts.length > 100)

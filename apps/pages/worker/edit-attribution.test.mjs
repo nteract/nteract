@@ -12,7 +12,7 @@ import { decodeFrame, encodeFrame, framePipe } from "../sync/wire.mjs";
 import { proposeAccessUpdate } from "./access.mjs";
 import { WRITER_PREFIX, actorWriterId } from "./host-writers.mjs";
 import { Page } from "./index.mjs";
-import { documentMutation, operationKey } from "./mutations.mjs";
+import { documentMutation, fingerprint, operationKey } from "./mutations.mjs";
 import { readRevision } from "./operation-journal.mjs";
 import { HOST_SENDER_ID, treeOf } from "./plain-sync.mjs";
 
@@ -133,6 +133,10 @@ const changesSince = async (f, since, options) => {
     options,
   );
   assert.equal(read.status, 200, JSON.stringify(read.body));
+  // An attributed delta names a writer for every content change.
+  if (read.body.attribution === "block")
+    for (const change of read.body.changes)
+      assert.ok(change.written_by.length > 0, JSON.stringify(change));
   return read.body;
 };
 /** The writers a change names, from the read's writers table. */
@@ -362,45 +366,100 @@ test("nothing a browser sends sets or overrides a host edit's writer", async (t)
   );
 });
 
-test("a retry keeps its first attempt's writer; another assertion under its nonce conflicts", async (t) => {
+test("a retry under the same nonce replays its first attempt and writer, whatever labels it carries", async (t) => {
   const f = await fixture(t);
   const r0 = await revision(f);
   const args = { revision: r0, nonce: "retry-1", operations: [{ op: "set_title", title: "Once" }] };
   const first = await tool(f, "edit_page", args, { agent: { name: "Rel", model: "m-1" } });
   assert.equal(first.status, 200);
   const heads = A.getHeads(f.host.handle.doc());
-  const replay = await tool(f, "edit_page", args, { agent: { name: "Rel", model: "m-1" } });
-  assert.equal(replay.status, 200);
-  assert.deepEqual(replay.body, first.body);
-  assert.deepEqual(A.getHeads(f.host.handle.doc()), heads, "nothing new was written");
-  for (const agent of [{ name: "Other", model: "m-1" }, { name: "Rel" }, undefined]) {
-    const conflict = await tool(f, "edit_page", args, { agent });
-    assert.equal(conflict.status, 409, JSON.stringify(agent));
-    assert.equal(conflict.body.code, "nonce_conflict");
+  // Agent labels are recorded on the writer, not fingerprinted: every retry
+  // replays the first receipt and writes nothing.
+  for (const agent of [{ name: "Rel", model: "m-1" }, { name: "Other", model: "m-2" }, undefined]) {
+    const replay = await tool(f, "edit_page", args, { agent });
+    assert.equal(replay.status, 200, JSON.stringify(agent));
+    assert.deepEqual(replay.body, first.body);
   }
+  assert.deepEqual(A.getHeads(f.host.handle.doc()), heads, "nothing new was written");
   const read = await changesSince(f, r0);
   assert.deepEqual(
     read.writers.map((w) => w.agent),
     [{ name: "Rel", model: "m-1" }],
   );
+  assert.equal((await f.storage.list({ prefix: WRITER_PREFIX })).size, 1);
+  // Another request under the nonce still conflicts.
+  const changed = await tool(f, "edit_page", {
+    ...args,
+    operations: [{ op: "set_title", title: "Twice" }],
+  });
+  assert.equal(changed.status, 409);
+  assert.equal(changed.body.code, "nonce_conflict");
+});
 
-  // An entry journaled before the fingerprint covered the agent (it records
-  // no writer) still replays when its client retries with its assertion.
-  const r1 = await revision(f);
-  const legacyArgs = {
-    revision: r1,
-    nonce: "legacy",
-    operations: [{ op: "set_title", title: "Old" }],
+test("an edit's journal fingerprint is the one main computes for the same request", async (t) => {
+  const f = await fixture(t);
+  const args = {
+    revision: await revision(f),
+    nonce: "same-digest",
+    operations: [{ op: "set_title", title: "Digest" }],
   };
-  assert.equal((await tool(f, "edit_page", legacyArgs)).status, 200);
-  const key = await operationKey({ nonce: "legacy" }, { principal: owner }, "page");
-  const entry = await f.storage.get(key);
+  assert.equal(
+    (await tool(f, "edit_page", args, { agent: { name: "Rel", model: "m-1" } })).status,
+    200,
+  );
+  const entry = await f.storage.get(
+    await operationKey({ nonce: "same-digest" }, { principal: owner }, "page"),
+  );
+  // main: fingerprint(operation, arguments, identity), no agent.
+  assert.equal(
+    entry.fingerprint,
+    await fingerprint(
+      "edit_page",
+      { page_id: pageId, ...args },
+      { principal: owner, driver: "Kilo" },
+    ),
+  );
   assert.match(entry.writer, /^[0-9a-f]{16}$/);
-  assert.equal((await tool(f, "edit_page", legacyArgs, { agent: { name: "Rel" } })).status, 409);
-  delete entry.writer;
-  await f.storage.put(key, entry);
-  const legacy = await tool(f, "edit_page", legacyArgs, { agent: { name: "Rel" } });
-  assert.equal(legacy.status, 200, JSON.stringify(legacy.body));
+});
+
+test("an edit that changes nothing stores no writer record", async (t) => {
+  const f = await fixture(t);
+  const title = f.host.handle.doc().title;
+  for (let n = 0; n < 50; n++) {
+    const response = await tool(
+      f,
+      "edit_page",
+      {
+        revision: await revision(f),
+        nonce: `no-op-${n}`,
+        operations: [{ op: "set_title", title }],
+      },
+      { agent: { name: `Agent ${n}` } },
+    );
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    const entry = await f.storage.get(
+      await operationKey({ nonce: `no-op-${n}` }, { principal: owner }, "page"),
+    );
+    assert.equal(entry.writer, undefined);
+  }
+  assert.equal((await f.storage.list({ prefix: WRITER_PREFIX })).size, 0);
+});
+
+test("a browser change that replaces the blocks map is attributed to every block it removes", async (t) => {
+  const f = await fixture(t);
+  const r0 = await revision(f);
+  const replica = await browser(t, f, browserIdentity(owner, "Replacer"), "b-replace");
+  replica.handle.change((d) => {
+    d.blocks = {};
+  });
+  await until(() => Object.keys(f.host.handle.doc().blocks).length === 0);
+  const read = await changesSince(f, r0);
+  assert.ok(read.changes.length > 0);
+  assert.ok(read.changes.every((change) => change.change === "deleted"));
+  for (const change of read.changes)
+    assert.deepEqual(writersOf(read, change.written_by), [
+      { principal: owner, displayName: "Replacer", driver: "Browser", via: "sync" },
+    ]);
 });
 
 test("an edit whose history append failed keeps its writer when its retry replays it", async (t) => {
@@ -412,8 +471,10 @@ test("an edit whose history append failed keeps its writer when its retry replay
     operations: [{ op: "set_title", title: "Pending" }],
   };
   let failures = 2;
+  const puts = [];
   const put = f.storage.put.bind(f.storage);
   t.mock.method(f.storage, "put", async (key, value) => {
+    puts.push(typeof key === "object" ? Object.keys(key) : [key]);
     if (
       failures > 0 &&
       typeof key === "object" &&
@@ -430,7 +491,12 @@ test("an edit whose history append failed keeps its writer when its retry replay
     await operationKey({ nonce: "pending" }, { principal: owner }, "page"),
   );
   assert.equal(entry.pending, true);
-  // The record was stored with the entry that holds the change bytes.
+  // The record went in the one put that stored the entry holding the change
+  // bytes, and in no other.
+  const pendingKey = await operationKey({ nonce: "pending" }, { principal: owner }, "page");
+  const withRecord = puts.filter((keys) => keys.includes(WRITER_PREFIX + entry.writer));
+  assert.equal(withRecord.length, 1);
+  assert.ok(withRecord[0].includes(pendingKey), JSON.stringify(withRecord));
   assert.ok(await f.storage.get(WRITER_PREFIX + entry.writer));
   const retry = await tool(f, "edit_page", args, { agent: { name: "Rel", model: "m-1" } });
   assert.equal(retry.status, 200, JSON.stringify(retry.body));

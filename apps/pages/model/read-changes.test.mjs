@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
-import { projectReadChanges } from "./read-changes.mjs";
+import { ATTRIBUTION_MAX_CHANGES, changeHistory, projectReadChanges } from "./read-changes.mjs";
 import { projectReadContent } from "./read-content.mjs";
 import { setRichMarkdown, textPath } from "./richtext.mjs";
 import { richFromSource } from "./richtext-test-support.mjs";
@@ -142,23 +142,96 @@ test("each change names the writers of its block; a deleted block and the title 
     writerOf: (actor) => writers[actor] ?? null,
   });
   assert.equal(result.attribution, "block");
-  assert.deepEqual(result.writers, [
-    writers[actors.agent],
-    writers[actors.person],
-    { recorded: false },
-  ]);
+  const named = (indexes) => indexes.map((index) => result.writers[index]);
+  assert.equal(result.writers.length, 3);
   const deleted = result.changes.find((change) => change.change === "deleted");
-  assert.deepEqual(deleted.written_by, [2]);
+  assert.deepEqual(named(deleted.written_by), [{ recorded: false }]);
   const updated = result.changes.filter((change) => change.change === "updated");
   assert.equal(updated.length, 2);
   // Block granularity: both node changes in block one name both writers.
-  for (const change of updated) assert.deepEqual(change.written_by, [0, 1]);
-  assert.deepEqual(result.title_written_by, [1]);
+  for (const change of updated)
+    assert.deepEqual(named(change.written_by), [writers[actors.agent], writers[actors.person]]);
+  assert.deepEqual(named(result.title_written_by), [writers[actors.person]]);
   // Without a resolver the projection makes no attribution claim.
   const plain = projectReadChanges(doc, { since_heads: before, comments: "none" });
   assert.equal(plain.attribution, "unavailable");
   assert.equal(plain.writers, undefined);
   assert.ok(plain.changes.every((change) => !("written_by" in change)));
+});
+
+test("the writers table holds only writers a reported change or the title names", () => {
+  let doc = page();
+  const before = A.getHeads(doc);
+  const by = (actor, fn) => {
+    const next = A.change(A.clone(doc, { actor }), fn);
+    doc = A.merge(doc, next);
+    A.free(next);
+  };
+  // A block inserted and deleted again since the baseline reports nothing,
+  // so its writers don't reach the table.
+  by("aa".repeat(16), (draft) => {
+    draft.blocks.gone = { position: new A.RawString("a5"), markdown: "Brief" };
+    richFromSource(draft, "gone");
+  });
+  by("bb".repeat(16), (draft) => {
+    delete draft.blocks.gone;
+  });
+  by("cc".repeat(16), (draft) =>
+    replaceMatch(draft, "one", { match_text: "Second", replacement: "Kept" }),
+  );
+  const result = projectReadChanges(doc, { since_heads: before, comments: "none" }, undefined, {
+    writerOf: (actor) => ({ principal: actor, displayName: actor, driver: "API", via: "tool" }),
+  });
+  assert.deepEqual(
+    result.writers.map((writer) => writer.principal),
+    ["cc".repeat(16)],
+  );
+  assert.ok(result.changes.every((change) => change.written_by.join() === "0"));
+});
+
+test("a change that replaces the blocks map writes every block the delta reports", () => {
+  let doc = page();
+  const before = A.getHeads(doc);
+  const next = A.change(A.clone(doc, { actor: "dd".repeat(16) }), (draft) => {
+    draft.blocks = {};
+  });
+  doc = A.merge(doc, next);
+  A.free(next);
+  const result = projectReadChanges(doc, { since_heads: before, comments: "none" }, undefined, {
+    writerOf: () => ({ principal: "user:d", displayName: "D", driver: "Browser", via: "sync" }),
+  });
+  assert.ok(result.changes.length > 0);
+  assert.deepEqual(result.writers, [
+    { principal: "user:d", displayName: "D", driver: "Browser", via: "sync" },
+  ]);
+  for (const change of result.changes) assert.deepEqual(change.written_by, [0]);
+});
+
+test("past ATTRIBUTION_MAX_CHANGES the delta comes whole, without writers", () => {
+  let doc = page();
+  const before = A.getHeads(doc);
+  for (let n = 0; n <= ATTRIBUTION_MAX_CHANGES; n++)
+    doc = A.change(doc, (draft) => {
+      draft.counter = n;
+    });
+  doc = A.change(doc, (draft) =>
+    replaceMatch(draft, "one", { match_text: "Second", replacement: "Late" }),
+  );
+  let resolved = 0;
+  const result = projectReadChanges(doc, { since_heads: before, comments: "none" }, undefined, {
+    writerOf: () => {
+      resolved++;
+      return null;
+    },
+  });
+  assert.equal(result.attribution, "unavailable");
+  assert.equal(result.attribution_reason, "too_many_changes");
+  assert.equal(result.writers, undefined);
+  assert.equal(resolved, 0);
+  assert.equal(result.changes.length, 1);
+  assert.equal(result.changes[0].markdown, "Late paragraph.");
+  assert.ok(!("written_by" in result.changes[0]));
+  assert.deepEqual(changeHistory(doc, before), { tooMany: true });
 });
 
 test("one native paragraph edit returns only its current Markdown and revision-bound address", () => {

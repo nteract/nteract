@@ -121,11 +121,14 @@ const requiredRevision = (args) => {
  * names; it defaults to `handle`'s heads when `handle` holds the Page.
  *
  * A caller's mutation records its writer (worker/host-writers.mjs): the
- * account and the `agent` assertion the fingerprint covers. The change's
- * actor names the writer's record, and a new record goes in the same put as
- * the pending entry that holds the change bytes. An exact retry replays
- * those bytes, so it keeps the writer of its first attempt. An `internal`
- * mutation has no writer.
+ * account and its client's agent labels, `writerAgent` when given and
+ * `agent` otherwise. `agent` joins the fingerprint (comments and sources
+ * store it); `writerAgent` doesn't, so a Page edit's fingerprint is the
+ * request alone. The change's actor names the writer's record, and a new
+ * record goes in the same put as the pending entry that holds the change
+ * bytes. A retry replays those bytes, so it keeps its first attempt's
+ * writer. An edit that changes nothing, and an `internal` mutation, record
+ * no writer.
  */
 export async function documentMutation({
   storage,
@@ -149,17 +152,14 @@ export async function documentMutation({
   onHeads,
   pageHeads = () => (doc === PAGE_DOC ? A.getHeads(handle.doc()) : undefined),
   agent,
+  writerAgent = agent,
 }) {
   requireNonce(args);
   const key = internal
     ? `${INTERNAL_PREFIX}${args.nonce}`
     : await operationKey(args, identity, lane);
   const digest = await fingerprint(operation, args, identity, agent);
-  // A Page edit journaled before its writer was recorded has a fingerprint
-  // without the agent assertion; its exact retry still replays.
-  const legacyDigest =
-    doc === PAGE_DOC && agent ? await fingerprint(operation, args, identity) : undefined;
-  const inspected = await inspectOperation(storage, { key, digest, legacyDigest });
+  const inspected = await inspectOperation(storage, { key, digest });
   let entry = inspected.entry;
   if (entry && entryDoc(entry) !== doc)
     throw new Error("A journal entry names another document than its lane");
@@ -170,7 +170,7 @@ export async function documentMutation({
     requireSupportedSchema(handle.doc());
     const writer =
       hostActorPrefix && !internal && identity?.principal
-        ? await recordWriter(storage, hostWriter(identity, agent))
+        ? await recordWriter(storage, hostWriter(identity, writerAgent))
         : undefined;
     // Check external prerequisites only for new intents. A retry must replay
     // its original bytes/receipt even if an external service is unavailable.
@@ -256,13 +256,16 @@ export async function documentMutation({
           ? [openingTitleWarning(after), ...editWarnings(result)].filter(Boolean)
           : [];
       const heads = A.getHeads(after);
+      const changes = A.getChanges(before, after);
+      // An edit that changes nothing names no writer, so it stores none.
+      const named = changes.length ? writer : undefined;
       entry = {
         fingerprint: digest,
         pending: true,
         ...(doc !== PAGE_DOC && { doc }),
-        ...(writer && { writer: writer.id }),
+        ...(named && { writer: named.id }),
         heads,
-        changes: A.getChanges(before, after),
+        changes,
         receipt: { page_id: pageId, result: result ?? null },
       };
       assertIntentSize(key, entry.changes, {
@@ -297,7 +300,7 @@ export async function documentMutation({
         ...(warnings.length ? { warnings } : {}),
         ...(receiptFields && (await receiptFields(plan))),
       };
-      await storage.put({ [key]: entry, ...plan.writes, ...writer?.writes });
+      await storage.put({ [key]: entry, ...plan.writes, ...named?.writes });
       await storage.sync();
       await plan.settle();
       recorded = true;

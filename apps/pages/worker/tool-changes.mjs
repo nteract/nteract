@@ -1,5 +1,5 @@
 import * as A from "@automerge/automerge";
-import { changeActors, projectReadChanges } from "../model/read-changes.mjs";
+import { changeHistory, projectReadChanges } from "../model/read-changes.mjs";
 
 const DEFAULT_BYTES = 128 * 1024;
 const bytes = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
@@ -20,7 +20,8 @@ const invalid = (message) => {
  * Oversized results fail as a whole; current heads never imply a partial delta.
  * `writers(actors)` resolves the actors of the changes since the baseline to
  * a Map of writers (worker/host-writers.mjs); without it the result has no
- * attribution.
+ * attribution. The changes are decoded once, after the argument and revision
+ * checks, and not at all past ATTRIBUTION_MAX_CHANGES.
  */
 export async function readChangesTool(
   doc,
@@ -59,7 +60,11 @@ export async function readChangesTool(
       args.since_comment_revision === undefined
         ? undefined
         : await revisions.heads("comments", args.since_comment_revision, "since_comment_revision");
-    const resolved = writers && (await writers(changeActors(doc, since)));
+    // Every argument is refused before a change is decoded.
+    if (args.comments !== undefined && !["none", "summary", "all"].includes(args.comments))
+      invalid("comments must be none, summary or all");
+    const history = writers ? changeHistory(doc, since) : undefined;
+    const resolved = history?.actors && (await writers(history.actors));
     const {
       since_heads: _since,
       heads: _heads,
@@ -74,7 +79,7 @@ export async function readChangesTool(
         max_bytes: maxBytes,
       },
       commentsDoc,
-      resolved ? { writerOf: (actor) => resolved.get(actor) ?? null } : {},
+      history ? { history, writerOf: (actor) => resolved?.get(actor) ?? null } : {},
     );
     payload = { ...delta, since_revision: args.since_revision };
   } catch (error) {

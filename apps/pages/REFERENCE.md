@@ -1151,8 +1151,9 @@ return `author.agent` when stored. The comment thread reads "<agent name> via
 <driver> for <person>" with the model in the tooltip. These are what the client
 said about itself, shown under the authenticated account: they grant nothing and
 verify nothing. An `edit_page` call stores the resolved assertion on its
-writer ([Edit writers](#edit-writers)); it joins that request's fingerprint the
-same way, so the same `nonce` with other labels is `nonce_conflict`.
+writer ([Edit writers](#edit-writers)) but leaves it out of the request's
+fingerprint: a retry under the same `nonce` with other labels replays the
+first attempt's receipt and keeps its writer.
 
 `Browser` is the one driver a bearer credential can't claim: viewers show a
 browser session by the person's name alone, so on a request with an API key or
@@ -2117,16 +2118,21 @@ A journaled mutation a caller asked for (`edit_page`, including a title or
 source write, and comment writes) records its writer
 ([worker/host-writers.mjs](worker/host-writers.mjs)). The writer is the
 `authorOf` shape comments and sources store: `{ principal, displayName,
-driver, agent? }`, with `agent` the `{ name?, model? }` the request's
-fingerprint covers. Its actor is three parts of eight bytes: the host prefix,
-the writer id (the first eight bytes of the SHA-256 of the canonical writer
-record) and a fresh random nonce. The record is stored once per distinct
-writer, as CBOR under `plain/writer/<id>`, in the same put as the pending
-journal entry that holds the change bytes; the entry names it as `writer`. A
-different record already stored under an id refuses the write
-(`writer_conflict`). An exact retry replays the journaled bytes, so it keeps
-its first attempt's writer. A Page edit journaled before writers were
-recorded replays under its old fingerprint, which lacks the assertion.
+driver, agent? }`, its display name cut to `WRITER_LIMITS` as a source's is
+([model/author.mjs](model/author.mjs)). `agent` is the request's resolved
+`{ name?, model? }`. A comment or source write fingerprints it, as before; an
+`edit_page` request's fingerprint leaves it out, so a retry under the same
+nonce with other labels replays the first attempt and keeps its writer, and a
+build without writers computes the same fingerprint for the same request.
+
+Its actor is three parts of eight bytes: the host prefix, the writer id (the
+first eight bytes of the SHA-256 of the canonical writer record) and a fresh
+random nonce. The record is stored once per distinct writer, as CBOR under
+`plain/writer/<id>`, in the same put as the pending journal entry that holds
+the change bytes; the entry names it as `writer`. An edit that changes
+nothing stores no record and names none. A different record already stored
+under an id refuses the write (`writer_conflict`). A retry replays the
+journaled bytes, so it keeps its first attempt's writer.
 
 A host actor of the prefix and eight bytes alone names no writer: the host's
 own edits (registration, migrations, direct handle changes) and every host
@@ -2136,16 +2142,27 @@ them; a purge deletes them with the rest of `plain/`. Nothing lists
 `plain/writer/` at startup or on connect: a change read resolves the actors
 in its delta, one storage read per distinct writer.
 
-`read_page_changes` resolves each changed actor: a host actor through its
-writer record (`via: "tool"`), any other through its actor claim
+`read_page_changes` checks its arguments and baseline, then decodes the
+changes since the baseline once. It resolves each actor: a host actor through
+its writer record (`via: "tool"`), any other through its actor claim
 (`via: "sync"`). A host claim, an unclaimed actor or a host actor without a
 writer is `{ recorded: false }`. The response has `attribution: "block"`, a
 `writers` table, `written_by` on every content change and `title_written_by`
 beside a title change: indexes into `writers` of the authors of every change
-since the baseline that wrote that block (ops resolved to blocks as admission
-does, [model/block-shape.mjs](model/block-shape.mjs) `changeWrites`) or the
-title. A node change names every writer of its block. The table counts toward
+since the baseline that wrote that block or the title. Ops resolve to blocks
+as admission resolves them ([model/block-shape.mjs](model/block-shape.mjs)
+`changeWrites`); a change that writes the blocks map itself writes every
+block. A node change names every writer of its block. The table holds only
+writers some reported change or the title names, and counts toward
 `max_bytes`.
+
+More than `ATTRIBUTION_MAX_CHANGES` (10,000) changes between the baseline and
+the current heads is too many to attribute in one read
+([model/read-changes.mjs](model/read-changes.mjs)): the delta is returned
+whole, with `attribution: "unavailable"`, `attribution_reason:
+"too_many_changes"` and no writers. The read never fails for this. An agent
+that wants writers reads again from a newer baseline. Past the limit the read
+counts the changes but decodes none.
 
 ### Page quotas
 

@@ -1,5 +1,5 @@
 import { cbor } from "@automerge/automerge-repo";
-import { authorOf } from "../model/author.mjs";
+import { authorOf, boundedWriter } from "../model/author.mjs";
 
 // Who wrote a host edit. A journaled host mutation (worker/mutations.mjs)
 // authors its change under an actor that names its writer:
@@ -35,10 +35,10 @@ const canonical = (value) =>
       : item,
   );
 
-/** The writer record of a host edit by `identity`, with the `agent`
- * assertion its fingerprint covers: the authorOf shape comments and sources
- * store. */
-export const hostWriter = (identity, agent) => authorOf(identity, agent);
+/** The writer record of a host edit by `identity`, with its client's
+ * `agent` labels: the authorOf shape comments and sources store, its display
+ * name cut to WRITER_LIMITS (boundedWriter) before it is hashed or stored. */
+export const hostWriter = (identity, agent) => boundedWriter(authorOf(identity, agent));
 
 /** A writer record's 16-hex id. */
 export async function writerId(writer) {

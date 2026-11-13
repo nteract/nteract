@@ -339,57 +339,95 @@ function commentsDocChanges(page, commentsDoc, since, mode) {
   }
 }
 
-/** The actors of the Page changes after `since`, for the host to resolve
- * into writers before projecting (projectReadChanges' `writerOf`). Empty when
- * `since` isn't in the document's history. */
-export function changeActors(doc, since) {
-  if (!A.hasHeads(doc, since)) return [];
-  return [...new Set(A.getChangesSince(doc, since).map((bytes) => A.decodeChange(bytes).actor))];
+/** The most changes between a baseline and the current heads that a read
+ * attributes. Past it the delta is returned without writers. */
+export const ATTRIBUTION_MAX_CHANGES = 10_000;
+
+/**
+ * The Page changes after `since`, decoded once for the host to resolve their
+ * actors into writers and for the projection to map onto blocks
+ * (projectReadChanges' `history`). Null when `since` isn't in the
+ * document's history: the projection refuses that itself. `{ tooMany: true }`
+ * when more than ATTRIBUTION_MAX_CHANGES changes follow `since`; nothing is
+ * decoded then.
+ */
+export function changeHistory(doc, since) {
+  if (!A.hasHeads(doc, since)) return null;
+  const bytes = A.getChangesSince(doc, since);
+  if (bytes.length > ATTRIBUTION_MAX_CHANGES) return { tooMany: true };
+  const changes = bytes.map((change) => A.decodeChange(change));
+  return { changes, actors: [...new Set(changes.map((change) => change.actor))] };
 }
 
 const UNRECORDED = Object.freeze({ recorded: false });
 
 /**
- * Who wrote what since `since`, at block granularity. `writerOf(actor)` is
- * the host's answer for one actor: a writer, or null when none is recorded
- * (worker/host-writers.mjs). Returns `writers`, the distinct writers in the
- * order first seen, with `{ recorded: false }` standing for every change that
- * has none, and `writtenBy(blockId)` and `title`, the sorted indexes into
- * `writers` of the changes that wrote that block or the title.
+ * Who wrote what in `changes` (changeHistory), at block granularity.
+ * `writerOf(actor)` is the host's answer for one actor: a writer, or null when
+ * none is recorded (worker/host-writers.mjs), which reads as
+ * `{ recorded: false }`. `writtenBy(blockId)` and `title` are writer keys, the
+ * canonical JSON of each writer, with `writer(key)` the writer itself.
  *
  * A block's writers are the authors of every change since the baseline that
  * wrote anything in it, so a node change names everyone who wrote its block,
- * not only its node.
+ * not only its node. A change that writes the blocks map itself
+ * (`_root.blocks`) writes every block.
  */
-function attribution(doc, since, writerOf) {
+function attribution(doc, changes, writerOf) {
   const backend = A.getBackend(doc),
     paths = new Map(),
-    writers = [],
-    keys = new Map(),
+    writers = new Map(),
     blocks = new Map(),
+    everyBlock = new Set(),
     title = new Set();
-  const indexOf = (actor) => {
+  const keyOf = (actor) => {
     const writer = writerOf(actor) ?? UNRECORDED;
     const key = canonical(writer);
-    if (!keys.has(key)) {
-      keys.set(key, writers.length);
-      writers.push(writer);
-    }
-    return keys.get(key);
+    writers.set(key, writer);
+    return key;
   };
-  for (const bytes of A.getChangesSince(doc, since)) {
-    const change = A.decodeChange(bytes);
+  for (const change of changes) {
     const { touched, root } = changeWrites(backend, change, paths);
-    if (!touched.size && !root.has("title")) continue;
-    const writer = indexOf(change.actor);
+    const replacesBlocks = change.ops.some((op) => op.obj === "_root" && op.key === "blocks");
+    if (!touched.size && !replacesBlocks && !root.has("title")) continue;
+    const key = keyOf(change.actor);
     for (const id of touched) {
       if (!blocks.has(id)) blocks.set(id, new Set());
-      blocks.get(id).add(writer);
+      blocks.get(id).add(key);
     }
-    if (root.has("title")) title.add(writer);
+    if (replacesBlocks) everyBlock.add(key);
+    if (root.has("title")) title.add(key);
   }
-  const sorted = (set) => [...(set ?? [])].sort((a, b) => a - b);
-  return { writers, writtenBy: (id) => sorted(blocks.get(id)), title: sorted(title) };
+  return {
+    writer: (key) => writers.get(key),
+    writtenBy: (id) => [...new Set([...(blocks.get(id) ?? []), ...everyBlock])],
+    title: [...title],
+  };
+}
+
+/**
+ * `changes` and the title's writer keys as indexes into one `writers` table
+ * holding only the writers they name, numbered in the order first named. Each
+ * change's indexes are sorted.
+ */
+function writerTable(changes, title, writerOf) {
+  const writers = [],
+    index = new Map();
+  const indexes = (keys) =>
+    keys
+      .map((key) => {
+        if (!index.has(key)) {
+          index.set(key, writers.length);
+          writers.push(writerOf(key));
+        }
+        return index.get(key);
+      })
+      .sort((a, b) => a - b);
+  const named = changes.map(({ written_by, ...change }) => ({
+    ...change,
+    written_by: indexes(written_by),
+  }));
+  return { writers, changes: named, title: title && indexes(title) };
 }
 
 /** Bounded net changes between one known historical view and one captured
@@ -398,10 +436,13 @@ function attribution(doc, since, writerOf) {
  *
  * With `writerOf` (see attribution), the result says who wrote each change:
  * `attribution: "block"`, a `writers` table, `written_by` on each content
- * change and `title_written_by` beside a title change. Without it,
- * `attribution: "unavailable"`.
+ * change and `title_written_by` beside a title change. `history` is
+ * changeHistory's result when the caller already has it. Past
+ * ATTRIBUTION_MAX_CHANGES the delta comes without writers, with
+ * `attribution: "unavailable"` and `attribution_reason: "too_many_changes"`.
+ * Without `writerOf`, `attribution: "unavailable"`.
  */
-export function projectReadChanges(doc, args, commentsDoc, { writerOf } = {}) {
+export function projectReadChanges(doc, args, commentsDoc, { writerOf, history } = {}) {
   const settings = options(args),
     heads = A.getHeads(doc);
   // Pinned Automerge diff tolerates unknown heads and may return root-to-tip
@@ -412,6 +453,8 @@ export function projectReadChanges(doc, args, commentsDoc, { writerOf } = {}) {
       "resync_required",
       "The baseline revision is unavailable. Read the current Page or outline to establish a new baseline.",
     );
+  history = writerOf ? (history ?? changeHistory(doc, settings.heads)) : undefined;
+  const attributed = !!history && !history.tooMany;
   let payload = {
     page_id: doc.page_id,
     since_heads: settings.heads,
@@ -421,8 +464,9 @@ export function projectReadChanges(doc, args, commentsDoc, { writerOf } = {}) {
     comments: [],
     comments_mode: settings.comments,
     ...(commentsDoc && { comment_heads: A.getHeads(commentsDoc) }),
-    attribution: writerOf ? "block" : "unavailable",
-    ...(writerOf && { writers: [] }),
+    attribution: attributed ? "block" : "unavailable",
+    ...(history?.tooMany && { attribution_reason: "too_many_changes" }),
+    ...(attributed && { writers: [] }),
   };
   if (commentsDoc)
     payload = {
@@ -441,7 +485,7 @@ export function projectReadChanges(doc, args, commentsDoc, { writerOf } = {}) {
     try {
       let changes, written;
       try {
-        written = writerOf && attribution(doc, settings.heads, writerOf);
+        written = attributed && attribution(doc, history.changes, writerOf);
         changes = contentChanges(before.view, doc, written?.writtenBy);
       } catch {
         fail(
@@ -451,13 +495,14 @@ export function projectReadChanges(doc, args, commentsDoc, { writerOf } = {}) {
         );
       }
       const titleChanged = before.view.title !== doc.title;
+      const table = written && writerTable(changes, titleChanged && written.title, written.writer);
       payload = {
         ...payload,
         title_changed: titleChanged,
         ...(titleChanged ? { title: doc.title } : {}),
-        ...(titleChanged && written && { title_written_by: written.title }),
-        changes,
-        ...(written && { writers: written.writers }),
+        ...(table?.title && { title_written_by: table.title }),
+        changes: table ? table.changes : changes,
+        ...(table && { writers: table.writers }),
       };
     } finally {
       A.free(before.owned);
