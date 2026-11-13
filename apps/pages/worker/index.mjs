@@ -6293,6 +6293,17 @@ export class Page {
     return refusal ? errorResponse(refusal, "page") : this.enqueue(request);
   }
 
+  /** What a Page converted from Subduction still holds of it in its own
+   * storage, which the plain host never reads: native records under `repo/`,
+   * actor entries, signing-key bindings and the signer seed. A permanent
+   * deletion deletes them with the rest of the Page. Each step is idempotent,
+   * so a repeated deletion finishes the job. The Page's `PageRecords` object
+   * is not called. */
+  async purgeConvertedRecords() {
+    await clearPrefixes(this.ctx.storage, ["repo/", "host/actor/", "host/binding/"]);
+    await this.ctx.storage.delete("host/signer");
+  }
+
   async run(request) {
     const url = new URL(request.url);
     const admissionRoute = ADMISSION_ROUTES.includes(url.pathname);
@@ -7818,6 +7829,7 @@ export class Page {
         // After the documents: a restart that still finds the list repeats
         // the deletes above.
         await clearPrefixes(this.ctx.storage, [VIEW_KEY_PREFIX]);
+        if (this.metadata.recordStorageMigratedFrom) await this.purgeConvertedRecords();
         return;
       }
       case "flush":
