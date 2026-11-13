@@ -10,8 +10,8 @@
 // whatever this tab shows. It sits fixed at the viewport's corner with
 // opacity 0 and no pointer events, so widgets that wait for the viewport
 // still draw; dataframes load eagerly regardless. Charts draw from the
-// session's view replicas and source store, the ones the live editor holds,
-// so a chart on the first screen costs no lookup the Page hasn't made.
+// session's view replicas and source store, the ones the live editor uses,
+// so a chart the editor already holds costs the shell no new lookup.
 //
 // The rasterizer (modern-screenshot) loads with this module, which loads on
 // the first capture, so neither grows the app's first download. Images are
@@ -145,25 +145,36 @@ async function createFrame(document, signal) {
   return frame;
 }
 
-/** Draw `blocks` in `frame` under `theme`; returns the shell and editors. */
+/**
+ * Wordgard editors have no destroy: a widget lets go of what it holds (a
+ * view, a chart, a download) only when its editor element disconnects.
+ * Removing the iframe doesn't disconnect the elements inside it, so the
+ * shell empties the body itself before each theme and before it goes.
+ */
+function unmountShell(frame) {
+  frame.contentDocument?.body?.replaceChildren();
+}
+
+/** Draw `blocks` in `frame` under `theme`; returns the shell. The previous
+ * theme's widgets disconnect before the root changes theme, so they don't
+ * redraw for it. */
 function mountShell(frame, { blocks, pageId, theme, views, sources }) {
   const inner = frame.contentDocument;
+  unmountShell(frame);
   const root = inner.documentElement;
   root.classList.toggle("dark", theme === "dark");
   root.classList.toggle("light", theme !== "dark");
   root.dataset.theme = theme;
   root.style.colorScheme = theme;
-  inner.body.replaceChildren();
   const shell = inner.body.appendChild(inner.createElement("main"));
   shell.className = "workspace document card-shell";
   const article = shell.appendChild(inner.createElement("article"));
-  const editors = [];
   for (const block of blocks) {
     const section = article.appendChild(inner.createElement("section"));
     section.className = "page-block";
     const wrap = section.appendChild(inner.createElement("div"));
     wrap.className = "rich-editor wordgard-editor";
-    const editor = Wordgard.create({
+    Wordgard.create({
       parent: wrap,
       doc: decode(block.spans).doc,
       config: [
@@ -171,9 +182,8 @@ function mountShell(frame, { blocks, pageId, theme, views, sources }) {
         Wordgard.editorAttributes.of({ class: "wordgard-document" }),
       ],
     });
-    editors.push(editor);
   }
-  return { shell, editors };
+  return shell;
 }
 
 const onScreen = (element) => element.getBoundingClientRect().top < CARD_HEIGHT;
@@ -314,25 +324,22 @@ export async function renderCardImages({
   await whenIdle();
   signal.throwIfAborted();
   const frame = await createFrame(document, signal);
-  let editors = [];
   try {
     const images = [];
     for (const theme of themes) {
-      for (const editor of editors) editor.destroy?.();
-      const mounted = mountShell(frame, { blocks, pageId, theme, views, sources });
-      editors = mounted.editors;
-      await widgetsReady(mounted.shell, signal);
+      const shell = mountShell(frame, { blocks, pageId, theme, views, sources });
+      await widgetsReady(shell, signal);
       await whenIdle();
       signal.throwIfAborted();
       const start = performance.now();
-      const canvas = await domToCanvas(mounted.shell, {
+      const canvas = await domToCanvas(shell, {
         width: CARD_WIDTH,
         height: CARD_HEIGHT,
         scale: CARD_SCALE,
-        backgroundColor: frame.contentWindow.getComputedStyle(mounted.shell).backgroundColor,
+        backgroundColor: frame.contentWindow.getComputedStyle(shell).backgroundColor,
         font: false,
         timeout: 5_000,
-        fetchFn: cardImageFetch(mounted.shell, globalThis.location.origin),
+        fetchFn: cardImageFetch(shell, globalThis.location.origin),
         filter: (node) => node.nodeType !== 1 || node.getBoundingClientRect().top < CARD_HEIGHT,
       });
       const blob = await encodeCard(canvas);
@@ -346,7 +353,7 @@ export async function renderCardImages({
     }
     return images;
   } finally {
-    for (const editor of editors) editor.destroy?.();
+    unmountShell(frame);
     frame.remove();
   }
 }

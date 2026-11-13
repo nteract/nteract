@@ -60,17 +60,20 @@ const fetchImage = (page, url) =>
 
 async function signIn(email, viewport = { width: 1280, height: 900 }, options = {}) {
   const context = await browser.newContext({ viewport, ...options });
-  // Each capture's shell, read as it rasterizes (card-shell.mjs measures
-  // `pages-card-capture` while the shell is still mounted): the status of
-  // each chart in it and how many marks it drew.
+  // Each capture's shell, read just after it rasterizes (card-shell.mjs
+  // measures `pages-card-capture` while the shell is still mounted): the
+  // status of each chart in it and how many marks it drew. Each shell's
+  // document is kept, to check the shell emptied it before it went.
   await context.addInitScript(() => {
     const measure = performance.measure.bind(performance);
     window.__cardShellCharts = [];
+    window.__cardShellDocs = new Set();
     performance.measure = (name, ...rest) => {
       if (name === "pages-card-capture")
         for (const frame of document.querySelectorAll("iframe")) {
           const shell = frame.contentDocument?.querySelector(".card-shell");
           if (!shell) continue;
+          window.__cardShellDocs.add(frame.contentDocument);
           window.__cardShellCharts.push(
             [...shell.querySelectorAll("figure.pages-chart:not(.pages-view-placeholder)")].map(
               (figure) => ({
@@ -374,7 +377,10 @@ try {
     });
     assert.equal(result.status, 200, JSON.stringify(result.body));
   }
-  await owner.evaluate(() => (window.__cardShellCharts = []));
+  await owner.evaluate(() => {
+    window.__cardShellCharts = [];
+    window.__cardShellDocs = new Set();
+  });
   await owner.goto(`${origin}/p/${chartId}`);
   await expect(
     owner.locator('figure.pages-chart[data-chart-status="rendered"]').first(),
@@ -386,8 +392,9 @@ try {
     })
     .toMatch(/^[0-9a-f]{64}$/);
   report.chartShells = await owner.evaluate(() => window.__cardShellCharts);
-  assert.equal(report.chartShells.length, 2, JSON.stringify(report.chartShells));
-  for (const charts of report.chartShells) {
+  // The last light and dark capture are the ones the host kept.
+  assert.ok(report.chartShells.length >= 2, JSON.stringify(report.chartShells));
+  for (const charts of report.chartShells.slice(-2)) {
     assert.equal(charts.length, 1, JSON.stringify(report.chartShells));
     assert.equal(charts[0].status, "rendered", JSON.stringify(report.chartShells));
     assert.equal(charts[0].marks, 2, JSON.stringify(report.chartShells));
@@ -410,8 +417,41 @@ try {
     }, chartImage[theme]);
     const ext = chartImage[theme].split(".").at(-1);
     await writeFile(path.join(shots, `card-images-chart-${theme}.${ext}`), Uint8Array.from(bytes));
+    // The chart drew at the frame's width, not Vega-Lite's default step
+    // width: the right half of the plot holds bar pixels (the chart theme's
+    // first category color, blue in both themes).
+    const right = await owner.evaluate(async (url) => {
+      const blob = await (await fetch(url, { cache: "no-store" })).blob();
+      const bitmap = await createImageBitmap(blob);
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const context = canvas.getContext("2d");
+      context.drawImage(bitmap, 0, 0);
+      const x = Math.round(bitmap.width * 0.5);
+      const y = Math.round(bitmap.height * 0.45);
+      const { data } = context.getImageData(
+        x,
+        y,
+        Math.round(bitmap.width * 0.42),
+        Math.round(bitmap.height * 0.33),
+      );
+      let blue = 0;
+      for (let i = 0; i < data.length; i += 4)
+        if (data[i + 2] > 150 && data[i + 2] - data[i] > 80) blue++;
+      return blue;
+    }, chartImage[theme]);
+    assert.ok(right > 1000, `${theme}: ${right} bar pixels in the plot's right half`);
   }
-  complete("A chart on the first screen draws in both card images");
+  // Each shell emptied its document before it went, so its widgets
+  // disconnected and let go of their views and charts.
+  const leftover = await owner.evaluate(() =>
+    [...window.__cardShellDocs].map((doc) => doc.body?.childElementCount ?? 0),
+  );
+  assert.ok(leftover.length >= 1, "a shell document was seen");
+  assert.deepEqual(
+    leftover,
+    leftover.map(() => 0),
+  );
+  complete("A chart on the first screen draws at full width in both card images");
   assert.deepEqual(report.errors, []);
 } catch (error) {
   report.failure = error.stack ?? String(error);
