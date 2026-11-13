@@ -56,20 +56,6 @@ export const CASES = {
   arcs: () => path(`M0,0${"a1 1 0 0 1 1 1".repeat(Math.floor((PER_PATH - 1) / 8))}`, 2),
   closes: () => path(`M0,0${"z".repeat(PER_PATH - 1)}`, 2),
   moves: () => path(`M${".1.1".repeat(PER_PATH)}`, 2),
-  // 100,000 symbols, each its own shape with an arc: the item budget's
-  // points with the command budget spent on shapes Vega parses one by one.
-  shapes: () =>
-    frameOf([
-      {
-        marktype: "symbol",
-        items: Array.from({ length: 100_000 }, (_, i) => ({
-          x: (i * 7.919) % 800,
-          y: (i * 1.04729) % 500,
-          shape: `M${i},0a1 1 0 0 1 1 1`,
-          fill: "steelblue",
-        })),
-      },
-    ]),
 };
 
 const name = new URL(location.href).searchParams.get("case");

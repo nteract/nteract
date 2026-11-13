@@ -44,9 +44,7 @@ const server = createServer(async (request, response) => {
 }).listen(0);
 const origin = `http://localhost:${server.address().port}`;
 
-const cases = (
-  process.argv[2] ?? "points,line,geoshape,lines,cubics,arcs,closes,moves,shapes"
-).split(",");
+const cases = (process.argv[2] ?? "points,line,geoshape,lines,cubics,arcs,closes,moves").split(",");
 const results = {};
 for (const engine of [chromium, firefox, webkit]) {
   const browser = await engine.launch({ headless: true });
