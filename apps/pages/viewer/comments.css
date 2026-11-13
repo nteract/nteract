@@ -1206,6 +1206,13 @@ button.anchor-chip:hover {
 :root:has(.comments.comments-review[open]) {
   overflow: hidden;
 }
+/* The header stays above the workspace, so its menus (account and
+   appearance, the Page's actions) open over review instead of under it.
+   The workspace starts below the header, so raising it covers nothing. At
+   sheet width review is a modal dialog in the top layer and this has no effect. */
+:root:has(.comments.comments-review[open]) .app-header {
+  z-index: 21;
+}
 .comments-review .comments-list,
 .comments-review .page-excerpt,
 .comments-review .thread-view-scroll {
