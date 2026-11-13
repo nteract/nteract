@@ -16,6 +16,7 @@ import {
   expressionProblem,
 } from "../shared/chart-spec.mjs";
 import { tableFromIPC } from "apache-arrow";
+import { chartTable } from "./chart-arrow.mjs";
 import { datasetRows, ownRows, spentCellBudget, tooManyCells } from "./chart-data.mjs";
 import { SCENE_KEYS } from "./chart-scene.mjs";
 
@@ -429,8 +430,10 @@ export const tooManyRows = (name, rows) =>
   `The dataset "${name}" has ${rows.toLocaleString("en-US")} rows; a chart reads at most ${CHART_MAX_ROWS.toLocaleString("en-US")}.`;
 
 /** A dataset as it crosses to the Worker: `{ rows }` from structured clone,
- * or `{ ipc }`, Arrow IPC bytes the page copied for this Worker. Normalized
- * under the row and cell budgets. */
+ * or `{ ipc }`, Arrow IPC bytes the page copied for this Worker, read through
+ * chart-arrow.mjs `chartTable` so decimals, 64-bit integers, times and nested
+ * values read as a chart reads them. Normalized under the row and cell
+ * budgets. */
 function readDataset(name, dataset) {
   try {
     if (Array.isArray(dataset?.rows)) {
@@ -441,7 +444,7 @@ function readDataset(name, dataset) {
     if (dataset?.ipc instanceof Uint8Array) {
       const table = tableFromIPC(dataset.ipc);
       if (table.numRows > CHART_MAX_ROWS) throw new ChartRefusal(tooManyRows(name, table.numRows));
-      return datasetRows(table);
+      return datasetRows(chartTable(table));
     }
   } catch (error) {
     if (spentCellBudget(error)) throw new ChartRefusal(tooManyCells(name));

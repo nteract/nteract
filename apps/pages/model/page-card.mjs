@@ -9,7 +9,8 @@
 // It is never HTML. A card differs from a preview in what it leaves out:
 //
 // - Images become a placeholder holding their alt text. No bytes, no src.
-// - A dataframe becomes a placeholder holding its title.
+// - A dataframe becomes a placeholder holding its title, a view one naming
+//   its view id.
 // - Links keep their text and lose their href: the card is one link already.
 // - Code blocks name their language (`data-language`), so Mermaid stays code
 //   and reads as Mermaid.
@@ -20,7 +21,7 @@
 // unchanged and the host skips the write, while a build that renders cards
 // differently rewrites each one on its Page's next flush.
 //
-// `rich` says the first screen holds Mermaid, a dataframe or an image, which
+// `rich` says the first screen holds Mermaid, a dataframe, a view or an image, which
 // the JSON card can only stand in for. Nothing reads it yet.
 import { surfaceRead } from "./page-surface-read.mjs";
 import { readKind } from "./native-read.mjs";
@@ -137,6 +138,9 @@ const CARD_OVERRIDES = Object.freeze({
         return [
           ["div", { "data-card-placeholder": "dataframe" }, cut(node.param.title) || "Dataframe"],
         ];
+      // The view's title is in its own document; the card names the view.
+      case "view":
+        return [["div", { "data-card-placeholder": "view" }, cut(String(node.param.view_id))]];
       case "code-block": {
         const language = codeLanguage(attrs.params);
         return [
@@ -186,7 +190,7 @@ export function showsContent(node) {
   return children.some(showsContent);
 }
 
-/** Whether card content holds Mermaid, a dataframe or an image. */
+/** Whether card content holds Mermaid, a dataframe, a view or an image. */
 export function holdsRich(content) {
   if (!Array.isArray(content)) return false;
   if (typeof content[0] === "string" && content[1] && typeof content[1] === "object") {

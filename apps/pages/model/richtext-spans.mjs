@@ -10,6 +10,7 @@ import {
   markerType,
 } from "./node-registry.mjs";
 import { DATAFRAME_BLOCK, parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
+import { VIEW_BLOCK, readViewNode } from "../shared/views.mjs";
 import { PagesUnknownBlock, PagesUnknownEmbed, decode, encode, schema } from "./wordgard-doc.mjs";
 import { noticeNode, treeMarkdown } from "./markdown-serializer.mjs";
 import { UNREADABLE_NAME, codeTextUnmarked, markerParents, textPath } from "./richtext-format.mjs";
@@ -19,7 +20,7 @@ export const richDoc = readTree;
 export const pageSpans = encode;
 
 /** The first stored type a Markdown rewrite cannot reproduce: a dataframe
- * out of place, a type this build doesn't know, or anything else the
+ * or view out of place, a type this build doesn't know, or anything else the
  * serializer draws as a notice (noticeNode), which a rewrite would turn
  * into literal notice text. A notice with no quotable name answers null
  * from noticeNode and refuses as UNREADABLE_NAME. */
@@ -38,6 +39,8 @@ export function markdownlessNode(block, pageId) {
           )?.pageId !== pageId))
     )
       return DATAFRAME_BLOCK;
+    if (type === VIEW_BLOCK && parents.some((parent) => TEXT_CONTAINERS.has(parent)))
+      return VIEW_BLOCK;
     for (const name of [type, ...parents]) if (!isKnownBlock(name)) return name;
   }
   const notice = noticeNode(readTree(block));
@@ -149,6 +152,15 @@ export function validateRichSpans(spans, maxBytes = 262144) {
         )
       )
         throw Error("Invalid dataframe: src must be a Page asset path");
+      if (
+        type === VIEW_BLOCK &&
+        !readViewNode(
+          Object.fromEntries(
+            Object.entries(attrs).map(([k, v]) => [k, A.isImmutableString(v) ? String(v) : v]),
+          ),
+        )
+      )
+        throw Error("Invalid view: view_id must be a view id");
     } else throw Error("Unsupported rich span");
   }
   const decoded = decode(codeTextUnmarked(spans));

@@ -1,7 +1,7 @@
 import * as A from "@automerge/automerge/slim";
 import { nativeReadSpans } from "./native-read.mjs";
 import { codeTextUnmarked, markerParents } from "./richtext-format.mjs";
-import { nodeType, TEXT_CONTAINERS, markerType } from "./node-registry.mjs";
+import { DATA_LEAVES, nodeType, TEXT_CONTAINERS, markerType } from "./node-registry.mjs";
 import { unknownNodeNotice } from "./richtext-notices.mjs";
 
 const MAX_SPANS = 65536;
@@ -31,7 +31,7 @@ export function surfaceRead(block) {
         ({ type, value }) =>
           type === "block" &&
           ([markerType(value), ...markerParents(value)].some((type) => !nodeType(type)) ||
-            (markerType(value) === "dataframe" &&
+            (DATA_LEAVES.has(markerType(value)) &&
               markerParents(value).some((type) => TEXT_CONTAINERS.has(type)))),
       )
     )
@@ -63,7 +63,7 @@ function surfaceNodes(input, all) {
       parents = markerParents(span.value);
     const name = markerType(span.value) ?? "",
       textOnly = parents.some((p) => TEXT_CONTAINERS.has(p));
-    const unknown = !nodeType(name) || (name === "dataframe" && textOnly);
+    const unknown = !nodeType(name) || (DATA_LEAVES.has(name) && textOnly);
     if (!unknown || !(all || (isEmbed && parents.includes("code-block")))) {
       readable.push(span);
       continue;
@@ -92,7 +92,7 @@ function surfaceNodes(input, all) {
         parents = markerParents(raw);
       if (
         !raw.isEmbed &&
-        name !== "dataframe" &&
+        !DATA_LEAVES.has(name) &&
         nodeType(name)?.kind === "leaf" &&
         parents.some((p) => TEXT_CONTAINERS.has(p)) &&
         input[index + 1] &&
@@ -173,8 +173,8 @@ function surfaceNodes(input, all) {
       }
     } else {
       if (
-        ((!def || name === "dataframe") && parents.some((p) => TEXT_CONTAINERS.has(String(p)))) ||
-        (name === "dataframe" &&
+        ((!def || DATA_LEAVES.has(name)) && parents.some((p) => TEXT_CONTAINERS.has(String(p)))) ||
+        (DATA_LEAVES.has(name) &&
           markerParents(value).some((p) => TEXT_CONTAINERS.has(p)) &&
           input[index + 1] &&
           (input[index + 1].type === "text" || input[index + 1].value.isEmbed))
@@ -212,7 +212,7 @@ function surfaceNodes(input, all) {
         parents.some(
           (p) =>
             nodeType(p)?.kind === "text" ||
-            (TEXT_CONTAINERS.has(String(p)) && def && name !== "dataframe"),
+            (TEXT_CONTAINERS.has(String(p)) && def && !DATA_LEAVES.has(name)),
         )
       )
         throw Error("Unreadable nested block");

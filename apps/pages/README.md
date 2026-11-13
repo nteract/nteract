@@ -57,12 +57,19 @@ Source layout under this directory:
 
 `viewer/vega-chart.mjs` draws a Vega-Lite spec over datasets the caller
 supplies (rows, Arrow IPC bytes or an Arrow table), in the Page's own
-document. Vega runs in a Worker (`viewer/chart-worker.mjs`): it compiles the
-spec, runs the dataflow and posts the finished scenegraph back, and the page
-draws it with Vega's SVG renderer and keeps the hover tooltip. The charts on a
-Page share one Worker (`viewer/chart-pool.mjs`), which runs one draw at a time,
+document. The editor draws each `view` node with it
+([viewer/wordgard-views.mjs](viewer/wordgard-views.mjs)): the node names a
+view, the host's `pages.view` document holds its spec and data bindings, and
+each binding reads one of the Page's sources. The chart code is its own chunk
+(`viewer/view-chart.mjs`), loaded only when a view nears the viewport; cards
+and previews draw a view as the node's figure and never load it.
+
+Vega runs in a Worker (`viewer/chart-worker.mjs`): it compiles the spec, runs
+the dataflow and posts the finished scenegraph back, and the page draws it
+with Vega's SVG renderer and keeps the hover tooltip. The charts on a Page
+share one Worker (`viewer/chart-pool.mjs`), which runs one draw at a time,
 first draws ahead of redraws. The page never runs the dataflow itself: a
-Worker that can't start fails its charts. Nothing in production loads it yet.
+Worker that can't start fails its charts.
 
 A chart is static: marks, axes, legends and Vega's hover tooltip. Selections,
 bindings, `param` predicates, hover encodings and every other event stream are

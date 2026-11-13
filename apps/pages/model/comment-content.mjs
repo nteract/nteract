@@ -8,6 +8,7 @@ import { Leaf } from "wordgard/doc";
 import { LineBreak, Paragraph, decode, encode, schema } from "./wordgard-doc.mjs";
 import { stampSpans } from "./schema-features.mjs";
 import { DATAFRAME_BLOCK } from "../shared/dataset-assets.mjs";
+import { VIEW_BLOCK } from "../shared/views.mjs";
 import {
   COMMENT_MAX_BYTES,
   COMMENT_MAX_LENGTH,
@@ -206,6 +207,7 @@ export function validateCommentSpans(spans) {
     if (span?.type === "block") {
       if (markerType(span.value) === DATAFRAME_BLOCK)
         throw Error("Comments can't hold a dataframe");
+      if (markerType(span.value) === VIEW_BLOCK) throw Error("Comments can't hold a view");
       if (markerType(span.value) === "image" && span.value?.attrs?.dark_src != null)
         throw Error("Comments can't hold theme image variants; use a Page image instead");
     }

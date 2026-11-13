@@ -9,6 +9,7 @@
 //
 import { MARK_REGISTRY } from "./marks.mjs";
 import { readDataframe } from "../shared/dataset-assets.mjs";
+import { readViewNode, viewLabel, viewPath } from "../shared/views.mjs";
 import { escapeLiteralSyntax } from "./markdown-scan.mjs";
 import { dataframeLabel, unknownNodeNotice } from "./richtext-notices.mjs";
 import {
@@ -26,6 +27,7 @@ import {
   ListItem,
   OrderedList,
   PagesDataframe,
+  PagesView,
   PagesForeignMarks,
   PagesHighlight,
   PagesImage,
@@ -180,6 +182,8 @@ function kind(node) {
       return "table";
     case PagesDataframe:
       return "dataframe";
+    case PagesView:
+      return "view";
     case PagesUnknownBlock:
       return "unknownBlock";
     case Aside.type:
@@ -516,10 +520,10 @@ const cannotInterrupt = (list) => {
   );
 };
 function renderList(state, node, delim, firstDelim) {
-  // A dataframe's read-back link is also a Markdown paragraph.
+  // A dataframe's or view's read-back link is also a Markdown paragraph.
   if (
     state.inTightList &&
-    ["paragraph", "dataframe"].includes(state.closed?.kind) &&
+    ["paragraph", "dataframe", "view"].includes(state.closed?.kind) &&
     cannotInterrupt(node)
   )
     state.flushClose(2);
@@ -678,6 +682,22 @@ const NODES = {
     const attrs = node.param;
     if (!readDataframe(attrs)) notice(state, node, "dataframe");
     else state.write(`[${state.esc(dataframeLabel(attrs.title))}](${attrs.src})`);
+    state.closeBlock(node);
+  },
+  // A view reads as a link to its own address, labeled with its view id:
+  // only what the node stores, so the line stays the same when the view's
+  // title changes. replace_block_markdown keeps the node for that exact line,
+  // as it does a dataframe's. A read names the Page in the node it reads
+  // (`page_id`, model/native-read.mjs); without one the label stands alone.
+  view(state, node) {
+    const view = readViewNode(node.param);
+    if (!view) notice(state, node, "view");
+    else if (typeof node.param.page_id !== "string")
+      state.write(`[${state.esc(viewLabel(view.view_id))}]`);
+    else
+      state.write(
+        `[${state.esc(viewLabel(view.view_id))}](${viewPath(node.param.page_id, view.view_id)})`,
+      );
     state.closeBlock(node);
   },
   // A node this build doesn't know, written by a newer build. It reads as a

@@ -168,11 +168,12 @@ for (const fails of [true, false])
           if (options.write === false) return {outputFiles: [{contents: new TextEncoder().encode('fixture bundle')}]};
           if (options.outdir) {
             mkdirSync(path.join(options.outdir, 'chunks'), {recursive: true});
-            for (const file of ['app.js', 'app.css', 'chunks/ABCDEFGH.js']) writeFileSync(path.join(options.outdir, file), 'fixture bundle');
+            for (const file of ['app.js', 'app.css', 'chunks/ABCDEFGH.js', 'chunks/CHARTAAA.js']) writeFileSync(path.join(options.outdir, file), 'fixture bundle');
             return {metafile: {outputs: {
-              'public/app.js': {inputs: {}, imports: []},
-              'public/app.css': {inputs: {}, imports: []},
-              'public/chunks/ABCDEFGH.js': {inputs: {}, imports: []}
+              'public/app.js': {inputs: {}, imports: [], bytes: 14},
+              'public/app.css': {inputs: {}, imports: [], bytes: 14},
+              'public/chunks/ABCDEFGH.js': {inputs: {'../viewer/WordgardEditor.jsx': {}}, imports: [], bytes: 14},
+              'public/chunks/CHARTAAA.js': {inputs: {'../viewer/view-chart.mjs': {}}, imports: [], bytes: 14}
             }}};
           }
           writeFileSync(options.outfile, 'fixture worker');
@@ -254,6 +255,7 @@ for (const fails of [true, false])
             "pages.page": [3],
             "pages.comments": [2],
             "pages.sources": [1],
+            "pages.view": [1],
           });
           assert.ok(options.releaseFiles.includes("index.js"));
           assert.ok(options.releaseFiles.includes("public/chunks/ABCDEFGH.js"));

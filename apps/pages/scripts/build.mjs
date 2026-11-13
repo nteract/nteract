@@ -13,6 +13,7 @@ import {
   hashedAssetPath,
   headersFile,
   publicUrl,
+  chartChunk,
   shellAssetDefine,
   stylesCovered,
   viewerAsset,
@@ -128,6 +129,14 @@ const viewer = await build(
 const split = viewerSplit(viewer.metafile);
 const viewerChunks = [...split.chunks, chartWorker].sort();
 const { preloads, styles } = split;
+// A view's chart code loads only when a chart nears the viewport, and Vega
+// itself only in the Worker.
+const chart = chartChunk(viewer.metafile);
+const kib = (file) => `${(viewer.metafile.outputs[file].bytes / 1024).toFixed(1)} KiB`;
+console.log(
+  `Viewer: app.js ${kib("public/app.js")}, editor ${kib(chart.editor)}, chart ${chart.chunk} ${kib(chart.chunk)}, ` +
+    `chart Worker ${chartWorker} ${(chartWorkerBytes.byteLength / 1024).toFixed(1)} KiB`,
+);
 // esbuild also writes CSS for the lazily loaded chunk. app.css already holds
 // those rules, in the order the shell imports them, so nothing loads it.
 const appStyles = await readFile(path.join(dist, "public/app.css"), "utf8");

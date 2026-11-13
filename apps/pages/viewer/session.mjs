@@ -63,8 +63,14 @@ import {
   viewerReconnectMachine,
 } from "./reconnect-machine.mjs";
 import { commentsOpenMachine } from "./comments-open-machine.mjs";
-import { SourcesReplica } from "./sources-replica.mjs";
+import { HostDocReplica, evictUnavailable } from "./host-doc-replica.mjs";
 import { PageSourceStore } from "./page-source-store.mjs";
+import {
+  derivedDocumentId,
+  sourcesDocUuid,
+  viewDocumentId as deriveViewDocumentId,
+} from "../shared/document-ids.mjs";
+import { VIEW_CLOSE_DELAY_MS, ViewReplicas } from "./view-replicas.mjs";
 import { fullStatus, overlayStatus, viewerSyncStatusMachine } from "./sync-status-machine.mjs";
 import { FORMAT_GATE_INITIAL, PAGE_FORMAT_UNSUPPORTED, formatGateStep } from "./format-gate.mjs";
 import { validNonce } from "../model/nonce.mjs";
@@ -449,11 +455,14 @@ export class PageSession {
   // Opening the comments document (comments-open-machine.mjs).
   commentsOpen$ = new Store(commentsOpenMachine.initial);
   /** The Page's sources document on this replica, read-only
-   * (sources-replica.mjs). It isn't part of the checkpoint or the recovery
+   * (host-doc-replica.mjs). It isn't part of the checkpoint or the recovery
    * archive: the host holds all of it, and this replica never changes it. */
   sources;
   /** The Page's source store over `sources`, once something reads it. */
   sourceStore;
+  /** The Page's view documents on this replica, read-only
+   * (view-replicas.mjs). Like `sources`, they are the host's alone. */
+  views;
   /** What the status line says about receipts and the connection (see
    * sync-status-machine.mjs). `status` renders it with the phase's pauses. */
   sync$ = new Store(viewerSyncStatusMachine.initial);
@@ -517,6 +526,7 @@ export class PageSession {
       random = Math.random,
       now = monotonicNow,
       buildFeatures = BUILD_FEATURES,
+      viewDocumentId = deriveViewDocumentId,
     } = {},
   ) {
     this.pageId = pageId;
@@ -530,11 +540,30 @@ export class PageSession {
     // receipt outages, reconnect stability, and presence and agent-progress
     // lifetimes. Readers of `peers` and `agentProgress` use it too.
     this.now = now;
-    this.sources = new SourcesReplica({
+    // How the sources and view replicas reach the repo. A host document a
+    // derived lookup missed is evicted just before the next lookup of it, so
+    // that lookup asks the host. Eviction happens only while the repo still
+    // holds the unavailable answer and no replica has the id installed
+    // (`claims`): the repo's eviction closes the document for every holder.
+    const lookups = {
       find: (id, options) => this.repo.find(id, options),
+      forget: (id) => evictUnavailable(this.repo, id),
+      claims: new Set(),
       // A lookup's connection: the admitted one, or none while disconnected.
       link: () => (this.sockets.size ? this.connectionGeneration : undefined),
+      // Whether an ask may look a document up now.
+      linked: () => this.lookupsOpen,
       scheduler,
+    };
+    this.sources = new HostDocReplica({
+      ...lookups,
+      derive: async () => derivedDocumentId(await sourcesDocUuid(pageId)),
+    });
+    this.views = new ViewReplicas({
+      ...lookups,
+      pageId,
+      viewDocumentId,
+      closeDelay: VIEW_CLOSE_DELAY_MS,
     });
     this.recoveryCapture = new RecoveryCapture({
       capture: (id) => this.captureRecoveryCopy(id),
@@ -600,14 +629,31 @@ export class PageSession {
    * the sources document alone. Made on first use; released with the
    * session. */
   get pageSources() {
-    this.sourceStore ??= new PageSourceStore({ pageId: this.pageId, doc$: this.sources.doc$ });
+    // A reader waiting on a source the store doesn't hold asks for the
+    // sources document for as long as it waits, so a Page's first source,
+    // created while this tab is open, is found without waiting for the next
+    // admitted connection.
+    this.sourceStore ??= new PageSourceStore({
+      pageId: this.pageId,
+      doc$: this.sources.doc$,
+      demand: () => this.sources.demand(),
+    });
     return this.sourceStore;
   }
-  /** Look up the sources document the current discovery names, after a
-   * connection was admitted. A hidden Page opens nothing. */
+  /** Whether host documents can be looked up now: the Page is open and
+   * shown, and a connection is admitted. */
+  get lookupsOpen() {
+    return (
+      !this.hidden && !!this.connection && !!this.backend && !!this.handle && this.sockets.size > 0
+    );
+  }
+  /** Look up the sources document the current discovery names, and every
+   * open view document by its derived id, after a connection was admitted.
+   * A hidden Page opens nothing. */
   openSources() {
     if (this.hidden || !this.connection || !this.backend) return;
     this.sources.discovered(this.connection);
+    this.views.connected();
   }
   get alive() {
     return isLive(this.phase$.snapshot());
@@ -962,11 +1008,12 @@ export class PageSession {
    * and Try again captures again. */
   async #retire() {
     const { reason, released } = this.phase$.snapshot();
-    // The sources document retires on every path, a failed capture included:
-    // nothing in it is this replica's own, so it never waits on capture or
-    // the archive. Its synced bytes stay in the replica's database, as the
-    // Page's and comments' do.
+    // The sources and view documents retire on every path, a failed capture
+    // included: nothing in them is this replica's own, so they never wait on
+    // capture or the archive. Their synced bytes stay in the replica's
+    // database, as the Page's and comments' do.
     this.sources.retire();
+    this.views.retire();
     let live = this.closedRecovery;
     if (!live) {
       try {
@@ -3573,9 +3620,10 @@ export class PageSession {
       await this.storage?.close();
     } finally {
       this.local?.release();
-      // The replica goes, and with it any comments or sources lookup.
+      // The replica goes, and with it any comments, sources or view lookup.
       this.commentsOpen({ type: "close" });
       this.sources.close();
+      this.views.close();
       this.repo = this.backend = this.storage = this.local = undefined;
       this.commentsHandle = this.pendingComments = undefined;
     }

@@ -285,6 +285,12 @@ export class PlainSync {
     await this.repo.flush(documentIds);
   }
 
+  /** Whether this host's storage holds history for `documentId`, whether or
+   * not it serves it. */
+  async stored(documentId) {
+    return !!(await this.host.store.open(treeOf(documentId)));
+  }
+
   /** Durable heads of a document, from its stored manifest. */
   durableHeads(documentId) {
     return this.host.durableHeads(treeOf(documentId));

@@ -10,7 +10,7 @@
 //     text-container  holds only text and line breaks, so a block inside one
 //                     can't be drawn where it was stored (code block, cell)
 //     container       holds blocks (quote, aside, list item, table, row)
-//     leaf            a block with no content (rule, dataframe)
+//     leaf            a block with no content (rule, dataframe, view)
 //     embed           an inline marker (image, hard break)
 // - `governsFirstParagraph`: set_node on the text of the container's first
 //   paragraph changes the container, though that paragraph has a marker of
@@ -26,8 +26,10 @@
 //   differs from the stored one; `set` names the operation that may change
 //   it; `scope: "column"` applies the change to the whole table column;
 //   `nullable` lets null clear it.
-// - `insert`: how agents create it, and which stored asset it names, so the
-//   host can check the asset before the change (worker/index.mjs prepare).
+// - `insert`: how agents create it (`op`), and what the host checks before
+//   the change (worker/index.mjs prepare): the stored asset kind it names
+//   (`asset`), or that it names one of the Page's views (`view: true`).
+//   Several types may share an op; insert_node picks one by node.type.
 //
 // Agent-facing names are the same everywhere: a node's `type` is its stored
 // block name (`code-block`), and its attrs are the `agent` names. read_page
@@ -147,6 +149,13 @@ export const NODE_TYPES = Object.freeze([
     }),
     insert: Object.freeze({ op: "insert_node", asset: "dataset" }),
   }),
+  entry("view", {
+    kind: "leaf",
+    feature: "view",
+    label: "a view",
+    attrs: Object.freeze({ view_id: { type: "string" } }),
+    insert: Object.freeze({ op: "insert_node", asset: null, view: true }),
+  }),
 ]);
 
 const BY_BLOCK = new Map(NODE_TYPES.map((type) => [type.block, type]));
@@ -186,22 +195,36 @@ export const validHeadingLevel = (level) =>
 /** Whether `value` is a stored table alignment (null clears it). */
 export const validAlignment = (value) => ALIGNMENTS.includes(value);
 
-/** Each node-creating operation and the stored asset kind it names. */
+/** Each node-creating operation, and for each block type it creates, what
+ * the host checks first: `{ op: { block: { asset, view } } }`. */
 export const INSERT_OPERATIONS = Object.freeze(
-  Object.fromEntries(
-    NODE_TYPES.filter((type) => type.insert).map((type) => [
-      type.insert.op,
-      { block: type.block, asset: type.insert.asset },
-    ]),
-  ),
+  (() => {
+    const out = {};
+    for (const type of NODE_TYPES.filter((type) => type.insert))
+      (out[type.insert.op] ??= {})[type.block] = Object.freeze({
+        asset: type.insert.asset,
+        view: !!type.insert.view,
+      });
+    for (const value of Object.values(out)) Object.freeze(value);
+    return out;
+  })(),
 );
 
-/** The node-creating operation `name`, as `{ block, asset }`, or undefined.
- * Own keys only, so an op named `constructor` or `__proto__` isn't one. */
+/** Leaf blocks that draw stored data (a dataframe, a view): no Pages writer
+ * stores one inside a text container, and every reader draws one there as a
+ * notice. */
+export const DATA_LEAVES = Object.freeze(new Set(["dataframe", "view"]));
+
+/** The node-creating operation `name`, as `{ block: { asset, view } }`, or
+ * undefined. Own keys only, so an op named `constructor` or `__proto__`
+ * isn't one. */
 export const insertOperation = (name) =>
   typeof name === "string" && Object.hasOwn(INSERT_OPERATIONS, name)
     ? INSERT_OPERATIONS[name]
     : undefined;
+
+/** The block types operation `name` creates. */
+export const insertedTypes = (name) => Object.keys(insertOperation(name) ?? {});
 
 /** Every attribute set_node may change, by agent name: its spec and the block
  * types that hold it. One name has one spec across types. */
