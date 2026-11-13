@@ -8,7 +8,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { Repo, interpretAsDocumentId } from "@automerge/automerge-repo";
-import { VirtualTimeScheduler } from "rxjs";
+import { VirtualTimeScheduler, asyncScheduler } from "rxjs";
 import { AutomergeSyncBackend } from "../sync/backend.mjs";
 import { DocStore, MemoryByteStore } from "../sync/doc-store.mjs";
 import { PlainHostStorage } from "../sync/plain-host-fixture.mjs";
@@ -25,7 +25,9 @@ import {
   HostDocReplica,
   UNAVAILABLE,
   evictUnavailable,
+  monotonicClock,
 } from "./host-doc-replica.mjs";
+import { monotonicNow } from "./monotonic.mjs";
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const ID = "sources-1";
@@ -62,8 +64,11 @@ function handleOf(doc) {
   };
 }
 
-function replica({ link = () => 1, linked, derive, ignoreAbort } = {}) {
+function replica({ link = () => 1, linked, derive, ignoreAbort, clock } = {}) {
   const scheduler = new VirtualTimeScheduler();
+  // The wall clock: the scheduler's own now(), which a test can set back.
+  let shift = 0;
+  scheduler.now = () => scheduler.frame + shift;
   const repo = heldFind({ ignoreAbort });
   const forgotten = [];
   const derivations = [];
@@ -72,6 +77,7 @@ function replica({ link = () => 1, linked, derive, ignoreAbort } = {}) {
     forget: async (id) => forgotten.push(id),
     link,
     ...(linked && { linked }),
+    ...(clock && { clock: clock(scheduler) }),
     scheduler,
     ...(derive !== null && {
       derive: async () => {
@@ -101,6 +107,8 @@ function replica({ link = () => 1, linked, derive, ignoreAbort } = {}) {
     forgotten,
     derivations,
     state: () => sources.state$.snapshot(),
+    /** Set the wall clock back `ms` without advancing any timer. */
+    setWallBack: (ms) => (shift -= ms),
   };
 }
 
@@ -244,6 +252,64 @@ test("a close and a new connection keep the misses and what is left of the windo
   await tick();
   assert.deepEqual(r.state(), { name: "absent", id: DERIVED, misses: 2, cooling: true });
   stop();
+});
+
+/** Rest `r` after its first burst, with standing demand; returns the
+ * lookup count at the rest. */
+async function restAfterBurst(r) {
+  r.sources.discovered(none);
+  const stop = r.sources.demand();
+  await tick();
+  for (let attempt = 1; attempt <= MISSING_ATTEMPTS; attempt++) {
+    r.repo.calls.at(-1).reject(missing());
+    await tick();
+    if (attempt < MISSING_ATTEMPTS) r.advance(retryDelay(attempt));
+    await tick();
+  }
+  return { rested: r.repo.calls.length, stop };
+}
+
+test("setting the wall clock back an hour doesn't stretch the rest", async () => {
+  // Deadlines read a monotonic clock (here the virtual frame, as
+  // performance.now() is in a browser); the scheduler's now() is the wall
+  // clock, which moves back an hour with no timer advancing.
+  const r = replica({ clock: (scheduler) => () => scheduler.frame });
+  const { rested, stop } = await restAfterBurst(r);
+  r.advance(2_000);
+  r.setWallBack(3_600_000);
+  r.sources.close();
+  r.sources.connected();
+  await tick();
+  r.advance(lookAgainDelay(1) - 2_000 - 1);
+  await tick();
+  assert.equal(r.repo.calls.length, rested);
+  r.advance(1);
+  await tick();
+  assert.equal(r.repo.calls.length, rested + 1, "the next lookup ends the original window");
+  stop();
+});
+
+test("a clock that jumps back can't make a rest longer than its window", async () => {
+  // A clock that misbehaves the same way: the rest is clamped to the window.
+  let back = 0;
+  const r = replica({ clock: (scheduler) => () => scheduler.frame - back });
+  const { rested, stop } = await restAfterBurst(r);
+  r.advance(2_000);
+  back = 3_600_000;
+  r.sources.close();
+  r.sources.connected();
+  await tick();
+  r.advance(lookAgainDelay(1));
+  await tick();
+  assert.equal(r.repo.calls.length, rested + 1, "one window at most, not an hour");
+  stop();
+});
+
+test("deadlines read performance.now() under the async scheduler, and the scheduler's clock otherwise", () => {
+  assert.equal(monotonicClock(asyncScheduler), monotonicNow);
+  const scheduler = new VirtualTimeScheduler();
+  scheduler.frame = 1234;
+  assert.equal(monotonicClock(scheduler)(), 1234);
 });
 
 test("standing demand made before a connection looks the document up when one is admitted", async () => {

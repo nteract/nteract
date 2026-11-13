@@ -223,11 +223,8 @@ export class ViewReplicas {
       }
       const closing = slots.find((entry) => entry.state.name === "closing");
       const fresh = queue[0].state.rank === "fresh";
-      const now = this.#options.scheduler.now();
       const next =
-        closing || fresh
-          ? queue[0]
-          : queue.find((entry) => !entry.replica || entry.replica.lookAgainAt <= now);
+        closing || fresh ? queue[0] : queue.find((entry) => !entry.replica || entry.replica.due);
       if (!next) return;
       const yields = fresh
         ? (entry) => undrawn(entry.replica.state$.snapshot())

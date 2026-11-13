@@ -11,6 +11,7 @@
 import { BehaviorSubject, asyncScheduler, timer } from "rxjs";
 import { parseDocumentDescriptor } from "../model/document-types.mjs";
 import { Store } from "./store.mjs";
+import { monotonicNow } from "./monotonic.mjs";
 import { discoveryEvent, hostDocOpenMachine } from "./host-doc-open-machine.mjs";
 
 /** How long one lookup may take before it counts as failed. */
@@ -25,6 +26,15 @@ export const UNAVAILABLE = /^Document \S+ is unavailable$/;
  * eviction closes the document for anyone holding it, so a document that
  * loaded since the miss stays.
  */
+/**
+ * The monotonic clock deadlines are measured on, in ms: monotonicNow
+ * (monotonic.mjs) when timers run on RxJS's asyncScheduler, whose own now()
+ * is the wall clock and can jump, and the scheduler's clock otherwise (a
+ * virtual scheduler in tests), so deadlines and timers share one clock.
+ */
+export const monotonicClock = (scheduler) =>
+  scheduler === asyncScheduler ? monotonicNow : () => scheduler.now();
+
 export async function evictUnavailable(repo, id) {
   if (repo?.findWithProgress?.(id).peek().state !== "unavailable") return;
   await repo.removeFromCache(id);
@@ -57,8 +67,11 @@ export class HostDocReplica {
   #linked;
   /** How many things on the Page ask for the document now (demand()). */
   #demand = 0;
-  /** When the look-again window last armed ends, on the scheduler's clock. */
+  #clock;
+  /** When the look-again window last armed ends, on #clock, and how long it
+   * was: what is left of it is never longer than the window itself. */
   #lookAgainAt = -Infinity;
+  #lookAgainWindow = 0;
   /** Advances on retire and close, so a derivation that settles after
    * either steps nothing. */
   #epoch = 0;
@@ -78,7 +91,8 @@ export class HostDocReplica {
    * `linked()` says whether lookups may run now (a connection is admitted
    * and the Page is shown); an ask while it is false waits for the next
    * connection.
-   * `scheduler` runs the retry, look-again and lookup timers.
+   * `scheduler` runs the retry, look-again and lookup timers. `clock()`
+   * reads monotonic ms for the look-again deadline (monotonicClock).
    */
   constructor({
     find,
@@ -89,7 +103,9 @@ export class HostDocReplica {
     derive,
     scheduler = asyncScheduler,
     lookupTimeout = LOOKUP_TIMEOUT_MS,
+    clock = monotonicClock(scheduler),
   }) {
+    this.#clock = clock;
     this.#find = find;
     this.#forget = forget;
     this.#claims = claims;
@@ -119,16 +135,22 @@ export class HostDocReplica {
    * id: a view document, which discovery doesn't list. */
   connected() {
     this.#withId((id) => {
-      const wait = Math.ceil(this.#lookAgainAt - this.#scheduler.now());
+      const wait = this.#remaining();
       return { type: "discovered", answer: "derived", id, ...(wait > 0 && { wait }) };
     });
   }
 
-  /** When the look-again window last armed ends, on the scheduler's clock
-   * (-Infinity before any). A document that missed is due for its next
-   * lookup from then. */
-  get lookAgainAt() {
-    return this.#lookAgainAt;
+  /** Whether the look-again window last armed has ended (or none was). A
+   * document that missed is due for its next lookup from then. */
+  get due() {
+    return this.#remaining() === 0;
+  }
+
+  /** Whole ms left in the look-again window last armed, at most the
+   * window's own length, so no clock reading can stretch a rest. */
+  #remaining() {
+    const left = Math.ceil(this.#lookAgainAt - this.#clock());
+    return Math.max(0, Math.min(left, this.#lookAgainWindow));
   }
 
   /** Something on the Page asks for the document. Only an absent one is
@@ -202,7 +224,8 @@ export class HostDocReplica {
       case "schedule":
         return this.#arm(effect.delay, () => ({ type: "timer", attempt: effect.attempt }));
       case "cool":
-        this.#lookAgainAt = this.#scheduler.now() + effect.delay;
+        this.#lookAgainAt = this.#clock() + effect.delay;
+        this.#lookAgainWindow = effect.delay;
         return this.#arm(effect.delay, () => ({
           type: "cooled",
           ...(this.#demand > 0 && this.#linked() && { demanded: true }),
