@@ -19,9 +19,12 @@ const {
   safePaint,
   cleanItem,
   VEGA_LITE_FUNCTIONS,
+  STATIC_OPERATORS,
   RESIZE_SETTLE_MS,
+  tooltipText,
 } = await import("./vega-chart.mjs");
-const { checkChartSpec, CHART_MAX_ROWS } = await import("../shared/chart-spec.mjs");
+const { checkChartSpec, CHART_MAX_ROWS, CHART_EXPRESSION_FUNCTIONS } =
+  await import("../shared/chart-spec.mjs");
 const vl = await import("vega-lite");
 
 const theme = { dark: false, text: "#111", muted: "#555", line: "#ddd", font: "sans-serif" };
@@ -570,6 +573,129 @@ test("a hand-built dataflow with a stream, an unlisted operator or call is refus
   assert.match(runtimeProblem(plucked), /calls pluck\(\)/);
 });
 
+test("the structural checks reach every subflow, and hover encodings anywhere", () => {
+  const vega = globalThis.__vega;
+  const faceted = {
+    data: { name: "calls" },
+    facet: { row: { field: "client", type: "nominal" } },
+    spec: { mark: "bar", encoding: stacked.encoding },
+  };
+  const runtime = () =>
+    vega.parse(vl.compile(faceted, { config: themeConfig(theme) }).spec, null, { ast: true });
+  const subflow = (parsed) => {
+    const stack = [parsed];
+    while (stack.length) {
+      const node = stack.pop();
+      if (node?.$subflow) return node.$subflow;
+      if (node && typeof node === "object") stack.push(...Object.values(node));
+    }
+    throw new Error("no subflow");
+  };
+  assert.equal(runtimeProblem(runtime()), null);
+  const streamed = runtime();
+  subflow(streamed).streams.push({ id: 999, source: "window", type: "keydown" });
+  assert.match(runtimeProblem(streamed), /listens for events/);
+  const updated = runtime();
+  subflow(updated).updates.push({ source: 999, target: 1, update: 1 });
+  assert.match(runtimeProblem(updated), /listens for events/);
+  const bound = runtime();
+  subflow(bound).bindings = [{ signal: "x", input: "range" }];
+  assert.match(runtimeProblem(bound), /listens for events/);
+  const voronoi = runtime();
+  subflow(voronoi).operators.push({ id: 998, type: "voronoi", params: {} });
+  assert.match(runtimeProblem(voronoi), /uses a voronoi operator/);
+  const hovered = runtime();
+  subflow(hovered).operators.push({
+    id: 997,
+    type: "encode",
+    params: { encoders: { $encode: { hover: { $expr: { code: "", ast: { type: "Literal" } } } } } },
+  });
+  assert.match(runtimeProblem(hovered), /changes on hover/);
+});
+
+test("a drawn chart listens for nothing; hovering a mark only shows its tooltip", () =>
+  withWindow(async (window) => {
+    const shown = [];
+    const target = window.document.body.appendChild(window.document.createElement("div"));
+    const view = await drawChart(target, {
+      spec: stacked,
+      data: { calls: datasetRows(calls) },
+      theme,
+      width: 400,
+      tooltip: (_handler, _event, _item, value) => shown.push(value),
+    });
+    assert.equal(view._eventListeners.length, 0);
+    const svg = target.querySelector("svg");
+    const before = svg.outerHTML;
+    const bar = bars(target)[0];
+    for (const type of ["pointerover", "pointermove", "mouseover", "mousemove", "pointerout"])
+      bar.dispatchEvent(new window.MouseEvent(type, { bubbles: true, clientX: 10, clientY: 10 }));
+    await settle();
+    assert.equal(svg.outerHTML, before);
+    assert.ok(
+      shown.some((value) => value && typeof value === "object"),
+      JSON.stringify(shown),
+    );
+    view.finalize();
+  }));
+
+test("tooltip text is total: no toString, cycles, depth and length", () => {
+  const hostile = { toString: 0, valueOf: 0 };
+  const cyclic = { name: "loop" };
+  cyclic.self = cyclic;
+  const escape = (value) => String(value).replace(/</g, "&lt;");
+  assert.equal(tooltipText(hostile), '{"toString":0,"valueOf":0}');
+  assert.equal(tooltipText(cyclic), '{"name":"loop","self":"[Circular]"}');
+  assert.equal(tooltipText({ a: { b: { c: { d: 1 } } } }), '{"a":{"b":{"c":"[Object]"}}}');
+  assert.equal(tooltipText(10n), "10");
+  assert.equal(tooltipText(new Date(Number.NaN)), "Invalid date");
+  assert.equal(tooltipText("x".repeat(5000)).length, 400);
+  const throwing = {
+    get boom() {
+      throw new Error("boom");
+    },
+  };
+  assert.equal(tooltipText(throwing), "[Value]");
+  for (const value of [
+    hostile,
+    { title: hostile, x: hostile },
+    [hostile, cyclic],
+    throwing,
+    cyclic,
+  ])
+    assert.equal(typeof formatTooltip(value, escape, 2, ""), "string");
+  const wide = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`c${i}`, i]));
+  assert.match(formatTooltip(wide, escape, 2, ""), /60 more/);
+  assert.equal((formatTooltip(wide, escape, 2, "").match(/<tr>/g) ?? []).length, 41);
+});
+
+test("a tooltip that can't show moves the chart to its error state", () =>
+  withWindow(async (window) => {
+    const { element } = container(window);
+    const chart = mount(element, {
+      spec: { ...stacked, mark: { type: "bar", tooltip: { content: "data" } } },
+      datasets: { calls },
+    });
+    await settle();
+    const figure = element.querySelector("figure");
+    assert.equal(figure.dataset.chartStatus, "rendered");
+    // Make the handler itself throw, as vega-tooltip does on a value it
+    // can't render.
+    const { getElementById } = window.document;
+    window.document.getElementById = () => {
+      throw new Error("The tooltip broke.");
+    };
+    bars(element)[0].dispatchEvent(
+      new window.MouseEvent("pointermove", { bubbles: true, clientX: 5, clientY: 5 }),
+    );
+    window.document.getElementById = getElementById;
+    await settle();
+    assert.equal(figure.dataset.chartStatus, "error");
+    assert.match(figure.querySelector(".pages-chart-message").textContent, /tooltip broke/);
+    assert.equal(figure.querySelector(".pages-chart-canvas svg"), null);
+    chart.destroy();
+  }));
+
 // Static specs across marks, transforms and composition. Every operator type
 // and call Vega-Lite generates for them must be in STATIC_OPERATORS and
 // VEGA_LITE_FUNCTIONS, with no event stream; a new Vega-Lite version that
@@ -860,8 +986,30 @@ const CORPUS = (() => {
   ];
 })();
 
-test("every static spec in the corpus passes both checks", () => {
+/** Operator types and called functions in a parsed runtime, subflows
+ * included. */
+function usedIn(runtime) {
+  const operators = new Set();
+  const calls = new Set();
+  const seen = new Set();
+  const stack = [runtime];
+  while (stack.length) {
+    const node = stack.pop();
+    if (!node || typeof node !== "object" || seen.has(node)) continue;
+    seen.add(node);
+    if (Array.isArray(node.operators))
+      for (const operator of node.operators) operators.add(operator.type);
+    if (node.type === "CallExpression" && node.callee?.type === "Identifier")
+      calls.add(node.callee.name);
+    stack.push(...Object.values(node));
+  }
+  return { operators, calls };
+}
+
+test("every static spec in the corpus passes both checks, and uses every listed entry", () => {
   const vega = globalThis.__vega;
+  const operators = new Set();
+  const calls = new Set();
   for (const [index, spec] of CORPUS.entries()) {
     const checked = checkChartSpec(spec);
     assert.equal(checked.ok, true, `${index}: ${checked.error}`);
@@ -871,7 +1019,20 @@ test("every static spec in the corpus passes both checks", () => {
       { ast: true },
     );
     assert.equal(runtimeProblem(runtime), null, `${index}: ${JSON.stringify(spec).slice(0, 160)}`);
+    const used = usedIn(runtime);
+    for (const type of used.operators) operators.add(type);
+    for (const name of used.calls) calls.add(name);
   }
+  // The lists hold what the corpus needs and nothing more: an entry no
+  // static chart compiles to fails here.
+  assert.deepEqual([...operators].sort(), [...STATIC_OPERATORS].sort());
+  const generated = [...VEGA_LITE_FUNCTIONS].filter(
+    (name) => !CHART_EXPRESSION_FUNCTIONS.has(name),
+  );
+  assert.deepEqual(
+    [...calls].filter((name) => !CHART_EXPRESSION_FUNCTIONS.has(name)).sort(),
+    generated.sort(),
+  );
 });
 
 test("paint is a color or a gradient of colors; anything else is dropped", () => {
@@ -1120,4 +1281,119 @@ test("Vega draws with string code generation disabled, as under the viewer CSP",
   );
   assert.equal(run.status, 0, run.stderr);
   assert.deepEqual(JSON.parse(run.stdout), { status: "rendered", message: "" });
+});
+
+test("hovering a value with no usable toString shows a tooltip, and the chart stays drawn", () =>
+  withWindow(async (window) => {
+    const { element } = container(window);
+    const rows = calls.map((row) => ({
+      ...row,
+      title: { toString: 0, valueOf: 0 },
+      meta: { toString: 0 },
+    }));
+    const chart = mount(element, {
+      spec: {
+        data: { name: "calls" },
+        mark: { type: "point", tooltip: { content: "data" } },
+        encoding: {
+          x: { field: "calls", type: "quantitative" },
+          y: { field: "tool", type: "nominal" },
+        },
+      },
+      datasets: { calls: rows },
+    });
+    await settle();
+    const figure = element.querySelector("figure");
+    const point = element.querySelector(".pages-chart-canvas path[role='graphics-symbol']");
+    point.dispatchEvent(
+      new window.MouseEvent("pointermove", { bubbles: true, clientX: 5, clientY: 5 }),
+    );
+    await settle();
+    assert.equal(figure.dataset.chartStatus, "rendered");
+    assert.match(window.document.querySelector(".vg-tooltip")?.innerHTML ?? "", /toString/);
+    chart.destroy();
+  }));
+
+// A draw that never returns blocks the event loop, so each runs in its own
+// process with a timeout.
+function drawInProcess(cases, timeout) {
+  const chart = fileURLToPath(new URL("./vega-chart.mjs", import.meta.url));
+  const script = `
+    import { JSDOM } from "jsdom";
+    const { window } = new JSDOM("<!doctype html><body></body>");
+    globalThis.document = window.document;
+    Object.defineProperty(window.HTMLElement.prototype, "clientWidth", { get: () => 400 });
+    const { mount } = await import(${JSON.stringify(chart)});
+    const results = [];
+    for (const { spec, rows } of ${JSON.stringify(cases)}) {
+      const element = window.document.body.appendChild(window.document.createElement("div"));
+      const chart = mount(element, { spec, datasets: { d: rows } });
+      const figure = element.firstElementChild;
+      for (let i = 0; i < 200 && figure.dataset.chartStatus === "drawing"; i++)
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      results.push(figure.dataset.chartStatus);
+      chart.destroy();
+    }
+    process.stdout.write(JSON.stringify(results));
+  `;
+  return spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+    cwd: fileURLToPath(new URL("..", import.meta.url)),
+    encoding: "utf8",
+    timeout,
+  });
+}
+
+test("bin and time-unit extremes in the data or the spec never hang a draw", () => {
+  // Vega's own bin never returns for an extent like [0, 5e-324]: its step
+  // underflows to 0 and the loop multiplies 0 forever. Without the checks and
+  // the data normalization, each case here would hang the child process.
+  const x = (bin) => ({
+    data: { name: "d" },
+    mark: "bar",
+    encoding: { x: { field: "x", type: "quantitative", bin }, y: { aggregate: "count" } },
+  });
+  const t = (timeUnit) => ({
+    data: { name: "d" },
+    mark: "bar",
+    encoding: { x: { field: "x", type: "temporal", timeUnit }, y: { aggregate: "count" } },
+  });
+  const binned = (bin) => ({
+    data: { name: "d" },
+    transform: [{ bin, field: "x", as: "b" }],
+    mark: "bar",
+    encoding: { x: { field: "b", type: "quantitative" }, y: { aggregate: "count" } },
+  });
+  const rows = (...values) => values.map((value) => ({ x: value }));
+  const tiny = rows(0, 5e-324);
+  const near = rows(1e-150, 1.0000000000000002e-150);
+  const huge = rows(-1e308, 1e308, 1);
+  const strings = rows("0", "5e-324");
+  const cases = [
+    // Literal parameters: refused before Vega sees them.
+    [binned({ base: 2, extent: [0, 5e-324] }), tiny, "error"],
+    [x({ extent: [0, 1e-200] }), tiny, "error"],
+    [x({ step: 1e-300 }), rows(0, 1), "error"],
+    // Data: normalized, so an inferred extent is 0 or wide enough.
+    [binned({ base: 2 }), tiny, "rendered"],
+    [binned(true), near, "rendered"],
+    [x(true), tiny, "rendered"],
+    [x({ base: 2, maxbins: 1000 }), near, "rendered"],
+    [x(true), huge, "rendered"],
+    [x(true), strings, "rendered"],
+    [t("yearmonth"), tiny, "rendered"],
+    [t({ unit: "hours", maxbins: 1000 }), tiny, "rendered"],
+    [t({ unit: "milliseconds", step: 1 }), rows(-8.64e15, 8.64e15), "rendered"],
+    [t("utcyearmonthdate"), huge, "rendered"],
+    [{ ...t("hours"), transform: [{ timeUnit: "hours", field: "x", as: "h" }] }, tiny, "rendered"],
+  ];
+  const run = drawInProcess(
+    cases.map(([spec, data]) => ({ spec, rows: data })),
+    30_000,
+  );
+  assert.equal(run.signal, null, `a draw hung: ${run.stderr.slice(-400)}`);
+  assert.equal(run.status, 0, run.stderr.slice(-400));
+  assert.deepEqual(
+    JSON.parse(run.stdout),
+    cases.map(([, , status]) => status),
+  );
 });

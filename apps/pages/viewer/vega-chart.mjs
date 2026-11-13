@@ -3,19 +3,23 @@
 // way wordgard-dataframes.mjs loads sift-table.jsx for tables.
 //
 // A chart is static: marks, axes, legends and Vega's hover tooltip. Nothing
-// else listens to the reader; selections, bindings and every other event
-// stream are refused, because each review of the interactive surface found
-// another way through it.
+// else listens to the reader; selections, bindings, hover encodings and every
+// other event stream are refused, and the View is made without `hover`,
+// because each review of the interactive surface found another way through
+// it. The tooltip handler formats every value without calling its own
+// toString, and a tooltip that fails moves the chart to its error state.
 //
 // The spec and the rows are both untrusted. Four layers keep a chart from
 // running code, fetching or navigating:
 // - shared/chart-spec.mjs refuses a spec before anything compiles, with one
 //   sentence: allowlists for data, transforms, parameters and expression
-//   functions, no URL anywhere, keyword cursors.
+//   functions, no URL anywhere, keyword cursors, numbers in
+//   CHART_NUMBER_RANGE. `datasetRows` puts the data's numbers in that range.
 // - `runtimeProblem` is the boundary on what runs. It refuses a compiled Vega
-//   dataflow that has any event stream, signal handler or binding, any
-//   operator type outside STATIC_OPERATORS, or any expression outside the
-//   policy with VEGA_LITE_FUNCTIONS, before the dataflow runs.
+//   dataflow, root or any subflow, that has any event stream, signal handler
+//   or binding, any operator type outside STATIC_OPERATORS, a hover
+//   encoding, or any expression outside the policy with VEGA_LITE_FUNCTIONS,
+//   before the dataflow runs.
 // - The viewer CSP has no 'unsafe-eval', so Vega runs with its expression
 //   interpreter, and `deniedLoader` refuses every load and link.
 // - The "pages-svg" renderer cleans each item's fill, stroke, font, blend and
@@ -26,8 +30,9 @@
 // work without capping it: a facet draws a cell per distinct value, and an
 // SVG mark per row is slow at CHART_MAX_ROWS rows, so a spec within every
 // bound can still freeze the tab for seconds. A Worker with a kill timer would
-// bound that; nothing here does. An error after the first draw moves the
-// chart to its error state.
+// bound that; nothing here does, and the planned next change is to compile
+// and run the dataflow there and render its scenegraph here. An error after
+// the first draw moves the chart to its error state.
 //
 // The look is bare: the caller's title above, one thin rounded border around
 // the drawing, and Vega-Lite's own axes, legend and hover tooltip inside it.
@@ -36,13 +41,14 @@
 import * as vega from "vega";
 import * as vl from "vega-lite";
 import { expressionInterpreter } from "vega-interpreter";
-import { Handler as TooltipHandler, formatValue } from "vega-tooltip";
+import { Handler as TooltipHandler } from "vega-tooltip";
 import { BehaviorSubject, Observable, Subscription, combineLatest, concat } from "rxjs";
 import { debounceTime, distinctUntilChanged, skip, switchMap, take } from "rxjs/operators";
 import {
   CHART_CURSORS,
   CHART_EXPRESSION_FUNCTIONS,
   CHART_MAX_ROWS,
+  chartNumber,
   checkChartSpec,
   checkFormatCall,
   expressionProblem,
@@ -67,14 +73,32 @@ export const deniedLoader = Object.freeze({
   file: () => Promise.reject(Error("A chart can't load a file.")),
 });
 
-const plainValue = (value) =>
-  typeof value === "bigint"
-    ? Number(value)
-    : value instanceof Date || value === null || typeof value !== "object"
-      ? value
-      : JSON.parse(
-          JSON.stringify(value, (_key, item) => (typeof item === "bigint" ? Number(item) : item)),
-        );
+/**
+ * One data value as a chart reads it. Numbers go through `chartNumber`
+ * (bigints become numbers first). Vega coerces strings in arithmetic, so a
+ * string that reads as a number outside CHART_NUMBER_RANGE, or as Infinity,
+ * becomes that number's chart value. A nested value is copied the same way,
+ * since a field path reaches it; one that isn't JSON (a cycle) becomes null.
+ */
+function plainScalar(value) {
+  if (typeof value === "bigint") return chartNumber(Number(value));
+  if (typeof value === "number") return chartNumber(value);
+  if (typeof value === "string" && value.trim() !== "") {
+    const read = Number(value);
+    if (!Number.isNaN(read) && chartNumber(read) !== read) return chartNumber(read);
+  }
+  return value;
+}
+
+function plainValue(value) {
+  if (value instanceof Date || value === null || typeof value !== "object")
+    return plainScalar(value);
+  try {
+    return JSON.parse(JSON.stringify(value, (_key, item) => plainScalar(item)));
+  } catch {
+    return null;
+  }
+}
 
 /** Rows in a dataset, before any are copied. */
 const rowCount = (dataset) =>
@@ -89,8 +113,10 @@ const isArrowTable = (value) =>
 
 /**
  * Plain rows for Vega from a dataset: an array of row objects, or an Arrow
- * table. Rows are copied, since Vega tags each row it ingests, and 64-bit
- * integers become numbers, since Vega's scales take only numbers. Each copy
+ * table. Rows are copied, since Vega tags each row it ingests, and each value
+ * goes through `plainValue`: 64-bit integers become numbers, since Vega's
+ * scales take only numbers, and every number lands in CHART_NUMBER_RANGE or
+ * becomes 0 or null. Each copy
  * has a null prototype, so a column named `__proto__` stays a column and a
  * missing `constructor` or `toString` column reads as undefined.
  */
@@ -197,15 +223,73 @@ function errorSentence(error) {
   return message ? `This chart couldn't be drawn: ${first}` : "This chart couldn't be drawn.";
 }
 
-// A tooltip value's `image` key would load a URL into an <img>; a chart's
-// tooltip shows its fields and nothing else.
-export const formatTooltip = (value, valueToHtml, maxDepth, baseURL) => {
-  if (value && typeof value === "object" && !Array.isArray(value) && "image" in value) {
-    const { image: _image, ...rest } = value;
-    value = rest;
+const TOOLTIP_TEXT_MAX = 400;
+const TOOLTIP_ROWS_MAX = 40;
+
+/** JSON.stringify's replacer for a tooltip: nested objects past `maxDepth`
+ * and cycles become markers, bigints numbers. */
+function tooltipReplacer(maxDepth) {
+  const stack = [];
+  return function (_key, value) {
+    if (typeof value === "bigint") return Number(value);
+    if (typeof value !== "object" || value === null) return value;
+    stack.length = stack.indexOf(this) + 1;
+    if (stack.length > maxDepth) return "[Object]";
+    if (stack.includes(value)) return "[Circular]";
+    stack.push(value);
+    return value;
+  };
+}
+
+/** Text for one tooltip value, whatever it holds. Never calls a value's own
+ * `toString` or `valueOf`, never throws, and stops at TOOLTIP_TEXT_MAX
+ * characters. */
+export function tooltipText(value, maxDepth = 2) {
+  let text;
+  try {
+    if (typeof value === "string") text = value;
+    else if (value === null || typeof value !== "object") text = String(value);
+    else if (value instanceof Date)
+      text = Number.isNaN(value.getTime()) ? "Invalid date" : value.toISOString();
+    else text = JSON.stringify(value, tooltipReplacer(maxDepth)) ?? "";
+  } catch {
+    text = "[Value]";
   }
-  return formatValue(value, valueToHtml, maxDepth, baseURL);
-};
+  return text.length > TOOLTIP_TEXT_MAX ? `${text.slice(0, TOOLTIP_TEXT_MAX - 1)}…` : text;
+}
+
+/**
+ * The tooltip's HTML: a title, then a table of the other fields, at most
+ * TOOLTIP_ROWS_MAX of them. `valueToHtml` escapes each text. An `image` key is
+ * dropped, since vega-tooltip would load its URL into an <img>; a chart's
+ * tooltip shows its fields and nothing else.
+ */
+export function formatTooltip(value, valueToHtml, maxDepth = 2) {
+  const html = (item) => valueToHtml(tooltipText(item, maxDepth));
+  if (!value || typeof value !== "object" || Array.isArray(value) || value instanceof Date)
+    return html(value);
+  let entries;
+  try {
+    entries = Object.entries(value);
+  } catch {
+    return html("[Value]");
+  }
+  let content = "";
+  const title = entries.find(([key]) => key === "title")?.[1];
+  if (title) content += `<h2>${html(title)}</h2>`;
+  const rows = entries.filter(
+    ([key, item]) => key !== "title" && key !== "image" && item !== undefined,
+  );
+  if (rows.length) {
+    content += "<table>";
+    for (const [key, item] of rows.slice(0, TOOLTIP_ROWS_MAX))
+      content += `<tr><td class="key">${html(key)}</td><td class="value">${html(item)}</td></tr>`;
+    if (rows.length > TOOLTIP_ROWS_MAX)
+      content += `<tr><td class="key">…</td><td class="value">${rows.length - TOOLTIP_ROWS_MAX} more</td></tr>`;
+    content += "</table>";
+  }
+  return content || "{}";
+}
 
 let tooltipCount = 0;
 
@@ -323,26 +407,33 @@ const checkCompiledCall = (call) =>
   literalTimeUnitSpecifier(call.arguments[1]) ? null : checkFormatCall(call);
 
 /**
- * Why a parsed Vega dataflow can't run, or null. Structural first: a static
- * chart has no event streams, signal handlers or bindings, and only
- * STATIC_OPERATORS. Then every expression against the policy with
- * VEGA_LITE_FUNCTIONS, and no image mark.
+ * Why a parsed Vega dataflow can't run, or null. In the root and in every
+ * `$subflow`: no event stream, signal handler or binding, and only
+ * STATIC_OPERATORS. Anywhere: no hover encoding, no image mark, and every
+ * expression within the policy with VEGA_LITE_FUNCTIONS.
  */
 export function runtimeProblem(runtime) {
   if (!runtime || typeof runtime !== "object") return "This chart didn't compile.";
-  for (const key of ["streams", "updates", "bindings"])
-    if (Array.isArray(runtime[key]) && runtime[key].length)
-      return `This chart listens for events; ${STATIC}.`;
-  for (const operator of Array.isArray(runtime.operators) ? runtime.operators : [])
-    if (!STATIC_OPERATORS.has(operator?.type))
-      return `This chart uses a ${operator?.type} operator; ${STATIC}.`;
   const seen = new Set();
   const stack = [runtime];
   while (stack.length) {
     const node = stack.pop();
     if (!node || typeof node !== "object" || seen.has(node)) continue;
     seen.add(node);
+    // The root and every `$subflow` (a facet's or a repeat's cells) is a
+    // dataflow of its own, with its own operators and streams.
+    if (node === runtime) {
+      const problem = flowProblem(node);
+      if (problem) return problem;
+    }
+    if (node.$subflow && typeof node.$subflow === "object") {
+      const problem = flowProblem(node.$subflow);
+      if (problem) return problem;
+    }
     if (node.marktype === "image") return "This chart can't draw image marks.";
+    // A hover encoding would run on pointer events.
+    if (node.$encode && typeof node.$encode === "object" && "hover" in node.$encode)
+      return `This chart changes on hover; ${STATIC}.`;
     if (node.ast) {
       const problem = expressionProblem(node.ast, VEGA_LITE_FUNCTIONS, checkCompiledCall);
       if (problem) return `This chart's compiled code ${problem}.`;
@@ -350,6 +441,19 @@ export function runtimeProblem(runtime) {
     for (const child of Object.values(node))
       if (child && typeof child === "object") stack.push(child);
   }
+  return null;
+}
+
+/** Why one dataflow, the root or a subflow, isn't static, or null. */
+function flowProblem(flow) {
+  for (const key of ["streams", "updates", "bindings"])
+    if (flow[key] !== undefined && (!Array.isArray(flow[key]) || flow[key].length))
+      return `This chart listens for events; ${STATIC}.`;
+  if (flow.operators !== undefined && !Array.isArray(flow.operators))
+    return "This chart didn't compile.";
+  for (const operator of flow.operators ?? [])
+    if (!STATIC_OPERATORS.has(operator?.type))
+      return `This chart uses a ${operator?.type} operator; ${STATIC}.`;
   return null;
 }
 
@@ -473,7 +577,6 @@ export async function drawChart(target, { spec, data, theme, width, tooltip, onE
     loader: deniedLoader,
     renderer: "pages-svg",
     container: target,
-    hover: true,
     ...(tooltip && { tooltip }),
     logger: reportingLogger((error) => {
       if (!drawn) firstError ??= error;
@@ -601,8 +704,25 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
   // Finalizing a view hides its tooltip, and vega-tooltip creates the element
   // to hide it. After destroy, a late draw's finalize must not.
   let mounted = true;
+  // A failure after the chart drew (a later run, a tooltip that can't show)
+  // leaves it in its error state. Deferred, so a view isn't finalized inside
+  // its own run or event. `target` is the drawing that failed; a newer one
+  // stays.
+  const fail = (error, target = canvas.firstChild) =>
+    queueMicrotask(() => {
+      if (!mounted || !target || canvas.firstChild !== target) return;
+      view?.finalize();
+      view = null;
+      canvas.replaceChildren();
+      show("error", errorSentence(error));
+    });
   const showTooltip = (...args) => {
-    if (mounted) tooltip.call(...args);
+    if (!mounted) return;
+    try {
+      tooltip.call(...args);
+    } catch (error) {
+      fail(error);
+    }
   };
   const themes = new BehaviorSubject(pageTheme(container));
   const watchTheme = win?.MutationObserver
@@ -624,17 +744,7 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
     new Observable((subscriber) => {
       let cancelled = false;
       const target = doc.createElement("div");
-      // A later run that fails (a hover, a redraw of this view) leaves the
-      // chart in its error state. Deferred, so the view isn't finalized
-      // inside its own run.
-      const onError = (error) =>
-        queueMicrotask(() => {
-          if (!mounted || canvas.firstChild !== target) return;
-          view?.finalize();
-          view = null;
-          canvas.replaceChildren();
-          show("error", errorSentence(error));
-        });
+      const onError = (error) => fail(error, target);
       drawChart(target, { spec: plain, data, theme, width, tooltip: showTooltip, onError }).then(
         (drawn) => {
           if (cancelled) drawn.finalize();

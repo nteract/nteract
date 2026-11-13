@@ -4,14 +4,15 @@
 // the Page host on write. Both the spec and the data it reads are untrusted.
 //
 // The first version of a chart is static: marks, axes, legends and Vega's
-// hover tooltip, and nothing else interactive. Selections, bindings and raw
-// signals are refused here, because each review of the interactive surface
-// found another way through it. What a spec may use is listed, not excluded:
+// hover tooltip, and nothing else interactive. Selections, bindings, hover
+// encodings and raw signals are refused here, because each review of the
+// interactive surface found another way through it. What a spec may use is listed, not excluded:
 // data is `{ "name": ... }` only, transforms and their parameters come from
 // TRANSFORMS with ranged numbers, expressions call only
-// CHART_EXPRESSION_FUNCTIONS, a cursor is a keyword, and no string may hold a
-// CSS url(). `checkChartSpec` never throws; anything it can't check is a
-// refusal.
+// CHART_EXPRESSION_FUNCTIONS (every ExprRef and SignalRef, wherever it is), a
+// cursor is a keyword, no string may hold a CSS url(), and every number is in
+// CHART_NUMBER_RANGE. `checkChartSpec` never throws; anything it can't check
+// is a refusal.
 //
 // Cost: spec bytes, views, nesting, rows per dataset (CHART_MAX_ROWS), folds,
 // bins, steps, windows, ticks and sizes are bounded. A chart still runs on the
@@ -19,7 +20,9 @@
 // facet draws a cell per distinct value, a density or quantile emits rows per
 // group, and an SVG mark per row is slow at 100,000 rows. A spec within every
 // bound can still freeze the tab for seconds. A Worker with a kill timer would
-// bound that; nothing here does.
+// bound that; nothing here does. Listing inputs that stall Vega's numeric code
+// won't finish that class; the planned next change runs compile and the
+// dataflow in a Worker and renders the finished scenegraph in the Page.
 import { parseExpression } from "vega-expression";
 
 export const CHART_SPEC_LIMITS = Object.freeze({
@@ -36,6 +39,32 @@ export const CHART_SPEC_LIMITS = Object.freeze({
 /** Rows a chart reads from one dataset. viewer/vega-chart.mjs refuses more.
  * Transforms can still emit more rows than this, within their own bounds. */
 export const CHART_MAX_ROWS = 100_000;
+
+/**
+ * Sizes a chart number may have besides 0, in a spec and in the data. Vega's
+ * numeric loops assume normal doubles: its bin loop multiplies a step that
+ * underflows to 0 forever, and wider spans overflow the same arithmetic.
+ *
+ * - The smallest gap between two numbers at least 1e-150 in size is about
+ *   1.5e-166, and Vega's bin step is at least its span over 1e6 (`base` to
+ *   the power of its level is at most maxbins × base, 1e5, and rounding adds
+ *   at most √100), so a step stays far above the smallest normal double,
+ *   2.2e-308.
+ * - At most 1e150, a square stays finite, so variance, regression and
+ *   distances never reach Infinity.
+ *
+ * viewer/vega-chart.mjs applies `chartNumber` to every number in the data.
+ */
+export const CHART_NUMBER_RANGE = Object.freeze({ min: 1e-150, max: 1e150 });
+
+/** A number as a chart reads it: 0 below the range, null above it or when
+ * it isn't finite, the number itself otherwise. */
+export function chartNumber(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const size = Math.abs(value);
+  if (size > CHART_NUMBER_RANGE.max) return null;
+  return size < CHART_NUMBER_RANGE.min ? 0 : value;
+}
 
 /**
  * Vega expression functions a spec may call, in `calculate`, `filter`, `test`,
@@ -365,6 +394,8 @@ const number = (value) => (typeof value === "number" && Number.isFinite(value) ?
  * numbers only and refuses anything else. */
 const within = (value, min, max) => number(value) !== null && value >= min && value <= max;
 const integerWithin = (value, min, max) => within(value, min, max) && Number.isInteger(value);
+/** 0, or a finite number whose size is in CHART_NUMBER_RANGE. */
+const inRange = (value) => number(value) !== null && chartNumber(value) === value;
 const isString = (value) => typeof value === "string";
 const isBoolean = (value) => typeof value === "boolean";
 const isStringList = (value, max = 64) =>
@@ -433,20 +464,23 @@ function checkParam(param, path) {
 
 // Bin parameters, transform or encoding. Vega's bin multiplies or divides its
 // step in loops driven by `base` and `divide`, so each is ranged: a base below
-// 2 never leaves the loop.
+// 2 never leaves the loop, and a step that underflows to 0 never grows. Every
+// number feeding the step is 0 or in CHART_NUMBER_RANGE, and so is an
+// extent's span unless it is 0.
+const positiveInRange = (v) => inRange(v) && v > 0;
 const BIN_PARAMS = {
   maxbins: (v) => integerWithin(v, 1, 1000),
-  extent: isPair,
-  step: (v) => within(v, Number.MIN_VALUE, Number.MAX_VALUE),
-  steps: (v) =>
-    Array.isArray(v) &&
-    v.length <= 32 &&
-    v.every((step) => within(step, Number.MIN_VALUE, Number.MAX_VALUE)),
-  minstep: (v) => within(v, 0, Number.MAX_VALUE),
+  extent: (v) =>
+    isPair(v) &&
+    v.every(inRange) &&
+    (v[0] === v[1] || Math.abs(v[1] - v[0]) >= CHART_NUMBER_RANGE.min),
+  step: positiveInRange,
+  steps: (v) => Array.isArray(v) && v.length <= 32 && v.every(positiveInRange),
+  minstep: (v) => inRange(v) && v >= 0,
   base: (v) => within(v, 2, 100),
   divide: (v) => Array.isArray(v) && v.length <= 8 && v.every((d) => within(d, 1.001, 100)),
   nice: isBoolean,
-  anchor: (v) => number(v) !== null,
+  anchor: inRange,
   binned: isBoolean,
 };
 const MAX_BINS = 1000;
@@ -762,9 +796,19 @@ function checkString(value, path) {
 const reservedName = (name, path) =>
   `A chart can't use "${name}" as a name; every object already has it${at(path)}.`;
 
-/** Refuse any string or key under `value` that checkString refuses. */
+/** Refuse a number outside CHART_NUMBER_RANGE. */
+function checkNumber(value, path) {
+  if (!inRange(value))
+    refuse(
+      `A chart number must be 0 or between ${CHART_NUMBER_RANGE.min} and ${CHART_NUMBER_RANGE.max} in size${at(path)}.`,
+    );
+}
+
+/** Refuse any string, number or key under `value` that checkString or
+ * checkNumber refuses. */
 function checkStrings(value, path) {
   if (isString(value)) checkString(value, path);
+  else if (typeof value === "number") checkNumber(value, path);
   else if (value && typeof value === "object")
     for (const [key, child] of Object.entries(value)) {
       if (RESERVED_NAMES.has(key)) refuse(reservedName(key, path));
@@ -790,6 +834,10 @@ function walk(value, path, names) {
     checkString(value, path);
     return;
   }
+  if (typeof value === "number") {
+    checkNumber(value, path);
+    return;
+  }
   if (Array.isArray(value)) {
     value.forEach((item, index) => walk(item, [...path, index], names));
     return;
@@ -800,6 +848,9 @@ function walk(value, path, names) {
     if (FORBIDDEN_NAMES.has(key)) refuse(`A chart spec can't use the key "${key}"${at(path)}.`);
     if (RESERVED_NAMES.has(key)) refuse(reservedName(key, path));
     if (key === "usermeta") continue;
+    // A hover encoding runs on pointer events, and `interactive` asks for them.
+    if ((key === "hover" || key === "interactive") && path.includes("encode"))
+      refuse(`A chart can't change on hover; charts are static, with hover tooltips${at(here)}.`);
     if (key === "url") refuse(`A chart can't load anything from a URL${at(here)}.`);
     if (key === "href") refuse(`A chart can't link anywhere${at(here)}.`);
     if (key === "datasets") refuse(`A chart reads named data, not inline datasets${at(here)}.`);
@@ -876,6 +927,28 @@ function nestsWithin(value, max) {
  * throws. Whether the fields a spec encodes exist in the data is Vega-Lite's
  * to report.
  */
+/**
+ * Check every expression in the spec, wherever it is: any `expr`, `signal`,
+ * `calculate` or `labelExpr` string, and any `filter` or `test` string. The
+ * walk above checks the positions it knows; this pass has no early return, so
+ * an ExprRef or SignalRef in a field predicate, a mark property, a scale or a
+ * param's value is checked too. Iterative; depth is already bounded.
+ */
+function checkEveryExpression(spec) {
+  const stack = [[spec, []]];
+  while (stack.length) {
+    const [value, path] = stack.pop();
+    if (!value || typeof value !== "object") continue;
+    for (const [key, child] of Object.entries(value)) {
+      const here = [...path, key];
+      if (isString(child) && !Array.isArray(value)) {
+        if (EXPRESSION_KEYS.has(key) || key === "filter" || key === "test")
+          checkExpression(child, here);
+      } else if (child && typeof child === "object") stack.push([child, here]);
+    }
+  }
+}
+
 export function checkChartSpec(spec, { datasets } = {}) {
   try {
     if (!isObject(spec)) return { ok: false, error: "A chart spec must be a JSON object." };
@@ -901,6 +974,7 @@ export function checkChartSpec(spec, { datasets } = {}) {
     const { $schema: _schema, ...rest } = plain;
     const names = [];
     walk(rest, [], names);
+    checkEveryExpression(rest);
     const shape = viewShape(plain);
     if (shape.views > CHART_SPEC_LIMITS.maxViews)
       return { ok: false, error: `A chart can have at most ${CHART_SPEC_LIMITS.maxViews} views.` };

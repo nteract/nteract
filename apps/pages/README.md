@@ -59,16 +59,21 @@ Source layout under this directory:
 supplies, in the Page's own document. Nothing in production loads it yet.
 
 A chart is static: marks, axes, legends and Vega's hover tooltip. Selections,
-bindings, `param` predicates and every other event stream are refused, because
-each review of the interactive surface found another way through it.
+bindings, `param` predicates, hover encodings and every other event stream are
+refused, because each review of the interactive surface found another way
+through it.
 
 The spec and the rows are both untrusted. `shared/chart-spec.mjs` checks a
 spec against allowlists: data by name only, transforms and their parameters
 with ranged numbers, expression functions, keyword cursors, and no CSS `url()`
-in any string. The viewer refuses a compiled Vega dataflow with any event
-stream, binding or unlisted operator, checks every compiled expression again,
-runs expressions through Vega's interpreter, denies every load, and cleans
-each paint, font and cursor before Vega writes it.
+in any string. Every number, in the spec and in the data, is 0 or between
+1e-150 and 1e150 in size, since Vega's bin loop never ends once its step
+underflows to 0; the viewer turns a smaller number in the data into 0 and a
+larger or non-finite one into null. The viewer refuses a compiled Vega
+dataflow, root or subflow, with any event stream, binding or unlisted
+operator, checks every compiled expression again, runs expressions through
+Vega's interpreter, denies every load, and cleans each paint, font and cursor
+before Vega writes it.
 
 A chart runs on the reader's main thread, and nothing stops it there. The
 bounds limit its work without capping it: a facet draws a cell per distinct
@@ -76,6 +81,12 @@ value, a density or quantile emits rows per group, and an SVG mark per row is
 slow at 100,000 rows. A spec within every bound can still freeze the tab for
 seconds. A Worker or a separate frame with a kill timer would bound that;
 nothing does today.
+
+Each review of Vega's numeric code finds another input that stalls it, and
+listing inputs won't finish that. The planned next change, after charts ship,
+compiles the spec and runs the dataflow in a Worker with a kill timer, then
+renders the finished scenegraph in the Page: no Vega View on the main thread,
+with native SVG and tooltips kept.
 
 ## Run locally
 

@@ -843,3 +843,124 @@ test("names every object already has are refused, as keys and as whole strings",
   // A name that merely contains one is fine.
   assert.equal(checkChartSpec({ ...stacked, title: "toString of calls" }).ok, true);
 });
+
+test("every ExprRef and SignalRef is checked, wherever it sits", () => {
+  const enc = (channel) => ({ ...stacked, encoding: { ...stacked.encoding, ...channel } });
+  const leaks = ["join(['a', 'b'], '')", "length(data('calls'))", "pluck(datum, 'tool')"];
+  for (const code of leaks) {
+    const ref = { expr: code };
+    for (const [where, spec] of [
+      [
+        "field predicate equal",
+        { ...stacked, transform: [{ filter: { field: "tool", equal: ref } }] },
+      ],
+      ["field predicate lt", { ...stacked, transform: [{ filter: { field: "calls", lt: ref } }] }],
+      [
+        "field predicate range",
+        { ...stacked, transform: [{ filter: { field: "calls", range: [0, ref] } }] },
+      ],
+      [
+        "field predicate oneOf",
+        { ...stacked, transform: [{ filter: { field: "tool", oneOf: [ref] } }] },
+      ],
+      [
+        "condition test predicate",
+        enc({
+          opacity: { condition: { test: { field: "calls", gt: ref }, value: 1 }, value: 0.5 },
+        }),
+      ],
+      ["mark property", { ...stacked, mark: { type: "bar", opacity: ref } }],
+      ["encoding value", enc({ opacity: { value: ref } })],
+      ["encoding datum", enc({ x2: { datum: ref } })],
+      ["axis", enc({ x: { field: "calls", type: "quantitative", axis: { labelAngle: ref } } })],
+      ["legend", enc({ color: { field: "client", type: "nominal", legend: { offset: ref } } })],
+      [
+        "scale domain",
+        enc({ x: { field: "calls", type: "quantitative", scale: { domain: [0, ref] } } }),
+      ],
+      [
+        "scale range",
+        enc({ color: { field: "client", type: "nominal", scale: { range: [ref, "red"] } } }),
+      ],
+      ["title", { ...stacked, title: { text: "t", fontSize: ref } }],
+      ["config", { ...stacked, config: { bar: { opacity: ref } } }],
+      ["param value", { ...stacked, params: [{ name: "p", value: { nested: ref } }] }],
+      ["signal ref", { ...stacked, mark: { type: "bar", opacity: { signal: code } } }],
+    ])
+      assert.match(refusal(spec), /calls (join|data|pluck)\(\)/, `${where}: ${code}`);
+  }
+  assert.equal(
+    checkChartSpec({
+      ...stacked,
+      transform: [{ filter: { field: "calls", lt: { expr: "10 * 2" } } }],
+    }).ok,
+    true,
+  );
+});
+
+test("a chart can't change on hover", () => {
+  const hover = { fill: { value: "red" } };
+  for (const spec of [
+    { ...stacked, title: { text: "t", encode: { title: { interactive: true, hover } } } },
+    {
+      ...stacked,
+      encoding: {
+        ...stacked.encoding,
+        x: { field: "calls", type: "quantitative", axis: { encode: { labels: { hover } } } },
+      },
+    },
+    {
+      ...stacked,
+      encoding: {
+        ...stacked.encoding,
+        color: {
+          field: "client",
+          type: "nominal",
+          legend: { encode: { symbols: { interactive: true } } },
+        },
+      },
+    },
+  ])
+    assert.match(refusal(spec), /can't change on hover/);
+  // Plain encode blocks still style axes.
+  assert.equal(
+    checkChartSpec({
+      ...stacked,
+      encoding: {
+        ...stacked.encoding,
+        x: {
+          field: "calls",
+          type: "quantitative",
+          axis: { encode: { labels: { update: { fontWeight: { value: "bold" } } } } },
+        },
+      },
+    }).ok,
+    true,
+  );
+});
+
+test("numbers in a spec are 0 or between 1e-150 and 1e150 in size, and so are bin spans", () => {
+  const b = (bin) => ({
+    ...stacked,
+    encoding: { ...stacked.encoding, x: { field: "calls", type: "quantitative", bin } },
+  });
+  for (const spec of [
+    { ...stacked, transform: [{ bin: { base: 2, extent: [0, 5e-324] }, field: "calls", as: "b" }] },
+    b({ extent: [0, 1e-200] }),
+    b({ extent: [1, 1e200] }),
+    b({ step: 1e-200 }),
+    b({ minstep: 1e-160 }),
+    b({ anchor: 1e-300 }),
+    { ...stacked, mark: { type: "bar", opacity: 1e-200 } },
+    { ...stacked, transform: [{ calculate: "1", as: "v" }, { sample: 5e-324 }] },
+  ])
+    assert.match(
+      refusal(spec),
+      /number must be 0 or between|out.of.range/,
+      JSON.stringify(spec).slice(0, 120),
+    );
+  // A span below the floor between two numbers that are each in range.
+  assert.match(refusal(b({ extent: [1e-140, 1e-140 + 1e-155] })), /extent is out of range/);
+  assert.equal(checkChartSpec(b({ extent: [0, 1e-100], maxbins: 1000, base: 2 })).ok, true);
+  assert.equal(checkChartSpec(b({ extent: [5, 5] })).ok, true);
+});
