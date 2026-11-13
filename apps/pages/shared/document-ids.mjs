@@ -16,9 +16,9 @@ import { interpretAsDocumentId } from "@automerge/automerge-repo";
  * The Page record names the comments document's UUID as `comments_doc`. A
  * Page record written without the field by a racing update still finds the
  * same document next time. The sources and view documents' UUIDs are not
- * stored: the record names the `pages.sources` and `pages.view` types once a
- * document of that type exists, and the host lists its views under
- * `host/view/` (worker/index.mjs).
+ * stored: the record names the `pages.sources` type once that document
+ * exists, and the host lists its views under `host/view/`
+ * (worker/index.mjs).
  */
 
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");

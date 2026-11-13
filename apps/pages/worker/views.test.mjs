@@ -11,7 +11,8 @@ import { createAuthFixture } from "../auth-fixtures.mjs";
 import { MEMBER_FORMATS, readableFormats } from "../model/document-types.mjs";
 import { documentFeatures } from "../model/schema-features.mjs";
 import { checkChartSpec } from "../shared/chart-spec.mjs";
-import { viewDocumentId } from "../shared/document-ids.mjs";
+import { createPageData, initializePage } from "../model/page.mjs";
+import { derivedDocumentId, sourcesDocUuid, viewDocumentId } from "../shared/document-ids.mjs";
 import { BUILD_FEATURES } from "../model/schema-features.mjs";
 import { decodeFrame, encodeFrame, framePipe } from "../sync/wire.mjs";
 import { until } from "../sync/test-helpers.mjs";
@@ -29,8 +30,16 @@ const first = "a".repeat(64),
  * passes `test`: before storing it, or after. */
 class PlainStorage extends Storage {
   crashes = [];
+  // Names whose next delete throws once, before deleting anything.
+  failDeletes = [];
   async delete(key) {
-    for (const name of Array.isArray(key) ? key : [key]) this.values.delete(name);
+    const names = Array.isArray(key) ? key : [key];
+    const index = this.failDeletes.findIndex((name) => names.includes(name));
+    if (index >= 0) {
+      this.failDeletes.splice(index, 1);
+      throw Error("Simulated crash before a delete");
+    }
+    for (const name of names) this.values.delete(name);
   }
   async put(key, value) {
     const entries = typeof key === "object" ? Object.entries(key) : [[key, value]];
@@ -50,8 +59,10 @@ const parquetHead = (assetId) => ({
 
 /** A Page over real plain sync with one source, `usage`, at revisions "1"
  * (asset `first`) and "2" (asset `second`). `page()` starts a new host over
- * the same storage, as after eviction or a crash. */
-async function viewsHost(t) {
+ * the same storage, as after eviction or a crash. With `documentId`, the
+ * Page is a registered draft under that document id, and with `sources:
+ * false` it holds no source. */
+async function viewsHost(t, { documentId, sources = true } = {}) {
   const auth = await createAuthFixture();
   t.mock.method(globalThis, "fetch", auth.fetch);
   t.mock.method(console, "error", () => {});
@@ -94,16 +105,33 @@ async function viewsHost(t) {
   const setView = (host, fields = {}, nonce) =>
     edit(host, [{ op: "set_view", ...chart(fields) }], nonce);
   const host = page();
-  const created = await call(host, "/internal/create", {
-    page_id: pageId,
-    title: "Usage",
-    markdown: "Some text",
-  });
+  let created;
+  if (documentId) {
+    const draft = A.change(A.from(createPageData({ pageId, title: "Usage" })), (doc) =>
+      initializePage(doc, "Some text"),
+    );
+    created = await call(host, "/internal/register", {
+      page_id: pageId,
+      expected_principal: `user:anaconda-fixture:${auth.subject}`,
+      document_id: documentId,
+      initial_snapshot_base64: Buffer.from(A.save(draft)).toString("base64"),
+      title: "Usage",
+      nonce: "register-draft",
+      record_storage: "automerge",
+    });
+    A.free(draft);
+  } else
+    created = await call(host, "/internal/create", {
+      page_id: pageId,
+      title: "Usage",
+      markdown: "Some text",
+    });
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  for (const [asset_id, source_revision] of [
+  const versions = [
     [first, null],
     [second, "1"],
-  ]) {
+  ];
+  for (const [asset_id, source_revision] of sources ? versions : []) {
     const source = await edit(host, [
       { op: "set_source", source_id: "usage", name: "Usage", asset_id, source_revision },
     ]);
@@ -121,7 +149,19 @@ async function viewsHost(t) {
     writers: await keys("plain/writer/"),
     plain: (await keys("plain/sync/")).length,
   });
-  return { storage, host, page, call, tool, edit, setView, record, keys, viewStored, snapshot };
+  return {
+    storage,
+    host,
+    page,
+    call,
+    tool,
+    edit,
+    setView,
+    record,
+    keys,
+    viewStored,
+    snapshot,
+  };
 }
 
 const SPEC = Object.freeze({
@@ -161,11 +201,9 @@ test("set_view creates a view, rewrites it, refuses a stale revision, and reads 
   assert.deepEqual(created.body.result.edits, [
     { op: "set_view", view_id: "daily", view_revision: "1" },
   ]);
-  assert.deepEqual((await h.record()).documentFormats, {
-    ...MEMBER_FORMATS,
-    "pages.sources": 1,
-    "pages.view": 1,
-  });
+  // The key is the view's only record: a host that predates views opens
+  // the Page.
+  assert.deepEqual((await h.record()).documentFormats, { ...MEMBER_FORMATS, "pages.sources": 1 });
   assert.deepEqual(await h.keys("host/view/"), ["host/view/daily"]);
   assert.equal((await h.keys("plain/writer/")).length, before.writers.length, "same writer");
   const connected = await h.call(h.host, `/api/connect?page=${pageId}`);
@@ -514,4 +552,156 @@ test("purge deletes every view's document and the host's view list", async (t) =
   assert.deepEqual(await h.keys("plain/"), []);
   assert.deepEqual(await h.keys("host/view/"), []);
   for (const view_id of ["a", "b", "c"]) assert.equal(host.viewDoc(view_id), undefined);
+});
+
+/** Edit `operations` against `revision` without reading first. */
+const editAt = (h, revision, nonce, operations) =>
+  h.tool(h.host, "edit_page", { revision, nonce, operations });
+
+test("a write refused once its view slot is taken gives the slot back", async (t) => {
+  const h = await viewsHost(t);
+  const before = await h.snapshot();
+  const { revision } = (await h.tool(h.host, "read_page", { include_content: false })).body;
+  // The journal's pending capacity is full, so reserving the entry is
+  // refused after the view's key is written.
+  const pending = Array.from({ length: 64 }, (_, n) => `host/operation/held-${n}`);
+  for (const key of pending)
+    h.storage.values.set(key, {
+      fingerprint: key,
+      pending: true,
+      createdAt: new Date().toISOString(),
+    });
+  const refused = await editAt(h, revision, "full-journal", [{ op: "set_view", ...chart() }]);
+  assert.equal(refused.status, 429, JSON.stringify(refused.body));
+  assert.equal(refused.body.code, "pending_operation_capacity");
+  assert.deepEqual(await h.snapshot(), before);
+  assert.deepEqual(await h.viewStored("daily"), []);
+  assert.equal(h.host.views?.has("daily") ?? false, false);
+  assert.equal(
+    (await h.call(h.host, `/api/connect?page=${pageId}`)).body.documents.views,
+    undefined,
+  );
+  // The slot is free: once the journal drains, the same id is created.
+  for (const key of pending) h.storage.values.delete(key);
+  const written = await editAt(h, revision, "drained", [{ op: "set_view", ...chart() }]);
+  assert.equal(written.status, 200, JSON.stringify(written.body));
+  assert.equal(written.body.view_revision, "1");
+});
+
+test("a view key with no journal entry and no revision is never advertised, and boot releases it", async (t) => {
+  const h = await viewsHost(t);
+  // The host stops after the key and before the journal entry; its own
+  // release of the slot fails too.
+  h.storage.crashes.push({
+    test: (name, value) => name.startsWith("host/operation/") && value?.pending === true,
+    before: true,
+  });
+  h.storage.failDeletes.push("host/view/daily");
+  assert.equal((await h.setView(h.host)).status, 500);
+  assert.deepEqual(await h.keys("host/view/"), ["host/view/daily"], "the slot is taken");
+  assert.equal(
+    (await h.call(h.host, `/api/connect?page=${pageId}`)).body.documents.views,
+    undefined,
+    "a view with no revision isn't advertised",
+  );
+  assert.deepEqual((await h.tool(h.host, "read_page", { views: true })).body.views, []);
+
+  const host = h.page();
+  assert.deepEqual((await h.tool(host, "read_page", { views: true })).body.views, []);
+  assert.deepEqual(await h.keys("host/view/"), [], "boot released the slot");
+  assert.deepEqual(await h.viewStored("daily"), []);
+  assert.equal(host.views?.has("daily") ?? false, false);
+  const written = await h.setView(host);
+  assert.equal(written.status, 200, JSON.stringify(written.body));
+  assert.equal(written.body.view_revision, "1");
+});
+
+test("two editors racing to create one view: one creates it, the other is stale", async (t) => {
+  const h = await viewsHost(t);
+  const { revision } = (await h.tool(h.host, "read_page", { include_content: false })).body;
+  const results = await Promise.all(
+    ["first-editor", "second-editor"].map((nonce, n) =>
+      editAt(h, revision, nonce, [{ op: "set_view", ...chart({ title: `Editor ${n}` }) }]),
+    ),
+  );
+  assert.deepEqual(
+    results.map((result) => result.status).sort(),
+    [200, 409],
+    JSON.stringify(results.map((result) => result.body)),
+  );
+  const stale = results.find((result) => result.status === 409);
+  assert.equal(stale.body.code, "stale_view");
+  assert.equal(stale.body.view_revision, "1");
+  assert.deepEqual(await h.keys("host/view/"), ["host/view/daily"]);
+  const listed = await h.tool(h.host, "read_page", { views: true });
+  assert.equal(listed.body.views.length, 1);
+  assert.equal(listed.body.views[0].revision, "1");
+});
+
+test("access revoked while a new view's slot is checked creates nothing", async (t) => {
+  const h = await viewsHost(t);
+  const before = await h.snapshot();
+  const { revision } = (await h.tool(h.host, "read_page", { include_content: false })).body;
+  // The view list read is slow; the caller's access ends while it runs.
+  const list = h.storage.list.bind(h.storage);
+  t.mock.method(h.storage, "list", async (options) => {
+    const listed = await list(options);
+    if (options?.prefix === "host/view/")
+      t.mock.method(h.host.policy, "account", () => {
+        throw Object.assign(Error("Document access denied"), { status: 403 });
+      });
+    return listed;
+  });
+  const refused = await editAt(h, revision, "revoked", [{ op: "set_view", ...chart() }]);
+  assert.equal(refused.status, 403, JSON.stringify(refused.body));
+  assert.deepEqual(await h.snapshot(), before);
+  assert.deepEqual(await h.viewStored("daily"), []);
+  assert.equal(h.host.views?.has("daily") ?? false, false);
+});
+
+test("refused creates leave the host's view map as it was", async (t) => {
+  const h = await viewsHost(t);
+  const { revision } = (await h.tool(h.host, "read_page", { include_content: false })).body;
+  const size = h.host.views?.size ?? 0;
+  for (let n = 0; n < 1000; n++) {
+    const refused = await editAt(h, revision, `unknown-${n}`, [
+      { op: "set_view", ...chart({ view_id: `v${n}`, data: { usage: { source_id: "nope" } } }) },
+    ]);
+    assert.equal(refused.body.code, "unknown_source");
+  }
+  assert.equal(h.host.views?.size ?? 0, size);
+  assert.deepEqual(await h.keys("host/view/"), []);
+});
+
+test("a Page registered under a view's document id refuses set_view and keeps its content", async (t) => {
+  const h = await viewsHost(t, { documentId: await viewDocumentId(pageId, "daily") });
+  const heads = A.getHeads(h.host.handle.doc());
+  const before = await h.snapshot();
+  const refused = await h.setView(h.host);
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.code, "document_conflict");
+  assert.deepEqual(A.getHeads(h.host.handle.doc()), heads);
+  assert.equal(h.host.handle.doc().title, "Usage");
+  assert.deepEqual(await h.snapshot(), before);
+  assert.equal(h.host.views?.has("daily") ?? false, false);
+  // Another view id is a different document.
+  const other = await h.setView(h.host, { view_id: "weekly" });
+  assert.equal(other.status, 200, JSON.stringify(other.body));
+});
+
+test("a Page registered under its sources document id refuses set_source and keeps its content", async (t) => {
+  const h = await viewsHost(t, {
+    documentId: derivedDocumentId(await sourcesDocUuid(pageId)),
+    sources: false,
+  });
+  const heads = A.getHeads(h.host.handle.doc());
+  const record = await h.record();
+  const refused = await h.edit(h.host, [
+    { op: "set_source", source_id: "usage", name: "Usage", asset_id: first, source_revision: null },
+  ]);
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.code, "document_conflict");
+  assert.deepEqual(A.getHeads(h.host.handle.doc()), heads);
+  assert.equal(h.host.handle.doc().title, "Usage");
+  assert.deepEqual(await h.record(), record);
 });

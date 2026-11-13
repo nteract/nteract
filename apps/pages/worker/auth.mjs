@@ -497,6 +497,7 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "unknown_source_revision",
   "view_limit",
   "unknown_view",
+  "document_conflict",
   "upload_capability_invalid",
   "upload_capability_expired",
   "upload_mismatch",

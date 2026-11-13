@@ -6,7 +6,7 @@ import { HIGHLIGHT_COLORS, MARK_NAMES, formatAddSchema } from "./model/marks.mjs
 import { SETTABLE_ATTRS, retypeTargets } from "./model/node-registry.mjs";
 import { richContentInstructions } from "./model/rich-content-guide.mjs";
 import { MAX_SOURCE_NAME, SOURCE_ID_PATTERN, SOURCE_REVISION_PATTERN } from "./shared/sources.mjs";
-import { VIEW_ID_PATTERN, VIEW_MEDIA_TYPES, VIEW_REVISION_PATTERN } from "./shared/views.mjs";
+import { VIEW_MEDIA_TYPES } from "./shared/views.mjs";
 import {
   RENAMED_TOOLS,
   refusalCode,
@@ -164,11 +164,7 @@ const readSelectors = {
     description: "Reads one source, who set it when, and its history. Alone, skips content.",
   },
   views: { type: "boolean", description: "true lists views. Alone, skips content." },
-  view_id: {
-    type: "string",
-    pattern: VIEW_ID_PATTERN,
-    description: "One view with its spec. Alone, skips content.",
-  },
+  view_id: { type: "string", description: "One view with its spec. Alone, skips content." },
   max_bytes: readBudget,
 };
 const nonce = {
@@ -294,25 +290,15 @@ const editOperation = {
       pattern: SOURCE_REVISION_PATTERN,
       description: "set_source: source_revision you read; null creates. Else stale_source.",
     },
-    view_id: { type: "string", pattern: VIEW_ID_PATTERN, description: "set_view: its ID." },
-    media_type: { ...choice(...VIEW_MEDIA_TYPES), description: "set_view: the spec's." },
-    spec: { type: "object", description: 'set_view: Vega-Lite spec; data only {"name"}.' },
+    view_id: { type: "string", description: "set_view: its ID, like a source_id." },
+    media_type: { ...choice(...VIEW_MEDIA_TYPES), description: "set_view." },
+    spec: { type: "object", description: 'set_view: Vega-Lite; data by {"name"} only.' },
     data: {
       type: "object",
-      description: "set_view: each data name the spec reads, to a source.",
-      additionalProperties: {
-        type: "object",
-        properties: {
-          source_id: { type: "string", pattern: SOURCE_ID_PATTERN },
-          revision: { type: "string", pattern: SOURCE_REVISION_PATTERN },
-        },
-        required: ["source_id"],
-        additionalProperties: false,
-      },
+      description: "set_view: each name the spec reads → {source_id, revision?}.",
     },
     view_revision: {
       type: ["string", "null"],
-      pattern: VIEW_REVISION_PATTERN,
       description: "set_view: view_revision you read; null creates. Else stale_view.",
     },
     dark_asset_id: {
@@ -347,7 +333,7 @@ const editOperation = {
               ...choice("application/vnd.apache.parquet"),
               description: "Defaults to Parquet.",
             },
-            view_id: { type: "string", pattern: VIEW_ID_PATTERN },
+            view_id: { type: "string" },
           },
           additionalProperties: false,
         },

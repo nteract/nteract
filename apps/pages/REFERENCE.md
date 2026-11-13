@@ -1633,17 +1633,35 @@ document. A view, once created, stays for the life of the Page and can be
 rewritten; there is no delete.
 
 The host lists its views under `host/view/<view_id>`, one key per view whose
-document it created, so it never reads the Page body to find them. The key
-is normative: written in the same put as the host record that names
-`pages.view` in `documentFormats` (for the Page's first view), and read at
-boot, for discovery, for the cap and on purge. Each view has its own
-lifecycle ([worker/view-lifecycle.mjs](worker/view-lifecycle.mjs)), the
-sources document's steps per view id: `absent`, then `storing` (serve, import
-the genesis, flush), `recording` (the key and record), `ready`; at boot, a
-listed view goes through `loading` (serve, import, replay its journal) to
-`ready`. A restart before the key is written starts over on the next write.
-The host serves a view's document from `storing` on, so any open socket can
-sync it once the Page body names it; nothing waits for a reconnect.
+document it created, holding `{ format }`, so it never reads the Page body to
+find them. The key is normative and is the view's only record: the host
+record never names `pages.view` in `documentFormats`, so a host that predates
+views still opens the Page. That host ignores the `host/view/` keys and the
+`view:<view_id>` journal entries, and its purge clears the views' documents
+with the rest of the Page's plain storage. The key is read at boot, for
+discovery, for the cap and on purge. Each view has its own lifecycle
+([worker/view-lifecycle.mjs](worker/view-lifecycle.mjs)): `absent`, then
+`storing` (serve, import the genesis, flush), `recording` (put the key),
+`ready`; at boot, a listed view goes through `loading` (serve, import, replay
+its journal) to `ready`. A restart before the key is written starts over on
+the next write. The host serves a view's document from `storing` on, so any
+open socket can sync it once the Page body names it; nothing waits for a
+reconnect.
+
+A slot holds a view only once a write lands in it. Discovery and reads list
+only views with a `revision`. A write refused after its slot was taken, by
+the journal's pending capacity say, releases the slot (`releasing`: delete
+the key, then the document) when no other write holds the view and the
+journal holds no entry for it. Boot releases a listed view that still has no
+`revision` once its journal is replayed, which covers a restart between the
+key and the journal entry. Slot allocation and release take turns per Page,
+so the cap is read and the key written as one step. A new view's write
+authenticates its caller again just before it takes the slot.
+
+Every derived document id (comments, sources, each view) is served under one
+kind only. A Page registered with a `document_id` equal to one of them
+refuses the write that would create that document with `409
+document_conflict`, and its own document is unchanged.
 
 Browsers read views and never write them: the type module declares no
 browser write access and refuses a frame that changes one
@@ -1681,6 +1699,7 @@ writer record:
 | `view_revision` not the stored one, or null for an existing view | `409 stale_view` |
 | a non-null `view_revision` for a view that doesn't exist | `404 view_not_found` |
 | an eleventh view | `400 view_limit`, naming the ten in `details.view_ids` |
+| the Page's own document id is this view's derived id | `409 document_conflict` |
 
 A pinned revision is checked against `history` because it holds the asset of
 each revision it keeps; a source keeps its newest 50.
@@ -2283,8 +2302,9 @@ document types as `documentFormats`, `{ "pages.page": 3, "pages.comments":
 formats the build writes ([model/document-types.mjs](model/document-types.mjs)),
 the comments format included, since the comments document is created at
 boot. The host adds `"pages.sources": 1` once it creates the Page's sources
-document, and `"pages.view": 1` with its first view. `recordDocumentFormats` is the one reader; it reads a record without
-the field as naming no formats.
+document. It never adds `pages.view`: each view's format is stored with its
+`host/view/<view_id>` key ([Views](#views)). `recordDocumentFormats` is the one
+reader; it reads a record without the field as naming no formats.
 
 A record without the field, or whose formats aren't exactly the ones the
 build writes, opens

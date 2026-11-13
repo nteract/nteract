@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { VIEW_ABSENT, viewStep } from "./view-lifecycle.mjs";
 
-const STATES = ["absent", "loading", "storing", "recording", "ready"];
+const STATES = ["absent", "loading", "storing", "recording", "ready", "releasing"];
 const EVENTS = [
   { type: "boot", recorded: true },
   { type: "boot", recorded: false },
@@ -11,6 +11,8 @@ const EVENTS = [
   { type: "loaded" },
   { type: "stored" },
   { type: "recorded" },
+  { type: "release" },
+  { type: "released" },
   { type: "failed" },
   { type: "drop" },
 ];
@@ -31,6 +33,8 @@ const TABLE = {
     loaded: null,
     stored: null,
     recorded: null,
+    release: null,
+    released: null,
     failed: null,
     drop: ["absent", []],
   },
@@ -42,6 +46,8 @@ const TABLE = {
     loaded: ["ready", []],
     stored: null,
     recorded: null,
+    release: null,
+    released: null,
     failed: ["absent", []],
     drop: ["absent", []],
   },
@@ -53,6 +59,8 @@ const TABLE = {
     loaded: null,
     stored: ["recording", ["record"]],
     recorded: null,
+    release: null,
+    released: null,
     failed: ["absent", []],
     drop: ["absent", []],
   },
@@ -64,6 +72,8 @@ const TABLE = {
     loaded: null,
     stored: null,
     recorded: ["ready", []],
+    release: null,
+    released: null,
     failed: ["absent", []],
     drop: ["absent", []],
   },
@@ -75,7 +85,23 @@ const TABLE = {
     loaded: null,
     stored: null,
     recorded: null,
+    release: ["releasing", ["release"]],
+    released: null,
     failed: null,
+    drop: ["absent", []],
+  },
+  releasing: {
+    "boot:recorded": null,
+    "boot:unrecorded": null,
+    "create:recorded": null,
+    "create:unrecorded": null,
+    loaded: null,
+    stored: null,
+    recorded: null,
+    release: null,
+    released: ["absent", []],
+    // The key may still be stored; the next boot or refused write retries.
+    failed: ["ready", []],
     drop: ["absent", []],
   },
 };
@@ -129,4 +155,24 @@ test("views step apart: one view's write leaves another's state alone", () => {
   assert.deepEqual(step("b", { type: "stored" }), ["record"]);
   assert.deepEqual(step("b", { type: "recorded" }), []);
   assert.equal(views.get("b").name, "ready");
+});
+
+test("a slot with no write is released and can be taken again", () => {
+  let state = VIEW_ABSENT;
+  const step = (event) => {
+    const result = viewStep(state, event);
+    assert.ok(!result.rejected, `${state.name} + ${event.type}`);
+    state = result.state;
+    return result.effects;
+  };
+  step({ type: "create", recorded: false });
+  step({ type: "stored" });
+  step({ type: "recorded" });
+  assert.deepEqual(step({ type: "release" }), ["release"]);
+  assert.deepEqual(step({ type: "failed" }), []);
+  assert.equal(state.name, "ready", "a failed release keeps the view");
+  step({ type: "release" });
+  assert.deepEqual(step({ type: "released" }), []);
+  assert.equal(state.name, "absent");
+  assert.deepEqual(step({ type: "create", recorded: false }), ["store"]);
 });

@@ -28,9 +28,10 @@ export const WRITTEN_FORMATS = Object.freeze(
 );
 
 /** The types every Page holds a document of. A type registered beside them
- * is one a Page may hold, such as `pages.sources` or `pages.view`: its record
- * names the type once a document of it exists, and a record without it is
- * still opened. */
+ * is one a Page may hold, such as `pages.sources` or `pages.view`, and a
+ * record without it is still opened. The record names `pages.sources` once
+ * the sources document exists; it never names `pages.view`, whose documents
+ * the host lists under `host/view/` instead. */
 export const MEMBER_TYPES = Object.freeze(["pages.page", "pages.comments"]);
 
 /** `documentFormats` for a new Page: each member type at its written format.
@@ -83,8 +84,8 @@ export function formatPairs(formats) {
  * recordDocumentFormats) without minting, persisting or converting
  * documents. Omit comments when the host has no comments handle to
  * advertise, sources when the Page has no sources document, and views when
- * it has none. `viewDocumentIds` is `{ [view_id]: documentId }`, every view
- * document of format `formats["pages.view"]`. */
+ * it has none. `viewDocumentIds` is `{ [view_id]: documentId }`; each view's
+ * format is stored with the host's key for it, not in `formats`. */
 export function pageDocuments(
   formats,
   documentId,

@@ -5188,8 +5188,12 @@ export class Page {
     }
     await this.loadComments();
     await this.sourcesEvent({ type: "boot", recorded: recordNamesSources(this.metadata) });
-    for (const viewId of await this.storedViewIds())
+    for (const viewId of await this.storedViewIds()) {
       await this.viewEvent(viewId, { type: "boot", recorded: true });
+      // A key with no write behind it: the host stopped between the key
+      // and the journal entry.
+      await this.releaseEmptyView(viewId);
+    }
     await this.restoreTitleProjection();
     // After recovery: a replayed journal entry was accepted before the
     // restart, not now.
@@ -5513,25 +5517,56 @@ export class Page {
     return [...keys.keys()].map((key) => key.slice(VIEW_KEY_PREFIX.length)).sort();
   }
 
-  /** The host's entry for view `viewId`: its document UUID, handle and
-   * lifecycle state (view-lifecycle.mjs), created on first use. `views` is
-   * keyed by view id. */
+  /** The host's entry for view `viewId`: its document UUID, handle,
+   * lifecycle state (view-lifecycle.mjs), the queue its events run in and
+   * the count of writes holding it. `views` is keyed by view id. An entry is
+   * made by boot or by a write that passed its checks, and dropped once it
+   * is absent with no write holding it (forgetIdleView). */
   async viewEntry(viewId) {
     this.views ??= new Map();
     let entry = this.views.get(viewId);
     if (!entry) {
-      entry = { uuid: undefined, handle: undefined, state: VIEW_ABSENT };
+      entry = {
+        uuid: await viewDocUuid(this.metadata.pageId, viewId),
+        handle: undefined,
+        state: VIEW_ABSENT,
+        queue: Promise.resolve(),
+        writers: 0,
+      };
+      // Another caller may have made it while the UUID was hashed.
+      if (this.views.has(viewId)) return this.views.get(viewId);
       this.views.set(viewId, entry);
     }
-    entry.uuid ??= await viewDocUuid(this.metadata.pageId, viewId);
     return entry;
   }
 
-  /** Step view `viewId`'s lifecycle and run its effects in order. A failed
-   * effect leaves the lifecycle where the next write starts over, and
-   * throws. */
+  /** Drop view `viewId`'s entry when nothing holds it: absent, with no
+   * write in flight. */
+  forgetIdleView(viewId) {
+    const entry = this.views?.get(viewId);
+    if (entry?.state.name === "absent" && !entry.writers) this.views.delete(viewId);
+  }
+
+  /** Run `step` after every earlier one. Allocating a view slot and giving
+   * one back take turns, so the view cap is read and the key written as one
+   * step, and a release never runs between a write's reading of the view
+   * list and its claim on the view. */
+  viewSlot(step) {
+    const run = (this.viewSlots ?? Promise.resolve()).then(step);
+    this.viewSlots = run.catch(() => {});
+    return run;
+  }
+
+  /** Step view `viewId`'s lifecycle and run its effects in order, after its
+   * earlier events. A failed effect steps `failed` and throws. */
   async viewEvent(viewId, event) {
     const entry = await this.viewEntry(viewId);
+    const run = entry.queue.then(() => this.stepView(viewId, entry, event));
+    entry.queue = run.catch(() => {});
+    return run;
+  }
+
+  async stepView(viewId, entry, event) {
     const result = viewStep(entry.state, event);
     if (result.rejected)
       throw Error(`The view lifecycle refused ${event.type} in ${entry.state.name}`);
@@ -5544,8 +5579,23 @@ export class Page {
         entry.state = viewStep(entry.state, { type: "failed" }).state;
         throw error;
       }
-      await this.viewEvent(viewId, done);
+      await this.stepView(viewId, entry, done);
     }
+  }
+
+  /** Release view `viewId` when its slot holds nothing: the view is ready
+   * with no revision, no other write holds it, and, for a write that was
+   * just refused, the journal holds no entry under `journalKey`, which a
+   * retry or the next boot would replay. Runs in the slot queue. */
+  releaseEmptyView(viewId, journalKey) {
+    return this.viewSlot(async () => {
+      const entry = this.views?.get(viewId);
+      if (entry?.state.name !== "ready" || entry.writers > (journalKey ? 1 : 0)) return;
+      if (this.viewDoc(viewId)?.revision !== undefined) return;
+      if (journalKey && (await this.ctx.storage.get(journalKey)) !== undefined) return;
+      await this.viewEvent(viewId, { type: "release" });
+      this.forgetIdleView(viewId);
+    });
   }
 
   /** One view lifecycle effect. Returns the event that reports it. */
@@ -5570,26 +5620,23 @@ export class Page {
         await this.ctx.storage.sync();
         return { type: "stored" };
       }
-      case "record": {
-        const formats = recordDocumentFormats(this.metadata);
-        const named = Object.hasOwn(formats ?? {}, VIEW_MODULE.type);
-        const metadata = named
-          ? this.metadata
-          : {
-              ...this.metadata,
-              documentFormats: {
-                ...formats,
-                [VIEW_MODULE.type]: WRITTEN_FORMATS[VIEW_MODULE.type],
-              },
-            };
-        await this.ctx.storage.put({
-          [viewKey(viewId)]: { format: WRITTEN_FORMATS[VIEW_MODULE.type] },
-          ...(!named && { "host/document": metadata }),
+      case "record":
+        // The key alone records the view. The Page record never names
+        // `pages.view`, so a host that predates views opens the Page.
+        await this.ctx.storage.put(viewKey(viewId), {
+          format: WRITTEN_FORMATS[VIEW_MODULE.type],
         });
         await this.ctx.storage.sync();
-        this.metadata = metadata;
         return { type: "recorded" };
-      }
+      case "release":
+        // The key first: a restart between the two finds no view, and the
+        // genesis bytes left behind go with the Page's plain storage on
+        // purge, as after a restart before `recording`.
+        await this.ctx.storage.delete(viewKey(viewId));
+        await this.ctx.storage.sync();
+        entry.handle = undefined;
+        await this.repo.delete(derivedDocumentId(entry.uuid));
+        return { type: "released" };
       default:
         throw Error(`Unknown view effect ${effect}`);
     }
@@ -5616,11 +5663,12 @@ export class Page {
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   }
 
-  /** `{ [view_id]: documentId }` of each view that exists. */
+  /** `{ [view_id]: documentId }` of each view that holds a write. A slot
+   * with no revision is never advertised. */
   viewDocumentIds() {
     return Object.fromEntries(
       this.servedViews()
-        .filter(([viewId]) => this.viewDoc(viewId))
+        .filter(([viewId]) => this.viewDoc(viewId)?.revision !== undefined)
         .map(([viewId, entry]) => [viewId, derivedDocumentId(entry.uuid)]),
     );
   }
@@ -7124,12 +7172,15 @@ export class Page {
    *
    * A journaled write to this view whose apply didn't finish is replayed
    * first. For a new intent, `prepare` checks the operation, its spec
-   * (shared/view-spec.mjs), its bindings against the Page's sources and the
-   * view cap, and only then creates the view's document when the Page has
-   * none under this id (view-lifecycle.mjs), so a refused write creates no
-   * document, no listed view and no writer record. Until then the journal
-   * reads the fixed genesis. The receipt's `view_revision` is the view's
-   * revision after the write; an exact retry replays it.
+   * (shared/view-spec.mjs) and its bindings against the Page's sources,
+   * then, in the slot queue, the view cap and the caller's access, and only
+   * then creates the view's document when the Page has none under this id
+   * (view-lifecycle.mjs). Until then the journal reads the fixed genesis
+   * and the host holds no entry for the view. A write refused after that,
+   * by the journal's capacity say, gives the slot back when it was the
+   * view's only write and left no journal entry. The receipt's
+   * `view_revision` is the view's revision after the write; an exact retry
+   * replays it.
    */
   async writeView(request, identity, body) {
     const args = body.arguments ?? {};
@@ -7146,14 +7197,21 @@ export class Page {
     // Stored as the view's producer, so the retry fingerprint covers it, as
     // a source's does.
     const agent = agentFromProvenance(identity.clientProvenance);
-    const entry = await this.viewEntry(viewId);
+    const uuid = this.views?.get(viewId)?.uuid ?? (await viewDocUuid(this.metadata.pageId, viewId));
     if (this.viewDoc(viewId))
-      await recoverDocumentMutations(this.ctx.storage, entry.handle, () => this.flush(), doc);
+      await recoverDocumentMutations(
+        this.ctx.storage,
+        this.views.get(viewId).handle,
+        () => this.flush(),
+        doc,
+      );
     let genesis;
     let viewRevision;
+    // The entry this write holds, from its claim in `prepare` to its end.
+    let held;
     const handle = {
-      doc: () => this.viewDoc(viewId) ?? (genesis ??= VIEW_MODULE.derived.genesis(entry.uuid)),
-      update: (fn, options) => entry.handle.update(fn, options),
+      doc: () => this.viewDoc(viewId) ?? (genesis ??= VIEW_MODULE.derived.genesis(uuid)),
+      update: (fn, options) => this.views.get(viewId).handle.update(fn, options),
     };
     try {
       return await documentMutation({
@@ -7176,17 +7234,23 @@ export class Page {
           } catch (error) {
             throw viewRefusal(error);
           }
-          const listed = await this.storedViewIds();
-          if (!listed.includes(viewId) && listed.length >= MAX_VIEWS)
-            throw Object.assign(
-              new HttpError(
-                400,
-                `A Page holds up to ${MAX_VIEWS} views, and this one holds ${listed.join(", ")}. Rewrite one of them with set_view and its view_revision.`,
-                "view_limit",
-              ),
-              { details: { view_ids: listed } },
-            );
-          await this.viewEvent(viewId, { type: "create", recorded: listed.includes(viewId) });
+          await this.viewSlot(async () => {
+            const listed = await this.storedViewIds();
+            if (!listed.includes(viewId) && listed.length >= MAX_VIEWS)
+              throw Object.assign(
+                new HttpError(
+                  400,
+                  `A Page holds up to ${MAX_VIEWS} views, and this one holds ${listed.join(", ")}. Rewrite one of them with set_view and its view_revision.`,
+                  "view_limit",
+                ),
+                { details: { view_ids: listed } },
+              );
+            // Access can change while the view list is read.
+            this.policy.account(await authenticate(request, this.env), true);
+            held = await this.viewEntry(viewId);
+            held.writers += 1;
+            await this.viewEvent(viewId, { type: "create", recorded: listed.includes(viewId) });
+          });
         },
         apply: (draft, effectiveArgs) => {
           try {
@@ -7203,7 +7267,18 @@ export class Page {
         receiptFields: async () => ({ view_revision: viewRevision }),
         flush: () => this.flush(),
       });
+    } catch (error) {
+      // A failed release leaves the view ready; the next boot retries it.
+      if (held)
+        await this.releaseEmptyView(viewId, await operationKey(args, identity, PAGE_DOC)).catch(
+          () => {},
+        );
+      throw error;
     } finally {
+      if (held) {
+        held.writers -= 1;
+        this.forgetIdleView(viewId);
+      }
       if (genesis) A.free(genesis);
     }
   }
@@ -7595,7 +7670,11 @@ export class Page {
         ]);
         const viewDocumentIds = [];
         for (const viewId of viewIds)
-          viewDocumentIds.push(derivedDocumentId((await this.viewEntry(viewId)).uuid));
+          viewDocumentIds.push(
+            derivedDocumentId(
+              this.views?.get(viewId)?.uuid ?? (await viewDocUuid(this.metadata.pageId, viewId)),
+            ),
+          );
         await this.repo.delete(this.metadata.documentId);
         if (this.commentsUuid) await this.repo.delete(commentsDocumentId(this.commentsUuid));
         if (sourcesId) await this.repo.delete(sourcesId);

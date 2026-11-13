@@ -265,6 +265,9 @@ ${part.authErrorItems}
 - invalid_view, unknown_source, unknown_source_revision, view_limit (400),
   view_not_found (404), stale_view (409): a set_view refusal; unknown_view
   (400): insert_node named a view this Page doesn't hold. See Charts below.
+- document_conflict (409): this Page's own document id is the one the host
+  derives for its comments, sources or a view, so that document can't be made.
+  Nothing changed; report it.
 - unsupported_media_type (415): import_page_image or a byte upload got bytes
   that aren't a PNG, JPEG or static WebP (or, for a byte upload, an
   unencrypted Parquet file), or don't match their Content-Type. Convert the
