@@ -11,6 +11,7 @@ import {
   publishPackage,
   releaseIdentity,
   releasePlan,
+  standaloneReleaseIdentity,
   stampManifest,
   stampBuildManifest,
   standalonePackages,
@@ -33,22 +34,44 @@ if (command === "resolve") {
   if (!/^[1-9]\d*$/.test(runId) || !/^[1-9]\d*$/.test(runAttempt)) {
     throw new Error("A numeric upstream release run ID and attempt are required");
   }
-  const response = await fetch(`${process.env.GITHUB_API_URL}/repos/${process.env.GITHUB_REPOSITORY}/actions/runs/${runId}/attempts/${runAttempt}`, {
-    signal: AbortSignal.timeout(30_000),
-    headers: { Authorization: `Bearer ${process.env.GH_TOKEN}`, Accept: "application/vnd.github+json" },
-  });
-  if (!response.ok) throw new Error(`Release run lookup failed: HTTP ${response.status}`);
-  const identity = releaseIdentity(await response.json(), {
+  // Automatic runs publish every package. A manual run may name Sift alone.
+  const packages = automatic ? "all" : process.env.NPM_PACKAGES || "all";
+  if (!["all", "sift"].includes(packages)) throw new Error(`Unknown npm package set: ${packages}`);
+  const api = async path => {
+    const response = await fetch(`${process.env.GITHUB_API_URL}/repos/${process.env.GITHUB_REPOSITORY}${path}`, {
+      signal: AbortSignal.timeout(30_000),
+      headers: { Authorization: `Bearer ${process.env.GH_TOKEN}`, Accept: "application/vnd.github+json" },
+    });
+    if (!response.ok) throw new Error(`Release run lookup failed: HTTP ${response.status}`);
+    return response.json();
+  };
+  const attempt = `/actions/runs/${runId}/attempts/${runAttempt}`;
+  const run = await api(attempt);
+  const expected = {
     repository: process.env.GITHUB_REPOSITORY,
     runId,
     runAttempt,
     sourceSha: automatic ? event.workflow_run.head_sha : undefined,
-  });
+  };
+  let identity;
+  if (packages === "sift") {
+    const jobs = [];
+    for (let page = 1; ; page++) {
+      const items = (await api(`${attempt}/jobs?per_page=100&page=${page}`)).jobs;
+      if (!Array.isArray(items)) throw new Error("Invalid release run jobs response");
+      jobs.push(...items);
+      if (items.length < 100) break;
+    }
+    identity = standaloneReleaseIdentity(run, jobs, expected);
+  } else {
+    identity = releaseIdentity(run, expected);
+  }
   writeJson(args[0], identity);
   output("source_sha", identity.sourceSha);
   output("channel", identity.channel);
   output("run_id", identity.runId);
   output("run_attempt", identity.runAttempt);
+  output("packages", packages);
 } else if (command === "plan") {
   const identity = readJson(args[0]);
   const sourceManifest = readJson(args[1]);

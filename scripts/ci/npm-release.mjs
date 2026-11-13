@@ -46,6 +46,32 @@ export function releaseIdentity(run, expected) {
   return { channel, sourceSha: run.head_sha, runId, runAttempt };
 }
 
+// Desktop app jobs whose output no npm package uses. Apple code signing can
+// fail these without touching any package source.
+export const desktopAppJobs = new Set([
+  "release / Build macOS ARM64 Notebook",
+  "release / Build macOS x64 Notebook",
+]);
+
+const passingJobConclusions = new Set(["success", "skipped", "neutral"]);
+
+// Sift and Sift CSV build from the upstream source in this workflow and take
+// only the run's identity. A nightly whose failed jobs are all desktop app
+// builds still names a source every Sift input passed in. Any other run must
+// pass releaseIdentity unchanged.
+export function standaloneReleaseIdentity(run, jobs, expected) {
+  if (run.status !== "completed" || run.conclusion === "success") return releaseIdentity(run, expected);
+  if (run.conclusion !== "failure") throw new Error("Upstream release must have completed successfully");
+  const failed = jobs.filter(job => !passingJobConclusions.has(job.conclusion));
+  const blocking = failed.filter(job => !desktopAppJobs.has(job.name));
+  if (failed.length === 0 || blocking.length > 0) {
+    throw new Error(`Upstream release failed outside desktop app jobs: ${blocking.map(job => job.name).join(", ") || "no failed job listed"}`);
+  }
+  const identity = releaseIdentity({ ...run, conclusion: "success" }, expected);
+  if (identity.channel !== "nightly") throw new Error("Only a nightly release can publish Sift past failed desktop app jobs");
+  return identity;
+}
+
 function versionParts(version) {
   const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-nightly\.([1-9]\d*))?$/.exec(version);
   if (!match) throw new Error(`Unsupported npm release version: ${version}`);
