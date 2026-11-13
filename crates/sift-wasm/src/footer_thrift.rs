@@ -2,8 +2,13 @@
 //!
 //! `ParquetMetaDataReader::decode_metadata` (parquet 54.3.1) can abort the
 //! module on a crafted footer: INT96 statistics longer than 12 bytes hit an
-//! `assert_eq!`, and a known list with a negative or absurd length reaches
-//! `Vec::with_capacity`. On wasm32 a panic aborts the instance. This module
+//! `assert_eq!`, a known list with a negative or absurd length reaches
+//! `Vec::with_capacity`, a non-root schema group without a repetition type
+//! reaches an `assert!` in `SchemaDescriptor::new`, a root annotated as a map
+//! or a list reaches one in Arrow's list conversion, and a map whose only
+//! child is a primitive reaches a `panic!` in Arrow's map conversion. On
+//! wasm32 a panic
+//! aborts the instance. This module
 //! reads the same bytes first and rejects those footers with an error.
 //!
 //! The parquet crate's compact input protocol is crate-private at 54.3.1, so
@@ -22,6 +27,14 @@
 
 /// Thrift `Type::INT96`.
 const THRIFT_INT96: i32 = 3;
+/// Thrift `ConvertedType::MAP` and `MAP_KEY_VALUE`.
+const CONVERTED_MAP: [i32; 2] = [1, 2];
+/// Thrift `ConvertedType::LIST`.
+const CONVERTED_LIST: i32 = 3;
+/// The `LogicalType` union's `MAP` member.
+const LOGICAL_MAP: i16 = 2;
+/// The `LogicalType` union's `LIST` member.
+const LOGICAL_LIST: i16 = 3;
 /// The thrift crate's `MAXIMUM_SKIP_DEPTH`.
 const MAX_SKIP_DEPTH: u8 = 64;
 /// Longest varint a 64-bit value can need.
@@ -34,6 +47,26 @@ pub(crate) struct RawFooter {
     pub(crate) leaf_types: Vec<Option<i32>>,
     /// Column chunks of each row group, in file order.
     pub(crate) row_groups: Vec<Vec<RawChunk>>,
+}
+
+/// The fields of one `SchemaElement` the pre-pass checks.
+#[derive(Clone, Copy, Debug, Default)]
+struct RawSchemaElement {
+    physical: Option<i32>,
+    repetition: Option<i32>,
+    children: Option<i32>,
+    /// Annotated as a map, by its converted type or its logical type: Arrow's
+    /// conversion sends such a group to `visit_map`.
+    map: bool,
+    /// Annotated as a list, likewise sent to `visit_list`.
+    list: bool,
+}
+
+impl RawSchemaElement {
+    /// parquet-cpp writes `num_children: 0` on primitives, so 0 is a leaf too.
+    fn is_leaf(&self) -> bool {
+        matches!(self.children, None | Some(0))
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -472,13 +505,39 @@ impl<'a> Reader<'a> {
                     for _ in 0..count {
                         elements.push(self.schema_element()?);
                     }
+                    // parquet's `from_thrift_helper` builds a non-root group
+                    // without a repetition type, and `SchemaDescriptor::new`
+                    // then asserts it has one.
+                    if elements
+                        .iter()
+                        .skip(1)
+                        .any(|e| !e.is_leaf() && e.repetition.is_none())
+                    {
+                        return Err("schema group has no repetition type".to_string());
+                    }
+                    // parquet keeps the root's annotation but never its
+                    // repetition, and Arrow's list conversion, which a map
+                    // with a one-field entry also takes, asserts one.
+                    if elements.first().is_some_and(|root| root.map || root.list) {
+                        return Err("schema root is annotated as a map or a list".to_string());
+                    }
+                    // `visit_map` reads the fields of a map's only child
+                    // without checking it is a group, and parquet panics on a
+                    // primitive's fields. In preorder that child comes next.
+                    let primitive_entry = elements
+                        .iter()
+                        .zip(elements.iter().skip(1))
+                        .any(|(map, entry)| map.map && map.children == Some(1) && entry.is_leaf());
+                    if primitive_entry {
+                        return Err("schema map entry is not a group".to_string());
+                    }
                     // Preorder: every non-root element without children is a
                     // leaf, as in parquet's `from_thrift_helper`.
                     footer.leaf_types = elements
                         .iter()
                         .skip(1)
-                        .filter(|(_, children)| matches!(children, None | Some(0)))
-                        .map(|(physical, _)| *physical)
+                        .filter(|e| e.is_leaf())
+                        .map(|e| e.physical)
                         .collect();
                 }
                 4 => {
@@ -495,18 +554,41 @@ impl<'a> Reader<'a> {
         Ok(footer)
     }
 
-    /// `(type, num_children)` of one schema element.
-    fn schema_element(&mut self) -> R<(Option<i32>, Option<i32>)> {
-        let (mut physical, mut children) = (None, None);
+    fn schema_element(&mut self) -> R<RawSchemaElement> {
+        let mut element = RawSchemaElement::default();
         let mut last_id = 0;
         while let Some((id, field_type)) = self.field_begin(&mut last_id)? {
             match id {
-                1 => physical = Some(self.read_i32()?),
-                5 => children = Some(self.read_i32()?),
+                1 => element.physical = Some(self.read_i32()?),
+                3 => element.repetition = Some(self.read_i32()?),
+                5 => element.children = Some(self.read_i32()?),
+                6 => {
+                    let converted = self.read_i32()?;
+                    element.map |= CONVERTED_MAP.contains(&converted);
+                    element.list |= converted == CONVERTED_LIST;
+                }
+                10 => {
+                    let (map, list) = self.logical_map_or_list()?;
+                    element.map |= map;
+                    element.list |= list;
+                }
                 _ => self.field(S::SchemaElement, id, field_type)?,
             }
         }
-        Ok((physical, children))
+        Ok(element)
+    }
+
+    /// Read a `LogicalType` union as `known_struct` would, noting whether it
+    /// names `MAP` and whether it names `LIST`.
+    fn logical_map_or_list(&mut self) -> R<(bool, bool)> {
+        let (mut map, mut list) = (false, false);
+        let mut last_id = 0;
+        while let Some((id, field_type)) = self.field_begin(&mut last_id)? {
+            map |= id == LOGICAL_MAP;
+            list |= id == LOGICAL_LIST;
+            self.field(S::LogicalType, id, field_type)?;
+        }
+        Ok((map, list))
     }
 
     fn row_group(&mut self) -> R<Vec<RawChunk>> {
@@ -655,5 +737,40 @@ mod tests {
         // An unknown double field with fewer than 8 bytes left.
         let short_double = [0xA7, 0x00, 0x00];
         assert!(read_raw_footer(&short_double).is_err());
+    }
+
+    #[test]
+    fn a_schema_group_without_repetition_is_an_error() {
+        use crate::test_footers::group_footer;
+        use parquet::format::FieldRepetitionType;
+        let metadata = |tail: &[u8]| tail[..tail.len() - 8].to_vec();
+        let (tail, _) = group_footer(None);
+        let refused = read_raw_footer(&metadata(&tail)).unwrap_err();
+        assert!(refused.contains("repetition"), "{refused}");
+        for repetition in [FieldRepetitionType::REQUIRED, FieldRepetitionType::OPTIONAL] {
+            let (tail, _) = group_footer(Some(repetition));
+            let raw = read_raw_footer(&metadata(&tail)).unwrap();
+            assert_eq!(raw.leaf_types, [Some(1)]);
+        }
+    }
+
+    #[test]
+    fn a_root_annotated_as_a_map_or_a_list_is_an_error() {
+        use crate::test_footers::{annotated_root_footer, ROOT_MAP_OR_LIST_ANNOTATIONS};
+        for annotation in ROOT_MAP_OR_LIST_ANNOTATIONS {
+            let (tail, _) = annotated_root_footer(annotation());
+            let refused = read_raw_footer(&tail[..tail.len() - 8]).unwrap_err();
+            assert!(refused.contains("map or a list"), "{refused}");
+        }
+    }
+
+    #[test]
+    fn a_map_whose_entry_is_a_primitive_is_an_error() {
+        use crate::test_footers::primitive_map_entry_footer;
+        for logical in [false, true] {
+            let (tail, _) = primitive_map_entry_footer(logical);
+            let refused = read_raw_footer(&tail[..tail.len() - 8]).unwrap_err();
+            assert!(refused.contains("map entry"), "{refused}");
+        }
     }
 }

@@ -25,8 +25,8 @@
 //! page decompression and one decoder batch still allocate before a batch is
 //! admitted.
 
-use crate::column_stats::{file_column_stats, ParquetFileStats};
-use crate::footer_thrift::read_raw_footer;
+use crate::column_stats::{file_column_stats, ColumnFileStats, ParquetFileStats};
+use crate::footer_thrift::{read_raw_footer, RawFooter};
 use crate::store::{
     admit_parquet_footer, admit_parquet_footer_columns, append_batches_to_store, check_file_limit,
     collect_file_batches_into, empty_streaming_store, fixed_width_rows_within,
@@ -37,7 +37,9 @@ use arrow::array::{Array, ArrayData, ArrayRef, BinaryViewArray, StringViewArray}
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 use bytes::{Buf, Bytes};
-use nteract_predicate::parquet_features::{file_key_value_metadata, parse_parquet_column_hints};
+use nteract_predicate::parquet_features::{
+    file_key_value_metadata, parse_parquet_column_hints, ParquetColumnHint,
+};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
 use parquet::errors::{ParquetError, Result as ParquetResult};
@@ -265,12 +267,11 @@ pub fn parquet_open(
     .map_err(js_err)
 }
 
-fn open_parquet_file_with_overflow(
-    tail: &[u8],
-    file_len: u64,
-    limits: FileLimits,
-    overflow: LimitOverflow,
-) -> Result<u32, String> {
+/// Decode a file's footer from its tail: the Arrow view of the metadata and
+/// the raw thrift facts the decoder drops. Checks the footer against
+/// `file_len` and every column chunk's range against the data before it.
+/// Reads no bytes beyond `tail`.
+fn decode_footer(tail: &[u8], file_len: u64) -> Result<(ArrowReaderMetadata, RawFooter), String> {
     let metadata_len = footer_metadata_length(tail)?;
     // The footer must leave room for the leading `PAR1` magic.
     if (metadata_len as u64) + MIN_PARQUET_FILE_LEN > file_len {
@@ -294,6 +295,16 @@ fn open_parquet_file_with_overflow(
     validate_chunk_ranges(&metadata, file_end, usize::MAX as u64)?;
     let arrow = ArrowReaderMetadata::try_new(Arc::new(metadata), ArrowReaderOptions::default())
         .map_err(|e| e.to_string())?;
+    Ok((arrow, raw))
+}
+
+fn open_parquet_file_with_overflow(
+    tail: &[u8],
+    file_len: u64,
+    limits: FileLimits,
+    overflow: LimitOverflow,
+) -> Result<u32, String> {
+    let (arrow, raw) = decode_footer(tail, file_len)?;
     let total_rows = match overflow {
         LimitOverflow::Error => admit_parquet_footer(arrow.schema(), arrow.metadata(), limits)?,
         LimitOverflow::Truncate => {
@@ -441,6 +452,80 @@ pub fn parquet_file_column_hints(file: u32) -> Result<JsValue, JsValue> {
     })
     .map_err(js_err)?;
     serde_wasm_bindgen::to_value(&hints).map_err(js_err)
+}
+
+/// What a file's footer says about it, read without decoding any data page.
+#[derive(Debug, Serialize)]
+pub(crate) struct ParquetFooterSummary {
+    num_rows: f64,
+    num_row_groups: u32,
+    /// The writer's self-description, such as `parquet-cpp-arrow version 21.0.0`.
+    created_by: Option<String>,
+    /// One per top-level Arrow column, in schema order.
+    columns: Vec<FooterColumn>,
+    column_hints: Vec<ParquetColumnHint>,
+}
+
+#[derive(Debug, Serialize)]
+struct FooterColumn {
+    name: String,
+    /// The Arrow type the file reads as, in Arrow's display form (`Utf8`,
+    /// `Int64`, `Timestamp(Microsecond, Some("UTC"))`).
+    data_type: String,
+    nullable: bool,
+    #[serde(flatten)]
+    stats: ColumnFileStats,
+}
+
+/// Summarize a file from its tail alone. Shares the checks `parquet_open`
+/// makes before it admits a file, without its row and memory limits: a
+/// summary never decodes data.
+pub(crate) fn footer_summary(tail: &[u8], file_len: u64) -> Result<ParquetFooterSummary, String> {
+    let (arrow, raw) = decode_footer(tail, file_len)?;
+    let metadata = arrow.metadata();
+    let schema = arrow.schema();
+    // A declared total the row groups disagree with would put row counts
+    // beside statistics that describe other rows.
+    let rows = parquet_footer_rows(metadata)?;
+    let stats = file_column_stats(metadata, schema, &raw);
+    let names: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
+    let column_hints = parse_parquet_column_hints(&names, rows, &file_key_value_metadata(metadata));
+    let columns = schema
+        .fields()
+        .iter()
+        .zip(stats.columns)
+        .map(|(field, stats)| FooterColumn {
+            name: field.name().clone(),
+            data_type: field.data_type().to_string(),
+            nullable: field.is_nullable(),
+            stats,
+        })
+        .collect();
+    Ok(ParquetFooterSummary {
+        num_rows: rows as f64,
+        num_row_groups: stats.num_row_groups,
+        created_by: metadata.file_metadata().created_by().map(str::to_owned),
+        columns,
+        column_hints,
+    })
+}
+
+/// Footer summary of a Parquet file from its tail, holding no file handle:
+/// `{ num_rows, num_row_groups, created_by, columns, column_hints }`. Each
+/// column is `{ name, data_type, nullable }` plus the fields of
+/// `parquet_file_column_stats`, in the same units (epoch milliseconds for
+/// temporal columns, scaled decimals). `tail` must end with the footer and
+/// hold at least `parquet_footer_length(tail) + 8` bytes; `file_len` is the
+/// whole file's length. Absent values are `null`.
+#[wasm_bindgen]
+pub fn parquet_footer_summary(tail: &[u8], file_len: f64) -> Result<JsValue, JsValue> {
+    let summary =
+        footer_summary(tail, file_len_from_js(file_len).map_err(js_err)?).map_err(js_err)?;
+    // `flatten` serializes a column as a map; read it in JS as a plain object.
+    let serializer = serde_wasm_bindgen::Serializer::new()
+        .serialize_missing_as_null(true)
+        .serialize_maps_as_objects(true);
+    summary.serialize(&serializer).map_err(js_err)
 }
 
 /// Create an empty, appendable store carrying the file's Arrow schema. Row
@@ -926,7 +1011,10 @@ mod tests {
     use super::*;
     use crate::column_stats::StatValue;
     use crate::store::{free, get_cell_string, is_null, num_rows};
-    use crate::test_footers::{int96_footer, parquet_with_footer_total, thrift_footer};
+    use crate::test_footers::{
+        annotated_root_footer, group_footer, int96_footer, parquet_with_footer_total,
+        primitive_map_entry_footer, thrift_footer, ROOT_MAP_OR_LIST_ANNOTATIONS,
+    };
     use arrow::array::{ArrayRef, Int64Array, StringArray};
     use arrow::record_batch::RecordBatch;
     use std::sync::Arc;
@@ -1321,6 +1409,146 @@ mod tests {
         let stats = with_file(handle, |f| Ok(f.column_stats.clone())).unwrap();
         parquet_close(handle);
         stats
+    }
+
+    /// The shortest tail a host can pass `parquet_footer_summary`: the footer
+    /// and its 8-byte trailer.
+    fn exact_tail(file: &[u8]) -> &[u8] {
+        let metadata_len = footer_metadata_length(file).unwrap();
+        &file[file.len() - metadata_len - FOOTER_SIZE..]
+    }
+
+    #[test]
+    fn footer_summary_matches_an_open_file_from_the_tail_alone() {
+        let file = parquet_bytes(&fixture_batch(1000), 128);
+        let summary = footer_summary(exact_tail(&file), file.len() as u64).unwrap();
+
+        assert_eq!(summary.num_rows, 1000.0);
+        assert_eq!(summary.num_row_groups, 8);
+        assert!(summary
+            .created_by
+            .as_deref()
+            .is_some_and(|by| by.starts_with("parquet-rs")));
+        let described: Vec<_> = summary
+            .columns
+            .iter()
+            .map(|c| (c.name.as_str(), c.data_type.as_str(), c.nullable))
+            .collect();
+        assert_eq!(
+            described,
+            [("number", "Int64", true), ("text", "Utf8", true)]
+        );
+        let stats: Vec<_> = summary.columns.iter().map(|c| c.stats.clone()).collect();
+        assert_eq!(stats, column_stats_of(&file).columns);
+        // Every fifth value from the fourth is null; the rest are i * 7.
+        let numbers = &summary.columns[0].stats;
+        assert_eq!(numbers.null_count, Some(200.0));
+        assert_eq!(
+            (numbers.min.clone(), numbers.max.clone()),
+            (number(0.0), number(6993.0))
+        );
+        assert!(numbers.bounds_exact);
+    }
+
+    #[test]
+    fn footer_summary_columns_are_flat_objects() {
+        let file = parquet_bytes(&fixture_batch(10), 10);
+        let summary = footer_summary(exact_tail(&file), file.len() as u64).unwrap();
+        let json = serde_json::to_value(&summary).unwrap();
+        let keys: Vec<_> = json["columns"][0]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "name",
+                "data_type",
+                "nullable",
+                "null_count",
+                "min",
+                "max",
+                "bounded_row_groups",
+                "bounds_exact",
+                "has_infinite"
+            ]
+        );
+    }
+
+    #[test]
+    fn footer_summary_carries_the_footer_column_hints() {
+        let file = write_parquet(&fixture_batch(10), 10, |builder| {
+            builder.set_key_value_metadata(Some(vec![parquet::file::metadata::KeyValue::new(
+                "pandas".to_string(),
+                r#"{"index_columns":["number"]}"#.to_string(),
+            )]))
+        });
+        let summary = footer_summary(exact_tail(&file), file.len() as u64).unwrap();
+        assert!(summary
+            .column_hints
+            .iter()
+            .any(|hint| hint.name == "number" && hint.pandas_index));
+    }
+
+    #[test]
+    fn footer_summary_refuses_a_tail_that_cannot_hold_its_footer() {
+        let file = parquet_bytes(&fixture_batch(10), 10);
+        let tail = exact_tail(&file);
+        let short = footer_summary(&tail[1..], file.len() as u64).unwrap_err();
+        assert!(short.contains("too short"), "{short}");
+        // A footer longer than the file it claims to end.
+        assert!(footer_summary(tail, tail.len() as u64 - 1).is_err());
+        assert!(footer_summary(b"not a parquet file", 18).is_err());
+    }
+
+    #[test]
+    fn footer_summary_refuses_a_declared_row_count_its_row_groups_disagree_with() {
+        let batch = fixture_batch(30);
+        for declared in [0, 29, -1] {
+            let file = parquet_with_footer_total(&batch, 10, declared);
+            let refused = footer_summary(exact_tail(&file), file.len() as u64).unwrap_err();
+            assert!(refused.contains("row count"), "{declared}: {refused}");
+        }
+        let file = parquet_with_footer_total(&batch, 10, 30);
+        let summary = footer_summary(exact_tail(&file), file.len() as u64).unwrap();
+        assert_eq!(summary.num_rows, 30.0);
+    }
+
+    #[test]
+    fn a_schema_group_without_repetition_is_an_error_not_an_abort() {
+        let (tail, file_len) = group_footer(None);
+        let summary = footer_summary(&tail, file_len).unwrap_err();
+        assert!(summary.contains("repetition"), "{summary}");
+        let open = open_parquet_file(&tail, file_len, limits()).unwrap_err();
+        assert!(open.contains("repetition"), "{open}");
+
+        let (tail, file_len) = group_footer(Some(parquet::format::FieldRepetitionType::REQUIRED));
+        let summary = footer_summary(&tail, file_len).unwrap();
+        assert_eq!(summary.columns[0].name, "g");
+    }
+
+    #[test]
+    fn a_root_annotated_as_a_map_or_a_list_is_an_error_not_an_abort() {
+        for annotation in ROOT_MAP_OR_LIST_ANNOTATIONS {
+            let (tail, file_len) = annotated_root_footer(annotation());
+            let summary = footer_summary(&tail, file_len).unwrap_err();
+            assert!(summary.contains("map or a list"), "{summary}");
+            let open = open_parquet_file(&tail, file_len, limits()).unwrap_err();
+            assert!(open.contains("map or a list"), "{open}");
+        }
+    }
+
+    #[test]
+    fn a_map_whose_entry_is_a_primitive_is_an_error_not_an_abort() {
+        for logical in [false, true] {
+            let (tail, file_len) = primitive_map_entry_footer(logical);
+            let summary = footer_summary(&tail, file_len).unwrap_err();
+            assert!(summary.contains("map entry"), "{summary}");
+            let open = open_parquet_file(&tail, file_len, limits()).unwrap_err();
+            assert!(open.contains("map entry"), "{open}");
+        }
     }
 
     fn write_parquet(

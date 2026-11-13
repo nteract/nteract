@@ -375,7 +375,8 @@ const INPUT_THROTTLE_MS = 250;
 /**
  * Capture `session`'s card images while this tab shows the Page to its
  * owner. Returns the stop function. `session` is a PageSession: its `doc`,
- * `pageId`, `access`, `canWrite`, `hidden` and `subscribe`.
+ * `pageId`, `access`, `canWrite`, `hidden` and `subscribe`, and the `views`
+ * and `pageSources` the shell draws charts from.
  *
  * Until the session first shows the owner's write access, this only watches
  * for it: a reader's or editor's tab never hashes, reads the stored image's
@@ -438,7 +439,13 @@ export function captureCards(
         // The document may have moved on since the hash was built; draw only
         // the first screen that hash names.
         if ((await hashOf(doc)) !== hash) throw Error("The first screen changed");
-        const images = await shell.renderCardImages({ doc, pageId, signal });
+        const images = await shell.renderCardImages({
+          doc,
+          pageId,
+          signal,
+          views: session.views ?? null,
+          sources: session.pageSources ?? null,
+        });
         let stored = null;
         for (const image of images) {
           signal.throwIfAborted();
