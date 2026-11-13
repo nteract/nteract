@@ -112,6 +112,22 @@ test("a filtered listing echoes the canonical expression and carries each Page's
   assert.deepEqual(new Map(asked.pages.map((page) => [page.page_id, page.tags])).get(id(4)), []);
 });
 
+test("include_tags brings the tag schema current on a database where it never ran", async (t) => {
+  const f = await world(t, { migrate: false });
+  await migrateCatalogIndex(f.db);
+  await f.untilReady(member);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const { source, body } = await f.list(member, { include_tags: true });
+    assert.equal(source, "index");
+    assert.ok(body.pages.length > 0);
+    assert.ok(
+      body.pages.every((page) => Array.isArray(page.tags)),
+      JSON.stringify(body.pages),
+    );
+  }
+  assert.deepEqual(f.db.rows("SELECT count(*) AS n FROM page_tags"), [{ n: 0 }]);
+});
+
 test("filters combine with the other listing arguments", async (t) => {
   const f = await world(t);
   await f.untilReady(member);

@@ -4375,7 +4375,7 @@ export class Catalog {
       source: "catalog",
     };
     if (options.tags || options.includeTags)
-      await this.attachTags(result.pages, tagDb ?? db, !!options.tags);
+      await this.attachTags(result.pages, tagDb, !!options.tags);
     const response = json({
       pages: result.pages,
       limit: options.limit,
@@ -4419,12 +4419,14 @@ export class Catalog {
    * effort without a tag filter: a listing never fails for want of tags, and
    * a Page with no `tags` field means they could not be read. A tag filter
    * promises `tags` on every Page it returns, so when it can't read them the
-   * listing is `tags_unavailable`, never Pages without their tags (`strict`). */
-  async attachTags(pages, db, strict = false) {
+   * listing is `tags_unavailable`, never Pages without their tags (`strict`).
+   * `tagDb` is a handle from `tagDatabase`, or null to open one here: either
+   * way the tag schema is current before the read. */
+  async attachTags(pages, tagDb, strict = false) {
     if (!pages.length) return;
     try {
       const handle =
-        db ?? (catalogIndexEpoch(this.env) ? await openPageTags(this.env, this.ctx) : null);
+        tagDb ?? (catalogIndexEpoch(this.env) ? await openPageTags(this.env, this.ctx) : null);
       if (!handle) {
         if (strict) throw tagsUnavailable();
         return;
