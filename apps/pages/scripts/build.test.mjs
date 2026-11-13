@@ -137,6 +137,7 @@ for (const fails of [true, false])
           "viewer-chunks.mjs",
           "stage-artifacts.mjs",
           "worker-shape.mjs",
+          "worker-modules.mjs",
           "deployment/profiles.mjs",
         ])
           write(`scripts/${name}`, readFileSync(new URL(`./${name}`, import.meta.url), "utf8"));

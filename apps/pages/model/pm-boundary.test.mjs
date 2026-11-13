@@ -48,7 +48,7 @@ test("complete worker and viewer dependency graphs contain no ProseMirror", asyn
     platform: "browser",
     format: "esm",
     alias: viewerBuildOptions(root, root).alias,
-    external: ["cloudflare:workers", "*.wasm", "pages-sift-assets"],
+    external: ["cloudflare:workers", "node:*", "*.wasm", "pages-sift-assets"],
     loader: { ".css": "empty", ".svg": "dataurl" },
     tsconfig: join(root, "tsconfig.json"),
   });

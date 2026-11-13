@@ -4,6 +4,7 @@ import { agentBlock, projectReadContent } from "../model/read-content.mjs";
 import { projectReadComments } from "../model/read-comments.mjs";
 import { documentFeatures } from "../model/schema-features.mjs";
 import { listSources, readSource } from "../model/sources-doc.mjs";
+import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 import { readView, viewSummary } from "../model/view-doc.mjs";
 import { validViewId } from "../shared/views.mjs";
 
@@ -117,13 +118,27 @@ function outlinePage(entries, offset, limit) {
 }
 
 /** The sources a read_page asks for: `{ sources }` listing every source
- * for `sources: true`, `{ source }` with its producer and history for
- * `source_id`, or both. A Page with no sources document lists none. */
-function sourcesRead(sourcesDoc, { sources, source_id }) {
+ * for `sources: true`, `{ source }` with its dataset's summary, producer and
+ * history for `source_id`, or both. A Page with no sources document lists
+ * none. `datasetSummary(assetId)` is the host's: it resolves to the agent
+ * summary (worker/dataset-summary.mjs) or null, and never rejects. */
+async function sourcesRead(sourcesDoc, { sources, source_id }, datasetSummary) {
+  const source = source_id === undefined ? undefined : readSource(sourcesDoc, source_id);
   return {
     ...(sources === true && { sources: listSources(sourcesDoc) }),
-    ...(source_id !== undefined && { source: readSource(sourcesDoc, source_id) }),
+    ...(source && { source: await withSummary(source, datasetSummary) }),
   };
+}
+
+/** `source` with `summary` after its media type: the summary of the asset
+ * it names now, or null without one. */
+async function withSummary(source, datasetSummary) {
+  const { producer, history, history_truncated, ...current } = source;
+  const summary =
+    datasetSummary && source.media_type === PARQUET_MEDIA_TYPE
+      ? await datasetSummary(source.asset_id)
+      : null;
+  return { ...current, summary, producer, history, history_truncated };
 }
 
 /** The views a read_page asks for: `{ views }` listing every view for
@@ -160,7 +175,8 @@ function viewsRead(views, { views: list, view_id }) {
  * host's own use.
  *
  * read_page's `sources` and `source_id` read the Page's sources
- * (`sourcesDoc`), and `views` and `view_id` its views (`views`, the host's
+ * (`sourcesDoc`), with the summary of `source_id`'s dataset from the host's
+ * `datasetSummary`, and `views` and `view_id` its views (`views`, the host's
  * viewReads). Alone, they read them without the Page's content; beside
  * other selectors, such as include_content false, they add them to that
  * read. An outline entry for a view node carries its view's title and media
@@ -169,7 +185,16 @@ export async function readTool(
   doc,
   operation,
   args,
-  { revisions, recovery, historyIncomplete, getPresence, commentsDoc, sourcesDoc, views } = {},
+  {
+    revisions,
+    recovery,
+    historyIncomplete,
+    getPresence,
+    commentsDoc,
+    sourcesDoc,
+    views,
+    datasetSummary,
+  } = {},
 ) {
   const heads = A.getHeads(doc);
   const commentHeads = commentsDoc ? A.getHeads(commentsDoc) : undefined;
@@ -180,8 +205,8 @@ export async function readTool(
   const viewSelector = { views: listViews, view_id };
   const readsSources = sources === true || source_id !== undefined;
   const readsViews = listViews === true || view_id !== undefined;
-  const reads = () => ({
-    ...(readsSources && sourcesRead(sourcesDoc, sourceSelector)),
+  const reads = async () => ({
+    ...(readsSources && (await sourcesRead(sourcesDoc, sourceSelector, datasetSummary))),
     ...(readsViews && viewsRead(views, viewSelector)),
   });
   const summaries = {
@@ -216,7 +241,7 @@ export async function readTool(
       payload = {
         page_id: doc.page_id,
         title: doc.title,
-        ...reads(),
+        ...(await reads()),
       };
     } else if (Object.keys(args).every((key) => key === "page_id")) {
       // A read with no selector: every block whole and every thread with its
@@ -251,7 +276,7 @@ export async function readTool(
               ),
         ...(content.selection && { selection: content.selection }),
         ...(args.include_presence && { presence: getPresence(doc) }),
-        ...reads(),
+        ...(await reads()),
       };
     }
   } catch (error) {

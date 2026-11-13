@@ -2,6 +2,12 @@
   "name": "@nteract/pages",
   "private": true,
   "type": "module",
+  "imports": {
+    "#sift-wasm": {
+      "workerd": "./worker/sift-wasm.workerd.mjs",
+      "default": "./worker/sift-wasm.node.mjs"
+    }
+  },
   "workspaces": [
     "upstream/packages/*"
   ],
