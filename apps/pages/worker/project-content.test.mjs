@@ -239,7 +239,9 @@ test("alias edits replay the physical journal and keep the stale-revision fence"
   const first = await w.call("owner", "edit_page", alias(args, project.project_id));
   assert.equal(first.status, 200, JSON.stringify(first.body));
   const second = await w.call("owner", "edit_page", args);
-  const { project_id: _id, ...receipt } = first.body;
+  // The Project address adds kind and project_id; the receipt is the same.
+  assert.equal(first.body.kind, "project");
+  const { project_id: _id, kind: _kind, ...receipt } = first.body;
   assert.deepEqual(second.body, receipt);
   assert.deepEqual(
     w.heads(project.document_id),
@@ -342,7 +344,11 @@ test("patch, comment and presence tools resolve the same content and receipt sco
   const patched = await w.call("owner", "edit_page", patch);
   assert.equal(patched.status, 200, JSON.stringify(patched.body));
   const replay = await w.call("owner", "edit_page", alias(patch, project.project_id));
-  assert.deepEqual(replay.body, { ...patched.body, project_id: project.project_id });
+  assert.deepEqual(replay.body, {
+    ...patched.body,
+    kind: "project",
+    project_id: project.project_id,
+  });
   const changes = await w.call("owner", "read_page_changes", {
     project_id: project.project_id,
     since_revision: before.revision,
@@ -360,7 +366,7 @@ test("patch, comment and presence tools resolve the same content and receipt sco
   assert.equal(commented.status, 200, JSON.stringify(commented.body));
   assert.deepEqual(
     (await w.call("owner", "manage_page_comment", alias(comment, project.project_id))).body,
-    { ...commented.body, project_id: project.project_id },
+    { ...commented.body, kind: "project", project_id: project.project_id },
   );
   assert.equal(
     (await w.call("owner", "list_page_comments", { project_id: project.project_id })).status,
@@ -481,6 +487,8 @@ test("Project image imports preserve Page asset identity and recheck edit access
   });
   assert.equal(first.status, 201, JSON.stringify(first.body));
   assert.equal(first.body.page_id, project.document_id);
+  assert.equal(first.body.kind, "project");
+  assert.equal(first.body.project_id, project.project_id);
   assert.equal(
     first.body.asset_url,
     `/api/pages/${project.document_id}/assets/${first.body.asset_id}`,
@@ -490,7 +498,8 @@ test("Project image imports preserve Page asset identity and recheck edit access
     file,
   });
   assert.equal(replay.status, 200);
-  assert.deepEqual(replay.body, first.body);
+  const { kind: _kind, project_id: _project, ...asset } = first.body;
+  assert.deepEqual(replay.body, asset);
   assert.equal(objects.size, 1);
   assert.equal((await grant(w, project, "commenter")).status, 200);
   assert.equal(

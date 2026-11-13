@@ -55,6 +55,7 @@ import {
 import { storedFormUnsupported } from "../model/stored-form.mjs";
 import { readTargets, writeTargets } from "../model/agent-presence.mjs";
 import { assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
+import { MAX_PAGE_TITLE } from "../shared/page-title.mjs";
 import { RECORD_STORAGE_MODES } from "../shared/record-storage.mjs";
 import { handleMcp } from "../mcp.mjs";
 import {
@@ -776,8 +777,11 @@ const callerLifecycleArguments = ({
 function validateCreateInput(args) {
   if (!args || typeof args !== "object" || Array.isArray(args))
     throw new HttpError(400, "Invalid create arguments");
-  if (args.title !== undefined && (typeof args.title !== "string" || args.title.length > 500))
-    throw new HttpError(400, "Invalid title");
+  if (
+    args.title !== undefined &&
+    (typeof args.title !== "string" || args.title.length > MAX_PAGE_TITLE)
+  )
+    throw new HttpError(400, `title is a string of at most ${MAX_PAGE_TITLE} characters`);
   if (args.markdown !== undefined && typeof args.markdown !== "string")
     throw new HttpError(400, "Invalid markdown");
   // Refused before any reservation, so the agent can rewrite and retry.
@@ -1103,17 +1107,18 @@ async function invoke(request, env, operation, args = {}, seen, call) {
         if (Object.keys(args).some((key) => !["page_id", "file"].includes(key)))
           throw new HttpError(400, "Invalid image import arguments");
         // Transfer bytes at the Worker edge; access stays with the Page host.
-        return bufferedResponse(
-          await untilAborted(
-            handleImportPageImage(request, env, {
-              pageId: args.page_id,
-              file: args.file,
-              authorize: (write) => authorizeImage(request, env, args.page_id, write),
-            }),
-            signal,
-          ),
+        const imported = await untilAborted(
+          handleImportPageImage(request, env, {
+            pageId: args.page_id,
+            file: args.file,
+            authorize: (write) => authorizeImage(request, env, args.page_id, write),
+          }),
           signal,
         );
+        if (!projectId || !imported.ok) return bufferedResponse(imported, signal);
+        // Named as every Project-addressed answer is, below.
+        const body = await readResponseJson(imported, signal);
+        return json({ ...body, kind: "project", project_id: projectId }, imported.status);
       }
       // Transient and storage failures use this request's repeat safety,
       // as a timeout does.
@@ -1134,8 +1139,11 @@ async function invoke(request, env, operation, args = {}, seen, call) {
       // A project_id address answers only to a caller who can read the
       // Project; locationView then reports it as Project content. A direct
       // grant alone reads by document ID and is never told the Project.
+      // Every other tool's answer names it as read_page does: kind project
+      // beside project_id, so its link is the Project's, not the document's.
       if (projectId && operation !== "read_page") {
         delete body._owner;
+        body.kind = "project";
         body.project_id = projectId;
       } else await locationView(request, env, body, signal);
       return json(body, response.status);

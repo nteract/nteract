@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { MAX_PAGE_TITLE } from "../shared/page-title.mjs";
+import { REVISION_DOCS, parseRevision } from "../worker/revisions.mjs";
+import { MAX_TAGS_PER_PAGE, normalizeTag } from "../worker/page-tags.mjs";
 import { test } from "node:test";
 import { handleMcp as handleMcpRequest, tools } from "../mcp.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
@@ -71,7 +74,8 @@ test("MCP forwards authorized operations and preserves stale-write failure", asy
       calls.push({ op, args });
       return Response.json(
         {
-          error: "Page changed; read_page again before editing",
+          error:
+            "Page changed since this revision, so the edit was not applied. The refusal carries current_revision: resend at it with a new nonce only if the edit doesn't depend on content that may have changed; otherwise read what you're replacing first",
           code: "stale_revision",
           current_revision: "r9",
           comment_revision: "c4",
@@ -84,7 +88,8 @@ test("MCP forwards authorized operations and preserves stale-write failure", asy
   assert.equal(result.isError, true);
   // The service's revision fields ride along with retryable.
   const expected = {
-    error: "Page changed; read_page again before editing",
+    error:
+      "Page changed since this revision, so the edit was not applied. The refusal carries current_revision: resend at it with a new nonce only if the edit doesn't depend on content that may have changed; otherwise read what you're replacing first",
     code: "stale_revision",
     current_revision: "r9",
     comment_revision: "c4",
@@ -1298,9 +1303,51 @@ test("every write takes a nonce, a Page write a revision, and nothing takes head
   }
   const edit = tools.find((tool) => tool.name === "edit_page").inputSchema;
   assert.ok(edit.required.includes("revision"));
-  assert.equal(edit.properties.revision.pattern, "^[rc][1-9][0-9]{0,15}$");
+  assert.equal(edit.properties.revision.pattern, "^r[1-9][0-9]{0,15}$");
   const move = tools.find((tool) => tool.name === "move_page").inputSchema;
   assert.deepEqual(move.required, ["page_id", "nonce"]);
+});
+
+test("revision, tag and title schemas follow the host's own rules", () => {
+  const schema = (name) => tools.find((tool) => tool.name === name).inputSchema.properties;
+  const accepts = (property, value) => new RegExp(property.pattern).test(value);
+  // Each revision argument's pattern takes exactly the handles parseRevision
+  // takes for it: since_comment_revision the comments' letter, every other
+  // one the Page's. Checked against every letter the host mints.
+  const letters = Object.values(REVISION_DOCS);
+  for (const tool of tools)
+    for (const [name, property] of Object.entries(tool.inputSchema.properties)) {
+      if (!name.endsWith("revision") || name === "source_revision" || !property.pattern) continue;
+      const own = REVISION_DOCS[name === "since_comment_revision" ? "comments" : "page"];
+      for (const letter of letters)
+        assert.equal(
+          accepts(property, `${letter}12`),
+          letter === own,
+          `${tool.name}.${name} ${letter}`,
+        );
+      assert.equal(
+        parseRevision(`${own}12`, name === "since_comment_revision" ? "comments" : "page"),
+        12,
+      );
+    }
+  // Tag lists carry the host's bounds and no uniqueItems: normalizeTag folds
+  // case, so the host keeps one of ["a", "A"] instead of refusing it.
+  assert.equal(normalizeTag("A"), normalizeTag("a"));
+  for (const [tool, field] of [
+    ["update_page_tags", "add"],
+    ["update_page_tags", "remove"],
+    ["create_page", "tags"],
+  ]) {
+    const list = schema(tool)[field];
+    assert.equal(list.uniqueItems, undefined, `${tool}.${field}`);
+    assert.equal(list.maxItems, MAX_TAGS_PER_PAGE, `${tool}.${field}`);
+  }
+  // A Page title has the one limit create_page and set_title enforce.
+  assert.equal(schema("create_page").title.maxLength, MAX_PAGE_TITLE);
+  assert.match(
+    schema("edit_page").operations.items.properties.title.description,
+    new RegExp(`up to ${MAX_PAGE_TITLE} characters`),
+  );
 });
 
 test("no MCP tool tells a caller to build its key from a prefix", () => {

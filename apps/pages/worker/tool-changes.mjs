@@ -1,5 +1,6 @@
 import * as A from "@automerge/automerge";
 import { changeHistory, projectReadChanges } from "../model/read-changes.mjs";
+import { MAX_READ_BYTES, budgetAdvice } from "./tool-reads.mjs";
 
 const DEFAULT_BYTES = 128 * 1024;
 const bytes = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
@@ -12,6 +13,8 @@ export const CHANGE_ERROR_CODES = new Set([
 const invalid = (message) => {
   throw Object.assign(Error(message), { status: 400, code: "invalid_change_selector" });
 };
+const overBudget = (maxBytes) =>
+  `Changes exceed max_bytes (${maxBytes}); no partial delta was returned. ${budgetAdvice(maxBytes, "use comments:none, or read_page with section or node_ids for a new baseline.")}`;
 
 /** A captured revision supplies the complete net delta. `since_revision`
  * and `since_comment_revision` resolve through the host's handle table
@@ -51,9 +54,11 @@ export async function readChangesTool(
       invalid("Unknown change-read argument");
     if (
       args.max_bytes !== undefined &&
-      (!Number.isSafeInteger(args.max_bytes) || args.max_bytes < 4096 || args.max_bytes > 262144)
+      (!Number.isSafeInteger(args.max_bytes) ||
+        args.max_bytes < 4096 ||
+        args.max_bytes > MAX_READ_BYTES)
     )
-      invalid("max_bytes must be an integer from 4096 to 262144");
+      invalid(`max_bytes must be an integer from 4096 to ${MAX_READ_BYTES}`);
     maxBytes = args.max_bytes ?? DEFAULT_BYTES;
     if (args.since_revision === undefined) invalid("since_revision from a read is required");
     const since = await revisions.heads("page", args.since_revision, "since_revision");
@@ -88,7 +93,7 @@ export async function readChangesTool(
     status = error.status;
     payload = {
       page_id: doc.page_id,
-      error: error.message,
+      error: error.code === "changes_budget_exceeded" ? overBudget(maxBytes) : error.message,
       code: error.code,
       ...(error.code === "changes_budget_exceeded" && {
         max_bytes: maxBytes,
@@ -113,8 +118,7 @@ export async function readChangesTool(
     status = 413;
     body = {
       page_id: doc.page_id,
-      error:
-        "Changes exceed max_bytes. Increase the budget, use comments:none, or resynchronize with read_page and its section/node selectors. No partial delta was returned.",
+      error: overBudget(maxBytes),
       code: "changes_budget_exceeded",
       max_bytes: maxBytes,
       ...(payload.changes && {

@@ -114,4 +114,22 @@ test("the complete change envelope is bounded including revisions and URL reserv
   assert.equal(rejected.body.changes, undefined);
   assert.match(rejected.body.revision, /^r\d+$/);
   assert.ok(new TextEncoder().encode(JSON.stringify(rejected.body)).byteLength + 512 <= 4096);
+  assert.equal(
+    rejected.body.error,
+    "Changes exceed max_bytes (4096); no partial delta was returned. Raise it, up to 262144, or use comments:none, or read_page with section or node_ids for a new baseline.",
+  );
+  // At the largest budget, raising it is no longer advice.
+  const huge = A.change(A.clone(f.doc), (d) =>
+    applyPageOperation(d, {
+      operation: "edit_page",
+      arguments: { operations: [{ op: "insert_markdown", markdown: "large ".repeat(50000) }] },
+    }),
+  );
+  t.after(() => A.free(huge));
+  const capped = await read(f, { since_revision: f.base, max_bytes: 262144 }, f.revisions, huge);
+  assert.equal(capped.body.code, "changes_budget_exceeded");
+  assert.equal(
+    capped.body.error,
+    "Changes exceed max_bytes (262144); no partial delta was returned. Use comments:none, or read_page with section or node_ids for a new baseline.",
+  );
 });

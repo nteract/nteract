@@ -6,6 +6,15 @@ import { documentFeatures } from "../model/schema-features.mjs";
 import { listSources, readSource } from "../model/sources-doc.mjs";
 
 export const DEFAULT_READ_BYTES = 128 * 1024;
+/** The largest max_bytes a read takes (read_page, list_page_comments,
+ * read_page_changes). */
+export const MAX_READ_BYTES = 262144;
+/** What an over-budget refusal tells the caller to do: raise max_bytes while
+ * it can still rise, then `instead`, a sentence fragment starting lowercase. */
+export const budgetAdvice = (maxBytes, instead) =>
+  maxBytes < MAX_READ_BYTES
+    ? `Raise it, up to ${MAX_READ_BYTES}, or ${instead}`
+    : `${instead[0].toUpperCase()}${instead.slice(1)}`;
 const encoder = new TextEncoder();
 const bytes = (value) => encoder.encode(JSON.stringify(value)).byteLength;
 const selectorKeys = [
@@ -51,7 +60,7 @@ function validate(operation, args) {
   const keys = operation === "read_page" ? selectorKeys : commentKeys;
   if (Object.keys(args).some((key) => key !== "page_id" && !keys.includes(key)))
     invalid("Unknown read argument");
-  const maxBytes = integer(args.max_bytes, DEFAULT_READ_BYTES, 4096, 262144, "max_bytes");
+  const maxBytes = integer(args.max_bytes, DEFAULT_READ_BYTES, 4096, MAX_READ_BYTES, "max_bytes");
   const offset = integer(args.outline_offset, 0, 0, Number.MAX_SAFE_INTEGER, "outline_offset");
   const limit = integer(args.outline_limit, 100, 1, 100, "outline_limit");
   if (args.comments !== undefined && !["none", "summary", "open", "all"].includes(args.comments))
@@ -136,6 +145,8 @@ export async function readTool(
   const readsSources = sources === true || source_id !== undefined;
   let settings = { maxBytes: DEFAULT_READ_BYTES, offset: 0, limit: 100 },
     legacy = false,
+    // A read of sources alone has no outline to offer when it is too large.
+    sourcesOnly = false,
     content,
     payload,
     status = 200;
@@ -157,6 +168,7 @@ export async function readTool(
       readsSources &&
       Object.keys(contentArgs).every((key) => ["page_id", "max_bytes", "revision"].includes(key))
     ) {
+      sourcesOnly = true;
       payload = {
         page_id: doc.page_id,
         title: doc.title,
@@ -245,7 +257,22 @@ export async function readTool(
       body.outline.next_offset = body.outline.offset + body.outline.entries.length;
     }
   }
-  if (!fits(body)) {
+  if (!fits(body) && sourcesOnly) {
+    status = 413;
+    body = {
+      page_id: doc.page_id,
+      error: `Sources exceed max_bytes (${settings.maxBytes}). ${budgetAdvice(settings.maxBytes, "read one source with source_id rather than listing them with sources:true.")}`,
+      code: "read_budget_exceeded",
+      max_bytes: settings.maxBytes,
+      ...common,
+    };
+    if (!fits(body))
+      body = {
+        error: "Revision metadata exceeds max_bytes; retry with a larger budget.",
+        code: "read_metadata_budget_exceeded",
+        max_bytes: settings.maxBytes,
+      };
+  } else if (!fits(body)) {
     status = 413;
     body = {
       page_id: doc.page_id,

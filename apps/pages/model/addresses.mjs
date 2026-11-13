@@ -119,18 +119,19 @@ const notFound = (message) => Object.assign(Error(message), { code: "node_not_fo
 
 /** What kind of thing `address` names in `index`'s document, and the key
  * of its block: `{ kind, key }`, without a node's range or an image's
- * offset. Throws as resolveAddress does. */
-export function addressKind(index, address) {
+ * offset. Throws as resolveAddress does; a refusal names `field`, the
+ * argument that held the address. */
+export function addressKind(index, address, field = "node_id") {
   if (typeof address !== "string" || address.length > MAX_ADDRESS || !ADDRESS_PATTERN.test(address))
     throw Error(
-      `node_id must be an id from read_page: <counter>@<actor hex>, up to ${MAX_ADDRESS} characters`,
+      `${field} must be an id from read_page: <counter>@<actor hex>, up to ${MAX_ADDRESS} characters`,
     );
   const key = index.block(address);
   if (key !== undefined) return { kind: "block", key };
   const found = index.find(address);
   if (!found)
     throw notFound(
-      "node_id doesn't name a block, node or image in this Page: it was deleted, or it is not an id read_page gave. Read the Page again for current ids. A node read_page reports with node_id null is reached through its block's id.",
+      `${field} doesn't name a block, node or image in this Page: it was deleted, or it is not an id read_page gave. Read the Page again for current ids. A node read_page reports with node_id null is reached through its block's id.`,
     );
   return { kind: found.entry.kind, key: found.key, found };
 }
@@ -142,8 +143,8 @@ export function addressKind(index, address) {
  * `{ kind: "image", key, at, index }` with the embed's offset and span
  * index. Throws `node_not_found` when the address names nothing live, and
  * a plain Error when it isn't an address. */
-export function resolveAddress(index, address) {
-  const { kind, key, found } = addressKind(index, address);
+export function resolveAddress(index, address, field) {
+  const { kind, key, found } = addressKind(index, address, field);
   if (kind === "block") return { kind, key };
   const { entry, nodes } = found;
   if (kind === "image") return { kind, key, at: entry.at, index: entry.index };
@@ -181,7 +182,7 @@ function addressLabel(doc, resolved) {
  * address `kinds` listed. Any other kind is refused with 400
  * `wrong_address_kind`, naming what the id names and what takes it. */
 export function resolveAddressFor(index, doc, address, { op, field, kinds }) {
-  const resolved = resolveAddress(index, address);
+  const resolved = resolveAddress(index, address, field);
   if (kinds.includes(resolved.kind)) return resolved;
   throw Object.assign(
     Error(

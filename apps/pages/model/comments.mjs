@@ -247,7 +247,10 @@ export function applyComment(
     setCommentContent(commentsDoc, path(messageId), input, nativeSpans);
   } else if (action === "resolve" || action === "reopen") {
     requireCommentDecision(commentDecision({ action, role, principal, thread }));
-    thread.status = { value: action === "resolve" ? "resolved" : "open", at: now };
+    // A thread already in the target state is left as it is, as in a batch:
+    // nothing is written, so no comment revision is made.
+    const [{ outcome }] = applyThreadStatuses(threads, action, [threadId], now).threads;
+    return { thread_id: threadId, message_id: null, outcome };
   } else if (action === "edit" || action === "delete_message") {
     const message = Object.hasOwn(thread.messages, messageId) && thread.messages[messageId];
     if (!message || message.deletedAt) throw Error("Comment message not found");
