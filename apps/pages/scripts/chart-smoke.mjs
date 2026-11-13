@@ -43,6 +43,29 @@ const complete = (name) => {
   console.log(`[Chart E2E] ${name}`);
 };
 
+// The chart Worker, built as scripts/build.mjs builds it, and a fixture
+// Worker with every check and guard off for the freeze page.
+const workerBuild = (entry, outfile) =>
+  build({
+    entryPoints: [path.join(app, entry)],
+    bundle: true,
+    format: "iife",
+    platform: "browser",
+    target: "es2022",
+    minify: true,
+    outfile: path.join(site, outfile),
+    define: { "process.env.NODE_ENV": '"production"' },
+    logLevel: "error",
+  });
+await workerBuild("viewer/chart-worker.mjs", "chart-worker.js");
+await workerBuild("scripts/fixtures/chart-worker-unguarded.mjs", "unguarded-worker.js");
+const workerBytes = await readFile(path.join(site, "chart-worker.js"));
+report.worker = {
+  bytes: workerBytes.byteLength,
+  gzip: gzipSync(workerBytes, { level: 9 }).byteLength,
+};
+const workerDefine = { __PAGES_CHART_WORKER_URL__: '"/chart-worker.js"' };
+
 // The same esbuild settings as the viewer (scripts/viewer-chunks.mjs): ESM,
 // split chunks, minified, so the renderer's chunk is the one a Page would load.
 const built = await build({
@@ -56,7 +79,7 @@ const built = await build({
   outdir: site,
   chunkNames: "chunks/[hash]",
   metafile: true,
-  define: { "process.env.NODE_ENV": '"production"' },
+  define: { "process.env.NODE_ENV": '"production"', ...workerDefine },
   logLevel: "error",
 });
 const rendererInput = "viewer/vega-chart.mjs";
@@ -74,7 +97,8 @@ const entryBytes = await readFile(path.join(site, "fixture.js"));
 assert.ok(entryBytes.byteLength < 20_000, "Vega stays out of the page that loads the renderer");
 console.log(
   `[Chart E2E] renderer chunk ${(report.chunk.bytes / 1024).toFixed(1)} KiB, ` +
-    `${(report.chunk.gzip / 1024).toFixed(1)} KiB gzip`,
+    `${(report.chunk.gzip / 1024).toFixed(1)} KiB gzip; Worker ` +
+    `${(report.worker.bytes / 1024).toFixed(1)} KiB, ${(report.worker.gzip / 1024).toFixed(1)} KiB gzip`,
 );
 // The hostile fixture builds on its own, so its direct Vega imports don't
 // change how the renderer's chunk is measured above.
@@ -88,9 +112,67 @@ await build({
   splitting: true,
   outdir: path.join(site, "hostile"),
   chunkNames: "chunks/[hash]",
-  define: { "process.env.NODE_ENV": '"production"' },
+  define: { "process.env.NODE_ENV": '"production"', ...workerDefine },
   logLevel: "error",
 });
+await build({
+  entryPoints: { fixture: path.join(app, "scripts/fixtures/chart-freeze-fixture.mjs") },
+  bundle: true,
+  format: "esm",
+  platform: "browser",
+  target: "es2022",
+  minify: true,
+  splitting: true,
+  outdir: path.join(site, "freeze"),
+  chunkNames: "chunks/[hash]",
+  define: { "process.env.NODE_ENV": '"production"', ...workerDefine },
+  logLevel: "error",
+});
+await build({
+  entryPoints: { fixture: path.join(app, "scripts/fixtures/chart-large-fixture.mjs") },
+  bundle: true,
+  format: "esm",
+  platform: "browser",
+  target: "es2022",
+  minify: true,
+  splitting: true,
+  outdir: path.join(site, "large"),
+  chunkNames: "chunks/[hash]",
+  define: { "process.env.NODE_ENV": '"production"', ...workerDefine },
+  logLevel: "error",
+});
+await writeFile(
+  path.join(site, "large/index.html"),
+  `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Large chart fixture</title>
+    <link rel="stylesheet" href="/large/fixture.css" />
+  </head>
+  <body>
+    <main id="charts" style="display: grid; grid-template-columns: repeat(2, 480px); gap: 8px; padding: 8px"></main>
+    <script type="module" src="/large/fixture.js"></script>
+  </body>
+</html>
+`,
+);
+await writeFile(
+  path.join(site, "freeze/index.html"),
+  `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Chart freeze fixture</title>
+    <link rel="stylesheet" href="/freeze/fixture.css" />
+  </head>
+  <body>
+    <main id="charts" style="display: grid; grid-template-columns: repeat(2, 360px); gap: 8px; padding: 8px"></main>
+    <script type="module" src="/freeze/fixture.js"></script>
+  </body>
+</html>
+`,
+);
 await writeFile(
   path.join(site, "hostile/index.html"),
   `<!doctype html>
@@ -249,6 +331,104 @@ async function hostileCheck(engine) {
   }
 }
 
+/**
+ * Open the freeze fixture in `engine`: two charts whose Worker never finishes.
+ * Each must end in its error state within the timer and a second, while the
+ * page keeps painting and answering, and no Worker may be left running.
+ */
+async function freezeCheck(engine) {
+  const instance =
+    engine === "chromium" ? browser : await ENGINES[engine].launch({ headless: true });
+  const freezeContext = await instance.newContext({ viewport: { width: 800, height: 600 } });
+  const freeze = await freezeContext.newPage();
+  const errors = [];
+  freeze.on("pageerror", (error) => errors.push(error.message));
+  try {
+    await freeze.goto(`${origin}/freeze/`, { waitUntil: "load" });
+    await expect(freeze.locator("body[data-fixture=ready]")).toBeAttached({ timeout: 30_000 });
+    const timeout = await freeze.evaluate(() => window.chartTimeout);
+    // While the Workers spin, the page paints and answers.
+    await freeze.waitForTimeout(1500);
+    const statuses = await freeze
+      .locator("figure.pages-chart")
+      .evaluateAll((figures) => figures.map((figure) => figure.dataset.chartStatus));
+    assert.deepEqual(statuses, ["drawing", "drawing"], `${engine}: still drawing`);
+    const framesBefore = await freeze.evaluate(() => window.chartFrames());
+    const started = Date.now();
+    await freeze.evaluate(() => 1);
+    const roundTrip = Date.now() - started;
+    await freeze.waitForTimeout(1000);
+    const painted = (await freeze.evaluate(() => window.chartFrames())) - framesBefore;
+    assert.ok(roundTrip < 100, `${engine}: an evaluate round trip took ${roundTrip} ms`);
+    assert.ok(painted > 20, `${engine}: ${painted} frames in a second while the Workers spun`);
+    // Both end in the error state within the timer and a second.
+    const elapsed = await freeze.evaluate(async () => {
+      const figures = [...document.querySelectorAll("figure.pages-chart")];
+      while (figures.some((figure) => figure.dataset.chartStatus === "drawing"))
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      return performance.now() - Number(document.body.dataset.started);
+    });
+    assert.ok(elapsed <= timeout + 1000, `${engine}: ended after ${Math.round(elapsed)} ms`);
+    const messages = await freeze
+      .locator("figure.pages-chart .pages-chart-message")
+      .allInnerTexts();
+    assert.deepEqual(messages, [
+      "This chart took too long to draw.",
+      "This chart took too long to draw.",
+    ]);
+    assert.deepEqual(
+      await freeze.evaluate(() => window.chartWorkers),
+      { started: 2, terminated: 2 },
+      `${engine}: each Worker was terminated`,
+    );
+    await expect.poll(() => freeze.workers().length, { timeout: 15_000 }).toBe(0);
+    assert.deepEqual(errors, [], `${engine}: page errors`);
+    report.freeze ??= {};
+    report.freeze[engine] = { timeout, elapsed: Math.round(elapsed), roundTrip, painted };
+    complete(
+      `${engine}: charts that never finish end as an error in ${Math.round(elapsed)} ms ` +
+        `(timer ${timeout} ms), the page painting ${painted} frames a second and answering in ${roundTrip} ms`,
+    );
+  } catch (error) {
+    await freeze
+      .screenshot({ path: path.join(output, `failure-freeze-${engine}.png`), fullPage: true })
+      .catch(() => {});
+    throw error;
+  } finally {
+    await freezeContext.close();
+    if (instance !== browser) await instance.close();
+  }
+}
+
+/**
+ * Time the largest chart the budgets admit through the real Worker in
+ * `engine`: each must draw well inside the timer.
+ */
+async function largeCheck(engine) {
+  const instance =
+    engine === "chromium" ? browser : await ENGINES[engine].launch({ headless: true });
+  const largeContext = await instance.newContext({ viewport: { width: 1000, height: 700 } });
+  const large = await largeContext.newPage();
+  try {
+    await large.goto(`${origin}/large/`, { waitUntil: "load" });
+    await expect(large.locator("body[data-fixture=ready]")).toBeAttached({ timeout: 60_000 });
+    const times = await large.evaluate(() => window.chartTimes);
+    report.large ??= {};
+    report.large[engine] = times;
+    for (const [name, { status, ms, message }] of Object.entries(times))
+      assert.equal(status, "rendered", `${engine} ${name}: ${message} after ${ms} ms`);
+    complete(
+      `${engine}: the largest admitted chart draws through the Worker: ` +
+        Object.entries(times)
+          .map(([name, { ms }]) => `${name} ${ms} ms`)
+          .join(", "),
+    );
+  } finally {
+    await largeContext.close();
+    if (instance !== browser) await instance.close();
+  }
+}
+
 const figure = page.locator("figure.pages-chart");
 const frame = figure.locator(".pages-chart-frame");
 const bars = frame.locator("path[role='graphics-symbol']");
@@ -333,6 +513,8 @@ try {
   complete("No page errors, Content-Security-Policy refusals or requests off the fixture origin");
 
   for (const engine of engines) await hostileCheck(engine);
+  for (const engine of engines) await freezeCheck(engine);
+  for (const engine of engines) await largeCheck(engine);
 } catch (error) {
   report.failure = error.stack || error.message;
   await page.screenshot({ path: path.join(output, "failure.png"), fullPage: true }).catch(() => {});

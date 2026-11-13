@@ -1,9 +1,10 @@
 // Charts whose spec or data carries a CSS url() in every position that could
 // reach a style, drawn three ways, for scripts/chart-smoke.mjs to hover while
 // it watches the network:
-// - "mount": the full renderer, spec checks included.
-// - "draw": drawChart, which skips the spec check, so the compiled-dataflow
-//   check and the cleaning SVG renderer are what stand.
+// - "mount": the full renderer, spec checks and the chart Worker included.
+// - "draw": the Worker's run in this page with the spec check off, then the
+//   page's drawing, so the compiled-dataflow check and the cleaning SVG
+//   renderer are what stand.
 // - "raw": Vega with the interpreter, the denied loader and its stock SVG
 //   renderer, as the renderer drew before it cleaned items. Its requests are
 //   the baseline: what each engine fetches when nothing cleans a style.
@@ -146,7 +147,9 @@ const rowsFor = (u) =>
     },
   }));
 
-const { mount, drawChart, deniedLoader, pageTheme } = await import("../../viewer/vega-chart.mjs");
+const { mount, drawScene, pageTheme } = await import("../../viewer/vega-chart.mjs");
+const { runChart, deniedLoader } = await import("../../viewer/chart-dataflow.mjs");
+const { datasetRows } = await import("../../viewer/chart-data.mjs");
 const [vega, vl, { expressionInterpreter }] = await Promise.all([
   import("vega"),
   import("vega-lite"),
@@ -167,11 +170,17 @@ for (const layer of ["mount", "draw", "raw"])
     try {
       if (layer === "mount") {
         mount(cell, { spec, datasets: { d: rows }, title: `${layer} ${position}` });
-        await new Promise((resolve) => setTimeout(resolve, 30));
-        outcome.status = cell.querySelector("figure")?.dataset.chartStatus ?? "missing";
+        const figure = cell.querySelector("figure");
+        for (let i = 0; i < 500 && figure.dataset.chartStatus === "drawing"; i++)
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        outcome.status = figure.dataset.chartStatus;
       } else if (layer === "draw") {
         const target = cell.appendChild(document.createElement("div"));
-        await drawChart(target, { spec, data: { d: rows }, theme: pageTheme(cell), width: 220 });
+        const result = await runChart(
+          { spec, data: { d: datasetRows(rows) }, theme: pageTheme(cell), width: 220 },
+          { checkSpec: false },
+        );
+        drawScene(target, result, () => {});
       } else {
         const target = cell.appendChild(document.createElement("div"));
         const view = new vega.View(vega.parse(vl.compile(spec).spec, null, { ast: true }), {

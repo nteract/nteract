@@ -56,7 +56,10 @@ Source layout under this directory:
 ### Charts
 
 `viewer/vega-chart.mjs` draws a Vega-Lite spec over datasets the caller
-supplies, in the Page's own document. Nothing in production loads it yet.
+supplies, in the Page's own document. Vega runs in a Worker
+(`viewer/chart-worker.mjs`): it compiles the spec, runs the dataflow and posts
+the finished scenegraph back, and the page draws it with Vega's SVG renderer
+and keeps the hover tooltip. Nothing in production loads it yet.
 
 A chart is static: marks, axes, legends and Vega's hover tooltip. Selections,
 bindings, `param` predicates, hover encodings and every other event stream are
@@ -68,25 +71,25 @@ spec against allowlists: data by name only, transforms and their parameters
 with ranged numbers, expression functions, keyword cursors, and no CSS `url()`
 in any string. Every number, in the spec and in the data, is 0 or between
 1e-150 and 1e150 in size, since Vega's bin loop never ends once its step
-underflows to 0; the viewer turns a smaller number in the data into 0 and a
-larger or non-finite one into null. The viewer refuses a compiled Vega
+underflows to 0; the Worker turns a smaller number in the data into 0 and a
+larger or non-finite one into null. The Worker refuses a compiled Vega
 dataflow, root or subflow, with any event stream, binding or unlisted
 operator, checks every compiled expression again, runs expressions through
-Vega's interpreter, denies every load, and cleans each paint, font and cursor
-before Vega writes it.
+Vega's interpreter and denies every load; the page cleans each paint, font and
+cursor before it writes them.
 
 A dataset may hold at most 100,000 rows and 2,000,000 cells, nested values
-included, since the viewer copies every value before Vega runs. Vega's bin,
-kde and regression transforms check the values they read at run time, since
-a formula, an aggregate or a window can compute a number the spec check never
-sees.
+included. Vega's bin, kde and regression transforms check the values they read
+at run time, since a formula, an aggregate or a window can compute a number
+the spec check never sees.
 
-A chart runs on the reader's main thread, and nothing stops it there. A spec
-that passes every check can still fail to terminate in a reader's tab: the
-guards above cover the cases reviews have found, and Vega's and d3's numeric
-loops aren't proven to end. Compiling the spec and running the dataflow in a
-Worker with a kill timer, then rendering the finished scenegraph in the Page
-with native SVG and tooltips, is the next change.
+A spec that passes every check can still fail to terminate: the guards cover
+the cases reviews have found, and Vega's and d3's numeric loops aren't proven
+to end. A draw that takes longer than 8 seconds terminates its Worker and
+shows `This chart took too long to draw.`; the page keeps painting meanwhile.
+The largest chart the budgets admit, 100,000 points from 2,000,000 cells, draws
+in about 2 seconds in Chromium, Firefox and WebKit. Drawing that many SVG
+marks still costs the page's own thread time.
 
 ## Run locally
 
@@ -184,7 +187,7 @@ build-update check.
 | `list_pages` reports `content_updated_at` after an MCP edit and after typing in a tab, each well after the Page's creation | `node scripts/local-sharing-e2e.mjs --content-activity` | Starts an isolated fixture |
 | Grid cards show each edited Page's first content in light, dark and phone layouts; a shared card shows for its member and `page_cards` answers null on the call after removal | `node scripts/local-sharing-e2e.mjs --cards` | Starts an isolated fixture |
 | Cold first open of a 300-paragraph Page with images on Fast 3G and 4x CPU, phase by phase (records timings, gates on nothing) | `node scripts/local-sharing-e2e.mjs --cold-open` | Starts an isolated fixture behind a brotli proxy; writes `report.json` |
-| Vega-Lite chart renderer with no Page: a stacked bar chart from a fixture under the viewer CSP, Vega's tooltip on hover, light and dark screenshots, Maximize, phone width, the renderer chunk's size; then charts with `url()` in every style position, in the spec and in the data, hovered with no request leaving the fixture (`PAGES_CHART_ENGINES=chromium,firefox,webkit` for more engines) | `node scripts/chart-smoke.mjs` | Builds and serves its own fixture page; no celld |
+| Vega-Lite chart renderer with no Page: a stacked bar chart from a fixture under the viewer CSP, Vega's tooltip on hover, light and dark screenshots, Maximize, phone width, the renderer chunk's and Worker's sizes; charts with `url()` in every style position, in the spec and in the data, hovered with no request leaving the fixture; charts that never finish, in a Worker with every check off, ending as an error within the timer while the page keeps painting; the largest admitted chart's time through the Worker (`PAGES_CHART_ENGINES=chromium,firefox,webkit` for more engines) | `node scripts/chart-smoke.mjs` | Builds and serves its own fixture page; no celld |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
 | Comments panel placement at 1920/1440/1100/800px | `PAGES_ORIGIN=http://localhost:9894 node scripts/comments-layout-smoke.mjs` | Uses the running Wordgard fixture |
 | Comment review at 1440/800px: whole messages through J and Resolve and next, the Page behind holds still under wheel and touch and keeps its scroll after Exit review, Resolve and next hovers green in light and dark | `PAGES_ORIGIN=http://localhost:9894 node scripts/comments-review-smoke.mjs` | Uses the running Wordgard fixture |

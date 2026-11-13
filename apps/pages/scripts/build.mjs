@@ -9,6 +9,7 @@ import { releaseFilesOf } from "./stage-artifacts.mjs";
 import {
   VIEWER_ASSETS,
   VIEWER_CSP,
+  chartWorkerChunk,
   hashedAssetPath,
   headersFile,
   publicUrl,
@@ -93,17 +94,40 @@ await writeAsset(
 // Sift's WASM loads only when a Page shows a Parquet dataframe (viewer/sift-table.jsx).
 await writeAsset("sift.wasm", await readFile(siftWasmPath(app)));
 
+// The chart Worker runs Vega off the page's thread (viewer/vega-chart.mjs). A
+// classic script with nothing shared, so it loads in every engine under
+// `script-src 'self'`; written as one more hashed chunk.
+const chartWorkerBytes = firstOutput(
+  await build({
+    entryPoints: [path.join(app, "viewer/chart-worker.mjs")],
+    bundle: true,
+    format: "iife",
+    platform: "browser",
+    target: "es2022",
+    minify: true,
+    tsconfig: path.join(app, "tsconfig.json"),
+    outfile: path.join(dist, "public/chunks/chart-worker.js"),
+    write: false,
+    define: { "process.env.NODE_ENV": '"production"' },
+  }),
+);
+const chartWorker = chartWorkerChunk(chartWorkerBytes);
+await mkdir(path.join(dist, "public/chunks"), { recursive: true });
+await writeFile(path.join(dist, chartWorker), chartWorkerBytes);
+
 const viewer = await build(
   viewerBuildOptions(
     app,
     dist,
-    buildDefine,
+    { ...buildDefine, __PAGES_CHART_WORKER_URL__: JSON.stringify(publicUrl(chartWorker)) },
     Object.fromEntries(
       ["mermaid.js", "automerge.wasm", "sift.wasm"].map((name) => [name, publicUrl(assets[name])]),
     ),
   ),
 );
-const { chunks: viewerChunks, preloads, styles } = viewerSplit(viewer.metafile);
+const split = viewerSplit(viewer.metafile);
+const viewerChunks = [...split.chunks, chartWorker].sort();
+const { preloads, styles } = split;
 // esbuild also writes CSS for the lazily loaded chunk. app.css already holds
 // those rules, in the order the shell imports them, so nothing loads it.
 const appStyles = await readFile(path.join(dist, "public/app.css"), "utf8");

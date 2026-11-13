@@ -5,24 +5,32 @@ import { fileURLToPath } from "node:url";
 import { Vector, tableFromJSON } from "apache-arrow";
 import { JSDOM } from "jsdom";
 import * as vega from "vega";
+import { SVGHandler } from "vega-scenegraph";
 globalThis.__vega = vega;
 
 const {
   mount,
-  drawChart,
-  datasetRows,
+  drawScene,
+  setChartWorker,
+  formatTooltip,
+  safePaint,
+  cleanItem,
+  RESIZE_SETTLE_MS,
+  TIMED_OUT,
+  tooltipText,
+} = await import("./vega-chart.mjs");
+const {
+  runChart,
+  serveCharts,
   sizedSpec,
   themeConfig,
   deniedLoader,
-  formatTooltip,
   runtimeProblem,
-  safePaint,
-  cleanItem,
   VEGA_LITE_FUNCTIONS,
   STATIC_OPERATORS,
-  RESIZE_SETTLE_MS,
-  tooltipText,
-} = await import("./vega-chart.mjs");
+} = await import("./chart-dataflow.mjs");
+const { datasetRows, ownRows } = await import("./chart-data.mjs");
+const { plainScene, readDatasets } = await import("./chart-dataflow.mjs");
 const { checkChartSpec, CHART_MAX_ROWS, CHART_MAX_CELLS, CHART_EXPRESSION_FUNCTIONS } =
   await import("../shared/chart-spec.mjs");
 const vl = await import("vega-lite");
@@ -45,6 +53,20 @@ const stacked = {
   },
 };
 const settle = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
+/** Wait until `check()` is true, up to five seconds. */
+async function until(check) {
+  for (let i = 0; i < 250 && !check(); i++) await settle(20);
+  return check();
+}
+/** Wait until `element`'s chart has drawn or failed, up to five seconds. */
+async function drawn(element) {
+  for (let i = 0; i < 250; i++) {
+    const status = element.querySelector("figure")?.dataset.chartStatus;
+    if (status && status !== "drawing") return status;
+    await settle(20);
+  }
+  return "drawing";
+}
 const bars = (root) => root.querySelectorAll("path[role='graphics-symbol']");
 
 /**
@@ -127,14 +149,14 @@ function withWindow(run) {
   });
 }
 
-/** Count Vega views created and finalized while `run` runs. */
+/** Count Vega views that run, and those not yet finalized, while `run` runs. */
 async function countViews(run) {
-  const { initialize, finalize } = vega.View.prototype;
+  const { runAsync, finalize } = vega.View.prototype;
   const views = { live: new Set(), created: 0 };
-  vega.View.prototype.initialize = function (...args) {
+  vega.View.prototype.runAsync = function (...args) {
+    if (!views.live.has(this)) views.created++;
     views.live.add(this);
-    views.created++;
-    return initialize.apply(this, args);
+    return runAsync.apply(this, args);
   };
   vega.View.prototype.finalize = function (...args) {
     views.live.delete(this);
@@ -143,8 +165,62 @@ async function countViews(run) {
   try {
     return await run(views);
   } finally {
-    Object.assign(vega.View.prototype, { initialize, finalize });
+    Object.assign(vega.View.prototype, { runAsync, finalize });
   }
+}
+
+/**
+ * A Worker that runs the chart Worker's own message loop (serveCharts) in
+ * this process, a task later, with structured clones crossing as they would.
+ * `workers` counts the Workers charts start and those still running, and the
+ * draws they are sent.
+ */
+const workers = { created: 0, live: new Set(), draws: 0, hold: false };
+class InProcessWorker extends EventTarget {
+  constructor() {
+    super();
+    workers.created++;
+    workers.live.add(this);
+    this.scope = new EventTarget();
+    this.scope.postMessage = (data) =>
+      setTimeout(() => {
+        if (workers.live.has(this)) this.dispatchEvent(new MessageEvent("message", { data }));
+      });
+    serveCharts(this.scope);
+  }
+  postMessage(message) {
+    if (message.type === "draw") workers.draws++;
+    const data = structuredClone(message);
+    setTimeout(() => {
+      if (!workers.hold && workers.live.has(this))
+        this.scope.dispatchEvent(new MessageEvent("message", { data }));
+    });
+  }
+  terminate() {
+    workers.live.delete(this);
+  }
+}
+setChartWorker(() => new InProcessWorker());
+
+/** Count chart Workers and draws while `run` runs. */
+async function countWorkers(run) {
+  Object.assign(workers, { created: 0, draws: 0, hold: false });
+  workers.live.clear();
+  return run(workers);
+}
+
+/**
+ * Draw `spec` over `data` (name → rows) into `target` the way a chart does,
+ * in this process: the Worker's run, then the page's drawing. The spec check
+ * is off, so the compiled-dataflow check and the guards are what stand.
+ * Resolves with the drawing; rejects with the run's error.
+ */
+async function drawChart(target, { spec, data, theme, width, tooltip, checkSpec = false }) {
+  const rows = Object.fromEntries(
+    Object.entries(data).map(([name, set]) => [name, datasetRows(set)]),
+  );
+  const result = await runChart({ spec, data: rows, theme, width }, { checkSpec });
+  return drawScene(target, result, tooltip);
 }
 
 function container(window, width = 640) {
@@ -168,7 +244,7 @@ test("mount draws a stacked bar chart from rows, with the title above one frame"
   withWindow(async (window) => {
     const { element } = container(window);
     const chart = mount(element, { spec: stacked, datasets: { calls }, title: "Calls by tool" });
-    await settle();
+    await drawn(element);
     const figure = element.querySelector("figure.pages-chart");
     assert.equal(figure.dataset.chartStatus, "rendered");
     assert.equal(figure.getAttribute("aria-label"), "Calls by tool");
@@ -206,7 +282,7 @@ test("an Arrow table is a dataset; 64-bit integers become numbers", () =>
     );
     const { element } = container(window);
     const chart = mount(element, { spec: stacked, datasets: { calls: table } });
-    await settle();
+    await drawn(element);
     assert.equal(element.querySelector("figure").dataset.chartStatus, "rendered");
     assert.equal(bars(element).length, 5);
     chart.destroy();
@@ -221,12 +297,12 @@ test("rows are copied, so Vega never tags the caller's objects", () => {
   assert.equal(datasetRows({ rows: [] }), null);
 });
 
-test("mount redraws at a new width once a resize settles, and finalizes the old view", () =>
+test("mount redraws at a new width once a resize settles, in the same Worker", () =>
   withWindow((window, { observers }) =>
-    countViews(async (views) => {
+    countWorkers(async (workers) => {
       const { element, resize } = container(window, 600);
       const chart = mount(element, { spec: stacked, datasets: { calls } });
-      await settle();
+      await drawn(element);
       const svgWidth = () =>
         Number(element.querySelector(".pages-chart-canvas svg").getAttribute("width"));
       const wide = svgWidth();
@@ -237,53 +313,55 @@ test("mount redraws at a new width once a resize settles, and finalizes the old 
       observer.callback();
       await settle(RESIZE_SETTLE_MS / 2);
       assert.equal(svgWidth(), wide, "a resize still in motion doesn't redraw");
-      await settle(RESIZE_SETTLE_MS + 80);
-      assert.ok(svgWidth() < wide && svgWidth() <= 340, `${wide} -> ${svgWidth()}`);
-      assert.equal(views.created, 2);
-      assert.equal(views.live.size, 1);
+      assert.ok(await until(() => svgWidth() <= 340), `${wide} -> ${svgWidth()}`);
+      assert.equal(workers.draws, 2);
+      assert.equal(workers.created, 1);
+      assert.equal(workers.live.size, 1);
       assert.equal(element.querySelectorAll(".pages-chart-canvas svg").length, 1);
       chart.destroy();
-      assert.equal(views.live.size, 0);
+      assert.equal(workers.live.size, 0);
     }),
   ));
 
 test("a Page theme change redraws with the dark palette", () =>
   withWindow((window) =>
-    countViews(async (views) => {
+    countWorkers(async (workers) => {
       const { element } = container(window);
       const chart = mount(element, { spec: stacked, datasets: { calls } });
-      await settle();
+      await drawn(element);
       const fills = () => new Set([...bars(element)].map((bar) => bar.getAttribute("fill")));
       assert.ok(fills().has(themeConfig(theme).range.category[0]));
       window.document.documentElement.classList.add("dark");
-      await settle();
-      assert.ok(fills().has(themeConfig({ ...theme, dark: true }).range.category[0]));
-      assert.equal(views.created, 2);
-      assert.equal(views.live.size, 1);
+      assert.ok(
+        await until(() => fills().has(themeConfig({ ...theme, dark: true }).range.category[0])),
+      );
+      assert.equal(workers.draws, 2);
+      assert.equal(workers.live.size, 1);
       // A class change that keeps the theme draws nothing new.
       window.document.documentElement.classList.add("unrelated");
       await settle();
-      assert.equal(views.created, 2);
+      assert.equal(workers.draws, 2);
       chart.destroy();
     }),
   ));
 
-test("destroy leaves no listeners, observers, views, tooltip or viewer behind", () =>
+test("destroy leaves no listeners, observers, Workers, tooltip or viewer behind", () =>
   withWindow((window, { listeners, observers }) =>
-    countViews(async (views) => {
+    countWorkers(async (workers) => {
       const before = listeners();
       const { element } = container(window);
       const chart = mount(element, { spec: stacked, datasets: { calls }, title: "Calls" });
-      await settle();
+      await drawn(element);
       // Show Vega's tooltip and open the expanded viewer, then tear down.
-      const [view] = views.live;
-      view.tooltip()(view, { clientX: 10, clientY: 10 }, null, { tool: "read_page" });
+      bars(element)[0].dispatchEvent(
+        new window.MouseEvent("pointermove", { bubbles: true, clientX: 10, clientY: 10 }),
+      );
       assert.ok(window.document.querySelector(".vg-tooltip.visible"));
       element.querySelector(".wordgard-diagram-maximize").click();
       assert.ok(window.document.querySelector("dialog.diagram-viewer"));
       assert.ok(listeners() > before);
       chart.destroy();
-      assert.equal(views.live.size, 0);
+      assert.equal(workers.live.size, 0);
       assert.equal(listeners(), before);
       assert.equal(observers.mutation, 0);
       assert.ok(observers.resize.every((observer) => !observer.connected));
@@ -293,17 +371,26 @@ test("destroy leaves no listeners, observers, views, tooltip or viewer behind", 
     }),
   ));
 
-test("destroy during the first draw finalizes the view that draw makes", () =>
+test("destroy during the first draw leaves no Worker and draws nothing", () =>
   withWindow((window) =>
-    countViews(async (views) => {
+    countWorkers(async (workers) => {
       const { element } = container(window);
       const chart = mount(element, { spec: stacked, datasets: { calls } });
       chart.destroy();
       await settle();
-      assert.equal(views.created, 1, "the draw ran to its end");
-      assert.equal(views.live.size, 0);
+      assert.equal(workers.live.size, 0);
+      // Destroyed after the draw was posted: the Worker is terminated and its
+      // answer is dropped.
+      const { element: later } = container(window);
+      const second = mount(later, { spec: stacked, datasets: { calls } });
+      await settle(1);
+      assert.equal(workers.draws, 1);
+      second.destroy();
+      await settle();
+      assert.equal(workers.live.size, 0);
+      assert.equal(later.children.length, 0);
       assert.equal(element.children.length, 0);
-      // Finalizing the late view hides its tooltip; that must not leave an
+      // A late answer from the terminated Worker must not leave a tooltip
       // element behind.
       assert.equal(
         window.document.body.querySelectorAll(".vg-tooltip, [id^='pages-chart-tooltip']").length,
@@ -316,7 +403,7 @@ test("Maximize opens the chart in the diagram viewer, titled by the chart", () =
   withWindow(async (window) => {
     const { element } = container(window);
     const chart = mount(element, { spec: stacked, datasets: { calls }, title: "Calls by tool" });
-    await settle();
+    await drawn(element);
     const button = element.querySelector(".wordgard-diagram-maximize");
     assert.equal(button.getAttribute("aria-label"), "Maximize chart");
     assert.equal(button.getAttribute("aria-haspopup"), "dialog");
@@ -348,7 +435,7 @@ test("columns named like Object.prototype stay columns, in rows and in Arrow tab
         assert.equal(Object.hasOwn(rows[0], name) && rows[0][name], "x", name);
       const { element } = container(window);
       const chart = mount(element, { spec: stacked, datasets: { calls: dataset } });
-      await settle();
+      await drawn(element);
       assert.equal(element.querySelector("figure").dataset.chartStatus, "rendered");
       assert.equal(bars(element).length, 5);
       chart.destroy();
@@ -383,7 +470,7 @@ test("a dataset or field named like Object.prototype is refused with one sentenc
 async function refusalIn(window, spec, datasets = { calls }) {
   const { element } = container(window);
   const chart = mount(element, { spec, datasets, title: "Refused" });
-  await settle();
+  await drawn(element);
   const figure = element.querySelector("figure");
   const message = figure.querySelector(".pages-chart-frame > .pages-chart-message");
   assert.equal(figure.dataset.chartStatus, "error");
@@ -613,18 +700,17 @@ test("the structural checks reach every subflow, and hover encodings anywhere", 
   assert.match(runtimeProblem(hovered), /changes on hover/);
 });
 
-test("a drawn chart listens for nothing; hovering a mark only shows its tooltip", () =>
+test("hovering a drawn chart only shows its tooltip", () =>
   withWindow(async (window) => {
     const shown = [];
     const target = window.document.body.appendChild(window.document.createElement("div"));
-    const view = await drawChart(target, {
+    const drawing = await drawChart(target, {
       spec: stacked,
-      data: { calls: datasetRows(calls) },
+      data: { calls },
       theme,
       width: 400,
       tooltip: (_handler, _event, _item, value) => shown.push(value),
     });
-    assert.equal(view._eventListeners.length, 0);
     const svg = target.querySelector("svg");
     const before = svg.outerHTML;
     const bar = bars(target)[0];
@@ -636,7 +722,7 @@ test("a drawn chart listens for nothing; hovering a mark only shows its tooltip"
       shown.some((value) => value && typeof value === "object"),
       JSON.stringify(shown),
     );
-    view.finalize();
+    drawing.finalize();
   }));
 
 test("tooltip text is total: no toString, cycles, depth and length", () => {
@@ -676,7 +762,7 @@ test("a tooltip that can't show moves the chart to its error state", () =>
       spec: { ...stacked, mark: { type: "bar", tooltip: { content: "data" } } },
       datasets: { calls },
     });
-    await settle();
+    await drawn(element);
     const figure = element.querySelector("figure");
     assert.equal(figure.dataset.chartStatus, "rendered");
     // Make the handler itself throw, as vega-tooltip does on a value it
@@ -1141,20 +1227,15 @@ test("data that carries url() never reaches a drawn attribute or the cursor", ()
       );
     const { element } = container(window);
     const chart = mount(element, { spec: byField, datasets: { calls: rows } });
-    await settle(120);
+    await drawn(element);
     const figure = element.querySelector("figure");
     assert.equal(figure.dataset.chartStatus, "rendered", figure.textContent);
     assert.deepEqual(references(figure.querySelector(".pages-chart-canvas svg")), []);
-    const target = figure.querySelector(".pages-chart-canvas > div");
-    target.style.cursor = `${probe}, auto`;
-    assert.equal(target.style.cursor, "");
-    target.style.cursor = "pointer";
-    assert.equal(target.style.cursor, "pointer");
     chart.destroy();
     // Past the spec check, Vega-Lite's own data() can carry a row's value into
     // a font, a background or a cursor; the renderer still cleans them.
     const target2 = window.document.body.appendChild(window.document.createElement("div"));
-    const view = await drawChart(target2, {
+    const drawing = await drawChart(target2, {
       spec: {
         data: { name: "calls" },
         background: { expr: "data('calls')[0].paint" },
@@ -1175,7 +1256,7 @@ test("data that carries url() never reaches a drawn attribute or the cursor", ()
     });
     assert.deepEqual(references(target2.querySelector("svg")), []);
     assert.doesNotMatch(target2.querySelector("svg").getAttribute("style") ?? "", /url\(/);
-    view.finalize();
+    drawing.finalize();
   }));
 
 test("an expression that throws while the chart runs shows an error, not a drawn chart", () =>
@@ -1185,7 +1266,7 @@ test("an expression that throws while the chart runs shows an error, not a drawn
       spec: { ...stacked, transform: [{ calculate: "datum.missing.x", as: "v" }] },
       datasets: { calls },
     });
-    await settle(120);
+    await drawn(element);
     const figure = element.querySelector("figure");
     assert.equal(figure.dataset.chartStatus, "error");
     const message = figure.querySelector(".pages-chart-message").textContent;
@@ -1195,30 +1276,107 @@ test("an expression that throws while the chart runs shows an error, not a drawn
     chart.destroy();
   }));
 
-test("an error in a later run moves a drawn chart to its error state", () =>
+test("a draw that outlasts the timer ends in the error state and its Worker is terminated", () =>
+  withWindow((window, { observers }) =>
+    countWorkers(async (workers) => {
+      const restore = setChartWorker(() => new InProcessWorker(), { timeoutMs: 60 });
+      try {
+        const { element, resize } = container(window, 600);
+        workers.hold = true;
+        const chart = mount(element, { spec: stacked, datasets: { calls } });
+        await settle(30);
+        const figure = element.querySelector("figure");
+        assert.equal(figure.dataset.chartStatus, "drawing");
+        await settle(80);
+        assert.equal(figure.dataset.chartStatus, "error");
+        assert.equal(figure.querySelector(".pages-chart-message").textContent, TIMED_OUT);
+        assert.equal(workers.live.size, 0);
+        // The next draw starts a fresh Worker, sends the data again, and draws.
+        workers.hold = false;
+        resize(400);
+        observers.resize[0].callback();
+        assert.ok(await until(() => figure.dataset.chartStatus === "rendered"));
+        assert.equal(workers.created, 2);
+        assert.equal(bars(element).length, 5);
+        chart.destroy();
+        assert.equal(workers.live.size, 0);
+      } finally {
+        restore();
+      }
+    }),
+  ));
+
+test("a timer the busy page held past its time waits for an answer already queued", () =>
   withWindow((window) =>
-    countViews(async (views) => {
-      const { element } = container(window);
-      const chart = mount(element, {
-        spec: {
-          ...stacked,
-          transform: [{ calculate: "datum.calls > 1000 ? datum.missing.x : 0", as: "v" }],
-        },
-        datasets: { calls },
-      });
-      await settle(120);
-      const figure = element.querySelector("figure");
-      assert.equal(figure.dataset.chartStatus, "rendered");
-      const [view] = views.live;
-      await view.insert("calls", [{ tool: "read_page", client: "Claude", calls: 5000 }]).runAsync();
-      await settle(10);
-      assert.equal(figure.dataset.chartStatus, "error");
-      assert.match(
-        figure.querySelector(".pages-chart-message").textContent,
-        /^This chart couldn't be drawn: /,
+    countWorkers(async () => {
+      const restore = setChartWorker(() => new InProcessWorker(), { timeoutMs: 40 });
+      try {
+        const { element } = container(window);
+        const chart = mount(element, { spec: stacked, datasets: { calls } });
+        // Let the Worker answer, then hold this thread past the timer, as a
+        // page laying out a large chart does.
+        await settle(20);
+        const until = performance.now() + 400;
+        while (performance.now() < until);
+        assert.equal(await drawn(element), "rendered");
+        chart.destroy();
+      } finally {
+        restore();
+      }
+    }),
+  ));
+
+test("a Worker that fails to start or errors shows the error state", () =>
+  withWindow(async (window) => {
+    for (const create of [
+      () => {
+        throw new Error("Workers are off.");
+      },
+      () => {
+        const worker = new InProcessWorker();
+        worker.postMessage = () =>
+          setTimeout(() =>
+            worker.dispatchEvent(Object.assign(new Event("error"), { message: "Script failed." })),
+          );
+        return worker;
+      },
+    ]) {
+      const restore = setChartWorker(create);
+      try {
+        const { element } = container(window);
+        const chart = mount(element, { spec: stacked, datasets: { calls } });
+        await settle(60);
+        const figure = element.querySelector("figure");
+        assert.equal(figure.dataset.chartStatus, "error");
+        assert.match(
+          figure.querySelector(".pages-chart-message").textContent,
+          /^This chart couldn't be drawn: /,
+        );
+        chart.destroy();
+        element.remove();
+      } finally {
+        restore();
+      }
+    }
+  }));
+
+test("a newer draw cuts off a running one and its Worker", () =>
+  withWindow((window, { observers }) =>
+    countWorkers(async (workers) => {
+      const { element, resize } = container(window, 600);
+      workers.hold = true;
+      const chart = mount(element, { spec: stacked, datasets: { calls } });
+      await settle(20);
+      workers.hold = false;
+      resize(400);
+      observers.resize[0].callback();
+      await until(() => element.querySelector("figure").dataset.chartStatus === "rendered");
+      assert.equal(workers.created, 2, "the held Worker was replaced");
+      assert.equal(workers.live.size, 1);
+      assert.equal(element.querySelector("figure").dataset.chartStatus, "rendered");
+      assert.ok(
+        Number(element.querySelector(".pages-chart-canvas svg").getAttribute("width")) <= 400,
       );
-      assert.equal(figure.querySelector(".pages-chart-canvas svg"), null);
-      assert.equal(views.live.size, 0);
       chart.destroy();
     }),
   ));
@@ -1254,6 +1412,7 @@ test("a single view fills the width it's given; a composite sizes itself", () =>
 
 test("Vega draws with string code generation disabled, as under the viewer CSP", () => {
   const chart = fileURLToPath(new URL("./vega-chart.mjs", import.meta.url));
+  const dataflow = fileURLToPath(new URL("./chart-dataflow.mjs", import.meta.url));
   const script = `
     import { JSDOM } from "jsdom";
     const { window } = new JSDOM("<!doctype html><body></body>");
@@ -1261,6 +1420,21 @@ test("Vega draws with string code generation disabled, as under the viewer CSP",
     // jsdom's own selector engine compiles with Function: keep its
     // getComputedStyle and querySelector out of this process.
     window.getComputedStyle = () => ({ getPropertyValue: () => "", paddingLeft: "0" });
+    const { serveCharts } = await import(${JSON.stringify(dataflow)});
+    const { setChartWorker } = await import(${JSON.stringify(chart)});
+    setChartWorker(() => {
+      const worker = new EventTarget();
+      const scope = new EventTarget();
+      scope.postMessage = (data) =>
+        setTimeout(() => worker.dispatchEvent(new MessageEvent("message", { data })));
+      serveCharts(scope);
+      worker.postMessage = (message) => {
+        const data = structuredClone(message);
+        setTimeout(() => scope.dispatchEvent(new MessageEvent("message", { data })));
+      };
+      worker.terminate = () => {};
+      return worker;
+    });
     const { mount } = await import(${JSON.stringify(chart)});
     const element = window.document.body.appendChild(window.document.createElement("div"));
     mount(element, {
@@ -1318,11 +1492,27 @@ test("hovering a value with no usable toString shows a tooltip, and the chart st
 // process with a timeout.
 function drawInProcess(cases, timeout) {
   const chart = fileURLToPath(new URL("./vega-chart.mjs", import.meta.url));
+  const dataflow = fileURLToPath(new URL("./chart-dataflow.mjs", import.meta.url));
   const script = `
     import { JSDOM } from "jsdom";
     const { window } = new JSDOM("<!doctype html><body></body>");
     globalThis.document = window.document;
     Object.defineProperty(window.HTMLElement.prototype, "clientWidth", { get: () => 400 });
+    const { serveCharts } = await import(${JSON.stringify(dataflow)});
+    const { setChartWorker } = await import(${JSON.stringify(chart)});
+    setChartWorker(() => {
+      const worker = new EventTarget();
+      const scope = new EventTarget();
+      scope.postMessage = (data) =>
+        setTimeout(() => worker.dispatchEvent(new MessageEvent("message", { data })));
+      serveCharts(scope);
+      worker.postMessage = (message) => {
+        const data = structuredClone(message);
+        setTimeout(() => scope.dispatchEvent(new MessageEvent("message", { data })));
+      };
+      worker.terminate = () => {};
+      return worker;
+    });
     const { mount } = await import(${JSON.stringify(chart)});
     const results = [];
     for (const { spec, rows } of ${JSON.stringify(cases)}) {
@@ -1543,36 +1733,35 @@ test("a dataset over the cell budget is refused before any row is copied", () =>
     const narrow = wide.slice(0, Math.floor(CHART_MAX_CELLS / columns));
     narrow[narrow.length - 1] = { tool: "t", calls: 1 };
     const chart = mount(element, { spec: stacked, datasets: { calls: narrow } });
-    await settle(200);
-    assert.equal(element.querySelector("figure").dataset.chartStatus, "rendered");
+    assert.equal(await drawn(element), "rendered");
     chart.destroy();
   }));
 
-test("destroy empties the container even when Vega's finalize throws", () =>
+test("destroy empties the container even when the drawing's finalize throws", () =>
   withWindow(async (window) => {
-    const vega = globalThis.__vega;
     const { element } = container(window);
     const chart = mount(element, {
       spec: { ...stacked, mark: { type: "bar", tooltip: { content: "data" } } },
       datasets: { calls },
     });
-    await settle();
+    await drawn(element);
     bars(element)[0].dispatchEvent(
       new window.MouseEvent("pointermove", { bubbles: true, clientX: 5, clientY: 5 }),
     );
     await settle();
     assert.ok(window.document.querySelector(".vg-tooltip"), "the tooltip exists before destroy");
-    const { finalize } = vega.View.prototype;
+    const { initialize } = SVGHandler.prototype;
     const reported = [];
     const { reportError } = window;
     window.reportError = (error) => reported.push(error);
-    vega.View.prototype.finalize = () => {
-      throw new Error("finalize broke");
+    SVGHandler.prototype.initialize = function (el, ...rest) {
+      if (!el) throw new Error("finalize broke");
+      return initialize.call(this, el, ...rest);
     };
     try {
       chart.destroy();
     } finally {
-      vega.View.prototype.finalize = finalize;
+      SVGHandler.prototype.initialize = initialize;
       window.reportError = reportError;
     }
     assert.equal(element.children.length, 0);
@@ -1625,8 +1814,7 @@ test("nested values count against the dataset's cell budget", () =>
       spec: { ...stacked, mark: { type: "bar", tooltip: { content: "data" } } },
       datasets: { calls: [{ ...calls[0], payload }] },
     });
-    await settle(200);
-    assert.equal(element.querySelector("figure").dataset.chartStatus, "rendered");
+    assert.equal(await drawn(element), "rendered");
     bars(element)[0].dispatchEvent(
       new window.MouseEvent("pointermove", { bubbles: true, clientX: 5, clientY: 5 }),
     );
@@ -1704,3 +1892,81 @@ test("every corpus chart draws through the guards", () =>
       target.remove();
     }
   }));
+
+test("the Worker normalizes the rows it receives in place, under the cell budget", () => {
+  const rows = [{ x: 5e-324, big: 1e300, s: "1e-200" }, null];
+  const first = rows[0];
+  ownRows(rows);
+  assert.equal(rows[0], first, "the same object, not a copy");
+  assert.equal(Object.getPrototypeOf(rows[0]), null);
+  assert.deepEqual({ ...rows[0] }, { x: 0, big: null, s: 0 });
+  assert.equal(Object.getPrototypeOf(rows[1]), null);
+  assert.throws(() => ownRows([{ payload: Array(3_000_000).fill(1) }]));
+  // A dataset that can't be read refuses with its sentence.
+  assert.throws(() => readDatasets({ d: { rows: [{ payload: Array(3_000_000).fill(1) }] } }), {
+    message: /The dataset "d" has more than 2,000,000 cells/,
+  });
+  assert.throws(() => readDatasets({ d: { neither: true } }), {
+    message: 'The dataset "d" must be rows or an Arrow table.',
+  });
+});
+
+test("the Worker's message loop answers each draw by id, and a bad dataset fails every draw", async () => {
+  const answers = [];
+  const scope = new EventTarget();
+  scope.postMessage = (data) => answers.push(data);
+  serveCharts(scope);
+  const send = (data) => scope.dispatchEvent(new MessageEvent("message", { data }));
+  const wait = async (count) => {
+    for (let i = 0; i < 200 && answers.length < count; i++) await settle(10);
+  };
+  send({ type: "draw", id: 1, spec: stacked, theme, width: 300 });
+  await wait(1);
+  assert.deepEqual(answers[0], {
+    id: 1,
+    error: { message: "This chart has no data yet.", refusal: true },
+  });
+  send({ type: "data", datasets: { calls: { rows: structuredClone(calls) } } });
+  send({ type: "draw", id: 2, spec: stacked, theme, width: 300 });
+  await wait(2);
+  assert.equal(answers[1].id, 2);
+  assert.ok(
+    answers[1].scene && answers[1].width > 0 && answers[1].height > 0,
+    JSON.stringify(answers[1]).slice(0, 200),
+  );
+  send({ type: "data", datasets: { calls: { rows: [{ payload: Array(3_000_000).fill(1) }] } } });
+  send({ type: "draw", id: 3, spec: stacked, theme, width: 300 });
+  await wait(3);
+  assert.equal(answers[2].id, 3);
+  assert.equal(answers[2].error.refusal, true);
+  assert.match(answers[2].error.message, /more than 2,000,000 cells/);
+});
+
+test("the scene that crosses to the page keeps tooltips and cursors, and nothing that links or loads", () => {
+  const scene = plainScene({
+    marktype: "group",
+    items: [
+      {
+        items: [
+          {
+            marktype: "rect",
+            items: [
+              {
+                x: 1,
+                fill: "red",
+                tooltip: { tool: "read_page" },
+                cursor: "pointer",
+                href: "https://example.com",
+                url: "https://example.com/p.png",
+                datum: { secret: 1 },
+                mark: {},
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+  const item = scene.items[0].items[0].items[0];
+  assert.deepEqual(item, { x: 1, fill: "red", tooltip: { tool: "read_page" }, cursor: "pointer" });
+});
