@@ -64,7 +64,7 @@ function handleOf(doc) {
   };
 }
 
-function replica({ link = () => 1, linked, derive, ignoreAbort, clock } = {}) {
+function replica({ link = () => 1, linked, stored, derive, ignoreAbort, clock } = {}) {
   const scheduler = new VirtualTimeScheduler();
   // The wall clock: the scheduler's own now(), which a test can set back.
   let shift = 0;
@@ -77,6 +77,7 @@ function replica({ link = () => 1, linked, derive, ignoreAbort, clock } = {}) {
     forget: async (id) => forgotten.push(id),
     link,
     ...(linked && { linked }),
+    ...(stored && { stored }),
     ...(clock && { clock: clock(scheduler) }),
     scheduler,
     ...(derive !== null && {
@@ -641,7 +642,10 @@ test("automerge-repo's unknown-document error is the one the replica reads as an
 
 // Over a real host: PlainSync serving the Page family, and a browser repo
 // with this build's formats.
-async function hostWithSources(t, { seed = true } = {}) {
+async function hostWithSources(
+  t,
+  { seed = true, connect = true, bytes = new MemoryByteStore() } = {},
+) {
   const pageId = crypto.randomUUID();
   const uuid = crypto.randomUUID();
   const sourcesId = interpretAsDocumentId(
@@ -661,42 +665,48 @@ async function hostWithSources(t, { seed = true } = {}) {
   t.after(() => plain.close());
   // The browser side: a socket stand-in for PlainSync.accept and the frames
   // the browser sends.
-  const link = framePipe();
   const sent = [];
-  const transport = {
-    ...link.client,
-    send(frame) {
-      sent.push(frame);
-      return link.client.send(frame);
-    },
-    onMessage: (fn) => link.client.onMessage(fn),
-    onClose: (fn) => link.client.onClose(fn),
-    close: (...args) => link.client.close(...args),
+  /** Admit a connection from `backend` to the host. */
+  const attach = (backend) => {
+    const link = framePipe();
+    const transport = {
+      ...link.client,
+      send(frame) {
+        sent.push(frame);
+        return link.client.send(frame);
+      },
+      onMessage: (fn) => link.client.onMessage(fn),
+      onClose: (fn) => link.client.onClose(fn),
+      close: (...args) => link.client.close(...args),
+    };
+    const socket = new EventTarget();
+    socket.send = (bytes) => link.host.send(decodeFrame(bytes));
+    socket.close = (code, reason) => link.host.close(code, reason);
+    link.host.onMessage((frame) =>
+      socket.dispatchEvent(
+        Object.assign(new Event("message"), { data: encodeFrame(frame).buffer }),
+      ),
+    );
+    link.host.onClose(() => socket.dispatchEvent(new Event("close")));
+    plain.accept(
+      socket,
+      {
+        principal: "account:reader",
+        displayName: "Reader",
+        driver: "Browser",
+        canWrite: false,
+        credentialKind: "session",
+      },
+      {
+        features: [...BUILD_FEATURES],
+        formats: readableFormats(),
+        senderId: `b-${crypto.randomUUID()}`,
+      },
+    );
+    backend.addConnection(transport, { hostId: "pages-host" });
   };
-  const socket = new EventTarget();
-  socket.send = (bytes) => link.host.send(decodeFrame(bytes));
-  socket.close = (code, reason) => link.host.close(code, reason);
-  link.host.onMessage((frame) =>
-    socket.dispatchEvent(Object.assign(new Event("message"), { data: encodeFrame(frame).buffer })),
-  );
-  link.host.onClose(() => socket.dispatchEvent(new Event("close")));
-  plain.accept(
-    socket,
-    {
-      principal: "account:reader",
-      displayName: "Reader",
-      driver: "Browser",
-      canWrite: false,
-      credentialKind: "session",
-    },
-    {
-      features: [...BUILD_FEATURES],
-      formats: readableFormats(),
-      senderId: `b-${crypto.randomUUID()}`,
-    },
-  );
-  const backend = await AutomergeSyncBackend.load({ store: new DocStore(new MemoryByteStore()) });
-  backend.addConnection(transport, { hostId: "pages-host" });
+  const backend = await AutomergeSyncBackend.load({ store: new DocStore(bytes) });
+  if (connect) attach(backend);
   const repo = new Repo({ backend });
   t.after(() => repo.shutdown?.());
   /** The host's own write: a source pointing at `asset`. */
@@ -721,7 +731,31 @@ async function hostWithSources(t, { seed = true } = {}) {
       ),
     );
   };
-  return { pageId, sourcesId, repo, sent, write, create };
+  return {
+    pageId,
+    sourcesId,
+    repo,
+    sent,
+    write,
+    create,
+    connect: () => attach(backend),
+    /** A browser on `store` that holds no connection until it connects. */
+    browser: async (store) => {
+      const local = await AutomergeSyncBackend.load({ store: new DocStore(store) });
+      const localRepo = new Repo({ backend: local });
+      t.after(() => localRepo.shutdown?.());
+      return {
+        repo: localRepo,
+        connect: () => attach(local),
+        /** Persist what it holds and let go of the store, as a reload does. */
+        async unload() {
+          await localRepo.flush();
+          await localRepo.shutdown();
+          await local.close();
+        },
+      };
+    },
+  };
 }
 
 test("over a real host the replica syncs the document and never sends a change for it", async (t) => {
@@ -788,4 +822,449 @@ test("over a real host, eviction leaves a document that has loaded since the mis
   // The handle still follows the host's writes.
   await h.write("usage", "b".repeat(64), "1");
   await until(() => handle.doc().sources.usage.revision === "2", { label: "a write after" });
+});
+
+// Before a connection: an ask reads this tab's stored copy (`stored`).
+
+/** A replica whose Page is open from this tab's copy, with no connection
+ * until `connect()`. `socket` holds a socket up while lookups stay closed. */
+function offline({ socket = false } = {}) {
+  let up = false;
+  const r = replica({
+    link: () => (up || socket ? 1 : undefined),
+    linked: () => up,
+    stored: () => true,
+  });
+  return {
+    ...r,
+    connect() {
+      up = true;
+    },
+  };
+}
+
+test("before a connection, an ask opens the document from this tab's copy, and the connection keeps it", async () => {
+  const r = offline();
+  const stop = r.sources.demand();
+  await tick();
+  assert.deepEqual(r.state(), { name: "opening", attempt: 1, id: DERIVED, via: "stored" });
+  assert.equal(r.repo.calls[0].id, DERIVED);
+  const handle = handleOf(sourcesDoc({ usage: {} }));
+  r.repo.calls[0].resolve(handle);
+  await tick();
+  assert.deepEqual(r.state(), { name: "ready", id: DERIVED });
+  assert.equal(r.sources.doc, handle.doc());
+  // The connection derives the same id: the document stays open.
+  r.connect();
+  r.sources.connected();
+  r.sources.discovered(named(DERIVED));
+  await tick();
+  assert.equal(r.repo.calls.length, 1, "no lookup on the connection");
+  assert.deepEqual(r.state(), { name: "ready", id: DERIVED });
+  const refreshed = sourcesDoc({ usage: { name: "Usage" } });
+  handle.land(refreshed);
+  assert.equal(r.sources.doc, refreshed);
+  // A discovery that names none drops it, as for any open document.
+  stop();
+  r.sources.discovered(none);
+  assert.deepEqual(r.state(), { name: "absent" });
+  assert.equal(r.sources.doc, undefined);
+  assert.equal(handle.listeners.size, 0);
+});
+
+test("a stored miss is not a verdict: the replica closes, reads nothing again, and the connection looks", async () => {
+  for (const socket of [false, true]) {
+    const r = offline({ socket });
+    const stop = r.sources.demand();
+    await tick();
+    // No socket: the repo's answer reads as a failed lookup. A socket that
+    // isn't admitted yet: as an unavailable one. Both close the replica.
+    r.repo.calls[0].reject(missing());
+    await tick();
+    assert.deepEqual(r.state(), { name: "closed", checked: true }, `socket ${socket}`);
+    assert.deepEqual(r.docs, [undefined], "nothing is shown as missing or failed");
+    const derived = r.derivations.length;
+    r.sources.want();
+    r.sources.demand()();
+    r.advance(600_000);
+    await tick();
+    assert.equal(r.repo.calls.length, 1, "standing demand doesn't read the store again");
+    assert.equal(r.derivations.length, derived, "an ask in that state derives nothing");
+    assert.deepEqual(r.forgotten, [], "nothing is evicted until the next lookup");
+    // The connection looks it up, evicting the stored answer first.
+    r.connect();
+    r.sources.connected();
+    await tick();
+    assert.deepEqual(r.state(), { name: "opening", attempt: 1, id: DERIVED, via: "derived" });
+    assert.deepEqual(r.forgotten, [DERIVED]);
+    assert.equal(r.repo.calls.length, 2);
+    r.repo.calls[1].resolve(handleOf(sourcesDoc()));
+    await tick();
+    assert.equal(r.state().name, "ready");
+    stop();
+  }
+});
+
+test("a stored read that outlasts its timeout closes the replica the same way", async () => {
+  const r = offline();
+  r.sources.want();
+  await tick();
+  r.advance(LOOKUP_TIMEOUT_MS);
+  await tick();
+  assert.equal(r.repo.calls[0].signal.aborted, true);
+  assert.deepEqual(r.state(), { name: "closed", checked: true });
+});
+
+test("a connection admitted during a stored read cancels it, evicts its answer, and looks up on the link", async () => {
+  const r = offline();
+  r.sources.want();
+  await tick();
+  r.connect();
+  r.sources.discovered(named(DERIVED));
+  await tick();
+  assert.equal(r.repo.calls[0].signal.aborted, true, "the stored read stops");
+  assert.deepEqual(r.forgotten, [DERIVED], "its answer is evicted before the lookup");
+  assert.equal(r.repo.calls.length, 2);
+  assert.deepEqual(r.state(), { name: "opening", attempt: 1, id: DERIVED, via: "named" });
+  r.repo.calls[1].resolve(handleOf(sourcesDoc()));
+  await tick();
+  assert.equal(r.state().name, "ready");
+});
+
+test("a connection admitted while the id derives looks up on the link, not in storage", async () => {
+  let release;
+  let up = false;
+  const r = replica({
+    link: () => (up ? 1 : undefined),
+    linked: () => up,
+    stored: () => true,
+    derive: () => new Promise((resolve) => (release = resolve)),
+  });
+  r.sources.want();
+  await tick();
+  up = true;
+  release(DERIVED);
+  await tick();
+  assert.equal(r.repo.calls.length, 0);
+  assert.deepEqual(r.state(), { name: "closed" });
+});
+
+test("nothing reads the store until something asks, and a tab without a stored Page reads nothing", async () => {
+  const r = offline();
+  r.advance(60_000);
+  await tick();
+  assert.equal(r.derivations.length, 0);
+  assert.equal(r.repo.calls.length, 0);
+  const fresh = replica({ link: () => undefined, linked: () => false, stored: () => false });
+  fresh.sources.demand();
+  await tick();
+  assert.equal(fresh.repo.calls.length, 0);
+  assert.deepEqual(fresh.state(), { name: "closed" });
+});
+
+test("retire and close stop a stored read; a replaced backend's copy is read afresh", async () => {
+  const r = offline();
+  r.sources.want();
+  await tick();
+  r.sources.retire();
+  assert.equal(r.repo.calls[0].signal.aborted, true);
+  assert.deepEqual(r.state(), { name: "retired" });
+  r.sources.want();
+  await tick();
+  assert.equal(r.repo.calls.length, 1);
+
+  const other = offline();
+  other.sources.want();
+  await tick();
+  other.sources.close();
+  assert.equal(other.repo.calls[0].signal.aborted, true);
+  assert.deepEqual(other.state(), { name: "closed" });
+  other.sources.want();
+  await tick();
+  assert.equal(other.repo.calls.length, 2, "the new backend's copy is read");
+  other.repo.calls[1].reject(missing());
+  await tick();
+  other.sources.close();
+  assert.deepEqual(other.state(), { name: "closed" }, "a close clears the read");
+});
+
+test("a replica closed mid-read evicts the read's answer before its next lookup on a link", async () => {
+  const r = offline();
+  r.sources.want();
+  await tick();
+  // A view gives its slot up mid-read; the repo may still settle the read
+  // unavailable.
+  r.sources.close();
+  r.repo.calls[0].reject(missing());
+  await tick();
+  assert.deepEqual(r.state(), { name: "closed" });
+  r.connect();
+  r.sources.connected();
+  await tick();
+  assert.deepEqual(r.forgotten, [DERIVED], "the read's answer is evicted first");
+  assert.equal(r.repo.calls.length, 2);
+  assert.deepEqual(r.state(), { name: "opening", attempt: 1, id: DERIVED, via: "derived" });
+});
+
+/** A replica with no connection until `connect()`, whose evictions wait
+ * until the test settles them (or their lookup's signal aborts, unless
+ * `ignoreAbort`). */
+function slowEviction({ ignoreAbort = false } = {}) {
+  let up = false;
+  const repo = heldFind();
+  const evictions = [];
+  const sources = new HostDocReplica({
+    find: repo.find,
+    forget: (id, { signal } = {}) =>
+      new Promise((resolve) => {
+        evictions.push({ id, signal, resolve });
+        if (!ignoreAbort) signal?.addEventListener("abort", () => resolve());
+      }),
+    link: () => (up ? 1 : undefined),
+    linked: () => up,
+    stored: () => true,
+    derive: async () => DERIVED,
+  });
+  return {
+    sources,
+    repo,
+    evictions,
+    connect() {
+      up = true;
+    },
+    disconnect() {
+      up = false;
+    },
+  };
+}
+
+test("an eviction interrupted by its lookup's cancellation runs again on the next lookup", async () => {
+  for (const interrupt of ["discovered", "close"]) {
+    const r = slowEviction();
+    r.sources.want();
+    await tick();
+    // A connection interrupts the stored read: the named lookup first evicts
+    // the read's answer, and the eviction waits on the still-loading entry.
+    r.connect();
+    r.sources.discovered(named(DERIVED));
+    await tick();
+    assert.equal(r.evictions.length, 1);
+    assert.equal(r.repo.calls.length, 1, "no find before the eviction completes");
+    // The eviction itself is interrupted.
+    if (interrupt === "close") r.sources.close();
+    r.sources.discovered(named(DERIVED));
+    await tick();
+    assert.equal(r.evictions[0].signal.aborted, true, interrupt);
+    assert.equal(r.evictions.length, 2, `${interrupt}: the next lookup evicts again`);
+    r.evictions[1].resolve();
+    await tick();
+    assert.equal(r.repo.calls.length, 2, "the find follows the completed eviction");
+    r.repo.calls[1].resolve(handleOf(sourcesDoc()));
+    await tick();
+    assert.equal(r.sources.state$.snapshot().name, "ready");
+    // Completed: the next lookup of the id evicts nothing.
+    r.sources.close();
+    r.sources.discovered(named(DERIVED));
+    await tick();
+    assert.equal(r.evictions.length, 2);
+    assert.equal(r.repo.calls.length, 3);
+    r.sources.close();
+  }
+});
+
+test("an earlier eviction settling late never clears an obligation a later forget set", async () => {
+  const r = slowEviction({ ignoreAbort: true });
+  r.sources.want();
+  await tick();
+  r.connect();
+  r.sources.discovered(named(DERIVED));
+  await tick();
+  assert.equal(r.evictions.length, 1);
+  // The lookup is closed mid-eviction; with no connection, a new stored
+  // read misses and sets a new obligation.
+  r.sources.close();
+  r.disconnect();
+  r.sources.want();
+  await tick();
+  // The new read evicts first (the interrupted obligation still stands),
+  // then reads, and misses.
+  assert.equal(r.evictions.length, 2);
+  r.evictions[1].resolve();
+  await tick();
+  r.repo.calls.at(-1).reject(missing());
+  await tick();
+  assert.deepEqual(r.sources.state$.snapshot(), { name: "closed", checked: true });
+  // The first eviction settles now: the miss's obligation stands.
+  r.evictions[0].resolve();
+  await tick();
+  r.connect();
+  r.sources.discovered(named(DERIVED));
+  await tick();
+  assert.equal(r.evictions.length, 3, "the stored miss's answer is evicted before the lookup");
+  r.evictions[2].resolve();
+  await tick();
+  r.repo.calls.at(-1).resolve(handleOf(sourcesDoc()));
+  await tick();
+  assert.equal(r.sources.state$.snapshot().name, "ready");
+  r.sources.close();
+});
+
+test("after a stored miss, the next lookup never evicts an id another replica installed", async () => {
+  const claims = new Set();
+  const forgotten = [];
+  const repo = heldFind();
+  let up = false;
+  const make = () =>
+    new HostDocReplica({
+      find: repo.find,
+      forget: async (id) => forgotten.push(id),
+      claims,
+      link: () => (up ? 1 : undefined),
+      linked: () => up,
+      stored: () => true,
+      derive: async () => DERIVED,
+    });
+  const first = make();
+  first.want();
+  await tick();
+  repo.calls[0].reject(missing());
+  await tick();
+  assert.deepEqual(first.state$.snapshot(), { name: "closed", checked: true });
+  const second = make();
+  second.want();
+  await tick();
+  repo.calls[1].resolve(handleOf(sourcesDoc()));
+  await tick();
+  assert.ok(claims.has(DERIVED));
+  up = true;
+  first.connected();
+  await tick();
+  assert.deepEqual(forgotten, [], "the installed id is not evicted");
+  assert.equal(repo.calls.length, 3);
+  first.close();
+  second.close();
+});
+
+/** A replica on `tab`'s repo whose Page is open from the tab's store, with
+ * no connection until the test admits one. */
+function storedReplica(tab, id, { onFind = () => {} } = {}) {
+  let up = false;
+  const states = [];
+  const sources = new HostDocReplica({
+    find: (doc, options) => {
+      const found = tab.repo.find(doc, options);
+      onFind(up);
+      return found;
+    },
+    forget: (doc, options) => evictUnavailable(tab.repo, doc, options),
+    link: () => (up ? 1 : undefined),
+    linked: () => up,
+    stored: () => true,
+    derive: async () => id,
+  });
+  sources.state$.state$.subscribe((state) => states.push(state.name));
+  return {
+    sources,
+    states,
+    /** Admit a connection whose discovery names `id`. */
+    admit() {
+      tab.connect();
+      up = true;
+      sources.discovered(named(id));
+    },
+  };
+}
+
+test("over a real host, a document this tab stored opens before the connection and then syncs on it", async (t) => {
+  const bytes = new MemoryByteStore();
+  const h = await hostWithSources(t, { connect: false });
+  await h.write("usage", "a".repeat(64));
+  // An earlier visit synced the document into this tab's store.
+  const visit = await h.browser(bytes);
+  visit.connect();
+  const synced = await visit.repo.find(h.sourcesId);
+  await until(() => synced.doc()?.sources?.usage?.revision === "1", { label: "first visit" });
+  await visit.unload();
+  // A reload: the same store, no connection.
+  const tab = await h.browser(bytes);
+  const { sources, admit } = storedReplica(tab, h.sourcesId);
+  const stop = sources.demand();
+  await until(() => sources.state$.snapshot().name === "ready", { label: "opened from storage" });
+  assert.equal(sources.doc.sources.usage.current.asset_id, "a".repeat(64));
+  // The host moves on while the tab has no connection.
+  await h.write("usage", "b".repeat(64), "1");
+  await tick();
+  assert.equal(sources.doc.sources.usage.revision, "1");
+  // The connection is admitted: discovery names the open document, and the
+  // host's change reaches doc$.
+  const values = [];
+  sources.doc$.subscribe((doc) => values.push(doc?.sources.usage.revision));
+  admit();
+  assert.equal(sources.state$.snapshot().name, "ready", "the open document stays open");
+  await until(() => sources.doc?.sources.usage.revision === "2", { label: "synced on the link" });
+  assert.equal(values.at(-1), "2");
+  assert.equal(sources.doc.sources.usage.current.asset_id, "b".repeat(64));
+  stop();
+  sources.close();
+});
+
+test("over a real host, a tab with no stored copy waits for the host, which finds the document", async (t) => {
+  const h = await hostWithSources(t, { connect: false });
+  await h.write("usage", "a".repeat(64));
+  const tab = await h.browser(new MemoryByteStore());
+  const { sources, states, admit } = storedReplica(tab, h.sourcesId);
+  const stop = sources.demand();
+  // With no bytes and no peer, the repo answers at once: unavailable.
+  await until(() => sources.state$.snapshot().checked === true, { label: "stored miss" });
+  assert.equal(
+    tab.repo.findWithProgress(h.sourcesId).peek().state,
+    "unavailable",
+    "the repo holds that answer",
+  );
+  assert.equal(sources.doc, undefined);
+  // A named discovery on the live link evicts that answer and asks the host.
+  admit();
+  await until(() => sources.state$.snapshot().name === "ready", { label: "found on the link" });
+  assert.equal(sources.doc.sources.usage.current.asset_id, "a".repeat(64));
+  for (const name of ["failed", "absent", "unserved", "retrying"])
+    assert.ok(!states.includes(name), `never ${name}`);
+  stop();
+  sources.close();
+});
+
+test("over a real host, a connection admitted while a stored read settles still finds the document", async (t) => {
+  const h = await hostWithSources(t, { connect: false });
+  await h.write("usage", "a".repeat(64));
+  // The repo's answer to the stored read is on its way for a few turns: admit
+  // the connection a little later each round, through and past that window.
+  // With `twice`, a second admission follows at once and cancels the first
+  // lookup while its eviction still waits on the read.
+  for (const twice of [false, true])
+    for (let round = 0; round < 24; round++) {
+      const label = `round ${round}${twice ? ", admitted twice" : ""}`;
+      const tab = await h.browser(new MemoryByteStore());
+      let admitted;
+      const replica = storedReplica(tab, h.sourcesId, {
+        onFind: (up) => {
+          if (up) return;
+          admitted = (async () => {
+            for (let i = 0; i < round; i++) await Promise.resolve();
+            replica.admit();
+            if (!twice) return;
+            await Promise.resolve();
+            replica.admit();
+          })();
+        },
+      });
+      const { sources, states } = replica;
+      sources.want();
+      await until(() => admitted !== undefined, { label: "stored read" });
+      await admitted;
+      await until(() => sources.state$.snapshot().name === "ready", {
+        label: `found on the link, ${label}`,
+      });
+      assert.ok(!states.includes("unserved"), `${label}: never unserved`);
+      sources.close();
+      await tab.unload();
+    }
 });

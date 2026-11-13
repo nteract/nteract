@@ -547,12 +547,15 @@ export class PageSession {
     // (`claims`): the repo's eviction closes the document for every holder.
     const lookups = {
       find: (id, options) => this.repo.find(id, options),
-      forget: (id) => evictUnavailable(this.repo, id),
+      forget: (id, options) => evictUnavailable(this.repo, id, options),
       claims: new Set(),
       // A lookup's connection: the admitted one, or none while disconnected.
       link: () => (this.sockets.size ? this.connectionGeneration : undefined),
-      // Whether an ask may look a document up now.
+      // Whether an ask may look a document up on a connection now.
       linked: () => this.lookupsOpen,
+      // Whether an ask with no connection may read this tab's stored copy:
+      // the Page is shown and open from this replica's database.
+      stored: () => !this.hidden && !!this.backend && !!this.handle,
       scheduler,
     };
     this.sources = new HostDocReplica({

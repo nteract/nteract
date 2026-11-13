@@ -28,6 +28,12 @@
 // the ones that give way: every existing view gets a slot, and draws, while
 // its embed holds it.
 //
+// Before a connection, a held view with a slot reads this tab's stored copy
+// once. A view whose stored read missed keeps its slot until a connection
+// answers: its replica is closed, neither undrawn nor due, so nothing evicts
+// it. On a Page that names more than the limit, a view this tab stored can
+// wait behind one of those until the connection is admitted.
+//
 // A waiting view reads as over the limit, or as missing (or failed) once it
 // gave its slot up. A view that gave its slot up after failing is looked up
 // again when it next has one; one with a slot is looked up again on each
@@ -81,11 +87,14 @@ export class ViewReplicas {
 
   /**
    * `viewDocumentId(pageId, viewId)` derives a view's document id (it may
-   * return a promise). `find`, `forget`, `claims`, `link`, `linked` and
-   * `scheduler` are each replica's (host-doc-replica.mjs). `linked()` says
-   * whether a connection is admitted now, so a replica opened while
-   * connected looks its view up at once; one opened before that waits for
-   * connected().
+   * return a promise). `find`, `forget`, `claims`, `link`, `linked`,
+   * `stored` and `scheduler` are each replica's (host-doc-replica.mjs).
+   * `linked()` says whether a connection is admitted now, so a replica
+   * opened while connected looks its view up at once. One opened before
+   * that reads this tab's stored copy through its demand, when `stored()`
+   * says the Page is open from it, and otherwise waits for connected(). A
+   * stored read that finds nothing keeps its slot and counts as no look:
+   * the replica is closed, not undrawn, until a connection answers.
    */
   constructor({
     pageId,
@@ -95,6 +104,7 @@ export class ViewReplicas {
     claims,
     link,
     linked = () => false,
+    stored = () => false,
     scheduler = asyncScheduler,
     lookupTimeout,
     closeDelay = 0,
@@ -109,6 +119,7 @@ export class ViewReplicas {
       claims,
       link,
       linked,
+      stored,
       scheduler,
       lookupTimeout,
       closeDelay,
@@ -318,8 +329,18 @@ export class ViewReplicas {
   /** Make the view's replica on its first slot; a view that gave its slot
    * up keeps its closed replica, and with it the miss it last saw. */
   #open(entry) {
-    const { pageId, viewDocumentId, find, forget, claims, link, linked, scheduler, lookupTimeout } =
-      this.#options;
+    const {
+      pageId,
+      viewDocumentId,
+      find,
+      forget,
+      claims,
+      link,
+      linked,
+      stored,
+      scheduler,
+      lookupTimeout,
+    } = this.#options;
     if (!entry.replica) {
       entry.replica = new HostDocReplica({
         find,
@@ -327,6 +348,7 @@ export class ViewReplicas {
         claims,
         link,
         linked,
+        stored,
         scheduler,
         ...(lookupTimeout && { lookupTimeout }),
         derive: () => viewDocumentId(pageId, entry.viewId),
@@ -340,6 +362,8 @@ export class ViewReplicas {
         if (this.#queue().length) this.#admitSoon();
       });
     }
+    // Not linked: the `demand` effect that follows `open` asks, and the
+    // replica reads this tab's stored copy if the Page is open from it.
     if (linked()) entry.replica.connected();
   }
 }

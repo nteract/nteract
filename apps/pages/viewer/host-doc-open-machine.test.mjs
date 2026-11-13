@@ -20,6 +20,7 @@ const S1 = "s1";
 const S2 = "s2";
 const closed = { name: "closed" };
 const closedMissed = { name: "closed", id: S1, misses: 2 };
+const checked = { name: "closed", checked: true };
 const absent = { name: "absent" };
 const missed = { name: "absent", id: S1, misses: 1 };
 const cooling = { name: "absent", id: S1, misses: 1, cooling: true };
@@ -42,6 +43,7 @@ const named = (id = S1) => ({ type: "discovered", answer: "named", id });
 const derived = (id = S1) => ({ type: "discovered", answer: "derived", id });
 const answer = (kind) => ({ type: "discovered", answer: kind });
 const wanted = (id = S1) => ({ type: "wanted", id });
+const stored = (id = S1) => ({ type: "stored", id });
 const settled = (type, attempt = 2) => ({ type, attempt });
 const cooled = { type: "cooled" };
 const retire = { type: "retire" };
@@ -102,19 +104,30 @@ const discoveries = (state, { none, unaware, unreadable: unread }) => [
 ];
 
 /** A state that holds no lookup, timer or handle, through every event. */
-function quiet(state, answers, { wanted: want, wantedCase, close: closing }) {
+function quiet(
+  state,
+  answers,
+  { wanted: want, wantedCase, stored: fromStore, storedCase, close: closing, closeCase },
+) {
   return [
     ...discoveries(state, answers),
     row(`${state.name}: something asks for the document`, state, wanted(), want, wantedCase),
+    row(
+      `${state.name}: something asks with no connection admitted`,
+      state,
+      stored(),
+      fromStore,
+      storedCase,
+    ),
     ...lateAnswers(state),
     lateCooled(state),
     row(`${state.name}: retire`, state, retire, go(retired)),
-    row(`${state.name}: close`, state, close, closing),
+    row(`${state.name}: close`, state, close, closing, closeCase),
   ];
 }
 
 /** A state that holds something to stop, through a discovery that leaves it. */
-function leaving(state, stop, lookupRow) {
+function leaving(state, stop, lookupRow, closeCase) {
   return [
     lookupRow,
     row(`${state.name}: discovery names none`, state, answer("none"), go(absent, stop), "none"),
@@ -127,7 +140,7 @@ function leaving(state, stop, lookupRow) {
       "unreadable",
     ),
     row(`${state.name}: retire`, state, retire, go(retired, stop)),
-    row(`${state.name}: close`, state, close, go(closed, stop)),
+    row(`${state.name}: close`, state, close, go(closed, stop), closeCase),
   ];
 }
 
@@ -137,30 +150,167 @@ const ROWS = [
   ...quiet(
     closed,
     { none: go(absent), unaware: go(unserved), unreadable: go(unreadable) },
-    { wanted: no(closed, REJECT.closed), close: no(closed, REJECT.closed) },
+    {
+      wanted: no(closed, REJECT.closed),
+      stored: go(opening(1, S1, "stored"), [lookup(1)]),
+      storedCase: "look",
+      close: no(closed, REJECT.closed),
+      closeCase: "closed",
+    },
   ),
   ...quiet(
     unserved,
     { none: go(absent), unaware: no(unserved, REJECT.same), unreadable: go(unreadable) },
-    { wanted: answered, close: go(closed) },
+    { wanted: answered, stored: answered, close: go(closed) },
   ),
   ...quiet(
     unreadable,
     { none: go(absent), unaware: go(unserved), unreadable: no(unreadable, REJECT.same) },
-    { wanted: no(unreadable, REJECT.answered), close: go(closed) },
+    {
+      wanted: no(unreadable, REJECT.answered),
+      stored: no(unreadable, REJECT.answered),
+      close: go(closed),
+    },
   ),
   ...quiet(
     failed,
     { none: go(absent), unaware: go(unserved), unreadable: go(unreadable) },
-    { wanted: no(failed, REJECT.answered), close: go(closed) },
+    {
+      wanted: no(failed, REJECT.answered),
+      stored: no(failed, REJECT.answered),
+      close: go(closed),
+    },
+  ),
+
+  // This tab's copy was read and held nothing: only a connection looks again.
+  ...quiet(
+    checked,
+    { none: go(absent), unaware: go(unserved), unreadable: go(unreadable) },
+    {
+      wanted: no(checked, REJECT.closed),
+      stored: no(checked, REJECT.checked),
+      storedCase: "checked",
+      close: go(closed),
+      closeCase: "checked",
+    },
+  ),
+  row(
+    "closed after misses: an ask with no connection reads nothing",
+    closedMissed,
+    stored(),
+    no(closedMissed, REJECT.missed),
+    "missed",
   ),
 
   // No such document.
   ...quiet(
     absent,
     { none: no(absent, REJECT.same), unaware: go(unserved), unreadable: go(unreadable) },
-    { wanted: go(opening(1, S1, "derived"), [lookup(1)]), wantedCase: "look", close: go(closed) },
+    {
+      wanted: go(opening(1, S1, "derived"), [lookup(1)]),
+      wantedCase: "look",
+      stored: no(absent, REJECT.answered),
+      close: go(closed),
+    },
   ),
+  row(
+    "cooling: an ask with no connection reads nothing",
+    cooling,
+    stored(),
+    no(cooling, REJECT.answered),
+  ),
+
+  // A stored lookup is running: no connection is admitted.
+  row(
+    "opening from storage: this tab's copy holds it",
+    opening(1, S1, "stored"),
+    settled("opened", 1),
+    go(ready(), [{ type: "install", attempt: 1 }]),
+    "current",
+  ),
+  row(
+    "opening from storage: this tab's copy holds none, and only a connection looks again",
+    opening(1, S1, "stored"),
+    settled("unknown", 1),
+    go(checked, [forget()]),
+    "stored",
+  ),
+  row(
+    "opening from storage: a failed read is not a verdict either",
+    opening(1, S1, "stored"),
+    settled("lookupFailed", 1),
+    go(checked, [forget()]),
+    "stored",
+  ),
+  row(
+    "opening from storage: a connection restarts the lookup on it, forgetting the read",
+    opening(1, S1, "stored"),
+    named(),
+    go(opening(1), [cancel(1), forget(), lookup(1)]),
+    "stored",
+  ),
+  row(
+    "opening from storage: a connection that derives the id restarts it too",
+    opening(1, S1, "stored"),
+    derived(),
+    go(opening(1, S1, "derived"), [cancel(1), forget(), lookup(1)]),
+    "stored",
+  ),
+  row(
+    "opening from storage: discovery names none",
+    opening(1, S1, "stored"),
+    answer("none"),
+    go(absent, [cancel(1), forget()]),
+    "none",
+  ),
+  row(
+    "opening from storage: an older host",
+    opening(1, S1, "stored"),
+    answer("unaware"),
+    go(unserved, [cancel(1), forget()]),
+    "unaware",
+  ),
+  row(
+    "opening from storage: an unreadable format",
+    opening(1, S1, "stored"),
+    answer("unreadable"),
+    go(unreadable, [cancel(1), forget()]),
+    "unreadable",
+  ),
+  row(
+    "opening from storage: another ask changes nothing",
+    opening(1, S1, "stored"),
+    stored(),
+    no(opening(1, S1, "stored"), REJECT.looking),
+  ),
+  row("opening from storage: retire", opening(1, S1, "stored"), retire, go(retired, [cancel(1)])),
+  row(
+    "opening from storage: close cancels the read and forgets its answer",
+    opening(1, S1, "stored"),
+    close,
+    go(closed, [cancel(1), forget()]),
+    "stored",
+  ),
+  row(
+    "opening from storage: an ask on a connection changes nothing",
+    opening(1, S1, "stored"),
+    wanted(),
+    no(opening(1, S1, "stored"), REJECT.looking),
+  ),
+  row(
+    "opening from storage: a cancelled read's answer",
+    opening(2, S1, "stored"),
+    settled("unknown", 1),
+    no(opening(2, S1, "stored"), REJECT.stale),
+    "stale",
+  ),
+  row(
+    "opening from storage: no retry timer is armed",
+    opening(1, S1, "stored"),
+    settled("timer", 1),
+    no(opening(1, S1, "stored"), REJECT.stale),
+  ),
+  lateCooled(opening(1, S1, "stored")),
   row(
     "absent after a miss: a discovery that names none starts plain",
     missed,
@@ -265,6 +415,7 @@ const ROWS = [
       go(opening(1), [cancel(2), lookup(1)]),
       "lookup",
     ),
+    "lookup",
   ),
   row(
     "opening: a derived lookup restarts on a new connection too",
@@ -277,6 +428,12 @@ const ROWS = [
     "opening: an ask while looking changes nothing",
     opening(2),
     wanted(),
+    no(opening(2), REJECT.looking),
+  ),
+  row(
+    "opening on a connection: an ask with no connection changes nothing",
+    opening(2),
+    stored(),
     no(opening(2), REJECT.looking),
   ),
   row(
@@ -377,6 +534,12 @@ const ROWS = [
     no(retrying(2), REJECT.looking),
   ),
   row(
+    "retrying: an ask with no connection waits for the retry",
+    retrying(2),
+    stored(),
+    no(retrying(2), REJECT.looking),
+  ),
+  row(
     "retrying: the timer starts the next lookup",
     retrying(2),
     settled("timer"),
@@ -434,12 +597,24 @@ const ROWS = [
     "other",
   ),
   row("ready: an ask changes nothing", ready(), wanted(), no(ready(), REJECT.ready)),
+  row(
+    "ready: an ask with no connection reads nothing",
+    ready(),
+    stored(),
+    no(ready(), REJECT.ready),
+  ),
   ...lateAnswers(ready()),
   lateCooled(ready()),
 
   // Retired: nothing opens again.
   row("retired: a discovery opens nothing", retired, named(), no(retired, REJECT.retired)),
   row("retired: an ask opens nothing", retired, wanted(), no(retired, REJECT.retired)),
+  row(
+    "retired: an ask reads nothing from this tab's copy",
+    retired,
+    stored(),
+    no(retired, REJECT.retired),
+  ),
   ...lateAnswers(retired),
   lateCooled(retired),
   row("retired: retire again", retired, retire, no(retired, REJECT.retired)),
@@ -448,7 +623,7 @@ const ROWS = [
 
 test("the host-doc-open table covers every state and event", async () => {
   const result = await runTable(hostDocOpenMachine, ROWS);
-  assert.equal(result.pairs, 81);
+  assert.equal(result.pairs, 90);
   assert.equal(result.unreachable, 0);
 });
 
@@ -464,6 +639,23 @@ test("the table's effects only find, wait, adopt and drop: none writes the docum
     "schedule",
     "uninstall",
   ]);
+});
+
+test("a stored lookup never retries or gives up, and only a fresh closed replica is checked", () => {
+  for (const name of ["retrying", "failed"])
+    assert.throws(() => hostDocOpenMachine.assertState({ ...opening(1, S1, "stored"), name }));
+  assert.throws(() => hostDocOpenMachine.assertState({ ...closedMissed, checked: true }));
+  assert.throws(() => hostDocOpenMachine.assertState({ name: "closed", checked: false }));
+  hostDocOpenMachine.assertState(checked);
+});
+
+test("a stored read happens once per backend: a miss, then a close, reads again", () => {
+  let { state } = hostDocOpenMachine.step(hostDocOpenMachine.initial, stored());
+  ({ state } = hostDocOpenMachine.step(state, settled("unknown", 1)));
+  assert.deepEqual(state, checked);
+  assert.equal(hostDocOpenMachine.step(state, stored()).rejected, REJECT.checked);
+  ({ state } = hostDocOpenMachine.step(state, close));
+  assert.deepEqual(hostDocOpenMachine.step(state, stored()).state, opening(1, S1, "stored"));
 });
 
 test("retries back off as the comments document's do, then stop at the attempt limit", () => {
