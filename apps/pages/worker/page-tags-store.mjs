@@ -16,7 +16,7 @@
 //   catalog tombstone (`deletePageTags`), whether or not the catalog index is
 //   on. The tombstone is a projection and never touches this table.
 // - Authorization is not stored here. The Page host decides who may edit a
-//   Page before `writePageTags` runs, and a listing verifies every candidate
+//   Page before `addPageTag` or `removePageTag` runs, and a listing verifies every candidate
 //   before it shows it. A tag row grants nothing.
 // - The table has its own schema-version table, `page_tags_schema`, and its
 //   own migration list (`PAGE_TAGS_MIGRATIONS`), apart from the catalog's
@@ -112,95 +112,127 @@ export async function tagMatchingIds(db, ast, pageIds) {
   return matched;
 }
 
+/** The refusal for a Page whose lifecycle mark in `pages_catalog_pages` says it
+ * takes no tag change, or nothing when it is open. The mark is a projection of
+ * the Page host's lifecycle, used here only as a fence; it is not tag data. */
+function lifecycleRefusal(state) {
+  if (state === "deleted") return new HttpError(404, "Page not found", "page_not_found");
+  if (state === "trashed")
+    return new HttpError(409, "Restore this Page before changing its tags", "page_trashed");
+  return undefined;
+}
+
+/** SQL true while the Page is open: no tombstone or Trash mark in the catalog
+ * projection. Binds one Page ID. */
+const PAGE_OPEN = `NOT EXISTS (SELECT 1 FROM pages_catalog_pages p
+                                 WHERE p.page_id = ? AND p.state IN ('deleted', 'trashed'))`;
+
 /**
- * Add and remove tags on one Page, and return the Page's tags afterwards. This
- * writes the normative record: there is no other copy to update or repair
- * from. The caller has already checked edit access on the Page host.
- * `add` and `remove` are normalized, distinct and disjoint (page-tags.mjs).
- * Adding a tag the Page has, or removing one it lacks, changes nothing.
+ * Add one tag to a Page. Returns the Page's tags afterwards and `added`: true
+ * when this call inserted the row, false when the Page already had the tag.
+ * This writes the normative record: there is no other copy to update or repair
+ * from. The caller has already checked edit access on the Page host. `tag` is
+ * normalized (page-tags.mjs).
  *
  * One batch, one transaction, decides and applies the change. Its first
- * statement reads the Page's lifecycle mark and counts, as the writes see
- * them: the remove tags the Page has, the add tags it lacks, and the tags it
- * keeps. The delete and the insert both run only while the Page is open and
- * the change fits the limit, so a change applies whole or not at all. The
- * outcome comes from that read and the writes' `meta.changes`, never from a
- * later read: two writers racing can't pass the limit, and one can't report
- * the limit or Trash for a change the other made after its batch.
+ * statement reads the Page's lifecycle mark, whether the tag is already there
+ * and how many tags the Page has. The insert runs only while the Page is open
+ * and has room, and `ON CONFLICT` skips a tag that is already there, so of two
+ * writers racing to add one tag exactly one gets `added: true`. The outcome
+ * comes from that read and the insert's own rows, never from a later read, so
+ * two writers racing can't pass the limit, and one can't report the limit or
+ * Trash for a change the other made after its batch.
  *
  * This runs after the Page host's queue has released the request, so a Page
  * can be trashed or deleted between the host's check and this write, and a
  * batch that timed out here keeps running in D1 and can land later still. A
- * Page whose tombstone or Trash mark is in `pages_catalog_pages` takes no tag
- * changes: the writes check it as they run, so a late batch lands nothing on
- * a Page that took its Trash mark first, and the write answers `page_trashed`
- * (or `page_not_found` for a deleted mark) even when it would change nothing. That row is a projection of the Page
- * host's lifecycle, used here only as a fence; it is not tag data. The host
- * marks it after its own record is durable, so a write that races a Trash or
- * purge itself can land first. Trash keeps tags (a restored Page has them
- * back) and a purge deletes them (`deletePageTags`).
+ * Page marked trashed or deleted takes no tag changes: the insert checks the
+ * mark as it runs, so a late batch lands nothing on a Page that took its mark
+ * first, and the write answers `page_trashed` (or `page_not_found` for a
+ * deleted mark) even when it would have changed nothing. The host marks the
+ * row after its own record is durable, so a write that races a Trash or purge
+ * itself can land first. Trash keeps tags (a restored Page has them back) and a
+ * purge deletes them (`deletePageTags`).
+ *
+ * A retry of a write whose answer was lost finds its own earlier insert
+ * already there and reports `added: false`. Nothing in the response tells that
+ * apart from another writer having added the tag first.
  */
-export async function writePageTags(db, { pageId, principal, add, remove, now }) {
-  const removes = JSON.stringify(remove);
-  const adds = JSON.stringify(add);
-  // The tags the Page keeps plus the add tags it lacks: the size after the
-  // change. A delete leaves both counts as they were, so the insert after it
-  // sees the same total.
-  const total = `(SELECT count(*) FROM page_tags k
-                   WHERE k.page_id = ? AND k.tag NOT IN (SELECT value FROM json_each(?)))
-               + (SELECT count(*) FROM json_each(?) n
-                   WHERE NOT EXISTS (SELECT 1 FROM page_tags t
-                                      WHERE t.page_id = ? AND t.tag = n.value))`;
-  const totalParams = [pageId, removes, adds, pageId];
-  const applies = `NOT EXISTS (SELECT 1 FROM pages_catalog_pages p
-                                WHERE p.page_id = ? AND p.state IN ('deleted', 'trashed'))
-                   AND ${total} <= ?`;
-  const appliesParams = [pageId, ...totalParams, MAX_TAGS_PER_PAGE];
-  const [decided, deleted, inserted, listed] = await withTimeout(
+export async function addPageTag(db, { pageId, principal, tag, now }) {
+  const have = "(SELECT count(*) FROM page_tags WHERE page_id = ?)";
+  const [decided, inserted, listed] = await withTimeout(
     db.batch([
       db
         .prepare(
           `SELECT (SELECT state FROM pages_catalog_pages WHERE page_id = ?) AS state,
-                  (SELECT count(*) FROM page_tags
-                    WHERE page_id = ? AND tag IN (SELECT value FROM json_each(?))) AS removing,
-                  (SELECT count(*) FROM json_each(?) n
-                    WHERE NOT EXISTS (SELECT 1 FROM page_tags t
-                                       WHERE t.page_id = ? AND t.tag = n.value)) AS adding,
-                  ${total} AS total`,
+                  EXISTS (SELECT 1 FROM page_tags WHERE page_id = ? AND tag = ?) AS present,
+                  ${have} AS existing`,
         )
-        .bind(pageId, pageId, removes, adds, pageId, ...totalParams),
+        .bind(pageId, pageId, tag, pageId),
       db
         .prepare(
-          `DELETE FROM page_tags
-            WHERE page_id = ? AND tag IN (SELECT value FROM json_each(?)) AND ${applies}`,
+          `INSERT INTO page_tags (page_id, tag, added_by, added_at)
+           SELECT ?, ?, ?, ? WHERE ${PAGE_OPEN} AND ${have} < ?
+           ON CONFLICT (page_id, tag) DO NOTHING
+           RETURNING tag`,
         )
-        .bind(pageId, removes, ...appliesParams),
-      db
-        .prepare(
-          `INSERT OR IGNORE INTO page_tags (page_id, tag, added_by, added_at)
-          SELECT ?, j.value, ?, ? FROM json_each(?) j WHERE ${applies}`,
-        )
-        .bind(pageId, principal, now, adds, ...appliesParams),
+        .bind(pageId, tag, principal, now, pageId, pageId, MAX_TAGS_PER_PAGE),
       db.prepare("SELECT tag FROM page_tags WHERE page_id = ? ORDER BY tag").bind(pageId),
     ]),
     catalogIndexTimeouts.write,
     TIMED_OUT,
   );
-  const { state, removing, adding, total: size } = decided.results[0];
+  const { state, present, existing } = decided.results[0];
   // A marked Page answers its lifecycle refusal, even for a change that
   // would have changed nothing.
-  if (state === "deleted") throw new HttpError(404, "Page not found", "page_not_found");
-  if (state === "trashed")
-    throw new HttpError(409, "Restore this Page before changing its tags", "page_trashed");
-  if (deleted.meta.changes === removing && inserted.meta.changes === adding)
-    return listed.results.map((row) => row.tag);
-  if (size > MAX_TAGS_PER_PAGE)
+  const refusal = lifecycleRefusal(state);
+  if (refusal) throw refusal;
+  const tags = listed.results.map((row) => row.tag);
+  if (inserted.results.length) return { tags, added: true };
+  if (present) return { tags, added: false };
+  if (existing >= MAX_TAGS_PER_PAGE)
     throw new HttpError(
       409,
-      `A Page holds at most ${MAX_TAGS_PER_PAGE} tags; this change would leave ${size}. Remove some first.`,
+      `A Page holds at most ${MAX_TAGS_PER_PAGE} tags. Remove one first.`,
       "tag_limit_exceeded",
     );
   throw new Error("A tag write changed rows its own read did not predict");
+}
+
+/**
+ * Remove one tag from a Page. Returns the Page's tags afterwards and `removed`:
+ * true when this call deleted the row, false when the Page lacked the tag. As
+ * in `addPageTag`, one batch reads the lifecycle mark and whether the tag is
+ * there, and the delete runs only while the Page is open, so a late or
+ * timed-out batch can't change a Page that was trashed or purged first. A retry
+ * of a write whose answer was lost reports `removed: false`.
+ */
+export async function removePageTag(db, { pageId, tag }) {
+  const [decided, deleted, listed] = await withTimeout(
+    db.batch([
+      db
+        .prepare(
+          `SELECT (SELECT state FROM pages_catalog_pages WHERE page_id = ?) AS state,
+                  EXISTS (SELECT 1 FROM page_tags WHERE page_id = ? AND tag = ?) AS present`,
+        )
+        .bind(pageId, pageId, tag),
+      db
+        .prepare(
+          `DELETE FROM page_tags WHERE page_id = ? AND tag = ? AND ${PAGE_OPEN} RETURNING tag`,
+        )
+        .bind(pageId, tag, pageId),
+      db.prepare("SELECT tag FROM page_tags WHERE page_id = ? ORDER BY tag").bind(pageId),
+    ]),
+    catalogIndexTimeouts.write,
+    TIMED_OUT,
+  );
+  const { state, present } = decided.results[0];
+  const refusal = lifecycleRefusal(state);
+  if (refusal) throw refusal;
+  const removed = deleted.results.length === 1;
+  if (removed !== Boolean(present))
+    throw new Error("A tag write changed rows its own read did not predict");
+  return { tags: listed.results.map((row) => row.tag), removed };
 }
 
 /**

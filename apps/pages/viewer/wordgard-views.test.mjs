@@ -4,13 +4,22 @@
 // Without views or sources, it says the chart isn't on this Page. Over the
 // real view replicas: a mounted embed keeps asking for a missing view, and
 // embeds scrolled past or removed don't keep a real chart from its slot.
+// The warm-up the embeds share loads the chunk and starts the Worker once,
+// quietly, and makes no lookup.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { VirtualTimeScheduler } from "rxjs";
 import { LOOK_AGAIN_MS, MISSING_ATTEMPTS, retryDelay } from "./host-doc-open-machine.mjs";
 import { MAX_VIEWS, VIEW_CLOSE_DELAY_MS, ViewReplicas } from "./view-replicas.mjs";
 import { VIEW_MEDIA_TYPE } from "./view-store.mjs";
-import { VIEW_EMBED_STATUS, VIEW_NOT_HERE, viewLifecycle } from "./wordgard-views.mjs";
+import {
+  VIEW_EMBED_STATUS,
+  VIEW_EMBED_UNAVAILABLE,
+  VIEW_NOT_HERE,
+  chartWarmup,
+  viewLifecycle,
+  warmupFor,
+} from "./wordgard-views.mjs";
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const PAGE = "0b9f2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f";
@@ -306,4 +315,117 @@ test("a chart that throws while tearing down still lets go of its view", async (
   p.advance(VIEW_CLOSE_DELAY_MS);
   await flush();
   assert.deepEqual(p.views.open, [], "the slot freed");
+});
+
+/** A chart chunk whose `warm` records each start and release. */
+function warmChunk() {
+  const loads = [];
+  const warms = [];
+  return {
+    loads,
+    warms,
+    load: async () => {
+      loads.push(1);
+      return {
+        warm: (doc) => {
+          const warm = { doc, released: 0 };
+          warms.push(warm);
+          return () => warm.released++;
+        },
+      };
+    },
+  };
+}
+
+test("a Page without views or sources warms nothing", () => {
+  assert.equal(warmupFor({ views: null, sources: {} }), null);
+  assert.equal(warmupFor({ views: {}, sources: null }), null);
+  assert.ok(warmupFor({ views: {}, sources: {} }));
+});
+
+test("every embed on a Page shares one warm-up: one chunk load, one Worker start", async () => {
+  const chunk = warmChunk();
+  const warmup = chartWarmup({ load: chunk.load });
+  const doc = {};
+  assert.deepEqual(chunk.loads, [], "nothing loads before an embed connects");
+  const releases = [warmup.hold(doc), warmup.hold(doc), warmup.hold(doc)];
+  await flush();
+  assert.equal(chunk.loads.length, 1);
+  assert.equal(chunk.warms.length, 1);
+  assert.equal(chunk.warms[0].doc, doc);
+  // Wordgard disconnects an embed and connects it again in one turn: the
+  // Worker stays.
+  releases[0]();
+  releases[0] = warmup.hold(doc);
+  releases[0]();
+  releases[0]();
+  await flush();
+  assert.equal(chunk.warms[0].released, 0, "two embeds still hold it");
+  releases[1]();
+  releases[2]();
+  await flush();
+  assert.equal(chunk.warms[0].released, 1, "the last embed lets it go, once");
+  // An embed that connects later warms it again, from the loaded chunk.
+  const again = warmup.hold(doc);
+  await flush();
+  assert.equal(chunk.warms.length, 2);
+  again();
+  await flush();
+  assert.equal(chunk.warms[1].released, 1);
+});
+
+test("a warm-up whose chunk fails says nothing; the embed's own load reports it", async () => {
+  const failing = {
+    load: async () => {
+      throw Error("chunk failed");
+    },
+  };
+  const warmup = chartWarmup({ load: failing.load });
+  const release = warmup.hold({});
+  await flush();
+  release();
+  await flush();
+  const { scheduler, advance } = clock();
+  const frame = frameStub();
+  let near = null;
+  let reported = 0;
+  const lifecycle = viewLifecycle({
+    viewId: "sales",
+    views: { hold: () => assert.fail("no view without a chunk") },
+    sources: {},
+    frame,
+    scheduler,
+    delay: DELAY,
+    park: PARK,
+    observe: (_element, callback) => {
+      near = callback;
+      return () => {};
+    },
+    load: failing.load,
+    onUnavailable: () => reported++,
+  });
+  lifecycle.connect();
+  near(true);
+  advance(DELAY);
+  await flush();
+  assert.equal(lifecycle.state, "failed");
+  assert.equal(frame.status.textContent, VIEW_EMBED_UNAVAILABLE);
+  assert.equal(reported, 1);
+});
+
+test("a warm Page's embed away from the viewport looks nothing up, holds no slot and arms no timer", async () => {
+  const p = page({ existing: new Set(["sales"]) });
+  const chunk = warmChunk();
+  const warmup = chartWarmup({ load: chunk.load });
+  const { scheduler } = clock();
+  const one = embed({ views: p.views, scheduler, chunk: p.chunk });
+  one.lifecycle.connect();
+  const release = warmup.hold({});
+  await flush();
+  assert.equal(chunk.warms.length, 1, "the chart path is warm");
+  assert.equal(p.calls.length, 0, "no view document is looked up");
+  assert.equal(p.chunk.mounts.length, 0, "no chart mounts, so no view is held");
+  assert.equal(scheduler.actions.length, 0, "the embed armed no timer");
+  release();
+  one.lifecycle.disconnect();
 });

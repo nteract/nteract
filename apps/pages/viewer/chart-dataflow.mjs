@@ -188,7 +188,7 @@ export function textLimits(spec, width) {
 }
 
 /** A spec sized for `width`, when it doesn't size itself. A discrete y axis
- * keeps Vega-Lite's own step height. */
+ * keeps Vega-Lite's own step height. compileChart sets the fit. */
 export function sizedSpec(spec, width) {
   if (isComposite(spec)) return spec;
   return {
@@ -196,8 +196,29 @@ export function sizedSpec(spec, width) {
     ...(spec.width === undefined && width > 0 && { width: Math.max(MIN_WIDTH, width) }),
     ...(spec.height === undefined &&
       !DISCRETE.has(spec.encoding?.y?.type) && { height: DEFAULT_HEIGHT }),
-    autosize: spec.autosize ?? { type: "fit-x", contains: "padding" },
   };
+}
+
+/**
+ * The Vega spec for `spec` drawn `width` wide, under Vega-Lite `config`. A
+ * single view without an autosize of its own fits its padding and axes
+ * inside its width: Vega gets `fit-x` when the compiled width is a number,
+ * `fit-y` when only the height is, and `pad` when both size by step (a
+ * discrete axis with no size). Vega-Lite drops a fit on an axis that sizes
+ * by step, with a warning, and keeps the other axis's; the page hands
+ * Vega-Lite no fit and sets that same one on the compiled spec, from the
+ * sizes Vega-Lite resolved.
+ */
+export function compileChart(spec, width, config) {
+  const compiled = vl.compile(sizedSpec(spec, width), { config }).spec;
+  if (isComposite(spec) || spec.autosize !== undefined) return compiled;
+  const type =
+    typeof compiled.width === "number"
+      ? "fit-x"
+      : typeof compiled.height === "number"
+        ? "fit-y"
+        : "pad";
+  return { ...compiled, autosize: { type, contains: "padding" } };
 }
 
 /**
@@ -519,9 +540,7 @@ export async function runChart(
     const checked = checkChartSpec(spec, { datasets: Object.keys(data) });
     if (!checked.ok) throw new ChartRefusal(checked.error);
   }
-  const compiled = vl.compile(sizedSpec(spec, width), {
-    config: themeConfig(theme, textLimits(spec, width)),
-  }).spec;
+  const compiled = compileChart(spec, width, themeConfig(theme, textLimits(spec, width)));
   const runtime = vega.parse(compiled, null, { ast: true });
   if (checkDataflow) {
     const problem = runtimeProblem(runtime);

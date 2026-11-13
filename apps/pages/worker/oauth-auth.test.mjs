@@ -436,6 +436,10 @@ test("MCP grants cannot call direct APIs or reach internal routes through the ga
   };
   const cases = [
     ["/api/tools", "POST", { operation: "list_pages", arguments: {} }],
+    // The REST routes are not MCP: only Kilo agent tokens reach them.
+    ["/api/pages", "GET"],
+    [`/api/pages/${pageId}/tags/code`, "PUT"],
+    [`/api/pages/${pageId}/tags/code`, "DELETE"],
     [`/api/access?page=${pageId}`, "GET"],
     [`/api/sync?page=${pageId}`, "GET"],
     [`/api/connect?page=${pageId}`, "GET"],

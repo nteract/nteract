@@ -786,7 +786,9 @@ Automerge sync. The migrations that got them there are in
 
 Leftover records from the migrations (`host/comments-migration/*`, converted
 Subduction records under `repo/`, `host/actor/`, `host/binding/`,
-`host/signer`) stay until a purge deletes them. Nothing reads them. The
+`host/signer`) stay until a purge deletes them. Nothing reads them. Purging a
+Page whose record carries `recordStorageMigratedFrom` deletes its converted
+Subduction records from the Page's own storage (`purgeConvertedRecords`). The
 root-only `/etc/<service>/operator-secret` file is unused.
 
 For a separately created v2 namespace, document its own format and rollback
@@ -795,11 +797,11 @@ are absent.
 
 ### Old PageRecords objects
 
-The `PageRecords` class and `PAGE_RECORDS` binding are delete-only
-(`worker/page-records.mjs`): `inspect` counts keys and bytes, `clear` deletes
-everything. Purge uses it to clear a Page converted from `buffered` storage
-(`purgeConvertedRecords`). No read or write path is left, and the operator
-sweep left both targets empty.
+The `PageRecords` class and `PAGE_RECORDS` binding are declared with an empty
+class body (`worker/page-records.mjs`). No code calls the binding: purge
+does not call a Page's `PageRecords` object, and no path reads, writes or
+clears an object's storage. The operator sweep left both targets empty, and
+no release-package build writes a `buffered` Page.
 
 Removing the class needs a `deleted_classes` migration. celld 0.6.3 knows
 `new_sqlite_classes`, `old_tag`, `new_tag` and `steps`, not `deleted_classes`,
@@ -983,7 +985,7 @@ on stdout; the database, target and storage prefix print on stderr.
   through the Worker. See [Where state lives](#where-state-lives).
 - **`page_tags` is not a projection.** It is the only copy of every Page's tags.
   A row you edit, or delete, stays that way, and nothing regenerates it. Change
-  tags with `update_page_tags`. Take a [restore point](#restore-points) before
+  tags with `PUT` and `DELETE /api/pages/<page_id>/tags/<tag>`. Take a [restore point](#restore-points) before
   any hand edit.
 - **Auth lives here too.** `pages-next-auth` holds the OIDC sessions and OAuth
   grants, codes and tokens beside the catalog projection, tags, quota and
@@ -1133,6 +1135,19 @@ assets (`linkPreviewPaths`, `cardImagePaths` and `projectAssetPaths` in
   shape `CARD_IMAGE_FILE` in [card-images.mjs](worker/card-images.mjs) names.
 - `/api/projects/<id>/assets` and `/api/projects/<id>/assets/<sha256>`: a
   Project's assets, which the gateway serves from its content document.
+
+Every target also admits the REST routes (`restPaths` in
+[routes.mjs](scripts/deployment/routes.mjs)), with no profile flag: `GET
+/api/pages`, and `PUT` or `DELETE /api/pages/<uuid>/tags/<tag>`, where the tag is
+one percent-encoded segment (`:` and `/` are sent as `%3A` and `%2F`).
+cloudflared matches ingress rules against the decoded path, so the ingress
+admits up to 192 characters of a tag's alphabet including `/`; the Worker
+takes one raw segment and refuses a second. A target that has not published them answers 404 at the edge
+to a tag change or a listing by REST; MCP and `/api/tools` are unaffected. The
+publisher asks cloudflared where the listing, a plain tag and a tag with an
+encoded `/` go before it starts a connector, and stops if one is not forwarded.
+No request has crossed a live tunnel yet: confirm a `PUT` of `repo:org/name`
+reaches the Worker on a target after its first publish.
 
 IDs are lowercase v4 UUIDs, as in every other group. Until a target publishes
 these routes, the edge refuses them: hover cards on Page links show "Couldn't
@@ -1609,7 +1624,10 @@ client and model:
 - `mcp.initialize` on `/mcp`.
 - `tool.call` for each tool call on `/mcp` (surface `mcp`) and `/api/tools`
   (surface `http-tools`, which includes the browser UI's own calls with
-  driver `Browser`). MCP resource lists and reads are `tool.call` with
+  driver `Browser`), and for each call to the REST routes (surface `http-rest`:
+  `GET /api/pages`, and `PUT` or `DELETE /api/pages/<page_id>/tags/<tag>`, with
+  operations `list_pages`, `put_page_tag` and `delete_page_tag`; the tag itself
+  is never logged). MCP resource lists and reads are `tool.call` with
   `kind: "resource"`.
 - `page.create` once per created Page: from `create_page` on either tool
   surface, and from browser registration on `/api/pages/register` (surface

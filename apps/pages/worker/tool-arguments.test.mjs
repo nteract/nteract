@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import worker from "./index.mjs";
 import { gatewayFixture, pageId, privateOrigin, publicOrigin } from "./gateway-fixture.mjs";
-import { API_ARGUMENTS, allowedArguments } from "./tool-arguments.mjs";
+import { API_ARGUMENTS, REST_ARGUMENTS, allowedArguments } from "./tool-arguments.mjs";
 import { tools } from "../mcp.mjs";
 
 /** A gateway whose Catalog records what reaches it and answers 200. */
@@ -126,6 +126,22 @@ test("only a browser session's delete_page takes base_heads", () => {
   assert.ok(
     allowedArguments("delete_page", "http-tools", { credentialKind: "oidc" }).has("base_heads"),
   );
+});
+
+test("the REST routes take list_pages' schema, and the tag operations only their own arguments", () => {
+  const listed = tools.find((tool) => tool.name === "list_pages");
+  assert.deepEqual(
+    [...allowedArguments("list_pages", "http-rest")].sort(),
+    Object.keys(listed.inputSchema.properties).sort(),
+  );
+  for (const operation of ["put_page_tag", "delete_page_tag"]) {
+    assert.deepEqual([...allowedArguments(operation, "http-rest")].sort(), ["page_id", "tag"]);
+    // Only the REST routes call them: neither /mcp nor /api/tools takes any argument.
+    for (const transport of ["mcp", "http-tools"])
+      assert.equal(allowedArguments(operation, transport).size, 0, `${operation} ${transport}`);
+    assert.equal(API_ARGUMENTS[operation], undefined);
+  }
+  assert.deepEqual(Object.keys(REST_ARGUMENTS).sort(), ["delete_page_tag", "put_page_tag"]);
 });
 
 test("every /api/tools operation declares the arguments it takes", () => {

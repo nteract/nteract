@@ -14,7 +14,9 @@
  * reads them for auth.
  *
  * Surfaces: `mcp` for /mcp, `http-tools` for /api/tools (agents and the
- * browser UI's own calls, told apart by driver), and `browser-sync` for the
+ * browser UI's own calls, told apart by driver), `http-rest` for the REST
+ * routes (`GET /api/pages`, `PUT|DELETE /api/pages/<id>/tags/<tag>`), and
+ * `browser-sync` for the
  * browser's native Page traffic: registering a Page it created, and admitted
  * sync connections.
  *
@@ -38,7 +40,7 @@ export const USAGE_ACTIONS = Object.freeze([
   "sync.open",
   "sync.close",
 ]);
-export const USAGE_SURFACES = Object.freeze(["mcp", "http-tools", "browser-sync"]);
+export const USAGE_SURFACES = Object.freeze(["mcp", "http-tools", "http-rest", "browser-sync"]);
 /** What an MCP or HTTP call asked for: a tool, or an MCP resource list/read. */
 export const USAGE_KINDS = Object.freeze(["tool", "resource"]);
 /** Set by the Catalog on a create or register response that replays a stored
@@ -96,6 +98,61 @@ export function mcpSessionId(clientInfo, uuid = crypto.randomUUID()) {
   // 36 (uuid) + 1 (dot) + 88 base64 chars = 125 ≤ 128.
   const bytes = new TextEncoder().encode(label).slice(0, 66);
   return `${uuid}.${toBase64Url(bytes)}`;
+}
+
+/** The id of a modern request that declares no client name. */
+export const MODERN_MCP_CLIENT_UUID = "00000000-0000-4000-8000-000000000000";
+/** Longest clientInfo name or version that reaches the identity digest. */
+const MODERN_CLIENT_FIELD_LIMIT = 1024;
+
+/** The uuid-shaped identity half of a modern client id: SHA-256 of the
+ * cleaned name and version, each bounded to MODERN_CLIENT_FIELD_LIMIT, so
+ * every distinct client gets its own id even where the display label is
+ * truncated. Same `[0-9a-f-]{36}` shape as the uuid mcpSessionClient parses. */
+async function modernClientUuid(clientInfo) {
+  const field = (value) => cleanLabel(value, MODERN_CLIENT_FIELD_LIMIT) ?? "";
+  const name = field(clientInfo?.name);
+  if (!name) return MODERN_MCP_CLIENT_UUID;
+  const digest = new Uint8Array(
+    await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(JSON.stringify([name, field(clientInfo.version)])),
+    ),
+  );
+  const hex = Array.from(digest.slice(0, 16), (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20),
+  ].join("-");
+}
+
+/** The Mcp-Session-Id that stands in for an MCP protocol 2026-07-28 client:
+ * `<digest of name and version>.<base64url display label>`. The digest half
+ * tells clients apart; the label half is truncated for display only. A
+ * request without a client name gets MODERN_MCP_CLIENT_UUID. */
+export async function modernMcpClientId(clientInfo) {
+  const uuid = await modernClientUuid(clientInfo);
+  return uuid === MODERN_MCP_CLIENT_UUID ? uuid : mcpSessionId(clientInfo, uuid);
+}
+
+/** `request` as the gateway invokes a tool for an MCP protocol 2026-07-28
+ * request. That revision has no session: every request declares its
+ * clientInfo in `_meta`, and a client's Mcp-Session-Id header is ignored. The
+ * gateway's own invocation request carries modernMcpClientId(clientInfo) as
+ * its Mcp-Session-Id, so usage (requestClient) and presence (auth.mjs
+ * sessionTag) read the client the way they read a legacy session. One
+ * principal's requests from one client name and version share a presence
+ * tag; without a client name they share MODERN_MCP_CLIENT_UUID's. Only the
+ * headers are copied: the body was already read. */
+export async function withModernMcpClient(request, clientInfo) {
+  const headers = new Headers(request.headers);
+  headers.set("mcp-session-id", await modernMcpClientId(clientInfo));
+  return new Request(request.url, { method: request.method, headers });
 }
 
 /** The clientInfo label carried in an Mcp-Session-Id, or undefined. */

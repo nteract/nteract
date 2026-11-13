@@ -1,5 +1,5 @@
-// update_page_tags: the Page host's side (access, validation, limits, Trash)
-// and the public gateway's side (routing and arguments).
+// put_page_tag and delete_page_tag: the Page host's side (access, validation, limits, Trash)
+// and the REST routes' side (PUT and DELETE /api/pages/<id>/tags/<tag>).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createAuthFixture } from "../auth-fixtures.mjs";
@@ -11,6 +11,7 @@ import { fixture, pageId } from "./trash-fixture.mjs";
 import { pageState } from "./access.mjs";
 import { projectObject } from "./authz.mjs";
 import { DocumentPolicy } from "./policy.mjs";
+import { tools } from "../mcp.mjs";
 
 async function tagged(t, options = {}) {
   const db = sqliteD1(t).open();
@@ -24,31 +25,50 @@ async function tagged(t, options = {}) {
   return { f, db, rows };
 }
 
-const update = (f, who, args) => f.tool(who, "update_page_tags", args);
+const add = (f, who, tag) => f.tool(who, "put_page_tag", { tag });
+const remove = (f, who, tag) => f.tool(who, "delete_page_tag", { tag });
 
-test("an owner or editor adds and removes tags, which stay out of the document", async (t) => {
+test("an owner or editor adds and removes a tag, which stays out of the document", async (t) => {
   const { f, rows } = await tagged(t);
   const revision = (await f.tool("owner", "read_page", { comments: "none" })).body.revision;
-  const added = await update(f, "owner", { add: ["Code", "status:reviewing", "code"] });
+  // The tag is normalized: trimmed and lowercased.
+  const added = await add(f, "owner", " Code ");
   assert.equal(added.status, 200, JSON.stringify(added.body));
-  assert.deepEqual(added.body, { page_id: pageId, tags: ["code", "status:reviewing"] });
+  assert.deepEqual(added.body, { page_id: pageId, tag: "code", tags: ["code"], added: true });
   // An editor adds and removes too; the principal that added a tag is kept.
-  const edited = await update(f, "member", { add: ["repo:nteract"], remove: ["status:reviewing"] });
-  assert.deepEqual(edited.body.tags, ["code", "repo:nteract"]);
-  assert.deepEqual(rows(), [
-    { tag: "code", added_by: f.owner },
-    { tag: "repo:nteract", added_by: f.member },
-  ]);
-  // Repeating a change, or removing a tag the Page lacks, changes nothing.
-  const again = await update(f, "member", { add: ["repo:nteract"], remove: ["status:reviewing"] });
-  assert.deepEqual(again.body.tags, ["code", "repo:nteract"]);
-  assert.equal(rows().find((row) => row.tag === "code").added_by, f.owner);
-  assert.deepEqual((await update(f, "owner", { remove: ["nope"] })).body.tags, [
-    "code",
-    "repo:nteract",
-  ]);
+  const more = await add(f, "member", "repo:nteract");
+  assert.deepEqual(more.body, {
+    page_id: pageId,
+    tag: "repo:nteract",
+    tags: ["code", "repo:nteract"],
+    added: true,
+  });
+  const removed = await remove(f, "member", "CODE");
+  assert.deepEqual(removed.body, {
+    page_id: pageId,
+    tag: "code",
+    tags: ["repo:nteract"],
+    removed: true,
+  });
+  assert.deepEqual(rows(), [{ tag: "repo:nteract", added_by: f.member }]);
   // The Page's content revision never moves.
   assert.equal((await f.tool("owner", "read_page", { comments: "none" })).body.revision, revision);
+});
+
+test("adding a tag the Page has, or removing one it lacks, changes nothing and says so", async (t) => {
+  const { f, rows } = await tagged(t);
+  assert.equal((await add(f, "owner", "code")).body.added, true);
+  // A repeat, by anyone, adds nothing and keeps the first writer's row.
+  const again = await add(f, "member", "code");
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.deepEqual(again.body, { page_id: pageId, tag: "code", tags: ["code"], added: false });
+  assert.deepEqual(rows(), [{ tag: "code", added_by: f.owner }]);
+  // Removing is the same set logic.
+  const gone = await remove(f, "owner", "code");
+  assert.deepEqual(gone.body, { page_id: pageId, tag: "code", tags: [], removed: true });
+  const none = await remove(f, "owner", "code");
+  assert.equal(none.status, 200, JSON.stringify(none.body));
+  assert.deepEqual(none.body, { page_id: pageId, tag: "code", tags: [], removed: false });
 });
 
 test("viewers, commenters and strangers can't change tags", async (t) => {
@@ -58,88 +78,94 @@ test("viewers, commenters and strangers can't change tags", async (t) => {
     [{}, "stranger"],
   ]) {
     const { f, rows } = await tagged(t, options);
-    const refused = await update(f, who, { add: ["code"] });
-    assert.equal(refused.status, 403, JSON.stringify([options, who, refused.body]));
+    for (const refused of [await add(f, who, "code"), await remove(f, who, "code")])
+      assert.equal(refused.status, 403, JSON.stringify([options, who, refused.body]));
     assert.deepEqual(rows(), []);
   }
 });
 
-test("a malformed tag, an empty change and an oversized one are refused", async (t) => {
+test("a malformed tag, or none, is refused", async (t) => {
   const { f, rows } = await tagged(t);
-  for (const [args, status, code] of [
-    [{ add: ["has space"] }, 400, "invalid_tag"],
-    [{ add: ["AND"] }, 400, "invalid_tag"],
-    [{ add: ["not"] }, 400, "invalid_tag"],
-    [{ remove: ["-lead"] }, 400, "invalid_tag"],
-    [{ add: ["café"] }, 400, "invalid_tag"],
-    [{ add: [7] }, 400, "invalid_tag"],
-    [{ add: "code" }, 400, "invalid_arguments"],
-    [{}, 400, "invalid_arguments"],
-    [{ add: [] }, 400, "invalid_arguments"],
-    [{ add: ["a"], remove: ["A"] }, 400, "invalid_arguments"],
-    [{ add: Array.from({ length: 33 }, (_, index) => `t${index}`) }, 400, "invalid_arguments"],
-  ]) {
-    const refused = await update(f, "owner", args);
-    assert.equal(refused.status, status, JSON.stringify(args));
-    assert.equal(refused.body.code, code, JSON.stringify(args));
+  for (const operation of ["put_page_tag", "delete_page_tag"]) {
+    for (const [args, code] of [
+      [{ tag: "has space" }, "invalid_tag"],
+      [{ tag: "AND" }, "invalid_tag"],
+      [{ tag: "not" }, "invalid_tag"],
+      [{ tag: "-lead" }, "invalid_tag"],
+      [{ tag: "café" }, "invalid_tag"],
+      [{ tag: "a".repeat(65) }, "invalid_tag"],
+      [{ tag: "" }, "invalid_tag"],
+      [{ tag: 7 }, "invalid_tag"],
+      [{ tag: ["code"] }, "invalid_tag"],
+      [{}, "invalid_tag"],
+    ]) {
+      const refused = await f.tool("owner", operation, args);
+      assert.equal(refused.status, 400, `${operation} ${JSON.stringify(args)}`);
+      assert.equal(refused.body.code, code, `${operation} ${JSON.stringify(args)}`);
+    }
   }
   assert.deepEqual(rows(), []);
 });
 
 test("a Page holds at most 32 tags", async (t) => {
   const { f, rows } = await tagged(t);
-  const names = (count, start = 0) => Array.from({ length: count }, (_, i) => `t${start + i}`);
-  assert.equal((await update(f, "owner", { add: names(32) })).body.tags.length, 32);
-  const over = await update(f, "owner", { add: ["one-too-many"] });
+  for (let index = 0; index < 32; index++)
+    assert.equal((await add(f, "owner", `t${index}`)).status, 200, `t${index}`);
+  assert.equal(rows().length, 32);
+  const over = await add(f, "owner", "one-too-many");
   assert.equal(over.status, 409);
   assert.equal(over.body.code, "tag_limit_exceeded");
   assert.equal(rows().length, 32);
-  // A tag it has, or a swap that nets out, still fits.
-  assert.equal((await update(f, "owner", { add: ["t0"] })).status, 200);
-  const swap = await update(f, "owner", { add: ["fresh"], remove: ["t0"] });
-  assert.equal(swap.status, 200, JSON.stringify(swap.body));
-  assert.equal(swap.body.tags.length, 32);
-  assert.ok(swap.body.tags.includes("fresh") && !swap.body.tags.includes("t0"));
+  // A tag it has still answers, at the limit: it changes nothing.
+  const present = await add(f, "owner", "t0");
+  assert.equal(present.status, 200, JSON.stringify(present.body));
+  assert.equal(present.body.added, false);
+  // A removal makes room.
+  assert.equal((await remove(f, "owner", "t0")).status, 200);
+  const fresh = await add(f, "owner", "fresh");
+  assert.equal(fresh.status, 200, JSON.stringify(fresh.body));
+  assert.equal(fresh.body.tags.length, 32);
+  assert.ok(fresh.body.tags.includes("fresh") && !fresh.body.tags.includes("t0"));
 });
 
 test("a write whose tag another writer removes before its answer arrives still reports its own change", async (t) => {
   const { f, db, rows } = await tagged(t);
   const release = holdAnswer(db);
   // A adds x; its batch commits and its answer is in flight.
-  const adding = update(f, "owner", { add: ["x"] });
+  const adding = add(f, "owner", "x");
   await untilAnswerHeld(db);
   // B removes x before A hears back.
-  const removed = await update(f, "member", { remove: ["x"] });
+  const removed = await remove(f, "member", "x");
   assert.equal(removed.status, 200, JSON.stringify(removed.body));
   assert.deepEqual(removed.body.tags, []);
+  assert.equal(removed.body.removed, true);
   release();
   const added = await adding;
   assert.equal(added.status, 200, JSON.stringify(added.body));
   assert.deepEqual(added.body.tags, ["x"], "A reports the set its own batch left");
+  assert.equal(added.body.added, true);
   assert.deepEqual(rows(), []);
 });
 
-test("an over-limit change applies none of its removals", async (t) => {
+test("of two writers racing to add one tag, exactly one has added: true", async (t) => {
   const { f, rows } = await tagged(t);
-  const names = Array.from({ length: 32 }, (_, i) => `t${i}`);
-  assert.equal((await update(f, "owner", { add: names })).status, 200);
-  const over = await update(f, "owner", { add: ["a", "b"], remove: ["t0"] });
-  assert.equal(over.status, 409, JSON.stringify(over.body));
-  assert.equal(over.body.code, "tag_limit_exceeded");
-  assert.match(over.body.error, /would leave 33/);
-  assert.equal(rows().length, 32);
-  assert.ok(rows().some((row) => row.tag === "t0"));
+  const [a, b] = await Promise.all([add(f, "owner", "claim"), add(f, "member", "claim")]);
+  assert.equal(a.status, 200, JSON.stringify(a.body));
+  assert.equal(b.status, 200, JSON.stringify(b.body));
+  assert.deepEqual([a.body.added, b.body.added].sort(), [false, true]);
+  const winner = a.body.added ? f.owner : f.member;
+  assert.deepEqual(rows(), [{ tag: "claim", added_by: winner }]);
 });
 
 test("a Page in Trash takes no tag changes, and its tags return with it", async (t) => {
   const { f, rows } = await tagged(t);
-  await update(f, "owner", { add: ["code"] });
+  await add(f, "owner", "code");
   const trashed = await f.catalogCall("owner", "delete_page", {
     page_id: pageId,
     nonce: "tags-trash-0001",
   });
   assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
-  const refused = await update(f, "owner", { add: ["more"] });
+  const refused = await add(f, "owner", "more");
   assert.equal(refused.status, 409);
   assert.equal(refused.body.code, "page_trashed");
   assert.deepEqual(
@@ -151,10 +177,10 @@ test("a Page in Trash takes no tag changes, and its tags return with it", async 
     nonce: "tags-restore-0001",
   });
   assert.equal(restored.status, 200, JSON.stringify(restored.body));
-  assert.deepEqual((await update(f, "owner", { add: ["more"] })).body.tags, ["code", "more"]);
+  assert.deepEqual((await add(f, "owner", "more")).body.tags, ["code", "more"]);
 });
 
-// Edit access reaches update_page_tags through more than the Page's own member
+// Edit access reaches the tag routes through more than the Page's own member
 // rows. These tests give the Page host the identity and the Page record a
 // request would carry, so each grant is the one decide() reads in production.
 const namespace = "user:anaconda-fixture";
@@ -218,7 +244,7 @@ test("a Project editor changes tags on a Page in the Project; a viewer or commen
     const { f, rows } = await tagged(t);
     actingAs(f, principal);
     inProject(f, projectSnapshot(f, role, { principal }));
-    const changed = await update(f, "stranger", { add: ["Plan"] });
+    const changed = await add(f, "stranger", "Plan");
     assert.equal(changed.status, status, `${role}: ${JSON.stringify(changed.body)}`);
     if (status === 200) {
       assert.deepEqual(changed.body.tags, ["plan"]);
@@ -232,13 +258,13 @@ test("a Project grant that has lapsed, or never named the caller, gives no tag a
   const stale = await tagged(t);
   actingAs(stale.f, principal);
   inProject(stale.f, projectSnapshot(stale.f, "editor", { principal, validUntil: Date.now() - 1 }));
-  const lapsed = await update(stale.f, "stranger", { add: ["plan"] });
+  const lapsed = await add(stale.f, "stranger", "plan");
   assert.equal(lapsed.status, 403, JSON.stringify(lapsed));
   assert.deepEqual(stale.rows(), []);
   const other = await tagged(t);
   actingAs(other.f, principal);
   inProject(other.f, projectSnapshot(other.f, "editor", { principal: `${namespace}:someone` }));
-  const unnamed = await update(other.f, "stranger", { add: ["plan"] });
+  const unnamed = await add(other.f, "stranger", "plan");
   assert.equal(unnamed.status, 403, JSON.stringify(unnamed));
   assert.deepEqual(other.rows(), []);
 });
@@ -248,13 +274,13 @@ test("a Project editor can't change the tags of a Page in Trash", async (t) => {
   const { f, rows } = await tagged(t);
   actingAs(f, principal);
   inProject(f, projectSnapshot(f, "editor", { principal }));
-  assert.equal((await update(f, "stranger", { add: ["plan"] })).status, 200);
+  assert.equal((await add(f, "stranger", "plan")).status, 200);
   // The owner trashes it through the real credential check.
   const stub = f.page.identify;
   delete f.page.identify;
   assert.equal((await trash(f, "tags-project-trash")).status, 200);
   f.page.identify = stub;
-  const refused = await update(f, "stranger", { add: ["more"] });
+  const refused = await add(f, "stranger", "more");
   // A trashed Page is hidden from everyone but those who may restore it.
   assert.equal(refused.status, 404, JSON.stringify(refused));
   assert.deepEqual(
@@ -279,7 +305,7 @@ test("an organization link grants tag changes by its role, only to that organiza
     const { f, rows } = await tagged(t);
     f.page.metadata.acl.organizationAccess = grant(role);
     actingAs(f, principal, { organizations: [organizationLease()] });
-    const changed = await update(f, "stranger", { add: ["Shared"] });
+    const changed = await add(f, "stranger", "Shared");
     assert.equal(changed.status, status, `${role}: ${JSON.stringify(changed.body)}`);
     assert.deepEqual(rows(), status === 200 ? [{ tag: "shared", added_by: principal }] : []);
   }
@@ -293,7 +319,7 @@ test("an organization link grants tag changes by its role, only to that organiza
     const { f, rows } = await tagged(t);
     f.page.metadata.acl.organizationAccess = grant("editor");
     actingAs(f, principal, identity);
-    const refused = await update(f, "stranger", { add: ["shared"] });
+    const refused = await add(f, "stranger", "shared");
     assert.equal(refused.status, 403, JSON.stringify([identity, refused]));
     assert.deepEqual(rows(), []);
   }
@@ -301,9 +327,9 @@ test("an organization link grants tag changes by its role, only to that organiza
   const { f, rows } = await tagged(t);
   f.page.metadata.acl.organizationAccess = grant("editor");
   actingAs(f, principal, { organizations: [organizationLease()] });
-  assert.equal((await update(f, "stranger", { add: ["shared"] })).status, 200);
+  assert.equal((await add(f, "stranger", "shared")).status, 200);
   f.page.metadata.acl.organizationAccess = null;
-  const withdrawn = await update(f, "stranger", { add: ["more"] });
+  const withdrawn = await add(f, "stranger", "more");
   assert.equal(withdrawn.status, 403, JSON.stringify(withdrawn));
   assert.deepEqual(
     rows().map((row) => row.tag),
@@ -330,7 +356,7 @@ test("a company-domain link grants tag changes by its role; one stored without a
     // The link opens the Page to every role: they can read it.
     const read = await f.tool("stranger", "read_page", { comments: "none" });
     assert.equal(read.status, 200, JSON.stringify(read.body));
-    const changed = await update(f, "stranger", { add: ["Plan"] });
+    const changed = await add(f, "stranger", "Plan");
     assert.equal(changed.status, status, `${role}: ${JSON.stringify(changed.body)}`);
     assert.deepEqual(rows(), status === 200 ? [{ tag: "plan", added_by: principal }] : []);
   }
@@ -346,7 +372,7 @@ test("a company-domain link grants tag changes by its role; one stored without a
     f.page.metadata.acl.domainView = { domain: "anaconda.com", namespace, role: "editor" };
     f.page.metadata.acl.members = { ...f.page.metadata.acl.members, ...members };
     actingAs(f, principal, identity);
-    const refused = await update(f, "stranger", { add: ["shared"] });
+    const refused = await add(f, "stranger", "shared");
     assert.equal(refused.status, 403, `${label}: ${JSON.stringify(refused.body)}`);
     assert.deepEqual(rows(), []);
   }
@@ -354,28 +380,30 @@ test("a company-domain link grants tag changes by its role; one stored without a
 
 test("without the catalog index flag (no D1 binding), a tag change is refused and nothing is written", async (t) => {
   const off = await fixture(t);
-  const refused = await update(off, "owner", { add: ["code"] });
+  const refused = await add(off, "owner", "code");
   assert.equal(refused.status, 503);
   assert.equal(refused.body.code, "tags_unavailable");
   const { f, rows } = await tagged(t);
   f.env.DB.mode = "fail";
-  const failed = await update(f, "owner", { add: ["code"] });
+  const failed = await add(f, "owner", "code");
   assert.equal(failed.status, 503);
   assert.equal(failed.body.code, "tags_unavailable");
   f.env.DB.mode = "ok";
   assert.deepEqual(rows(), []);
 });
 
-test("the gateway routes update_page_tags to the Page and refuses other arguments", async (t) => {
+/** The gateway over a Page namespace that answers like a tag write, recording
+ * what reached it. */
+async function gatewayOver(t) {
   const auth = await createAuthFixture();
   t.mock.method(globalThis, "fetch", auth.fetch);
   const calls = [];
   const namespace = {
-    getByName: () => ({
+    getByName: (name) => ({
       async fetch(request) {
         const { operation, arguments: args } = await request.json();
-        calls.push({ path: new URL(request.url).pathname, operation, args });
-        return Response.json({ page_id: pageId, tags: ["code"] });
+        calls.push({ name, path: new URL(request.url).pathname, operation, args });
+        return Response.json({ page_id: pageId, tag: args?.tag, tags: [args?.tag], added: true });
       },
     }),
   };
@@ -385,37 +413,107 @@ test("the gateway routes update_page_tags to the Page and refuses other argument
     CATALOGS: namespace,
     PAGES: namespace,
   };
-  const call = (args, token = auth.apiKey()) =>
+  const send = (method, path, token = auth.apiKey(), body) =>
     worker.fetch(
-      new Request("http://127.0.0.1:9477/api/tools", {
-        method: "POST",
+      new Request(`http://127.0.0.1:9477${path}`, {
+        method,
         headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-        body: JSON.stringify({ operation: "update_page_tags", arguments: args }),
+        ...(body && { body: JSON.stringify(body) }),
       }),
       env,
     );
-  const ok = await call({ page_id: pageId, add: ["code"] });
-  assert.equal(ok.status, 200, await ok.clone().text());
+  return { auth, calls, send };
+}
+
+test("PUT and DELETE /api/pages/<id>/tags/<tag> run one tag on the Page host", async (t) => {
+  const { calls, send } = await gatewayOver(t);
+  const put = await send("PUT", `/api/pages/${pageId}/tags/Code`);
+  assert.equal(put.status, 200, await put.clone().text());
+  assert.deepEqual(await put.json(), { page_id: pageId, tag: "Code", tags: ["Code"], added: true });
+  const del = await send("DELETE", `/api/pages/${pageId}/tags/code`);
+  assert.equal(del.status, 200, await del.clone().text());
   assert.deepEqual(calls, [
     {
+      name: pageId,
       path: "/internal/tool",
-      operation: "update_page_tags",
-      args: { page_id: pageId, add: ["code"] },
+      operation: "put_page_tag",
+      args: { page_id: pageId, tag: "Code" },
+    },
+    {
+      name: pageId,
+      path: "/internal/tool",
+      operation: "delete_page_tag",
+      args: { page_id: pageId, tag: "code" },
     },
   ]);
-  // No nonce is needed, and an unknown argument is named and refused.
-  const unknown = await call({ page_id: pageId, add: ["code"], retry_token: "old" });
-  assert.equal(unknown.status, 400);
-  assert.equal((await unknown.json()).code, "invalid_arguments");
-  const project = await call({ project_id: "prj_x", add: ["code"] });
-  assert.equal(project.status, 400);
-  // A read-only credential can't write tags.
-  const readOnly = await call(
-    { page_id: pageId, add: ["code"] },
-    auth.apiKey({ scopes: ["cloud:read"] }),
+});
+
+test("a tag's `:` and `/` travel percent-encoded and arrive decoded", async (t) => {
+  const { calls, send } = await gatewayOver(t);
+  const tag = "repo:org/name";
+  const encoded = encodeURIComponent(tag);
+  assert.equal(encoded, "repo%3Aorg%2Fname");
+  assert.equal((await send("PUT", `/api/pages/${pageId}/tags/${encoded}`)).status, 200);
+  // An unencoded `:` is legal in a path segment too.
+  assert.equal((await send("PUT", `/api/pages/${pageId}/tags/status:done`)).status, 200);
+  assert.deepEqual(
+    calls.map((call) => call.args.tag),
+    [tag, "status:done"],
   );
-  assert.equal(readOnly.status, 403);
-  assert.equal(calls.length, 1);
+});
+
+test("a tag route refuses another method, a bad encoding and a bad Page ID before the Page host", async (t) => {
+  const { calls, send } = await gatewayOver(t);
+  for (const method of ["GET", "POST", "PATCH"]) {
+    const refused = await send(method, `/api/pages/${pageId}/tags/code`);
+    assert.equal(refused.status, 405, method);
+  }
+  const encoding = await send("PUT", `/api/pages/${pageId}/tags/%E0%A4%A`);
+  assert.equal(encoding.status, 400);
+  assert.equal((await encoding.json()).code, "invalid_tag");
+  const id = await send("PUT", "/api/pages/not-a-page/tags/code");
+  assert.equal(id.status, 400);
+  assert.equal(calls.length, 0);
+});
+
+test("a read-only credential can't change a tag, and a Kilo-style bearer is checked first", async (t) => {
+  const { auth, calls, send } = await gatewayOver(t);
+  const readOnly = auth.apiKey({ scopes: ["cloud:read"] });
+  for (const method of ["PUT", "DELETE"])
+    assert.equal((await send(method, `/api/pages/${pageId}/tags/code`, readOnly)).status, 403);
+  const anonymous = await worker.fetch(
+    new Request(`http://127.0.0.1:9477/api/pages/${pageId}/tags/code`, { method: "PUT" }),
+    { ...auth.env, PAGES: { getByName: () => assert.fail("unauthenticated call reached a Page") } },
+  );
+  assert.equal(anonymous.status, 401);
+  assert.equal(calls.length, 0);
+});
+
+test("the tag operations are on neither /mcp nor /api/tools, and tools take no tags", async (t) => {
+  const { calls, send } = await gatewayOver(t);
+  const names = tools.map((tool) => tool.name);
+  // The tag tools of earlier builds: update_page_tags on main, and the split pair before this.
+  const retired = ["update_page_tags", "add_page_tags", "remove_page_tags"];
+  for (const name of [...retired, "put_page_tag", "delete_page_tag"])
+    assert.equal(names.includes(name), false, name);
+  for (const tool of tools.filter((tool) => tool.name === "create_page"))
+    assert.equal("tags" in tool.inputSchema.properties, false);
+  for (const operation of [...retired, "put_page_tag", "delete_page_tag"]) {
+    const refused = await send("POST", "/api/tools", undefined, {
+      operation,
+      arguments: { page_id: pageId, tag: "code", tags: ["code"] },
+    });
+    assert.equal(refused.status, 400, operation);
+    assert.equal((await refused.json()).code, "unknown_operation", operation);
+  }
+  // create_page takes no tags: the name is refused before anything is reserved.
+  const created = await send("POST", "/api/tools", undefined, {
+    operation: "create_page",
+    arguments: { title: "Tagged", nonce: "create-tags-0001", tags: ["code"] },
+  });
+  assert.equal(created.status, 400);
+  assert.equal((await created.json()).code, "invalid_arguments");
+  assert.equal(calls.length, 0);
 });
 
 const settled = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -479,7 +577,7 @@ async function purge(f, key = "tags-purge") {
 test("a tag write waits on D1 outside the Page's queue", async (t) => {
   const { f, db, rows } = await tagged(t);
   const release = holdBatch(db);
-  const writing = update(f, "owner", { add: ["code"] });
+  const writing = add(f, "owner", "code");
   await untilBatchHeld(db);
   // D1 is stalled mid-write. Every other request to the Page still runs.
   const state = await Promise.race([
@@ -519,22 +617,22 @@ test("control: a Page that is already in Trash is refused in the queue, before a
   const { f, db, rows } = await tagged(t);
   await trash(f);
   const before = db.calls;
-  const refused = await update(f, "owner", { add: ["code"] });
+  const refused = await add(f, "owner", "code");
   assert.equal(refused.status, 409);
   assert.equal(refused.body.code, "page_trashed");
   assert.equal(db.calls, before, "the refusal read nothing from D1");
   assert.deepEqual(rows(), []);
   // So is a caller who can't see the Page.
-  assert.equal((await update(f, "stranger", { add: ["code"] })).status, 404);
+  assert.equal((await add(f, "stranger", "code")).status, 404);
   assert.equal(db.calls, before);
 });
 
 test("a write held in D1 and refused by Trash lands nothing and says why", async (t) => {
   const { f, db, rows } = await tagged(t);
   await project(f);
-  await update(f, "owner", { add: ["keep"] });
+  await add(f, "owner", "keep");
   const release = holdBatch(db);
-  const writing = update(f, "owner", { add: ["late"], remove: ["keep"] });
+  const writing = remove(f, "owner", "keep");
   await untilBatchHeld(db);
   // The Page is trashed while the write is in flight, then the write runs.
   assert.equal((await trash(f)).status, 200);
@@ -543,7 +641,7 @@ test("a write held in D1 and refused by Trash lands nothing and says why", async
   const refused = await writing;
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   assert.equal(refused.body.code, "page_trashed");
-  // Neither the add nor the removal landed: a Page in Trash takes no tag change.
+  // The removal didn't land: a Page in Trash takes no tag change.
   assert.deepEqual(
     rows().map((row) => row.tag),
     ["keep"],
@@ -553,9 +651,9 @@ test("a write held in D1 and refused by Trash lands nothing and says why", async
 test("a held no-op write on a Page trashed meanwhile still answers page_trashed", async (t) => {
   const { f, db, rows } = await tagged(t);
   await project(f);
-  await update(f, "owner", { add: ["keep"] });
+  await add(f, "owner", "keep");
   const release = holdBatch(db);
-  const writing = update(f, "owner", { add: ["keep"] });
+  const writing = add(f, "owner", "keep");
   await untilBatchHeld(db);
   assert.equal((await trash(f)).status, 200);
   release();
@@ -572,7 +670,7 @@ test("a held no-op write on a Page deleted meanwhile answers not found", async (
   const { f, db, rows } = await tagged(t);
   await project(f);
   const release = holdBatch(db);
-  const writing = update(f, "owner", { remove: ["absent"] });
+  const writing = remove(f, "owner", "absent");
   await untilBatchHeld(db);
   assert.equal((await purge(f, "tags-noop-purge")).status, 200);
   release();
@@ -589,10 +687,9 @@ test("a batch that timed out can't land on a Page trashed after the timeout", as
   catalogIndexTimeouts.write = 40;
   t.after(() => (catalogIndexTimeouts.write = write));
   const release = holdBatch(db);
-  const writing = await Promise.all([
-    update(f, "owner", { add: ["late"] }),
-    untilBatchHeld(db),
-  ]).then(([response]) => response);
+  const writing = await Promise.all([add(f, "owner", "late"), untilBatchHeld(db)]).then(
+    ([response]) => response,
+  );
   // The caller is told D1 did not answer, which doesn't say whether it wrote.
   assert.equal(writing.status, 503);
   assert.equal(writing.body.code, "tags_unavailable");
@@ -608,7 +705,7 @@ test("a batch that timed out can't land on a Page trashed after the timeout", as
     nonce: "tags-restore-0002",
   });
   assert.equal(restored.status, 200, JSON.stringify(restored.body));
-  assert.deepEqual((await update(f, "owner", { add: ["late"] })).body.tags, ["late"]);
+  assert.deepEqual((await add(f, "owner", "late")).body.tags, ["late"]);
 });
 
 // CONTROL. No Trash happens here, so this passes with or without the fence:
@@ -622,7 +719,7 @@ test("control: a timed-out batch that lands before any Trash is the write the ca
   catalogIndexTimeouts.write = 40;
   t.after(() => (catalogIndexTimeouts.write = write));
   const release = holdBatch(db);
-  const [timedOut] = await Promise.all([update(f, "owner", { add: ["code"] }), untilBatchHeld(db)]);
+  const [timedOut] = await Promise.all([add(f, "owner", "code"), untilBatchHeld(db)]);
   assert.equal(timedOut.status, 503);
   release();
   await settled(50);
@@ -633,7 +730,7 @@ test("control: a timed-out batch that lands before any Trash is the write the ca
   const landed = db
     .rows("SELECT tag, added_by, added_at FROM page_tags")
     .map((row) => ({ ...row }));
-  const retried = await update(f, "owner", { add: ["code"] });
+  const retried = await add(f, "owner", "code");
   assert.deepEqual(retried.body.tags, ["code"]);
   assert.deepEqual(
     db.rows("SELECT tag, added_by, added_at FROM page_tags").map((row) => ({ ...row })),
@@ -646,7 +743,7 @@ test("a Page's deleted mark answers a held write as not found", async (t) => {
   const { f, db, rows } = await tagged(t);
   await project(f);
   const release = holdBatch(db);
-  const writing = update(f, "owner", { add: ["late"] });
+  const writing = add(f, "owner", "late");
   await untilBatchHeld(db);
   const purged = await purge(f);
   assert.equal(purged.status, 200, JSON.stringify(purged.body));
@@ -659,7 +756,8 @@ test("a Page's deleted mark answers a held write as not found", async (t) => {
 
 test("a purge deletes the Page's tag rows itself, and only that Page's", async (t) => {
   const { f, db, rows } = await tagged(t);
-  await update(f, "owner", { add: ["code", "repo:nteract"] });
+  await add(f, "owner", "code");
+  await add(f, "owner", "repo:nteract");
   const other = "44444444-4444-4444-8444-444444444444";
   db.sqlite.prepare("INSERT INTO page_tags VALUES (?, 'keep', ?, ?)").run(other, f.owner, "x");
   // Trash keeps the tags.
@@ -706,7 +804,7 @@ test("a purge deletes the tag rows with the catalog index off, and with nothing 
 
 test("a purge whose tag delete fails repeats it until it lands", async (t) => {
   const { f, db, rows } = await tagged(t);
-  await update(f, "owner", { add: ["code"] });
+  await add(f, "owner", "code");
   assert.equal((await trash(f, "retry-trash")).status, 200);
   const preview = await f.catalogCall("owner", "purge_page", {
     page_id: pageId,

@@ -18,6 +18,7 @@ import {
   linkPreviewPaths,
   pageSlugPaths,
   projectAssetPaths,
+  restPaths,
   routesFor,
   siftPaths,
   whoamiPaths,
@@ -257,13 +258,19 @@ export function publishIsolated(
       ...extra,
     }) + "\n";
   const receipt = receiptFor(plan.config);
-  // The route set the last release sealed: this one without Page slugs
-  // (pageSlugPaths). Every history below is stated against it, so each keeps
-  // its exact bytes and migrates straight to plan.config.
-  const slugless = plan.config.replace(pageSlugPaths, "");
-  // The route set before link previews, card images
-  // and Project assets (linkPreviewPaths, cardImagePaths, projectAssetPaths).
-  // A target without those flags keeps plan.config.
+  // The route sets earlier releases sealed, newest first. Each strips one
+  // group from this one, so every history keeps its exact bytes and migrates
+  // straight to plan.config:
+  // - beforeSlugs: without the Page slug routes (pageSlugPaths), what a
+  //   target that published between the REST routes and the slugs sealed;
+  // - beforeRest: without the REST routes (restPaths) either, what the last
+  //   package release sealed. A set with the slugs and without REST was never
+  //   published, so it is no predecessor.
+  // The route set before link previews, card images and Project assets
+  // (linkPreviewPaths, cardImagePaths, projectAssetPaths) strips those from
+  // beforeRest. A target without those flags keeps beforeRest.
+  const beforeSlugs = plan.config.replace(pageSlugPaths, "");
+  const beforeRest = beforeSlugs.replace(restPaths, "");
   const linkPreviews = profile.linkPreviews === true;
   const cardImages = profile.cardImages === true;
   const projectAssets = profile.projectAssets === true;
@@ -271,7 +278,10 @@ export function publishIsolated(
     [linkPreviews, linkPreviewPaths],
     [cardImages, cardImagePaths],
     [projectAssets, projectAssetPaths],
-  ].reduce((config, [enabled, group]) => (enabled ? config.replace(group, "") : config), slugless);
+  ].reduce(
+    (config, [enabled, group]) => (enabled ? config.replace(group, "") : config),
+    beforeRest,
+  );
   // The route set before the account routes (accountPaths). Every history
   // below is stated against it, so those predecessors keep their exact bytes,
   // and each one migrates straight to plan.config.
@@ -356,11 +366,14 @@ export function publishIsolated(
     predecessor(base, false);
     if (slotted) predecessor(base, true);
   }
-  // The installation the last release sealed, on slot units or the legacy
-  // unit. Only the Page slug routes differ.
-  predecessor(slugless, false);
-  if (slotted) predecessor(slugless, true);
-  if (sealedRoutes !== slugless) {
+  // The installations the last two releases sealed, on slot units. A target
+  // still on its legacy unit at either route set migrates too. Units and
+  // every other route stay byte-identical.
+  for (const config of [beforeSlugs, beforeRest]) {
+    predecessor(config, false);
+    if (slotted) predecessor(config, true);
+  }
+  if (sealedRoutes !== beforeRest) {
     // The installation the release before it sealed: the account route set,
     // without link previews, card images and Project assets, on slot units.
     // A target still on its legacy unit at that route set migrates too.
@@ -478,6 +491,7 @@ export function publishIsolated(
     const uuid = "08c583e5-d29e-4f1e-b06b-333965254e94";
     const assets = "/api/pages/" + uuid + "/assets";
     const cardImage = "/api/pages/" + uuid + "/card-image";
+    const tags = "/api/pages/" + uuid + "/tags";
     const projectAssetRoute = "/api/projects/prj_" + uuid + "/assets";
     const imageHash = "a".repeat(64);
     run("/usr/bin/cloudflared", ["--config", file, "tunnel", "ingress", "validate"]);
@@ -586,6 +600,18 @@ export function publishIsolated(
       ["/api/pages/arbitrary/assets", "http_status:404"],
       [assets + "/private", "http_status:404"],
       [assets + "/" + "a".repeat(64) + "/private", "http_status:404"],
+      // The REST routes. cloudflared matches the decoded path, so the encoded
+      // tag is the probe that shows `repo:org/name` reaches the Worker.
+      ["/api/pages", plan.listen],
+      ["/api/pages?tags=status%3Adone&limit=1", plan.listen],
+      [tags + "/status", plan.listen],
+      [tags + "/repo%3Aorg%2Fname", plan.listen],
+      ["/api/pages/", "http_status:404"],
+      [tags, "http_status:404"],
+      [tags + "/", "http_status:404"],
+      [tags + "/a;b", "http_status:404"],
+      ["/api/pages/arbitrary/tags/status", "http_status:404"],
+      ["/api/projects/prj_" + uuid + "/tags/status", "http_status:404"],
       ["/p/" + uuid + "/meta.json", linkPreviews ? plan.listen : "http_status:404"],
       ["/p/" + uuid + "/card.json", linkPreviews ? plan.listen : "http_status:404"],
       ["/project/prj_" + uuid + "/meta.json", linkPreviews ? plan.listen : "http_status:404"],

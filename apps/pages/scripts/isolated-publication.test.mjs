@@ -13,6 +13,7 @@ import {
   pageSlugPaths,
   projectAssetPaths,
   projectPaths,
+  restPaths,
   siftPaths,
   whoamiPaths,
 } from "./deployment/routes.mjs";
@@ -234,7 +235,8 @@ function fixture(
       const pathname = new URL(args.at(-1)).pathname;
       const contents = fs.readFileSync(local(args[1]), "utf8");
       const pattern = new RegExp(/^    path: (.+)$/m.exec(contents)[1]);
-      const forwarded = pattern.test(pathname) !== (pathname === misroutePath);
+      // cloudflared matches a rule against the decoded path.
+      const forwarded = pattern.test(decodeURIComponent(pathname)) !== (pathname === misroutePath);
       return "service: " + (forwarded ? "http://" + profile.deployment.listen : "http_status:404");
     }
     throw Error("Unexpected command " + command);
@@ -304,6 +306,7 @@ const beforeSlugs = (config) => config.replace(pageSlugPaths, "");
 // set the release before those sealed.
 const beforePreviews = (config) =>
   beforeSlugs(config)
+    .replace(restPaths, "")
     .replace(linkPreviewPaths, "")
     .replace(cardImagePaths, "")
     .replace(projectAssetPaths, "");
@@ -713,6 +716,46 @@ for (const target of ["page10", "pages"])
       imageAssetPath + "/" + "a".repeat(64) + "/private",
     ])
       assert.ok(paths.includes(pathname), pathname);
+  });
+
+const tagPath = "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/tags";
+for (const target of ["page10", "pages"])
+  test(`${target} publisher verifies REST ingress before starting its connector`, (t) => {
+    const f = fixture(t, { target });
+    f.execute();
+    const start = f.calls.findIndex(
+      ({ command, args }) => command === "systemctl" && ["start", "restart"].includes(args[0]),
+    );
+    assert.ok(start >= 0);
+    const paths = f.calls
+      .slice(0, start)
+      .filter(({ command, args }) => command === "/usr/bin/cloudflared" && args.includes("rule"))
+      .map(({ args }) => new URL(args.at(-1)))
+      .map((url) => url.pathname + url.search);
+    for (const pathname of [
+      "/api/pages",
+      "/api/pages?tags=status%3Adone&limit=1",
+      tagPath + "/status",
+      tagPath + "/repo%3Aorg%2Fname",
+      "/api/pages/",
+      tagPath,
+      tagPath + "/",
+      tagPath + "/a;b",
+      "/api/pages/arbitrary/tags/status",
+      "/api/projects/prj_08c583e5-d29e-4f1e-b06b-333965254e94/tags/status",
+    ])
+      assert.ok(paths.includes(pathname), pathname);
+  });
+
+for (const target of ["page10", "pages"])
+  test(`${target} publisher refuses to start a connector that drops a tag's encoded slash`, (t) => {
+    const f = fixture(t, { target, misroutePath: tagPath + "/repo%3Aorg%2Fname" });
+    assert.throws(() => f.execute(), /Dedicated tunnel route validation failed/);
+    assert.ok(
+      !f.calls.some(
+        ({ command, args }) => command === "systemctl" && ["start", "restart"].includes(args[0]),
+      ),
+    );
   });
 
 for (const target of ["page10", "pages"])
@@ -1879,18 +1922,19 @@ test("link previews, card images and Project assets are the only difference from
     assert.equal(prior.includes("projects/(prj|sp)"), false);
     assert.equal(
       beforeSlugs(current).length - prior.length,
-      linkPreviewPaths.length + cardImagePaths.length + projectAssetPaths.length,
+      restPaths.length + linkPreviewPaths.length + cardImagePaths.length + projectAssetPaths.length,
     );
   }
 });
 
-test("Page slugs are the only difference from the last sealed route set", () => {
-  // routesFor(target) as the release before Page slugs published it.
+test("Page slugs are the only difference from the REST release's route set", () => {
+  // routesFor(target) as the release with the REST routes and before Page
+  // slugs published it (B).
   for (const [target, sealed] of [
-    ["page10", "16a862190609fe804dc14873914f944082840b27a70d39f2970dd59569b87f95"],
-    ["pages", "0bd2976080db6b91e719947d479313744b6ad7223e34489cc50b51e1b60559fe"],
-    ["pages2", "5ce2c01e54839e9f8380c0ce2cdb73f674dde505599e6f04badda5ef4026d8ae"],
-    ["page11", "4de3c8fabf6ffa360a9fdab1e263a36078b78d825ff6e11c3117bcaed88e079a"],
+    ["page10", "6f566b38fb83bafa7d91b380391b149e20ed181f20ae447d2f34e28fbf648b30"],
+    ["pages", "fdcd64bfbec9b2f26f467957b4c0045bb5ad34783b37522f3e3b52d2755bfd2a"],
+    ["pages2", "91dbfafba5bb419477c83671a01a44f84204f5df0becb2b7776f3e026f91dc22"],
+    ["page11", "779d5b3f80cb0bcd42d85a5781aae1e7897e1385cb232ed91320631931bc5fe5"],
   ]) {
     const current = routesFor(target);
     assert.equal(current.split(pageSlugPaths).length, 2, target);
@@ -1915,9 +1959,20 @@ test("Page slugs are the only difference from the last sealed route set", () => 
   }
 });
 
+// A set with Page slugs and without the REST routes was never published: an
+// installation holding it refuses rather than being overwritten.
+for (const target of ["page10", "pages", "pages2", "page11"])
+  test(`${target} refuses an installation with Page slugs and without the REST routes`, (t) => {
+    const f = fixture(t, { target, sharedTunnel: !["pages2", "page11"].includes(target) });
+    slotInstall(f, (config) => config.replace(restPaths, ""));
+    assert.throws(f.execute, /installation differs/);
+    assert.equal(f.writes.length, 0);
+    assert.deepEqual(lifecycle(f), []);
+  });
+
 for (const target of ["page10", "pages", "pages2", "page11"])
   for (const state of ["sealed", "pending-old", "pending-new"])
-    test(`${target} adds Page slugs to its sealed installation (${state})`, (t) => {
+    test(`${target} adds Page slugs to the REST release's installation (${state})`, (t) => {
       const f = fixture(t, { target, sharedTunnel: !["pages2", "page11"].includes(target) });
       const x = slotInstall(f, beforeSlugs, { state });
       const units = x.plan.slots.map((slot) => fs.readFileSync(f.local(slot.unitPath), "utf8"));
@@ -2055,3 +2110,47 @@ for (const target of PREVIEW_TARGETS) {
     }
   });
 }
+
+test("the REST routes and Page slugs are the only difference from the package release's route set", () => {
+  // routesFor(target) as the release before both groups published it.
+  for (const [target, sealed] of [
+    ["page10", "16a862190609fe804dc14873914f944082840b27a70d39f2970dd59569b87f95"],
+    ["pages", "0bd2976080db6b91e719947d479313744b6ad7223e34489cc50b51e1b60559fe"],
+    ["pages2", "5ce2c01e54839e9f8380c0ce2cdb73f674dde505599e6f04badda5ef4026d8ae"],
+    ["page11", "4de3c8fabf6ffa360a9fdab1e263a36078b78d825ff6e11c3117bcaed88e079a"],
+  ]) {
+    const current = routesFor(target);
+    const prior = beforeSlugs(current).replace(restPaths, "");
+    // Either group may be stripped first: they never overlap.
+    assert.equal(current.replace(restPaths, "").replace(pageSlugPaths, ""), prior, target);
+    assert.equal(digest(prior), sealed, target);
+    assert.equal(prior.includes("/tags/"), false);
+    assert.equal(prior.includes("|pages|"), false);
+    assert.equal(current.length - prior.length, restPaths.length + pageSlugPaths.length);
+  }
+});
+
+// The installation the package release sealed, with neither the REST routes
+// nor Page slugs (A). It migrates straight to both.
+const restInstall = (f, options) =>
+  slotInstall(f, (config) => beforeSlugs(config).replace(restPaths, ""), options);
+
+for (const target of ["page10", "pages", "pages2", "page11"])
+  for (const state of ["sealed", "pending-old", "pending-new"])
+    test(`${target} adds the REST routes and Page slugs to the package release's installation (${state})`, (t) => {
+      const f = fixture(t, { target, sharedTunnel: !["pages2", "page11"].includes(target) });
+      const x = restInstall(f, { state });
+      const units = x.plan.slots.map((slot) => fs.readFileSync(f.local(slot.unitPath), "utf8"));
+      const result = f.execute();
+      assert.equal(result.routesUpdated, true);
+      assert.equal(result.connectorHandoff, true);
+      assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.plan.config);
+      assert.equal(installedReceipt(f), slotReceipt(x.plan.config, x.plan.unitSha256));
+      // Only the routes changed.
+      assert.deepEqual(
+        x.plan.slots.map((slot) => fs.readFileSync(f.local(slot.unitPath), "utf8")),
+        units,
+      );
+      f.calls.length = 0;
+      assert.equal(f.execute().routesUpdated, false);
+    });

@@ -12,6 +12,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium, expect } from "@playwright/test";
+import { chartChunkName, installRecorder, summarize, timeReload } from "./chart-start-timing.mjs";
 import { purgeTrashedFixture } from "./purge-fixture.mjs";
 
 const origin = process.env.PAGES_ORIGIN;
@@ -222,6 +223,37 @@ try {
   // The replica writes received documents to IndexedDB after applying them.
   await reader.waitForTimeout(1500);
   complete("a first visit draws the chart and stores its documents");
+
+  // PAGES_CHART_START_RUNS reloads the Page that many times with a warm
+  // cache and as many with a cold one, and reports each chart milestone
+  // (chart-start-timing.mjs).
+  const startRuns = Number(process.env.PAGES_CHART_START_RUNS ?? 0);
+  if (startRuns > 0) {
+    const chunk = await chartChunkName(path.resolve(import.meta.dirname, "../dist"));
+    await installRecorder(reader.context(), "Sales by region");
+    const fitWarnings = [];
+    // Vega-Lite logs from the chart Worker.
+    const onConsole = (message) => {
+      if (/Dropping "fit-/.test(message.text())) fitWarnings.push(message.text());
+    };
+    reader.on("console", onConsole);
+    reader.on("worker", (worker) => worker.on("console", onConsole));
+    const runs = { warm: [], cold: [] };
+    // One reload of each first, so both series start from the same state.
+    for (const cold of [false, true]) await timeReload(reader, { cold, chunk });
+    for (let run = 0; run < startRuns; run++)
+      for (const cold of [false, true])
+        runs[cold ? "cold" : "warm"].push(await timeReload(reader, { cold, chunk }));
+    report.measurements.chartStart = {
+      runs: startRuns,
+      fitWarnings: fitWarnings.length,
+      warm: summarize(runs.warm),
+      cold: summarize(runs.cold),
+      samples: runs,
+    };
+    console.log(JSON.stringify(report.measurements.chartStart, null, 2));
+    complete(`timed ${startRuns} warm and ${startRuns} cold reloads`);
+  }
 
   // Reload with the connection held back: the chart draws from storage.
   const connection = await holdConnection(reader);

@@ -49,6 +49,19 @@ export const cardImagePaths = `pages/${uuid}/card-image(/[0-9a-f]{64}-(light|dar
 // sha256. Inside the api/( group.
 export const projectAssetPaths = `projects/(prj|sp)_${uuid}/assets(/[0-9a-f]{64})?|`;
 
+// The REST routes (worker/rest-api.mjs), admitted by every target: one tag of
+// one Page (PUT|DELETE /api/pages/<id>/tags/<tag>) and the listing (GET
+// /api/pages). A tag is up to 64 characters of a-z, 0-9 and . _ : / -, sent as
+// one percent-encoded path segment, so `/` is %2F and `:` is %3A. cloudflared
+// matches ingress rules against the decoded path, so the Worker's encoded
+// segment arrives here as `repo:org/name`: the class admits `/` and `%`, and
+// the Worker, which matches one raw segment, refuses a tag path with more
+// than one. 192 leaves room for a character that stays encoded (three
+// characters). Case and `:` are admitted too: the Worker folds the first and
+// decodes the second. One group, so a release before them is this one without
+// it. Inside the api/( group.
+export const restPaths = `pages/${uuid}/tags/[A-Za-z0-9._:%/-]{1,192}|pages|`;
+
 export function routesFor(target) {
   const profile = deploymentProfile(target);
   const { hostname, listen } = profile.deployment;
@@ -85,6 +98,7 @@ export function routesFor(target) {
     (profile.accountRoutes === true ? accountPaths : "") +
     (profile.cardImages === true ? cardImagePaths : "") +
     (profile.projectAssets === true ? projectAssetPaths : "") +
+    restPaths +
     "tools|connect|sync|saved|pages/register|auth/(login|logout|session))|oidc";
   return `  - hostname: ${hostname}
     path: ^/(${paths})?$

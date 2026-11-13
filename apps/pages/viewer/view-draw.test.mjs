@@ -94,13 +94,14 @@ const view = ({ revision = "1", names = ["sales"], data, title = "Sales" } = {})
 
 function fixture({
   sources: initial,
+  sourcesAnswer$,
   check = checkChartSpec,
   throwOnDraw = () => false,
   throwOnDestroy = () => false,
 } = {}) {
   const host = hostSources();
   for (const [id, char] of Object.entries(initial ?? { sales: "a" })) host.set(id, asset(char));
-  const doc$ = new BehaviorSubject(host.doc);
+  const doc$ = new BehaviorSubject(initial === null ? undefined : host.doc);
   const fetches = [];
   const asks = [];
   const store = new PageSourceStore({
@@ -121,6 +122,7 @@ function fixture({
   const draw = createViewDraw({
     view$,
     sources: store,
+    ...(sourcesAnswer$ && { sourcesAnswer$ }),
     decode: decoder.decode,
     checkChartSpec: check,
     render: {
@@ -316,6 +318,78 @@ test("a removed source draws empty, names the source, and asks for the sources d
   assert.equal(latest.note, `This chart's source "costs" isn't on this Page.`);
   assert.equal(f.shown.at(-1).note, latest.note);
   assert.ok(f.asks.length > 0, "a missing source asks for the sources document");
+});
+
+test("a view ready before its sources document is read waits, then draws its data once", async () => {
+  // The sources document is still being read from storage: the store holds
+  // no document, and the lookup has no answer.
+  const answer$ = new BehaviorSubject("unknown");
+  const f = fixture({ sources: null, sourcesAnswer$: answer$ });
+  f.host.set("sales", asset("a"));
+  f.view$.next(view());
+  await settle();
+  assert.deepEqual(f.draws, [], "nothing draws as missing while the document is unread");
+  assert.equal(f.shown.at(-1).state, "waiting");
+  assert.equal(f.shown.at(-1).sentence, VIEW_STATUS.waiting);
+  assert.equal(f.shown.at(-1).note, null);
+  assert.ok(f.asks.length > 0, "it asks for the sources document");
+  f.doc$.next(f.host.doc);
+  answer$.next("known");
+  await settle();
+  f.decoder.calls[0].resolve();
+  await settle();
+  assert.equal(f.draws.length, 1);
+  assert.equal(f.draws[0].note, null);
+  assert.equal(f.draws[0].datasets.sales, f.decoder.calls[0].table);
+});
+
+test("offline with no stored sources, the embed says it draws on reconnect, then draws its data once", async () => {
+  const answer$ = new BehaviorSubject("unknown");
+  const f = fixture({ sources: null, sourcesAnswer$: answer$ });
+  f.host.set("sales", asset("a"));
+  f.view$.next(view());
+  await settle();
+  answer$.next("unreachable");
+  await settle();
+  assert.deepEqual(f.draws, []);
+  assert.deepEqual(f.shown.at(-1), {
+    state: "unreachable",
+    sentence: VIEW_STATUS.unreachable,
+    note: null,
+    title: "Sales",
+  });
+  // Reconnecting: the lookup runs again.
+  answer$.next("unknown");
+  await settle();
+  assert.equal(f.shown.at(-1).state, "waiting");
+  assert.deepEqual(f.draws, []);
+  f.doc$.next(f.host.doc);
+  answer$.next("known");
+  await settle();
+  f.decoder.calls[0].resolve();
+  await settle();
+  assert.equal(f.draws.length, 1);
+  assert.equal(f.draws[0].note, null);
+  assert.equal(
+    f.shown.filter((status) => status.state === "drawn").length > 0 &&
+      f.shown.every((status) => !["blocked", "failed"].includes(status.state)),
+    true,
+    "never a state that releases the reserve",
+  );
+});
+
+test("a source the answered sources document doesn't hold draws empty, with its note", async () => {
+  const answer$ = new BehaviorSubject("unknown");
+  const f = fixture({ sources: null, sourcesAnswer$: answer$ });
+  f.view$.next(view());
+  await settle();
+  assert.deepEqual(f.draws, []);
+  // The host answered: there is no sources document.
+  answer$.next("known");
+  await settle();
+  assert.equal(f.draws.length, 1);
+  assert.deepEqual(f.draws[0].datasets.sales, []);
+  assert.equal(f.draws[0].note, `This chart's source "sales" isn't on this Page.`);
 });
 
 test("a pinned binding reads its history state and ignores later revisions", async () => {

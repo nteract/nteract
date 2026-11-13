@@ -14,7 +14,7 @@ const actions = new Set([
   "sync.open",
   "sync.close",
 ]);
-const surfaces = new Set(["mcp", "http-tools", "browser-sync"]);
+const surfaces = new Set(["mcp", "http-tools", "http-rest", "browser-sync"]);
 const drivers = new Set([
   "Browser",
   "API",

@@ -6,7 +6,10 @@
 //
 // The embed is bare: the view's title, the chart in one thin border, and the
 // Maximize control Mermaid diagrams have. The chart code is its own chunk
-// (view-chart.mjs), loaded only when a Page shows a view near the viewport.
+// (view-chart.mjs). A Page whose editor holds a view embed loads it as the
+// embed connects and starts the chart Worker (`chartWarmup`), so both are
+// ready by the time the first chart's view and data are; each embed still
+// reads its view and sources only near the viewport.
 //
 // Until its chart draws, an embed reserves the height the chart last drew at
 // in this browser (view-heights.mjs), or wordgard.css's default, so the Page
@@ -17,12 +20,13 @@
 import { Decoration, Widget } from "wordgard/editor";
 import { PagesView } from "../model/wordgard-doc.mjs";
 import { readViewNode } from "../shared/views.mjs";
+import { chartWarmupMachine } from "./chart-warmup-machine.mjs";
 import { viewHeight } from "./view-heights.mjs";
 import { dataframeLifecycle } from "./wordgard-dataframes.mjs";
 import { reportRendererUnavailable } from "./wordgard-widgets.mjs";
 
-/** The chart chunk, with `mount(container, { view$, sources })` returning
- * `{ destroy }`. */
+/** The chart chunk, with `mount(container, { view$, sources, sourcesAnswer$
+ * })` returning `{ destroy }`. */
 export const VIEW_RENDERER = () => import("./view-chart.mjs");
 
 /** What an embed says before its chart chunk is drawing, and if the chunk
@@ -80,6 +84,7 @@ export function viewLifecycle({
   viewId,
   views,
   sources,
+  sourcesAnswer$ = null,
   frame,
   load = VIEW_RENDERER,
   onUnavailable = reportRendererUnavailable,
@@ -112,7 +117,7 @@ export function viewLifecycle({
           const held = views.hold(viewId);
           let chart;
           try {
-            chart = chunk.mount(canvas, { view$: held.view$, sources });
+            chart = chunk.mount(canvas, { view$: held.view$, sources, sourcesAnswer$ });
           } catch (error) {
             held.release();
             throw error;
@@ -154,6 +159,88 @@ export function viewLifecycle({
     },
   };
 }
+
+/**
+ * Warms the chart path for one editor's embeds, running chartWarmupMachine
+ * (chart-warmup-machine.mjs) with its effects at the edge: while an embed is
+ * connected, the chart chunk is loaded (`load`, the same import an embed's
+ * lifecycle makes) and one held document's chart Worker is kept started
+ * (view-chart.mjs `warm`). It looks up no view or source, holds no view slot
+ * and arms no timer. A chunk that fails to load is ignored here; the embed's
+ * own load reports it. `defer` runs the machine's deferred settle.
+ */
+export function chartWarmup({ load = VIEW_RENDERER, defer = queueMicrotask } = {}) {
+  let state = chartWarmupMachine.initial;
+  let chunk = null;
+  let count = 0;
+  const ids = new WeakMap();
+  const docs = new Map();
+  const releases = new Map();
+  const idOf = (doc) => {
+    let id = ids.get(doc);
+    if (!id) ids.set(doc, (id = `doc-${++count}`));
+    docs.set(id, doc);
+    return id;
+  };
+  const dispatch = (event) => {
+    const result = chartWarmupMachine.step(state, event);
+    state = result.state;
+    for (const effect of result.effects) run(effect);
+    // Keep only the documents the machine still names.
+    for (const id of docs.keys())
+      if (!Object.hasOwn(state.holds ?? {}, id) && state.warm !== id) docs.delete(id);
+  };
+  function run(effect) {
+    switch (effect.type) {
+      case "load":
+        Promise.resolve()
+          .then(load)
+          .then(
+            (loaded) => {
+              chunk = loaded;
+              dispatch({ type: "loaded" });
+            },
+            () => dispatch({ type: "loadFailed" }),
+          );
+        return;
+      case "warm":
+        try {
+          const release = chunk?.warm?.(docs.get(effect.doc));
+          if (typeof release === "function") releases.set(effect.doc, release);
+        } catch {}
+        return;
+      case "cool": {
+        const release = releases.get(effect.doc);
+        releases.delete(effect.doc);
+        try {
+          release?.();
+        } catch {}
+        return;
+      }
+      case "defer":
+        defer(() => dispatch({ type: "settle" }));
+        return;
+    }
+  }
+  return {
+    /** Hold the warm path for an embed in `doc`; returns its release. */
+    hold(doc) {
+      const id = idOf(doc);
+      dispatch({ type: "hold", doc: id });
+      let held = true;
+      return () => {
+        if (!held) return;
+        held = false;
+        dispatch({ type: "release", doc: id });
+      };
+    },
+  };
+}
+
+/** The warm-up an editor's embeds share: none without the Page's views and
+ * sources, where every embed says its chart isn't on this Page. */
+export const warmupFor = ({ views, sources, load }) =>
+  views && sources ? chartWarmup({ load }) : null;
 
 /** Whether the embed shows its view drawn (view-draw.mjs "drawn") as a chart
  * Vega has finished (vega-chart.mjs "rendered"). */
@@ -210,15 +297,20 @@ const viewEmbed = Widget.define({
     a.viewId === b.viewId &&
     a.views === b.views &&
     a.sources === b.sources &&
+    a.sourcesAnswer$ === b.sourcesAnswer$ &&
     a.eager === b.eager &&
-    a.heights === b.heights,
+    a.heights === b.heights &&
+    a.warmup === b.warmup,
   render(attrs) {
     const frame = viewFrame(attrs);
     mounted.set(frame.dom, {
+      warmup: attrs.warmup,
+      release: null,
       lifecycle: viewLifecycle({
         viewId: attrs.viewId,
         views: attrs.views,
         sources: attrs.sources,
+        sourcesAnswer$: attrs.sourcesAnswer$,
         frame,
         ...(attrs.eager && { observe: alwaysNear }),
       }),
@@ -228,6 +320,7 @@ const viewEmbed = Widget.define({
   },
   connect(_value, dom) {
     const embed = mounted.get(dom);
+    if (embed && !embed.release) embed.release = embed.warmup?.hold(dom.ownerDocument) ?? null;
     embed?.lifecycle.connect();
     embed?.recorder.connect();
   },
@@ -235,6 +328,8 @@ const viewEmbed = Widget.define({
     const embed = mounted.get(dom);
     embed?.recorder.disconnect();
     embed?.lifecycle.disconnect();
+    embed?.release?.();
+    if (embed) embed.release = null;
   },
   propagateEvent: viewEventReachesEditor,
 });
@@ -243,18 +338,23 @@ const viewEmbed = Widget.define({
  * Editor config that draws every view node (the Page model's PagesView) as
  * its chart. `views` is the Page's view replicas (view-replicas.mjs) and
  * `sources` its source store; without them every embed says its chart isn't
- * on this Page. `eager` draws each chart at once rather than near the
+ * on this Page. `sourcesAnswer$` says what the Page knows about its sources
+ * document (page-source-store.mjs `sourcesAnswer$`), so a chart waits for a
+ * source the store hasn't read yet rather than drawing without it. `eager` draws each chart at once rather than near the
  * viewport. `heights` (view-heights.mjs) remembers each chart's drawn height
  * for the next render's reserve; without it every embed reserves the
- * default. An editor without this config draws the node's own inert figure,
- * as a card does.
+ * default. With views and sources, a connected embed warms the chart path
+ * (`chartWarmup`). An editor without this config draws
+ * the node's own inert figure, as a card does.
  */
 export function wordgardViews({
   views = null,
   sources = null,
+  sourcesAnswer$ = null,
   eager = false,
   heights = null,
 } = {}) {
+  const warmup = warmupFor({ views, sources });
   return [
     Decoration.Tag.shape(
       PagesView,
@@ -263,8 +363,10 @@ export function wordgardViews({
           viewId: readViewNode(tag.param)?.view_id ?? "",
           views,
           sources,
+          sourcesAnswer$,
           eager,
           heights,
+          warmup,
         }),
       { atom: true },
     ),
