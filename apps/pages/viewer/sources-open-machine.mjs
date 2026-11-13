@@ -45,9 +45,14 @@
  * - clearTimer: disarm the retry timer.
  * - install: adopt the handle lookup `attempt` found.
  * - uninstall: drop the installed handle; readers see no document.
- * - forget: remove the synced bytes of every document this replica looked
- *   up from its storage. Only a retirement forgets: the copy holds nothing of
- *   the reader's, so there is nothing to recover. A closed replica keeps them.
+ * - forget: remove the synced bytes of every document this session looked
+ *   up from the replica's storage. Only a retirement forgets: the copy holds
+ *   nothing of the reader's, so there is nothing to recover. It is best
+ *   effort, and the interpreter waits for it a bounded time so retirement
+ *   always finishes. A closed replica, a tab that closes mid-retire, a
+ *   removal that times out, another tab's replica, and a revoked Page
+ *   reopened before any discovery keep their copy, like the Page's other
+ *   synced bytes.
  *
  * No effect writes the document. It has no local change to queue, retry or
  * resend.

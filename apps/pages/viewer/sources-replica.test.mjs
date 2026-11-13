@@ -18,7 +18,12 @@ import { BUILD_FEATURES } from "../model/schema-features.mjs";
 import { readableFormats } from "../model/document-types.mjs";
 import { setSources, sourcesGenesis } from "../model/sources-doc.mjs";
 import { retryDelay } from "./sources-open-machine.mjs";
-import { SOURCES_LOOKUP_TIMEOUT_MS, SourcesReplica, UNAVAILABLE } from "./sources-replica.mjs";
+import {
+  SOURCES_FORGET_TIMEOUT_MS,
+  SOURCES_LOOKUP_TIMEOUT_MS,
+  SourcesReplica,
+  UNAVAILABLE,
+} from "./sources-replica.mjs";
 import { IdbByteStore } from "../sync/idb-byte-store.mjs";
 import "fake-indexeddb/auto";
 
@@ -393,4 +398,39 @@ test("over a real host, a document it doesn't serve reads as an older host's ans
   assert.deepEqual(sources.state$.snapshot(), { name: "unserved", id: missing });
   assert.equal(sources.doc, undefined);
   sources.close();
+});
+
+test("retire() resolves at the bound when a removal never settles, and its late result changes nothing", async () => {
+  const scheduler = new VirtualTimeScheduler();
+  const repo = heldFind();
+  let settleLate;
+  const sources = new SourcesReplica({
+    find: repo.find,
+    forget: () => new Promise((resolve) => (settleLate = resolve)),
+    scheduler,
+  });
+  const advance = (ms) => {
+    const target = scheduler.frame + ms;
+    scheduler.maxFrames = target;
+    scheduler.flush();
+    scheduler.frame = target;
+    scheduler.maxFrames = Infinity;
+  };
+  sources.discovered(named());
+  await tick();
+  repo.calls[0].resolve(handleOf(sourcesDoc()));
+  await tick();
+  let done = false;
+  sources.retire().then(() => (done = true));
+  await tick();
+  advance(SOURCES_FORGET_TIMEOUT_MS - 1);
+  await tick();
+  assert.equal(done, false, "it waits for the removal up to the bound");
+  advance(1);
+  await tick();
+  assert.equal(done, true, "the bound releases it");
+  settleLate();
+  await tick();
+  assert.deepEqual(sources.state$.snapshot(), { name: "retired" });
+  assert.equal(sources.doc, undefined);
 });
