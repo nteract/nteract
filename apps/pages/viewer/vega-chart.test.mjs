@@ -1001,7 +1001,7 @@ test("an expression that throws while the chart runs shows an error, not a drawn
 test("a draw that outlasts the timer ends in the error state, terminates its Worker and isn't retried", () =>
   withWindow((window, { observers }) =>
     countWorkers(async (workers) => {
-      const restore = setChartWorker(() => new InProcessWorker(), { timeoutMs: 60 });
+      let restore = setChartWorker(() => new InProcessWorker(), { timeoutMs: 60 });
       try {
         const { element, resize } = container(window, 600);
         workers.hang = () => true;
@@ -1024,7 +1024,10 @@ test("a draw that outlasts the timer ends in the error state, terminates its Wor
         assert.equal(workers.draws, 1);
         assert.equal(workers.created, 1);
         chart.destroy();
-        // A new revision mounts the chart again, and it draws.
+        // A new revision mounts the chart again, and it draws, under the
+        // normal timer: a real draw in this process can outlast 60 ms.
+        restore();
+        restore = setChartWorker(() => new InProcessWorker());
         const { element: next } = container(window, 600);
         const again = mount(next, { spec: stacked, datasets: { calls } });
         assert.equal(await drawn(next), "rendered");
