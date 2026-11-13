@@ -34,6 +34,16 @@ export function isTransientFailure(error) {
 }
 
 /**
+ * Whether a request went unanswered: a transient failure (isTransientFailure)
+ * or this module's own deadline (REQUEST_TIMEOUT). Neither says anything
+ * about the session or the Page, so a check that runs on its own schedule
+ * asks again instead of reporting it. A caller's own abort is not one.
+ */
+export function isUnansweredFailure(error) {
+  return isTransientFailure(error) || error?.code === "REQUEST_TIMEOUT";
+}
+
+/**
  * How long a failed response asks the caller to wait, in ms, or undefined:
  * the body's `retry_after_ms` when it is a positive integer, else the
  * Retry-After header as whole seconds or an HTTP date still in the future.

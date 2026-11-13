@@ -178,6 +178,7 @@ export function insertedAssets(operations, pageId) {
   return assets;
 }
 const PASSAGE_OPS = new Set(["replace_match", "format_match", "set_node"]);
+const MARKDOWN_OPS = new Set(["replace_block_markdown", "insert_markdown"]);
 // `trace` records where each operation landed, for agent presence. It never
 // enters the result, so stored receipts and retries are unchanged.
 function applyEdit(doc, op, trace, context) {
@@ -189,7 +190,7 @@ function applyEdit(doc, op, trace, context) {
   if (op.op === "insert_markdown") {
     const value = block(crypto.randomUUID(), positionForInsertion(doc, op.after_block_id));
     doc.blocks[value.id] = value;
-    setRichMarkdown(doc, value.id, String(op.markdown ?? ""));
+    setRichMarkdown(doc, value.id, op.markdown);
     trace?.push({ type: "block", block_id: value.id });
     return;
   }
@@ -267,7 +268,7 @@ function applyEdit(doc, op, trace, context) {
     // A dataframe's read-back line, left unchanged, keeps the node. Runs
     // after the unknown-node refusal: with no dataframe in the block it
     // falls through to a plain rewrite.
-    setRichMarkdownKeepingNodes(doc, id, String(op.markdown ?? ""));
+    setRichMarkdownKeepingNodes(doc, id, op.markdown);
     trace?.push({ type: "block", block_id: id });
   } else if (op.op === "delete_block") {
     delete doc.blocks[id];
@@ -329,6 +330,13 @@ function applyOperation(doc, { operation, arguments: args = {}, trace }) {
   if (!Array.isArray(args.operations) || args.operations.length > 100)
     throw Error("Provide up to 100 operations");
   const operations = args.operations.map((op) => ({ ...op, op: op.op ?? op.type }));
+  // The edit_page schema requires only `op`, so a Markdown operation can leave
+  // `markdown` out. Read as an empty string it would erase the block
+  // replace_block_markdown names. An explicit empty string is a stated
+  // rewrite and is written. Checked before any operation of the batch runs.
+  for (const op of operations)
+    if (MARKDOWN_OPS.has(op.op) && typeof op.markdown !== "string")
+      throw Error(`${op.op} requires a markdown string`);
   const imageTargets = new Set();
   for (const op of operations) {
     if (op.op !== "set_image") continue;

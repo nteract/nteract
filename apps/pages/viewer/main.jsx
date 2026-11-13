@@ -895,12 +895,9 @@ function App() {
           }
         }
       },
-      onError: (error, { outage }) => {
+      onError: (error, { notice }) => {
         if (!alive) return;
-        const banner = sessionCheckBanner(error, {
-          outage,
-          signedIn: !!authentication.current?.identity,
-        });
+        const banner = sessionCheckBanner(error, { notice });
         if (banner !== undefined) setSessionNotice({ message: banner, signIn: false });
         setAccount((value) => (value === undefined ? null : value));
       },
