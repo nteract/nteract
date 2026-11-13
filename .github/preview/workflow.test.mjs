@@ -11,7 +11,7 @@ const helperSha = "7797fcba934c467f966bc91856e8c6ce817eb8e8";
 test("the caller skips unsupported fork previews without changing deployment authority", () => {
   const caller = readFileSync(new URL("../workflows/preview.yml", import.meta.url), "utf8");
   assert.match(caller, /^    if: github\.event\.pull_request\.head\.repo\.full_name == github\.repository$/m);
-  assert.match(caller, /^    uses: nteract\/nteract\/\.github\/workflows\/preview-reusable.yml@fcdfb358876ec0a690c865dce49ef4adc7efeb33$/m);
+  assert.match(caller, /^    uses: nteract\/nteract\/\.github\/workflows\/preview-reusable.yml@4fb475a139a78a7fe78ecfe6b5f87b7035ca77f3$/m);
   assert.doesNotMatch(caller, /pull_request_target:|secrets: inherit/);
 });
 // This workflow intentionally uses plain, one-line job names. Fail on layout
