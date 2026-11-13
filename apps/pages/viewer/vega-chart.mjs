@@ -124,7 +124,6 @@ export function pageTheme(element) {
     text: token("--foreground", dark ? "#f0efec" : "#0b0b0b"),
     muted: token("--muted-foreground", dark ? "#c3c2b7" : "#52514e"),
     line: token("--border", dark ? "#3a3a38" : "#e2e1dc"),
-    font: style?.fontFamily || "system-ui, sans-serif",
   };
 }
 

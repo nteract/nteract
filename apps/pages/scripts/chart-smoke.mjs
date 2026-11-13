@@ -78,6 +78,9 @@ await workerBuild("scripts/fixtures/chart-worker-escape-bare.mjs", "open/escape-
 // under the chart Worker's CSP. Its page builds Arrow IPC with code the
 // viewer CSP refuses, so the page is served under /open/.
 await workerBuild("scripts/fixtures/chart-worker-recorder.mjs", "recorder-worker.js");
+// The real chart Worker with a listener that measures text with Vega's own
+// metrics, for the measured-against-drawn check.
+await workerBuild("scripts/fixtures/chart-worker-metrics.mjs", "metrics-worker.js");
 await build({
   entryPoints: { fixture: path.join(app, "scripts/fixtures/chart-recorder-fixture.mjs") },
   bundle: true,
@@ -180,6 +183,35 @@ await build({
   logLevel: "error",
 });
 await build({
+  entryPoints: { fixture: path.join(app, "scripts/fixtures/chart-metrics-fixture.mjs") },
+  bundle: true,
+  format: "esm",
+  platform: "browser",
+  target: "es2022",
+  minify: true,
+  splitting: true,
+  outdir: path.join(site, "metrics"),
+  chunkNames: "chunks/[hash]",
+  define: { "process.env.NODE_ENV": '"production"', ...workerDefine },
+  logLevel: "error",
+});
+await writeFile(
+  path.join(site, "metrics/index.html"),
+  `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Chart text metrics</title>
+    <link rel="stylesheet" href="/metrics/fixture.css" />
+  </head>
+  <body>
+    <main id="charts" style="display: grid; gap: 8px; padding: 8px"></main>
+    <script type="module" src="/metrics/fixture.js"></script>
+  </body>
+</html>
+`,
+);
+await build({
   entryPoints: { fixture: path.join(app, "scripts/fixtures/chart-escape-fixture.mjs") },
   bundle: true,
   format: "esm",
@@ -275,6 +307,7 @@ const WORKER_SCRIPTS = new Set([
   "/escape-worker.js",
   "/escape-bare-worker.js",
   "/recorder-worker.js",
+  "/metrics-worker.js",
 ]);
 // Requests from an escape Worker: none may arrive.
 report.escapeRequests = [];
@@ -637,6 +670,81 @@ async function globalsCheck(engine) {
   }
 }
 
+/** Vega's default label limits, in px: an axis label or legend label is
+ * truncated with an ellipsis to fit, by the width the Worker measures. */
+const LABEL_LIMITS = { "axis-label": 180, "legend-label": 160 };
+
+/**
+ * In `engine`, check that the chart Worker measures text as the page draws
+ * it: for a long title, a crowded band axis of long labels, a continuous
+ * axis Vega thins and a legend that truncates, at a wide and a phone width, in light and dark, every text's
+ * width by the Worker's own text metrics is within 1 px of its drawn
+ * width. Vega lays out, truncates and thins labels by the measured width, so
+ * with the widths equal, truncated labels fit their limit and the labels
+ * Vega keeps don't overlap. Axis and legend text lies inside the SVG.
+ */
+async function metricsCheck(engine) {
+  const instance =
+    engine === "chromium" ? browser : await ENGINES[engine].launch({ headless: true });
+  const metricsContext = await instance.newContext({ viewport: { width: 1000, height: 900 } });
+  const metrics = await metricsContext.newPage();
+  try {
+    await metrics.goto(`${origin}/metrics/`, { waitUntil: "load" });
+    await expect(metrics.locator("body[data-fixture=ready]")).toBeAttached({ timeout: 60_000 });
+    const charts = await metrics.evaluate(() => window.chartMetrics);
+    assert.equal(charts.length, 16, `${engine}: ${charts.length} charts measured`);
+    let worst = 0;
+    let count = 0;
+    for (const chart of charts) {
+      const label = `${engine} ${chart.name} at ${chart.width}px${chart.dark ? ", dark" : ""}`;
+      assert.equal(chart.status, "rendered", label);
+      assert.ok(chart.texts.length >= 3, `${label}: ${chart.texts.length} texts`);
+      for (const text of chart.texts) {
+        const off = Math.abs(text.measured - text.drawn);
+        worst = Math.max(worst, off);
+        count++;
+        assert.ok(
+          off <= 1,
+          `${label}: "${text.text}" measures ${text.measured} in the Worker, drawn ${text.drawn}`,
+        );
+        if (text.role in LABEL_LIMITS)
+          assert.ok(
+            text.drawn <= LABEL_LIMITS[text.role] + 1,
+            `${label}: "${text.text}" is ${text.drawn} px past its ${LABEL_LIMITS[text.role]} px limit`,
+          );
+        if (text.role !== "title-text")
+          assert.ok(
+            text.box.left >= chart.svg.left - 1 &&
+              text.box.right <= chart.svg.right + 1 &&
+              text.box.top >= chart.svg.top - 1 &&
+              text.box.bottom <= chart.svg.bottom + 1,
+            `${label}: "${text.text}" lies outside the SVG`,
+          );
+      }
+      // Vega thins a continuous axis's labels by their measured width; a
+      // band axis's labels it only truncates.
+      if (chart.name !== "thinned") continue;
+      const labels = chart.texts.filter((text) => text.role === "axis-label");
+      assert.ok(labels.length >= 3, `${label}: ${labels.length} labels kept`);
+      for (const [i, a] of labels.entries())
+        for (const b of labels.slice(i + 1)) {
+          const across = Math.min(a.box.right, b.box.right) - Math.max(a.box.left, b.box.left);
+          const down = Math.min(a.box.bottom, b.box.bottom) - Math.max(a.box.top, b.box.top);
+          assert.ok(across <= 1 || down <= 1, `${label}: "${a.text}" overlaps "${b.text}"`);
+        }
+    }
+    report.metrics ??= {};
+    report.metrics[engine] = { worst, count };
+    complete(
+      `${engine}: the chart Worker measures text as the page draws it: ${count} texts, ` +
+        `light and dark, wide and phone width, within ${worst.toFixed(2)} px`,
+    );
+  } finally {
+    await metricsContext.close();
+    if (instance !== browser) await instance.close();
+  }
+}
+
 /**
  * Time the largest chart the budgets admit through the real Worker in
  * `engine`: each must draw well inside the timer.
@@ -759,6 +867,7 @@ try {
   for (const engine of engines) await escapeCheck(engine);
   for (const engine of engines) await hostileCheck(engine);
   for (const engine of engines) await freezeCheck(engine);
+  for (const engine of engines) await metricsCheck(engine);
   for (const engine of engines) await largeCheck(engine);
 } catch (error) {
   report.failure = error.stack || error.message;

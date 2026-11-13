@@ -47,7 +47,7 @@ const { checkChartSpec, CHART_MAX_ROWS, CHART_MAX_CELLS, CHART_EXPRESSION_FUNCTI
 const vl = await import("vega-lite");
 const { pathParse } = await import("vega-scenegraph");
 
-const theme = { dark: false, text: "#111", muted: "#555", line: "#ddd", font: "sans-serif" };
+const theme = { dark: false, text: "#111", muted: "#555", line: "#ddd" };
 const calls = [
   { tool: "read_page", client: "Claude", calls: 300 },
   { tool: "read_page", client: "Codex", calls: 120 },

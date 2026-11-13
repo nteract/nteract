@@ -113,12 +113,27 @@ const CATEGORY = {
   dark: ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"],
 };
 
+/**
+ * The font every chart draws its text in. Vega lays text out by widths this
+ * Worker measures on an OffscreenCanvas, and the page then draws the text as
+ * SVG, so both must resolve the same installed face. A Worker can't see the
+ * page's fonts and loads none, and a system alias resolves differently in
+ * one: Firefox on macOS measures `system-ui` and `-apple-system` 12 percent
+ * narrower in a Worker than it draws them. Every face named here resolves
+ * the same on both sides, within 0.2 px, in Chromium, Firefox and WebKit on
+ * macOS and Linux (Linux reaches Liberation Sans, which has Arial's
+ * metrics). A family added here needs the smoke's measured-against-drawn
+ * check to pass in every engine first. Vega writes it on each text as its
+ * font-family attribute, so chart text doesn't inherit the Page's family.
+ */
+export const CHART_FONT = '"Helvetica Neue", Helvetica, Arial, sans-serif';
+
 /** Vega-Lite config from a theme. A spec's own config wins over it. */
 export function themeConfig(theme) {
   const category = theme.dark ? CATEGORY.dark : CATEGORY.light;
   return {
     background: null,
-    font: theme.font,
+    font: CHART_FONT,
     view: { stroke: null },
     axis: {
       labelColor: theme.muted,
@@ -338,9 +353,9 @@ function reportingLogger(onError) {
 }
 
 /** Measure text with an OffscreenCanvas where the Worker has one, as Vega
- * measures with a canvas in a page; without one, Vega estimates. A font the
- * page loaded from CSS isn't in the Worker, so its widths come from the
- * fallback font. */
+ * measures with a canvas in a page; without one, Vega estimates. The Worker
+ * sees only installed fonts, so the theme names faces that resolve the same
+ * here as in the page (CHART_FONT). */
 export function installTextMetrics(scope = globalThis) {
   if (typeof scope.OffscreenCanvas !== "function") return false;
   const context = new scope.OffscreenCanvas(1, 1).getContext("2d");
