@@ -23,7 +23,7 @@ HEAD and stops after installation and patching, before compilation. It never
 falls back to `npm install`. Run `npm run build:upstream`, then `npm run build`,
 in the offline phase. The flag does not isolate networking itself; the host must
 enforce a private network namespace. `test/setup.test.mjs` covers both modes and
-`test/patch-wordgard.test.mjs` the editor patch.
+`test/patch-wordgard.test.mjs` the editor patches.
 
 Pages syncs with plain Automerge sync messages through its own
 `SedimentreeBackend`, `AutomergeSyncBackend` (`sync/backend.mjs`).
