@@ -57,12 +57,7 @@ pub(crate) fn thrift_footer(
     physical: parquet::format::Type,
     statistics: parquet::format::Statistics,
 ) -> (Vec<u8>, u64) {
-    use parquet::format::{
-        ColumnChunk, ColumnMetaData, CompressionCodec, Encoding, FieldRepetitionType, FileMetaData,
-        RowGroup, SchemaElement,
-    };
-    use parquet::thrift::{TCompactOutputProtocol, TSerializable};
-
+    use parquet::format::{FieldRepetitionType, SchemaElement};
     let root = SchemaElement::new(
         None,
         None,
@@ -87,10 +82,62 @@ pub(crate) fn thrift_footer(
         None,
         None,
     );
+    footer_with_schema(vec![root, leaf], &["t"], physical, statistics)
+}
+
+/// A one-row footer whose only column is `g.x`, a required INT32 inside the
+/// group `g`, which has repetition `group_repetition`. Parquet requires one
+/// on every non-root element; a footer without it is malformed.
+pub(crate) fn group_footer(
+    group_repetition: Option<parquet::format::FieldRepetitionType>,
+) -> (Vec<u8>, u64) {
+    use parquet::format::{FieldRepetitionType, SchemaElement, Statistics, Type};
+    let element = |physical, repetition, name: &str, children| {
+        SchemaElement::new(
+            physical,
+            None,
+            repetition,
+            name.to_string(),
+            children,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+    };
+    let schema = vec![
+        element(None, None, "schema", Some(1)),
+        element(None, group_repetition, "g", Some(1)),
+        element(
+            Some(Type::INT32),
+            Some(FieldRepetitionType::REQUIRED),
+            "x",
+            None,
+        ),
+    ];
+    let statistics = Statistics::new(None, None, 0, None, None, None, None, None);
+    footer_with_schema(schema, &["g", "x"], Type::INT32, statistics)
+}
+
+/// Serialize a one-row-group footer over `schema`, with one column chunk at
+/// `path` of type `physical` carrying `statistics`. Returns the tail and a
+/// file length that fits the chunk.
+fn footer_with_schema(
+    schema: Vec<parquet::format::SchemaElement>,
+    path: &[&str],
+    physical: parquet::format::Type,
+    statistics: parquet::format::Statistics,
+) -> (Vec<u8>, u64) {
+    use parquet::format::{
+        ColumnChunk, ColumnMetaData, CompressionCodec, Encoding, FileMetaData, RowGroup,
+    };
+    use parquet::thrift::{TCompactOutputProtocol, TSerializable};
+
     let meta = ColumnMetaData::new(
         physical,
         vec![Encoding::PLAIN],
-        vec!["t".to_string()],
+        path.iter().map(|segment| segment.to_string()).collect(),
         CompressionCodec::UNCOMPRESSED,
         1,
         1,
@@ -107,17 +154,7 @@ pub(crate) fn thrift_footer(
     );
     let chunk = ColumnChunk::new(None, 4, meta, None, None, None, None, None, None);
     let group = RowGroup::new(vec![chunk], 1, 1, None, None, None, None);
-    let metadata = FileMetaData::new(
-        1,
-        vec![root, leaf],
-        1,
-        vec![group],
-        None,
-        None,
-        None,
-        None,
-        None,
-    );
+    let metadata = FileMetaData::new(1, schema, 1, vec![group], None, None, None, None, None);
     let mut tail = Vec::new();
     {
         let mut protocol = TCompactOutputProtocol::new(&mut tail);

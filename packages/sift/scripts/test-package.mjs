@@ -199,13 +199,23 @@ try {
   } finally {
     wasm.free(handle);
   }
-  // `@nteract/sift/wasm` is the same glue, reached through the export map. A
-  // footer summary reads only the file's tail.
-  const bindings = await import(pathToFileURL(resolve(packed, manifest.exports["./wasm"].import)));
-  bindings.initSync({ module: binary });
-  const parquet = bindings.write_parquet_ipc(fixture);
-  const tail = parquet.subarray(-(bindings.parquet_footer_length(parquet) + 8));
-  const summary = bindings.parquet_footer_summary(tail, parquet.length);
+  // A host with no DOM, in a fresh process so initSync starts cold: Node
+  // resolves both specifiers through the export map, as a Worker bundler does.
+  await writeFile(join(scratch, "fixture.parquet"), wasm.write_parquet_ipc(fixture));
+  await writeFile(
+    join(scratch, "worker-host.mjs"),
+    `
+    import { readFileSync } from "node:fs";
+    import { fileURLToPath } from "node:url";
+    import { initSync, parquet_footer_length, parquet_footer_summary } from "@nteract/sift/wasm";
+    const binary = readFileSync(fileURLToPath(import.meta.resolve("@nteract/sift/sift.wasm")));
+    initSync({ module: new WebAssembly.Module(binary) });
+    const file = readFileSync("fixture.parquet");
+    const tail = file.subarray(-(parquet_footer_length(file) + 8));
+    console.log(JSON.stringify(parquet_footer_summary(tail, file.length)));
+  `,
+  );
+  const summary = JSON.parse(run(process.execPath, ["worker-host.mjs"]));
   assert.equal(summary.num_rows, 3);
   assert.deepEqual(
     [

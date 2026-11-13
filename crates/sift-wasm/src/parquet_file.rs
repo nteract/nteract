@@ -484,13 +484,12 @@ pub(crate) fn footer_summary(tail: &[u8], file_len: u64) -> Result<ParquetFooter
     let (arrow, raw) = decode_footer(tail, file_len)?;
     let metadata = arrow.metadata();
     let schema = arrow.schema();
+    // A declared total the row groups disagree with would put row counts
+    // beside statistics that describe other rows.
+    let rows = parquet_footer_rows(metadata)?;
     let stats = file_column_stats(metadata, schema, &raw);
     let names: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
-    let column_hints = parse_parquet_column_hints(
-        &names,
-        metadata.file_metadata().num_rows().max(0) as u64,
-        &file_key_value_metadata(metadata),
-    );
+    let column_hints = parse_parquet_column_hints(&names, rows, &file_key_value_metadata(metadata));
     let columns = schema
         .fields()
         .iter()
@@ -503,7 +502,7 @@ pub(crate) fn footer_summary(tail: &[u8], file_len: u64) -> Result<ParquetFooter
         })
         .collect();
     Ok(ParquetFooterSummary {
-        num_rows: stats.num_rows,
+        num_rows: rows as f64,
         num_row_groups: stats.num_row_groups,
         created_by: metadata.file_metadata().created_by().map(str::to_owned),
         columns,
@@ -1012,7 +1011,9 @@ mod tests {
     use super::*;
     use crate::column_stats::StatValue;
     use crate::store::{free, get_cell_string, is_null, num_rows};
-    use crate::test_footers::{int96_footer, parquet_with_footer_total, thrift_footer};
+    use crate::test_footers::{
+        group_footer, int96_footer, parquet_with_footer_total, thrift_footer,
+    };
     use arrow::array::{ArrayRef, Int64Array, StringArray};
     use arrow::record_batch::RecordBatch;
     use std::sync::Arc;
@@ -1499,6 +1500,32 @@ mod tests {
         // A footer longer than the file it claims to end.
         assert!(footer_summary(tail, tail.len() as u64 - 1).is_err());
         assert!(footer_summary(b"not a parquet file", 18).is_err());
+    }
+
+    #[test]
+    fn footer_summary_refuses_a_declared_row_count_its_row_groups_disagree_with() {
+        let batch = fixture_batch(30);
+        for declared in [0, 29, -1] {
+            let file = parquet_with_footer_total(&batch, 10, declared);
+            let refused = footer_summary(exact_tail(&file), file.len() as u64).unwrap_err();
+            assert!(refused.contains("row count"), "{declared}: {refused}");
+        }
+        let file = parquet_with_footer_total(&batch, 10, 30);
+        let summary = footer_summary(exact_tail(&file), file.len() as u64).unwrap();
+        assert_eq!(summary.num_rows, 30.0);
+    }
+
+    #[test]
+    fn a_schema_group_without_repetition_is_an_error_not_an_abort() {
+        let (tail, file_len) = group_footer(None);
+        let summary = footer_summary(&tail, file_len).unwrap_err();
+        assert!(summary.contains("repetition"), "{summary}");
+        let open = open_parquet_file(&tail, file_len, limits()).unwrap_err();
+        assert!(open.contains("repetition"), "{open}");
+
+        let (tail, file_len) = group_footer(Some(parquet::format::FieldRepetitionType::REQUIRED));
+        let summary = footer_summary(&tail, file_len).unwrap();
+        assert_eq!(summary.columns[0].name, "g");
     }
 
     fn write_parquet(
