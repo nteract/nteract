@@ -492,9 +492,13 @@ daily trigger only.
 The existing `pages.usage.v1` emission path also queues an allowlisted projection:
 UTC day and timestamp, principal id, driver, surface, action, Page id, outcome.
 It stores no titles, content, emails, display names, client/model labels or
-session ids. Drivers are classified as `Browser`, `API`, `Kilo`, `Codex`,
-`Claude Code`, `Claude Desktop`, `ChatGPT`, `Cursor`, `Gemini`, or `other`.
-Unknown labels, including email-shaped drivers, retain the event as `other`.
+session ids. Drivers are classified as `Browser`, `API`, `MCP`, `Kilo`, `Codex`,
+`Claude`, `Claude Code`, `Claude Desktop`, `ChatGPT`, `Cursor`, `Gemini`, or
+`other`. `Claude` is a claude.ai connector and `MCP` an OAuth client Pages can't
+name; both are labels the host assigns to a grant whose client sends none.
+Unknown labels, including email-shaped drivers and a client named by its host,
+retain the event as `other`. A row keeps the class it was written with, so rows
+older than a label's place on this list stay `other`.
 Anonymous/service events and principals containing emails after percent-decoding
 are dropped. Existing console telemetry is unchanged and has its separate 30-day
 retention (DEPLOYMENT.md, Telemetry).
