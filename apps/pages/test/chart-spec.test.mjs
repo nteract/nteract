@@ -405,6 +405,43 @@ test("a CSS url() in any string is refused, escaped or not", () => {
   assert.equal(loadsResource("rgb(1, 2, 3)"), false);
 });
 
+test("a symbol shape is one of Vega's own, never a custom SVG path", () => {
+  const point = { data: { name: "calls" }, mark: "point" };
+  const shapeField = { field: "client", type: "nominal" };
+  const allowed = [
+    { ...point, mark: { type: "point", shape: "triangle-up" } },
+    { ...point, encoding: { shape: { value: "diamond" } } },
+    { ...point, encoding: { shape: { ...shapeField, scale: { range: ["circle", "wedge"] } } } },
+    { ...point, encoding: { shape: { ...shapeField, scale: { range: "symbol" } } } },
+    { ...point, encoding: { shape: { ...shapeField, legend: { symbolType: "square" } } } },
+    // A field named "shape" is a field, not a shape.
+    { ...point, encoding: { color: { field: "shape", type: "nominal" } } },
+    { ...point, config: { point: { shape: "cross" }, range: { symbol: ["stroke", "arrow"] } } },
+  ];
+  for (const spec of allowed) assert.equal(checkChartSpec(spec).ok, true, JSON.stringify(spec));
+  const custom = "M-1,-1H1V1H-1Z";
+  const refused = [
+    { ...point, mark: { type: "point", shape: custom } },
+    { ...point, encoding: { shape: { value: custom } } },
+    {
+      ...point,
+      encoding: { shape: { ...shapeField, condition: { test: "datum.calls > 1", value: custom } } },
+    },
+    { ...point, encoding: { shape: { ...shapeField, scale: { range: ["circle", custom] } } } },
+    { ...point, encoding: { shape: { ...shapeField, legend: { symbolType: custom } } } },
+    { ...point, config: { mark: { shape: custom } } },
+    { ...point, config: { range: { symbol: ["circle", custom] } } },
+    { ...point, config: { legend: { symbolType: custom } } },
+    { layer: [{ ...point, mark: { type: "point", shape: custom } }] },
+  ];
+  for (const spec of refused)
+    assert.match(
+      refusal(spec),
+      /A chart's symbols are Vega's own shapes: circle, square, cross, diamond, triangle-up, triangle-down, triangle-right, triangle-left, triangle, arrow, wedge or stroke; it can't draw a custom SVG path/,
+      JSON.stringify(spec),
+    );
+});
+
 test("a cursor is a CSS keyword, never a URL or an expression", () => {
   assert.equal(checkChartSpec({ ...stacked, mark: { type: "bar", cursor: "pointer" } }).ok, true);
   assert.match(

@@ -453,6 +453,25 @@ const DATA_NUMBER_KEYS = new Set([
 ]);
 const MAX_LAYOUT_NUMBER = 1e6;
 
+/** Vega's own symbol shapes. A chart's symbols draw only these: Vega parses
+ * a custom SVG path shape into a module-wide cache that nothing clears. */
+export const CHART_SYMBOL_SHAPES = Object.freeze(
+  new Set([
+    "circle",
+    "square",
+    "cross",
+    "diamond",
+    "triangle-up",
+    "triangle-down",
+    "triangle-right",
+    "triangle-left",
+    "triangle",
+    "arrow",
+    "wedge",
+    "stroke",
+  ]),
+);
+
 /** CSS cursor keywords. A cursor is never a URL or an expression. */
 export const CHART_CURSORS = Object.freeze(
   new Set([
@@ -960,9 +979,27 @@ function sizeAllowed(value) {
   return within(value, 0, MAX_SIZE);
 }
 
+/** Whether the string at `path` names a symbol shape: a mark's or config's
+ * `shape`, a legend's `symbolType`, a `shape` channel's value (directly or
+ * in a condition), a `shape` channel scale's range, or `config.range.symbol`. */
+function isShapeValue(path) {
+  const keys = path.filter((part) => typeof part === "string");
+  const [last, second, third] = [keys.at(-1), keys.at(-2), keys.at(-3)];
+  if (last === "shape" || last === "symbolType") return true;
+  if (last === "value") return second === "shape" || (second === "condition" && third === "shape");
+  if (last === "range" && second === "scale" && third === "shape") return true;
+  return last === "symbol" && second === "range" && third === "config";
+}
+
+const SHAPE_SENTENCE = `A chart's symbols are Vega's own shapes: ${[...CHART_SYMBOL_SHAPES].slice(0, -1).join(", ")} or ${[...CHART_SYMBOL_SHAPES].at(-1)}; it can't draw a custom SVG path`;
+
 function walk(value, path, names) {
   if (isString(value)) {
     checkString(value, path);
+    // A scale's range may name Vega's own range of shapes.
+    const namedRange = path.at(-1) === "range" && value === "symbol";
+    if (isShapeValue(path) && !namedRange && !CHART_SYMBOL_SHAPES.has(value))
+      refuse(`${SHAPE_SENTENCE}${at(path)}.`);
     return;
   }
   if (typeof value === "number") {

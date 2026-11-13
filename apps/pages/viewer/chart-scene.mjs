@@ -10,6 +10,8 @@
 // cleaning (vega-chart.mjs cleanItem) still runs on every item it writes. No
 // DOM.
 
+import { CHART_SYMBOL_SHAPES } from "../shared/chart-spec.mjs";
+
 /** The mark types the page draws. A Worker's shape mark arrives as a path
  * mark (chart-dataflow.mjs plainScene); an image would load a URL. */
 export const SCENE_MARKS = Object.freeze(
@@ -25,37 +27,22 @@ export const SCENE_MAX_DEPTH = 32;
 const MAX_TEXT = 10_000;
 /** A line or area through 100,000 points is one path string of a few MB. */
 const MAX_PATH = 8_000_000;
-/** Most path commands one path or symbol shape may hold, weighted by
- * PATH_COMMAND_COST: a 100,000-vertex geoshape costs 100,000. */
+/** Most path commands one path may hold, weighted by PATH_COMMAND_COST: a
+ * 100,000-vertex geoshape costs 100,000. */
 export const SCENE_PATH_COMMANDS = 500_000;
 /** What one path command costs against the command budgets, from the
  * renderer benchmark (scripts/chart-path-bench.mjs) in its slowest engine:
  * a line, move or close about 0.1 to 0.45 µs each, a cubic or quadratic
- * curve about 0.8 µs, an arc about 2.2 µs in a path and 3.4 µs in a symbol
- * shape. Any other letter costs as an arc. */
+ * curve about 0.8 µs, an arc about 2.2 µs. */
 const PATH_COMMAND_COST = { m: 1, l: 1, h: 1, v: 1, t: 1, z: 1, c: 2, s: 2, q: 2, a: 8 };
-/** Numbers each command takes; more repeat it. */
+/** Parameters each command takes, as Vega's path parser counts them
+ * (vega-scenegraph path/parse.js); a multiple repeats the command. */
 const PATH_ARITY = { m: 2, l: 2, h: 1, v: 1, t: 2, z: 0, c: 6, s: 4, q: 4, a: 7 };
-/** Vega's own symbol names, which draw a fixed shape. */
-const SYMBOL_NAMES = new Set([
-  "circle",
-  "cross",
-  "diamond",
-  "square",
-  "arrow",
-  "wedge",
-  "triangle",
-  "triangle-up",
-  "triangle-down",
-  "triangle-right",
-  "triangle-left",
-  "stroke",
-]);
 const MAX_STOPS = 256;
 const MAX_DASH = 64;
 
 /** Cumulative budgets across a whole scene, every reference counted: path
- * and symbol-shape characters (two lines or areas through the row budget's
+ * characters (two lines or areas through the row budget's
  * points), label characters, other strings (names, roles, fonts and aria
  * descriptions, about 100 characters for each of SCENE_MAX_ITEMS), gradient
  * stops, weighted path commands (SCENE_PATH_COMMANDS, twice over), tooltip payload (strings and keys by length, at least 1, any other
@@ -237,58 +224,78 @@ function spendTooltip(budget, value) {
 }
 
 const isDigit = (code) => code >= 48 && code <= 57;
+const isSpace = (code) => code === 32 || (code >= 9 && code <= 13);
+/** The command `path` holds at `index`, lowercase, or undefined. */
+const commandAt = (path, index) => {
+  const code = path.charCodeAt(index);
+  if (code >= 128) return undefined;
+  const type = String.fromCharCode(code | 32);
+  return Object.hasOwn(PATH_ARITY, type) ? type : undefined;
+};
+const skipSpace = (path, index) => {
+  while (isSpace(path.charCodeAt(index))) index++;
+  return index;
+};
+/** Where a number starting at `index` ends, or -1: Vega's
+ * `[+-]?(\d*\.\d+|\d+\.|\d+)([eE][+-]?\d+)?`. */
+function numberEnd(path, index) {
+  if (path.charCodeAt(index) === 43 || path.charCodeAt(index) === 45) index++;
+  let digits = 0;
+  while (isDigit(path.charCodeAt(index))) (index++, digits++);
+  if (path.charCodeAt(index) === 46) {
+    index++;
+    while (isDigit(path.charCodeAt(index))) (index++, digits++);
+  }
+  if (!digits) return -1;
+  if ((path.charCodeAt(index) | 32) === 101) {
+    let exponent = index + 1;
+    if (path.charCodeAt(exponent) === 43 || path.charCodeAt(exponent) === 45) exponent++;
+    if (isDigit(path.charCodeAt(exponent))) {
+      index = exponent;
+      while (isDigit(path.charCodeAt(index))) index++;
+    }
+  }
+  return index;
+}
 
 /**
- * What an SVG path string costs to draw: each command, implicit repeats
- * included (an `L` with six numbers draws three lines), times its
- * PATH_COMMAND_COST. One pass over characters the path budget has already
- * charged.
+ * What an SVG path string costs to draw, or null when it can't be read
+ * exactly as Vega's path parser and the browser read it. Each command
+ * counts once per full set of parameters (an `L` with six numbers draws
+ * three lines), times its PATH_COMMAND_COST. Parameters are read by
+ * position, as Vega reads them: an arc's large-arc and sweep flags are one
+ * character each, `0` or `1`, so `a1 1 0 011 1` is one arc. Separators are
+ * whitespace with at most one comma. A parameter count that isn't a
+ * positive multiple of the command's, a letter that isn't a command,
+ * anything before the first command, or anything after a `z`, is
+ * unreadable. One pass over characters the path budget has already charged.
  */
 export function pathCost(path) {
   let cost = 0;
-  let command = null;
-  let numbers = 0;
-  const close = () => {
-    if (command === null) return;
-    const arity = PATH_ARITY[command] ?? 7;
-    const repeats = arity ? Math.max(1, Math.ceil(numbers / arity)) : 1;
-    cost += repeats * (PATH_COMMAND_COST[command] ?? 8);
-  };
-  for (let index = 0; index < path.length; ) {
-    const code = path.charCodeAt(index);
-    const lower = code | 32;
-    // Any letter but an exponent's e starts a command.
-    if (lower >= 97 && lower <= 122 && lower !== 101) {
-      close();
-      command = String.fromCharCode(lower);
-      numbers = 0;
-      index++;
-      continue;
+  let index = skipSpace(path, 0);
+  while (index < path.length) {
+    const type = commandAt(path, index);
+    if (type === undefined) return null;
+    const arity = PATH_ARITY[type];
+    index = skipSpace(path, index + 1);
+    let count = 0;
+    while (index < path.length && commandAt(path, index) === undefined) {
+      if (!arity) return null;
+      const position = count % arity;
+      const flag = type === "a" && (position === 3 || position === 4);
+      const end = flag
+        ? path.charCodeAt(index) === 48 || path.charCodeAt(index) === 49
+          ? index + 1
+          : -1
+        : numberEnd(path, index);
+      if (end < 0) return null;
+      count++;
+      index = skipSpace(path, end);
+      if (path.charCodeAt(index) === 44) index = skipSpace(path, index + 1);
     }
-    // A number: sign, digits, one point, digits, exponent.
-    let end = index + (code === 43 || code === 45 ? 1 : 0);
-    let digits = 0;
-    while (isDigit(path.charCodeAt(end))) (end++, digits++);
-    if (path.charCodeAt(end) === 46) {
-      end++;
-      while (isDigit(path.charCodeAt(end))) (end++, digits++);
-    }
-    if (!digits) {
-      index++;
-      continue;
-    }
-    if ((path.charCodeAt(end) | 32) === 101) {
-      let exponent = end + 1;
-      if (path.charCodeAt(exponent) === 43 || path.charCodeAt(exponent) === 45) exponent++;
-      if (isDigit(path.charCodeAt(exponent))) {
-        end = exponent;
-        while (isDigit(path.charCodeAt(end))) end++;
-      }
-    }
-    numbers++;
-    index = end;
+    if (arity && (count === 0 || count % arity)) return null;
+    cost += (arity ? count / arity : 1) * PATH_COMMAND_COST[type];
   }
-  close();
   return cost;
 }
 
@@ -380,16 +387,20 @@ function copyFields(from, into, renamed, budget) {
       into.strokeDash = dash;
     }
   }
-  // A path, or a symbol's shape (a name or an SVG path string).
-  for (const key of ["path", "shape"]) {
-    const path = own(from, key) ? shortString(from[key], MAX_PATH) : undefined;
-    if (path === undefined) continue;
+  // A path, read as the browser will draw it.
+  const path = own(from, "path") ? shortString(from.path, MAX_PATH) : undefined;
+  if (path !== undefined) {
     spend(budget, "path", path.length);
-    const commands = key === "shape" && SYMBOL_NAMES.has(path) ? 1 : pathCost(path);
+    const commands = pathCost(path);
+    if (commands === null) throw new SceneRefusal(SCENE_MALFORMED);
     if (commands > SCENE_PATH_COMMANDS) throw new SceneRefusal(SCENE_TOO_LARGE);
     spend(budget, "pathCommands", commands);
-    into[key] = path;
+    into.path = path;
   }
+  // A symbol draws one of Vega's own shapes. Vega keeps every custom shape
+  // it parses in a module-wide cache that nothing clears, so any other
+  // string is left out and the symbol draws as Vega's default circle.
+  if (own(from, "shape") && CHART_SYMBOL_SHAPES.has(from.shape)) into.shape = from.shape;
   if (own(from, "text")) {
     const text = from.text;
     if (shortString(text) !== undefined) {

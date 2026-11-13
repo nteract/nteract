@@ -45,6 +45,7 @@ const { WORKER_DIDNT_START } = await import("./chart-pool.mjs");
 const { checkChartSpec, CHART_MAX_ROWS, CHART_MAX_CELLS, CHART_EXPRESSION_FUNCTIONS } =
   await import("../shared/chart-spec.mjs");
 const vl = await import("vega-lite");
+const { pathParse } = await import("vega-scenegraph");
 
 const theme = { dark: false, text: "#111", muted: "#555", line: "#ddd", font: "sans-serif" };
 const calls = [
@@ -2041,35 +2042,65 @@ function counted(value, reads, seen = new Map()) {
   return proxy;
 }
 
-test("paths and symbol shapes are charged by the commands they draw", () => {
-  assert.equal(pathCost("M1e2,3L4-5h6v7Z"), 5);
-  // Implicit repeats count: three lines, two moves, two arcs at 8 each.
-  assert.equal(pathCost("M0 0L1 1 2 2 3 3"), 4);
-  assert.equal(pathCost("M.1.1.1.1"), 2);
-  assert.equal(pathCost("M0,0a1 1 0 0 1 1 1 1 1 0 0 1 2 2"), 17);
-  assert.equal(pathCost("M0,0C1,1,2,2,3,3S4,4,5,5zzz"), 8);
+test("paths are charged by the commands they draw, read as Vega reads them", () => {
+  const COST = { m: 1, l: 1, h: 1, v: 1, t: 1, z: 1, c: 2, s: 2, q: 2, a: 8 };
+  const vegaCost = (path) =>
+    pathParse(path).reduce((sum, [command]) => sum + COST[command.toLowerCase()], 0);
+  // Implicit repeats, relative forms, packed arc flags and numbers that run
+  // together, each costed as Vega's own parser splits them.
+  for (const path of [
+    "M1e2,3L4-5h6v7Z",
+    "M0 0L1 1 2 2 3 3",
+    "m.1.1.1.1",
+    "M0,0a1 1 0 0 1 1 1 1 1 0 0 1 2 2",
+    "M0 0a1 1 0 011 1",
+    "M0 0a1 1 0 0,1 1 1",
+    "m0 0a1 1 0 11.5.5 2 2 0 00-1-1",
+    "M0 0A1 1 0 1 0 2 2a1,1,0,1,1,3,3",
+    "M0,0C1,1,2,2,3,3S4,4,5,5zzz",
+    "M0 0c1 1 2 2 3 3 4 4 5 5 6 6s1 1 2 2q1 1 2 2t1 1 2 2",
+    "M1.5.5L2.e3 1E-2Z",
+    "M 0 , 0 l 1 , 1",
+    "",
+  ])
+    assert.equal(pathCost(path), vegaCost(path), path);
+  // Packed flags: 80,000 arcs cost 640,001, over one path's budget.
+  const packed = `M0 0a${"1 1 0 011 1 ".repeat(80_000)}`;
+  assert.equal(pathCost(packed), 640_001);
+  // Anything Vega's parser or the browser's wouldn't read the same way.
+  for (const path of [
+    "M0 0a1 1 0 2 1 1 1",
+    "M0 0L1",
+    "M0 0x1 1",
+    "M1e",
+    "junkM0 0",
+    "M0 0z5",
+    "M0 0L1,,1",
+    "M0 0a1 1 0 0 1 1",
+  ])
+    assert.equal(pathCost(path), null, path);
   const fill = (start, unit, chars) =>
     start + unit.repeat(Math.floor((chars - start.length) / unit.length));
   const sceneOf = (marktype, key, value, count = 1) =>
     frameOf([{ marktype, items: Array.from({ length: count }, () => ({ [key]: value })) }]);
-  const refused = (scene) =>
+  const refused = (scene, message = SCENE_TOO_LARGE) =>
     assert.throws(
       () => pageScene(scene),
-      (error) => error.message === SCENE_TOO_LARGE,
+      (error) => error.message === message,
     );
   // Under the character budgets, each of these was seconds of drawing.
   refused(sceneOf("path", "path", fill("M0,0L", ".1.1", 8_000_000)));
   refused(sceneOf("path", "path", fill("M0,0", "z", 8_000_000)));
   refused(sceneOf("path", "path", fill("M0,0", "a1 1 0 0 1 1 1", 1_000_000)));
-  refused(sceneOf("symbol", "shape", fill("M0,0", "a1 1 0 0 1 1 1", 160), 100_000));
+  refused(sceneOf("path", "path", packed));
+  refused(sceneOf("path", "path", "M0 0a1 1 0 2 1 1 1"), SCENE_MALFORMED);
   // One path at the per-path budget fits; two exceed none; three exceed the total.
   const full = `M0,0L${"1,1 ".repeat(SCENE_PATH_COMMANDS - 1)}`;
   assert.equal(pathCost(full), SCENE_PATH_COMMANDS);
   pageScene(sceneOf("path", "path", full, 2));
   refused(sceneOf("path", "path", full, 3));
   refused(sceneOf("path", "path", `${full}L1,1`));
-  // A 100,000-vertex geoshape, and 100,000 points in a named or small
-  // custom shape, fit.
+  // A 100,000-vertex geoshape fits.
   const vertex = (i) => `L${(i % 800).toFixed(2)},${(i % 500).toFixed(2)}`;
   pageScene(
     sceneOf(
@@ -2078,8 +2109,19 @@ test("paths and symbol shapes are charged by the commands they draw", () => {
       `M0,0${Array.from({ length: 100_000 }, (_, i) => vertex(i)).join("")}Z`,
     ),
   );
-  pageScene(sceneOf("symbol", "shape", "circle", 100_000));
-  pageScene(sceneOf("symbol", "shape", "M-1,-1H1V1H-1Z", 100_000));
+});
+
+test("a symbol draws one of Vega's own shapes, never a custom path", () => {
+  const sceneOf = (shape, count = 1) =>
+    frameOf([{ marktype: "symbol", items: Array.from({ length: count }, () => ({ shape })) }]);
+  const drawn = pageScene(sceneOf("triangle-up", 100_000)).items[0].items[0].items;
+  assert.equal(drawn.length, 100_000);
+  assert.equal(drawn[0].shape, "triangle-up");
+  for (const shape of ["M-1,-1H1V1H-1Z", "M0 0a1 1 0 0 1 1 1", "circle ", "Circle"])
+    assert.equal(
+      Object.hasOwn(pageScene(sceneOf(shape)).items[0].items[0].items[0], "shape"),
+      false,
+    );
 });
 
 test("a tooltip walk reads no more entries than it has charged", () => {
