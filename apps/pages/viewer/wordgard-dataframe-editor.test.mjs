@@ -170,6 +170,31 @@ for (const [where, at] of [
 // A press on the frame (the header or the select handle) selects the table as
 // one node, so cut and paste act on it. A press inside Sift's canvas doesn't.
 
+test("the editor asks its binding what each table draws, with the node's read attrs", () => {
+  const asked = [];
+  const state = GardState.create({
+    doc: schema.doc([Paragraph.create([Leaf.text("hello")]), PagesDataframe.of(attrs)]),
+    config: [
+      ...schema.elements.map((e) => GardState.schemaElement.of(e)),
+      wordgardDataframes({
+        pageId,
+        binding: (dataframe) => {
+          asked.push(dataframe);
+          return { source_id: "usage" };
+        },
+      }),
+    ],
+  });
+  const editor = new Wordgard({ state, parent: document.body });
+  try {
+    editor.flush();
+    assert.deepEqual(asked.at(-1), attrs);
+    assert.equal(document.querySelectorAll("section.wordgard-dataframe-table").length, 1);
+  } finally {
+    editor.dom.remove();
+  }
+});
+
 test("wordgardDataframes refuses to run without the Page it shows", () => {
   for (const options of [undefined, {}, { pageId: "" }, { pageId: 42 }])
     assert.throws(() => wordgardDataframes(options), /needs the Page id/);
