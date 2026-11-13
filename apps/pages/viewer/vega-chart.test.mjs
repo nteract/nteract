@@ -23,7 +23,7 @@ const {
   RESIZE_SETTLE_MS,
   tooltipText,
 } = await import("./vega-chart.mjs");
-const { checkChartSpec, CHART_MAX_ROWS, CHART_EXPRESSION_FUNCTIONS } =
+const { checkChartSpec, CHART_MAX_ROWS, CHART_MAX_CELLS, CHART_EXPRESSION_FUNCTIONS } =
   await import("../shared/chart-spec.mjs");
 const vl = await import("vega-lite");
 
@@ -1397,3 +1397,75 @@ test("bin and time-unit extremes in the data or the spec never hang a draw", () 
     cases.map(([, , status]) => status),
   );
 });
+
+test("a dataset over the cell budget is refused before any row is copied", () =>
+  withWindow(async (window) => {
+    const columns = 21;
+    const rows = Math.ceil(CHART_MAX_CELLS / columns) + 1;
+    const wide = Array.from({ length: rows }, (_, r) => {
+      const row = { tool: "t", calls: r };
+      for (let c = 0; c < columns - 2; c++) row[`c${c}`] = c;
+      return row;
+    });
+    // A Proxy row would show a copy; the count reads only keys.
+    let copied = false;
+    wide[rows - 1] = new Proxy(wide[rows - 1], {
+      get(target, key) {
+        copied = true;
+        return target[key];
+      },
+    });
+    const limit = CHART_MAX_CELLS.toLocaleString("en-US");
+    assert.equal(
+      await refusalIn(window, stacked, { calls: wide }),
+      `The dataset "calls" has more than ${limit} cells (rows × columns); a chart reads at most that many.`,
+    );
+    assert.equal(copied, false);
+    // An Arrow table's cells are rows × fields, known before any row.
+    const table = tableFromJSON([wide[0]]);
+    const fake = Object.create(table, { numRows: { value: CHART_MAX_ROWS } });
+    assert.match(await refusalIn(window, stacked, { calls: fake }), /more than 2,000,000 cells/);
+    // At the budget, a chart draws.
+    const { element } = container(window);
+    const narrow = wide.slice(0, Math.floor(CHART_MAX_CELLS / columns));
+    narrow[narrow.length - 1] = { tool: "t", calls: 1 };
+    const chart = mount(element, { spec: stacked, datasets: { calls: narrow } });
+    await settle(200);
+    assert.equal(element.querySelector("figure").dataset.chartStatus, "rendered");
+    chart.destroy();
+  }));
+
+test("destroy empties the container even when Vega's finalize throws", () =>
+  withWindow(async (window) => {
+    const vega = globalThis.__vega;
+    const { element } = container(window);
+    const chart = mount(element, {
+      spec: { ...stacked, mark: { type: "bar", tooltip: { content: "data" } } },
+      datasets: { calls },
+    });
+    await settle();
+    bars(element)[0].dispatchEvent(
+      new window.MouseEvent("pointermove", { bubbles: true, clientX: 5, clientY: 5 }),
+    );
+    await settle();
+    assert.ok(window.document.querySelector(".vg-tooltip"), "the tooltip exists before destroy");
+    const { finalize } = vega.View.prototype;
+    const reported = [];
+    const { reportError } = window;
+    window.reportError = (error) => reported.push(error);
+    vega.View.prototype.finalize = () => {
+      throw new Error("finalize broke");
+    };
+    try {
+      chart.destroy();
+    } finally {
+      vega.View.prototype.finalize = finalize;
+      window.reportError = reportError;
+    }
+    assert.equal(element.children.length, 0);
+    assert.equal(window.document.querySelector(".vg-tooltip"), null);
+    assert.deepEqual(
+      reported.map((error) => error.message),
+      ["finalize broke"],
+    );
+  }));

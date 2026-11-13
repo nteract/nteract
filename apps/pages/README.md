@@ -78,7 +78,8 @@ before Vega writes it.
 A chart runs on the reader's main thread, and nothing stops it there. The
 bounds limit its work without capping it: a facet draws a cell per distinct
 value, a density or quantile emits rows per group, and an SVG mark per row is
-slow at 100,000 rows. A spec within every bound can still freeze the tab for
+slow at 100,000 rows. A dataset may hold at most 100,000 rows and 2,000,000
+cells, since the viewer copies every column before Vega runs. A spec within every bound can still freeze the tab for
 seconds. A Worker or a separate frame with a kill timer would bound that;
 nothing does today.
 

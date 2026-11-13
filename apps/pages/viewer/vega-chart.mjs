@@ -47,6 +47,7 @@ import { debounceTime, distinctUntilChanged, skip, switchMap, take } from "rxjs/
 import {
   CHART_CURSORS,
   CHART_EXPRESSION_FUNCTIONS,
+  CHART_MAX_CELLS,
   CHART_MAX_ROWS,
   chartNumber,
   checkChartSpec,
@@ -103,6 +104,19 @@ function plainValue(value) {
 /** Rows in a dataset, before any are copied. */
 const rowCount = (dataset) =>
   Array.isArray(dataset) ? dataset.length : isArrowTable(dataset) ? dataset.numRows : 0;
+
+/** Cells a copy of the dataset would hold, counted without copying: an Arrow
+ * table's rows × columns, or each row's own keys, stopping once past `limit`. */
+function cellCount(dataset, limit) {
+  if (isArrowTable(dataset)) return dataset.numRows * dataset.schema.fields.length;
+  if (!Array.isArray(dataset)) return 0;
+  let cells = 0;
+  for (const row of dataset) {
+    if (row && typeof row === "object") cells += Object.keys(row).length;
+    if (cells > limit) break;
+  }
+  return cells;
+}
 
 const isArrowTable = (value) =>
   !!value &&
@@ -656,12 +670,28 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
     if (svg) viewer = openDiagramViewer({ svg, label: title || "Chart", opener: maximize });
   };
 
+  // Each step runs whether or not an earlier one throws, so the figure and
+  // the tooltip always leave the document; the first failure is reported, not
+  // thrown at the caller. `removeTooltip` is set once the tooltip exists.
+  let removeTooltip = null;
   const teardown = () => {
-    viewer?.close();
+    const closing = viewer;
+    const finalizing = view;
     viewer = null;
-    view?.finalize();
     view = null;
-    figure.remove();
+    let failure = null;
+    for (const step of [
+      () => closing?.close(),
+      () => finalizing?.finalize(),
+      () => figure.remove(),
+      () => removeTooltip?.(),
+    ])
+      try {
+        step();
+      } catch (error) {
+        failure ??= error;
+      }
+    if (failure) (win?.reportError ?? console.error)(failure);
   };
 
   // Plain JSON: functions, cycles and prototypes never reach Vega-Lite.
@@ -683,6 +713,10 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
         refusal = `The dataset "${name}" has ${rows.toLocaleString("en-US")} rows; a chart reads at most ${CHART_MAX_ROWS.toLocaleString("en-US")}.`;
         break;
       }
+      if (cellCount(given(name), CHART_MAX_CELLS) > CHART_MAX_CELLS) {
+        refusal = `The dataset "${name}" has more than ${CHART_MAX_CELLS.toLocaleString("en-US")} cells (rows × columns); a chart reads at most that many.`;
+        break;
+      }
       data[name] = datasetRows(given(name));
       if (!data[name]) {
         refusal = `The dataset "${name}" must be rows or an Arrow table.`;
@@ -695,6 +729,7 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
   }
 
   const tooltipId = `pages-chart-tooltip-${++tooltipCount}`;
+  removeTooltip = () => doc.getElementById(tooltipId)?.remove();
   const tooltip = new TooltipHandler({
     id: tooltipId,
     theme: "pages",
@@ -781,7 +816,6 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
       watchTheme?.disconnect();
       watchSize?.disconnect();
       teardown();
-      doc.getElementById(tooltipId)?.remove();
     },
   };
 }

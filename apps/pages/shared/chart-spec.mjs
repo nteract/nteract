@@ -40,6 +40,13 @@ export const CHART_SPEC_LIMITS = Object.freeze({
  * Transforms can still emit more rows than this, within their own bounds. */
 export const CHART_MAX_ROWS = 100_000;
 
+/** Cells (rows × columns) a chart copies from one dataset before Vega runs.
+ * The viewer copies every column of every row, so a wide table costs memory
+ * even when the spec reads two fields: 2,000,000 cells took 0.1 to 0.25 s and
+ * about 100 MiB to copy on an M-series Mac; 5,000,000 took 0.3 to 0.6 s and
+ * 300 MiB. viewer/vega-chart.mjs refuses more. */
+export const CHART_MAX_CELLS = 2_000_000;
+
 /**
  * Sizes a chart number may have besides 0, in a spec and in the data. Vega's
  * numeric loops assume normal doubles: its bin loop multiplies a step that
