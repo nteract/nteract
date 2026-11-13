@@ -85,6 +85,7 @@ import {
   pastedPageHTML,
 } from "./wordgard-model.mjs";
 import { wordgardViews } from "./wordgard-views.mjs";
+import { viewHeights } from "./view-heights.mjs";
 import { DATASET_ACCEPT } from "../shared/dataset-assets.mjs";
 import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
 import { displaySymbols } from "./wordgard-symbols.mjs";
@@ -447,10 +448,16 @@ export function WordgardEditor(props) {
           binding: editorBinding(),
         }),
         // Every view node draws its chart from the Page's view and source
-        // documents; the chart chunk loads near the viewport.
+        // documents; the chart chunk loads near the viewport. Each embed
+        // reserves the height this browser last drew its chart at, for this
+        // account and Page.
         wordgardViews({
           views: replica.views ?? null,
           sources: replica.pageSources ?? null,
+          heights: viewHeights(typeof window === "undefined" ? undefined : window, {
+            account: replica.identity?.principal,
+            pageId: replica.doc.page_id,
+          }),
         }),
         wordgardImages(),
         wordgardCodeNewlines,

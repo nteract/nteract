@@ -32,6 +32,7 @@ const domainView = process.argv.includes("--domain-view");
 const images = process.argv.includes("--images");
 const datasets = process.argv.includes("--datasets");
 const views = process.argv.includes("--views");
+const viewsLayout = process.argv.includes("--views-layout");
 const mcpImages = process.argv.includes("--mcp-images");
 const taskLists = process.argv.includes("--task-lists");
 const admission = process.argv.includes("--admission");
@@ -52,6 +53,7 @@ if (
     images,
     datasets,
     views,
+    viewsLayout,
     mcpImages,
     taskLists,
     admission,
@@ -69,7 +71,7 @@ if (
   ].filter(Boolean).length > 1
 )
   throw new Error(
-    "Choose one qualification: --domain-view, --images, --datasets, --views, --mcp-images, --task-lists, --admission, --build-update, --trash, --unopened, --projects, --revocation, --cold-open, --commenter, --content-activity, --cards, --card-images or --listing-bench",
+    "Choose one qualification: --domain-view, --images, --datasets, --views, --views-layout, --mcp-images, --task-lists, --admission, --build-update, --trash, --unopened, --projects, --revocation, --cold-open, --commenter, --content-activity, --cards, --card-images or --listing-bench",
   );
 const children = new Set();
 let canceled = false;
@@ -262,7 +264,7 @@ try {
       .filter((key) => process.env[key] !== undefined)
       .map((key) => [key, process.env[key]]),
   );
-  if (images || datasets || views || mcpImages || coldOpen)
+  if (images || datasets || views || viewsLayout || mcpImages || coldOpen)
     hostEnv.CELLD_MAX_REQUEST_BODY_BYTES = String(6 * 1024 * 1024);
   const version = parseRuntimeVersion(
     execFileSync(process.env.CELLD_BIN || "celld", ["--version"], {
@@ -418,13 +420,15 @@ try {
                                   ? "scripts/datasets-smoke.mjs"
                                   : views
                                     ? "scripts/views-smoke.mjs"
-                                    : domainView
-                                      ? "scripts/domain-sharing-smoke.mjs"
-                                      : buildUpdate
-                                        ? "scripts/build-update-smoke.mjs"
-                                        : listingBench
-                                          ? "scripts/listing-benchmark.mjs"
-                                          : "scripts/sharing-smoke.mjs",
+                                    : viewsLayout
+                                      ? "scripts/views-layout-smoke.mjs"
+                                      : domainView
+                                        ? "scripts/domain-sharing-smoke.mjs"
+                                        : buildUpdate
+                                          ? "scripts/build-update-smoke.mjs"
+                                          : listingBench
+                                            ? "scripts/listing-benchmark.mjs"
+                                            : "scripts/sharing-smoke.mjs",
     ],
     {
       env: {
