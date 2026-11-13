@@ -117,60 +117,90 @@ async function editOk(pageId, operations) {
   return result.body;
 }
 
-/** Sum of the layout-shift entries without recent input since navigation. */
+/**
+ * Collect every layout-shift entry without recent input from the start of
+ * each document `page` loads, into `window.__layoutShifts`. It runs as an
+ * init script, so the observer is in place before anything paints and no
+ * entry depends on the buffer or on when a late observer's callback runs.
+ */
+const recordLayoutShifts = (page) =>
+  page.addInitScript(() => {
+    const shifts = { total: 0, entries: [] };
+    window.__layoutShifts = shifts;
+    const describe = (source) => {
+      const node = source.node;
+      const element = node?.nodeType === 1 ? node : node?.parentElement;
+      const name = element
+        ? `${element.nodeName.toLowerCase()}.${String(element.getAttribute("class") ?? "")
+            .trim()
+            .replaceAll(/\s+/g, ".")}`
+        : "?";
+      const rect = (r) =>
+        `${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}`;
+      return `${node?.nodeType === 3 ? "text in " : ""}${name.slice(0, 80)} ${rect(source.previousRect)}->${rect(source.currentRect)}`;
+    };
+    const take = (entries) => {
+      for (const entry of entries) {
+        if (entry.hadRecentInput) continue;
+        shifts.total += entry.value;
+        shifts.entries.push({
+          value: Number(entry.value.toFixed(4)),
+          at: Math.round(entry.startTime),
+          sources: (entry.sources ?? []).map(describe),
+        });
+      }
+    };
+    const observer = new PerformanceObserver((list) => take(list.getEntries()));
+    observer.observe({ type: "layout-shift", buffered: true });
+    shifts.drain = () => take(observer.takeRecords());
+  });
+
+/** The layout shift the current document has reported so far. */
 const layoutShift = (page) =>
-  page.evaluate(
-    () =>
-      new Promise((resolve) => {
-        let total = 0;
-        const entries = [];
-        new PerformanceObserver((list) => {
-          for (const entry of list.getEntries()) {
-            if (entry.hadRecentInput) continue;
-            total += entry.value;
-            entries.push({
-              value: Number(entry.value.toFixed(4)),
-              at: Math.round(entry.startTime),
-              sources: (entry.sources ?? []).map((source) => {
-                const node = source.node;
-                const element = node?.nodeType === 1 ? node : node?.parentElement;
-                const name = element
-                  ? `${element.nodeName.toLowerCase()}.${String(element.getAttribute("class") ?? "")
-                      .trim()
-                      .replaceAll(/\s+/g, ".")}`
-                  : "?";
-                const rect = (r) =>
-                  `${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}`;
-                return `${node?.nodeType === 3 ? "text in " : ""}${name.slice(0, 80)} ${rect(source.previousRect)}->${rect(source.currentRect)}`;
-              }),
-            });
-          }
-        }).observe({ type: "layout-shift", buffered: true });
-        setTimeout(() => resolve({ total: Number(total.toFixed(4)), entries }), 0);
-      }),
-  );
+  page.evaluate(() => {
+    const shifts = window.__layoutShifts;
+    shifts.drain();
+    return { total: Number(shifts.total.toFixed(4)), entries: shifts.entries };
+  });
 
 const embeds = (page) => page.locator("wg-content section.wordgard-view-embed");
+/** The chart Vega has finished in each embed. */
 const rendered = (page) =>
-  page.locator(
-    "section.wordgard-view-embed figure.pages-chart:not(.pages-view-placeholder)[data-chart-status=rendered]",
+  embeds(page).locator(
+    "figure.pages-chart:not(.pages-view-placeholder)[data-chart-status=rendered]",
+  );
+const storedHeights = (page) =>
+  page.evaluate(
+    () => JSON.parse(localStorage.getItem("nteract.pages.view-heights") ?? "null")?.heights ?? [],
   );
 
-/** Open `url` in `page`, or reload it without one, and wait for the first
- * chart and a settle; returns the shift and each embed's height. */
-async function openAndMeasure(page, url = null) {
+/** Open `url` in `page`, or reload it without one, and wait until both
+ * charts are rendered (both embeds are inside the lifecycle's preload margin,
+ * so both load without scrolling) and, when `stored` is given, until
+ * localStorage holds exactly those `[viewId, px]` rows. Then a short settle,
+ * so a late shift still counts; returns the shift and each embed's height. */
+async function openAndMeasure(page, url = null, { stored = null } = {}) {
   if (url) await page.goto(url);
   else await page.reload();
   await expect(embeds(page)).toHaveCount(2, { timeout: 30000 });
-  await expect(rendered(page).first()).toBeVisible({ timeout: 30000 });
-  // The second chart sits below the fold; it draws when scrolled to, which
-  // is input, so only the first chart's draw and the gutter count here.
-  await page.waitForTimeout(1500);
+  await expect(rendered(page)).toHaveCount(2, { timeout: 30000 });
+  for (let i = 0; i < 2; i++)
+    await expect(
+      embeds(page).nth(i).locator(".pages-chart[data-chart-status=rendered]"),
+    ).toHaveCount(1);
+  const heights = () =>
+    embeds(page).evaluateAll((sections) =>
+      sections.map((section) => Math.round(section.getBoundingClientRect().height)),
+    );
+  if (stored)
+    await expect
+      .poll(async () => (await storedHeights(page)).map((row) => [row[2], row[3]]), {
+        timeout: 10000,
+      })
+      .toEqual(stored(await heights()));
+  await page.waitForTimeout(750);
   const shift = await layoutShift(page);
-  const heights = await embeds(page).evaluateAll((sections) =>
-    sections.map((section) => section.getBoundingClientRect().height),
-  );
-  return { ...shift, heights };
+  return { ...shift, heights: await heights() };
 }
 
 try {
@@ -240,22 +270,21 @@ try {
   complete("a Page with two views and text below them");
 
   const reader = await signIn(context, "dev@localhost");
-  const first = await openAndMeasure(reader, `${origin}/p/${pageId}`);
+  await recordLayoutShifts(reader);
+  // The default chart draws at the default and needs no memory; the short
+  // one is remembered at the height it drew.
+  const stored = (heights) => [["second", heights[1]]];
+  const first = await openAndMeasure(reader, `${origin}/p/${pageId}`, { stored });
   report.measurements.firstOpen = first;
   assert.equal(first.heights[0], DEFAULT_RESERVE, "a default chart draws at the default reserve");
+  report.measurements.remembered = await storedHeights(reader);
+  assert.ok(
+    report.measurements.remembered.every((row) => row[1] === pageId),
+    "rows are keyed by this Page",
+  );
   complete(`first open (default reserve): layout shift ${first.total}`);
 
-  const remembered = await reader.evaluate(() =>
-    JSON.parse(localStorage.getItem("nteract.pages.view-heights")),
-  );
-  report.measurements.remembered = remembered;
-  // The default chart drew at the default and needs no memory; the short one
-  // is remembered at the height it drew.
-  assert.deepEqual(
-    remembered?.heights.map((row) => [row[1], row[2], row[3]]),
-    [[pageId, "second", Math.round(first.heights[1])]],
-  );
-  const again = await openAndMeasure(reader);
+  const again = await openAndMeasure(reader, null, { stored });
   report.measurements.reload = again;
   await reader.screenshot({ path: `${output}/views-layout.png`, fullPage: true });
   assert.ok(
