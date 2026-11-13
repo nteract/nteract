@@ -4244,7 +4244,11 @@ operations `put_page_tag` and `delete_page_tag`, which only these routes may
 name (`REST_OPERATIONS`). Any other method is 405. Pages OAuth grants are
 limited to `/mcp` and are refused here; API keys, browser sessions and Kilo agent
 tokens reach the routes (`KILO_ROUTES` in [auth.mjs](worker/auth.mjs) names
-exactly `/api/pages` and one tag of one Page for a Kilo token). Usage events for
+exactly `/api/pages` and one tag of one Page for a Kilo token). A browser
+session is held to the same-origin rule on all three, the listing included: a
+listing of a shared Project accepts the caller's pending invitation, so the
+`GET` is admitted from this origin's own page (`Sec-Fetch-Site: same-origin`)
+or with this origin's `Origin` header, and refused otherwise. Usage events for
 these calls carry surface `http-rest` and the operation name, never the tag.
 
 The result is `{ page_id, tag, tags, added }` for a PUT and
@@ -4257,9 +4261,10 @@ or already absent (DELETE). Of two writers racing to add one tag, exactly one
 gets `added: true`. They say what this call's transaction changed, not who added
 a tag earlier: a retry after a 503 `tags_unavailable` whose first attempt had
 landed reports `added: false`, the same as if another writer had added the tag.
-A caller that needs to tell them apart reads `added_by`, which holds the
-principal only, not the agent or session; a nonce stored with the row would be
-the fix, and nothing needs it yet.
+These responses can't tell the two apart: no route returns `added_by`, and it
+holds the principal only, not the agent or session. A claimant that gets no
+answer needs its own recovery, such as a timeout. A nonce stored with the row
+would make the answer exact, and nothing needs it yet.
 
 The Page host decides access and Trash state in its admission queue, then
 releases the queue before it touches D1, so a slow D1 never holds the Page's

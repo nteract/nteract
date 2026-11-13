@@ -19,15 +19,18 @@ const invalid = (message) => new HttpError(400, message, "invalid_arguments");
  * Page ID spells `null`). A value that does not coerce is passed on as the
  * string it is, so `list_pages` refuses it with its own message. A repeated
  * parameter is refused rather than guessing which one was meant.
+ *
+ * Every parameter becomes an own property, whatever its name: assigning
+ * `__proto__` to a plain object sets nothing, and the argument check would
+ * never see it.
  */
 export function listArguments(searchParams) {
-  const args = {};
+  const args = new Map();
   for (const [name, value] of searchParams) {
-    if (Object.hasOwn(args, name))
-      throw invalid(`\`${name.slice(0, 64)}\` was sent more than once`);
-    args[name] = coerce(name, value);
+    if (args.has(name)) throw invalid(`\`${name.slice(0, 64)}\` was sent more than once`);
+    args.set(name, coerce(name, value));
   }
-  return args;
+  return Object.fromEntries(args);
 }
 
 function coerce(name, value) {

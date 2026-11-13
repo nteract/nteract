@@ -4,6 +4,9 @@
 // the same answers as the operation, and the refusals the wrapper adds.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import worker from "./index.mjs";
+import { requireSameOrigin } from "./auth.mjs";
+import { gatewayFixture, privateOrigin, publicOrigin } from "./gateway-fixture.mjs";
 import { listArguments, tagFromSegment } from "./rest-api.mjs";
 import { world } from "./projects-fixture.mjs";
 
@@ -34,8 +37,11 @@ test("a query string becomes list_pages arguments, restoring only the typing it 
   });
   assert.deepEqual(query("limit=-1&limit2=3"), { limit: "-1", limit2: "3" });
   // A repeated parameter has no single meaning.
-  for (const text of ["limit=1&limit=2", "tags=a&tags=b"])
+  for (const text of ["limit=1&limit=2", "tags=a&tags=b", "__proto__=a&__proto__=b"])
     assert.throws(() => query(text), { status: 400, code: "invalid_arguments" }, text);
+  // A name a plain object would swallow is an argument like any other.
+  for (const name of ["__proto__", "constructor", "hasOwnProperty"])
+    assert.deepEqual(Object.entries(query(`${name}=x`)), [[name, "x"]], name);
 });
 
 test("a tag path segment is percent-decoded once, and a bad encoding is invalid_tag", () => {
@@ -179,6 +185,8 @@ test("GET /api/pages refuses what list_pages refuses, and names what the route c
   // The arguments are list_pages' own: anything else is named and refused.
   await refused("page_id=x", 400, "invalid_arguments");
   await refused("nonce=abcdef", 400, "invalid_arguments");
+  await refused("__proto__=x", 400, "invalid_arguments");
+  await refused("constructor=x", 400, "invalid_arguments");
   await refused("limit=1&limit=2", 400, "invalid_arguments");
   await refused("space_id=sp_x", 400, "argument_renamed");
   assert.equal((await w.rest("owner", "POST", "/api/pages")).status, 405);
@@ -192,6 +200,52 @@ test("GET /api/pages is a read: a read-only key lists, and nobody unauthenticate
     await import("./index.mjs")
   ).default.fetch(new Request("https://pages.invalid/api/pages"), w.env);
   assert.equal(anonymous.status, 401);
+});
+
+test("a browser session lists Pages: the Catalog hop carries the gateway's own Origin", async (t) => {
+  const f = await gatewayFixture(t);
+  // A Catalog that admits what the real one admits (auth.mjs), then answers.
+  const admitted = [];
+  f.env.CATALOGS = {
+    getByName() {
+      return {
+        async fetch(request) {
+          try {
+            requireSameOrigin(request, f.env);
+          } catch (error) {
+            return Response.json({ error: error.message }, { status: error.status });
+          }
+          admitted.push(request.clone());
+          return Response.json({ pages: [] });
+        },
+      };
+    },
+  };
+  const list = (headers) =>
+    worker.fetch(new Request(`${privateOrigin}/api/pages?limit=1`, { headers }), f.env);
+  // A same-origin browser GET sends no Origin. The hop that answers it is a
+  // POST, which the Catalog admits for a cookie only with one.
+  const listed = await list({ cookie: f.cookie, "sec-fetch-site": "same-origin" });
+  assert.equal(listed.status, 200, await listed.clone().text());
+  assert.equal(admitted.length, 1);
+  assert.equal(admitted[0].method, "POST");
+  assert.equal(admitted[0].headers.get("origin"), publicOrigin);
+  // A listing can accept a Project invitation, so only this origin's own page
+  // gets that: not another site, not a sibling subdomain, and not a request
+  // that doesn't say where it is from.
+  for (const headers of [
+    { cookie: f.cookie, origin: "https://elsewhere.example" },
+    { cookie: f.cookie, origin: "https://elsewhere.example", "sec-fetch-site": "same-origin" },
+    { cookie: f.cookie, "sec-fetch-site": "cross-site" },
+    { cookie: f.cookie, "sec-fetch-site": "same-site" },
+    { cookie: f.cookie, "sec-fetch-site": "none" },
+    { cookie: f.cookie },
+  ])
+    assert.equal((await list(headers)).status, 403, JSON.stringify(Object.keys(headers)));
+  assert.equal(admitted.length, 1);
+  // A script that names the origin itself is admitted, as on every route.
+  assert.equal((await list({ cookie: f.cookie, origin: publicOrigin })).status, 200);
+  assert.equal(admitted.length, 2);
 });
 
 test("REST calls are logged on their own surface, with the operation and never the tag", async (t) => {

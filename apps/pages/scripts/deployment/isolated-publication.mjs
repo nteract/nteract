@@ -481,6 +481,7 @@ export function publishIsolated(
     const uuid = "08c583e5-d29e-4f1e-b06b-333965254e94";
     const assets = "/api/pages/" + uuid + "/assets";
     const cardImage = "/api/pages/" + uuid + "/card-image";
+    const tags = "/api/pages/" + uuid + "/tags";
     const projectAssetRoute = "/api/projects/prj_" + uuid + "/assets";
     const imageHash = "a".repeat(64);
     run("/usr/bin/cloudflared", ["--config", file, "tunnel", "ingress", "validate"]);
@@ -589,6 +590,18 @@ export function publishIsolated(
       ["/api/pages/arbitrary/assets", "http_status:404"],
       [assets + "/private", "http_status:404"],
       [assets + "/" + "a".repeat(64) + "/private", "http_status:404"],
+      // The REST routes. cloudflared matches the decoded path, so the encoded
+      // tag is the probe that shows `repo:org/name` reaches the Worker.
+      ["/api/pages", plan.listen],
+      ["/api/pages?tags=status%3Adone&limit=1", plan.listen],
+      [tags + "/status", plan.listen],
+      [tags + "/repo%3Aorg%2Fname", plan.listen],
+      ["/api/pages/", "http_status:404"],
+      [tags, "http_status:404"],
+      [tags + "/", "http_status:404"],
+      [tags + "/a;b", "http_status:404"],
+      ["/api/pages/arbitrary/tags/status", "http_status:404"],
+      ["/api/projects/prj_" + uuid + "/tags/status", "http_status:404"],
       ["/p/" + uuid + "/meta.json", linkPreviews ? plan.listen : "http_status:404"],
       ["/p/" + uuid + "/card.json", linkPreviews ? plan.listen : "http_status:404"],
       ["/project/prj_" + uuid + "/meta.json", linkPreviews ? plan.listen : "http_status:404"],

@@ -950,6 +950,26 @@ function concatBytes(chunks, size) {
   return bytes;
 }
 
+/**
+ * `request`, carrying this deployment's Origin when a browser says the request
+ * is from this origin and sends none. For a GET the gateway answers through a
+ * host: a browser sends no Origin on a same-origin GET, and the internal hop
+ * is a POST (`forwarded`), which a host admits for a cookie only with one.
+ *
+ * Only `Sec-Fetch-Site: same-origin` earns it. A page can't set that header,
+ * and a sibling subdomain's request says `same-site`. list_pages on a shared
+ * Project accepts the caller's pending invitation, so this GET is a write
+ * under the cookie and gets the same guard as one. Anything else reaches the
+ * host unchanged and is refused there.
+ */
+function withOwnOrigin(request, env) {
+  if (request.headers.has("origin") || request.headers.get("sec-fetch-site") !== "same-origin")
+    return request;
+  const headers = new Headers(request.headers);
+  headers.set("origin", new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin);
+  return new Request(request, { headers });
+}
+
 function authorizeImage(request, env, pageId, write) {
   const internal = forwarded(request, "/internal/assets/authorize", { page_id: pageId, write });
   // Only the host creates this request. Reauthenticate on every call so a grant
@@ -1633,9 +1653,10 @@ const gateway = {
           if (request.method !== "GET") throw new HttpError(405, "Use GET");
           const args = listArguments(url.searchParams);
           usage = toolUsage(request, "http-rest", "list_pages", args, "tool", env);
+          const listing = withOwnOrigin(request, env);
           response = await invokeProjectApi(
             (internal, internalArgs) =>
-              invoke(request, env, internal, internalArgs, usage.seen, {
+              invoke(listing, env, internal, internalArgs, usage.seen, {
                 transport: "http-rest",
                 operation: "list_pages",
                 args,

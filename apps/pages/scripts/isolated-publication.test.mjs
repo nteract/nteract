@@ -234,7 +234,8 @@ function fixture(
       const pathname = new URL(args.at(-1)).pathname;
       const contents = fs.readFileSync(local(args[1]), "utf8");
       const pattern = new RegExp(/^    path: (.+)$/m.exec(contents)[1]);
-      const forwarded = pattern.test(pathname) !== (pathname === misroutePath);
+      // cloudflared matches a rule against the decoded path.
+      const forwarded = pattern.test(decodeURIComponent(pathname)) !== (pathname === misroutePath);
       return "service: " + (forwarded ? "http://" + profile.deployment.listen : "http_status:404");
     }
     throw Error("Unexpected command " + command);
@@ -711,6 +712,46 @@ for (const target of ["page10", "pages"])
       imageAssetPath + "/" + "a".repeat(64) + "/private",
     ])
       assert.ok(paths.includes(pathname), pathname);
+  });
+
+const tagPath = "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/tags";
+for (const target of ["page10", "pages"])
+  test(`${target} publisher verifies REST ingress before starting its connector`, (t) => {
+    const f = fixture(t, { target });
+    f.execute();
+    const start = f.calls.findIndex(
+      ({ command, args }) => command === "systemctl" && ["start", "restart"].includes(args[0]),
+    );
+    assert.ok(start >= 0);
+    const paths = f.calls
+      .slice(0, start)
+      .filter(({ command, args }) => command === "/usr/bin/cloudflared" && args.includes("rule"))
+      .map(({ args }) => new URL(args.at(-1)))
+      .map((url) => url.pathname + url.search);
+    for (const pathname of [
+      "/api/pages",
+      "/api/pages?tags=status%3Adone&limit=1",
+      tagPath + "/status",
+      tagPath + "/repo%3Aorg%2Fname",
+      "/api/pages/",
+      tagPath,
+      tagPath + "/",
+      tagPath + "/a;b",
+      "/api/pages/arbitrary/tags/status",
+      "/api/projects/prj_08c583e5-d29e-4f1e-b06b-333965254e94/tags/status",
+    ])
+      assert.ok(paths.includes(pathname), pathname);
+  });
+
+for (const target of ["page10", "pages"])
+  test(`${target} publisher refuses to start a connector that drops a tag's encoded slash`, (t) => {
+    const f = fixture(t, { target, misroutePath: tagPath + "/repo%3Aorg%2Fname" });
+    assert.throws(() => f.execute(), /Dedicated tunnel route validation failed/);
+    assert.ok(
+      !f.calls.some(
+        ({ command, args }) => command === "systemctl" && ["start", "restart"].includes(args[0]),
+      ),
+    );
   });
 
 for (const target of ["page10", "pages"])

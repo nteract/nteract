@@ -1144,8 +1144,10 @@ cloudflared matches ingress rules against the decoded path, so the ingress
 admits up to 192 characters of a tag's alphabet including `/`; the Worker
 takes one raw segment and refuses a second. A target that has not published them answers 404 at the edge
 to a tag change or a listing by REST; MCP and `/api/tools` are unaffected. The
-tunnel has only been exercised locally: confirm a `PUT` of `repo:org/name`
-reaches the Worker on a live target before relying on it.
+publisher asks cloudflared where the listing, a plain tag and a tag with an
+encoded `/` go before it starts a connector, and stops if one is not forwarded.
+No request has crossed a live tunnel yet: confirm a `PUT` of `repo:org/name`
+reaches the Worker on a target after its first publish.
 
 IDs are lowercase v4 UUIDs, as in every other group. Until a target publishes
 these routes, the edge refuses them: hover cards on Page links show "Couldn't
