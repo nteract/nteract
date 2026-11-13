@@ -1254,7 +1254,7 @@ export function checkChartSpec(spec, { datasets } = {}) {
       if (missing !== undefined)
         return {
           ok: false,
-          error: `This chart reads "${missing}", but no dataset has that name.`,
+          error: `This chart reads ${JSON.stringify(missing.slice(0, 64))}, but no dataset has that name.`,
         };
     }
     return { ok: true, names };

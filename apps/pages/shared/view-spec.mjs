@@ -9,6 +9,20 @@ export const VIEW_SPEC_MAX_BYTES = 64 * 1024;
 
 const isObject = (value) => !!value && typeof value === "object" && !Array.isArray(value);
 
+/** A data name as a refusal prints it: its first 64 characters as a JSON
+ * string, so quotes and control characters stay escaped on one line. */
+export const quotedDataName = (name) => JSON.stringify(String(name).slice(0, 64));
+
+/** The most data names one refusal lists. */
+const LISTED_NAMES = 8;
+
+/** `names` as a refusal lists them: each quoted, at most LISTED_NAMES, then
+ * how many more. */
+export function quotedDataNames(names) {
+  const listed = names.slice(0, LISTED_NAMES).map(quotedDataName).join(", ");
+  return names.length > LISTED_NAMES ? `${listed} and ${names.length - LISTED_NAMES} more` : listed;
+}
+
 /**
  * Why `data`, a view's `{ [data_name]: binding }` map, doesn't bind exactly
  * `names`, the data names its spec reads, or null.
@@ -16,9 +30,10 @@ const isObject = (value) => !!value && typeof value === "object" && !Array.isArr
 export function viewDataProblem(names, data) {
   const unbound = names.find((name) => !Object.hasOwn(data, name));
   if (unbound !== undefined)
-    return `The spec reads "${unbound}", but data doesn't map it to a source.`;
+    return `The spec reads ${quotedDataName(unbound)}, but data doesn't map it to a source.`;
   const unread = Object.keys(data).find((name) => !names.includes(name));
-  if (unread !== undefined) return `data names "${unread}", but the spec doesn't read it.`;
+  if (unread !== undefined)
+    return `data names ${quotedDataName(unread)}, but the spec doesn't read it.`;
   return null;
 }
 

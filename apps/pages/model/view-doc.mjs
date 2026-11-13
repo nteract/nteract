@@ -11,7 +11,12 @@ import {
   validTime,
 } from "./view-record.mjs";
 import { SOURCE_ID_PATTERN } from "../shared/sources.mjs";
-import { checkViewSpec, viewDataProblem } from "../shared/view-spec.mjs";
+import {
+  checkViewSpec,
+  quotedDataName,
+  quotedDataNames,
+  viewDataProblem,
+} from "../shared/view-spec.mjs";
 import {
   MAX_VIEW_DATA,
   MAX_VIEW_TITLE,
@@ -120,7 +125,7 @@ export function validateViewOperation(op) {
   if (!isMap(op.data) || !Object.keys(op.data).length)
     fail(
       "invalid_view",
-      `data must map each data name the spec reads (${checked.names.map((name) => `"${name}"`).join(", ")}) to a source: {"${checked.names[0]}": {"source_id": "<source_id>"}}`,
+      `data must map each data name the spec reads (${quotedDataNames(checked.names)}) to a source: {${quotedDataName(checked.names[0])}: {"source_id": "<source_id>"}}`,
     );
   if (Object.keys(op.data).length > MAX_VIEW_DATA)
     fail("invalid_view", `data can bind at most ${MAX_VIEW_DATA} data names`);
@@ -128,7 +133,7 @@ export function validateViewOperation(op) {
     if (!validDataName(name))
       fail(
         "invalid_view",
-        `data can't name "${name.slice(0, 64)}": a data name matches ${VIEW_DATA_NAME_PATTERN}, not ${RESERVED_DATA_NAMES}`,
+        `data can't name ${quotedDataName(name)}: a data name matches ${VIEW_DATA_NAME_PATTERN}, not ${RESERVED_DATA_NAMES}`,
       );
     if (isMap(binding) && binding.source_id === undefined)
       fail("invalid_view", `data.${name} needs a source_id: a source this Page holds`);

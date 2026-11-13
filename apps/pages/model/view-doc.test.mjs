@@ -242,3 +242,46 @@ test("a set_view refusal names the field it is about and the rule it broke", () 
     'The spec reads "usage", but data doesn\'t map it to a source.',
   );
 });
+
+test("a refusal prints a spec's data names bounded and escaped, on one line", () => {
+  const message = (fields) => {
+    try {
+      validateViewOperation(op(fields));
+    } catch (error) {
+      return error.message;
+    }
+    assert.fail("expected a refusal");
+  };
+  const long = "a".repeat(60_000);
+  const odd = 'say "hi"\nthen';
+  const bounded = (text) => {
+    assert.doesNotMatch(text, /\n/);
+    assert.ok(text.length < 400, `${text.length} characters`);
+  };
+  for (const name of [long, odd]) {
+    const spec = { data: { name }, mark: "bar" };
+    const empty = message({ spec, data: {} });
+    bounded(empty);
+    // The example's key is a JSON string.
+    const key = JSON.stringify(name.slice(0, 64));
+    assert.ok(empty.includes(`{${key}: {"source_id": "<source_id>"}}`), empty);
+    bounded(message({ spec, data: { usage: { source_id: "usage" } } }));
+    bounded(message({ data: { usage: { source_id: "usage" }, [name]: { source_id: "usage" } } }));
+    bounded(checkViewSpec(spec, { usage: { source_id: "usage" } }).error);
+    bounded(checkViewSpec(SPEC, { usage: { source_id: "usage" }, [name]: {} }).error);
+  }
+  assert.equal(
+    message({
+      spec: { data: { name: odd }, mark: "bar" },
+      data: { usage: { source_id: "usage" } },
+    }),
+    'The spec reads "say \\"hi\\"\\nthen", but data doesn\'t map it to a source.',
+  );
+  // At most eight names, then a count.
+  const spec = {
+    layer: Array.from({ length: 12 }, (_, i) => ({ data: { name: `d${i}` }, mark: "bar" })),
+  };
+  const many = message({ spec, data: {} });
+  bounded(many);
+  assert.match(many, /"d7" and 4 more\)/);
+});
