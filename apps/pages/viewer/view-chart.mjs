@@ -1,7 +1,9 @@
 // The chart chunk for view embeds (wordgard-views.mjs VIEW_RENDERER). Only a
-// Page that shows a view loads it, so Vega, Vega-Lite and the Arrow decoder
-// stay out of the editor chunk. Sift's WASM decodes each Parquet source here;
-// the Worker only stores and serves the bytes.
+// Page that shows a view loads it, so the SVG renderer and the Parquet
+// decoder stay out of the editor chunk. Sift's WASM decodes each Parquet
+// source here into Arrow IPC bytes; the host only stores and serves the
+// Parquet. Vega and Vega-Lite run in the chart Worker (chart-worker.mjs), a
+// script of its own that the first chart starts.
 import { setWasmUrl } from "@nteract/sift";
 import { SIFT_WASM_URL } from "pages-sift-assets";
 import { checkChartSpec } from "../shared/chart-spec.mjs";

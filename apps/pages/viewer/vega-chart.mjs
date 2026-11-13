@@ -4,343 +4,148 @@
 //
 // A chart is static: marks, axes, legends and Vega's hover tooltip. Nothing
 // else listens to the reader; selections, bindings, hover encodings and every
-// other event stream are refused, and the View is made without `hover`,
-// because each review of the interactive surface found another way through
-// it. The tooltip handler formats every value without calling its own
-// toString, and a tooltip that fails moves the chart to its error state.
+// other event stream are refused, because each review of the interactive
+// surface found another way through it.
 //
-// The spec and the rows are both untrusted. Four layers keep a chart from
-// running code, fetching or navigating:
-// - shared/chart-spec.mjs refuses a spec before anything compiles, with one
-//   sentence: allowlists for data, transforms, parameters and expression
+// Vega runs in a Worker (viewer/chart-worker.mjs, viewer/chart-dataflow.mjs):
+// it compiles the spec, checks the compiled dataflow, runs it and posts the
+// finished scenegraph back. The charts on a Page share at most CHART_WORKERS
+// Workers (viewer/chart-pool.mjs). This page draws the scenegraph with Vega's
+// SVG renderer and keeps the tooltip; it never holds a Vega View and never
+// runs the dataflow itself. A draw that outlasts CHART_TIMEOUT_MS from its
+// start shows the chart's error state and its Worker is replaced, so a spec
+// that never terminates costs the reader a sentence, not the tab.
+//
+// The spec and the rows are both untrusted:
+// - shared/chart-spec.mjs refuses a spec here before any Worker starts, with
+//   one sentence: allowlists for data, transforms, parameters and expression
 //   functions, no URL anywhere, keyword cursors, numbers in
-//   CHART_NUMBER_RANGE. `datasetRows` puts the data's numbers in that range.
-// - `runtimeProblem` is the boundary on what runs. It refuses a compiled Vega
-//   dataflow, root or any subflow, that has any event stream, signal handler
-//   or binding, any operator type outside STATIC_OPERATORS, a hover
-//   encoding, or any expression outside the policy with VEGA_LITE_FUNCTIONS,
-//   before the dataflow runs.
-// - The viewer CSP has no 'unsafe-eval', so Vega runs with its expression
-//   interpreter, and `deniedLoader` refuses every load and link.
-// - The "pages-svg" renderer cleans each item's fill, stroke, font, blend and
-//   cursor before Vega writes them, and the container's cursor setter takes
-//   keywords only, so a data value can't put `url(...)` into a style.
-//
-// A chart still runs on the reader's main thread. `datasetRows` copies at
-// most CHART_MAX_CELLS cells per dataset, nested values included, and
-// `guardTransforms` checks the values bin, kde and regression read at run
-// time. A spec that passes every check can still fail to terminate in a
-// reader's tab: the guards cover the cases reviews have found, and Vega's and
-// d3's numeric loops aren't proven to end. Compiling and running the dataflow
-// in a Worker with a kill timer, and rendering its scenegraph here, is the
-// next change. An error after the first draw moves the chart to its error
-// state.
+//   CHART_NUMBER_RANGE, and the row and cell budgets.
+// - The Worker checks the spec again, normalizes the data, checks the
+//   compiled dataflow (`runtimeProblem`), guards the transforms that loop on
+//   derived values, runs expressions through Vega's interpreter and denies
+//   every load.
+// - The page rebuilds the returned scene from known marks and keys within
+//   bounds (viewer/chart-scene.mjs), and the "pages-svg" renderer cleans each
+//   item's fill, stroke, font, blend and cursor before it writes them, so
+//   neither a data value nor a Worker's answer can put `url(...)` into a
+//   style.
 //
 // The look is bare: the caller's title above, one thin rounded border around
 // the drawing, and Vega-Lite's own axes, legend and hover tooltip inside it.
 // The one control is the Maximize button a Mermaid diagram has, which opens
 // the same expanded viewer.
-import * as vega from "vega";
-import * as vl from "vega-lite";
-import { expressionInterpreter } from "vega-interpreter";
+import { SVGHandler, SVGRenderer, sceneFromJSON } from "vega-scenegraph";
 import { Handler as TooltipHandler } from "vega-tooltip";
-import { BehaviorSubject, Observable, Subscription, combineLatest, concat } from "rxjs";
-import { debounceTime, distinctUntilChanged, skip, switchMap, take } from "rxjs/operators";
+import { BehaviorSubject, Subscription, combineLatest, concat, from } from "rxjs";
+import { debounceTime, distinctUntilChanged, filter, skip, switchMap, take } from "rxjs/operators";
 import {
   CHART_CURSORS,
-  CHART_EXPRESSION_FUNCTIONS,
   CHART_MAX_CELLS,
   CHART_MAX_ROWS,
-  chartNumber,
   checkChartSpec,
-  checkFormatCall,
-  expressionProblem,
   loadsResource,
 } from "../shared/chart-spec.mjs";
+import {
+  UnreadableDataset,
+  cellCount,
+  isArrowTable,
+  rowCount,
+  tooManyCells,
+  unreadableDataset,
+} from "./chart-data.mjs";
+import { CHART_READY_MS, CHART_WORKERS, TIMED_OUT, createChartPool } from "./chart-pool.mjs";
+import { pageScene } from "./chart-scene.mjs";
 import { maximizeButton } from "./diagram-icons.mjs";
 import { openDiagramViewer } from "./diagram-viewer.mjs";
 
-export const CHART_RENDERER = `vega-lite@${vl.version} vega@${vega.version}`;
-const DEFAULT_HEIGHT = 260;
-const MIN_WIDTH = 120;
 /** Wait after the last width change before redrawing, so a drag-resize draws
  * once at its end. */
 export const RESIZE_SETTLE_MS = 120;
+/** How long one draw may take in its Worker, from its start to its scene. */
+export const CHART_TIMEOUT_MS = 8_000;
+export { TIMED_OUT };
 
-/**
- * Guards on the values Vega's looping transforms read at run time. The spec
- * check bounds literals and `datasetRows` bounds the data, but a `calculate`,
- * an aggregate or a window can derive a number outside CHART_NUMBER_RANGE
- * (`datum.x / 1e150 / 1e150 / 1e23` is about 1e-323), and these transforms
- * loop on what they read:
- *
- * | Transform  | Reads                                  | Loop                                 |
- * | ---------- | -------------------------------------- | ------------------------------------ |
- * | bin        | extent (from data), span, step, steps, | vega-statistics bin multiplies a step |
- * |            | minstep, anchor                        | that underflows to 0 forever         |
- * | kde        | extent and the field's values          | sampleCurve subdivides to span/steps |
- * | regression | extent and the x field's values        | sampleCurve, as kde                  |
- *
- * Each throws before the stock code runs when a value it reads isn't 0 or in
- * CHART_NUMBER_RANGE, so the chart moves to its error state. With every input
- * in range, a bin step is at least its span over 1e6 and a curve's stop is at
- * least its span over 500, both far above 0. Checked and left alone:
- * timeunit picks a unit from a fixed table, quantile's probabilities come
- * from the spec, and d3's linear ticks return none for a span they can't
- * step. Vega is bundled into this chunk alone, so the registry patch reaches
- * charts and nothing else.
- */
-const GUARDED = Symbol.for("pages.chart.guarded");
-
-const readable = (value) => {
-  if (value == null) return true;
-  let number;
-  try {
-    number = +value;
-  } catch {
-    return true;
-  }
-  return Number.isNaN(number) || chartNumber(number) === number;
-};
-
-function guardValues(values, transform) {
-  for (const value of values)
-    if (!readable(value))
-      throw new Error(
-        `A ${transform} read a computed value outside what a chart can draw: 0, or 1e-150 to 1e150 in size.`,
-      );
-}
-
-function guardTransforms(registry) {
-  if (registry[GUARDED]) return;
-  registry[GUARDED] = true;
-  const bin = registry.bin.prototype;
-  const stockBins = bin._bins;
-  bin._bins = function (_) {
-    if (!this.value || _.modified()) {
-      guardValues(_.extent ?? [], "bin");
-      guardValues([_.span, _.step, _.minstep, _.anchor, ...(_.steps ?? [])], "bin");
-    }
-    return stockBins.call(this, _);
-  };
-  for (const [name, field] of [
-    ["kde", "field"],
-    ["regression", "x"],
-  ]) {
-    const proto = registry[name].prototype;
-    const stock = proto.transform;
-    proto.transform = function (_, pulse) {
-      guardValues(_.extent ?? [], name);
-      const read = _[field];
-      if (typeof read === "function")
-        for (const tuple of pulse.materialize(pulse.SOURCE).source ?? [])
-          guardValues([read(tuple)], name);
-      return stock.call(this, _, pulse);
-    };
-  }
-}
-guardTransforms(vega.transforms);
-
-/** A loader that refuses every load and every link, so no spec can reach the
- * network or navigate. */
-export const deniedLoader = Object.freeze({
-  load: () => Promise.reject(Error("A chart reads only the datasets it is given.")),
-  sanitize: () => Promise.reject(Error("A chart can't load or link to a URL.")),
-  http: () => Promise.reject(Error("A chart can't load a URL.")),
-  file: () => Promise.reject(Error("A chart can't load a file.")),
+// The Worker script, a content-hashed chunk the build names (scripts/build.mjs).
+const WORKER_URL =
+  typeof __PAGES_CHART_WORKER_URL__ === "string" ? __PAGES_CHART_WORKER_URL__ : null;
+const defaultWorkers = Object.freeze({
+  create: () => {
+    if (!WORKER_URL) throw new Error("This build has no chart Worker.");
+    return new Worker(WORKER_URL, { name: "chart" });
+  },
+  timeoutMs: CHART_TIMEOUT_MS,
+  readyMs: CHART_READY_MS,
+  size: CHART_WORKERS,
+  checkSpec: true,
 });
-
+const SVG_NS = "http://www.w3.org/2000/svg";
+let workers = defaultWorkers;
+// One pool per document, made when its first chart mounts.
+let pools = new WeakMap();
 /**
- * One data value as a chart reads it. Numbers go through `chartNumber`
- * (bigints become numbers first). Vega coerces strings in arithmetic, so a
- * string that reads as a number outside CHART_NUMBER_RANGE, or as Infinity,
- * becomes that number's chart value.
+ * The widths `doc` draws probe `items` at: SVG text with the attributes Vega's
+ * SVG renderer writes, so a probe compares what the Worker measures with what
+ * the page draws, not with a second canvas. In WebKit on macOS a canvas
+ * measures `system-ui` digits 2 to 5 percent narrower than SVG draws them.
+ * Null when the document lays out no text.
  */
-function plainScalar(value) {
-  if (typeof value === "bigint") return chartNumber(Number(value));
-  if (typeof value === "number") return chartNumber(value);
-  if (typeof value === "string" && value.trim() !== "") {
-    const read = Number(value);
-    if (!Number.isNaN(read) && chartNumber(read) !== read) return chartNumber(read);
+export function drawnWidths(doc, items) {
+  const svg = doc.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute(
+    "style",
+    "position:absolute;left:0;top:0;width:0;height:0;overflow:hidden;visibility:hidden",
+  );
+  for (const { item, text } of items) {
+    const node = svg.appendChild(doc.createElementNS(SVG_NS, "text"));
+    node.setAttribute("font-family", item.font);
+    node.setAttribute("font-size", `${item.fontSize}px`);
+    if (item.fontWeight !== undefined) node.setAttribute("font-weight", item.fontWeight);
+    node.textContent = text;
   }
-  return value;
+  (doc.body ?? doc.documentElement).append(svg);
+  try {
+    const widths = [...svg.children].map((node) => node.getComputedTextLength?.());
+    return widths.every(Number.isFinite) ? widths : null;
+  } finally {
+    svg.remove();
+  }
 }
 
-/** Nesting a copied value keeps; anything deeper becomes null. */
-const MAX_NESTING = 32;
+const poolFor = (doc) => {
+  let pool = pools.get(doc);
+  if (!pool) {
+    // Each new Worker is probed with the Page's own font stack.
+    const font = () =>
+      doc.defaultView?.getComputedStyle?.(doc.body ?? doc.documentElement)?.fontFamily;
+    pool = createChartPool({ font, measure: (items) => drawnWidths(doc, items), ...workers, doc });
+    pools.set(doc, pool);
+  }
+  return pool;
+};
 
-/** A dataset that needs more than CHART_MAX_CELLS cells to copy. */
-class CellBudgetSpent extends Error {}
-
-/** The cells left for one dataset's copy, top-level and nested together. */
-function cellBudget(limit) {
-  let left = limit;
-  return (cells) => {
-    left -= cells;
-    if (left < 0) throw new CellBudgetSpent();
+/** Replace how charts start their Workers, how long a draw may take and how
+ * many Workers a document shares: for tests in a DOM without Workers, and
+ * for the smoke's fixture Worker. `checkSpec: false` skips the page's spec
+ * check, so the smoke can prove the timer cuts off a spec the checks would
+ * refuse. Charts mounted after the call use a new pool. Returns a function
+ * that restores the previous setting. */
+export function setChartWorker(create, options = {}) {
+  const previous = workers;
+  workers = { ...defaultWorkers, ...options, create };
+  pools = new WeakMap();
+  return () => {
+    workers = previous;
+    pools = new WeakMap();
   };
 }
 
-// Arrow's nested values: a list cell is a Vector, a struct cell a StructRow
-// and a map cell a MapRow. Their toJSON reads every element at once, so they
-// are walked one entry at a time instead, after their size is charged.
-const ARROW_PARENT = Symbol.for("parent");
-const ARROW_KEYS = Symbol.for("keys");
-const isArrowVector = (value) =>
-  typeof value.get === "function" &&
-  Number.isInteger(value.length) &&
-  Array.isArray(value.data) &&
-  value.type !== undefined;
-const arrowRowSize = (value) => {
-  if (value[ARROW_KEYS] !== undefined) return value.size;
-  if (value[ARROW_PARENT] !== undefined) return value[ARROW_PARENT].type?.children?.length;
-  return undefined;
-};
-
-/** Define `key` on `copy` as an own property, so "__proto__" stays a key, as
- * JSON.parse makes it. */
-const defineKey = (copy, key, value) =>
-  Object.defineProperty(copy, key, { value, enumerable: true, writable: true, configurable: true });
-
-/**
- * A copy of one data value, spending a cell for every array element and
- * object key before reading it, nested ones included, so a payload shared by
- * every row counts once per row. A field path reaches nested values, so they
- * get `plainScalar` too. Objects copy as plain objects, since Vega coerces
- * some (a gradient paint) to strings. Arrow lists, structs and maps are
- * walked entry by entry; another object's `toJSON` is honored after the depth
- * check. A cycle, a value deeper than MAX_NESTING or a property that throws
- * becomes null.
- */
-function plainValue(value, spend, depth = 0, ancestors = []) {
-  if (value instanceof Date || value === null || typeof value !== "object")
-    return plainScalar(value);
-  if (depth >= MAX_NESTING || ancestors.includes(value)) return null;
-  ancestors.push(value);
-  try {
-    const next = (item) => plainValue(item, spend, depth + 1, ancestors);
-    if (isArrowVector(value)) {
-      spend(value.length);
-      const copy = new Array(value.length);
-      for (let i = 0; i < value.length; i++) copy[i] = next(value.get(i));
-      return copy;
-    }
-    const rowSize = arrowRowSize(value);
-    if (rowSize !== undefined) {
-      spend(Number.isInteger(rowSize) ? rowSize : Number.POSITIVE_INFINITY);
-      const copy = {};
-      for (const [key, item] of value) defineKey(copy, String(key), next(item));
-      return copy;
-    }
-    if (typeof value.toJSON === "function") {
-      let json;
-      try {
-        json = value.toJSON();
-      } catch {
-        return null;
-      }
-      return json === value ? null : next(json);
-    }
-    if (Array.isArray(value) || ArrayBuffer.isView(value)) {
-      spend(value.length);
-      const copy = new Array(value.length);
-      for (let i = 0; i < value.length; i++) copy[i] = next(value[i]);
-      return copy;
-    }
-    const copy = {};
-    for (const key of Object.keys(value)) {
-      spend(1);
-      let item;
-      try {
-        item = value[key];
-      } catch {
-        item = null;
-      }
-      defineKey(copy, key, next(item));
-    }
-    return copy;
-  } finally {
-    ancestors.pop();
-  }
-}
-
-const tooManyCells = (name) =>
-  `The dataset "${name}" has more than ${CHART_MAX_CELLS.toLocaleString("en-US")} cells (rows × columns, nested values included); a chart reads at most that many.`;
-
-/** Rows in a dataset, before any are copied. */
-const rowCount = (dataset) =>
-  Array.isArray(dataset) ? dataset.length : isArrowTable(dataset) ? dataset.numRows : 0;
-
-/** Cells a copy of the dataset would hold, counted without copying: an Arrow
- * table's rows × columns, or each row's own keys, stopping once past `limit`. */
-function cellCount(dataset, limit) {
-  if (isArrowTable(dataset)) return dataset.numRows * dataset.schema.fields.length;
-  if (!Array.isArray(dataset)) return 0;
-  let cells = 0;
-  for (const row of dataset) {
-    if (row && typeof row === "object") cells += Object.keys(row).length;
-    if (cells > limit) break;
-  }
-  return cells;
-}
-
-const isArrowTable = (value) =>
-  !!value &&
-  typeof value === "object" &&
-  Array.isArray(value.schema?.fields) &&
-  typeof value.getChildAt === "function" &&
-  Number.isInteger(value.numRows);
-
-/**
- * Plain rows for Vega from a dataset: an array of row objects, or an Arrow
- * table, or null for anything else. Rows are copied, since Vega tags each row
- * it ingests, and each value goes through `plainValue`: 64-bit integers
- * become numbers, since Vega's scales take only numbers, and every number
- * lands in CHART_NUMBER_RANGE or becomes 0 or null. Each copy has a null
- * prototype, so a column named `__proto__` stays a column and a missing
- * `constructor` or `toString` column reads as undefined.
- *
- * The copy spends at most `limit` cells, top-level and nested together, and
- * throws CellBudgetSpent past it.
- */
-export function datasetRows(dataset, limit = CHART_MAX_CELLS) {
-  const spend = cellBudget(limit);
-  if (Array.isArray(dataset))
-    return dataset.map((row) => {
-      const copy = Object.create(null);
-      if (!row || typeof row !== "object") return copy;
-      for (const key of Object.keys(row)) {
-        spend(1);
-        copy[key] = plainValue(row[key], spend);
-      }
-      return copy;
-    });
-  if (isArrowTable(dataset)) {
-    const columns = dataset.schema.fields.map((field, index) => ({
-      name: field.name,
-      vector: dataset.getChildAt(index),
-    }));
-    spend(dataset.numRows * columns.length);
-    const rows = new Array(dataset.numRows);
-    for (let r = 0; r < rows.length; r++) {
-      const row = Object.create(null);
-      for (const { name, vector } of columns) row[name] = plainValue(vector?.get(r) ?? null, spend);
-      rows[r] = row;
-    }
-    return rows;
-  }
-  return null;
-}
-
-/** True when `error` is datasetRows running out of cells. */
-export const spentCellBudget = (error) => error instanceof CellBudgetSpent;
-
-/** The categorical palette, light and dark steps of the same eight hues
- * (validated for adjacent-pair color-vision separation). */
-const CATEGORY = {
-  light: ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"],
-  dark: ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"],
-};
+/** Links and loads go nowhere: the scenegraph carries no hrefs or images, and
+ * the handler's loader refuses anyway. */
+const deniedLoader = Object.freeze({
+  sanitize: () => Promise.reject(Error("A chart can't link anywhere.")),
+});
 
 /** The theme a chart draws with, read from the Page's own tokens. */
 export function pageTheme(element) {
@@ -353,60 +158,13 @@ export function pageTheme(element) {
     text: token("--foreground", dark ? "#f0efec" : "#0b0b0b"),
     muted: token("--muted-foreground", dark ? "#c3c2b7" : "#52514e"),
     line: token("--border", dark ? "#3a3a38" : "#e2e1dc"),
-    font: style?.fontFamily || "system-ui, sans-serif",
   };
 }
 
-/** Vega-Lite config from a theme. A spec's own config wins over it. */
-export function themeConfig(theme) {
-  const category = theme.dark ? CATEGORY.dark : CATEGORY.light;
-  return {
-    background: null,
-    font: theme.font,
-    view: { stroke: null },
-    axis: {
-      labelColor: theme.muted,
-      titleColor: theme.text,
-      gridColor: theme.line,
-      domainColor: theme.line,
-      tickColor: theme.line,
-      labelFontSize: 11,
-      titleFontWeight: 500,
-    },
-    legend: { labelColor: theme.muted, titleColor: theme.text },
-    title: { color: theme.text, anchor: "start", fontSize: 14, fontWeight: 600 },
-    header: { labelColor: theme.muted, titleColor: theme.text },
-    range: { category },
-    // Every mark answers hover with its encoded fields; a spec's own
-    // `tooltip: null` turns it off.
-    mark: { color: category[0], tooltip: { content: "encoding" } },
-    bar: { cornerRadiusEnd: 4 },
-    line: { strokeWidth: 2 },
-    point: { size: 64 },
-  };
-}
-
-const isComposite = (spec) =>
-  ["concat", "hconcat", "vconcat", "facet", "repeat"].some((key) => key in spec) ||
-  ["row", "column", "facet"].some((key) => key in (spec.encoding ?? {}));
-const DISCRETE = new Set(["nominal", "ordinal"]);
-
-/** A spec sized for `width`, when it doesn't size itself. A discrete y axis
- * keeps Vega-Lite's own step height. */
-export function sizedSpec(spec, width) {
-  if (isComposite(spec)) return spec;
-  return {
-    ...spec,
-    ...(spec.width === undefined && width > 0 && { width: Math.max(MIN_WIDTH, width) }),
-    ...(spec.height === undefined &&
-      !DISCRETE.has(spec.encoding?.y?.type) && { height: DEFAULT_HEIGHT }),
-    autosize: spec.autosize ?? { type: "fit-x", contains: "padding" },
-  };
-}
-
-/** One sentence from an error Vega or Vega-Lite threw. */
+/** One sentence from a draw's failure: a refusal as it is, anything Vega or
+ * Vega-Lite threw as its first sentence. */
 function errorSentence(error) {
-  if (error instanceof ChartRefusal) return error.message;
+  if (error?.refusal) return error.message;
   const message = String(error?.message ?? error ?? "").trim();
   const first = message
     .split(/(?<=[.!?])\s/)[0]
@@ -536,170 +294,6 @@ export function formatTooltip(value, valueToHtml, maxDepth = 2) {
 
 let tooltipCount = 0;
 
-/**
- * Functions a static chart's compiled dataflow may call: the ones a spec may
- * call itself, plus what Vega-Lite 6.5.0 generates for static charts. The
- * corpus test in viewer/vega-chart.test.mjs compiles static specs across
- * marks, transforms and composition and fails if Vega-Lite emits a call
- * outside this set.
- */
-export const VEGA_LITE_FUNCTIONS = Object.freeze(
-  new Set([
-    ...CHART_EXPRESSION_FUNCTIONS,
-    // A scale by its name in the chart's own scope, for band offsets and
-    // label positions.
-    "bandwidth",
-    "scale",
-    // Scale lookups by Vega's internal scale reference, for encodings.
-    "_bandwidth",
-    "_range",
-    "_scale",
-    // Band and point scale layout: padding as a fraction of the step.
-    "bandspace",
-    // A facet's cell count and a layout's extent read the chart's own data.
-    "data",
-    // A scale's domain and range, for axis and legend layout.
-    "domain",
-    "range",
-    // Legend symbol layout by column.
-    "flush",
-    // A continuous color legend's gradient.
-    "gradient",
-    // Multi-line titles and labels, joined from the spec's own strings.
-    "join",
-    // Linear interpolation for legend gradients and offsets.
-    "lerp",
-    // Time-unit labels for temporal axes.
-    "timeUnitSpecifier",
-  ]),
-);
-
-/**
- * Operator types a static chart's compiled dataflow uses, from the corpus
- * test. Interaction adds others (selection tuples, Voronoi for nearest
- * points), and those never run.
- */
-export const STATIC_OPERATORS = Object.freeze(
-  new Set([
-    "aggregate",
-    "axisticks",
-    "bin",
-    "bound",
-    "collect",
-    "datajoin",
-    "encode",
-    "extent",
-    "facet",
-    "filter",
-    "fold",
-    "formula",
-    "geoshape",
-    "impute",
-    "joinaggregate",
-    "kde",
-    "legendentries",
-    "lookup",
-    "mark",
-    "multiextent",
-    "operator",
-    "overlap",
-    "pivot",
-    "prefacet",
-    "projection",
-    "proxy",
-    "quantile",
-    "regression",
-    "relay",
-    "render",
-    "sample",
-    "scale",
-    "sequence",
-    "sieve",
-    "sortitems",
-    "stack",
-    "timeunit",
-    "tupleindex",
-    "values",
-    "viewlayout",
-    "window",
-  ]),
-);
-
-/** A refusal whose message is the sentence a reader sees. */
-class ChartRefusal extends Error {}
-
-const STATIC = "charts are static, with hover tooltips";
-
-/** True for `timeUnitSpecifier(...)` over literals, which Vega-Lite passes
- * as a temporal axis's label specifier. */
-const literalTimeUnitSpecifier = (node) =>
-  node?.type === "CallExpression" &&
-  node.callee?.type === "Identifier" &&
-  node.callee.name === "timeUnitSpecifier" &&
-  node.arguments.every(function literal(arg) {
-    if (arg.type === "Literal") return true;
-    if (arg.type === "ArrayExpression") return arg.elements.every(literal);
-    if (arg.type === "ObjectExpression")
-      return arg.properties.every((property) => literal(property.value));
-    return false;
-  });
-
-/** The spec's call check, except that a format specifier may also be a
- * literal `timeUnitSpecifier(...)`. */
-const checkCompiledCall = (call) =>
-  literalTimeUnitSpecifier(call.arguments[1]) ? null : checkFormatCall(call);
-
-/**
- * Why a parsed Vega dataflow can't run, or null. In the root and in every
- * `$subflow`: no event stream, signal handler or binding, and only
- * STATIC_OPERATORS. Anywhere: no hover encoding, no image mark, and every
- * expression within the policy with VEGA_LITE_FUNCTIONS.
- */
-export function runtimeProblem(runtime) {
-  if (!runtime || typeof runtime !== "object") return "This chart didn't compile.";
-  const seen = new Set();
-  const stack = [runtime];
-  while (stack.length) {
-    const node = stack.pop();
-    if (!node || typeof node !== "object" || seen.has(node)) continue;
-    seen.add(node);
-    // The root and every `$subflow` (a facet's or a repeat's cells) is a
-    // dataflow of its own, with its own operators and streams.
-    if (node === runtime) {
-      const problem = flowProblem(node);
-      if (problem) return problem;
-    }
-    if (node.$subflow && typeof node.$subflow === "object") {
-      const problem = flowProblem(node.$subflow);
-      if (problem) return problem;
-    }
-    if (node.marktype === "image") return "This chart can't draw image marks.";
-    // A hover encoding would run on pointer events.
-    if (node.$encode && typeof node.$encode === "object" && "hover" in node.$encode)
-      return `This chart changes on hover; ${STATIC}.`;
-    if (node.ast) {
-      const problem = expressionProblem(node.ast, VEGA_LITE_FUNCTIONS, checkCompiledCall);
-      if (problem) return `This chart's compiled code ${problem}.`;
-    }
-    for (const child of Object.values(node))
-      if (child && typeof child === "object") stack.push(child);
-  }
-  return null;
-}
-
-/** Why one dataflow, the root or a subflow, isn't static, or null. */
-function flowProblem(flow) {
-  for (const key of ["streams", "updates", "bindings"])
-    if (flow[key] !== undefined && (!Array.isArray(flow[key]) || flow[key].length))
-      return `This chart listens for events; ${STATIC}.`;
-  if (flow.operators !== undefined && !Array.isArray(flow.operators))
-    return "This chart didn't compile.";
-  for (const operator of flow.operators ?? [])
-    if (!STATIC_OPERATORS.has(operator?.type))
-      return `This chart uses a ${operator?.type} operator; ${STATIC}.`;
-  return null;
-}
-
 // A paint is a color, never a reference: hex, a color keyword, or one color
 // function with no nested parentheses, quotes or escapes.
 const PAINT =
@@ -754,7 +348,7 @@ export function cleanItem(item) {
 /** Vega's SVG renderer, cleaning each item before it writes it. `_update`
  * writes a mark's attributes (a text's font among them) and then calls
  * `style`; a group's background calls `style` directly. */
-class PagesSVGRenderer extends vega.SVGRenderer {
+class PagesSVGRenderer extends SVGRenderer {
   _update(mdef, el, item) {
     if (item) cleanItem(item);
     return super._update(mdef, el, item);
@@ -768,76 +362,6 @@ class PagesSVGRenderer extends vega.SVGRenderer {
     return super.background(safeColor(color));
   }
 }
-vega.renderModule("pages-svg", {
-  renderer: PagesSVGRenderer,
-  headless: PagesSVGRenderer,
-  handler: vega.SVGHandler,
-});
-
-/** Vega sets the view's cursor with `container.style.cursor = value`. Let it
- * set keywords only. */
-function guardCursor(element) {
-  const style = element.style;
-  let proto = Object.getPrototypeOf(style);
-  while (proto && !Object.hasOwn(proto, "cursor")) proto = Object.getPrototypeOf(proto);
-  const accessor = proto && Object.getOwnPropertyDescriptor(proto, "cursor");
-  if (!accessor?.set) return;
-  Object.defineProperty(style, "cursor", {
-    configurable: true,
-    get: () => accessor.get.call(style),
-    set: (value) => accessor.set.call(style, CHART_CURSORS.has(value) ? value : ""),
-  });
-}
-
-/** Vega's logger, handing each error to `onError`. An operator that throws
- * during a run logs and lets the run finish, so the logger is how a chart
- * learns it failed, on the first draw or any later run. */
-function reportingLogger(onError) {
-  const logger = vega.logger(vega.Warn);
-  const error = logger.error;
-  logger.error = (...args) => {
-    onError(new Error(args.map((arg) => arg?.message ?? String(arg)).join(" ")));
-    return error.apply(logger, args);
-  };
-  return logger;
-}
-
-/**
- * Draw `spec` over `data` (name → plain rows) into `target`. Resolves with the
- * Vega view; rejects with Vega's error after finalizing a half-built view.
- * `onError(error)` hears an error from any run after the first.
- */
-export async function drawChart(target, { spec, data, theme, width, tooltip, onError }) {
-  const compiled = vl.compile(sizedSpec(spec, width), { config: themeConfig(theme) }).spec;
-  const runtime = vega.parse(compiled, null, { ast: true });
-  const problem = runtimeProblem(runtime);
-  if (problem) throw new ChartRefusal(problem);
-  guardCursor(target);
-  let firstError = null;
-  let drawn = false;
-  const view = new vega.View(runtime, {
-    expr: expressionInterpreter,
-    loader: deniedLoader,
-    renderer: "pages-svg",
-    container: target,
-    ...(tooltip && { tooltip }),
-    logger: reportingLogger((error) => {
-      if (!drawn) firstError ??= error;
-      else onError?.(error);
-    }),
-  });
-  try {
-    for (const [name, rows] of Object.entries(data)) view.data(name, rows);
-    await view.runAsync();
-    if (firstError) throw firstError;
-    drawn = true;
-    return view;
-  } catch (error) {
-    view.finalize();
-    throw error;
-  }
-}
-
 /** The width a chart may fill: the element's content box. */
 function contentWidth(element) {
   const style = element.ownerDocument.defaultView?.getComputedStyle?.(element);
@@ -847,14 +371,66 @@ function contentWidth(element) {
 }
 
 /**
+ * Draw a Worker's scenegraph into `target` with the cleaning SVG renderer, and
+ * show each item's tooltip on hover through `tooltip`. Returns `{ finalize }`,
+ * which stops listening and hides the tooltip.
+ */
+export function drawScene(target, { scene, width, height, origin, background }, tooltip) {
+  const size = (value) => (Number.isFinite(value) ? Math.min(Math.max(value, 0), 100_000) : 0);
+  width = size(width);
+  height = size(height);
+  origin = Array.isArray(origin) ? [size(origin[0]), size(origin[1])] : [0, 0];
+  background = typeof background === "string" && background.length <= 256 ? background : null;
+  const root = sceneFromJSON(pageScene(scene));
+  const renderer = new PagesSVGRenderer(deniedLoader)
+    .initialize(target, width, height, origin)
+    .background(background ?? null);
+  renderer.render(root);
+  const handler = new SVGHandler(deniedLoader, tooltip).initialize(target, origin, null);
+  return {
+    finalize() {
+      handler.initialize(null, origin, null);
+      tooltip?.(handler, null, null, null);
+    },
+  };
+}
+
+/** A real apache-arrow Table: Arrow's shape with record batches behind it.
+ * A wrapper that only looks like one can't be serialized for a Worker. */
+const isArrowBacked = (dataset) => isArrowTable(dataset) && Array.isArray(dataset.batches);
+
+/** What crosses to a Worker for one dataset, built for each Worker that
+ * needs it: rows by structured clone; Arrow IPC bytes as this chart's own
+ * copy, transferred, since the caller's bytes may back other views and
+ * tables; an Arrow table serialized to fresh IPC bytes, transferred.
+ * `transfer` collects the buffers; `arrow` is the apache-arrow module,
+ * loaded only when a table needs it. */
+function crossing(dataset, transfer, arrow) {
+  if (dataset instanceof Uint8Array) {
+    const ipc = dataset.slice();
+    transfer.push(ipc.buffer);
+    return { ipc };
+  }
+  if (isArrowBacked(dataset)) {
+    const ipc = arrow.tableToIPC(dataset);
+    transfer.push(ipc.buffer);
+    return { ipc };
+  }
+  return { rows: dataset };
+}
+
+/**
  * Mount a chart in `container`. `spec` is a parsed Vega-Lite spec. `datasets`
- * maps each data name the spec reads to rows or an Arrow table; the chart
+ * maps each data name the spec reads to rows, Arrow IPC bytes (a Uint8Array
+ * the chart copies, never transfers) or an apache-arrow Table; the chart
  * never fetches. `title` is shown above the chart. Returns `{ destroy }`.
  *
  * A Page theme change or a new container width redraws the chart, so text
  * keeps its size at any width; a draw still in flight is abandoned, so a slow
- * earlier draw never replaces a newer one. A spec the checks refuse, or one
- * Vega can't draw, shows one sentence inside the border instead.
+ * earlier draw never replaces a newer one. A spec the checks refuse, one Vega
+ * can't draw, one that outlasts CHART_TIMEOUT_MS, or a Worker that can't
+ * start shows one sentence inside the border instead. A chart that timed
+ * out doesn't redraw; the caller mounts it again for a new spec or data.
  */
 export function mount(container, { spec, datasets = {}, title = "" }) {
   const doc = container.ownerDocument;
@@ -885,7 +461,7 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
   const showHeader = () => (header.hidden = !title && maximize.hidden);
   showHeader();
 
-  let view = null;
+  let drawing = null;
   let viewer = null;
   const show = (status, sentence = "") => {
     figure.dataset.chartStatus = status;
@@ -905,9 +481,9 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
   let removeTooltip = null;
   const teardown = () => {
     const closing = viewer;
-    const finalizing = view;
+    const finalizing = drawing;
     viewer = null;
-    view = null;
+    drawing = null;
     let failure = null;
     for (const step of [
       () => closing?.close(),
@@ -930,31 +506,36 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
   } catch {
     plain = undefined;
   }
-  const checked = checkChartSpec(plain, { datasets: Object.keys(datasets) });
+  const checked = workers.checkSpec
+    ? checkChartSpec(plain, { datasets: Object.keys(datasets) })
+    : { ok: true, names: Object.keys(datasets) };
   // Keyed by dataset name, so neither map answers to a name it wasn't given.
   const given = (name) => (Object.hasOwn(datasets, name) ? datasets[name] : undefined);
-  const data = Object.create(null);
   let refusal = checked.ok ? null : checked.error;
   if (!refusal)
     for (const name of checked.names) {
-      const rows = rowCount(given(name));
+      const dataset = given(name);
+      // IPC bytes are counted in the Worker, as they decode.
+      if (dataset instanceof Uint8Array) continue;
+      if (!Array.isArray(dataset) && !isArrowBacked(dataset)) {
+        refusal = `The dataset "${name}" must be rows, Arrow IPC bytes or an Arrow table.`;
+        break;
+      }
+      const rows = rowCount(dataset);
       if (rows > CHART_MAX_ROWS) {
         refusal = `The dataset "${name}" has ${rows.toLocaleString("en-US")} rows; a chart reads at most ${CHART_MAX_ROWS.toLocaleString("en-US")}.`;
         break;
       }
-      if (cellCount(given(name), CHART_MAX_CELLS) > CHART_MAX_CELLS) {
-        refusal = tooManyCells(name);
-        break;
-      }
+      let cells;
       try {
-        data[name] = datasetRows(given(name));
+        cells = cellCount(dataset, CHART_MAX_CELLS);
       } catch (error) {
-        if (!spentCellBudget(error)) throw error;
-        refusal = tooManyCells(name);
+        if (!(error instanceof UnreadableDataset)) throw error;
+        refusal = unreadableDataset(name);
         break;
       }
-      if (!data[name]) {
-        refusal = `The dataset "${name}" must be rows or an Arrow table.`;
+      if (cells > CHART_MAX_CELLS) {
+        refusal = tooManyCells(name);
         break;
       }
     }
@@ -971,21 +552,18 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
     disableDefaultStyle: true,
     formatTooltip,
   });
-  // Finalizing a view hides its tooltip, and vega-tooltip creates the element
-  // to hide it. After destroy, a late draw's finalize must not.
   let mounted = true;
-  // A failure after the chart drew (a later run, a tooltip that can't show)
-  // leaves it in its error state. Deferred, so a view isn't finalized inside
-  // its own run or event. `target` is the drawing that failed; a newer one
-  // stays.
-  const fail = (error, target = canvas.firstChild) =>
+  // A tooltip that can't show leaves the chart in its error state. Deferred,
+  // so the drawing isn't torn down inside its own event.
+  const fail = (error) =>
     queueMicrotask(() => {
-      if (!mounted || !target || canvas.firstChild !== target) return;
-      view?.finalize();
-      view = null;
+      if (!mounted || !drawing) return;
+      drawing.finalize();
+      drawing = null;
       canvas.replaceChildren();
       show("error", errorSentence(error));
     });
+  // After destroy, a late finalize must not recreate the tooltip element.
   const showTooltip = (...args) => {
     if (!mounted) return;
     try {
@@ -994,6 +572,25 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
       fail(error);
     }
   };
+
+  // The chart's place in its document's Worker pool, once Arrow (needed only
+  // to serialize a table) has loaded.
+  let client = null;
+  const attached = (
+    checked.names.some((name) => isArrowBacked(given(name)))
+      ? import("apache-arrow")
+      : Promise.resolve(null)
+  ).then((arrow) => {
+    if (!mounted) return null;
+    client = poolFor(doc).attach(() => {
+      const transfer = [];
+      const datasets = Object.create(null);
+      for (const name of checked.names) datasets[name] = crossing(given(name), transfer, arrow);
+      return { datasets, transfer };
+    });
+    return client;
+  });
+
   const themes = new BehaviorSubject(pageTheme(container));
   const watchTheme = win?.MutationObserver
     ? new win.MutationObserver(() => themes.next(pageTheme(container)))
@@ -1004,43 +601,56 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
     ? new win.ResizeObserver(() => widths.next(contentWidth(frame)))
     : null;
   watchSize?.observe(frame);
-  // The first width draws at once; later ones wait for the resize to settle.
+  // Only a measured width draws: a frame with no width yet (not laid out, or
+  // in a hidden tab) posts nothing until its first observed width, so no
+  // chart draws at Vega-Lite's default size first. The first width draws at
+  // once; later ones wait for the resize to settle. Without a ResizeObserver
+  // the width read at mount is the only one there will be.
+  const measured = watchSize ? widths.pipe(filter((width) => width > 0)) : widths;
   const settledWidths = concat(
-    widths.pipe(take(1)),
-    widths.pipe(skip(1), debounceTime(RESIZE_SETTLE_MS)),
+    measured.pipe(take(1)),
+    measured.pipe(skip(1), debounceTime(RESIZE_SETTLE_MS)),
   ).pipe(distinctUntilChanged());
 
+  // One draw: the Worker's answer drawn into a fresh target, or the error.
   const draw = ([theme, width]) =>
-    new Observable((subscriber) => {
-      let cancelled = false;
-      const target = doc.createElement("div");
-      const onError = (error) => fail(error, target);
-      drawChart(target, { spec: plain, data, theme, width, tooltip: showTooltip, onError }).then(
-        (drawn) => {
-          if (cancelled) drawn.finalize();
-          else subscriber.next({ view: drawn, target });
-          subscriber.complete();
-        },
-        (error) => {
-          if (!cancelled) subscriber.next({ error });
-          subscriber.complete();
-        },
-      );
-      return () => {
-        cancelled = true;
-      };
-    });
+    from(attached).pipe(
+      switchMap((pooled) => {
+        if (!pooled) return [];
+        // A chart already on screen redraws behind charts not yet drawn.
+        return pooled.draw({ spec: plain, theme, width }, { redraw: drawing !== null });
+      }),
+      switchMap((answer) => {
+        if (answer.error) return [{ error: answer.error, timedOut: answer.timedOut === true }];
+        const target = doc.createElement("div");
+        try {
+          return [{ target, drawing: drawScene(target, answer, showTooltip) }];
+        } catch (error) {
+          return [{ error }];
+        }
+      }),
+    );
 
   const subscription = new Subscription();
   subscription.add(
     combineLatest([themes.pipe(distinctUntilChanged((a, b) => a.dark === b.dark)), settledWidths])
       .pipe(switchMap(draw))
       .subscribe((result) => {
-        view?.finalize();
-        view = result.view ?? null;
+        drawing?.finalize();
+        drawing = result.drawing ?? null;
         canvas.replaceChildren(...(result.target ? [result.target] : []));
         if (result.error) show("error", errorSentence(result.error));
         else show("rendered");
+        // A chart that timed out stays in its error state: a resize or theme
+        // change doesn't run it again, and its data leaves the Worker. A new
+        // spec or data revision mounts it anew. Ten hung charts on one Page
+        // then cost the Worker at most ten timers, once.
+        if (result.timedOut) {
+          subscription.unsubscribe();
+          watchTheme?.disconnect();
+          watchSize?.disconnect();
+          client?.detach();
+        }
       }),
   );
 
@@ -1050,6 +660,7 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
       subscription.unsubscribe();
       watchTheme?.disconnect();
       watchSize?.disconnect();
+      client?.detach();
       teardown();
     },
   };

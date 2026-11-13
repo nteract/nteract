@@ -1,6 +1,6 @@
-// A view embed in a DOM with the real chart renderer and the real Arrow
-// decoder: a Parquet source decodes once into an Arrow table, draws, and a
-// rewritten source redraws; a view that isn't on the Page and a removed
+// A view embed in a DOM with the real chart renderer, the chart Worker's
+// message loop in this process, and the real Arrow decoder: a Parquet source
+// decodes once into Arrow IPC bytes, draws, and a rewritten source redraws; a view that isn't on the Page and a removed
 // source each show their one sentence. Also measures what decoding and
 // drawing a 100,000-row source costs.
 import test, { after, before } from "node:test";
@@ -12,11 +12,15 @@ import path from "node:path";
 import * as A from "@automerge/automerge";
 import { setWasmUrl } from "@nteract/sift";
 import { JSDOM } from "jsdom";
+import { tableFromIPC } from "apache-arrow";
 import { BehaviorSubject } from "rxjs";
 import { setSources, sourcesGenesis } from "../model/sources-doc.mjs";
 import { checkChartSpec } from "../shared/chart-spec.mjs";
 import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 import { PageSourceStore } from "./page-source-store.mjs";
+import { InProcessWorker } from "../test/chart-worker-in-process.mjs";
+import { readDatasets } from "./chart-dataflow.mjs";
+import { setChartWorker } from "./vega-chart.mjs";
 import { decodeArrow } from "./view-arrow.mjs";
 import { DATAFRAME_LIMITS } from "./sift-dataset.mjs";
 import { VIEW_MEDIA_TYPE, projectView } from "./view-store.mjs";
@@ -27,6 +31,11 @@ const duckDist = path.dirname(require.resolve("@duckdb/duckdb-wasm/dist/duckdb-e
 setWasmUrl(
   `data:application/wasm;base64,${readFileSync(require.resolve("@nteract/sift/sift.wasm")).toString("base64")}`,
 );
+
+setChartWorker(() => new InProcessWorker());
+
+/** A decoded source's rows as the chart Worker reads them. */
+const workerRows = (bytes) => readDatasets({ d: { ipc: bytes } }).d;
 
 const PAGE = "0b9f2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f";
 const asset = (char) => char.repeat(64);
@@ -172,8 +181,10 @@ const ready = (revision = "1", fields = {}) => ({
   },
 });
 
-test("a Parquet source decodes once into an Arrow table the renderer reads", async () => {
-  const table = await decodeArrow(files.small, DATAFRAME_LIMITS);
+test("a Parquet source decodes once into Arrow IPC bytes a chart reads", async () => {
+  const bytes = await decodeArrow(files.small, DATAFRAME_LIMITS);
+  assert.ok(bytes instanceof Uint8Array);
+  const table = tableFromIPC(bytes);
   assert.equal(table.numRows, 3);
   assert.deepEqual(
     table.schema.fields.map((field) => field.name),
@@ -182,10 +193,8 @@ test("a Parquet source decodes once into an Arrow table the renderer reads", asy
 });
 
 test("each column reaches a chart in a form Vega reads", async () => {
-  const { datasetRows } = await import("./vega-chart.mjs");
-  const table = await decodeArrow(files.typed, DATAFRAME_LIMITS);
-  assert.ok(!table.schema.fields.some((field) => field.name === "__proto__"));
-  const [row, empty] = datasetRows(table);
+  const [row, empty] = workerRows(await decodeArrow(files.typed, DATAFRAME_LIMITS));
+  assert.ok(!Object.hasOwn(row, "__proto__"));
   assert.equal(row.price, 12.34);
   assert.equal(row.big, 9007199254740992, "past the safe range: the nearest double");
   assert.equal(row.unsigned, 5);
@@ -203,8 +212,7 @@ test("each column reaches a chart in a form Vega reads", async () => {
 });
 
 test("timestamps read as epoch milliseconds in every unit, a zoned one as its instant", async () => {
-  const { datasetRows } = await import("./vega-chart.mjs");
-  const [row] = datasetRows(await decodeArrow(files.stamps, DATAFRAME_LIMITS));
+  const [row] = workerRows(await decodeArrow(files.stamps, DATAFRAME_LIMITS));
   const at = Date.UTC(2024, 0, 2, 3, 4, 5);
   assert.equal(row.s, at);
   assert.equal(row.ms, at + 123);
@@ -214,8 +222,7 @@ test("timestamps read as epoch milliseconds in every unit, a zoned one as its in
 });
 
 test("values inside lists, structs and maps read as numbers, and rows serialize", async () => {
-  const { datasetRows } = await import("./vega-chart.mjs");
-  const rows = datasetRows(await decodeArrow(files.nested, DATAFRAME_LIMITS));
+  const rows = workerRows(await decodeArrow(files.nested, DATAFRAME_LIMITS));
   const [row] = rows;
   assert.deepEqual({ ...row.record }, { count: 9007199254740992, price: 1.25 });
   assert.deepEqual(row.counts, [9007199254740992, null]);
@@ -225,8 +232,7 @@ test("values inside lists, structs and maps read as numbers, and rows serialize"
 });
 
 test("struct fields named like object members read their values, and map keys stay apart", async () => {
-  const { datasetRows } = await import("./vega-chart.mjs");
-  const [row] = datasetRows(await decodeArrow(files.nested, DATAFRAME_LIMITS));
+  const [row] = workerRows(await decodeArrow(files.nested, DATAFRAME_LIMITS));
   const members = row.members;
   for (const [name, value] of Object.entries({
     constructor: 1,
@@ -362,11 +368,10 @@ test("a 100,000-row source decodes and draws, and the cost is reported", () =>
     const { mountViewEmbed } = await import("./view-embed.mjs");
     const { mount } = await import("./vega-chart.mjs");
     const started = performance.now();
-    const table = await decodeArrow(files.large, DATAFRAME_LIMITS);
+    const bytes = await decodeArrow(files.large, DATAFRAME_LIMITS);
     const decoded = performance.now();
-    assert.equal(table.numRows, 100_000);
-    const { datasetRows } = await import("./vega-chart.mjs");
-    const rows = datasetRows(table);
+    assert.equal(tableFromIPC(bytes).numRows, 100_000);
+    const rows = workerRows(bytes);
     const converted = performance.now();
     assert.equal(rows.length, 100_000);
     assert.equal(typeof rows[0].total, "number", "a 64-bit integer column reads as numbers");

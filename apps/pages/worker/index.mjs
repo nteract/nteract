@@ -37,6 +37,8 @@ import { authorOf } from "../model/author.mjs";
 import { checkSources, setSources, validateSourceBatch } from "../model/sources-doc.mjs";
 import { checkView, setView, validateViewOperation } from "../model/view-doc.mjs";
 import { MAX_VIEWS, validViewId } from "../shared/views.mjs";
+import { CHART_WORKER_CSP, CHUNK_PATH } from "../shared/chart-worker-csp.mjs";
+import { setResponseHeaders } from "./response-headers.mjs";
 import { viewDocUuid } from "../shared/document-ids.mjs";
 import {
   commentsDocUuid,
@@ -1737,6 +1739,13 @@ const gateway = {
       if (linkRoute) return await handleLinkPreview(request, env, linkRoute, { logFailure });
       if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/internal/"))
         return json({ error: "Not found" }, 404);
+      // A chart Worker runs under the CSP delivered with its own script, so
+      // every viewer chunk carries one that allows nothing. Set here, not in
+      // public/_headers, so it holds wherever this Worker serves the assets.
+      if (CHUNK_PATH.test(url.pathname))
+        return setResponseHeaders(await env.ASSETS.fetch(request), [
+          ["Content-Security-Policy", CHART_WORKER_CSP],
+        ]);
       return env.ASSETS.fetch(request);
     } catch (error) {
       const response = errorResponse(error, "gateway");

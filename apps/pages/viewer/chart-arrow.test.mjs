@@ -5,8 +5,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Decimal, Dictionary, Int32, Int64, Table, makeData, makeVector } from "apache-arrow";
-import { datasetRows } from "./vega-chart.mjs";
-import { chartTable, decimalNumber } from "./view-arrow.mjs";
+import { chartTable, decimalNumber } from "./chart-arrow.mjs";
+import { datasetRows } from "./chart-data.mjs";
 
 /** 128-bit two's-complement words, low first, for each BigInt. */
 function decimalWords(values) {

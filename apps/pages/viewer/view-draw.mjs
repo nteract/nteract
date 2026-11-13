@@ -190,8 +190,8 @@ export function createViewDraw({ view$, sources, decode, checkChartSpec, render 
         } catch {
           step({ type: "drawFailed", generation: effect.generation });
         } finally {
-          // The chart turned the tables into its own rows when it mounted;
-          // a chart that threw keeps nothing.
+          // The chart copied what it reads when it mounted; a chart that
+          // threw keeps nothing.
           free(load.owned);
         }
         return;
