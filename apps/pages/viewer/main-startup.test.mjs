@@ -1010,6 +1010,35 @@ test("Project and legacy links open the existing document editor and tree", asyn
   }
 });
 
+test("the document menu's Copy link keeps the address's slug and adds none", async (t) => {
+  cleanUp(t);
+  globalThis.__editor = editorSurface;
+  const copied = [];
+  const previousClipboard = navigator.clipboard;
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: async (value) => copied.push(value) },
+  });
+  t.after(() =>
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: previousClipboard }),
+  );
+  globalThis.__openPage = async (id) => fakeSession(id, "one", "Plan content");
+  for (const [address, expected, shown] of [
+    [`/p/${PLAN}`, `http://localhost/p/${PLAN}`, `/p/${PLAN}`],
+    [`/p/${PLAN}/Some-Title`, `http://localhost/p/${PLAN}/Some-Title`, `/p/${PLAN}/Some-Title`],
+    [`/p/${PLAN}/Some-Title/`, `http://localhost/p/${PLAN}/Some-Title`, `/p/${PLAN}/Some-Title`],
+  ]) {
+    history.replaceState(null, "", address);
+    await boot(signedIn, {
+      ...catalog,
+      read_page: ({ page_id }) => ({ page_id, kind: "page", breadcrumbs: [] }),
+    });
+    await click(await until(() => pageAction("Copy link")));
+    assert.equal(copied.at(-1), expected, address);
+    assert.equal(location.pathname, shown, `${address}: the address keeps its slug`);
+  }
+});
+
 test("signed-out Project links name the Project and failed opens offer a way back", async (t) => {
   cleanUp(t);
   history.replaceState(null, "", `/project/${PROJECT}`);

@@ -142,8 +142,7 @@ test("replace_block_markdown keeps a view whose line is unchanged, and refuses d
     ["Gone", /holds a view with no line/],
     [line("weekly"), /holds a view with no line/],
     [`> ${line("daily")}`, /A view's line can't go inside a quote/],
-    [`${line("daily")}\n\n${line("daily")}`, /A view's line appears more times/],
-    [`${line("daily")}\n\n${line("weekly")}`, /reads as a view this block doesn't hold/],
+    [`# ${line("daily")}`, /A view's line can't go inside a quote/],
     // A link or formatted text isn't the line: refused, never a view
     // dropped for a plain link.
     [`[View: daily](/p/${pageId}/view/daily)`, /holds a view with no line/],
@@ -152,6 +151,113 @@ test("replace_block_markdown keeps a view whose line is unchanged, and refuses d
     assert.throws(
       () => edit(doc, [{ op: "replace_block_markdown", node_id: node, markdown }]),
       (error) => error.code === "markdownless_node" && pattern.test(error.message),
+      markdown,
+    );
+});
+
+// A block holding a view or a dataframe and paragraphs around it, written
+// through replace_block_markdown so the kept node stays the stored one.
+const dataframeNode = {
+  op: "insert_node",
+  node: { type: "dataframe", attrs: { asset_id: "d".repeat(64), title: "Usage" } },
+};
+const withProse = (insert, markdown) => {
+  const { doc } = edit(fresh(), [insert]);
+  const [, id] = orderedBlockIds(doc);
+  const node = blockAddress(doc, id);
+  const keep = projectPage(doc).blocks[1].markdown;
+  const next = edit(doc, [
+    { op: "replace_block_markdown", node_id: node, markdown: markdown(keep) },
+  ]).doc;
+  return { doc: next, id, node: blockAddress(next, id), keep };
+};
+const blockTypes = (doc, id) =>
+  A.spans(doc, textPath(id))
+    .filter((span) => span.type === "block")
+    .map((span) => String(span.value.type));
+// The node_id of the block's first paragraph, from read_page's outline.
+const projectReadNodeId = (doc, id) =>
+  projectReadContent(doc, { include_content: false }).outline.find(
+    (entry) => entry.block === blockAddress(doc, id) && entry.type === "paragraph",
+  ).node_id;
+const rewrite = (doc, node, markdown) =>
+  edit(doc, [{ op: "replace_block_markdown", node_id: node, markdown }]).doc;
+
+test("prose that reads like a view line stays prose beside a dataframe", () => {
+  const { doc, id, node } = withProse(dataframeNode, (keep) => `${keep}\n\n[View: summary]`);
+  assert.deepEqual(blockTypes(doc, id), ["dataframe", "paragraph"]);
+  const markdown = projectPage(doc).blocks[1].markdown;
+  assert.match(markdown, /\\\[View: summary\\\]$/);
+  // An unchanged round trip keeps both, and edits around them apply.
+  const same = rewrite(doc, node, markdown);
+  assert.equal(projectPage(same).blocks[1].markdown, markdown);
+  assert.deepEqual(blockTypes(same, id), ["dataframe", "paragraph"]);
+  const edited = rewrite(doc, node, `${markdown}\n\nAfter`);
+  assert.deepEqual(blockTypes(edited, id), ["dataframe", "paragraph", "paragraph"]);
+  assert.equal(documentFeatures(edited).includes("view"), false);
+});
+
+test("prose naming a view the block doesn't store creates nothing", () => {
+  const { doc, id, node, keep } = withProse(view("daily"), (line) => `${line}\n\nIntro`);
+  for (const markdown of [
+    `${keep}\n\n[View: weekly]`,
+    `${keep}\n\n\\[View: weekly\\]`,
+    `[View: weekly]\n\n${keep}`,
+  ]) {
+    const next = rewrite(doc, node, markdown);
+    assert.deepEqual(
+      blockTypes(next, id),
+      markdown.startsWith(keep) ? ["view", "paragraph"] : ["paragraph", "view"],
+      markdown,
+    );
+    assert.equal(
+      A.spans(next, textPath(id)).filter((span) => String(span.value?.type) === "view").length,
+      1,
+    );
+  }
+});
+
+test("prose with a stored view's own text stays prose beside the view's line", () => {
+  // The view, then a paragraph whose text reads the same.
+  const { doc, id, node } = withProse(view("daily"), (line) => `${line}\n\n[View: daily]`);
+  assert.deepEqual(blockTypes(doc, id), ["view", "paragraph"]);
+  const markdown = projectPage(doc).blocks[1].markdown;
+  assert.equal(markdown, `${line("daily")}\n\n${line("daily")}`);
+  const viewSpan = (d) =>
+    A.spans(d, textPath(id)).findIndex((span) => String(span.value?.type) === "view");
+  const same = rewrite(doc, node, markdown);
+  assert.deepEqual(blockTypes(same, id), ["view", "paragraph"]);
+  assert.equal(viewSpan(same), viewSpan(doc));
+  // Prose first, written by a text edit: the view keeps its place after it.
+  // (A rewrite that adds the line ahead of the view gives the view to the
+  // first line at its count, and the later one reads as prose.)
+  const placed = withProse(view("daily"), (l) => `Intro\n\n${l}`);
+  const intro = projectReadNodeId(placed.doc, placed.id);
+  const before = {
+    ...placed,
+    doc: edit(placed.doc, [
+      { op: "replace_match", node_id: intro, match_text: "Intro", replacement: "[View: daily]" },
+    ]).doc,
+  };
+  assert.deepEqual(blockTypes(before.doc, before.id), ["paragraph", "view"]);
+  const again = rewrite(before.doc, before.node, projectPage(before.doc).blocks[1].markdown);
+  assert.deepEqual(blockTypes(again, before.id), ["paragraph", "view"]);
+  // Dropping the prose that stood before the view leaves no line at the
+  // view's place: refused, as a dropped line is.
+  assert.throws(
+    () => rewrite(before.doc, before.node, line("daily")),
+    (error) =>
+      error.code === "markdownless_node" && /holds a view with no line/.test(error.message),
+  );
+});
+
+test("a stored view whose line is edited or dropped is still refused", () => {
+  const { doc, node } = withProse(view("daily"), (line) => `${line}\n\nIntro`);
+  for (const markdown of ["Intro", `${line("weekly")}\n\nIntro`, `**[View: daily]**\n\nIntro`])
+    assert.throws(
+      () => rewrite(doc, node, markdown),
+      (error) =>
+        error.code === "markdownless_node" && /holds a view with no line/.test(error.message),
       markdown,
     );
 });

@@ -33,8 +33,7 @@ import {
   isLibraryRoute,
   libraryBase,
   libraryPath,
-  pagePath,
-  projectPath,
+  copyLinkPath,
   readPageRoute,
   writePageRoute,
   writeRoute,
@@ -1195,8 +1194,7 @@ function App() {
         pageId === host.current?.pageId &&
         (projectOpen || (placement?.kind === "project" && placement.project_id));
       await navigator.clipboard.writeText(
-        new URL(path ?? (projectId ? projectPath(projectId) : pagePath(pageId)), location.origin)
-          .href,
+        new URL(path ?? copyLinkPath(projectId || pageId, location.href), location.origin).href,
       );
       setNotice("Link copied");
       if (documentDisclosure.current) documentDisclosure.current.open = false;

@@ -625,3 +625,34 @@ test("an owner who belongs to no organization and has no grant sees no link acce
   assert.match(f.container.textContent, /account-a owner/);
   assert.equal(f.container.querySelector(".page-domain-sharing"), null);
 });
+
+test("Copy link keeps the slug the address shows for this Page, and adds none", async (t) => {
+  const pageId = "1a160b47-6df1-4983-81eb-489ca5a26812";
+  const other = "2b160b47-6df1-4983-81eb-489ca5a26812";
+  const copied = [];
+  const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: async (value) => copied.push(value) },
+  });
+  t.after(() => {
+    if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard);
+    else delete navigator.clipboard;
+    dom.window.history.replaceState(null, "", "/p/page-a");
+  });
+  const f = await fixture(t, async () => json(ledger()), { current: session(pageId) });
+  for (const [address, expected] of [
+    [`/p/${pageId}`, `http://localhost/p/${pageId}`],
+    [`/p/${pageId}/Some-Title`, `http://localhost/p/${pageId}/Some-Title`],
+    [`/p/${pageId}/Some-Title#goals`, `http://localhost/p/${pageId}/Some-Title`],
+    // An address naming another Page lends this one no slug.
+    [`/p/${other}/Some-Title`, `http://localhost/p/${pageId}`],
+  ]) {
+    dom.window.history.replaceState(null, "", address);
+    await f.toggle();
+    const copy = f.container.querySelector('button[aria-label="Copy link"]');
+    await act(async () => copy.click());
+    assert.equal(copied.at(-1), expected, address);
+    await f.toggle();
+  }
+});

@@ -198,6 +198,18 @@ export function readPageRoute(input) {
   return { kind: "home", library, path: libraryPath("/", library) };
 }
 
+/**
+ * The path a "Copy link" action copies for Page or Project `id`, with `href`
+ * the address showing now. A Page link keeps the slug the address shows for
+ * that same Page, read through readPageRoute, so it is always one isPageSlug
+ * admits; with none it is `/p/<id>`. Nothing derives a slug from a title.
+ */
+export function copyLinkPath(id, href = globalThis.location?.href) {
+  if (isProjectId(id)) return projectPath(id);
+  const shown = href ? readPageRoute(href) : null;
+  return pagePath(id, shown?.kind === "page" && shown.pageId === id ? shown.slug : null);
+}
+
 // Modified and auxiliary clicks retain normal browser link behavior.
 export function isPlainNavigation(event) {
   return (

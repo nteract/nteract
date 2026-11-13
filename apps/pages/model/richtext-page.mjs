@@ -188,7 +188,9 @@ const KEPT_NODES = Object.freeze([
       const view = readViewNode(param);
       return view ? { text: viewLine(view.view_id), href: null } : null;
     },
-    looksLike: (line) => line.href === null && /^\[View: [^\]]*\]$/.test(line.text),
+    // Its line is text, which a person may also write: one that brings no
+    // stored view back is prose, never refused.
+    looksLike: () => false,
     insert: "insert_node with its view_id",
   },
 ]);
@@ -203,14 +205,19 @@ const capital = (text) => text[0].toUpperCase() + text.slice(1);
  * Each such node must appear in `source` as its read-back line, unchanged,
  * in the same place in the block's structure: at the top level, or inside
  * the same kind of quote or list item it's stored in. That line becomes the
- * original node again, unknown attrs included. Lines may move among their
- * siblings. Throws `markdownless_node`, rather than dropping or inventing a
- * node, when a line:
+ * original node again, unknown attrs included. A dataframe's line (a link)
+ * may move among its siblings. A view's line is text a paragraph can also
+ * hold, so it brings the view back only at the view's own place: the same
+ * container, after as many identical lines as stood before the view (so an
+ * identical line added ahead of it takes the view's place). Every other
+ * paragraph with that text is prose. Throws `markdownless_node`, rather
+ * than dropping or inventing a node, when a line:
  *
  * - moves into or out of a quote, list or table, or sits in a heading;
- * - is missing or edited;
- * - outnumbers the block's nodes with that line;
- * - reads like a node the block doesn't hold.
+ * - is missing or edited (for a view, also when identical lines before it
+ *   are removed, so none stands at its count);
+ * - outnumbers the block's dataframes with that line;
+ * - reads like a dataframe the block doesn't hold.
  */
 export function setRichMarkdownKeepingNodes(doc, id, source) {
   const block = doc.blocks[id];
@@ -248,15 +255,40 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
     }
     return spans;
   };
+  // The line a textblock holds when its whole text is one link, or one run
+  // of unformatted text (href null): the shapes of a kept node's read-back
+  // line. Table cells hold their text directly.
+  const lineLink = (node) => {
+    const only = node.type.spec.inlineContent && node.content.length === 1 ? node.content[0] : null;
+    if (!only?.isText) return null;
+    const link = only.mark(PagesLink);
+    if (link) return { href: link.href, text: only.param };
+    return only.marks.length ? null : { href: null, text: only.param };
+  };
+  // A text line (a view's) reads the same as a paragraph of that text, so
+  // its place is counted among both: `occurrence` is how many paragraphs and
+  // kept nodes with the same text line come before it in its container.
+  const textKey = (path, text) => `${path}\n${text}`;
   // Each kept node with its container path: the node types from the block's
   // root down to it, "" at the top level.
   const existing = [];
-  (function collect(node, path) {
+  (function collect(node, path, seen = new Map()) {
+    const count = (text) => {
+      const n = seen.get(textKey(path, text)) ?? 0;
+      seen.set(textKey(path, text), n + 1);
+      return n;
+    };
     for (const child of node.content ?? []) {
       const kind = keptKind(child);
-      if (kind) existing.push({ node: child, path, kind });
-      else if (child.isPlot && !child.type.spec.inlineContent)
-        collect(child, path ? `${path}/${readKind(child)}` : readKind(child));
+      if (kind) {
+        const own = kind.line(child.param);
+        const occurrence = own?.href === null ? count(own.text) : null;
+        existing.push({ node: child, path, kind, occurrence });
+      } else if (child.type === Paragraph.type) {
+        const line = lineLink(child);
+        if (line?.href === null) count(line.text);
+      } else if (child.isPlot && !child.type.spec.inlineContent)
+        collect(child, path ? `${path}/${readKind(child)}` : readKind(child), seen);
     }
   })(richDoc(block), "");
   // Every stored one counts, readable or not: one whose attrs this build
@@ -279,22 +311,34 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
   // Look-alike lines the walk found, `problem → kind`; the most specific
   // problem is reported.
   const problems = new Map();
-  // The line a textblock holds when its whole text is one link, or one run
-  // of unformatted text (href null): the shapes of a kept node's read-back
-  // line. Table cells hold their text directly.
-  const lineLink = (node) => {
-    const only = node.type.spec.inlineContent && node.content.length === 1 ? node.content[0] : null;
-    if (!only?.isText) return null;
-    const link = only.mark(PagesLink);
-    if (link) return { href: link.href, text: only.param };
-    return only.marks.length ? null : { href: null, text: only.param };
-  };
   const sameNode = (entry, line) => {
     const own = entry.kind.line(entry.node.param);
     return !!own && own.href === line.href && own.text === line.text;
   };
+  // Text lines the walk has passed, per container and text, and the kept
+  // nodes whose text line stood somewhere it can't bring them back.
+  const textSeen = new Map();
+  const textElsewhere = new Set();
   const restore = (node, path) => {
     const line = node.type.spec.inlineContent ? lineLink(node) : null;
+    // A text line is a kept node's only at that node's own place: the same
+    // container and the same count of identical lines before it. Any other
+    // such paragraph is prose, as it reads, and never refused.
+    if (line?.href === null) {
+      if (node.type !== Paragraph.type) {
+        for (const entry of existing) if (sameNode(entry, line)) textElsewhere.add(entry);
+        return node;
+      }
+      const n = textSeen.get(textKey(path, line.text)) ?? 0;
+      textSeen.set(textKey(path, line.text), n + 1);
+      const index = unmatched.findIndex(
+        (entry) => entry.path === path && entry.occurrence === n && sameNode(entry, line),
+      );
+      if (index !== -1) return unmatched.splice(index, 1)[0].node;
+      for (const entry of existing)
+        if (entry.path !== path && sameNode(entry, line)) textElsewhere.add(entry);
+      return node;
+    }
     if (line) {
       const matches = existing.filter((entry) => entry.path === path && sameNode(entry, line));
       if (matches.some((entry) => !entry.node.eq(matches[0].node)))
@@ -329,6 +373,8 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
   };
   // Without stored kept nodes, lines that look like them are ordinary links.
   const kept = existing.length ? restore(tree, "") : tree;
+  const movedText = unmatched.find((entry) => textElsewhere.has(entry));
+  if (movedText) problems.set("moved", movedText.kind);
   if (problems.has("moved"))
     refuse(
       `${capital(problems.get("moved").one)}'s line can't go inside a quote, list or table, into a heading, or out of the quote or list item it's stored in. Keep it where read_page shows it; it may move among its neighbours.`,

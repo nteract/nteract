@@ -137,9 +137,12 @@ replace_block_markdown keeps the node when that line is unchanged and stays
 where the node is stored: at the top level of the block, or inside the same kind
 of quote or list item. It refuses with markdownless_node a rewrite that drops or edits the
 line, takes it into or out of a quote, list, table or heading, has more copies
-of it than the block has such nodes, or adds a line that reads like a node the
-block doesn't hold: Markdown never creates or copies a node. Moving the line
-among its neighbours keeps the node's attrs but writes it as a new node.
+of a dataframe's line than the block has such dataframes, or adds a line that
+reads like a dataframe the block doesn't hold: Markdown never creates or copies
+a node. A view's line is plain text, so another copy, or one naming a view the
+block doesn't hold, stays text; the view keeps the copy at its own place.
+Moving the line among its neighbours keeps the node's attrs but writes it as a
+new node.
 ${typedReadFields()}
 ${richEditOperations()}
 These operations keep comment anchors and untouched characters in place, so

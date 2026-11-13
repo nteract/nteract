@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  copyLinkPath,
   isPageSlug,
   pagePath,
   pageSlugWords,
@@ -105,6 +106,19 @@ test("pagePath builds a slugged link that reads back as the same Page", () => {
   }
   for (const slug of ["view", "a.b", "", "a/b"])
     assert.throws(() => pagePath(id, slug), /Invalid Page slug/, slug);
+});
+test("a copied link keeps the slug the address shows for that Page, and derives none", () => {
+  const other = "2b160b47-6df1-4983-81eb-489ca5a26812";
+  const at = (path) => `https://pages.example${path}`;
+  assert.equal(copyLinkPath(id, at(`/p/${id}`)), `/p/${id}`);
+  assert.equal(copyLinkPath(id, at(`/p/${id}/My-Dashboard#goals`)), `/p/${id}/My-Dashboard`);
+  assert.equal(copyLinkPath(id, at(`/p/${id}/My-Dashboard/`)), `/p/${id}/My-Dashboard`);
+  assert.equal(copyLinkPath(id, at(`/p/${other}/My-Dashboard`)), `/p/${id}`);
+  // An address outside the grammar is no Page route and lends no slug.
+  assert.equal(copyLinkPath(id, at(`/p/${id}/My.Dashboard`)), `/p/${id}`);
+  assert.equal(copyLinkPath(id, at(`/p/${id}/%3Cscript%3E`)), `/p/${id}`);
+  assert.equal(copyLinkPath(id, at("/")), `/p/${id}`);
+  assert.equal(copyLinkPath(`prj_${id}`, at(`/p/${id}/My-Dashboard`)), `/project/prj_${id}`);
 });
 test("a replace keeps the slug the address shows for the same Page; a push or another Page drops it", () => {
   const calls = [];

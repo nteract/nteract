@@ -357,8 +357,10 @@ runs collapse, the ends trim) beside the product name, and an `og:title` of
 the words alone, HTML-escaped ([worker/page-shell.mjs](worker/page-shell.mjs)).
 It looks nothing up, so the shell is the same bytes whether the Page exists or
 the caller can read it, and it answers `Cache-Control: no-store` with no
-ETag. A signed-in reader's tab title is the Page's own. "Copy link" and the
-`url` fields tools return stay `/p/<page_id>`.
+ETag. A signed-in reader's tab title is the Page's own. Both "Copy link"
+actions (the document menu and Share) copy `copyLinkPath`: the slug the
+address shows for that Page, or `/p/<page_id>` with none. Nothing derives a
+slug from a title, and the `url` fields tools return stay `/p/<page_id>`.
 
 Browser creation allocates the Page and history locally, persists them to
 IndexedDB, and opens the editor while authenticated registration proceeds.
@@ -1829,7 +1831,10 @@ node is `400 invalid_edit_selector`, naming the field and its rule.
 `delete_node` removes the node and keeps the view. Markdown reads it as the
 text `[View: <view_id>]` (brackets escaped), from the node alone, with no
 link: a view has no address of its own. `replace_block_markdown` keeps the
-node for that exact line as it keeps a dataframe's. An outline entry has
+node for that exact line at the view's own place: the same container, after
+as many identical lines as stood before it. Any other paragraph with that text
+is prose and is never refused, so a block can hold `[View: x]` as text beside
+a dataframe or a view. An outline entry has
 `type: "view"`, `attrs: { view_id }`, and
 `summary: { title, media_type }` when the view exists. Comments refuse a view
 node. A view stored inside a text container reads as a notice.
