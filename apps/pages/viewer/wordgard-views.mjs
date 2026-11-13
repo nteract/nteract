@@ -6,7 +6,10 @@
 //
 // The embed is bare: the view's title, the chart in one thin border, and the
 // Maximize control Mermaid diagrams have. The chart code is its own chunk
-// (view-chart.mjs), loaded only when a Page shows a view near the viewport.
+// (view-chart.mjs). A Page whose editor holds a view embed loads it as the
+// embed connects and starts the chart Worker (`chartWarmup`), so both are
+// ready by the time the first chart's view and data are; each embed still
+// reads its view and sources only near the viewport.
 //
 // Until its chart draws, an embed reserves the height the chart last drew at
 // in this browser (view-heights.mjs), or wordgard.css's default, so the Page
@@ -155,6 +158,62 @@ export function viewLifecycle({
   };
 }
 
+/**
+ * Warms the chart path for one editor's embeds: while at least one embed is
+ * connected, the chart chunk is loaded (`load`, the same import an embed's
+ * lifecycle makes) and the document's chart Worker is kept started
+ * (view-chart.mjs `warm`). It looks up no view or source, holds no view slot
+ * and arms no timer of its own. A chunk that fails to load is ignored here;
+ * the embed's own load reports it. The last embed's release lets the Worker
+ * go a microtask later, so an embed Wordgard disconnects and connects again
+ * in one turn keeps it.
+ */
+export function chartWarmup({ load = VIEW_RENDERER } = {}) {
+  let holds = 0;
+  let release = null;
+  let loading = false;
+  const start = (doc) => {
+    if (release || loading) return;
+    loading = true;
+    Promise.resolve()
+      .then(load)
+      .then((chunk) => {
+        loading = false;
+        if (holds > 0 && !release) release = chunk.warm?.(doc) ?? null;
+      })
+      .catch(() => {
+        loading = false;
+      });
+  };
+  const settle = () => {
+    if (holds > 0 || !release) return;
+    const stop = release;
+    release = null;
+    try {
+      stop();
+    } catch {}
+  };
+  return {
+    /** Hold the warm path for an embed in `doc`; returns its release. */
+    hold(doc) {
+      let held = true;
+      holds++;
+      start(doc);
+      return () => {
+        if (!held) return;
+        held = false;
+        holds--;
+        queueMicrotask(settle);
+      };
+    },
+  };
+}
+
+/** The warm-up an editor's embeds share: none without the Page's views and
+ * sources, where every embed says its chart isn't on this Page. */
+export const warmupFor = ({ views, sources, load }) =>
+  views && sources ? chartWarmup({ load }) : null;
+
 /** Whether the embed shows its view drawn (view-draw.mjs "drawn") as a chart
  * Vega has finished (vega-chart.mjs "rendered"). */
 const chartDrawn = (dom) =>
@@ -211,10 +270,13 @@ const viewEmbed = Widget.define({
     a.views === b.views &&
     a.sources === b.sources &&
     a.eager === b.eager &&
-    a.heights === b.heights,
+    a.heights === b.heights &&
+    a.warmup === b.warmup,
   render(attrs) {
     const frame = viewFrame(attrs);
     mounted.set(frame.dom, {
+      warmup: attrs.warmup,
+      release: null,
       lifecycle: viewLifecycle({
         viewId: attrs.viewId,
         views: attrs.views,
@@ -228,6 +290,7 @@ const viewEmbed = Widget.define({
   },
   connect(_value, dom) {
     const embed = mounted.get(dom);
+    if (embed && !embed.release) embed.release = embed.warmup?.hold(dom.ownerDocument) ?? null;
     embed?.lifecycle.connect();
     embed?.recorder.connect();
   },
@@ -235,6 +298,8 @@ const viewEmbed = Widget.define({
     const embed = mounted.get(dom);
     embed?.recorder.disconnect();
     embed?.lifecycle.disconnect();
+    embed?.release?.();
+    if (embed) embed.release = null;
   },
   propagateEvent: viewEventReachesEditor,
 });
@@ -246,8 +311,9 @@ const viewEmbed = Widget.define({
  * on this Page. `eager` draws each chart at once rather than near the
  * viewport. `heights` (view-heights.mjs) remembers each chart's drawn height
  * for the next render's reserve; without it every embed reserves the
- * default. An editor without this config draws the node's own inert figure,
- * as a card does.
+ * default. With views and sources, a connected embed warms the chart path
+ * (`chartWarmup`). An editor without this config draws
+ * the node's own inert figure, as a card does.
  */
 export function wordgardViews({
   views = null,
@@ -255,6 +321,7 @@ export function wordgardViews({
   eager = false,
   heights = null,
 } = {}) {
+  const warmup = warmupFor({ views, sources });
   return [
     Decoration.Tag.shape(
       PagesView,
@@ -265,6 +332,7 @@ export function wordgardViews({
           sources,
           eager,
           heights,
+          warmup,
         }),
       { atom: true },
     ),

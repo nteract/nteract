@@ -47,8 +47,9 @@ const draw = (id, key, redraw = false) => ({
 });
 const gen = (state, slot = 0) => state.slots[slot]?.gen ?? 0;
 
-/** One line for a state and the results its step delivered: the hidden
- * flag, slot 0's phase, each job's phase by id, and each delivery's kind. */
+/** One line for a state and the results its step delivered: the warm and
+ * hidden flags, slot 0's phase, each job's phase by id, and each delivery's
+ * kind. */
 function summary(state, effects) {
   const jobs = [...state.jobs]
     .sort(([a], [b]) => a - b)
@@ -61,7 +62,7 @@ function summary(state, effects) {
         `${id}=${result.timedOut ? "timeout" : result.error ? "error" : "answer"}`,
     )
     .join(" ");
-  return `${state.hidden ? "hidden " : ""}${state.slots[0].phase} ${jobs || "-"} ${delivered || "-"}`;
+  return `${state.warm ? "warm " : ""}${state.hidden ? "hidden " : ""}${state.slots[0].phase} ${jobs || "-"} ${delivered || "-"}`;
 }
 
 // The states a one-Worker pool reaches with charts "a" and "b" attached.
@@ -78,6 +79,17 @@ STATES.idle = play([{ type: "answer", slot: 0, gen: 1, id: 1, result: {} }], STA
 STATES["busy+waiting"] = play([draw(2, "b")], STATES.busy).state;
 STATES["abandoned+waiting"] = play([{ type: "cancel", id: 1 }], STATES["busy+waiting"]).state;
 STATES.hidden = play([{ type: "hide" }], STATES["busy+waiting"]).state;
+// A Page with a chart warms its pool before any chart attaches.
+STATES.warm = play([{ type: "warm" }]).state;
+STATES["warm idle"] = play(started(0, 1), STATES.warm).state;
+STATES["warm, drawn"] = play(
+  [
+    { type: "attach", key: "a" },
+    draw(1, "a"),
+    { type: "answer", slot: 0, gen: 1, id: 1, result: {} },
+  ],
+  STATES["warm idle"],
+).state;
 
 const EVENTS = {
   "draw a": () => draw(3, "a"),
@@ -96,6 +108,8 @@ const EVENTS = {
   "detach a": () => ({ type: "detach", key: "a" }),
   "detach b": () => ({ type: "detach", key: "b" }),
   "attach c": () => ({ type: "attach", key: "c" }),
+  warm: () => ({ type: "warm" }),
+  cool: () => ({ type: "cool" }),
 };
 
 // Every state against every event: the slot phase, the jobs, and what was
@@ -118,6 +132,8 @@ const TABLE = {
     "detach a": "down - -",
     "detach b": "down - -",
     "attach c": "down - -",
+    warm: "warm starting - -",
+    cool: "down - -",
   },
   starting: {
     "draw a": "starting 1:waiting 3:waiting -",
@@ -136,6 +152,8 @@ const TABLE = {
     "detach a": "starting - -",
     "detach b": "starting 1:waiting -",
     "attach c": "starting 1:waiting -",
+    warm: "warm starting 1:waiting -",
+    cool: "starting 1:waiting -",
   },
   probing: {
     "draw a": "probing 1:waiting 3:waiting -",
@@ -154,6 +172,8 @@ const TABLE = {
     "detach a": "probing - -",
     "detach b": "probing 1:waiting -",
     "attach c": "probing 1:waiting -",
+    warm: "warm probing 1:waiting -",
+    cool: "probing 1:waiting -",
   },
   idle: {
     "draw a": "busy 3:running -",
@@ -172,6 +192,8 @@ const TABLE = {
     "detach a": "idle - -",
     "detach b": "idle - -",
     "attach c": "idle - -",
+    warm: "warm idle - -",
+    cool: "idle - -",
   },
   busy: {
     "draw a": "busy 1:running 3:waiting -",
@@ -190,6 +212,8 @@ const TABLE = {
     "detach a": "busy 1:abandoned -",
     "detach b": "busy 1:running -",
     "attach c": "busy 1:running -",
+    warm: "warm busy 1:running -",
+    cool: "busy 1:running -",
   },
   "busy+waiting": {
     "draw a": "busy 1:running 2:waiting 3:waiting -",
@@ -208,6 +232,8 @@ const TABLE = {
     "detach a": "busy 1:abandoned 2:waiting -",
     "detach b": "busy 1:running -",
     "attach c": "busy 1:running 2:waiting -",
+    warm: "warm busy 1:running 2:waiting -",
+    cool: "busy 1:running 2:waiting -",
   },
   "abandoned+waiting": {
     "draw a": "busy 1:abandoned 2:waiting 3:waiting -",
@@ -226,6 +252,8 @@ const TABLE = {
     "detach a": "busy 1:abandoned 2:waiting -",
     "detach b": "busy 1:abandoned -",
     "attach c": "busy 1:abandoned 2:waiting -",
+    warm: "warm busy 1:abandoned 2:waiting -",
+    cool: "busy 1:abandoned 2:waiting -",
   },
   hidden: {
     "draw a": "hidden down 1:waiting 2:waiting 3:waiting -",
@@ -244,6 +272,68 @@ const TABLE = {
     "detach a": "hidden down 2:waiting -",
     "detach b": "hidden down 1:waiting -",
     "attach c": "hidden down 1:waiting 2:waiting -",
+    warm: "warm hidden down 1:waiting 2:waiting -",
+    cool: "hidden down 1:waiting 2:waiting -",
+  },
+  warm: {
+    "draw a": "warm starting - -",
+    "redraw a": "warm starting - -",
+    "cancel 1": "warm starting - -",
+    "cancel 2": "warm starting - -",
+    ready: "warm probing - -",
+    probed: "warm down - -",
+    "answer 1": "warm down - -",
+    "answer 2": "warm down - -",
+    "timeout 1": "warm starting - -",
+    failed: "warm down - -",
+    readyTimeout: "warm down - -",
+    hide: "warm hidden down - -",
+    show: "warm starting - -",
+    "detach a": "warm starting - -",
+    "detach b": "warm starting - -",
+    "attach c": "warm starting - -",
+    warm: "warm starting - -",
+    cool: "down - -",
+  },
+  "warm idle": {
+    "draw a": "warm idle - -",
+    "redraw a": "warm idle - -",
+    "cancel 1": "warm idle - -",
+    "cancel 2": "warm idle - -",
+    ready: "warm idle - -",
+    probed: "warm down - -",
+    "answer 1": "warm down - -",
+    "answer 2": "warm down - -",
+    "timeout 1": "warm idle - -",
+    failed: "warm down - -",
+    readyTimeout: "warm idle - -",
+    hide: "warm hidden idle - -",
+    show: "warm idle - -",
+    "detach a": "warm idle - -",
+    "detach b": "warm idle - -",
+    "attach c": "warm idle - -",
+    warm: "warm idle - -",
+    cool: "down - -",
+  },
+  "warm, drawn": {
+    "draw a": "warm busy 3:running -",
+    "redraw a": "warm busy 3:running -",
+    "cancel 1": "warm idle - -",
+    "cancel 2": "warm idle - -",
+    ready: "warm idle - -",
+    probed: "warm down - -",
+    "answer 1": "warm down - -",
+    "answer 2": "warm down - -",
+    "timeout 1": "warm idle - -",
+    failed: "warm down - -",
+    readyTimeout: "warm idle - -",
+    hide: "warm hidden idle - -",
+    show: "warm idle - -",
+    "detach a": "warm idle - -",
+    "detach b": "warm idle - -",
+    "attach c": "warm idle - -",
+    warm: "warm idle - -",
+    cool: "idle - -",
   },
 };
 
@@ -256,6 +346,9 @@ test("the states the table starts from are the ones they're named for", () => {
   assert.equal(summary(STATES["busy+waiting"], []), "busy 1:running 2:waiting -");
   assert.equal(summary(STATES["abandoned+waiting"], []), "busy 1:abandoned 2:waiting -");
   assert.equal(summary(STATES.hidden, []), "hidden down 1:waiting 2:waiting -");
+  assert.equal(summary(STATES.warm, []), "warm starting - -");
+  assert.equal(summary(STATES["warm idle"], []), "warm idle - -");
+  assert.equal(summary(STATES["warm, drawn"], []), "warm idle - -");
 });
 
 for (const [name, start] of Object.entries(STATES))
@@ -672,4 +765,94 @@ test("a probe answer is checked like any Worker message", () => {
   assert.equal(log[0].terminated, true);
   assert.equal(results[0].error.message, WORKER_FAILED);
   client.detach();
+});
+
+test("a warm pool starts one Worker before any chart, which the first chart draws in at once", () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const log = [];
+    const pool = createChartPool({ create: () => new FakeWorker(log), size: 1, timeoutMs: 1000 });
+    const first = pool.warm();
+    const second = pool.warm();
+    assert.equal(log.length, 1, "one Worker for every caller that warms");
+    log[0].start();
+    const client = pool.attach(() => ({ datasets: { d: { rows: [] } }, transfer: [] }));
+    const results = [];
+    client.draw({ spec: {} }).subscribe((result) => results.push(result));
+    assert.equal(log.length, 1);
+    assert.deepEqual(
+      log[0].sent.map(({ message }) => [message.type, Object.hasOwn(message, "datasets")]),
+      [["draw", true]],
+      "the job goes out with no wait for ready",
+    );
+    log[0].reply({ type: "answer", id: log[0].sent[0].message.id, scene: null });
+    assert.equal(results.length, 1);
+    // Warm, the Worker outlives its last chart; cooled, it goes with it.
+    client.detach();
+    assert.equal(log[0].terminated, false);
+    first();
+    first();
+    assert.equal(log[0].terminated, false, "one caller still holds it warm");
+    second();
+    assert.equal(log[0].terminated, true);
+    assert.equal(log.length, 1);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("a warm Worker that fails to start says nothing; the first chart starts its own", () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    for (const failure of ["throws", "never ready"]) {
+      const log = [];
+      let refuse = failure === "throws";
+      const pool = createChartPool({
+        create: () => {
+          if (refuse) throw Error("no Workers here");
+          return new FakeWorker(log);
+        },
+        size: 1,
+        timeoutMs: 1000,
+      });
+      const release = pool.warm();
+      refuse = false;
+      mock.timers.tick(10_000);
+      if (failure === "never ready")
+        assert.equal(log[0].terminated, true, "cut off at its ready timer");
+      const before = log.length;
+      const client = pool.attach(() => ({ datasets: {}, transfer: [] }));
+      const results = [];
+      client.draw({ spec: {} }).subscribe((result) => results.push(result));
+      assert.equal(log.length, before + 1, `${failure}: the chart's draw starts a Worker`);
+      log.at(-1).start();
+      assert.equal(log.at(-1).sent[0].message.type, "draw");
+      assert.deepEqual(results, [], "no failure reaches the chart");
+      client.detach();
+      release();
+    }
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("a hidden document warms nothing, and listens only while warm or drawing", () => {
+  const log = [];
+  const listeners = new Set();
+  const doc = {
+    visibilityState: "hidden",
+    addEventListener: (_type, listener) => listeners.add(listener),
+    removeEventListener: (_type, listener) => listeners.delete(listener),
+  };
+  const pool = createChartPool({
+    create: () => new FakeWorker(log),
+    size: 1,
+    timeoutMs: 1000,
+    doc,
+  });
+  const release = pool.warm();
+  assert.equal(log.length, 0);
+  assert.equal(listeners.size, 1);
+  release();
+  assert.equal(listeners.size, 0);
 });

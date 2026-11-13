@@ -125,6 +125,10 @@ const poolFor = (doc) => {
   return pool;
 };
 
+/** Start `doc`'s chart Worker before its first chart draws (chart-pool.mjs
+ * `warm`). Returns the function that lets it go. */
+export const warmCharts = (doc) => poolFor(doc).warm();
+
 /** Replace how charts start their Workers, how long a draw may take and how
  * many Workers a document shares: for tests in a DOM without Workers, and
  * for the smoke's fixture Worker. `checkSpec: false` skips the page's spec

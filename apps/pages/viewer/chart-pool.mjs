@@ -19,6 +19,12 @@
 // the Worker is replaced. Waiting jobs are picked first draws first, then in
 // the order they came.
 //
+// A Page that holds a chart warms the pool before its first chart draws
+// (`warm`): the Worker it will draw in starts, with no job, so it is ready
+// and probed by the time the chart's data is. While the pool is warm, a
+// Worker whose last chart leaves stays; `cool` stops a Worker no chart
+// holds.
+//
 // `chartPool` is the pure transition function over named Worker states and
 // job states (the table below); `createChartPool` runs its effects.
 //
@@ -38,10 +44,12 @@
 // A Worker that doesn't post `ready` and its probe answer in time, or fails
 // while starting or probing, fails every job waiting on it. One that fails while running a job, or sends a
 // message that isn't a valid answer to its one job, fails that job and is
-// replaced for the others. When a job outlasts its timer, only that chart
-// fails. A hidden document stops Workers that are starting or busy and holds
-// the jobs; they run again when it shows. The last chart to leave a Worker
-// terminates it. There is no in-page fallback.
+// replaced for the others. A Worker started warm that fails, with no job
+// waiting, goes down quietly; the next draw starts it again. When a job
+// outlasts its timer, only that chart fails. A hidden document stops Workers
+// that are starting or busy and holds the jobs; they run again when it
+// shows. The last chart to leave a Worker terminates it, unless the pool is
+// warm. There is no in-page fallback.
 import { Observable } from "rxjs";
 import {
   CHART_FALLBACK_FONT,
@@ -67,7 +75,14 @@ export const GRACE_MS = 50;
 export const WORKER_MESSAGE_MAX = 300;
 
 export const initialPool = (size = CHART_WORKERS) =>
-  Object.freeze({ size, hidden: false, slots: [], keys: new Map(), jobs: new Map() });
+  Object.freeze({
+    size,
+    hidden: false,
+    warm: false,
+    slots: [],
+    keys: new Map(),
+    jobs: new Map(),
+  });
 
 const timeoutResult = Object.freeze({
   error: Object.freeze({ message: TIMED_OUT, refusal: true }),
@@ -89,6 +104,20 @@ const setJobs = (state, change) => {
 const jobsOn = (state, slot, phases) =>
   [...state.jobs].filter(([, job]) => job.slot === slot && phases.includes(job.phase));
 
+/** Start `slot`'s Worker, which is down. */
+function start(state, slot) {
+  const gen = state.slots[slot].gen + 1;
+  return {
+    state: setSlot(state, slot, { gen, phase: "starting", job: null, loaded: [], font: null }),
+    effects: [
+      { type: "spawn", slot, gen },
+      { type: "timer", name: `ready:${slot}`, kind: "ready", slot, gen },
+    ],
+  };
+}
+
+const newSlot = () => ({ gen: 0, phase: "down", job: null, keys: [], loaded: [], font: null });
+
 /** Run what can run on `slot`: start its Worker if it's down and a job
  * waits, or post the next waiting job if it's idle. */
 function pump(state, slot) {
@@ -96,16 +125,7 @@ function pump(state, slot) {
   const current = state.slots[slot];
   const waiting = jobsOn(state, slot, ["waiting"]);
   if (!waiting.length) return { state, effects: [] };
-  if (current.phase === "down") {
-    const gen = current.gen + 1;
-    return {
-      state: setSlot(state, slot, { gen, phase: "starting", job: null, loaded: [], font: null }),
-      effects: [
-        { type: "spawn", slot, gen },
-        { type: "timer", name: `ready:${slot}`, kind: "ready", slot, gen },
-      ],
-    };
-  }
+  if (current.phase === "down") return start(state, slot);
   if (current.phase !== "idle") return { state, effects: [] };
   // First draws before redraws, then in the order they came.
   const [[id, job]] = waiting.sort(
@@ -180,13 +200,7 @@ export function chartPool(state, event) {
       let slot = loads.indexOf(least);
       if (next.slots.length < next.size && (slot < 0 || least > 0)) {
         slot = next.slots.length;
-        next = {
-          ...next,
-          slots: [
-            ...next.slots,
-            { gen: 0, phase: "down", job: null, keys: [], loaded: [], font: null },
-          ],
-        };
+        next = { ...next, slots: [...next.slots, newSlot()] };
       }
       next = setSlot(next, slot, { keys: [...next.slots[slot].keys, event.key] });
       return unchanged({ ...next, keys: new Map(next.keys).set(event.key, slot) });
@@ -208,7 +222,7 @@ export function chartPool(state, event) {
         else if (job.phase === "running") change.push([id, { ...job, phase: "abandoned" }]);
       }
       next = setJobs(next, change);
-      if (!next.slots[slot].keys.length) return stop(next, slot, null);
+      if (!next.slots[slot].keys.length && !next.warm) return stop(next, slot, null);
       const effects =
         current.phase !== "down" && current.loaded.includes(event.key)
           ? [{ type: "post", slot, gen: current.gen, message: { type: "drop", key: event.key } }]
@@ -302,6 +316,24 @@ export function chartPool(state, event) {
         return unchanged(state);
       return stop(state, event.slot, failure(WORKER_DIDNT_START), { failWaiting: true });
     }
+    case "warm": {
+      // Start the Worker the first chart will join (slot 0, the least
+      // loaded), unless a Worker is already up.
+      if (state.warm) return unchanged(state);
+      const next = { ...state, warm: true };
+      if (next.hidden || next.size < 1 || next.slots.some((slot) => slot.phase !== "down"))
+        return unchanged(next);
+      return start(next.slots.length ? next : { ...next, slots: [newSlot()] }, 0);
+    }
+    case "cool": {
+      if (!state.warm) return unchanged(state);
+      let result = unchanged({ ...state, warm: false });
+      state.slots.forEach((slot, index) => {
+        if (slot.keys.length || slot.phase === "down") return;
+        result = then(result, (next) => stop(next, index, null));
+      });
+      return result;
+    }
     case "hide": {
       if (state.hidden) return unchanged(state);
       let result = unchanged({ ...state, hidden: true });
@@ -348,10 +380,12 @@ function workerError(error) {
  * - `font()`: the Page's font stack, which each new Worker is probed with.
  * - `measure(items)`: the widths the page draws probe items at, or null when
  *   it can't lay text out (then every Worker draws in the fallback).
- * Returns `{ attach(payload) }`. `payload()` builds a chart's data for one
- * Worker: `{ datasets, transfer }`, owned by that Worker once posted.
+ * Returns `{ attach(payload), warm() }`. `payload()` builds a chart's data
+ * for one Worker: `{ datasets, transfer }`, owned by that Worker once posted.
  * `attach` returns `{ draw(message, { redraw }), detach() }`; `draw` is an
  * Observable of one result: the Worker's answer, `{ error }`, or the timeout.
+ * `warm()` keeps the pool warm until every caller has called the function it
+ * returns.
  */
 export function createChartPool({
   create,
@@ -548,18 +582,36 @@ export function createChartPool({
     throw new Error(`unknown chart pool effect ${effect.type}`);
   }
 
-  // The pool listens to its document only while a chart is attached.
-  let attached = 0;
+  // The pool listens to its document only while a chart is attached or a
+  // caller keeps it warm.
+  let listeners = 0;
   const onVisibility = () => dispatch({ type: doc.visibilityState === "hidden" ? "hide" : "show" });
+  const listen = () => {
+    if (!doc || listeners++ > 0) return;
+    doc.addEventListener("visibilitychange", onVisibility);
+    onVisibility();
+  };
+  const unlisten = () => {
+    if (doc && --listeners === 0) doc.removeEventListener("visibilitychange", onVisibility);
+  };
+  let warmers = 0;
 
   return {
+    warm() {
+      let held = true;
+      listen();
+      if (warmers++ === 0) dispatch({ type: "warm" });
+      return () => {
+        if (!held) return;
+        held = false;
+        if (--warmers === 0) dispatch({ type: "cool" });
+        unlisten();
+      };
+    },
     attach(payload) {
       const key = `chart-${++keys}`;
       payloads.set(key, payload);
-      if (doc && attached++ === 0) {
-        doc.addEventListener("visibilitychange", onVisibility);
-        onVisibility();
-      }
+      listen();
       dispatch({ type: "attach", key });
       return {
         draw: (message, { redraw = false } = {}) =>
@@ -577,7 +629,7 @@ export function createChartPool({
         detach() {
           if (!payloads.delete(key)) return;
           dispatch({ type: "detach", key });
-          if (doc && --attached === 0) doc.removeEventListener("visibilitychange", onVisibility);
+          unlisten();
         },
       };
     },
