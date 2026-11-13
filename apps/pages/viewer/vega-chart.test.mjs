@@ -32,6 +32,8 @@ const {
 const { datasetRows, ownRows } = await import("./chart-data.mjs");
 const { plainScene, readDatasets } = await import("./chart-dataflow.mjs");
 const {
+  SCENE_PATH_COMMANDS,
+  pathCost,
   SCENE_BUDGET,
   SCENE_MALFORMED,
   SCENE_MAX_ITEMS,
@@ -2038,6 +2040,47 @@ function counted(value, reads, seen = new Map()) {
   seen.set(value, proxy);
   return proxy;
 }
+
+test("paths and symbol shapes are charged by the commands they draw", () => {
+  assert.equal(pathCost("M1e2,3L4-5h6v7Z"), 5);
+  // Implicit repeats count: three lines, two moves, two arcs at 8 each.
+  assert.equal(pathCost("M0 0L1 1 2 2 3 3"), 4);
+  assert.equal(pathCost("M.1.1.1.1"), 2);
+  assert.equal(pathCost("M0,0a1 1 0 0 1 1 1 1 1 0 0 1 2 2"), 17);
+  assert.equal(pathCost("M0,0C1,1,2,2,3,3S4,4,5,5zzz"), 8);
+  const fill = (start, unit, chars) =>
+    start + unit.repeat(Math.floor((chars - start.length) / unit.length));
+  const sceneOf = (marktype, key, value, count = 1) =>
+    frameOf([{ marktype, items: Array.from({ length: count }, () => ({ [key]: value })) }]);
+  const refused = (scene) =>
+    assert.throws(
+      () => pageScene(scene),
+      (error) => error.message === SCENE_TOO_LARGE,
+    );
+  // Under the character budgets, each of these was seconds of drawing.
+  refused(sceneOf("path", "path", fill("M0,0L", ".1.1", 8_000_000)));
+  refused(sceneOf("path", "path", fill("M0,0", "z", 8_000_000)));
+  refused(sceneOf("path", "path", fill("M0,0", "a1 1 0 0 1 1 1", 1_000_000)));
+  refused(sceneOf("symbol", "shape", fill("M0,0", "a1 1 0 0 1 1 1", 160), 100_000));
+  // One path at the per-path budget fits; two exceed none; three exceed the total.
+  const full = `M0,0L${"1,1 ".repeat(SCENE_PATH_COMMANDS - 1)}`;
+  assert.equal(pathCost(full), SCENE_PATH_COMMANDS);
+  pageScene(sceneOf("path", "path", full, 2));
+  refused(sceneOf("path", "path", full, 3));
+  refused(sceneOf("path", "path", `${full}L1,1`));
+  // A 100,000-vertex geoshape, and 100,000 points in a named or small
+  // custom shape, fit.
+  const vertex = (i) => `L${(i % 800).toFixed(2)},${(i % 500).toFixed(2)}`;
+  pageScene(
+    sceneOf(
+      "path",
+      "path",
+      `M0,0${Array.from({ length: 100_000 }, (_, i) => vertex(i)).join("")}Z`,
+    ),
+  );
+  pageScene(sceneOf("symbol", "shape", "circle", 100_000));
+  pageScene(sceneOf("symbol", "shape", "M-1,-1H1V1H-1Z", 100_000));
+});
 
 test("a tooltip walk reads no more entries than it has charged", () => {
   const sceneOf = (tooltip, count = 1) =>

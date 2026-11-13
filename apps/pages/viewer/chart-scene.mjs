@@ -25,6 +25,32 @@ export const SCENE_MAX_DEPTH = 32;
 const MAX_TEXT = 10_000;
 /** A line or area through 100,000 points is one path string of a few MB. */
 const MAX_PATH = 8_000_000;
+/** Most path commands one path or symbol shape may hold, weighted by
+ * PATH_COMMAND_COST: a 100,000-vertex geoshape costs 100,000. */
+export const SCENE_PATH_COMMANDS = 500_000;
+/** What one path command costs against the command budgets, from the
+ * renderer benchmark (scripts/chart-path-bench.mjs) in its slowest engine:
+ * a line, move or close about 0.1 to 0.45 µs each, a cubic or quadratic
+ * curve about 0.8 µs, an arc about 2.2 µs in a path and 3.4 µs in a symbol
+ * shape. Any other letter costs as an arc. */
+const PATH_COMMAND_COST = { m: 1, l: 1, h: 1, v: 1, t: 1, z: 1, c: 2, s: 2, q: 2, a: 8 };
+/** Numbers each command takes; more repeat it. */
+const PATH_ARITY = { m: 2, l: 2, h: 1, v: 1, t: 2, z: 0, c: 6, s: 4, q: 4, a: 7 };
+/** Vega's own symbol names, which draw a fixed shape. */
+const SYMBOL_NAMES = new Set([
+  "circle",
+  "cross",
+  "diamond",
+  "square",
+  "arrow",
+  "wedge",
+  "triangle",
+  "triangle-up",
+  "triangle-down",
+  "triangle-right",
+  "triangle-left",
+  "stroke",
+]);
 const MAX_STOPS = 256;
 const MAX_DASH = 64;
 
@@ -32,12 +58,13 @@ const MAX_DASH = 64;
  * and symbol-shape characters (two lines or areas through the row budget's
  * points), label characters, other strings (names, roles, fonts and aria
  * descriptions, about 100 characters for each of SCENE_MAX_ITEMS), gradient
- * stops, tooltip payload (strings and keys by length, at least 1, any other
+ * stops, weighted path commands (SCENE_PATH_COMMANDS, twice over), tooltip payload (strings and keys by length, at least 1, any other
  * value as 8) and tooltip entries (each tooltip, array entry and object
  * field). 100,000 points with a 16-field tooltip each, names and values of 8
  * characters, fit both. */
 export const SCENE_BUDGET = Object.freeze({
   path: 16_000_000,
+  pathCommands: 1_000_000,
   text: 1_000_000,
   strings: 24_000_000,
   stops: 4_096,
@@ -209,6 +236,62 @@ function spendTooltip(budget, value) {
   }
 }
 
+const isDigit = (code) => code >= 48 && code <= 57;
+
+/**
+ * What an SVG path string costs to draw: each command, implicit repeats
+ * included (an `L` with six numbers draws three lines), times its
+ * PATH_COMMAND_COST. One pass over characters the path budget has already
+ * charged.
+ */
+export function pathCost(path) {
+  let cost = 0;
+  let command = null;
+  let numbers = 0;
+  const close = () => {
+    if (command === null) return;
+    const arity = PATH_ARITY[command] ?? 7;
+    const repeats = arity ? Math.max(1, Math.ceil(numbers / arity)) : 1;
+    cost += repeats * (PATH_COMMAND_COST[command] ?? 8);
+  };
+  for (let index = 0; index < path.length; ) {
+    const code = path.charCodeAt(index);
+    const lower = code | 32;
+    // Any letter but an exponent's e starts a command.
+    if (lower >= 97 && lower <= 122 && lower !== 101) {
+      close();
+      command = String.fromCharCode(lower);
+      numbers = 0;
+      index++;
+      continue;
+    }
+    // A number: sign, digits, one point, digits, exponent.
+    let end = index + (code === 43 || code === 45 ? 1 : 0);
+    let digits = 0;
+    while (isDigit(path.charCodeAt(end))) (end++, digits++);
+    if (path.charCodeAt(end) === 46) {
+      end++;
+      while (isDigit(path.charCodeAt(end))) (end++, digits++);
+    }
+    if (!digits) {
+      index++;
+      continue;
+    }
+    if ((path.charCodeAt(end) | 32) === 101) {
+      let exponent = end + 1;
+      if (path.charCodeAt(exponent) === 43 || path.charCodeAt(exponent) === 45) exponent++;
+      if (isDigit(path.charCodeAt(exponent))) {
+        end = exponent;
+        while (isDigit(path.charCodeAt(end))) end++;
+      }
+    }
+    numbers++;
+    index = end;
+  }
+  close();
+  return cost;
+}
+
 let gradients = 0;
 
 /**
@@ -302,6 +385,9 @@ function copyFields(from, into, renamed, budget) {
     const path = own(from, key) ? shortString(from[key], MAX_PATH) : undefined;
     if (path === undefined) continue;
     spend(budget, "path", path.length);
+    const commands = key === "shape" && SYMBOL_NAMES.has(path) ? 1 : pathCost(path);
+    if (commands > SCENE_PATH_COMMANDS) throw new SceneRefusal(SCENE_TOO_LARGE);
+    spend(budget, "pathCommands", commands);
     into[key] = path;
   }
   if (own(from, "text")) {
