@@ -55,7 +55,7 @@ import { HttpError } from "./auth.mjs";
 import { catalogTitle, listAll, trashTime } from "./catalog.mjs";
 import { acceptedTime, validTime } from "./content-activity.mjs";
 import { migrateSchema } from "./d1-schema.mjs";
-import { configuredOrganizationAccess, pageAudienceKey } from "./organization-access.mjs";
+import { pageAudience } from "./organization-access.mjs";
 import { validPageId } from "./registration.mjs";
 import { TagError, parseTagExpression, tagPredicate } from "./page-tags.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
@@ -434,26 +434,24 @@ const trashedAt = (metadata) =>
  * sort by its spelling. Neither can be sealed into a cursor. */
 const firstTime = (...values) => values.find(validTime) ?? null;
 
-/** Principals a Page's host record lists. A link audience's readers (company
- * view or an organization grant, `domain_opened` rows keyed by the audience)
- * appear only when observed opening the Page through the current audience.
- * An organization reader lists with the grant's role. */
+/** The index lists; it never grants. Its role column predates commenters and
+ * accepts owner, editor and viewer, so a commenter lists as a viewer. */
+const listedRole = (role) => (role === "commenter" ? "viewer" : role);
+
+/** Principals a Page's host record lists. A link audience's readers (a
+ * company domain or an organization grant, `domain_opened` rows keyed by the
+ * audience) appear only when observed opening the Page through the current
+ * audience, and list with the grant's role. */
 export function accessRows(metadata, env, reader) {
   const members = metadata?.acl?.members ?? {};
   const rows = [{ principal: metadata.owner, role: "owner", source: "owner", domain: null }];
   for (const principal of Object.keys(members)) {
     const { role } = pageGrant(metadata, principal);
-    // The index lists; it never grants. Its role column predates commenters
-    // and accepts owner, editor and viewer, so a commenter lists as a viewer.
     if (role === "viewer" || role === "editor" || role === "commenter")
-      rows.push({
-        principal,
-        role: role === "commenter" ? "viewer" : role,
-        source: "member",
-        domain: null,
-      });
+      rows.push({ principal, role: listedRole(role), source: "member", domain: null });
   }
-  const domain = pageAudienceKey(metadata, env);
+  const audience = pageAudience(metadata, env);
+  const domain = audience?.key ?? null;
   if (
     reader &&
     domain &&
@@ -463,7 +461,7 @@ export function accessRows(metadata, env, reader) {
   )
     rows.push({
       principal: reader.principal,
-      role: configuredOrganizationAccess(metadata, env)?.role === "editor" ? "editor" : "viewer",
+      role: listedRole(audience.role),
       source: "domain_opened",
       domain,
     });
@@ -472,8 +470,8 @@ export function accessRows(metadata, env, reader) {
 
 /** True when moving from `previous` to `next` removes a listed principal,
  * clears or changes the link audience, or tombstones a principal who could be
- * one of its readers. Pure grants never need a pre-commit index write. An
- * organization grant's role change keeps its readers' rows until the next
+ * one of its readers. Pure grants never need a pre-commit index write. A
+ * link audience's role change keeps its readers' rows until the next
  * report rewrites their role: the index lists, and each shared row is
  * verified with its Page host before it is shown. */
 export function listingRestricted(previous, next, env) {

@@ -76,12 +76,45 @@ const anacondaConnectInstructions = (createUrl) =>
     : `<p>Ask the deployment owner for the API-key setup instructions for this identity provider. This deployment does not use the standard production Anaconda key endpoint.</p>
       <p class="setup-note">Production and staging credentials are separate. Use a key for this deployment's provider.</p>`;
 
+// A DNS label: 1 to 63 lower-case ASCII letters, digits or inner hyphens.
+// Punycode labels (xn--...) have this form.
+const DOMAIN_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+// A final label a URL parser reads as a number, which makes the name an IPv4
+// address.
+const NUMERIC_LABEL = /^(?:[0-9]+|0x[0-9a-f]*)$/;
+
+/** Whether `value` can name a company domain: a lower-case ASCII hostname of
+ * two or more labels and at most 253 characters, each label valid, with no
+ * wildcard, trailing dot, whitespace or upper case, and not an IP address.
+ * It says nothing about whether the domain was reviewed. */
+export function companyDomainValid(value) {
+  if (typeof value !== "string" || value.length > 253) return false;
+  const labels = value.split(".");
+  return (
+    labels.length >= 2 &&
+    labels.every((label) => DOMAIN_LABEL.test(label)) &&
+    !NUMERIC_LABEL.test(labels.at(-1))
+  );
+}
+
+/** A provider's reviewed company domains. Each entry is checked with
+ * `companyDomainValid` when this module loads, so a bad entry fails every
+ * test that imports the module instead of reaching a deployment. */
+function reviewedDomains(domains) {
+  for (const domain of domains)
+    if (!companyDomainValid(domain))
+      throw new Error(`Reviewed company domain ${JSON.stringify(domain)} is not a valid hostname`);
+  return Object.freeze([...domains]);
+}
+
+const ANACONDA_COMPANY_DOMAINS = reviewedDomains(["anaconda.com"]);
+
 const KILO = Object.freeze({
   id: "kilo",
   /** What people call the provider, in running text. */
   label: "Kilo",
-  /** Email domains an owner may open a Page to for viewing. Kilo has none. */
-  companyDomains: Object.freeze([]),
+  /** Email domains an owner may open a Page to. Kilo has none. */
+  companyDomains: reviewedDomains([]),
   /** Whether the provider reports the organizations an account belongs to.
    * Only then can an owner share a Page with an organization. */
   organizations: true,
@@ -111,9 +144,9 @@ function anacondaProvider(env) {
     id: "anaconda",
     /** What people call the provider, in running text. */
     label: "Anaconda",
-    /** Email domains an owner may open a Page to for viewing. A deployment
-     * turns each on with PAGES_COMPANY_VIEW_DOMAINS; it cannot add others. */
-    companyDomains: ["anaconda.com"],
+    /** Email domains an owner may open a Page to. A deployment turns each on
+     * with PAGES_COMPANY_VIEW_DOMAINS; it cannot add others. */
+    companyDomains: ANACONDA_COMPANY_DOMAINS,
     /** Whether the provider reports the organizations an account belongs to.
      * Only then can an owner share a Page with an organization. */
     organizations: false,

@@ -1,5 +1,6 @@
 import * as A from "@automerge/automerge";
 import { threadsOf } from "../model/comments.mjs";
+import { domainViewRole } from "./authz.mjs";
 
 /** Host-owned Trash records and permanent-deletion previews.
  *
@@ -82,7 +83,12 @@ export function purgeImpact(metadata, doc, commentsDoc, title) {
     ...discussionOf(doc, commentsDoc),
     collaborators: collaboratorsOf(metadata.acl),
     pending_invitations: pendingInvitations(metadata.acl),
-    domain_view: metadata.acl?.domainView?.domain ?? null,
+    domain_view: metadata.acl?.domainView
+      ? {
+          domain: metadata.acl.domainView.domain,
+          role: domainViewRole(metadata.acl.domainView),
+        }
+      : null,
     organization_access: metadata.acl?.organizationAccess
       ? {
           name: metadata.acl.organizationAccess.name,

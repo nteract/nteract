@@ -818,6 +818,59 @@ test("a copy needs edit access to the destination and read access to the source"
   assert.equal((await capability.json()).code, "upload_capability_invalid");
 });
 
+test("a company domain grant copies as its role: an editor into the destination, any role out of the source", async (t) => {
+  const f = await fixture(t),
+    dataset = await sourceDataset(f);
+  f.env.PAGES_COMPANY_VIEW_DOMAINS = "anaconda.com";
+  const companyKey = `Bearer ${f.auth.apiKey({ email: "person@anaconda.com" })}`;
+  const shareWithCompany = (id, role) => {
+    const page = f.pages.get(id);
+    page.metadata.owner = "user:someone-else";
+    page.metadata.acl = {
+      revision: 1,
+      members: {},
+      invites: {},
+      domainView: { domain: "anaconda.com", namespace: "user:anaconda-fixture", role },
+    };
+  };
+  const cases = [
+    // [destination role, source role, status]
+    ["viewer", "editor", 403],
+    ["commenter", "editor", 403],
+    ["editor", "viewer", 201],
+    ["editor", "commenter", 200],
+    ["editor", "editor", 200],
+  ];
+  for (const [target, source, status] of cases) {
+    shareWithCompany(pageId, target);
+    shareWithCompany(otherId, source);
+    const before = puts(f);
+    const response = await copyRequest(f, dataset.asset_id, {
+      headers: { authorization: companyKey },
+    });
+    assert.equal(
+      response.status,
+      status,
+      `${target} → ${source}: ${await response.clone().text()}`,
+    );
+    // The copy answers with the asset alone; it hands out no capability.
+    if (status !== 403)
+      assert.deepEqual(Object.keys(await response.json()).sort(), [
+        "asset_id",
+        "asset_url",
+        "mime_type",
+        "size",
+        "url",
+      ]);
+    else assert.equal(puts(f), before, `${target}/${source}`);
+  }
+  // The same grants give an account without a company email nothing.
+  const outsider = await copyRequest(f, "0".repeat(64), {
+    headers: { authorization: `Bearer ${f.auth.apiKey({ email: "person@gmail.com" })}` },
+  });
+  assert.equal(outsider.status, 403);
+});
+
 test("a source the caller can't read answers the same whether the dataset is there", async (t) => {
   const f = await fixture(t),
     dataset = await sourceDataset(f);
