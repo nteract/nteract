@@ -230,7 +230,6 @@ test("refusalOf names only the refusals that retire the copy", () => {
   for (const kept of [
     { status: 404 },
     { status: 403, code: "page_trashed" },
-    { status: 403, code: "signing_key_rejected" },
     { status: 403 },
     { status: 401, code: "sign_in_required" },
     { status: 503, code: "temporarily_unavailable" },
@@ -318,7 +317,6 @@ test("classifyRefusal names each refusal once for every path", () => {
     [{ status: 403, code: "page_access_denied" }, "access"],
     [{ status: 403, code: "page_trashed" }, "trash"],
     [{ status: 403 }, "denied"],
-    [{ status: 403, code: "signing_key_rejected" }, undefined],
     [{ status: 401, code: "sign_in_required" }, undefined],
     [{ status: 503, code: "temporarily_unavailable" }, undefined],
     [undefined, undefined],

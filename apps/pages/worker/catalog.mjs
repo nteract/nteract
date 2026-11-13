@@ -366,12 +366,3 @@ async function projectEntries(storage, pageId, current, { marked = false, now } 
     await storage.delete(`trash/${pageId}`);
   } else throw new TypeError("Unknown Page lifecycle state");
 }
-
-/** Owned entries under `prefix` by Page ID, without reservations or pending
- * creations. */
-export async function catalogEntries(storage, prefix) {
-  const entries = new Map();
-  for (const entry of (await listAll(storage, prefix)).values())
-    if (entry?.page_id && !entry.pending && !entry.reservation) entries.set(entry.page_id, entry);
-  return entries;
-}

@@ -271,7 +271,7 @@ function coldOpenFixture(t, { refuseDuringHandshake = false, discovery = {} } = 
   });
   const refuse = (socket) =>
     socket.dispatchEvent(
-      Object.assign(new Event("close"), { code: 4422, reason: "signing_key_rejected" }),
+      Object.assign(new Event("close"), { code: 4426, reason: "schema_unsupported" }),
     );
   t.mock.method(globalThis, "WebSocket", function () {
     const events = new EventTarget();
@@ -306,7 +306,7 @@ function coldOpenFixture(t, { refuseDuringHandshake = false, discovery = {} } = 
   return state;
 }
 
-test("a signing key refused after the handshake ends the cold lookup without retrying", async (t) => {
+test("an admission stop after the handshake ends the cold lookup without retrying", async (t) => {
   const f = coldOpenFixture(t);
   const opening = f.open();
   void opening.catch(() => {});
@@ -317,14 +317,14 @@ test("a signing key refused after the handshake ends the cold lookup without ret
     (error) => error,
   );
   assert.equal(error.code, "SIGNING_KEY_REFUSED");
-  assert.match(error.message, /refused this tab's signing key/);
-  assert.equal(error.admission.code, "signing_key_rejected");
+  assert.match(error.message, /Reload to update/);
+  assert.equal(error.admission.code, "schema_unsupported");
   assert.equal(f.attempts, 1, "a permanent refusal is not reopened");
   assert.deepEqual(f.backoff, []);
   await error.cleanupPromise;
 });
 
-test("a signing key refused during the handshake reports the diagnosis without retrying", async (t) => {
+test("an admission stop during the handshake reports the diagnosis without retrying", async (t) => {
   const f = coldOpenFixture(t, { refuseDuringHandshake: true });
   const error = await f.open().then(
     () => assert.fail("opened despite refusal"),
