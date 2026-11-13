@@ -58,4 +58,48 @@ for (const [name, spec] of Object.entries(SPECS)) {
     done();
   });
 }
+
+// A chart whose long left-axis labels and title push Vega's layout origin
+// off the padding: every label and title must land inside the SVG.
+const labels = root.appendChild(document.createElement("section"));
+labels.dataset.case = "labels";
+mount(labels, {
+  spec: {
+    data: { name: "d" },
+    title: "Calls by tool, with a title wide enough to need its own room",
+    mark: "bar",
+    encoding: {
+      y: { field: "tool", type: "nominal", title: "A left axis title" },
+      x: { field: "n", type: "quantitative", title: "Calls" },
+    },
+  },
+  datasets: {
+    d: [
+      { tool: "a fairly long tool name, number one", n: 3 },
+      { tool: "another quite long tool name", n: 5 },
+    ],
+  },
+  title: "labels",
+});
+const labelFigure = labels.querySelector("figure");
+while (labelFigure.dataset.chartStatus === "drawing") await new Promise((r) => setTimeout(r, 25));
+const svg = labels.querySelector(".pages-chart-canvas svg");
+const box = svg?.getBoundingClientRect();
+const texts = svg ? [...svg.querySelectorAll("text")] : [];
+window.chartLabels = {
+  status: labelFigure.dataset.chartStatus,
+  count: texts.length,
+  outside: texts
+    .filter((text) => {
+      const rect = text.getBoundingClientRect();
+      return (
+        rect.width > 0 &&
+        (rect.left < box.left - 1 ||
+          rect.right > box.right + 1 ||
+          rect.top < box.top - 1 ||
+          rect.bottom > box.bottom + 1)
+      );
+    })
+    .map((text) => text.textContent),
+};
 document.body.dataset.fixture = "ready";

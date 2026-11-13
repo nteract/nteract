@@ -498,13 +498,17 @@ export async function runChart(
     for (const [name, rows] of Object.entries(data)) view.data(name, rows);
     await view.runAsync();
     if (firstError) throw firstError;
+    // The size and offset Vega's own renderer takes (vega-view
+    // render-size.js): the layout origin, which moves for axis labels and
+    // titles, plus the padding.
     const padding = view.padding();
+    const [x, y] = view.origin();
     return {
       scene: plainScene(view.scenegraph().root),
       background: view.background() ?? null,
-      width: view._viewWidth + padding.left + padding.right,
-      height: view._viewHeight + padding.top + padding.bottom,
-      origin: [padding.left, padding.top],
+      width: Math.max(0, view._viewWidth + padding.left + padding.right),
+      height: Math.max(0, view._viewHeight + padding.top + padding.bottom),
+      origin: [padding.left + x, padding.top + y],
     };
   } finally {
     view.finalize();

@@ -541,6 +541,12 @@ async function largeCheck(engine) {
     report.large[engine] = times;
     for (const [name, { status, ms, message }] of Object.entries(times))
       assert.equal(status, "rendered", `${engine} ${name}: ${message} after ${ms} ms`);
+    // Axis labels and the title land inside the drawing, offset by Vega's
+    // layout origin as well as its padding.
+    const labels = await large.evaluate(() => window.chartLabels);
+    assert.equal(labels.status, "rendered", `${engine}: the labels chart`);
+    assert.ok(labels.count >= 6, `${engine}: ${labels.count} texts`);
+    assert.deepEqual(labels.outside, [], `${engine}: texts outside the SVG`);
     complete(
       `${engine}: the largest admitted chart draws through the Worker: ` +
         Object.entries(times)
