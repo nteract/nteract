@@ -799,3 +799,47 @@ test("a time unit's step and maxbins are ranged, in an encoding and a transform"
   assert.equal(checkChartSpec(enc("yearmonth")).ok, true);
   assert.equal(checkChartSpec(enc({ unit: "hours", step: 6, utc: true })).ok, true);
 });
+
+test("names every object already has are refused, as keys and as whole strings", () => {
+  for (const name of ["__proto__", "constructor", "toString", "valueOf", "hasOwnProperty"]) {
+    const sentence = new RegExp(`can't use "${name}" as a name`);
+    assert.match(refusal({ ...stacked, data: { name } }), sentence, `data ${name}`);
+    assert.match(
+      refusal({
+        ...stacked,
+        encoding: { ...stacked.encoding, x: { field: name, type: "quantitative" } },
+      }),
+      sentence,
+      `field ${name}`,
+    );
+    assert.match(
+      refusal({ ...stacked, transform: [{ fold: ["calls", name] }] }),
+      sentence,
+      `fold ${name}`,
+    );
+    assert.match(
+      refusal({ ...stacked, transform: [{ calculate: "1", as: name }] }),
+      sentence,
+      `as ${name}`,
+    );
+  }
+  // JSON.parse keeps "__proto__" and "toString" as own keys.
+  assert.match(
+    refusal(
+      JSON.parse(
+        '{"data":{"name":"calls"},"mark":"bar","config":{"style":{"toString":{"fill":"red"}}}}',
+      ),
+    ),
+    /can't use "toString" as a name/,
+  );
+  // A bin or time unit key never reaches Object.prototype.
+  assert.match(
+    refusal({
+      ...stacked,
+      transform: [{ bin: JSON.parse('{"toString":1}'), field: "calls", as: "b" }],
+    }),
+    /bin can't use "toString"|can't use "toString" as a name/,
+  );
+  // A name that merely contains one is fine.
+  assert.equal(checkChartSpec({ ...stacked, title: "toString of calls" }).ok, true);
+});

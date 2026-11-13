@@ -144,6 +144,16 @@ export const CHART_EXPRESSION_FUNCTIONS = Object.freeze(
 // Names an expression may not use as an identifier, a property or an object
 // key, written plainly or as a string.
 const FORBIDDEN_NAMES = new Set(["constructor", "__proto__", "prototype"]);
+// Names every plain object answers to. Vega and Vega-Lite key their own
+// plain objects by dataset, field and style names, so a chart named
+// "toString" or a field named "constructor" fails inside them. A spec may not
+// use one as a key or as a whole string; viewer/vega-chart.mjs copies rows
+// into null-prototype objects, so a column with such a name that no spec
+// reads is harmless.
+const RESERVED_NAMES = new Set([
+  ...Object.getOwnPropertyNames(Object.prototype),
+  ...FORBIDDEN_NAMES,
+]);
 const MAX_FORMAT_WIDTH = 64;
 // d3-format's specifier grammar; group 6 is the padded width.
 const NUMBER_FORMAT = /^(?:(.)?([<>=^]))?([+\-( ])?([$#])?(0)?(\d+)?(,)?(\.\d+)?(~)?([a-z%])?$/i;
@@ -400,6 +410,7 @@ function checkData(data, path, names) {
       if (generator in data) refuse(`A chart reads named data, not generated data${at(path)}.`);
     const keys = Object.keys(data);
     if (keys.length === 1 && keys[0] === "name" && isString(data.name) && data.name) {
+      if (RESERVED_NAMES.has(data.name)) refuse(reservedName(data.name, [...path, "name"]));
       if (!names.includes(data.name)) names.push(data.name);
       return;
     }
@@ -444,7 +455,7 @@ function checkBin(bin, path) {
   if (bin === true || bin === false || bin === null || bin === "binned") return;
   if (!isObject(bin)) refuse(`A chart bin must be true, "binned" or an object${at(path)}.`);
   for (const [key, value] of Object.entries(bin)) {
-    const valid = BIN_PARAMS[key];
+    const valid = Object.hasOwn(BIN_PARAMS, key) && BIN_PARAMS[key];
     if (!valid) refuse(`A chart bin can't use "${key}"${at(path)}.`);
     if (!valid(value)) refuse(`A chart bin's ${key} is out of range${at([...path, key])}.`);
   }
@@ -471,7 +482,7 @@ function checkTimeUnit(timeUnit, path) {
   if (timeUnit === undefined || isString(timeUnit)) return;
   if (!isObject(timeUnit)) refuse(`A chart time unit must be a name or an object${at(path)}.`);
   for (const [key, value] of Object.entries(timeUnit)) {
-    const valid = TIME_UNIT_PARAMS[key];
+    const valid = Object.hasOwn(TIME_UNIT_PARAMS, key) && TIME_UNIT_PARAMS[key];
     if (!valid) refuse(`A chart time unit can't use "${key}"${at(path)}.`);
     if (!valid(value)) refuse(`A chart time unit's ${key} is out of range${at([...path, key])}.`);
   }
@@ -742,12 +753,23 @@ function viewShape(spec, folds = 1) {
   return { views, folds: largest };
 }
 
-/** Refuse any string under `value` that holds a CSS url(). */
+/** Refuse a string that holds a CSS url() or is a reserved name. */
+function checkString(value, path) {
+  if (loadsResource(value)) refuse(`A chart can't load anything from a URL${at(path)}.`);
+  if (RESERVED_NAMES.has(value)) refuse(reservedName(value, path));
+}
+
+const reservedName = (name, path) =>
+  `A chart can't use "${name}" as a name; every object already has it${at(path)}.`;
+
+/** Refuse any string or key under `value` that checkString refuses. */
 function checkStrings(value, path) {
-  if (isString(value)) {
-    if (loadsResource(value)) refuse(`A chart can't load anything from a URL${at(path)}.`);
-  } else if (value && typeof value === "object")
-    for (const [key, child] of Object.entries(value)) checkStrings(child, [...path, key]);
+  if (isString(value)) checkString(value, path);
+  else if (value && typeof value === "object")
+    for (const [key, child] of Object.entries(value)) {
+      if (RESERVED_NAMES.has(key)) refuse(reservedName(key, path));
+      checkStrings(child, [...path, key]);
+    }
 }
 
 /** A width, height or default view size: a number, `{step}` for a discrete
@@ -765,7 +787,7 @@ function sizeAllowed(value) {
 
 function walk(value, path, names) {
   if (isString(value)) {
-    if (loadsResource(value)) refuse(`A chart can't load anything from a URL${at(path)}.`);
+    checkString(value, path);
     return;
   }
   if (Array.isArray(value)) {
@@ -776,6 +798,7 @@ function walk(value, path, names) {
   for (const [key, child] of Object.entries(value)) {
     const here = [...path, key];
     if (FORBIDDEN_NAMES.has(key)) refuse(`A chart spec can't use the key "${key}"${at(path)}.`);
+    if (RESERVED_NAMES.has(key)) refuse(reservedName(key, path));
     if (key === "usermeta") continue;
     if (key === "url") refuse(`A chart can't load anything from a URL${at(here)}.`);
     if (key === "href") refuse(`A chart can't link anywhere${at(here)}.`);

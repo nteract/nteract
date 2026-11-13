@@ -90,12 +90,14 @@ const isArrowTable = (value) =>
 /**
  * Plain rows for Vega from a dataset: an array of row objects, or an Arrow
  * table. Rows are copied, since Vega tags each row it ingests, and 64-bit
- * integers become numbers, since Vega's scales take only numbers.
+ * integers become numbers, since Vega's scales take only numbers. Each copy
+ * has a null prototype, so a column named `__proto__` stays a column and a
+ * missing `constructor` or `toString` column reads as undefined.
  */
 export function datasetRows(dataset) {
   if (Array.isArray(dataset))
     return dataset.map((row) => {
-      const copy = {};
+      const copy = Object.create(null);
       for (const [key, value] of Object.entries(row ?? {})) copy[key] = plainValue(value);
       return copy;
     });
@@ -106,7 +108,7 @@ export function datasetRows(dataset) {
     }));
     const rows = new Array(dataset.numRows);
     for (let r = 0; r < rows.length; r++) {
-      const row = {};
+      const row = Object.create(null);
       for (const { name, vector } of columns) row[name] = plainValue(vector?.get(r) ?? null);
       rows[r] = row;
     }
@@ -567,16 +569,18 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
     plain = undefined;
   }
   const checked = checkChartSpec(plain, { datasets: Object.keys(datasets) });
-  const data = {};
+  // Keyed by dataset name, so neither map answers to a name it wasn't given.
+  const given = (name) => (Object.hasOwn(datasets, name) ? datasets[name] : undefined);
+  const data = Object.create(null);
   let refusal = checked.ok ? null : checked.error;
   if (!refusal)
     for (const name of checked.names) {
-      const rows = rowCount(datasets[name]);
+      const rows = rowCount(given(name));
       if (rows > CHART_MAX_ROWS) {
         refusal = `The dataset "${name}" has ${rows.toLocaleString("en-US")} rows; a chart reads at most ${CHART_MAX_ROWS.toLocaleString("en-US")}.`;
         break;
       }
-      data[name] = datasetRows(datasets[name]);
+      data[name] = datasetRows(given(name));
       if (!data[name]) {
         refusal = `The dataset "${name}" must be rows or an Arrow table.`;
         break;

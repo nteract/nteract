@@ -197,7 +197,10 @@ test("an untitled chart shows a title row only to hold Maximize", () =>
 test("an Arrow table is a dataset; 64-bit integers become numbers", () =>
   withWindow(async (window) => {
     const table = tableFromJSON(calls.map((row) => ({ ...row, calls: BigInt(row.calls) })));
-    assert.deepEqual(datasetRows(table), calls);
+    assert.deepEqual(
+      datasetRows(table).map((row) => ({ ...row })),
+      calls,
+    );
     const { element } = container(window);
     const chart = mount(element, { spec: stacked, datasets: { calls: table } });
     await settle();
@@ -210,7 +213,7 @@ test("rows are copied, so Vega never tags the caller's objects", () => {
   const rows = [{ a: 1, n: 2n, nested: { big: 3n } }];
   const copy = datasetRows(rows);
   assert.notEqual(copy[0], rows[0]);
-  assert.deepEqual(copy, [{ a: 1, n: 2, nested: { big: 3 } }]);
+  assert.deepEqual({ ...copy[0] }, { a: 1, n: 2, nested: { big: 3 } });
   assert.equal(datasetRows("calls"), null);
   assert.equal(datasetRows({ rows: [] }), null);
 });
@@ -322,6 +325,58 @@ test("Maximize opens the chart in the diagram viewer, titled by the chart", () =
   }));
 
 /** Mount `spec` and return the sentence shown inside the frame. */
+const RESERVED = ["__proto__", "constructor", "toString"];
+
+test("columns named like Object.prototype stay columns, in rows and in Arrow tables", () =>
+  withWindow(async (window) => {
+    // JSON.parse makes "__proto__" an own key, as data from a host would.
+    const odd = JSON.parse(
+      JSON.stringify(
+        calls.map((row) => ({
+          ...row,
+          ...Object.fromEntries(RESERVED.map((name) => [name, "x"])),
+        })),
+      ),
+    );
+    for (const dataset of [odd, tableFromJSON(odd)]) {
+      const rows = datasetRows(dataset);
+      assert.equal(Object.getPrototypeOf(rows[0]), null);
+      for (const name of RESERVED)
+        assert.equal(Object.hasOwn(rows[0], name) && rows[0][name], "x", name);
+      const { element } = container(window);
+      const chart = mount(element, { spec: stacked, datasets: { calls: dataset } });
+      await settle();
+      assert.equal(element.querySelector("figure").dataset.chartStatus, "rendered");
+      assert.equal(bars(element).length, 5);
+      chart.destroy();
+      element.remove();
+    }
+    // A missing column reads as undefined, never as Object.prototype's own.
+    assert.equal(datasetRows([{ a: 1 }])[0].toString, undefined);
+  }));
+
+test("a dataset or field named like Object.prototype is refused with one sentence", () =>
+  withWindow(async (window) => {
+    for (const name of RESERVED) {
+      const datasets = Object.fromEntries([[name, calls]]);
+      assert.match(
+        await refusalIn(window, { ...stacked, data: { name } }, datasets),
+        new RegExp(`can't use "${name}" as a name`),
+        `dataset ${name}`,
+      );
+      assert.match(
+        await refusalIn(window, {
+          ...stacked,
+          encoding: { ...stacked.encoding, x: { field: name, type: "quantitative" } },
+        }),
+        new RegExp(`can't use "${name}" as a name`),
+        `field ${name}`,
+      );
+    }
+    // A name the caller didn't give is missing, not read from the prototype.
+    assert.match(await refusalIn(window, { ...stacked, data: { name: "calls" } }, {}), /calls/);
+  }));
+
 async function refusalIn(window, spec, datasets = { calls }) {
   const { element } = container(window);
   const chart = mount(element, { spec, datasets, title: "Refused" });
