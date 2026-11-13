@@ -9,8 +9,10 @@
  * document's id is also derived from the Page id (and the view id), so the
  * replica can look one up by that id on the live connection when something
  * on the Page asks for it: a view embed names its view, and a table or a
- * chart asks for a source. A lookup carries how it was started (`via`),
- * because the host's "no such document" answer means different things:
+ * chart asks for a source. Before any connection is admitted, the same ask
+ * reads the document from this tab's replica database, when the Page itself
+ * is open from there. A lookup carries how it was started (`via`), because a
+ * "no such document" answer means different things:
  *
  * - `named`: discovery named the document, so a host that answers it holds
  *   no such document doesn't serve the type. That is an older host.
@@ -25,10 +27,18 @@
  *   connection: a derived discovery of a document that missed runs no new
  *   burst, but waits out what is left of its window (`wait`) and then looks
  *   once.
+ * - `stored`: no connection is admitted, so the answer comes from this tab's
+ *   stored bytes alone. A hit opens the document from its last-known-good
+ *   copy, and sync resumes on it when a connection is admitted, as it does
+ *   for any open document across a reconnect. A miss is not a verdict: only
+ *   the host can say a document is missing. The replica returns to `closed`,
+ *   marked `checked`, retries nothing, and waits for the next connection.
  *
  * States:
  * - closed: no replica, or no connection admitted since it opened. A
- *   replica closed after derived misses keeps the `id` and `misses`.
+ *   replica closed after derived misses keeps the `id` and `misses`. One
+ *   whose stored lookup found nothing is `checked`: this tab's copy was
+ *   read once, and only a connection looks again.
  * - absent: there is no such document. Discovery named none, or a derived
  *   lookup was answered "none". After derived misses it holds the `id` it
  *   looked up and how many times it rested (`misses`), and `cooling` while
@@ -44,7 +54,7 @@
  *   A lookup after the replica rested carries its `misses`; it doesn't
  *   retry a "none" answer.
  * - retrying: lookup `attempt` failed or missed; the next one waits on a
- *   timer.
+ *   timer. A stored lookup never retries.
  * - failed: lookups kept failing. The next admitted connection starts over.
  * - ready: the document is open, as `id`.
  * - retired: the replica was retired (access revoked, Page deleted). Nothing
@@ -58,19 +68,30 @@
  *   read). A reconnect is a new discovery: anything not open starts over,
  *   and a running lookup restarts on the new connection, except that a
  *   derived document that missed keeps its misses. `wait` is the time left
- *   in the look-again window the interpreter last armed for it.
+ *   in the look-again window the interpreter last armed for it. A running
+ *   stored lookup is cancelled, and the repo's answer to it forgotten: it
+ *   may hold an "unavailable" answer no event has reported yet, which a
+ *   lookup on the live connection would read as the host's.
  * - wanted: something on the Page asks for the document, whose derived id is
  *   `id`. Only an absent document is looked up again.
+ * - stored: something on the Page asks for the document, whose derived id is
+ *   `id`, while no connection is admitted and the Page is open from this
+ *   tab's stored copy. Only a fresh `closed` replica (no misses, not
+ *   `checked`) looks it up, in this tab's stored bytes.
  * - opened / lookupFailed / unknown: lookup `attempt` found the document,
  *   failed, or the host answered it holds no such document. An attempt that
- *   isn't the current one was cancelled, so its result is ignored.
+ *   isn't the current one was cancelled, so its result is ignored. A stored
+ *   lookup that fails or finds nothing closes the replica as `checked`.
  * - timer: the retry timer for `attempt` fired.
  * - cooled: the look-again timer fired; `demanded` while something on the
  *   Page still asks for the document.
  * - retire: the replica is being retired with the Page's other documents.
  *   It drops the document from memory; its synced bytes stay in the tab's
  *   replica database, the same as the Page's and comments' synced bytes.
- * - close: the replica closed or was replaced; everything stops.
+ * - close: the replica closed or was replaced; everything stops. A `checked`
+ *   replica closes to a fresh `closed`: a replaced backend holds other bytes.
+ *   A running stored lookup is cancelled and its answer forgotten, as for a
+ *   discovery: a view replica closes and reopens on the same repo.
  *
  * Effects:
  * - lookup: find document `id` as `attempt`, with a timeout.
@@ -100,7 +121,7 @@ export const LOOK_AGAIN_MS = Object.freeze([10_000, 30_000, 60_000]);
 export const lookAgainDelay = (misses) => LOOK_AGAIN_MS[Math.min(misses, LOOK_AGAIN_MS.length) - 1];
 
 const ANSWERS = ["named", "derived", "none", "unaware", "unreadable"];
-const VIA = ["named", "derived"];
+const VIA = ["named", "derived", "stored"];
 
 const check = (condition, message) => {
   if (!condition) throw new Error(message);
@@ -115,7 +136,10 @@ const attempt = (value) =>
   );
 const id = (value) => check(typeof value.id === "string" && value.id !== "", "id is required");
 const optionalId = (value) => value.id === undefined || id(value);
-const via = (value) => check(VIA.includes(value.via), "via is named or derived");
+const via = (value) => check(VIA.includes(value.via), `via is one of ${VIA.join(", ")}`);
+/** Only a lookup on a connection waits to retry or gives up. */
+const connectedVia = (value) =>
+  check(value.via !== "stored", "a stored lookup neither retries nor fails");
 const delay = (value) =>
   check(Number.isSafeInteger(value.delay) && value.delay > 0, "delay must be positive");
 const answer = (value) => {
@@ -138,6 +162,11 @@ const closedShape = (value) => {
   optionalId(value);
   optionalMisses(value);
   check((value.id === undefined) === (value.misses === undefined), "a closed miss keeps its id");
+  check(value.checked === undefined || value.checked === true, "checked is true or absent");
+  check(
+    value.checked === undefined || value.misses === undefined,
+    "only a fresh closed replica reads this tab's copy",
+  );
 };
 const absentShape = (value) => {
   optionalId(value);
@@ -167,6 +196,15 @@ const lookupState = shape(
   via,
   lookupMisses,
 );
+const connectedLookup = shape(
+  "name",
+  ["attempt", "id", "via", "misses"],
+  attempt,
+  id,
+  via,
+  lookupMisses,
+  connectedVia,
+);
 const settled = shape("type", ["attempt"], attempt);
 
 export const STATES = Object.freeze([
@@ -189,6 +227,7 @@ export const hostDocOpenSpec = Object.freeze({
   events: [
     "discovered",
     "wanted",
+    "stored",
     "opened",
     "lookupFailed",
     "unknown",
@@ -206,31 +245,35 @@ export const hostDocOpenSpec = Object.freeze({
     ),
     "closed/discovered": ["named", "derived", ...QUIET, "missed", "waits"],
     "absent/discovered": ["named", "derived", ...QUIET, "cooling", "waits"],
-    "opening/discovered": ["lookup", "missed", ...QUIET],
+    "opening/discovered": ["lookup", "missed", "stored", ...QUIET],
     "retrying/discovered": ["lookup", ...QUIET],
     "ready/discovered": ["same", "other", ...QUIET],
     "absent/wanted": ["look", "again", "ask", "asked"],
+    "closed/stored": ["look", "missed", "checked"],
     "opening/opened": ["current", "stale"],
-    "opening/lookupFailed": ["retry", "exhausted", "stale"],
-    "opening/unknown": ["unserved", "retry", "missing", "again", "stale"],
+    "opening/lookupFailed": ["retry", "exhausted", "stored", "stale"],
+    "opening/unknown": ["unserved", "retry", "missing", "again", "stored", "stale"],
     "retrying/timer": ["current", "stale"],
     "absent/cooled": ["look", "demanded", "rest", "stale"],
+    "closed/close": ["closed", "checked"],
+    "opening/close": ["lookup", "stored"],
   },
   validate: {
     states: {
-      closed: shape("name", ["id", "misses"], closedShape),
+      closed: shape("name", ["id", "misses", "checked"], closedShape),
       absent: shape("name", ["id", "misses", "cooling", "asked"], absentShape),
       unserved: shape("name", ["id"], optionalId),
       unreadable: bare,
       opening: lookupState,
-      retrying: lookupState,
-      failed: lookupState,
+      retrying: connectedLookup,
+      failed: connectedLookup,
       ready: shape("name", ["id"], id),
       retired: bare,
     },
     events: {
       discovered: shape("type", ["answer", "id", "wait"], answer),
       wanted: shape("type", ["id"], id),
+      stored: shape("type", ["id"], id),
       opened: settled,
       lookupFailed: settled,
       unknown: settled,
@@ -266,6 +309,8 @@ export const REJECT = Object.freeze({
   looking: "Already looking",
   asked: "Already asked",
   answered: "The host's answer stands until the next connection",
+  missed: "The host answered it holds none; only a connection looks again",
+  checked: "This tab's copy was read; only a connection looks again",
 });
 
 const ok = (state, effects = []) => ({ state, effects });
@@ -306,6 +351,15 @@ const quietState = (event) =>
 /** The misses `state` carries for derived document `id`, if any. */
 const missesFor = (state, id) => (state.id === id ? state.misses : undefined);
 
+/** What leaving `state` for a connection's answer or a close needs: a
+ * running stored lookup is cancelled and the repo's answer to it forgotten,
+ * because an "unavailable" answer it left there would read as the host's on
+ * a live link. */
+const leaveLookup = (state) =>
+  state.name === "opening" && state.via === "stored"
+    ? [...leave(state), { type: "forget", id: state.id }]
+    : leave(state);
+
 function discovered(state, event) {
   if (state.name === "retired") return reject(state, REJECT.retired);
   const misses = event.answer === "derived" ? missesFor(state, event.id) : undefined;
@@ -319,17 +373,44 @@ function discovered(state, event) {
       ]);
     return start(state, event.id, "derived", leave(state), misses);
   }
+  const stop = leaveLookup(state);
   if (event.answer === "named" || event.answer === "derived") {
     // An open document stays open on a new connection: sync resumes on it.
     if (state.name === "ready" && state.id === event.id) return reject(state, REJECT.ready);
     // Anything else starts over, a running lookup included: it ran on a
-    // connection that is gone.
-    return start(state, event.id, event.answer);
+    // connection that is gone, or on none.
+    return start(state, event.id, event.answer, stop);
   }
   const next = quietState(event);
   if (state.name === next.name && state.id === undefined) return reject(state, REJECT.same);
-  return ok(next, leave(state));
+  return ok(next, stop);
 }
+
+/** Something asks for the document while no connection is admitted: a
+ * fresh closed replica reads this tab's stored bytes, once. */
+function stored(state, event) {
+  switch (state.name) {
+    case "retired":
+      return reject(state, REJECT.retired);
+    case "ready":
+      return reject(state, REJECT.ready);
+    case "opening":
+    case "retrying":
+      return reject(state, REJECT.looking);
+    case "closed":
+      if (state.misses !== undefined) return reject(state, REJECT.missed);
+      if (state.checked) return reject(state, REJECT.checked);
+      return start(state, event.id, "stored", []);
+  }
+  // absent, unserved, unreadable, failed: the host answered.
+  return reject(state, REJECT.answered);
+}
+
+/** A stored lookup opened nothing: this tab's copy was read, and the next
+ * connection decides. The repo's "unavailable" answer is forgotten before
+ * the next lookup of the id. */
+const storedMiss = (state) =>
+  ok({ name: "closed", checked: true }, [{ type: "forget", id: state.id }]);
 
 function wanted(state, event) {
   switch (state.name) {
@@ -384,11 +465,14 @@ function transition(state, event) {
       return discovered(state, event);
     case "wanted":
       return wanted(state, event);
+    case "stored":
+      return stored(state, event);
     case "opened":
       if (!current("opening")) return reject(state, REJECT.stale);
       return ok({ name: "ready", id: state.id }, [{ type: "install", attempt: event.attempt }]);
     case "lookupFailed":
       if (!current("opening")) return reject(state, REJECT.stale);
+      if (state.via === "stored") return storedMiss(state);
       if (state.attempt >= OPEN_ATTEMPTS)
         return ok(lookup("failed", state.attempt, state.id, state.via, state.misses));
       return ok(lookup("retrying", state.attempt, state.id, state.via, state.misses), [
@@ -396,6 +480,7 @@ function transition(state, event) {
       ]);
     case "unknown":
       if (!current("opening")) return reject(state, REJECT.stale);
+      if (state.via === "stored") return storedMiss(state);
       return missing(state);
     case "timer":
       if (!current("retrying")) return reject(state, REJECT.stale);
@@ -412,8 +497,10 @@ function transition(state, event) {
       return ok({ name: "retired" }, leave(state));
     case "close":
       if (state.name === "retired") return reject(state, REJECT.retired);
-      if (state.name === "closed") return reject(state, REJECT.closed);
-      return ok(closedAfter(state), leave(state));
+      // A replaced backend holds other bytes: its copy is read afresh.
+      if (state.name === "closed")
+        return state.checked ? ok({ name: "closed" }) : reject(state, REJECT.closed);
+      return ok(closedAfter(state), leaveLookup(state));
   }
   throw new Error(`unknown event ${event.type}`);
 }

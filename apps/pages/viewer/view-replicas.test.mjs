@@ -20,7 +20,7 @@ import { VIEW_MEDIA_TYPE } from "./view-store.mjs";
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const PAGE = "0b9f2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f";
 
-function fixture({ linked = true } = {}) {
+function fixture({ linked = true, stored = false, limit } = {}) {
   const scheduler = new VirtualTimeScheduler();
   const calls = [];
   const derivations = [];
@@ -42,8 +42,10 @@ function fixture({ linked = true } = {}) {
     forget: async () => {},
     link: () => (connected ? 1 : undefined),
     linked: () => connected,
+    stored: () => stored,
     scheduler,
     closeDelay: VIEW_CLOSE_DELAY_MS,
+    ...(limit && { limit }),
   });
   const advance = (ms) => {
     const target = scheduler.frame + ms;
@@ -433,4 +435,67 @@ test("a view held before a connection waits for one, and every view looks up on 
   await tick();
   assert.equal(f.calls.length, 10);
   for (const hold of holds) hold.release();
+});
+
+test("before a connection, a held view this tab stored draws, and one it didn't waits", async () => {
+  const f = fixture({ linked: false, stored: true });
+  const sales = f.views.hold("sales");
+  const costs = f.views.hold("costs");
+  await tick();
+  assert.deepEqual(
+    f.calls.map((call) => call.id),
+    [`${PAGE}/sales`, `${PAGE}/costs`],
+    "each held view reads this tab's copy once",
+  );
+  assert.equal(f.views.replica("sales").state$.snapshot().via, "stored");
+  // This tab stored the sales view, not the costs one.
+  await serve(f, new Set(["sales"]));
+  assert.equal(latest(sales).status, "ready");
+  assert.equal(latest(sales).view.title, "sales");
+  assert.deepEqual(latest(costs), { status: "pending" }, "a stored miss is not a verdict");
+  assert.deepEqual(f.views.replica("costs").state$.snapshot(), { name: "closed", checked: true });
+  f.advance(600_000);
+  await tick();
+  assert.equal(f.calls.length, 2, "standing demand doesn't read the store again");
+  // The connection keeps the open view and looks the other up on it.
+  f.connect();
+  await tick();
+  assert.deepEqual(
+    f.calls.slice(2).map((call) => call.id),
+    [`${PAGE}/costs`],
+  );
+  await serve(f, new Set(["costs"]));
+  assert.equal(latest(costs).status, "ready");
+  assert.equal(latest(sales).status, "ready");
+  sales.release();
+  costs.release();
+});
+
+test("a stored miss keeps its slot and counts as no look; the connection decides", async () => {
+  const f = fixture({ linked: false, stored: true, limit: 1 });
+  const first = f.views.hold("first");
+  await tick();
+  await serve(f, new Set());
+  assert.deepEqual(f.views.replica("first").state$.snapshot(), { name: "closed", checked: true });
+  // A view named while the slot is taken waits: the stored miss doesn't give
+  // the slot up.
+  const second = f.views.hold("second");
+  await tick();
+  assert.deepEqual(f.views.open, ["first"]);
+  assert.deepEqual(f.views.waiting, ["second"]);
+  assert.deepEqual(latest(first), { status: "pending" });
+  assert.equal(latest(second).reason, "limit");
+  // On the connection the first view is looked up; once the host answers it
+  // holds none, the slot goes to the view that waited.
+  f.connect();
+  await tick();
+  assert.equal(f.calls.at(-1).id, `${PAGE}/first`);
+  for (let attempt = 1; attempt <= MISSING_ATTEMPTS; attempt++)
+    await serve(f, new Set(["second"]), retryDelay(attempt));
+  await tick();
+  assert.deepEqual(f.views.open, ["second"]);
+  await serve(f, new Set(["second"]));
+  assert.equal(latest(second).status, "ready");
+  first.release();
+  second.release();
 });

@@ -81,11 +81,14 @@ export class ViewReplicas {
 
   /**
    * `viewDocumentId(pageId, viewId)` derives a view's document id (it may
-   * return a promise). `find`, `forget`, `claims`, `link`, `linked` and
-   * `scheduler` are each replica's (host-doc-replica.mjs). `linked()` says
-   * whether a connection is admitted now, so a replica opened while
-   * connected looks its view up at once; one opened before that waits for
-   * connected().
+   * return a promise). `find`, `forget`, `claims`, `link`, `linked`,
+   * `stored` and `scheduler` are each replica's (host-doc-replica.mjs).
+   * `linked()` says whether a connection is admitted now, so a replica
+   * opened while connected looks its view up at once. One opened before
+   * that reads this tab's stored copy through its demand, when `stored()`
+   * says the Page is open from it, and otherwise waits for connected(). A
+   * stored read that finds nothing keeps its slot and counts as no look:
+   * the replica is closed, not undrawn, until a connection answers.
    */
   constructor({
     pageId,
@@ -95,6 +98,7 @@ export class ViewReplicas {
     claims,
     link,
     linked = () => false,
+    stored = () => false,
     scheduler = asyncScheduler,
     lookupTimeout,
     closeDelay = 0,
@@ -109,6 +113,7 @@ export class ViewReplicas {
       claims,
       link,
       linked,
+      stored,
       scheduler,
       lookupTimeout,
       closeDelay,
@@ -318,8 +323,18 @@ export class ViewReplicas {
   /** Make the view's replica on its first slot; a view that gave its slot
    * up keeps its closed replica, and with it the miss it last saw. */
   #open(entry) {
-    const { pageId, viewDocumentId, find, forget, claims, link, linked, scheduler, lookupTimeout } =
-      this.#options;
+    const {
+      pageId,
+      viewDocumentId,
+      find,
+      forget,
+      claims,
+      link,
+      linked,
+      stored,
+      scheduler,
+      lookupTimeout,
+    } = this.#options;
     if (!entry.replica) {
       entry.replica = new HostDocReplica({
         find,
@@ -327,6 +342,7 @@ export class ViewReplicas {
         claims,
         link,
         linked,
+        stored,
         scheduler,
         ...(lookupTimeout && { lookupTimeout }),
         derive: () => viewDocumentId(pageId, entry.viewId),
@@ -340,6 +356,8 @@ export class ViewReplicas {
         if (this.#queue().length) this.#admitSoon();
       });
     }
+    // Not linked: the `demand` effect that follows `open` asks, and the
+    // replica reads this tab's stored copy if the Page is open from it.
     if (linked()) entry.replica.connected();
   }
 }
