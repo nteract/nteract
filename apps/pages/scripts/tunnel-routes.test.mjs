@@ -191,12 +191,14 @@ const NEAR_MISSES = [
   `/api/projects/prj_${U}/assets/private`,
   `/api/projects/prj_${U}/assets/${HASH.slice(1)}`,
   `/api/projects/prj_${U}/assets/${HASH}/private`,
-  // Page tags: a Page ID and one tag segment, nothing after it, no
-  // characters outside a percent-encoded tag.
+  // Page tags: a Page ID and a tag, no characters outside a tag's alphabet.
+  // A `/` is admitted (cloudflared matches the decoded path, so an encoded
+  // %2F arrives as one); the Worker refuses a second segment.
   `/api/pages/${U}/tags`,
   `/api/pages/${U}/tags/`,
-  `/api/pages/${U}/tags/a/b`,
   `/api/pages/${U}/tags/${"a".repeat(193)}`,
+  `/api/pages/${U}/tags/a;b`,
+  `/api/pages/${U}/tags/a@b`,
   `/api/pages/${U.toUpperCase()}/tags/a`,
   `/api/pages/prj_${U}/tags/a`,
   `/api/projects/prj_${U}/tags/a`,
@@ -405,13 +407,28 @@ test("the gateway answers every GATEWAY request itself and serves APP from the s
   // The catch-all answers what the gateway doesn't serve.
   for (const path of ["/api/nope", LINK_PREVIEW_PATH, "/internal/create"])
     assert.equal((await send("GET", path)).catchAll, true, path);
+  // A tag path with a second segment is admitted by the ingress, not by the
+  // gateway.
+  for (const method of ["PUT", "DELETE"])
+    assert.equal((await send(method, `/api/pages/${U}/tags/repo:org/name`)).catchAll, true, method);
 });
 
 test("every target's ingress pattern refuses private routes, extra segments and malformed Page IDs", () => {
   const page = "/p/12345678-1234-4123-8123-123456789abc";
   for (const target of QUALIFIED_TARGETS) {
     const pattern = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
-    for (const pathname of [page, page + "/", "/api/pages", "/api/pages/register", "/llms.txt"])
+    // A tag's `/` and `:` reach the ingress decoded, as cloudflared matches
+    // them, and the Worker's encoded form reaches it only if nothing decodes.
+    const tags = `/api/pages/12345678-1234-4123-8123-123456789abc/tags`;
+    for (const pathname of [
+      page,
+      page + "/",
+      "/api/pages",
+      "/api/pages/register",
+      "/llms.txt",
+      tags + "/repo:org/name",
+      tags + "/repo%3Aorg%2Fname",
+    ])
       assert.equal(pattern.test(pathname), true, target + " admits " + pathname);
     for (const pathname of [
       "/state",

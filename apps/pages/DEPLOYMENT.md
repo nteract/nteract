@@ -1139,8 +1139,10 @@ assets (`linkPreviewPaths`, `cardImagePaths` and `projectAssetPaths` in
 Every target also admits the REST routes (`restPaths` in
 [routes.mjs](scripts/deployment/routes.mjs)), with no profile flag: `GET
 /api/pages`, and `PUT` or `DELETE /api/pages/<uuid>/tags/<tag>`, where the tag is
-one percent-encoded segment of at most 192 characters (`:` and `/` arrive as
-`%3A` and `%2F`). A target that has not published them answers 404 at the edge
+one percent-encoded segment (`:` and `/` are sent as `%3A` and `%2F`).
+cloudflared matches ingress rules against the decoded path, so the ingress
+admits up to 192 characters of a tag's alphabet including `/`; the Worker
+takes one raw segment and refuses a second. A target that has not published them answers 404 at the edge
 to a tag change or a listing by REST; MCP and `/api/tools` are unaffected. The
 tunnel has only been exercised locally: confirm a `PUT` of `repo:org/name`
 reaches the Worker on a live target before relying on it.
