@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   CHART_EXPRESSION_FUNCTIONS,
+  CHART_MAX_ROWS,
   CHART_SPEC_LIMITS,
   checkChartSpec,
+  loadsResource,
 } from "../shared/chart-spec.mjs";
 
 const stacked = {
@@ -149,18 +151,53 @@ test("expressions may call only allowlisted functions", () => {
   assert.equal(checkChartSpec(calc("format(datum.calls, ',') + upper(datum.tool)")).ok, true);
   assert.equal(
     refusal(calc("modify('calls', datum)")),
-    "A chart expression can't call modify() (at transform.0.calculate).",
+    "A chart expression calls modify() (at transform.0.calculate).",
   );
-  assert.match(refusal(calc("lassoAppend(null, 1, 2)")), /can't call lassoAppend\(\)/);
-  assert.match(refusal(calc("regexp ('a+')")), /can't call regexp\(\)/);
+  assert.match(refusal(calc("lassoAppend(null, 1, 2)")), /calls lassoAppend\(\)/);
+  assert.match(refusal(calc("datum.tool.toString()")), /something that isn't a function name/);
   // A function name inside a string literal is text, not a call.
   assert.equal(checkChartSpec(calc("'modify(' + datum.tool")).ok, true);
+  assert.match(refusal(calc("datum.calls +")), /doesn't parse/);
 });
 
-test("every expression position is checked", () => {
-  const bad = "windowSize()";
+test("generators that build arrays or strings of any length are refused", () => {
+  for (const call of [
+    "sequence(0, 1e9)",
+    "timeSequence('day', 0, 1e15)",
+    "utcSequence('day', 0, 1e15)",
+    "pad('', 1e9)",
+  ]) {
+    assert.match(
+      refusal({ ...stacked, transform: [{ calculate: call, as: "v" }] }),
+      /calls \w+\(\)/,
+    );
+    assert.equal(CHART_EXPRESSION_FUNCTIONS.has(call.split("(")[0]), false);
+  }
+});
+
+test("regular expression literals are refused", () => {
+  assert.match(
+    refusal({
+      ...stacked,
+      transform: [{ calculate: "replace(datum.tool, /^(a+)+$/, '')", as: "v" }],
+    }),
+    /uses a regular expression/,
+  );
+  assert.equal(
+    checkChartSpec({
+      ...stacked,
+      transform: [{ calculate: "replace(datum.tool, '_', ' ')", as: "v" }],
+    }).ok,
+    true,
+  );
+});
+
+test("every Vega-Lite expression position is checked", () => {
+  const bad = "warn(datum.value)";
+  const label = { labelExpr: bad };
   for (const spec of [
     { ...stacked, transform: [{ filter: bad }] },
+    { ...stacked, transform: [{ filter: { and: [bad, "true"] } }] },
     {
       ...stacked,
       encoding: {
@@ -170,21 +207,258 @@ test("every expression position is checked", () => {
     },
     { ...stacked, mark: { type: "bar", opacity: { expr: bad } } },
     { ...stacked, params: [{ name: "p", expr: bad }] },
-    { ...stacked, config: { bar: { color: { signal: bad } } } },
+    { ...stacked, encoding: { ...stacked.encoding, y: { ...stacked.encoding.y, axis: label } } },
+    { ...stacked, encoding: { ...stacked.encoding, color: { field: "client", legend: label } } },
+    { ...stacked, config: { axis: label } },
+    { ...stacked, encoding: { ...stacked.encoding, row: { field: "client", header: label } } },
+    {
+      ...stacked,
+      encoding: {
+        ...stacked.encoding,
+        y: {
+          ...stacked.encoding.y,
+          axis: { encode: { labels: { update: { fill: { signal: bad } } } } },
+        },
+      },
+    },
+    { ...stacked, params: [{ name: "p", select: { type: "point", on: `click[${bad}]` } }] },
+    {
+      ...stacked,
+      params: [
+        {
+          name: "p",
+          select: { type: "point", on: "click", clear: `[mousedown[${bad}], mouseup] > mousemove` },
+        },
+      ],
+    },
+    {
+      ...stacked,
+      params: [{ name: "p", select: { type: "point", on: { type: "click", filter: [bad] } } }],
+    },
   ])
-    assert.match(refusal(spec), /can't call windowSize\(\)/);
+    assert.match(refusal(spec), /calls warn\(\)/, JSON.stringify(spec).slice(0, 200));
   assert.equal(
     checkChartSpec({ ...stacked, transform: [{ filter: { field: "a", equal: 1 } }] }).ok,
     true,
   );
+  assert.equal(
+    checkChartSpec({
+      ...stacked,
+      params: [
+        {
+          name: "p",
+          select: {
+            type: "interval",
+            on: "[pointerdown[event.shiftKey], pointerup] > pointermove",
+          },
+        },
+      ],
+    }).ok,
+    true,
+  );
 });
 
-test("expressions can't reach prototypes", () => {
-  for (const name of ["constructor", "__proto__", "prototype"])
+test("raw Vega signals and custom format functions are refused", () => {
+  assert.match(
+    refusal({ ...stacked, config: { signals: [{ name: "s", init: "1" }] } }),
+    /Vega signals/,
+  );
+  assert.match(
+    refusal({
+      ...stacked,
+      encoding: { ...stacked.encoding, x: { ...stacked.encoding.x, formatType: "warn" } },
+    }),
+    /format type must be number, time or utc/,
+  );
+  for (const key of [
+    "customFormatTypes",
+    "numberFormatType",
+    "normalizedNumberFormatType",
+    "timeFormatType",
+  ])
     assert.match(
-      refusal({ ...stacked, transform: [{ calculate: `datum.${name}`, as: "v" }] }),
-      new RegExp(`can't use "${name}"`),
+      refusal({ ...stacked, config: { [key]: key === "customFormatTypes" ? true : "f" } }),
+      /custom format/,
     );
+  assert.equal(
+    checkChartSpec({
+      ...stacked,
+      encoding: {
+        ...stacked.encoding,
+        x: { ...stacked.encoding.x, formatType: "number", format: ",d" },
+      },
+    }).ok,
+    true,
+  );
+});
+
+test("expressions can't reach prototypes, however the name is written", () => {
+  for (const calculate of [
+    "datum.constructor",
+    "datum.__proto__",
+    "datum['__proto__']",
+    'datum["constructor"]',
+    'datum["constr\\u0075ctor"]',
+    "datum['proto' + 'type']",
+    "datum[datum.key]",
+    "{__proto__: 1}",
+    "{'constructor': 1}",
+  ])
+    assert.match(
+      refusal({ ...stacked, transform: [{ calculate, as: "v" }] }),
+      /uses "(constructor|__proto__|prototype)"|indexes with something other than a literal/,
+      calculate,
+    );
+  assert.equal(
+    checkChartSpec({
+      ...stacked,
+      transform: [{ calculate: "datum['calls per day'] + datum[0]", as: "v" }],
+    }).ok,
+    true,
+  );
+});
+
+test("a repeat counts every copy it draws", () => {
+  const inner = {
+    mark: "bar",
+    encoding: { x: { field: { repeat: "row" }, type: "quantitative" } },
+  };
+  const names = Array.from({ length: 10 }, (_, i) => `f${i}`);
+  assert.match(
+    refusal({ data: { name: "calls" }, repeat: { row: names, column: names }, spec: inner }),
+    /at most 32 views/,
+  );
+  assert.match(
+    refusal({
+      data: { name: "calls" },
+      repeat: Array.from({ length: 40 }, (_, i) => `f${i}`),
+      spec: inner,
+    }),
+    /at most 32 views/,
+  );
+  assert.equal(
+    checkChartSpec({
+      data: { name: "calls" },
+      repeat: { row: names.slice(0, 3), column: names.slice(0, 3) },
+      spec: inner,
+    }).ok,
+    true,
+  );
+});
+
+test("a CSS url() in any string is refused, escaped or not", () => {
+  const probe = "url(https://x.example/p.png)";
+  for (const spec of [
+    { ...stacked, mark: { type: "bar", fill: probe } },
+    { ...stacked, mark: { type: "bar", stroke: probe } },
+    { ...stacked, encoding: { ...stacked.encoding, color: { value: probe } } },
+    {
+      ...stacked,
+      mark: {
+        type: "bar",
+        fill: {
+          gradient: "linear",
+          stops: [
+            { offset: 0, color: probe },
+            { offset: 1, color: "red" },
+          ],
+        },
+      },
+    },
+    { ...stacked, mark: { type: "text", font: probe } },
+    { ...stacked, background: probe },
+    {
+      ...stacked,
+      config: { style: { hostile: { fill: probe } } },
+      mark: { type: "bar", style: "hostile" },
+    },
+    { ...stacked, config: { view: { stroke: probe } } },
+    { ...stacked, config: { axis: { gridColor: probe } } },
+    { ...stacked, mark: { type: "bar", fill: "u\\72l(https://x.example/p.png)" } },
+    { ...stacked, mark: { type: "bar", fill: "URL(https://x.example/p.png)" } },
+    { ...stacked, mark: { type: "bar", fill: "image-set('https://x.example/p.png' 1x)" } },
+    { ...stacked, transform: [{ calculate: `'${probe}'`, as: "paint" }] },
+  ])
+    assert.match(
+      refusal(spec),
+      /can't load anything from a URL/,
+      JSON.stringify(spec).slice(0, 160),
+    );
+  // Prose with a space before the parenthesis isn't a CSS function.
+  assert.equal(
+    checkChartSpec({ ...stacked, title: "Hover image (left) and url (right)" }).ok,
+    true,
+  );
+  assert.equal(loadsResource("rgb(1, 2, 3)"), false);
+});
+
+test("a cursor is a CSS keyword, never a URL or an expression", () => {
+  assert.equal(checkChartSpec({ ...stacked, mark: { type: "bar", cursor: "pointer" } }).ok, true);
+  assert.match(
+    refusal({ ...stacked, mark: { type: "bar", cursor: "url(https://x.example/c.png), auto" } }),
+    /cursor must be a CSS cursor keyword|from a URL/,
+  );
+  assert.match(
+    refusal({ ...stacked, mark: { type: "bar", cursor: { expr: "'pointer'" } } }),
+    /cursor must be a CSS cursor keyword/,
+  );
+  assert.match(refusal({ ...stacked, config: { mark: { cursor: "zoom" } } }), /cursor keyword/);
+});
+
+test("transforms that multiply rows or cost are bounded or refused", () => {
+  const t = (transform) => ({ ...stacked, transform: [transform] });
+  const fields = (n) => Array.from({ length: n }, (_, i) => `f${i}`);
+  const cases = [
+    [{ flatten: ["xs"] }, /flatten/],
+    [{ loess: "y", on: "x" }, /loess/],
+    [{ impute: "y", key: "x", keyvals: { start: 0, stop: 1e9 } }, /impute/],
+    [{ fold: fields(33) }, /fold at most 32/],
+    [{ window: [{ op: "mean", field: "calls", as: "m" }], frame: [-500, 500] }, /window frame/],
+    [{ window: [{ op: "mean", field: "calls", as: "m" }], frame: [0, null] }, /window frame/],
+    [{ density: "calls", steps: 10_000 }, /density/],
+    [{ density: "calls", maxsteps: 10_000 }, /density/],
+    [{ regression: "y", on: "x", method: "poly", order: 50 }, /order/],
+    [{ quantile: "calls", step: 1e-9 }, /quantile step/],
+    [{ quantile: "calls", probs: Array.from({ length: 1001 }, () => 0.5) }, /probabilities/],
+    [{ pivot: "client", value: "calls" }, /pivot/],
+    [{ pivot: "client", value: "calls", limit: 5000 }, /pivot/],
+    [{ bin: { maxbins: 1e6 }, field: "calls", as: "b" }, /bins/],
+    [{ bin: { step: 0.001 }, field: "calls", as: "b" }, /literal extent/],
+    [{ bin: { step: 0.001, extent: [0, 100] }, field: "calls", as: "b" }, /literal extent/],
+  ];
+  for (const [transform, sentence] of cases)
+    assert.match(refusal(t(transform)), sentence, JSON.stringify(transform));
+  assert.match(
+    refusal({
+      ...stacked,
+      encoding: { ...stacked.encoding, x: { ...stacked.encoding.x, impute: { value: 0 } } },
+    }),
+    /impute/,
+  );
+  assert.match(
+    refusal({
+      ...stacked,
+      encoding: { ...stacked.encoding, x: { field: "calls", bin: { maxbins: 1e6 } } },
+    }),
+    /bins/,
+  );
+  for (const transform of [
+    { fold: fields(32) },
+    { window: [{ op: "rank", as: "r" }] },
+    { window: [{ op: "sum", field: "calls", as: "s" }], frame: [null, 0] },
+    { window: [{ op: "mean", field: "calls", as: "m" }], frame: [-100, 100] },
+    { density: "calls", steps: 200 },
+    { regression: "y", on: "x", method: "poly", order: 3 },
+    { quantile: "calls", step: 0.01 },
+    { pivot: "client", value: "calls", limit: 20 },
+    { bin: { step: 1, extent: [0, 100] }, field: "calls", as: "b" },
+    { lookup: "tool", from: { data: { name: "calls" }, key: "tool", fields: ["client"] } },
+  ])
+    assert.equal(checkChartSpec(t(transform)).ok, true, JSON.stringify(transform));
+});
+
+test("the row cap is a named limit", () => {
+  assert.equal(CHART_MAX_ROWS, 100_000);
 });
 
 test("the allowlist leaves out writes, lasso helpers and window geometry", () => {
@@ -195,6 +469,8 @@ test("the allowlist leaves out writes, lasso helpers and window geometry", () =>
     "windowSize",
     "containerSize",
     "warn",
+    "regexp",
+    "test",
   ])
     assert.equal(CHART_EXPRESSION_FUNCTIONS.has(name), false, name);
 });

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { tableFromJSON } from "apache-arrow";
 import { JSDOM } from "jsdom";
 import * as vega from "vega";
+globalThis.__vega = vega;
 
 const {
   mount,
@@ -14,8 +15,14 @@ const {
   themeConfig,
   deniedLoader,
   formatTooltip,
+  runtimeProblem,
+  safePaint,
+  cleanItem,
+  VEGA_LITE_FUNCTIONS,
   RESIZE_SETTLE_MS,
 } = await import("./vega-chart.mjs");
+const { checkChartSpec, CHART_MAX_ROWS } = await import("../shared/chart-spec.mjs");
+const vl = await import("vega-lite");
 
 const theme = { dark: false, text: "#111", muted: "#555", line: "#ddd", font: "sans-serif" };
 const calls = [
@@ -287,8 +294,15 @@ test("destroy during the first draw finalizes the view that draw makes", () =>
       const chart = mount(element, { spec: stacked, datasets: { calls } });
       chart.destroy();
       await settle();
+      assert.equal(views.created, 1, "the draw ran to its end");
       assert.equal(views.live.size, 0);
       assert.equal(element.children.length, 0);
+      // Finalizing the late view hides its tooltip; that must not leave an
+      // element behind.
+      assert.equal(
+        window.document.body.querySelectorAll(".vg-tooltip, [id^='pages-chart-tooltip']").length,
+        0,
+      );
     }),
   ));
 
@@ -347,7 +361,11 @@ test("each refusal shows one sentence inside the frame and draws nothing", () =>
       );
       assert.match(
         await refusalIn(window, { ...stacked, transform: [{ calculate: "modify(1)", as: "m" }] }),
-        /can't call modify\(\)/,
+        /calls modify\(\)/,
+      );
+      assert.equal(
+        await refusalIn(window, stacked, { calls: new Array(CHART_MAX_ROWS + 1).fill({}) }),
+        'The dataset "calls" has 100,001 rows; a chart reads at most 100,000.',
       );
       assert.equal(
         await refusalIn(window, stacked, { calls: "not rows" }),
@@ -364,34 +382,532 @@ test("a spec Vega-Lite can't compile shows its error as one sentence", () =>
     assert.doesNotMatch(text.slice(0, -1), /\.\s/);
   }));
 
-test("Vega's loader refuses every URL, even past the spec checks", () =>
-  withWindow(async (window) => {
-    const fetched = [];
-    const realFetch = globalThis.fetch;
-    globalThis.fetch = async (url) => (fetched.push(String(url)), new Response(""));
-    try {
-      const view = await drawChart(window.document.createElement("div"), {
-        spec: {
-          data: { name: "pics" },
-          mark: { type: "image", width: 20, height: 20 },
-          encoding: {
-            x: { field: "n", type: "ordinal" },
-            url: { field: "src", type: "nominal" },
-            href: { field: "src", type: "nominal" },
+test("Vega's loader refuses every URL, and the compiled check refuses image marks", () =>
+  withWindow(async (window) =>
+    countViews(async (views) => {
+      const fetched = [];
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = async (url) => (fetched.push(String(url)), new Response(""));
+      try {
+        await assert.rejects(
+          drawChart(window.document.createElement("div"), {
+            spec: {
+              data: { name: "pics" },
+              mark: { type: "image", width: 20, height: 20 },
+              encoding: {
+                x: { field: "n", type: "ordinal" },
+                url: { field: "src", type: "nominal" },
+              },
+            },
+            data: { pics: [{ n: 1, src: "https://tracker.example/pixel.png" }] },
+            theme,
+            width: 300,
+          }),
+          /can't draw image marks/,
+        );
+        // An href channel draws, and its link goes nowhere.
+        const view = await drawChart(window.document.createElement("div"), {
+          spec: { ...stacked, encoding: { ...stacked.encoding, href: { field: "tool" } } },
+          data: { calls },
+          theme,
+          width: 300,
+        });
+        await settle(20);
+        assert.deepEqual(fetched, []);
+        view.finalize();
+        assert.equal(views.created, 1);
+      } finally {
+        globalThis.fetch = realFetch;
+      }
+      for (const method of ["load", "sanitize", "http", "file"])
+        await assert.rejects(deniedLoader[method]("https://tracker.example/pixel.png", {}));
+    }),
+  ));
+
+test("the compiled dataflow is checked before it runs, with Vega-Lite's own functions allowed", () =>
+  withWindow((window) =>
+    countViews(async (views) => {
+      const labelled = {
+        ...stacked,
+        encoding: {
+          ...stacked.encoding,
+          y: { ...stacked.encoding.y, axis: { labelExpr: "warn(datum.label)" } },
+        },
+      };
+      // The spec check refuses it first; drawChart skips that check, so this
+      // is the compiled check alone.
+      assert.equal(checkChartSpec(labelled).ok, false);
+      await assert.rejects(
+        drawChart(window.document.createElement("div"), {
+          spec: labelled,
+          data: { calls },
+          theme,
+          width: 300,
+        }),
+        { message: "This chart's compiled code calls warn()." },
+      );
+      for (const calculate of [
+        "sequence(0, 1e9)",
+        "datum['__proto__']",
+        "replace(datum.tool, /a+/, '')",
+      ])
+        await assert.rejects(
+          drawChart(window.document.createElement("div"), {
+            spec: { ...stacked, transform: [{ calculate, as: "v" }] },
+            data: { calls },
+            theme,
+            width: 300,
+          }),
+          /^Error: This chart's compiled code (calls sequence|uses "__proto__"|uses a regular)/,
+        );
+      assert.equal(views.created, 0, "no refused dataflow ever ran");
+    }),
+  ));
+
+// Specs across marks, selections, bindings, transforms and composition. Every
+// call Vega-Lite generates for them must be in VEGA_LITE_FUNCTIONS; a new
+// Vega-Lite version that emits another one fails here, not in a reader's tab.
+const CORPUS = (() => {
+  const d = { name: "c" };
+  const enc = { x: { field: "a", type: "nominal" }, y: { field: "n", type: "quantitative" } };
+  const xy = { x: { field: "n", type: "quantitative" }, y: { field: "m", type: "quantitative" } };
+  const time = {
+    x: { field: "t", type: "temporal", timeUnit: "yearmonth" },
+    y: { field: "n", type: "quantitative", aggregate: "sum" },
+    color: { field: "a", type: "nominal" },
+  };
+  return [
+    { data: d, mark: "bar", encoding: enc },
+    {
+      data: d,
+      mark: "bar",
+      encoding: {
+        ...enc,
+        y: { ...enc.y, stack: "normalize", axis: { format: "%" } },
+        color: { field: "b" },
+      },
+    },
+    { data: d, mark: "line", encoding: time },
+    { data: d, mark: { type: "area", interpolate: "monotone" }, encoding: time },
+    {
+      data: d,
+      mark: { type: "line", point: true },
+      encoding: { ...time, strokeDash: { field: "a" } },
+    },
+    {
+      data: d,
+      mark: "point",
+      params: [{ name: "brush", select: "interval" }],
+      encoding: { ...xy, color: { condition: { param: "brush", field: "a" }, value: "grey" } },
+    },
+    {
+      data: d,
+      mark: "point",
+      params: [
+        { name: "p", select: { type: "point", on: "pointerover", nearest: true, fields: ["a"] } },
+      ],
+      encoding: { ...xy, opacity: { condition: { param: "p", value: 1 }, value: 0.3 } },
+    },
+    {
+      data: d,
+      mark: "point",
+      params: [{ name: "g", select: "interval", bind: "scales" }],
+      encoding: xy,
+    },
+    {
+      data: d,
+      mark: "point",
+      params: [{ name: "g", select: "interval", bind: "scales" }],
+      encoding: { x: { ...xy.x, scale: { type: "log" } }, y: { ...xy.y, scale: { type: "pow" } } },
+    },
+    {
+      data: d,
+      mark: "point",
+      params: [{ name: "g", select: "interval", bind: "scales" }],
+      encoding: { x: { ...xy.x, scale: { type: "symlog" } }, y: xy.y },
+    },
+    {
+      data: d,
+      mark: "line",
+      params: [{ name: "l", select: { type: "point", fields: ["a"] }, bind: "legend" }],
+      encoding: { ...time, opacity: { condition: { param: "l", value: 1 }, value: 0.2 } },
+    },
+    {
+      data: d,
+      mark: "bar",
+      params: [{ name: "h", select: { type: "point", on: "pointerover", clear: "pointerout" } }],
+      encoding: { ...enc, fillOpacity: { condition: { param: "h", value: 1 }, value: 0.5 } },
+    },
+    {
+      data: d,
+      mark: "point",
+      params: [
+        {
+          name: "s",
+          select: {
+            type: "interval",
+            encodings: ["x"],
+            on: "[pointerdown[event.shiftKey], pointerup] > pointermove",
           },
         },
-        data: { pics: [{ n: 1, src: "https://tracker.example/pixel.png" }] },
-        theme,
-        width: 300,
-      });
-      await settle(20);
-      assert.deepEqual(fetched, []);
-      view.finalize();
-    } finally {
-      globalThis.fetch = realFetch;
-    }
-    for (const method of ["load", "sanitize", "http", "file"])
-      await assert.rejects(deniedLoader[method]("https://tracker.example/pixel.png", {}));
+      ],
+      encoding: xy,
+    },
+    {
+      data: d,
+      mark: "bar",
+      encoding: {
+        x: { field: "n", bin: { maxbins: 30 }, type: "quantitative" },
+        y: { aggregate: "count" },
+      },
+    },
+    {
+      data: d,
+      mark: "rect",
+      encoding: {
+        x: { field: "n", bin: true },
+        y: { field: "m", bin: true },
+        color: { aggregate: "count" },
+      },
+    },
+    {
+      data: d,
+      mark: "bar",
+      encoding: {
+        x: { field: "n", bin: { step: 5, extent: [0, 100] }, type: "quantitative" },
+        y: { aggregate: "count" },
+      },
+    },
+    { data: d, mark: "bar", encoding: { ...enc, facet: { field: "b", columns: 2 } } },
+    { data: d, facet: { row: { field: "b" } }, spec: { mark: "bar", encoding: enc } },
+    {
+      data: d,
+      repeat: ["n", "m"],
+      spec: {
+        mark: "bar",
+        encoding: { x: { field: "a" }, y: { field: { repeat: "repeat" }, type: "quantitative" } },
+      },
+    },
+    {
+      data: d,
+      hconcat: [
+        { mark: "bar", encoding: enc },
+        { mark: "point", encoding: enc },
+      ],
+    },
+    {
+      data: d,
+      layer: [
+        { mark: "bar", encoding: enc },
+        {
+          mark: { type: "text", dy: -4 },
+          encoding: { ...enc, text: { field: "n", format: ",.1f" } },
+        },
+        { mark: "rule", encoding: { y: { aggregate: "mean", field: "n" } } },
+      ],
+    },
+    { data: d, mark: "boxplot", encoding: enc },
+    { data: d, mark: "errorbar", encoding: enc },
+    {
+      data: d,
+      mark: { type: "errorband", extent: "ci" },
+      encoding: { x: { field: "t", type: "temporal" }, y: { field: "n", type: "quantitative" } },
+    },
+    {
+      data: d,
+      mark: { type: "arc", innerRadius: 40 },
+      encoding: { theta: { field: "n", type: "quantitative", stack: true }, color: { field: "a" } },
+    },
+    {
+      data: d,
+      transform: [
+        { window: [{ op: "rank", as: "r" }], sort: [{ field: "n", order: "descending" }] },
+        { filter: "datum.r <= 5" },
+        { joinaggregate: [{ op: "sum", field: "n", as: "tot" }] },
+        { calculate: "datum.n/datum.tot", as: "p" },
+      ],
+      mark: "bar",
+      encoding: {
+        x: { field: "a" },
+        y: { field: "p", type: "quantitative", axis: { format: ".0%" } },
+      },
+    },
+    {
+      data: d,
+      layer: [
+        { mark: "point", encoding: xy },
+        { mark: "line", transform: [{ regression: "m", on: "n" }], encoding: xy },
+      ],
+    },
+    {
+      data: d,
+      transform: [{ density: "n", groupby: ["a"] }],
+      mark: "area",
+      encoding: {
+        x: { field: "value", type: "quantitative" },
+        y: { field: "density", type: "quantitative" },
+        color: { field: "a" },
+      },
+    },
+    {
+      data: d,
+      transform: [{ quantile: "n", step: 0.01 }],
+      mark: "point",
+      encoding: {
+        x: { field: "prob", type: "quantitative" },
+        y: { field: "value", type: "quantitative" },
+      },
+    },
+    {
+      data: d,
+      transform: [{ fold: ["n", "m"] }],
+      mark: "bar",
+      encoding: { x: { field: "key" }, y: { field: "value", type: "quantitative" } },
+    },
+    {
+      data: d,
+      transform: [{ pivot: "a", value: "n", groupby: ["t"], limit: 10 }],
+      mark: "point",
+      encoding: { x: { field: "t", type: "temporal" } },
+    },
+    {
+      data: d,
+      mark: "bar",
+      encoding: {
+        x: { field: "a", sort: "-y" },
+        y: { field: "n", aggregate: "argmax", type: "quantitative" },
+        tooltip: [
+          { field: "a" },
+          { field: "n", format: ".2f" },
+          { field: "t", type: "temporal", timeUnit: "yearmonthdate" },
+        ],
+      },
+    },
+    {
+      data: d,
+      mark: { type: "bar", tooltip: true },
+      encoding: {
+        ...enc,
+        x: { ...enc.x, axis: { labelExpr: "upper(datum.label)", labelAngle: -45 } },
+        color: { field: "b", legend: { labelExpr: "datum.label + '!'", orient: "bottom" } },
+      },
+    },
+    {
+      data: d,
+      mark: "tick",
+      encoding: {
+        x: { field: "n", type: "quantitative", scale: { type: "log" } },
+        y: { field: "a" },
+      },
+    },
+    {
+      data: d,
+      mark: "point",
+      encoding: {
+        x: { field: "t", type: "temporal", scale: { type: "utc" }, axis: { format: "%b %Y" } },
+        y: { field: "n", type: "quantitative", scale: { zero: false } },
+        size: { field: "m", type: "quantitative" },
+        shape: { field: "a" },
+      },
+    },
+    {
+      data: d,
+      mark: "text",
+      encoding: { text: { field: "t", type: "temporal", format: "%Y" }, x: { field: "a" } },
+    },
+    { data: d, width: "container", mark: "bar", encoding: enc },
+    {
+      data: d,
+      params: [{ name: "cut", value: 5 }],
+      transform: [{ filter: "datum.n > cut" }],
+      mark: "bar",
+      encoding: enc,
+    },
+    {
+      data: d,
+      mark: "rect",
+      encoding: {
+        x: { field: "t", timeUnit: "date", type: "ordinal" },
+        y: { field: "t", timeUnit: "month", type: "ordinal" },
+        color: { field: "n", aggregate: "max", type: "quantitative", scale: { scheme: "viridis" } },
+      },
+    },
+    {
+      data: d,
+      mark: "geoshape",
+      projection: { type: "albersUsa" },
+      encoding: { color: { field: "n", type: "quantitative" } },
+    },
+    {
+      data: d,
+      mark: "trail",
+      encoding: {
+        x: { field: "t", type: "temporal" },
+        y: { field: "n", type: "quantitative" },
+        size: { field: "m", type: "quantitative" },
+      },
+    },
+    {
+      data: d,
+      transform: [
+        { timeUnit: "yearmonth", field: "t", as: "ym" },
+        { aggregate: [{ op: "mean", field: "n", as: "mn" }], groupby: ["ym"] },
+        { lookup: "ym", from: { data: { name: "e" }, key: "ym", fields: ["x"] } },
+      ],
+      mark: "line",
+      encoding: { x: { field: "ym", type: "temporal" }, y: { field: "mn", type: "quantitative" } },
+    },
+    {
+      data: d,
+      mark: "bar",
+      encoding: { ...enc, color: { field: "a", type: "nominal", scale: null } },
+    },
+  ];
+})();
+
+test("everything Vega-Lite generates for the corpus passes the compiled check", () => {
+  const vega = globalThis.__vega;
+  for (const [index, spec] of CORPUS.entries()) {
+    assert.equal(checkChartSpec(spec).ok, true, `${index}: ${checkChartSpec(spec).error}`);
+    const runtime = vega.parse(vl.compile(spec, { config: themeConfig(theme) }).spec, null, {
+      ast: true,
+    });
+    assert.equal(runtimeProblem(runtime), null, `${index}: ${JSON.stringify(spec).slice(0, 160)}`);
+  }
+  assert.ok(VEGA_LITE_FUNCTIONS.has("vlSelectionTest") && VEGA_LITE_FUNCTIONS.has("modify"));
+});
+
+test("paint is a color or a gradient of colors; anything else is dropped", () => {
+  for (const paint of [
+    "#2a78d6",
+    "steelblue",
+    "transparent",
+    "rgb(1, 2, 3)",
+    "hsl(10 50% 50% / 0.5)",
+    "oklch(0.7 0.1 250)",
+  ])
+    assert.equal(safePaint(paint), paint);
+  for (const paint of [
+    "url(https://x.example/p.svg#g)",
+    "URL(https://x.example/p.svg#g)",
+    "u\\72l(https://x.example/p.svg#g)",
+    "rgb(1, 2, 3) url(https://x.example/p.svg#g)",
+    "var(--x)",
+    "image-set('https://x.example/p.png' 1x)",
+    "context-fill url(#x)",
+    42,
+  ])
+    assert.equal(safePaint(paint), null, String(paint));
+  const gradient = {
+    gradient: "linear",
+    stops: [
+      { offset: 0, color: "url(https://x.example/a)" },
+      { offset: 1, color: "red" },
+    ],
+  };
+  assert.deepEqual(
+    safePaint(gradient).stops.map((stop) => stop.color),
+    ["transparent", "red"],
+  );
+  const item = {
+    fill: "url(https://x.example/a)",
+    stroke: "#000",
+    font: "url(https://x.example/f.woff)",
+    blend: "url(x)",
+    cursor: "url(https://x.example/c.png), auto",
+  };
+  cleanItem(item);
+  assert.deepEqual(item, { fill: null, stroke: "#000", font: null, blend: null, cursor: null });
+  const fine = { fill: "red", font: "Inter, sans-serif", blend: "multiply", cursor: "pointer" };
+  cleanItem(fine);
+  assert.deepEqual(fine, {
+    fill: "red",
+    font: "Inter, sans-serif",
+    blend: "multiply",
+    cursor: "pointer",
+  });
+});
+
+test("data that carries url() never reaches a drawn attribute or the cursor", () =>
+  withWindow(async (window) => {
+    const probe = "url(https://x.example/p.svg#g)";
+    const rows = calls.map((row) => ({
+      ...row,
+      paint: probe,
+      grad: {
+        gradient: "linear",
+        stops: [
+          { offset: 0, color: probe },
+          { offset: 1, color: "red" },
+        ],
+      },
+      cur: `${probe}, auto`,
+    }));
+    const spec = {
+      data: { name: "calls" },
+      background: { expr: "data('calls')[0].paint" },
+      layer: [
+        {
+          mark: { type: "bar", cursor: "pointer" },
+          encoding: {
+            ...stacked.encoding,
+            fill: { field: "paint", type: "nominal", scale: null },
+            stroke: { field: "paint", type: "nominal", scale: null },
+          },
+        },
+        {
+          mark: "point",
+          encoding: { ...stacked.encoding, fill: { field: "grad", type: "nominal", scale: null } },
+        },
+        {
+          mark: { type: "text", font: { expr: "data('calls')[0].paint" } },
+          encoding: { ...stacked.encoding, text: { field: "tool" } },
+        },
+      ],
+    };
+    assert.equal(checkChartSpec(spec).ok, true, checkChartSpec(spec).error);
+    const { element } = container(window);
+    const chart = mount(element, { spec, datasets: { calls: rows } });
+    await settle(120);
+    const figure = element.querySelector("figure");
+    assert.equal(figure.dataset.chartStatus, "rendered", figure.textContent);
+    const svg = figure.querySelector(".pages-chart-canvas svg");
+    // Attributes that take CSS. Vega's own gradients are url(<this document>#id).
+    const own = new RegExp(
+      `url\\((?:#|${window.location.href.split("#")[0].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}#)`,
+      "gi",
+    );
+    const references = [svg, ...svg.querySelectorAll("*")].flatMap((node) =>
+      [...node.attributes]
+        .filter(
+          (attr) => !attr.name.startsWith("aria-") && /url\(/i.test(attr.value.replace(own, "")),
+        )
+        .map((attr) => `${node.tagName} ${attr.name}=${attr.value}`),
+    );
+    assert.deepEqual(references, []);
+    const target = figure.querySelector(".pages-chart-canvas > div");
+    target.style.cursor = `${probe}, auto`;
+    assert.equal(target.style.cursor, "");
+    target.style.cursor = "pointer";
+    assert.equal(target.style.cursor, "pointer");
+    chart.destroy();
+  }));
+
+test("an expression that throws while the chart runs shows an error, not a drawn chart", () =>
+  withWindow(async (window) => {
+    const { element } = container(window);
+    const chart = mount(element, {
+      spec: { ...stacked, transform: [{ calculate: "datum.missing.x", as: "v" }] },
+      datasets: { calls },
+    });
+    await settle(120);
+    const figure = element.querySelector("figure");
+    assert.equal(figure.dataset.chartStatus, "error");
+    const message = figure.querySelector(".pages-chart-message").textContent;
+    assert.match(message, /^This chart couldn't be drawn: .+\.$/);
+    assert.doesNotMatch(message.slice(0, -1), /\.\s/);
+    assert.equal(figure.querySelector(".pages-chart-canvas svg"), null);
+    chart.destroy();
   }));
 
 test("the tooltip shows fields and drops an image URL", () => {

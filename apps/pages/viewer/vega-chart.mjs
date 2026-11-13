@@ -2,10 +2,24 @@
 // chunk: load it with `import("./vega-chart.mjs")` where a chart is shown, the
 // way wordgard-dataframes.mjs loads sift-table.jsx for tables.
 //
-// The viewer CSP has no 'unsafe-eval', so Vega runs with its expression
-// interpreter, and its loader refuses every request: a chart's only data is
-// the rows the caller passes, and it can't fetch an image or follow a link.
-// shared/chart-spec.mjs refuses the same things first, with a sentence.
+// The spec and the rows are both untrusted. Four layers keep a chart from
+// running code, fetching or navigating:
+// - shared/chart-spec.mjs refuses a spec before anything compiles, with one
+//   sentence: named data only, no URL anywhere, keyword cursors, and an
+//   allowlist of expression functions checked on parsed expressions.
+// - `runtimeProblem` checks every expression in the compiled Vega dataflow
+//   against the same policy, with VEGA_LITE_FUNCTIONS for the code
+//   Vega-Lite generates, before the dataflow runs.
+// - The viewer CSP has no 'unsafe-eval', so Vega runs with its expression
+//   interpreter, and `deniedLoader` refuses every load and link.
+// - The "pages-svg" renderer cleans each item's fill, stroke, font, blend and
+//   cursor before Vega writes them, and the container's cursor setter takes
+//   keywords only, so a data value can't put `url(...)` into a style.
+//
+// What stays unbounded is the reader's own tab: facets draw a cell per
+// distinct value, a chart may draw up to CHART_MAX_ROWS marks, and the bounded
+// transforms still do real work. A Worker with a kill timer would bound that;
+// nothing here does.
 //
 // The look is bare: the caller's title above, one thin rounded border around
 // the drawing, and Vega-Lite's own axes, legend and hover tooltip inside it.
@@ -17,7 +31,14 @@ import { expressionInterpreter } from "vega-interpreter";
 import { Handler as TooltipHandler, formatValue } from "vega-tooltip";
 import { BehaviorSubject, Observable, Subscription, combineLatest, concat } from "rxjs";
 import { debounceTime, distinctUntilChanged, skip, switchMap, take } from "rxjs/operators";
-import { checkChartSpec } from "../shared/chart-spec.mjs";
+import {
+  CHART_CURSORS,
+  CHART_EXPRESSION_FUNCTIONS,
+  CHART_MAX_ROWS,
+  checkChartSpec,
+  expressionProblem,
+  loadsResource,
+} from "../shared/chart-spec.mjs";
 import { maximizeButton } from "./diagram-icons.mjs";
 import { openDiagramViewer } from "./diagram-viewer.mjs";
 
@@ -45,6 +66,10 @@ const plainValue = (value) =>
       : JSON.parse(
           JSON.stringify(value, (_key, item) => (typeof item === "bigint" ? Number(item) : item)),
         );
+
+/** Rows in a dataset, before any are copied. */
+const rowCount = (dataset) =>
+  Array.isArray(dataset) ? dataset.length : isArrowTable(dataset) ? dataset.numRows : 0;
 
 const isArrowTable = (value) =>
   !!value &&
@@ -152,6 +177,7 @@ export function sizedSpec(spec, width) {
 
 /** One sentence from an error Vega or Vega-Lite threw. */
 function errorSentence(error) {
+  if (error instanceof ChartRefusal) return error.message;
   const message = String(error?.message ?? error ?? "").trim();
   const first = message
     .split(/(?<=[.!?])\s/)[0]
@@ -173,23 +199,195 @@ export const formatTooltip = (value, valueToHtml, maxDepth, baseURL) => {
 let tooltipCount = 0;
 
 /**
+ * Functions the code Vega-Lite 6.5.0 generates calls, beyond the ones a spec
+ * may call itself: selections, scale bindings, layout and gradients. The
+ * corpus test in viewer/vega-chart.test.mjs compiles specs across marks,
+ * selections, bindings, transforms and composition and fails if Vega-Lite
+ * emits a call outside this set.
+ */
+export const VEGA_LITE_FUNCTIONS = Object.freeze(
+  new Set([
+    ...CHART_EXPRESSION_FUNCTIONS,
+    "_bandwidth",
+    "_range",
+    "_scale",
+    "bandspace",
+    "containerSize",
+    "flush",
+    "gradient",
+    "group",
+    "inScope",
+    "isTuple",
+    "item",
+    "lerp",
+    "modify",
+    "panLinear",
+    "panLog",
+    "panPow",
+    "panSymlog",
+    "vlSelectionIdTest",
+    "vlSelectionResolve",
+    "vlSelectionTest",
+    "vlSelectionTuples",
+    "x",
+    "y",
+    "zoomLinear",
+    "zoomLog",
+    "zoomPow",
+    "zoomSymlog",
+  ]),
+);
+
+/** A refusal whose message is the sentence a reader sees. */
+class ChartRefusal extends Error {}
+
+/**
+ * Why a parsed Vega dataflow can't run, or null: an expression outside the
+ * policy (expressionProblem with VEGA_LITE_FUNCTIONS), or an image mark.
+ */
+export function runtimeProblem(runtime) {
+  const seen = new Set();
+  const stack = [runtime];
+  while (stack.length) {
+    const node = stack.pop();
+    if (!node || typeof node !== "object" || seen.has(node)) continue;
+    seen.add(node);
+    if (node.marktype === "image") return "This chart can't draw image marks.";
+    if (node.ast) {
+      const problem = expressionProblem(node.ast, VEGA_LITE_FUNCTIONS);
+      if (problem) return `This chart's compiled code ${problem}.`;
+    }
+    for (const child of Object.values(node))
+      if (child && typeof child === "object") stack.push(child);
+  }
+  return null;
+}
+
+// A paint is a color, never a reference: hex, a color keyword, or one color
+// function with no nested parentheses, quotes or escapes.
+const PAINT =
+  /^(?:#[0-9a-f]{3,8}|[a-z]+|(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\([^()\\;:"']*\))$/i;
+const BLENDS = new Set([
+  "normal",
+  "multiply",
+  "screen",
+  "overlay",
+  "darken",
+  "lighten",
+  "color-dodge",
+  "color-burn",
+  "hard-light",
+  "soft-light",
+  "difference",
+  "exclusion",
+  "hue",
+  "saturation",
+  "color",
+  "luminosity",
+]);
+const safeColor = (value) => (typeof value === "string" && PAINT.test(value.trim()) ? value : null);
+
+/** A fill or stroke the SVG renderer may write: a color, or a gradient whose
+ * stops are colors. Vega writes its own `url(#id)` for a gradient. */
+export function safePaint(value) {
+  if (value && typeof value === "object" && value.gradient) {
+    for (const stop of Array.isArray(value.stops) ? value.stops : [])
+      if (stop && typeof stop === "object") stop.color = safeColor(stop.color) ?? "transparent";
+    return Array.isArray(value.stops) ? value : null;
+  }
+  return safeColor(value);
+}
+
+/** Clean the scene item properties that reach a style or a cursor. */
+export function cleanItem(item) {
+  for (const key of ["fill", "stroke"])
+    if (item[key] != null) {
+      const safe = safePaint(item[key]);
+      if (safe !== item[key]) item[key] = safe;
+    }
+  if (
+    item.font != null &&
+    (typeof item.font !== "string" || loadsResource(item.font) || /[\\();{}]/.test(item.font))
+  )
+    item.font = null;
+  if (item.blend != null && !BLENDS.has(item.blend)) item.blend = null;
+  if (item.cursor != null && !CHART_CURSORS.has(item.cursor)) item.cursor = null;
+}
+
+/** Vega's SVG renderer, cleaning each item before it writes it. `_update`
+ * writes a mark's attributes (a text's font among them) and then calls
+ * `style`; a group's background calls `style` directly. */
+class PagesSVGRenderer extends vega.SVGRenderer {
+  _update(mdef, el, item) {
+    if (item) cleanItem(item);
+    return super._update(mdef, el, item);
+  }
+  style(el, item) {
+    if (item) cleanItem(item);
+    return super.style(el, item);
+  }
+  background(color) {
+    if (!arguments.length) return super.background();
+    return super.background(safeColor(color));
+  }
+}
+vega.renderModule("pages-svg", {
+  renderer: PagesSVGRenderer,
+  headless: PagesSVGRenderer,
+  handler: vega.SVGHandler,
+});
+
+/** Vega sets the view's cursor with `container.style.cursor = value`. Let it
+ * set keywords only. */
+function guardCursor(element) {
+  const style = element.style;
+  let proto = Object.getPrototypeOf(style);
+  while (proto && !Object.hasOwn(proto, "cursor")) proto = Object.getPrototypeOf(proto);
+  const accessor = proto && Object.getOwnPropertyDescriptor(proto, "cursor");
+  if (!accessor?.set) return;
+  Object.defineProperty(style, "cursor", {
+    configurable: true,
+    get: () => accessor.get.call(style),
+    set: (value) => accessor.set.call(style, CHART_CURSORS.has(value) ? value : ""),
+  });
+}
+
+/** Vega's logger, also keeping each error. An operator that throws during a
+ * run logs and lets the run finish; the chart treats that as a failed draw. */
+function keepingLogger(errors) {
+  const logger = vega.logger(vega.Warn);
+  const error = logger.error;
+  logger.error = (...args) => {
+    errors.push(args.map((arg) => arg?.message ?? String(arg)).join(" "));
+    return error.apply(logger, args);
+  };
+  return logger;
+}
+
+/**
  * Draw `spec` over `data` (name → plain rows) into `target`. Resolves with the
  * Vega view; rejects with Vega's error after finalizing a half-built view.
  */
 export async function drawChart(target, { spec, data, theme, width, tooltip }) {
   const compiled = vl.compile(sizedSpec(spec, width), { config: themeConfig(theme) }).spec;
-  const view = new vega.View(vega.parse(compiled, null, { ast: true }), {
+  const runtime = vega.parse(compiled, null, { ast: true });
+  const problem = runtimeProblem(runtime);
+  if (problem) throw new ChartRefusal(problem);
+  guardCursor(target);
+  const errors = [];
+  const view = new vega.View(runtime, {
     expr: expressionInterpreter,
     loader: deniedLoader,
-    renderer: "svg",
+    renderer: "pages-svg",
     container: target,
     hover: true,
     ...(tooltip && { tooltip }),
-    logLevel: vega.Warn,
+    logger: keepingLogger(errors),
   });
   try {
     for (const [name, rows] of Object.entries(data)) view.data(name, rows);
     await view.runAsync();
+    if (errors.length) throw new Error(errors[0]);
     return view;
   } catch (error) {
     view.finalize();
@@ -278,6 +476,11 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
   let refusal = checked.ok ? null : checked.error;
   if (!refusal)
     for (const name of checked.names) {
+      const rows = rowCount(datasets[name]);
+      if (rows > CHART_MAX_ROWS) {
+        refusal = `The dataset "${name}" has ${rows.toLocaleString("en-US")} rows; a chart reads at most ${CHART_MAX_ROWS.toLocaleString("en-US")}.`;
+        break;
+      }
       data[name] = datasetRows(datasets[name]);
       if (!data[name]) {
         refusal = `The dataset "${name}" must be rows or an Arrow table.`;
@@ -296,6 +499,12 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
     disableDefaultStyle: true,
     formatTooltip,
   });
+  // Finalizing a view hides its tooltip, and vega-tooltip creates the element
+  // to hide it. After destroy, a late draw's finalize must not.
+  let mounted = true;
+  const showTooltip = (...args) => {
+    if (mounted) tooltip.call(...args);
+  };
   const themes = new BehaviorSubject(pageTheme(container));
   const watchTheme = win?.MutationObserver
     ? new win.MutationObserver(() => themes.next(pageTheme(container)))
@@ -316,7 +525,7 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
     new Observable((subscriber) => {
       let cancelled = false;
       const target = doc.createElement("div");
-      drawChart(target, { spec: plain, data, theme, width, tooltip: tooltip.call }).then(
+      drawChart(target, { spec: plain, data, theme, width, tooltip: showTooltip }).then(
         (drawn) => {
           if (cancelled) drawn.finalize();
           else subscriber.next({ view: drawn, target });
@@ -347,12 +556,11 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
 
   return {
     destroy() {
+      mounted = false;
       subscription.unsubscribe();
       watchTheme?.disconnect();
       watchSize?.disconnect();
       teardown();
-      // After the view: finalizing it hides the tooltip, which recreates the
-      // element.
       doc.getElementById(tooltipId)?.remove();
     },
   };

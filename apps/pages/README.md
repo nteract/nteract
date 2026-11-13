@@ -53,6 +53,20 @@ Source layout under this directory:
 | `shared/` | Code shared by viewer and worker, state machines |
 | `scripts/` | Build, E2E harness, deploy, operator tools |
 
+### Charts
+
+`viewer/vega-chart.mjs` draws a Vega-Lite spec over datasets the caller
+supplies, in the Page's own document. Nothing in production loads it yet. The
+spec and the rows are both untrusted. `shared/chart-spec.mjs` refuses a spec
+that could fetch, navigate, run an expression outside its allowlist, or
+multiply rows past fixed bounds; the viewer checks the compiled Vega dataflow
+again, cleans every paint, font and cursor before Vega writes it, and runs
+expressions through Vega's interpreter. A chart can still keep the reader's
+tab busy within those bounds: a facet draws a cell per distinct value, up to
+100,000 rows can each draw a mark, and windows, densities and regressions do
+real work. A Worker or a separate frame with a kill timer would bound that;
+nothing does today.
+
 ## Run locally
 
 Use Node 22.13 or newer, Git, npm, and `celld` 0.6.3 on `PATH`. From
@@ -149,7 +163,7 @@ build-update check.
 | `list_pages` reports `content_updated_at` after an MCP edit and after typing in a tab, each well after the Page's creation | `node scripts/local-sharing-e2e.mjs --content-activity` | Starts an isolated fixture |
 | Grid cards show each edited Page's first content in light, dark and phone layouts; a shared card shows for its member and `page_cards` answers null on the call after removal | `node scripts/local-sharing-e2e.mjs --cards` | Starts an isolated fixture |
 | Cold first open of a 300-paragraph Page with images on Fast 3G and 4x CPU, phase by phase (records timings, gates on nothing) | `node scripts/local-sharing-e2e.mjs --cold-open` | Starts an isolated fixture behind a brotli proxy; writes `report.json` |
-| Vega-Lite chart renderer with no Page: a stacked bar chart from a fixture under the viewer CSP, Vega's tooltip on hover, light and dark screenshots, Maximize, phone width, the renderer chunk's size | `node scripts/chart-smoke.mjs` | Builds and serves its own fixture page; no celld |
+| Vega-Lite chart renderer with no Page: a stacked bar chart from a fixture under the viewer CSP, Vega's tooltip on hover, light and dark screenshots, Maximize, phone width, the renderer chunk's size; then charts with `url()` in every style position, in the spec and in the data, hovered with no request leaving the fixture (`PAGES_CHART_ENGINES=chromium,firefox,webkit` for more engines) | `node scripts/chart-smoke.mjs` | Builds and serves its own fixture page; no celld |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
 | Comments panel placement at 1920/1440/1100/800px | `PAGES_ORIGIN=http://localhost:9894 node scripts/comments-layout-smoke.mjs` | Uses the running Wordgard fixture |
 | Comment review at 1440/800px: whole messages through J and Resolve and next, the Page behind holds still under wheel and touch and keeps its scroll after Exit review, Resolve and next hovers green in light and dark | `PAGES_ORIGIN=http://localhost:9894 node scripts/comments-review-smoke.mjs` | Uses the running Wordgard fixture |
