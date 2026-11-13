@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { VirtualTimeScheduler } from "rxjs";
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
+import { oauthDriverName } from "./oauth-clients.mjs";
 import {
   createUsageSink,
   migrateUsageStore,
@@ -93,13 +94,37 @@ test("privacy projection has only SQL columns; migrations repeat and tolerate ad
   assert.equal(db.rows("SELECT readers FROM pages_usage_weekly")[0].readers, 1);
 });
 
+test("a grant's own driver label is a classified driver, never other", () => {
+  // The labels oauthDriverName gives a grant whose client sends none: each
+  // recognized client's product name, and "MCP" for a client it can't name.
+  const named = [
+    "pages-chatgpt",
+    "pages-kilo",
+    "https://claude.ai/oauth/mcp-oauth-client-metadata",
+    "https://claude.ai/oauth/claude-code-client-metadata",
+  ];
+  for (const clientId of [...named, "a-client-nobody-registered"]) {
+    const driver = oauthDriverName(clientId);
+    assert.notEqual(driver, "other", clientId);
+    assert.equal(storedUsage(event({ driver, action: "tool.call" })).driver, driver, clientId);
+  }
+  assert.equal(oauthDriverName("https://claude.ai/oauth/mcp-oauth-client-metadata"), "Claude");
+  assert.equal(oauthDriverName("a-client-nobody-registered"), "MCP");
+  // A client named by its host is a label a stranger chose: it stays "other".
+  const hosted = oauthDriverName("https://tools.example.com/oauth/client.json");
+  assert.equal(hosted, "tools.example.com");
+  assert.equal(storedUsage(event({ driver: hosted, action: "tool.call" })).driver, "other");
+});
+
 test("drivers are classified without dropping caller-labeled events", async (t) => {
   const db = sqliteD1(t).open();
   const known = [
     "Browser",
     "API",
+    "MCP",
     "Kilo",
     "Codex",
+    "Claude",
     "Claude Code",
     "Claude Desktop",
     "ChatGPT",

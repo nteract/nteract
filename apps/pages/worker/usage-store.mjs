@@ -15,11 +15,18 @@ const actions = new Set([
   "sync.close",
 ]);
 const surfaces = new Set(["mcp", "http-tools", "http-rest", "browser-sync"]);
+// Every label the host assigns itself is here: "Browser" and "API"
+// (auth.mjs driverLabel), and what a grant gets when its client sends none
+// (oauth-clients.mjs oauthDriverName): a recognized client's product name, or
+// "MCP" for a client it can't name. A label a caller chose is kept only when
+// it is one of these names.
 const drivers = new Set([
   "Browser",
   "API",
+  "MCP",
   "Kilo",
   "Codex",
+  "Claude",
   "Claude Code",
   "Claude Desktop",
   "ChatGPT",
