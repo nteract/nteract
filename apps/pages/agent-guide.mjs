@@ -849,8 +849,8 @@ page_quota_exceeded with limit and count; tell the person rather than retrying.
   Returns page_id and the new Page's revision, so the first edit needs no read_page. With
   tags, the result also carries tags. If the Page was created but its tags were not written
   it carries tags_applied:false and tags_error instead; for tags_unavailable send the same
-  call again (same nonce) to retry them, and never create a second Page. A call that names an
-  invalid tag creates nothing.
+  call again (same nonce) to retry them, and never create a second Page. A refusal, such as
+  page_trashed, repeats on a retry. A call that names an invalid tag creates nothing.
 - read_page: page_id (or project_id for a Project's content), optional node_ids,
   section/section_occurrence, search/context_nodes, include_content,
   include_presence, comments, outline_offset/outline_limit and max_bytes.

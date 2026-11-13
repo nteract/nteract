@@ -578,7 +578,7 @@ export const tools = [
   ),
   tool(
     "create_page",
-    "Create a rich-text Page. Returns url and revision, so the first edit needs no read. Omit project_id and parent_id for Your items; parent_id makes a sub-page (max 9 levels). Project owners and editors can add Pages; a Page added to someone else's Project is owned by its owner. tags adds tags as update_page_tags does; if the Page is created but its tags are not written the result says tags_applied:false, and sending the same call again retries them.",
+    "Create a rich-text Page. Returns url and revision, so the first edit needs no read. Omit project_id and parent_id for Your items; parent_id makes a sub-page (max 9 levels). Project owners and editors can add Pages; a Page added to someone else's Project is owned by its owner. tags adds tags as update_page_tags does; if the Page is created but its tags are not written the result says tags_applied:false; only for tags_unavailable does the same call again retry them.",
     {
       title,
       markdown: markdownBody,
