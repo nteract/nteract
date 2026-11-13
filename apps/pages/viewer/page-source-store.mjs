@@ -113,6 +113,7 @@ export class PageSourceStore {
   /** The version a binding reads now. Throws SourceUnavailable for a source
    * the Page doesn't hold and for an invalid binding. */
   resolve(binding) {
+    if (this.#destroyed) throw new SourceUnavailable("This Page's sources are closed.", binding);
     if (binding && typeof binding.source_id === "string") {
       const sources = this.#sources.snapshot();
       if (!Object.hasOwn(sources, binding.source_id))
@@ -149,13 +150,18 @@ export class PageSourceStore {
     return this.#resolver;
   }
 
-  /** Stop following the document, cancel downloads and drop the byte cache. */
+  /** Stop following the document, cancel downloads and drop the byte cache.
+   * The store then reads as a Page with no sources: snapshot() is empty,
+   * resolve() throws SourceUnavailable, and each versions() subscriber gets
+   * null for every id it follows. Subscriptions stay open and emit nothing
+   * more; the caller ends its own. */
   destroy() {
     if (this.#destroyed) return;
     this.#destroyed = true;
     this.#subscription.unsubscribe();
     this.#resolver?.destroy();
     this.#resolver = undefined;
+    this.#sources.update(() => NO_SOURCES);
   }
 }
 

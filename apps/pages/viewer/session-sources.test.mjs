@@ -107,6 +107,10 @@ test("a sources document that appears while the tab is open opens on the next ad
   session.repo.calls[0].resolve({ doc: () => sourcesWith("a".repeat(64)), on() {}, off() {} });
   await tick();
   assert.equal(session.sources.state$.snapshot().name, "ready");
+  // session.sources exposes the two streams and no handle.
+  assert.deepEqual(Object.keys(session.sources).sort(), ["doc$", "state$"]);
+  for (const value of Object.values(session.sources))
+    assert.notEqual(typeof value, "function", "no own property is a function");
   assert.deepEqual(
     versions.map((v) => v && [v.asset_id, v.revision]),
     [null, ["a".repeat(64), "1"]],

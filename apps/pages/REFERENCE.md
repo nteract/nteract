@@ -1480,12 +1480,15 @@ format this build doesn't read is `unreadable`; a discovery without a
 still connected, is `unserved` (an older host); a named one is looked up with
 the comments document's timeout and backoff. An open document stays open
 across reconnects, and anything else starts over on the next admitted
-connection. The open document's value is all the viewer exposes; its handle
-stays inside the replica, so nothing queues, retries or resends a change to
-it. The document isn't in the local checkpoint or the recovery archive: the
-host holds all of it. A retirement (access removed, Page deleted) cancels a
-lookup, drops the document and moves the machine to `retired`, from which
-nothing opens it again; a reopened retired Page opens nothing either. A
+connection. The replica exposes only its state and the document's value as
+`doc$`; nothing in the viewer changes the document, and the host refuses any
+change a browser sends for it. The document isn't in the local checkpoint or
+the recovery archive: the host holds all of it. A retirement (access removed,
+Page deleted) cancels a lookup, drops the document, removes its synced bytes
+from the tab's replica database (the Page's and comments' bytes stay there
+for recovery) and moves the machine to `retired`, from which nothing opens it
+again; a reopened retired Page opens nothing either. A replaced replica keeps
+the bytes for its successor. A
 document the host creates while a tab is open reaches that tab at its next
 admitted connection: the host tells no open socket that the record gained
 the type.
@@ -1497,8 +1500,12 @@ those sources changes. Its one resolver per session turns `{ source_id }` or
 `{ asset_id }` into `{ asset_id, media_type, revision }` and loads the
 table through Sift's loader, sharing a byte cache of the four most recent
 assets; each table decodes its own copy and frees it when unmounted,
-replaced or abandoned mid-load. The editor draws every dataframe from its
-pinned asset ([viewer/dataframe-binding.mjs](viewer/dataframe-binding.mjs)).
+replaced or abandoned mid-load. Released with the session, the store reads
+as a Page with no sources: its versions emit null and resolve refuses. The
+editor draws every dataframe from its pinned asset
+([viewer/dataframe-binding.mjs](viewer/dataframe-binding.mjs)), fetching the
+node's own `src`, so a `src` on another Page is still refused before any
+request.
 A table given a source binding follows it
 ([viewer/source-follow.mjs](viewer/source-follow.mjs)): each new version
 replaces the table, and its canvas records `data-source-id`, `data-asset-id`

@@ -45,6 +45,9 @@
  * - clearTimer: disarm the retry timer.
  * - install: adopt the handle lookup `attempt` found.
  * - uninstall: drop the installed handle; readers see no document.
+ * - forget: remove the synced bytes of every document this replica looked
+ *   up from its storage. Only a retirement forgets: the copy holds nothing of
+ *   the reader's, so there is nothing to recover. A closed replica keeps them.
  *
  * No effect writes the document. It has no local change to queue, retry or
  * resend.
@@ -145,6 +148,7 @@ export const sourcesOpenSpec = Object.freeze({
       clearTimer: shape("type", []),
       install: shape("type", ["attempt"], attempt),
       uninstall: shape("type", []),
+      forget: shape("type", []),
     },
   },
 });
@@ -221,7 +225,7 @@ function transition(state, event) {
       ]);
     case "retire":
       if (state.name === "retired") return reject(state, REJECT.retired);
-      return ok({ name: "retired" }, leave(state));
+      return ok({ name: "retired" }, [...leave(state), { type: "forget" }]);
     case "close":
       if (state.name === "retired") return reject(state, REJECT.retired);
       if (state.name === "closed") return reject(state, REJECT.closed);

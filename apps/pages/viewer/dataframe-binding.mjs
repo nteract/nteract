@@ -4,6 +4,7 @@
 // (wordgard-dataframes.mjs) takes the binding as a function, so a source
 // binding can be supplied without a stored shape.
 import { parseAssetPath } from "../shared/dataset-assets.mjs";
+import { imageAssetUrl } from "../shared/image-assets.mjs";
 
 /**
  * The asset a dataframe node pins, as a binding: `{ asset_id }` for a node
@@ -13,6 +14,18 @@ import { parseAssetPath } from "../shared/dataset-assets.mjs";
 export function pinnedBinding(dataframe) {
   const path = parseAssetPath(dataframe?.src);
   return path ? { asset_id: path.assetId } : null;
+}
+
+/**
+ * The path a table with an asset binding fetches. A node's own pin fetches
+ * its stored `src` unchanged, so a `src` on another Page is still refused
+ * before any request (sift-dataset.mjs fetchDataset). Only an asset binding
+ * that didn't come from `src` names a path on `pageId`.
+ */
+export function assetPath(src, pageId, binding) {
+  const assetId = binding?.asset_id;
+  if (typeof assetId !== "string" || parseAssetPath(src)?.assetId === assetId) return src;
+  return imageAssetUrl(pageId, assetId);
 }
 
 /** A binding as the drawing code compares it: one source or one asset. */

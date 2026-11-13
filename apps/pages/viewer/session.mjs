@@ -535,6 +535,9 @@ export class PageSession {
       find: (id, options) => this.repo.find(id, options),
       // A lookup's connection: the admitted one, or none while disconnected.
       link: () => (this.sockets.size ? this.connectionGeneration : undefined),
+      // A retirement removes the document's synced bytes: nothing in them is
+      // the reader's to recover.
+      forget: (id) => this.backend?.deleteLocal?.(documentIdToBinary(id)),
       scheduler,
     });
     this.recoveryCapture = new RecoveryCapture({
@@ -978,8 +981,10 @@ export class PageSession {
     // result never installs (comments-open-machine.mjs).
     this.commentsOpen({ type: "close" });
     // The sources document retires with them. Nothing in it is this
-    // replica's own, so none of it is archived.
-    this.sources.retire();
+    // replica's own, so none of it is archived, and its synced bytes are
+    // removed from this replica's storage, beside the archive and before the
+    // release closes it.
+    const forgetting = this.sources.retire();
     let archived = false;
     try {
       await this.retireLocal(reason, live);
@@ -988,6 +993,7 @@ export class PageSession {
     } catch (error) {
       this.retireProblem = error instanceof Error ? error.message : String(error);
     }
+    await forgetting;
     if (this.phase$.snapshot().name !== "retiring") return this.#whenReleased();
     const { done } = this.dispatch({
       type: archived ? "retireOk" : "retireFail",

@@ -218,8 +218,31 @@ test("a table decoded after its reader left is freed, and destroy stops everythi
 
   small.destroy();
   assert.deepEqual(cached.cached(), []);
-  await assert.rejects(cached.load(small.resolve({ asset_id: asset("a") })), /stopped/);
+  await assert.rejects(
+    cached.load({ asset_id: asset("a"), media_type: PARQUET_MEDIA_TYPE, revision: null }),
+    /stopped/,
+  );
   assert.throws(() => small.resolver(async () => ({})), /closed/);
+});
+
+test("a destroyed store reads as a Page with no sources", () => {
+  const host = hostDoc();
+  host.set("usage", asset("a"));
+  host.set("costs", asset("b"));
+  const { doc$, store } = storeOver(host.doc);
+  const seen = [];
+  const subscription = store.versions(["usage", "costs"]).subscribe((v) => seen.push(v));
+  assert.equal(Object.keys(store.snapshot()).length, 2);
+  store.destroy();
+  assert.deepEqual(store.snapshot(), {});
+  assert.throws(() => store.resolve({ source_id: "usage" }), SourceUnavailable);
+  assert.throws(() => store.resolve({ asset_id: asset("a") }), SourceUnavailable);
+  assert.deepEqual(seen.at(-1), { usage: null, costs: null }, "subscribers get nulls");
+  assert.equal(subscription.closed, false, "and stay open");
+  // The document no longer reaches it.
+  doc$.next(host.set("usage", asset("c")));
+  assert.equal(seen.length, 2);
+  assert.deepEqual(store.snapshot(), {});
 });
 
 test("a followed table redraws on a refresh, frees the version it replaced, and records what drew", async () => {

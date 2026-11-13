@@ -5,7 +5,7 @@
 import { createRoot } from "react-dom/client";
 import { SiftTable, loadTableFile, setWasmUrl } from "@nteract/sift";
 import { SIFT_CSS, SIFT_WASM_URL } from "pages-sift-assets";
-import { imageAssetUrl } from "../shared/image-assets.mjs";
+import { assetPath } from "./dataframe-binding.mjs";
 import { DATAFRAME_LIMITS, ensureSiftStyles, fetchDataset } from "./sift-dataset.mjs";
 import { followSource, markDrawnVersion } from "./source-follow.mjs";
 
@@ -21,7 +21,7 @@ export const SOURCE_MISSING = "This table's source isn't on this Page.";
  * cancels a pending download and unmounts the table.
  *
  * `binding` (dataframe-binding.mjs) says what the table draws: `{ asset_id }`
- * draws that asset, and `{ source_id }` with the Page's `sources` store
+ * draws that asset (the node's own pin fetches its `src` unchanged), and `{ source_id }` with the Page's `sources` store
  * follows the source: each new version replaces the table, and the
  * container's `data-source-id`, `data-asset-id` and `data-source-revision`
  * say which version it drew. Without a usable binding it draws `src`.
@@ -54,7 +54,7 @@ export function mount(container, { src, pageId, binding, sources }) {
     };
   }
   const controller = new AbortController();
-  const asset = binding?.asset_id ? imageAssetUrl(pageId, binding.asset_id) : src;
+  const asset = assetPath(src, pageId, binding);
   const source = {
     kind: "loader",
     load: async () =>

@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
-import { Repo, interpretAsDocumentId } from "@automerge/automerge-repo";
+import { Repo, documentIdToBinary, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { VirtualTimeScheduler } from "rxjs";
 import { AutomergeSyncBackend } from "../sync/backend.mjs";
 import { DocStore, MemoryByteStore } from "../sync/doc-store.mjs";
@@ -18,7 +18,9 @@ import { BUILD_FEATURES } from "../model/schema-features.mjs";
 import { readableFormats } from "../model/document-types.mjs";
 import { setSources, sourcesGenesis } from "../model/sources-doc.mjs";
 import { retryDelay } from "./sources-open-machine.mjs";
-import { SOURCES_LOOKUP_TIMEOUT_MS, SourcesReplica } from "./sources-replica.mjs";
+import { SOURCES_LOOKUP_TIMEOUT_MS, SourcesReplica, UNAVAILABLE } from "./sources-replica.mjs";
+import { IdbByteStore } from "../sync/idb-byte-store.mjs";
+import "fake-indexeddb/auto";
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const ID = "sources-1";
@@ -221,17 +223,64 @@ test("retiring cancels a lookup, drops the document, and nothing opens again", a
   assert.equal(other.sources.doc, undefined);
 });
 
-test("the replica exposes no way to change the document", () => {
+test("the replica exposes its state and the document's value, and no handle", async () => {
   const r = replica();
-  const surface = new Set();
-  for (let o = r.sources; o && o !== Object.prototype; o = Object.getPrototypeOf(o))
-    for (const key of Object.getOwnPropertyNames(o)) surface.add(key);
-  for (const key of ["change", "update", "handle", "merge"]) assert.ok(!surface.has(key), key);
+  r.sources.discovered(named());
+  await tick();
+  const handle = handleOf(sourcesDoc());
+  r.repo.calls[0].resolve(handle);
+  await tick();
+  assert.equal(r.state().name, "ready");
+  // Its own enumerable properties are the two streams; nothing reaches the
+  // handle or a function that returns it.
+  assert.deepEqual(Object.keys(r.sources).sort(), ["doc$", "state$"]);
+  for (const value of Object.values(r.sources)) {
+    assert.notEqual(value, handle);
+    assert.notEqual(typeof value, "function");
+  }
+  assert.equal(r.sources.find, undefined);
+  assert.equal(r.sources.doc, handle.doc(), "the value, not the handle");
+});
+
+test("automerge-repo's unknown-document error is the one the replica reads as an older host", async (t) => {
+  const h = await hostWithSources(t);
+  const missing = interpretAsDocumentId(new Uint8Array(16).fill(9));
+  const error = await h.repo.find(missing).then(
+    () => assert.fail("the host doesn't serve this document"),
+    (cause) => cause,
+  );
+  assert.match(error.message, UNAVAILABLE);
+});
+
+test("retirement removes the sources document's synced bytes from the replica's storage", async (t) => {
+  const bytes = new IdbByteStore(`pages-plain-test-${crypto.randomUUID()}`);
+  t.after(() => bytes.destroy());
+  const h = await hostWithSources(t, { bytes });
+  await h.write("usage", "a".repeat(64));
+  const tree = treeOf(h.sourcesId);
+  const stored = async () => (await bytes.list("")).filter((key) => key.includes(tree));
+  const sources = new SourcesReplica({
+    find: (id, options) => h.repo.find(id, options),
+    forget: (id) => h.backend.deleteLocal(documentIdToBinary(id)),
+  });
+  sources.discovered(named(h.sourcesId));
+  await until(() => sources.state$.snapshot().name === "ready", { label: "sources open" });
+  await h.backend.flush();
+  assert.ok((await stored()).length > 0, "the synced document is stored");
+
+  // A closed replica keeps its bytes for its successor.
+  sources.close();
+  assert.ok((await stored()).length > 0);
+
+  sources.discovered(named(h.sourcesId));
+  await until(() => sources.state$.snapshot().name === "ready", { label: "sources reopen" });
+  await sources.retire();
+  assert.deepEqual(await stored(), [], "nothing of it is left in the tab's database");
 });
 
 // Over a real host: PlainSync serving the Page family, and a browser repo
 // with this build's formats.
-async function hostWithSources(t) {
+async function hostWithSources(t, { bytes = new MemoryByteStore() } = {}) {
   const pageId = crypto.randomUUID();
   const uuid = crypto.randomUUID();
   const sourcesId = interpretAsDocumentId(
@@ -284,7 +333,7 @@ async function hostWithSources(t) {
       senderId: `b-${crypto.randomUUID()}`,
     },
   );
-  const backend = await AutomergeSyncBackend.load({ store: new DocStore(new MemoryByteStore()) });
+  const backend = await AutomergeSyncBackend.load({ store: new DocStore(bytes) });
   backend.addConnection(transport, { hostId: "pages-host" });
   const repo = new Repo({ backend });
   t.after(() => repo.shutdown?.());
@@ -310,7 +359,7 @@ async function hostWithSources(t) {
       ),
     );
   };
-  return { pageId, sourcesId, repo, sent, write };
+  return { pageId, sourcesId, repo, backend, sent, write };
 }
 
 test("over a real host the replica syncs the document and never sends a change for it", async (t) => {

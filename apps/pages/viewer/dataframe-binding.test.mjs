@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
+import { fetchDataset } from "./sift-dataset.mjs";
 import {
   TEST_BINDING_GLOBAL,
+  assetPath,
   bindingKey,
   editorBinding,
   pinnedBinding,
@@ -20,6 +22,26 @@ test("every stored node draws its pinned asset", () => {
   assert.equal(pinnedBinding({ src: "https://example.com/x.parquet" }), null);
   assert.equal(pinnedBinding(null), null);
   assert.equal(editorBinding({ location: { hostname: "pages.example" } }), pinnedBinding);
+});
+
+test("a pinned node fetches its own src, so a src on another Page is refused with no request", async () => {
+  const otherPage = "44444444-4444-4444-8444-444444444444";
+  const foreign = { ...node(), src: `/api/pages/${otherPage}/assets/${"a".repeat(64)}` };
+  const path = assetPath(foreign.src, pageId, pinnedBinding(foreign));
+  assert.equal(path, foreign.src);
+  const requests = [];
+  await assert.rejects(
+    fetchDataset(path, { pageId, request: async (url) => requests.push(url) }),
+    /belongs to another Page/,
+  );
+  assert.deepEqual(requests, []);
+  // This Page's pin is its own src too; only another asset names a new path.
+  assert.equal(assetPath(node().src, pageId, pinnedBinding(node())), node().src);
+  assert.equal(
+    assetPath(node().src, pageId, { asset_id: "b".repeat(64) }),
+    `/api/pages/${pageId}/assets/${"b".repeat(64)}`,
+  );
+  assert.equal(assetPath(node().src, pageId, null), node().src);
 });
 
 test("bindings compare by what they name", () => {

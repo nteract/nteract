@@ -1548,23 +1548,24 @@ async function openSourcesOf(copy) {
       lookups.push({ id, signal, resolve });
       signal?.addEventListener("abort", () => reject(signal.reason ?? Error("aborted")));
     });
-  session.backend ??= {};
+  const forgotten = [];
+  session.backend = { deleteLocal: async (id) => forgotten.push(id) };
   session.sockets.add({ close() {} });
-  const sourcesId = "5".repeat(32);
+  const sourcesId = interpretAsDocumentId(generateAutomergeUrl());
   session.connection = {
     documentId: copy.documentId,
     documents: { sources: { id: sourcesId, type: "pages.sources", format: 1 } },
   };
   session.openSources();
   await tick();
-  return { lookups, sourcesId };
+  return { lookups, sourcesId, forgotten };
 }
 
 test("revocation retires the sources replica with the Page's others and archives none of it", async (t) => {
   browser(t);
   const copy = await openCopy();
   const { session, auth, pageId } = copy;
-  const { lookups, sourcesId } = await openSourcesOf(copy);
+  const { lookups, sourcesId, forgotten } = await openSourcesOf(copy);
   assert.equal(lookups.length, 1);
   assert.equal(lookups[0].id, sourcesId);
   let sources = A.from({ sources: {} });
@@ -1598,6 +1599,11 @@ test("revocation retires the sources replica with the Page's others and archives
     "the archive carries no sources field",
   );
   assert.deepEqual(versions, [null]);
+  // Its synced bytes leave the replica's storage, as the document it named.
+  assert.deepEqual(
+    forgotten.map((id) => Buffer.from(id).toString("hex")),
+    [Buffer.from(documentIdToBinary(sourcesId)).toString("hex")],
+  );
 });
 
 test("a sources lookup running at retirement is cancelled and never installs", async (t) => {
