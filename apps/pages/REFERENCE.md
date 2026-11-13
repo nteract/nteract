@@ -1315,7 +1315,11 @@ reconnect at once; a stable connection clears them too.
 A host restart is not an error the person can act on. A 502, 503 or 504 (JSON
 or a gateway's HTML page), a JSON error marked `retryable`, and a failed fetch
 are transient (`isTransientFailure` in [request.mjs](viewer/request.mjs)): the
-Page shows Offline or Saved locally and retries without a red banner. Receipts
+Page shows Offline or Saved locally and retries without a red banner. A
+session check or a connection attempt that runs past the request deadline gets
+the same treatment (`isUnansweredFailure`): the server said nothing about the
+session or the Page, so the viewer asks again. A receipt that times out still
+reports it, because it holds up saving the edit. Receipts
 retry on the same backoff. From the seventh failure in a row, about 15 to 30
 seconds in, the Page shows one sentence, "Pages can't reach the server. Your
 changes are saved on this device.", and keeps retrying; the next admitted
@@ -1324,7 +1328,9 @@ are timed instead of counted (`OUTAGE_MS`, 20 s), because edits and Page
 reconnects trigger them too: receipt failures count from the first one after
 the last successful receipt, across edits, and the session-refresh machine
 tracks a run of unreachable answers, so a library screen whose renewals keep
-failing shows the same sentence until a session request succeeds. Both read
+failing shows the same sentence until a session request succeeds. A tab with
+no account yet shows the failed check's own error instead, since the sentence
+promises saved changes it doesn't have. Both read
 one monotonic clock ([monotonic.mjs](viewer/monotonic.mjs), `performance.now()`),
 so changing the system time can't hide or hasten the notice. A renewal the
 server refuses (401 or 403) still signs the tab out, and says why: "Your
