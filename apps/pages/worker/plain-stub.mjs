@@ -13,6 +13,7 @@ export function plainStub(repo, overrides = {}) {
     async forget() {},
     serve() {},
     profiles: () => ({}),
+    claim: () => undefined,
     actorSnapshot: () => ({ actorProfiles: {}, attestedChanges: {} }),
     sender: (_identity, requested) => ({ senderId: requested ?? "b-fixture", replaces: null }),
     async close() {},

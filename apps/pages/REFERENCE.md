@@ -283,8 +283,45 @@ else replaces the screen with a Reload notice and leaves the Page unchanged.
   same feature still decodes, draws "This build can't show…", and writes back
   unchanged; writers (`insert_node`, upload) check strictly. Copy writes a
   `figure[data-pages-dataframe]` with the attrs as JSON, and paste reads it
-  back only when its `src` is on the same Page. The table fetch refuses a
-  `src` on another Page too. A dataframe whose attrs this build can't read
+  back when its `src` is on the same Page.
+
+  Clipboard HTML is untrusted, so a table's data moves between Pages only
+  when this browser copied it. A copy or cut holding this Page's tables
+  writes a copy record to this origin's `localStorage`
+  ([`viewer/copy-registry.mjs`](viewer/copy-registry.mjs)): a random 128-bit
+  id, the Page, its title and the asset ids. The clipboard HTML gets one empty hidden
+  `span[data-pages-copy]` holding `{"v": 1, "id": …}`; other apps paste
+  nothing from it, and Pages strips it before reading a paste. The registry
+  keeps the 20 newest copies, each for one hour: long enough to paste in
+  another tab, and short, because the id leaves the browser with the
+  clipboard. Without `localStorage` nothing is recorded and nothing copies.
+
+  A paste or drop reading HTML that holds tables from another Page looks up
+  the clipboard's copy id. A table copies only when the record exists, names
+  the Page in the table's `src` and lists its asset; no other field of the
+  clipboard element counts. A record shows that this browser copied the
+  table, not that the person means to move its data here: another site that
+  saw the clipboard can hand the id back inside its own content. So the
+  paste is held while the Page asks, in the paste's status row, whether to
+  bring the data for the tables from the Page the record names, by the
+  record's title, never the clipboard's. Bring data starts the copies;
+  Paste titles only lands the paste now with those tables as titles; Cancel
+  drops it. Nothing is requested before Bring data. An answer counts only for
+  the question it was shown with, so a late answer can't start another
+  paste's copies; answering from the keyboard puts focus back in the Page. The paste then waits
+  while the host copies each dataset onto this Page (`POST /api/pages/:pageId/assets/:sha256` with
+  `{"from_page_id": …}`), at most 8 tables a paste and 2 at a time, and
+  lands with each `src` on this Page, replacing the selection as any paste
+  does, with the caret after it. Whether it landed is the transaction's own
+  answer: the Page reports it refused only when the binding refused it. A table that didn't copy (not this browser's copy, past the limit,
+  or refused by the host) lands as its title, and the Page says why. In a
+  code block and for paste-as-plain-text, Wordgard reads the clipboard's
+  text and nothing is held. A paste made while another is held takes the
+  editor's own path: its tables from other Pages land as titles, with no
+  message of its own. The lifecycle is
+  [`viewer/dataframe-copy-machine.mjs`](viewer/dataframe-copy-machine.mjs).
+  The node never names another Page, and the table fetch refuses a `src` on
+  another Page. A dataframe whose attrs this build can't read
   decodes as an unknown node (see above), and a Markdown rewrite of its block
   is refused. Each block editor also sits in an error boundary
   (`viewer/BlockBoundary.jsx`), so any other failure to draw one block can't
@@ -1161,8 +1198,10 @@ original receipt. `list_page_comments`, `read_page` and `read_page_changes`
 return `author.agent` when stored. The comment thread reads "<agent name> via
 <driver> for <person>" with the model in the tooltip. These are what the client
 said about itself, shown under the authenticated account: they grant nothing and
-verify nothing. `read_page_changes` still reports `attribution: "unavailable"`
-for document edits.
+verify nothing. An `edit_page` call stores the resolved assertion on its
+writer ([Edit writers](#edit-writers)) but leaves it out of the request's
+fingerprint: a retry under the same `nonce` with other labels replays the
+first attempt's receipt and keeps its writer.
 
 `Browser` is the one driver a bearer credential can't claim: viewers show a
 browser session by the person's name alone, so on a request with an API key or
@@ -1732,7 +1771,19 @@ million pixels; the HTTP request ceiling is 6 MiB. SVG, HTML, GIF, APNG, and ani
 accepted. Container validation is not full pixel decoding. Removed images and
 interrupted uploads may leave private objects: immediate deletion would break
 undo or offline references. Asset garbage collection and copying assets between
-Pages/deployments require a separate lifecycle implementation.
+deployments require a separate lifecycle implementation.
+
+A dataset copies between Pages with `POST /api/pages/:pageId/assets/:sha256`
+and a JSON body `{"from_page_id": "<source Page>"}`. The Worker asks the
+destination's host for edit access first and the source's host for read
+access second, as a read of the source asset would, and touches neither
+Page's storage until both pass. A caller who can't read the source gets that
+read's refusal whether or not the dataset is there. The source object must be
+a Parquet dataset; its bytes go through the upload's own checks and limits,
+are stored under the same id, and edit access is checked again before the
+answer. A dataset already on the destination is `200` with no second write;
+a new copy is `201`. Upload capabilities can't copy. Images don't copy: an
+image pasted from another Page keeps its `src` there.
 
 For agents, importing bytes and inserting content are separate operations:
 
@@ -2172,6 +2223,70 @@ Edits from the API go through the host's Repo and the same admission queue.
 through the Page host; `npm run test:contract` runs Repo 3's
 backend contract.
 
+### Edit writers
+
+A journaled mutation a caller asked for (`edit_page`, including a title or
+source write, and comment writes) records its writer
+([worker/host-writers.mjs](worker/host-writers.mjs)). The writer is the
+`authorOf` shape comments and sources store: `{ principal, displayName,
+driver, agent? }`, its display name cut to `WRITER_LIMITS` as a source's is
+([model/author.mjs](model/author.mjs)). `agent` is the request's resolved
+`{ name?, model? }`. A comment or source write fingerprints it, as before; an
+`edit_page` request's fingerprint leaves it out, so a retry under the same
+nonce with other labels replays the first attempt and keeps its writer, and a
+build without writers computes the same fingerprint for the same request.
+
+The change keeps the host actor every journaled host edit has, the prefix
+and eight random bytes, and carries the writer id as its own Automerge
+`author`: the first eight bytes of the SHA-256 of the canonical writer
+record. Automerge's `setAuthor` mints a fresh random actor, so the mutation
+sets the author on one clone and the host actor on a clone of that, which
+keeps the author. The author is in the change bytes the journal holds, so a
+retry and startup recovery replay it unchanged. The record is stored once per
+distinct writer, as CBOR under `plain/writer/<id>`, in the same put as the
+pending journal entry that holds the change bytes; the entry names it as
+`writer`. An edit that changes nothing stores no record and names none. A
+different record already stored under an id refuses the write
+(`writer_conflict`).
+
+Trust rule: an `author` is believed only on a change whose actor is under the
+host prefix, because only the host authors under that prefix. Any peer can
+set any author on its own changes; on any other actor the field is ignored
+and the writer is the actor's claim. A host change with no author (the host's
+own edits: registration, migrations, direct handle changes; and every host
+edit stored before writers were recorded) or an author with no record names
+no writer. Nothing reads a writer out of an actor. Writer records and claims are never
+removed by an access change, so a removed member's edits stay attributed to
+them; a purge deletes them with the rest of `plain/`. Nothing lists
+`plain/writer/` at startup or on connect: a change read resolves the
+changes in its delta, one storage read per distinct writer.
+
+`read_page_changes` checks its arguments and baseline, then decodes the
+changes since the baseline once, and takes each change's actor and `author`
+from that decode. A host-prefixed change resolves through the record its
+author names (`via: "tool"`), any other through its actor's claim
+(`via: "sync"`). A host claim, an unclaimed actor, a host change without an
+author and an author without a record are `{ recorded: false }`. A browser
+actor's claim answers for its edits however old they are, so what reads
+unrecorded is the host's own edits, host edits made before writers were
+recorded, and edits by an actor with no recorded claim. The response has
+`attribution: "block"`, a `writers` table, `written_by` on every content change and `title_written_by`
+beside a title change: indexes into `writers` of the authors of every change
+since the baseline that wrote that block or the title. Ops resolve to blocks
+as admission resolves them ([model/block-shape.mjs](model/block-shape.mjs)
+`changeWrites`); a change that writes the blocks map itself writes every
+block. A node change names every writer of its block. The table holds only
+writers some reported change or the title names, and counts toward
+`max_bytes`.
+
+More than `ATTRIBUTION_MAX_CHANGES` (10,000) changes between the baseline and
+the current heads is too many to attribute in one read
+([model/read-changes.mjs](model/read-changes.mjs)): the delta is returned
+whole, with `attribution: "unavailable"`, `attribution_reason:
+"too_many_changes"` and no writers. The read never fails for this. An agent
+that wants writers reads again from a newer baseline. Past the limit the read
+counts the changes but decodes none.
+
 ### Page quotas
 
 Each account has one Page limit. It bounds the account's active Pages and,
@@ -2532,9 +2647,9 @@ an inserted or moved node, at the baseline for a deleted one, null when none
 follows. Two nodes that have ids never name the same successor, so a caller
 rebuilds the order of a block's nodes that have ids from its baseline and the
 delta. A paragraph of unmarked text has no id and isn't placed among them; it
-is reached through its block. It is not an event/audit
-log and does not supply historical person/client attribution or deleted message
-bodies. A revision the host no longer knows returns `resync_required`; oversized
+is reached through its block. Each change names its block's writers since the
+baseline ([Edit writers](#edit-writers)). It is not an event/audit log and
+does not supply deleted message bodies. A revision the host no longer knows returns `resync_required`; oversized
 deltas return `changes_budget_exceeded`, never partial success. Advance a saved
 revision only after consuming a successful response or resynchronizing with
 focused reads.

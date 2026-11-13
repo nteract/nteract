@@ -16,6 +16,7 @@ import {
 } from "./operation-journal.mjs";
 import { PAGE_FAMILY } from "./document-modules.mjs";
 import { fencedHeads, parseRevision, revisionPlan } from "./revisions.mjs";
+import { hostWriter, recordWriter } from "./host-writers.mjs";
 
 /** The document a journal entry writes. */
 export const PAGE_DOC = "page";
@@ -118,6 +119,16 @@ const requiredRevision = (args) => {
  * them unchanged. `onHeads(heads)` receives the document heads the receipt
  * describes. `pageHeads()` returns the live Page heads a revision refusal
  * names; it defaults to `handle`'s heads when `handle` holds the Page.
+ *
+ * A caller's mutation records its writer (worker/host-writers.mjs): the
+ * account and its client's agent labels, `writerAgent` when given and
+ * `agent` otherwise. `agent` joins the fingerprint (comments and sources
+ * store it); `writerAgent` doesn't, so a Page edit's fingerprint is the
+ * request alone. The change's `author` names the writer's record, and a new
+ * record goes in the same put as the pending entry that holds the change
+ * bytes. A retry replays those bytes, so it keeps its first attempt's
+ * writer. An edit that changes nothing, and an `internal` mutation, record
+ * no writer.
  */
 export async function documentMutation({
   storage,
@@ -141,6 +152,7 @@ export async function documentMutation({
   onHeads,
   pageHeads = () => (doc === PAGE_DOC ? A.getHeads(handle.doc()) : undefined),
   agent,
+  writerAgent = agent,
 }) {
   requireNonce(args);
   const key = internal
@@ -156,6 +168,10 @@ export async function documentMutation({
     // A new intent never edits a Page stamped with a schema feature this build
     // can't express. A recorded receipt still replays.
     requireSupportedSchema(handle.doc());
+    const writer =
+      hostActorPrefix && !internal && identity?.principal
+        ? await recordWriter(storage, hostWriter(identity, writerAgent))
+        : undefined;
     // Check external prerequisites only for new intents. A retry must replay
     // its original bytes/receipt even if an external service is unavailable.
     const targetScope = args.conflict_scope === "target";
@@ -221,7 +237,18 @@ export async function documentMutation({
         Array.from(crypto.getRandomValues(new Uint8Array(8)), (byte) =>
           byte.toString(16).padStart(2, "0"),
         ).join("");
-    const candidate = A.clone(before, actor ? { actor } : undefined);
+    // A caller's change carries its writer id as its Automerge `author`,
+    // believed because the actor is the host's (worker/host-writers.mjs).
+    // Automerge's setAuthor mints a fresh random actor, so the author is set
+    // first and the host actor is set by the clone after it, which keeps the
+    // author.
+    const authored = actor && writer ? A.clone(before, { author: writer.id }) : null;
+    let candidate;
+    try {
+      candidate = A.clone(authored ?? before, actor ? { actor } : undefined);
+    } finally {
+      if (authored) A.free(authored);
+    }
     // No await between the head guard and immutable edit construction.
     try {
       after = A.change(candidate, (doc) => {
@@ -237,12 +264,16 @@ export async function documentMutation({
           ? [openingTitleWarning(after), ...editWarnings(result)].filter(Boolean)
           : [];
       const heads = A.getHeads(after);
+      const changes = A.getChanges(before, after);
+      // An edit that changes nothing names no writer, so it stores none.
+      const named = changes.length ? writer : undefined;
       entry = {
         fingerprint: digest,
         pending: true,
         ...(doc !== PAGE_DOC && { doc }),
+        ...(named && { writer: named.id }),
         heads,
-        changes: A.getChanges(before, after),
+        changes,
         receipt: { page_id: pageId, result: result ?? null },
       };
       assertIntentSize(key, entry.changes, {
@@ -277,7 +308,7 @@ export async function documentMutation({
         ...(warnings.length ? { warnings } : {}),
         ...(receiptFields && (await receiptFields(plan))),
       };
-      await storage.put({ [key]: entry, ...plan.writes });
+      await storage.put({ [key]: entry, ...plan.writes, ...named?.writes });
       await storage.sync();
       await plan.settle();
       recorded = true;

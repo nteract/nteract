@@ -46,34 +46,49 @@ const refusal = (message, block) => ({
 const POSITION_MESSAGE = `A block's position must be a raw-string fractional index of at most ${MAX_POSITION_LENGTH} characters`;
 
 /**
- * The block ids that `fresh` writes: a key of a blocks map, or anything
- * inside a block. An op names its object; the object's path comes from
- * `objInfo` at the document's heads, or at its own change's heads when the
- * object is hidden behind a concurrent value. Paths are looked up once per
- * object, so the cost follows the change, not the number of blocks.
+ * What one decoded change writes: `blocks` when it writes the blocks map or
+ * anything in it, `touched`, the block ids it writes (a key of a blocks map,
+ * or anything inside a block), and `root`, the top-level fields it writes
+ * (`title`, `blocks`, ...). An op names its object; the object's path comes
+ * from `objInfo` at the document's heads, or at its own change's heads when
+ * the object is hidden behind a concurrent value or deleted. `paths` caches
+ * each object's path across changes, so the cost follows the changes, not
+ * the number of blocks.
  */
+export function changeWrites(backend, { hash, ops }, paths = new Map()) {
+  const touched = new Set();
+  const root = new Set();
+  let blocks = false;
+  for (const { obj, key } of ops) {
+    if (obj === "_root") {
+      if (typeof key === "string") root.add(key);
+      if (key === "blocks") blocks = true;
+      continue;
+    }
+    let path = paths.get(obj);
+    if (path === undefined) {
+      path = backend.objInfo(obj).path ?? backend.objInfo(obj, [hash]).path ?? null;
+      paths.set(obj, path);
+    }
+    if (path?.length) root.add(String(path[0]));
+    if (path?.[0] !== "blocks") continue;
+    blocks = true;
+    if (path.length === 1) {
+      if (typeof key === "string") touched.add(key);
+    } else touched.add(String(path[1]));
+  }
+  return { blocks, touched, root };
+}
+
+/** The block ids that `fresh` writes, by changeWrites over each change. */
 function touchedBlocks(backend, fresh) {
   const touched = new Set();
   const paths = new Map();
   let blocks = false;
   for (const bytes of fresh) {
-    const { hash, ops } = A.decodeChange(bytes);
-    for (const { obj, key } of ops) {
-      if (obj === "_root") {
-        if (key === "blocks") blocks = true;
-        continue;
-      }
-      let path = paths.get(obj);
-      if (path === undefined) {
-        path = backend.objInfo(obj).path ?? backend.objInfo(obj, [hash]).path ?? null;
-        paths.set(obj, path);
-      }
-      if (path?.[0] !== "blocks") continue;
-      blocks = true;
-      if (path.length === 1) {
-        if (typeof key === "string") touched.add(key);
-      } else touched.add(String(path[1]));
-    }
+    const writes = changeWrites(backend, A.decodeChange(bytes), paths);
+    blocks ||= writes.blocks;
+    for (const id of writes.touched) touched.add(id);
   }
   return { blocks, touched };
 }

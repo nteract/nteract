@@ -183,13 +183,19 @@ export function resolveImageInsertion(replica, target, map) {
  * the selection is theirs: return null and let the editor map it through the
  * insertion. */
 export function caretAfterImage(replica, target, map, selection, position) {
+  if (!selectionUnmoved(replica, target, map, selection)) return null;
+  return (_cx, changes) => GardSelection.cursor(changes.mapPos(position, 1));
+}
+
+/** Whether `selection` is still the one captured with `target`
+ * (captureImageInsertion): the person hasn't typed or moved it since. */
+export function selectionUnmoved(replica, target, map, selection) {
   const captured = target.selection;
-  if (captured?.anchor === undefined || captured?.head === undefined) return null;
+  if (captured?.anchor === undefined || captured?.head === undefined) return false;
   const doc = replica.doc,
     anchor = resolvePosition(doc, target, captured.anchor, map),
     head = resolvePosition(doc, target, captured.head, map);
-  if (anchor === null || anchor !== selection.anchor || head !== selection.head) return null;
-  return (_cx, changes) => GardSelection.cursor(changes.mapPos(position, 1));
+  return anchor !== null && anchor === selection.anchor && head === selection.head;
 }
 
 export async function uploadPageImage(pageId, file, signal, request = fetch) {

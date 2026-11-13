@@ -1,5 +1,5 @@
 import * as A from "@automerge/automerge";
-import { projectReadChanges } from "../model/read-changes.mjs";
+import { changeHistory, projectReadChanges } from "../model/read-changes.mjs";
 
 const DEFAULT_BYTES = 128 * 1024;
 const bytes = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
@@ -18,11 +18,16 @@ const invalid = (message) => {
  * (`revisions`, as readTool takes it); a handle it no longer holds is
  * `resync_required`. The result names the current revisions as handles.
  * Oversized results fail as a whole; current heads never imply a partial delta.
+ * `writers(changes)` resolves the decoded changes since the baseline to a
+ * function from one change to its writer (worker/host-writers.mjs
+ * resolveWriters); without it the result has no
+ * attribution. The changes are decoded once, after the argument and revision
+ * checks, and not at all past ATTRIBUTION_MAX_CHANGES.
  */
 export async function readChangesTool(
   doc,
   args,
-  { revisions, recovery, historyIncomplete, commentsDoc } = {},
+  { revisions, recovery, historyIncomplete, commentsDoc, writers } = {},
 ) {
   const heads = A.getHeads(doc);
   let maxBytes = DEFAULT_BYTES,
@@ -56,6 +61,11 @@ export async function readChangesTool(
       args.since_comment_revision === undefined
         ? undefined
         : await revisions.heads("comments", args.since_comment_revision, "since_comment_revision");
+    // Every argument is refused before a change is decoded.
+    if (args.comments !== undefined && !["none", "summary", "all"].includes(args.comments))
+      invalid("comments must be none, summary or all");
+    const history = writers ? changeHistory(doc, since) : undefined;
+    const resolve = history?.changes && (await writers(history.changes));
     const {
       since_heads: _since,
       heads: _heads,
@@ -70,6 +80,7 @@ export async function readChangesTool(
         max_bytes: maxBytes,
       },
       commentsDoc,
+      history ? { history, writerOf: (change) => resolve?.(change) ?? null } : {},
     );
     payload = { ...delta, since_revision: args.since_revision };
   } catch (error) {

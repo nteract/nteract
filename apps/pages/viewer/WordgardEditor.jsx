@@ -119,6 +119,14 @@ import {
   uploadFiles,
   resolveImageInsertion,
 } from "./image-upload.mjs";
+import {
+  COPYING,
+  createDataframeCopier,
+  landHeldPaste,
+  pastedSlice,
+  readsPastedHTML,
+} from "./dataframe-copy.mjs";
+import { markCopiedHTML } from "./copy-registry.mjs";
 import { caretGlideFor, createGlideRunner, mediaMatches$ } from "./caret-glide.mjs";
 import { glideSettings } from "./feature-flags.mjs";
 import "./wordgard.css";
@@ -205,6 +213,7 @@ export function WordgardEditor(props) {
     toolbar = useRef(null),
     imageInput = useRef(null),
     imageUploader = useRef(null),
+    dataframeCopier = useRef(null),
     imageTarget = useRef(null);
   const permissions = useRef(new GardState.Compartment());
   const [format, setFormat] = useState(null),
@@ -214,6 +223,7 @@ export function WordgardEditor(props) {
     [link, setLink] = useState(null),
     [editingLink, setEditingLink] = useState(false),
     [imageStatus, setImageStatus] = useState(null),
+    [copyStatus, setCopyStatus] = useState(null),
     [mobile, setMobile] = useState(() => matchMedia(MOBILE_EDITOR_QUERY).matches),
     [barFocus, setBarFocus] = useState(false);
   const mobileBar = useRef(null);
@@ -226,6 +236,18 @@ export function WordgardEditor(props) {
     positionToolbar = useRef(() => {});
   const report = (error) =>
     latest.current.onError(error instanceof Error ? error.message : String(error));
+  // Answer a held paste's question for the token it was shown with. The
+  // answer buttons go away with the question; if one of them still has
+  // focus then, focus returns to the editor, so typing continues after the
+  // paste. Focus the person moved elsewhere stays there.
+  function answerCopy(event, answer) {
+    const button = event.currentTarget;
+    const copier = dataframeCopier.current;
+    if (!copier) return;
+    answer(copier);
+    if (button.ownerDocument.activeElement === button && copier.state.name !== "confirming")
+      view.current?.focus();
+  }
   function comment() {
     const editor = view.current;
     const { editable: canEdit, commentable: canComment = canEdit } = latest.current;
@@ -333,6 +355,9 @@ export function WordgardEditor(props) {
     pendingLink.current = null;
     let alive = true,
       writing = false,
+      // Local transactions the binding refused: a held paste checks this to
+      // tell whether its own transaction was accepted.
+      refused = 0,
       lastPresence = "",
       lastPresenceAt = 0;
     const bound = createWordgardBinding(replica, id);
@@ -365,6 +390,25 @@ export function WordgardEditor(props) {
         setImageStatus({ pending: false, message: error.message, retryable: false });
       }
       return true;
+    };
+    // A paste or drop holding tables from another Page waits while their
+    // data copies to this Page (dataframe-copy.mjs). Anything else, or a
+    // paste while one is copying, takes the editor's own path, where such a
+    // table lands as its title.
+    // A paste replaces the selection (`from` to `to`); a drop lands at one
+    // point. `at` is where Wordgard reads the paste's context: in a code
+    // block, or for paste-as-plain-text, it reads text and this stays out.
+    const acceptDataframes = (transfer, { from, to = from, at = from, plain = false }) => {
+      if (!latest.current.editable || replica.canWrite === false) return false;
+      if (!readsPastedHTML(editor.state, transfer, { at, plain })) return false;
+      const capture = (position) =>
+        captureImageInsertion(replica, id, editor, bound.current.map, position);
+      return (
+        dataframeCopier.current?.accept(transfer.getData("text/html"), () => {
+          const end = capture(to);
+          return { from: from === to ? end : capture(from), to: end };
+        }) ?? false
+      );
     };
     const editor = Wordgard.create({
       parent: mount.current,
@@ -412,23 +456,39 @@ export function WordgardEditor(props) {
         // A block decode couldn't draw as stored opens read-only.
         permissions.current.of(editConfig(latest.current.editable && !bound.current.lossy)),
         Wordgard.clipboardInputHTMLFilter.of((html) => pastedPageHTML(html, replica.doc.page_id)),
+        // A copy or cut holding this Page's tables is recorded, and the
+        // clipboard says so, so a paste into another Page can bring their
+        // data (copy-registry.mjs).
+        Wordgard.clipboardOutputHTMLFilter.of((html) =>
+          markCopiedHTML(html, replica.doc.page_id, { title: replica.doc.title }),
+        ),
         // A pasted URL becomes a bare link.
         bareLinkPaste(),
         Wordgard.domEventObserver("focusout", (event, wg) => {
           collapseAtomOnLeave(wg, event);
         }),
-        Wordgard.domEventHandler("paste", (event) =>
-          acceptImages(uploadFiles(event.clipboardData)),
+        Wordgard.domEventHandler(
+          "paste",
+          (event) =>
+            acceptImages(uploadFiles(event.clipboardData)) ||
+            acceptDataframes(event.clipboardData, {
+              from: editor.state.selection.replacementRange.from,
+              to: editor.state.selection.replacementRange.to,
+              plain: editor.inputState?.shiftKey === true,
+            }),
         ),
         Wordgard.domEventHandler("drop", (event) => {
           const files = uploadFiles(event.dataTransfer);
+          const position = () => editor.posAtCoords({ x: event.clientX, y: event.clientY }).pos;
           // Wordgard's own drop reads HTML through clipboardInputHTMLFilter,
-          // so a dataframe from another Page drops as its title.
-          if (!files.length) return false;
-          return acceptImages(
-            files,
-            editor.posAtCoords({ x: event.clientX, y: event.clientY }).pos,
-          );
+          // so a dataframe from another Page that doesn't copy drops as its
+          // title.
+          if (!files.length)
+            return acceptDataframes(event.dataTransfer, {
+              from: position(),
+              at: editor.state.selection.head,
+            });
+          return acceptImages(files, position());
         }),
         KeyBinding.of({
           key: "Mod-k",
@@ -518,6 +578,7 @@ export function WordgardEditor(props) {
               undoHistory,
             });
           } catch (error) {
+            refused++;
             report(error);
           } finally {
             writing = false;
@@ -583,6 +644,52 @@ export function WordgardEditor(props) {
       },
     });
     imageUploader.current = uploader;
+    setCopyStatus(null);
+    let detached = null;
+    const copier = createDataframeCopier({
+      pageId: replica.doc.page_id,
+      insert: (html, target, copied) => {
+        const pageId = replica.doc.page_id;
+        if (
+          !alive ||
+          view.current !== editor ||
+          binding.current !== bound ||
+          !latest.current.editable ||
+          editor.state.readOnly
+        )
+          throw Error("The Page changed before the paste landed. Paste again.");
+        detached ??= document.implementation.createHTMLDocument("");
+        const slice = pastedSlice(editor.state, pastedPageHTML(html, pageId, undefined, copied), {
+          document: detached,
+          filters: editor.state.facet(Wordgard.clipboardInputFilter),
+        });
+        landHeldPaste({
+          replica,
+          target,
+          map: bound.current.map,
+          slice,
+          selection: editor.state.selection,
+          // Transaction listeners run inside dispatch, so a refusal is
+          // counted before it returns.
+          dispatch: (spec) => {
+            const before = refused;
+            editor.dispatch(spec);
+            return refused === before;
+          },
+        });
+      },
+      onState: (state) =>
+        setCopyStatus(
+          state.name === "confirming"
+            ? { confirming: true, token: state.token, pending: true, message: copier.question }
+            : state.name === "copying"
+              ? { pending: true, message: COPYING }
+              : state.name === "failed"
+                ? { pending: false, message: state.message }
+                : null,
+        ),
+    });
+    dataframeCopier.current = copier;
     let caretFrame = null,
       beatTimer;
     const reducedMotion = glide.enabled && matchMedia("(prefers-reduced-motion: reduce)");
@@ -950,6 +1057,8 @@ export function WordgardEditor(props) {
       alive = false;
       uploader.destroy();
       imageUploader.current = null;
+      copier.destroy();
+      dataframeCopier.current = null;
       imageTarget.current = null;
       clearInterval(timer);
       if (caretFrame !== null) cancelAnimationFrame(caretFrame);
@@ -983,7 +1092,11 @@ export function WordgardEditor(props) {
   useEffect(() => {
     const editor = view.current;
     if (!editor) return;
-    if (!editable) imageUploader.current?.cancel();
+    if (!editable) {
+      imageUploader.current?.cancel();
+      if (["confirming", "copying"].includes(dataframeCopier.current?.state.name))
+        dataframeCopier.current.cancel();
+    }
     editor.dispatch({
       effects: permissions.current.reconfigure(
         editConfig(editable && !binding.current?.current.lossy),
@@ -1364,6 +1477,30 @@ export function WordgardEditor(props) {
           )}
           <button type="button" onClick={() => imageUploader.current?.cancel()}>
             {imageStatus.pending ? "Cancel" : "Dismiss"}
+          </button>
+        </div>
+      )}
+      {copyStatus && (
+        <div className="image-upload-status" role="status" aria-live="polite">
+          <span>{copyStatus.message}</span>
+          {copyStatus.confirming && (
+            <>
+              <button
+                type="button"
+                onClick={(event) => answerCopy(event, (copier) => copier.confirm(copyStatus.token))}
+              >
+                Bring data
+              </button>
+              <button
+                type="button"
+                onClick={(event) => answerCopy(event, (copier) => copier.decline(copyStatus.token))}
+              >
+                Paste titles only
+              </button>
+            </>
+          )}
+          <button type="button" onClick={() => dataframeCopier.current?.cancel()}>
+            {copyStatus.pending ? "Cancel" : "Dismiss"}
           </button>
         </div>
       )}

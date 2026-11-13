@@ -508,33 +508,158 @@ try {
   await expect.poll(async () => (await markdownOf()).match(/\[Dataframe/g)?.length ?? 0).toBe(2);
   complete("Click, Cmd-X and paste move the table");
 
-  // An HTML drop of a dataframe copied from another Page lands as its title,
-  // never as a node naming another Page's asset.
-  const foreign = `/api/pages/44444444-4444-4444-8444-444444444444/assets/${"a".repeat(64)}`;
-  await content(owner).evaluate((element, src) => {
-    const data = new DataTransfer();
-    const attrs = JSON.stringify({
-      src,
-      media_type: "application/vnd.apache.parquet",
-      title: "Foreign table",
+  // POSTs to an asset's own URL: the copy route. A page's requests count
+  // from when it's watched.
+  const watchCopies = (page) => {
+    const seen = [];
+    page.on("request", (request) => {
+      if (
+        request.method() === "POST" &&
+        /\/assets\/[0-9a-f]{64}$/.test(new URL(request.url()).pathname)
+      )
+        seen.push(request.url());
     });
-    data.setData("text/html", `<figure data-pages-dataframe='${attrs}'>Foreign table</figure>`);
-    data.setData("text/plain", "Foreign table");
-    const rect = element.getBoundingClientRect();
-    element.dispatchEvent(
-      new DragEvent("drop", {
-        dataTransfer: data,
-        clientX: rect.left + 20,
-        clientY: rect.top + 10,
-        bubbles: true,
-        cancelable: true,
-      }),
+    return seen;
+  };
+  // A paste event carrying `html`, as another site's clipboard would.
+  const pasteHTML = (page, html) =>
+    content(page).evaluate((element, value) => {
+      const data = new DataTransfer();
+      data.setData("text/html", value);
+      data.setData("text/plain", "pasted");
+      element.dispatchEvent(
+        new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }),
+      );
+    }, html);
+  const figure = (src, title) =>
+    `<figure data-pages-dataframe='${JSON.stringify({ src, media_type: PARQUET, title })}'>${title}</figure>`;
+
+  // Copy a table on one Page and paste it into another: the Page asks,
+  // naming the source from this browser's copy record, and copies nothing
+  // until the person says yes. Then the host copies the dataset onto the
+  // second Page, the paste lands with its src there, and the table draws.
+  {
+    const listing = (await tool(owner, "list_pages")).body;
+    const target = await tool(owner, "create_page", {
+      title: "Datasets paste target",
+      markdown: "Pasted from another Page:",
+      ...retry(listing),
+    });
+    assert.equal(target.status, 200, JSON.stringify(target.body));
+    const targetId = target.body.page_id;
+    created.push(targetId);
+    const local = `/api/pages/${targetId}/assets/${dataset.asset_id}`;
+    const stored = () =>
+      owner.evaluate(async (path) => (await fetch(path, { method: "HEAD" })).status, local);
+    assert.equal(await stored(), 404);
+    await other.locator(".wordgard-dataframe-title").click();
+    await expect(selected(other)).toHaveCount(1);
+    await owner.keyboard.press("ControlOrMeta+C");
+    const second = await owner.context().newPage();
+    second.on("pageerror", (error) => report.errors.push(`paste target: ${error.message}`));
+    const copies = watchCopies(second);
+    await second.goto(`${origin}/p/${targetId}`);
+    await content(second).click();
+    await second.keyboard.press("ControlOrMeta+End");
+    await second.keyboard.press("ControlOrMeta+V");
+    const ask = second
+      .getByRole("status")
+      .filter({ hasText: `Bring the data for 1 table from "Datasets qualification"` });
+    await expect(ask).toBeVisible({ timeout: 10000 });
+    await second.waitForTimeout(500);
+    assert.deepEqual(copies, [], "a copy ran before the person said yes");
+    await expect(tables(second)).toHaveCount(0);
+    await ask.getByRole("button", { name: "Bring data" }).click();
+    await expect(tables(second)).toHaveCount(1, { timeout: 20000 });
+    assert.equal(copies.length, 1);
+    const pasted = tables(second).first();
+    await expect(pasted).toHaveAttribute("aria-label", "Usage by day");
+    for (const text of ["surface", "browser", "mcp"])
+      await expect(pasted).toContainText(text, { timeout: 20000 });
+    await expect(second.locator(".image-upload-status")).toHaveCount(0);
+    const markdownOn = async (id) =>
+      (await tool(owner, "read_page", { page_id: id })).body.blocks
+        .map((block) => block.markdown)
+        .join("\n");
+    const markdown = await markdownOn(targetId);
+    assert.ok(markdown.includes(`[Dataframe: Usage by day](${local})`), markdown);
+    assert.equal(markdown.includes(pageId), false, markdown);
+    assert.equal(await stored(), 200);
+    await second.screenshot({ path: `${output}/sift-table-pasted.png`, fullPage: true });
+    complete(
+      "A table copied from one Page and pasted into another asks, then arrives with its data",
     );
-  }, foreign);
+
+    // A replayed copy id: the id and reference came back inside some other
+    // site's content, under that site's title. The Page still names the
+    // record's source, and Paste titles only copies nothing.
+    const id = await second.evaluate(
+      () => JSON.parse(localStorage.getItem("pages.clipboard-copies.v1")).at(-1).id,
+    );
+    await content(second).click();
+    await second.keyboard.press("ControlOrMeta+End");
+    await pasteHTML(
+      second,
+      `<p>Totally ordinary notes</p>${figure(dataset.asset_url, "Lunch menu")}` +
+        `<span hidden data-pages-copy='{"v":1,"id":"${id}"}'></span>`,
+    );
+    const replayed = second.getByRole("status").filter({ hasText: "Bring the data" });
+    await expect(replayed).toContainText('"Datasets qualification"');
+    await expect(replayed).not.toContainText("Lunch menu");
+    await second.waitForTimeout(500);
+    assert.equal(copies.length, 1, "a replayed id copied before the person said yes");
+    // Answer with the keyboard; focus comes back to the Page, so typing
+    // goes on after the paste.
+    await replayed.getByRole("button", { name: "Paste titles only" }).focus();
+    await second.keyboard.press("Enter");
+    await expect.poll(() => markdownOn(targetId)).toContain("Lunch menu");
+    assert.ok((await markdownOn(targetId)).includes("Totally ordinary notes"));
+    await expect(content(second)).toBeFocused();
+    await second.keyboard.type(" typed after");
+    await expect.poll(() => markdownOn(targetId)).toContain("Lunch menu typed after");
+    await expect(tables(second)).toHaveCount(1);
+    assert.equal(copies.length, 1);
+    await second.close();
+  }
+  complete("A replayed copy id asks with the record's title, and Paste titles only copies nothing");
+
+  // A dataframe this browser didn't copy (forged clipboard HTML, with a
+  // valid-looking reference to another Page), pasted or dropped, asks the
+  // host for nothing and raises no question. It lands as its title, never
+  // as a node naming another Page's asset, and the Page says why.
+  const copyRequests = watchCopies(owner);
+  const foreign = `/api/pages/44444444-4444-4444-8444-444444444444/assets/${"a".repeat(64)}`;
+  const notBrought = owner.getByRole("status").filter({ hasText: "wasn't brought over" });
+  await content(owner).click();
+  await pasteHTML(owner, figure(foreign, "Forged paste"));
+  await expect(notBrought).toBeVisible();
+  await expect(owner.getByRole("button", { name: "Bring data" })).toHaveCount(0);
+  await notBrought.getByRole("button", { name: "Dismiss" }).click();
+  await content(owner).evaluate(
+    (element, html) => {
+      const data = new DataTransfer();
+      data.setData("text/html", html);
+      data.setData("text/plain", "Foreign table");
+      const rect = element.getBoundingClientRect();
+      element.dispatchEvent(
+        new DragEvent("drop", {
+          dataTransfer: data,
+          clientX: rect.left + 20,
+          clientY: rect.top + 10,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    },
+    figure(foreign, "Foreign table"),
+  );
   await expect.poll(markdownOf).toContain("Foreign table");
   assert.equal((await markdownOf()).includes("44444444-4444-4444-8444-444444444444"), false);
   await expect(tables(owner)).toHaveCount(2);
-  complete("An HTML drop of another Page's dataframe lands as its title");
+  await expect(notBrought).toBeVisible();
+  await notBrought.getByRole("button", { name: "Dismiss" }).click();
+  assert.deepEqual(copyRequests, [], "a forged reference asked the host to copy");
+  complete("A forged dataframe paste or drop copies nothing and lands as its title");
 
   for (const page of [owner, viewer])
     assert.equal(await page.locator("[data-block-error]").count(), 0, "a block failed to draw");

@@ -367,6 +367,7 @@ import { legibleEnv, overloadRetryAfterMs, withRepeatSafety } from "./host-busy.
 import { readTool } from "./tool-reads.mjs";
 import { checkArguments } from "./tool-arguments.mjs";
 import { readChangesTool } from "./tool-changes.mjs";
+import { resolveWriters } from "./host-writers.mjs";
 import { PageActivity } from "./page-activity.mjs";
 import {
   checkPurgePreview,
@@ -1635,6 +1636,9 @@ const gateway = {
             pageId,
             assetId,
             authorize: (write) => authorizeImage(request, env, pageId, write),
+            // A dataset copied from another Page: the source's own read check,
+            // exactly as a read of its asset URL asks it.
+            authorizeSource: (sourceId) => authorizeImage(request, env, sourceId, false),
           }),
         );
       }
@@ -6424,6 +6428,15 @@ export class Page {
             commentsDoc: this.commentsView(),
             sourcesDoc: this.sourcesView(),
             revisions: this.revisionTable(),
+            writers: (changes) =>
+              resolveWriters(
+                {
+                  storage: this.ctx.storage,
+                  prefix: this.plain.hostActorPrefix,
+                  claim: (actor) => this.plain.claim(actor),
+                },
+                changes,
+              ),
           };
           const result =
             body.operation === "read_page_changes"
@@ -6522,6 +6535,10 @@ export class Page {
           operation: body.operation,
           args: body.arguments,
           identity,
+          // The edit's writer keeps what the client said about itself. The
+          // labels stay out of the fingerprint: a retry under the same nonce
+          // replays the first attempt and keeps its writer.
+          writerAgent: agentFromProvenance(identity.clientProvenance),
           prepare: inserts.length
             ? async () => {
                 if (inserts.length > 100)

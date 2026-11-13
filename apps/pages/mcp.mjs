@@ -603,7 +603,7 @@ export const tools = [
   ),
   tool(
     "read_page_changes",
-    "Read net content and comment changes since an earlier revision. Returns changed nodes (Markdown and typed fields), deleted addresses, revision and comment_revision. Without since_comment_revision, comments is a full snapshot (comments_snapshot:true). Not an audit log. A revision too old to know: resync_required.",
+    "Net content and comment changes since an earlier revision: changed nodes (Markdown, typed fields), deleted addresses, revision, comment_revision. Without since_comment_revision, comments is a snapshot (comments_snapshot:true). written_by/title_written_by index writers of that block: {principal, displayName, driver, agent?, via}, or {recorded:false} for old host edits and unclaimed actors; none past 10000 edits (too_many_changes). Not an audit log. Unknown revision: resync_required.",
     {
       page_id: page,
       since_revision: { ...revision, description: "revision from your last read or receipt." },
