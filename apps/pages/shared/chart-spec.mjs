@@ -347,9 +347,9 @@ const MAX_TICKS = 1_000;
  * |               | {interval, step 1 to 1,000}                 |                                         |
  * | bins          | up to 1,000 numbers, or literal {start,     | a step alone bins the data's domain,    |
  * |               | stop, step} giving at most 1,000 bins       | whose size the data sets                |
- * | domain, range | a list of at most 1,000                     | each entry is a tick or a color         |
- * | values        | a list of at most 1,000                     | axis and legend ticks                   |
- * | unionWith     | a list of at most 1,000                     | added to a domain                       |
+ * | domain, range | a list of at most 1,000, never an {expr}    | each entry is a tick or a color         |
+ * | values        | a list of at most 1,000, never an {expr}    | axis and legend ticks                   |
+ * | unionWith     | a list of at most 1,000, never an {expr}    | added to a domain                       |
  * | tickCount     | 0 to 1,000                                  | ticks; never a time interval            |
  * | symbolLimit   | 0 to 1,000                                  | legend symbols                          |
  * | columns       | 0 to 1,000                                  | legend and facet columns                |
@@ -360,9 +360,10 @@ const MAX_TICKS = 1_000;
  * `binned` field with a `step` is refused in checkBin for the same reason as
  * `bins`.
  *
- * Every other number is a data value or a layout value. Data values (keys in
- * DATA_NUMBER_KEYS) may be anything in CHART_NUMBER_RANGE, so a timestamp
- * fits. Layout values (sizes, offsets, angles, opacities, font sizes) must be
+ * Every other number is a data value or a layout value. Data values (any
+ * number under a key in DATA_NUMBER_KEYS, however deep: a param's value, a
+ * sort list, a datum, a domain, a predicate bound) may be anything in
+ * CHART_NUMBER_RANGE, so a timestamp fits. Layout values (sizes, offsets, angles, opacities, font sizes) must be
  * at most 1e6 in size; an `{expr}` there can compute more, which reaches a
  * drawn attribute and no loop.
  */
@@ -376,7 +377,11 @@ const TIME_UNITS = new Set([
   "month",
   "year",
 ]);
-const shortList = (value) => !Array.isArray(value) || value.length <= 1000;
+/** A list of at most 1,000, or a non-list form (a scheme name, `{unionWith}`),
+ * but never an ExprRef or SignalRef, whose list is known only when the chart
+ * runs. */
+const isRef = (value) => isObject(value) && ("expr" in value || "signal" in value);
+const shortList = (value) => (Array.isArray(value) ? value.length <= 1000 : !isRef(value));
 const KEY_RULES = Object.assign(Object.create(null), {
   base: (v) => within(v, 2, 100),
   exponent: (v) => within(v, -10, 10),
@@ -411,10 +416,10 @@ const KEY_SENTENCES = Object.assign(Object.create(null), {
   constant: "a symlog constant must be a number from 1e-6 to 1e6",
   nice: "nice must be true, false, a count up to 1,000 or a time unit",
   bins: "bins must be at most 1,000 numbers, or a literal start, stop and step giving at most 1,000",
-  domain: "a domain can list at most 1,000 values",
-  range: "a range can list at most 1,000 values",
-  values: "values can list at most 1,000 entries",
-  unionWith: "unionWith can list at most 1,000 values",
+  domain: "a domain can list at most 1,000 values, written out",
+  range: "a range can list at most 1,000 values, written out",
+  values: "values can list at most 1,000 entries, written out",
+  unionWith: "unionWith can list at most 1,000 values, written out",
   tickCount: `a tick count must be a number up to ${MAX_TICKS}`,
   symbolLimit: "a symbol limit must be a number up to 1,000",
   columns: "columns must be a number up to 1,000",
@@ -422,6 +427,7 @@ const KEY_SENTENCES = Object.assign(Object.create(null), {
 });
 const DATA_NUMBER_KEYS = new Set([
   "datum",
+  "sort",
   "value",
   "domain",
   "domainMin",
@@ -963,7 +969,8 @@ function walk(value, path, names) {
   if (typeof value === "number") {
     checkNumber(value, path);
     const key = path.findLast((part) => typeof part === "string");
-    if (!DATA_NUMBER_KEYS.has(key) && Math.abs(value) > MAX_LAYOUT_NUMBER)
+    const data = path.some((part) => typeof part === "string" && DATA_NUMBER_KEYS.has(part));
+    if (!data && Math.abs(value) > MAX_LAYOUT_NUMBER)
       refuse(`A chart's ${key ?? "number"} must be at most 1e6 in size${at(path)}.`);
     return;
   }

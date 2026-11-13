@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { tableFromJSON } from "apache-arrow";
+import { Vector, tableFromJSON } from "apache-arrow";
 import { JSDOM } from "jsdom";
 import * as vega from "vega";
 globalThis.__vega = vega;
@@ -1331,7 +1331,10 @@ function drawInProcess(cases, timeout) {
       const figure = element.firstElementChild;
       for (let i = 0; i < 200 && figure.dataset.chartStatus === "drawing"; i++)
         await new Promise((resolve) => setTimeout(resolve, 25));
-      results.push(figure.dataset.chartStatus);
+      results.push({
+        status: figure.dataset.chartStatus,
+        message: figure.querySelector(".pages-chart-message")?.textContent ?? "",
+      });
       chart.destroy();
     }
     process.stdout.write(JSON.stringify(results));
@@ -1405,6 +1408,7 @@ test("bin and time-unit extremes in the data or the spec never hang a draw", () 
       },
       rows(0, 1),
       "error",
+      "guard",
     ]),
     // d3's negative-domain log ticks count down from base - 1, which 1e20 - 1
     // never leaves; the spec check refuses the base.
@@ -1450,6 +1454,43 @@ test("bin and time-unit extremes in the data or the spec never hang a draw", () 
       },
       rows(0, 1),
       "error",
+      "guard",
+    ],
+    // kde and regression sample a curve over the derived extent.
+    [
+      {
+        data: { name: "d" },
+        transform: [
+          { calculate: "datum.x / 1e150 / 1e150 / 1e23", as: "tiny" },
+          { density: "tiny" },
+        ],
+        mark: "line",
+        encoding: {
+          x: { field: "value", type: "quantitative" },
+          y: { field: "density", type: "quantitative" },
+        },
+      },
+      rows(0, 1),
+      "error",
+      "guard",
+    ],
+    [
+      {
+        data: { name: "d" },
+        transform: [
+          { calculate: "datum.x / 1e150 / 1e150 / 1e23", as: "tiny" },
+          { calculate: "datum.x", as: "y" },
+          { regression: "y", on: "tiny", method: "poly" },
+        ],
+        mark: "line",
+        encoding: {
+          x: { field: "tiny", type: "quantitative" },
+          y: { field: "y", type: "quantitative" },
+        },
+      },
+      rows(0, 1),
+      "error",
+      "guard",
     ],
   ];
   const run = drawInProcess(
@@ -1458,10 +1499,16 @@ test("bin and time-unit extremes in the data or the spec never hang a draw", () 
   );
   assert.equal(run.signal, null, `a draw hung: ${run.stderr.slice(-400)}`);
   assert.equal(run.status, 0, run.stderr.slice(-400));
+  const results = JSON.parse(run.stdout);
   assert.deepEqual(
-    JSON.parse(run.stdout),
+    results.map(({ status }) => status),
     cases.map(([, , status]) => status),
   );
+  // A derived value is refused by a guard, not by something else.
+  cases.forEach(([, , , guard], index) => {
+    if (guard)
+      assert.match(results[index].message, /outside what a chart can draw/, `case ${index}`);
+  });
 });
 
 test("a dataset over the cell budget is refused before any row is copied", () =>
@@ -1595,61 +1642,65 @@ test("nested values count against the dataset's cell budget", () =>
     assert.equal(depth, 32);
   }));
 
-test("bin, kde and regression refuse derived values a chart can't draw", () =>
+test("Arrow lists, structs and maps are charged before they are read", () =>
   withWindow(async (window) => {
-    const rows = [
-      { x: 0, g: "a" },
-      { x: 1, g: "a" },
-    ];
-    const tiny = { calculate: "datum.x / 1e150 / 1e150 / 1e23", as: "tiny" };
-    for (const spec of [
-      {
-        data: { name: "d" },
-        transform: [tiny, { bin: { base: 2 }, field: "tiny", as: "b" }],
-        mark: "point",
-        encoding: { x: { field: "b", type: "quantitative" } },
-      },
-      {
-        data: { name: "d" },
-        transform: [tiny],
-        mark: "bar",
-        encoding: {
-          x: { field: "tiny", type: "quantitative", bin: true },
-          y: { aggregate: "count" },
-        },
-      },
-      {
-        data: { name: "d" },
-        transform: [tiny, { density: "tiny" }],
-        mark: "line",
-        encoding: {
-          x: { field: "value", type: "quantitative" },
-          y: { field: "density", type: "quantitative" },
-        },
-      },
-      {
-        data: { name: "d" },
-        transform: [
-          tiny,
-          { calculate: "datum.x", as: "y" },
-          { regression: "y", on: "tiny", method: "poly" },
-        ],
-        mark: "line",
-        encoding: {
-          x: { field: "tiny", type: "quantitative" },
-          y: { field: "y", type: "quantitative" },
-        },
-      },
-    ]) {
-      const { element } = container(window);
-      const chart = mount(element, { spec, datasets: { d: rows } });
-      await settle(100);
-      const figure = element.querySelector("figure");
-      assert.equal(figure.dataset.chartStatus, "error", JSON.stringify(spec.transform));
+    const reads = { toJSON: 0, get: 0 };
+    const { toJSON, get } = Vector.prototype;
+    Vector.prototype.toJSON = function (...args) {
+      reads.toJSON++;
+      return toJSON.apply(this, args);
+    };
+    try {
+      const big = tableFromJSON([{ tool: "a", calls: 1, xs: Array(3_000_000).fill(1) }]);
+      Vector.prototype.get = function (...args) {
+        reads.get++;
+        return get.apply(this, args);
+      };
       assert.match(
-        figure.querySelector(".pages-chart-message").textContent,
-        /outside what a chart can draw/,
+        await refusalIn(window, stacked, { calls: big }),
+        /has more than 2,000,000 cells \(rows × columns, nested values included\)/,
       );
-      chart.destroy();
+      assert.equal(reads.toJSON, 0);
+      assert.ok(reads.get < 10, `${reads.get} element reads`);
+    } finally {
+      Vector.prototype.toJSON = toJSON;
+      Vector.prototype.get = get;
+    }
+    const nested = tableFromJSON([{ tool: "a", calls: 1, xs: [1, 2], s: { a: 1, b: "two" } }]);
+    const [row] = datasetRows(nested);
+    assert.deepEqual(row.xs, [1, 2]);
+    assert.deepEqual({ ...row.s }, { a: 1, b: "two" });
+    assert.equal(reads.toJSON, 0);
+  }));
+
+test("every corpus chart draws through the guards", () =>
+  withWindow(async (window) => {
+    const rows = Array.from({ length: 24 }, (_, i) => ({
+      a: ["read", "patch", "move"][i % 3],
+      b: ["Claude", "Codex"][i % 2],
+      n: 10 + ((i * 7) % 13),
+      m: 3 + ((i * 5) % 11),
+      t: Date.UTC(2026, i % 12, 1 + (i % 27)),
+    }));
+    for (const [index, spec] of CORPUS.entries()) {
+      const { names } = checkChartSpec(spec);
+      const target = window.document.body.appendChild(window.document.createElement("div"));
+      const errors = [];
+      let view;
+      try {
+        view = await drawChart(target, {
+          spec,
+          data: Object.fromEntries(names.map((name) => [name, datasetRows(rows)])),
+          theme,
+          width: 400,
+          onError: (error) => errors.push(error),
+        });
+      } catch (error) {
+        assert.fail(`${index}: ${error.message} in ${JSON.stringify(spec).slice(0, 160)}`);
+      }
+      assert.deepEqual(errors, [], `${index}`);
+      assert.ok(target.querySelector("svg"), `${index} drew`);
+      view.finalize();
+      target.remove();
     }
   }));

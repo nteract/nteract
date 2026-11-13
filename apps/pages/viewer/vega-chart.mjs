@@ -181,34 +181,70 @@ function cellBudget(limit) {
   };
 }
 
+// Arrow's nested values: a list cell is a Vector, a struct cell a StructRow
+// and a map cell a MapRow. Their toJSON reads every element at once, so they
+// are walked one entry at a time instead, after their size is charged.
+const ARROW_PARENT = Symbol.for("parent");
+const ARROW_KEYS = Symbol.for("keys");
+const isArrowVector = (value) =>
+  typeof value.get === "function" &&
+  Number.isInteger(value.length) &&
+  Array.isArray(value.data) &&
+  value.type !== undefined;
+const arrowRowSize = (value) => {
+  if (value[ARROW_KEYS] !== undefined) return value.size;
+  if (value[ARROW_PARENT] !== undefined) return value[ARROW_PARENT].type?.children?.length;
+  return undefined;
+};
+
+/** Define `key` on `copy` as an own property, so "__proto__" stays a key, as
+ * JSON.parse makes it. */
+const defineKey = (copy, key, value) =>
+  Object.defineProperty(copy, key, { value, enumerable: true, writable: true, configurable: true });
+
 /**
  * A copy of one data value, spending a cell for every array element and
- * object key it copies, nested ones included, so a payload shared by every row
- * counts once per row. A field path reaches nested values, so they get
- * `plainScalar` too. Objects copy as plain objects, since Vega coerces some
- * (a gradient paint) to strings; `toJSON` is honored,
- * as Arrow's nested values need; a cycle, a value deeper than MAX_NESTING or
- * a property that throws becomes null.
+ * object key before reading it, nested ones included, so a payload shared by
+ * every row counts once per row. A field path reaches nested values, so they
+ * get `plainScalar` too. Objects copy as plain objects, since Vega coerces
+ * some (a gradient paint) to strings. Arrow lists, structs and maps are
+ * walked entry by entry; another object's `toJSON` is honored after the depth
+ * check. A cycle, a value deeper than MAX_NESTING or a property that throws
+ * becomes null.
  */
 function plainValue(value, spend, depth = 0, ancestors = []) {
   if (value instanceof Date || value === null || typeof value !== "object")
     return plainScalar(value);
-  if (typeof value.toJSON === "function" && !(value instanceof Date)) {
-    try {
-      value = value.toJSON();
-    } catch {
-      return null;
-    }
-    if (value === null || typeof value !== "object") return plainScalar(value);
-  }
   if (depth >= MAX_NESTING || ancestors.includes(value)) return null;
   ancestors.push(value);
   try {
+    const next = (item) => plainValue(item, spend, depth + 1, ancestors);
+    if (isArrowVector(value)) {
+      spend(value.length);
+      const copy = new Array(value.length);
+      for (let i = 0; i < value.length; i++) copy[i] = next(value.get(i));
+      return copy;
+    }
+    const rowSize = arrowRowSize(value);
+    if (rowSize !== undefined) {
+      spend(Number.isInteger(rowSize) ? rowSize : Number.POSITIVE_INFINITY);
+      const copy = {};
+      for (const [key, item] of value) defineKey(copy, String(key), next(item));
+      return copy;
+    }
+    if (typeof value.toJSON === "function") {
+      let json;
+      try {
+        json = value.toJSON();
+      } catch {
+        return null;
+      }
+      return json === value ? null : next(json);
+    }
     if (Array.isArray(value) || ArrayBuffer.isView(value)) {
       spend(value.length);
       const copy = new Array(value.length);
-      for (let i = 0; i < value.length; i++)
-        copy[i] = plainValue(value[i], spend, depth + 1, ancestors);
+      for (let i = 0; i < value.length; i++) copy[i] = next(value[i]);
       return copy;
     }
     const copy = {};
@@ -220,14 +256,7 @@ function plainValue(value, spend, depth = 0, ancestors = []) {
       } catch {
         item = null;
       }
-      // Defined, not assigned, so "__proto__" stays a key, as JSON.parse
-      // makes it.
-      Object.defineProperty(copy, key, {
-        value: plainValue(item, spend, depth + 1, ancestors),
-        enumerable: true,
-        writable: true,
-        configurable: true,
-      });
+      defineKey(copy, key, next(item));
     }
     return copy;
   } finally {

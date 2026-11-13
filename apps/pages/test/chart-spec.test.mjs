@@ -1042,3 +1042,74 @@ test("scale, axis and legend counts, steps and bases are ranged literals", () =>
       `${JSON.stringify(spec).slice(-120)}: ${checkChartSpec(spec).error}`,
     );
 });
+
+test("data values may be large wherever they nest; ranged lists are written out", () => {
+  const ok = (spec) => {
+    const checked = checkChartSpec(spec);
+    assert.equal(checked.ok, true, `${JSON.stringify(spec).slice(-120)}: ${checked.error}`);
+  };
+  ok({
+    ...stacked,
+    encoding: { ...stacked.encoding, y: { field: "day", type: "nominal", sort: [1.7e12, 1.8e12] } },
+  });
+  ok({ ...stacked, params: [{ name: "thresholds", value: { high: 1_000_001, when: [1.7e12] } }] });
+  ok({
+    ...stacked,
+    encoding: {
+      ...stacked.encoding,
+      x: { field: "day", type: "temporal", scale: { domain: [1.7e12, 1.8e12] } },
+    },
+  });
+  ok({
+    ...stacked,
+    encoding: { ...stacked.encoding, x: { datum: { year: 2024 }, type: "temporal" } },
+  });
+  ok({ ...stacked, transform: [{ filter: { field: "year", oneOf: [2023, 2024] } }] });
+  ok({
+    ...stacked,
+    encoding: {
+      ...stacked.encoding,
+      opacity: { condition: { test: { field: "calls", equal: 1_000_001 }, value: 1 }, value: 0.5 },
+    },
+  });
+  ok({
+    ...stacked,
+    encoding: { ...stacked.encoding, x: { datum: 1_000_001, type: "quantitative" } },
+  });
+  // A layout number is still at most 1e6.
+  assert.match(
+    refusal({ ...stacked, mark: { type: "bar", cornerRadius: 1_000_001 } }),
+    /cornerRadius must be at most 1e6/,
+  );
+  // A ranged list is a literal list, never an expression.
+  const x = (extra) => ({
+    ...stacked,
+    params: [{ name: "ticks", value: Array.from({ length: 1001 }, (_, i) => i) }],
+    encoding: { ...stacked.encoding, x: { field: "calls", type: "quantitative", ...extra } },
+  });
+  assert.match(
+    refusal(x({ axis: { values: { expr: "ticks" } } })),
+    /values can list at most 1,000 entries, written out/,
+  );
+  assert.match(refusal(x({ scale: { domain: { expr: "ticks" } } })), /domain can list/);
+  assert.match(refusal(x({ scale: { range: { signal: "ticks" } } })), /range can list/);
+  assert.match(
+    refusal(x({ scale: { domain: { unionWith: { expr: "ticks" } } } })),
+    /unionWith can list/,
+  );
+  assert.match(refusal(x({ scale: { bins: { expr: "ticks" } } })), /bins must be/);
+  ok({
+    ...stacked,
+    encoding: {
+      ...stacked.encoding,
+      color: { field: "client", type: "nominal", scale: { range: "category" } },
+    },
+  });
+  ok({
+    ...stacked,
+    encoding: {
+      ...stacked.encoding,
+      x: { field: "calls", type: "quantitative", scale: { domain: { unionWith: [0, 100] } } },
+    },
+  });
+});
