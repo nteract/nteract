@@ -268,6 +268,10 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
     // null clears an image's title; a Page always has a title, "" included.
     if (typeof op.title !== "string")
       throw Error('set_title takes title as a string; "" leaves the Page untitled');
+    // The limit is for new titles. A title already stored longer (a browser
+    // merge admits one) can be sent back unchanged, as in a batch that
+    // echoes it, and writes nothing.
+    if (op.title === String(doc.title ?? "")) return;
     if (op.title.length > MAX_PAGE_TITLE)
       throw Error(
         `set_title's title is at most ${MAX_PAGE_TITLE} characters; this one has ${op.title.length}`,

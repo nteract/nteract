@@ -456,6 +456,27 @@ test("one thread already in the target state writes nothing and says so", async 
   }
 });
 
+test("a no-op resolve retried with its nonce replays its receipt after the thread reopens", async (t) => {
+  const f = fixture(t);
+  const [thread] = openThreads(f, 1);
+  await documentMutation(f.context(await f.args({ action: "resolve", thread_id: thread })));
+  const args = await f.args({ action: "resolve", thread_id: thread });
+  const receipt = await documentMutation(f.context(args));
+  assert.equal(receipt.result.outcome, "already_resolved");
+  // Someone reopens it; the retry replays the no-op and resolves nothing.
+  await documentMutation(f.context(await f.args({ action: "reopen", thread_id: thread })));
+  const heads = A.getHeads(f.handle.doc());
+  const applications = f.applications();
+  assert.deepEqual(await documentMutation(f.context(args)), receipt);
+  assert.deepEqual(A.getHeads(f.handle.doc()), heads);
+  assert.equal(states(f)[thread], "open");
+  assert.equal(f.applications(), applications, "the replay never applies the resolve again");
+  await assert.rejects(
+    documentMutation(f.context({ ...args, action: "reopen" })),
+    rejectsWith(409, "nonce_conflict"),
+  );
+});
+
 test("reopen works as a batch", async (t) => {
   const f = fixture(t);
   const ids = openThreads(f, 3);

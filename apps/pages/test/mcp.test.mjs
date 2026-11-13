@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { MAX_PAGE_TITLE } from "../shared/page-title.mjs";
+import { REVISION_DOCS, parseRevision } from "../worker/revisions.mjs";
+import { MAX_TAGS_PER_PAGE, normalizeTag } from "../worker/page-tags.mjs";
 import { test } from "node:test";
 import { handleMcp as handleMcpRequest, tools } from "../mcp.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
@@ -73,7 +75,7 @@ test("MCP forwards authorized operations and preserves stale-write failure", asy
       return Response.json(
         {
           error:
-            "Page changed since this revision. Retry with current_revision; read_page first only when you need the changed text",
+            "Page changed since this revision, so the edit was not applied. The refusal carries current_revision: resend at it with a new nonce only if the edit doesn't depend on content that may have changed; otherwise read what you're replacing first",
           code: "stale_revision",
           current_revision: "r9",
           comment_revision: "c4",
@@ -87,7 +89,7 @@ test("MCP forwards authorized operations and preserves stale-write failure", asy
   // The service's revision fields ride along with retryable.
   const expected = {
     error:
-      "Page changed since this revision. Retry with current_revision; read_page first only when you need the changed text",
+      "Page changed since this revision, so the edit was not applied. The refusal carries current_revision: resend at it with a new nonce only if the edit doesn't depend on content that may have changed; otherwise read what you're replacing first",
     code: "stale_revision",
     current_revision: "r9",
     comment_revision: "c4",
@@ -1306,36 +1308,45 @@ test("every write takes a nonce, a Page write a revision, and nothing takes head
   assert.deepEqual(move.required, ["page_id", "nonce"]);
 });
 
-test("each schema accepts what its host accepts", () => {
+test("revision, tag and title schemas follow the host's own rules", () => {
   const schema = (name) => tools.find((tool) => tool.name === name).inputSchema.properties;
-  // Every revision argument takes a Page revision but since_comment_revision,
-  // which takes the comments' (worker/revisions.mjs parseRevision).
-  const changes = schema("read_page_changes");
-  const pattern = (property) => new RegExp(property.pattern);
-  assert.ok(pattern(changes.since_revision).test("r1"));
-  assert.equal(pattern(changes.since_revision).test("c1"), false);
-  assert.ok(pattern(changes.since_comment_revision).test("c1"));
-  assert.equal(pattern(changes.since_comment_revision).test("r1"), false);
+  const accepts = (property, value) => new RegExp(property.pattern).test(value);
+  // Each revision argument's pattern takes exactly the handles parseRevision
+  // takes for it: since_comment_revision the comments' letter, every other
+  // one the Page's. Checked against every letter the host mints.
+  const letters = Object.values(REVISION_DOCS);
   for (const tool of tools)
-    for (const [name, property] of Object.entries(tool.inputSchema.properties))
-      if (name.endsWith("revision") && property.pattern?.includes("[1-9]"))
-        assert.match(
-          property.pattern,
-          name === "since_comment_revision" ? /^\^c/ : /^\^r/,
-          `${tool.name}.${name}`,
+    for (const [name, property] of Object.entries(tool.inputSchema.properties)) {
+      if (!name.endsWith("revision") || name === "source_revision" || !property.pattern) continue;
+      const own = REVISION_DOCS[name === "since_comment_revision" ? "comments" : "page"];
+      for (const letter of letters)
+        assert.equal(
+          accepts(property, `${letter}12`),
+          letter === own,
+          `${tool.name}.${name} ${letter}`,
         );
-  // Tags fold case, so the host keeps one of each duplicate: no uniqueItems.
+      assert.equal(
+        parseRevision(`${own}12`, name === "since_comment_revision" ? "comments" : "page"),
+        12,
+      );
+    }
+  // Tag lists carry the host's bounds and no uniqueItems: normalizeTag folds
+  // case, so the host keeps one of ["a", "A"] instead of refusing it.
+  assert.equal(normalizeTag("A"), normalizeTag("a"));
   for (const [tool, field] of [
     ["update_page_tags", "add"],
     ["update_page_tags", "remove"],
     ["create_page", "tags"],
-  ])
-    assert.equal(schema(tool)[field].uniqueItems, undefined, `${tool}.${field}`);
-  // A Page title has one limit for create_page and set_title.
+  ]) {
+    const list = schema(tool)[field];
+    assert.equal(list.uniqueItems, undefined, `${tool}.${field}`);
+    assert.equal(list.maxItems, MAX_TAGS_PER_PAGE, `${tool}.${field}`);
+  }
+  // A Page title has the one limit create_page and set_title enforce.
   assert.equal(schema("create_page").title.maxLength, MAX_PAGE_TITLE);
   assert.match(
     schema("edit_page").operations.items.properties.title.description,
-    /up to 500 characters/,
+    new RegExp(`up to ${MAX_PAGE_TITLE} characters`),
   );
 });
 

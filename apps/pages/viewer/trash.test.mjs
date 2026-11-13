@@ -131,7 +131,7 @@ test("the viewer's largest limit matches the Worker's", () => {
 test("a peer's edit that beats Move to Trash gets a message a person can act on", () => {
   const stale = Object.assign(
     Error(
-      "Page changed since this revision. Retry with current_revision; read_page first only when you need the changed text",
+      "Page changed since this revision, so it was not moved to Trash. The refusal carries current_revision: look at the Page again before deleting it",
     ),
     {
       status: 409,

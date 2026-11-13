@@ -146,7 +146,10 @@ ${part.authErrorItems}
   retryable:true. The refusal carries current_revision (and comment_revision
   when the Page has a comments document). Reconsider the edit against the
   current content, then send a new request with that revision and a new nonce;
-  read again only when you need the changed text.
+  read again only when you need the changed text. Read before resending an edit
+  that rewrites content, such as replace_block_markdown, or it overwrites the
+  change that refused it. For delete_page, look at the Page again before
+  deleting it.
 - invalid_edit_selector: the request can't apply as written: zero or
   multiple matches, an unknown block, operation or mark, or an operation
   field with a value it doesn't take, such as a dataframe title over 200
@@ -754,10 +757,12 @@ insert_node for a new one. Moving the line among its neighbours keeps the
 dataframe's attrs but writes it as a new node.
 In a block with no dataframe, such a line stays a link. replace_match and
 set_node edit around a dataframe without touching it; delete_node removes it
-by the node_id read_page's outline reports, and leaves its block holding one
-empty paragraph. To remove the block insert_node made for a dataframe, use
-delete_block with the block's id (the block field of its outline entry). A
-missing asset is dataset_not_found (404).
+by the node_id read_page's outline reports. Its block's other nodes stay; when
+the dataframe was the block's only node, as in the block insert_node made for
+it, the block stays holding one empty paragraph. To remove that block too,
+use delete_block with the block's id (the block field of its outline entry),
+after reading it if it may hold anything else. A missing asset is
+dataset_not_found (404).
 
 ${part.datasetReaderParagraph}
 

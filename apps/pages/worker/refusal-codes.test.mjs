@@ -4,9 +4,13 @@ import * as A from "@automerge/automerge";
 import { fixture, trashArgs } from "./trash-fixture.mjs";
 import { proposeAccessUpdate } from "./access.mjs";
 
-// The refusal carries current_revision, so it never asks for a read first.
+// The refusal carries current_revision, and says to resend at it only when
+// the edit doesn't depend on content that may have changed: resending a
+// rewrite unread would overwrite the edit that made it stale.
 const STALE =
-  "Page changed since this revision. Retry with current_revision; read_page first only when you need the changed text";
+  "Page changed since this revision, so the edit was not applied. The refusal carries current_revision: resend at it with a new nonce only if the edit doesn't depend on content that may have changed; otherwise read what you're replacing first";
+const STALE_TRASH =
+  "Page changed since this revision, so it was not moved to Trash. The refusal carries current_revision: look at the Page again before deleting it";
 
 test("guarded writes refuse a stale or malformed revision with a code, not just a message", async (t) => {
   const f = await fixture(t);
@@ -67,7 +71,7 @@ test("guarded writes refuse a stale or malformed revision with a code, not just 
   });
   assert.equal(trash.status, 409);
   assert.equal(trash.body.code, "stale_revision");
-  assert.equal(trash.body.error, STALE);
+  assert.equal(trash.body.error, STALE_TRASH);
   assert.equal(trash.body.current_revision, await f.revision());
   assert.equal(trash.body.comment_revision, await f.commentRevision());
 });

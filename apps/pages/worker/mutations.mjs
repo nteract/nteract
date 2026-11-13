@@ -87,7 +87,7 @@ export function requireHeads(doc, heads) {
   )
     reject(
       409,
-      "Page changed since this revision. Retry with current_revision; read_page first only when you need the changed text",
+      "Page changed since this revision, so the edit was not applied. The refusal carries current_revision: resend at it with a new nonce only if the edit doesn't depend on content that may have changed; otherwise read what you're replacing first",
       "stale_revision",
       {
         current_heads: current,

@@ -684,7 +684,7 @@
         "effects": [],
         "response": {
           "status": 409,
-          "error": "Page changed since this revision. Retry with current_revision; read_page first only when you need the changed text",
+          "error": "Page changed since this revision, so it was not moved to Trash. The refusal carries current_revision: look at the Page again before deleting it",
           "code": "stale_revision",
           "beforeChange": true
         },

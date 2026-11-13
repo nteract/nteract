@@ -52,6 +52,26 @@ test("set_title refuses a title past the limit instead of cutting it, and keeps 
   assert.equal(apply(doc, [{ op: "set_title", title: "" }]).after.title, "");
 });
 
+test("set_title takes back a stored title over the limit unchanged", () => {
+  const { doc: base, id } = fixture("Hello");
+  // A browser merge can store a title past the limit set_title writes.
+  const long = "L".repeat(MAX_PAGE_TITLE + 100);
+  const doc = A.change(A.clone(base), (draft) => A.updateText(draft, ["title"], long));
+  // Alone, the echo is a no-op success that writes nothing.
+  const echoed = apply(doc, [{ op: "set_title", title: long }]).after;
+  assert.equal(echoed.title, long);
+  assert.deepEqual(A.getHeads(echoed), A.getHeads(doc));
+  // Beside a body edit, the batch applies whole.
+  const { after } = apply(doc, [
+    { op: "replace_block_markdown", node_id: blockAddress(doc, id), markdown: "Changed" },
+    { op: "set_title", title: long },
+  ]);
+  assert.equal(after.title, long);
+  assert.equal(md(after, id), "Changed");
+  // A different long title is still refused.
+  refuses(doc, [{ op: "set_title", title: `${long}!` }], /at most 500 characters/);
+});
+
 test("edit_page rejects fields from another operation", () => {
   const { doc } = fixture("Hello");
   refuses(
