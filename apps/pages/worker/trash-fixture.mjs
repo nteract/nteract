@@ -33,7 +33,10 @@ export class Storage {
     }
     this.values.set(key, structuredClone(value));
   }
+  /** One key answers whether it existed; an array of keys answers how many
+   * existed, as Durable Object storage does. */
   async delete(key) {
+    if (Array.isArray(key)) return key.filter((name) => this.values.delete(name)).length;
     return this.values.delete(key);
   }
   async sync() {

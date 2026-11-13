@@ -1315,7 +1315,11 @@ reconnect at once; a stable connection clears them too.
 A host restart is not an error the person can act on. A 502, 503 or 504 (JSON
 or a gateway's HTML page), a JSON error marked `retryable`, and a failed fetch
 are transient (`isTransientFailure` in [request.mjs](viewer/request.mjs)): the
-Page shows Offline or Saved locally and retries without a red banner. Receipts
+Page shows Offline or Saved locally and retries without a red banner. A
+session check or a connection attempt that runs past the request deadline gets
+the same treatment (`isUnansweredFailure`): the server said nothing about the
+session or the Page, so the viewer asks again. A receipt that times out still
+reports it, because it holds up saving the edit. Receipts
 retry on the same backoff. From the seventh failure in a row, about 15 to 30
 seconds in, the Page shows one sentence, "Pages can't reach the server. Your
 changes are saved on this device.", and keeps retrying; the next admitted
@@ -1324,7 +1328,9 @@ are timed instead of counted (`OUTAGE_MS`, 20 s), because edits and Page
 reconnects trigger them too: receipt failures count from the first one after
 the last successful receipt, across edits, and the session-refresh machine
 tracks a run of unreachable answers, so a library screen whose renewals keep
-failing shows the same sentence until a session request succeeds. Both read
+failing shows the same sentence until a session request succeeds. A tab with
+no account yet shows the failed check's own error instead, since the sentence
+promises saved changes it doesn't have. Both read
 one monotonic clock ([monotonic.mjs](viewer/monotonic.mjs), `performance.now()`),
 so changing the system time can't hide or hasten the notice. A renewal the
 server refuses (401 or 403) still signs the tab out, and says why: "Your
@@ -1758,16 +1764,35 @@ The nonce shares `edit_page`'s lane, and the writer is recorded as for any
 edit ([Edit writers](#edit-writers)) and as `producer.by`.
 
 The spec passes `checkViewSpec` ([shared/view-spec.mjs](shared/view-spec.mjs)):
-a JSON object of at most 64 KiB, accepted by `checkChartSpec`
-([shared/chart-spec.mjs](shared/chart-spec.mjs)) with `datasets` the keys of
-`data`, whose refusal sentence reaches the caller as it is, and reading every
-name `data` binds. Refused, creating no document, no listed view and no
-writer record:
+a JSON object of at most 64 KiB, nested at most 32 levels, accepted by
+`checkChartSpec` ([shared/chart-spec.mjs](shared/chart-spec.mjs)), whose
+refusal sentence reaches the caller as it is, and reading exactly the names
+`data` binds. The spec is checked before `data`, so a spec that can't draw is
+the refusal whatever `data` holds, and an empty `data` names the data names
+the spec reads. `checkChartSpec` takes from allowlists:
+
+- each unit view's mark: `arc`, `area`, `bar`, `boxplot`, `circle`,
+  `errorband`, `errorbar`, `geoshape`, `line`, `point`, `rect`, `rule`,
+  `square`, `text`, `tick` or `trail` (`CHART_MARKS`; Vega-Lite 6's marks
+  without `image`), as a string or a mark object's `type`, in every layer,
+  concatenation and inner spec;
+- each encoding, condition and facet field's `type`: `quantitative`,
+  `temporal`, `ordinal`, `nominal` or `geojson` (`CHART_ENCODING_TYPES`),
+  in any case, or Vega-Lite's `q`, `t`, `o` and `n`;
+- transforms: `aggregate`, `joinaggregate`, `bin`, `calculate`, `density`,
+  `extent`, `filter`, `fold`, `lookup`, `pivot`, `quantile`, `regression`,
+  `sample`, `stack`, `timeUnit` and `window`, each with ranged parameters.
+
+A chart reads at most 100,000 rows and 2,000,000 cells from one dataset; the
+viewer refuses more when it draws, and the host doesn't count rows on write.
+A view stored before a check refused its spec still reads, lists, rewrites
+and deletes as any view; the viewer shows the check's sentence in its place.
+Refused, creating no document, no listed view and no writer record:
 
 | Request | Result |
 | --- | --- |
-| malformed `view_id`, `title`, `media_type`, `data` or `view_revision` | `400 invalid_view` |
-| spec not an object, over 64 KiB, or refused by `checkChartSpec` | `400 invalid_view` |
+| malformed `view_id`, `title`, `media_type`, `data` or `view_revision` | `400 invalid_view`, naming the field |
+| spec not an object, over 64 KiB, or refused by `checkChartSpec` | `400 invalid_view`, naming the spec path |
 | `data` binds a name the spec doesn't read, or lacks one it reads | `400 invalid_view` |
 | a data name that isn't a safe key, a malformed `source_id`, or over 32 names | `400 invalid_view`, naming the key |
 | `data` names a source this Page doesn't hold | `400 unknown_source` |
@@ -1789,7 +1814,9 @@ A `view` node is a top-level leaf with one attr, `view_id`; feature `view`
 gates it ([model/features.json](model/features.json)), so a build without it
 opens a Page with one read-only. Its DOM form is `figure[data-pages-view]`
 with `data-view-id`. `insert_node` with `{ type: "view", attrs: { view_id }
-}` places one; the view must exist on the Page (`400 unknown_view`).
+}` places one; the view must exist on the Page (`400 unknown_view`, naming
+the views it holds in the sentence and `details.view_ids`). A malformed view
+node is `400 invalid_edit_selector`, naming the field and its rule.
 `delete_node` removes the node and keeps the view. Markdown reads it as
 `[View: <view_id>](/p/<page_id>/view/<view_id>)`, from the node alone, and
 `replace_block_markdown` keeps the node for that exact line as it keeps a

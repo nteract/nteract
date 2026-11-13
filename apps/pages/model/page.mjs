@@ -26,7 +26,7 @@ import { orderedBlockIds, positionForInsertion } from "./order.mjs";
 import { anchorOccurrence, formatMatch, replaceMatch, withinNode } from "./replace-match.mjs";
 import { setNode } from "./set-node.mjs";
 import { insertOperation, insertedTypes } from "./node-registry.mjs";
-import { VIEW_BLOCK, validViewId } from "../shared/views.mjs";
+import { RESERVED_VIEW_IDS, VIEW_BLOCK, VIEW_ID_PATTERN, validViewId } from "../shared/views.mjs";
 import { stampFeatures } from "./schema-features.mjs";
 export { orderedBlockIds } from "./order.mjs";
 // A stored block holds its order and its text. Its id is its key in `blocks`.
@@ -117,41 +117,68 @@ export function validateImageChange(op) {
 }
 const NODE_INSERTION_USAGE =
   'insert_node requires node: {type: "dataframe", attrs: {asset_id, title?, media_type?}} or {type: "view", attrs: {view_id}}, and optional after_node_id';
-const only = (value, keys) =>
-  !!value &&
-  typeof value === "object" &&
-  !Array.isArray(value) &&
-  Object.keys(value).every((key) => keys.includes(key));
+const isPlainObject = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+/** The first key of `value` outside `keys`, or undefined. */
+const extraKey = (value, keys) => Object.keys(value).find((key) => !keys.includes(key));
+const quoted = (key) => `"${String(key).slice(0, 64)}"`;
 // The attrs an agent gives each type insert_node creates, checked without a
-// Page: `check(attrs)` is true for attrs it may store, and `stored(pageId,
-// attrs)` is the node's stored attrs.
+// Page: `problem(attrs)` is why it may not store them, or null, and
+// `stored(pageId, attrs)` is the node's stored attrs.
 const NODE_INSERTIONS = Object.freeze({
   [DATAFRAME_BLOCK]: {
-    check: (attrs) =>
-      only(attrs, ["asset_id", "media_type", "title"]) &&
-      validAssetId(attrs.asset_id) &&
-      // Title and media type rules live with the node.
-      !!dataframeFor("00000000-0000-4000-8000-000000000000", attrs),
+    problem: (attrs) => {
+      if (!isPlainObject(attrs))
+        return "a dataframe node's attrs must be {asset_id, title?, media_type?}";
+      const extra = extraKey(attrs, ["asset_id", "media_type", "title"]);
+      if (extra !== undefined)
+        return `a dataframe node's attrs take asset_id, media_type and title, not ${quoted(extra)}`;
+      if (!validAssetId(attrs.asset_id))
+        return "attrs.asset_id is 64 lowercase hex characters: the asset_id an upload returned";
+      // Title and media type rules live with the node, and throw their own.
+      dataframeFor("00000000-0000-4000-8000-000000000000", attrs);
+      return null;
+    },
     stored: (pageId, attrs) => dataframeFor(pageId, attrs),
   },
   [VIEW_BLOCK]: {
-    check: (attrs) => only(attrs, ["view_id"]) && validViewId(attrs.view_id),
+    problem: (attrs) => {
+      if (!isPlainObject(attrs)) return "a view node's attrs must be {view_id}";
+      const extra = extraKey(attrs, ["view_id"]);
+      if (extra !== undefined) return `a view node's attrs take view_id only, not ${quoted(extra)}`;
+      if (attrs.view_id === undefined)
+        return "a view node needs attrs.view_id: the view_id a set_view on this Page created";
+      if (!validViewId(attrs.view_id))
+        return `attrs.view_id must match ${VIEW_ID_PATTERN}, not ${RESERVED_VIEW_IDS}`;
+      return null;
+    },
     stored: (_pageId, attrs) => ({ view_id: attrs.view_id }),
   },
 });
+/** Why an insert_node operation can't run, checked without a Page: its
+ * shape, the node type and the attrs an agent may set. Null when it can. */
+function nodeInsertionProblem(op) {
+  if (!isPlainObject(op)) return NODE_INSERTION_USAGE;
+  const extra = extraKey(op, ["op", "node", "after_node_id"]);
+  if (extra !== undefined)
+    return `insert_node does not take ${String(extra).slice(0, 64)}; it takes node and after_node_id`;
+  const node = op.node;
+  if (!isPlainObject(node)) return NODE_INSERTION_USAGE;
+  const extraNode = extraKey(node, ["type", "attrs"]);
+  if (extraNode !== undefined)
+    return `insert_node's node takes type and attrs, not ${quoted(extraNode)}`;
+  const types = insertedTypes("insert_node");
+  if (!types.includes(node.type))
+    return `node.type must be ${types.join(" or ")}, not ${quoted(node.type)}`;
+  if (!afterAnchor(op.after_node_id))
+    return "after_node_id must be a block's id, or null to insert first";
+  return NODE_INSERTIONS[node.type].problem(node.attrs);
+}
 /** Check an insert_node operation without a Page: its shape, the node type and
  * the attrs an agent may set. Returns the agent's attrs. */
 export function validateNodeInsertion(op) {
-  const node = op?.node;
-  if (
-    !only(op, ["op", "node", "after_node_id"]) ||
-    !only(node, ["type", "attrs"]) ||
-    !insertedTypes("insert_node").includes(node.type) ||
-    !afterAnchor(op.after_node_id) ||
-    !NODE_INSERTIONS[node.type].check(node.attrs)
-  )
-    throw Error(NODE_INSERTION_USAGE);
-  return node.attrs;
+  const problem = nodeInsertionProblem(op);
+  if (problem) throw Error(problem);
+  return op.node.attrs;
 }
 /** The view ids a batch's insert_node operations name, each once, in order.
  * Each operation is validated first; an invalid one throws. The host checks

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   isTransientFailure,
+  isUnansweredFailure,
   observeSignedOut,
   request,
   REQUEST_TIMEOUT_MS,
@@ -294,6 +295,36 @@ test("deadline includes a response body that ignores cancellation", async () => 
   body.resolve({ late: true });
   await Promise.resolve();
   await assert.rejects(pending, { code: "REQUEST_TIMEOUT" });
+});
+
+test("a request past its deadline went unanswered; a caller's abort and a 500 did not", async () => {
+  const timer = clock();
+  const pending = request(
+    "/api/auth/session",
+    {},
+    { ...timer, fetch: () => new Promise(() => {}) },
+  );
+  const settled = pending.catch((error) => error);
+  timer.expire();
+  const timedOut = await settled;
+  assert.equal(timedOut.code, "REQUEST_TIMEOUT");
+  assert.equal(isTransientFailure(timedOut), false);
+  assert.equal(isUnansweredFailure(timedOut), true);
+  assert.equal(isUnansweredFailure(new TypeError("Failed to fetch")), true);
+  assert.equal(isUnansweredFailure({ code: "NETWORK_ERROR" }), true);
+  assert.equal(isUnansweredFailure({ status: 503 }), true);
+
+  const caller = new AbortController();
+  const aborted = request(
+    "/api/auth/session",
+    { signal: caller.signal },
+    { ...clock(), fetch: () => new Promise(() => {}) },
+  ).catch((error) => error);
+  caller.abort();
+  assert.equal(isUnansweredFailure(await aborted), false);
+  assert.equal(isUnansweredFailure({ status: 500 }), false);
+  for (const status of [401, 403]) assert.equal(isUnansweredFailure({ status }), false);
+  assert.equal(isUnansweredFailure(undefined), false);
 });
 
 test("already-aborted callers do not start fetches or timers", async () => {
