@@ -29,15 +29,27 @@ export const isolateSetupTimeouts = { wait: 10_000, poll: 5, attempt: 30_000 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// The refusals below. Other errors share their code (a stuck serial queue's
+// 503, a tool deadline's 504), so `isStartingRefusal` asks this set instead.
+const startingRefusals = new WeakSet();
+
 // Plain fields, not HttpError: auth.mjs imports a module that uses this one.
-const waitTimeout = () =>
-  withAdmissionReason(
+const waitTimeout = () => {
+  const error = withAdmissionReason(
     Object.assign(new Error("Pages is starting. Try again."), {
       status: 503,
       code: "request_timeout",
     }),
     "credential_unverified",
   );
+  startingRefusals.add(error);
+  return error;
+};
+
+/** Whether `error` is the refusal a request gets when it waits too long for
+ * this isolate's one-time setup or single-flight work. */
+export const isStartingRefusal = (error) =>
+  typeof error === "object" && error !== null && startingRefusals.has(error);
 
 // One poll of a waiter's own timer. Callers re-check and claim their key in
 // the same synchronous step after it returns.

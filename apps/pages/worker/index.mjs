@@ -114,6 +114,7 @@ import {
   verifyAssetUpload,
 } from "./asset-uploads.mjs";
 import { sessionStoreReady } from "./isolate-setup.mjs";
+import { startingPage } from "./starting-page.mjs";
 import { handleKiloSignIn, kiloSessionProvider } from "./kilo-handoff.mjs";
 import { signInCallbackOptions } from "./sign-in-failure.mjs";
 import { localOidcStore } from "./local-oidc-store.mjs";
@@ -1816,6 +1817,13 @@ const gateway = {
       if (slug) return await slugShellResponse(request, env.ASSETS, slug);
       return env.ASSETS.fetch(request);
     } catch (error) {
+      // A browser opening a sign-in route while Pages starts gets a page
+      // that loads it again, not the JSON refusal.
+      const starting = startingPage(request, error);
+      if (starting) {
+        logFailure(error, "gateway");
+        return starting;
+      }
       const response = errorResponse(error, "gateway");
       return new URL(request.url).pathname === "/mcp" && response.status === 401
         ? mcpAuthChallenge(env, response)
