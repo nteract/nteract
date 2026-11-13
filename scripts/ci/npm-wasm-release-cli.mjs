@@ -64,7 +64,11 @@ if (command === "seal") {
   const run = (id, attempt) => json(`/actions/runs/${positive(id)}/attempts/${positive(attempt)}`);
   const artifacts = id => pages(`/actions/runs/${positive(id)}/artifacts`, "artifacts");
   const jobs = (id, attempt) => pages(`/actions/runs/${positive(id)}/attempts/${positive(attempt)}/jobs`, "jobs");
-  const successfulJob = async (id, attempt, name) => successfulJobAtAttempt(await jobs(id, attempt), attempt, name);
+  const jobEvidence = async (id, attempt) => Promise.all([jobs(id, attempt), run(id, attempt)]);
+  const successfulJob = async (id, attempt, name) => {
+    const [attemptJobs, attemptRun] = await jobEvidence(id, attempt);
+    return successfulJobAtAttempt(attemptJobs, attempt, name, attemptRun);
+  };
   async function entries(artifact, names) {
     const bytes = Buffer.from(await (await request(`/actions/artifacts/${positive(artifact.id)}/zip`)).arrayBuffer());
     if (`sha256:${digest(bytes)}` !== artifact.digest) throw new Error("GitHub artifact digest mismatch");
@@ -104,7 +108,10 @@ if (command === "seal") {
     // without excluding earlier producer retries for the same release identity.
     buildRuns: () => pages(`/actions/workflows/build-wasm-npm.yml/runs?created=${encodeURIComponent(`>=${upstreamRun.created_at}`)}`, "workflow_runs"),
     artifacts, successfulJob,
-    packJobStatus: async (id, attempt) => packJobStatusAtAttempt(await jobs(id, attempt), attempt),
+    packJobStatus: async (id, attempt) => {
+      const [attemptJobs, attemptRun] = await jobEvidence(id, attempt);
+      return packJobStatusAtAttempt(attemptJobs, attempt, attemptRun);
+    },
     readCandidate: async artifact => JSON.parse((await entries(artifact, ["candidate.json"]))["candidate.json"]),
   };
   if (command === "prepare") {
