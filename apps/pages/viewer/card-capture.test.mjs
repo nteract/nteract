@@ -430,6 +430,8 @@ function tab({ role = "owner" } = {}) {
     canWrite: true,
     hidden: false,
     doc: { version: 1 },
+    views: { name: "views" },
+    pageSources: { name: "sources" },
     subscribe(fn) {
       listeners.add(fn);
       return () => listeners.delete(fn);
@@ -456,8 +458,8 @@ function tab({ role = "owner" } = {}) {
       },
     }),
     loadShell: async () => ({
-      renderCardImages: async ({ signal }) => {
-        drawn.push(signal);
+      renderCardImages: async ({ signal, views, sources }) => {
+        drawn.push({ signal, views, sources });
         return ["light", "dark"].map((theme) => ({
           theme,
           blob: new Blob([theme], { type: "image/webp" }),
@@ -522,6 +524,9 @@ test("captureCards: the owner's tab starts once its access shows, then captures 
   assert.equal(t.drawn.length, 0);
   await t.advance(1);
   assert.equal(t.drawn.length, 1);
+  // The shell draws charts from the session's own views and sources.
+  assert.equal(t.drawn[0].views, t.session.views);
+  assert.equal(t.drawn[0].sources, t.session.pageSources);
   assert.deepEqual(t.requests, [
     ["GET", `/api/pages/${t.session.pageId}/card-image`],
     ["PUT", `/api/pages/${t.session.pageId}/card-image?hash=${A}&theme=light`],

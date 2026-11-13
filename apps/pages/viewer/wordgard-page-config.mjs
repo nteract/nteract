@@ -29,6 +29,7 @@ import {
 } from "./wordgard-binding.mjs";
 import { wordgardWidgets } from "./wordgard-widgets.mjs";
 import { wordgardDataframes } from "./wordgard-dataframes.mjs";
+import { wordgardViews } from "./wordgard-views.mjs";
 import { wordgardImages } from "./wordgard-images.mjs";
 import { codeHighlighting } from "./code-highlight.mjs";
 
@@ -54,8 +55,17 @@ export const pageNodes = () => [
  * collaborates, comments, uploads or keeps history. Links draw as text: no
  * href. `eagerDataframes` loads every dataframe at once instead of when it
  * nears the viewport, for a shell nobody scrolls.
+ *
+ * With `views` and `sources` (a session's view replicas and source store),
+ * each view node draws its chart near the viewport, as the editor does.
+ * Without them a view node draws its own inert figure.
  */
-export function readOnlyPageConfig({ pageId, eagerDataframes = false }) {
+export function readOnlyPageConfig({
+  pageId,
+  eagerDataframes = false,
+  views = null,
+  sources = null,
+}) {
   return [
     ...pageNodes(),
     tables({ cellContent: "inline", cellSpanning: false }),
@@ -64,6 +74,7 @@ export function readOnlyPageConfig({ pageId, eagerDataframes = false }) {
     Decoration.Mark.shape(PagesLink, { element: "a", attributes: () => ({}) }),
     wordgardWidgets(),
     wordgardDataframes({ pageId, eager: eagerDataframes }),
+    ...(views && sources ? [wordgardViews({ views, sources })] : []),
     wordgardImages(),
     wordgardCodeNewlines,
     wordgardForeignMarks,
