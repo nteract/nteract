@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { handleImportPageImage, IMAGE_IMPORT_TIMEOUT_MS } from "../worker/import-image.mjs";
+import { handleFileImport, FILE_IMPORT_TIMEOUT_MS } from "../worker/import-file.mjs";
 import { IMAGE_MAX_BYTES } from "../shared/image-assets.mjs";
-import { persistImageAsset, requireStoredImageAsset } from "../worker/image-assets.mjs";
+import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
+import { persistPageAsset, requireStoredImageAsset } from "../worker/image-assets.mjs";
 
 const pageId = "33333333-3333-4333-8333-333333333333";
 const downloadUrl = "https://files.oaiusercontent.com/file-fixture?sig=temporary-secret";
@@ -57,7 +58,7 @@ function setup(t, { fetchImage, authorize } = {}) {
     env,
     calls,
     run(overrides = {}) {
-      return handleImportPageImage(overrides.request ?? request(), env, {
+      return handleFileImport(overrides.request ?? request(), env, {
         pageId,
         file: descriptor(),
         async authorize(write) {
@@ -123,7 +124,7 @@ test("same-content retries deduplicate even when ChatGPT renews the download URL
 test("byte uploads and client file handoffs resolve to the same validated private asset", async (t) => {
   const f = setup(t);
   // Raw uploads use this identical storage boundary after their own authentication.
-  const { asset: uploaded } = await persistImageAsset(f.env.PAGES_ASSETS, {
+  const { asset: uploaded } = await persistPageAsset(f.env.PAGES_ASSETS, {
     pageId,
     bytes: png,
     contentTypes: ["image/png"],
@@ -249,7 +250,7 @@ test("times out a stalled fetch and aborts the upstream request", async (t) => {
   const f = setup(t, { fetchImage: () => new Promise(() => {}) });
   const pending = f.run();
   await new Promise(setImmediate);
-  t.mock.timers.tick(IMAGE_IMPORT_TIMEOUT_MS);
+  t.mock.timers.tick(FILE_IMPORT_TIMEOUT_MS);
   assert.equal((await pending).status, 504);
   assert.equal(f.calls.fetch[0][1].signal.aborted, true);
   assert.equal(f.env.PAGES_ASSETS.objects.size, 0);
@@ -264,7 +265,7 @@ test("a fetch completing after the deadline is canceled without processing its b
   });
   const pending = f.run();
   await new Promise(setImmediate);
-  t.mock.timers.tick(IMAGE_IMPORT_TIMEOUT_MS);
+  t.mock.timers.tick(FILE_IMPORT_TIMEOUT_MS);
   assert.equal((await pending).status, 504);
   completeFetch(new Response(new ReadableStream({ cancel: () => (canceled = true) })));
   await new Promise(setImmediate);
@@ -281,7 +282,7 @@ test("one deadline covers a stalled body and cancels the body stream", async (t)
   });
   const pending = f.run();
   await new Promise(setImmediate);
-  t.mock.timers.tick(IMAGE_IMPORT_TIMEOUT_MS);
+  t.mock.timers.tick(FILE_IMPORT_TIMEOUT_MS);
   assert.equal((await pending).status, 504);
   assert.equal(canceled, true);
   assert.equal(f.env.PAGES_ASSETS.objects.size, 0);
@@ -298,7 +299,7 @@ test("caller cancellation stops downloading without persisting", async (t) => {
   controller.abort(new Error("private caller details"));
   const response = await pending;
   assert.equal(response.status, 408);
-  assert.deepEqual(await response.json(), { error: "Image import canceled" });
+  assert.deepEqual(await response.json(), { error: "File import canceled" });
   assert.equal(canceled, true);
   assert.equal(f.env.PAGES_ASSETS.objects.size, 0);
 });
@@ -337,6 +338,35 @@ test("requires real image bytes matching both the response and file MIME types",
   body = new TextEncoder().encode("<svg><script>not an image</script></svg>");
   assert.equal((await f.run()).status, 415);
   assert.equal(f.env.PAGES_ASSETS.objects.size, 0);
+});
+
+test("a Parquet file imports as a dataset whose insert is a dataframe", async (t) => {
+  // The smallest container the upload's check admits: PAR1, a footer, its
+  // little-endian length, PAR1.
+  const parquet = new Uint8Array([
+    ...Buffer.from("PAR1"),
+    ...[1, 2, 3, 4],
+    ...[4, 0, 0, 0],
+    ...Buffer.from("PAR1"),
+  ]);
+  const f = setup(t, {
+    fetchImage: () => new Response(parquet, { headers: { "content-type": PARQUET_MEDIA_TYPE } }),
+  });
+  const response = await f.run({
+    file: descriptor({ mime_type: PARQUET_MEDIA_TYPE, file_name: "usage.parquet" }),
+  });
+  assert.equal(response.status, 201);
+  const asset = await response.json();
+  assert.equal(asset.mime_type, PARQUET_MEDIA_TYPE);
+  assert.equal(asset.width, undefined);
+  assert.deepEqual(asset.insert, {
+    op: "insert_node",
+    node: { type: "dataframe", attrs: { asset_id: asset.asset_id } },
+  });
+  // A claimed type the bytes don't match is refused before storage.
+  const mislabeled = await f.run({ file: descriptor({ mime_type: "image/png" }) });
+  assert.equal(mislabeled.status, 415);
+  assert.equal(f.env.PAGES_ASSETS.objects.size, 1);
 });
 
 test("the same raster dimension limit applies to imported images", async (t) => {

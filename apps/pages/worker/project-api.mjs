@@ -16,21 +16,29 @@ import { pagePath, projectPath } from "../shared/routes.mjs";
 import { HttpError } from "./auth.mjs";
 import { PROJECT_CONTENT_OPERATIONS } from "./project-content.mjs";
 
-/** Old tool name → the tool that replaced it. */
-export const RENAMED_TOOLS = Object.freeze({
+/** Space tool name → the Project tool that runs it. The internal operation
+ * keeps the Space name. */
+const PROJECT_TOOLS = Object.freeze({
   create_space: "create_project",
   list_spaces: "list_projects",
   get_space: "get_project",
   update_space: "update_project",
 });
+/** Old tool name → the tool that takes the same arguments now. A call to the
+ * old name is refused with the new one, so a client with a cached tool list
+ * learns where to go. */
+export const RENAMED_TOOLS = Object.freeze({
+  ...PROJECT_TOOLS,
+  import_page_image: "create_page_asset_upload",
+});
 const INTERNAL_OPERATION = Object.freeze(
-  Object.fromEntries(Object.entries(RENAMED_TOOLS).map(([internal, api]) => [api, internal])),
+  Object.fromEntries(Object.entries(PROJECT_TOOLS).map(([internal, api]) => [api, internal])),
 );
 /** Results that can carry a Project or placement. Other bodies pass through. */
 const MAPPED_RESULTS = new Set([
   "get_project_access",
   "manage_project_access",
-  ...Object.values(RENAMED_TOOLS),
+  ...Object.values(PROJECT_TOOLS),
   "delete_project",
   "create_page",
   "list_pages",
@@ -47,7 +55,7 @@ export const renamedTool = (name) =>
 /** The refusal for an operation outside `internalOperations`, listing the
  * valid ones under their API names. */
 export function unknownOperation(name, internalOperations) {
-  const valid = [...internalOperations].map((operation) => RENAMED_TOOLS[operation] ?? operation);
+  const valid = [...internalOperations].map((operation) => PROJECT_TOOLS[operation] ?? operation);
   const named =
     typeof name === "string" && name
       ? `Unknown operation \`${name.slice(0, 64)}\``

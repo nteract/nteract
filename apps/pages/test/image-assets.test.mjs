@@ -17,7 +17,6 @@ import {
   inspectImage,
   inspectParquet,
   imageAssetKey,
-  persistImageAsset,
   requireStoredImageAsset,
 } from "../worker/image-assets.mjs";
 import { IMAGE_MAX_BYTES } from "../shared/image-assets.mjs";
@@ -668,11 +667,8 @@ test("Parquet bytes under an image Content-Type, or as a broken container, are r
   assert.equal(f.env.PAGES_ASSETS.calls.filter(([method]) => method === "put").length, 0);
 });
 
-test("image paths refuse a Parquet dataset: import, insert_image preflight", async (t) => {
+test("the insert_image preflight refuses a Parquet dataset", async (t) => {
   const f = await fixture(t);
-  await assert.rejects(persistImageAsset(f.env.PAGES_ASSETS, { pageId, bytes: parquetBytes() }), {
-    status: 415,
-  });
   const dataset = await upload(f, {
     body: parquetBytes(),
     headers: { "content-type": PARQUET_MEDIA_TYPE },

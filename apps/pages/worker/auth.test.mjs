@@ -478,7 +478,7 @@ test("JSON tool refusals carry a code: rejected key, unknown operation, bad argu
   assert.equal(malformed.status, 400);
   assert.deepEqual(await malformed.json(), { error: "Invalid JSON", code: "invalid_request" });
   const badImport = await call({
-    operation: "import_page_image",
+    operation: "create_page_asset_upload",
     arguments: { page_id: crypto.randomUUID(), file: {} },
   });
   assert.deepEqual(badImport, {
@@ -488,6 +488,22 @@ test("JSON tool refusals carry a code: rejected key, unknown operation, bad argu
       code: "invalid_request",
     },
   });
+  const mixed = await call({
+    operation: "create_page_asset_upload",
+    arguments: { page_id: crypto.randomUUID(), file: {}, size: 1 },
+  });
+  assert.equal(mixed.status, 400);
+  assert.equal(mixed.body.code, "invalid_arguments");
+  assert.deepEqual(
+    await call({ operation: "import_page_image", arguments: { page_id: crypto.randomUUID() } }),
+    {
+      status: 400,
+      body: {
+        error: "`import_page_image` was renamed `create_page_asset_upload`",
+        code: "tool_renamed",
+      },
+    },
+  );
 });
 
 test("JSON API bounds body memory and rejects malformed input", async () => {

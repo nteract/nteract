@@ -93,7 +93,7 @@ const imageFile = (behavior = "ok") => {
   };
 };
 const importImage = (client, image, allowed = true) =>
-  call(client, "import_page_image", { page_id: pageId, file: image.file }, allowed);
+  call(client, "create_page_asset_upload", { page_id: pageId, file: image.file }, allowed);
 // A refused import must not reach the image source at all.
 async function refusedImport(client) {
   const image = imageFile(),
@@ -255,7 +255,7 @@ try {
   pageId = created.page_id;
   fixtures.push(pageId);
   const descriptors = await ownerGrant.client.listTools();
-  const descriptor = descriptors.tools.find((tool) => tool.name === "import_page_image");
+  const descriptor = descriptors.tools.find((tool) => tool.name === "create_page_asset_upload");
   assert.ok(descriptor);
   assert.deepEqual(descriptor._meta["openai/fileParams"], ["file"]);
   complete("Local OIDC, PKCE consent and MCP expose the file-input tool");
@@ -266,6 +266,7 @@ try {
   assert.equal(asset.asset_id, createHash("sha256").update(imagePng()).digest("hex"));
   assert.equal(asset.asset_url, `/api/pages/${pageId}/assets/${asset.asset_id}`);
   assert.equal(asset.url, origin + `/p/${pageId}`);
+  assert.deepEqual(asset.insert, { op: "insert_image", asset_id: asset.asset_id });
   assert.equal(asset.mime_type, "image/png");
   assert.equal(asset.size, imagePng().length);
   assert.equal(asset.width, 3);
@@ -470,7 +471,7 @@ try {
       id: 1,
       method: "tools/call",
       params: {
-        name: "import_page_image",
+        name: "create_page_asset_upload",
         arguments: { page_id: pageId, file: revokedImage.file },
       },
     }),

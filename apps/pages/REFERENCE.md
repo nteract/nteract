@@ -2069,8 +2069,8 @@ Worker checks only the container: `PAR1` at both ends, a footer length that
 fits, and no encrypted footer. It decodes no column data; a source's summary
 decodes the footer through Sift ([Sources document](#sources-document)). A dataset is
 served as `application/vnd.apache.parquet` with `Content-Disposition:
-attachment`, so opening its URL downloads it. `insert_image` and
-`import_page_image` refuse datasets; `insert_node` checks with `HEAD` that its
+attachment`, so opening its URL downloads it. `insert_image` refuses
+datasets; `insert_node` checks with `HEAD` that its
 asset is a dataset of the node's media type on the same Page.
 
 Current limits are 5 MiB per image or dataset, 8192 pixels per side, and 25
@@ -2101,14 +2101,18 @@ For agents, importing bytes and inserting content are separate operations:
      header (see [Upload capabilities](#upload-capabilities)).
    - API-key clients may also POST raw bytes to the asset endpoint with their
      own bearer header.
-   - A client that attaches a file to the tool call itself uses
-     `import_page_image({page_id, file})` with that file descriptor. ChatGPT
-     does, through `openai/fileParams`. The importer requires read/write OAuth
-     scope and Page edit access, accepts bounded HTTPS downloads from the hosts
-     in `FILE_HOSTS` ([import-image.mjs](worker/import-image.mjs)), today only
-     `files.oaiusercontent.com`, without redirects, and returns `asset_id`,
-     reference, MIME, dimensions, and size. A file ID alone is not a download
-     URL. Temporary source URLs are not stored in the document.
+   - A client that attaches a file to the tool call itself passes that file
+     descriptor as `create_page_asset_upload({page_id, file})`. ChatGPT does,
+     through `openai/fileParams`. The Worker handles that call at its edge
+     ([import-file.mjs](worker/import-file.mjs)): it requires read/write scope
+     and Page edit access, accepts bounded HTTPS downloads from the hosts in
+     `FILE_HOSTS`, today only `files.oaiusercontent.com`, without redirects,
+     stores an image or a Parquet file under the upload's checks, and returns
+     `asset_id`, reference, MIME, size and an image's dimensions. With `file`
+     the call takes no `content_type` or `size`. A file ID alone is not a
+     download URL. Temporary source URLs are not stored in the document.
+     `import_page_image`, which took the same arguments, is refused with
+     `tool_renamed` naming `create_page_asset_upload`.
 
    A client with none of these asks the person to upload in the browser.
 
@@ -2145,8 +2149,8 @@ verification through `summary.images`.
 `create_page_asset_upload` ([asset-uploads.mjs](worker/asset-uploads.mjs)) lets
 any agent that can run curl add a local file without handling its own bearer
 token. It is a Page content tool on MCP and `/api/tools`, takes `page_id` or
-`project_id`, and needs write scope plus current edit access, like
-`import_page_image`. API-key and OAuth clients can issue one; a browser
+`project_id`, and needs write scope plus current edit access. API-key and
+OAuth clients can issue one; a browser
 session is refused, since the browser uploads to the same route with its
 cookie. The Page host answers with `upload_url` (the ordinary
 `POST /api/pages/:pageId/assets` route), `method`, `headers`, `expires_at`,
@@ -3378,11 +3382,11 @@ doesn't, because clients read an absent hint as destructive and open-world.
 Reads are read-only. Keyed writes are idempotent and not destructive: edits stay
 in Automerge history. `delete_page`, `purge_page` and `delete_project` are destructive; Trash is
 reversible, but it revokes every collaborator's access until restored.
-`import_page_image` is open-world because it downloads the client's file, and
-`report_page_progress` is not idempotent because each call without a lease starts
-another session. `create_page_asset_upload` is an ordinary write (it needs write
-scope) that changes nothing: it is closed-world, since the client sends the
-file, and idempotent, since a repeat issues another equivalent capability.
+`report_page_progress` is not idempotent because each call without a lease
+starts another session. `create_page_asset_upload` is an ordinary write (it
+needs write scope). It is open-world, because with `file` it downloads the
+client's file, and idempotent: without `file` a repeat issues another
+equivalent capability, and with it the same bytes reuse one asset.
 
 ### Agent carets
 

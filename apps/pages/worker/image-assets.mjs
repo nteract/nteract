@@ -281,21 +281,14 @@ function checkExpected(expect, { mime_type, size }) {
 }
 
 /**
- * Store only validated original bytes; authorization belongs to the caller.
- * `accept: "image"` admits rasters only (import_page_image, comment images);
- * `accept: "any"` also admits Parquet datasets (the Page asset route).
- * `expect` is an upload capability's binding ({content_type, size}, each
+ * Store only validated original bytes, a raster or a Parquet dataset;
+ * authorization belongs to the caller. `expect` is an upload capability's binding ({content_type, size}, each
  * optional); bytes that don't match it are refused before storage.
  */
-export async function persistPageAsset(
-  bucket,
-  { pageId, bytes, contentTypes = [], accept = "image", expect },
-) {
+export async function persistPageAsset(bucket, { pageId, bytes, contentTypes = [], expect }) {
   if (!validPageId(pageId)) throw new HttpError(400, "Invalid image reference");
-  if (bytes.byteLength > (accept === "image" ? IMAGE_MAX_BYTES : ASSET_MAX_BYTES))
-    throw new HttpError(413, accept === "image" ? IMAGE_TOO_LARGE : FILE_TOO_LARGE);
-  const inspected =
-    accept === "image" ? inspectImage(bytes) : inspectAsset(bytes, expect?.content_type);
+  if (bytes.byteLength > ASSET_MAX_BYTES) throw new HttpError(413, FILE_TOO_LARGE);
+  const inspected = inspectAsset(bytes, expect?.content_type);
   const dataset = inspected.mime_type === PARQUET_MEDIA_TYPE;
   if (bytes.byteLength > (dataset ? DATASET_MAX_BYTES : IMAGE_MAX_BYTES))
     throw new HttpError(413, dataset ? "Datasets must be 5 MiB or smaller" : IMAGE_TOO_LARGE);
@@ -366,11 +359,10 @@ const assetReceipt = (asset) => ({
   insert: assetInsertOperation(asset),
 });
 
-/** Images only; see persistPageAsset. */
-export const persistImageAsset = (bucket, options) =>
-  persistPageAsset(bucket, { ...options, accept: "image" });
-
 const FILE_TOO_LARGE = "Files must be 5 MiB or smaller";
+/** Read an image or dataset body under the shared asset ceiling. */
+export const readAssetBody = (source, { signal } = {}) =>
+  readImageBody(source, { signal, maxBytes: ASSET_MAX_BYTES, tooLarge: FILE_TOO_LARGE });
 const SERVED_MEDIA_TYPES = Object.freeze([...IMAGE_MEDIA_TYPES, PARQUET_MEDIA_TYPE]);
 
 /** An upload capability's binding from the Page host's authorization answer,
@@ -489,7 +481,6 @@ async function copyDatasetAsset(bucket, { pageId, assetId, sourceId }) {
     pageId,
     bytes,
     contentTypes: [PARQUET_MEDIA_TYPE],
-    accept: "any",
     expect: { content_type: PARQUET_MEDIA_TYPE },
   });
   if (copied.asset.asset_id !== assetId)
@@ -556,7 +547,6 @@ export async function handleImageAssets(
         pageId,
         bytes,
         contentTypes: [request.headers.get("content-type")],
-        accept: "any",
         expect,
       });
       const current = await authorize(true);

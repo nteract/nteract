@@ -89,8 +89,8 @@ project_id instead of page_id:
 
 Content tools accept exactly one of page_id or project_id: read_page,
 read_page_changes, edit_page, list_page_comments, manage_page_comment,
-reply_page_comment, read_page_presence, report_page_progress, import_page_image
-and create_page_asset_upload.
+reply_page_comment, read_page_presence, report_page_progress and
+create_page_asset_upload.
 A project_id address needs read access to the Project and never widens it; the
 content document's own permissions still decide each operation. For retries,
 replace only the selector in the same payload position; keep all other
@@ -280,12 +280,12 @@ ${part.authErrorItems}
 - document_conflict (409): this Page's own document id is the one the host
   derives for its comments, sources or a view, so that document can't be made.
   Nothing changed; report it.
-- unsupported_media_type (415): import_page_image or a byte upload got bytes
-  that aren't a PNG, JPEG or static WebP (or, for a byte upload, an
-  unencrypted Parquet file), or don't match their Content-Type. Convert the
+- unsupported_media_type (415): an upload or a file import got bytes that
+  aren't a PNG, JPEG, static WebP or unencrypted Parquet file, or don't match
+  their Content-Type. Convert the
   file and upload it again; the same bytes fail again. insert_image also
   returns this for a Parquet asset: show a dataset with insert_node instead.
-- request_canceled (408): an image import or upload was canceled before it
+- request_canceled (408): a file import or upload was canceled before it
   finished, usually because the client disconnected. Import the same file
   again; identical bytes reuse one asset.
 - Upload URLs (create_page_asset_upload): upload_capability_expired (401;
@@ -609,8 +609,9 @@ replace these URLs with public hosting or put base64 image data in Markdown.
 
 ### Which path to use
 
-- A client that attaches the file to the tool call itself: import_page_image.
-  ChatGPT does, for an attached or generated file.
+- A client that attaches the file to the tool call itself: pass it as
+  create_page_asset_upload's file argument. ChatGPT does, for an attached or
+  generated file.
 ${part.uploadPathItems}
 - No shell and no file parameters (for example a web chat): ask the person to
   use Insert image in the browser, or to paste or drop the file into the Page.
@@ -679,17 +680,17 @@ is inserted into the shared document.
 
 ${part.byteRouteParagraph}
 
-import_page_image takes an image the client attaches to the tool call itself.
-Pass page_id and the file descriptor the client supplied: file has download_url
-and file_id, with optional mime_type and file_name. The tool advertises
-openai/fileParams, which is how ChatGPT attaches a file today;
+create_page_asset_upload's file argument takes a file the client attaches to
+the tool call itself. Pass page_id and the file descriptor the client supplied:
+file has download_url and file_id, with optional mime_type and file_name. The
+tool advertises openai/fileParams, which is how ChatGPT attaches a file today;
 do not invent a download URL from its file ID.
 The current importer accepts only HTTPS files.oaiusercontent.com downloads and
 does not follow redirects or accept arbitrary remote URLs. Do not pass base64
 image data, a local/sandbox path, or a temporary ChatGPT link as the document's
 image reference.
 
-${part.importPageImageParagraph}
+${part.fileImportParagraph}
 
 After any upload or import, call read_page and send the returned insert
 operation through edit_page, with alt added for an image. For an image it is
@@ -883,7 +884,7 @@ ${part.jsonToolsParagraph}
 read_page returns title, ordered blocks, comments, revision and
 comment_revision. Keep the returned page_id, node_ids and revision. Every tool that takes page_id
 (read_page, read_page_changes, edit_page, list_page_comments,
-manage_page_comment, read_page_presence, report_page_progress, import_page_image,
+manage_page_comment, read_page_presence, report_page_progress,
 create_page_asset_upload) takes project_id in its place to address a Project's
 content; give one, never both
 (invalid_arguments). Such a read answers with kind "project", project_id and the
@@ -955,12 +956,11 @@ page_quota_exceeded with limit and count; tell the person rather than retrying.
   set_view creates or rewrites a chart; see Charts.
 - manage_page_comment: add, reply, resolve, reopen, edit, or delete_message. resolve and
   reopen also take thread_ids to change up to 100 threads in one call. See Comments below.
-- import_page_image: page_id and a file descriptor the client attached itself;
-  returns a private asset_id, asset_url and insert, the insert_image operation
-  for edit_page. See Images above.
 - create_page_asset_upload: page_id and optional content_type and size;
   returns a 10-minute upload_url, headers and a curl example for sending a local
-  image or Parquet file. See Images above.
+  image or Parquet file. With file, a descriptor the client attached itself, it
+  stores that file and returns asset_id, asset_url and insert, the edit_page
+  operation that places it. See Images above.
 - delete_page: page_id and nonce move a Page you own to Trash; revision is an
   optional guard. See Trash below.
 - restore_page: page_id and nonce.
@@ -1755,18 +1755,19 @@ Actions are invite (email, role: viewer, commenter or editor), set_role (princip
 role: viewer, commenter, editor or null to remove), revoke_invite (invite_id), and
 set_domain_view. ${companyDomainSharing} ${organizationSharing}
 A 409 requires reading access again. An uncertain request can be retried with its identical nonce and body.`,
-    importPageImageParagraph: `import_page_image requires pages:read and pages:write plus current Page edit
-access. It copies the bytes into private Page storage and returns asset_id,
-asset_url, mime_type, size, width, height, and insert, the operation that
-places it. It does not insert content.
+    fileImportParagraph: `A file import requires pages:read and pages:write plus current Page edit
+access. It copies the bytes, an image or a Parquet file, into private Page
+storage and returns asset_id, asset_url, mime_type, size, width and height for
+an image, and insert, the operation that places it. It does not insert content.
 Repeating an import of identical bytes to the same Page reuses the asset.
-No additional API key or public hosting is needed. If ChatGPT does not expose this tool yet, refresh the connection's
-tool list. Newly generated images must be available as transferable files in
-that client; this handoff still needs a separate live ChatGPT trial. An uploaded
-attachment and a generated image are not interchangeable proof of support.
-If the client cannot supply a file descriptor but can run curl, use
-create_page_asset_upload; otherwise ask the human to upload through Pages'
-image control instead of inserting a broken placeholder link.`,
+No additional API key or public hosting is needed. If ChatGPT doesn't offer the
+file argument yet, refresh the connection's tool list. Newly generated images
+must be available as transferable files in that client; this handoff still
+needs a separate live ChatGPT trial. An uploaded attachment and a generated
+image are not interchangeable proof of support. If the client cannot supply a
+file descriptor but can run curl, call create_page_asset_upload without file
+and POST the bytes; otherwise ask the human to upload through Pages' image
+control instead of inserting a broken placeholder link.`,
     uploadCapabilityParagraph: `An OAuth token itself works only on /mcp and GET /whoami, and never authorizes
 the asset route.
 OAuth clients upload with create_page_asset_upload instead: its Pages-Upload
@@ -2163,18 +2164,19 @@ invite (email, role: viewer, commenter or editor), set_role (principal, role:
 viewer, commenter, editor or null to remove), revoke_invite (invite_id), and
 set_domain_view. ${companyDomainSharing} ${organizationSharing} A 409 requires reading access again. An uncertain request can be
 retried with its identical nonce and body.`,
-    importPageImageParagraph: `import_page_image requires pages:read and pages:write plus current Page edit
-access. It copies the bytes into private Page storage and returns asset_id,
-asset_url, mime_type, size, width, height, and insert, the operation that
-places it. It does not insert content.
+    fileImportParagraph: `A file import requires pages:read and pages:write plus current Page edit
+access. It copies the bytes, an image or a Parquet file, into private Page
+storage and returns asset_id, asset_url, mime_type, size, width and height for
+an image, and insert, the operation that places it. It does not insert content.
 Repeating an import of identical bytes to the same Page reuses the asset. No
-public hosting is needed. If ChatGPT does not expose this tool yet, refresh the
-connection's tool list. Newly generated images must be available as transferable
-files in that client; this handoff still needs a separate live ChatGPT trial. An
-uploaded attachment and a generated image are not interchangeable proof of
-support. If the client cannot supply a file descriptor but can run curl, use
-create_page_asset_upload; otherwise ask the human to upload through Pages' image
-control instead of inserting a broken placeholder link.`,
+public hosting is needed. If ChatGPT doesn't offer the file argument yet,
+refresh the connection's tool list. Newly generated images must be available as
+transferable files in that client; this handoff still needs a separate live
+ChatGPT trial. An uploaded attachment and a generated image are not
+interchangeable proof of support. If the client cannot supply a file descriptor
+but can run curl, call create_page_asset_upload without file and POST the
+bytes; otherwise ask the human to upload through Pages' image control instead
+of inserting a broken placeholder link.`,
     uploadCapabilityParagraph: `An OAuth token itself works only on /mcp and GET /whoami, and never authorizes
 the asset route.
 OAuth clients upload with create_page_asset_upload instead: its Pages-Upload

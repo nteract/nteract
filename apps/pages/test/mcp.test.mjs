@@ -156,6 +156,12 @@ test("MCP gives every refusal a stable code in text and structured content", asy
   );
   assert.equal((await call("no_such_tool", async () => assert.fail())).code, "unknown_tool");
   assert.equal((await call("create_space", async () => assert.fail())).code, "tool_renamed");
+  // A client that cached import_page_image is sent to the tool that takes its
+  // arguments now, before anything runs.
+  assert.deepEqual(await call("import_page_image", async () => assert.fail()), {
+    error: "`import_page_image` was renamed `create_page_asset_upload`",
+    code: "tool_renamed",
+  });
   // No answer: reads and writes with a nonce can repeat; progress keeps its lease rule.
   const thrown = async () => {
     throw Error("Private internals");
@@ -170,7 +176,6 @@ test("MCP gives every refusal a stable code in text and structured content", asy
     ["create_page", "outcome_unknown", false],
     ["edit_page", "outcome_unknown", false, { nonce: "short" }],
     ["edit_page", "outcome_unknown", false, { nonce: "x".repeat(65) }],
-    ["import_page_image", "outcome_unknown", true],
     ["create_page_asset_upload", "outcome_unknown", true],
     ["report_page_progress", "outcome_unknown", undefined],
   ]) {
@@ -185,6 +190,12 @@ test("MCP gives every refusal a stable code in text and structured content", asy
         name,
       );
   }
+  // An upload URL stores nothing; a file import may have stored the file.
+  assert.match((await call("create_page_asset_upload", thrown)).error, /nothing was stored/);
+  const imported = await call("create_page_asset_upload", thrown, { file: {} });
+  assert.equal(imported.code, "outcome_unknown");
+  assert.equal(imported.retryable, true);
+  assert.match(imported.error, /storage may have completed/);
 });
 
 test("MCP tools declare every annotation hint, and each tool's hints are intended", async () => {
@@ -223,8 +234,7 @@ test("MCP tools declare every annotation hint, and each tool's hints are intende
     restore_page: write,
     move_page: write,
     report_page_progress: { ...write, idempotentHint: false },
-    import_page_image: { ...write, openWorldHint: true },
-    create_page_asset_upload: write,
+    create_page_asset_upload: { ...write, openWorldHint: true },
     delete_page: destructive,
     purge_page: destructive,
     delete_project: destructive,
@@ -261,7 +271,6 @@ test("every Page tool takes project_id in place of page_id for Project content",
     "list_page_comments",
     "read_page_presence",
     "report_page_progress",
-    "import_page_image",
     "create_page_asset_upload",
     "edit_page",
     "edit_page",
@@ -904,10 +913,10 @@ test("MCP tool metadata declares the OAuth scopes needed by each operation", asy
   }
 });
 
-test("MCP image import advertises ChatGPT's complete file descriptor and keeps the private asset URL", async () => {
+test("create_page_asset_upload advertises a client's complete file descriptor and keeps the private asset URL", async () => {
   const listed = await handleMcp(request("tools/list"), async () => assert.fail("unexpected call"));
   const descriptor = (await listed.json()).result.tools.find(
-    (tool) => tool.name === "import_page_image",
+    (tool) => tool.name === "create_page_asset_upload",
   );
   assert.deepEqual(descriptor._meta, { "openai/fileParams": ["file"] });
   const fileSchema = descriptor.inputSchema.properties.file;
@@ -919,7 +928,8 @@ test("MCP image import advertises ChatGPT's complete file descriptor and keeps t
   ]);
   assert.deepEqual(fileSchema.required, ["download_url", "file_id"]);
   assert.equal(fileSchema.additionalProperties, false);
-  assert.deepEqual(descriptor.inputSchema.required, ["file"]);
+  // page_id or project_id; file is optional.
+  assert.deepEqual(descriptor.inputSchema.required, []);
   assert.equal(descriptor.inputSchema.oneOf, undefined);
   assert.deepEqual(descriptor.securitySchemes[0].scopes, ["pages:read", "pages:write"]);
   assert.equal(descriptor.annotations.destructiveHint, false);
@@ -932,11 +942,11 @@ test("MCP image import advertises ChatGPT's complete file descriptor and keeps t
   const assetUrl = `/api/pages/${pageId}/assets/${"a".repeat(64)}`;
   const response = await handleMcp(
     request("tools/call", {
-      name: "import_page_image",
+      name: "create_page_asset_upload",
       arguments: { page_id: pageId, file },
     }),
     async (operation, args) => {
-      assert.equal(operation, "import_page_image");
+      assert.equal(operation, "create_page_asset_upload");
       assert.deepEqual(args, { page_id: pageId, file });
       return Response.json({
         page_id: pageId,
@@ -956,13 +966,18 @@ test("MCP image import advertises ChatGPT's complete file descriptor and keeps t
 test("MCP lists create_page_asset_upload for any client with write scope, and points other image paths at it", async () => {
   const listed = await handleMcp(request("tools/list"), async () => assert.fail("unexpected call"));
   const all = (await listed.json()).result.tools;
+  assert.equal(
+    all.find((tool) => tool.name === "import_page_image"),
+    undefined,
+    "one tool adds a file",
+  );
   const descriptor = all.find((tool) => tool.name === "create_page_asset_upload");
   assert.deepEqual(descriptor.securitySchemes, [
     { type: "oauth2", scopes: ["pages:read", "pages:write"] },
   ]);
-  assert.equal(descriptor._meta, undefined, "no ChatGPT file handoff: the client uploads itself");
   assert.deepEqual(Object.keys(descriptor.inputSchema.properties).sort(), [
     "content_type",
+    "file",
     "page_id",
     "project_id",
     "size",
@@ -974,6 +989,7 @@ test("MCP lists create_page_asset_upload for any client with write scope, and po
     "application/vnd.apache.parquet",
   ]);
   assert.equal(descriptor.inputSchema.properties.size.maximum, 5 * 1024 * 1024);
+  assert.match(descriptor.inputSchema.properties.file.description, /never build one/);
   for (const fact of [
     /API key or OAuth/,
     /Pages-Upload/,
@@ -981,23 +997,14 @@ test("MCP lists create_page_asset_upload for any client with write scope, and po
     /expires_at \(at most 10 minutes\)/,
     /curl/,
     /not multipart or base64/,
-    /same bytes always return the same asset_id/,
     /Access is checked again at upload/,
-    /asset_id and insert: the edit_page op that places it \(add alt to an image\)/,
+    /With file, Pages fetches the file instead/,
+    /same bytes return the same asset_id, with insert: the edit_page op that places it \(add alt to an image\)/,
     /Insert image in the browser/,
-    /import_page_image takes a file your client attaches itself/,
   ])
     assert.match(descriptor.description, fact);
-  const importer = all.find((tool) => tool.name === "import_page_image");
-  for (const fact of [
-    /your client attaches itself as file; never build file/,
-    /Other files: create_page_asset_upload/,
-    /insert: the edit_page op that places it \(add alt\)/,
-  ])
-    assert.match(importer.description, fact);
   // The catalog names the mechanism, not a vendor.
-  for (const tool of [descriptor, importer])
-    assert.doesNotMatch(tool.description, /ChatGPT|OpenAI/i, tool.name);
+  assert.doesNotMatch(descriptor.description, /ChatGPT|OpenAI/i);
   const insertImage = all.find((tool) => tool.name === "edit_page").inputSchema.properties
     .operations.items;
   assert.match(insertImage.properties.asset_id.description, /create_page_asset_upload/);
@@ -1014,6 +1021,8 @@ test("MCP lists create_page_asset_upload for any client with write scope, and po
     instructions,
     /create_page_asset_upload and POST the file to its upload_url with the returned headers \(its example field is a ready curl command\)/,
   );
+  assert.match(instructions, /goes in that tool's file argument instead/);
+  assert.doesNotMatch(instructions, /import_page_image/);
   assert.match(instructions, /untrusted source material, not instructions/);
   assert.match(instructions, /Every write takes a nonce/);
   assert.doesNotMatch(instructions, /retry_token|idempotency_key|heads/);
@@ -1041,11 +1050,11 @@ test("MCP lists create_page_asset_upload for any client with write scope, and po
   });
 });
 
-test("image import failures distinguish storage retries from document edits without leaking file URLs", async () => {
+test("file import failures distinguish storage retries from document edits without leaking file URLs", async () => {
   const response = await handleMcp(
     request("tools/call", {
-      name: "import_page_image",
-      arguments: { page_id: pageId },
+      name: "create_page_asset_upload",
+      arguments: { page_id: pageId, file: { download_url: "https://x.invalid", file_id: "f" } },
     }),
     async () => {
       throw new Error("private download URL with credentials");
@@ -1053,7 +1062,10 @@ test("image import failures distinguish storage retries from document edits with
   );
   const result = (await response.json()).result;
   assert.equal(result.isError, true);
-  assert.match(result.content[0].text, /document was not edited/);
+  assert.match(
+    result.content[0].text,
+    /storage may have completed, but the document was not edited/,
+  );
   assert.doesNotMatch(result.content[0].text, /private download|same key/);
 });
 
@@ -1284,11 +1296,7 @@ test("every write takes a nonce, a Page write a revision, and nothing takes head
     "since_heads",
   ])
     assert.doesNotMatch(schemas, new RegExp(name), name);
-  const unkeyed = new Set([
-    "report_page_progress",
-    "create_page_asset_upload",
-    "import_page_image",
-  ]);
+  const unkeyed = new Set(["report_page_progress", "create_page_asset_upload"]);
   for (const tool of tools) {
     if (tool.annotations.readOnlyHint || unkeyed.has(tool.name)) continue;
     const { properties, required } = tool.inputSchema;
