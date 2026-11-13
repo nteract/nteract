@@ -222,6 +222,14 @@ import {
   cardImageView,
   readCardImagePointer,
 } from "./card-images.mjs";
+import { MAX_TAGS_PER_PAGE, TagError, normalizeTag } from "./page-tags.mjs";
+import {
+  deletePageTags,
+  pageTagsDatabase as openPageTags,
+  readPageTags,
+  tagMatchingIds,
+  writePageTags,
+} from "./page-tags-store.mjs";
 import {
   CatalogIndexUnavailable,
   SHORT_CURSOR_MAX_LENGTH,
@@ -409,6 +417,7 @@ const operations = new Set([
   "edit_page",
   "manage_page_comment",
   "reply_page_comment",
+  "update_page_tags",
   "delete_page",
   "restore_page",
   "purge_page",
@@ -510,6 +519,58 @@ const sharedPagesUnavailable = ({ overloaded = false } = {}) =>
     ),
     { retryAfterMs: overloaded ? overloadRetryAfterMs() : 1000 },
   );
+/** A tag filter or a tag write needs D1: the `page_tags` table is the only
+ * record of tags (no Durable Object, Catalog entry or Page record holds a
+ * copy), so a listing never falls back to the Catalog entries for one. Coded
+ * server failures are retryable. */
+const tagsUnavailable = () =>
+  new HttpError(
+    503,
+    "Page tags are temporarily unavailable: the tag database did not answer. Retry the request.",
+    "tags_unavailable",
+  );
+/** The D1 binding for a request that needs tags, or `tags_unavailable`. D1 is
+ * reached through the catalog index's binding and its `PAGES_CATALOG_INDEX`
+ * gate; that makes the database available to tags, not an index of them. The
+ * tag table's own schema is brought current here (page-tags-store.mjs). */
+async function pageTagsDatabase(env, ctx) {
+  if (!catalogIndexEpoch(env)) throw tagsUnavailable();
+  try {
+    return await openPageTags(env, ctx);
+  } catch (error) {
+    logFailure(error, "page-tags");
+    throw tagsUnavailable();
+  }
+}
+/** `value` as distinct normalized tags: an array of at most 32 valid tags, or
+ * nothing. Refuses with `invalid_arguments` or `invalid_tag`, naming `field`. */
+function tagList(value, field) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_TAGS_PER_PAGE)
+    throw new HttpError(
+      400,
+      `${field} must be an array of at most ${MAX_TAGS_PER_PAGE} tags`,
+      "invalid_arguments",
+    );
+  try {
+    return [...new Set(value.map(normalizeTag))];
+  } catch (error) {
+    if (!(error instanceof TagError)) throw error;
+    throw new HttpError(400, `${field}: ${error.message}`, "invalid_tag");
+  }
+}
+const requestedTags = (value) => tagList(value, "tags");
+/** What a Page's or a Catalog's `run` returns for a request whose queue work
+ * is done: `work` answers the request once the queue has released it (Page
+ * `enqueue`, Catalog `fetch`). */
+class AfterQueue {
+  constructor(work) {
+    this.work = work;
+  }
+  finish() {
+    return this.work();
+  }
+}
 /** The error an abandoned object refuses with when its reset gave no reason. */
 const abandonedError = () => Object.assign(Error("Page object was reset"), { status: 503 });
 /** Viewer builds that speak plain Automerge sync send `sync=automerge` on
@@ -945,6 +1006,8 @@ const READ_OPERATIONS = [
 const safeToRepeat = (operation, args) => {
   // Issuing an upload URL changes nothing; a repeat issues another one.
   if (operation === ASSET_UPLOAD_OPERATION) return true;
+  // Tags are a set: adding or removing one twice changes nothing.
+  if (operation === "update_page_tags") return true;
   if (operation === "report_page_progress")
     return typeof args?.progress_id === "string" && typeof args?.lease_token === "string"
       ? true
@@ -1658,7 +1721,13 @@ export class Catalog {
     // each other.
     if (new URL(request.url).pathname === "/internal/location") return this.location(request);
     if (new URL(request.url).pathname === "/internal/project-discovery") return this.run(request);
-    return this.queue(() => this.run(request));
+    // A request whose `run` returns `AfterQueue` finishes after the queue has
+    // released it, and holds itself open until then (request-hold.mjs).
+    const answer = this.queue(() => this.run(request)).then((result) =>
+      result instanceof AfterQueue ? result.finish() : result,
+    );
+    holdUntilSettled(this.ctx, answer);
+    return answer;
   }
   /**
    * Host-only location route: the gateway never forwards /internal/* paths.
@@ -2056,7 +2125,18 @@ export class Catalog {
             "purge_preview_required",
           );
       }
-      if (body.operation === "create_page") validateCreateInput(args);
+      // The tags a create_page asks for are checked before anything is
+      // reserved: an invalid tag creates nothing. They are written once the
+      // receipt exists, after the queue has released the request (tagCreated).
+      let createTags = [];
+      if (body.operation === "create_page") {
+        validateCreateInput(args);
+        createTags = requestedTags(args.tags);
+      }
+      const withTags = (response) =>
+        createTags.length
+          ? new AfterQueue(() => this.tagCreated(request, response, createTags))
+          : response;
       if (registering) {
         requireRegistrationAccount(args, identity);
         // A retry of a registration this Catalog already recorded resends the
@@ -2100,14 +2180,16 @@ export class Catalog {
         body.operation === "create_page" &&
         (inspected.entry ? !!inspected.entry.forward : await this.placedElsewhere(args))
       )
-        return await this.forwardCreate(request, identity, args, { key, digest, inspected });
+        return withTags(
+          await this.forwardCreate(request, identity, args, { key, digest, inspected }),
+        );
       let intent = inspected.entry;
       if (intent && !intent.pending) {
         // A previous attempt may have stored its receipt before sync failed.
         await this.storage.sync();
         const replay = json(intent.receipt);
         replay.headers.set(REPLAYED_RECEIPT_HEADER, "1");
-        return replay;
+        return withTags(replay);
       }
       if (!intent) {
         await this.requirePageRoom(limit);
@@ -2144,17 +2226,73 @@ export class Catalog {
           },
         });
       }
-      return await this.completeCreation(request, {
-        key,
-        intent,
-        args,
-        registering,
-        resumed: !!inspected.entry,
-        owner: identity.principal,
-      });
+      return withTags(
+        await this.completeCreation(request, {
+          key,
+          intent,
+          args,
+          registering,
+          resumed: !!inspected.entry,
+          owner: identity.principal,
+        }),
+      );
     } catch (error) {
       return errorResponse(error, "catalog");
     }
+  }
+
+  /**
+   * Tag the Page a create_page made, once its receipt exists and this
+   * Catalog's queue has released the request. `response` is the receipt
+   * (fresh, replayed or forwarded); a failed one passes through. The tags are
+   * an update_page_tags call to the Page host with the caller's own
+   * credential, so the host decides edit access and Trash state now, as for a
+   * direct call, on every attempt including a replay. A caller who can no
+   * longer edit the Page gets the receipt with the host's refusal code and no
+   * tags. The Page exists by now and the receipt is recorded, so a write that
+   * fails doesn't undo the creation: the receipt says `tags_applied: false`,
+   * and repeating the same call (same nonce) replays the receipt and writes
+   * the tags again, which is safe because tags are a set.
+   */
+  async tagCreated(request, response, add) {
+    if (!response.ok) return response;
+    const receipt = await response.clone().json();
+    let outcome;
+    try {
+      const reply = await this.env.PAGES.getByName(receipt.page_id).fetch(
+        forwarded(request, "/internal/tool", {
+          operation: "update_page_tags",
+          arguments: { page_id: receipt.page_id, add },
+        }),
+      );
+      const answer = await reply.json().catch(() => ({}));
+      if (!reply.ok) throw new HttpError(reply.status, answer.error, answer.code);
+      outcome = { tags: answer.tags };
+    } catch (error) {
+      if (!(error instanceof HttpError)) logFailure(error, "page-tags");
+      // The refusal a direct update_page_tags call would get: its status, and
+      // its code when it has one. A failure with no answer is an outage.
+      const refusal = error instanceof HttpError && error.status < 500;
+      outcome = {
+        tags_applied: false,
+        tags_error: refusal
+          ? {
+              status: error.status,
+              ...(error.code && { code: error.code }),
+              message: `The Page was created but its tags were not written: ${error.message}`,
+            }
+          : {
+              status: 503,
+              code: "tags_unavailable",
+              message:
+                "The Page was created but its tags were not written. Send the same create_page again to retry them, or use update_page_tags.",
+            },
+      };
+    }
+    const tagged = json({ ...receipt, ...outcome }, response.status);
+    if (response.headers.has(REPLAYED_RECEIPT_HEADER))
+      tagged.headers.set(REPLAYED_RECEIPT_HEADER, response.headers.get(REPLAYED_RECEIPT_HEADER));
+    return tagged;
   }
 
   /** Finish a reserved create_page or register_page: the Page host creates
@@ -4080,6 +4218,8 @@ export class Catalog {
   async listPages(request, identity, args, limit) {
     const options = parseListArguments(args);
     const storage = this.storage;
+    const tagDb = options.tags ? await this.tagDatabase() : null;
+    const keep = this.tagKeep(options, tagDb);
     if (options.inTrash) await pruneTombstonedTrash(storage);
     if (options.spaceId) {
       // Only the owner can see a Space in this build, and the owner's own
@@ -4129,12 +4269,17 @@ export class Catalog {
     const filtered = options.spaceId !== null || options.parentId !== undefined;
     // Children of a shared parent come from its owner's Catalog, so a
     // rejected one may be a Page the caller can't see at all. That listing
-    // checks every child before it paginates; see scanCandidates.
+    // checks every child before it paginates or filters by tag; see
+    // scanCandidates.
     const scope = {
       locations,
       located,
       sharedChildren: sharedChildren && new Set(sharedChildren),
       exhaustive: !!sharedChildren,
+      // The owner's Catalog names these children whether or not the caller
+      // can read them, so the tag filter runs only on the ones that passed
+      // the access check (scanCandidates).
+      keepVerified: sharedChildren ? keep : null,
     };
     const context = {
       principal: identity.principal,
@@ -4191,6 +4336,7 @@ export class Catalog {
             needle: options.needle,
             access: options.access,
             sort: options.sort,
+            tags: options.tags?.ast ?? null,
           });
       } catch (error) {
         // Listing degrades to the Catalog entries; editing never waits on D1.
@@ -4234,6 +4380,7 @@ export class Catalog {
               inTrash: options.inTrash,
               needle: options.needle,
               sort: options.sort,
+              keep,
               owned: options.access === "shared" ? () => false : (entry) => located(entry.page_id),
               // Shared Pages are never in a Project here, and never under a
               // parent this account owns.
@@ -4247,6 +4394,8 @@ export class Catalog {
       )),
       source: "catalog",
     };
+    if (options.tags || options.includeTags)
+      await this.attachTags(result.pages, tagDb, !!options.tags);
     const response = json({
       pages: result.pages,
       limit: options.limit,
@@ -4261,9 +4410,56 @@ export class Catalog {
       quota,
       principal: identity.principal,
       account: accountIdentity(identity),
+      ...(options.tags && { tag_filter: options.tags.canonical }),
     });
     response.headers.set("x-pages-catalog-source", result.source);
     return response;
+  }
+
+  async tagDatabase() {
+    return pageTagsDatabase(this.env, this.ctx);
+  }
+
+  /** For a listing with a tag filter, `keep(pageIds)` answers the Set of IDs
+   * that satisfy it, read from the `page_tags` table in D1. A failure is `tags_unavailable`: the
+   * Catalog entries have no tags, so the listing can't answer without it. */
+  tagKeep(options, db) {
+    if (!options.tags) return null;
+    return async (pageIds) => {
+      try {
+        return await tagMatchingIds(db, options.tags.ast, pageIds);
+      } catch (error) {
+        logFailure(error, "page-tags");
+        throw tagsUnavailable();
+      }
+    };
+  }
+
+  /** Set `tags` on each listed Page: an array, empty when it has none. Best
+   * effort without a tag filter: a listing never fails for want of tags, and
+   * a Page with no `tags` field means they could not be read. A tag filter
+   * promises `tags` on every Page it returns, so when it can't read them the
+   * listing is `tags_unavailable`, never Pages without their tags (`strict`).
+   * `tagDb` is a handle from `tagDatabase`, or null to open one here: either
+   * way the tag schema is current before the read. */
+  async attachTags(pages, tagDb, strict = false) {
+    if (!pages.length) return;
+    try {
+      const handle =
+        tagDb ?? (catalogIndexEpoch(this.env) ? await openPageTags(this.env, this.ctx) : null);
+      if (!handle) {
+        if (strict) throw tagsUnavailable();
+        return;
+      }
+      const tags = await readPageTags(
+        handle,
+        pages.map((page) => page.page_id),
+      );
+      for (const page of pages) page.tags = tags.get(page.page_id) ?? [];
+    } catch (error) {
+      logFailure(error, "page-tags");
+      if (strict) throw tagsUnavailable();
+    }
   }
 
   /** Up to `options.limit` verified Pages after the position `after`, and the
@@ -4272,6 +4468,8 @@ export class Catalog {
    * and the next cursor resume from the order's key, never a row's own
    * `updated_at`. */
   async listSharedProjectPages(request, identity, options) {
+    const tagDb = options.tags ? await this.tagDatabase() : null;
+    const keep = this.tagKeep(options, tagDb);
     const response = await this.env.PROJECTS.getByName(options.spaceId).fetch(
       forwarded(request, "/internal/space/read", { space_id: options.spaceId }),
     );
@@ -4300,34 +4498,38 @@ export class Catalog {
     const { position: after } = options.cursor
       ? await openListingCursor(this.env, context, options.cursor, options.sort)
       : { position: null };
+    const candidates =
+      options.inTrash || options.access === "owned" ? [] : ids.map((e) => e.page_id);
     const result = await this.scanCandidates(
       request,
       identity,
-      childIdSource(
-        options.inTrash || options.access === "owned" ? [] : ids.map((entry) => entry.page_id),
-        options.sort,
-      ),
+      childIdSource(candidates, options.sort),
       { ...options, spaceId: null },
       {
         locations: new Map(),
         located: () => false,
         sharedChildren: new Set(ids.map((entry) => entry.page_id)),
         exhaustive: true,
+        // Filtered after each Page's access check, never before it.
+        keepVerified: keep,
       },
       after,
       null,
     );
+    const pages = result.pages.map((page) => ({
+      ...page,
+      space_id: options.spaceId,
+      parent_id: entries.find((entry) => entry.page_id === page.page_id)?.parent_id,
+    }));
+    if (options.tags || options.includeTags) await this.attachTags(pages, tagDb, !!options.tags);
     return json({
-      pages: result.pages.map((page) => ({
-        ...page,
-        space_id: options.spaceId,
-        parent_id: entries.find((entry) => entry.page_id === page.page_id)?.parent_id,
-      })),
+      pages,
       limit: options.limit,
       next_cursor: result.next
         ? await sealPosition(this.env, { ...context, source: "catalog" }, options.sort, result.next)
         : null,
       principal: identity.principal,
+      ...(options.tags && { tag_filter: options.tags.canonical }),
     });
   }
 
@@ -4434,7 +4636,17 @@ export class Catalog {
     while (verified.length <= limit && scanned < scanBound) {
       const want = Math.min(limit + 1 - verified.length, scanBound - scanned);
       const rows = await source.next(position, want);
-      const checked = await boundedMap(rows, sharedCheckBounds.concurrency, check);
+      let checked = await boundedMap(rows, sharedCheckBounds.concurrency, check);
+      // A tag filter on candidates the caller may not be able to see runs on
+      // the ones that passed their check, so a tag never decides what a
+      // refused Page reveals, and a Page that fails the filter still counts
+      // as scanned.
+      if (scope.keepVerified && checked.some(Boolean)) {
+        const matched = await scope.keepVerified(
+          checked.filter(Boolean).map((page) => page.page_id),
+        );
+        checked = checked.map((page) => (page && matched.has(page.page_id) ? page : null));
+      }
       for (const [index, page] of checked.entries())
         if (page) verified.push({ page, row: rows[index] });
       scanned += rows.length;
@@ -5651,17 +5863,25 @@ export class Page {
 
   /** Lifecycle state for the index, after the host record is durable. */
   async retireIndex() {
-    if (!catalogIndexEpoch(this.env)) return;
-    try {
-      await withTimeout(
-        retirePageIndex(this.env, this.ctx, this.metadata),
-        catalogIndexTimeouts.write,
-      );
-    } catch (error) {
-      // Owner rows are confirmed against the Catalog and non-owner rows were
-      // removed before commit, so a missed retirement cannot list the Page.
-      logFailure(error, "catalog-index-retire");
+    if (catalogIndexEpoch(this.env)) {
+      try {
+        await withTimeout(
+          retirePageIndex(this.env, this.ctx, this.metadata),
+          catalogIndexTimeouts.write,
+        );
+      } catch (error) {
+        // Owner rows are confirmed against the Catalog and non-owner rows were
+        // removed before commit, so a missed retirement cannot list the Page.
+        logFailure(error, "catalog-index-retire");
+      }
     }
+    // A permanent deletion deletes the Page's tag rows itself, after the
+    // tombstone above fences late tag writes, and whether or not the catalog
+    // index is on. Unlike the projection it is not best-effort: the rows are
+    // the only record, so a failure fails this step and the lifecycle repeats
+    // it. Trash keeps tags.
+    if (pageState(this.metadata) === "deleted")
+      await deletePageTags(this.env, this.ctx, this.metadata.pageId);
   }
 
   async installAccess(metadata) {
@@ -5747,11 +5967,13 @@ export class Page {
     return settle(this.enqueue(request));
   }
 
-  /** Run `request` in admission order. */
+  /** Run `request` in admission order. A request that returns `AfterQueue`
+   * has decided its admission in the queue and finishes its work here, after
+   * the queue has moved on, so a slow dependency can't hold later requests. */
   enqueue(request) {
     const next = this.tail.then(() => this.run(request));
     this.tail = next.catch(() => {});
-    return next;
+    return next.then((result) => (result instanceof AfterQueue ? result.finish() : result));
   }
 
   /** An upload capability's screen (asset-uploads.mjs uploadScreen): only the
@@ -6233,6 +6455,23 @@ export class Page {
         if (["manage_page_comment", "reply_page_comment"].includes(body.operation))
           return json(await this.writeComment(request, identity, body));
         this.policy.account(identity, true);
+        if (body.operation === "update_page_tags") {
+          if (state === "trashed")
+            throw new HttpError(409, "Restore this Page before changing its tags", "page_trashed");
+          // Access and Trash state are decided here, in the queue. The write
+          // is D1 work, so it runs after the queue releases this request
+          // (updateTags).
+          const change = this.tagChange(body.arguments);
+          const pageId = this.metadata.pageId;
+          return new AfterQueue(async () => {
+            try {
+              return json(await this.updateTags(identity, pageId, change));
+            } catch (error) {
+              if ((error.status ?? 500) >= 500) logFailure(error, "page");
+              return errorResponse(await this.agentRefusal(error), "page");
+            }
+          });
+        }
         if (body.operation === "report_page_progress") {
           const revision = body.arguments?.revision;
           // The targets' revision resolves before the snapshot it is checked in.
@@ -6446,6 +6685,54 @@ export class Page {
       error.details = details;
     }
     return error;
+  }
+
+  /**
+   * The validated change of one update_page_tags call: `{ add, remove }`,
+   * normalized sets that don't overlap. Pure, so it runs in the Page's queue.
+   */
+  tagChange(args = {}) {
+    const add = tagList(args.add, "add");
+    const remove = tagList(args.remove, "remove");
+    if (!add.length && !remove.length)
+      throw new HttpError(
+        400,
+        "update_page_tags needs a tag to add or remove",
+        "invalid_arguments",
+      );
+    if (add.some((tag) => remove.includes(tag)))
+      throw new HttpError(400, "A tag can't be in both add and remove", "invalid_arguments");
+    return { add, remove };
+  }
+
+  /**
+   * One update_page_tags call, after the queue has released it. The caller has
+   * edit access and the Page was not in Trash when the queue admitted it. The
+   * Page host only authorizes the call; it keeps no tag state, and no Durable
+   * Object does. Tags are rows in the D1 `page_tags` table, the only record of
+   * them (page-tags-store.mjs), and never part of the document: this changes
+   * neither the Page's content nor its revision. `add` and `remove` are sets,
+   * so a repeat changes nothing and needs no receipt. A Trash or purge between
+   * the admission and the write is fenced in D1 (writePageTags); a timeout
+   * answers `tags_unavailable`, which doesn't say whether the write landed, and
+   * the same call is safe to repeat.
+   */
+  async updateTags(identity, pageId, { add, remove }) {
+    const db = await pageTagsDatabase(this.env, this.ctx);
+    try {
+      const tags = await writePageTags(db, {
+        pageId,
+        principal: identity.principal,
+        add,
+        remove,
+        now: new Date().toISOString(),
+      });
+      return { page_id: pageId, tags };
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      logFailure(error, "page-tags");
+      throw tagsUnavailable();
+    }
   }
 
   /**

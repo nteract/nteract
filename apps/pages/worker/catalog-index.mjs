@@ -1,6 +1,19 @@
 /**
  * D1 projection of each account's Page catalog.
  *
+ * Provenance. This module owns the `pages_catalog_*` tables, which are
+ * derived: the Page host Durable Objects and each account's Catalog Durable
+ * Object are the source of truth, and these rows are a projection kept in sync
+ * from them. They are an index for listing and search and can be cleared and
+ * rebuilt by reconciliation. Not every table in this D1 database is like that.
+ * `page_tags` shares the database, but not this migration chain: it has its own
+ * schema-version table and migrations, and it is the normative record of Page
+ * tags with no Durable Object behind it. Nothing here may clear, rebuild or
+ * "repair" it (see page-tags-store.mjs). Quota rules,
+ * sessions, OAuth grants and Kilo memberships are also normative D1 state.
+ * Before adding a table or a repair path, decide which kind it is and say so
+ * where the table is created.
+ *
  * The projection chooses listing candidates; it never grants access. Page DOs
  * own the owner, ACL and lifecycle state. A listing returns a non-owner title
  * only after its Page DO confirms access, and an owner title only while the
@@ -44,6 +57,7 @@ import { acceptedTime, validTime } from "./content-activity.mjs";
 import { migrateSchema } from "./d1-schema.mjs";
 import { configuredOrganizationAccess, pageAudienceKey } from "./organization-access.mjs";
 import { validPageId } from "./registration.mjs";
+import { TagError, parseTagExpression, tagPredicate } from "./page-tags.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
 import { requirePageIdArgument, requireSpaceIdArgument, validSpaceId } from "./spaces.mjs";
 
@@ -778,7 +792,10 @@ export async function restrictPageIndex(env, ctx, metadata, revision = revisionO
 }
 
 /** A deleted Page's tombstone: no title, no access rows, and no later write
- * changes it. */
+ * changes it. It leaves `page_tags` alone: those rows are the normative record,
+ * not part of this projection, and the Page host deletes them itself on a
+ * purge (`deletePageTags`). The tombstone is also the fence a late tag write
+ * meets. */
 function tombstoneStatements(db, pageId, owner, lifecycle, now = new Date().toISOString()) {
   return [
     db
@@ -1094,9 +1111,18 @@ export function parseListArguments(args = {}) {
     throw fail("Invalid list arguments");
   // null `access` or `sort` is the default, so it leaves a bare call bare.
   const legacy =
-    ["query", "cursor", "limit", "in_trash", "space_id", "parent_id", "kind"].every(
-      (key) => args[key] === undefined,
-    ) && ["access", "sort"].every((key) => args[key] == null);
+    [
+      "query",
+      "cursor",
+      "limit",
+      "in_trash",
+      "space_id",
+      "parent_id",
+      "kind",
+      "tags",
+      "include_tags",
+    ].every((key) => args[key] === undefined) &&
+    ["access", "sort"].every((key) => args[key] == null);
   const options = {
     limit: legacy ? LIST_LEGACY_LIMIT : LIST_DEFAULT_LIMIT,
     inTrash: false,
@@ -1108,7 +1134,23 @@ export function parseListArguments(args = {}) {
     kind: null,
     access: null,
     sort: "activity",
+    // null, or parseTagExpression's { ast, canonical, tags }.
+    tags: null,
+    // Whether each listed Page carries `tags`. A tag filter implies it.
+    includeTags: false,
   };
+  if (args.include_tags !== undefined && args.include_tags !== null) {
+    if (typeof args.include_tags !== "boolean") throw fail("include_tags must be a boolean");
+    options.includeTags = args.include_tags;
+  }
+  if (args.tags !== undefined && args.tags !== null) {
+    try {
+      options.tags = parseTagExpression(args.tags);
+    } catch (error) {
+      if (!(error instanceof TagError)) throw error;
+      throw fail(error.message);
+    }
+  }
   if (args.access !== undefined && args.access !== null) {
     if (args.access !== "owned" && args.access !== "shared")
       throw fail("access must be owned or shared");
@@ -1191,6 +1233,9 @@ export function listScope(options) {
     options.kind ?? null,
     options.access ?? null,
     SCOPE_SORTS[options.sort ?? "activity"],
+    // Only a tag filter adds an element, so a cursor sealed before tags
+    // existed still opens for a listing that has none.
+    ...(options.tags ? [options.tags.canonical] : []),
   ]);
 }
 
@@ -1342,7 +1387,10 @@ const before = (row, after) =>
 
 /** SQL and parameters for one page of D1 candidates. The SQL text depends
  * only on `access`, `sort` and whether `after` holds a position; every value
- * is a bound parameter. `after` is null or a `positionOf(sort, …)`. */
+ * is a bound parameter. `after` is null or a `positionOf(sort, …)`.
+ * `tags` is a parsed tag expression: the candidates (projection rows) are
+ * narrowed by joining the normative `page_tags` table through an `EXISTS` per
+ * tag. Tags are read here, never copied into the projection. */
 export function listingQuery({
   principal,
   audiences = [],
@@ -1352,9 +1400,11 @@ export function listingQuery({
   count,
   access = null,
   sort = "activity",
+  tags = null,
 }) {
   const pattern = needle ? likePattern(needle) : null;
-  if (sort === "trashed") return trashQuery({ principal, inTrash, pattern, after, count });
+  if (sort === "trashed") return trashQuery({ principal, inTrash, pattern, after, count, tags });
+  const tag = tags ? tagPredicate(tags, "a.page_id") : null;
   const title = sort === "title";
   const accessFilter =
     access === "owned"
@@ -1382,6 +1432,7 @@ export function listingQuery({
         ${accessFilter}
         AND (a.source != 'domain_opened' OR a.domain IN (SELECT value FROM json_each(?)))
         AND (? IS NULL OR a.title_search LIKE ? ESCAPE '\\')
+        ${tag ? `AND ${tag.sql}` : ""}
         ${keyset}
       ORDER BY ${order}
       LIMIT ?`,
@@ -1391,6 +1442,7 @@ export function listingQuery({
       JSON.stringify(audiences),
       pattern,
       pattern,
+      ...(tag ? tag.params : []),
       ...(continued ? [key, after.page_id] : []),
       count,
     ],
@@ -1404,9 +1456,10 @@ export function listingQuery({
  * under `in_trash`, owner rows of trashed Pages: an owner row's principal is
  * its Page row's `owner`. `access` needs no filter, since every row here is
  * an owner row. */
-function trashQuery({ principal, inTrash, pattern, after, count }) {
+function trashQuery({ principal, inTrash, pattern, after, count, tags = null }) {
   if (inTrash !== true) throw new TypeError("The trashed order lists only Trash");
   const continued = requirePosition("trashed", after) !== null;
+  const tag = tags ? tagPredicate(tags, "p.page_id") : null;
   return {
     sql: `SELECT a.page_id, a.source, a.updated_at, a.updated_revision, a.title, a.title_search,
         a.created_at, a.content_updated_at, a.activity_at, p.trashed_at
@@ -1414,6 +1467,7 @@ function trashQuery({ principal, inTrash, pattern, after, count }) {
       JOIN pages_catalog_access a ON a.page_id = p.page_id AND a.principal = ?
       WHERE p.owner = ? AND p.state = 'trashed' AND p.kind = 'page' AND a.source = 'owner'
         AND (? IS NULL OR a.title_search LIKE ? ESCAPE '\\')
+        ${tag ? `AND ${tag.sql}` : ""}
         ${continued ? "AND (p.trash_key, p.page_id) < (?, ?)" : ""}
       ORDER BY p.trash_key DESC, p.page_id DESC
       LIMIT ?`,
@@ -1422,6 +1476,7 @@ function trashQuery({ principal, inTrash, pattern, after, count }) {
       principal,
       pattern,
       pattern,
+      ...(tag ? tag.params : []),
       ...(continued ? [after.key, after.page_id] : []),
       count,
     ],
@@ -1485,7 +1540,7 @@ export async function queryCatalogIndex(db, query) {
  * Catalog's earlier creation time (README, "Catalog index"). */
 export async function catalogSource(
   storage,
-  { inTrash, needle, owned = () => true, shared = true, sort = "activity" },
+  { inTrash, needle, owned = () => true, shared = true, sort = "activity", keep = null },
 ) {
   const order = listOrder(sort);
   const list = async (prefix) => [...(await listAll(storage, prefix)).values()];
@@ -1517,7 +1572,9 @@ export async function catalogSource(
     })
     .filter((row) => titleMatches(row.title, needle))
     .sort(order.compare);
-  return memorySource(rows, sort);
+  // `keep(pageIds)` answers the Set of IDs that satisfy a tag filter.
+  const kept = keep ? await keep(rows.map((row) => row.page_id)) : null;
+  return memorySource(kept ? rows.filter((row) => kept.has(row.page_id)) : rows, sort);
 }
 
 /** Candidate source over the child IDs a shared parent's owner Catalog

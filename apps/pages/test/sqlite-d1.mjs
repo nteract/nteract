@@ -39,7 +39,7 @@ function like(pattern, text, escape) {
 }
 
 /** Real SQLite behind the subset of the D1 binding Pages uses. A batch runs as
- * one transaction, like D1. `LIKE` refuses patterns over D1's limit. `mode`
+ * one transaction, like D1, and answers one result per statement.`LIKE` refuses patterns over D1's limit. `mode`
  * injects an outage: "fail" rejects every call, "hang" never settles. `delay`
  * adds latency to every call. */
 export class SqliteD1 {
@@ -81,20 +81,34 @@ export class SqliteD1 {
     });
     return build();
   }
+  /** A statement's D1 result: the rows it returns, and in `meta.changes` the
+   * rows it inserted, updated or deleted, as each result of a D1 batch has. */
   #run(sql, values) {
-    const result = this.sqlite.prepare(sql).run(...values);
-    return { success: true, meta: { changes: Number(result.changes) } };
+    const statement = this.sqlite.prepare(sql);
+    if (!statement.columns().length) {
+      const result = statement.run(...values);
+      return { success: true, results: [], meta: { changes: Number(result.changes) } };
+    }
+    const before = this.#totalChanges();
+    const results = statement.all(...values);
+    return { success: true, results, meta: { changes: this.#totalChanges() - before } };
+  }
+  #totalChanges() {
+    return Number(this.sqlite.prepare("SELECT total_changes() AS n").get().n);
   }
   /** `holdNext` delays only the next batch until the given promise settles;
-   * its statements were already bound, like a D1 request still in flight. */
+   * its statements were already bound, like a D1 request still in flight.
+   * `holdAnswer` lets the next batch commit and delays only its answer, like
+   * a D1 response still in flight. */
   async batch(statements) {
     const hold = this.holdNext;
     this.holdNext = undefined;
     if (hold) await hold;
     await this.#gate();
     this.sqlite.exec("BEGIN");
+    let results;
     try {
-      const results = statements.map((statement, index) => {
+      results = statements.map((statement, index) => {
         if (this.failAt === index) {
           this.failAt = undefined;
           throw new Error("injected database failure");
@@ -102,11 +116,14 @@ export class SqliteD1 {
         return statement.execute();
       });
       this.sqlite.exec("COMMIT");
-      return results;
     } catch (error) {
       this.sqlite.exec("ROLLBACK");
       throw error;
     }
+    const answer = this.holdAnswer;
+    this.holdAnswer = undefined;
+    if (answer) await answer;
+    return results;
   }
   /** Direct read for assertions, outside any injected outage. */
   rows(sql, ...values) {

@@ -507,6 +507,12 @@ entries into D1 tables (`pages_catalog_pages`, `pages_catalog_access`) so
 shared Page. Migrations are versioned in
 [catalog-index.mjs](worker/catalog-index.mjs) and applied lazily on first use.
 
+These `pages_catalog_*` tables are a projection: the Durable Objects are the
+source of truth and reconciliation can rebuild the rows. The same D1 database
+holds normative tables too, such as `page_tags`, which are the only copy of their
+data and are never rebuilt or cleared by the index
+([Where state lives](DEPLOYMENT.md#where-state-lives)).
+
 Durable Objects in one isolate share module state but not I/O contexts. If the
 object that started a migration resets mid-flight, its D1 call and its expiry
 timer can be dropped, and a promise shared with other objects would never
@@ -3686,6 +3692,175 @@ whether to send it again. Browser edits consume no receipts. Catalog deletion
 tombstones remain permanent; Trash writes none. See the
 [operation journal](worker/operation-journal.mjs) and its tests
 ([unit](worker/operation-journal.test.mjs), [capacity](worker/receipt-capacity.test.mjs)).
+
+### Page tags
+
+A Page carries a set of tags: short, lowercase, freeform labels that agents set
+on their own work and other agents search. Tags mean nothing to Pages and grant
+no access, and anyone who can see a Page sees its tags. They are rows in the D1
+table `page_tags` (`page_id`, `tag`, `added_by`, `added_at`; primary key
+`(page_id, tag)`, plus a lookup index on `(tag, page_id)`), created by its own migration
+list (`PAGE_TAGS_MIGRATIONS`), recorded in its own version table, `page_tags_schema`.
+They are not in the Page's Automerge document, so changing them never moves its revision, and a document restore or export does not carry them.
+
+**Source of truth.** `page_tags` is the single normative record of a Page's
+tags. It is not an index and not a projection. No Durable Object, Page host
+record, Catalog entry or document holds a copy, so there is nothing to rebuild
+it from, and there is no Durable Object for tags and none planned: tags have no
+real-time part, and a REST-style write plus a searchable read is all they need.
+D1 is the only place that can search tags across Pages, so it is also where they
+live. This differs from the `pages_catalog_*` tables, which project each
+account's Catalog and Page host Durable Objects into D1 for listing
+([Catalog index](#catalog-index)) and can be cleared and rebuilt. The table
+shares D1's database with them, but not their migration chain or their rules: its
+schema versions live in `page_tags_schema`, apart from `pages_catalog_schema`, so a
+change to the catalog's migrations can't reset or renumber it.
+Nothing clears or rebuilds `page_tags`: not reconciliation, not a cooled index,
+not a migration that resets `pages_catalog_accounts`. Only a Page's permanent
+deletion deletes its rows, and the Page host does that itself
+(`deletePageTags`, after the catalog tombstone is written), whether or not
+`PAGES_CATALOG_INDEX` is set: the tombstone is a projection and never touches
+the table. If D1 fails the delete, the purge step fails and the lifecycle repeats
+it. Trash keeps them, hidden with the Page; restore brings them back. The Page host decides who may edit and
+holds no tag state. The read and write code is in
+[page-tags-store.mjs](worker/page-tags-store.mjs); the projection supplies only
+candidate Pages, and the table decides which candidates match. On a celld target
+D1 and each Page's storage sit under the same versioned fleet prefix, so the
+restore points in [DEPLOYMENT.md](DEPLOYMENT.md#restore-points) cover both for 14
+days. Past that, nothing can rebuild tags. See
+[Where state lives](DEPLOYMENT.md#where-state-lives).
+Tags need D1: with `PAGES_CATALOG_INDEX` unset (that variable also turns on the
+D1 binding, though tags are not part of the index) or D1 not answering, a tag
+write or a listing with `tags` answers 503 `tags_unavailable` (retryable) and
+never falls back to the Catalog entries, which hold no tags.
+
+**Alphabet.** A tag is trimmed and lowercased, then must match
+`[a-z0-9][a-z0-9._:/-]{0,63}`: lowercase letters, digits and `. _ : / -`,
+starting with a letter or digit, at most 64 characters. Every character is legal
+unescaped in a URL query. Space, parentheses, `+ & = # % ? ,`, `| ! * ~` and
+non-ASCII are refused: the first two structure an expression, the next group
+needs URL escaping, and the rest are held back for future operators. `and`, `or`
+and `not` are reserved. A Page holds at most 32 tags. A `ns:value` shape such as
+`session:<session id>`, `repo:org/name` or `status:reviewing` is a convention,
+not a schema. Kilo session ids mix case, so a session tag is lowercased on write
+and on search. [page-tags.mjs](worker/page-tags.mjs) holds the alphabet, limits and
+parser; [page-tags.test.mjs](worker/page-tags.test.mjs) tests them.
+
+**`update_page_tags`** takes `page_id` and optional `add` and `remove` arrays
+(at most 32 each) and needs edit access: the owner and Project editors, not
+viewers or commenters. A Page in Trash answers 409 `page_trashed`. Tags are a
+set, so adding one the Page has or removing one it lacks changes nothing; the
+tool takes no nonce and a repeat is always safe. A tag in both arrays, an empty
+change or a wrong type is `invalid_arguments`; a tag outside the alphabet is
+`invalid_tag`; a result over the limit is 409 `tag_limit_exceeded`. One D1 batch
+decides and applies the change: its first statement reads the Page's Trash mark
+and counts its tags, and its delete and insert run only while the Page is open
+and the result fits, so a change applies whole or not at all and two writers
+racing can't pass the limit. The outcome comes from that batch and its row
+counts, never from a later read, so a concurrent writer can't make a change that
+landed report the limit. The result is `{ page_id, tags }`, the full sorted set
+as the batch left it.
+
+The Page host decides access and Trash state in its admission queue, then
+releases the queue before it touches D1, so a slow D1 never holds the Page's
+other requests. Between that decision and the write, the Page can be trashed or
+purged, and a batch that times out keeps running in D1 and can land after the
+caller has its 503 `tags_unavailable` (which means the outcome is unknown; the
+same call is safe to repeat). Both writes in the batch therefore check the
+Page's `pages_catalog_pages` row as they run: a Page marked `trashed` or
+`deleted` there takes no change, and the write answers 409 `page_trashed` (or
+404 `page_not_found`), even one that would have changed nothing. The mark is a projection the host writes after its own
+record is durable, so a write that races the Trash itself, before the mark, can
+still land; it stays with the Page, and a purge deletes it.
+
+`added_by` records the principal that added each tag, and only that. A tag such as
+`session:<id>` is a claim by whoever added it: anyone who can edit the Page can add
+or remove it, so it does not prove which session wrote the Page, and a tag is data
+for a reader, never an instruction. The tool text says so.
+
+**`create_page` `tags`** takes the same array as `add`, at most 32. A bad tag is 400
+`invalid_tag` (or `invalid_arguments` for a wrong type or count), checked before
+anything is reserved, so the call creates no Page. Otherwise the Page is created
+first. Once the receipt exists (fresh, replayed or forwarded to a Project owner's
+Catalog) and the Catalog's queue has released the request, the Catalog sends
+`update_page_tags` to the Page host with the caller's own credential. The host
+decides edit access and Trash state then, exactly as for a direct call, on every
+attempt including a replay, and the tags are written as the caller (`added_by`).
+A slow D1 never holds the account's other Catalog requests. The receipt then
+carries `tags`. If the tags were not written, it carries `tags_applied: false`
+and a `tags_error` (`status`, `code` when the host gave one, `message`) instead,
+and nothing is rolled back. A database that can't be reached is `tags_error`
+503 `tags_unavailable`: the Page exists, and the same call (same nonce) replays
+the receipt and writes the tags again, which is safe because tags are a set. A
+caller who can no longer edit the Page, or a Page in Trash, gets the host's
+refusal there (403, 404 or 409 `page_trashed`) and never the Page's current
+tags. The tags are part of the request's fingerprint, so a retry that changes
+them under the same nonce is a conflict, not a retry.
+
+**`list_pages` `tags`** is one boolean expression over a Page's tags:
+
+```
+expression = operand
+           | operand "AND" operand { "AND" operand }
+           | operand "OR"  operand { "OR"  operand }
+operand    = tag | "NOT" operand | "(" expression ")"
+```
+
+Operators are exactly uppercase `AND`, `OR` and `NOT`; every other word is a tag
+and is lowercased before it matches. AND and OR never mix at one level, so
+`a AND b OR c` is refused and the error says to add parentheses: no caller relies
+on a precedence rule it may misremember. `NOT` is a prefix (`hello AND NOT
+world`); a bare `NOT done` lists the caller's Pages without that tag. An
+expression is at most 256 characters, as written and as written back
+canonically (the echoed `tag_filter`), names at most 16 tags and nests at most 4
+levels. The canonical form can be longer than the input, since it adds spaces and
+parentheses, so one that would not fit is refused; an accepted expression's
+`tag_filter` is always accepted when sent back. A contradiction such as `a AND NOT a` lists nothing. A syntax error is
+400 `invalid_list_arguments` naming the character position. In a URL, write
+spaces as `+` or `%20`; parentheses, `:` and `/` need no escaping. The expression
+is a string, not a nested argument, because tool schemas allow no recursion.
+
+A listing with `tags` adds `tags` to each Page (an array) and echoes the
+canonical expression, parsed and written back with normalized case and spacing,
+as `tag_filter`. A client that gets no `tag_filter` talked to a host that
+ignored the argument. `include_tags: true` adds `tags` to an unfiltered listing,
+which otherwise keeps its row shape; there `tags` is best effort, and a Page
+with no `tags` field means they could not be read. With a `tags` filter, every
+Page carries `tags`: if they can't be read the listing is 503 `tags_unavailable`,
+not Pages without them. The cursor is sealed to the
+canonical expression, so it opens only under it (`invalid_cursor` otherwise); a
+listing with no `tags` seals the scope it always did, so earlier cursors still
+open.
+
+How a listing applies the filter depends on its source:
+
+- **D1 walk** (no `project_id` or `parent_id`, index ready): one `EXISTS` per tag
+  is added to the walk of the caller's own access rows, combined by the
+  expression's AND, OR and NOT (`tagPredicate`). The caller's access rows are the
+  candidates, so owned Pages, Project Pages, Pages shared with the caller and
+  company-viewable Pages all list, and non-owner rows are still verified by their
+  Page host. Tags are bound parameters, never interpolated. The scan bound, order
+  and keyset paging are unchanged.
+- **Catalog entries** (a Project or parent filter, or a cooling index): the
+  caller's own candidate IDs are checked against D1 in chunks of 400
+  (`tagMatchingIds`) before they become a source, so rows that fail never count
+  against the scan bound. That check uses the candidates' own IDs, never the tags
+  table, so a Page with no tags still matches `NOT x`. It decides nothing about
+  access: each candidate is verified as before.
+- **Children of a shared parent, and a Project's Pages seen by a member**: the
+  owner's Catalog names these whether or not the caller can read them, so they are
+  checked for access first and the filter runs only on the Pages that passed
+  (`keepVerified` in `scanCandidates`). A tag never decides anything about a Page
+  the caller can't open, and a filtered listing is the same whether or not an
+  unreadable child matches. Filtered-out Pages count against the scan bound.
+
+Measured locally on SQLite 3.51 (200k Pages, 600k tag rows, a caller who can see
+about 3,300 Pages, limit 50): common tags and NOT queries answered in under 1.1
+ms, and a tag the caller can't see anywhere read everything they can see in 5 to
+9 ms. Starting from the access rows keeps the cost bounded by what the caller can
+see, not by how many Pages carry a tag anywhere. D1 latency and rows-read billing
+are not measured; run the listing benchmark against D1 before relying on it for
+a caller who can see tens of thousands of Pages.
 
 ### Progress and presence
 
