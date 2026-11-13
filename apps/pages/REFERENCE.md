@@ -1649,19 +1649,31 @@ open socket can sync it once the Page body names it; nothing waits for a
 reconnect.
 
 A slot holds a view only once a write lands in it. Discovery and reads list
-only views with a `revision`. A write refused after its slot was taken, by
-the journal's pending capacity say, releases the slot (`releasing`: delete
-the key, then the document) when no other write holds the view and the
-journal holds no entry for it. Boot releases a listed view that still has no
-`revision` once its journal is replayed, which covers a restart between the
-key and the journal entry. Slot allocation and release take turns per Page,
-so the cap is read and the key written as one step. A new view's write
-authenticates its caller again just before it takes the slot.
+only views with a `revision`. Every refusal known in advance comes before a
+new view's slot is taken: the checks, the cap, room in the journal
+(`requireJournalRoom`, which refuses as reserving would) and a fresh
+authentication of the request's own principal. A write that fails after the
+slot is taken fails from I/O or a crash; the slot stays, served and
+unlisted, and the next write to the id uses it. A running host never removes
+a served view document, so a tab that synced the genesis keeps its
+subscription. Boot releases a listed view it opened that still has no
+`revision` once its journal is replayed (`releasing`: delete the document,
+then the key, then sync), before any socket can hold it. A failed release
+fails the boot, and the next boot runs it again; no create is taken under
+the id until it finishes. Slot allocation runs in one per-Page queue, so the
+cap is read and the key written as one step.
+
+A view whose key names a format this build doesn't write is never opened:
+not served, replayed, rewritten or released. It counts toward the cap,
+`set_view` on it is refused with `409 document_format_unsupported`, and purge
+removes it.
 
 Every derived document id (comments, sources, each view) is served under one
-kind only. A Page registered with a `document_id` equal to one of them
-refuses the write that would create that document with `409
-document_conflict`, and its own document is unchanged.
+kind only. Registration refuses a `document_id` equal to the Page's derived
+comments or sources id with `409 document_conflict` before it stores the
+creation intent. View ids are open-ended, so a Page registered under a view's
+derived id gets that refusal from the `set_view` that would create the view,
+and its own document is unchanged.
 
 Browsers read views and never write them: the type module declares no
 browser write access and refuses a frame that changes one
@@ -1700,6 +1712,7 @@ writer record:
 | a non-null `view_revision` for a view that doesn't exist | `404 view_not_found` |
 | an eleventh view | `400 view_limit`, naming the ten in `details.view_ids` |
 | the Page's own document id is this view's derived id | `409 document_conflict` |
+| the view's key names a format this build doesn't write | `409 document_format_unsupported` |
 
 A pinned revision is checked against `history` because it holds the asset of
 each revision it keeps; a source keeps its newest 50.

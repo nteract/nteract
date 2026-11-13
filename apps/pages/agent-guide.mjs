@@ -199,7 +199,8 @@ ${part.authErrorItems}
 - document_format_unsupported (409): this Page is stored in a format this
   version of Pages doesn't open, so it can't be read or edited. It still
   appears in list_pages; its owner can delete_page, restore_page and
-  purge_page it. Retrying doesn't help; tell the person.
+  purge_page it. On set_view, only that view is in such a format; the rest
+  of the Page works. Retrying doesn't help; tell the person.
 - nonce_conflict (409): your account already sent this nonce with a different
   request. Use a new nonce.
 - creation_conflict (409): a Page registration named a Page that another

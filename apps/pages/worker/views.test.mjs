@@ -12,6 +12,7 @@ import { MEMBER_FORMATS, readableFormats } from "../model/document-types.mjs";
 import { documentFeatures } from "../model/schema-features.mjs";
 import { checkChartSpec } from "../shared/chart-spec.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
+import { commentsDocUuid, commentsDocumentId } from "./comments-store.mjs";
 import { derivedDocumentId, sourcesDocUuid, viewDocumentId } from "../shared/document-ids.mjs";
 import { BUILD_FEATURES } from "../model/schema-features.mjs";
 import { decodeFrame, encodeFrame, framePipe } from "../sync/wire.mjs";
@@ -30,11 +31,22 @@ const first = "a".repeat(64),
  * passes `test`: before storing it, or after. */
 class PlainStorage extends Storage {
   crashes = [];
-  // Names whose next delete throws once, before deleting anything.
+  // Tests of key names: the next delete of a key one passes throws once,
+  // before deleting anything.
   failDeletes = [];
+  // Tests of this storage: the next sync one passes throws once.
+  failSyncs = [];
+  async sync() {
+    const index = this.failSyncs.findIndex((test) => test(this));
+    if (index >= 0) {
+      this.failSyncs.splice(index, 1);
+      throw Error("Simulated crash before a sync");
+    }
+    return super.sync();
+  }
   async delete(key) {
     const names = Array.isArray(key) ? key : [key];
-    const index = this.failDeletes.findIndex((name) => names.includes(name));
+    const index = this.failDeletes.findIndex((test) => names.some(test));
     if (index >= 0) {
       this.failDeletes.splice(index, 1);
       throw Error("Simulated crash before a delete");
@@ -62,7 +74,7 @@ const parquetHead = (assetId) => ({
  * the same storage, as after eviction or a crash. With `documentId`, the
  * Page is a registered draft under that document id, and with `sources:
  * false` it holds no source. */
-async function viewsHost(t, { documentId, sources = true } = {}) {
+async function viewsHost(t, { documentId, sources = true, registerOnly = false } = {}) {
   const auth = await createAuthFixture();
   t.mock.method(globalThis, "fetch", auth.fetch);
   t.mock.method(console, "error", () => {});
@@ -120,6 +132,7 @@ async function viewsHost(t, { documentId, sources = true } = {}) {
       record_storage: "automerge",
     });
     A.free(draft);
+    if (registerOnly) return { storage, created };
   } else
     created = await call(host, "/internal/create", {
       page_id: pageId,
@@ -473,6 +486,7 @@ function browser(plain) {
   );
   let r = 0;
   return {
+    frames,
     /** Ask for `id` with an empty document; resolve with the host's answer. */
     async ask(id) {
       const [, message] = A.generateSyncMessage(A.init(), A.initSyncState());
@@ -558,12 +572,10 @@ test("purge deletes every view's document and the host's view list", async (t) =
 const editAt = (h, revision, nonce, operations) =>
   h.tool(h.host, "edit_page", { revision, nonce, operations });
 
-test("a write refused once its view slot is taken gives the slot back", async (t) => {
+test("a full journal refuses a new view before its slot is taken", async (t) => {
   const h = await viewsHost(t);
   const before = await h.snapshot();
   const { revision } = (await h.tool(h.host, "read_page", { include_content: false })).body;
-  // The journal's pending capacity is full, so reserving the entry is
-  // refused after the view's key is written.
   const pending = Array.from({ length: 64 }, (_, n) => `host/operation/held-${n}`);
   for (const key of pending)
     h.storage.values.set(key, {
@@ -577,35 +589,58 @@ test("a write refused once its view slot is taken gives the slot back", async (t
   assert.deepEqual(await h.snapshot(), before);
   assert.deepEqual(await h.viewStored("daily"), []);
   assert.equal(h.host.views?.has("daily") ?? false, false);
-  assert.equal(
-    (await h.call(h.host, `/api/connect?page=${pageId}`)).body.documents.views,
-    undefined,
-  );
-  // The slot is free: once the journal drains, the same id is created.
   for (const key of pending) h.storage.values.delete(key);
   const written = await editAt(h, revision, "drained", [{ op: "set_view", ...chart() }]);
   assert.equal(written.status, 200, JSON.stringify(written.body));
   assert.equal(written.body.view_revision, "1");
 });
 
-test("a view key with no journal entry and no revision is never advertised, and boot releases it", async (t) => {
-  const h = await viewsHost(t);
-  // The host stops after the key and before the journal entry; its own
-  // release of the slot fails too.
+/** A view slot no write landed in: the host fails between the key and the
+ * journal entry. */
+async function emptySlot(h) {
   h.storage.crashes.push({
     test: (name, value) => name.startsWith("host/operation/") && value?.pending === true,
     before: true,
   });
-  h.storage.failDeletes.push("host/view/daily");
   assert.equal((await h.setView(h.host)).status, 500);
   assert.deepEqual(await h.keys("host/view/"), ["host/view/daily"], "the slot is taken");
+}
+
+test("a slot whose write failed stays served and unlisted, and its next write reaches an open tab", async (t) => {
+  const h = await viewsHost(t);
+  await emptySlot(h);
   assert.equal(
     (await h.call(h.host, `/api/connect?page=${pageId}`)).body.documents.views,
     undefined,
     "a view with no revision isn't advertised",
   );
   assert.deepEqual((await h.tool(h.host, "read_page", { views: true })).body.views, []);
+  // A tab syncs the genesis while the slot holds no write.
+  const id = await viewDocumentId(pageId, "daily");
+  const tab = browser(h.host.plain);
+  const genesis = await tab.ask(id);
+  assert.equal(genesis.has, true);
+  const seen = tab.frames.length;
+  const written = await h.setView(h.host, {}, "after-failure");
+  assert.equal(written.status, 200, JSON.stringify(written.body));
+  assert.equal(written.body.view_revision, "1");
+  // The same subscription gets the write, with no new request.
+  const heads = A.getHeads(h.host.viewDoc("daily")).sort();
+  await until(
+    () =>
+      tab.frames
+        .slice(seen)
+        .some((frame) => frame.doc === treeOf(id) && sameHeads(frame.heads, heads)),
+    { label: "the write pushed to the open tab" },
+  );
+});
 
+const sameHeads = (a, b) =>
+  Array.isArray(a) && a.length === b.length && [...a].sort().every((x, i) => x === b[i]);
+
+test("boot releases a slot no write landed in", async (t) => {
+  const h = await viewsHost(t);
+  await emptySlot(h);
   const host = h.page();
   assert.deepEqual((await h.tool(host, "read_page", { views: true })).body.views, []);
   assert.deepEqual(await h.keys("host/view/"), [], "boot released the slot");
@@ -614,6 +649,87 @@ test("a view key with no journal entry and no revision is never advertised, and 
   const written = await h.setView(host);
   assert.equal(written.status, 200, JSON.stringify(written.body));
   assert.equal(written.body.view_revision, "1");
+});
+
+for (const [step, fail] of [
+  // The release deletes the document, then the key, then syncs.
+  [
+    "the document delete",
+    async (storage) => {
+      const tree = `plain/sync/${treeOf(await viewDocumentId(pageId, "daily"))}/`;
+      storage.failDeletes.push((name) => name.startsWith(tree));
+    },
+  ],
+  ["the key delete", (storage) => storage.failDeletes.push((name) => name === "host/view/daily")],
+  [
+    "the sync after the key delete",
+    (storage) =>
+      storage.failSyncs.push(
+        (self) => !self.values.has("host/view/daily") && self.synced.has("host/view/daily"),
+      ),
+  ],
+])
+  test(`a boot whose release fails at ${step} fails, and the next boot finishes it`, async (t) => {
+    const h = await viewsHost(t);
+    await emptySlot(h);
+    await fail(h.storage);
+    const failed = h.page();
+    const read = await h.tool(failed, "read_page", { views: true });
+    assert.equal(read.status, 500, JSON.stringify(read.body));
+    assert.equal(h.storage.failDeletes.length + h.storage.failSyncs.length, 0, "the failure ran");
+    const host = h.page();
+    assert.deepEqual((await h.tool(host, "read_page", { views: true })).body.views, []);
+    assert.deepEqual(await h.keys("host/view/"), []);
+    assert.deepEqual(await h.viewStored("daily"), []);
+    const written = await h.setView(host);
+    assert.equal(written.status, 200, JSON.stringify(written.body));
+    assert.equal(written.body.view_revision, "1");
+    assert.deepEqual((await h.call(host, `/api/connect?page=${pageId}`)).body.documents.views, {
+      daily: await viewDocumentId(pageId, "daily"),
+    });
+  });
+
+test("a view stored in a format this build doesn't write is never opened, counts, refuses writes and purges", async (t) => {
+  const h = await viewsHost(t);
+  assert.equal((await h.setView(h.host, { view_id: "known" })).status, 200);
+  // A later build wrote `future` in format 2.
+  await h.storage.put("host/view/future", { format: 2 });
+  for (let n = 0; n < 8; n++)
+    assert.equal((await h.setView(h.host, { view_id: `v${n}` })).status, 200);
+  const host = h.page();
+  const listed = await h.tool(host, "read_page", { views: true });
+  assert.deepEqual(
+    listed.body.views.map((view) => view.view_id),
+    ["known", ...Array.from({ length: 8 }, (_, n) => `v${n}`)],
+  );
+  assert.equal(host.views?.has("future") ?? false, false, "not served or replayed");
+  assert.equal(
+    (await h.call(host, `/api/connect?page=${pageId}`)).body.documents.views.future,
+    undefined,
+  );
+  assert.deepEqual(await h.keys("host/view/future"), ["host/view/future"], "not released");
+  for (const view_revision of [null, "1"]) {
+    const refused = await h.setView(host, { view_id: "future", view_revision });
+    assert.equal(refused.status, 409, JSON.stringify(refused.body));
+    assert.equal(refused.body.code, "document_format_unsupported");
+  }
+  const capped = await h.setView(host, { view_id: "eleventh" });
+  assert.equal(capped.status, 400);
+  assert.equal(capped.body.code, "view_limit");
+  assert.ok(capped.body.view_ids.includes("future"), "it counts toward the cap");
+  assert.equal(
+    (await h.call(host, "/internal/trash", { page_id: pageId, nonce: "trash-it" })).status,
+    200,
+  );
+  const preview = await h.call(host, "/internal/purge", { page_id: pageId, action: "preview" });
+  const purged = await h.call(host, "/internal/purge", {
+    page_id: pageId,
+    action: "confirm",
+    preview_token: preview.body.preview_token,
+    nonce: "purge-it",
+  });
+  assert.equal(purged.status, 200, JSON.stringify(purged.body));
+  assert.deepEqual(await h.keys("host/view/"), []);
 });
 
 test("two editors racing to create one view: one creates it, the other is stale", async (t) => {
@@ -689,19 +805,17 @@ test("a Page registered under a view's document id refuses set_view and keeps it
   assert.equal(other.status, 200, JSON.stringify(other.body));
 });
 
-test("a Page registered under its sources document id refuses set_source and keeps its content", async (t) => {
-  const h = await viewsHost(t, {
-    documentId: derivedDocumentId(await sourcesDocUuid(pageId)),
-    sources: false,
+for (const [kind, documentId] of [
+  ["comments", async () => commentsDocumentId(await commentsDocUuid(pageId))],
+  ["sources", async () => derivedDocumentId(await sourcesDocUuid(pageId))],
+])
+  test(`registration refuses a draft under the Page's ${kind} document id before its intent`, async (t) => {
+    const { storage, created } = await viewsHost(t, {
+      documentId: await documentId(),
+      registerOnly: true,
+    });
+    assert.equal(created.status, 409, JSON.stringify(created.body));
+    assert.equal(created.body.code, "document_conflict");
+    assert.equal(await storage.get("host/creation"), undefined, "no intent is stored");
+    assert.equal(await storage.get("host/document"), undefined);
   });
-  const heads = A.getHeads(h.host.handle.doc());
-  const record = await h.record();
-  const refused = await h.edit(h.host, [
-    { op: "set_source", source_id: "usage", name: "Usage", asset_id: first, source_revision: null },
-  ]);
-  assert.equal(refused.status, 409, JSON.stringify(refused.body));
-  assert.equal(refused.body.code, "document_conflict");
-  assert.deepEqual(A.getHeads(h.host.handle.doc()), heads);
-  assert.equal(h.host.handle.doc().title, "Usage");
-  assert.deepEqual(await h.record(), record);
-});

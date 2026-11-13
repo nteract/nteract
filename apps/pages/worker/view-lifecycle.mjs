@@ -15,14 +15,21 @@
 //              views still opens the Page
 //   ready      the document exists and is served. View writes go through
 //              the journal like every tool write
-//   releasing  the slot holds no write: the host deletes the key, syncs,
-//              then stops serving the document and removes its genesis
+//   releasing  a slot the boot that opened it found with no write: the host
+//              stops serving the document and removes it, then deletes the
+//              key and syncs. It stays here until the key is gone; a failed
+//              release fails the boot, and the next boot (or, in a host
+//              that is already running, the next write to this id) runs it
+//              again. Nothing is created under the id meanwhile
 //
 // The document is served from `storing` on, so a tab that is open when the
 // view is created can sync it as soon as the Page body names it; nothing
 // waits for a reconnect. Reads and `/api/connect` list only a view with a
 // revision, so a slot between `recording` and its first write, or one
-// whose write was refused, is never advertised.
+// whose write failed, is never advertised. A running host never removes a
+// served document: every refusal known in advance comes before the slot is
+// taken, a slot whose write failed stays, and only boot releases, before
+// any socket can hold the document.
 //
 // Each persisted step is idempotent: the document id and genesis are fixed
 // by the Page id and view id, so storing again stores nothing new, and the
@@ -30,19 +37,22 @@
 // boots without the key: the state is `absent`, and the next write runs
 // every step again. A restart after it boots into `loading`; a view that
 // still has no revision once its journal is replayed is released, so a
-// crash between the key and the journal entry leaves no slot taken.
+// crash between the key and the journal entry leaves no slot taken. A key
+// whose format this build doesn't write is never stepped at all.
 //
 // Events:
 //
 //   boot      { recorded }: the host loads the Page's documents; `recorded`
-//             says the view's key is stored
+//             says the view's key is stored. In `releasing`, it runs the
+//             release again
 //   create    { recorded }: a view write needs the document
-//   release   the view has no revision and no write in flight or journaled
+//   release   boot found the view with no revision once its journal was
+//             replayed; in `releasing`, run the release again
 //   loaded, stored, recorded, released
 //             the effect of that name finished
 //   failed    the running effect threw. A failed load, store or record
-//             starts the next create over; a failed release leaves the
-//             view ready, and the next boot or refused write releases it
+//             starts the next create over; a failed release stays
+//             `releasing`
 //   drop      the Page's documents are gone (purge, tombstone)
 //
 // Effects: `load`, `store`, `record`, `release`. viewStep is the only
@@ -84,7 +94,10 @@ export function viewStep(current, event) {
       return reject();
     case "releasing":
       if (event.type === "released") return to("absent");
-      if (event.type === "failed") return to("ready");
+      // The key may still be stored. Nothing is created under this id until
+      // a boot or the next write runs the release again and it finishes.
+      if (event.type === "failed") return to("releasing");
+      if (["boot", "release"].includes(event.type)) return to("releasing", ["release"]);
       return reject();
     default:
       return reject();

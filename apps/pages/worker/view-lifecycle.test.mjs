@@ -91,17 +91,18 @@ const TABLE = {
     drop: ["absent", []],
   },
   releasing: {
-    "boot:recorded": null,
-    "boot:unrecorded": null,
+    // A boot or the host's own release event runs the release again; no
+    // create is taken until it finishes.
+    "boot:recorded": ["releasing", ["release"]],
+    "boot:unrecorded": ["releasing", ["release"]],
     "create:recorded": null,
     "create:unrecorded": null,
     loaded: null,
     stored: null,
     recorded: null,
-    release: null,
+    release: ["releasing", ["release"]],
     released: ["absent", []],
-    // The key may still be stored; the next boot or refused write retries.
-    failed: ["ready", []],
+    failed: ["releasing", []],
     drop: ["absent", []],
   },
 };
@@ -157,7 +158,7 @@ test("views step apart: one view's write leaves another's state alone", () => {
   assert.equal(views.get("b").name, "ready");
 });
 
-test("a slot with no write is released and can be taken again", () => {
+test("a slot with no write is released, retried until its key is gone, and taken again", () => {
   let state = VIEW_ABSENT;
   const step = (event) => {
     const result = viewStep(state, event);
@@ -170,8 +171,9 @@ test("a slot with no write is released and can be taken again", () => {
   step({ type: "recorded" });
   assert.deepEqual(step({ type: "release" }), ["release"]);
   assert.deepEqual(step({ type: "failed" }), []);
-  assert.equal(state.name, "ready", "a failed release keeps the view");
-  step({ type: "release" });
+  assert.equal(state.name, "releasing", "a failed release stays releasing");
+  assert.equal(viewStep(state, { type: "create", recorded: true }).rejected, true);
+  assert.deepEqual(step({ type: "boot", recorded: true }), ["release"]);
   assert.deepEqual(step({ type: "released" }), []);
   assert.equal(state.name, "absent");
   assert.deepEqual(step({ type: "create", recorded: false }), ["store"]);

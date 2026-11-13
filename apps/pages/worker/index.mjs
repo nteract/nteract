@@ -139,8 +139,10 @@ import {
 import {
   inspectOperation,
   journalTime,
+  operationEntryBytes,
   raiseHorizon,
   readRevisions,
+  requireJournalRoom,
   reserveOperation,
   revisionClock,
 } from "./operation-journal.mjs";
@@ -155,7 +157,13 @@ import {
   VIEW_MODULE,
   keyedDoc,
 } from "./document-modules.mjs";
-import { HOST_SENDER_ID, PlainSync, clearPrefixes, plainSessionReplaced } from "./plain-sync.mjs";
+import {
+  HOST_SENDER_ID,
+  PlainSync,
+  clearPrefixes,
+  plainSessionReplaced,
+  treeOf,
+} from "./plain-sync.mjs";
 import { logSyncRefused, logSyncRounds } from "./plain-sync-log.mjs";
 import { BLOCKING as BLOCKING_COMMENT_CODES } from "../sync/comments.mjs";
 import { DocumentPolicy, PermissionDenied, leaseExpiryError } from "./policy.mjs";
@@ -5188,11 +5196,21 @@ export class Page {
     }
     await this.loadComments();
     await this.sourcesEvent({ type: "boot", recorded: recordNamesSources(this.metadata) });
-    for (const viewId of await this.storedViewIds()) {
+    for (const [viewId, format] of await this.storedViews()) {
+      // A view in a format this build doesn't write is never opened: not
+      // served, replayed, rewritten or released. It still counts toward the
+      // cap, and purge still removes it.
+      if (format !== WRITTEN_FORMATS[VIEW_MODULE.type]) continue;
+      const opened = this.views?.get(viewId)?.state.name === "ready";
       await this.viewEvent(viewId, { type: "boot", recorded: true });
-      // A key with no write behind it: the host stopped between the key
-      // and the journal entry.
-      await this.releaseEmptyView(viewId);
+      // A slot no write landed in: the host stopped between the key and the
+      // journal entry, or the write failed after the key. Released only by
+      // the boot that opened it, before any socket can hold the document.
+      // A failed release fails the boot; the next boot retries it.
+      const doc = this.viewDoc(viewId);
+      if (!opened && doc && doc.revision === undefined)
+        await this.viewEvent(viewId, { type: "release" });
+      this.forgetIdleView(viewId);
     }
     await this.restoreTitleProjection();
     // After recovery: a replayed journal entry was accepted before the
@@ -5510,18 +5528,41 @@ export class Page {
     return this.sourcesState?.name === "ready" ? this.sourcesHandle?.doc() : undefined;
   }
 
-  /** The view ids the host lists (VIEW_KEY_PREFIX), sorted. At most
-   * MAX_VIEWS, so one list call reads them all. */
-  async storedViewIds() {
+  /** The views the host lists (VIEW_KEY_PREFIX), `[view_id, format]` by
+   * id, whatever their format. At most MAX_VIEWS, so one list call reads
+   * them all. */
+  async storedViews() {
     const keys = await this.ctx.storage.list({ prefix: VIEW_KEY_PREFIX });
-    return [...keys.keys()].map((key) => key.slice(VIEW_KEY_PREFIX.length)).sort();
+    return [...keys]
+      .map(([key, value]) => [key.slice(VIEW_KEY_PREFIX.length), value?.format])
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  }
+
+  /** The ids of the views the host lists, whatever their format. */
+  async storedViewIds() {
+    return (await this.storedViews()).map(([viewId]) => viewId);
+  }
+
+  /** The refusal for a write to view `viewId` when its key names a format
+   * this build doesn't write, or undefined. */
+  async viewFormatRefusal(viewId) {
+    const stored = await this.ctx.storage.get(viewKey(viewId));
+    if (stored === undefined || stored?.format === WRITTEN_FORMATS[VIEW_MODULE.type]) return;
+    return Object.assign(
+      new HttpError(
+        409,
+        `The view "${viewId}" is stored in a format this version of Pages doesn't open.`,
+        "document_format_unsupported",
+      ),
+      { details: { view_id: viewId } },
+    );
   }
 
   /** The host's entry for view `viewId`: its document UUID, handle,
-   * lifecycle state (view-lifecycle.mjs), the queue its events run in and
-   * the count of writes holding it. `views` is keyed by view id. An entry is
-   * made by boot or by a write that passed its checks, and dropped once it
-   * is absent with no write holding it (forgetIdleView). */
+   * lifecycle state (view-lifecycle.mjs) and the queue its events run in.
+   * `views` is keyed by view id. An entry is made by boot or by a write that
+   * passed its checks, in the slot queue, and dropped there once it is
+   * absent (forgetIdleView). */
   async viewEntry(viewId) {
     this.views ??= new Map();
     let entry = this.views.get(viewId);
@@ -5531,7 +5572,6 @@ export class Page {
         handle: undefined,
         state: VIEW_ABSENT,
         queue: Promise.resolve(),
-        writers: 0,
       };
       // Another caller may have made it while the UUID was hashed.
       if (this.views.has(viewId)) return this.views.get(viewId);
@@ -5540,17 +5580,13 @@ export class Page {
     return entry;
   }
 
-  /** Drop view `viewId`'s entry when nothing holds it: absent, with no
-   * write in flight. */
+  /** Drop view `viewId`'s entry once it is absent. */
   forgetIdleView(viewId) {
-    const entry = this.views?.get(viewId);
-    if (entry?.state.name === "absent" && !entry.writers) this.views.delete(viewId);
+    if (this.views?.get(viewId)?.state.name === "absent") this.views.delete(viewId);
   }
 
-  /** Run `step` after every earlier one. Allocating a view slot and giving
-   * one back take turns, so the view cap is read and the key written as one
-   * step, and a release never runs between a write's reading of the view
-   * list and its claim on the view. */
+  /** Run `step` after every earlier one. A write takes its view slot here,
+   * so the view cap is read and the key written as one step. */
   viewSlot(step) {
     const run = (this.viewSlots ?? Promise.resolve()).then(step);
     this.viewSlots = run.catch(() => {});
@@ -5581,21 +5617,6 @@ export class Page {
       }
       await this.stepView(viewId, entry, done);
     }
-  }
-
-  /** Release view `viewId` when its slot holds nothing: the view is ready
-   * with no revision, no other write holds it, and, for a write that was
-   * just refused, the journal holds no entry under `journalKey`, which a
-   * retry or the next boot would replay. Runs in the slot queue. */
-  releaseEmptyView(viewId, journalKey) {
-    return this.viewSlot(async () => {
-      const entry = this.views?.get(viewId);
-      if (entry?.state.name !== "ready" || entry.writers > (journalKey ? 1 : 0)) return;
-      if (this.viewDoc(viewId)?.revision !== undefined) return;
-      if (journalKey && (await this.ctx.storage.get(journalKey)) !== undefined) return;
-      await this.viewEvent(viewId, { type: "release" });
-      this.forgetIdleView(viewId);
-    });
   }
 
   /** One view lifecycle effect. Returns the event that reports it. */
@@ -5629,13 +5650,13 @@ export class Page {
         await this.ctx.storage.sync();
         return { type: "recorded" };
       case "release":
-        // The key first: a restart between the two finds no view, and the
-        // genesis bytes left behind go with the Page's plain storage on
-        // purge, as after a restart before `recording`.
-        await this.ctx.storage.delete(viewKey(viewId));
-        await this.ctx.storage.sync();
+        // The document first, then the key: until the key is gone, the next
+        // boot or create finds the view `releasing` and runs this again.
+        // Each step is idempotent.
         entry.handle = undefined;
         await this.repo.delete(derivedDocumentId(entry.uuid));
+        await this.ctx.storage.delete(viewKey(viewId));
+        await this.ctx.storage.sync();
         return { type: "released" };
       default:
         throw Error(`Unknown view effect ${effect}`);
@@ -7176,11 +7197,12 @@ export class Page {
    * then, in the slot queue, the view cap and the caller's access, and only
    * then creates the view's document when the Page has none under this id
    * (view-lifecycle.mjs). Until then the journal reads the fixed genesis
-   * and the host holds no entry for the view. A write refused after that,
-   * by the journal's capacity say, gives the slot back when it was the
-   * view's only write and left no journal entry. The receipt's
-   * `view_revision` is the view's revision after the write; an exact retry
-   * replays it.
+   * and the host holds no entry for the view. The journal's room is checked
+   * before the slot too, so a write that fails after it fails from I/O or a
+   * crash: its slot stays unlisted until a write lands, and the next boot
+   * releases it if none does. A view whose key names a format this build
+   * doesn't write is refused first. The receipt's `view_revision` is the
+   * view's revision after the write; an exact retry replays it.
    */
   async writeView(request, identity, body) {
     const args = body.arguments ?? {};
@@ -7194,6 +7216,8 @@ export class Page {
     }
     const viewId = op.view_id;
     const doc = keyedDoc(VIEW_MODULE, viewId);
+    const unsupported = await this.viewFormatRefusal(viewId);
+    if (unsupported) throw unsupported;
     // Stored as the view's producer, so the retry fingerprint covers it, as
     // a source's does.
     const agent = agentFromProvenance(identity.clientProvenance);
@@ -7207,8 +7231,6 @@ export class Page {
       );
     let genesis;
     let viewRevision;
-    // The entry this write holds, from its claim in `prepare` to its end.
-    let held;
     const handle = {
       doc: () => this.viewDoc(viewId) ?? (genesis ??= VIEW_MODULE.derived.genesis(uuid)),
       update: (fn, options) => this.views.get(viewId).handle.update(fn, options),
@@ -7234,6 +7256,10 @@ export class Page {
           } catch (error) {
             throw viewRefusal(error);
           }
+          // Every refusal known in advance comes before the slot is taken,
+          // so a write that fails after it fails from I/O or a crash. Its
+          // slot stays, unlisted until a write lands, and the next boot
+          // releases it if none does.
           await this.viewSlot(async () => {
             const listed = await this.storedViewIds();
             if (!listed.includes(viewId) && listed.length >= MAX_VIEWS)
@@ -7245,11 +7271,29 @@ export class Page {
                 ),
                 { details: { view_ids: listed } },
               );
-            // Access can change while the view list is read.
-            this.policy.account(await authenticate(request, this.env), true);
-            held = await this.viewEntry(viewId);
-            held.writers += 1;
-            await this.viewEvent(viewId, { type: "create", recorded: listed.includes(viewId) });
+            // The journal's own check stays the check of record; this one
+            // is generous, so it refuses before the slot.
+            await requireJournalRoom(this.ctx.storage, {
+              bytes: 2 * operationEntryBytes("", args) + 4096,
+            });
+            // Access can change while the view list is read. The credential
+            // is the request's own, so it names the principal the write is
+            // attributed to, or the write is refused.
+            const current = await authenticate(request, this.env);
+            if (current.principal !== identity.principal)
+              throw new HttpError(403, "Document access denied");
+            this.policy.account(current, true);
+            const entry = await this.viewEntry(viewId);
+            try {
+              // A release a failed boot or create left unfinished ends first.
+              if (entry.state.name === "releasing") {
+                await this.viewEvent(viewId, { type: "release" });
+                listed.splice(listed.indexOf(viewId), 1);
+              }
+              await this.viewEvent(viewId, { type: "create", recorded: listed.includes(viewId) });
+            } finally {
+              this.forgetIdleView(viewId);
+            }
           });
         },
         apply: (draft, effectiveArgs) => {
@@ -7267,18 +7311,7 @@ export class Page {
         receiptFields: async () => ({ view_revision: viewRevision }),
         flush: () => this.flush(),
       });
-    } catch (error) {
-      // A failed release leaves the view ready; the next boot retries it.
-      if (held)
-        await this.releaseEmptyView(viewId, await operationKey(args, identity, PAGE_DOC)).catch(
-          () => {},
-        );
-      throw error;
     } finally {
-      if (held) {
-        held.writers -= 1;
-        this.forgetIdleView(viewId);
-      }
       if (genesis) A.free(genesis);
     }
   }
@@ -7883,6 +7916,21 @@ export class Page {
       } else {
         const { doc, bytes } = readRegistration(args);
         try {
+          // The Page's comments and sources documents derive their ids from
+          // the Page id. A draft under one of those ids would be served
+          // under two kinds, and its initialization would fail on every
+          // boot, so it is refused before the intent is stored. A view's id
+          // is open-ended; the view write refuses that collision itself.
+          const derived = [
+            commentsDocumentId(await commentsDocUuid(args.page_id)),
+            derivedDocumentId(await derivedDocUuid(SOURCES_MODULE.derived.label, args.page_id)),
+          ];
+          if (derived.some((id) => treeOf(id) === treeOf(args.document_id)))
+            throw new HttpError(
+              409,
+              "This document_id is one the Page derives for its own comments or sources. Register the draft under a new document id.",
+              "document_conflict",
+            );
           const metadata = {
             recordStorage: "automerge",
             pageId: args.page_id,

@@ -287,6 +287,34 @@ export function operationEntryBytes(key, entry) {
   return size(key) + size(entry);
 }
 
+/** Refuse, as `reserveOperation` would, a new client entry of about `bytes`
+ * that the journal has no room for, without writing anything. A caller that
+ * must do durable work before it reserves (a new view's slot) checks this
+ * first. Completed receipts count as room, since reserving evicts them;
+ * pending entries never do. `reserveOperation` stays the check of record. */
+export async function requireJournalRoom(storage, { bytes }) {
+  const values = await listOperationEntries(storage);
+  const pending = [...values].filter(
+    ([name, value]) => !isInternal(name) && value.pending === true,
+  );
+  const pendingBytes = pending.reduce(
+    (sum, [name, value]) => sum + operationEntryBytes(name, value),
+    bytes,
+  );
+  if (pending.length >= JOURNAL_LIMITS.pendingEntries || pendingBytes > JOURNAL_LIMITS.pendingBytes)
+    reject(
+      429,
+      "pending_operation_capacity",
+      "Pending operations need recovery before accepting more edits",
+    );
+  if (pending.length + 1 > JOURNAL_LIMITS.entries || pendingBytes > JOURNAL_LIMITS.bytes)
+    reject(
+      429,
+      "operation_receipt_capacity",
+      "Pending operations fill the receipt journal; finish or recover them before new requests",
+    );
+}
+
 /** Checks headroom for an immutable intent and stamps its `recordedAt` with
  * the journal clock. The caller durably installs the returned entry under
  * its serialized mutation queue before any side effect. */
