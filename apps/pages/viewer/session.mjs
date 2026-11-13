@@ -63,8 +63,10 @@ import {
   viewerReconnectMachine,
 } from "./reconnect-machine.mjs";
 import { commentsOpenMachine } from "./comments-open-machine.mjs";
-import { SourcesReplica } from "./sources-replica.mjs";
+import { HostDocReplica } from "./host-doc-replica.mjs";
 import { PageSourceStore } from "./page-source-store.mjs";
+import { sourcesDocumentId } from "./derived-documents.mjs";
+import { ViewReplicas } from "./view-replicas.mjs";
 import { fullStatus, overlayStatus, viewerSyncStatusMachine } from "./sync-status-machine.mjs";
 import { FORMAT_GATE_INITIAL, PAGE_FORMAT_UNSUPPORTED, formatGateStep } from "./format-gate.mjs";
 import { validNonce } from "../model/nonce.mjs";
@@ -231,6 +233,8 @@ const recordBytes = (record) => ({
 export const STABLE_CONNECTION_MS = 15_000;
 // A Page being left keeps syncing this long for its receipt before closing.
 export const CLOSE_DRAIN_MS = 10_000;
+/** How long a view replica stays open after its last embed lets go. */
+export const VIEW_CLOSE_DELAY_MS = 2_000;
 // Status ids (STATUS_IDS in sync-status-machine.mjs) in which a Page being
 // left may still save. These read ids, never labels.
 const DRAINING_STATES = new Set(["connecting", "reconnecting", "syncing", "saving"]);
@@ -450,11 +454,15 @@ export class PageSession {
   // Opening the comments document (comments-open-machine.mjs).
   commentsOpen$ = new Store(commentsOpenMachine.initial);
   /** The Page's sources document on this replica, read-only
-   * (sources-replica.mjs). It isn't part of the checkpoint or the recovery
+   * (host-doc-replica.mjs). It isn't part of the checkpoint or the recovery
    * archive: the host holds all of it, and this replica never changes it. */
   sources;
   /** The Page's source store over `sources`, once something reads it. */
   sourceStore;
+  /** The Page's view documents on this replica, read-only
+   * (view-replicas.mjs), or null for a session made without a view
+   * derivation. Like `sources`, they are the host's alone. */
+  views = null;
   /** What the status line says about receipts and the connection (see
    * sync-status-machine.mjs). `status` renders it with the phase's pauses. */
   sync$ = new Store(viewerSyncStatusMachine.initial);
@@ -518,6 +526,7 @@ export class PageSession {
       random = Math.random,
       now = monotonicNow,
       buildFeatures = BUILD_FEATURES,
+      viewDocumentId,
     } = {},
   ) {
     this.pageId = pageId;
@@ -531,12 +540,29 @@ export class PageSession {
     // receipt outages, reconnect stability, and presence and agent-progress
     // lifetimes. Readers of `peers` and `agentProgress` use it too.
     this.now = now;
-    this.sources = new SourcesReplica({
+    // How the sources and view replicas reach the repo. A host document a
+    // derived lookup missed is forgotten, so the next lookup asks the host.
+    const lookups = {
       find: (id, options) => this.repo.find(id, options),
+      forget: (id) => this.repo?.removeFromCache?.(id),
       // A lookup's connection: the admitted one, or none while disconnected.
       link: () => (this.sockets.size ? this.connectionGeneration : undefined),
       scheduler,
+    };
+    this.sources = new HostDocReplica({
+      ...lookups,
+      derive: () => sourcesDocumentId(pageId),
     });
+    if (viewDocumentId)
+      this.views = new ViewReplicas({
+        ...lookups,
+        pageId,
+        viewDocumentId,
+        linked: () => this.lookupsOpen,
+        // Longer than an embed's park (wordgard-dataframes.mjs), so an embed
+        // the editor moves keeps its view document.
+        closeDelay: VIEW_CLOSE_DELAY_MS,
+      });
     this.recoveryCapture = new RecoveryCapture({
       capture: (id) => this.captureRecoveryCopy(id),
       persist: (copy) => saveRecoveryCopy({ principal: copy.principal }, copy),
@@ -601,14 +627,32 @@ export class PageSession {
    * the sources document alone. Made on first use; released with the
    * session. */
   get pageSources() {
-    this.sourceStore ??= new PageSourceStore({ pageId: this.pageId, doc$: this.sources.doc$ });
+    // A reader of a source the store doesn't hold asks for the sources
+    // document, so a Page's first source, created while this tab is open,
+    // is found without waiting for the next admitted connection.
+    this.sourceStore ??= new PageSourceStore({
+      pageId: this.pageId,
+      doc$: this.sources.doc$,
+      want: () => {
+        if (this.lookupsOpen) this.sources.want();
+      },
+    });
     return this.sourceStore;
   }
-  /** Look up the sources document the current discovery names, after a
-   * connection was admitted. A hidden Page opens nothing. */
+  /** Whether host documents can be looked up now: the Page is open and
+   * shown, and a connection is admitted. */
+  get lookupsOpen() {
+    return (
+      !this.hidden && !!this.connection && !!this.backend && !!this.handle && this.sockets.size > 0
+    );
+  }
+  /** Look up the sources document the current discovery names, and every
+   * open view document by its derived id, after a connection was admitted.
+   * A hidden Page opens nothing. */
   openSources() {
     if (this.hidden || !this.connection || !this.backend) return;
     this.sources.discovered(this.connection);
+    this.views?.connected();
   }
   get alive() {
     return isLive(this.phase$.snapshot());
@@ -963,11 +1007,12 @@ export class PageSession {
    * and Try again captures again. */
   async #retire() {
     const { reason, released } = this.phase$.snapshot();
-    // The sources document retires on every path, a failed capture included:
-    // nothing in it is this replica's own, so it never waits on capture or
-    // the archive. Its synced bytes stay in the replica's database, as the
-    // Page's and comments' do.
+    // The sources and view documents retire on every path, a failed capture
+    // included: nothing in them is this replica's own, so they never wait on
+    // capture or the archive. Their synced bytes stay in the replica's
+    // database, as the Page's and comments' do.
     this.sources.retire();
+    this.views?.retire();
     let live = this.closedRecovery;
     if (!live) {
       try {
@@ -3574,9 +3619,10 @@ export class PageSession {
       await this.storage?.close();
     } finally {
       this.local?.release();
-      // The replica goes, and with it any comments or sources lookup.
+      // The replica goes, and with it any comments, sources or view lookup.
       this.commentsOpen({ type: "close" });
       this.sources.close();
+      this.views?.close();
       this.repo = this.backend = this.storage = this.local = undefined;
       this.commentsHandle = this.pendingComments = undefined;
     }

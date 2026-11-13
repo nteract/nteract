@@ -1,12 +1,15 @@
-// PageSession's sources replica: each admitted connection's discovery moves
-// it, the Page's source store reads it, and a replaced replica opens its own.
-// The machine is covered by sources-open-machine.test.mjs, its interpreter by
-// sources-replica.test.mjs, and retirement by session-revoke.test.mjs.
+// PageSession's sources and view replicas: each admitted connection moves
+// them, a reader that asks for a missing source looks again, the Page's
+// source store reads them, and a replaced replica opens its own.
+// The machine is covered by host-doc-open-machine.test.mjs, its interpreter by
+// host-doc-replica.test.mjs, and retirement by session-revoke.test.mjs.
 import test from "node:test";
 import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
 import * as A from "@automerge/automerge";
 import { PageSession } from "./session.mjs";
+import { sourcesDocumentId } from "./derived-documents.mjs";
+import { until } from "../sync/test-helpers.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { setSources, sourcesGenesis } from "../model/sources-doc.mjs";
 import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
@@ -33,7 +36,7 @@ function heldRepo() {
   };
 }
 
-function fixture(t) {
+function fixture(t, options = {}) {
   const auth = { identity: { principal: crypto.randomUUID(), displayName: "R" }, canWrite: false };
   const pageId = crypto.randomUUID();
   const doc = A.change(A.from(createPageData({ pageId, title: "P" })), (draft) =>
@@ -42,6 +45,7 @@ function fixture(t) {
   const session = new PageSession(pageId, {
     authentication: auth,
     refreshSession: async () => auth,
+    ...options,
   });
   session.acceptAuthentication(auth);
   session.handle = { doc: () => doc, on() {} };
@@ -59,7 +63,7 @@ function fixture(t) {
     session.connectionGeneration = (session.connectionGeneration ?? 0) + 1;
     session.openSources();
   };
-  return { session, admit };
+  return { session, admit, pageId };
 }
 
 const sourcesWith = (assetId) => {
@@ -147,4 +151,79 @@ test("a hidden Page opens no sources document", async (t) => {
   await tick();
   assert.equal(session.repo.calls.length, 0);
   assert.equal(session.sources.state$.snapshot().name, "closed");
+});
+
+test("a Page's first source, created while the tab is open, opens when a table asks for it", async (t) => {
+  const { session, admit, pageId } = fixture(t);
+  admit(withoutSources);
+  await tick();
+  assert.equal(session.repo.calls.length, 0, "nothing asks yet, so nothing is looked up");
+  // A table follows a source the Page doesn't hold: the session looks the
+  // sources document up by its derived id, on the connection it has.
+  const versions = [];
+  session.pageSources.versions(["usage"]).subscribe((v) => versions.push(v.usage));
+  await until(() => session.repo.calls.length === 1, { label: "the derived lookup" });
+  assert.equal(session.repo.calls[0].id, await sourcesDocumentId(pageId));
+  session.repo.calls[0].resolve({ doc: () => sourcesWith("a".repeat(64)), on() {}, off() {} });
+  await tick();
+  assert.equal(session.sources.state$.snapshot().name, "ready");
+  assert.deepEqual(
+    versions.map((v) => v && v.asset_id),
+    [null, "a".repeat(64)],
+  );
+});
+
+test("a hidden Page asks for no sources document", async (t) => {
+  const { session, admit } = fixture(t);
+  admit(withoutSources);
+  Object.defineProperty(session, "hidden", { value: true, configurable: true });
+  session.pageSources.versions(["usage"]).subscribe(() => {});
+  await tick();
+  assert.equal(session.repo.calls.length, 0);
+});
+
+const viewDocumentId = async (pageId, viewId) => `view:${pageId}:${viewId}`;
+
+test("a held view is looked up by its derived id on each admitted connection", async (t) => {
+  const { session, admit, pageId } = fixture(t, { viewDocumentId });
+  // A view held before any connection waits for one.
+  const sales = session.views.hold("sales");
+  await tick();
+  assert.equal(session.repo.calls.length, 0);
+  admit(withoutSources);
+  await tick();
+  assert.deepEqual(
+    session.repo.calls.map((call) => call.id),
+    [`view:${pageId}:sales`],
+  );
+  // One held while connected looks up at once.
+  const costs = session.views.hold("costs");
+  await tick();
+  assert.equal(session.repo.calls.at(-1).id, `view:${pageId}:costs`);
+  assert.deepEqual(session.views.open, ["costs", "sales"]);
+  sales.release();
+  costs.release();
+});
+
+test("retiring the Page retires every view replica, and none opens after", async (t) => {
+  const { session, admit } = fixture(t, { viewDocumentId });
+  admit(withoutSources);
+  const held = session.views.hold("sales");
+  await tick();
+  const lookup = session.repo.calls[0];
+  session.views.retire();
+  assert.equal(lookup.signal.aborted, true, "the running lookup stops");
+  assert.equal(session.views.replica("sales").state$.snapshot().name, "retired");
+  const later = session.views.hold("costs");
+  const seen = [];
+  later.view$.subscribe((view) => seen.push(view));
+  await tick();
+  assert.equal(session.repo.calls.length, 1, "nothing is looked up after retirement");
+  assert.equal(seen.at(-1).reason, "closed");
+  held.release();
+});
+
+test("a session made without a view derivation has no view replicas", (t) => {
+  const { session } = fixture(t);
+  assert.equal(session.views, null);
 });

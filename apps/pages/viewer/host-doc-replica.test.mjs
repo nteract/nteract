@@ -1,7 +1,9 @@
-// The sources replica's interpreter: discovery answers, lookups with a
-// timeout, retries on virtual time, an older host's answer, retirement, and
+// The host-document replica's interpreter: discovery answers, lookups by a
+// derived id when something asks, lookups with a timeout, retries and the
+// look-again window on virtual time, an older host's answer, retirement, and
 // that the open document's changes reach `doc$`. Over a real host it syncs
-// the document and never sends a change for it.
+// the document, never sends a change for it, and finds a document the host
+// created after an earlier lookup missed, on the same connection.
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
@@ -17,8 +19,8 @@ import { PlainSync, treeOf } from "../worker/plain-sync.mjs";
 import { BUILD_FEATURES } from "../model/schema-features.mjs";
 import { readableFormats } from "../model/document-types.mjs";
 import { setSources, sourcesGenesis } from "../model/sources-doc.mjs";
-import { retryDelay } from "./sources-open-machine.mjs";
-import { SOURCES_LOOKUP_TIMEOUT_MS, SourcesReplica, UNAVAILABLE } from "./sources-replica.mjs";
+import { LOOK_AGAIN_MS, MISSING_ATTEMPTS, retryDelay } from "./host-doc-open-machine.mjs";
+import { LOOKUP_TIMEOUT_MS, HostDocReplica, UNAVAILABLE } from "./host-doc-replica.mjs";
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const ID = "sources-1";
@@ -52,10 +54,23 @@ function handleOf(doc) {
   };
 }
 
-function replica({ link = () => 1 } = {}) {
+function replica({ link = () => 1, derive } = {}) {
   const scheduler = new VirtualTimeScheduler();
   const repo = heldFind();
-  const sources = new SourcesReplica({ find: repo.find, link, scheduler });
+  const forgotten = [];
+  const derivations = [];
+  const sources = new HostDocReplica({
+    find: repo.find,
+    forget: async (id) => forgotten.push(id),
+    link,
+    scheduler,
+    ...(derive !== null && {
+      derive: async () => {
+        derivations.push(1);
+        return derive ? derive() : DERIVED;
+      },
+    }),
+  });
   const docs = [];
   sources.doc$.subscribe((doc) => docs.push(doc));
   /** Run virtual time forward by `ms`. */
@@ -68,8 +83,20 @@ function replica({ link = () => 1 } = {}) {
     scheduler.frame = target;
     scheduler.maxFrames = Infinity;
   };
-  return { sources, repo, scheduler, docs, advance, state: () => sources.state$.snapshot() };
+  return {
+    sources,
+    repo,
+    scheduler,
+    docs,
+    advance,
+    forgotten,
+    derivations,
+    state: () => sources.state$.snapshot(),
+  };
 }
+
+const DERIVED = "derived-1";
+const missing = (id = DERIVED) => Error(`Document ${id} is unavailable`);
 
 const sourcesDoc = (sources = {}) => A.from({ sources });
 
@@ -81,6 +108,137 @@ test("a Page with no sources document looks nothing up and publishes nothing", a
   assert.equal(r.repo.calls.length, 0);
   assert.deepEqual(r.docs, [undefined]);
   assert.equal(r.sources.doc, undefined);
+});
+
+test("a Page with no sources document and nothing asking derives nothing", async () => {
+  const r = replica();
+  r.sources.discovered(none);
+  r.advance(10 * LOOK_AGAIN_MS);
+  await tick();
+  assert.equal(r.derivations.length, 0);
+  assert.equal(r.repo.calls.length, 0);
+});
+
+test("an ask on an absent document looks it up by its derived id on this connection", async () => {
+  const r = replica();
+  r.sources.discovered(none);
+  r.sources.want();
+  await tick();
+  assert.deepEqual(r.state(), { name: "opening", attempt: 1, id: DERIVED, via: "derived" });
+  assert.equal(r.repo.calls[0].id, DERIVED);
+  // Asking again while it looks derives nothing more.
+  r.sources.want();
+  await tick();
+  assert.equal(r.repo.calls.length, 1);
+  const handle = handleOf(sourcesDoc({ usage: {} }));
+  r.repo.calls[0].resolve(handle);
+  await tick();
+  assert.deepEqual(r.state(), { name: "ready", id: DERIVED });
+  assert.equal(r.sources.doc, handle.doc());
+  // An open document answers an ask without deriving or looking anything up.
+  const derived = r.derivations.length;
+  r.sources.want();
+  await tick();
+  assert.equal(r.derivations.length, derived);
+  assert.equal(r.repo.calls.length, 1);
+});
+
+test("a derived miss forgets the answer, retries on the backoff, then rests", async () => {
+  const r = replica();
+  r.sources.discovered(none);
+  r.sources.want();
+  await tick();
+  for (let attempt = 1; attempt <= MISSING_ATTEMPTS; attempt++) {
+    r.repo.calls[attempt - 1].reject(missing());
+    await tick();
+    assert.deepEqual(r.forgotten, Array(attempt).fill(DERIVED), "each miss is forgotten");
+    if (attempt === MISSING_ATTEMPTS) break;
+    r.advance(retryDelay(attempt) - 1);
+    await tick();
+    assert.equal(r.repo.calls.length, attempt, "no lookup before the delay");
+    r.advance(1);
+    await tick();
+    assert.equal(r.repo.calls.length, attempt + 1);
+  }
+  assert.deepEqual(r.state(), { name: "absent", id: DERIVED, cooling: true });
+  // Nobody asks: the window passes and nothing runs.
+  r.advance(LOOK_AGAIN_MS);
+  await tick();
+  assert.deepEqual(r.state(), { name: "absent", id: DERIVED });
+  r.advance(10 * LOOK_AGAIN_MS);
+  await tick();
+  assert.equal(r.repo.calls.length, MISSING_ATTEMPTS);
+  // A later ask looks at once.
+  r.sources.want();
+  await tick();
+  assert.equal(r.repo.calls.length, MISSING_ATTEMPTS + 1);
+});
+
+test("asks inside the look-again window run one lookup when it ends", async () => {
+  const r = replica();
+  r.sources.discovered(none);
+  r.sources.want();
+  await tick();
+  for (let attempt = 1; attempt <= MISSING_ATTEMPTS; attempt++) {
+    r.repo.calls.at(-1).reject(missing());
+    await tick();
+    r.advance(retryDelay(attempt));
+    await tick();
+  }
+  const before = r.repo.calls.length;
+  assert.equal(r.state().cooling, true);
+  for (let i = 0; i < 20; i++) r.sources.want();
+  await tick();
+  assert.equal(r.repo.calls.length, before, "asks wait for the window");
+  r.advance(LOOK_AGAIN_MS);
+  await tick();
+  assert.equal(r.repo.calls.length, before + 1, "twenty asks are one lookup");
+  r.repo.calls.at(-1).resolve(handleOf(sourcesDoc()));
+  await tick();
+  assert.equal(r.state().name, "ready");
+});
+
+test("a new connection looks a derived document up again at once", async () => {
+  const r = replica();
+  r.sources.connected();
+  await tick();
+  assert.deepEqual(r.state(), { name: "opening", attempt: 1, id: DERIVED, via: "derived" });
+  r.sources.connected();
+  await tick();
+  assert.equal(r.repo.calls[0].signal.aborted, true, "the first connection's lookup stops");
+  assert.equal(r.repo.calls.length, 2);
+});
+
+test("a derivation that settles after retirement or close steps nothing", async () => {
+  let release;
+  const r = replica({ derive: () => new Promise((resolve) => (release = resolve)) });
+  r.sources.connected();
+  await tick();
+  r.sources.retire();
+  release(DERIVED);
+  await tick();
+  assert.deepEqual(r.state(), { name: "retired" });
+  assert.equal(r.repo.calls.length, 0);
+
+  const other = replica({ derive: () => new Promise((resolve) => (release = resolve)) });
+  other.sources.discovered(none);
+  other.sources.want();
+  await tick();
+  other.sources.close();
+  release(DERIVED);
+  await tick();
+  assert.deepEqual(other.state(), { name: "closed" });
+  assert.equal(other.repo.calls.length, 0);
+});
+
+test("a replica without a derivation opens only what discovery names", async () => {
+  const r = replica({ derive: null });
+  r.sources.discovered(none);
+  r.sources.want();
+  r.sources.connected();
+  await tick();
+  assert.deepEqual(r.state(), { name: "absent" });
+  assert.equal(r.repo.calls.length, 0);
 });
 
 test("a document that appears on a later discovery opens then", async () => {
@@ -118,7 +276,7 @@ test("a failed lookup retries on the backoff, and a reconnect retries at once", 
   assert.equal(r.repo.calls.length, 2, "the timer starts the next lookup");
   r.repo.calls[1].reject(Error("network"));
   await tick();
-  assert.deepEqual(r.state(), { name: "retrying", attempt: 2, id: ID });
+  assert.deepEqual(r.state(), { name: "retrying", attempt: 2, id: ID, via: "named" });
   // A reconnect's discovery restarts at once and clears the timer.
   r.sources.discovered(named());
   await tick();
@@ -135,7 +293,7 @@ test("a lookup that outlasts its timeout counts as failed", async () => {
   const r = replica();
   r.sources.discovered(named());
   await tick();
-  r.advance(SOURCES_LOOKUP_TIMEOUT_MS - 1);
+  r.advance(LOOKUP_TIMEOUT_MS - 1);
   await tick();
   assert.equal(r.state().name, "opening");
   r.advance(1);
@@ -155,7 +313,7 @@ test("a lookup running when a new connection is admitted restarts on it", async 
   // The first lookup's late handle never installs.
   r.repo.calls[0].resolve(handleOf(sourcesDoc()));
   await tick();
-  assert.deepEqual(r.state(), { name: "opening", attempt: 1, id: ID });
+  assert.deepEqual(r.state(), { name: "opening", attempt: 1, id: ID, via: "named" });
 });
 
 test("an older host's unknown-document answer stops; one after the connection changed retries", async () => {
@@ -252,7 +410,7 @@ test("automerge-repo's unknown-document error is the one the replica reads as an
 
 // Over a real host: PlainSync serving the Page family, and a browser repo
 // with this build's formats.
-async function hostWithSources(t) {
+async function hostWithSources(t, { seed = true } = {}) {
   const pageId = crypto.randomUUID();
   const uuid = crypto.randomUUID();
   const sourcesId = interpretAsDocumentId(
@@ -267,7 +425,8 @@ async function hostWithSources(t) {
     },
   });
   await plain.load([]);
-  await plain.host.seed(treeOf(sourcesId), "sources", sourcesGenesis(uuid));
+  const create = () => plain.host.seed(treeOf(sourcesId), "sources", sourcesGenesis(uuid));
+  if (seed) await create();
   t.after(() => plain.close());
   // The browser side: a socket stand-in for PlainSync.accept and the frames
   // the browser sends.
@@ -331,13 +490,13 @@ async function hostWithSources(t) {
       ),
     );
   };
-  return { pageId, sourcesId, repo, sent, write };
+  return { pageId, sourcesId, repo, sent, write, create };
 }
 
 test("over a real host the replica syncs the document and never sends a change for it", async (t) => {
   const h = await hostWithSources(t);
   await h.write("usage", "a".repeat(64));
-  const sources = new SourcesReplica({ find: (id, options) => h.repo.find(id, options) });
+  const sources = new HostDocReplica({ find: (id, options) => h.repo.find(id, options) });
   sources.discovered(named(h.sourcesId));
   await until(() => sources.state$.snapshot().name === "ready", { label: "sources open" });
   assert.equal(sources.doc.sources.usage.current.asset_id, "a".repeat(64));
@@ -359,10 +518,33 @@ test("over a real host the replica syncs the document and never sends a change f
 test("over a real host, a document it doesn't serve reads as an older host's answer", async (t) => {
   const h = await hostWithSources(t);
   const missing = interpretAsDocumentId(new Uint8Array(16).fill(7));
-  const sources = new SourcesReplica({ find: (id, options) => h.repo.find(id, options) });
+  const sources = new HostDocReplica({ find: (id, options) => h.repo.find(id, options) });
   sources.discovered(named(missing));
   await until(() => sources.state$.snapshot().name !== "opening", { label: "lookup settles" });
   assert.deepEqual(sources.state$.snapshot(), { name: "unserved", id: missing });
   assert.equal(sources.doc, undefined);
+  sources.close();
+});
+
+test("over a real host, a document created after a derived miss opens on the same connection", async (t) => {
+  const h = await hostWithSources(t, { seed: false });
+  const sources = new HostDocReplica({
+    find: (id, options) => h.repo.find(id, options),
+    forget: (id) => h.repo.removeFromCache(id),
+    derive: async () => h.sourcesId,
+  });
+  sources.discovered(none);
+  sources.want();
+  // The host answers none, and the replica waits to look again.
+  await until(() => sources.state$.snapshot().name === "retrying", { label: "first miss" });
+  // The host creates the document (an agent's first source); the retry on
+  // this same connection finds it.
+  await h.create();
+  await h.write("usage", "a".repeat(64));
+  await until(() => sources.state$.snapshot().name === "ready", {
+    label: "found after the miss",
+    timeout: 10_000,
+  });
+  assert.equal(sources.doc.sources.usage.current.asset_id, "a".repeat(64));
   sources.close();
 });

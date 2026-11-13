@@ -1521,8 +1521,8 @@ reader that syncs it sees each source's `producer.by` and every earlier
 writer in its changes, as comment authors are visible to comment readers.
 
 The viewer declares `pages.sources:1` and syncs the document read-only
-([viewer/sources-replica.mjs](viewer/sources-replica.mjs), with its states in
-[viewer/sources-open-machine.mjs](viewer/sources-open-machine.mjs)). Each
+([viewer/host-doc-replica.mjs](viewer/host-doc-replica.mjs), with its states in
+[viewer/host-doc-open-machine.mjs](viewer/host-doc-open-machine.mjs)). Each
 connection the host admits brings its discovery, which moves the machine:
 no `documents.sources` is `absent` and looks nothing up; a descriptor at a
 format this build doesn't read is `unreadable`; a discovery without a
@@ -1538,19 +1538,29 @@ Page deleted) cancels a lookup, drops the document from memory and moves the
 machine to `retired`, from which nothing opens it again; a reopened retired
 Page opens nothing either. It does this on every path, a failed recovery
 capture included. The document's synced bytes stay in the tab's replica
-database, the same as the Page's and comments' synced bytes. A
-document the host creates while a tab is open reaches that tab at its next
-admitted connection: the host tells no open socket that the record gained
-the type.
+database, the same as the Page's and comments' synced bytes.
+
+The host tells no open socket that the record gained the type, so a document
+it creates while a tab is open isn't named until the next admitted
+connection. The viewer derives the document's id from the Page id instead
+([viewer/derived-documents.mjs](viewer/derived-documents.mjs)) and looks it up
+on the live connection when a reader asks for a source the Page doesn't hold
+and the machine is `absent`. A miss there is the host saying the document
+doesn't exist yet: the repo's unavailable answer is forgotten so the next
+lookup asks again, the lookup retries twice on the backoff, and the machine
+rests in `absent` with a 10 s look-again window, in which further asks run
+one lookup when the window ends. A Page with no sources and nothing asking
+looks nothing up.
 
 The Page's source store ([viewer/page-source-store.mjs](viewer/page-source-store.mjs))
 projects the document's readable sources by id, skipping an entry the host
 would refuse as `invalid_source`. `versions(ids)` emits only when one of
-those sources changes. Its one resolver per session turns `{ source_id }` or
-`{ asset_id }` into `{ asset_id, media_type, revision }` and loads the
-table through Sift's loader, sharing a byte cache of the four most recent
-assets; each table decodes its own copy and frees it when unmounted,
-replaced or abandoned mid-load. Released with the session, the store reads
+those sources changes. `resolve` turns `{ source_id }`, `{ source_id,
+revision }` (the source's history state at that revision) or `{ asset_id }`
+into `{ asset_id, media_type, revision }`. Each decoder (Sift's loader for a
+table, an Arrow decoder for a chart) gets its own resolver over one byte
+cache of the four most recent assets; each table decodes its own copy and
+frees it when unmounted, replaced or abandoned mid-load. Released with the session, the store reads
 as a Page with no sources: its versions emit null and resolve refuses. The
 editor draws every dataframe from its pinned asset
 ([viewer/dataframe-binding.mjs](viewer/dataframe-binding.mjs)), fetching the

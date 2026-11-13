@@ -745,6 +745,30 @@
 .pages-chart-message[hidden] {
   display: none;
 }
+/* A view node's embed (viewer/wordgard-views.mjs, viewer/view-embed.mjs):
+   the chart above, or the chart's own frame with one sentence while there is
+   no chart to show. A sentence naming a source the chart couldn't read sits
+   under the chart. */
+.wordgard-view {
+  margin: 0;
+  min-width: 0;
+  cursor: default;
+}
+.wordgard-view-status {
+  margin: 0;
+  padding: 12px 0;
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+.wordgard-view-status[hidden],
+.pages-view [hidden] {
+  display: none;
+}
+.pages-view-note {
+  margin: 6px 0 0;
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
 /* Vega's tooltip (vega-tooltip with theme "pages"), on the body above the
    Page. Its own stylesheet is off; these rules give it the Page's tokens. */
 .vg-tooltip {

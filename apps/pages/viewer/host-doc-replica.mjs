@@ -1,54 +1,71 @@
-// A Page's sources document on this replica, read-only: the interpreter for
-// sources-open-machine.mjs. It finds the document the host's discovery
-// names, retries a failed lookup on a timer, and publishes the open
-// document's current value as `doc$`, the only thing it exposes. Nothing
-// here writes the document; the host refuses any change a browser sends for
-// it. On retirement the replica drops the document from memory; its synced
-// bytes stay in the tab's replica database, the same as the Page's and
-// comments' synced bytes.
+// One host-written document on this replica, read-only: the interpreter for
+// host-doc-open-machine.mjs. The Page's sources document and each view
+// document run one each. It finds the document discovery names, or the one
+// its derived id names when something on the Page asks for it, retries a
+// failed lookup on a timer, and publishes the open document's current value
+// as `doc$`, the only thing it exposes besides its state. Nothing here writes
+// the document; the host refuses any change a browser sends for it. On
+// retirement the replica drops the document from memory; its synced bytes
+// stay in the tab's replica database, the same as the Page's and comments'
+// synced bytes.
 import { BehaviorSubject, asyncScheduler, timer } from "rxjs";
 import { parseDocumentDescriptor } from "../model/document-types.mjs";
 import { Store } from "./store.mjs";
-import { discoveryEvent, sourcesOpenMachine } from "./sources-open-machine.mjs";
+import { discoveryEvent, hostDocOpenMachine } from "./host-doc-open-machine.mjs";
 
 /** How long one lookup may take before it counts as failed. */
-export const SOURCES_LOOKUP_TIMEOUT_MS = 15_000;
+export const LOOKUP_TIMEOUT_MS = 15_000;
 
 /** Repo's answer when the host said it holds no such document. */
 export const UNAVAILABLE = /^Document \S+ is unavailable$/;
 
-export class SourcesReplica {
-  /** The machine's state (sources-open-machine.mjs). */
-  state$ = new Store(sourcesOpenMachine.initial);
+export class HostDocReplica {
+  /** The machine's state (host-doc-open-machine.mjs). */
+  state$ = new Store(hostDocOpenMachine.initial);
   #doc = new BehaviorSubject(undefined);
-  /** The open sources document's current value, or undefined while none is
-   * open. Emits synchronously on subscribe. */
+  /** The open document's current value, or undefined while none is open.
+   * Emits synchronously on subscribe. */
   doc$ = this.#doc.asObservable();
   #handle;
   #found;
   #onChange;
   #lookup;
-  #retry;
+  #timer;
+  #forgetting = Promise.resolve();
   #find;
+  #forget;
   #link;
+  #derive;
+  #derived;
   #scheduler;
   #lookupTimeout;
+  /** Advances on retire and close, so a derivation that settles after
+   * either steps nothing. */
+  #epoch = 0;
 
   /**
    * `find(id, { signal })` looks a document up in the replica's repo.
+   * `forget(id)` drops the repo's record of a document it found
+   * unavailable, so the next find asks the host again.
    * `link()` names the connection a lookup runs on (undefined while none is
    * up): an unavailable answer on a link that is still up is the host's
    * answer, and one after the link changed is a lost connection.
-   * `scheduler` runs the retry and lookup timers.
+   * `derive()` resolves with the document's derived id; without it the
+   * replica opens only what discovery names.
+   * `scheduler` runs the retry, look-again and lookup timers.
    */
   constructor({
     find,
+    forget = async () => {},
     link = () => true,
+    derive,
     scheduler = asyncScheduler,
-    lookupTimeout = SOURCES_LOOKUP_TIMEOUT_MS,
+    lookupTimeout = LOOKUP_TIMEOUT_MS,
   }) {
     this.#find = find;
+    this.#forget = forget;
     this.#link = link;
+    this.#derive = derive;
     this.#scheduler = scheduler;
     this.#lookupTimeout = lookupTimeout;
   }
@@ -58,29 +75,62 @@ export class SourcesReplica {
     return this.#doc.getValue();
   }
 
-  /** A connection was admitted with `connection` as its discovery. */
+  /** A connection was admitted with `connection` as its discovery, which
+   * names the sources document. */
   discovered(connection) {
     return this.step(discoveryEvent(connection, parseDocumentDescriptor));
+  }
+
+  /** A connection was admitted, and this document is found by its derived
+   * id: a view document, which discovery doesn't list. */
+  connected() {
+    this.#withId((id) => ({ type: "discovered", answer: "derived", id }));
+  }
+
+  /** Something on the Page asks for the document. Only an absent one is
+   * looked up again, at most once per look-again window. A replica in any
+   * other state answers at once, without deriving anything. */
+  want() {
+    if (this.state$.snapshot().name !== "absent") return;
+    this.#withId((id) => ({ type: "wanted", id }));
   }
 
   /** The replica is retiring with the Page's other documents: a lookup is
    * cancelled and the document dropped from memory. */
   retire() {
+    this.#epoch++;
     return this.step({ type: "retire" });
   }
 
   /** The replica closed or is being replaced. */
   close() {
+    this.#epoch++;
     return this.step({ type: "close" });
   }
 
   /** Step the machine and run its effects at the edge. */
   step(event) {
-    const result = sourcesOpenMachine.step(this.state$.snapshot(), event);
+    const result = hostDocOpenMachine.step(this.state$.snapshot(), event);
     if (result.rejected) return result;
     this.state$.update(() => result.state);
     for (const effect of result.effects) this.#run(effect);
     return result;
+  }
+
+  /** Step `event(id)` once the derived id is known. */
+  #withId(event) {
+    if (!this.#derive) return;
+    const epoch = this.#epoch;
+    this.#derived ??= Promise.resolve().then(() => this.#derive());
+    this.#derived.then(
+      (id) => {
+        if (epoch === this.#epoch) this.step(event(id));
+      },
+      () => {
+        // A derivation that failed is tried again by the next ask.
+        this.#derived = undefined;
+      },
+    );
   }
 
   #run(effect) {
@@ -92,15 +142,17 @@ export class SourcesReplica {
         this.#lookup = undefined;
         return;
       case "schedule":
-        this.#retry?.unsubscribe();
-        this.#retry = timer(effect.delay, this.#scheduler).subscribe(() => {
-          this.#retry = undefined;
-          this.step({ type: "timer", attempt: effect.attempt });
-        });
-        return;
+        return this.#arm(effect.delay, { type: "timer", attempt: effect.attempt });
+      case "cool":
+        return this.#arm(effect.delay, { type: "cooled" });
       case "clearTimer":
-        this.#retry?.unsubscribe();
-        this.#retry = undefined;
+        this.#timer?.unsubscribe();
+        this.#timer = undefined;
+        return;
+      case "forget":
+        this.#forgetting = Promise.resolve()
+          .then(() => this.#forget(effect.id))
+          .catch(() => {});
         return;
       case "install":
         return this.#install();
@@ -110,15 +162,24 @@ export class SourcesReplica {
     throw new Error(`unknown effect ${effect.type}`);
   }
 
+  #arm(delay, event) {
+    this.#timer?.unsubscribe();
+    this.#timer = timer(delay, this.#scheduler).subscribe(() => {
+      this.#timer = undefined;
+      this.step(event);
+    });
+  }
+
   /** One lookup. Its result reaches the machine only through events that
-   * name its attempt, so a cancelled one is ignored there. */
+   * name its attempt, so a cancelled one is ignored there. It waits for a
+   * pending forget, so it never reads the repo's earlier answer. */
   #start({ attempt, id }) {
     this.#lookup?.abort();
     const lookup = new AbortController();
     this.#lookup = lookup;
     const link = this.#link();
     const deadline = timer(this.#lookupTimeout, this.#scheduler).subscribe(() =>
-      lookup.abort(Object.assign(Error("The sources lookup timed out"), { name: "TimeoutError" })),
+      lookup.abort(Object.assign(Error("The lookup timed out"), { name: "TimeoutError" })),
     );
     const settle = (event) => {
       deadline.unsubscribe();
@@ -126,7 +187,7 @@ export class SourcesReplica {
       if (lookup.signal.aborted && lookup.signal.reason?.name !== "TimeoutError") return;
       this.step(event);
     };
-    Promise.resolve()
+    this.#forgetting
       .then(() => this.#find(id, { signal: lookup.signal }))
       .then(
         (handle) => {
@@ -138,7 +199,7 @@ export class SourcesReplica {
         (error) =>
           settle({
             // The host answered on a connection still up that it holds no
-            // such document: an older host. Anything else may pass.
+            // such document. Anything else may pass.
             type:
               !lookup.signal.aborted &&
               UNAVAILABLE.test(error?.message ?? "") &&
