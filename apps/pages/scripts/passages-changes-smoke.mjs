@@ -190,7 +190,14 @@ async function typeAndObserve(target, replacement, collapse = false) {
 let nodeIds;
 function onlyNodes(delta, expected) {
   assert.equal(delta.title_changed, false);
-  assert.equal(delta.attribution, "unavailable");
+  // Every change names who wrote its block: the agent's edit_page calls
+  // through their writer record, the browser's typing through its claim.
+  assert.equal(delta.attribution, "block");
+  for (const change of delta.changes) {
+    assert.ok(change.written_by.length > 0, JSON.stringify(change));
+    for (const index of change.written_by)
+      assert.ok(["tool", "sync"].includes(delta.writers[index].via), JSON.stringify(delta.writers));
+  }
   assert.deepEqual(
     delta.changes.map(({ scope, change, node_id }) => ({ scope, change, node_id })),
     expected.map((index) => ({ scope: "node", change: "updated", node_id: nodeIds[index] })),
@@ -258,6 +265,12 @@ try {
   await expect(content()).toContainText("Alpha was revised in the browser.");
   const firstDelta = await changes(baseline.revision, "summary", baseline.comment_revision);
   onlyNodes(firstDelta, [0, 1]);
+  // The browser's edit and the agent's both reach the writers table.
+  assert.deepEqual(
+    new Set(firstDelta.writers.map((writer) => writer.via)),
+    new Set(["sync", "tool"]),
+  );
+  assert.ok(firstDelta.writers.some((writer) => writer.driver === driver));
   assert.ok(!JSON.stringify(firstDelta).includes("Preserve this exact sentinel."));
   assert.equal(firstDelta.comments.length, 0);
   complete(stage);

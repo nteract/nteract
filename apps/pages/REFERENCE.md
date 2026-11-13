@@ -2015,14 +2015,14 @@ close counts too. Each connection also logs `page.sync_rounds`, its sync-round
 latency from frame arrival to ack, summarised every 256 rounds and at close rather
 than per keystroke ([worker/plain-sync-log.mjs](worker/plain-sync-log.mjs)).
 
-Journaled host edits use a fresh actor per mutation, under the Page host's
-persisted random eight-byte prefix. Concurrent producers can build candidates
-from the same heads without sharing an actor sequence. SyncHost refuses new
-changes from browsers under this prefix, including actors it has never seen;
-trusted host changes need no per-edit claim. Existing host claims remain
-readable. Chunk parts, the descriptor, any browser claims and the manifest
-share one DO put for ordinary appends; the journal's pending and terminal
-writes remain separate barriers.
+Journaled host edits use a fresh actor per mutation: the Page host's persisted
+random eight-byte prefix followed by eight random bytes. Concurrent producers
+can build candidates from the same heads without sharing an actor sequence.
+SyncHost refuses new changes from browsers under this prefix, including actors
+it has never seen; trusted host changes need no per-edit claim. Existing host
+claims remain readable. Chunk parts, the descriptor, any browser claims and
+the manifest share one DO put for ordinary appends; the journal's pending and
+terminal writes remain separate barriers.
 
 Attribution is host-attested: an actor binds to the first authenticated
 principal that sends a change with it. With no signatures, the host can't tell
@@ -2125,28 +2125,37 @@ driver, agent? }`, its display name cut to `WRITER_LIMITS` as a source's is
 nonce with other labels replays the first attempt and keeps its writer, and a
 build without writers computes the same fingerprint for the same request.
 
-Its actor is three parts of eight bytes: the host prefix, the writer id (the
-first eight bytes of the SHA-256 of the canonical writer record) and a fresh
-random nonce. The record is stored once per distinct writer, as CBOR under
-`plain/writer/<id>`, in the same put as the pending journal entry that holds
-the change bytes; the entry names it as `writer`. An edit that changes
-nothing stores no record and names none. A different record already stored
-under an id refuses the write (`writer_conflict`). A retry replays the
-journaled bytes, so it keeps its first attempt's writer.
+The change keeps the host actor every journaled host edit has, the prefix
+and eight random bytes, and carries the writer id as its own Automerge
+`author`: the first eight bytes of the SHA-256 of the canonical writer
+record. Automerge's `setAuthor` mints a fresh random actor, so the mutation
+sets the author on one clone and the host actor on a clone of that, which
+keeps the author. The author is in the change bytes the journal holds, so a
+retry and startup recovery replay it unchanged. The record is stored once per
+distinct writer, as CBOR under `plain/writer/<id>`, in the same put as the
+pending journal entry that holds the change bytes; the entry names it as
+`writer`. An edit that changes nothing stores no record and names none. A
+different record already stored under an id refuses the write
+(`writer_conflict`).
 
-A host actor of the prefix and eight bytes alone names no writer: the host's
-own edits (registration, migrations, direct handle changes) and every host
-edit stored before writers were recorded. Writer records and claims are never
+Trust rule: an `author` is believed only on a change whose actor is under the
+host prefix, because only the host authors under that prefix. Any peer can
+set any author on its own changes; on any other actor the field is ignored
+and the writer is the actor's claim. A host change with no author (the host's
+own edits: registration, migrations, direct handle changes; and every host
+edit stored before writers were recorded) or an author with no record names
+no writer. Nothing reads a writer out of an actor. Writer records and claims are never
 removed by an access change, so a removed member's edits stay attributed to
 them; a purge deletes them with the rest of `plain/`. Nothing lists
-`plain/writer/` at startup or on connect: a change read resolves the actors
-in its delta, one storage read per distinct writer.
+`plain/writer/` at startup or on connect: a change read resolves the
+changes in its delta, one storage read per distinct writer.
 
 `read_page_changes` checks its arguments and baseline, then decodes the
-changes since the baseline once. It resolves each actor: a host actor through
-its writer record (`via: "tool"`), any other through its actor claim
-(`via: "sync"`). A host claim, an unclaimed actor or a host actor without a
-writer is `{ recorded: false }`. The response has `attribution: "block"`, a
+changes since the baseline once, and takes each change's actor and `author`
+from that decode. A host-prefixed change resolves through the record its
+author names (`via: "tool"`), any other through its actor's claim
+(`via: "sync"`). A host claim, an unclaimed actor, a host change without an
+author and an author without a record are `{ recorded: false }`. The response has `attribution: "block"`, a
 `writers` table, `written_by` on every content change and `title_written_by`
 beside a title change: indexes into `writers` of the authors of every change
 since the baseline that wrote that block or the title. Ops resolve to blocks

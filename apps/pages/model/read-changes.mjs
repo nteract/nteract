@@ -345,7 +345,7 @@ export const ATTRIBUTION_MAX_CHANGES = 10_000;
 
 /**
  * The Page changes after `since`, decoded once for the host to resolve their
- * actors into writers and for the projection to map onto blocks
+ * actors and authors into writers and for the projection to map onto blocks
  * (projectReadChanges' `history`). Null when `since` isn't in the
  * document's history: the projection refuses that itself. `{ tooMany: true }`
  * when more than ATTRIBUTION_MAX_CHANGES changes follow `since`; nothing is
@@ -355,16 +355,16 @@ export function changeHistory(doc, since) {
   if (!A.hasHeads(doc, since)) return null;
   const bytes = A.getChangesSince(doc, since);
   if (bytes.length > ATTRIBUTION_MAX_CHANGES) return { tooMany: true };
-  const changes = bytes.map((change) => A.decodeChange(change));
-  return { changes, actors: [...new Set(changes.map((change) => change.actor))] };
+  return { changes: bytes.map((change) => A.decodeChange(change)) };
 }
 
 const UNRECORDED = Object.freeze({ recorded: false });
 
 /**
  * Who wrote what in `changes` (changeHistory), at block granularity.
- * `writerOf(actor)` is the host's answer for one actor: a writer, or null when
- * none is recorded (worker/host-writers.mjs), which reads as
+ * `writerOf(change)` is the host's answer for one decoded change, from its
+ * actor and author: a writer, or null when none is recorded
+ * (worker/host-writers.mjs), which reads as
  * `{ recorded: false }`. `writtenBy(blockId)` and `title` are writer keys, the
  * canonical JSON of each writer, with `writer(key)` the writer itself.
  *
@@ -380,8 +380,8 @@ function attribution(doc, changes, writerOf) {
     blocks = new Map(),
     everyBlock = new Set(),
     title = new Set();
-  const keyOf = (actor) => {
-    const writer = writerOf(actor) ?? UNRECORDED;
+  const keyOf = (change) => {
+    const writer = writerOf(change) ?? UNRECORDED;
     const key = canonical(writer);
     writers.set(key, writer);
     return key;
@@ -390,7 +390,7 @@ function attribution(doc, changes, writerOf) {
     const { touched, root } = changeWrites(backend, change, paths);
     const replacesBlocks = change.ops.some((op) => op.obj === "_root" && op.key === "blocks");
     if (!touched.size && !replacesBlocks && !root.has("title")) continue;
-    const key = keyOf(change.actor);
+    const key = keyOf(change);
     for (const id of touched) {
       if (!blocks.has(id)) blocks.set(id, new Set());
       blocks.get(id).add(key);

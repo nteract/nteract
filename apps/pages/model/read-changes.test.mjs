@@ -139,7 +139,7 @@ test("each change names the writers of its block; a deleted block and the title 
     [actors.person]: { principal: "user:b", displayName: "B", driver: "Browser", via: "sync" },
   };
   const result = projectReadChanges(doc, { since_heads: before, comments: "none" }, undefined, {
-    writerOf: (actor) => writers[actor] ?? null,
+    writerOf: ({ actor }) => writers[actor] ?? null,
   });
   assert.equal(result.attribution, "block");
   const named = (indexes) => indexes.map((index) => result.writers[index]);
@@ -180,7 +180,7 @@ test("the writers table holds only writers a reported change or the title names"
     replaceMatch(draft, "one", { match_text: "Second", replacement: "Kept" }),
   );
   const result = projectReadChanges(doc, { since_heads: before, comments: "none" }, undefined, {
-    writerOf: (actor) => ({ principal: actor, displayName: actor, driver: "API", via: "tool" }),
+    writerOf: ({ actor }) => ({ principal: actor, displayName: actor, driver: "API", via: "tool" }),
   });
   assert.deepEqual(
     result.writers.map((writer) => writer.principal),

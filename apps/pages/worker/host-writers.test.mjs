@@ -7,11 +7,9 @@ import { MemoryByteStore } from "../sync/doc-store.mjs";
 import { SyncHost } from "../sync/host.mjs";
 import {
   WRITER_PREFIX,
-  actorWriterId,
   hostWriter,
   recordWriter,
   resolveWriters,
-  writerActor,
   writerId,
 } from "./host-writers.mjs";
 
@@ -81,24 +79,6 @@ test("an oversized display name is cut to WRITER_LIMITS before it is hashed or s
   );
 });
 
-test("a host actor names its writer between the prefix and a fresh nonce", async () => {
-  const id = await writerId(hostWriter(identity));
-  const actors = new Set(Array.from({ length: 10_000 }, () => writerActor(prefix, id)));
-  assert.equal(actors.size, 10_000, "no two mutations share an actor");
-  for (const actor of actors) {
-    assert.match(actor, /^[0-9a-f]{48}$/);
-    assert.equal(actorWriterId(prefix, actor), id);
-  }
-  // A host actor of the prefix and a nonce alone (the host's own edits, and
-  // every host edit stored before writers) names no writer.
-  assert.equal(actorWriterId(prefix, prefix + "fedcba9876543210"), null);
-  // Another host's prefix, a browser's actor, or no prefix at all.
-  assert.equal(actorWriterId("ffffffffffffffff", [...actors][0]), null);
-  assert.equal(actorWriterId(prefix, "aa".repeat(16)), null);
-  assert.equal(actorWriterId(undefined, [...actors][0]), null);
-  assert.throws(() => writerActor(prefix, "not-an-id"), TypeError);
-});
-
 test("a writer is recorded once; a different record under its id is refused", async () => {
   const storage = new Storage();
   const writer = hostWriter(identity, { name: "Rel" });
@@ -114,12 +94,17 @@ test("a writer is recorded once; a different record under its id is refused", as
   await assert.rejects(recordWriter(storage, writer), { code: "writer_conflict" });
 });
 
-test("resolveWriters answers claims, writer records and unrecorded actors, one read per writer", async () => {
+test("resolveWriters believes an author only under the host prefix, and reads each writer once", async () => {
   const storage = new Storage();
   const writer = hostWriter(identity, { name: "Rel", model: "m-1" });
   const { id, writes } = await recordWriter(storage, writer);
   await storage.put(writes);
-  const hostEdits = Array.from({ length: 1000 }, () => writerActor(prefix, id));
+  const hostActor = () =>
+    prefix +
+    Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) =>
+      b.toString(16).padStart(2, "0"),
+    ).join("");
+  const hostEdits = Array.from({ length: 1000 }, () => ({ actor: hostActor(), author: id }));
   const claims = new Map([
     [
       "aa".repeat(16),
@@ -127,28 +112,41 @@ test("resolveWriters answers claims, writer records and unrecorded actors, one r
     ],
     ["bb".repeat(16), { host: true, firstSeen: 1 }],
   ]);
-  const missing = writerActor(prefix, "0000000000000000");
+  const browser = { actor: "aa".repeat(16), author: null };
+  // A browser names the agent's writer id as its own change's author.
+  const forged = { actor: "aa".repeat(16), author: id };
+  const unclaimedForged = { actor: "cc".repeat(16), author: id };
+  const hostClaim = { actor: "bb".repeat(16), author: null };
+  const hostOwn = { actor: hostActor(), author: null };
+  const missing = { actor: hostActor(), author: "0".repeat(16) };
+  const malformed = { actor: hostActor(), author: "not-hex" };
   storage.gets = 0;
-  const resolved = await resolveWriters({ storage, prefix, claim: (actor) => claims.get(actor) }, [
+  const writerOf = await resolveWriters({ storage, prefix, claim: (actor) => claims.get(actor) }, [
     ...hostEdits,
-    "aa".repeat(16),
-    "bb".repeat(16),
-    "cc".repeat(16),
-    prefix + "1".repeat(16),
+    browser,
+    forged,
+    unclaimedForged,
+    hostClaim,
+    hostOwn,
     missing,
+    malformed,
   ]);
   assert.equal(storage.gets, 2, "one read per distinct writer id");
-  for (const actor of hostEdits) assert.deepEqual(resolved.get(actor), { ...writer, via: "tool" });
-  assert.deepEqual(resolved.get("aa".repeat(16)), {
+  for (const change of hostEdits) assert.deepEqual(writerOf(change), { ...writer, via: "tool" });
+  const claimed = {
     principal: "user:browser",
     displayName: "Browser person",
     driver: "Browser",
     via: "sync",
-  });
-  // The host's own claim, an unclaimed actor, a host actor without a writer
-  // and a writer id with no record: never guessed.
-  for (const actor of ["bb".repeat(16), "cc".repeat(16), prefix + "1".repeat(16), missing])
-    assert.equal(resolved.get(actor), null, actor);
+  };
+  assert.deepEqual(writerOf(browser), claimed);
+  // The author on a browser's actor is ignored: its claim names the writer.
+  assert.deepEqual(writerOf(forged), claimed);
+  // The host's own claim, an unclaimed actor (author or not), a host change
+  // without an author, an author with no record, a malformed author: never
+  // guessed.
+  for (const change of [unclaimedForged, hostClaim, hostOwn, missing, malformed])
+    assert.equal(writerOf(change), null, JSON.stringify(change));
 });
 
 // Measurements behind the design decision. Each prints its numbers with
@@ -277,9 +275,16 @@ test("raw Automerge's own per-change author: hex only, any peer sets it, survive
   const authorsOf = (doc) =>
     A.getChangesMetaSince(doc, A.getHeads(base)).map((change) => change.author);
   const author = "ab".repeat(8);
-  const edited = A.change(A.clone(base, { actor: "02".repeat(16), author }), (d) => {
+  // Setting an author mints a fresh random actor, even beside an explicit
+  // one: a writer that keeps its own actor sets the author, then clones with
+  // the actor, which keeps the author.
+  const minted = A.clone(base, { actor: "02".repeat(16), author });
+  assert.notEqual(A.getActorId(minted), "02".repeat(16));
+  const authored = A.clone(base, { author });
+  const edited = A.change(A.clone(authored, { actor: "02".repeat(16) }), (d) => {
     d.title = "Edited";
   });
+  assert.equal(A.getActorId(edited), "02".repeat(16));
   assert.deepEqual(authorsOf(edited), [author]);
   assert.deepEqual(authorsOf(A.load(A.save(edited))), [author], "save and load");
   assert.deepEqual(authorsOf(A.merge(A.clone(base), edited)), [author], "merge");
@@ -288,14 +293,17 @@ test("raw Automerge's own per-change author: hex only, any peer sets it, survive
   assert.equal(A.decodeChange(A.getLastLocalChange(edited)).author, author);
   // An author is bytes, not a label: a principal can't be one.
   assert.throws(() => A.clone(base, { author: "user:anaconda:someone" }), /Invalid author/);
-  // Any peer names any author, and one actor can carry several.
-  const other = A.change(
-    A.clone(edited, { actor: "02".repeat(16), author: "cd".repeat(8) }),
-    (d) => {
-      d.title = "Again";
-    },
-  );
-  assert.deepEqual(authorsOf(other), [author, "cd".repeat(8)]);
+  // An actor keeps the author it first wrote with in a document; another
+  // author needs another actor. Any peer names any author for its own.
+  const reauthored = A.clone(edited, { author: "cd".repeat(8) });
+  const other = A.change(A.clone(reauthored, { actor: "02".repeat(16) }), (d) => {
+    d.title = "Again";
+  });
+  assert.deepEqual(authorsOf(other), [author, author]);
+  const third = A.change(A.clone(reauthored, { actor: "03".repeat(16) }), (d) => {
+    d.title = "Third";
+  });
+  assert.deepEqual(authorsOf(third), [author, "cd".repeat(8)]);
   // Cost: 1000 edits by 3 interleaved authors.
   const authors = [hex(8), hex(8), hex(8)];
   const run = (withAuthor) => {
@@ -323,7 +331,12 @@ test("raw Automerge's own per-change author: hex only, any peer sets it, survive
   t.diagnostic(JSON.stringify({ edits: 1000, without, withAuthor }));
   assert.ok((withAuthor.changes - without.changes) / 1000 <= 12);
   assert.ok((withAuthor.saved - without.saved) / 1000 <= 2);
-  for (const doc of [base, edited, applied, other]) A.free(doc);
+  assert.deepEqual(
+    A.getChangesMetaSince(other, A.getHeads(base)).map((change) => change.actor),
+    ["02".repeat(16), "02".repeat(16)],
+  );
+  for (const doc of [base, minted, authored, edited, applied, reauthored, other, third])
+    A.free(doc);
 });
 
 test("a claim per host actor would grow Page startup and every connect with each agent edit", async (t) => {

@@ -6202,14 +6202,14 @@ export class Page {
             commentsDoc: this.commentsView(),
             sourcesDoc: this.sourcesView(),
             revisions: this.revisionTable(),
-            writers: (actors) =>
+            writers: (changes) =>
               resolveWriters(
                 {
                   storage: this.ctx.storage,
                   prefix: this.plain.hostActorPrefix,
                   claim: (actor) => this.plain.claim(actor),
                 },
-                actors,
+                changes,
               ),
           };
           const result =

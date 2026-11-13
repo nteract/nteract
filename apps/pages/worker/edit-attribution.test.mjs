@@ -10,7 +10,7 @@ import { AutomergeSyncBackend } from "../sync/backend.mjs";
 import { DocStore, MemoryByteStore } from "../sync/doc-store.mjs";
 import { decodeFrame, encodeFrame, framePipe } from "../sync/wire.mjs";
 import { proposeAccessUpdate } from "./access.mjs";
-import { WRITER_PREFIX, actorWriterId } from "./host-writers.mjs";
+import { WRITER_PREFIX } from "./host-writers.mjs";
 import { Page } from "./index.mjs";
 import { documentMutation, fingerprint, operationKey } from "./mutations.mjs";
 import { readRevision } from "./operation-journal.mjs";
@@ -142,6 +142,17 @@ const changesSince = async (f, since, options) => {
 /** The writers a change names, from the read's writers table. */
 const writersOf = (read, indexes) => indexes.map((index) => read.writers[index]);
 
+/** A clone of `doc` that writes as `actor` with Automerge author `author`.
+ * Setting an author mints a fresh actor, so the actor is set after it. */
+function authoredClone(doc, actor, author) {
+  const authored = A.clone(doc, { author });
+  try {
+    return A.clone(authored, { actor });
+  } finally {
+    A.free(authored);
+  }
+}
+
 async function until(predicate, timeout = 5000) {
   const start = Date.now();
   while (!predicate()) {
@@ -220,6 +231,15 @@ test("an agent edit reads back with its writer: name and model, name only, or no
     via: "tool",
   });
   assert.equal(typeof read.writers[0].displayName, "string");
+  // The stored change has main's actor shape and the writer id as its author.
+  const stored = A.getChangesSince(
+    f.host.handle.doc(),
+    await f.host.revisionTable().heads("page", r0, "r0"),
+  ).map(A.decodeChange);
+  assert.equal(stored.length, 1);
+  assert.ok(stored[0].actor.startsWith(f.host.plain.hostActorPrefix));
+  assert.equal(stored[0].actor.length, 32);
+  assert.ok(await f.storage.get(WRITER_PREFIX + stored[0].author));
   assert.deepEqual(read.writers, [writer({ name: "Rel", model: "m-1" })]);
   assert.ok(read.changes.length > 0);
   for (const change of read.changes) assert.deepEqual(change.written_by, [0]);
@@ -265,15 +285,15 @@ test("a browser edit reads back with the principal its actor claim names", async
 test("a change from before writers were recorded reads as unrecorded, never guessed", async (t) => {
   const f = await fixture(t);
   const r0 = await revision(f);
-  // A host edit in the layout every host edit had before this change: the
-  // prefix and a nonce, with no writer between them.
+  // A host edit as every host edit was stored before writers: a host actor
+  // and no author.
   await f.host.handle.change((d) => A.updateText(d, ["title"], "Old host edit"));
   await f.host.flush();
-  const actor = A.decodeChange(
+  const old = A.decodeChange(
     A.getChangesSince(f.host.handle.doc(), await f.host.revisionTable().heads("page", r0, "r0"))[0],
-  ).actor;
-  assert.equal(actor.length, 32);
-  assert.equal(actorWriterId(f.host.plain.hostActorPrefix, actor), null);
+  );
+  assert.ok(old.actor.startsWith(f.host.plain.hostActorPrefix));
+  assert.ok(!old.author);
   const r1 = await revision(f);
   await tool(
     f,
@@ -301,18 +321,19 @@ test("nothing a browser sends sets or overrides a host edit's writer", async (t)
     { agent: { name: "Rel", model: "m-1" } },
   );
   assert.equal(agentEdit.status, 200);
-  const victimActor = A.decodeChange(
+  const victim = A.decodeChange(
     A.getChangesSince(f.host.handle.doc(), await f.host.revisionTable().heads("page", r0, "r0"))[0],
-  ).actor;
-  const writer = actorWriterId(f.host.plain.hostActorPrefix, victimActor);
-  assert.ok(writer);
+  );
+  const writer = victim.author;
+  assert.match(writer, /^[0-9a-f]{16}$/);
   const before = structuredClone(f.storage.values);
 
-  // A browser authors under the victim's writer id, with a message that
-  // names the agent: refused as the host's actor, and nothing is stored.
-  const forgedActor = victimActor.slice(0, 32) + "ab".repeat(8);
+  // A browser authors a host-prefixed change carrying the agent's writer id
+  // and a message that names the agent: refused as the host's actor, and
+  // nothing is stored.
+  const forgedActor = f.host.plain.hostActorPrefix + "ab".repeat(8);
   const forged = A.change(
-    A.clone(f.host.handle.doc(), { actor: forgedActor }),
+    authoredClone(f.host.handle.doc(), forgedActor, writer),
     { message: JSON.stringify({ principal: owner, agent: { name: "Rel" } }) },
     (d) => A.updateText(d, ["title"], "Forged"),
   );
@@ -335,13 +356,14 @@ test("nothing a browser sends sets or overrides a host edit's writer", async (t)
   assert.deepEqual(f.storage.values, before);
   A.free(forged);
 
-  // The same layout under another prefix is the browser's own actor: its
-  // claim names the browser's principal, and its message is never read.
+  // Under its own actor a browser's change sets the agent's writer id as its
+  // author: admitted, claimed by the browser, and attributed to its claim.
+  // The author and the message are never read.
   setRole(f, member, "editor");
-  const lookalike = "fe".repeat(8) + writer + "cd".repeat(8);
+  const lookalike = "fe".repeat(16);
   const second = socketFor(f.host, browserIdentity(member, "Member"), "b-lookalike");
   const own = A.change(
-    A.clone(f.host.handle.doc(), { actor: lookalike }),
+    authoredClone(f.host.handle.doc(), lookalike, writer),
     { message: JSON.stringify({ principal: owner, agent: { name: "Rel" } }) },
     (d) => A.updateText(d, ["title"], "Lookalike"),
   );
@@ -353,6 +375,10 @@ test("nothing a browser sends sets or overrides a host edit's writer", async (t)
     r: 1,
   });
   await until(() => f.host.handle.doc().title === "Lookalike");
+  const stored = A.getAllChanges(f.host.handle.doc())
+    .map(A.decodeChange)
+    .find((change) => change.actor === lookalike);
+  assert.equal(stored.author, writer, "the browser's author reached history");
   A.free(own);
   const read = await changesSince(f, r1);
   assert.deepEqual(writersOf(read, read.title_written_by), [
@@ -498,6 +524,11 @@ test("an edit whose history append failed keeps its writer when its retry replay
   assert.equal(withRecord.length, 1);
   assert.ok(withRecord[0].includes(pendingKey), JSON.stringify(withRecord));
   assert.ok(await f.storage.get(WRITER_PREFIX + entry.writer));
+  // The journaled change bytes carry the author.
+  assert.deepEqual(
+    entry.changes.map((bytes) => A.decodeChange(bytes).author),
+    [entry.writer],
+  );
   const retry = await tool(f, "edit_page", args, { agent: { name: "Rel", model: "m-1" } });
   assert.equal(retry.status, 200, JSON.stringify(retry.body));
   // A restarted host reads the same writer.
@@ -507,6 +538,47 @@ test("an edit whose history append failed keeps its writer when its retry replay
   await f.host.documentReady();
   const read = await changesSince(f, r0);
   assert.deepEqual(writersOf(read, read.title_written_by)[0].agent, { name: "Rel", model: "m-1" });
+});
+
+test("startup recovery of a pending edit applies its journaled bytes with their author", async (t) => {
+  const f = await fixture(t);
+  const r0 = await revision(f);
+  let failures = 2;
+  const put = f.storage.put.bind(f.storage);
+  t.mock.method(f.storage, "put", async (key, value) => {
+    if (
+      failures > 0 &&
+      typeof key === "object" &&
+      Object.keys(key).some((k) => k.startsWith("plain/sync/"))
+    ) {
+      failures--;
+      throw Error("history append failed");
+    }
+    return put(key, value);
+  });
+  const first = await tool(
+    f,
+    "edit_page",
+    { revision: r0, nonce: "recovered", operations: [{ op: "set_title", title: "Recovered" }] },
+    { agent: { name: "Rel" } },
+  );
+  assert.equal(first.status, 500);
+  const entry = await f.storage.get(
+    await operationKey({ nonce: "recovered" }, { principal: owner }, "page"),
+  );
+  assert.equal(entry.pending, true);
+  // A new host replays the pending entry at startup, with no retry.
+  await f.host.plain.close();
+  f.host = f.page();
+  await f.host.ready;
+  await f.host.documentReady();
+  assert.equal(f.host.handle.doc().title, "Recovered");
+  const applied = A.getAllChanges(f.host.handle.doc())
+    .map(A.decodeChange)
+    .find((change) => change.hash === A.decodeChange(entry.changes[0]).hash);
+  assert.equal(applied.author, entry.writer);
+  const read = await changesSince(f, r0);
+  assert.deepEqual(writersOf(read, read.title_written_by)[0].agent, { name: "Rel" });
 });
 
 test("concurrent mutations by one writer from the same heads get distinct actors naming that writer", async (t) => {
@@ -543,9 +615,13 @@ test("concurrent mutations by one writer from the same heads get distinct actors
   const changes = A.getChangesSince(host.handle.doc(), heads).map(A.decodeChange);
   assert.equal(changes.length, 4);
   assert.equal(new Set(changes.map((c) => c.actor)).size, 4);
-  const ids = changes.map((c) => actorWriterId(host.plain.hostActorPrefix, c.actor));
+  // Main's actor shape: the host prefix and 8 random bytes.
+  assert.ok(
+    changes.every((c) => c.actor.startsWith(host.plain.hostActorPrefix) && c.actor.length === 32),
+  );
+  const ids = changes.map((c) => c.author);
   assert.equal(new Set(ids).size, 1);
-  assert.ok(ids[0]);
+  assert.match(ids[0], /^[0-9a-f]{16}$/);
   assert.ok(changes.every((c) => c.seq === 1));
   for (const field of ["a", "b", "c", "d"]) assert.equal(host.handle.doc()[field], true);
 });

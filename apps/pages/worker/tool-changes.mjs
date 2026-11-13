@@ -18,8 +18,9 @@ const invalid = (message) => {
  * (`revisions`, as readTool takes it); a handle it no longer holds is
  * `resync_required`. The result names the current revisions as handles.
  * Oversized results fail as a whole; current heads never imply a partial delta.
- * `writers(actors)` resolves the actors of the changes since the baseline to
- * a Map of writers (worker/host-writers.mjs); without it the result has no
+ * `writers(changes)` resolves the decoded changes since the baseline to a
+ * function from one change to its writer (worker/host-writers.mjs
+ * resolveWriters); without it the result has no
  * attribution. The changes are decoded once, after the argument and revision
  * checks, and not at all past ATTRIBUTION_MAX_CHANGES.
  */
@@ -64,7 +65,7 @@ export async function readChangesTool(
     if (args.comments !== undefined && !["none", "summary", "all"].includes(args.comments))
       invalid("comments must be none, summary or all");
     const history = writers ? changeHistory(doc, since) : undefined;
-    const resolved = history?.actors && (await writers(history.actors));
+    const resolve = history?.changes && (await writers(history.changes));
     const {
       since_heads: _since,
       heads: _heads,
@@ -79,7 +80,7 @@ export async function readChangesTool(
         max_bytes: maxBytes,
       },
       commentsDoc,
-      history ? { history, writerOf: (actor) => resolved?.get(actor) ?? null } : {},
+      history ? { history, writerOf: (change) => resolve?.(change) ?? null } : {},
     );
     payload = { ...delta, since_revision: args.since_revision };
   } catch (error) {

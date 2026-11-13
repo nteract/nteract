@@ -16,7 +16,7 @@ import {
 } from "./operation-journal.mjs";
 import { PAGE_FAMILY } from "./document-modules.mjs";
 import { fencedHeads, parseRevision, revisionPlan } from "./revisions.mjs";
-import { hostWriter, recordWriter, writerActor } from "./host-writers.mjs";
+import { hostWriter, recordWriter } from "./host-writers.mjs";
 
 /** The document a journal entry writes. */
 export const PAGE_DOC = "page";
@@ -124,7 +124,7 @@ const requiredRevision = (args) => {
  * account and its client's agent labels, `writerAgent` when given and
  * `agent` otherwise. `agent` joins the fingerprint (comments and sources
  * store it); `writerAgent` doesn't, so a Page edit's fingerprint is the
- * request alone. The change's actor names the writer's record, and a new
+ * request alone. The change's `author` names the writer's record, and a new
  * record goes in the same put as the pending entry that holds the change
  * bytes. A retry replays those bytes, so it keeps its first attempt's
  * writer. An edit that changes nothing, and an `internal` mutation, record
@@ -231,16 +231,24 @@ export async function documentMutation({
     // Each host mutation has a fresh actor so concurrent producers can build
     // candidates from the same heads without reusing an (actor, seq). SyncHost
     // refuses host-prefixed actors from browsers, without a per-edit claim.
-    // A caller's actor names its writer between the prefix and the nonce.
     const actor =
       hostActorPrefix &&
-      (writer
-        ? writerActor(hostActorPrefix, writer.id)
-        : hostActorPrefix +
-          Array.from(crypto.getRandomValues(new Uint8Array(8)), (byte) =>
-            byte.toString(16).padStart(2, "0"),
-          ).join(""));
-    const candidate = A.clone(before, actor ? { actor } : undefined);
+      hostActorPrefix +
+        Array.from(crypto.getRandomValues(new Uint8Array(8)), (byte) =>
+          byte.toString(16).padStart(2, "0"),
+        ).join("");
+    // A caller's change carries its writer id as its Automerge `author`,
+    // believed because the actor is the host's (worker/host-writers.mjs).
+    // Automerge's setAuthor mints a fresh random actor, so the author is set
+    // first and the host actor is set by the clone after it, which keeps the
+    // author.
+    const authored = actor && writer ? A.clone(before, { author: writer.id }) : null;
+    let candidate;
+    try {
+      candidate = A.clone(authored ?? before, actor ? { actor } : undefined);
+    } finally {
+      if (authored) A.free(authored);
+    }
     // No await between the head guard and immutable edit construction.
     try {
       after = A.change(candidate, (doc) => {

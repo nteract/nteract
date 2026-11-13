@@ -1,23 +1,23 @@
 import { cbor } from "@automerge/automerge-repo";
 import { authorOf, boundedWriter } from "../model/author.mjs";
 
-// Who wrote a host edit. A journaled host mutation (worker/mutations.mjs)
-// authors its change under an actor that names its writer:
+// Who wrote a host edit. A journaled host mutation a caller asked for
+// (worker/mutations.mjs) authors its change under a fresh host actor, the
+// Page host's persisted prefix and 8 random bytes, and sets the change's own
+// Automerge `author` to its writer id. The id names one record under
+// `plain/writer/<id>`: the authorOf shape (model/author.mjs) of the
+// authenticated account and the agent labels its client sent, bounded by
+// WRITER_LIMITS. The id is the first 8 bytes of the SHA-256 of that record,
+// so a writer is stored once however many edits it makes, and a retry
+// derives the same id.
 //
-//   <host prefix: 8 bytes><writer id: 8 bytes><nonce: 8 bytes>
-//
-// The prefix is the Page host's persisted namespace, which SyncHost refuses
-// from every browser, so only the host authors under it. The writer id names
-// one record under `plain/writer/<id>`: the authorOf shape
-// (model/author.mjs) of the authenticated account and the agent its client
-// asserted. The id is the first 8 bytes of the SHA-256 of that record, so a
-// writer is stored once however many edits it makes, and a retry derives the
-// same id. The nonce is fresh per mutation: concurrent producers building
-// from the same heads never share an (actor, seq).
-//
-// A host actor of the prefix and 8 bytes alone carries no writer: the host's
-// own edits (migrations, genesis, direct handle changes), and every host edit
-// stored before writers were recorded. A read reports those as unrecorded.
+// Trust rule: an `author` is believed only on a change whose actor is under
+// the host prefix. SyncHost refuses that prefix from every browser, so only
+// the host authors under it. Any peer can set `author` on its own changes;
+// on any other actor the field is ignored and the writer is the actor's
+// claim. A host change with no author (the host's own edits, every host edit
+// stored before writers were recorded) or an author with no record names no
+// writer.
 
 export const WRITER_PREFIX = "plain/writer/";
 const ID = /^[0-9a-f]{16}$/;
@@ -40,25 +40,10 @@ const canonical = (value) =>
  * name cut to WRITER_LIMITS (boundedWriter) before it is hashed or stored. */
 export const hostWriter = (identity, agent) => boundedWriter(authorOf(identity, agent));
 
-/** A writer record's 16-hex id. */
+/** A writer record's 16-hex id, the `author` its edits carry. */
 export async function writerId(writer) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical(writer)));
   return hex(new Uint8Array(digest).slice(0, 8));
-}
-
-/** A fresh host actor naming writer `id`. */
-export function writerActor(prefix, id) {
-  if (!ID.test(id)) throw new TypeError("A writer id is 16 hex characters");
-  return prefix + id + hex(crypto.getRandomValues(new Uint8Array(8)));
-}
-
-/** The writer id `actor` names, or null: an actor outside the host prefix,
- * or a host actor that names no writer. */
-export function actorWriterId(prefix, actor) {
-  if (!prefix || typeof actor !== "string" || !actor.startsWith(prefix)) return null;
-  if (actor.length !== prefix.length + 32) return null;
-  const id = actor.slice(prefix.length, prefix.length + 16);
-  return ID.test(id) ? id : null;
 }
 
 /**
@@ -82,49 +67,44 @@ export async function recordWriter(storage, writer) {
 }
 
 /**
- * Who wrote each of `actors`, as a Map from actor to a writer or null.
- * A host actor resolves through its writer record (`via: "tool"`); any other
- * actor through its actor claim, `claim(actor)` (`via: "sync"`). A claim the
- * host made for itself, a host actor without a writer, and an actor nobody
- * claimed resolve to null: the read says the writer is unrecorded and never
- * guesses.
+ * Who wrote `changes` (`{ actor, author }`, as decoded), as a function from
+ * one such change to a writer or null. A change under the host prefix
+ * resolves through the record its `author` names (`via: "tool"`); any other
+ * through its actor's claim, `claim(actor)` (`via: "sync"`), whatever author
+ * it carries. A claim the host made for itself, an unclaimed actor, a host
+ * change without an author and an author without a record resolve to null:
+ * the read says the writer is unrecorded and never guesses. Each distinct
+ * writer record is read once.
  */
-export async function resolveWriters({ storage, prefix, claim }, actors) {
-  const result = new Map();
-  const ids = new Map();
-  for (const actor of actors) {
-    const id = actorWriterId(prefix, actor);
-    if (id) {
-      ids.set(actor, id);
-      continue;
-    }
-    if (prefix && actor.startsWith(prefix)) {
-      result.set(actor, null);
-      continue;
-    }
-    const claimed = claim?.(actor);
-    result.set(
-      actor,
-      typeof claimed?.principal === "string"
-        ? {
-            principal: claimed.principal,
-            displayName: claimed.displayName ?? "Collaborator",
-            driver: claimed.driver ?? "Browser",
-            via: "sync",
-          }
-        : null,
+export async function resolveWriters({ storage, prefix, claim }, changes) {
+  const hosted = (change) => !!prefix && change.actor.startsWith(prefix);
+  const records = new Map();
+  for (const change of changes) {
+    const id = hosted(change) && ID.test(change.author ?? "") ? change.author : null;
+    if (!id || records.has(id)) continue;
+    const bytes = await storage.get(WRITER_PREFIX + id);
+    records.set(
+      id,
+      bytes === undefined ? null : { ...cbor.decode(new Uint8Array(bytes)), via: "tool" },
     );
   }
-  // One read per distinct writer, not per edit: a delta of thousands of host
-  // edits by one agent reads one record.
-  const records = new Map();
-  for (const id of new Set(ids.values())) {
-    const bytes = await storage.get(WRITER_PREFIX + id);
-    if (bytes !== undefined) records.set(id, bytes);
-  }
-  for (const [actor, id] of ids) {
-    const bytes = records.get(id);
-    result.set(actor, bytes ? { ...cbor.decode(new Uint8Array(bytes)), via: "tool" } : null);
-  }
-  return result;
+  const claims = new Map();
+  return (change) => {
+    if (hosted(change)) return (ID.test(change.author ?? "") && records.get(change.author)) || null;
+    if (!claims.has(change.actor)) {
+      const claimed = claim?.(change.actor);
+      claims.set(
+        change.actor,
+        typeof claimed?.principal === "string"
+          ? {
+              principal: claimed.principal,
+              displayName: claimed.displayName ?? "Collaborator",
+              driver: claimed.driver ?? "Browser",
+              via: "sync",
+            }
+          : null,
+      );
+    }
+    return claims.get(change.actor);
+  };
 }

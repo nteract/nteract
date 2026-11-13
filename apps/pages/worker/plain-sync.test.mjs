@@ -148,6 +148,7 @@ test("plain API edit write costs at 1, 10 and 100 consecutive edits", async (t) 
   const block = blockAddress(host.handle.doc(), Object.keys(host.handle.doc().blocks)[0]);
   const stats = countWrites(t, f.storage);
   const actors = new Set();
+  const authors = new Set();
   let changeBytes = 0;
   for (let n = 1; n <= 100; n++) {
     const heads = A.getHeads(host.handle.doc());
@@ -167,6 +168,7 @@ test("plain API edit write costs at 1, 10 and 100 consecutive edits", async (t) 
     await host.flush();
     for (const change of A.getChangesSince(host.handle.doc(), heads)) {
       actors.add(A.decodeChange(change).actor);
+      authors.add(A.decodeChange(change).author);
       changeBytes += change.byteLength;
     }
     if ([1, 10, 100].includes(n))
@@ -181,19 +183,20 @@ test("plain API edit write costs at 1, 10 and 100 consecutive edits", async (t) 
       );
   }
   assert.equal(actors.size, 100);
-  // Each actor is the host prefix, the caller's writer id and a fresh nonce.
-  const writer = [...actors][0].slice(16, 32);
   assert.ok(
     [...actors].every(
-      (actor) =>
-        actor.startsWith(host.plain.hostActorPrefix + writer) && /^[a-f0-9]{48}$/.test(actor),
+      (actor) => actor.startsWith(host.plain.hostActorPrefix) && /^[a-f0-9]{32}$/.test(actor),
     ),
   );
   assert.equal((await f.storage.list({ prefix: "plain/actor/" })).size, initialClaims);
-  // One writer record for one caller, however many edits it makes.
+  // Every edit carries its caller's writer id as its author, and the caller
+  // has one record however many edits it makes.
+  assert.equal(authors.size, 1);
+  const [author] = authors;
+  assert.match(author, /^[a-f0-9]{16}$/);
   assert.deepEqual(
     [...(await f.storage.list({ prefix: "plain/writer/" })).keys()],
-    [`plain/writer/${writer}`],
+    [`plain/writer/${author}`],
   );
   assert.ok(stats.plainBytes < 60_000, JSON.stringify(stats));
   assert.ok(stats.puts <= 301, JSON.stringify(stats));

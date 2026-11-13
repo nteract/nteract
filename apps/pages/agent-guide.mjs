@@ -1123,7 +1123,7 @@ client said about itself, under the authenticated account; it grants and
 verifies nothing. {recorded: false} stands for edits with no recorded writer:
 the host's own edits and every edit made before writers were recorded. Don't
 guess a writer for those, and don't read people or clients from raw Automerge
-actor IDs. Comment authors are on the comments themselves. When more than
+actor IDs or change authors. Comment authors are on the comments themselves. When more than
 10,000 edits separate your baseline from now, the response has every change
 but no writers: attribution is "unavailable" with attribution_reason
 "too_many_changes". Read again from a newer baseline when you need writers. comments defaults to summary; none omits threads,
