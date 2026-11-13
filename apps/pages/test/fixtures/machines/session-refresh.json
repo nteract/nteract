@@ -1,6 +1,6 @@
 {
   "machine": "session-refresh",
-  "description": "The browser's session refreshes: one request in flight, renewals join it, and a refresh that can change the answer (visible, retry) supersedes it with one fresh request. A run of unreachable answers (a restart, a gateway error, a lost connection) is tracked from its first answer and reports an outage once it has lasted 20 s. Runs against viewer/session-refresh-machine.mjs and through maintainBrowserSession in viewer/browser-session.test.mjs.",
+  "description": "The browser's session refreshes: one request in flight, renewals join it, and a refresh that can change the answer (visible, retry) supersedes it with one fresh request. A run of unreachable answers (a restart, a gateway error, a lost connection, the request deadline) is tracked from its first answer. A signed-in tab says nothing about it until it has lasted 20 s, then reports one outage; a tab with no account yet, and any failure the server answered, says so at once. Runs against viewer/session-refresh-machine.mjs and through maintainBrowserSession in viewer/browser-session.test.mjs.",
   "states": [
     "idle",
     "scheduled",
@@ -45,7 +45,8 @@
       "unreachable-first",
       "unreachable-brief",
       "unreachable-outage",
-      "unreachable-idle"
+      "unreachable-idle",
+      "unreachable-no-account"
     ]
   },
   "rows": [
@@ -55,6 +56,7 @@
       "state": {
         "name": "idle",
         "keepAlive": true,
+        "signedIn": false,
         "failingSince": null
       },
       "event": {
@@ -65,6 +67,7 @@
         "state": {
           "name": "requesting",
           "keepAlive": true,
+          "signedIn": false,
           "failingSince": null
         },
         "effects": [
@@ -81,6 +84,7 @@
       "state": {
         "name": "idle",
         "keepAlive": false,
+        "signedIn": false,
         "failingSince": null
       },
       "event": {
@@ -91,6 +95,7 @@
         "state": {
           "name": "requesting",
           "keepAlive": false,
+          "signedIn": false,
           "failingSince": null
         },
         "effects": [
@@ -107,6 +112,7 @@
       "state": {
         "name": "idle",
         "keepAlive": false,
+        "signedIn": false,
         "failingSince": null
       },
       "event": {
@@ -117,6 +123,7 @@
         "state": {
           "name": "idle",
           "keepAlive": false,
+          "signedIn": false,
           "failingSince": null
         },
         "effects": [],
@@ -128,6 +135,7 @@
       "state": {
         "name": "idle",
         "keepAlive": true,
+        "signedIn": false,
         "failingSince": null
       },
       "event": {
@@ -144,6 +152,7 @@
       "label": "a refresh while a run is failing carries it into the request",
       "state": {
         "name": "scheduled",
+        "signedIn": true,
         "failingSince": 5000
       },
       "event": {
@@ -154,6 +163,7 @@
         "state": {
           "name": "requesting",
           "keepAlive": true,
+          "signedIn": true,
           "failingSince": 5000
         },
         "effects": [
@@ -170,6 +180,7 @@
       "label": "the renewal timer fires",
       "state": {
         "name": "scheduled",
+        "signedIn": true,
         "failingSince": null
       },
       "event": {
@@ -180,6 +191,7 @@
         "state": {
           "name": "requesting",
           "keepAlive": true,
+          "signedIn": true,
           "failingSince": null
         },
         "effects": [
@@ -196,6 +208,7 @@
       "label": "becoming visible while signed in renews early",
       "state": {
         "name": "scheduled",
+        "signedIn": true,
         "failingSince": null
       },
       "event": {
@@ -206,6 +219,7 @@
         "state": {
           "name": "requesting",
           "keepAlive": true,
+          "signedIn": true,
           "failingSince": null
         },
         "effects": [
@@ -222,6 +236,7 @@
       "label": "a caller asks while signed in",
       "state": {
         "name": "scheduled",
+        "signedIn": true,
         "failingSince": null
       },
       "event": {
@@ -232,6 +247,7 @@
         "state": {
           "name": "requesting",
           "keepAlive": true,
+          "signedIn": true,
           "failingSince": null
         },
         "effects": [
@@ -248,6 +264,7 @@
       "label": "stopping clears the renewal timer",
       "state": {
         "name": "scheduled",
+        "signedIn": true,
         "failingSince": null
       },
       "event": {
@@ -270,6 +287,7 @@
       "state": {
         "name": "requesting",
         "keepAlive": true,
+        "signedIn": true,
         "failingSince": null
       },
       "event": {
@@ -280,6 +298,7 @@
         "state": {
           "name": "requesting",
           "keepAlive": true,
+          "signedIn": true,
           "failingSince": null
         },
         "effects": [],
@@ -293,6 +312,7 @@
       "state": {
         "name": "requesting",
         "keepAlive": false,
+        "signedIn": false,
         "failingSince": null
       },
       "event": {
@@ -303,6 +323,7 @@
         "state": {
           "name": "superseded",
           "keepAlive": false,
+          "signedIn": false,
           "failingSince": null
         },
         "effects": []
@@ -314,6 +335,7 @@
       "state": {
         "name": "requesting",
         "keepAlive": true,
+        "signedIn": true,
         "failingSince": null
       },
       "event": {
@@ -324,6 +346,7 @@
         "state": {
           "name": "superseded",
           "keepAlive": true,
+          "signedIn": true,
           "failingSince": null
         },
         "effects": []
@@ -335,6 +358,7 @@
       "state": {
         "name": "requesting",
         "keepAlive": false,
+        "signedIn": false,
         "failingSince": null
       },
       "event": {
@@ -344,6 +368,7 @@
       "expect": {
         "state": {
           "name": "scheduled",
+          "signedIn": true,
           "failingSince": null
         },
         "effects": [
@@ -367,6 +392,7 @@
       "state": {
         "name": "requesting",
         "keepAlive": true,
+        "signedIn": true,
         "failingSince": null
       },
       "event": {
@@ -377,6 +403,7 @@
         "state": {
           "name": "idle",
           "keepAlive": false,
+          "signedIn": false,
           "failingSince": null
         },
         "effects": [
@@ -396,6 +423,7 @@
       "state": {
         "name": "requesting",
         "keepAlive": true,
+        "signedIn": true,
         "failingSince": null
       },
       "event": {
@@ -406,6 +434,7 @@
         "state": {
           "name": "idle",
           "keepAlive": false,
+          "signedIn": false,
           "failingSince": null
         },
         "effects": [
@@ -420,11 +449,12 @@
       }
     },
     {
-      "label": "a transient failure while signed in retries on the next renewal",
+      "label": "a failure the server answered while signed in retries on the next renewal and says so",
       "case": "failed-keep-alive",
       "state": {
         "name": "requesting",
         "keepAlive": true,
+        "signedIn": true,
         "failingSince": null
       },
       "event": {
@@ -434,6 +464,7 @@
       "expect": {
         "state": {
           "name": "scheduled",
+          "signedIn": true,
           "failingSince": null
         },
         "effects": [
@@ -446,17 +477,19 @@
           },
           {
             "type": "apply",
-            "outcome": "failed"
+            "outcome": "failed",
+            "notice": "failure"
           }
         ]
       }
     },
     {
-      "label": "a transient failure while signed out waits for a retry",
+      "label": "a failure the server answered while signed out waits for a retry and says so",
       "case": "failed-idle",
       "state": {
         "name": "requesting",
         "keepAlive": false,
+        "signedIn": false,
         "failingSince": null
       },
       "event": {
@@ -467,6 +500,7 @@
         "state": {
           "name": "idle",
           "keepAlive": false,
+          "signedIn": false,
           "failingSince": null
         },
         "effects": [
@@ -475,17 +509,19 @@
           },
           {
             "type": "apply",
-            "outcome": "failed"
+            "outcome": "failed",
+            "notice": "failure"
           }
         ]
       }
     },
     {
-      "label": "the first unreachable answer starts the run and renews quietly",
+      "label": "a signed-in tab's first unreachable answer starts the run and renews quietly",
       "case": "unreachable-first",
       "state": {
         "name": "requesting",
         "keepAlive": true,
+        "signedIn": true,
         "failingSince": null
       },
       "event": {
@@ -496,6 +532,7 @@
       "expect": {
         "state": {
           "name": "scheduled",
+          "signedIn": true,
           "failingSince": 5000
         },
         "effects": [
@@ -509,7 +546,7 @@
           {
             "type": "apply",
             "outcome": "unreachable",
-            "outage": false
+            "notice": "quiet"
           }
         ]
       }
@@ -520,6 +557,7 @@
       "state": {
         "name": "requesting",
         "keepAlive": true,
+        "signedIn": true,
         "failingSince": 5000
       },
       "event": {
@@ -530,6 +568,7 @@
       "expect": {
         "state": {
           "name": "scheduled",
+          "signedIn": true,
           "failingSince": 5000
         },
         "effects": [
@@ -543,7 +582,7 @@
           {
             "type": "apply",
             "outcome": "unreachable",
-            "outage": false
+            "notice": "quiet"
           }
         ]
       }
@@ -554,6 +593,7 @@
       "state": {
         "name": "requesting",
         "keepAlive": true,
+        "signedIn": true,
         "failingSince": 5000
       },
       "event": {
@@ -564,6 +604,7 @@
       "expect": {
         "state": {
           "name": "scheduled",
+          "signedIn": true,
           "failingSince": 5000
         },
         "effects": [
@@ -577,17 +618,18 @@
           {
             "type": "apply",
             "outcome": "unreachable",
-            "outage": true
+            "notice": "outage"
           }
         ]
       }
     },
     {
-      "label": "signed out, an unreachable answer waits for a retry and keeps its run",
+      "label": "signed out, an unreachable answer waits for a retry, keeps its run and says so",
       "case": "unreachable-idle",
       "state": {
         "name": "requesting",
         "keepAlive": false,
+        "signedIn": false,
         "failingSince": 1000
       },
       "event": {
@@ -599,6 +641,7 @@
         "state": {
           "name": "idle",
           "keepAlive": false,
+          "signedIn": false,
           "failingSince": 1000
         },
         "effects": [
@@ -608,7 +651,43 @@
           {
             "type": "apply",
             "outcome": "unreachable",
-            "outage": false
+            "notice": "failure"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a tab with no account yet whose first check goes unanswered renews and says so",
+      "case": "unreachable-no-account",
+      "state": {
+        "name": "requesting",
+        "keepAlive": true,
+        "signedIn": false,
+        "failingSince": null
+      },
+      "event": {
+        "type": "settled",
+        "outcome": "unreachable",
+        "at": 30000
+      },
+      "expect": {
+        "state": {
+          "name": "scheduled",
+          "signedIn": false,
+          "failingSince": 30000
+        },
+        "effects": [
+          {
+            "type": "schedule",
+            "delayMs": 60000
+          },
+          {
+            "type": "answer"
+          },
+          {
+            "type": "apply",
+            "outcome": "unreachable",
+            "notice": "failure"
           }
         ]
       }
@@ -619,6 +698,7 @@
       "state": {
         "name": "requesting",
         "keepAlive": true,
+        "signedIn": true,
         "failingSince": 5000
       },
       "event": {
@@ -629,6 +709,7 @@
       "expect": {
         "state": {
           "name": "scheduled",
+          "signedIn": true,
           "failingSince": null
         },
         "effects": [
@@ -652,6 +733,7 @@
       "state": {
         "name": "requesting",
         "keepAlive": true,
+        "signedIn": true,
         "failingSince": 5000
       },
       "event": {
@@ -661,6 +743,7 @@
       "expect": {
         "state": {
           "name": "scheduled",
+          "signedIn": true,
           "failingSince": null
         },
         "effects": [
@@ -673,7 +756,8 @@
           },
           {
             "type": "apply",
-            "outcome": "failed"
+            "outcome": "failed",
+            "notice": "failure"
           }
         ]
       }
@@ -683,6 +767,7 @@
       "state": {
         "name": "requesting",
         "keepAlive": true,
+        "signedIn": true,
         "failingSince": null
       },
       "event": {
@@ -700,6 +785,7 @@
       "state": {
         "name": "superseded",
         "keepAlive": true,
+        "signedIn": true,
         "failingSince": null
       },
       "event": {
@@ -710,6 +796,7 @@
         "state": {
           "name": "superseded",
           "keepAlive": true,
+          "signedIn": true,
           "failingSince": null
         },
         "effects": [],
@@ -721,6 +808,7 @@
       "state": {
         "name": "superseded",
         "keepAlive": true,
+        "signedIn": true,
         "failingSince": null
       },
       "event": {
@@ -731,6 +819,7 @@
         "state": {
           "name": "superseded",
           "keepAlive": true,
+          "signedIn": true,
           "failingSince": null
         },
         "effects": [],
@@ -742,6 +831,7 @@
       "state": {
         "name": "superseded",
         "keepAlive": true,
+        "signedIn": true,
         "failingSince": null
       },
       "event": {
@@ -752,6 +842,7 @@
         "state": {
           "name": "superseded",
           "keepAlive": true,
+          "signedIn": true,
           "failingSince": null
         },
         "effects": [],
@@ -764,6 +855,7 @@
       "state": {
         "name": "superseded",
         "keepAlive": false,
+        "signedIn": false,
         "failingSince": null
       },
       "event": {
@@ -774,6 +866,7 @@
         "state": {
           "name": "requesting",
           "keepAlive": false,
+          "signedIn": false,
           "failingSince": null
         },
         "effects": [
@@ -788,6 +881,7 @@
       "state": {
         "name": "superseded",
         "keepAlive": true,
+        "signedIn": true,
         "failingSince": null
       },
       "event": {
@@ -798,6 +892,7 @@
         "state": {
           "name": "requesting",
           "keepAlive": true,
+          "signedIn": true,
           "failingSince": null
         },
         "effects": [
@@ -812,6 +907,7 @@
       "state": {
         "name": "superseded",
         "keepAlive": true,
+        "signedIn": true,
         "failingSince": null
       },
       "event": {
@@ -822,6 +918,7 @@
         "state": {
           "name": "requesting",
           "keepAlive": true,
+          "signedIn": true,
           "failingSince": null
         },
         "effects": [
@@ -836,6 +933,7 @@
       "state": {
         "name": "superseded",
         "keepAlive": true,
+        "signedIn": true,
         "failingSince": null
       },
       "event": {
@@ -846,6 +944,7 @@
         "state": {
           "name": "requesting",
           "keepAlive": true,
+          "signedIn": true,
           "failingSince": null
         },
         "effects": [
@@ -860,6 +959,7 @@
       "state": {
         "name": "superseded",
         "keepAlive": true,
+        "signedIn": true,
         "failingSince": 5000
       },
       "event": {
@@ -871,6 +971,7 @@
         "state": {
           "name": "requesting",
           "keepAlive": true,
+          "signedIn": true,
           "failingSince": 5000
         },
         "effects": [
@@ -885,6 +986,7 @@
       "state": {
         "name": "superseded",
         "keepAlive": true,
+        "signedIn": true,
         "failingSince": null
       },
       "event": {

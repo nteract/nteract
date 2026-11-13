@@ -56,6 +56,11 @@ const SUITES = Object.freeze([
     timeout: 2 * minute,
   },
   {
+    name: "quiet-background",
+    script: "scripts/quiet-background-smoke.mjs",
+    timeout: 3 * minute,
+  },
+  {
     name: "comments-review",
     script: "scripts/comments-review-smoke.mjs",
     timeout: 3 * minute,

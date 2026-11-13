@@ -5,7 +5,7 @@
 // starts after they asked: mid-request, they queue one fresh request and every
 // waiter gets its answer. The renewal timer joins the request in flight.
 import { sessionRefreshMachine } from "./session-refresh-machine.mjs";
-import { isTransientFailure } from "./request.mjs";
+import { isUnansweredFailure } from "./request.mjs";
 import { monotonicNow } from "./monotonic.mjs";
 import { Store } from "./store.mjs";
 
@@ -15,18 +15,19 @@ function outcomeOf(answer) {
   if (!("error" in answer)) return answer.value?.identity ? "signedIn" : "signedOut";
   const status = answer.error?.status;
   if (status === 401 || status === 403) return "refused";
-  return isTransientFailure(answer.error) ? "unreachable" : "failed";
+  return isUnansweredFailure(answer.error) ? "unreachable" : "failed";
 }
 
 /**
  * Keep this tab's session cookie renewed. `onSession(session, { refusal })`
  * gets each answer; a 401 or 403 arrives as a signed-out session with the
  * server's error as `refusal`, so the viewer can say why the account left.
- * `onError(error, { outage })` gets each other failure. `outage` is true once
- * transient failures (isTransientFailure) have lasted OUTAGE_MS with no other
- * answer between them; a transient failure before then is false, and so is
- * any failure the server answered. `now` is the monotonic clock those runs
- * are timed with (monotonic.mjs).
+ * `onError(error, { notice })` gets each other failure, with what the viewer
+ * says about it (session-refresh-machine.mjs NOTICES): `quiet` while a
+ * signed-in tab's checks go unanswered (isUnansweredFailure: a lost
+ * connection, a restart or the request deadline), `outage` once they have
+ * gone unanswered for OUTAGE_MS, and `failure` for anything else. `now` is
+ * the monotonic clock those runs are timed with (monotonic.mjs).
  */
 export function maintainBrowserSession({
   request,
@@ -72,9 +73,8 @@ export function maintainBrowserSession({
         return;
       }
       case "apply":
-        if (effect.outcome === "failed") onError(settled.error, { outage: false });
-        else if (effect.outcome === "unreachable")
-          onError(settled.error, { outage: effect.outage });
+        if (effect.outcome === "failed" || effect.outcome === "unreachable")
+          onError(settled.error, { notice: effect.notice });
         else if (effect.outcome === "refused") onSession(SIGNED_OUT, { refusal: settled.error });
         else onSession(settled.value, {});
         return;
