@@ -3,10 +3,13 @@ import { boundedWriter } from "./author.mjs";
 import { readSource, validSourceId } from "./sources-doc.mjs";
 import { checkViewSpec } from "../shared/view-spec.mjs";
 import {
+  MAX_VIEW_DATA,
   MAX_VIEW_TITLE,
+  VIEW_DATA_NAME_PATTERN,
   VIEW_ID_PATTERN,
   VIEW_MEDIA_TYPES,
   VIEW_REVISION_PATTERN,
+  validDataName,
   validViewId,
 } from "../shared/views.mjs";
 
@@ -49,7 +52,6 @@ const STATUS = {
   unknown_source_revision: 400,
 };
 const FIELDS = ["op", "view_id", "title", "media_type", "spec", "data", "view_revision"];
-const RESERVED = new Set(["constructor", "prototype", "__proto__"]);
 const REVISION = new RegExp(VIEW_REVISION_PATTERN);
 
 function fail(code, message, details) {
@@ -99,13 +101,16 @@ function bindingOf(value) {
  * binding a host write stores. */
 function dataOf(data) {
   if (!isMap(data)) return undefined;
-  const out = {};
-  for (const [name, value] of Object.entries(data)) {
+  const entries = Object.entries(data);
+  if (entries.length > MAX_VIEW_DATA) return undefined;
+  const out = [];
+  for (const [name, value] of entries) {
     const binding = bindingOf(value);
-    if (!binding || RESERVED.has(name)) return undefined;
-    out[name] = binding;
+    if (!binding || !validDataName(name)) return undefined;
+    out.push([name, binding]);
   }
-  return out;
+  // Built from entries, so no key can reach a prototype.
+  return Object.fromEntries(out);
 }
 
 /** The view a document holds, as an agent reads it with its spec, or
@@ -175,8 +180,19 @@ export function validateViewOperation(op) {
     );
   if (!isMap(op.data) || !Object.keys(op.data).length)
     fail("invalid_view", "data must map each data name the spec reads to a source");
+  if (Object.keys(op.data).length > MAX_VIEW_DATA)
+    fail("invalid_view", `data can bind at most ${MAX_VIEW_DATA} data names`);
   for (const [name, binding] of Object.entries(op.data)) {
-    if (RESERVED.has(name)) fail("invalid_view", `data can't name "${name}"`);
+    if (!validDataName(name))
+      fail(
+        "invalid_view",
+        `data can't name "${name.slice(0, 64)}": a data name matches ${VIEW_DATA_NAME_PATTERN} and isn't a reserved name`,
+      );
+    if (isMap(binding) && !validSourceId(binding.source_id))
+      fail(
+        "invalid_view",
+        `data.${name} names source_id "${String(binding.source_id).slice(0, 64)}", which isn't a source id`,
+      );
     if (!bindingOf(binding))
       fail(
         "invalid_view",

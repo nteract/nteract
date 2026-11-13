@@ -13,6 +13,10 @@ export const MAX_VIEW_TITLE = 200;
 export const VIEW_MEDIA_TYPES = Object.freeze(["application/vnd.vegalite.v6+json"]);
 /** A view revision: decimal, minted by the host from "1". */
 export const VIEW_REVISION_PATTERN = "^[1-9][0-9]{0,15}$";
+/** A data name: a key of a view's `data` map and the name its spec reads. */
+export const VIEW_DATA_NAME_PATTERN = "^[A-Za-z_][A-Za-z0-9_-]{0,63}$";
+/** The most data names one view binds. */
+export const MAX_VIEW_DATA = 32;
 /** The block type of a view node, in spans and features.json. */
 export const VIEW_BLOCK = "view";
 /** A DOM figure holding a view node carries this attribute, and its view id
@@ -25,6 +29,11 @@ const RESERVED = new Set(["constructor", "prototype", "__proto__"]);
 
 /** Whether `id` is a well-formed view id. */
 export const validViewId = (id) => typeof id === "string" && VIEW_ID.test(id) && !RESERVED.has(id);
+
+const DATA_NAME = new RegExp(VIEW_DATA_NAME_PATTERN);
+/** Whether `name` is a data name a view may bind: a safe object key. */
+export const validDataName = (name) =>
+  typeof name === "string" && DATA_NAME.test(name) && !RESERVED.has(name);
 
 /** The address of one view on its Page. */
 export const viewPath = (pageId, viewId) => `/p/${pageId}/view/${viewId}`;

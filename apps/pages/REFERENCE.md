@@ -1611,7 +1611,10 @@ root is:
 
 `spec` is collaborative text: a rewrite replaces it with `updateText`. `data`
 names exactly the data the spec reads, each bound to one of the Page's
-sources. `{ source_id }` follows the source's current revision;
+sources. A data name matches `^[A-Za-z_][A-Za-z0-9_-]{0,63}$` and is never
+`constructor`, `prototype` or `__proto__`; a view binds at most 32. Every map
+keyed by a data name, view id or source id is built from entries or is a
+`Map`, so no key reaches a prototype. `{ source_id }` follows the source's current revision;
 `{ source_id, revision }` names a revision the source's `history` held when
 the view was written. `producer` has a source's meaning
 ([Sources document](#sources-document)). `data` and `producer` are each
@@ -1672,6 +1675,7 @@ writer record:
 | malformed `view_id`, `title`, `media_type`, `data` or `view_revision` | `400 invalid_view` |
 | spec not an object, over 64 KiB, or refused by `checkChartSpec` | `400 invalid_view` |
 | `data` binds a name the spec doesn't read, or lacks one it reads | `400 invalid_view` |
+| a data name that isn't a safe key, a malformed `source_id`, or over 32 names | `400 invalid_view`, naming the key |
 | `data` names a source this Page doesn't hold | `400 unknown_source` |
 | a pinned `revision` the source's `history` doesn't hold | `400 unknown_source_revision` |
 | `view_revision` not the stored one, or null for an existing view | `409 stale_view` |

@@ -811,7 +811,8 @@ the Page's sources. Make one in three calls:
 view_id follows the source_id rules. The spec reads data only by name,
 {"name": "<data name>"}, and data maps exactly those names to sources:
 {source_id} follows the source's current revision, {source_id, revision} pins
-one its history still holds. view_revision is null to create, or the
+one its history still holds. A data name is 1 to 64 letters, digits, _ and -,
+starting with a letter or _; a view binds at most 32. view_revision is null to create, or the
 view_revision you read to rewrite the view; the receipt names the new
 view_revision. A Page holds up to 10 views.
 

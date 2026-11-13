@@ -259,6 +259,35 @@ test("every set_view refusal creates no document, no listed view and no writer",
       checkChartSpec(SPEC, { datasets: ["other"] }).error,
     ],
     [{ data: { usage: { source_id: "usage", extra: 1 } } }, 400, "invalid_view"],
+    // A data name is a safe key, and a source_id is checked before a lookup.
+    ...["1usage", "us age", "constructor", "prototype", "x".repeat(65)].map((name) => [
+      { data: { [name]: { source_id: "usage" } } },
+      400,
+      "invalid_view",
+      `data can't name "${name.slice(0, 64)}": a data name matches ^[A-Za-z_][A-Za-z0-9_-]{0,63}$ and isn't a reserved name`,
+    ]),
+    [
+      { data: JSON.parse('{"__proto__": {"source_id": "usage"}}') },
+      400,
+      "invalid_view",
+      `data can't name "__proto__": a data name matches ^[A-Za-z_][A-Za-z0-9_-]{0,63}$ and isn't a reserved name`,
+    ],
+    [
+      { data: { usage: { source_id: "__proto__" } } },
+      400,
+      "invalid_view",
+      'data.usage names source_id "__proto__", which isn\'t a source id',
+    ],
+    [
+      {
+        data: Object.fromEntries(
+          Array.from({ length: 33 }, (_, i) => [`d${i}`, { source_id: "usage" }]),
+        ),
+      },
+      400,
+      "invalid_view",
+      "data can bind at most 32 data names",
+    ],
     [{ data: { usage: { source_id: "missing" } } }, 400, "unknown_source"],
     [{ data: { usage: { source_id: "usage", revision: "9" } } }, 400, "unknown_source_revision"],
     [{ view_revision: "1" }, 404, "view_not_found"],
