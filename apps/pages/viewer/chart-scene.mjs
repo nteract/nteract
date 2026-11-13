@@ -32,15 +32,22 @@ const MAX_DASH = 64;
  * and symbol-shape characters (two lines or areas through the row budget's
  * points), label characters, other strings (names, roles, fonts and aria
  * descriptions, about 100 characters for each of SCENE_MAX_ITEMS), gradient
- * stops, and tooltip payload (strings and keys by length, any other value as
- * 8; 100,000 points with a 40-field tooltip each fit). */
+ * stops, tooltip payload (strings and keys by length, at least 1, any other
+ * value as 8) and tooltip entries (each tooltip, array entry and object
+ * field). 100,000 points with a 16-field tooltip each, names and values of 8
+ * characters, fit both. */
 export const SCENE_BUDGET = Object.freeze({
   path: 16_000_000,
   text: 1_000_000,
   strings: 24_000_000,
   stops: 4_096,
   tooltip: 32_000_000,
+  tooltipEntries: 2_000_000,
 });
+/** Most entries one tooltip array or object may hold. */
+export const TOOLTIP_MAX_ENTRIES = 10_000;
+/** Deepest tooltip nesting. */
+const TOOLTIP_MAX_DEPTH = 64;
 // The string keys that may run to 1,000 characters (Vega-Lite writes an
 // aria description for each mark); the others stop at 256.
 const LONG_STRINGS = new Set(["description", "ariaRoleDescription"]);
@@ -151,24 +158,53 @@ function spend(budget, kind, amount) {
   if (budget[kind] < 0) throw new SceneRefusal(SCENE_TOO_LARGE);
 }
 
-/** Spend a tooltip value's size from the budget, walking it iteratively and
- * stopping as soon as the budget runs out. Strings and keys count their
- * length, anything else 8; a nested value 64 levels down is malformed. */
+/** A tooltip container the walk may enter: a plain array, or an object
+ * with no prototype but Object's. Structured clone and the Worker's JSON copy
+ * (chart-dataflow.mjs plainTooltip) make nothing else. */
+const plainContainer = (value) =>
+  Array.isArray(value) || [Object.prototype, null].includes(Object.getPrototypeOf(value));
+
+/**
+ * Spend a tooltip value's size from the budget, or refuse the scene. Every
+ * entry is charged before it's read: the tooltip itself on entry, and an
+ * array's or object's entries all at once, from its length, before the walk
+ * descends. Each frame on the stack walks one container by index, so the
+ * stack holds at most TOOLTIP_MAX_DEPTH frames whatever the width. An
+ * object's keys are listed before they're charged; a container over
+ * TOOLTIP_MAX_ENTRIES is refused on its first visit, so that listing is never
+ * repeated past what was charged.
+ */
 function spendTooltip(budget, value) {
-  const stack = [[value, 0]];
-  while (stack.length) {
-    const [next, depth] = stack.pop();
-    if (typeof next === "string") spend(budget, "tooltip", next.length);
+  spend(budget, "tooltipEntries", 1);
+  const frames = [];
+  let next = value;
+  for (;;) {
+    if (typeof next === "string") spend(budget, "tooltip", Math.max(1, next.length));
     else if (next === null || typeof next !== "object") spend(budget, "tooltip", 8);
     else {
-      if (depth >= 64) throw new SceneRefusal(SCENE_MALFORMED);
+      if (!plainContainer(next)) throw new SceneRefusal(SCENE_MALFORMED);
+      if (frames.length >= TOOLTIP_MAX_DEPTH) throw new SceneRefusal(SCENE_MALFORMED);
+      const keys = Array.isArray(next) ? null : Object.keys(next);
+      const length = keys ? keys.length : next.length;
+      if (length > TOOLTIP_MAX_ENTRIES) throw new SceneRefusal(SCENE_TOO_LARGE);
+      spend(budget, "tooltipEntries", length);
       spend(budget, "tooltip", 8);
-      if (Array.isArray(next)) for (const item of next) stack.push([item, depth + 1]);
-      else
-        for (const key of Object.keys(next)) {
-          spend(budget, "tooltip", key.length);
-          stack.push([next[key], depth + 1]);
-        }
+      frames.push({ container: next, keys, index: 0, length });
+    }
+    // Step to the next entry, leaving each finished container.
+    for (;;) {
+      const frame = frames.at(-1);
+      if (!frame) return;
+      if (frame.index < frame.length) {
+        const index = frame.index++;
+        if (frame.keys) {
+          const key = frame.keys[index];
+          spend(budget, "tooltip", Math.max(1, key.length));
+          next = frame.container[key];
+        } else next = frame.container[index];
+        break;
+      }
+      frames.pop();
     }
   }
 }

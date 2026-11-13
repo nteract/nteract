@@ -31,8 +31,14 @@ const {
 } = await import("./chart-dataflow.mjs");
 const { datasetRows, ownRows } = await import("./chart-data.mjs");
 const { plainScene, readDatasets } = await import("./chart-dataflow.mjs");
-const { SCENE_MALFORMED, SCENE_MAX_ITEMS, SCENE_TOO_BIG, SCENE_TOO_LARGE } =
-  await import("./chart-scene.mjs");
+const {
+  SCENE_BUDGET,
+  SCENE_MALFORMED,
+  SCENE_MAX_ITEMS,
+  SCENE_TOO_BIG,
+  SCENE_TOO_LARGE,
+  pageScene,
+} = await import("./chart-scene.mjs");
 const { WORKER_DIDNT_START } = await import("./chart-pool.mjs");
 const { checkChartSpec, CHART_MAX_ROWS, CHART_MAX_CELLS, CHART_EXPRESSION_FUNCTIONS } =
   await import("../shared/chart-spec.mjs");
@@ -1959,6 +1965,67 @@ const shared = (marktype, item, count) => ({
 const frameOf = (marks) => ({
   marktype: "group",
   items: [{ x: 0, y: 0, width: 200, height: 100, items: marks }],
+});
+
+/** `value` behind a Proxy that counts, in `reads.count`, every array entry
+ * or object field read through it, nested values included. */
+function counted(value, reads, seen = new Map()) {
+  if (value === null || typeof value !== "object") return value;
+  if (seen.has(value)) return seen.get(value);
+  const proxy = new Proxy(value, {
+    get(target, key, receiver) {
+      if (typeof key === "string" && Object.hasOwn(target, key) && key !== "length") {
+        reads.count++;
+        return counted(target[key], reads, seen);
+      }
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  seen.set(value, proxy);
+  return proxy;
+}
+
+test("a tooltip walk reads no more entries than it has charged", () => {
+  const sceneOf = (tooltip, count = 1) =>
+    frameOf([{ marktype: "rect", items: Array.from({ length: count }, () => ({ tooltip })) }]);
+  const refused = (scene) => {
+    const started = performance.now();
+    assert.throws(
+      () => pageScene(scene),
+      (error) => error.message === SCENE_TOO_LARGE,
+    );
+    return performance.now() - started;
+  };
+  // One shared array of 100,000 empty strings, 1,000 times over: 100 million
+  // entries that cost nothing by length.
+  const reads = { count: 0 };
+  const inner = Array(100_000).fill("");
+  const ms = refused(sceneOf(counted(Array(1_000).fill(inner), reads)));
+  assert.ok(reads.count <= 1, `${reads.count} entries read`);
+  assert.ok(ms < 250, `${ms} ms`);
+  // Empty strings and empty arrays, shared across items: every entry costs
+  // at least one, so the walk stops at the entry budget.
+  const wide = { count: 0 };
+  refused(sceneOf(counted(Array(10_000).fill([]), wide), 1_000));
+  assert.ok(wide.count <= SCENE_BUDGET.tooltipEntries, `${wide.count} entries read`);
+  // A sparse array that claims billions of entries is refused unread.
+  const sparse = { count: 0 };
+  refused(sceneOf(counted(new Array(4_000_000_000), sparse)));
+  assert.equal(sparse.count, 0);
+  // A typed array or a Map isn't a tooltip.
+  for (const tooltip of [new Float64Array(10_000_000), new Map([[1, 2]])])
+    assert.throws(
+      () => pageScene(sceneOf(tooltip)),
+      (error) => error.message === SCENE_MALFORMED,
+    );
+  // 100,000 points with a 16-field tooltip each, names and values of 8
+  // characters, fit; 20 fields each don't.
+  const fields = (count) =>
+    Object.fromEntries(
+      Array.from({ length: count }, (_, i) => [`field_${i}`.padEnd(8, "_"), "12345678"]),
+    );
+  assert.equal(pageScene(sceneOf(fields(16), 100_000)).items[0].items[0].items.length, 100_000);
+  refused(sceneOf(fields(20), 100_000));
 });
 
 test("the page draws a Worker's scene as untrusted: known marks and keys, cleaned, bounded", () =>
