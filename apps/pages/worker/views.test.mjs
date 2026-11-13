@@ -687,8 +687,10 @@ for (const step of ["the document delete", "the key delete"])
     await emptySlot(h);
     const stuck = new Map(await releaseSteps()).get(step);
     h.storage.stuck.push(stuck);
+    let host;
+    let retry;
     for (let boot = 0; boot < 2; boot++) {
-      const host = h.page();
+      host = h.page();
       const read = await h.tool(host, "read_page", { comments: "none" });
       assert.equal(read.status, 200, JSON.stringify(read.body));
       assert.equal(host.views.get("daily").state.name, "releasing");
@@ -702,7 +704,9 @@ for (const step of ["the document delete", "the key delete"])
       );
       const answer = await browser(host.plain).ask(await viewDocumentId(pageId, "daily"));
       assert.notEqual(answer.has, true, "the document isn't served");
-      const refused = await h.setView(host);
+      const { revision } = (await h.tool(host, "read_page", { include_content: false })).body;
+      retry = { revision, nonce: `daily-${boot}`, operations: [{ op: "set_view", ...chart() }] };
+      const refused = await h.tool(host, "edit_page", retry);
       assert.equal(refused.status, 503, JSON.stringify(refused.body));
       assert.equal(refused.body.code, "view_unavailable");
       assert.equal(refused.body.retryable, true);
@@ -710,19 +714,77 @@ for (const step of ["the document delete", "the key delete"])
       const other = await h.setView(host, { view_id: `other-${boot}` });
       assert.equal(other.status, 200, "other ids work");
     }
-    // Once storage recovers, the next write to the id finishes the release
-    // and creates the view.
+    // Once storage recovers, the same host's retry of the exact request
+    // that got 503 finishes the release and creates the view; repeating it
+    // replays its receipt.
     h.storage.stuck.length = 0;
-    const host = h.page();
-    const written = await h.setView(host);
+    const written = await h.tool(host, "edit_page", retry);
     assert.equal(written.status, 200, JSON.stringify(written.body));
     assert.equal(written.body.view_revision, "1");
+    const replayed = await h.tool(host, "edit_page", retry);
+    assert.equal(replayed.status, 200, JSON.stringify(replayed.body));
+    assert.deepEqual(replayed.body, written.body);
+    assert.deepEqual(await h.keys("host/view/"), [
+      "host/view/daily",
+      "host/view/other-0",
+      "host/view/other-1",
+    ]);
     assert.deepEqual((await h.call(host, `/api/connect?page=${pageId}`)).body.documents.views, {
       daily: await viewDocumentId(pageId, "daily"),
       "other-0": await viewDocumentId(pageId, "other-0"),
       "other-1": await viewDocumentId(pageId, "other-1"),
     });
   });
+
+test("access revoked while a write finishes a view's release is refused, and takes no slot", async (t) => {
+  const h = await viewsHost(t);
+  await emptySlot(h);
+  h.storage.stuck.push({ delete: (name) => name === "host/view/daily" });
+  const host = h.page();
+  assert.equal((await h.tool(host, "read_page", { views: true })).status, 200);
+  assert.equal(host.views.get("daily").state.name, "releasing");
+  h.storage.stuck.length = 0;
+  // The release pauses at its key delete; the caller's access ends there.
+  const remove = h.storage.delete.bind(h.storage);
+  t.mock.method(h.storage, "delete", async (key) => {
+    if (key === "host/view/daily")
+      t.mock.method(host.policy, "account", () => {
+        throw Object.assign(Error("Document access denied"), { status: 403 });
+      });
+    return remove(key);
+  });
+  const refused = await h.setView(host);
+  assert.equal(refused.status, 403, JSON.stringify(refused.body));
+  assert.deepEqual(await h.keys("host/view/"), [], "the release finished; no slot was taken");
+  assert.deepEqual(await h.viewStored("daily"), []);
+  assert.equal(host.views?.has("daily") ?? false, false);
+});
+
+test("a view whose release removed its document, on a Page then stamped with a feature this build lacks, keeps its slot unserved and the Page boots", async (t) => {
+  const h = await viewsHost(t);
+  await emptySlot(h);
+  h.storage.stuck.push({ delete: (name) => name === "host/view/daily" });
+  const host = h.page();
+  assert.equal((await h.tool(host, "read_page", { views: true })).status, 200);
+  assert.equal(host.views.get("daily").state.name, "releasing");
+  assert.deepEqual(await h.viewStored("daily"), [], "the document is gone, the key is not");
+  await stampFuture(host);
+  await host.flush();
+  h.storage.stuck.length = 0;
+
+  const next = h.page();
+  const read = await h.tool(next, "read_page", { views: true });
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.deepEqual(read.body.views, []);
+  assert.deepEqual(await h.keys("host/view/"), ["host/view/daily"], "the slot is kept");
+  assert.deepEqual(await h.viewStored("daily"), [], "no genesis is recreated");
+  assert.equal(next.views?.has("daily") ?? false, false, "not served");
+  const answer = await browser(next.plain).ask(await viewDocumentId(pageId, "daily"));
+  assert.notEqual(answer.has, true);
+  const refused = await h.setView(next);
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.code, "unsupported_schema_feature");
+});
 
 test("a release whose sync after the key delete fails leaves the Page working, and the next write to the id finishes it", async (t) => {
   const h = await viewsHost(t);

@@ -1667,7 +1667,9 @@ then the key, then sync), before any socket can hold it. A failed release
 leaves the view `releasing` and the Page boots: the view is not served,
 listed or writable. The next boot runs the release again, and so does the
 next `set_view` to that id, which proceeds once the release finishes and is
-refused `503 view_unavailable` (retryable) while it fails. Slot allocation
+refused `503 view_unavailable` (retryable) while it fails. A write that
+finishes a release runs every pre-slot check again from the top, since the
+release awaited storage. Slot allocation
 runs in one per-Page queue, so the cap is read and the key written as one
 step.
 
@@ -1678,7 +1680,10 @@ the stamp names a feature this build lacks (a newer build wrote it, then the
 host rolled back), boot doesn't replay a pending sources or view intent,
 which stays pending for a build that supports the stamp; the document loads
 at its stored state and the Page boots. A retry of that intent gets the same
-refusal. Boot releases no empty view slot in that state either.
+refusal. Boot releases no empty view slot in that state either, and doesn't
+import a listed view whose document a release already removed (importing
+would create its genesis, which the gate refuses): the slot stays, unserved,
+until a build that supports the stamp boots.
 
 A view whose key names a format this build doesn't write is never opened:
 not served, replayed, rewritten or released, and its pending intents and

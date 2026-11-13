@@ -5206,6 +5206,18 @@ export class Page {
       // served, replayed, rewritten or released. It still counts toward the
       // cap, and purge still removes it.
       if (format !== WRITTEN_FORMATS[VIEW_MODULE.type]) continue;
+      // A key whose document a release already removed: importing would
+      // create its genesis, which SyncHost's gate refuses while the Page's
+      // stamp names a feature this build lacks, failing the boot. The slot
+      // stays, unserved, until a build that supports the stamp boots.
+      if (
+        !this.pageEditable() &&
+        this.views?.get(viewId) === undefined &&
+        !(await this.plain.stored(
+          derivedDocumentId(await viewDocUuid(this.metadata.pageId, viewId)),
+        ))
+      )
+        continue;
       const opened = this.views?.get(viewId)?.state.name === "ready";
       // A slot no write landed in: the host stopped between the key and the
       // journal entry, or the write failed after the key. Released only by
@@ -7221,6 +7233,72 @@ export class Page {
     }
   }
 
+  /** The pre-slot checks of set_view `op`, then its view slot: the Page's
+   * stamp, the operation against the view as it stands, the cap, room in
+   * the journal and the caller's access, then the view's document (created
+   * when the Page has none under this id). Every refusal known in advance
+   * comes before the slot is taken, so a write that fails after it fails
+   * from I/O or a crash; its slot stays, unlisted until a write lands, and
+   * the next boot releases it if none does. Returns false, having taken
+   * nothing, when it first finished a release a boot or an earlier write
+   * left unfinished: the caller runs it again, since the release awaited
+   * storage. */
+  async takeViewSlot(request, identity, op, args, handle) {
+    const viewId = op.view_id;
+    requireSupportedSchema(this.handle.doc());
+    try {
+      checkView(handle.doc(), op, { sourcesDoc: this.sourcesView() });
+    } catch (error) {
+      throw viewRefusal(error);
+    }
+    return this.viewSlot(async () => {
+      const listed = await this.storedViewIds();
+      if (!listed.includes(viewId) && listed.length >= MAX_VIEWS)
+        throw Object.assign(
+          new HttpError(
+            400,
+            `A Page holds up to ${MAX_VIEWS} views, and this one holds ${listed.join(", ")}. Rewrite one of them with set_view and its view_revision.`,
+            "view_limit",
+          ),
+          { details: { view_ids: listed } },
+        );
+      // The journal's own check stays the check of record; this one is
+      // generous, so it refuses before the slot.
+      await requireJournalRoom(this.ctx.storage, {
+        bytes: 2 * operationEntryBytes("", args) + 4096,
+      });
+      // Access can change while the view list is read. The credential is the
+      // request's own, so it names the principal the write is attributed to,
+      // or the write is refused.
+      const current = await authenticate(request, this.env);
+      if (current.principal !== identity.principal)
+        throw new HttpError(403, "Document access denied");
+      this.policy.account(current, true);
+      const entry = await this.viewEntry(viewId);
+      try {
+        // Until a release a boot or an earlier write left unfinished ends,
+        // the id takes no write.
+        if (entry.state.name === "releasing") {
+          try {
+            await this.viewEvent(viewId, { type: "release" });
+          } catch (error) {
+            logFailure(error, "view-release");
+            throw new HttpError(
+              503,
+              `The view "${viewId}" is still being cleared after a failed write. Try again shortly.`,
+              "view_unavailable",
+            );
+          }
+          return false;
+        }
+        await this.viewEvent(viewId, { type: "create", recorded: listed.includes(viewId) });
+        return true;
+      } finally {
+        this.forgetIdleView(viewId);
+      }
+    });
+  }
+
   /**
    * One edit_page set_view: the view's document (model/view-doc.mjs),
    * written through the journal. The caller holds edit access. Like a source
@@ -7295,60 +7373,10 @@ export class Page {
         schemaDoc: () => this.handle.doc(),
         pageHeads: () => A.getHeads(this.handle.doc()),
         prepare: async () => {
-          try {
-            checkView(handle.doc(), op, { sourcesDoc: this.sourcesView() });
-          } catch (error) {
-            throw viewRefusal(error);
-          }
-          // Every refusal known in advance comes before the slot is taken,
-          // so a write that fails after it fails from I/O or a crash. Its
-          // slot stays, unlisted until a write lands, and the next boot
-          // releases it if none does.
-          await this.viewSlot(async () => {
-            const listed = await this.storedViewIds();
-            if (!listed.includes(viewId) && listed.length >= MAX_VIEWS)
-              throw Object.assign(
-                new HttpError(
-                  400,
-                  `A Page holds up to ${MAX_VIEWS} views, and this one holds ${listed.join(", ")}. Rewrite one of them with set_view and its view_revision.`,
-                  "view_limit",
-                ),
-                { details: { view_ids: listed } },
-              );
-            // The journal's own check stays the check of record; this one
-            // is generous, so it refuses before the slot.
-            await requireJournalRoom(this.ctx.storage, {
-              bytes: 2 * operationEntryBytes("", args) + 4096,
-            });
-            // Access can change while the view list is read. The credential
-            // is the request's own, so it names the principal the write is
-            // attributed to, or the write is refused.
-            const current = await authenticate(request, this.env);
-            if (current.principal !== identity.principal)
-              throw new HttpError(403, "Document access denied");
-            this.policy.account(current, true);
-            const entry = await this.viewEntry(viewId);
-            try {
-              // A release a boot or an earlier write left unfinished ends
-              // first; until it does, the id takes no write.
-              if (entry.state.name === "releasing") {
-                try {
-                  await this.viewEvent(viewId, { type: "release" });
-                } catch (error) {
-                  logFailure(error, "view-release");
-                  throw new HttpError(
-                    503,
-                    `The view "${viewId}" is still being cleared after a failed write. Try again shortly.`,
-                    "view_unavailable",
-                  );
-                }
-                listed.splice(listed.indexOf(viewId), 1);
-              }
-              await this.viewEvent(viewId, { type: "create", recorded: listed.includes(viewId) });
-            } finally {
-              this.forgetIdleView(viewId);
-            }
-          });
+          // A release this write finishes first awaits storage, so every
+          // check runs again after it, from the top. A release only runs
+          // from `releasing`, so the second pass takes the slot or refuses.
+          while (!(await this.takeViewSlot(request, identity, op, args, handle)));
         },
         apply: (draft, effectiveArgs) => {
           try {
