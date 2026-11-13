@@ -2,6 +2,8 @@ import { useId } from "react";
 import { ROLE_LABELS } from "./sharing-roles.mjs";
 
 const roleLabel = (role) => ROLE_LABELS[role] ?? ROLE_LABELS.viewer;
+/** Grantable roles, weakest first. */
+const ROLES = Object.keys(ROLE_LABELS);
 
 /**
  * The owner's "Link access" control for a Page or a Project: Restricted, then
@@ -11,6 +13,8 @@ const roleLabel = (role) => ROLE_LABELS[role] ?? ROLE_LABELS.viewer;
  * `onChange` receives the sharing action to send: choosing an audience sets
  * it at the stored audience's role or Can view, choosing a role sets it on
  * the stored audience, and Restricted clears whichever audience is stored.
+ * When the owner can't prove a stored company domain now (`narrowOnly`), only
+ * lower roles are offered, as the host allows.
  * `onRefresh` reads sharing again after the owner signs in again in another
  * tab.
  */
@@ -60,11 +64,15 @@ export function LinkAccess({ linkAccess, resource, busy, refreshing, onChange, o
             id={`${id}-role`}
             className="page-organization-role"
             value={linkAccess.role}
-            disabled={busy || linkAccess.unverified}
+            disabled={busy || (linkAccess.unverified && !linkAccess.narrowOnly)}
             onChange={(event) => chooseRole(event.target.value)}
           >
-            {Object.entries(ROLE_LABELS).map(([role, label]) => (
-              <option key={role} value={role}>
+            {Object.entries(ROLE_LABELS).map(([role, label], rank) => (
+              <option
+                key={role}
+                value={role}
+                disabled={linkAccess.narrowOnly && rank > ROLES.indexOf(linkAccess.role)}
+              >
                 {label}
               </option>
             ))}
@@ -99,7 +107,9 @@ export function LinkAccess({ linkAccess, resource, busy, refreshing, onChange, o
               {linkAccess.organization
                 ? `Members of ${linkAccess.organization.name} can still open this ${resource}.`
                 : `People at ${linkAccess.domain} can still open this ${resource}.`}{" "}
-              Choose Restricted to stop sharing with them.
+              {linkAccess.narrowOnly
+                ? "You can lower their role, or choose Restricted to stop sharing with them."
+                : "Choose Restricted to stop sharing with them."}
             </p>
           )}
           <div className="page-domain-sharing-actions">
@@ -129,8 +139,9 @@ export function LinkAccess({ linkAccess, resource, busy, refreshing, onChange, o
         ) : (
           <p className="page-domain-sharing-note" role="note">
             You are not signed in with a verified {linkAccess.domain} email. People at{" "}
-            {linkAccess.domain} can still open this {resource}. Choose Restricted to stop sharing
-            with them; sharing again needs a verified {linkAccess.domain} email.
+            {linkAccess.domain} can still open this {resource}. You can lower their role, or choose
+            Restricted to stop sharing with them; a higher role or sharing again needs a verified{" "}
+            {linkAccess.domain} email.
           </p>
         ))
       )}

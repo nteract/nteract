@@ -497,6 +497,53 @@ test("an owner shares with an organization, sets its role, and Restricted withdr
   assert.equal(roleSelect(f.container), null);
 });
 
+test("an owner who can't prove a stored company domain may only lower its role or withdraw it", async (t) => {
+  const posts = [];
+  let current = {
+    ...companyLedger("expired"),
+    domainView: { domain: "anaconda.com", namespace: "fixture", role: "commenter" },
+    domainViewOwnerVerified: false,
+  };
+  const f = await fixture(t, async (_url, options) => {
+    if (options.method === "POST") {
+      const body = JSON.parse(options.body);
+      posts.push(body);
+      current = {
+        ...current,
+        ...ledger(current.access.revision + 1),
+        domainView: { ...current.domainView, role: body.role },
+      };
+      return json({ ...current, receipt: { revision: current.access.revision } });
+    }
+    return json(current);
+  });
+  await f.toggle();
+  const select = roleSelect(f.container);
+  assert.equal(select.disabled, false);
+  assert.deepEqual(
+    [...select.options].map((option) => [option.value, option.disabled]),
+    [
+      ["viewer", false],
+      ["commenter", false],
+      ["editor", true],
+    ],
+  );
+  assert.match(
+    f.container.querySelector(".page-domain-sharing-note").textContent,
+    /You can lower their role, or choose Restricted/,
+  );
+  await choose(select, "viewer");
+  await flush();
+  assert.deepEqual(
+    { action: posts[0].action, domain: posts[0].domain, role: posts[0].role },
+    { action: "set_domain_view", domain: "anaconda.com", role: "viewer" },
+  );
+  assert.deepEqual(
+    [...roleSelect(f.container).options].map((option) => option.disabled),
+    [false, true, true],
+  );
+});
+
 test("an owner shares with a company domain, sets its role, and Restricted withdraws it", async (t) => {
   const posts = [];
   let current = companyLedger("verified");

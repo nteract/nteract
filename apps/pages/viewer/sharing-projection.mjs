@@ -111,7 +111,9 @@ export function organizationSharingProjection(value) {
  * Restricted clears whichever is stored. `organization` is the stored
  * organization grant, `domain` the stored company domain, `role` the stored
  * audience's role (null when Restricted), and `expired` names the audience
- * whose proof a fresh sign-in restores.
+ * whose proof a fresh sign-in restores. `narrowOnly` is true for a stored
+ * company domain the owner can't prove now: the host still lets the owner
+ * lower its role (or choose Restricted), never raise it.
  */
 export function linkAccessProjection(value) {
   const domain = domainSharingProjection(value);
@@ -125,6 +127,7 @@ export function linkAccessProjection(value) {
     domain: storedDomain,
     role: stored?.role ?? domain?.role ?? null,
     unverified: stored ? organization.unverified : !!domain?.unverified,
+    narrowOnly: !stored && !!storedDomain && !!domain?.unverified,
     expired: organization?.expired
       ? { kind: "organization", name: organization.expired }
       : domain?.expired && !stored

@@ -763,7 +763,7 @@ const capabilities = (access) =>
     (name) => access[name],
   );
 
-test("an owner shares with a company domain at each role; a role change needs current proof, withdrawing none", async () => {
+test("an owner shares with a company domain at each role; widening needs current proof, narrowing and withdrawing none", async () => {
   let page = restrictedPage();
   let revision = 1;
   for (const role of ["viewer", "commenter", "editor", "viewer"]) {
@@ -798,22 +798,45 @@ test("an owner shares with a company domain at each role; a role change needs cu
     (await sharingProjection(metadata(), companyApiKeyOwner, env, now)).domainView,
     viewerGrant,
   );
-  // An owner whose proof lapsed can't change the role, only withdraw.
+  // An owner whose proof lapsed may narrow the grant: lower its role on the
+  // same domain, or withdraw it. Widening needs fresh proof.
   const stale = await verifiedIdentity(
     "owner@anaconda.com",
     true,
     now - 6 * 3600 * 1000 - 1000,
     owner.principal,
   );
-  for (const role of ["viewer", "commenter"])
+  const asStale = (from, args, nonce) =>
+    proposeSharingMutation(
+      from,
+      stale,
+      { ...enableArgs, ...args, expected_revision: from.acl.revision, nonce },
+      now,
+      env,
+    );
+  const commenter = await asStale(page, { role: "commenter" }, "stale-commenter");
+  assert.deepEqual(commenter.metadata.acl.domainView, grantAt("commenter"));
+  const viewer = await asStale(commenter.metadata, { role: "viewer" }, "stale-viewer");
+  assert.deepEqual(viewer.metadata.acl.domainView, grantAt("viewer"));
+  // A stored grant without a role is a viewer grant: nothing lower to narrow to.
+  for (const [from, args, label] of [
+    [page, { role: "editor" }, "the same role"],
+    [commenter.metadata, { role: "editor" }, "a higher role"],
+    [viewer.metadata, { role: "commenter" }, "a higher role"],
+    [viewer.metadata, { role: "viewer" }, "the same role"],
+    [metadata(), { role: "viewer" }, "a role-less grant again"],
+    [restrictedPage(), { role: "viewer" }, "a new grant"],
+    [
+      {
+        ...page,
+        acl: { ...page.acl, domainView: { ...grantAt("editor"), namespace: "user:other" } },
+      },
+      { role: "viewer" },
+      "another namespace's grant",
+    ],
+  ])
     await rejectsWithStatus(
-      proposeSharingMutation(
-        page,
-        stale,
-        { ...enableArgs, role, expected_revision: revision, nonce: `stale-${role}` },
-        now,
-        env,
-      ),
+      asStale(from, args, `stale-${label.replaceAll(/\W/g, "-")}-${args.role}`),
       403,
       ownerProofExpired,
       "company_email_proof_required",
