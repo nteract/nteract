@@ -69,7 +69,11 @@ the dataflow and posts the finished scenegraph back, and the page draws it
 with Vega's SVG renderer and keeps the hover tooltip. The charts on a Page
 share one Worker (`viewer/chart-pool.mjs`), which runs one draw at a time,
 first draws ahead of redraws. The page never runs the dataflow itself: a
-Worker that can't start fails its charts.
+Worker that can't start fails its charts. The Worker removes its network,
+storage, channel and child-Worker capabilities before Vega loads
+(`viewer/chart-lockdown.mjs`), and the Pages Worker serves it under its own
+`Content-Security-Policy: default-src 'none'`
+(`shared/chart-worker-csp.mjs`).
 
 A chart is static: marks, axes, legends and Vega's hover tooltip. Selections,
 bindings, `param` predicates, hover encodings and every other event stream are
@@ -99,8 +103,9 @@ A spec that passes every check can still fail to terminate: the guards cover
 the cases reviews have found, and Vega's and d3's numeric loops aren't proven
 to end. A draw that runs longer than 8 seconds in its Worker shows `This chart
 took too long to draw.`; that Worker is replaced, and the other charts draw on
-the replacement. The timer starts when the Worker begins the draw, so waiting
-behind other charts doesn't count against it. A chart that timed out isn't
+the replacement. The page hands the Worker one job at a time and times each
+from its post, data decoding included, so waiting behind other charts
+doesn't count against it. A chart that timed out isn't
 drawn again until its spec or data changes, so ten hung charts on one Page cost
 at most 80 seconds of Worker time, once. The page keeps painting meanwhile. While the Page is hidden, draws wait and a Worker running
 one is terminated. The largest chart the budgets admit, 100,000 points from
