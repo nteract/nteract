@@ -31,7 +31,8 @@ const {
 } = await import("./chart-dataflow.mjs");
 const { datasetRows, ownRows } = await import("./chart-data.mjs");
 const { plainScene, readDatasets } = await import("./chart-dataflow.mjs");
-const { SCENE_MALFORMED, SCENE_MAX_ITEMS, SCENE_TOO_BIG } = await import("./chart-scene.mjs");
+const { SCENE_MALFORMED, SCENE_MAX_ITEMS, SCENE_TOO_BIG, SCENE_TOO_LARGE } =
+  await import("./chart-scene.mjs");
 const { WORKER_DIDNT_START } = await import("./chart-pool.mjs");
 const { checkChartSpec, CHART_MAX_ROWS, CHART_MAX_CELLS, CHART_EXPRESSION_FUNCTIONS } =
   await import("../shared/chart-spec.mjs");
@@ -2223,6 +2224,14 @@ class SceneWorker extends EventTarget {
   terminate() {}
 }
 
+/** A scene whose one `marktype` mark holds the same `item` `count` times. */
+const shared = (marktype, item, count) => ({
+  scene: frameOf([{ marktype, items: Array.from({ length: count }, () => item) }]),
+  width: 200,
+  height: 100,
+  origin: [0, 0],
+});
+
 const frameOf = (marks) => ({
   marktype: "group",
   items: [{ x: 0, y: 0, width: 200, height: 100, items: marks }],
@@ -2260,6 +2269,7 @@ test("the page draws a Worker's scene as untrusted: known marks and keys, cleane
             tooltip: { note: "x".repeat(100_000) },
           },
           { x: 15, y: 1, width: 5, height: 5, fill: () => "red", text: { toString: () => "x" } },
+          { x: 1e300, y: Number.NaN, width: Infinity, height: 5, fill: "red" },
           polluting,
         ],
       },
@@ -2310,6 +2320,31 @@ test("the page draws a Worker's scene as untrusted: known marks and keys, cleane
         () => ({ scene: "<svg onload=alert(1)>", width: 200, height: 100, origin: [0, 0] }),
         SCENE_MALFORMED,
       ],
+      // One item referenced many times: structured clone keeps one copy, so
+      // the budgets count every reference before anything is copied.
+      [() => shared("path", { path: `M0,0${"L1,1".repeat(1_999_999)}` }, 3), SCENE_TOO_LARGE],
+      [() => shared("text", { text: "x".repeat(10_000) }, 200), SCENE_TOO_LARGE],
+      [() => shared("rect", { description: "x".repeat(1_000) }, 30_000), SCENE_TOO_LARGE],
+      [() => shared("rect", { tooltip: { note: "x".repeat(1_000_000) } }, 40), SCENE_TOO_LARGE],
+      [
+        () =>
+          shared(
+            "rect",
+            {
+              fill: {
+                gradient: "linear",
+                stops: Array.from({ length: 256 }, (_, i) => ({ offset: i / 255, color: "red" })),
+              },
+            },
+            20,
+          ),
+        SCENE_TOO_LARGE,
+      ],
+      // An error a Worker forges is bounded like any other answer.
+      [
+        () => ({ error: { refusal: true, message: "x".repeat(10_000_000) } }),
+        "This chart couldn't be drawn.",
+      ],
     ];
     for (const [answer, expected] of cases) {
       const restore = setChartWorker(() => new SceneWorker(answer));
@@ -2321,6 +2356,7 @@ test("the page draws a Worker's scene as untrusted: known marks and keys, cleane
           assert.equal(status, "rendered");
           const html = element.innerHTML;
           assert.doesNotMatch(html, /evil\.test|onload|href=/);
+          assert.doesNotMatch(html, /NaN|Infinity|e\+300/, "numbers are finite and in range");
           const gradient = element.querySelector("linearGradient");
           assert.match(gradient.id, /^pages-chart-gradient-\d+$/);
           assert.equal({}.polluted, undefined);
