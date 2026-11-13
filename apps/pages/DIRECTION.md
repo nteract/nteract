@@ -202,7 +202,7 @@ records the node addresses agents use.
   not build a migration from it. It runs the commit tagged `pages-format-1`.
   Nothing from `main` deploys to it: a fix is a commit on a maintenance
   branch cut from that tag.
-- **Other deployed targets are demos.** Keep this list current.
+- **The other targets in this list are demos.** Keep this list current.
 
   | Target | Host | State |
   | --- | --- | --- |
@@ -210,6 +210,11 @@ records the node addresses agents use.
   | `page10` | lab1 | Preview. Deployed from `main` automatically. Reset freely |
   | `pages2` (`page2.runtimed.run`) | lab2 | Demo. Reset freely |
   | `page11` | lab2 | Profile in source only; nothing is deployed |
+- **A deployment from the release package belongs to its operator.** It is not
+  in the list above, it takes builds of `main`, and it can hold documents
+  people use. Do not reset it or delete from it. A change on `main` that stops
+  a stored document from opening says so in its PR, so the operator can decide
+  before taking the release.
 - **Additive changes stay in the document. Structural changes get a new
   document.** New keys and new node types layer onto existing documents, and
   a reader keeps what it does not understand. A change that reshapes existing
