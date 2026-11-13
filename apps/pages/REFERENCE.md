@@ -1551,8 +1551,10 @@ on the live connection when a reader asks for a source the Page doesn't hold
 and the machine is `absent`. A miss there is the host saying the document
 doesn't exist yet. The lookup retries twice on the backoff, then the machine
 rests in `absent` behind a look-again window: asks inside it run one lookup
-when it ends, and each further miss widens it (10 s, 30 s, then 60 s) until a
-new connection starts over. A reader still waiting on a missing source is
+when it ends, and each further miss widens it (10 s, 30 s, then 60 s). The
+misses outlast a closed replica and a new connection: a lookup by the derived
+id after one waits out what is left of the window, then looks once, with no
+new burst. A reader still waiting on a missing source is
 standing demand: while it waits, one lookup runs as each window ends, so a
 document the host creates later is found; when nothing waits, nothing runs.
 View documents work the same way, with a held view embed as the demand.

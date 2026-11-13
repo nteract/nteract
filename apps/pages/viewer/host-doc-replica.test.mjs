@@ -213,6 +213,39 @@ test("standing demand looks a document that never appears up at fixed times, and
   assert.equal(times.length, 7, "nothing asks once the demand stops");
 });
 
+test("a close and a new connection keep the misses and what is left of the window", async () => {
+  const r = replica();
+  r.sources.discovered(none);
+  const stop = r.sources.demand();
+  await tick();
+  for (let attempt = 1; attempt <= MISSING_ATTEMPTS; attempt++) {
+    r.repo.calls.at(-1).reject(missing());
+    await tick();
+    if (attempt < MISSING_ATTEMPTS) r.advance(retryDelay(attempt));
+    await tick();
+  }
+  const rested = r.repo.calls.length;
+  assert.deepEqual(r.state(), { name: "absent", id: DERIVED, misses: 1, cooling: true });
+  r.advance(4_000);
+  r.sources.close();
+  assert.deepEqual(r.state(), { name: "closed", id: DERIVED, misses: 1 });
+  r.advance(1_000);
+  r.sources.connected();
+  await tick();
+  assert.deepEqual(r.state(), { name: "absent", id: DERIVED, misses: 1, cooling: true });
+  assert.equal(r.repo.calls.length, rested, "no new burst");
+  r.advance(lookAgainDelay(1) - 5_000 - 1);
+  await tick();
+  assert.equal(r.repo.calls.length, rested, "the window's last 5 s pass first");
+  r.advance(1);
+  await tick();
+  assert.equal(r.repo.calls.length, rested + 1, "then one lookup");
+  r.repo.calls.at(-1).reject(missing());
+  await tick();
+  assert.deepEqual(r.state(), { name: "absent", id: DERIVED, misses: 2, cooling: true });
+  stop();
+});
+
 test("standing demand made before a connection looks the document up when one is admitted", async () => {
   let linked = false;
   const r = replica({ linked: () => linked });

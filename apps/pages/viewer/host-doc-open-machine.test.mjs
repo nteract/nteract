@@ -19,6 +19,7 @@ import {
 const S1 = "s1";
 const S2 = "s2";
 const closed = { name: "closed" };
+const closedMissed = { name: "closed", id: S1, misses: 2 };
 const absent = { name: "absent" };
 const missed = { name: "absent", id: S1, misses: 1 };
 const cooling = { name: "absent", id: S1, misses: 1, cooling: true };
@@ -183,11 +184,39 @@ const ROWS = [
     "asked",
   ),
   row(
-    "cooling: a new connection looks at once and clears the timer",
+    "cooling: a new connection after the window looks once, keeping the misses",
     cooling,
     derived(),
-    go(opening(1, S1, "derived"), [clearTimer, lookup(1)]),
+    go(opening(1, S1, "derived", 1), [clearTimer, lookup(1)]),
     "derived",
+  ),
+  row(
+    "cooling: a new connection inside the window waits out what is left of it",
+    cooling,
+    { ...derived(), wait: 4_000 },
+    go(cooling, [clearTimer, { type: "cool", delay: 4_000 }]),
+    "waits",
+  ),
+  row(
+    "closed after misses: a new connection looks once, with no burst",
+    closedMissed,
+    derived(),
+    go(opening(1, S1, "derived", 2), [lookup(1)]),
+    "missed",
+  ),
+  row(
+    "closed after misses: inside its window, the rest of the window passes first",
+    closedMissed,
+    { ...derived(), wait: 5_000 },
+    go({ ...cooling, misses: 2 }, [{ type: "cool", delay: 5_000 }]),
+    "waits",
+  ),
+  row(
+    "opening a look-again lookup: a new connection restarts it with its misses",
+    opening(1, S1, "derived", 2),
+    derived(),
+    go(opening(1, S1, "derived", 2), [cancel(1), lookup(1)]),
+    "missed",
   ),
   row(
     "cooling: a discovery naming none clears the timer",
@@ -197,7 +226,12 @@ const ROWS = [
     "cooling",
   ),
   row("cooling: retire clears the timer", cooling, retire, go(retired, [clearTimer])),
-  row("cooling: close clears the timer", cooling, close, go(closed, [clearTimer])),
+  row(
+    "cooling: close clears the timer and keeps the misses",
+    cooling,
+    close,
+    go({ name: "closed", id: S1, misses: 1 }, [clearTimer]),
+  ),
   row(
     "cooling: the timer fires with nobody asking, and the replica rests",
     cooling,
@@ -482,9 +516,9 @@ test("with steady demand, a missing document gets one lookup per window, widenin
     assert.deepEqual(state, opening(1, S1, "derived", rest));
   }
   assert.deepEqual(windows, [10_000, 30_000, 60_000, 60_000, 60_000]);
-  // A new connection starts over with a fresh burst.
+  // A new connection keeps the misses: one lookup, no new burst.
   ({ state } = hostDocOpenMachine.step(state, derived()));
-  assert.deepEqual(state, opening(1, S1, "derived"));
+  assert.deepEqual(state, opening(1, S1, "derived", 5));
 });
 
 test("a discovery answer becomes one event", () => {

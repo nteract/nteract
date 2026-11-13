@@ -21,10 +21,14 @@
  *   widens the window (lookAgainDelay: 10 s, 30 s, then 60 s). Something
  *   that keeps asking (a view embed on the Page, a table waiting for a
  *   source) is standing demand: one lookup runs at the end of each window
- *   for as long as it asks. A new connection starts over.
+ *   for as long as it asks. The misses outlast a close and a new
+ *   connection: a derived discovery of a document that missed runs no new
+ *   burst, but waits out what is left of its window (`wait`) and then looks
+ *   once.
  *
  * States:
- * - closed: no replica, or no connection admitted since it opened.
+ * - closed: no replica, or no connection admitted since it opened. A
+ *   replica closed after derived misses keeps the `id` and `misses`.
  * - absent: there is no such document. Discovery named none, or a derived
  *   lookup was answered "none". After derived misses it holds the `id` it
  *   looked up and how many times it rested (`misses`), and `cooling` while
@@ -52,7 +56,9 @@
  *   (the document is found only by its derived id, as a view is), `none`,
  *   `unaware` (no document map) or `unreadable` (a format this build doesn't
  *   read). A reconnect is a new discovery: anything not open starts over,
- *   and a running lookup restarts on the new connection.
+ *   and a running lookup restarts on the new connection, except that a
+ *   derived document that missed keeps its misses. `wait` is the time left
+ *   in the look-again window the interpreter last armed for it.
  * - wanted: something on the Page asks for the document, whose derived id is
  *   `id`. Only an absent document is looked up again.
  * - opened / lookupFailed / unknown: lookup `attempt` found the document,
@@ -117,12 +123,22 @@ const answer = (value) => {
   const carriesId = value.answer === "named" || value.answer === "derived";
   check(carriesId === (value.id !== undefined), "only a named or derived answer has an id");
   optionalId(value);
+  check(
+    value.wait === undefined ||
+      (value.answer === "derived" && Number.isSafeInteger(value.wait) && value.wait > 0),
+    "only a derived answer waits, a positive number of ms",
+  );
 };
 const optionalMisses = (value) =>
   check(
     value.misses === undefined || (Number.isSafeInteger(value.misses) && value.misses > 0),
     "misses is a positive integer or absent",
   );
+const closedShape = (value) => {
+  optionalId(value);
+  optionalMisses(value);
+  check((value.id === undefined) === (value.misses === undefined), "a closed miss keeps its id");
+};
 const absentShape = (value) => {
   optionalId(value);
   optionalMisses(value);
@@ -183,13 +199,14 @@ export const hostDocOpenSpec = Object.freeze({
   ],
   cases: {
     ...Object.fromEntries(
-      ["closed", "unserved", "unreadable", "failed"].map((name) => [
+      ["unserved", "unreadable", "failed"].map((name) => [
         `${name}/discovered`,
         ["named", "derived", ...QUIET],
       ]),
     ),
-    "absent/discovered": ["named", "derived", ...QUIET, "cooling"],
-    "opening/discovered": ["lookup", ...QUIET],
+    "closed/discovered": ["named", "derived", ...QUIET, "missed", "waits"],
+    "absent/discovered": ["named", "derived", ...QUIET, "cooling", "waits"],
+    "opening/discovered": ["lookup", "missed", ...QUIET],
     "retrying/discovered": ["lookup", ...QUIET],
     "ready/discovered": ["same", "other", ...QUIET],
     "absent/wanted": ["look", "again", "ask", "asked"],
@@ -201,7 +218,7 @@ export const hostDocOpenSpec = Object.freeze({
   },
   validate: {
     states: {
-      closed: bare,
+      closed: shape("name", ["id", "misses"], closedShape),
       absent: shape("name", ["id", "misses", "cooling", "asked"], absentShape),
       unserved: shape("name", ["id"], optionalId),
       unreadable: bare,
@@ -212,7 +229,7 @@ export const hostDocOpenSpec = Object.freeze({
       retired: bare,
     },
     events: {
-      discovered: shape("type", ["answer", "id"], answer),
+      discovered: shape("type", ["answer", "id", "wait"], answer),
       wanted: shape("type", ["id"], id),
       opened: settled,
       lookupFailed: settled,
@@ -286,8 +303,22 @@ const quietState = (event) =>
       ? { name: "unserved" }
       : { name: "unreadable" };
 
+/** The misses `state` carries for derived document `id`, if any. */
+const missesFor = (state, id) => (state.id === id ? state.misses : undefined);
+
 function discovered(state, event) {
   if (state.name === "retired") return reject(state, REJECT.retired);
+  const misses = event.answer === "derived" ? missesFor(state, event.id) : undefined;
+  if (misses !== undefined) {
+    // A document that missed keeps its misses: what is left of its window
+    // passes first, then one lookup runs.
+    if (event.wait)
+      return ok({ name: "absent", id: event.id, misses, cooling: true }, [
+        ...leave(state),
+        { type: "cool", delay: event.wait },
+      ]);
+    return start(state, event.id, "derived", leave(state), misses);
+  }
   if (event.answer === "named" || event.answer === "derived") {
     // An open document stays open on a new connection: sync resumes on it.
     if (state.name === "ready" && state.id === event.id) return reject(state, REJECT.ready);
@@ -339,6 +370,13 @@ function missing(state) {
   ]);
 }
 
+/** The closed state after `state`: a derived document that missed keeps its
+ * id and misses. */
+const closedAfter = (state) =>
+  state.misses === undefined
+    ? { name: "closed" }
+    : { name: "closed", id: state.id, misses: state.misses };
+
 function transition(state, event) {
   const current = (name) => state.name === name && state.attempt === event.attempt;
   switch (event.type) {
@@ -375,7 +413,7 @@ function transition(state, event) {
     case "close":
       if (state.name === "retired") return reject(state, REJECT.retired);
       if (state.name === "closed") return reject(state, REJECT.closed);
-      return ok({ name: "closed" }, leave(state));
+      return ok(closedAfter(state), leave(state));
   }
   throw new Error(`unknown event ${event.type}`);
 }

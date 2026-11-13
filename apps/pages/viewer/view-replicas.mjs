@@ -14,18 +14,24 @@
 // named while every slot is taken waits, and gets a slot when one frees:
 //
 // - a view in its close delay (no holder) gives its slot up first;
-// - a view whose document is missing gives its slot to a view that hasn't
-//   had one, and waits behind it;
-// - views whose documents are missing take turns: one that waited gets the
-//   slot of one whose look-again window ended, so each is still looked up.
+// - a view with no document drawn (missing, or its lookups failed) gives its
+//   slot to a view that hasn't had one, and waits behind it;
+// - views whose documents are missing take turns: a waiting one whose
+//   look-again window ended takes the slot of one that already looked in
+//   its slot and whose window ended too. Each turn is one lookup, so the
+//   slots together run about one lookup per slot per window however many
+//   ids wait. A replica keeps its misses and its window through a turn
+//   (host-doc-open-machine.mjs), so a turn never starts a new burst.
 //
 // The host holds at most MAX_VIEWS views per Page, so a body can name more
 // than MAX_VIEWS ids only with ids whose documents are missing. Those are
 // the ones that give way: every existing view gets a slot, and draws, while
 // its embed holds it.
 //
-// A waiting view reads as over the limit, or as missing once it gave its
-// slot up for that. Nothing here writes a view document.
+// A waiting view reads as over the limit, or as missing (or failed) once it
+// gave its slot up. A view that gave its slot up after failing is looked up
+// again when it next has one; one with a slot is looked up again on each
+// admitted connection. Nothing here writes a view document.
 import { BehaviorSubject, asyncScheduler, of, switchMap, timer } from "rxjs";
 import { HostDocReplica } from "./host-doc-replica.mjs";
 import { slotted, viewHoldMachine } from "./view-hold-machine.mjs";
@@ -43,19 +49,27 @@ const unavailable = (reason) =>
 const LIMIT = unavailable("limit");
 const MISSING = unavailable("missing");
 const CLOSED = unavailable("closed");
+const FAILED = unavailable("failed");
 
 /** Whether a replica in `state` (host-doc-open-machine.mjs) runs a look-again
  * lookup: its document was missing and its window ended. */
 export const lookingAgain = (state) =>
   (state.name === "opening" || state.name === "retrying") && state.misses !== undefined;
 
-/** Whether a replica in `state` settled without its document: the host
- * answered it holds none, or it is looking again for one it held none of. */
-export const settledMissing = (state) =>
+/** Whether a replica in `state` has no document and nothing in hand: the
+ * host answered it holds none, it is looking again for one it held none of,
+ * or its lookups failed. A view that hasn't had a slot may take the slot of
+ * one in this state. */
+export const undrawn = (state) =>
   state.name === "absent" ||
   state.name === "unserved" ||
   state.name === "unreadable" ||
+  state.name === "failed" ||
   lookingAgain(state);
+
+/** Whether a replica in `state` is due another lookup of a missing
+ * document: its window ended. */
+const due = (state) => lookingAgain(state) || (state.name === "absent" && !state.cooling);
 
 export class ViewReplicas {
   #entries = new Map();
@@ -139,6 +153,8 @@ export class ViewReplicas {
         timer: null,
         stopDemand: null,
         arrival: 0,
+        looked: false,
+        parked: null,
         shown$: new BehaviorSubject(CLOSED),
         watch: null,
       };
@@ -198,17 +214,27 @@ export class ViewReplicas {
   #admit() {
     if (this.#retired) return;
     for (;;) {
-      const [next] = this.#queue();
-      if (!next) return;
+      const queue = this.#queue();
+      if (!queue.length) return;
       const slots = [...this.#entries.values()].filter((entry) => slotted(entry.state));
-      if (slots.length >= this.#options.limit) {
-        const yields = next.state.rank === "fresh" ? settledMissing : lookingAgain;
-        const victim =
-          slots.find((entry) => entry.state.name === "closing") ??
-          slots.find((entry) => entry.replica && yields(entry.replica.state$.snapshot()));
-        if (!victim) return;
-        this.#step(victim, { type: "evict" });
+      if (slots.length < this.#options.limit) {
+        this.#step(queue[0], { type: "admit" });
+        continue;
       }
+      const closing = slots.find((entry) => entry.state.name === "closing");
+      const fresh = queue[0].state.rank === "fresh";
+      const now = this.#options.scheduler.now();
+      const next =
+        closing || fresh
+          ? queue[0]
+          : queue.find((entry) => !entry.replica || entry.replica.lookAgainAt <= now);
+      if (!next) return;
+      const yields = fresh
+        ? (entry) => undrawn(entry.replica.state$.snapshot())
+        : (entry) => entry.looked && due(entry.replica.state$.snapshot());
+      const victim = closing ?? slots.find((entry) => entry.replica && yields(entry));
+      if (!victim) return;
+      this.#step(victim, { type: "evict" });
       this.#step(next, { type: "admit" });
     }
   }
@@ -229,8 +255,13 @@ export class ViewReplicas {
     if (result.rejected) return result;
     const before = entry.state;
     entry.state = result.state;
-    if (entry.state.name === "waiting" && before.name !== "waiting")
+    if (entry.state.name === "waiting" && before.name !== "waiting") {
       entry.arrival = ++this.#arrivals;
+      // What a view that gave its slot up reads while it waits.
+      entry.parked = entry.replica?.state$.snapshot().name === "failed" ? FAILED : MISSING;
+    }
+    // A view's turn in a slot starts with no lookup made there.
+    if (event.type === "admit") entry.looked = false;
     for (const effect of result.effects) this.#run(entry, effect);
     this.#show(entry);
     if (entry.state.name === "closed" && this.#entries.get(entry.viewId) === entry) {
@@ -247,7 +278,7 @@ export class ViewReplicas {
       state.name === "waiting"
         ? state.rank === "fresh"
           ? LIMIT
-          : MISSING
+          : (entry.parked ?? MISSING)
         : (entry.view$ ?? CLOSED);
     if (entry.shown$.getValue() !== next) entry.shown$.next(next);
   }
@@ -303,9 +334,12 @@ export class ViewReplicas {
         derive: () => viewDocumentId(pageId, entry.viewId),
       });
       entry.view$ = viewStore(entry.viewId, entry.replica);
-      // A replica that settles missing may free a slot for a waiting view.
+      // A replica that settles without its document has looked in its slot
+      // and may give the slot up; so may one whose window then ends.
       entry.watch = entry.replica.state$.state$.subscribe((state) => {
-        if (settledMissing(state) && this.#queue().length) this.#admitSoon();
+        if (!undrawn(state)) return;
+        if (!lookingAgain(state) && slotted(entry.state)) entry.looked = true;
+        if (this.#queue().length) this.#admitSoon();
       });
     }
     if (linked()) entry.replica.connected();

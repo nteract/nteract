@@ -86,8 +86,10 @@ before(async () => {
     "nested",
     `SELECT * FROM (VALUES
       ({'count': 9007199254740993::BIGINT, 'price': 1.25::DECIMAL(5,2)},
-       [9007199254740993::BIGINT, NULL], [1.5::DECIMAL(4,1)], MAP {'k': 2::BIGINT})
-    ) t(record, counts, prices, lookup)`,
+       [9007199254740993::BIGINT, NULL], [1.5::DECIMAL(4,1)], MAP {'k': 2::BIGINT},
+       {'constructor': 1, 'toString': 2, 'toJSON': 3, 'toArray': 4, '__proto__': 5, 'plain': 6},
+       MAP {9007199254740992::BIGINT: 'even', 9007199254740993::BIGINT: 'odd'})
+    ) t(record, counts, prices, lookup, members, wide)`,
   );
   connection.close();
 });
@@ -220,6 +222,30 @@ test("values inside lists, structs and maps read as numbers, and rows serialize"
   assert.deepEqual(row.prices, [1.5]);
   assert.deepEqual({ ...row.lookup }, { k: 2 });
   assert.doesNotThrow(() => JSON.stringify(rows));
+});
+
+test("struct fields named like object members read their values, and map keys stay apart", async () => {
+  const { datasetRows } = await import("./vega-chart.mjs");
+  const [row] = datasetRows(await decodeArrow(files.nested, DATAFRAME_LIMITS));
+  const members = row.members;
+  for (const [name, value] of Object.entries({
+    constructor: 1,
+    toString: 2,
+    toJSON: 3,
+    toArray: 4,
+    plain: 6,
+  }))
+    assert.ok(Object.hasOwn(members, name) && members[name] === value, `${name} is ${value}`);
+  assert.ok(!Object.hasOwn(members, "__proto__"), "a __proto__ field is dropped");
+  assert.equal(Object.getPrototypeOf(members), Object.prototype);
+  assert.deepEqual(
+    Object.entries(row.wide).sort(),
+    [
+      ["9007199254740992", "even"],
+      ["9007199254740993", "odd"],
+    ],
+    "two keys one double apart keep their own digits",
+  );
 });
 
 test("an embed draws its view, redraws on a new source version, and shows its sentences", () =>

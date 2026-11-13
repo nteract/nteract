@@ -96,24 +96,30 @@ export function chartReader(type) {
     );
   }
   if (DataType.isStruct(type)) {
-    const fields = type.children
-      .filter((field) => field.name !== DROPPED)
-      .map((field) => [field.name, chartReader(field.type)]);
+    // Fields are read by position through the row's iterator. Arrow's
+    // StructRow resolves a name as its own member first, so `row.toJSON` is
+    // a method even when a field has that name.
+    const fields = type.children.map((field) => [field.name, chartReader(field.type)]);
     return nullable((row) => {
       const out = Object.create(null);
-      for (const [name, read] of fields) out[name] = read(row[name]);
+      let index = 0;
+      for (const [, value] of row) {
+        const [name, read] = fields[index++];
+        if (name !== DROPPED) out[name] = read(value);
+      }
       return out;
     });
   }
   if (DataType.isMap(type)) {
-    const [keyField, valueField] = type.children[0].type.children;
-    const key = chartReader(keyField.type);
-    const item = chartReader(valueField.type);
+    // A key is named by its stored value's own text (a BigInt's full
+    // digits), so two keys a chart number can't tell apart stay apart. Only
+    // values convert.
+    const item = chartReader(type.children[0].type.children[1].type);
     return nullable((map) => {
       const out = Object.create(null);
-      for (const [k, v] of map) {
-        const name = String(key(k));
-        if (name !== DROPPED) out[name] = item(v);
+      for (const [key, value] of map) {
+        const name = String(key);
+        if (name !== DROPPED) out[name] = item(value);
       }
       return out;
     });

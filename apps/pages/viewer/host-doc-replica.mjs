@@ -57,6 +57,8 @@ export class HostDocReplica {
   #linked;
   /** How many things on the Page ask for the document now (demand()). */
   #demand = 0;
+  /** When the look-again window last armed ends, on the scheduler's clock. */
+  #lookAgainAt = -Infinity;
   /** Advances on retire and close, so a derivation that settles after
    * either steps nothing. */
   #epoch = 0;
@@ -116,7 +118,17 @@ export class HostDocReplica {
   /** A connection was admitted, and this document is found by its derived
    * id: a view document, which discovery doesn't list. */
   connected() {
-    this.#withId((id) => ({ type: "discovered", answer: "derived", id }));
+    this.#withId((id) => {
+      const wait = Math.ceil(this.#lookAgainAt - this.#scheduler.now());
+      return { type: "discovered", answer: "derived", id, ...(wait > 0 && { wait }) };
+    });
+  }
+
+  /** When the look-again window last armed ends, on the scheduler's clock
+   * (-Infinity before any). A document that missed is due for its next
+   * lookup from then. */
+  get lookAgainAt() {
+    return this.#lookAgainAt;
   }
 
   /** Something on the Page asks for the document. Only an absent one is
@@ -190,6 +202,7 @@ export class HostDocReplica {
       case "schedule":
         return this.#arm(effect.delay, () => ({ type: "timer", attempt: effect.attempt }));
       case "cool":
+        this.#lookAgainAt = this.#scheduler.now() + effect.delay;
         return this.#arm(effect.delay, () => ({
           type: "cooled",
           ...(this.#demand > 0 && this.#linked() && { demanded: true }),

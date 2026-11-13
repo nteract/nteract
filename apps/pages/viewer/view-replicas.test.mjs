@@ -237,6 +237,67 @@ test("missing views take turns, so one the host makes later is found while it wa
   for (const held of holds) held.release();
 });
 
+test("taking turns keeps each view's misses: many missing ids cost about one lookup per slot per window", async () => {
+  const f = fixture();
+  const ids = Array.from({ length: 50 }, (_, i) => `gone-${i}`);
+  const holds = ids.map((id) => f.views.hold(id));
+  const minute = 60_000;
+  const step = 1_000;
+  const perMinute = [];
+  const lookedUp = new Set();
+  for (let at = 0; at < 30 * minute; at += step) {
+    const before = f.calls.length;
+    await serve(f, new Set(), step);
+    if (at >= 15 * minute) for (const call of f.calls.slice(before)) lookedUp.add(call.id);
+    if (at % minute === minute - step) perMinute.push(f.calls.length);
+  }
+  const counts = perMinute.map((total, index) => total - (perMinute[index - 1] ?? 0));
+  // The first minutes give each id its one burst; after that, about one
+  // lookup per slot per 60 s window (ten a minute), however long it runs.
+  const steady = counts.slice(15);
+  assert.ok(
+    steady.every((count) => count <= MAX_VIEWS),
+    `steady lookups per minute: ${steady.join(", ")}`,
+  );
+  assert.equal(lookedUp.size, ids.length, "every id is still looked up in turn");
+  assert.ok(f.pending().length <= MAX_VIEWS);
+  for (const held of holds) held.release();
+});
+
+test("ten views whose lookups failed give their slots to an existing view, and recover", async () => {
+  const f = fixture();
+  const gone = Array.from({ length: MAX_VIEWS }, (_, i) => f.views.hold(`gone-${i}`));
+  await tick();
+  // An outage: every lookup fails until the lookups give up.
+  for (let round = 0; round < 20; round++) {
+    for (const call of f.pending()) call.reject(Error("network"));
+    await tick();
+    f.advance(5_000);
+    await tick();
+  }
+  assert.ok(gone.every((_, i) => f.views.replica(`gone-${i}`).state$.snapshot().name === "failed"));
+  const real = f.views.hold("sales");
+  await tick();
+  assert.ok(f.views.open.includes("sales"), "a failed view gives its slot up");
+  assert.equal(latest(gone.find((held) => latest(held).reason === "failed")).reason, "failed");
+  // The connection recovers: views with a slot look again, and the existing
+  // view draws.
+  f.connect();
+  await tick();
+  await serve(f, new Set(["sales"]));
+  assert.equal(latest(real).status, "ready");
+  // The view that gave its slot up is looked up again when it next has one.
+  const [parked] = f.views.waiting;
+  const asked = () => f.calls.filter((call) => call.id === `${PAGE}/${parked}`).length;
+  const before = asked();
+  real.release();
+  f.advance(VIEW_CLOSE_DELAY_MS);
+  await tick();
+  assert.equal(f.views.waiting.length, 0);
+  assert.equal(asked(), before + 1, `${parked} looks again`);
+  for (const held of gone) held.release();
+});
+
 test("an embed replaced within the close delay frees its slot for the one that replaces it", async () => {
   const f = fixture();
   const holds = Array.from({ length: MAX_VIEWS }, (_, i) => f.views.hold(`view-${i}`));
