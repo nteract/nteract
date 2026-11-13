@@ -46,7 +46,14 @@ import {
   checkChartSpec,
   loadsResource,
 } from "../shared/chart-spec.mjs";
-import { cellCount, isArrowTable, rowCount, tooManyCells } from "./chart-data.mjs";
+import {
+  UnreadableDataset,
+  cellCount,
+  isArrowTable,
+  rowCount,
+  tooManyCells,
+  unreadableDataset,
+} from "./chart-data.mjs";
 import { CHART_READY_MS, CHART_WORKERS, TIMED_OUT, createChartPool } from "./chart-pool.mjs";
 import { pageScene } from "./chart-scene.mjs";
 import { maximizeButton } from "./diagram-icons.mjs";
@@ -486,7 +493,15 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
         refusal = `The dataset "${name}" has ${rows.toLocaleString("en-US")} rows; a chart reads at most ${CHART_MAX_ROWS.toLocaleString("en-US")}.`;
         break;
       }
-      if (cellCount(dataset, CHART_MAX_CELLS) > CHART_MAX_CELLS) {
+      let cells;
+      try {
+        cells = cellCount(dataset, CHART_MAX_CELLS);
+      } catch (error) {
+        if (!(error instanceof UnreadableDataset)) throw error;
+        refusal = unreadableDataset(name);
+        break;
+      }
+      if (cells > CHART_MAX_CELLS) {
         refusal = tooManyCells(name);
         break;
       }

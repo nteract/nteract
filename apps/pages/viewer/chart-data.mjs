@@ -124,47 +124,73 @@ export const tooManyCells = (name) =>
 export const rowCount = (dataset) =>
   Array.isArray(dataset) ? dataset.length : isArrowTable(dataset) ? dataset.numRows : 0;
 
+export const unreadableDataset = (name) =>
+  `The dataset "${name}" holds a value a chart can't read: one nested more than ${MAX_NESTING} levels deep, or one that isn't plain data: an object, array, string, number, boolean, date or typed array.`;
+
+/** A typed array: a view with a length, not a DataView. */
+const isTypedArray = (value) => ArrayBuffer.isView(value) && !(value instanceof DataView);
+
+/** An object with Object's prototype or none: what structured clone and
+ * `plainValue` copy key by key. */
+const isPlainObject = (value) => {
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+};
+
+/** A value a row may hold with nothing inside it to walk. */
+const isScalar = (value) =>
+  value === null ||
+  value instanceof Date ||
+  ["string", "number", "boolean", "bigint", "undefined"].includes(typeof value);
+
+/** Thrown by `cellCount` for a value it can't account for. */
+export class UnreadableDataset extends Error {}
+
 /**
  * Cells a copy of the dataset would hold, counted without copying, before
  * the page posts it to a Worker. Rows count the way the Worker's copy spends
- * them (`plainValue`): each row's own keys, and every nested array element
- * and object key, MAX_NESTING levels deep; a Map or Set counts its size and a
- * typed array its length, since structured clone copies them whole. An
- * object met twice in one row counts once, so a cycle ends. Stops once past
- * `limit`. An Arrow table counts rows × columns; its nested values are
- * charged in the Worker as they decode.
+ * them (`plainValue`): each row's own keys, and every nested array element,
+ * typed-array element and object key. An object met twice in one row counts
+ * once, so a cycle ends. Stops once past `limit`. An Arrow table counts rows
+ * × columns; its nested values are charged in the Worker as they decode.
+ *
+ * Throws UnreadableDataset for a row the count can't fully account for, so
+ * it never crosses: a container nested more than MAX_NESTING levels deep
+ * (the Worker's copy would drop it), or a value that isn't a scalar
+ * (`isScalar`), a plain object, an array or a typed array.
  */
 export function cellCount(dataset, limit) {
   if (isArrowTable(dataset)) return dataset.numRows * dataset.schema.fields.length;
   if (!Array.isArray(dataset)) return 0;
   let cells = 0;
   for (const row of dataset) {
-    if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+    if (isScalar(row)) continue;
+    if (!Array.isArray(row) && !isPlainObject(row)) throw new UnreadableDataset();
     const seen = new Set([row]);
     const stack = [[row, 0]];
     while (stack.length) {
       const [value, depth] = stack.pop();
-      if (value instanceof Map || value instanceof Set) {
-        cells += value.size;
-        continue;
-      }
-      if (ArrayBuffer.isView(value)) {
-        cells += value.length ?? value.byteLength;
+      if (isTypedArray(value)) {
+        cells += value.length;
+        if (cells > limit) return cells;
         continue;
       }
       const keys = Array.isArray(value) ? null : Object.keys(value);
       const size = keys ? keys.length : value.length;
       cells += size;
       if (cells > limit) return cells;
-      if (depth + 1 >= MAX_NESTING) continue;
       for (let index = 0; index < size; index++) {
         let child;
         try {
           child = keys ? value[keys[index]] : value[index];
         } catch {
-          continue;
+          throw new UnreadableDataset();
         }
-        if (child && typeof child === "object" && !seen.has(child)) {
+        if (isScalar(child)) continue;
+        if (!Array.isArray(child) && !isTypedArray(child) && !isPlainObject(child))
+          throw new UnreadableDataset();
+        if (depth + 1 >= MAX_NESTING) throw new UnreadableDataset();
+        if (!seen.has(child)) {
           seen.add(child);
           stack.push([child, depth + 1]);
         }

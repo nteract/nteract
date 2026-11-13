@@ -1571,6 +1571,60 @@ test("nested values count against the dataset's cell budget, in the page, before
     }),
   ));
 
+test("a dataset the page can't fully count is refused before anything is posted", () =>
+  withWindow((window) =>
+    countWorkers(async (workers) => {
+      let deep = 1;
+      for (let i = 0; i < 40; i++) deep = [deep];
+      class Point {
+        x = 1;
+      }
+      const unreadable = [
+        ["nesting past 32 levels", { deep }],
+        ["a Map", { m: new Map([[1, 2]]) }],
+        ["a Set", { s: new Set([1]) }],
+        ["a class instance", { p: new Point() }],
+        ["a RegExp", { r: /x/ }],
+        ["an ArrayBuffer", { b: new ArrayBuffer(8) }],
+        ["a DataView", { v: new DataView(new ArrayBuffer(8)) }],
+        ["a Blob", { b: new Blob(["x"]) }],
+        ["an Error", { e: new Error("x") }],
+        ["a boxed string", { s: new String("x") }],
+        ["a function", { f: () => 1 }],
+        ["a symbol", { s: Symbol("x") }],
+      ];
+      for (const [what, row] of unreadable)
+        assert.match(
+          await refusalIn(window, stacked, { calls: [{ ...calls[0], ...row }] }),
+          /The dataset "calls" holds a value a chart can't read/,
+          what,
+        );
+      assert.equal(workers.created, 0, "an unreadable dataset never reaches a Worker");
+      // Plain data, dates, typed arrays, bigints and 32 levels of nesting
+      // are read.
+      let fits = 1;
+      for (let i = 0; i < 31; i++) fits = [fits];
+      const { element } = container(window);
+      const chart = mount(element, {
+        spec: stacked,
+        datasets: {
+          calls: calls.map((row) => ({
+            ...row,
+            when: new Date(0),
+            xs: new Float64Array([1, 2]),
+            big: 10n,
+            none: null,
+            missing: undefined,
+            bare: Object.assign(Object.create(null), { a: 1 }),
+            fits,
+          })),
+        },
+      });
+      assert.equal(await drawn(element), "rendered");
+      chart.destroy();
+    }),
+  ));
+
 test("Arrow lists, structs and maps are charged before they are read", () =>
   withWindow(async (window) => {
     const reads = { toJSON: 0, get: 0 };
