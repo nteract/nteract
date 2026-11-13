@@ -102,6 +102,35 @@ test("a Page holds at most 32 tags", async (t) => {
   assert.ok(swap.body.tags.includes("fresh") && !swap.body.tags.includes("t0"));
 });
 
+test("a write whose tag another writer removes before its answer arrives still reports its own change", async (t) => {
+  const { f, db, rows } = await tagged(t);
+  const release = holdAnswer(db);
+  // A adds x; its batch commits and its answer is in flight.
+  const adding = update(f, "owner", { add: ["x"] });
+  await untilAnswerHeld(db);
+  // B removes x before A hears back.
+  const removed = await update(f, "member", { remove: ["x"] });
+  assert.equal(removed.status, 200, JSON.stringify(removed.body));
+  assert.deepEqual(removed.body.tags, []);
+  release();
+  const added = await adding;
+  assert.equal(added.status, 200, JSON.stringify(added.body));
+  assert.deepEqual(added.body.tags, ["x"], "A reports the set its own batch left");
+  assert.deepEqual(rows(), []);
+});
+
+test("an over-limit change applies none of its removals", async (t) => {
+  const { f, rows } = await tagged(t);
+  const names = Array.from({ length: 32 }, (_, i) => `t${i}`);
+  assert.equal((await update(f, "owner", { add: names })).status, 200);
+  const over = await update(f, "owner", { add: ["a", "b"], remove: ["t0"] });
+  assert.equal(over.status, 409, JSON.stringify(over.body));
+  assert.equal(over.body.code, "tag_limit_exceeded");
+  assert.match(over.body.error, /would leave 33/);
+  assert.equal(rows().length, 32);
+  assert.ok(rows().some((row) => row.tag === "t0"));
+});
+
 test("a Page in Trash takes no tag changes, and its tags return with it", async (t) => {
   const { f, rows } = await tagged(t);
   await update(f, "owner", { add: ["code"] });
@@ -376,6 +405,20 @@ function holdBatch(db) {
   let release;
   db.holdNext = new Promise((resolve) => (release = resolve));
   return release;
+}
+
+/** Let the next D1 batch commit and hold its answer, as a response still in
+ * flight. */
+function holdAnswer(db) {
+  let release;
+  db.holdAnswer = new Promise((resolve) => (release = resolve));
+  return release;
+}
+
+/** Wait until D1 has committed the batch whose answer `db.holdAnswer` holds. */
+async function untilAnswerHeld(db) {
+  for (let spin = 0; db.holdAnswer && spin < 400; spin++) await settled(5);
+  assert.equal(db.holdAnswer, undefined, "the tag write never reached its batch");
 }
 
 /** The Page's projection row, which the Page host writes when it first reports

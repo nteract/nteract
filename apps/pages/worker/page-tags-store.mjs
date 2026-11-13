@@ -119,81 +119,86 @@ export async function tagMatchingIds(db, ast, pageIds) {
  * `add` and `remove` are normalized, distinct and disjoint (page-tags.mjs).
  * Adding a tag the Page has, or removing one it lacks, changes nothing.
  *
- * The limit is checked against the rows read first and again inside the
- * insert, so two writers racing can't pass it: the loser's adds are skipped
- * and reported as `tag_limit_exceeded`, with its removals applied.
+ * One batch, one transaction, decides and applies the change. Its first
+ * statement reads the Page's lifecycle mark and counts, as the writes see
+ * them: the remove tags the Page has, the add tags it lacks, and the tags it
+ * keeps. The delete and the insert both run only while the Page is open and
+ * the change fits the limit, so a change applies whole or not at all. The
+ * outcome comes from that read and the writes' `meta.changes`, never from a
+ * later read: two writers racing can't pass the limit, and one can't report
+ * the limit or Trash for a change the other made after its batch.
  *
  * This runs after the Page host's queue has released the request, so a Page
  * can be trashed or deleted between the host's check and this write, and a
  * batch that timed out here keeps running in D1 and can land later still. A
  * Page whose tombstone or Trash mark is in `pages_catalog_pages` takes no tag
- * changes: both statements of the batch check it as they run, so a late batch
- * lands nothing on a Page that took its Trash mark first. That row is a
- * projection of the Page host's lifecycle, used here only as a fence; it is
- * not tag data. The host marks it after its own record is durable, so a write
- * that races a Trash or purge itself can land first. Trash keeps tags (a
- * restored Page has them back) and a purge deletes them (`deletePageTags`).
+ * changes: the writes check it as they run, so a late batch lands nothing on
+ * a Page that took its Trash mark first. That row is a projection of the Page
+ * host's lifecycle, used here only as a fence; it is not tag data. The host
+ * marks it after its own record is durable, so a write that races a Trash or
+ * purge itself can land first. Trash keeps tags (a restored Page has them
+ * back) and a purge deletes them (`deletePageTags`).
  */
 export async function writePageTags(db, { pageId, principal, add, remove, now }) {
-  const list = async () =>
-    (
-      (
-        await read(
-          db.prepare("SELECT tag FROM page_tags WHERE page_id = ? ORDER BY tag").bind(pageId).all(),
-        )
-      ).results ?? []
-    ).map((row) => row.tag);
-  const before = await list();
-  const after = new Set(before.filter((tag) => !remove.includes(tag)));
-  for (const tag of add) after.add(tag);
-  const full = (count) =>
-    new HttpError(
-      409,
-      `A Page holds at most ${MAX_TAGS_PER_PAGE} tags; this change would leave ${count}. Remove some first.`,
-      "tag_limit_exceeded",
-    );
-  if (after.size > MAX_TAGS_PER_PAGE) throw full(after.size);
+  const removes = JSON.stringify(remove);
   const adds = JSON.stringify(add);
-  const open = `NOT EXISTS (SELECT 1 FROM pages_catalog_pages p
-                             WHERE p.page_id = ? AND p.state IN ('deleted', 'trashed'))`;
-  await withTimeout(
+  // The tags the Page keeps plus the add tags it lacks: the size after the
+  // change. A delete leaves both counts as they were, so the insert after it
+  // sees the same total.
+  const total = `(SELECT count(*) FROM page_tags k
+                   WHERE k.page_id = ? AND k.tag NOT IN (SELECT value FROM json_each(?)))
+               + (SELECT count(*) FROM json_each(?) n
+                   WHERE NOT EXISTS (SELECT 1 FROM page_tags t
+                                      WHERE t.page_id = ? AND t.tag = n.value))`;
+  const totalParams = [pageId, removes, adds, pageId];
+  const applies = `NOT EXISTS (SELECT 1 FROM pages_catalog_pages p
+                                WHERE p.page_id = ? AND p.state IN ('deleted', 'trashed'))
+                   AND ${total} <= ?`;
+  const appliesParams = [pageId, ...totalParams, MAX_TAGS_PER_PAGE];
+  const [decided, deleted, inserted, listed] = await withTimeout(
     db.batch([
       db
         .prepare(
-          `DELETE FROM page_tags
-            WHERE page_id = ? AND tag IN (SELECT value FROM json_each(?))
-              AND ${open}`,
+          `SELECT (SELECT state FROM pages_catalog_pages WHERE page_id = ?) AS state,
+                  (SELECT count(*) FROM page_tags
+                    WHERE page_id = ? AND tag IN (SELECT value FROM json_each(?))) AS removing,
+                  (SELECT count(*) FROM json_each(?) n
+                    WHERE NOT EXISTS (SELECT 1 FROM page_tags t
+                                       WHERE t.page_id = ? AND t.tag = n.value)) AS adding,
+                  ${total} AS total`,
         )
-        .bind(pageId, JSON.stringify(remove), pageId),
+        .bind(pageId, pageId, removes, adds, pageId, ...totalParams),
+      db
+        .prepare(
+          `DELETE FROM page_tags
+            WHERE page_id = ? AND tag IN (SELECT value FROM json_each(?)) AND ${applies}`,
+        )
+        .bind(pageId, removes, ...appliesParams),
       db
         .prepare(
           `INSERT OR IGNORE INTO page_tags (page_id, tag, added_by, added_at)
-          SELECT ?, j.value, ?, ? FROM json_each(?) j
-          WHERE ${open}
-            AND (SELECT count(*) FROM page_tags t WHERE t.page_id = ?)
-              + (SELECT count(*) FROM json_each(?) j2
-                  WHERE NOT EXISTS (SELECT 1 FROM page_tags t2
-                                     WHERE t2.page_id = ? AND t2.tag = j2.value))
-              <= ?`,
+          SELECT ?, j.value, ?, ? FROM json_each(?) j WHERE ${applies}`,
         )
-        .bind(pageId, principal, now, adds, pageId, pageId, adds, pageId, MAX_TAGS_PER_PAGE),
+        .bind(pageId, principal, now, adds, ...appliesParams),
+      db.prepare("SELECT tag FROM page_tags WHERE page_id = ? ORDER BY tag").bind(pageId),
     ]),
     catalogIndexTimeouts.write,
     TIMED_OUT,
   );
-  const tags = await list();
-  const missing = add.filter((tag) => !tags.includes(tag));
-  const lingering = remove.filter((tag) => tags.includes(tag));
-  if (!missing.length && !lingering.length) return tags;
-  // Something didn't apply: the Page's lifecycle mark, or the limit.
-  const marked = await read(
-    db.prepare("SELECT state FROM pages_catalog_pages WHERE page_id = ?").bind(pageId).first(),
-  );
-  if (marked?.state === "deleted") throw new HttpError(404, "Page not found", "page_not_found");
-  if (marked?.state === "trashed")
+  const { state, removing, adding, total: size } = decided.results[0];
+  if (deleted.meta.changes === removing && inserted.meta.changes === adding)
+    return listed.results.map((row) => row.tag);
+  // The change didn't apply: the Page's lifecycle mark, or the limit.
+  if (state === "deleted") throw new HttpError(404, "Page not found", "page_not_found");
+  if (state === "trashed")
     throw new HttpError(409, "Restore this Page before changing its tags", "page_trashed");
-  if (missing.length) throw full(tags.length);
-  return tags;
+  if (size > MAX_TAGS_PER_PAGE)
+    throw new HttpError(
+      409,
+      `A Page holds at most ${MAX_TAGS_PER_PAGE} tags; this change would leave ${size}. Remove some first.`,
+      "tag_limit_exceeded",
+    );
+  throw new Error("A tag write changed rows its own read did not predict");
 }
 
 /**

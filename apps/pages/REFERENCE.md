@@ -3747,17 +3747,21 @@ viewers or commenters. A Page in Trash answers 409 `page_trashed`. Tags are a
 set, so adding one the Page has or removing one it lacks changes nothing; the
 tool takes no nonce and a repeat is always safe. A tag in both arrays, an empty
 change or a wrong type is `invalid_arguments`; a tag outside the alphabet is
-`invalid_tag`; a result over the limit is 409 `tag_limit_exceeded`. The limit is
-checked against the rows read and again inside the insert, so two writers racing
-can't pass it: the loser's adds are skipped and reported, its removals applied.
-The result is `{ page_id, tags }`, the full sorted set.
+`invalid_tag`; a result over the limit is 409 `tag_limit_exceeded`. One D1 batch
+decides and applies the change: its first statement reads the Page's Trash mark
+and counts its tags, and its delete and insert run only while the Page is open
+and the result fits, so a change applies whole or not at all and two writers
+racing can't pass the limit. The outcome comes from that batch and its row
+counts, never from a later read, so a concurrent writer can't make a change that
+landed report the limit. The result is `{ page_id, tags }`, the full sorted set
+as the batch left it.
 
 The Page host decides access and Trash state in its admission queue, then
 releases the queue before it touches D1, so a slow D1 never holds the Page's
 other requests. Between that decision and the write, the Page can be trashed or
 purged, and a batch that times out keeps running in D1 and can land after the
 caller has its 503 `tags_unavailable` (which means the outcome is unknown; the
-same call is safe to repeat). Both statements of the write therefore check the
+same call is safe to repeat). Both writes in the batch therefore check the
 Page's `pages_catalog_pages` row as they run: a Page marked `trashed` or
 `deleted` there takes no change, and the write answers 409 `page_trashed` (or
 404 `page_not_found`). The mark is a projection the host writes after its own
