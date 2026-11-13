@@ -25,6 +25,9 @@
 // Worker (slot) states:
 //   down      no Worker running
 //   starting  started, waiting for `ready` (CHART_READY_MS)
+//   probing   ready, measuring the font probe (chart-font.mjs) within the
+//             same CHART_READY_MS; its answer sets `slot.font`, the stack
+//             every chart on this Worker generation draws in
 //   idle      ready, no job
 //   busy      running exactly one job, `slot.job`
 // Job states:
@@ -32,17 +35,25 @@
 //   running    posted to its Worker, watched by its timer
 //   abandoned  running, but its chart no longer wants the answer
 //
-// A Worker that doesn't post `ready` in time, or fails while starting, fails
-// every job waiting on it. One that fails while running a job, or sends a
+// A Worker that doesn't post `ready` and its probe answer in time, or fails
+// while starting or probing, fails every job waiting on it. One that fails while running a job, or sends a
 // message that isn't a valid answer to its one job, fails that job and is
 // replaced for the others. When a job outlasts its timer, only that chart
 // fails. A hidden document stops Workers that are starting or busy and holds
 // the jobs; they run again when it shows. The last chart to leave a Worker
 // terminates it. There is no in-page fallback.
 import { Observable } from "rxjs";
+import {
+  CHART_FALLBACK_FONT,
+  PROBE_MAX_WIDTH,
+  chooseChartFont,
+  probeCount,
+  probeItems,
+} from "./chart-font.mjs";
 
 export const CHART_WORKERS = 1;
-/** How long a new Worker may take to load its script and post `ready`. */
+/** How long a new Worker may take to load its script, post `ready` and
+ * answer the font probe. */
 export const CHART_READY_MS = 4_000;
 export const WORKER_DIDNT_START = "The chart Worker didn't start.";
 export const WORKER_FAILED = "The chart Worker stopped.";
@@ -88,7 +99,7 @@ function pump(state, slot) {
   if (current.phase === "down") {
     const gen = current.gen + 1;
     return {
-      state: setSlot(state, slot, { gen, phase: "starting", job: null, loaded: [] }),
+      state: setSlot(state, slot, { gen, phase: "starting", job: null, loaded: [], font: null }),
       effects: [
         { type: "spawn", slot, gen },
         { type: "timer", name: `ready:${slot}`, kind: "ready", slot, gen },
@@ -110,7 +121,16 @@ function pump(state, slot) {
   return {
     state: next,
     effects: [
-      { type: "job", slot, gen: current.gen, id, key: job.key, withData, message: job.message },
+      {
+        type: "job",
+        slot,
+        gen: current.gen,
+        id,
+        key: job.key,
+        withData,
+        font: current.font,
+        message: job.message,
+      },
       { type: "timer", name: `job:${id}`, kind: "job", id },
     ],
   };
@@ -162,7 +182,10 @@ export function chartPool(state, event) {
         slot = next.slots.length;
         next = {
           ...next,
-          slots: [...next.slots, { gen: 0, phase: "down", job: null, keys: [], loaded: [] }],
+          slots: [
+            ...next.slots,
+            { gen: 0, phase: "down", job: null, keys: [], loaded: [], font: null },
+          ],
         };
       }
       next = setSlot(next, slot, { keys: [...next.slots[slot].keys, event.key] });
@@ -220,11 +243,24 @@ export function chartPool(state, event) {
     case "ready": {
       if (!fromWorker(state, event) || state.slots[event.slot].phase !== "starting")
         return unchanged(state);
-      const ready = {
-        state: setSlot(state, event.slot, { phase: "idle" }),
+      // The ready timer keeps running until the probe answers.
+      const { gen } = state.slots[event.slot];
+      return {
+        state: setSlot(state, event.slot, { phase: "probing" }),
+        effects: [{ type: "probe", slot: event.slot, gen }],
+      };
+    }
+    case "probed": {
+      if (!fromWorker(state, event)) return unchanged(state);
+      // A correct Worker answers the probe once, while it's being probed.
+      if (state.slots[event.slot].phase !== "probing")
+        return chartPool(state, { ...event, type: "failed", message: WORKER_FAILED });
+      const font = chooseChartFont(event.stacks, event.page, event.worker);
+      const probed = {
+        state: setSlot(state, event.slot, { phase: "idle", font }),
         effects: [{ type: "clear", name: `ready:${event.slot}` }],
       };
-      return then(ready, (next) => pump(next, event.slot));
+      return then(probed, (next) => pump(next, event.slot));
     }
     case "answer": {
       if (!fromWorker(state, event)) return unchanged(state);
@@ -252,14 +288,17 @@ export function chartPool(state, event) {
       const result = failure(event.message || WORKER_FAILED);
       // A Worker that never started fails every job waiting on it; one that
       // fails later fails its own job, and the others get a fresh Worker.
-      if (state.slots[event.slot].phase === "starting")
+      if (["starting", "probing"].includes(state.slots[event.slot].phase))
         return stop(state, event.slot, failure(event.message || WORKER_DIDNT_START), {
           failWaiting: true,
         });
       return then(stop(state, event.slot, result), (next) => pump(next, event.slot));
     }
     case "readyTimeout": {
-      if (!fromWorker(state, event) || state.slots[event.slot].phase !== "starting")
+      if (
+        !fromWorker(state, event) ||
+        !["starting", "probing"].includes(state.slots[event.slot].phase)
+      )
         return unchanged(state);
       return stop(state, event.slot, failure(WORKER_DIDNT_START), { failWaiting: true });
     }
@@ -267,7 +306,7 @@ export function chartPool(state, event) {
       if (state.hidden) return unchanged(state);
       let result = unchanged({ ...state, hidden: true });
       state.slots.forEach((slot, index) => {
-        if (slot.phase !== "starting" && slot.phase !== "busy") return;
+        if (!["starting", "probing", "busy"].includes(slot.phase)) return;
         result = then(result, (next) => {
           // The running job waits again; an abandoned one leaves.
           const change = [];
@@ -306,6 +345,9 @@ function workerError(error) {
  * - `create()` starts a Worker (`new Worker(url)`); it may throw.
  * - `size`, `timeoutMs` (a job, from its post), `readyMs`.
  * - `doc`: the document whose visibility holds jobs.
+ * - `font()`: the Page's font stack, which each new Worker is probed with.
+ * - `measure(items)`: the widths the page draws probe items at, or null when
+ *   it can't lay text out (then every Worker draws in the fallback).
  * Returns `{ attach(payload) }`. `payload()` builds a chart's data for one
  * Worker: `{ datasets, transfer }`, owned by that Worker once posted.
  * `attach` returns `{ draw(message, { redraw }), detach() }`; `draw` is an
@@ -317,6 +359,8 @@ export function createChartPool({
   timeoutMs,
   readyMs = CHART_READY_MS,
   doc = null,
+  font = () => CHART_FALLBACK_FONT,
+  measure = () => null,
 }) {
   let state = initialPool(size);
   const workers = [];
@@ -348,20 +392,53 @@ export function createChartPool({
     timers.delete(name);
   };
 
-  /** What a Worker posted, checked: `{ type: "ready" }`, or `{ type:
-   * "answer", id }` with a safe-integer id. Anything else fails the Worker:
-   * a correct one never sends it, and a Worker that does can't be trusted
-   * with the next job. */
+  // The stacks each Worker generation was probed with, by slot.
+  const probes = [];
+
+  /** What a Worker posted, checked: `{ type: "ready" }`; `{ type: "probed",
+   * widths }` with exactly the widths its probe asked for, each a finite
+   * number from 0 to PROBE_MAX_WIDTH; or `{ type: "answer", id }` with a
+   * safe-integer id. Anything else fails the Worker: a correct one never
+   * sends it, and a Worker that does can't be trusted with the next job. */
   const onMessage =
     (slot, gen) =>
     ({ data }) => {
+      const stacks = probes[slot];
       const valid =
         data !== null &&
         typeof data === "object" &&
         !Array.isArray(data) &&
-        (data.type === "ready" || (data.type === "answer" && Number.isSafeInteger(data.id)));
+        (data.type === "ready" ||
+          (data.type === "probed" &&
+            stacks?.gen === gen &&
+            Array.isArray(data.widths) &&
+            data.widths.length === probeCount(stacks.stacks) &&
+            data.widths.every(
+              (width) =>
+                typeof width === "number" &&
+                Number.isFinite(width) &&
+                width >= 0 &&
+                width <= PROBE_MAX_WIDTH,
+            )) ||
+          (data.type === "answer" && Number.isSafeInteger(data.id)));
       if (!valid) return dispatch({ type: "failed", slot, gen, message: WORKER_FAILED });
       if (data.type === "ready") return dispatch({ type: "ready", slot, gen });
+      if (data.type === "probed") {
+        let page = null;
+        try {
+          page = measure(probeItems(stacks.stacks));
+        } catch {
+          page = null;
+        }
+        return dispatch({
+          type: "probed",
+          slot,
+          gen,
+          stacks: stacks.stacks,
+          page,
+          worker: [...data.widths],
+        });
+      }
       const { scene, background, width, height, origin } = data;
       const result = Object.hasOwn(data, "error")
         ? { error: workerError(data.error) }
@@ -399,10 +476,28 @@ export function createChartPool({
         if (target?.gen === effect.gen) target.worker.postMessage(effect.message);
         return;
       }
+      case "probe": {
+        const target = workers[effect.slot];
+        if (target?.gen !== effect.gen) return;
+        let own = CHART_FALLBACK_FONT;
+        try {
+          own = font() || CHART_FALLBACK_FONT;
+        } catch {}
+        const stacks = [own, CHART_FALLBACK_FONT];
+        probes[effect.slot] = { gen: effect.gen, stacks };
+        target.worker.postMessage({ type: "probe", fonts: stacks });
+        return;
+      }
       case "job": {
         const target = workers[effect.slot];
         if (target?.gen !== effect.gen) return;
-        const message = { type: "draw", id: effect.id, key: effect.key, ...effect.message };
+        const message = {
+          type: "draw",
+          id: effect.id,
+          key: effect.key,
+          ...effect.message,
+          theme: { ...effect.message.theme, font: effect.font ?? CHART_FALLBACK_FONT },
+        };
         if (!effect.withData) return target.worker.postMessage(message);
         try {
           const { datasets, transfer = [] } = payloads.get(effect.key)();

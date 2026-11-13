@@ -79,13 +79,47 @@ const defaultWorkers = Object.freeze({
   size: CHART_WORKERS,
   checkSpec: true,
 });
+const SVG_NS = "http://www.w3.org/2000/svg";
 let workers = defaultWorkers;
 // One pool per document, made when its first chart mounts.
 let pools = new WeakMap();
+/**
+ * The widths `doc` draws probe `items` at: SVG text with the attributes Vega's
+ * SVG renderer writes, so a probe compares what the Worker measures with what
+ * the page draws, not with a second canvas. In WebKit on macOS a canvas
+ * measures `system-ui` digits 2 to 5 percent narrower than SVG draws them.
+ * Null when the document lays out no text.
+ */
+export function drawnWidths(doc, items) {
+  const svg = doc.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute(
+    "style",
+    "position:absolute;left:0;top:0;width:0;height:0;overflow:hidden;visibility:hidden",
+  );
+  for (const { item, text } of items) {
+    const node = svg.appendChild(doc.createElementNS(SVG_NS, "text"));
+    node.setAttribute("font-family", item.font);
+    node.setAttribute("font-size", `${item.fontSize}px`);
+    if (item.fontWeight !== undefined) node.setAttribute("font-weight", item.fontWeight);
+    node.textContent = text;
+  }
+  (doc.body ?? doc.documentElement).append(svg);
+  try {
+    const widths = [...svg.children].map((node) => node.getComputedTextLength?.());
+    return widths.every(Number.isFinite) ? widths : null;
+  } finally {
+    svg.remove();
+  }
+}
+
 const poolFor = (doc) => {
   let pool = pools.get(doc);
   if (!pool) {
-    pool = createChartPool({ ...workers, doc });
+    // Each new Worker is probed with the Page's own font stack.
+    const font = () =>
+      doc.defaultView?.getComputedStyle?.(doc.body ?? doc.documentElement)?.fontFamily;
+    pool = createChartPool({ font, measure: (items) => drawnWidths(doc, items), ...workers, doc });
     pools.set(doc, pool);
   }
   return pool;

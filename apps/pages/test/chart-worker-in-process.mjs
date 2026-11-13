@@ -9,9 +9,19 @@ import { serveCharts } from "../viewer/chart-dataflow.mjs";
  * still running, and the draws they are sent. `workers.hang(message)` marks
  * a draw that hangs: it starts, never answers, and its Worker sends nothing
  * after, as a Worker stuck in a loop. `workers.silent` makes new Workers
- * whose script never runs: no `ready`, no answers.
+ * whose script never runs: no `ready`, no answers. `workers.answered()` runs
+ * on this thread right after a Worker queues an answer; `workers.posted` is
+ * when the last draw was sent.
  */
-export const workers = { created: 0, live: new Set(), draws: 0, hang: null, silent: false };
+export const workers = {
+  created: 0,
+  live: new Set(),
+  draws: 0,
+  posted: 0,
+  hang: null,
+  silent: false,
+  answered: null,
+};
 export class InProcessWorker extends EventTarget {
   constructor() {
     super();
@@ -32,12 +42,14 @@ export class InProcessWorker extends EventTarget {
       setTimeout(() => {
         if (workers.live.has(this)) this.dispatchEvent(new MessageEvent("message", { data }));
       });
+      if (message.type === "answer") workers.answered?.();
     };
     if (!workers.silent) serveCharts(this.scope);
   }
   postMessage(message, transfer = []) {
     if (message.type === "draw") {
       workers.draws++;
+      workers.posted = performance.now();
       if (workers.hang?.(message)) this.hangs.add(message.id);
     }
     const data = structuredClone(message, { transfer });

@@ -18,6 +18,7 @@ const {
   RESIZE_SETTLE_MS,
   TIMED_OUT,
   tooltipText,
+  drawnWidths,
 } = await import("./vega-chart.mjs");
 const {
   runChart,
@@ -42,6 +43,7 @@ const {
   pageScene,
 } = await import("./chart-scene.mjs");
 const { WORKER_DIDNT_START } = await import("./chart-pool.mjs");
+const { CHART_FALLBACK_FONT, probeCount, probeItems } = await import("./chart-font.mjs");
 const { checkChartSpec, CHART_MAX_ROWS, CHART_MAX_CELLS, CHART_EXPRESSION_FUNCTIONS } =
   await import("../shared/chart-spec.mjs");
 const vl = await import("vega-lite");
@@ -186,7 +188,7 @@ setChartWorker(() => new InProcessWorker());
 
 /** Count chart Workers and draws while `run` runs. */
 async function countWorkers(run) {
-  Object.assign(workers, { created: 0, draws: 0, hang: null, silent: false });
+  Object.assign(workers, { created: 0, draws: 0, hang: null, silent: false, answered: null });
   workers.live.clear();
   return run(workers);
 }
@@ -222,6 +224,40 @@ function container(window, width = 640) {
     },
   };
 }
+
+test("a probe measures the page's widths as SVG text, the way a chart's text is drawn", () => {
+  const { window } = new JSDOM("<!doctype html><html><body></body></html>");
+  const items = probeItems(["Inter, sans-serif"]);
+  // jsdom lays out no text: the page can't measure, so the Worker gets the fallback.
+  assert.equal(drawnWidths(window.document, items), null);
+  assert.equal(window.document.querySelector("svg"), null);
+
+  const drawn = [];
+  window.SVGElement.prototype.getComputedTextLength = function () {
+    assert.ok(this.isConnected);
+    drawn.push({
+      text: this.textContent,
+      family: this.getAttribute("font-family"),
+      size: this.getAttribute("font-size"),
+      weight: this.getAttribute("font-weight"),
+    });
+    return this.textContent.length;
+  };
+  assert.deepEqual(
+    drawnWidths(window.document, items),
+    items.map(({ text }) => text.length),
+  );
+  assert.deepEqual(
+    drawn,
+    items.map(({ item, text }) => ({
+      text,
+      family: "Inter, sans-serif",
+      size: `${item.fontSize}px`,
+      weight: item.fontWeight === undefined ? null : String(item.fontWeight),
+    })),
+  );
+  assert.equal(window.document.querySelector("svg"), null);
+});
 
 test("mount draws a stacked bar chart from rows, with the title above one frame", () =>
   withWindow(async (window) => {
@@ -1043,15 +1079,17 @@ test("a draw that outlasts the timer ends in the error state, terminates its Wor
 test("a timer the busy page held past its time waits for an answer already queued", () =>
   withWindow((window) =>
     countWorkers(async () => {
-      const restore = setChartWorker(() => new InProcessWorker(), { timeoutMs: 40 });
+      const timeoutMs = 1_000;
+      const restore = setChartWorker(() => new InProcessWorker(), { timeoutMs });
+      // Once the Worker's answer is queued, hold this thread past the timer,
+      // as a page laying out a large chart does.
+      workers.answered = () => {
+        const deadline = workers.posted + timeoutMs + 100;
+        while (performance.now() < deadline);
+      };
       try {
         const { element } = container(window);
         const chart = mount(element, { spec: stacked, datasets: { calls } });
-        // Let the Worker answer, then hold this thread past the timer, as a
-        // page laying out a large chart does.
-        await settle(20);
-        const until = performance.now() + 400;
-        while (performance.now() < until);
         assert.equal(await drawn(element), "rendered");
         chart.destroy();
       } finally {
@@ -1099,7 +1137,8 @@ test("a newer draw cuts off a running one and its Worker", () =>
       const { element, resize } = container(window, 600);
       workers.hang = () => true;
       const chart = mount(element, { spec: stacked, datasets: { calls } });
-      await settle(20);
+      // The Worker is probed before it takes the draw.
+      assert.ok(await until(() => workers.draws === 1), "the first draw reached its Worker");
       workers.hang = null;
       resize(400);
       observers.resize[0].callback();
@@ -1216,7 +1255,7 @@ test("hovering a value with no usable toString shows a tooltip, and the chart st
     point.dispatchEvent(
       new window.MouseEvent("pointermove", { bubbles: true, clientX: 5, clientY: 5 }),
     );
-    await settle();
+    await until(() => window.document.querySelector(".vg-tooltip")?.innerHTML);
     assert.equal(figure.dataset.chartStatus, "rendered");
     assert.match(window.document.querySelector(".vg-tooltip")?.innerHTML ?? "", /toString/);
     chart.destroy();
@@ -1769,6 +1808,19 @@ test("the Worker's message loop says ready, takes a chart's data with its first 
     message: "Function object could not be cloned.",
     refusal: false,
   });
+  // The font probe: each stack in each style and string, measured as the
+  // Worker's layout measures text; a stack the page may not name measures
+  // as the fallback.
+  const probes = () => posted.filter((message) => message.type === "probed");
+  send({ type: "probe", fonts: ["Inter, sans-serif", CHART_FALLBACK_FONT] });
+  send({ type: "probe", fonts: ["url(https://x.example/f.woff)", CHART_FALLBACK_FONT] });
+  send({ type: "probe", fonts: "nonsense" });
+  const [own, unusable, missing] = probes().map((message) => message.widths);
+  assert.equal(own.length, probeCount(["Inter, sans-serif", CHART_FALLBACK_FONT]));
+  assert.ok(own.every((width) => Number.isFinite(width) && width > 0));
+  const half = own.length / 2;
+  assert.deepEqual(unusable.slice(0, half), unusable.slice(half));
+  assert.deepEqual(missing, unusable);
 });
 
 test("the scene that crosses to the page keeps tooltips and cursors, and nothing that links or loads", () => {
@@ -2017,6 +2069,11 @@ class SceneWorker extends EventTarget {
     this.dispatchEvent(new MessageEvent("message", { data }));
   }
   postMessage(message) {
+    if (message.type === "probe") {
+      const widths = Array(probeCount(message.fonts)).fill(10);
+      setTimeout(() => this.emit({ type: "probed", widths }));
+      return;
+    }
     if (message.type !== "draw") return;
     setTimeout(() => {
       this.emit({ type: "answer", id: message.id, ...this.answer() });

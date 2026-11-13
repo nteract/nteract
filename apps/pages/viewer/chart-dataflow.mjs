@@ -19,6 +19,7 @@ import { tableFromIPC } from "apache-arrow";
 import { chartTable } from "./chart-arrow.mjs";
 import { datasetRows, ownRows, spentCellBudget, tooManyCells } from "./chart-data.mjs";
 import { SCENE_KEYS } from "./chart-scene.mjs";
+import { CHART_FALLBACK_FONT, probeItems, usableFont } from "./chart-font.mjs";
 
 export const CHART_RENDERER = `vega-lite@${vl.version} vega@${vega.version}`;
 const DEFAULT_HEIGHT = 260;
@@ -113,27 +114,13 @@ const CATEGORY = {
   dark: ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"],
 };
 
-/**
- * The font every chart draws its text in. Vega lays text out by widths this
- * Worker measures on an OffscreenCanvas, and the page then draws the text as
- * SVG, so both must resolve the same installed face. A Worker can't see the
- * page's fonts and loads none, and a system alias resolves differently in
- * one: Firefox on macOS measures `system-ui` and `-apple-system` 12 percent
- * narrower in a Worker than it draws them. Every face named here resolves
- * the same on both sides, within 0.2 px, in Chromium, Firefox and WebKit on
- * macOS and Linux (Linux reaches Liberation Sans, which has Arial's
- * metrics). A family added here needs the smoke's measured-against-drawn
- * check to pass in every engine first. Vega writes it on each text as its
- * font-family attribute, so chart text doesn't inherit the Page's family.
- */
-export const CHART_FONT = '"Helvetica Neue", Helvetica, Arial, sans-serif';
-
-/** Vega-Lite config from a theme. A spec's own config wins over it. */
+/** Vega-Lite config from a theme. A spec's own config wins over it. The font
+ * is the stack the page chose for this Worker (chart-font.mjs). */
 export function themeConfig(theme) {
   const category = theme.dark ? CATEGORY.dark : CATEGORY.light;
   return {
     background: null,
-    font: CHART_FONT,
+    font: usableFont(theme.font) ? theme.font : CHART_FALLBACK_FONT,
     view: { stroke: null },
     axis: {
       labelColor: theme.muted,
@@ -354,8 +341,8 @@ function reportingLogger(onError) {
 
 /** Measure text with an OffscreenCanvas where the Worker has one, as Vega
  * measures with a canvas in a page; without one, Vega estimates. The Worker
- * sees only installed fonts, so the theme names faces that resolve the same
- * here as in the page (CHART_FONT). */
+ * sees only installed fonts, so the page probes it before choosing the stack
+ * charts draw in (chart-font.mjs). */
 export function installTextMetrics(scope = globalThis) {
   if (typeof scope.OffscreenCanvas !== "function") return false;
   const context = new scope.OffscreenCanvas(1, 1).getContext("2d");
@@ -540,6 +527,17 @@ const failure = (error) => ({
   refusal: error instanceof ChartRefusal,
 });
 
+/** Widths for the page's font probe, measured as the Worker's layout measures
+ * text (Vega's text metrics). A stack the page may not name is measured as
+ * the fallback. */
+export function probe(fonts) {
+  const stacks = (Array.isArray(fonts) ? fonts : []).slice(0, 2);
+  while (stacks.length < 2) stacks.push(CHART_FALLBACK_FONT);
+  return probeItems(stacks.map((font) => (usableFont(font) ? font : CHART_FALLBACK_FONT))).map(
+    ({ item, text }) => vega.textMetrics.width(item, text),
+  );
+}
+
 /**
  * Answer the page's messages in `scope` (the Worker's global). The page
  * (chart-pool.mjs) hands this Worker one job at a time:
@@ -552,6 +550,8 @@ const failure = (error) => ({
  *   id, scene, width, height, origin, background }` or `{ type: "answer",
  *   id, error }`.
  * - `{ type: "drop", key }` forgets a chart's data.
+ * - `{ type: "probe", fonts }` measures the font probe (chart-font.mjs) in
+ *   each stack, answered with `{ type: "probed", widths }`.
  *
  * `{ type: "ready" }` is posted once, when the script has loaded. Jobs that
  * arrive while one runs wait their turn, in order.
@@ -593,7 +593,9 @@ export function serveCharts(scope, options = {}) {
     }
   };
   scope.addEventListener("message", ({ data: message }) => {
-    if (message?.type === "drop") charts.delete(message.key);
+    if (message?.type === "probe")
+      scope.postMessage({ type: "probed", widths: probe(message.fonts) });
+    else if (message?.type === "drop") charts.delete(message.key);
     else if (message?.type === "draw") {
       queue.push(message);
       pump();
