@@ -53,6 +53,7 @@ test("Cloudflare staging separates native modules from browser assets and exclud
   assert.deepEqual(readdirSync(path.join(destination, "worker")).sort(), [
     "automerge.wasm",
     "index.js",
+    "sift.wasm",
   ]);
   const mermaid = hashedAssetPath("mermaid.js", "mermaid.js");
   assert.equal(readFileSync(path.join(destination, mermaid), "utf8"), "mermaid.js");

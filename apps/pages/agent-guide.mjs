@@ -395,7 +395,8 @@ write (see "Say who wrote a comment"); they never affect access:
 
 Send printable ASCII, at most 120 characters each; Pages drops other
 characters and truncates longer values. Without X-Pages-Client, Pages uses the
-MCP clientInfo name and version from initialize. MCP has no model field, so
+MCP clientInfo name and version from initialize, or from params._meta under
+revision 2026-07-28. MCP has no model field, so
 send X-Pages-Model if you know it. For Kilo, add
 "X-Pages-Model": "{env:PAGES_MODEL}" beside X-Pages-Agent.
 
@@ -801,7 +802,16 @@ source_revision. Resend the same nonce to retry.
 
 read_page with sources:true lists every source: source_id, name,
 source_revision, asset_id and media_type. source_id:"<source_id>" reads one
-with producer: kind, at (when it was set) and by (who set it: principal,
+with summary, what its dataset holds, read from the Parquet footer without
+downloading it: {rows, row_groups, created_by, column_count, columns}, each
+column {name, type, nullable, null_count, min, max, bounds_exact}. type is
+the Arrow type the file reads as. min and max bound the whole file, or are
+null when its statistics don't; dates are YYYY-MM-DD, timestamps ISO 8601
+in UTC, and an infinite bound "Infinity" or "-Infinity". bounds_exact is
+false when the writer cut a text bound short. columns stops early, with
+columns_truncated true, after 200 columns, 32 KiB, or what max_bytes
+leaves; column_count counts them all. summary is null when the footer can't
+be read. It also has producer: kind, at (when it was set) and by (who set it: principal,
 displayName, driver, and agent {name, model} when the writing client asserted
 one). Its history lists the source's newest 50 revisions, oldest first, each
 {revision, name, media_type, asset_id, at, by}; history_truncated is true
@@ -838,14 +848,22 @@ starting with a letter or _; a view binds at most 32. view_revision is null to c
 view_revision you read to rewrite the view; the receipt names the new
 view_revision. A Page holds up to 10 views.
 
-Refusals create nothing: invalid_view (a malformed field, a spec over 64 KiB or
-one a chart can't draw, or data that doesn't match the names the spec reads),
+Charts are static. A spec is at most 64 KiB, nested at most 32 levels. Each
+mark is arc, area, bar, boxplot, circle, errorband, errorbar, geoshape, line,
+point, rect, rule, square, text, tick or trail; each field type quantitative,
+temporal, ordinal, nominal or geojson. Transforms: aggregate, joinaggregate,
+bin, calculate, density, extent, filter, fold, lookup, pivot (with limit),
+quantile, regression, sample, stack, timeUnit, window. A chart reads at most
+100,000 rows of each dataset; past that it shows a sentence, not a chart.
+
+Refusals create nothing: invalid_view (a malformed field, a spec a chart can't
+draw, checked before data, or data that doesn't match the names the spec reads),
 unknown_source (data names a source this Page doesn't have),
 unknown_source_revision (a pinned revision its history no longer holds),
 stale_view (409, the view changed or exists), view_not_found (404, a
 view_revision for a view that doesn't exist) and view_limit (an eleventh view;
 the refusal names the ten). insert_node with a view_id this Page doesn't hold
-is unknown_view.
+is unknown_view, naming the views it holds.
 
 read_page with views:true lists each view's view_id, title, media_type,
 revision and data; view_id:"<view_id>" reads one with its spec and producer.
@@ -1545,8 +1563,12 @@ ${part.hostedMcpHeaders}
 Accept: application/json, text/event-stream
 \`\`\`
 
-Initialize with an MCP client, then call tools/list for the current input schemas.
-For example, tools/call uses this JSON-RPC shape:
+The endpoint speaks MCP protocol revision 2026-07-28 and the earlier revisions
+up to 2025-11-25. A 2026-07-28 client sends no initialize: each request names
+its version in the MCP-Protocol-Version header and in params._meta, and
+server/discover returns the supported versions. An earlier client initializes
+first. Then call tools/list for the current input schemas.
+For example, a 2025-11-25 tools/call uses this JSON-RPC shape:
 
 \`\`\`json
 {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_pages","arguments":{}}}
@@ -1567,7 +1589,9 @@ or node_ids shows where you are reading; whole-page and outline reads
 show nothing. This presence is derived from your calls; you publish nothing extra. People see
 it as your account and client, such as "Kyle's Kilo". If several sessions share one
 account and client, each MCP session already gets its own caret: Pages hands out
-an Mcp-Session-Id on initialize, and your client echoes it. An X-Pages-Agent
+an Mcp-Session-Id on initialize, and your client echoes it. Revision 2026-07-28
+has no sessions, so its requests share one caret per client name and version
+from the clientInfo in params._meta. An X-Pages-Agent
 label names the session ("Kyle's Kilo · release agent"); see "Name each
 session" above. Use report_page_progress for temporary
 agent activity and read_page_presence for recent selections. Use these tools for document work; /api/sync is a binary native client protocol,

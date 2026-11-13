@@ -81,6 +81,7 @@ import {
   takeReplayedReceipt,
   usageDropped,
   usageOperation,
+  withModernMcpClient,
 } from "./usage.mjs";
 import { flushUsage } from "./usage-store.mjs";
 import { runScheduled } from "./scheduled.mjs";
@@ -133,6 +134,7 @@ import {
   logFailure,
   json,
   readJson,
+  sessionTag,
   withDomainAccess,
 } from "./auth.mjs";
 import {
@@ -152,7 +154,6 @@ import {
 } from "./operation-journal.mjs";
 import { fencedHeads, headsFor, revisionPlan } from "./revisions.mjs";
 import { STORAGE_KEYS_PER_CALL, guardContext } from "./storage-guard.mjs";
-import { pageRecordsCall } from "./page-records.mjs";
 export { PageRecords } from "./page-records.mjs";
 import {
   COMMENTS_MODULE,
@@ -388,6 +389,8 @@ import { holdUntilSettled } from "./request-hold.mjs";
 import { boundedMap } from "./bounded-map.mjs";
 import { legibleEnv, overloadRetryAfterMs, withRepeatSafety } from "./host-busy.mjs";
 import { readTool } from "./tool-reads.mjs";
+import { DatasetSummaries } from "./dataset-summary.mjs";
+import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 import { checkArguments } from "./tool-arguments.mjs";
 import { readChangesTool } from "./tool-changes.mjs";
 import { resolveWriters } from "./host-writers.mjs";
@@ -522,15 +525,6 @@ const lifecycleFingerprint = {
   restore_page: "restore_page",
   purge_page: "purge_page",
 };
-/** Whether `metadata`'s Page has a PageRecords object, and whether it may be
- * cleared: `clear` for a Page converted from `buffered` storage or a deleted
- * `buffered` Page, `held` for a live `buffered` one (its records are its only
- * history), undefined for a Page that never had one. */
-function pageRecordsHolder(metadata) {
-  if (metadata?.recordStorageMigratedFrom === "buffered") return "clear";
-  if (metadata?.recordStorage !== "buffered") return undefined;
-  return pageState(metadata) === "deleted" ? "clear" : "held";
-}
 const noop = async () => {};
 /** A listing that met a shared Page (or its owner's Catalog) that did not
  * answer. A listing is a read, so it is retryable; an overloaded host asks
@@ -693,6 +687,8 @@ const PAGE_CARD_STORE_TIMEOUT_MS = 10_000;
 const PAGE_CARD_DELETE_TIMEOUT_MS = 2_000;
 /** How long a permanent deletion waits for its uploaded assets to go. */
 const ASSET_DELETE_TIMEOUT_MS = 10_000;
+/** How long a read waits on a dataset's summary before leaving it out. */
+const DATASET_SUMMARY_TIMEOUT_MS = 5_000;
 /** Budgets for reading Page lifecycles while the Catalog queue waits. */
 export const lifecycleBounds = { readMs: 2000, passMs: 5000, concurrency: 4 };
 const lifecycleUnsettled = () =>
@@ -1516,11 +1512,20 @@ const gateway = {
         const identity = await authenticate(request, env);
         return await handleMcp(
           request,
-          async (operation, args, { kind = "tool", agent } = {}) => {
-            const invocationRequest = withMcpAgent(request, agent);
-            const usage = toolUsage(request, "mcp", operation, args, kind, env);
-            // A refusal before invoke() authenticates still names the caller.
-            usage.seen.identity = identity;
+          async (operation, args, { kind = "tool", agent, client } = {}) => {
+            // A 2026-07-28 request (client present, possibly null) names its
+            // client per request, never by a session it was issued.
+            const mcpRequest =
+              client === undefined ? request : await withModernMcpClient(request, client);
+            const invocationRequest = withMcpAgent(mcpRequest, agent);
+            const usage = toolUsage(mcpRequest, "mcp", operation, args, kind, env);
+            // A refusal before invoke() authenticates still names the caller,
+            // with the session the invocation request carries: for a
+            // 2026-07-28 request, its client's, never a header it sent.
+            usage.seen.identity =
+              client === undefined
+                ? identity
+                : { ...identity, session: await sessionTag(mcpRequest, identity.principal) };
             let response;
             try {
               response = await invokeProjectApi(
@@ -5376,6 +5381,26 @@ export class Page {
     }
   }
 
+  /** The summary of one of this Page's datasets (dataset-summary.mjs), or
+   * null. A summary is advisory: a missing bucket, a failure or a slow read
+   * leaves it out rather than failing what asked for it. One store per host
+   * keeps summaries in memory between reads; a purge closes it for good. */
+  async datasetSummary(assetId) {
+    const bucket = this.env.PAGES_ASSETS;
+    if (!bucket || this.datasetSummariesClosed) return null;
+    this.datasetSummaries ??= new DatasetSummaries({ bucket, pageId: this.metadata.pageId });
+    try {
+      return await withTimeout(
+        this.datasetSummaries.summary(assetId),
+        DATASET_SUMMARY_TIMEOUT_MS,
+        "Dataset summary timed out",
+      );
+    } catch (error) {
+      logFailure(error, "dataset-summary");
+      return null;
+    }
+  }
+
   /** Remove this Page's uploaded images and datasets (image-assets.mjs
    * `deleteUploadedAssets`) under a deadline, so bucket trouble never holds
    * a purge. Best-effort: a deleted Page authorizes no asset read, so a
@@ -6279,26 +6304,15 @@ export class Page {
     return refusal ? errorResponse(refusal, "page") : this.enqueue(request);
   }
 
-  /** What a Page converted from Subduction still holds of it, which the
-   * plain host never reads: native records, actor entries, signing-key
-   * bindings, the signer seed, and its PageRecords object when
-   * pageRecordsHolder says `clear`. A live or trashed `buffered` Page's
-   * records are its only history (`held`), so they stay. Deleting the Page
-   * deletes the rest. Each step is idempotent, so a repeated deletion
-   * finishes the job. */
+  /** What a Page converted from Subduction still holds of it in its own
+   * storage, which the plain host never reads: native records under `repo/`,
+   * actor entries, signing-key bindings and the signer seed. A permanent
+   * deletion deletes them with the rest of the Page. Each step is idempotent,
+   * so a repeated deletion finishes the job. The Page's `PageRecords` object
+   * is not called. */
   async purgeConvertedRecords() {
-    if (pageRecordsHolder(this.metadata) === "clear") await this.pageRecords("clear");
     await clearPrefixes(this.ctx.storage, ["repo/", "host/actor/", "host/binding/"]);
     await this.ctx.storage.delete("host/signer");
-  }
-
-  /** `inspect` or `clear` this Page's PageRecords object
-   * (worker/page-records.mjs). The abandoned-object gate refuses it like any
-   * other storage write. */
-  async pageRecords(action) {
-    const refusal = this.storageRefusal();
-    if (refusal) throw refusal;
-    return pageRecordsCall(this.env.PAGE_RECORDS.getByName(this.metadata.pageId), action);
   }
 
   async run(request) {
@@ -6707,6 +6721,7 @@ export class Page {
             getPresence: (doc) => this.activityState().read(doc),
             commentsDoc: this.commentsView(),
             sourcesDoc: this.sourcesView(),
+            datasetSummary: (assetId) => this.datasetSummary(assetId),
             views: this.viewReads(),
             revisions: this.revisionTable(),
             writers: (changes) =>
@@ -6793,17 +6808,9 @@ export class Page {
           );
         if (body.operation !== "edit_page") throw new HttpError(400, "Unknown document operation");
         const ops = Array.isArray(body.arguments?.operations) ? body.arguments.operations : [];
-        // One journal entry writes one document: a batch with a set_source
-        // writes the sources document and nothing else.
-        const sourceOps = ops.filter((op) => op?.op === "set_source").length;
-        if (sourceOps && sourceOps !== ops.length)
-          throw new HttpError(
-            400,
-            "A batch with set_source holds only set_source operations. Send the other operations in a second edit_page request.",
-            "invalid_arguments",
-          );
-        if (sourceOps) return json(await this.writeSources(request, identity, body));
-        // A set_view writes one view's document: its batch holds it alone.
+        // One journal entry writes one document. A set_view writes one view's
+        // document: its batch holds it alone, whatever else the batch holds,
+        // so its rule is the one a mixed batch hears.
         if (ops.some((op) => op?.op === "set_view")) {
           if (ops.length !== 1)
             throw new HttpError(
@@ -6813,6 +6820,16 @@ export class Page {
             );
           return json(await this.writeView(request, identity, body));
         }
+        // A batch with a set_source writes the sources document and nothing
+        // else.
+        const sourceOps = ops.filter((op) => op?.op === "set_source").length;
+        if (sourceOps && sourceOps !== ops.length)
+          throw new HttpError(
+            400,
+            "A batch with set_source holds only set_source operations. Send the other operations in a second edit_page request.",
+            "invalid_arguments",
+          );
+        if (sourceOps) return json(await this.writeSources(request, identity, body));
         // Ops that create a node naming a stored asset (model/node-registry.mjs).
         const inserts = ops.filter((op) => insertOperation(op?.op) || op?.op === "set_image");
         // Where this batch landed, captured inside the change so the cursors
@@ -6847,14 +6864,22 @@ export class Page {
                     assetId,
                     ...(mediaType && { mediaType }),
                   });
-                // Each view node names a view this Page holds.
+                // Each view node names a view this Page holds. The refusal
+                // names the ones a view node can name, at most MAX_VIEWS.
                 for (const viewId of insertedViews(inserts))
-                  if (this.viewDoc(viewId)?.revision === undefined)
-                    throw new HttpError(
-                      400,
-                      `No view "${viewId}" on this Page. Create it with set_view, then insert its node.`,
-                      "unknown_view",
+                  if (this.viewDoc(viewId)?.revision === undefined) {
+                    const held = (await this.storedViewIds()).filter(
+                      (id) => this.viewDoc(id)?.revision !== undefined,
                     );
+                    throw Object.assign(
+                      new HttpError(
+                        400,
+                        `No view "${viewId}" on this Page, which holds ${held.length ? held.join(", ") : "none"}. Create it with set_view, then insert its node.`,
+                        "unknown_view",
+                      ),
+                      { details: { view_ids: held } },
+                    );
+                  }
                 // The Page queue orders ACL changes; OAuth/key expiry and revocation
                 // can still happen while immutable object metadata is being read.
                 this.policy.account(await authenticate(request, this.env), true);
@@ -7183,7 +7208,7 @@ export class Page {
       update: (fn, options) => this.sourcesHandle.update(fn, options),
     };
     try {
-      return await documentMutation({
+      const receipt = await documentMutation({
         storage: this.ctx.storage,
         hostActorPrefix: this.plain.hostActorPrefix,
         handle,
@@ -7237,6 +7262,11 @@ export class Page {
         },
         flush: () => this.flush(),
       });
+      // Summarize each named dataset now, so the first read of the source
+      // finds its summary stored. A replayed receipt names no new asset.
+      for (const [assetId, mediaType] of mediaTypes)
+        if (mediaType === PARQUET_MEDIA_TYPE) this.ctx.waitUntil(this.datasetSummary(assetId));
+      return receipt;
     } finally {
       if (genesis) A.free(genesis);
     }
@@ -7805,6 +7835,9 @@ export class Page {
         for (const documentId of viewDocumentIds) await this.repo.delete(documentId);
         this.dropSources();
         this.dropViews();
+        // Before the asset prefix goes, so no summary lands after it.
+        this.datasetSummariesClosed = true;
+        this.datasetSummaries?.close();
         await this.deleteAssets();
         await this.plain.forget(
           [

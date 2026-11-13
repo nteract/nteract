@@ -86,8 +86,13 @@ issuer; `cargo xtask dev` doesn't start it.
 
 `pages.runtimed.run` holds documents people use: don't reset it and don't build
 a migration from it. It runs the commit tagged `pages-format-1`. Nothing from
-`main` deploys there: a fix goes on a maintenance branch cut from that tag. Every other
-deployed target is a demo and can be reset. Confirm which target a command
+`main` deploys there: a fix goes on a maintenance branch cut from that tag. The
+other targets the deployment helpers know are demos and can be reset. A
+deployment someone made from the
+[release package](DEPLOYMENT.md#deployment-neutral-release-package) is not in
+that list. It takes builds of `main` and can hold documents people use: don't
+reset it or delete from it, and say so in the PR when a change stops a stored
+document from opening. Confirm which target a command
 addresses before it mutates anything. Read
 [DEPLOYMENT.md](DEPLOYMENT.md) before release work. Local tests don't qualify
 a live identity provider or object-store failover.

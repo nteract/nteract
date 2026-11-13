@@ -20,8 +20,7 @@ export function workerShape() {
       bindings: [
         { name: "PAGES", class_name: "Page" },
         { name: "CATALOGS", class_name: "Catalog" },
-        // Delete-only: purge clears old buffered records
-        // (worker/page-records.mjs).
+        // Declared and bound; nothing calls it (worker/page-records.mjs).
         { name: "PAGE_RECORDS", class_name: "PageRecords" },
         // Projects keep the Space class: the class name is the storage identity for
         // Projects, and celld 0.6.3 refuses renamed_classes migrations.

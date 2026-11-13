@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  CHART_ENCODING_TYPES,
   CHART_EXPRESSION_FUNCTIONS,
+  CHART_MARKS,
   CHART_MAX_ROWS,
   CHART_SPEC_LIMITS,
   checkChartSpec,
@@ -440,6 +442,95 @@ test("a symbol shape is one of Vega's own, never a custom SVG path", () => {
       /A chart's symbols are Vega's own shapes: circle, square, cross, diamond, triangle-up, triangle-down, triangle-right, triangle-left, triangle, arrow, wedge or stroke; it can't draw a custom SVG path/,
       JSON.stringify(spec),
     );
+});
+
+test("every unit view's mark is one Vega-Lite draws, in any layer or composed spec", () => {
+  const d = { name: "calls" };
+  const bar = { mark: "bar" };
+  for (const mark of CHART_MARKS) {
+    assert.equal(checkChartSpec({ data: d, mark }).ok, true, mark);
+    assert.equal(checkChartSpec({ data: d, mark: { type: mark } }).ok, true, mark);
+  }
+  const nested = (inner) => [
+    { data: d, ...inner },
+    { data: d, layer: [bar, inner] },
+    { data: d, layer: [bar, { layer: [inner] }] },
+    { data: d, hconcat: [bar, inner] },
+    { data: d, vconcat: [inner] },
+    { data: d, concat: [bar, inner] },
+    { data: d, facet: { field: "tool", type: "nominal" }, spec: inner },
+    { data: d, repeat: ["calls"], spec: { layer: [inner] } },
+  ];
+  const marks = (sentence) =>
+    new RegExp(
+      `^A chart's mark must be ${[...CHART_MARKS].slice(0, -1).join(", ")} or trail, as a string or an object's type \\(at ${sentence}\\)\\.$`,
+    );
+  for (const spec of nested({ mark: "bogus" }))
+    assert.match(refusal(spec), marks("(.+\\.)?mark"), JSON.stringify(spec));
+  for (const spec of nested({ mark: { type: "bogus", color: "red" } }))
+    assert.match(refusal(spec), marks("(.+\\.)?mark\\.type"), JSON.stringify(spec));
+  assert.match(refusal({ data: d, layer: [bar, { mark: "Bar" }] }), marks("layer\\.1\\.mark"));
+  // No mark at all, or a mark object with no type, compiles to nothing.
+  assert.match(refusal({ data: d, encoding: {} }), marks("mark"));
+  assert.match(refusal({ data: d, mark: { color: "red" } }), marks("mark\\.type"));
+  assert.match(refusal({ data: d, hconcat: [bar, {}] }), marks("hconcat\\.1\\.mark"));
+  // Image keeps its own refusal.
+  assert.match(refusal({ data: d, mark: { type: "image" } }), /can't draw image marks/);
+});
+
+test("every encoding and facet field's type is one Vega-Lite reads", () => {
+  const d = { name: "calls" };
+  const typed = (type) => ({ field: "calls", type });
+  for (const type of [...CHART_ENCODING_TYPES, "Quantitative", "q", "T", "o", "n"])
+    assert.equal(
+      checkChartSpec({ data: d, mark: "bar", encoding: { x: typed(type) } }).ok,
+      true,
+      type,
+    );
+  const sentence = (path) =>
+    new RegExp(
+      `^A chart encoding's type must be quantitative, temporal, ordinal, nominal or geojson \\(at ${path}\\)\\.$`,
+    );
+  for (const [spec, path] of [
+    [{ data: d, mark: "bar", encoding: { x: typed("bogus") } }, "encoding\\.x\\.type"],
+    [{ data: d, mark: "bar", encoding: { x: typed(7) } }, "encoding\\.x\\.type"],
+    [{ data: d, mark: "bar", encoding: { x: typed("g") } }, "encoding\\.x\\.type"],
+    [
+      { data: d, mark: "bar", encoding: { tooltip: [typed("nominal"), typed("text")] } },
+      "encoding\\.tooltip\\.1\\.type",
+    ],
+    [
+      {
+        data: d,
+        mark: "bar",
+        encoding: {
+          color: { condition: { test: "datum.calls > 1", ...typed("x") }, value: "red" },
+        },
+      },
+      "encoding\\.color\\.condition\\.type",
+    ],
+    [
+      { data: d, mark: "bar", encoding: { color: { condition: [typed("x")], value: "red" } } },
+      "encoding\\.color\\.condition\\.0\\.type",
+    ],
+    [
+      { data: d, layer: [{ mark: "bar", encoding: { y: typed("count") } }] },
+      "layer\\.0\\.encoding\\.y\\.type",
+    ],
+    [{ data: d, facet: typed("bogus"), spec: { mark: "bar" } }, "facet\\.type"],
+    [{ data: d, facet: { row: typed("bogus") }, spec: { mark: "bar" } }, "facet\\.row\\.type"],
+    [{ data: d, mark: "bar", encoding: { column: typed("bogus") } }, "encoding\\.column\\.type"],
+  ])
+    assert.match(refusal(spec), sentence(path), JSON.stringify(spec));
+  // A scale's or a legend's type isn't a field's.
+  assert.equal(
+    checkChartSpec({
+      data: d,
+      mark: "bar",
+      encoding: { x: { ...typed("quantitative"), scale: { type: "log" } } },
+    }).ok,
+    true,
+  );
 });
 
 test("a cursor is a CSS keyword, never a URL or an expression", () => {

@@ -15,6 +15,12 @@ import { SOURCES_MODULE } from "./document-modules.mjs";
 import { DEFAULT_READ_BYTES } from "./tool-reads.mjs";
 import { Page } from "./index.mjs";
 import { treeOf } from "./plain-sync.mjs";
+import { tableFromArrays, tableToIPC } from "apache-arrow";
+import { write_parquet_ipc } from "@nteract/sift/wasm";
+// Initializes Sift's WASM for write_parquet_ipc, as the host's summaries do.
+import "#sift-wasm";
+import { datasetSummaryKey } from "./dataset-summary.mjs";
+import { imageAssetKey } from "./image-assets.mjs";
 
 const PARQUET = "application/vnd.apache.parquet";
 const first = "a".repeat(64),
@@ -664,4 +670,92 @@ test("Trash and restore keep the sources document; purge deletes its stored byte
   assert.equal(purged.status, 200, JSON.stringify(purged.body));
   assert.deepEqual(await h.plainKeys(), []);
   assert.equal(host.sourcesView(), undefined);
+});
+
+test("read_page source_id carries its dataset's summary, stored once at set_source", async (t) => {
+  const h = await sourcesHost(t);
+  const parquet = write_parquet_ipc(
+    tableToIPC(tableFromArrays({ units: Int32Array.from([3, 9, 4]) }), "stream"),
+  );
+  const objects = new Map([[imageAssetKey(pageId, first), parquet]]);
+  const bucket = h.host.env.PAGES_ASSETS;
+  const ranged = [];
+  h.assets.head = async (key) =>
+    objects.has(key) ? { ...parquetHead(first), size: objects.get(key).byteLength } : null;
+  bucket.get = async (key, { range } = {}) => {
+    const bytes = objects.get(key);
+    if (!bytes) return null;
+    if (range) ranged.push(key);
+    const body = range ? bytes.subarray(range.offset, range.offset + range.length) : bytes;
+    return {
+      arrayBuffer: async () => body.slice().buffer,
+      text: async () => new TextDecoder().decode(body),
+    };
+  };
+  bucket.put = async (key, value) => objects.set(key, new TextEncoder().encode(value));
+  const warming = [];
+  h.host.ctx.waitUntil = (promise) => warming.push(promise);
+
+  assert.equal((await h.setSource(h.host, [usage()])).status, 200);
+  await Promise.all(warming);
+  assert.ok(objects.has(datasetSummaryKey(pageId, first)), "set_source stores the summary");
+
+  const read = await h.tool(h.host, "read_page", { source_id: "usage" });
+  assert.equal(read.status, 200);
+  const { summary } = read.body.source;
+  assert.equal(summary.rows, 3);
+  assert.deepEqual(
+    summary.columns.map(({ name, type, min, max }) => [name, type, min, max]),
+    [["units", "Int32", 3, 9]],
+  );
+  assert.deepEqual(Object.keys(read.body.source).slice(0, 6), [
+    "source_id",
+    "name",
+    "source_revision",
+    "asset_id",
+    "media_type",
+    "summary",
+  ]);
+
+  // A new host reads the stored summary, not the dataset.
+  const reads = ranged.length;
+  const next = h.page();
+  const again = await h.tool(next, "read_page", { source_id: "usage" });
+  assert.deepEqual(again.body.source.summary, summary);
+  assert.equal(ranged.length, reads);
+
+  // A bucket failure leaves the summary out of the read, not the read out.
+  bucket.get = async () => {
+    throw Error("object store unavailable");
+  };
+  const failed = await h.tool(h.page(), "read_page", { source_id: "usage" });
+  assert.equal(failed.status, 200);
+  assert.equal(failed.body.source.summary, null);
+});
+
+test("a source read gives up summary columns before it refuses for max_bytes", async (t) => {
+  const h = await sourcesHost(t);
+  assert.equal((await h.setSource(h.host, [usage()])).status, 200);
+  const columns = Array.from({ length: 200 }, (_, i) => ({
+    name: `column_${i}`,
+    type: "Int64",
+    nullable: true,
+    null_count: 0,
+    min: 0,
+    max: i,
+    bounds_exact: true,
+  }));
+  const held = { rows: 1, row_groups: 1, created_by: null, column_count: 200, columns };
+  h.host.datasetSummary = async () => held;
+
+  const maxBytes = 8192;
+  const read = await h.tool(h.host, "read_page", { source_id: "usage", max_bytes: maxBytes });
+  assert.equal(read.status, 200);
+  const { summary } = read.body.source;
+  assert.equal(summary.columns_truncated, true);
+  assert.ok(summary.columns.length > 0 && summary.columns.length < 200);
+  assert.deepEqual(summary.columns, columns.slice(0, summary.columns.length));
+  assert.ok(new TextEncoder().encode(JSON.stringify(read.body)).byteLength <= maxBytes);
+  assert.equal(held.columns.length, 200, "the host's summary is untouched");
+  assert.equal(held.columns_truncated, undefined);
 });

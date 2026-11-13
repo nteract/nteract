@@ -10,13 +10,14 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { VIEWER_ASSETS, VIEWER_CHUNK, digestHash, viewerAsset } from "./viewer-chunks.mjs";
+import { WORKER_MODULES } from "./worker-modules.mjs";
 
 // Keep this list aligned with build.mjs. Never archive a dev directory wholesale:
 // celld dev places .dev.vars and local account/document databases beside assets.
 // The viewer's hashed files come from the build receipt instead.
 export const releaseArtifacts = Object.freeze([
   "index.js",
-  "automerge.wasm",
+  ...WORKER_MODULES,
   "wrangler.json",
   "build-receipt.json",
   "public/index.html",

@@ -25,6 +25,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CELLD_RELEASE, parseRuntimeVersion } from "./deployment/profiles.mjs";
+import { WORKER_MODULES } from "./worker-modules.mjs";
 
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const celld = process.env.CELLD_BIN || "celld";
@@ -54,6 +55,11 @@ const SUITES = Object.freeze([
     name: "page-scrollbar",
     script: "scripts/page-scrollbar-smoke.mjs",
     timeout: 2 * minute,
+  },
+  {
+    name: "quiet-background",
+    script: "scripts/quiet-background-smoke.mjs",
+    timeout: 3 * minute,
   },
   {
     name: "comments-review",
@@ -294,7 +300,7 @@ async function startServer(output, deadline) {
   const scratch = await mkdtemp(path.join(tmpdir(), "pages-e2e-"));
   const runtime = path.join(scratch, "runtime");
   await mkdir(runtime);
-  for (const name of ["index.js", "public", "automerge.wasm", "wrangler.json"])
+  for (const name of ["index.js", "public", ...WORKER_MODULES, "wrangler.json"])
     await cp(path.join(app, "dist", name), path.join(runtime, name), {
       recursive: true,
     });

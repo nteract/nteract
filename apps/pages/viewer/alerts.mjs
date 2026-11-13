@@ -24,16 +24,15 @@ export function failureMessage(error) {
 
 /**
  * What the session-check banner should say after a failed session request,
- * or undefined to leave it as it is. `outage` comes from
- * maintainBrowserSession; `signedIn` says this tab knows its account. A
- * transient failure with a known account stays quiet until it is an outage:
- * an open Page shows Offline meanwhile, and the next answer may succeed. A
- * first check with no account has nothing else on screen, so it reports at
- * once. A successful session answer clears the banner.
+ * or undefined to leave it as it is. `notice` comes from
+ * maintainBrowserSession (session-refresh-machine.mjs decides it): `quiet`
+ * says nothing, since the tab keeps its account and the next check may be
+ * answered; `outage` is the one outage sentence; `failure` is the error's own
+ * sentence. A successful session answer clears the banner.
  */
-export function sessionCheckBanner(error, { outage = false, signedIn = false } = {}) {
-  if (outage) return SERVER_UNREACHABLE;
-  if (isTransientFailure(error) && signedIn) return undefined;
+export function sessionCheckBanner(error, { notice = "failure" } = {}) {
+  if (notice === "quiet") return undefined;
+  if (notice === "outage") return SERVER_UNREACHABLE;
   return failureMessage(error);
 }
 

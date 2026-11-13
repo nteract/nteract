@@ -1315,7 +1315,11 @@ reconnect at once; a stable connection clears them too.
 A host restart is not an error the person can act on. A 502, 503 or 504 (JSON
 or a gateway's HTML page), a JSON error marked `retryable`, and a failed fetch
 are transient (`isTransientFailure` in [request.mjs](viewer/request.mjs)): the
-Page shows Offline or Saved locally and retries without a red banner. Receipts
+Page shows Offline or Saved locally and retries without a red banner. A
+session check or a connection attempt that runs past the request deadline gets
+the same treatment (`isUnansweredFailure`): the server said nothing about the
+session or the Page, so the viewer asks again. A receipt that times out still
+reports it, because it holds up saving the edit. Receipts
 retry on the same backoff. From the seventh failure in a row, about 15 to 30
 seconds in, the Page shows one sentence, "Pages can't reach the server. Your
 changes are saved on this device.", and keeps retrying; the next admitted
@@ -1324,7 +1328,9 @@ are timed instead of counted (`OUTAGE_MS`, 20 s), because edits and Page
 reconnects trigger them too: receipt failures count from the first one after
 the last successful receipt, across edits, and the session-refresh machine
 tracks a run of unreachable answers, so a library screen whose renewals keep
-failing shows the same sentence until a session request succeeds. Both read
+failing shows the same sentence until a session request succeeds. A tab with
+no account yet shows the failed check's own error instead, since the sentence
+promises saved changes it doesn't have. Both read
 one monotonic clock ([monotonic.mjs](viewer/monotonic.mjs), `performance.now()`),
 so changing the system time can't hide or hasten the notice. A renewal the
 server refuses (401 or 403) still signs the tab out, and says why: "Your
@@ -1605,10 +1611,32 @@ before the host creates the document, so a refused first write creates
 nothing, and a journaled source write whose apply didn't finish is replayed
 before a new one is built. `read_page` takes `sources: true`, which lists
 `source_id`, `name`, `source_revision`, `asset_id` and `media_type`, and
-`source_id`, which reads one source with `producer`, `history` and
-`history_truncated`; both together return
+`source_id`, which reads one source with `summary`, `producer`, `history`
+and `history_truncated`; both together return
 both. Alone they read no Page content; beside other selectors they add to
 them. Reads name `sources_revision` once the document exists.
+
+A source's `summary` describes the dataset it names now, from the Parquet
+footer alone ([worker/dataset-summary.mjs](worker/dataset-summary.mjs)).
+The Page host reads the dataset's end from R2 with ranged reads, at most
+1 MiB of footer, and passes it to Sift's `parquet_footer_summary`, loaded
+from `@nteract/sift/wasm` as a second Worker module beside
+`automerge.wasm` ([scripts/worker-modules.mjs](scripts/worker-modules.mjs)).
+The agent summary is stored as
+`pages/<page>/assets/<asset>/footer-summary.v1.json`: an asset id names
+immutable bytes, so its summary never changes, and the asset prefix that
+permanent deletion clears holds it. The object is derived; deleting it costs
+a recomputation. Its columns stop at 200 or 32 KiB of JSON, and a read whose
+`max_bytes` can't hold the rest drops columns from the end, with
+`columns_truncated`, before it refuses. A footer Sift refuses is stored as
+unreadable and reads as `summary: null`. A WASM trap stores that footer as
+unreadable too, and the isolate's Sift module summarizes nothing more: its
+memory is in no known state, and the glue can't be initialized again.
+`set_source` summarizes each named dataset after its receipt is durable, so
+a later read finds it stored. A read waits at most 5 seconds for a summary
+and leaves it null on a timeout or a bucket or WASM failure; the read itself
+never fails for it. Purge closes the host's summaries before it deletes the
+asset prefix, and a summary write still in flight deletes what it wrote.
 
 Trash and restore keep the document. Permanent deletion deletes its stored
 bytes with the Page's. Page assets are never collected, so a source's
@@ -1736,16 +1764,35 @@ The nonce shares `edit_page`'s lane, and the writer is recorded as for any
 edit ([Edit writers](#edit-writers)) and as `producer.by`.
 
 The spec passes `checkViewSpec` ([shared/view-spec.mjs](shared/view-spec.mjs)):
-a JSON object of at most 64 KiB, accepted by `checkChartSpec`
-([shared/chart-spec.mjs](shared/chart-spec.mjs)) with `datasets` the keys of
-`data`, whose refusal sentence reaches the caller as it is, and reading every
-name `data` binds. Refused, creating no document, no listed view and no
-writer record:
+a JSON object of at most 64 KiB, nested at most 32 levels, accepted by
+`checkChartSpec` ([shared/chart-spec.mjs](shared/chart-spec.mjs)), whose
+refusal sentence reaches the caller as it is, and reading exactly the names
+`data` binds. The spec is checked before `data`, so a spec that can't draw is
+the refusal whatever `data` holds, and an empty `data` names the data names
+the spec reads. `checkChartSpec` takes from allowlists:
+
+- each unit view's mark: `arc`, `area`, `bar`, `boxplot`, `circle`,
+  `errorband`, `errorbar`, `geoshape`, `line`, `point`, `rect`, `rule`,
+  `square`, `text`, `tick` or `trail` (`CHART_MARKS`; Vega-Lite 6's marks
+  without `image`), as a string or a mark object's `type`, in every layer,
+  concatenation and inner spec;
+- each encoding, condition and facet field's `type`: `quantitative`,
+  `temporal`, `ordinal`, `nominal` or `geojson` (`CHART_ENCODING_TYPES`),
+  in any case, or Vega-Lite's `q`, `t`, `o` and `n`;
+- transforms: `aggregate`, `joinaggregate`, `bin`, `calculate`, `density`,
+  `extent`, `filter`, `fold`, `lookup`, `pivot`, `quantile`, `regression`,
+  `sample`, `stack`, `timeUnit` and `window`, each with ranged parameters.
+
+A chart reads at most 100,000 rows and 2,000,000 cells from one dataset; the
+viewer refuses more when it draws, and the host doesn't count rows on write.
+A view stored before a check refused its spec still reads, lists, rewrites
+and deletes as any view; the viewer shows the check's sentence in its place.
+Refused, creating no document, no listed view and no writer record:
 
 | Request | Result |
 | --- | --- |
-| malformed `view_id`, `title`, `media_type`, `data` or `view_revision` | `400 invalid_view` |
-| spec not an object, over 64 KiB, or refused by `checkChartSpec` | `400 invalid_view` |
+| malformed `view_id`, `title`, `media_type`, `data` or `view_revision` | `400 invalid_view`, naming the field |
+| spec not an object, over 64 KiB, or refused by `checkChartSpec` | `400 invalid_view`, naming the spec path |
 | `data` binds a name the spec doesn't read, or lacks one it reads | `400 invalid_view` |
 | a data name that isn't a safe key, a malformed `source_id`, or over 32 names | `400 invalid_view`, naming the key |
 | `data` names a source this Page doesn't hold | `400 unknown_source` |
@@ -1767,7 +1814,9 @@ A `view` node is a top-level leaf with one attr, `view_id`; feature `view`
 gates it ([model/features.json](model/features.json)), so a build without it
 opens a Page with one read-only. Its DOM form is `figure[data-pages-view]`
 with `data-view-id`. `insert_node` with `{ type: "view", attrs: { view_id }
-}` places one; the view must exist on the Page (`400 unknown_view`).
+}` places one; the view must exist on the Page (`400 unknown_view`, naming
+the views it holds in the sentence and `details.view_ids`). A malformed view
+node is `400 invalid_edit_selector`, naming the field and its rule.
 `delete_node` removes the node and keeps the view. Markdown reads it as
 `[View: <view_id>](/p/<page_id>/view/<view_id>)`, from the node alone, and
 `replace_block_markdown` keeps the node for that exact line as it keeps a
@@ -1987,9 +2036,10 @@ upload results are `private, no-store`. Bytes already in a reader's cache stay
 there after their access is revoked; the next request is still checked. No
 public bucket, persistent presigned URL, or cross-Page hash lookup is exposed.
 
-The same route stores Parquet datasets for dataframe nodes. The Worker checks
-only the container: `PAR1` at both ends, a footer length that fits, and no
-encrypted footer. It never decodes the footer or column data. A dataset is
+The same route stores Parquet datasets for dataframe nodes. On upload the
+Worker checks only the container: `PAR1` at both ends, a footer length that
+fits, and no encrypted footer. It decodes no column data; a source's summary
+decodes the footer through Sift ([Sources document](#sources-document)). A dataset is
 served as `application/vnd.apache.parquet` with `Content-Disposition:
 attachment`, so opening its URL downloads it. `insert_image` and
 `import_page_image` refuse datasets; `insert_node` checks with `HEAD` that its
@@ -2834,10 +2884,27 @@ optional client label and `X-Pages-Agent` an optional session label. OAuth
 scopes and current Page permissions apply on every call. The public `/llms.txt`
 is the tool usage and authentication reference.
 
+`/mcp` serves two protocol eras on the one endpoint, both statelessly
+([mcp.mjs](mcp.mjs), on `@modelcontextprotocol/server`):
+
+- A request that declares `io.modelcontextprotocol/protocolVersion` in
+  `params._meta`, or names a 2026-07-28 or later revision in
+  `MCP-Protocol-Version`, is served under 2026-07-28. There is no `initialize`
+  and no `Mcp-Session-Id`; `server/discover` returns the supported versions,
+  capabilities, instructions and server identity. The standard headers
+  (`MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`) must match the body
+  (400, `-32020`), the envelope must be complete (400, `-32602`), and any
+  other version gets 400 with `UnsupportedProtocolVersionError` (`-32022`,
+  `data.supported`, `data.requested`). `ping` is not part of this revision
+  and answers 404 with `-32601`.
+- Every other request is legacy: `initialize` negotiates a revision from
+  2024-10-07 to 2025-11-25, and responses are single JSON bodies.
+
 A single `tools/list` or `ping` message needs no credential: tool definitions are
-static and carry no account data. `initialize`, `tools/call` and every other method
-return the OAuth challenge without one, so MCP clients still start sign-in from
-`initialize`. A presented credential that fails still gets the challenge.
+static and carry no account data. `initialize`, `server/discover`, `tools/call`
+and every other method return the OAuth challenge without one, so MCP clients
+start sign-in from their first such request. A presented credential that fails
+still gets the challenge.
 
 Other endpoints include `/api/access` for sharing, `/api/connect` for native
 admission details, `/api/sync` for binary WebSockets, `/api/saved` for durable
@@ -3307,7 +3374,11 @@ label, so two sessions of one account keep separate carets. MCP `initialize`
 responses also carry an `Mcp-Session-Id`, and clients echo it; the transport
 stays stateless. The worker turns the id into an account-scoped SHA-256 tag
 (`identity.session`), so two unlabeled sessions on one credential still get two
-carets and two colors, and the raw id never leaves the worker. A reading marker's
+carets and two colors, and the raw id never leaves the worker. MCP revision
+2026-07-28 has no sessions: the worker ignores a client's `Mcp-Session-Id` and
+builds the tag from the clientInfo each request declares in `_meta`
+(`withModernMcpClient` in [usage.mjs](worker/usage.mjs)), so one account's
+requests from one client name and version share a caret. A reading marker's
 targets are captured on the revision the read returned.
 Each participant's color comes from nteract's cursor palette, keyed by
 principal and driver.
