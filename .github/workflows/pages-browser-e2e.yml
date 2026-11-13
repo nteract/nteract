@@ -43,7 +43,7 @@ jobs:
   browser-e2e:
     name: Pages browser E2E (local celld)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: apps/pages
@@ -97,11 +97,13 @@ jobs:
         run: npx --no-install playwright install-deps chromium
       # One retry per failed suite in a fresh fixture. A suite that passes only
       # on retry is flaky; more than PAGES_E2E_MAX_FLAKY of them fail the job.
-      # Setup takes about 2 minutes; the 15-minute step cap leaves the upload
-      # room inside the 20-minute job. Results are written per suite, so a
-      # timed-out step still uploads what finished.
+      # The suites take about 13.5 minutes when none retries, and a retry
+      # repeats one suite, so the 25-minute step cap holds a run with retries.
+      # Setup takes about 2 minutes; the cap leaves the upload room inside the
+      # 30-minute job. Results are written per suite, so a timed-out step
+      # still uploads what finished.
       - name: Run Pages browser E2E
-        timeout-minutes: 15
+        timeout-minutes: 25
         env:
           PAGES_E2E_RETRIES: "1"
           PAGES_E2E_MAX_FLAKY: "1"
