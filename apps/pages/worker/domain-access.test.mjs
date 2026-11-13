@@ -7,7 +7,14 @@ import { createAuthFixture } from "../auth-fixtures.mjs";
 import { WRITTEN_FORMATS } from "../model/document-types.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { companyViewDomains, domainAccessForIdentity } from "./domain-access.mjs";
-import { pageAccess, proposeAccessUpdate, restrictAccessDuringCommit } from "./access.mjs";
+import {
+  audienceEditUntil,
+  pageAccess,
+  proposeAccessUpdate,
+  restrictAccessDuringCommit,
+} from "./access.mjs";
+import { NO_ACTOR_CHAIN, decide, principalOf, projectObject } from "./authz.mjs";
+import { PROJECT_ACCESS_LEASE_MS } from "./project-access.mjs";
 import {
   ASSET_UPLOAD_TTL_MS,
   issueAssetUpload,
@@ -1175,4 +1182,50 @@ test("an API-key agent edits through a company domain editor grant, publishes it
   assert.equal(page.policy.account(identity, true).canWrite, true);
   clock = identity.expiresAt;
   assert.throws(() => page.policy.account(identity, true), /credential expired/);
+});
+
+test("a company domain grant is Page-only: a Project never carries one to its Pages", () => {
+  // A Project record that somehow holds a domain grant gives it to nobody:
+  // projectObject reads only member rows and the organization grant.
+  const record = {
+    space_id: "prj_00000000-0000-4000-8000-000000000002",
+    owner: owner.principal,
+    acl: {
+      revision: 2,
+      members: {},
+      invites: {},
+      domainView: grantAt("editor"),
+    },
+  };
+  assert.deepEqual(
+    decide(principalOf(domainReader), NO_ACTOR_CHAIN, projectObject(record), now).capabilities,
+    [],
+  );
+  const container = {
+    ...projectObject(record),
+    members: {},
+    valid_until: now + PROJECT_ACCESS_LEASE_MS,
+  };
+  const inProject = (acl) => ({
+    pageId: "in-project",
+    owner: owner.principal,
+    deleted: false,
+    acl: { revision: 1, members: {}, invites: {}, ...acl },
+    projectAccess: container,
+  });
+  assert.equal(pageAccess(inProject({}), domainReader, { now }).canRead, false);
+  // The Page's own domain grant works on a Page in a Project, at its role,
+  // and an upload depends on the domain lease, not the Project lease.
+  const shared = inProject({ domainView: grantAt("editor") });
+  const own = pageAccess(shared, domainReader, { now });
+  assert.equal(own.canWrite, true);
+  assert.equal(own.source, "domain");
+  assert.ok(lease.expiresAt > now + PROJECT_ACCESS_LEASE_MS);
+  assert.equal(audienceEditUntil(shared, domainReader, { now }), lease.expiresAt);
+  // A tombstone on the Page blocks its domain grant there too.
+  const removed = inProject({
+    domainView: grantAt("editor"),
+    members: { [employee.principal]: { role: "none", generation: 2 } },
+  });
+  assert.equal(pageAccess(removed, domainReader, { now }).canRead, false);
 });

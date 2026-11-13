@@ -83,14 +83,20 @@ export function pageDecision(metadata, identity, { now = Date.now() } = {}) {
 
 /** When `identity`'s edit access ends if its link audience leases (company
  * domain and organization) are not renewed: Infinity when it edits without
- * them, as an owner, a member or a Project member does, else the decision's
- * bound, which is the end of the lease it edits through or its own expiry.
- * Null when it can't edit now. */
+ * them, as an owner, a member or a Project member does, else the end of the
+ * lease it edits through or its own expiry. The Project lease doesn't count:
+ * it bounds the host's cached copy of the Project, which each request
+ * resolves again, not the caller's access. That covers a Page reached through
+ * its Project's organization grant. Null when it can't edit now. */
 export function audienceEditUntil(metadata, identity, { now = Date.now() } = {}) {
   if (!pageAccess(metadata, identity, { now }).canWrite) return null;
   const bare = { ...identity, domainAccess: undefined, organizations: undefined };
   if (pageAccess(metadata, bare, { now }).canWrite) return Infinity;
-  return pageDecision(metadata, identity, { now }).valid_until;
+  const project = metadata?.projectAccess;
+  const resolved = project
+    ? { ...metadata, projectAccess: { ...project, valid_until: undefined } }
+    : metadata;
+  return pageDecision(resolved, identity, { now }).valid_until;
 }
 
 /** The relation a principal holds on a Page record before the lifecycle

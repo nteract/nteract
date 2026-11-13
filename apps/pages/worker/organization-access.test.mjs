@@ -25,6 +25,8 @@ import {
   resetMembershipCache,
 } from "./kilo-membership.mjs";
 import { identityAudienceKeys, organizationAudienceKey } from "./organization-access.mjs";
+import { projectObject } from "./authz.mjs";
+import { PROJECT_ACCESS_LEASE_MS } from "./project-access.mjs";
 import { plainStub } from "./plain-stub.mjs";
 import { Storage } from "./projects-fixture.mjs";
 import { DocumentPolicy, leaseExpiryError } from "./policy.mjs";
@@ -614,4 +616,60 @@ test("an organization editor's upload URL expires when its membership evidence d
     (await issue(memberRecord)).expires_at,
     new Date(now + ASSET_UPLOAD_TTL_MS).toISOString(),
   );
+});
+
+test("a Project organization editor's upload URL on a Page in the Project ends with the membership evidence, not the Project lease", async (t) => {
+  let clock = now;
+  t.mock.method(Date, "now", () => clock);
+  const env = kiloEnv(t);
+  const storage = new Storage();
+  const pageId = "project-org-upload";
+  // The Project shares with Acme as editor; the Page has no grant of its own.
+  const projectRecord = {
+    space_id: "prj_00000000-0000-4000-8000-000000000003",
+    owner: owner.principal,
+    acl: { revision: 1, members: {}, invites: {}, organizationAccess: grant("editor") },
+  };
+  const inProject = {
+    pageId,
+    owner: owner.principal,
+    deleted: false,
+    acl: { revision: 1, members: {}, invites: {} },
+    // The host's cached copy of the Project, good for its short lease.
+    projectAccess: {
+      ...projectObject(projectRecord),
+      members: {},
+      valid_until: now + PROJECT_ACCESS_LEASE_MS,
+    },
+  };
+  const credential = { ...reader, credentialKind: "oauth", grantId: "grant-2" };
+  const issue = async () => {
+    const identity = {
+      ...credential,
+      expiresAt: now + 3_600_000,
+      organizations: await organizationLeases(env, { ...credential, expiresAt: now + 3_600_000 }),
+    };
+    assert.equal(pageAccess(inProject, identity, { now: clock }).canWrite, true);
+    return issueAssetUpload(storage, {
+      pageId,
+      identity,
+      args: { page_id: pageId },
+      origin: "https://pages.invalid",
+      now: clock,
+      accessUntil: (claims) => uploaderEditUntil(inProject, claims, env),
+    });
+  };
+  // Evidence that ends in two minutes: the URL ends then, long after the
+  // fifteen-second Project lease the host renews on every request.
+  await recordKiloMembership(
+    env,
+    reader.principal,
+    [acme],
+    now - KILO_MEMBERSHIP_SECONDS * 1000 + 120_000,
+  );
+  assert.equal((await issue()).expires_at, new Date(now + 120_000).toISOString());
+  // Fresh evidence: the full ten minutes.
+  resetMembershipCache();
+  await recordKiloMembership(env, reader.principal, [acme], now + 1);
+  assert.equal((await issue()).expires_at, new Date(now + ASSET_UPLOAD_TTL_MS).toISOString());
 });
