@@ -57,12 +57,7 @@ pub(crate) fn thrift_footer(
     physical: parquet::format::Type,
     statistics: parquet::format::Statistics,
 ) -> (Vec<u8>, u64) {
-    use parquet::format::{
-        ColumnChunk, ColumnMetaData, CompressionCodec, Encoding, FieldRepetitionType, FileMetaData,
-        RowGroup, SchemaElement,
-    };
-    use parquet::thrift::{TCompactOutputProtocol, TSerializable};
-
+    use parquet::format::{FieldRepetitionType, SchemaElement};
     let root = SchemaElement::new(
         None,
         None,
@@ -87,10 +82,190 @@ pub(crate) fn thrift_footer(
         None,
         None,
     );
+    footer_with_schema(vec![root, leaf], &["t"], physical, statistics)
+}
+
+/// A one-row footer whose only column is `g.x`, a required INT32 inside the
+/// group `g`, which has repetition `group_repetition`. Parquet requires one
+/// on every non-root element; a footer without it is malformed.
+pub(crate) fn group_footer(
+    group_repetition: Option<parquet::format::FieldRepetitionType>,
+) -> (Vec<u8>, u64) {
+    use parquet::format::{FieldRepetitionType, SchemaElement, Statistics, Type};
+    let element = |physical, repetition, name: &str, children| {
+        SchemaElement::new(
+            physical,
+            None,
+            repetition,
+            name.to_string(),
+            children,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+    };
+    let schema = vec![
+        element(None, None, "schema", Some(1)),
+        element(None, group_repetition, "g", Some(1)),
+        element(
+            Some(Type::INT32),
+            Some(FieldRepetitionType::REQUIRED),
+            "x",
+            None,
+        ),
+    ];
+    let statistics = Statistics::new(None, None, 0, None, None, None, None, None);
+    footer_with_schema(schema, &["g", "x"], Type::INT32, statistics)
+}
+
+/// A root annotation: a converted type, a logical type, or both.
+pub(crate) type RootAnnotation = (
+    Option<parquet::format::ConvertedType>,
+    Option<parquet::format::LogicalType>,
+);
+
+/// Every root annotation Arrow's conversion sends to `visit_map` or
+/// `visit_list`, as constructors.
+pub(crate) const ROOT_MAP_OR_LIST_ANNOTATIONS: [fn() -> RootAnnotation; 5] = [
+    || (Some(parquet::format::ConvertedType::LIST), None),
+    || (Some(parquet::format::ConvertedType::MAP), None),
+    || (Some(parquet::format::ConvertedType::MAP_KEY_VALUE), None),
+    || {
+        let list = parquet::format::ListType {};
+        (None, Some(parquet::format::LogicalType::LIST(list)))
+    },
+    || {
+        let map = parquet::format::MapType {};
+        (None, Some(parquet::format::LogicalType::MAP(map)))
+    },
+];
+
+/// A one-row footer whose root carries `annotation` over a repeated group
+/// `g` holding a required INT32 `x`: the shape a list, or a map whose entry
+/// has one field, takes. Parquet never gives the root a repetition.
+pub(crate) fn annotated_root_footer(annotation: RootAnnotation) -> (Vec<u8>, u64) {
+    use parquet::format::{FieldRepetitionType, SchemaElement, Statistics, Type};
+    let (converted, logical) = annotation;
+    let schema = vec![
+        SchemaElement::new(
+            None,
+            None,
+            None,
+            "schema".to_string(),
+            1,
+            converted,
+            None,
+            None,
+            None,
+            logical,
+        ),
+        SchemaElement::new(
+            None,
+            None,
+            FieldRepetitionType::REPEATED,
+            "g".to_string(),
+            1,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+        SchemaElement::new(
+            Type::INT32,
+            None,
+            FieldRepetitionType::REQUIRED,
+            "x".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+    ];
+    let statistics = Statistics::new(None, None, 0, None, None, None, None, None);
+    footer_with_schema(schema, &["g", "x"], Type::INT32, statistics)
+}
+
+/// A footer with no row groups whose only column is a required map `m`, by
+/// converted type or logical type, holding a repeated INT32 `entry` where
+/// a map's key-value group belongs.
+pub(crate) fn primitive_map_entry_footer(logical: bool) -> (Vec<u8>, u64) {
+    use parquet::format::{
+        ConvertedType, FieldRepetitionType, FileMetaData, LogicalType, MapType, SchemaElement, Type,
+    };
+    use parquet::thrift::{TCompactOutputProtocol, TSerializable};
+    let (converted, logical) = if logical {
+        (None, Some(LogicalType::MAP(MapType {})))
+    } else {
+        (Some(ConvertedType::MAP), None)
+    };
+    let element = |physical: Option<Type>, repetition, name: &str, children, converted, logical| {
+        SchemaElement::new(
+            physical,
+            None,
+            repetition,
+            name.to_string(),
+            children,
+            converted,
+            None,
+            None,
+            None,
+            logical,
+        )
+    };
+    let schema = vec![
+        element(None, None, "schema", Some(1), None, None),
+        element(
+            None,
+            Some(FieldRepetitionType::REQUIRED),
+            "m",
+            Some(1),
+            converted,
+            logical,
+        ),
+        element(
+            Some(Type::INT32),
+            Some(FieldRepetitionType::REPEATED),
+            "entry",
+            None,
+            None,
+            None,
+        ),
+    ];
+    let metadata = FileMetaData::new(1, schema, 0, vec![], None, None, None, None, None);
+    let mut tail = Vec::new();
+    metadata
+        .write_to_out_protocol(&mut TCompactOutputProtocol::new(&mut tail))
+        .unwrap();
+    let metadata_len = tail.len() as u32;
+    tail.extend_from_slice(&metadata_len.to_le_bytes());
+    tail.extend_from_slice(b"PAR1");
+    let file_len = tail.len() as u64 + 4;
+    (tail, file_len)
+}
+
+/// Serialize a one-row-group footer over `schema`, with one column chunk at
+/// `path` of type `physical` carrying `statistics`. Returns the tail and a
+/// file length that fits the chunk.
+fn footer_with_schema(
+    schema: Vec<parquet::format::SchemaElement>,
+    path: &[&str],
+    physical: parquet::format::Type,
+    statistics: parquet::format::Statistics,
+) -> (Vec<u8>, u64) {
+    use parquet::format::{
+        ColumnChunk, ColumnMetaData, CompressionCodec, Encoding, FileMetaData, RowGroup,
+    };
+    use parquet::thrift::{TCompactOutputProtocol, TSerializable};
+
     let meta = ColumnMetaData::new(
         physical,
         vec![Encoding::PLAIN],
-        vec!["t".to_string()],
+        path.iter().map(|segment| segment.to_string()).collect(),
         CompressionCodec::UNCOMPRESSED,
         1,
         1,
@@ -107,17 +282,7 @@ pub(crate) fn thrift_footer(
     );
     let chunk = ColumnChunk::new(None, 4, meta, None, None, None, None, None, None);
     let group = RowGroup::new(vec![chunk], 1, 1, None, None, None, None);
-    let metadata = FileMetaData::new(
-        1,
-        vec![root, leaf],
-        1,
-        vec![group],
-        None,
-        None,
-        None,
-        None,
-        None,
-    );
+    let metadata = FileMetaData::new(1, schema, 1, vec![group], None, None, None, None, None);
     let mut tail = Vec::new();
     {
         let mut protocol = TCompactOutputProtocol::new(&mut tail);

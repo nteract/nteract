@@ -9,7 +9,9 @@
 // the app's own stylesheets and its own root, so it can draw light and dark
 // whatever this tab shows. It sits fixed at the viewport's corner with
 // opacity 0 and no pointer events, so widgets that wait for the viewport
-// still draw; dataframes load eagerly regardless.
+// still draw; dataframes load eagerly regardless. Charts draw from the
+// session's view replicas and source store, the ones the live editor uses,
+// so a chart the editor already holds costs the shell no new lookup.
 //
 // The rasterizer (modern-screenshot) loads with this module, which loads on
 // the first capture, so neither grows the app's first download. Images are
@@ -22,6 +24,7 @@ import { cardContent } from "../model/page-card.mjs";
 import { textPath } from "../model/richtext-format.mjs";
 import { decode } from "./wordgard-model.mjs";
 import { readOnlyPageConfig } from "./wordgard-page-config.mjs";
+import { VIEW_EMBED_UNAVAILABLE } from "./wordgard-views.mjs";
 import { CARD_IMAGE_MAX_BYTES } from "../shared/card-images.mjs";
 
 /** The card's first screen in CSS pixels: the grid card's 4:3 body. */
@@ -138,45 +141,78 @@ async function createFrame(document, signal) {
         }),
     ),
   );
-  signal.throwIfAborted();
+  if (signal.aborted) {
+    frame.remove();
+    signal.throwIfAborted();
+  }
   return frame;
 }
 
-/** Draw `blocks` in `frame` under `theme`; returns the shell and editors. */
-function mountShell(frame, { blocks, pageId, theme }) {
+/**
+ * Wordgard editors have no destroy: a widget lets go of what it holds (a
+ * view, a chart, a download) only when its editor element disconnects.
+ * Removing the iframe doesn't disconnect the elements inside it, so the
+ * shell empties the body itself before each theme and before it goes.
+ */
+function unmountShell(frame) {
+  frame.contentDocument?.body?.replaceChildren();
+}
+
+/** Draw `blocks` in `frame` under `theme`; returns the shell. The previous
+ * theme's widgets disconnect before the root changes theme, so they don't
+ * redraw for it. */
+function mountShell(frame, { blocks, pageId, theme, views, sources }) {
   const inner = frame.contentDocument;
+  unmountShell(frame);
   const root = inner.documentElement;
   root.classList.toggle("dark", theme === "dark");
   root.classList.toggle("light", theme !== "dark");
   root.dataset.theme = theme;
   root.style.colorScheme = theme;
-  inner.body.replaceChildren();
   const shell = inner.body.appendChild(inner.createElement("main"));
   shell.className = "workspace document card-shell";
   const article = shell.appendChild(inner.createElement("article"));
-  const editors = [];
   for (const block of blocks) {
     const section = article.appendChild(inner.createElement("section"));
     section.className = "page-block";
     const wrap = section.appendChild(inner.createElement("div"));
     wrap.className = "rich-editor wordgard-editor";
-    const editor = Wordgard.create({
+    Wordgard.create({
       parent: wrap,
       doc: decode(block.spans).doc,
       config: [
-        readOnlyPageConfig({ pageId, eagerDataframes: true }),
+        readOnlyPageConfig({ pageId, eagerDataframes: true, views, sources }),
         Wordgard.editorAttributes.of({ class: "wordgard-document" }),
       ],
     });
-    editors.push(editor);
   }
-  return { shell, editors };
+  return shell;
 }
 
 const onScreen = (element) => element.getBoundingClientRect().top < CARD_HEIGHT;
 
+/**
+ * Whether a view embed (wordgard-views.mjs) is done: its chart finished
+ * (vega-chart.mjs `data-chart-status` past "drawing", drawn or in its error
+ * state), or it shows a sentence that stays: a blocked view or data that
+ * couldn't load (view-draw.mjs), or a chart chunk that didn't load.
+ */
+export function viewSettled(embed) {
+  const view = embed.querySelector(".pages-view");
+  const state = view?.dataset.viewState;
+  if (state === "blocked" || state === "failed") return true;
+  if (state === "drawn") {
+    const chart = view.querySelector(".pages-view-chart:not([hidden]) .pages-chart");
+    return !!chart && chart.dataset.chartStatus !== "drawing";
+  }
+  const status = embed.querySelector(":scope > .wordgard-view-status");
+  return status?.textContent === VIEW_EMBED_UNAVAILABLE;
+}
+
 /** Whether every widget on the first screen has drawn or given up. */
 function widgetsDrawn(shell) {
+  for (const embed of shell.querySelectorAll(".wordgard-view-embed"))
+    if (onScreen(embed) && !viewSettled(embed)) return false;
   for (const diagram of shell.querySelectorAll(".wordgard-diagram")) {
     if (!onScreen(diagram)) continue;
     const status = diagram.querySelector(":scope > p[role=status]");
@@ -272,9 +308,18 @@ function whenIdle(ms = 2_000) {
 /**
  * Light and dark images of `doc`'s first screen: `[{ theme, blob }]`, each
  * CARD_WIDTH×CARD_HEIGHT CSS pixels at CARD_SCALE. Stops when `signal`
- * aborts. Each rasterization is measured as `pages-card-capture`.
+ * aborts. Each rasterization is measured as `pages-card-capture`. `views`
+ * and `sources` are the session's (session.mjs `views`, `pageSources`);
+ * without them a view node draws as its inert figure.
  */
-export async function renderCardImages({ doc, pageId, signal, themes = ["light", "dark"] }) {
+export async function renderCardImages({
+  doc,
+  pageId,
+  signal,
+  views = null,
+  sources = null,
+  themes = ["light", "dark"],
+}) {
   const blocks = shellBlocks(doc);
   if (!blocks.length) throw Error("The Page has no first screen to draw");
   const { domToCanvas } = await import("modern-screenshot");
@@ -282,25 +327,22 @@ export async function renderCardImages({ doc, pageId, signal, themes = ["light",
   await whenIdle();
   signal.throwIfAborted();
   const frame = await createFrame(document, signal);
-  let editors = [];
   try {
     const images = [];
     for (const theme of themes) {
-      for (const editor of editors) editor.destroy?.();
-      const mounted = mountShell(frame, { blocks, pageId, theme });
-      editors = mounted.editors;
-      await widgetsReady(mounted.shell, signal);
+      const shell = mountShell(frame, { blocks, pageId, theme, views, sources });
+      await widgetsReady(shell, signal);
       await whenIdle();
       signal.throwIfAborted();
       const start = performance.now();
-      const canvas = await domToCanvas(mounted.shell, {
+      const canvas = await domToCanvas(shell, {
         width: CARD_WIDTH,
         height: CARD_HEIGHT,
         scale: CARD_SCALE,
-        backgroundColor: frame.contentWindow.getComputedStyle(mounted.shell).backgroundColor,
+        backgroundColor: frame.contentWindow.getComputedStyle(shell).backgroundColor,
         font: false,
         timeout: 5_000,
-        fetchFn: cardImageFetch(mounted.shell, globalThis.location.origin),
+        fetchFn: cardImageFetch(shell, globalThis.location.origin),
         filter: (node) => node.nodeType !== 1 || node.getBoundingClientRect().top < CARD_HEIGHT,
       });
       const blob = await encodeCard(canvas);
@@ -314,7 +356,7 @@ export async function renderCardImages({ doc, pageId, signal, themes = ["light",
     }
     return images;
   } finally {
-    for (const editor of editors) editor.destroy?.();
+    unmountShell(frame);
     frame.remove();
   }
 }

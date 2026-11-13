@@ -16,6 +16,7 @@ const required = [
   "types/packages/sift/src/handoff.d.ts",
   "types/packages/sift/src/worker/entry.d.ts",
   "wasm/sift_wasm.js",
+  "wasm/sift_wasm.d.ts",
   "wasm/sift_wasm_bg.wasm",
   "THIRD_PARTY_NOTICES.md",
   "LICENSE",
