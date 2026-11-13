@@ -66,6 +66,11 @@ const GATEWAY = [
   ["mcp", "POST", "/mcp"],
   ["register", "POST", "/api/pages/register"],
   ["tools", "POST", "/api/tools"],
+  // The REST routes: the listing, and one tag of one Page, whose `/` and `:`
+  // arrive percent-encoded.
+  ["list pages", "GET", "/api/pages"],
+  ["page tag", "PUT", `/api/pages/${U}/tags/status%3Areviewing`],
+  ["page tag", "DELETE", `/api/pages/${U}/tags/repo%3Aorg%2Fname`],
   // /api/(pages|projects)/<id>/assets[/<sha256>]; a Project's are its content
   // document's.
   ["assets", "GET", `/api/pages/${U}/assets`],
@@ -186,6 +191,18 @@ const NEAR_MISSES = [
   `/api/projects/prj_${U}/assets/private`,
   `/api/projects/prj_${U}/assets/${HASH.slice(1)}`,
   `/api/projects/prj_${U}/assets/${HASH}/private`,
+  // Page tags: a Page ID and one tag segment, nothing after it, no
+  // characters outside a percent-encoded tag.
+  `/api/pages/${U}/tags`,
+  `/api/pages/${U}/tags/`,
+  `/api/pages/${U}/tags/a/b`,
+  `/api/pages/${U}/tags/${"a".repeat(193)}`,
+  `/api/pages/${U.toUpperCase()}/tags/a`,
+  `/api/pages/prj_${U}/tags/a`,
+  `/api/projects/prj_${U}/tags/a`,
+  // The listing is exact: no trailing slash and nothing under it.
+  "/api/pages/",
+  "/api/pages/list",
   // Page assets and account routes keep their exact shapes.
   `/api/pages/${U}/assets/${HASH.slice(1)}`,
   `/api/pages/${U}/assets/private`,
@@ -254,6 +271,7 @@ test("every exact path, path regex and route handler in the gateway has a sample
   assert.deepEqual(
     regexes.map((regex) => regex.source),
     [
+      String.raw`^\/api\/pages\/([^/]+)\/tags\/([^/]+)$`,
       String.raw`^\/api\/(pages|projects)\/([^/]+)\/assets(?:\/([^/]+))?$`,
       String.raw`^\/api\/pages\/([^/]+)\/card-image(?:\/([^/]+))?$`,
     ],
@@ -393,14 +411,13 @@ test("every target's ingress pattern refuses private routes, extra segments and 
   const page = "/p/12345678-1234-4123-8123-123456789abc";
   for (const target of QUALIFIED_TARGETS) {
     const pattern = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
-    for (const pathname of [page, page + "/", "/api/pages/register", "/llms.txt"])
+    for (const pathname of [page, page + "/", "/api/pages", "/api/pages/register", "/llms.txt"])
       assert.equal(pattern.test(pathname), true, target + " admits " + pathname);
     for (const pathname of [
       "/state",
       "/internal/create",
       "/internal/register",
       "/dev/oidc/authorize",
-      "/api/pages",
       "/api/pages/register/extra",
       "/api/other",
       "/api/auth/other",

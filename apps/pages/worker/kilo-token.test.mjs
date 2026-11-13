@@ -265,6 +265,10 @@ test("a token reaches the tool routes and nothing else, and is refused before Ki
     ["/api/pages/register", "POST"],
     ["/api/auth/session", "GET"],
     [`/api/pages/${pageId}/assets/abc`, "GET"],
+    // Only one tag of one Page, never a path under it or above the listing.
+    [`/api/pages/${pageId}/tags`, "PUT"],
+    [`/api/pages/${pageId}/tags/a/b`, "PUT"],
+    ["/api/pages/list", "GET"],
     ["/whoami", "POST"],
   ])
     await assert.rejects(
@@ -276,6 +280,9 @@ test("a token reaches the tool routes and nothing else, and is refused before Ki
   for (const [path, method] of [
     ["/mcp", "POST"],
     ["/api/tools", "POST"],
+    ["/api/pages", "GET"],
+    [`/api/pages/${pageId}/tags/repo%3Aorg%2Fname`, "PUT"],
+    [`/api/pages/${pageId}/tags/code`, "DELETE"],
     ["/whoami", "GET"],
     ["/internal/tool", "POST"],
   ])

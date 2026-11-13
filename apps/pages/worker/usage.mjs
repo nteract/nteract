@@ -14,7 +14,9 @@
  * reads them for auth.
  *
  * Surfaces: `mcp` for /mcp, `http-tools` for /api/tools (agents and the
- * browser UI's own calls, told apart by driver), and `browser-sync` for the
+ * browser UI's own calls, told apart by driver), `http-rest` for the REST
+ * routes (`GET /api/pages`, `PUT|DELETE /api/pages/<id>/tags/<tag>`), and
+ * `browser-sync` for the
  * browser's native Page traffic: registering a Page it created, and admitted
  * sync connections.
  *
@@ -38,7 +40,7 @@ export const USAGE_ACTIONS = Object.freeze([
   "sync.open",
   "sync.close",
 ]);
-export const USAGE_SURFACES = Object.freeze(["mcp", "http-tools", "browser-sync"]);
+export const USAGE_SURFACES = Object.freeze(["mcp", "http-tools", "http-rest", "browser-sync"]);
 /** What an MCP or HTTP call asked for: a tool, or an MCP resource list/read. */
 export const USAGE_KINDS = Object.freeze(["tool", "resource"]);
 /** Set by the Catalog on a create or register response that replays a stored

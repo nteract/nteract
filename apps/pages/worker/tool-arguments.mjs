@@ -1,6 +1,6 @@
 /**
  * The argument names each public operation takes, checked at the public
- * boundary, /mcp and /api/tools, once the credential may make the call and
+ * boundary, /mcp, /api/tools and the REST routes (rest-api.mjs), once the credential may make the call and
  * before anything runs. An argument whose name isn't one of them is refused with 400
  * `invalid_arguments`, naming it, so a misspelled or retired guard never
  * turns into a write without its guard. Arguments the hosts add after the
@@ -8,7 +8,8 @@
  *
  * An MCP tool takes the properties of its input schema (mcp.mjs). /api/tools
  * takes the same, plus API_ARGUMENTS for the operations the viewer and
- * scripts call there. An operation with neither takes no arguments.
+ * scripts call there. The REST routes take the same schema, plus REST_ARGUMENTS
+ * for the operations only they call. An operation with none takes no arguments.
  */
 import { tools } from "../mcp.mjs";
 import { HttpError } from "./auth.mjs";
@@ -49,12 +50,21 @@ export const API_ARGUMENTS = Object.freeze({
   purge_page: ["expected_principal"],
 });
 
-/** The argument names `operation` takes over `transport` ("mcp" or
- * "http-tools") from `identity`. */
+/** Arguments of the operations only the REST routes call. */
+export const REST_ARGUMENTS = Object.freeze({
+  put_page_tag: ["page_id", "tag"],
+  delete_page_tag: ["page_id", "tag"],
+});
+
+/** The argument names `operation` takes over `transport` ("mcp",
+ * "http-tools" or "http-rest") from `identity`. `GET /api/pages` takes
+ * `list_pages`' schema, like MCP. */
 export function allowedArguments(operation, transport, identity) {
   const names = new Set(SCHEMA_ARGUMENTS.get(operation) ?? []);
   if (transport === "http-tools")
     for (const name of API_ARGUMENTS[operation] ?? []) names.add(name);
+  if (transport === "http-rest")
+    for (const name of REST_ARGUMENTS[operation] ?? []) names.add(name);
   if (operation === "delete_page" && !browserSession(identity)) names.delete(BROWSER_TRASH_GUARD);
   return names;
 }

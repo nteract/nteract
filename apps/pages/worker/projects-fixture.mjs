@@ -237,6 +237,23 @@ export async function world(
       return { status: response.status, body: text, headers: response.headers };
     }
   };
+  /** A request to one of the REST routes (GET /api/pages, PUT|DELETE
+   * /api/pages/<id>/tags/<tag>), through the gateway. */
+  const rest = async (who, method, path) => {
+    const response = await worker.fetch(
+      new Request(`https://pages.invalid${path}`, {
+        method,
+        headers: { authorization: `Bearer ${tokens[who]}`, "x-pages-driver": "Projects test" },
+      }),
+      env,
+    );
+    const text = await response.text();
+    try {
+      return { status: response.status, body: JSON.parse(text), headers: response.headers };
+    } catch {
+      return { status: response.status, body: text, headers: response.headers };
+    }
+  };
   /** A call as the 3548b9750 gateway sent it: Space names, straight to the
    * caller's Catalog, without the Project API. */
   const oldGateway = async (who, operation, args = {}) => {
@@ -319,6 +336,7 @@ export async function world(
     hooks,
     jobs,
     call,
+    rest,
     oldGateway,
     mcp,
     key,

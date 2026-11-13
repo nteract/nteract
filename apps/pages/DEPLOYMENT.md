@@ -985,7 +985,7 @@ on stdout; the database, target and storage prefix print on stderr.
   through the Worker. See [Where state lives](#where-state-lives).
 - **`page_tags` is not a projection.** It is the only copy of every Page's tags.
   A row you edit, or delete, stays that way, and nothing regenerates it. Change
-  tags with `update_page_tags`. Take a [restore point](#restore-points) before
+  tags with `PUT` and `DELETE /api/pages/<page_id>/tags/<tag>`. Take a [restore point](#restore-points) before
   any hand edit.
 - **Auth lives here too.** `pages-next-auth` holds the OIDC sessions and OAuth
   grants, codes and tokens beside the catalog projection, tags, quota and
@@ -1135,6 +1135,15 @@ assets (`linkPreviewPaths`, `cardImagePaths` and `projectAssetPaths` in
   shape `CARD_IMAGE_FILE` in [card-images.mjs](worker/card-images.mjs) names.
 - `/api/projects/<id>/assets` and `/api/projects/<id>/assets/<sha256>`: a
   Project's assets, which the gateway serves from its content document.
+
+Every target also admits the REST routes (`restPaths` in
+[routes.mjs](scripts/deployment/routes.mjs)), with no profile flag: `GET
+/api/pages`, and `PUT` or `DELETE /api/pages/<uuid>/tags/<tag>`, where the tag is
+one percent-encoded segment of at most 192 characters (`:` and `/` arrive as
+`%3A` and `%2F`). A target that has not published them answers 404 at the edge
+to a tag change or a listing by REST; MCP and `/api/tools` are unaffected. The
+tunnel has only been exercised locally: confirm a `PUT` of `repo:org/name`
+reaches the Worker on a live target before relying on it.
 
 IDs are lowercase v4 UUIDs, as in every other group. Until a target publishes
 these routes, the edge refuses them: hover cards on Page links show "Couldn't
@@ -1611,7 +1620,10 @@ client and model:
 - `mcp.initialize` on `/mcp`.
 - `tool.call` for each tool call on `/mcp` (surface `mcp`) and `/api/tools`
   (surface `http-tools`, which includes the browser UI's own calls with
-  driver `Browser`). MCP resource lists and reads are `tool.call` with
+  driver `Browser`), and for each call to the REST routes (surface `http-rest`:
+  `GET /api/pages`, and `PUT` or `DELETE /api/pages/<page_id>/tags/<tag>`, with
+  operations `list_pages`, `put_page_tag` and `delete_page_tag`; the tag itself
+  is never logged). MCP resource lists and reads are `tool.call` with
   `kind: "resource"`.
 - `page.create` once per created Page: from `create_page` on either tool
   surface, and from browser registration on `/api/pages/register` (surface

@@ -12,6 +12,7 @@ import {
   linkPreviewPaths,
   projectAssetPaths,
   projectPaths,
+  restPaths,
   siftPaths,
   whoamiPaths,
 } from "./deployment/routes.mjs";
@@ -299,7 +300,11 @@ const digest = (text) => createHash("sha256").update(text).digest("hex");
 // A live target's routes without link previews, card images and Project
 // assets: the route set the release before them sealed.
 const beforePreviews = (config) =>
-  config.replace(linkPreviewPaths, "").replace(cardImagePaths, "").replace(projectAssetPaths, "");
+  config
+    .replace(restPaths, "")
+    .replace(linkPreviewPaths, "")
+    .replace(cardImagePaths, "")
+    .replace(projectAssetPaths, "");
 function priorConfig(config) {
   return beforePreviews(config).replace(accountPaths, "").replace(whoamiPaths, "");
 }
@@ -1872,7 +1877,7 @@ test("link previews, card images and Project assets are the only difference from
     assert.equal(prior.includes("projects/(prj|sp)"), false);
     assert.equal(
       current.length - prior.length,
-      linkPreviewPaths.length + cardImagePaths.length + projectAssetPaths.length,
+      restPaths.length + linkPreviewPaths.length + cardImagePaths.length + projectAssetPaths.length,
     );
   }
 });
@@ -1997,3 +2002,44 @@ for (const target of PREVIEW_TARGETS) {
     }
   });
 }
+
+test("the REST routes are the only difference from the last sealed route set", () => {
+  // routesFor(target) as the release before the REST routes published it.
+  for (const [target, sealed] of [
+    ["page10", "16a862190609fe804dc14873914f944082840b27a70d39f2970dd59569b87f95"],
+    ["pages", "0bd2976080db6b91e719947d479313744b6ad7223e34489cc50b51e1b60559fe"],
+    ["pages2", "5ce2c01e54839e9f8380c0ce2cdb73f674dde505599e6f04badda5ef4026d8ae"],
+    ["page11", "4de3c8fabf6ffa360a9fdab1e263a36078b78d825ff6e11c3117bcaed88e079a"],
+  ]) {
+    const current = routesFor(target);
+    const prior = current.replace(restPaths, "");
+    assert.equal(digest(prior), sealed, target);
+    assert.equal(prior.includes("/tags/"), false);
+    assert.equal(prior.includes("|pages|"), false);
+    assert.equal(current.length - prior.length, restPaths.length);
+  }
+});
+
+// The installation the last release sealed, without the REST routes.
+const restInstall = (f, options) =>
+  slotInstall(f, (config) => config.replace(restPaths, ""), options);
+
+for (const target of PREVIEW_TARGETS)
+  for (const state of ["sealed", "pending-old", "pending-new"])
+    test(`${target} adds the REST routes to its sealed installation (${state})`, (t) => {
+      const f = fixture(t, { target, sharedTunnel: target !== "pages2" });
+      const x = restInstall(f, { state });
+      const units = x.plan.slots.map((slot) => fs.readFileSync(f.local(slot.unitPath), "utf8"));
+      const result = f.execute();
+      assert.equal(result.routesUpdated, true);
+      assert.equal(result.connectorHandoff, true);
+      assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.plan.config);
+      assert.equal(installedReceipt(f), slotReceipt(x.plan.config, x.plan.unitSha256));
+      // Only the routes changed.
+      assert.deepEqual(
+        x.plan.slots.map((slot) => fs.readFileSync(f.local(slot.unitPath), "utf8")),
+        units,
+      );
+      f.calls.length = 0;
+      assert.equal(f.execute().routesUpdated, false);
+    });

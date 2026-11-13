@@ -180,9 +180,18 @@ function onAgentRoute(request, extra = []) {
   return (
     (pathname === "/whoami" && request.method === "GET") ||
     AGENT_ROUTES.includes(pathname) ||
-    extra.includes(pathname)
+    extra.some((route) => (typeof route === "string" ? route === pathname : route.test(pathname)))
   );
 }
+
+/** The JSON routes a Kilo agent token may reach beyond /mcp: /api/tools, the
+ * page listing, and one tag of one Page (`PUT` or `DELETE`). Pages OAuth
+ * grants stay MCP-only. */
+const KILO_ROUTES = Object.freeze([
+  "/api/tools",
+  "/api/pages",
+  /^\/api\/pages\/[^/]+\/tags\/[^/]+$/,
+]);
 
 /** Kilo token answers whose membership evidence is in D1. The token lease
  * hands every request the same answer object until it ends, so once one
@@ -313,7 +322,7 @@ export async function authenticate(request, env) {
     if (kilo) {
       // The tool routes only, checked before Kilo is asked: no sync socket,
       // browser route or raw asset read.
-      if (!onAgentRoute(request, ["/api/tools"]))
+      if (!onAgentRoute(request, KILO_ROUTES))
         throw withAdmissionReason(
           new HttpError(403, "This credential is limited to Pages agent tools"),
           "credential_scope",
