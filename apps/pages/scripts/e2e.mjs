@@ -123,6 +123,7 @@ const SUITES = Object.freeze([
   { name: "images", harness: sharing("--images"), timeout: 4 * minute },
   { name: "datasets", harness: sharing("--datasets"), timeout: 4 * minute },
   { name: "views", harness: sharing("--views"), timeout: 6 * minute },
+  { name: "views-layout", harness: sharing("--views-layout"), timeout: 4 * minute },
   { name: "views-stored", harness: sharing("--views-stored"), timeout: 4 * minute },
   { name: "mcp-images", harness: sharing("--mcp-images"), timeout: 4 * minute },
   { name: "sharing", harness: sharing(), timeout: 4 * minute },
