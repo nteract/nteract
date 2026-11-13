@@ -40,6 +40,22 @@ test("each list that started at another number is named by its start and first i
   assert.match(warning.suggested_action, /from 1/);
 });
 
+test("a list after a bullet on the same line, or with its first item on the next line, is named", () => {
+  assert.deepEqual(listStartWarning("- 3. child").lists, [{ start: 3, first_item: "child" }]);
+  assert.deepEqual(listStartWarning("3.\n   first item").lists, [
+    { start: 3, first_item: "first item" },
+  ]);
+  assert.deepEqual(listStartWarning("7)\tafter a tab\r\n8) next").lists, [
+    { start: 7, first_item: "after a tab" },
+  ]);
+});
+
+test("a first item with no text of its own gives an empty preview, not later prose", () => {
+  assert.deepEqual(listStartWarning("3. ```\n   code\n   ```\n\nUnrelated paragraph").lists, [
+    { start: 3, first_item: "" },
+  ]);
+});
+
 test("a long first item is cut, and more than 32 lists are capped", () => {
   const long = "x".repeat(200);
   assert.equal(listStartWarning(`5. ${long}`).lists[0].first_item, `${"x".repeat(80)}…`);
