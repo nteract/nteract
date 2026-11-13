@@ -7,7 +7,12 @@ import { createAuthFixture } from "../auth-fixtures.mjs";
 import { tools } from "../mcp.mjs";
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
 import worker from "./index.mjs";
-import { MODERN_MCP_CLIENT_UUID, USAGE_EVENT, mcpSessionId } from "./usage.mjs";
+import {
+  MODERN_MCP_CLIENT_UUID,
+  USAGE_EVENT,
+  mcpSessionClient,
+  modernMcpClientId,
+} from "./usage.mjs";
 
 const MODERN = "2026-07-28";
 const origin = "https://pages.example";
@@ -117,7 +122,7 @@ test("a 2026-07-28 client's declared clientInfo names it in usage and presence",
   assert.equal(called.headers.get("mcp-session-id"), null);
   const body = await called.json();
   assert.equal(body.result.isError, undefined, JSON.stringify(body));
-  assert.equal(forwardedSessions.at(-1), mcpSessionId(first, MODERN_MCP_CLIENT_UUID));
+  assert.equal(forwardedSessions.at(-1), await modernMcpClientId(first));
   const call = toolCalls().at(-1);
   assert.equal(call.surface, "mcp");
   assert.equal(call.operation, "read_page_presence");
@@ -140,6 +145,96 @@ test("a 2026-07-28 client's declared clientInfo names it in usage and presence",
   assert.match(anonymousClient.session, /^[0-9a-f]{16}$/);
   assert.notEqual(anonymousClient.session, call.session);
   assert.equal(anonymousClient.principal, call.principal);
+});
+
+test("a modern client id tells apart clients whose display labels truncate alike", async () => {
+  const long = "c".repeat(64);
+  const ids = await Promise.all([
+    modernMcpClientId({ name: `${long}-alpha`, version: "1" }),
+    modernMcpClientId({ name: `${long}-beta`, version: "1" }),
+    modernMcpClientId({ name: long, version: "2.0" }),
+    modernMcpClientId({ name: long, version: "2.1" }),
+  ]);
+  // Each pair shares its truncated display label but not its identity.
+  assert.equal(mcpSessionClient(ids[0]), mcpSessionClient(ids[1]));
+  assert.equal(mcpSessionClient(ids[2]), mcpSessionClient(ids[3]));
+  assert.equal(new Set(ids).size, 4);
+  for (const id of ids) {
+    assert.match(
+      id,
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[A-Za-z0-9_-]+$/,
+    );
+    assert.ok(id.length <= 128);
+  }
+  // The same client gets the same id on every request.
+  assert.equal(await modernMcpClientId({ name: long, version: "2.1" }), ids[3]);
+  assert.equal(await modernMcpClientId({ version: "1" }), MODERN_MCP_CLIENT_UUID);
+  assert.equal(await modernMcpClientId(null), MODERN_MCP_CLIENT_UUID);
+});
+
+test("a refused 2026-07-28 call's usage names the modern client, not a sent session id", async (t) => {
+  const auth = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", auth.fetch);
+  const token = auth.apiKey();
+  const env = { ...auth.env, NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin };
+  env.PAGES_USAGE = sqliteD1(t).open();
+  const namespace = {
+    getByName: () => ({
+      fetch: async () => Response.json({ pages: [] }),
+    }),
+  };
+  env.CATALOGS = namespace;
+  env.PAGES = namespace;
+  const lines = [];
+  t.mock.method(console, "info", (line) => lines.push(JSON.parse(line)));
+  const lastCall = () =>
+    lines.filter((line) => line.event === USAGE_EVENT && line.action === "tool.call").at(-1);
+  const clientInfo = { name: "connector", version: "4.0" };
+  const sent = { "Mcp-Session-Id": "caller-chosen-0001" };
+  const listPages = (args, headers) =>
+    worker.fetch(
+      modern("tools/call", { name: "list_pages", arguments: args }, { token, clientInfo, headers }),
+      env,
+      { waitUntil: () => {} },
+    );
+
+  assert.equal((await listPages({})).status, 200);
+  const clientSession = lastCall().session;
+  assert.match(clientSession, /^[0-9a-f]{16}$/);
+
+  // A renamed argument is refused before invoke() authenticates again.
+  const refused = await listPages({ space_id: "sp_x" }, sent);
+  assert.equal(refused.status, 200);
+  assert.equal((await refused.json()).result.isError, true);
+  const refusal = lastCall();
+  assert.equal(refusal.operation, "list_pages");
+  assert.notEqual(refusal.outcome, "ok");
+  assert.equal(refusal.mcp_client, "connector/4.0");
+  assert.equal(refusal.session, clientSession);
+
+  // The sent id, on a legacy request, has a session tag of its own.
+  const legacy = await worker.fetch(
+    new Request("http://127.0.0.1:9477/mcp", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${token}`,
+        ...sent,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "list_pages", arguments: { space_id: "sp_x" } },
+      }),
+    }),
+    env,
+    { waitUntil: () => {} },
+  );
+  assert.equal(legacy.status, 200);
+  assert.match(lastCall().session, /^[0-9a-f]{16}$/);
+  assert.notEqual(lastCall().session, clientSession);
 });
 
 /** The Worker as an SDK client sees it: every request goes to worker.fetch. */
