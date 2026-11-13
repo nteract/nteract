@@ -558,10 +558,12 @@ async function escapeCheck(engine) {
     assert.deepEqual(open("control"), present, `${engine}: the control must get out every way`);
     assert.deepEqual(open("both"), [], `${engine}: lockdown and CSP together`);
     assert.deepEqual(open("lockdown"), KNOWN_LOCKDOWN_LEAKS, `${engine}: the lockdown alone`);
-    const network = Object.keys(NETWORK);
+    // The CSP doesn't govern storage or channels: each the engine has stays
+    // open, with the engine's known network leaks.
+    const storage = Object.keys(STORAGE).filter((name) => !absent.includes(name));
     assert.deepEqual(
-      open("csp").filter((name) => network.includes(name) || name in CODE),
-      [...KNOWN_CSP_LEAKS[engine]].sort(),
+      open("csp"),
+      [...KNOWN_CSP_LEAKS[engine], ...storage].sort(),
       `${engine}: the CSP alone`,
     );
     // Nothing but the allowlist is left on the locked-down Worker.
@@ -582,7 +584,7 @@ async function escapeCheck(engine) {
       `${engine}: code in the chart Worker reaches nothing (${present.length} ways out, each ` +
         `shown open with no lockdown and no CSP${absent.length ? `; absent here: ${absent.join(", ")}` : ""}); ` +
         `the lockdown alone leaves only ${KNOWN_LOCKDOWN_LEAKS.join(", ")}; the CSP alone leaves ` +
-        `${KNOWN_CSP_LEAKS[engine].join(", ") || "nothing on the network"}; ` +
+        `${storage.join(", ")}${KNOWN_CSP_LEAKS[engine].length ? `, and on the network ${KNOWN_CSP_LEAKS[engine].join(", ")}` : ", and nothing on the network"}; ` +
         `${escapes.both.remaining.length} names left, all on the allowlist`,
     );
   } finally {
