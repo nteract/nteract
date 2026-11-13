@@ -155,7 +155,7 @@ Comments live in their own document and anchor to the Page with cursors.
 | When | What | Why it can go |
 | --- | --- | --- |
 | Any time | A snapshot file with no regenerate command, or a test that compares against a fixed commit | It pins code that no longer exists and cannot follow an intended change |
-| After the format 1 tag | `PageRecords`, `recordStorage` stamps and guards, `stored-form.mjs` | They protect documents and open tabs on `pages.runtimed.run`. A new service has neither. The `PageRecords` Durable Object class stays declared, with an empty body, while a deployed target still binds it |
+| After the format 1 tag | The `PageRecords` declaration and binding, `recordStorage` stamps and guards, `stored-form.mjs` | They protect documents and open tabs on `pages.runtimed.run`. A new service has neither. The `PageRecords` Durable Object class already has an empty body and nothing calls it; it stays declared while a deployed target still binds it, because removing it takes a `deleted_classes` migration |
 
 Keep tests that state behavior: concurrent edits, comment anchors, access
 decisions, receipts, persistence and recovery, and the property tests.
