@@ -49,6 +49,24 @@ export type ParquetFileStatsJson = {
   columns: ColumnFileStatsJson[];
 };
 
+/** One column of `parquet_footer_summary`: its Arrow type and footer statistics. */
+export type FooterColumnJson = ColumnFileStatsJson & {
+  name: string;
+  /** Arrow's display form, such as `Utf8`, `Int64` or `Timestamp(Microsecond, Some("UTC"))`. */
+  data_type: string;
+  nullable: boolean;
+};
+
+/** A file's footer, summarized from its tail by `parquet_footer_summary`. */
+export type ParquetFooterSummaryJson = {
+  num_rows: number;
+  num_row_groups: number;
+  created_by: string | null;
+  /** One per top-level column, in schema order. */
+  columns: FooterColumnJson[];
+  column_hints: ParquetColumnHint[];
+};
+
 /**
  * Map the snake_case wire shape onto `ColumnFileStats`. A column whose stats
  * are missing or malformed maps to `null` so a bad footer entry degrades to
@@ -118,6 +136,8 @@ export type PredicateModule = {
   load_parquet_row_group(parquet_bytes: Uint8Array, row_group: number, handle: number): number;
   // Byte-range Parquet: open from the footer, decode row groups from fetched ranges
   parquet_footer_length(tail: Uint8Array): number;
+  /** Summarize a file from its tail without opening it. Holds no handle. */
+  parquet_footer_summary(tail: Uint8Array, file_len: number): ParquetFooterSummaryJson;
   parquet_open(
     tail: Uint8Array,
     file_len: number,
