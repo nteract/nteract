@@ -141,7 +141,10 @@ async function createFrame(document, signal) {
         }),
     ),
   );
-  signal.throwIfAborted();
+  if (signal.aborted) {
+    frame.remove();
+    signal.throwIfAborted();
+  }
   return frame;
 }
 
