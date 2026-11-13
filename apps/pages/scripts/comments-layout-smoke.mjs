@@ -3,7 +3,9 @@
 // expanded, and asserts the geometry from style.css: the panel starts at the
 // Page's right edge, never covers prose, and the Page only moves or narrows
 // when the right gutter cannot hold the panel. A zoomed iframe produces a
-// 900.5px viewport to cover the boundary between the sheet and docked queries.
+// 900.25px window to cover the boundary between the sheet and docked queries.
+// Expectations follow the measured layout viewport, which is the window less
+// the Page's scrollbar gutter where scrollbars are classic.
 // Measurements are written to <label>-report.json before any assertion fails.
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -368,9 +370,14 @@ try {
   await expect(popover).toHaveCount(0);
   await closeComments(page);
 
-  // Browser zoom can produce a fractional CSS viewport. A zoom:2 iframe that is
-  // 900.5px wide gives its document a 900.5px viewport, between the sheet's
-  // max-width: 900px and an integer min-width: 901px. The Page document refuses
+  // Browser zoom can produce a fractional CSS viewport. A zoom:4 iframe that is
+  // 900.25px wide (3601 device px) gives its document a 900.25px window,
+  // between the sheet's max-width: 900px and an integer min-width: 901px;
+  // media queries read the window. The layout viewport is that window less
+  // the scrollbar gutter: 15 device px is 3.75 CSS px at zoom 4, so it is
+  // 896.5px where the gutter is reserved and 900.25px where scrollbars
+  // overlay, fractional either way. (At zoom 2 widths snap to half px and the
+  // 7.5px gutter makes every such width whole.) The Page document refuses
   // framing, so this test-only route drops frame-ancestors from its response.
   await page.setViewportSize({ width: 1900, height: 1100 });
   await page.route(`${origin}/p/${pageId}`, async (route) => {
@@ -388,18 +395,21 @@ try {
   await page.route(host, (route) =>
     route.fulfill({
       contentType: "text/html",
-      body: `<!doctype html><body style="margin:0"><iframe title="Page at 900.5px" src="/p/${pageId}" style="border:0;zoom:2;width:900.5px;height:540px"></iframe></body>`,
+      body: `<!doctype html><body style="margin:0"><iframe title="Page at 900.25px" src="/p/${pageId}" style="border:0;zoom:4;width:900.25px;height:540px"></iframe></body>`,
     }),
   );
   await page.goto(host);
   const frame = await (await page.locator("iframe").elementHandle()).contentFrame();
   await expect(frame.locator("wg-content").first()).toContainText("reading column");
   const fractional = await measure(frame);
-  check(
-    fractional.viewport % 1 !== 0 && !fractional.sheetQuery,
-    `fixture produces a fractional desktop viewport (got ${fractional.viewport}, sheet ${fractional.sheetQuery})`,
+  const boundaryWindow = await frame.evaluate(
+    () => matchMedia("(min-width: 900.2px) and (max-width: 900.3px)").matches,
   );
-  await checkWidth(frame, "900.5", (name) =>
+  check(
+    boundaryWindow && fractional.viewport % 1 !== 0 && !fractional.sheetQuery,
+    `fixture produces a 900.25px window and a fractional desktop viewport (window ${boundaryWindow}, viewport ${fractional.viewport}, sheet ${fractional.sheetQuery})`,
+  );
+  await checkWidth(frame, "900.25", (name) =>
     page.screenshot({ path: `${output}/${label}-${name}.png` }),
   );
   await closeComments(frame);
