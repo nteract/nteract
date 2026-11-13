@@ -2101,17 +2101,27 @@ For agents, importing bytes and inserting content are separate operations:
      header (see [Upload capabilities](#upload-capabilities)).
    - API-key clients may also POST raw bytes to the asset endpoint with their
      own bearer header.
-   - ChatGPT uses `import_page_image({page_id, file})` with its client-provided
-     file descriptor. The importer requires read/write OAuth scope and Page edit
-     access, accepts bounded HTTPS downloads from `files.oaiusercontent.com`
-     without redirects, and returns `asset_id`, reference, MIME, dimensions, and
-     size. A file ID alone is not a download URL. Temporary source URLs are not
-     stored in the document.
+   - A client that attaches a file to the tool call itself uses
+     `import_page_image({page_id, file})` with that file descriptor. ChatGPT
+     does, through `openai/fileParams`. The importer requires read/write OAuth
+     scope and Page edit access, accepts bounded HTTPS downloads from the hosts
+     in `FILE_HOSTS` ([import-image.mjs](worker/import-image.mjs)), today only
+     `files.oaiusercontent.com`, without redirects, and returns `asset_id`,
+     reference, MIME, dimensions, and size. A file ID alone is not a download
+     URL. Temporary source URLs are not stored in the document.
 
    A client with none of these asks the person to upload in the browser.
-2. Read the current Page, then call guarded `edit_page` with `insert_image`,
-   `asset_id`, alt text, and optional `after_node_id` (omitted appends; `null`
-   prepends). The host verifies the asset belongs to this Page and creates a
+
+   Every stored asset's answer, from an upload, a dataset copy or an import,
+   also carries `insert`: the `edit_page` operation that places it as the
+   block its type calls for (`assetInsertOperation` in
+   [image-assets.mjs](worker/image-assets.mjs)). A raster gets
+   `{"op": "insert_image", "asset_id": "<asset_id>"}`, and the agent adds alt text, which
+   `insert_image` requires; a Parquet dataset gets
+   `{"op": "insert_node", "node": {"type": "dataframe", "attrs": {"asset_id": "<asset_id>"}}}`.
+2. Read the current Page, then call guarded `edit_page` with that `insert`
+   operation: for an image, `insert_image`, `asset_id`, alt text, and optional
+   `after_node_id` (omitted appends; `null` prepends). The host verifies the asset belongs to this Page and creates a
    dedicated image block. Its `result.edits` entry returns the new block's
    `node_id`, its `nodes`, the image's id as `image`, and the asset reference;
    the receipt adds updated heads and the Page URL. Exact retries reuse that result.

@@ -347,6 +347,25 @@ export async function persistPageAsset(
   };
 }
 
+/**
+ * The edit_page operation that places a stored asset as the block its type
+ * calls for: insert_image for a raster, an insert_node dataframe for a Parquet
+ * dataset. insert_image also needs alt text, which only the caller can write,
+ * so the operation leaves it out and edit_page refuses it until alt is added.
+ */
+export const assetInsertOperation = ({ asset_id, mime_type }) =>
+  mime_type === PARQUET_MEDIA_TYPE
+    ? { op: "insert_node", node: { type: "dataframe", attrs: { asset_id } } }
+    : { op: "insert_image", asset_id };
+
+/** The answer to a stored upload or copy: the asset, its URL under both names,
+ * and the operation that places it. */
+const assetReceipt = (asset) => ({
+  ...asset,
+  asset_url: asset.url,
+  insert: assetInsertOperation(asset),
+});
+
 /** Images only; see persistPageAsset. */
 export const persistImageAsset = (bucket, options) =>
   persistPageAsset(bucket, { ...options, accept: "image" });
@@ -523,7 +542,7 @@ export async function handleImageAssets(
       const current = await authorize(true);
       if (!current.ok) return privateImageResponse(current);
       return privateImageResponse(
-        Response.json({ ...asset, asset_url: asset.url }, { status: duplicate ? 200 : 201 }),
+        Response.json(assetReceipt(asset), { status: duplicate ? 200 : 201 }),
       );
     }
     const access = await authorize(upload);
@@ -543,7 +562,7 @@ export async function handleImageAssets(
       const current = await authorize(true);
       if (!current.ok) return privateImageResponse(current);
       return privateImageResponse(
-        Response.json({ ...asset, asset_url: asset.url }, { status: duplicate ? 200 : 201 }),
+        Response.json(assetReceipt(asset), { status: duplicate ? 200 : 201 }),
       );
     }
     const key = imageAssetKey(pageId, assetId);

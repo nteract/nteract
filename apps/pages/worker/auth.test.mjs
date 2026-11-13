@@ -484,7 +484,7 @@ test("JSON tool refusals carry a code: rejected key, unknown operation, bad argu
   assert.deepEqual(badImport, {
     status: 400,
     body: {
-      error: "Use a ChatGPT file attachment with download_url and file_id",
+      error: "file takes the download_url and file_id your client supplied",
       code: "invalid_request",
     },
   });

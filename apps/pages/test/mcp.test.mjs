@@ -983,17 +983,21 @@ test("MCP lists create_page_asset_upload for any client with write scope, and po
     /not multipart or base64/,
     /same bytes always return the same asset_id/,
     /Access is checked again at upload/,
-    /insert_image/,
-    /insert_node/,
+    /asset_id and insert: the edit_page op that places it \(add alt to an image\)/,
     /Insert image in the browser/,
-    /import_page_image/,
+    /import_page_image takes a file your client attaches itself/,
   ])
     assert.match(descriptor.description, fact);
   const importer = all.find((tool) => tool.name === "import_page_image");
-  assert.match(
-    importer.description,
-    /other clients with a local file use create_page_asset_upload/,
-  );
+  for (const fact of [
+    /your client attaches itself as file; never build file/,
+    /Other files: create_page_asset_upload/,
+    /insert: the edit_page op that places it \(add alt\)/,
+  ])
+    assert.match(importer.description, fact);
+  // The catalog names the mechanism, not a vendor.
+  for (const tool of [descriptor, importer])
+    assert.doesNotMatch(tool.description, /ChatGPT|OpenAI/i, tool.name);
   const insertImage = all.find((tool) => tool.name === "edit_page").inputSchema.properties
     .operations.items;
   assert.match(insertImage.properties.asset_id.description, /create_page_asset_upload/);

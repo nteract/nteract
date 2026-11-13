@@ -85,6 +85,7 @@ test("imports original bytes privately without forwarding credentials or retaini
     width: 3,
     height: 2,
     size: png.length,
+    insert: { op: "insert_image", asset_id: asset.asset_id },
   });
   assert.deepEqual(f.calls.authorize, [true, true]);
   const [[url, options]] = f.calls.fetch;
@@ -119,7 +120,7 @@ test("same-content retries deduplicate even when ChatGPT renews the download URL
   assert.equal(f.env.PAGES_ASSETS.writes, 1);
 });
 
-test("byte uploads and ChatGPT handoffs resolve to the same validated private asset", async (t) => {
+test("byte uploads and client file handoffs resolve to the same validated private asset", async (t) => {
   const f = setup(t);
   // Raw uploads use this identical storage boundary after their own authentication.
   const { asset: uploaded } = await persistImageAsset(f.env.PAGES_ASSETS, {
@@ -132,8 +133,9 @@ test("byte uploads and ChatGPT handoffs resolve to the same validated private as
   const imported = await response.json();
   assert.equal(imported.asset_id, uploaded.asset_id);
   assert.equal(imported.asset_url, uploaded.url);
-  const { page_id, ...metadata } = imported;
+  const { page_id, insert, ...metadata } = imported;
   assert.equal(page_id, pageId);
+  assert.deepEqual(insert, { op: "insert_image", asset_id: uploaded.asset_id });
   assert.deepEqual(
     await requireStoredImageAsset(f.env.PAGES_ASSETS, { pageId, assetId: imported.asset_id }),
     metadata,

@@ -609,7 +609,8 @@ replace these URLs with public hosting or put base64 image data in Markdown.
 
 ### Which path to use
 
-- ChatGPT, with an attached or generated file: import_page_image.
+- A client that attaches the file to the tool call itself: import_page_image.
+  ChatGPT does, for an attached or generated file.
 ${part.uploadPathItems}
 - No shell and no file parameters (for example a web chat): ask the person to
   use Insert image in the browser, or to paste or drop the file into the Page.
@@ -633,8 +634,8 @@ ${part.uploadPathItems}
    exported at 2x of a 380-pixel design (about 760 pixels) stays legible on a
    phone but looks large on a desktop; export it at 1x if desktop matters more.
 ${part.uploadStep}
-3. Insert it. Call read_page, then edit_page with insert_image, the asset_id
-   and descriptive alt text. after_node_id is optional (omitted appends; null
+3. Insert it. Call read_page, then edit_page with the upload's insert
+   operation (insert_image and the asset_id) and descriptive alt text added. after_node_id is optional (omitted appends; null
    prepends). For a dark-theme variant, upload the dark file to the same Page
    and pass its asset_id as dark_asset_id; that marks the Page with the
    image-theme-variants schema feature.
@@ -678,10 +679,11 @@ is inserted into the shared document.
 
 ${part.byteRouteParagraph}
 
-ChatGPT can transfer an attached image through import_page_image. Pass page_id
-and the file descriptor supplied by ChatGPT: file has download_url and file_id,
-with optional mime_type and file_name. The tool advertises openai/fileParams so
-ChatGPT can supply the file; do not invent a download URL from its file ID.
+import_page_image takes an image the client attaches to the tool call itself.
+Pass page_id and the file descriptor the client supplied: file has download_url
+and file_id, with optional mime_type and file_name. The tool advertises
+openai/fileParams, which is how ChatGPT attaches a file today;
+do not invent a download URL from its file ID.
 The current importer accepts only HTTPS files.oaiusercontent.com downloads and
 does not follow redirects or accept arbitrary remote URLs. Do not pass base64
 image data, a local/sandbox path, or a temporary ChatGPT link as the document's
@@ -689,9 +691,11 @@ image reference.
 
 ${part.importPageImageParagraph}
 
-After any upload or import, call read_page and insert the returned
-asset_id through edit_page. The dedicated insert_image operation creates one
-rich-text block containing the image. Supply descriptive alt text; after_node_id
+After any upload or import, call read_page and send the returned insert
+operation through edit_page, with alt added for an image. For an image it is
+insert_image with the asset_id, which creates one rich-text block containing
+the image; for a Parquet file it is the dataframe insert_node under Datasets.
+Supply descriptive alt text; after_node_id
 is optional (omitted appends; null prepends). The asset must already exist in
 this Page's private storage; an asset from another Page must be copied first.
 
@@ -951,8 +955,9 @@ page_quota_exceeded with limit and count; tell the person rather than retrying.
   set_view creates or rewrites a chart; see Charts.
 - manage_page_comment: add, reply, resolve, reopen, edit, or delete_message. resolve and
   reopen also take thread_ids to change up to 100 threads in one call. See Comments below.
-- import_page_image: page_id and a ChatGPT-supplied file descriptor; returns a
-  private asset_id and asset_url for a subsequent insert_image edit. See Images above.
+- import_page_image: page_id and a file descriptor the client attached itself;
+  returns a private asset_id, asset_url and insert, the insert_image operation
+  for edit_page. See Images above.
 - create_page_asset_upload: page_id and optional content_type and size;
   returns a 10-minute upload_url, headers and a curl example for sending a local
   image or Parquet file. See Images above.
@@ -1752,7 +1757,8 @@ set_domain_view. ${companyDomainSharing} ${organizationSharing}
 A 409 requires reading access again. An uncertain request can be retried with its identical nonce and body.`,
     importPageImageParagraph: `import_page_image requires pages:read and pages:write plus current Page edit
 access. It copies the bytes into private Page storage and returns asset_id,
-asset_url, mime_type, size, width, and height. It does not insert content.
+asset_url, mime_type, size, width, height, and insert, the operation that
+places it. It does not insert content.
 Repeating an import of identical bytes to the same Page reuses the asset.
 No additional API key or public hosting is needed. If ChatGPT does not expose this tool yet, refresh the connection's
 tool list. Newly generated images must be available as transferable files in
@@ -1780,7 +1786,8 @@ get an upload URL from create_page_asset_upload (content_type
 application/vnd.apache.parquet) and POST the raw bytes there, or POST them to
 ${origin}/api/pages/<page_id>/assets with Content-Type
 application/vnd.apache.parquet and your API-key bearer header. The response
-contains asset_id, asset_url, mime_type and size. In the browser, an editor can
+contains asset_id, asset_url, mime_type, size and insert, the insert_node
+operation below with the asset_id filled in. In the browser, an editor can
 drop or paste a .parquet file into a block.`,
     datasetReaderParagraph: `Readers see a Sift table: they can sort, filter and scroll it, and those
 changes stay in their own view. Nothing they do changes the document. Pages
@@ -2067,7 +2074,8 @@ config.
 
    Send the raw bytes, not multipart or base64. The answer has asset_id,
    asset_url (also url for existing clients), mime_type and size, plus width
-   and height for an image.
+   and height for an image, and insert: the edit_page operation that places
+   the file as the block its type calls for.
 
    - Repeating an upload is safe: the same bytes always return the same
      asset_id.
@@ -2157,7 +2165,8 @@ set_domain_view. ${companyDomainSharing} ${organizationSharing} A 409 requires r
 retried with its identical nonce and body.`,
     importPageImageParagraph: `import_page_image requires pages:read and pages:write plus current Page edit
 access. It copies the bytes into private Page storage and returns asset_id,
-asset_url, mime_type, size, width, and height. It does not insert content.
+asset_url, mime_type, size, width, height, and insert, the operation that
+places it. It does not insert content.
 Repeating an import of identical bytes to the same Page reuses the asset. No
 public hosting is needed. If ChatGPT does not expose this tool yet, refresh the
 connection's tool list. Newly generated images must be available as transferable
@@ -2183,7 +2192,8 @@ is insufficient.`,
 Page asset like an image, up to 5 MiB, and the same upload route stores it: get
 an upload URL from create_page_asset_upload (content_type
 application/vnd.apache.parquet) and POST the raw bytes there. The response
-contains asset_id, asset_url, mime_type and size. In the browser, an editor can
+contains asset_id, asset_url, mime_type, size and insert, the insert_node
+operation below with the asset_id filled in. In the browser, an editor can
 drop or paste a .parquet file into a block.`,
     datasetReaderParagraph: `Readers see a Sift table: they can sort, filter and scroll it, and those changes
 stay in their own view. Nothing they do changes the document. Pages does not
@@ -2287,7 +2297,8 @@ or a permission grant.`,
 
    Send the raw bytes, not multipart or base64. The answer has asset_id,
    asset_url (also url for existing clients), mime_type and size, plus width
-   and height for an image.
+   and height for an image, and insert: the edit_page operation that places
+   the file as the block its type calls for.
 
    - Repeating an upload is safe: the same bytes always return the same
      asset_id.

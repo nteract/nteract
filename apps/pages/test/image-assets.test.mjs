@@ -273,6 +273,7 @@ test("uploads raw bytes and serves a stable, immutable, Page-scoped private imag
       size: bytesFor().length,
       width: 3,
       height: 2,
+      insert: { op: "insert_image", asset_id: image.asset_id },
     },
   );
   assert.equal(f.env.PAGES_ASSETS.objects.size, 1);
@@ -515,7 +516,7 @@ test("image insertion preflight resolves the Page-local immutable asset without 
     pageId,
     assetId: image.asset_id,
   });
-  const { url, ...expected } = image;
+  const { url, insert: _insert, ...expected } = image;
   assert.deepEqual(metadata, expected);
   assert.equal(metadata.asset_url, url);
   assert.deepEqual(f.env.PAGES_ASSETS.calls, [["head", imageAssetKey(pageId, image.asset_id)]]);
@@ -620,6 +621,10 @@ test("a Parquet upload is stored once, Page-scoped, and served as a download", a
         url: "url",
         mime_type: PARQUET_MEDIA_TYPE,
         size: parquetBytes().length,
+        insert: {
+          op: "insert_node",
+          node: { type: "dataframe", attrs: { asset_id: dataset.asset_id } },
+        },
       },
     );
     assert.equal(dataset.url, `/api/pages/${pageId}/assets/${dataset.asset_id}`);
@@ -743,6 +748,10 @@ test("a dataset copies to another Page under the same id, once", async (t) => {
     asset_url: url,
     mime_type: PARQUET_MEDIA_TYPE,
     size: parquetBytes().length,
+    insert: {
+      op: "insert_node",
+      node: { type: "dataframe", attrs: { asset_id: dataset.asset_id } },
+    },
   });
   const stored = f.env.PAGES_ASSETS.objects.get(imageAssetKey(pageId, dataset.asset_id));
   assert.deepEqual(stored.customMetadata, { page_id: pageId, hash: dataset.asset_id });
@@ -858,6 +867,7 @@ test("a company domain grant copies as its role: an editor into the destination,
       assert.deepEqual(Object.keys(await response.json()).sort(), [
         "asset_id",
         "asset_url",
+        "insert",
         "mime_type",
         "size",
         "url",

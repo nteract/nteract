@@ -1,9 +1,21 @@
 import { HttpError, errorResponse } from "./auth.mjs";
 import { validPageId } from "./registration.mjs";
-import { persistImageAsset, privateImageResponse, readImageBody } from "./image-assets.mjs";
+import {
+  assetInsertOperation,
+  persistImageAsset,
+  privateImageResponse,
+  readImageBody,
+} from "./image-assets.mjs";
 
 export const IMAGE_IMPORT_TIMEOUT_MS = 20_000;
 const fileFields = new Set(["download_url", "file_id", "mime_type", "file_name"]);
+/**
+ * The hosts a client's file argument may download from, by exact HTTPS
+ * hostname on the default port. ChatGPT's file handoff (openai/fileParams)
+ * serves from files.oaiusercontent.com. Another client's handoff adds its own
+ * host here, after its URLs are checked to be short-lived and per-file.
+ */
+const FILE_HOSTS = new Set(["files.oaiusercontent.com"]);
 const boundedText = (value, max) =>
   typeof value === "string" &&
   value.length > 0 &&
@@ -23,7 +35,7 @@ function fileDownloadUrl(file) {
     (file.mime_type !== undefined && !boundedText(file.mime_type, 127)) ||
     (file.file_name !== undefined && !boundedText(file.file_name, 512))
   )
-    throw new HttpError(400, "Use a ChatGPT file attachment with download_url and file_id");
+    throw new HttpError(400, "file takes the download_url and file_id your client supplied");
   let url;
   try {
     url = new URL(file.download_url);
@@ -32,14 +44,17 @@ function fileDownloadUrl(file) {
   }
   if (
     url.protocol !== "https:" ||
-    url.hostname !== "files.oaiusercontent.com" ||
+    !FILE_HOSTS.has(url.hostname) ||
     url.port !== "" ||
     url.username ||
     url.password ||
     url.hash ||
     /[\\#\s]/.test(file.download_url)
   )
-    throw new HttpError(400, "Use a file attachment from ChatGPT's supported image host");
+    throw new HttpError(
+      400,
+      "Pages doesn't import from this file host; use create_page_asset_upload",
+    );
   return url;
 }
 
@@ -123,7 +138,10 @@ export async function handleImportPageImage(request, env, { pageId, file, author
     if (!current.ok) return privateImageResponse(current);
     const { url: asset_url, ...metadata } = asset;
     return privateImageResponse(
-      Response.json({ page_id: pageId, ...metadata, asset_url }, { status: duplicate ? 200 : 201 }),
+      Response.json(
+        { page_id: pageId, ...metadata, asset_url, insert: assetInsertOperation(asset) },
+        { status: duplicate ? 200 : 201 },
+      ),
     );
   } catch (error) {
     return privateImageResponse(errorResponse(error, "import-page-image"));
