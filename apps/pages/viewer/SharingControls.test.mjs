@@ -511,7 +511,8 @@ test("an owner who can't prove a stored company domain may only lower its role o
       current = {
         ...current,
         ...ledger(current.access.revision + 1),
-        domainView: { ...current.domainView, role: body.role },
+        domainView: body.domain ? { ...current.domainView, role: body.role } : null,
+        ...(!body.domain && { domainViewOwnerVerified: undefined }),
       };
       return json({ ...current, receipt: { revision: current.access.revision } });
     }
@@ -542,6 +543,14 @@ test("an owner who can't prove a stored company domain may only lower its role o
     [...roleSelect(f.container).options].map((option) => option.disabled),
     [false, true, true],
   );
+  // Restricted withdraws it, with no proof either.
+  await choose(linkSelect(f.container), "");
+  await flush();
+  assert.deepEqual(
+    { action: posts[1].action, domain: posts[1].domain },
+    { action: "set_domain_view", domain: null },
+  );
+  assert.equal(roleSelect(f.container), null);
 });
 
 test("an owner shares with a company domain, sets its role, and Restricted withdraws it", async (t) => {

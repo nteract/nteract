@@ -447,7 +447,7 @@ export const tools = [
   ),
   tool(
     "manage_page_access",
-    "Change direct Page sharing as its owner, at access.revision from get_page_access. invite: email and role. set_role: principal and role (null removes). revoke_invite: invite_id. set_domain_view: a domain from domainOptions and role, or null. set_organization_access: organization_id from organizationOptions and role, or null. Grants never cover sub-pages. Needs pages:share consent.",
+    "Change direct Page sharing as its owner, at access.revision from get_page_access. invite: email and role. set_role: principal and role (null removes). revoke_invite: invite_id. set_domain_view: a domainOptions domain (or domainView's to lower) and role, or null. set_organization_access: organization_id from organizationOptions and role, or null. Grants never cover sub-pages. Needs pages:share consent.",
     {
       page_id: page,
       action: {

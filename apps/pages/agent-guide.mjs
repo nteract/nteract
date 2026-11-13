@@ -1517,9 +1517,10 @@ export function agentGuideResponse(request, env) {
  * whether the deployment allows a domain shows in domainOptions. */
 const companyDomainSharing = `set_domain_view takes domain from
 domainOptions and role (viewer, commenter or editor; viewer when omitted), or
-domain null for Restricted. Choosing a domain or changing its role needs your
-own fresh company email proof, else 403 with code company_email_proof_required;
-Restricted needs none. domainView is { domain, namespace, role } or null. A
+domain null for Restricted. Choosing a domain, or the stored domain's role
+again or a higher one, needs your own fresh company email proof, else 403 with
+code company_email_proof_required. Lowering the stored domainView's role (its
+domain need not be in domainOptions) and Restricted need none. domainView is { domain, namespace, role } or null. A
 higher individual grant still wins, and an explicit removal overrides the
 domain. Browser/OAuth company proof expires after six hours without fresh
 sign-in; refreshing an OAuth token does not renew that identity proof. A

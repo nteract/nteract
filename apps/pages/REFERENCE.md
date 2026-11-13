@@ -1219,8 +1219,8 @@ setting must both allow it; only `anaconda.com` is currently recognized
 ([Company domains](DEPLOYMENT.md#company-domains)). The owner picks the
 audience's role: Can view, Can comment or Can edit. A grant stored without a
 role is a viewer grant. New Pages start Restricted. Existing company audiences
-remain active. Enabling a company audience or changing its role requires fresh
-owner proof. Browser and OAuth proof expires after six hours. API-key access uses
+remain active. Enabling a company audience or raising its role requires fresh
+owner proof; lowering its role or choosing Restricted does not. Browser and OAuth proof expires after six hours. API-key access uses
 bounded leases backed by provider verification. A higher direct grant wins and
 explicit revocation overrides domain access; removing the audience revokes it
 without creating permanent members.

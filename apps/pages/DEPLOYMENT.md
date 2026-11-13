@@ -1539,8 +1539,8 @@ one until the setting is fixed. A bad reviewed entry fails when
 ([worker/domain-access.mjs](worker/domain-access.mjs) `companyViewDomains`).
 
 A reader proves a domain with a verified email: a browser or OAuth sign-in
-counts for six hours, and an API key's account email for its 60-second
-identity. An upload URL issued to a domain editor carries that lease and ends
+counts for six hours, and an API key's account email until the provider lookup
+behind it stops being current, at most 60 seconds from that lookup. An upload URL issued to a domain editor carries that lease and ends
 with it. A domain can't be registered at runtime; the allowlist is
 configuration.
 

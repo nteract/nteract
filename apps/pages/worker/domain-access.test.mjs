@@ -833,8 +833,23 @@ test("an owner shares with a company domain at each role; widening needs current
   assert.deepEqual(commenter.metadata.acl.domainView, grantAt("commenter"));
   const viewer = await asStale(commenter.metadata, { role: "viewer" }, "stale-viewer");
   assert.deepEqual(viewer.metadata.acl.domainView, grantAt("viewer"));
+  // An omitted role is viewer, so against a stored editor grant it narrows.
+  const omitted = await asStale(page, {}, "stale-omitted-role");
+  assert.deepEqual(omitted.metadata.acl.domainView, grantAt("viewer"));
+  const withNamespace = (namespace) => ({
+    ...page,
+    acl: { ...page.acl, domainView: { ...grantAt("editor"), namespace } },
+  });
   // A stored grant without a role is a viewer grant: nothing lower to narrow to.
   for (const [from, args, label] of [
+    [viewer.metadata, {}, "the same role, omitted"],
+    [
+      { ...page, acl: { ...page.acl, domainView: { ...domainView, role: "owner" } } },
+      { role: "viewer" },
+      "a stored grant with an invalid role",
+    ],
+    [withNamespace(namespace.toUpperCase()), { role: "viewer" }, "a namespace in other case"],
+    [withNamespace(` ${namespace} `), { role: "viewer" }, "a namespace with whitespace"],
     [page, { role: "editor" }, "the same role"],
     [commenter.metadata, { role: "editor" }, "a higher role"],
     [viewer.metadata, { role: "commenter" }, "a higher role"],
@@ -864,6 +879,28 @@ test("an owner shares with a company domain at each role; widening needs current
     env,
   );
   assert.equal(withdrawn.metadata.acl.domainView, null);
+  // A stored domain the deployment no longer allows can't be narrowed, only
+  // withdrawn.
+  const dropped = { ...env, PAGES_COMPANY_VIEW_DOMAINS: "" };
+  await rejectsWithStatus(
+    proposeSharingMutation(
+      page,
+      stale,
+      { ...enableArgs, role: "viewer", expected_revision: revision, nonce: "dropped-viewer" },
+      now,
+      dropped,
+    ),
+    400,
+    /supported company domain/,
+  );
+  const droppedWithdrawn = await proposeSharingMutation(
+    page,
+    stale,
+    { ...restrictArgs, expected_revision: revision, nonce: "dropped-withdraw" },
+    now,
+    dropped,
+  );
+  assert.equal(droppedWithdrawn.metadata.acl.domainView, null);
 });
 
 test("a company domain grant gives its role to verified readers only, with no member row", () => {
