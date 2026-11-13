@@ -1,6 +1,6 @@
 // Wordgard owns the diagram DOM. Use the same small stroke icons as the React
 // toolbar (Lucide paths) without mounting a second React root inside an editor
-// decoration or the expanded viewer.
+// decoration, a chart (vega-chart.mjs) or the expanded viewer.
 const PATHS = {
   code: ["m16 18 6-6-6-6", "m8 6-6 6 6 6"],
   preview: [
@@ -35,4 +35,26 @@ export function diagramIcon(kind, doc = document) {
     svg.append(path);
   }
   return svg;
+}
+
+/** An icon button in a diagram's or chart's action group. */
+export function diagramButton(label, icon, className = "", doc = document) {
+  const button = doc.createElement("button");
+  button.type = "button";
+  button.className = `icon-button wordgard-diagram-action ${className}`;
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  button.append(diagramIcon(icon, doc));
+  return button;
+}
+
+/**
+ * Maximize opens a rendered diagram or chart in the expanded viewer
+ * (diagram-viewer.mjs). It stays hidden until there is a rendered SVG to show.
+ */
+export function maximizeButton(label = "Maximize diagram", doc = document) {
+  const button = diagramButton(label, "maximize", "wordgard-diagram-maximize", doc);
+  button.setAttribute("aria-haspopup", "dialog");
+  button.hidden = true;
+  return button;
 }

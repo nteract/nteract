@@ -39,6 +39,11 @@ export const VIEWER_ASSETS = Object.freeze([
 // Staging and the tunnel ingress route admit exactly these shapes.
 const VIEWER_ASSET = /^public\/(app|theme|mermaid|automerge|sift)-([A-Z2-7]{8})\.(js|css|wasm)$/;
 export const IMMUTABLE = "public, max-age=31536000, immutable";
+/** The viewer's Content-Security-Policy. No 'unsafe-eval': only WebAssembly
+ * compiles at runtime, so Vega charts run with its expression interpreter
+ * (viewer/vega-chart.mjs). scripts/chart-smoke.mjs serves its fixture with it. */
+export const VIEWER_CSP =
+  "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
 
 const BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 /** Eight base32 characters from the first five bytes of a sha256 digest. */
