@@ -1929,6 +1929,34 @@ details.account-actions > div a:hover {
     padding: 2rem 1.25rem 3rem;
   }
 }
+/* The page a browser gets while Pages starts (worker/starting-page.mjs): the
+   library's progress bar on a quiet track, until the page loads again. */
+.starting-progress {
+  position: relative;
+  width: min(100%, 16rem);
+  height: 2px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--line);
+}
+.starting-progress::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 30%;
+  border-radius: 2px;
+  background: var(--foreground);
+  animation: library-progress 1.1s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .starting-progress::before {
+    width: 100%;
+    opacity: 0.5;
+    animation: none;
+  }
+}
 
 /* Projects: a section in the switcher, a Project view and Page breadcrumbs.
    Minimal on purpose; they reuse library rows and switcher entries. */
