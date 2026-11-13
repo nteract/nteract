@@ -120,44 +120,74 @@ pub(crate) fn group_footer(
     footer_with_schema(schema, &["g", "x"], Type::INT32, statistics)
 }
 
-/// A one-row footer whose root carries a list annotation, as a converted
-/// type or a logical type, over a repeated INT32 `x`. Parquet never gives the
-/// root a repetition, so nothing that reads one may see this root as a list.
-pub(crate) fn list_root_footer(logical: bool) -> (Vec<u8>, u64) {
-    use parquet::format::{
-        ConvertedType, FieldRepetitionType, ListType, LogicalType, SchemaElement, Statistics, Type,
-    };
-    let (converted, logical) = if logical {
-        (None, Some(LogicalType::LIST(ListType {})))
-    } else {
-        (Some(ConvertedType::LIST), None)
-    };
-    let root = SchemaElement::new(
-        None,
-        None,
-        None,
-        "schema".to_string(),
-        1,
-        converted,
-        None,
-        None,
-        None,
-        logical,
-    );
-    let leaf = SchemaElement::new(
-        Type::INT32,
-        None,
-        FieldRepetitionType::REPEATED,
-        "x".to_string(),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    );
+/// A root annotation: a converted type, a logical type, or both.
+pub(crate) type RootAnnotation = (
+    Option<parquet::format::ConvertedType>,
+    Option<parquet::format::LogicalType>,
+);
+
+/// Every root annotation Arrow's conversion sends to `visit_map` or
+/// `visit_list`, as constructors.
+pub(crate) const ROOT_MAP_OR_LIST_ANNOTATIONS: [fn() -> RootAnnotation; 5] = [
+    || (Some(parquet::format::ConvertedType::LIST), None),
+    || (Some(parquet::format::ConvertedType::MAP), None),
+    || (Some(parquet::format::ConvertedType::MAP_KEY_VALUE), None),
+    || {
+        let list = parquet::format::ListType {};
+        (None, Some(parquet::format::LogicalType::LIST(list)))
+    },
+    || {
+        let map = parquet::format::MapType {};
+        (None, Some(parquet::format::LogicalType::MAP(map)))
+    },
+];
+
+/// A one-row footer whose root carries `annotation` over a repeated group
+/// `g` holding a required INT32 `x`: the shape a list, or a map whose entry
+/// has one field, takes. Parquet never gives the root a repetition.
+pub(crate) fn annotated_root_footer(annotation: RootAnnotation) -> (Vec<u8>, u64) {
+    use parquet::format::{FieldRepetitionType, SchemaElement, Statistics, Type};
+    let (converted, logical) = annotation;
+    let schema = vec![
+        SchemaElement::new(
+            None,
+            None,
+            None,
+            "schema".to_string(),
+            1,
+            converted,
+            None,
+            None,
+            None,
+            logical,
+        ),
+        SchemaElement::new(
+            None,
+            None,
+            FieldRepetitionType::REPEATED,
+            "g".to_string(),
+            1,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+        SchemaElement::new(
+            Type::INT32,
+            None,
+            FieldRepetitionType::REQUIRED,
+            "x".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+    ];
     let statistics = Statistics::new(None, None, 0, None, None, None, None, None);
-    footer_with_schema(vec![root, leaf], &["x"], Type::INT32, statistics)
+    footer_with_schema(schema, &["g", "x"], Type::INT32, statistics)
 }
 
 /// Serialize a one-row-group footer over `schema`, with one column chunk at

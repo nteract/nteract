@@ -1012,7 +1012,8 @@ mod tests {
     use crate::column_stats::StatValue;
     use crate::store::{free, get_cell_string, is_null, num_rows};
     use crate::test_footers::{
-        group_footer, int96_footer, list_root_footer, parquet_with_footer_total, thrift_footer,
+        annotated_root_footer, group_footer, int96_footer, parquet_with_footer_total,
+        thrift_footer, ROOT_MAP_OR_LIST_ANNOTATIONS,
     };
     use arrow::array::{ArrayRef, Int64Array, StringArray};
     use arrow::record_batch::RecordBatch;
@@ -1529,13 +1530,13 @@ mod tests {
     }
 
     #[test]
-    fn a_root_annotated_as_a_list_is_an_error_not_an_abort() {
-        for logical in [false, true] {
-            let (tail, file_len) = list_root_footer(logical);
+    fn a_root_annotated_as_a_map_or_a_list_is_an_error_not_an_abort() {
+        for annotation in ROOT_MAP_OR_LIST_ANNOTATIONS {
+            let (tail, file_len) = annotated_root_footer(annotation());
             let summary = footer_summary(&tail, file_len).unwrap_err();
-            assert!(summary.contains("list"), "{logical}: {summary}");
+            assert!(summary.contains("map or a list"), "{summary}");
             let open = open_parquet_file(&tail, file_len, limits()).unwrap_err();
-            assert!(open.contains("list"), "{logical}: {open}");
+            assert!(open.contains("map or a list"), "{open}");
         }
     }
 

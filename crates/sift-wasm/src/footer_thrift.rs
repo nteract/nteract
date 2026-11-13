@@ -5,7 +5,7 @@
 //! `assert_eq!`, a known list with a negative or absurd length reaches
 //! `Vec::with_capacity`, a non-root schema group without a repetition type
 //! reaches an `assert!` in `SchemaDescriptor::new`, and a root annotated as a
-//! list reaches one in Arrow's list conversion. On wasm32 a panic
+//! map or a list reaches one in Arrow's list conversion. On wasm32 a panic
 //! aborts the instance. This module
 //! reads the same bytes first and rejects those footers with an error.
 //!
@@ -25,10 +25,10 @@
 
 /// Thrift `Type::INT96`.
 const THRIFT_INT96: i32 = 3;
-/// Thrift `ConvertedType::LIST`.
-const CONVERTED_LIST: i32 = 3;
-/// The `LogicalType` union's `LIST` member.
-const LOGICAL_LIST: i16 = 3;
+/// Thrift `ConvertedType::MAP`, `MAP_KEY_VALUE` and `LIST`.
+const CONVERTED_MAP_OR_LIST: [i32; 3] = [1, 2, 3];
+/// The `LogicalType` union's `MAP` and `LIST` members.
+const LOGICAL_MAP_OR_LIST: [i16; 2] = [2, 3];
 /// The thrift crate's `MAXIMUM_SKIP_DEPTH`.
 const MAX_SKIP_DEPTH: u8 = 64;
 /// Longest varint a 64-bit value can need.
@@ -49,8 +49,10 @@ struct RawSchemaElement {
     physical: Option<i32>,
     repetition: Option<i32>,
     children: Option<i32>,
-    /// Annotated as a list by its converted type or its logical type.
-    list: bool,
+    /// Annotated as a map or a list, by its converted type or its logical
+    /// type: Arrow's conversion sends such a group to `visit_map` or
+    /// `visit_list` instead of `visit_struct`.
+    map_or_list: bool,
 }
 
 impl RawSchemaElement {
@@ -506,10 +508,11 @@ impl<'a> Reader<'a> {
                     {
                         return Err("schema group has no repetition type".to_string());
                     }
-                    // parquet keeps the root's annotation but never its repetition,
-                    // and Arrow's list conversion asserts a repetition.
-                    if elements.first().is_some_and(|root| root.list) {
-                        return Err("schema root is annotated as a list".to_string());
+                    // parquet keeps the root's annotation but never its
+                    // repetition, and Arrow's list conversion, which a map
+                    // with a one-field entry also takes, asserts one.
+                    if elements.first().is_some_and(|root| root.map_or_list) {
+                        return Err("schema root is annotated as a map or a list".to_string());
                     }
                     // Preorder: every non-root element without children is a
                     // leaf, as in parquet's `from_thrift_helper`.
@@ -542,8 +545,8 @@ impl<'a> Reader<'a> {
                 1 => element.physical = Some(self.read_i32()?),
                 3 => element.repetition = Some(self.read_i32()?),
                 5 => element.children = Some(self.read_i32()?),
-                6 => element.list |= self.read_i32()? == CONVERTED_LIST,
-                10 => element.list |= self.logical_type_is_list()?,
+                6 => element.map_or_list |= CONVERTED_MAP_OR_LIST.contains(&self.read_i32()?),
+                10 => element.map_or_list |= self.logical_type_is_map_or_list()?,
                 _ => self.field(S::SchemaElement, id, field_type)?,
             }
         }
@@ -551,15 +554,15 @@ impl<'a> Reader<'a> {
     }
 
     /// Read a `LogicalType` union as `known_struct` would, noting whether it
-    /// names `LIST`.
-    fn logical_type_is_list(&mut self) -> R<bool> {
-        let mut list = false;
+    /// names `MAP` or `LIST`.
+    fn logical_type_is_map_or_list(&mut self) -> R<bool> {
+        let mut map_or_list = false;
         let mut last_id = 0;
         while let Some((id, field_type)) = self.field_begin(&mut last_id)? {
-            list |= id == LOGICAL_LIST;
+            map_or_list |= LOGICAL_MAP_OR_LIST.contains(&id);
             self.field(S::LogicalType, id, field_type)?;
         }
-        Ok(list)
+        Ok(map_or_list)
     }
 
     fn row_group(&mut self) -> R<Vec<RawChunk>> {
@@ -726,12 +729,12 @@ mod tests {
     }
 
     #[test]
-    fn a_root_annotated_as_a_list_is_an_error() {
-        use crate::test_footers::list_root_footer;
-        for logical in [false, true] {
-            let (tail, _) = list_root_footer(logical);
+    fn a_root_annotated_as_a_map_or_a_list_is_an_error() {
+        use crate::test_footers::{annotated_root_footer, ROOT_MAP_OR_LIST_ANNOTATIONS};
+        for annotation in ROOT_MAP_OR_LIST_ANNOTATIONS {
+            let (tail, _) = annotated_root_footer(annotation());
             let refused = read_raw_footer(&tail[..tail.len() - 8]).unwrap_err();
-            assert!(refused.contains("list"), "{logical}: {refused}");
+            assert!(refused.contains("map or a list"), "{refused}");
         }
     }
 }
