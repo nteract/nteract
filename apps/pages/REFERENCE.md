@@ -1279,7 +1279,9 @@ still distinguish them.
 
 The browser reconnects with backoff on transient codes, rechecks access through
 `/api/connect` on access and sign-in codes, and stops on a code whose retry is
-`stop` (`signing_key_rejected`, kept for older hosts) until Retry. A first open waiting for the document ends with that diagnosis
+`stop`: `page_deleted` marks the copy deleted, `schema_unsupported` asks for a
+reload, and `document_format_unsupported` stops for good. A first open waiting
+for the document ends with that diagnosis
 instead of a lookup timeout, and the open retry loop does not reopen. A socket
 counts as admitted only after it stays open 15 seconds, so quick refusals keep
 growing the backoff instead of resetting it.

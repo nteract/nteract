@@ -45,8 +45,6 @@ export const PAGE_REF_BACKOFF_MS = 2_000;
 export const PAGE_REF_BACKOFF_MAX_MS = 60_000;
 /** Requests this tab runs at once. */
 export const PAGE_REF_CONCURRENCY = 6;
-/** What a ref reads: meta.json or card.json. */
-export const PAGE_REF_FILES = Object.freeze(["meta", "card"]);
 /** What a ref is for: a Page or a Project. */
 export const PAGE_REF_TARGETS = Object.freeze(["page", "project"]);
 

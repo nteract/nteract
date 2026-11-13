@@ -708,15 +708,16 @@ test("a Page the host doesn't open is read-only when discovery refuses it", asyn
   assertFormatStopped(f, before);
 });
 
-test("a refused signing key stops automatic reconnects until an explicit retry", async (t) => {
+test("an admission stop halts automatic reconnects until an explicit retry", async (t) => {
   const f = fixture(t);
   await f.start();
   const socket = f.sockets.at(-1);
-  hostClose(socket, 4422, "signing_key_rejected");
+  hostClose(socket, 4426, "schema_unsupported");
   f.session.socketDisconnected(socket);
   assert.equal(f.session.retryTimer, undefined);
   assert.equal(f.session.nativeRefused, true);
-  assert.match(f.session.problem, /refused this tab's signing key/);
+  // The schema notice says to reload; no connection banner beside it.
+  assert.equal(f.session.problem, "");
   f.session.scheduleReconnect();
   assert.equal(f.session.retryTimer, undefined);
   await f.advance(60_000);
@@ -724,7 +725,7 @@ test("a refused signing key stops automatic reconnects until an explicit retry",
 
   // Refusal during the native handshake is reported the same way.
   f.hooks.setup = () => {
-    hostClose(f.sockets.at(-1), 4422, "signing_key_rejected");
+    hostClose(f.sockets.at(-1), 4426, "schema_unsupported");
     throw Error("Native handshake failed");
   };
   await f.session.retryConnection();
@@ -1305,7 +1306,6 @@ test("only definitive answers stop automatic reconnects", () => {
   const cases = [
     [{ status: 401 }, false],
     [{ status: 403 }, false],
-    [{ status: 403, code: "signing_key_rejected" }, false],
     [{ code: "SIGNING_KEY_REFUSED" }, false],
     [{ status: 409, code: "RECORD_STORAGE_CHANGED" }, true],
     [{ status: 409, code: "STORAGE_SWITCH_FAILED" }, true],
@@ -1447,12 +1447,6 @@ test("definitive refusals from discovery stay parked", async (t) => {
       (s) => s.accessDenied,
     ],
     ["403 page_trashed", 403, { error: "In Trash", code: "page_trashed" }, (s) => s.accessDenied],
-    [
-      "403 signing_key_rejected",
-      403,
-      { error: "Signing key refused", code: "signing_key_rejected" },
-      (s) => s.problem === "Signing key refused",
-    ],
     [
       "404 page_deleted",
       404,

@@ -124,14 +124,13 @@ export function refusalOf(error) {
  *   account, purged included). revoke retires and hides the copy.
  * - `trash`: page_trashed. The Trash notice; the copy stays for restore.
  * - `denied`: any other 403. Paused; the copy stays, since the host didn't
- *   say why. A `signing_key_rejected` 403 is an admission stop, handled apart.
+ *   say why.
  * Anything else, a 404 without page_deleted included, is not a refusal. */
 export function classifyRefusal(error) {
   if (error?.status === 404) return error.code === "page_deleted" ? "deleted" : undefined;
   if (error?.status !== 403) return undefined;
   if (error.code === "page_access_denied") return "access";
   if (error.code === "page_trashed") return "trash";
-  if (error.code === "signing_key_rejected") return undefined;
   return "denied";
 }
 // 409s that retrying can't fix: this build lacks a feature the Page uses, the

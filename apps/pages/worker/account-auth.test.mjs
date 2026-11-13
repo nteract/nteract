@@ -288,6 +288,22 @@ test("the session answer advertises account controls to a browser session only",
   assert.equal((await session({})).accountControls, undefined);
 });
 
+test("the session answer holds who is signed in and what they can do, and nothing else", async (t) => {
+  const env = fixture(t);
+  const login = await signIn(env);
+  const answer = await (
+    await call(env, "/api/auth/session", { origin: null, cookie: login.cookie })
+  ).json();
+  assert.deepEqual(Object.keys(answer).sort(), [
+    "accountControls",
+    "canWrite",
+    "expiresAt",
+    "identity",
+  ]);
+  const signedOut = await (await call(env, "/api/auth/session", { origin: null })).json();
+  assert.deepEqual(signedOut, { identity: null, canWrite: false });
+});
+
 test("sign out everywhere needs this origin and a browser session", async (t) => {
   const env = fixture(t);
   const login = await signIn(env);
