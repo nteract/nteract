@@ -395,7 +395,8 @@ write (see "Say who wrote a comment"); they never affect access:
 
 Send printable ASCII, at most 120 characters each; Pages drops other
 characters and truncates longer values. Without X-Pages-Client, Pages uses the
-MCP clientInfo name and version from initialize. MCP has no model field, so
+MCP clientInfo name and version from initialize, or from params._meta under
+revision 2026-07-28. MCP has no model field, so
 send X-Pages-Model if you know it. For Kilo, add
 "X-Pages-Model": "{env:PAGES_MODEL}" beside X-Pages-Agent.
 
@@ -1562,8 +1563,12 @@ ${part.hostedMcpHeaders}
 Accept: application/json, text/event-stream
 \`\`\`
 
-Initialize with an MCP client, then call tools/list for the current input schemas.
-For example, tools/call uses this JSON-RPC shape:
+The endpoint speaks MCP protocol revision 2026-07-28 and the earlier revisions
+up to 2025-11-25. A 2026-07-28 client sends no initialize: each request names
+its version in the MCP-Protocol-Version header and in params._meta, and
+server/discover returns the supported versions. An earlier client initializes
+first. Then call tools/list for the current input schemas.
+For example, a 2025-11-25 tools/call uses this JSON-RPC shape:
 
 \`\`\`json
 {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_pages","arguments":{}}}
@@ -1584,7 +1589,9 @@ or node_ids shows where you are reading; whole-page and outline reads
 show nothing. This presence is derived from your calls; you publish nothing extra. People see
 it as your account and client, such as "Kyle's Kilo". If several sessions share one
 account and client, each MCP session already gets its own caret: Pages hands out
-an Mcp-Session-Id on initialize, and your client echoes it. An X-Pages-Agent
+an Mcp-Session-Id on initialize, and your client echoes it. Revision 2026-07-28
+has no sessions, so its requests share one caret per client name and version
+from the clientInfo in params._meta. An X-Pages-Agent
 label names the session ("Kyle's Kilo · release agent"); see "Name each
 session" above. Use report_page_progress for temporary
 agent activity and read_page_presence for recent selections. Use these tools for document work; /api/sync is a binary native client protocol,

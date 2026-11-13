@@ -2884,10 +2884,27 @@ optional client label and `X-Pages-Agent` an optional session label. OAuth
 scopes and current Page permissions apply on every call. The public `/llms.txt`
 is the tool usage and authentication reference.
 
+`/mcp` serves two protocol eras on the one endpoint, both statelessly
+([mcp.mjs](mcp.mjs), on `@modelcontextprotocol/server`):
+
+- A request that declares `io.modelcontextprotocol/protocolVersion` in
+  `params._meta`, or names a 2026-07-28 or later revision in
+  `MCP-Protocol-Version`, is served under 2026-07-28. There is no `initialize`
+  and no `Mcp-Session-Id`; `server/discover` returns the supported versions,
+  capabilities, instructions and server identity. The standard headers
+  (`MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`) must match the body
+  (400, `-32020`), the envelope must be complete (400, `-32602`), and any
+  other version gets 400 with `UnsupportedProtocolVersionError` (`-32022`,
+  `data.supported`, `data.requested`). `ping` is not part of this revision
+  and answers 404 with `-32601`.
+- Every other request is legacy: `initialize` negotiates a revision from
+  2024-10-07 to 2025-11-25, and responses are single JSON bodies.
+
 A single `tools/list` or `ping` message needs no credential: tool definitions are
-static and carry no account data. `initialize`, `tools/call` and every other method
-return the OAuth challenge without one, so MCP clients still start sign-in from
-`initialize`. A presented credential that fails still gets the challenge.
+static and carry no account data. `initialize`, `server/discover`, `tools/call`
+and every other method return the OAuth challenge without one, so MCP clients
+start sign-in from their first such request. A presented credential that fails
+still gets the challenge.
 
 Other endpoints include `/api/access` for sharing, `/api/connect` for native
 admission details, `/api/sync` for binary WebSockets, `/api/saved` for durable
@@ -3357,7 +3374,11 @@ label, so two sessions of one account keep separate carets. MCP `initialize`
 responses also carry an `Mcp-Session-Id`, and clients echo it; the transport
 stays stateless. The worker turns the id into an account-scoped SHA-256 tag
 (`identity.session`), so two unlabeled sessions on one credential still get two
-carets and two colors, and the raw id never leaves the worker. A reading marker's
+carets and two colors, and the raw id never leaves the worker. MCP revision
+2026-07-28 has no sessions: the worker ignores a client's `Mcp-Session-Id` and
+builds the tag from the clientInfo each request declares in `_meta`
+(`withModernMcpClient` in [usage.mjs](worker/usage.mjs)), so one account's
+requests from one client name and version share a caret. A reading marker's
 targets are captured on the revision the read returned.
 Each participant's color comes from nteract's cursor palette, keyed by
 principal and driver.
