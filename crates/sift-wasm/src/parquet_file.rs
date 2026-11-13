@@ -1013,7 +1013,7 @@ mod tests {
     use crate::store::{free, get_cell_string, is_null, num_rows};
     use crate::test_footers::{
         annotated_root_footer, group_footer, int96_footer, parquet_with_footer_total,
-        thrift_footer, ROOT_MAP_OR_LIST_ANNOTATIONS,
+        primitive_map_entry_footer, thrift_footer, ROOT_MAP_OR_LIST_ANNOTATIONS,
     };
     use arrow::array::{ArrayRef, Int64Array, StringArray};
     use arrow::record_batch::RecordBatch;
@@ -1537,6 +1537,17 @@ mod tests {
             assert!(summary.contains("map or a list"), "{summary}");
             let open = open_parquet_file(&tail, file_len, limits()).unwrap_err();
             assert!(open.contains("map or a list"), "{open}");
+        }
+    }
+
+    #[test]
+    fn a_map_whose_entry_is_a_primitive_is_an_error_not_an_abort() {
+        for logical in [false, true] {
+            let (tail, file_len) = primitive_map_entry_footer(logical);
+            let summary = footer_summary(&tail, file_len).unwrap_err();
+            assert!(summary.contains("map entry"), "{summary}");
+            let open = open_parquet_file(&tail, file_len, limits()).unwrap_err();
+            assert!(open.contains("map entry"), "{open}");
         }
     }
 

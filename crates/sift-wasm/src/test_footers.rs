@@ -190,6 +190,64 @@ pub(crate) fn annotated_root_footer(annotation: RootAnnotation) -> (Vec<u8>, u64
     footer_with_schema(schema, &["g", "x"], Type::INT32, statistics)
 }
 
+/// A footer with no row groups whose only column is a required map `m`, by
+/// converted type or logical type, holding a repeated INT32 `entry` where
+/// a map's key-value group belongs.
+pub(crate) fn primitive_map_entry_footer(logical: bool) -> (Vec<u8>, u64) {
+    use parquet::format::{
+        ConvertedType, FieldRepetitionType, FileMetaData, LogicalType, MapType, SchemaElement, Type,
+    };
+    use parquet::thrift::{TCompactOutputProtocol, TSerializable};
+    let (converted, logical) = if logical {
+        (None, Some(LogicalType::MAP(MapType {})))
+    } else {
+        (Some(ConvertedType::MAP), None)
+    };
+    let element = |physical: Option<Type>, repetition, name: &str, children, converted, logical| {
+        SchemaElement::new(
+            physical,
+            None,
+            repetition,
+            name.to_string(),
+            children,
+            converted,
+            None,
+            None,
+            None,
+            logical,
+        )
+    };
+    let schema = vec![
+        element(None, None, "schema", Some(1), None, None),
+        element(
+            None,
+            Some(FieldRepetitionType::REQUIRED),
+            "m",
+            Some(1),
+            converted,
+            logical,
+        ),
+        element(
+            Some(Type::INT32),
+            Some(FieldRepetitionType::REPEATED),
+            "entry",
+            None,
+            None,
+            None,
+        ),
+    ];
+    let metadata = FileMetaData::new(1, schema, 0, vec![], None, None, None, None, None);
+    let mut tail = Vec::new();
+    metadata
+        .write_to_out_protocol(&mut TCompactOutputProtocol::new(&mut tail))
+        .unwrap();
+    let metadata_len = tail.len() as u32;
+    tail.extend_from_slice(&metadata_len.to_le_bytes());
+    tail.extend_from_slice(b"PAR1");
+    let file_len = tail.len() as u64 + 4;
+    (tail, file_len)
+}
+
 /// Serialize a one-row-group footer over `schema`, with one column chunk at
 /// `path` of type `physical` carrying `statistics`. Returns the tail and a
 /// file length that fits the chunk.
