@@ -98,6 +98,25 @@ export function mcpSessionId(clientInfo, uuid = crypto.randomUUID()) {
   return `${uuid}.${toBase64Url(bytes)}`;
 }
 
+/** The uuid half of every modern client id: constant, so the id depends only
+ * on the client's label. */
+export const MODERN_MCP_CLIENT_UUID = "00000000-0000-4000-8000-000000000000";
+
+/** `request` as the gateway invokes a tool for an MCP protocol 2026-07-28
+ * request. That revision has no session: every request declares its
+ * clientInfo in `_meta`, and a client's Mcp-Session-Id header is ignored. The
+ * gateway's own invocation request carries an Mcp-Session-Id built from that
+ * clientInfo (mcpSessionId with MODERN_MCP_CLIENT_UUID), so usage
+ * (requestClient) and presence (auth.mjs sessionTag) read the client the way
+ * they read a legacy session. One principal's requests from one client
+ * name/version share a presence tag; without a clientInfo they share the bare
+ * uuid's. Only the headers are copied: the body was already read. */
+export function withModernMcpClient(request, clientInfo) {
+  const headers = new Headers(request.headers);
+  headers.set("mcp-session-id", mcpSessionId(clientInfo, MODERN_MCP_CLIENT_UUID));
+  return new Request(request.url, { method: request.method, headers });
+}
+
 /** The clientInfo label carried in an Mcp-Session-Id, or undefined. */
 export function mcpSessionClient(sessionId) {
   if (typeof sessionId !== "string") return undefined;

@@ -81,6 +81,7 @@ import {
   takeReplayedReceipt,
   usageDropped,
   usageOperation,
+  withModernMcpClient,
 } from "./usage.mjs";
 import { flushUsage } from "./usage-store.mjs";
 import { runScheduled } from "./scheduled.mjs";
@@ -1520,9 +1521,13 @@ const gateway = {
         const identity = await authenticate(request, env);
         return await handleMcp(
           request,
-          async (operation, args, { kind = "tool", agent } = {}) => {
-            const invocationRequest = withMcpAgent(request, agent);
-            const usage = toolUsage(request, "mcp", operation, args, kind, env);
+          async (operation, args, { kind = "tool", agent, client } = {}) => {
+            // A 2026-07-28 request (client present, possibly null) names its
+            // client per request, never by a session it was issued.
+            const mcpRequest =
+              client === undefined ? request : withModernMcpClient(request, client);
+            const invocationRequest = withMcpAgent(mcpRequest, agent);
+            const usage = toolUsage(mcpRequest, "mcp", operation, args, kind, env);
             // A refusal before invoke() authenticates still names the caller.
             usage.seen.identity = identity;
             let response;
