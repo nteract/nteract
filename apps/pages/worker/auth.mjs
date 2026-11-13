@@ -11,6 +11,7 @@ import { clientProvenance } from "./client-provenance.mjs";
 import { REVISION_PATTERN } from "./revisions.mjs";
 import { kiloIdentity } from "./kilo-config.mjs";
 import { kiloToken, kiloTokenAccount } from "./kilo-token.mjs";
+import { isLocalApiKey, localApiKeyIdentity, LocalApiKeyError } from "./local-api-keys.mjs";
 import { organizationLeases, recordKiloMembership } from "./kilo-membership.mjs";
 
 export class HttpError extends Error {
@@ -254,6 +255,39 @@ export async function authenticate(request, env) {
         "Send an upload capability only to its upload_url, as Authorization: Pages-Upload <token>",
         "upload_capability_invalid",
       );
+    // A key the local dev server minted for itself (local-api-keys.mjs). It
+    // never reaches the provider's verifier, which cannot know it, and a server
+    // that mints none refuses it.
+    if (isLocalApiKey(token)) {
+      let key;
+      try {
+        key = await localApiKeyIdentity(env, request, token);
+      } catch (error) {
+        if (!(error instanceof LocalApiKeyError)) throw error;
+        throw withAdmissionReason(
+          new HttpError(error.status, error.message, error.code),
+          "credential_invalid",
+        );
+      }
+      return withDomainAccess(
+        {
+          principal: key.principal,
+          displayName: key.displayName,
+          accountDisplayName: key.displayName,
+          driver: bearerDriver(driver),
+          ...(agent && { agent }),
+          ...requestAssertions,
+          ...(await mcpSession(request, key.principal)),
+          canWrite: key.scope === "editor",
+          credentialKind: "api-key",
+          namespace: key.namespace,
+          verifiedEmail: key.verifiedEmail,
+          verifiedEmailUntil: Math.min(key.expiresAt, Date.now() + 60_000),
+          expiresAt: Date.now() + 60_000,
+        },
+        env,
+      );
+    }
     if (token.startsWith("pages_")) {
       // Internal routes are only reachable through host namespace forwarding.
       // An MCP grant cannot be used to change ACLs or open a native sync socket.

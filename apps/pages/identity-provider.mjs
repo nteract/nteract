@@ -63,6 +63,50 @@ a production key will not work. If the client already has ANACONDA_AUTH_API_KEY,
 it can use that value as the bearer key; ANACONDA_API_KEY is the variable name in
 these examples. The service receives the header, not the environment variable.`;
 
+const LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
+
+/** Whether a URL hostname names this machine. The gateway mounts the loopback
+ * issuer and the key route on it, and a local key is honored only on it. */
+export const isLoopbackHostname = (hostname) => LOOPBACK_HOSTS.includes(hostname);
+
+/** Whether this is a local dev server that mints its own API keys: the
+ * loopback issuer is on, the public origin is a loopback address, and a
+ * session secret exists to sign keys with. The gateway also checks the host of
+ * each request before it mounts the minting route. */
+export function localDevKeysEnabled(env) {
+  if (env?.NOTEBOOK_CLOUD_LOCAL_OIDC !== "true") return false;
+  if (!env.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE?.trim()) return false;
+  if ((env.NOTEBOOK_CLOUD_APP_SESSION_SECRET?.trim().length ?? 0) < 32) return false;
+  try {
+    return isLoopbackHostname(new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN).hostname);
+  } catch {
+    return false;
+  }
+}
+
+// What a local dev server says in place of Anaconda's key instructions: its
+// keys come from the server itself.
+function localCreateGuide(origin) {
+  return `This is a local development server. It accepts no Anaconda keys and has no
+account service to create one: it mints its own, for the one account local
+sign-in uses (dev@localhost). One request returns a key:
+
+\`\`\`sh
+export ANACONDA_API_KEY="$(curl -sS -X POST ${origin}/dev/api-key \\
+  -H 'X-Pages-Dev: 1' | python3 -c 'import json,sys; print(json.load(sys.stdin)["key"])')"
+\`\`\`
+
+The key starts with pdk1., is an editor key for 30 days, and works only on this
+server. Send {"scope":"viewer"} or {"days":7} as a JSON body to change that. Each key stands for the same account as the
+browser session, so it sees the same Pages. Changing
+NOTEBOOK_CLOUD_APP_SESSION_SECRET in dist/.dev.vars ends every key.`;
+}
+
+const localConnectInstructions = (origin) =>
+  `<p>This is a local development server, so it signs you in as <code>dev@localhost</code> and mints its own keys. Run this in a terminal on this machine:</p>
+      <pre class="setup-value"><code>curl -sS -X POST ${origin}/dev/api-key -H 'X-Pages-Dev: 1'</code></pre>
+      <p>The answer holds a <code>key</code> that starts with <code>pdk1.</code>. It is an editor key for 30 days and works only on this server. Save it in step 2.</p>`;
+
 const anacondaConnectInstructions = (createUrl) =>
   createUrl
     ? `<p>Sign in to Anaconda with the account you use for Pages, then create a key named for your client.</p>
@@ -140,6 +184,7 @@ function anacondaProvider(env) {
   )
     ? "https://anaconda.com/app/profile/api-keys"
     : null;
+  const local = localDevKeysEnabled(env) ? new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN).origin : null;
   return {
     id: "anaconda",
     /** What people call the provider, in running text. */
@@ -167,10 +212,12 @@ function anacondaProvider(env) {
       keyFile: "~/" + ANACONDA_KEY_HOME_PATH,
       /** The page where a person creates a key, or null when this deployment's
        * provider environment has no known one. */
-      createUrl,
-      createGuide: ANACONDA_CREATE_GUIDE,
+      createUrl: local ? null : createUrl,
+      createGuide: local ? localCreateGuide(local) : ANACONDA_CREATE_GUIDE,
       /** Step 1 of the connect page, as HTML. */
-      connectInstructions: anacondaConnectInstructions(createUrl),
+      connectInstructions: local
+        ? localConnectInstructions(local)
+        : anacondaConnectInstructions(createUrl),
     },
   };
 }

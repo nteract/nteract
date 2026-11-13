@@ -8,6 +8,8 @@ import {
   serverOidcSessionStatus,
 } from "@cloud/server-oidc.ts";
 import { handleLocalOidcRequest } from "@cloud/dev-oidc.ts";
+import { handleLocalApiKeyRequest } from "./local-api-keys.mjs";
+import { isLoopbackHostname } from "../identity-provider.mjs";
 import { loadServerSession } from "@cloud/oidc-session-store.ts";
 import { assertSessionKeyring } from "@cloud/session-keyring.ts";
 import { sessionKeysFailure } from "./session-keys.mjs";
@@ -1408,12 +1410,11 @@ const gateway = {
       const url = new URL(request.url);
       // The test issuer is never mounted on a public hostname, even if a local
       // environment flag is accidentally copied into deployment configuration.
-      if (
-        env.NOTEBOOK_CLOUD_LOCAL_OIDC === "true" &&
-        ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
-      ) {
+      if (env.NOTEBOOK_CLOUD_LOCAL_OIDC === "true" && isLoopbackHostname(url.hostname)) {
         const local = await handleLocalOidcRequest(request, env, { store: localOidcStore(env.DB) });
         if (local) return local;
+        const minted = await handleLocalApiKeyRequest(request, env);
+        if (minted) return minted;
       }
       if (url.pathname === "/connect") return connectAgentResponse(request, env);
       if (url.pathname === "/llms.txt") return agentGuideResponse(request, env);

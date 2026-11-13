@@ -133,6 +133,8 @@ const OFF_TUNNEL = [
   // The loopback test issuer, mounted only on localhost.
   NOTEBOOK_CLOUD_LOCAL_OIDC_MOUNT_PATH,
   `${NOTEBOOK_CLOUD_LOCAL_OIDC_MOUNT_PATH}/token`,
+  // Mints a local dev key (worker/local-api-keys.mjs), mounted only on localhost.
+  "/dev/api-key",
   // Where Kilo sends a browser back (worker/kilo-handoff.mjs), answered only
   // where the deployment signs in with Kilo. No tunnel target does. Its start,
   // /api/auth/login, is the sign-in route every target admits.
@@ -276,6 +278,8 @@ test("every exact path, path regex and route handler in the gateway has a sample
       "handleKiloSignIn",
       "handleLinkPreview",
       // Mounted only on localhost (OFF_TUNNEL).
+      // Mounted only on localhost (OFF_TUNNEL).
+      "handleLocalApiKeyRequest",
       "handleLocalOidcRequest",
       "handleMcp",
       "handleOAuth",

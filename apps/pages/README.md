@@ -137,7 +137,31 @@ listens on `127.0.0.1` needs the default, `localhost`. Sign-in and the `/mcp`
 address follow the name: `http://127.0.0.1:9894/mcp`.
 
 Local sign-in uses a loopback-only OIDC issuer that a public deployment can't
-enable. State persists under `dist/.celld`. A Page records its storage
+enable. It signs you in as `dev@localhost`. State persists under `dist/.celld`.
+
+Scripts and coding agents can't use that sign-in's cookie conveniently, and the
+local server has no Anaconda account service to check a real API key against.
+It mints its own keys instead, for the same `dev@localhost` account, so a key
+sees the Pages the browser session sees:
+
+```sh
+export ANACONDA_API_KEY="$(curl -sS -X POST http://localhost:9894/dev/api-key \
+  -H 'X-Pages-Dev: 1' | python3 -c 'import json,sys; print(json.load(sys.stdin)["key"])')"
+```
+
+The request takes an optional JSON body, `{"scope":"viewer","days":7}`: scope is
+`editor` (the default) or `viewer`, and days is 1 to 365 (default 30). The key
+starts with `pdk1.` and works on `/api/tools`, `/mcp` and the other routes an
+API key reaches, exactly as the quick start in `/llms.txt` shows. It is
+stateless, an HMAC over its scope and expiry under
+`NOTEBOOK_CLOUD_APP_SESSION_SECRET`, so it survives a restart and needs no
+table. Changing that secret in `dist/.dev.vars` ends every key. The route and
+the key exist only when `NOTEBOOK_CLOUD_LOCAL_OIDC` is on and the public origin
+is a loopback address; a deployment refuses that variable, and any other server
+answers a `pdk1.` key with 401 `invalid_api_key`. The route needs the
+`X-Pages-Dev` header and refuses a cross-origin request, so a web page can't
+mint a key through your browser. There is one local account: a key can't stand
+for another user. A Page records its storage
 mode at creation; changing a persistence flag doesn't migrate local documents.
 The notebook `cargo xtask dev` workflow doesn't start Pages.
 

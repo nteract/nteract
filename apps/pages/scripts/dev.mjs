@@ -37,7 +37,8 @@ await writeFile(
   { mode: 0o600 },
 );
 console.log(
-  `Pages: ${origin}. Local OIDC signs in as dev@localhost. State persists under dist/.celld.`,
+  `Pages: ${origin}. Local OIDC signs in as dev@localhost. State persists under dist/.celld.\n` +
+    `API key for scripts and agents: curl -sS -X POST ${origin}/dev/api-key -H 'X-Pages-Dev: 1'`,
 );
 const child = spawn(
   "celld",
