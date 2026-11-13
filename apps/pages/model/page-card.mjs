@@ -33,10 +33,12 @@ export const CARD_VERSION = 1;
 /**
  * The builder's own version, hashed into `card_hash`. Bump it whenever this
  * module renders the same document differently (an override, a placeholder,
- * the budget), so each Page's next flush rewrites its stored card. It isn't
- * the bundle's `v`: readers don't need to know it.
+ * the budget), so each Page's next flush rewrites its stored card. Bump it
+ * too when the card shell (viewer/card-shell.mjs) draws the same card
+ * differently: the owner's tab redraws an image only for a new hash. It
+ * isn't the bundle's `v`: readers don't need to know it.
  */
-export const CARD_BUILDER_VERSION = 1;
+export const CARD_BUILDER_VERSION = 2;
 /** The most UTF-8 bytes the serialized `blocks` array may take. */
 export const CARD_BLOCKS_MAX_BYTES = 8 * 1024;
 /** The longest title a card keeps, in code points. */
