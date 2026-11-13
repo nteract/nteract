@@ -247,13 +247,15 @@ import {
   cardImageView,
   readCardImagePointer,
 } from "./card-images.mjs";
-import { MAX_TAGS_PER_PAGE, TagError, normalizeTag } from "./page-tags.mjs";
+import { TagError, normalizeTag } from "./page-tags.mjs";
+import { listArguments, tagFromSegment } from "./rest-api.mjs";
 import {
+  addPageTag,
   deletePageTags,
   pageTagsDatabase as openPageTags,
   readPageTags,
+  removePageTag,
   tagMatchingIds,
-  writePageTags,
 } from "./page-tags-store.mjs";
 import {
   CatalogIndexUnavailable,
@@ -445,7 +447,6 @@ const operations = new Set([
   "edit_page",
   "manage_page_comment",
   "reply_page_comment",
-  "update_page_tags",
   "delete_page",
   "restore_page",
   "purge_page",
@@ -460,6 +461,9 @@ const operations = new Set([
   "get_page_access",
   "manage_page_access",
 ]);
+/** Operations only the REST routes call (`PUT` and `DELETE`
+ * /api/pages/<id>/tags/<tag>). Neither /mcp nor /api/tools names them. */
+const REST_OPERATIONS = new Set(["put_page_tag", "delete_page_tag"]);
 /** Refuse unless the caller can read Project `spaceId`, with the caller's
  * own credentials, as every Project read is. A project_id content address
  * never widens access: a direct grant on the document alone is not a
@@ -561,24 +565,6 @@ async function pageTagsDatabase(env, ctx) {
     throw tagsUnavailable();
   }
 }
-/** `value` as distinct normalized tags: an array of at most 32 valid tags, or
- * nothing. Refuses with `invalid_arguments` or `invalid_tag`, naming `field`. */
-function tagList(value, field) {
-  if (value === undefined) return [];
-  if (!Array.isArray(value) || value.length > MAX_TAGS_PER_PAGE)
-    throw new HttpError(
-      400,
-      `${field} must be an array of at most ${MAX_TAGS_PER_PAGE} tags`,
-      "invalid_arguments",
-    );
-  try {
-    return [...new Set(value.map(normalizeTag))];
-  } catch (error) {
-    if (!(error instanceof TagError)) throw error;
-    throw new HttpError(400, `${field}: ${error.message}`, "invalid_tag");
-  }
-}
-const requestedTags = (value) => tagList(value, "tags");
 /** What a Page's or a Catalog's `run` returns for a request whose queue work
  * is done: `work` answers the request once the queue has released it (Page
  * `enqueue`, Catalog `fetch`). */
@@ -964,6 +950,26 @@ function concatBytes(chunks, size) {
   return bytes;
 }
 
+/**
+ * `request`, carrying this deployment's Origin when a browser says the request
+ * is from this origin and sends none. For a GET the gateway answers through a
+ * host: a browser sends no Origin on a same-origin GET, and the internal hop
+ * is a POST (`forwarded`), which a host admits for a cookie only with one.
+ *
+ * Only `Sec-Fetch-Site: same-origin` earns it. A page can't set that header,
+ * and a sibling subdomain's request says `same-site`. list_pages on a shared
+ * Project accepts the caller's pending invitation, so this GET is a write
+ * under the cookie and gets the same guard as one. Anything else reaches the
+ * host unchanged and is refused there.
+ */
+function withOwnOrigin(request, env) {
+  if (request.headers.has("origin") || request.headers.get("sec-fetch-site") !== "same-origin")
+    return request;
+  const headers = new Headers(request.headers);
+  headers.set("origin", new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin);
+  return new Request(request, { headers });
+}
+
 function authorizeImage(request, env, pageId, write) {
   const internal = forwarded(request, "/internal/assets/authorize", { page_id: pageId, write });
   // Only the host creates this request. Reauthenticate on every call so a grant
@@ -1046,7 +1052,7 @@ const safeToRepeat = (operation, args) => {
   // Issuing an upload URL changes nothing; a repeat issues another one.
   if (operation === ASSET_UPLOAD_OPERATION) return true;
   // Tags are a set: adding or removing one twice changes nothing.
-  if (operation === "update_page_tags") return true;
+  if (REST_OPERATIONS.has(operation)) return true;
   if (operation === "report_page_progress")
     return typeof args?.progress_id === "string" && typeof args?.lease_token === "string"
       ? true
@@ -1059,7 +1065,9 @@ const safeToRepeat = (operation, args) => {
  * arguments its operation takes (tool-arguments.mjs) once the credential may
  * make the call: a credential that can't learns that first. */
 async function invoke(request, env, operation, args = {}, seen, call) {
-  if (!operations.has(operation)) throw unknownOperation(operation, operations);
+  const rest = call?.transport === "http-rest";
+  if (!operations.has(operation) && !(rest && REST_OPERATIONS.has(operation)))
+    throw unknownOperation(operation, operations);
   if (!args || typeof args !== "object" || Array.isArray(args)) throw invalidArguments();
   const identity = await authenticate(request, env);
   if (seen) seen.identity = identity;
@@ -1326,7 +1334,12 @@ async function locationView(request, env, body, signal) {
 
 /** Operation names a usage event may record: internal operations, the
  * public tool names that map onto them, and browser registration. */
-const USAGE_OPERATIONS = new Set([...operations, ...Object.values(RENAMED_TOOLS), "register_page"]);
+const USAGE_OPERATIONS = new Set([
+  ...operations,
+  ...REST_OPERATIONS,
+  ...Object.values(RENAMED_TOOLS),
+  "register_page",
+]);
 
 /** Records one usage event for a tool call (or, for MCP, a resource list or
  * read) on `surface` once its response is known. `seen` collects the identity
@@ -1627,6 +1640,51 @@ const gateway = {
             body.arguments,
             { env },
           );
+        } catch (error) {
+          response = errorResponse(error, "gateway");
+        }
+        return await withRefusalCode(await usage.finish(response));
+      }
+      if (url.pathname === "/api/pages") {
+        // list_pages, with its query string as its arguments.
+        let response;
+        let usage = toolUsage(request, "http-rest", undefined, undefined, "tool", env);
+        try {
+          if (request.method !== "GET") throw new HttpError(405, "Use GET");
+          const args = listArguments(url.searchParams);
+          usage = toolUsage(request, "http-rest", "list_pages", args, "tool", env);
+          const listing = withOwnOrigin(request, env);
+          response = await invokeProjectApi(
+            (internal, internalArgs) =>
+              invoke(listing, env, internal, internalArgs, usage.seen, {
+                transport: "http-rest",
+                operation: "list_pages",
+                args,
+              }),
+            "list_pages",
+            args,
+            { env },
+          );
+        } catch (error) {
+          response = errorResponse(error, "gateway");
+        }
+        return await withRefusalCode(await usage.finish(response));
+      }
+      const tagRoute = url.pathname.match(/^\/api\/pages\/([^/]+)\/tags\/([^/]+)$/);
+      if (tagRoute) {
+        // One tag of one Page: PUT adds it, DELETE removes it.
+        const operation = { PUT: "put_page_tag", DELETE: "delete_page_tag" }[request.method];
+        let args = { page_id: tagRoute[1] };
+        let response;
+        let usage = toolUsage(request, "http-rest", operation, args, "tool", env);
+        try {
+          if (!operation) throw new HttpError(405, "Use PUT or DELETE");
+          args = { page_id: tagRoute[1], tag: tagFromSegment(tagRoute[2]) };
+          response = await invoke(request, env, operation, args, usage.seen, {
+            transport: "http-rest",
+            operation,
+            args,
+          });
         } catch (error) {
           response = errorResponse(error, "gateway");
         }
@@ -2183,18 +2241,7 @@ export class Catalog {
             "purge_preview_required",
           );
       }
-      // The tags a create_page asks for are checked before anything is
-      // reserved: an invalid tag creates nothing. They are written once the
-      // receipt exists, after the queue has released the request (tagCreated).
-      let createTags = [];
-      if (body.operation === "create_page") {
-        validateCreateInput(args);
-        createTags = requestedTags(args.tags);
-      }
-      const withTags = (response) =>
-        createTags.length
-          ? new AfterQueue(() => this.tagCreated(request, response, createTags))
-          : response;
+      if (body.operation === "create_page") validateCreateInput(args);
       if (registering) {
         requireRegistrationAccount(args, identity);
         // A retry of a registration this Catalog already recorded resends the
@@ -2238,16 +2285,14 @@ export class Catalog {
         body.operation === "create_page" &&
         (inspected.entry ? !!inspected.entry.forward : await this.placedElsewhere(args))
       )
-        return withTags(
-          await this.forwardCreate(request, identity, args, { key, digest, inspected }),
-        );
+        return await this.forwardCreate(request, identity, args, { key, digest, inspected });
       let intent = inspected.entry;
       if (intent && !intent.pending) {
         // A previous attempt may have stored its receipt before sync failed.
         await this.storage.sync();
         const replay = json(intent.receipt);
         replay.headers.set(REPLAYED_RECEIPT_HEADER, "1");
-        return withTags(replay);
+        return replay;
       }
       if (!intent) {
         await this.requirePageRoom(limit);
@@ -2284,73 +2329,17 @@ export class Catalog {
           },
         });
       }
-      return withTags(
-        await this.completeCreation(request, {
-          key,
-          intent,
-          args,
-          registering,
-          resumed: !!inspected.entry,
-          owner: identity.principal,
-        }),
-      );
+      return await this.completeCreation(request, {
+        key,
+        intent,
+        args,
+        registering,
+        resumed: !!inspected.entry,
+        owner: identity.principal,
+      });
     } catch (error) {
       return errorResponse(error, "catalog");
     }
-  }
-
-  /**
-   * Tag the Page a create_page made, once its receipt exists and this
-   * Catalog's queue has released the request. `response` is the receipt
-   * (fresh, replayed or forwarded); a failed one passes through. The tags are
-   * an update_page_tags call to the Page host with the caller's own
-   * credential, so the host decides edit access and Trash state now, as for a
-   * direct call, on every attempt including a replay. A caller who can no
-   * longer edit the Page gets the receipt with the host's refusal code and no
-   * tags. The Page exists by now and the receipt is recorded, so a write that
-   * fails doesn't undo the creation: the receipt says `tags_applied: false`,
-   * and repeating the same call (same nonce) replays the receipt and writes
-   * the tags again, which is safe because tags are a set.
-   */
-  async tagCreated(request, response, add) {
-    if (!response.ok) return response;
-    const receipt = await response.clone().json();
-    let outcome;
-    try {
-      const reply = await this.env.PAGES.getByName(receipt.page_id).fetch(
-        forwarded(request, "/internal/tool", {
-          operation: "update_page_tags",
-          arguments: { page_id: receipt.page_id, add },
-        }),
-      );
-      const answer = await reply.json().catch(() => ({}));
-      if (!reply.ok) throw new HttpError(reply.status, answer.error, answer.code);
-      outcome = { tags: answer.tags };
-    } catch (error) {
-      if (!(error instanceof HttpError)) logFailure(error, "page-tags");
-      // The refusal a direct update_page_tags call would get: its status, and
-      // its code when it has one. A failure with no answer is an outage.
-      const refusal = error instanceof HttpError && error.status < 500;
-      outcome = {
-        tags_applied: false,
-        tags_error: refusal
-          ? {
-              status: error.status,
-              ...(error.code && { code: error.code }),
-              message: `The Page was created but its tags were not written: ${error.message}`,
-            }
-          : {
-              status: 503,
-              code: "tags_unavailable",
-              message:
-                "The Page was created but its tags were not written. Send the same create_page again to retry them, or use update_page_tags.",
-            },
-      };
-    }
-    const tagged = json({ ...receipt, ...outcome }, response.status);
-    if (response.headers.has(REPLAYED_RECEIPT_HEADER))
-      tagged.headers.set(REPLAYED_RECEIPT_HEADER, response.headers.get(REPLAYED_RECEIPT_HEADER));
-    return tagged;
   }
 
   /** Finish a reserved create_page or register_page: the Page host creates
@@ -6765,17 +6754,19 @@ export class Page {
         if (["manage_page_comment", "reply_page_comment"].includes(body.operation))
           return json(await this.writeComment(request, identity, body));
         this.policy.account(identity, true);
-        if (body.operation === "update_page_tags") {
+        if (body.operation === "put_page_tag" || body.operation === "delete_page_tag") {
           if (state === "trashed")
             throw new HttpError(409, "Restore this Page before changing its tags", "page_trashed");
           // Access and Trash state are decided here, in the queue. The write
           // is D1 work, so it runs after the queue releases this request
-          // (updateTags).
-          const change = this.tagChange(body.arguments);
+          // (writeTag).
+          const tag = this.tagArgument(body.arguments);
           const pageId = this.metadata.pageId;
           return new AfterQueue(async () => {
             try {
-              return json(await this.updateTags(identity, pageId, change));
+              return json(
+                await this.writeTag(body.operation === "put_page_tag", identity, pageId, tag),
+              );
             } catch (error) {
               if ((error.status ?? 500) >= 500) logFailure(error, "page");
               return errorResponse(await this.agentRefusal(error), "page");
@@ -7032,46 +7023,43 @@ export class Page {
   }
 
   /**
-   * The validated change of one update_page_tags call: `{ add, remove }`,
-   * normalized sets that don't overlap. Pure, so it runs in the Page's queue.
+   * The normalized `tag` of one put_page_tag or delete_page_tag call, or
+   * `invalid_tag`. Pure, so it runs in the Page's queue.
    */
-  tagChange(args = {}) {
-    const add = tagList(args.add, "add");
-    const remove = tagList(args.remove, "remove");
-    if (!add.length && !remove.length)
-      throw new HttpError(
-        400,
-        "update_page_tags needs a tag to add or remove",
-        "invalid_arguments",
-      );
-    if (add.some((tag) => remove.includes(tag)))
-      throw new HttpError(400, "A tag can't be in both add and remove", "invalid_arguments");
-    return { add, remove };
+  tagArgument(args = {}) {
+    try {
+      return normalizeTag(args.tag);
+    } catch (error) {
+      if (!(error instanceof TagError)) throw error;
+      throw new HttpError(400, `tag: ${error.message}`, "invalid_tag");
+    }
   }
 
   /**
-   * One update_page_tags call, after the queue has released it. The caller has
-   * edit access and the Page was not in Trash when the queue admitted it. The
-   * Page host only authorizes the call; it keeps no tag state, and no Durable
-   * Object does. Tags are rows in the D1 `page_tags` table, the only record of
-   * them (page-tags-store.mjs), and never part of the document: this changes
-   * neither the Page's content nor its revision. `add` and `remove` are sets,
-   * so a repeat changes nothing and needs no receipt. A Trash or purge between
-   * the admission and the write is fenced in D1 (writePageTags); a timeout
+   * One tag put on or deleted from the Page, after the queue has released the
+   * request. The caller has edit access and the Page was not in Trash when the
+   * queue admitted it. The Page host only authorizes the call; it keeps no tag
+   * state, and no Durable Object does. Tags are rows in the D1 `page_tags`
+   * table, the only record of them (page-tags-store.mjs), and never part of
+   * the document: this changes neither the Page's content nor its revision.
+   * Tags are a set, so a repeat changes nothing. The result is the Page's
+   * `tags` and whether this call changed them: `added` or `removed`. A Trash or
+   * purge between the admission and the write is fenced in D1; a timeout
    * answers `tags_unavailable`, which doesn't say whether the write landed, and
    * the same call is safe to repeat.
    */
-  async updateTags(identity, pageId, { add, remove }) {
+  async writeTag(adding, identity, pageId, tag) {
     const db = await pageTagsDatabase(this.env, this.ctx);
     try {
-      const tags = await writePageTags(db, {
-        pageId,
-        principal: identity.principal,
-        add,
-        remove,
-        now: new Date().toISOString(),
-      });
-      return { page_id: pageId, tags };
+      const result = adding
+        ? await addPageTag(db, {
+            pageId,
+            principal: identity.principal,
+            tag,
+            now: new Date().toISOString(),
+          })
+        : await removePageTag(db, { pageId, tag });
+      return { page_id: pageId, tag, ...result };
     } catch (error) {
       if (error instanceof HttpError) throw error;
       logFailure(error, "page-tags");

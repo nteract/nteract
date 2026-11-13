@@ -17,6 +17,7 @@ import {
   cardImagePaths,
   linkPreviewPaths,
   projectAssetPaths,
+  restPaths,
   routesFor,
   siftPaths,
   whoamiPaths,
@@ -256,9 +257,12 @@ export function publishIsolated(
       ...extra,
     }) + "\n";
   const receipt = receiptFor(plan.config);
-  // The route set the last release sealed, before link previews, card images
-  // and Project assets (linkPreviewPaths, cardImagePaths, projectAssetPaths).
-  // A target without those flags keeps plan.config.
+  // The route set the last release sealed, before the REST routes (restPaths,
+  // admitted by every target).
+  const beforeRest = plan.config.replace(restPaths, "");
+  // The route set the release before it sealed, before link previews, card
+  // images and Project assets (linkPreviewPaths, cardImagePaths,
+  // projectAssetPaths). A target without those flags keeps beforeRest.
   const linkPreviews = profile.linkPreviews === true;
   const cardImages = profile.cardImages === true;
   const projectAssets = profile.projectAssets === true;
@@ -268,7 +272,7 @@ export function publishIsolated(
     [projectAssets, projectAssetPaths],
   ].reduce(
     (config, [enabled, group]) => (enabled ? config.replace(group, "") : config),
-    plan.config,
+    beforeRest,
   );
   // The route set before the account routes (accountPaths). Every history
   // below is stated against it, so those predecessors keep their exact bytes,
@@ -354,8 +358,13 @@ export function publishIsolated(
     predecessor(base, false);
     if (slotted) predecessor(base, true);
   }
-  if (sealedRoutes !== plan.config) {
-    // The installation the last release sealed: the account route set,
+  // The installation the last release sealed: this route set without the REST
+  // routes, on slot units. A target still on its legacy unit at that route set
+  // migrates too. Units and every other route stay byte-identical.
+  predecessor(beforeRest, false);
+  if (slotted) predecessor(beforeRest, true);
+  if (sealedRoutes !== beforeRest) {
+    // The installation the release before it sealed: the account route set,
     // without link previews, card images and Project assets, on slot units.
     // A target still on its legacy unit at that route set migrates too.
     // Units and every other route stay byte-identical.
@@ -472,6 +481,7 @@ export function publishIsolated(
     const uuid = "08c583e5-d29e-4f1e-b06b-333965254e94";
     const assets = "/api/pages/" + uuid + "/assets";
     const cardImage = "/api/pages/" + uuid + "/card-image";
+    const tags = "/api/pages/" + uuid + "/tags";
     const projectAssetRoute = "/api/projects/prj_" + uuid + "/assets";
     const imageHash = "a".repeat(64);
     run("/usr/bin/cloudflared", ["--config", file, "tunnel", "ingress", "validate"]);
@@ -580,6 +590,18 @@ export function publishIsolated(
       ["/api/pages/arbitrary/assets", "http_status:404"],
       [assets + "/private", "http_status:404"],
       [assets + "/" + "a".repeat(64) + "/private", "http_status:404"],
+      // The REST routes. cloudflared matches the decoded path, so the encoded
+      // tag is the probe that shows `repo:org/name` reaches the Worker.
+      ["/api/pages", plan.listen],
+      ["/api/pages?tags=status%3Adone&limit=1", plan.listen],
+      [tags + "/status", plan.listen],
+      [tags + "/repo%3Aorg%2Fname", plan.listen],
+      ["/api/pages/", "http_status:404"],
+      [tags, "http_status:404"],
+      [tags + "/", "http_status:404"],
+      [tags + "/a;b", "http_status:404"],
+      ["/api/pages/arbitrary/tags/status", "http_status:404"],
+      ["/api/projects/prj_" + uuid + "/tags/status", "http_status:404"],
       ["/p/" + uuid + "/meta.json", linkPreviews ? plan.listen : "http_status:404"],
       ["/p/" + uuid + "/card.json", linkPreviews ? plan.listen : "http_status:404"],
       ["/project/prj_" + uuid + "/meta.json", linkPreviews ? plan.listen : "http_status:404"],

@@ -73,6 +73,9 @@ test("usage event has a fixed shape and omits secrets and absent fields", () => 
   assert.doesNotMatch(text, /kyle@example\.com|secret/);
   assert.throws(() => usageEvent({ action: "page.unknown" }), TypeError);
   assert.equal(usageEvent({ action: "sync.open", surface: "elsewhere" }).surface, "unknown");
+  // The REST routes are a surface of their own, beside /mcp and /api/tools.
+  for (const surface of ["mcp", "http-tools", "http-rest", "browser-sync"])
+    assert.equal(usageEvent({ action: "tool.call", surface }).surface, surface);
 });
 
 test("only known operations and real Page and Project ids reach the record", () => {

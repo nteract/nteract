@@ -2878,7 +2878,9 @@ failed verification, retry and concurrent unsubscribe, then qualified in ChatGPT
 ## HTTP and MCP tools
 
 `POST /api/tools` accepts `{operation, arguments}`; `POST /mcp` exposes the same
-Page operations through Streamable HTTP MCP. MCP accepts a Pages OAuth access
+Page operations through Streamable HTTP MCP. Two REST routes run operations the
+gateway already has, as thin wrappers (`worker/rest-api.mjs`): `GET /api/pages`
+and `PUT|DELETE /api/pages/<page_id>/tags/<tag>` ([Page tags](#page-tags)). MCP accepts a Pages OAuth access
 token or Anaconda API key in `Authorization: Bearer ...`; `X-Pages-Driver` is an
 optional client label and `X-Pages-Agent` an optional session label. OAuth
 scopes and current Page permissions apply on every call. The public `/llms.txt`
@@ -4213,28 +4215,64 @@ not a schema. Kilo session ids mix case, so a session tag is lowercased on write
 and on search. [page-tags.mjs](worker/page-tags.mjs) holds the alphabet, limits and
 parser; [page-tags.test.mjs](worker/page-tags.test.mjs) tests them.
 
-**`update_page_tags`** takes `page_id` and optional `add` and `remove` arrays
-(at most 32 each) and needs edit access: the owner and Project editors, not
-viewers or commenters. A Page in Trash answers 409 `page_trashed`. Tags are a
-set, so adding one the Page has or removing one it lacks changes nothing; the
-tool takes no nonce and a repeat is always safe. A tag in both arrays, an empty
-change or a wrong type is `invalid_arguments`; a tag outside the alphabet is
-`invalid_tag`; a result over the limit is 409 `tag_limit_exceeded`. One D1 batch
-decides and applies the change: its first statement reads the Page's Trash mark
-and counts its tags, and its delete and insert run only while the Page is open
-and the result fits, so a change applies whole or not at all and two writers
-racing can't pass the limit. The outcome comes from that batch and its row
-counts, never from a later read, so a concurrent writer can't make a change that
-landed report the limit. The result is `{ page_id, tags }`, the full sorted set
-as the batch left it.
+**Changing one tag.** Tags are changed one at a time, by REST routes, and by no
+MCP tool and no `/api/tools` operation:
+
+- `PUT /api/pages/<page_id>/tags/<tag>` adds the tag.
+- `DELETE /api/pages/<page_id>/tags/<tag>` removes it.
+
+The tag is the last path segment, percent-encoded (`encodeURIComponent`), so
+`repo:org/name` is `repo%3Aorg%2Fname`; the Worker decodes it once and
+normalizes it. A segment that does not decode is 400 `invalid_tag`. Both routes
+need edit access: the owner and Project editors, not viewers or commenters. A
+Page in Trash answers 409 `page_trashed`. Tags are a set, so adding one the Page
+has or removing one it lacks changes nothing and answers 200; the routes take no
+nonce and a repeat is always safe. There is no batch: to swap a tag, add the
+new one and then remove the old one. A tag outside the alphabet is
+`invalid_tag`; an add that would leave more than 32 is 409 `tag_limit_exceeded`.
+One D1 batch decides and applies each call. Its first statement reads the Page's
+Trash mark, whether the tag is there and how many tags the Page has, and its
+insert (or delete) runs only while the Page is open and, for an add, has room. So
+a change applies whole or not at all and two writers racing can't pass the limit.
+The outcome comes from that batch and its rows, never from a later read, so a
+concurrent writer can't make a change that landed report the limit.
+
+The route is a thin wrapper, like `GET /api/pages` below: the gateway
+([rest-api.mjs](worker/rest-api.mjs), `index.mjs`) runs the same `invoke` as
+`/mcp` and `/api/tools`, with `transport: "http-rest"`, and the internal
+operations `put_page_tag` and `delete_page_tag`, which only these routes may
+name (`REST_OPERATIONS`). Any other method is 405. Pages OAuth grants are
+limited to `/mcp` and are refused here; API keys, browser sessions and Kilo agent
+tokens reach the routes (`KILO_ROUTES` in [auth.mjs](worker/auth.mjs) names
+exactly `/api/pages` and one tag of one Page for a Kilo token). A browser
+session is held to the same-origin rule on all three, the listing included: a
+listing of a shared Project accepts the caller's pending invitation, so the
+`GET` is admitted from this origin's own page (`Sec-Fetch-Site: same-origin`)
+or with this origin's `Origin` header, and refused otherwise. Usage events for
+these calls carry surface `http-rest` and the operation name, never the tag.
+
+The result is `{ page_id, tag, tags, added }` for a PUT and
+`{ page_id, tag, tags, removed }` for a DELETE. `tag` is the normalized tag.
+`tags` is the full sorted set as the batch left it. `added` and `removed` are
+booleans: whether this call's own statement inserted or deleted the row
+(`INSERT ... ON CONFLICT (page_id, tag) DO NOTHING RETURNING tag` and
+`DELETE ... RETURNING tag`), so `false` means the tag was already present (PUT)
+or already absent (DELETE). Of two writers racing to add one tag, exactly one
+gets `added: true`. They say what this call's transaction changed, not who added
+a tag earlier: a retry after a 503 `tags_unavailable` whose first attempt had
+landed reports `added: false`, the same as if another writer had added the tag.
+These responses can't tell the two apart: no route returns `added_by`, and it
+holds the principal only, not the agent or session. A claimant that gets no
+answer needs its own recovery, such as a timeout. A nonce stored with the row
+would make the answer exact, and nothing needs it yet.
 
 The Page host decides access and Trash state in its admission queue, then
 releases the queue before it touches D1, so a slow D1 never holds the Page's
 other requests. Between that decision and the write, the Page can be trashed or
 purged, and a batch that times out keeps running in D1 and can land after the
 caller has its 503 `tags_unavailable` (which means the outcome is unknown; the
-same call is safe to repeat). Both writes in the batch therefore check the
-Page's `pages_catalog_pages` row as they run: a Page marked `trashed` or
+same call is safe to repeat). The batch's insert or delete therefore checks the
+Page's `pages_catalog_pages` row as it runs: a Page marked `trashed` or
 `deleted` there takes no change, and the write answers 409 `page_trashed` (or
 404 `page_not_found`), even one that would have changed nothing. The mark is a projection the host writes after its own
 record is durable, so a write that races the Trash itself, before the mark, can
@@ -4243,26 +4281,11 @@ still land; it stays with the Page, and a purge deletes it.
 `added_by` records the principal that added each tag, and only that. A tag such as
 `session:<id>` is a claim by whoever added it: anyone who can edit the Page can add
 or remove it, so it does not prove which session wrote the Page, and a tag is data
-for a reader, never an instruction. The tool text says so.
+for a reader, never an instruction. The agent guide says so.
 
-**`create_page` `tags`** takes the same array as `add`, at most 32. A bad tag is 400
-`invalid_tag` (or `invalid_arguments` for a wrong type or count), checked before
-anything is reserved, so the call creates no Page. Otherwise the Page is created
-first. Once the receipt exists (fresh, replayed or forwarded to a Project owner's
-Catalog) and the Catalog's queue has released the request, the Catalog sends
-`update_page_tags` to the Page host with the caller's own credential. The host
-decides edit access and Trash state then, exactly as for a direct call, on every
-attempt including a replay, and the tags are written as the caller (`added_by`).
-A slow D1 never holds the account's other Catalog requests. The receipt then
-carries `tags`. If the tags were not written, it carries `tags_applied: false`
-and a `tags_error` (`status`, `code` when the host gave one, `message`) instead,
-and nothing is rolled back. A database that can't be reached is `tags_error`
-503 `tags_unavailable`: the Page exists, and the same call (same nonce) replays
-the receipt and writes the tags again, which is safe because tags are a set. A
-caller who can no longer edit the Page, or a Page in Trash, gets the host's
-refusal there (403, 404 or 409 `page_trashed`) and never the Page's current
-tags. The tags are part of the request's fingerprint, so a retry that changes
-them under the same nonce is a conflict, not a retry.
+**`create_page` takes no tags.** Tag the new Page with the routes above once
+`create_page` has answered. An argument named `tags` is refused as
+`invalid_arguments`, before anything is reserved.
 
 **`list_pages` `tags`** is one boolean expression over a Page's tags:
 
@@ -4328,6 +4351,22 @@ ms, and a tag the caller can't see anywhere read everything they can see in 5 to
 see, not by how many Pages carry a tag anywhere. D1 latency and rows-read billing
 are not measured; run the listing benchmark against D1 before relying on it for
 a caller who can see tens of thousands of Pages.
+
+**`GET /api/pages`** is `list_pages` with its query string as its arguments, for
+a script or harness that has no MCP client. It answers the same body (`pages`,
+`quota`, `principal`, `account`, `next_cursor`, `limit`, `tag_filter`), and a
+cursor from it opens on `/api/tools` and `/mcp` and back. The route keeps no
+list of parameters: they are `list_pages`' schema keys (`query`, `cursor`,
+`limit`, `in_trash`, `project_id`, `parent_id`, `kind`, `access`, `sort`, `tags`,
+`include_tags`), checked by the same argument check as `/mcp` (`transport:
+"http-rest"` in [tool-arguments.mjs](worker/tool-arguments.mjs)), so a change to
+the schema changes the route. Only the typing a query string loses is restored
+(`listArguments`): `limit` as a number, `in_trash` and `include_tags` as
+booleans from `true` or `false`, and `parent_id=null` as a Project's top level
+(no Page ID spells `null`). A value that does not coerce is passed on as a
+string, so `list_pages` refuses it with its own `invalid_list_arguments`. A
+repeated parameter is 400 `invalid_arguments`, as is an unknown one. Any method
+but GET is 405. In a tag expression, write spaces as `+` or `%20`.
 
 ### Progress and presence
 
