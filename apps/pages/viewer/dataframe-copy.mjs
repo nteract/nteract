@@ -4,14 +4,12 @@
 // keyed by token; the machine sees only tokens. The editor owns the
 // document: it captures where the paste goes when it starts and lands it
 // when asked.
-import * as A from "@automerge/automerge/slim";
 import { Node, parse } from "wordgard/doc";
 import { dataframeCopyMachine } from "./dataframe-copy-machine.mjs";
 import { foreignDataframes } from "./wordgard-model.mjs";
 import { clipboardCopyId, lookupCopy } from "./copy-registry.mjs";
 import { resolveImageInsertion, selectionUnmoved } from "./image-upload.mjs";
 import { GardSelection } from "wordgard/state";
-import { sameHeads } from "./wordgard-projection-state.mjs";
 import { imageAssetUrl, validAssetId } from "../shared/image-assets.mjs";
 import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 
@@ -157,20 +155,18 @@ export function heldPasteSelection(replica, target, map, selection, change) {
  * Wordgard's own paste dispatches (corrected as a whole and kept narrow, so
  * an opened node doesn't swallow what follows), and put the caret after it
  * when the selection hasn't moved. `dispatch(spec)` applies the transaction
- * through the editor. Throws when it didn't land: the binding writes an
- * applied transaction to the document at once, so unchanged heads mean the
- * editor refused it, whatever the paste replaced.
+ * through the editor and returns whether the Page accepted it (the binding's
+ * commit didn't refuse it). Throws when it was refused. A paste that changes
+ * nothing, such as a table replacing an identical one, is accepted.
  */
 export function landHeldPaste({ replica, target, map, slice, selection, dispatch }) {
   const change = heldPasteChange(replica, target, map, slice);
-  const before = A.getHeads(replica.doc);
-  dispatch({
+  const accepted = dispatch({
     changes: { correct: change, local: true },
     selection: heldPasteSelection(replica, target, map, selection, change),
     userEvent: "input.paste",
   });
-  if (sameHeads(before, A.getHeads(replica.doc)))
-    throw Error("The paste didn't land. Paste it again.");
+  if (accepted !== true) throw Error("The paste didn't land. Paste it again.");
 }
 
 /** What the Page says when a table's data didn't copy. */
@@ -238,8 +234,11 @@ export function createDataframeCopier({
           if (result.status === "fulfilled") job.copied.set(job.sources[index].src, result.value);
           else failure ??= result.reason;
         });
-        if (failure !== undefined) step({ type: "failed", token, message: copyFailure(failure) });
-        else if (job.skipped) step({ type: "failed", token, message: job.skipped });
+        // Every reason a table landed as its title, the request failure first.
+        const message = [failure !== undefined && copyFailure(failure), job.skipped]
+          .filter(Boolean)
+          .join(" ");
+        if (message) step({ type: "failed", token, message });
         else step({ type: "copied", token });
       });
     } else if (type === "abort") {
@@ -307,13 +306,15 @@ export function createDataframeCopier({
       const job = state.name === "confirming" && jobs.get(state.token);
       return job ? confirmQuestion({ count: job.sources.length, title: job.title }) : null;
     },
-    /** Bring the held paste's data: the copies start. */
-    confirm() {
-      return step({ type: "confirm" });
+    /** Bring the data of the held paste `token` names: the copies start.
+     * `token` is the one the question was shown for (state.token). */
+    confirm(token) {
+      return step({ type: "confirm", token });
     },
-    /** Land the held paste now, its tables from other Pages as titles. */
-    decline() {
-      return step({ type: "decline" });
+    /** Land the held paste `token` names now, its tables from other Pages
+     * as titles. */
+    decline(token) {
+      return step({ type: "decline", token });
     },
     cancel() {
       return step({ type: "cancel" });

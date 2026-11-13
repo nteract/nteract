@@ -25,8 +25,9 @@
  * Events:
  * - start: a paste holding tables this browser copied from another Page is
  *   held as `token`.
- * - confirm: the person chose to bring the data.
- * - decline: the person chose titles only; the paste lands now.
+ * - confirm: the person chose to bring the data, answering the question
+ *   shown for `token`. An answer for another token is stale.
+ * - decline: the person chose titles only, for `token`; the paste lands now.
  * - copied: every table of `token` copied.
  * - failed: `token`'s copies settled and at least one failed, or some of
  *   its tables were never copied; `message` says why. Any other token
@@ -64,6 +65,8 @@ export const dataframeCopySpec = Object.freeze({
   states: ["idle", "confirming", "copying", "failed"],
   events: ["start", "confirm", "decline", "copied", "failed", "problem", "cancel"],
   cases: {
+    "confirming/confirm": ["current", "stale"],
+    "confirming/decline": ["current", "stale"],
     "copying/copied": ["current", "stale"],
     "copying/failed": ["current", "stale"],
   },
@@ -76,8 +79,8 @@ export const dataframeCopySpec = Object.freeze({
     },
     events: {
       start: shape("type", ["token"], token),
-      confirm: shape("type", []),
-      decline: shape("type", []),
+      confirm: shape("type", ["token"], token),
+      decline: shape("type", ["token"], token),
       copied: shape("type", ["token"], token),
       failed: shape("type", ["token", "message"], token, message),
       problem: shape("type", ["message"], message),
@@ -108,9 +111,12 @@ function transition(state, event) {
       return ok({ name: "confirming", token: event.token });
     case "confirm":
       if (state.name !== "confirming") return reject(state, REJECT.unasked);
+      // An answer counts only for the question it was shown for.
+      if (state.token !== event.token) return reject(state, REJECT.stale);
       return ok({ name: "copying", token: state.token }, [{ type: "copy", token: state.token }]);
     case "decline":
       if (state.name !== "confirming") return reject(state, REJECT.unasked);
+      if (state.token !== event.token) return reject(state, REJECT.stale);
       // The paste lands now, every table from another Page as its title.
       return ok({ name: "idle" }, [{ type: "insert", token: state.token }]);
     case "copied":

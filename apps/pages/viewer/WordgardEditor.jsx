@@ -236,6 +236,18 @@ export function WordgardEditor(props) {
     positionToolbar = useRef(() => {});
   const report = (error) =>
     latest.current.onError(error instanceof Error ? error.message : String(error));
+  // Answer a held paste's question for the token it was shown with. The
+  // answer buttons go away with the question; if one of them still has
+  // focus then, focus returns to the editor, so typing continues after the
+  // paste. Focus the person moved elsewhere stays there.
+  function answerCopy(event, answer) {
+    const button = event.currentTarget;
+    const copier = dataframeCopier.current;
+    if (!copier) return;
+    answer(copier);
+    if (button.ownerDocument.activeElement === button && copier.state.name !== "confirming")
+      view.current?.focus();
+  }
   function comment() {
     const editor = view.current;
     const { editable: canEdit, commentable: canComment = canEdit } = latest.current;
@@ -343,6 +355,9 @@ export function WordgardEditor(props) {
     pendingLink.current = null;
     let alive = true,
       writing = false,
+      // Local transactions the binding refused: a held paste checks this to
+      // tell whether its own transaction was accepted.
+      refused = 0,
       lastPresence = "",
       lastPresenceAt = 0;
     const bound = createWordgardBinding(replica, id);
@@ -563,6 +578,7 @@ export function WordgardEditor(props) {
               undoHistory,
             });
           } catch (error) {
+            refused++;
             report(error);
           } finally {
             writing = false;
@@ -653,13 +669,19 @@ export function WordgardEditor(props) {
           map: bound.current.map,
           slice,
           selection: editor.state.selection,
-          dispatch: (spec) => editor.dispatch(spec),
+          // Transaction listeners run inside dispatch, so a refusal is
+          // counted before it returns.
+          dispatch: (spec) => {
+            const before = refused;
+            editor.dispatch(spec);
+            return refused === before;
+          },
         });
       },
       onState: (state) =>
         setCopyStatus(
           state.name === "confirming"
-            ? { confirming: true, pending: true, message: copier.question }
+            ? { confirming: true, token: state.token, pending: true, message: copier.question }
             : state.name === "copying"
               ? { pending: true, message: COPYING }
               : state.name === "failed"
@@ -1463,10 +1485,16 @@ export function WordgardEditor(props) {
           <span>{copyStatus.message}</span>
           {copyStatus.confirming && (
             <>
-              <button type="button" onClick={() => dataframeCopier.current?.confirm()}>
+              <button
+                type="button"
+                onClick={(event) => answerCopy(event, (copier) => copier.confirm(copyStatus.token))}
+              >
                 Bring data
               </button>
-              <button type="button" onClick={() => dataframeCopier.current?.decline()}>
+              <button
+                type="button"
+                onClick={(event) => answerCopy(event, (copier) => copier.decline(copyStatus.token))}
+              >
                 Paste titles only
               </button>
             </>

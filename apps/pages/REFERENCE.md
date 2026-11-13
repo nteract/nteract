@@ -306,11 +306,14 @@ else replaces the screen with a Reload notice and leaves the Page unchanged.
   bring the data for the tables from the Page the record names, by the
   record's title, never the clipboard's. Bring data starts the copies;
   Paste titles only lands the paste now with those tables as titles; Cancel
-  drops it. Nothing is requested before Bring data. The paste then waits
+  drops it. Nothing is requested before Bring data. An answer counts only for
+  the question it was shown with, so a late answer can't start another
+  paste's copies; answering from the keyboard puts focus back in the Page. The paste then waits
   while the host copies each dataset onto this Page (`POST /api/pages/:pageId/assets/:sha256` with
   `{"from_page_id": …}`), at most 8 tables a paste and 2 at a time, and
   lands with each `src` on this Page, replacing the selection as any paste
-  does, with the caret after it. A table that didn't copy (not this browser's copy, past the limit,
+  does, with the caret after it. Whether it landed is the transaction's own
+  answer: the Page reports it refused only when the binding refused it. A table that didn't copy (not this browser's copy, past the limit,
   or refused by the host) lands as its title, and the Page says why. In a
   code block and for paste-as-plain-text, Wordgard reads the clipboard's
   text and nothing is held. A paste made while another is held takes the

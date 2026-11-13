@@ -608,9 +608,15 @@ try {
     await expect(replayed).not.toContainText("Lunch menu");
     await second.waitForTimeout(500);
     assert.equal(copies.length, 1, "a replayed id copied before the person said yes");
-    await replayed.getByRole("button", { name: "Paste titles only" }).click();
+    // Answer with the keyboard; focus comes back to the Page, so typing
+    // goes on after the paste.
+    await replayed.getByRole("button", { name: "Paste titles only" }).focus();
+    await second.keyboard.press("Enter");
     await expect.poll(() => markdownOn(targetId)).toContain("Lunch menu");
     assert.ok((await markdownOn(targetId)).includes("Totally ordinary notes"));
+    await expect(content(second)).toBeFocused();
+    await second.keyboard.type(" typed after");
+    await expect.poll(() => markdownOn(targetId)).toContain("Lunch menu typed after");
     await expect(tables(second)).toHaveCount(1);
     assert.equal(copies.length, 1);
     await second.close();

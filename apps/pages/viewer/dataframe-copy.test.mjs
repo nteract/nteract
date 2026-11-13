@@ -85,24 +85,55 @@ const ROWS = [
     { type: "start", token: 3 },
     { state: { name: "confirming", token: 3 } },
   ),
-  refused("idle has nothing to confirm", idle, { type: "confirm" }, REJECT.unasked),
+  refused("idle has nothing to confirm", idle, { type: "confirm", token: 1 }, REJECT.unasked),
   row(
     "confirming starts the copies",
     confirming,
-    { type: "confirm" },
+    { type: "confirm", token: 2 },
     { state: copying, effects: [{ type: "copy", token: 2 }] },
+    "current",
   ),
-  refused("a second confirm is ignored", copying, { type: "confirm" }, REJECT.unasked),
-  refused("a failure has nothing to confirm", failed, { type: "confirm" }, REJECT.unasked),
-  refused("idle has nothing to decline", idle, { type: "decline" }, REJECT.unasked),
+  refused(
+    "a late confirm from an earlier question is ignored",
+    confirming,
+    { type: "confirm", token: 1 },
+    REJECT.stale,
+    "stale",
+  ),
+  refused("a second confirm is ignored", copying, { type: "confirm", token: 2 }, REJECT.unasked),
+  refused(
+    "a failure has nothing to confirm",
+    failed,
+    { type: "confirm", token: 2 },
+    REJECT.unasked,
+  ),
+  refused("idle has nothing to decline", idle, { type: "decline", token: 1 }, REJECT.unasked),
   row(
     "declining lands the paste with titles and copies nothing",
     confirming,
-    { type: "decline" },
+    { type: "decline", token: 2 },
     { state: idle, effects: [{ type: "insert", token: 2 }] },
+    "current",
   ),
-  refused("declining once copying is too late", copying, { type: "decline" }, REJECT.unasked),
-  refused("a failure has nothing to decline", failed, { type: "decline" }, REJECT.unasked),
+  refused(
+    "a late decline from an earlier question is ignored",
+    confirming,
+    { type: "decline", token: 1 },
+    REJECT.stale,
+    "stale",
+  ),
+  refused(
+    "declining once copying is too late",
+    copying,
+    { type: "decline", token: 2 },
+    REJECT.unasked,
+  ),
+  refused(
+    "a failure has nothing to decline",
+    failed,
+    { type: "decline", token: 2 },
+    REJECT.unasked,
+  ),
   refused("idle has no copy to finish", idle, { type: "copied", token: 1 }, REJECT.stale),
   refused("nothing copies before confirm", confirming, { type: "copied", token: 2 }, REJECT.stale),
   row(
@@ -194,10 +225,10 @@ const ROWS = [
 
 test("the dataframe-copy machine covers every state × event", async () => {
   assert.deepEqual(await runTable(dataframeCopyMachine, ROWS), {
-    rows: 30,
+    rows: 32,
     pairs: 28,
     unreachable: 0,
-    cases: 4,
+    cases: 8,
   });
 });
 
@@ -374,7 +405,7 @@ function harness(t, { insert } = {}) {
   // Paste and say yes.
   const bring = (html, target = () => "target") => {
     const taken = copier.accept(html, target);
-    if (taken) copier.confirm();
+    if (taken) copier.confirm(copier.state.token);
     return taken;
   };
   return { dom, parser, storage, copier, copies, inserted, states, questions, copyFrom, bring };
@@ -393,7 +424,7 @@ test("a table copied in one editor and pasted in another asks, then issues exact
   assert.deepEqual(h.questions, [
     `Bring the data for 1 table from "Usage this week" into this Page?`,
   ]);
-  h.copier.confirm();
+  h.copier.confirm(h.copier.state.token);
   assert.equal(h.copies.length, 1);
   assert.deepEqual(h.copies[0].source, { src: src(there), pageId: there, assetId: assetA });
   h.copies[0].resolve(src(here));
@@ -420,7 +451,7 @@ test("a replayed copy id asks with the record's title and copies nothing until c
   assert.equal(h.questions.at(-1).includes("Usage this week"), true);
   assert.equal(h.questions.at(-1).includes("Lunch menu"), false);
   // Paste titles only: lands now, copies nothing.
-  h.copier.decline();
+  h.copier.decline(h.copier.state.token);
   await settle();
   assert.equal(h.copies.length, 0);
   assert.deepEqual(h.inserted, [["target", {}]]);
@@ -442,7 +473,7 @@ test("a second paste while one is held takes the editor's own path", async (t) =
     false,
     "while asking",
   );
-  h.copier.confirm();
+  h.copier.confirm(h.copier.state.token);
   assert.equal(
     h.copier.accept(html, () => "second"),
     false,
@@ -539,6 +570,38 @@ test("past the limit and not this browser's own, the Page gives both reasons", a
   }
   assert.equal(h.copies.length, PASTE_TABLE_LIMIT);
   assert.equal(h.states.at(-1), `${OVER_LIMIT} ${NOT_BROUGHT}`);
+});
+
+test("an answer counts only for the question it was shown for", async (t) => {
+  const h = harness(t);
+  const html = h.copyFrom(there, assetA);
+  h.copier.accept(html, () => "first");
+  const first = h.copier.state.token;
+  h.copier.cancel();
+  h.copier.accept(html, () => "second");
+  const second = h.copier.state.token;
+  assert.notEqual(first, second);
+  // The first question's late answers reach the second paste and do nothing.
+  assert.equal(h.copier.confirm(first).rejected, REJECT.stale);
+  assert.equal(h.copier.decline(first).rejected, REJECT.stale);
+  assert.equal(h.copies.length, 0);
+  assert.deepEqual(h.inserted, []);
+  assert.deepEqual(h.copier.state, { name: "confirming", token: second });
+  h.copier.confirm(second);
+  assert.equal(h.copies.length, 1);
+});
+
+test("a failed request and tables that never copied are all reported", async (t) => {
+  const h = harness(t);
+  const assets = Array.from({ length: PASTE_TABLE_LIMIT + 1 }, (_, n) => asset(n + 1));
+  h.bring(h.copyFrom(there, ...assets) + copiedHTML(h.dom, { src: src(there, asset(99)) }));
+  for (let n = 0; n < PASTE_TABLE_LIMIT; n++) {
+    if (n === 0) h.copies[n].reject(Object.assign(Error("Not found"), { status: 404 }));
+    else h.copies[n].resolve(src(here, h.copies[n].source.assetId));
+    await settle();
+  }
+  assert.equal(h.states.at(-1), `${copyFailure({ status: 404 })} ${OVER_LIMIT} ${NOT_BROUGHT}`);
+  assert.equal(Object.keys(h.inserted[0][1]).length, PASTE_TABLE_LIMIT - 1);
 });
 
 test("a failed copy lands the paste with what did copy, and says why", async (t) => {
@@ -728,7 +791,9 @@ function bindingFixture(t, text) {
   };
   // Land through the binding as the editor's dispatch does; returns the
   // transaction so a test can read the selection it set.
-  const land = (target, slice, selection) => {
+  // `refuse` stands for the binding refusing the write, as the editor's
+  // commit path reports it.
+  const land = (target, slice, selection, { refuse = false } = {}) => {
     let tr;
     landHeldPaste({
       replica,
@@ -736,7 +801,16 @@ function bindingFixture(t, text) {
       map: binding.current.map,
       slice,
       selection,
-      dispatch: (spec) => binding.applyEditorTransaction((tr = state().update(spec))),
+      dispatch: (spec) => {
+        tr = state().update(spec);
+        if (refuse) return false;
+        try {
+          binding.applyEditorTransaction(tr);
+          return true;
+        } catch {
+          return false;
+        }
+      },
     });
     return tr;
   };
@@ -810,6 +884,31 @@ test("pasting over a selected table of the same dataset lands, and says nothing 
   assert.match(after, /\[Dataframe: New\]/);
   assert.equal(after.includes("Old"), false, after);
   assert.equal(after.match(/\[Dataframe/g).length, 1);
+  // An identical table over the selected one may change nothing at all; it
+  // still landed.
+  let same;
+  f.binding.current.doc.iterate((value, pos) => {
+    if (value.type === PagesDataframe) same = { from: pos, to: pos + value.length };
+  });
+  assert.doesNotThrow(() =>
+    f.land(
+      f.capture(same.from, same.to),
+      tableSlice(dom, f.state(), { src: src(here), title: "New" }),
+      { anchor: same.from, head: same.to },
+    ),
+  );
+  assert.equal(f.markdown(), after);
+  // A transaction the Page refuses is reported.
+  assert.throws(
+    () =>
+      f.land(
+        f.capture(same.from, same.to),
+        tableSlice(dom, f.state(), { src: src(here), title: "Refused" }),
+        { anchor: same.from, head: same.to },
+        { refuse: true },
+      ),
+    /didn't land/,
+  );
 });
 
 test("a held paste at an unmoved caret leaves the caret after what it pasted", (t) => {
