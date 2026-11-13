@@ -4,6 +4,7 @@
 import { parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
 import { DATAFRAME_ATTR, plainAttrs } from "../model/wordgard-doc.mjs";
 import { normalizePastedHTML, unwrapPastedAsides } from "./clipboard-html.mjs";
+import { COPY_ATTR, stripCopyMarkers } from "./copy-registry.mjs";
 
 export * from "../model/wordgard-doc.mjs";
 
@@ -38,9 +39,10 @@ export function foreignDataframes(html, pageId, parser = new DOMParser()) {
  * readable here, unless `copied` maps its src to this Page's copy of the
  * same asset: then it keeps its attrs with that src. */
 export function filterPastedDataframes(html, pageId, parser = new DOMParser(), copied = new Map()) {
-  if (!html.includes(DATAFRAME_ATTR)) return html;
+  if (!html.includes(DATAFRAME_ATTR) && !html.includes(COPY_ATTR)) return html;
   const doc = parser.parseFromString(html, "text/html");
-  let changed = false;
+  // A copy marker (copy-registry.mjs) is never content.
+  let changed = stripCopyMarkers(doc);
   for (const figure of doc.body.querySelectorAll(`figure[${DATAFRAME_ATTR}]`)) {
     const value = figureAttrs(figure);
     const path = value && parseAssetPath(value.src);

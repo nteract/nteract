@@ -4,14 +4,42 @@
 // keyed by token; the machine sees only tokens. The editor owns the
 // document: it captures where the paste goes when it starts and lands it
 // when asked.
-import { parse } from "wordgard/doc";
+import { Node, parse } from "wordgard/doc";
 import { dataframeCopyMachine } from "./dataframe-copy-machine.mjs";
 import { foreignDataframes } from "./wordgard-model.mjs";
+import { clipboardCopyId, lookupCopy } from "./copy-registry.mjs";
+import { resolveImageInsertion } from "./image-upload.mjs";
 import { imageAssetUrl, validAssetId } from "../shared/image-assets.mjs";
 import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 
 export const COPYING = "Copying the table's data from another Page…";
 const TITLE_INSTEAD = "Pasted its title instead.";
+/** Distinct tables one paste copies; the rest paste as titles. */
+export const PASTE_TABLE_LIMIT = 8;
+/** Copies one paste runs at a time. */
+export const PASTE_COPY_CONCURRENCY = 2;
+export const NOT_BROUGHT =
+  "This table's data wasn't brought over, so it pasted as its title. Copy the table from its Page in this browser to bring its data.";
+export const OVER_LIMIT = `Only ${PASTE_TABLE_LIMIT} tables' data copies in one paste; the rest pasted as titles.`;
+
+/** Run `task` over `items`, PASTE_COPY_CONCURRENCY at a time, settling as
+ * Promise.allSettled does. */
+async function copyAll(items, task) {
+  const results = Array.from({ length: items.length });
+  let index = 0;
+  const worker = async () => {
+    while (index < items.length) {
+      const at = index++;
+      try {
+        results[at] = { status: "fulfilled", value: await task(items[at]) };
+      } catch (reason) {
+        results[at] = { status: "rejected", reason };
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(PASTE_COPY_CONCURRENCY, items.length) }, worker));
+  return results;
+}
 
 /** Copy the dataset at `source` ({ pageId, assetId }) onto `pageId`, with
  * the reader's own session. Resolves to this Page's src for it. A refusal
@@ -62,6 +90,43 @@ export function pastedSlice(state, html, { document, filters = [] }) {
   return slice;
 }
 
+/**
+ * Whether a paste or drop reads the clipboard's HTML, as Wordgard decides:
+ * its text wins in a code block and for paste-as-plain-text, and then a
+ * held paste has nothing to do. `at` is the position the paste reads its
+ * context from.
+ */
+export function readsPastedHTML(state, transfer, { at, plain = false }) {
+  if (!transfer?.getData("text/html")) return false;
+  const text =
+    transfer.getData("text/plain") || transfer.getData("Text") || transfer.getData("text/uri-list");
+  if (!text) return true;
+  if (plain) return false;
+  return !state.doc.resolve(at).parent.node.type.hasRole(Node.Role.Code);
+}
+
+/**
+ * The change that lands a held paste: it replaces the range the person had
+ * selected, `target.from` to `target.to` (two captured insertions,
+ * image-upload.mjs), as Wordgard's own paste does. When an end no longer
+ * resolves, the paste goes in at the end that does, the caret end first.
+ */
+export function heldPasteChange(replica, target, map, insert) {
+  const resolve = (end) => {
+    try {
+      return resolveImageInsertion(replica, end, map);
+    } catch {
+      return null;
+    }
+  };
+  const to = resolve(target.to),
+    from = target.from === target.to ? to : resolve(target.from);
+  if (to === null && from === null)
+    throw Error("The place you pasted changed before the table copied. Paste again.");
+  if (to !== null && from !== null && from <= to) return { from, to, insert, fit: true };
+  return { from: to ?? from, insert, fit: true };
+}
+
 /** What the Page says when a table's data didn't copy. */
 export function copyFailure(error) {
   const status = error?.status;
@@ -86,6 +151,8 @@ export function copyFailure(error) {
  *   (source src → this Page's src) applied. Throws when it can't.
  * - onState(state): the machine state after each step.
  * - parser: a DOMParser, for reading the pasted HTML.
+ * - lookup(id): this browser's copy record for a clipboard's copy id
+ *   (copy-registry.mjs lookupCopy).
  */
 export function createDataframeCopier({
   pageId,
@@ -93,6 +160,7 @@ export function createDataframeCopier({
   insert,
   onState = () => {},
   parser,
+  lookup = (id) => lookupCopy(id),
 }) {
   let state = dataframeCopyMachine.initial,
     next = 0,
@@ -114,15 +182,18 @@ export function createDataframeCopier({
     if (type === "copy") {
       job.controller = new AbortController();
       const { signal } = job.controller;
-      Promise.allSettled(job.sources.map((source) => copy(source, signal))).then((results) => {
+      copyAll(job.sources, (source) =>
+        signal.aborted ? Promise.reject(signal.reason) : copy(source, signal),
+      ).then((results) => {
         if (signal.aborted) return;
         let failure;
         results.forEach((result, index) => {
           if (result.status === "fulfilled") job.copied.set(job.sources[index].src, result.value);
           else failure ??= result.reason;
         });
-        if (failure === undefined) step({ type: "copied", token });
-        else step({ type: "failed", token, message: copyFailure(failure) });
+        if (failure !== undefined) step({ type: "failed", token, message: copyFailure(failure) });
+        else if (job.skipped) step({ type: "failed", token, message: job.skipped });
+        else step({ type: "copied", token });
       });
     } else if (type === "abort") {
       job?.controller?.abort();
@@ -143,13 +214,28 @@ export function createDataframeCopier({
     get state() {
       return state;
     },
-    /** Paste or drop of `html` at `target()`: true when it holds tables from
-     * another Page and the copy started, so the editor leaves the event to
-     * it. False lets the editor paste it now, those tables as titles. */
+    /** Paste or drop of `html` at `target()`: true when it holds tables
+     * from another Page that this browser copied and the copy started, so
+     * the editor leaves the event to it. False lets the editor paste it now,
+     * those tables as titles; when the tables weren't this browser's own,
+     * the Page says so. */
     accept(html, target) {
       if (!alive || state.name === "copying") return false;
-      const sources = foreignDataframes(html, pageId, parser);
-      if (!sources.length) return false;
+      const foreign = foreignDataframes(html, pageId, parser);
+      if (!foreign.length) return false;
+      // Only the id is read from the clipboard; the record says which Page
+      // and assets this browser copied.
+      const record = lookup(clipboardCopyId(html, parser));
+      const own = foreign.filter(
+        (source) => record?.page === source.pageId && record.assets.includes(source.assetId),
+      );
+      const sources = own.slice(0, PASTE_TABLE_LIMIT);
+      const skipped =
+        own.length < foreign.length ? NOT_BROUGHT : own.length > sources.length ? OVER_LIMIT : null;
+      if (!sources.length) {
+        step({ type: "problem", message: skipped });
+        return false;
+      }
       let at;
       try {
         at = target();
@@ -157,7 +243,7 @@ export function createDataframeCopier({
         return false;
       }
       const token = ++next;
-      jobs.set(token, { html, target: at, sources, copied: new Map() });
+      jobs.set(token, { html, target: at, sources, skipped, copied: new Map() });
       return !step({ type: "start", token }).rejected;
     },
     cancel() {

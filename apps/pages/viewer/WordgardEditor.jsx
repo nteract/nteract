@@ -118,7 +118,14 @@ import {
   uploadFiles,
   resolveImageInsertion,
 } from "./image-upload.mjs";
-import { COPYING, createDataframeCopier, pastedSlice } from "./dataframe-copy.mjs";
+import {
+  COPYING,
+  createDataframeCopier,
+  heldPasteChange,
+  pastedSlice,
+  readsPastedHTML,
+} from "./dataframe-copy.mjs";
+import { markCopiedHTML } from "./copy-registry.mjs";
 import { markerType } from "../model/node-registry.mjs";
 import { caretGlideFor, createGlideRunner, mediaMatches$ } from "./caret-glide.mjs";
 import { glideSettings } from "./feature-flags.mjs";
@@ -373,13 +380,19 @@ export function WordgardEditor(props) {
     // data copies to this Page (dataframe-copy.mjs). Anything else, or a
     // paste while one is copying, takes the editor's own path, where such a
     // table lands as its title.
-    const acceptDataframes = (transfer, position) => {
-      const html = transfer?.getData("text/html");
-      if (!html || !latest.current.editable || replica.canWrite === false) return false;
+    // A paste replaces the selection (`from` to `to`); a drop lands at one
+    // point. `at` is where Wordgard reads the paste's context: in a code
+    // block, or for paste-as-plain-text, it reads text and this stays out.
+    const acceptDataframes = (transfer, { from, to = from, at = from, plain = false }) => {
+      if (!latest.current.editable || replica.canWrite === false) return false;
+      if (!readsPastedHTML(editor.state, transfer, { at, plain })) return false;
+      const capture = (position) =>
+        captureImageInsertion(replica, id, editor, bound.current.map, position);
       return (
-        dataframeCopier.current?.accept(html, () =>
-          captureImageInsertion(replica, id, editor, bound.current.map, position),
-        ) ?? false
+        dataframeCopier.current?.accept(transfer.getData("text/html"), () => {
+          const end = capture(to);
+          return { from: from === to ? end : capture(from), to: end };
+        }) ?? false
       );
     };
     const editor = Wordgard.create({
@@ -422,6 +435,10 @@ export function WordgardEditor(props) {
         // A block decode couldn't draw as stored opens read-only.
         permissions.current.of(editConfig(latest.current.editable && !bound.current.lossy)),
         Wordgard.clipboardInputHTMLFilter.of((html) => pastedPageHTML(html, replica.doc.page_id)),
+        // A copy or cut holding this Page's tables is recorded, and the
+        // clipboard says so, so a paste into another Page can bring their
+        // data (copy-registry.mjs).
+        Wordgard.clipboardOutputHTMLFilter.of((html) => markCopiedHTML(html, replica.doc.page_id)),
         // A pasted URL becomes a bare link.
         bareLinkPaste(),
         Wordgard.domEventObserver("focusout", (event, wg) => {
@@ -430,7 +447,12 @@ export function WordgardEditor(props) {
         Wordgard.domEventHandler(
           "paste",
           (event) =>
-            acceptImages(uploadFiles(event.clipboardData)) || acceptDataframes(event.clipboardData),
+            acceptImages(uploadFiles(event.clipboardData)) ||
+            acceptDataframes(event.clipboardData, {
+              from: editor.state.selection.replacementRange.from,
+              to: editor.state.selection.replacementRange.to,
+              plain: editor.inputState?.shiftKey === true,
+            }),
         ),
         Wordgard.domEventHandler("drop", (event) => {
           const files = uploadFiles(event.dataTransfer);
@@ -438,7 +460,11 @@ export function WordgardEditor(props) {
           // Wordgard's own drop reads HTML through clipboardInputHTMLFilter,
           // so a dataframe from another Page that doesn't copy drops as its
           // title.
-          if (!files.length) return acceptDataframes(event.dataTransfer, position());
+          if (!files.length)
+            return acceptDataframes(event.dataTransfer, {
+              from: position(),
+              at: editor.state.selection.head,
+            });
           return acceptImages(files, position());
         }),
         KeyBinding.of({
@@ -612,23 +638,15 @@ export function WordgardEditor(props) {
           editor.state.readOnly
         )
           throw Error("The Page changed before the paste landed. Paste again.");
-        let position;
-        try {
-          position = resolveImageInsertion(replica, target, bound.current.map);
-        } catch {
-          throw Error("The place you pasted changed before the table copied. Paste again.");
-        }
         detached ??= document.implementation.createHTMLDocument("");
         const slice = pastedSlice(editor.state, pastedPageHTML(html, pageId, undefined, copied), {
           document: detached,
           filters: editor.state.facet(Wordgard.clipboardInputFilter),
         });
+        const changes = heldPasteChange(replica, target, bound.current.map, slice);
         const local = new Set(copied.values());
         const before = blockDataframes(local);
-        editor.dispatch({
-          changes: { from: position, insert: slice, fit: true },
-          userEvent: "input.paste",
-        });
+        editor.dispatch({ changes, userEvent: "input.paste" });
         // The editor reports a refused write through its exception sink; say
         // so rather than leave the person thinking the table landed.
         if (local.size && blockDataframes(local) <= before)

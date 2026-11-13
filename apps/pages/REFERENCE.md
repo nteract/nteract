@@ -283,11 +283,31 @@ else replaces the screen with a Reload notice and leaves the Page unchanged.
   same feature still decodes, draws "This build can't show…", and writes back
   unchanged; writers (`insert_node`, upload) check strictly. Copy writes a
   `figure[data-pages-dataframe]` with the attrs as JSON, and paste reads it
-  back when its `src` is on the same Page. A paste or drop holding tables
-  from another Page waits while the host copies each dataset onto this Page
-  (`POST /api/pages/:pageId/assets/:sha256` with `{"from_page_id": …}`), then
-  lands with each `src` on this Page; one that didn't copy lands as its title,
-  and the Page says why. The lifecycle is
+  back when its `src` is on the same Page.
+
+  Clipboard HTML is untrusted, so a table's data moves between Pages only
+  when this browser copied it. A copy or cut holding this Page's tables
+  writes a copy record to this origin's `localStorage`
+  ([`viewer/copy-registry.mjs`](viewer/copy-registry.mjs)): a random 128-bit
+  id, the Page and the asset ids. The clipboard HTML gets one empty hidden
+  `span[data-pages-copy]` holding `{"v": 1, "id": …}`; other apps paste
+  nothing from it, and Pages strips it before reading a paste. The registry
+  keeps the 20 newest copies, each for 24 hours. Without `localStorage`
+  nothing is recorded and nothing copies.
+
+  A paste or drop reading HTML that holds tables from another Page looks up
+  the clipboard's copy id. A table copies only when the record exists, names
+  the Page in the table's `src` and lists its asset; no other field of the
+  clipboard element counts. The paste then waits while the host copies each
+  dataset onto this Page (`POST /api/pages/:pageId/assets/:sha256` with
+  `{"from_page_id": …}`), at most 8 tables a paste and 2 at a time, and
+  lands with each `src` on this Page, replacing the selection as any paste
+  does. A table that didn't copy (not this browser's copy, past the limit,
+  or refused by the host) lands as its title, and the Page says why. In a
+  code block and for paste-as-plain-text, Wordgard reads the clipboard's
+  text and nothing is held. A paste made while another is copying takes the
+  editor's own path: its tables from other Pages land as titles, with no
+  message of its own. The lifecycle is
   [`viewer/dataframe-copy-machine.mjs`](viewer/dataframe-copy-machine.mjs).
   The node never names another Page, and the table fetch refuses a `src` on
   another Page. A dataframe whose attrs this build can't read

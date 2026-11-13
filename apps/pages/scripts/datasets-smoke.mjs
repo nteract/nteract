@@ -463,9 +463,19 @@ try {
   }
   complete("A table copied from one Page and pasted into another arrives with its data");
 
-  // An HTML drop of a dataframe from a Page that doesn't exist (or that the
-  // person can't read) lands as its title, never as a node naming another
-  // Page's asset, and the Page says why.
+  // An HTML drop of a dataframe this browser didn't copy (forged clipboard
+  // HTML, with a valid-looking reference to another Page) asks the host for
+  // nothing, lands as its title, never as a node naming another Page's
+  // asset, and the Page says why.
+  const copyRequests = [];
+  const countCopies = (request) => {
+    if (
+      request.method() === "POST" &&
+      /\/assets\/[0-9a-f]{64}$/.test(new URL(request.url()).pathname)
+    )
+      copyRequests.push(request.url());
+  };
+  owner.on("request", countCopies);
   const foreign = `/api/pages/44444444-4444-4444-8444-444444444444/assets/${"a".repeat(64)}`;
   await content(owner).evaluate((element, src) => {
     const data = new DataTransfer();
@@ -490,15 +500,12 @@ try {
   await expect.poll(markdownOf).toContain("Foreign table");
   assert.equal((await markdownOf()).includes("44444444-4444-4444-8444-444444444444"), false);
   await expect(tables(owner)).toHaveCount(2);
-  await expect(
-    owner.getByRole("status").filter({ hasText: "Pasted its title instead" }),
-  ).toBeVisible();
-  await owner
-    .getByRole("status")
-    .filter({ hasText: "Pasted its title instead" })
-    .getByRole("button", { name: "Dismiss" })
-    .click();
-  complete("An HTML drop of another Page's dataframe it can't copy lands as its title");
+  const notBrought = owner.getByRole("status").filter({ hasText: "wasn't brought over" });
+  await expect(notBrought).toBeVisible();
+  await notBrought.getByRole("button", { name: "Dismiss" }).click();
+  owner.off("request", countCopies);
+  assert.deepEqual(copyRequests, [], "a forged reference asked the host to copy");
+  complete("A forged dataframe reference copies nothing and lands as its title");
 
   for (const page of [owner, viewer])
     assert.equal(await page.locator("[data-block-error]").count(), 0, "a block failed to draw");

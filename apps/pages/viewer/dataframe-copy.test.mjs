@@ -7,14 +7,36 @@ import { JSDOM } from "jsdom";
 import { parse, serialize } from "wordgard/doc";
 import { runTable } from "../shared/machine-test.mjs";
 import { REJECT, dataframeCopyMachine } from "./dataframe-copy-machine.mjs";
+import * as A from "@automerge/automerge";
+import { GardState } from "wordgard/state";
 import {
   COPYING,
+  NOT_BROUGHT,
+  OVER_LIMIT,
+  PASTE_COPY_CONCURRENCY,
+  PASTE_TABLE_LIMIT,
   copyFailure,
   copyPageDataset,
   createDataframeCopier,
+  heldPasteChange,
   pastedSlice,
+  readsPastedHTML,
 } from "./dataframe-copy.mjs";
 import {
+  COPY_LIMIT,
+  COPY_TTL_MS,
+  clipboardCopyId,
+  copyMarker,
+  lookupCopy,
+  markCopiedHTML,
+  recordCopy,
+} from "./copy-registry.mjs";
+import { captureImageInsertion } from "./image-upload.mjs";
+import { createWordgardBinding } from "./wordgard-binding.mjs";
+import { createPageData, initializePage, orderedBlockIds } from "../model/page.mjs";
+import { blockMarkdown } from "../model/richtext.mjs";
+import {
+  CodeBlock,
   PagesDataframe,
   Paragraph,
   foreignDataframes,
@@ -267,15 +289,29 @@ function deferred() {
   const promise = new Promise((yes, no) => ((resolve = yes), (reject = no)));
   return { promise, resolve, reject };
 }
+/** localStorage as this browser's copy registry sees it. */
+function memoryStorage() {
+  const items = new Map();
+  return {
+    items,
+    getItem: (key) => items.get(key) ?? null,
+    setItem: (key, value) => items.set(key, String(value)),
+  };
+}
+const asset = (n) => n.toString(16).padStart(64, "0");
+
 function harness(t, { insert } = {}) {
   const dom = new JSDOM();
   t.after(() => dom.window.close());
+  const parser = new dom.window.DOMParser();
+  const storage = memoryStorage();
   const copies = [],
     inserted = [],
     states = [];
   const copier = createDataframeCopier({
     pageId: here,
-    parser: new dom.window.DOMParser(),
+    parser,
+    lookup: (id) => lookupCopy(id, { storage: () => storage }),
     copy(source, signal) {
       const pending = { source, signal, ...deferred() };
       copies.push(pending);
@@ -285,40 +321,120 @@ function harness(t, { insert } = {}) {
       insert ?? ((html, target, copied) => inserted.push([target, Object.fromEntries(copied)])),
     onState: (state) => states.push(state.name === "failed" ? state.message : state.name),
   });
-  return { dom, copier, copies, inserted, states };
+  // A copy out of `page`'s editor: its tables, marked as the editor's
+  // clipboard output filter marks them.
+  const copyFrom = (page, ...assets) =>
+    markCopiedHTML(copiedHTML(dom, ...assets.map((id) => ({ src: src(page, id) }))), page, {
+      parser,
+      storage: () => storage,
+    });
+  return { dom, parser, storage, copier, copies, inserted, states, copyFrom };
 }
 
-test("a pasted table copies, then the paste lands with its src on this Page", async (t) => {
+test("a table copied in one editor and pasted in another issues exactly one copy", async (t) => {
   const h = harness(t);
-  const html = copiedHTML(h.dom, { src: src(there) }, { src: src(elsewhere, assetB) });
+  const html = h.copyFrom(there, assetA);
+  assert.match(html, /data-pages-copy/);
   assert.equal(
     h.copier.accept(html, () => "target"),
     true,
   );
+  assert.equal(h.copies.length, 1);
+  assert.deepEqual(h.copies[0].source, { src: src(there), pageId: there, assetId: assetA });
+  h.copies[0].resolve(src(here));
+  await settle();
+  assert.deepEqual(h.inserted, [["target", { [src(there)]: src(here) }]]);
+  assert.deepEqual(h.states, ["copying", "idle"]);
+  assert.equal(COPYING.includes("another Page"), true);
+});
+
+test("a second paste while one copies takes the editor's own path", async (t) => {
+  const h = harness(t);
+  const html = h.copyFrom(there, assetA, assetB);
+  h.copier.accept(html, () => "target");
   assert.equal(
     h.copier.accept(html, () => "second"),
     false,
-    "a second paste takes its own path",
   );
-  assert.deepEqual(
-    h.copies.map(({ source }) => source.pageId),
-    [there, elsewhere],
-  );
+  assert.equal(h.copies.length, 2);
   h.copies[0].resolve(src(here));
   await settle();
   assert.deepEqual(h.inserted, []);
   h.copies[1].resolve(src(here, assetB));
   await settle();
   assert.deepEqual(h.inserted, [
-    ["target", { [src(there)]: src(here), [src(elsewhere, assetB)]: src(here, assetB) }],
+    ["target", { [src(there)]: src(here), [src(there, assetB)]: src(here, assetB) }],
   ]);
-  assert.deepEqual(h.states, ["copying", "idle"]);
-  assert.equal(COPYING.includes("another Page"), true);
+});
+
+test("forged or foreign clipboard references issue no copy and say why", async (t) => {
+  const h = harness(t);
+  const forged = copiedHTML(h.dom, { src: src(there) });
+  const known = recordCopy({ pageId: elsewhere, assets: [assetA] }, { storage: () => h.storage });
+  const lacking = recordCopy({ pageId: there, assets: [assetB] }, { storage: () => h.storage });
+  for (const [label, html] of [
+    ["no copy element", forged],
+    ["an unknown id", forged + copyMarker("f".repeat(32))],
+    ["a record for another Page", forged + copyMarker(known)],
+    ["a record without that asset", forged + copyMarker(lacking)],
+    ["a malformed element", forged + `<span data-pages-copy='{"v":1,"id":"x"}'></span>`],
+    ["a newer format", forged + `<span data-pages-copy='{"v":2,"id":"${lacking}"}'></span>`],
+  ]) {
+    assert.equal(
+      h.copier.accept(html, () => "target"),
+      false,
+      label,
+    );
+    assert.equal(h.copies.length, 0, label);
+    assert.equal(h.states.at(-1), NOT_BROUGHT, label);
+  }
+  // The copy element only carries an id: page and asset fields in it count
+  // for nothing.
+  const lying =
+    forged + `<span data-pages-copy='{"v":1,"id":"${known}","page":"${there}"}'></span>`;
+  assert.equal(
+    h.copier.accept(lying, () => "target"),
+    false,
+  );
+  assert.equal(h.copies.length, 0);
+});
+
+test("of a paste's tables, only those this browser copied copy; the rest are titles", async (t) => {
+  const h = harness(t);
+  const own = h.copyFrom(there, assetA);
+  const mixed = own + copiedHTML(h.dom, { src: src(there, assetB) });
+  h.copier.accept(mixed, () => "target");
+  assert.deepEqual(
+    h.copies.map(({ source }) => source.assetId),
+    [assetA],
+  );
+  h.copies[0].resolve(src(here));
+  await settle();
+  assert.deepEqual(h.inserted, [["target", { [src(there)]: src(here) }]]);
+  assert.equal(h.states.at(-1), NOT_BROUGHT);
+});
+
+test("one paste copies at most the table limit, two at a time", async (t) => {
+  const h = harness(t);
+  const assets = Array.from({ length: PASTE_TABLE_LIMIT + 3 }, (_, n) => asset(n + 1));
+  h.copier.accept(h.copyFrom(there, ...assets), () => "target");
+  assert.equal(h.copies.length, PASTE_COPY_CONCURRENCY);
+  for (let n = 0; n < PASTE_TABLE_LIMIT; n++) {
+    h.copies[n].resolve(src(here, h.copies[n].source.assetId));
+    await settle();
+  }
+  assert.equal(h.copies.length, PASTE_TABLE_LIMIT);
+  assert.deepEqual(
+    h.copies.map(({ source }) => source.assetId),
+    assets.slice(0, PASTE_TABLE_LIMIT),
+  );
+  assert.equal(Object.keys(h.inserted[0][1]).length, PASTE_TABLE_LIMIT);
+  assert.equal(h.states.at(-1), OVER_LIMIT);
 });
 
 test("a failed copy lands the paste with what did copy, and says why", async (t) => {
   const h = harness(t);
-  const html = copiedHTML(h.dom, { src: src(there) }, { src: src(elsewhere, assetB) });
+  const html = h.copyFrom(there, assetA, assetB);
   h.copier.accept(html, () => "target");
   h.copies[0].resolve(src(here));
   h.copies[1].reject(Object.assign(Error("Forbidden"), { status: 403 }));
@@ -335,7 +451,7 @@ test("a failed copy lands the paste with what did copy, and says why", async (t)
 
 test("cancel drops the paste; a paste with nothing foreign, or no target, isn't taken", async (t) => {
   const h = harness(t);
-  const html = copiedHTML(h.dom, { src: src(there) });
+  const html = h.copyFrom(there, assetA);
   h.copier.accept(html, () => "target");
   h.copier.cancel();
   assert.equal(h.copies[0].signal.aborted, true);
@@ -362,7 +478,7 @@ test("a paste whose place is gone says so", async (t) => {
       throw Error("The place you pasted changed before the table copied. Paste again.");
     },
   });
-  h.copier.accept(copiedHTML(h.dom, { src: src(there) }), () => "target");
+  h.copier.accept(h.copyFrom(there, assetA), () => "target");
   h.copies[0].resolve(src(here));
   await settle();
   assert.deepEqual(h.states, [
@@ -372,7 +488,134 @@ test("a paste whose place is gone says so", async (t) => {
   ]);
   h.copier.destroy();
   assert.equal(
-    h.copier.accept(copiedHTML(h.dom, { src: src(there) }), () => "x"),
+    h.copier.accept(h.copyFrom(there, assetA), () => "x"),
     false,
+  );
+});
+
+test("the copy registry keeps the newest copies for a day, and nothing without storage", (t) => {
+  const dom = new JSDOM();
+  t.after(() => dom.window.close());
+  const storage = memoryStorage();
+  const options = (now) => ({ storage: () => storage, now });
+  const ids = Array.from({ length: COPY_LIMIT + 5 }, (_, n) =>
+    recordCopy({ pageId: there, assets: [assetA] }, options(1000 + n)),
+  );
+  const now = 1000 + ids.length;
+  assert.equal(lookupCopy(ids[0], options(now)), null, "the oldest copies are dropped");
+  assert.deepEqual(lookupCopy(ids.at(-1), options(now)), {
+    id: ids.at(-1),
+    page: there,
+    assets: [assetA],
+  });
+  assert.equal(lookupCopy(ids.at(-1), options(1000 + COPY_TTL_MS + ids.length)), null);
+  assert.equal(JSON.parse(storage.items.values().next().value).length, COPY_LIMIT);
+  // Storage that's missing, throws, or holds garbage records and finds nothing.
+  const throwing = {
+    getItem() {
+      throw Error("SecurityError");
+    },
+    setItem() {
+      throw Error("QuotaExceededError");
+    },
+  };
+  for (const store of [
+    () => undefined,
+    () => throwing,
+    () => {
+      throw Error("blocked");
+    },
+  ]) {
+    assert.equal(recordCopy({ pageId: there, assets: [assetA] }, { storage: store }), null);
+    assert.equal(lookupCopy(ids.at(-1), { storage: store }), null);
+  }
+  const garbage = memoryStorage();
+  garbage.setItem("pages.clipboard-copies.v1", "{not json");
+  assert.equal(lookupCopy(ids.at(-1), { storage: () => garbage }), null);
+  // Without a record, the editor's copy goes out unmarked, as ordinary HTML.
+  const parser = new dom.window.DOMParser();
+  const html = copiedHTML(dom, { src: src(there) });
+  assert.equal(markCopiedHTML(html, there, { parser, storage: () => throwing }), html);
+  // A copy of another Page's table, or of no table, isn't recorded.
+  assert.equal(markCopiedHTML(html, here, { parser, storage: () => storage }), html);
+  const marked = markCopiedHTML(html, there, { parser, storage: () => storage });
+  assert.equal(lookupCopy(clipboardCopyId(marked, parser), options(Date.now())).page, there);
+  // The marker never pastes as content.
+  assert.deepEqual(
+    dataframes(dom, pastedPageHTML(marked, there, parser)).map((value) => value.src),
+    [src(there)],
+  );
+  assert.equal(pastedPageHTML(marked, there, parser).includes("data-pages-copy"), false);
+});
+
+test("in a code block, or as plain text, a paste reads text and isn't held", () => {
+  const state = GardState.create({
+    doc: schema.doc([Paragraph.create([]), CodeBlock.create([])]),
+    config: [GardState.schemaElement.of(schema.elements)],
+  });
+  const transfer = (data) => ({ getData: (type) => data[type] ?? "" });
+  const html = `<figure data-pages-dataframe='{}'>t</figure>`;
+  const both = transfer({ "text/html": html, "text/plain": "t" });
+  const inParagraph = 1,
+    inCode = state.doc.content[0].length + 1;
+  assert.equal(readsPastedHTML(state, both, { at: inParagraph }), true);
+  assert.equal(readsPastedHTML(state, both, { at: inCode }), false);
+  assert.equal(readsPastedHTML(state, both, { at: inParagraph, plain: true }), false);
+  // With no text at all, Wordgard reads the HTML even in code.
+  assert.equal(readsPastedHTML(state, transfer({ "text/html": html }), { at: inCode }), true);
+  assert.equal(readsPastedHTML(state, transfer({ "text/plain": "t" }), { at: inParagraph }), false);
+});
+
+test("a held paste replaces the selected text, or lands at the end that still resolves", (t) => {
+  const dom = new JSDOM();
+  t.after(() => dom.window.close());
+  let doc = A.change(A.from(createPageData({ pageId: here, title: "Paste" })), (d) =>
+    initializePage(d, "Keep this, replace this."),
+  );
+  const id = orderedBlockIds(doc)[0];
+  const replica = {
+    get doc() {
+      return doc;
+    },
+    change(fn) {
+      doc = A.change(doc, fn);
+    },
+    observeChange: () => () => {},
+  };
+  const binding = createWordgardBinding(replica, id);
+  t.after(() => binding.destroy());
+  const state = () =>
+    GardState.create({
+      doc: binding.current.doc,
+      config: [GardState.schemaElement.of(schema.elements)],
+    });
+  const text = binding.current.doc.content[0].textContent();
+  const start = 1 + text.indexOf("replace this"),
+    end = start + "replace this".length;
+  const editor = {
+    state: { ...state(), selection: { anchor: start, head: end, to: end }, readOnly: false },
+  };
+  const capture = (position) =>
+    captureImageInsertion(replica, id, editor, binding.current.map, position);
+  const target = { from: capture(start), to: capture(end) };
+  const slice = pastedSlice(
+    state(),
+    copiedHTML(dom, { src: src(here), title: "Pasted" }).replace("<p></p>", ""),
+    { document: dom.window.document.implementation.createHTMLDocument("") },
+  );
+  const changes = heldPasteChange(replica, target, binding.current.map, slice);
+  assert.deepEqual([changes.from, changes.to], [start, end]);
+  binding.applyEditorTransaction(state().update({ changes, userEvent: "input.paste" }));
+  const markdown = blockMarkdown(doc.blocks[id]);
+  assert.equal(markdown.includes("replace this"), false, markdown);
+  assert.match(markdown, /Keep this, /);
+  assert.match(markdown, /\[Dataframe: Pasted\]/);
+  // When the selected text is gone, the paste lands where the caret was
+  // and nothing else is removed.
+  assert.deepEqual(
+    Object.keys(
+      heldPasteChange(replica, { from: target.from, to: target.to }, binding.current.map, slice),
+    ),
+    ["from", "insert", "fit"],
   );
 });
