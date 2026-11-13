@@ -226,19 +226,86 @@ test("a hidden Page asks for no sources document", async (t) => {
   assert.equal(session.repo.calls.length, 0);
 });
 
+test("with no connection, a table's ask reads the sources document from this tab's copy", async (t) => {
+  const { session, admit, pageId } = fixture(t);
+  session.sockets.clear();
+  const versions = [];
+  session.pageSources.versions(["usage"]).subscribe((v) => versions.push(v.usage));
+  await until(() => session.repo.calls.length === 1, { label: "the stored read" });
+  assert.equal(session.repo.calls[0].id, derivedDocumentId(await sourcesDocUuid(pageId)));
+  assert.equal(session.sources.state$.snapshot().via, "stored");
+  session.repo.calls[0].resolve({ doc: () => sourcesWith("a".repeat(64)), on() {}, off() {} });
+  await tick();
+  assert.equal(session.sources.state$.snapshot().name, "ready");
+  assert.deepEqual(
+    versions.map((v) => v && v.asset_id),
+    [null, "a".repeat(64)],
+  );
+  // The connection that follows names the same document: it stays open.
+  session.sockets.add({ close() {} });
+  admit({
+    documents: {
+      page,
+      sources: { id: session.repo.calls[0].id, type: "pages.sources", format: 1 },
+    },
+  });
+  await tick();
+  assert.equal(session.repo.calls.length, 1);
+  assert.equal(session.sources.state$.snapshot().name, "ready");
+});
+
+test("a tab with no Page copy open reads nothing before a connection", async (t) => {
+  const { session } = fixture(t, { viewDocumentId });
+  session.sockets.clear();
+  session.handle = undefined;
+  session.pageSources.versions(["usage"]).subscribe(() => {});
+  const sales = session.views.hold("sales");
+  await tick();
+  await tick();
+  assert.equal(session.repo.calls.length, 0);
+  assert.deepEqual(session.sources.state$.snapshot(), { name: "closed" });
+  let read;
+  sales.view$.subscribe((view) => (read = view)).unsubscribe();
+  assert.deepEqual(read, { status: "pending" });
+  sales.release();
+});
+
+test("a hidden Page reads nothing from this tab's copy", async (t) => {
+  const { session } = fixture(t, { viewDocumentId });
+  session.sockets.clear();
+  Object.defineProperty(session, "hidden", { value: true, configurable: true });
+  session.pageSources.versions(["usage"]).subscribe(() => {});
+  const sales = session.views.hold("sales");
+  await tick();
+  await tick();
+  assert.equal(session.repo.calls.length, 0);
+  sales.release();
+});
+
 const viewDocumentId = async (pageId, viewId) => `view:${pageId}:${viewId}`;
 
 test("a held view is looked up by its derived id on each admitted connection", async (t) => {
   const { session, admit, pageId } = fixture(t, { viewDocumentId });
-  // A view held before any connection waits for one.
+  session.sockets.clear();
+  // A view held before any connection reads this tab's copy once; a miss
+  // there waits for a connection.
   const sales = session.views.hold("sales");
+  await until(() => session.repo.calls.length === 1, { label: "the stored read" });
+  session.repo.calls[0].reject(Error(`Document view:${pageId}:sales is unavailable`));
   await tick();
-  assert.equal(session.repo.calls.length, 0);
+  assert.deepEqual(session.views.replica("sales").state$.snapshot(), {
+    name: "closed",
+    checked: true,
+  });
+  let read;
+  sales.view$.subscribe((view) => (read = view)).unsubscribe();
+  assert.deepEqual(read, { status: "pending" }, "a stored miss is not a verdict");
+  session.sockets.add({ close() {} });
   admit(withoutSources);
   await tick();
   assert.deepEqual(
     session.repo.calls.map((call) => call.id),
-    [`view:${pageId}:sales`],
+    [`view:${pageId}:sales`, `view:${pageId}:sales`],
   );
   // One held while connected looks up at once.
   const costs = session.views.hold("costs");
