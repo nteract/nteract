@@ -7,6 +7,9 @@ name: Publish npm packages
 # Linux/Windows ARM64 require their NPM_*_ARM64_ENABLED bootstrap gates, and
 # @nteract/sift requires NPM_SIFT_ENABLED and @nteract/sift-csv requires
 # NPM_SIFT_CSV_ENABLED. Both are independent of the Node SDK and of each other.
+# A manual run with packages=sift publishes only those two. It also accepts a
+# nightly whose only failed jobs are desktop app builds, since Sift builds from
+# the upstream source here and takes nothing else from that run.
 on:
   workflow_dispatch:
     inputs:
@@ -19,6 +22,12 @@ on:
         required: true
         default: "1"
         type: string
+      packages:
+        description: "all, or sift to publish only Sift and Sift CSV (allowed past failed desktop app builds)"
+        required: false
+        default: all
+        type: choice
+        options: [all, sift]
   workflow_run:
     workflows: ["Stable Release", "Nightly Release"]
     types: [completed]
@@ -39,7 +48,7 @@ env:
 jobs:
   resolve-wasm:
     name: Resolve retained WASM npm candidate
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    if: (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') && inputs.packages != 'sift'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -114,6 +123,7 @@ jobs:
       channel: ${{ steps.identity.outputs.channel }}
       run_id: ${{ steps.identity.outputs.run_id }}
       run_attempt: ${{ steps.identity.outputs.run_attempt }}
+      packages: ${{ steps.identity.outputs.packages }}
       version: ${{ steps.plan.outputs.version }}
       dist_tag: ${{ steps.plan.outputs.dist_tag }}
       linux_arm64_enabled: ${{ steps.plan.outputs.linux_arm64_enabled }}
@@ -136,6 +146,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_RUN_ID: ${{ inputs.release_run_id }}
           RELEASE_RUN_ATTEMPT: ${{ inputs.release_run_attempt }}
+          NPM_PACKAGES: ${{ inputs.packages }}
         run: node scripts/ci/npm-release-cli.mjs resolve "$RUNNER_TEMP/release-identity.json"
       - name: Read version from the exact upstream source
         uses: actions/checkout@v6
@@ -183,6 +194,8 @@ jobs:
   pack-native:
     name: Pack native package (${{ matrix.target }})
     needs: [resolve-release]
+    # The Node SDK wrapper and Pi wait on these jobs, so a Sift-only run skips them too.
+    if: needs.resolve-release.outputs.packages == 'all'
     runs-on: ${{ matrix.runner }}
     env:
       RUNT_BUILD_CHANNEL: ${{ needs.resolve-release.outputs.channel }}

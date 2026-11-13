@@ -207,6 +207,20 @@ test("Sift packs independently, tests the stamped package, and publishes only be
   assert.match(publish, /publish "\$RUNNER_TEMP\/npm-release-tools\/sift-plan\.json" sift "\$RUNNER_TEMP\/npm-package"/);
 });
 
+test("a Sift-only run skips the WASM and Node SDK chains but not Sift", () => {
+  assert.match(workflow, /      packages:\n(?:        .*\n)*?        options: \[all, sift\]\n/);
+  const resolve = jobs.get("resolve-release");
+  assert.match(resolve, /NPM_PACKAGES: \$\{\{ inputs\.packages \}\}/);
+  assert.match(resolve, /packages: \$\{\{ steps\.identity\.outputs\.packages \}\}/);
+  assert.match(jobs.get("resolve-wasm"), /^    if: .* && inputs\.packages != 'sift'$/m);
+  assert.match(jobs.get("pack-native"), /^    if: needs\.resolve-release\.outputs\.packages == 'all'$/m);
+  // Everything else in the Node SDK chain waits on pack-native.
+  assert.match(jobs.get("publish-native"), /^    needs: \[resolve-release, pack-native\]$/m);
+  for (const id of ["pack-sift", "publish-sift", "publish-sift-csv"]) {
+    assert.doesNotMatch(jobs.get(id), /outputs\.packages/, `${id} runs for every package set`);
+  }
+});
+
 test("Sift CSV packs and publishes like Sift, independent of both the Node SDK and Sift", () => {
   const resolve = jobs.get("resolve-release");
   assert.match(resolve, /plan "\$RUNNER_TEMP\/release-identity\.json" release-source\/packages\/sift-csv\/package\.json "\$RUNNER_TEMP\/npm-release-tools\/sift-csv-plan\.json"/);

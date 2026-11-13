@@ -10,6 +10,7 @@ import {
   releaseIdentity,
   releasePlan,
   stampManifest,
+  standaloneReleaseIdentity,
 } from "../ci/npm-release.mjs";
 
 const sourceSha = "a".repeat(40);
@@ -50,6 +51,93 @@ test("manual npm resolver rejects a repair run before writing identity or output
   assert.match(result.stderr, /Wheel-only recovery is not a successful release producer/);
   assert.doesNotMatch(result.stderr, /unexpected file write|unexpected API request/);
 });
+const desktopFailure = [
+  {name: "release / Build macOS ARM64 Notebook", conclusion: "failure"},
+  {name: "release / Build macOS x64 Notebook", conclusion: "failure"},
+  {name: "release / Build WASM artifacts", conclusion: "success"},
+  {name: "release / Publish agent plugins", conclusion: "skipped"},
+];
+
+test("Sift resolves past a nightly whose only failed jobs are desktop app builds", () => {
+  assert.deepEqual(standaloneReleaseIdentity({...run, conclusion: "failure"}, desktopFailure, expected), identity);
+  assert.deepEqual(standaloneReleaseIdentity(run, [], expected), identity, "a successful run needs no job list");
+});
+
+for (const [name, patch, jobs] of [
+  ["a failure outside desktop app jobs", {}, [...desktopFailure, {name: "release / Build WASM artifacts", conclusion: "failure"}]],
+  ["a cancelled job outside desktop app jobs", {}, [...desktopFailure, {name: "release / Build Linux x64 Notebook", conclusion: "cancelled"}]],
+  ["a failed run with no failed job listed", {}, []],
+  ["a failed stable release", {path: ".github/workflows/release-stable.yml"}, desktopFailure],
+  ["a cancelled run", {conclusion: "cancelled"}, desktopFailure],
+  ["a running release", {status: "in_progress", conclusion: null}, desktopFailure],
+  ["a repair run", {display_title: "other"}, desktopFailure],
+  ["a mismatched attempt", {run_attempt: 2}, desktopFailure],
+]) {
+  test(`Sift refuses ${name}`, () => {
+    const conclusion = "conclusion" in patch ? patch.conclusion : "failure";
+    assert.throws(() => standaloneReleaseIdentity({...run, ...patch, conclusion}, jobs, expected));
+  });
+}
+
+function resolveSift({lastPage = [desktopFailure[1]], eventName = "workflow_dispatch"} = {}) {
+  const cli = new URL("../ci/npm-release-cli.mjs", import.meta.url).href;
+  const filler = Array.from({length: 99}, (_, index) => ({name: `release / Build Python Wheels (${index})`, conclusion: "success"}));
+  const failedRun = {...run, conclusion: "failure"};
+  const program = `
+    import fs from "node:fs";
+    import {syncBuiltinESMExports} from "node:module";
+    const event = "/mock-event.json";
+    const read = fs.readFileSync;
+    const writes = [];
+    const payload = {repository: {default_branch: "main"}, workflow_run: ${JSON.stringify({id: 100, run_attempt: 1, head_sha: sourceSha})}};
+    fs.readFileSync = (path, ...args) => path === event ? JSON.stringify(payload) : read(path, ...args);
+    fs.writeFileSync = (path, value) => writes.push([path, String(value)]);
+    fs.appendFileSync = (path, value) => writes.push([path, String(value)]);
+    syncBuiltinESMExports();
+    Object.assign(process.env, {GITHUB_EVENT_PATH: event, GITHUB_EVENT_NAME: ${JSON.stringify(eventName)}, GITHUB_REF: "refs/heads/main", GITHUB_REPOSITORY: "nteract/nteract", GITHUB_API_URL: "https://api.github.com", GITHUB_OUTPUT: "/output", RELEASE_RUN_ID: "100", RELEASE_RUN_ATTEMPT: "1", NPM_PACKAGES: "sift"});
+    const base = "https://api.github.com/repos/nteract/nteract/actions/runs/100/attempts/1";
+    const responses = {
+      [base]: ${JSON.stringify(failedRun)},
+      [base + "/jobs?per_page=100&page=1"]: {jobs: [${JSON.stringify(desktopFailure[0])}, ...${JSON.stringify(filler)}]},
+      [base + "/jobs?per_page=100&page=2"]: {jobs: ${JSON.stringify(lastPage)}},
+    };
+    const requested = [];
+    globalThis.fetch = async url => {
+      requested.push(url);
+      if (!(url in responses)) throw new Error("unexpected API request " + url);
+      return new Response(JSON.stringify(responses[url]));
+    };
+    process.on("exit", () => console.log(JSON.stringify({requested, writes})));
+    process.argv = [process.execPath, "npm-release-cli.mjs", "resolve", "/identity.json"];
+    await import(${JSON.stringify(cli)});
+  `;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", program], {encoding: "utf8"});
+  return {...result, ...JSON.parse(result.stdout.trim().split("\n").at(-1))};
+}
+
+test("manual Sift resolver reads every job page of the exact attempt and reports the package set", () => {
+  const {status, stderr, requested, writes} = resolveSift();
+  assert.equal(status, 0, stderr);
+  assert.equal(requested.length, 3);
+  assert.deepEqual(JSON.parse(writes.find(([path]) => path === "/identity.json")[1]), identity);
+  assert.match(writes.filter(([path]) => path === "/output").map(([, value]) => value).join(""), /^packages=sift$/m);
+});
+
+test("manual Sift resolver refuses a blocking failure on a later job page", () => {
+  const {status, stderr, writes} = resolveSift({lastPage: [desktopFailure[1], {name: "release / Build WASM artifacts", conclusion: "failure"}]});
+  assert.equal(status, 1);
+  assert.match(stderr, /failed outside desktop app jobs: release \/ Build WASM artifacts/);
+  assert.deepEqual(writes, []);
+});
+
+test("an automatic run ignores a Sift package set and needs a successful release", () => {
+  const {status, stderr, requested, writes} = resolveSift({eventName: "workflow_run"});
+  assert.equal(status, 1);
+  assert.match(stderr, /Upstream release must have completed successfully/);
+  assert.equal(requested.length, 1, "no job lookup for the full package set");
+  assert.deepEqual(writes, []);
+});
+
 const empty = () => ({versions: {}, "dist-tags": {}});
 const packument = (versions, tag, version) => ({versions: Object.fromEntries(versions.map(value => [value.version, value])), "dist-tags": tag ? {[tag]: version} : {}});
 
