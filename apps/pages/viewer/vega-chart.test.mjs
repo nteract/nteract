@@ -380,8 +380,7 @@ test("destroy during the first draw leaves no Worker and draws nothing", () =>
       // answer is dropped.
       const { element: later } = container(window);
       const second = mount(later, { spec: stacked, datasets: { calls } });
-      await settle(1);
-      assert.equal(workers.draws, 1);
+      assert.ok(await until(() => workers.draws === 1));
       second.destroy();
       await settle();
       assert.equal(workers.live.size, 0);
@@ -1918,7 +1917,7 @@ test("the Worker normalizes the rows it receives in place, under the cell budget
   });
 });
 
-test("the Worker's message loop says ready, runs draws one at a time by key, and answers by id", async () => {
+test("the Worker's message loop says ready, takes a chart's data with its first job, and answers each job by id", async () => {
   const posted = [];
   const scope = new EventTarget();
   scope.postMessage = (data) => posted.push(data);
@@ -1929,56 +1928,47 @@ test("the Worker's message loop says ready, runs draws one at a time by key, and
   const wait = async (count) => {
     for (let i = 0; i < 300 && answers().length < count; i++) await settle(10);
   };
-  send({ type: "draw", id: 1, key: "a", spec: stacked, theme, width: 300 });
+  const job = (id, key, more = {}) => ({
+    type: "draw",
+    id,
+    key,
+    spec: stacked,
+    theme,
+    width: 300,
+    ...more,
+  });
+  send(job(1, "a"));
   await wait(1);
   assert.deepEqual(answers()[0], {
     type: "answer",
     id: 1,
     error: { message: "This chart has no data yet.", refusal: true },
   });
-  // Two charts' data, two draws and a third cancelled before it starts: each
-  // draw starts, then answers, before the next starts.
-  send({ type: "data", key: "a", datasets: { calls: { rows: structuredClone(calls) } } });
-  send({
-    type: "data",
-    key: "b",
-    datasets: { calls: { rows: [{ payload: Array(3_000_000).fill(1) }] } },
-  });
-  send({ type: "draw", id: 2, key: "a", spec: stacked, theme, width: 300 });
-  send({ type: "draw", id: 3, key: "b", spec: stacked, theme, width: 300 });
-  send({ type: "draw", id: 4, key: "a", spec: stacked, theme, width: 300 });
-  send({ type: "cancel", id: 4 });
-  await wait(3);
-  await settle(50);
-  const order = posted.slice(1).map((message) => `${message.type}:${message.id}`);
-  assert.deepEqual(order, ["start:1", "answer:1", "start:2", "answer:2", "start:3", "answer:3"]);
-  const [, drawnA, refusedB] = answers();
+  // Data comes with a chart's first job and stays for its later ones; a
+  // dataset over the budget fails that chart's jobs with its sentence.
+  send(job(2, "a", { datasets: { calls: { rows: structuredClone(calls) } } }));
+  send(job(3, "b", { datasets: { calls: { rows: [{ payload: Array(3_000_000).fill(1) }] } } }));
+  send(job(4, "a"));
+  await wait(4);
+  assert.deepEqual(
+    answers().map((answer) => answer.id),
+    [1, 2, 3, 4],
+  );
+  const [, drawnA, refusedB, againA] = answers();
   assert.ok(drawnA.scene && drawnA.width > 0 && drawnA.height > 0);
+  assert.ok(againA.scene, "the second job reads the data the first one brought");
   assert.equal(refusedB.error.refusal, true);
   assert.match(refusedB.error.message, /more than 2,000,000 cells/);
   // Dropped data draws nothing; data the page couldn't send fails with why.
   send({ type: "drop", key: "a" });
-  send({ type: "data", key: "c", failed: "Function object could not be cloned." });
-  send({ type: "draw", id: 5, key: "a", spec: stacked, theme, width: 300 });
-  send({ type: "draw", id: 6, key: "c", spec: stacked, theme, width: 300 });
-  await wait(5);
-  assert.equal(answers()[3].error.message, "This chart has no data yet.");
-  assert.deepEqual(answers()[4].error, {
+  send(job(5, "a"));
+  send(job(6, "c", { failed: "Function object could not be cloned." }));
+  await wait(6);
+  assert.equal(answers()[4].error.message, "This chart has no data yet.");
+  assert.deepEqual(answers()[5].error, {
     message: "Function object could not be cloned.",
     refusal: false,
   });
-  // While one draw runs, a redraw and then a first draw queue: the first
-  // draw goes ahead.
-  posted.length = 0;
-  send({ type: "data", key: "a", datasets: { calls: { rows: structuredClone(calls) } } });
-  send({ type: "draw", id: 7, key: "a", spec: stacked, theme, width: 300 });
-  send({ type: "draw", id: 8, key: "a", spec: stacked, theme, width: 200, redraw: true });
-  send({ type: "draw", id: 9, key: "a", spec: stacked, theme, width: 300 });
-  await wait(3);
-  assert.deepEqual(
-    posted.filter((message) => message.type === "start").map((message) => message.id),
-    [7, 9, 8],
-  );
 });
 
 test("the scene that crosses to the page keeps tooltips and cursors, and nothing that links or loads", () => {
@@ -2227,7 +2217,6 @@ class SceneWorker extends EventTarget {
   postMessage(message) {
     if (message.type !== "draw") return;
     setTimeout(() => {
-      this.emit({ type: "start", id: message.id });
       this.emit({ type: "answer", id: message.id, ...this.answer() });
     });
   }

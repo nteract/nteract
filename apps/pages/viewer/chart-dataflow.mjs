@@ -522,39 +522,44 @@ const failure = (error) => ({
 });
 
 /**
- * Answer the page's messages in `scope` (the Worker's global). One Worker
- * serves several charts, each under its own `key`:
+ * Answer the page's messages in `scope` (the Worker's global). The page
+ * (chart-pool.mjs) hands this Worker one job at a time:
  *
- * - `{ type: "data", key, datasets }` stores a chart's data; a dataset that
- *   can't be read fails that chart's draws with its sentence. `{ type:
- *   "data", key, failed }` says the page couldn't send it.
- * - `{ type: "drop", key }` forgets it.
- * - `{ type: "draw", id, key, spec, theme, width, redraw }` queues a draw.
- *   Draws run one at a time, in order, except that first draws go ahead of
- *   redraws (`redraw: true`, a chart already on screen at a new width or
- *   theme). Each posts `{ type: "start", id }` as it begins,
- *   so the page times the draw, not the queue, and then `{ type: "answer",
- *   id, scene, width, height, origin, background }` or `{ type: "answer", id,
- *   error }`.
- * - `{ type: "cancel", id }` drops a draw that hasn't started.
+ * - `{ type: "draw", id, key, spec, theme, width, datasets? }` draws chart
+ *   `key`. `datasets` comes with the first job for a chart and is decoded
+ *   and kept for its later jobs; a dataset that can't be read fails that
+ *   chart's jobs with its sentence. `failed` in place of `datasets` says the
+ *   page couldn't send them. Each job is answered with `{ type: "answer",
+ *   id, scene, width, height, origin, background }` or `{ type: "answer",
+ *   id, error }`.
+ * - `{ type: "drop", key }` forgets a chart's data.
  *
- * `{ type: "ready" }` is posted once, when the script has loaded.
+ * `{ type: "ready" }` is posted once, when the script has loaded. Jobs that
+ * arrive while one runs wait their turn, in order.
  */
 export function serveCharts(scope, options = {}) {
   const charts = new Map();
   const queue = [];
   let running = false;
+  const take = (message) => {
+    if (typeof message.failed === "string")
+      charts.set(message.key, { data: null, error: new Error(message.failed) });
+    else if (message.datasets !== undefined)
+      try {
+        charts.set(message.key, { data: readDatasets(message.datasets), error: null });
+      } catch (error) {
+        charts.set(message.key, { data: null, error });
+      }
+  };
   const pump = async () => {
     if (running) return;
     running = true;
     try {
       while (queue.length) {
-        // First come, first served, except that a chart's first draw goes
-        // ahead of a redraw of one already on screen.
-        const first = queue.findIndex((draw) => !draw.redraw);
-        const [{ id, key, spec, theme, width }] = queue.splice(Math.max(first, 0), 1);
-        scope.postMessage({ type: "start", id });
+        const message = queue.shift();
+        const { id, key, spec, theme, width } = message;
         try {
+          take(message);
           const chart = charts.get(key);
           if (!chart) throw new ChartRefusal("This chart has no data yet.");
           if (chart.error) throw chart.error;
@@ -569,30 +574,10 @@ export function serveCharts(scope, options = {}) {
     }
   };
   scope.addEventListener("message", ({ data: message }) => {
-    switch (message?.type) {
-      case "data":
-        if (typeof message.failed === "string") {
-          charts.set(message.key, { data: null, error: new Error(message.failed) });
-          return;
-        }
-        try {
-          charts.set(message.key, { data: readDatasets(message.datasets), error: null });
-        } catch (error) {
-          charts.set(message.key, { data: null, error });
-        }
-        return;
-      case "drop":
-        charts.delete(message.key);
-        return;
-      case "draw":
-        queue.push(message);
-        pump();
-        return;
-      case "cancel": {
-        const index = queue.findIndex((draw) => draw.id === message.id);
-        if (index >= 0) queue.splice(index, 1);
-        return;
-      }
+    if (message?.type === "drop") charts.delete(message.key);
+    else if (message?.type === "draw") {
+      queue.push(message);
+      pump();
     }
   });
   scope.postMessage({ type: "ready" });

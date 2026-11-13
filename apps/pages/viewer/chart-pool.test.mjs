@@ -5,13 +5,14 @@ import {
   LATE_MS,
   TIMED_OUT,
   WORKER_DIDNT_START,
+  WORKER_FAILED,
   chartPool,
   createChartPool,
   initialPool,
 } from "./chart-pool.mjs";
 
 /** Apply `events` from `state`; return the last state and every effect. */
-function play(events, state = initialPool(3)) {
+function play(events, state = initialPool(1)) {
   const effects = [];
   for (const event of events) {
     const result = chartPool(state, event);
@@ -21,198 +22,302 @@ function play(events, state = initialPool(3)) {
   return { state, effects };
 }
 const types = (effects) => effects.map((effect) => effect.type);
-const draw = (id, key) => ({ type: "draw", id, key, message: { type: "draw", id, key } });
-const posted = (effects) =>
-  effects.filter((effect) => effect.type === "post").map((effect) => effect.message);
+const draw = (id, key, redraw = false) => ({
+  type: "draw",
+  id,
+  key,
+  redraw,
+  message: { spec: id },
+});
+const gen = (state, slot = 0) => state.slots[slot]?.gen ?? 0;
 
-test("attach pins charts to the least-loaded Worker, adding Workers up to the size, and starts none", () => {
-  const { state, effects } = play(
-    ["a", "b", "c", "d", "e"].map((key) => ({ type: "attach", key })),
-  );
-  assert.deepEqual(effects, []);
-  assert.deepEqual(
-    state.slots.map((slot) => slot.keys),
-    [["a", "d"], ["b", "e"], ["c"]],
-  );
-  assert.ok(state.slots.every((slot) => slot.phase === "down"));
-  // A second attach of the same key changes nothing.
-  assert.equal(chartPool(state, { type: "attach", key: "a" }).state, state);
-  // A size of one pins every chart to one Worker.
-  const one = play(
-    ["a", "b"].map((key) => ({ type: "attach", key })),
-    initialPool(1),
-  ).state;
-  assert.deepEqual(
-    one.slots.map((slot) => slot.keys),
-    [["a", "b"]],
-  );
+/** One line for a state and the results its step delivered: the hidden
+ * flag, slot 0's phase, each job's phase by id, and each delivery's kind. */
+function summary(state, effects) {
+  const jobs = [...state.jobs]
+    .sort(([a], [b]) => a - b)
+    .map(([id, job]) => `${id}:${job.phase}`)
+    .join(" ");
+  const delivered = effects
+    .filter((effect) => effect.type === "deliver")
+    .map(
+      ({ id, result }) =>
+        `${id}=${result.timedOut ? "timeout" : result.error ? "error" : "answer"}`,
+    )
+    .join(" ");
+  return `${state.hidden ? "hidden " : ""}${state.slots[0].phase} ${jobs || "-"} ${delivered || "-"}`;
+}
+
+// The states a one-Worker pool reaches with charts "a" and "b" attached.
+const attached = play([
+  { type: "attach", key: "a" },
+  { type: "attach", key: "b" },
+]).state;
+const STATES = {};
+STATES.down = attached;
+STATES.starting = play([draw(1, "a")], STATES.down).state;
+STATES.busy = play([{ type: "ready", slot: 0, gen: 1 }], STATES.starting).state;
+STATES.idle = play([{ type: "answer", slot: 0, gen: 1, id: 1, result: {} }], STATES.busy).state;
+STATES["busy+waiting"] = play([draw(2, "b")], STATES.busy).state;
+STATES["abandoned+waiting"] = play([{ type: "cancel", id: 1 }], STATES["busy+waiting"]).state;
+STATES.hidden = play([{ type: "hide" }], STATES["busy+waiting"]).state;
+
+const EVENTS = {
+  "draw a": () => draw(3, "a"),
+  "redraw a": () => draw(3, "a", true),
+  "cancel 1": () => ({ type: "cancel", id: 1 }),
+  "cancel 2": () => ({ type: "cancel", id: 2 }),
+  ready: (state) => ({ type: "ready", slot: 0, gen: gen(state) }),
+  "answer 1": (state) => ({ type: "answer", slot: 0, gen: gen(state), id: 1, result: {} }),
+  "answer 2": (state) => ({ type: "answer", slot: 0, gen: gen(state), id: 2, result: {} }),
+  "timeout 1": () => ({ type: "jobTimeout", id: 1 }),
+  failed: (state) => ({ type: "failed", slot: 0, gen: gen(state), message: "" }),
+  readyTimeout: (state) => ({ type: "readyTimeout", slot: 0, gen: gen(state) }),
+  hide: () => ({ type: "hide" }),
+  show: () => ({ type: "show" }),
+  "detach a": () => ({ type: "detach", key: "a" }),
+  "detach b": () => ({ type: "detach", key: "b" }),
+  "attach c": () => ({ type: "attach", key: "c" }),
+};
+
+// Every state against every event: the slot phase, the jobs, and what was
+// delivered. A stale or unknown answer kills the Worker (WORKER_FAILED).
+const TABLE = {
+  down: {
+    "draw a": "starting 3:waiting -",
+    "redraw a": "starting 3:waiting -",
+    "cancel 1": "down - -",
+    "cancel 2": "down - -",
+    ready: "down - -",
+    "answer 1": "down - -",
+    "answer 2": "down - -",
+    "timeout 1": "down - -",
+    failed: "down - -",
+    readyTimeout: "down - -",
+    hide: "hidden down - -",
+    show: "down - -",
+    "detach a": "down - -",
+    "detach b": "down - -",
+    "attach c": "down - -",
+  },
+  starting: {
+    "draw a": "starting 1:waiting 3:waiting -",
+    "redraw a": "starting 1:waiting 3:waiting -",
+    "cancel 1": "starting - -",
+    "cancel 2": "starting 1:waiting -",
+    ready: "busy 1:running -",
+    "answer 1": "down - 1=error",
+    "answer 2": "down - 1=error",
+    "timeout 1": "starting 1:waiting -",
+    failed: "down - 1=error",
+    readyTimeout: "down - 1=error",
+    hide: "hidden down 1:waiting -",
+    show: "starting 1:waiting -",
+    "detach a": "starting - -",
+    "detach b": "starting 1:waiting -",
+    "attach c": "starting 1:waiting -",
+  },
+  idle: {
+    "draw a": "busy 3:running -",
+    "redraw a": "busy 3:running -",
+    "cancel 1": "idle - -",
+    "cancel 2": "idle - -",
+    ready: "idle - -",
+    "answer 1": "down - -",
+    "answer 2": "down - -",
+    "timeout 1": "idle - -",
+    failed: "down - -",
+    readyTimeout: "idle - -",
+    hide: "hidden idle - -",
+    show: "idle - -",
+    "detach a": "idle - -",
+    "detach b": "idle - -",
+    "attach c": "idle - -",
+  },
+  busy: {
+    "draw a": "busy 1:running 3:waiting -",
+    "redraw a": "busy 1:running 3:waiting -",
+    "cancel 1": "down - -",
+    "cancel 2": "busy 1:running -",
+    ready: "busy 1:running -",
+    "answer 1": "idle - 1=answer",
+    "answer 2": "down - 1=error",
+    "timeout 1": "down - 1=timeout",
+    failed: "down - 1=error",
+    readyTimeout: "busy 1:running -",
+    hide: "hidden down 1:waiting -",
+    show: "busy 1:running -",
+    "detach a": "busy 1:abandoned -",
+    "detach b": "busy 1:running -",
+    "attach c": "busy 1:running -",
+  },
+  "busy+waiting": {
+    "draw a": "busy 1:running 2:waiting 3:waiting -",
+    "redraw a": "busy 1:running 2:waiting 3:waiting -",
+    "cancel 1": "busy 1:abandoned 2:waiting -",
+    "cancel 2": "busy 1:running -",
+    ready: "busy 1:running 2:waiting -",
+    "answer 1": "busy 2:running 1=answer",
+    "answer 2": "starting 2:waiting 1=error",
+    "timeout 1": "starting 2:waiting 1=timeout",
+    failed: "starting 2:waiting 1=error",
+    readyTimeout: "busy 1:running 2:waiting -",
+    hide: "hidden down 1:waiting 2:waiting -",
+    show: "busy 1:running 2:waiting -",
+    "detach a": "busy 1:abandoned 2:waiting -",
+    "detach b": "busy 1:running -",
+    "attach c": "busy 1:running 2:waiting -",
+  },
+  "abandoned+waiting": {
+    "draw a": "busy 1:abandoned 2:waiting 3:waiting -",
+    "redraw a": "busy 1:abandoned 2:waiting 3:waiting -",
+    "cancel 1": "busy 1:abandoned 2:waiting -",
+    "cancel 2": "busy 1:abandoned -",
+    ready: "busy 1:abandoned 2:waiting -",
+    "answer 1": "busy 2:running -",
+    "answer 2": "starting 2:waiting -",
+    "timeout 1": "starting 2:waiting -",
+    failed: "starting 2:waiting -",
+    readyTimeout: "busy 1:abandoned 2:waiting -",
+    hide: "hidden down 2:waiting -",
+    show: "busy 1:abandoned 2:waiting -",
+    "detach a": "busy 1:abandoned 2:waiting -",
+    "detach b": "busy 1:abandoned -",
+    "attach c": "busy 1:abandoned 2:waiting -",
+  },
+  hidden: {
+    "draw a": "hidden down 1:waiting 2:waiting 3:waiting -",
+    "redraw a": "hidden down 1:waiting 2:waiting 3:waiting -",
+    "cancel 1": "hidden down 2:waiting -",
+    "cancel 2": "hidden down 1:waiting -",
+    ready: "hidden down 1:waiting 2:waiting -",
+    "answer 1": "hidden down 1:waiting 2:waiting -",
+    "answer 2": "hidden down 1:waiting 2:waiting -",
+    "timeout 1": "hidden down 1:waiting 2:waiting -",
+    failed: "hidden down 1:waiting 2:waiting -",
+    readyTimeout: "hidden down 1:waiting 2:waiting -",
+    hide: "hidden down 1:waiting 2:waiting -",
+    show: "starting 1:waiting 2:waiting -",
+    "detach a": "hidden down 2:waiting -",
+    "detach b": "hidden down 1:waiting -",
+    "attach c": "hidden down 1:waiting 2:waiting -",
+  },
+};
+
+test("the states the table starts from are the ones they're named for", () => {
+  assert.equal(summary(STATES.down, []), "down - -");
+  assert.equal(summary(STATES.starting, []), "starting 1:waiting -");
+  assert.equal(summary(STATES.busy, []), "busy 1:running -");
+  assert.equal(summary(STATES.idle, []), "idle - -");
+  assert.equal(summary(STATES["busy+waiting"], []), "busy 1:running 2:waiting -");
+  assert.equal(summary(STATES["abandoned+waiting"], []), "busy 1:abandoned 2:waiting -");
+  assert.equal(summary(STATES.hidden, []), "hidden down 1:waiting 2:waiting -");
 });
 
-test("a first draw starts its Worker, sends every pinned chart's data, then the draw", () => {
+for (const [name, start] of Object.entries(STATES))
+  test(`every event from ${name}`, () => {
+    assert.deepEqual(Object.keys(TABLE[name]).sort(), Object.keys(EVENTS).sort());
+    for (const [label, event] of Object.entries(EVENTS)) {
+      const { state, effects } = chartPool(start, event(start));
+      assert.equal(summary(state, effects), TABLE[name][label], `${name} + ${label}`);
+    }
+  });
+
+test("a job carries its chart's data the first time a Worker draws that chart", () => {
   const { state, effects } = play([
     { type: "attach", key: "a" },
-    { type: "attach", key: "b" },
-    { type: "attach", key: "c" },
-    { type: "attach", key: "d" },
-    draw(1, "a"),
-  ]);
-  assert.deepEqual(effects, [
-    { type: "spawn", slot: 0, gen: 1 },
-    { type: "timer", name: "ready:0", kind: "ready", slot: 0, gen: 1 },
-    { type: "data", slot: 0, gen: 1, key: "a" },
-    { type: "data", slot: 0, gen: 1, key: "d" },
-    { type: "post", slot: 0, gen: 1, message: { type: "draw", id: 1, key: "a" } },
-  ]);
-  assert.equal(state.slots[0].phase, "starting");
-  assert.equal(state.draws[1].phase, "queued");
-  // A chart attached to a running Worker sends its data at once.
-  const later = chartPool(state, { type: "attach", key: "e" });
-  assert.equal(later.state.keys.e, 1);
-  assert.deepEqual(later.effects, []);
-  const joined = play(
-    [
-      { type: "detach", key: "b" },
-      { type: "attach", key: "f" },
-    ],
-    state,
-  );
-  assert.equal(joined.state.keys.f, 1);
-});
-
-test("ready, start and answer move a draw from queued to delivered; stale Workers are ignored", () => {
-  let { state } = play([{ type: "attach", key: "a" }, draw(1, "a")]);
-  let step = chartPool(state, { type: "ready", slot: 0, gen: 1 });
-  assert.deepEqual(step.effects, [{ type: "clear", name: "ready:0" }]);
-  state = step.state;
-  assert.equal(state.slots[0].phase, "ready");
-  // A second ready, a stale start and an answer before its start change nothing.
-  assert.equal(chartPool(state, { type: "ready", slot: 0, gen: 1 }).state, state);
-  assert.equal(chartPool(state, { type: "start", slot: 0, gen: 0, id: 1 }).state, state);
-  assert.equal(
-    chartPool(state, { type: "answer", slot: 0, gen: 1, id: 1, result: {} }).state,
-    state,
-  );
-  step = chartPool(state, { type: "start", slot: 0, gen: 1, id: 1 });
-  assert.deepEqual(step.effects, [{ type: "timer", name: "draw:1", kind: "draw", id: 1 }]);
-  state = step.state;
-  assert.equal(state.draws[1].phase, "running");
-  step = chartPool(state, { type: "answer", slot: 0, gen: 1, id: 1, result: { scene: 1 } });
-  assert.deepEqual(step.effects, [
-    { type: "clear", name: "draw:1" },
-    { type: "deliver", id: 1, result: { scene: 1 } },
-  ]);
-  assert.deepEqual(step.state.draws, {});
-  // A draw for a chart that isn't attached does nothing.
-  assert.equal(chartPool(step.state, draw(9, "nobody")).state, step.state);
-});
-
-test("cancel drops a held or queued draw, abandons a running one others wait behind, or restarts", () => {
-  const base = play([
-    { type: "attach", key: "a" },
-    { type: "attach", key: "b" },
-    { type: "attach", key: "c" },
-    { type: "attach", key: "d" },
     draw(1, "a"),
     { type: "ready", slot: 0, gen: 1 },
-  ]).state;
-  // Queued: the Worker is told to skip it.
-  const queued = chartPool(base, { type: "cancel", id: 1 });
-  assert.deepEqual(posted(queued.effects), [{ type: "cancel", id: 1 }]);
-  assert.deepEqual(queued.state.draws, {});
-  // Running, alone on its Worker: the Worker restarts with the newer draw.
-  const running = play([{ type: "start", slot: 0, gen: 1, id: 1 }, draw(2, "a")], base).state;
-  const alone = chartPool(running, { type: "cancel", id: 1 });
-  assert.deepEqual(types(alone.effects), [
-    "clear",
-    "terminate",
-    "clear",
-    "spawn",
-    "timer",
-    "data",
-    "data",
-    "post",
   ]);
-  assert.deepEqual(posted(alone.effects), [{ type: "draw", id: 2, key: "a" }]);
-  assert.equal(alone.state.slots[0].gen, 2);
-  // Running, with another chart's draw queued behind: it runs out, abandoned.
-  const shared = play([{ type: "start", slot: 0, gen: 1, id: 1 }, draw(3, "d")], base).state;
-  const abandoned = chartPool(shared, { type: "cancel", id: 1 });
-  assert.deepEqual(abandoned.effects, []);
-  assert.equal(abandoned.state.draws[1].phase, "abandoned");
-  // Its answer is dropped, not delivered.
-  const late = chartPool(abandoned.state, { type: "answer", slot: 0, gen: 1, id: 1, result: {} });
-  assert.deepEqual(late.effects, [{ type: "clear", name: "draw:1" }]);
-  // Cancelling an abandoned or unknown draw does nothing.
-  assert.equal(chartPool(abandoned.state, { type: "cancel", id: 1 }).state, abandoned.state);
-  assert.equal(chartPool(base, { type: "cancel", id: 99 }).state, base);
-  // Held: dropped with no message.
-  const hidden = play([{ type: "hide" }, draw(4, "b")], base).state;
-  const held = chartPool(hidden, { type: "cancel", id: 4 });
-  assert.deepEqual(held.effects, []);
-  assert.equal(held.state.draws[4], undefined);
+  const job = effects.find((effect) => effect.type === "job");
+  assert.deepEqual(job, {
+    type: "job",
+    slot: 0,
+    gen: 1,
+    id: 1,
+    key: "a",
+    withData: true,
+    message: { spec: 1 },
+  });
+  assert.deepEqual(effects.at(-1), { type: "timer", name: "job:1", kind: "job", id: 1 });
+  const again = play([{ type: "answer", slot: 0, gen: 1, id: 1, result: {} }, draw(2, "a")], state);
+  assert.equal(again.effects.find((effect) => effect.type === "job").withData, false);
+  // A replacement Worker gets the data again.
+  const replaced = play(
+    [{ type: "jobTimeout", id: 2 }, draw(3, "a"), { type: "ready", slot: 0, gen: 2 }],
+    again.state,
+  );
+  assert.equal(replaced.effects.find((effect) => effect.type === "job").withData, true);
 });
 
-test("a timeout fails only its chart; the Worker is replaced and the others draw there", () => {
+test("first draws go ahead of redraws, then jobs run in the order they came", () => {
   const { state } = play([
     { type: "attach", key: "a" },
     { type: "attach", key: "b" },
     { type: "attach", key: "c" },
-    { type: "attach", key: "d" },
     draw(1, "a"),
-    draw(2, "d"),
     { type: "ready", slot: 0, gen: 1 },
-    { type: "start", slot: 0, gen: 1, id: 1 },
+    draw(2, "a", true),
+    draw(3, "b"),
+    draw(4, "c"),
   ]);
-  const step = chartPool(state, { type: "drawTimeout", id: 1 });
-  assert.deepEqual(step.effects[0], {
-    type: "deliver",
-    id: 1,
-    result: { error: { message: TIMED_OUT, refusal: true }, timedOut: true },
-  });
-  assert.deepEqual(types(step.effects.slice(1)), [
-    "terminate",
-    "clear",
-    "spawn",
-    "timer",
-    "data",
-    "data",
-    "post",
-  ]);
-  assert.deepEqual(posted(step.effects), [{ type: "draw", id: 2, key: "d" }]);
-  assert.equal(step.state.draws[2].phase, "queued");
-  assert.equal(step.state.slots[0].gen, 2);
-  // Late messages from the old Worker are ignored.
-  assert.equal(
-    chartPool(step.state, { type: "answer", slot: 0, gen: 1, id: 2, result: {} }).state,
-    step.state,
-  );
-  // A timeout for a draw that already answered does nothing.
-  assert.equal(chartPool(step.state, { type: "drawTimeout", id: 1 }).state, step.state);
-  // An abandoned draw's timeout restarts the Worker and delivers nothing.
-  const abandoned = play([{ type: "cancel", id: 1 }], state).state;
-  const quiet = chartPool(abandoned, { type: "drawTimeout", id: 1 });
-  assert.ok(!types(quiet.effects).includes("deliver"));
-  assert.ok(types(quiet.effects).includes("spawn"));
-  // A chart alone on its Worker: the Worker stops, and its next draw starts
-  // another.
-  const alone = play([
+  const order = [];
+  let next = state;
+  for (const id of [1, 3, 4, 2]) {
+    const step = chartPool(next, { type: "answer", slot: 0, gen: 1, id, result: {} });
+    next = step.state;
+    const job = step.effects.find((effect) => effect.type === "job");
+    if (job) order.push(job.id);
+  }
+  assert.deepEqual(order, [3, 4, 2]);
+});
+
+test("the last chart to leave a Worker terminates it, abandoned job and all", () => {
+  const { state } = play([
     { type: "attach", key: "a" },
     draw(1, "a"),
     { type: "ready", slot: 0, gen: 1 },
-    { type: "start", slot: 0, gen: 1, id: 1 },
-    { type: "drawTimeout", id: 1 },
   ]);
-  assert.deepEqual(types(alone.effects).slice(-3), ["deliver", "terminate", "clear"]);
-  assert.equal(alone.state.slots[0].phase, "down");
-  assert.deepEqual(chartPool(alone.state, draw(2, "a")).effects[0], {
-    type: "spawn",
-    slot: 0,
-    gen: 2,
-  });
+  const step = chartPool(state, { type: "detach", key: "a" });
+  assert.deepEqual(types(step.effects), ["terminate", "clear", "clear"]);
+  assert.equal(step.state.slots[0].phase, "down");
+  assert.equal(step.state.jobs.size, 0);
+  // A message from the terminated Worker is ignored.
+  assert.equal(
+    chartPool(step.state, { type: "answer", slot: 0, gen: 1, id: 1, result: {} }).state,
+    step.state,
+  );
+  // A detached chart sends a drop to a Worker that holds its data.
+  const two = play(
+    [
+      { type: "attach", key: "b" },
+      { type: "answer", slot: 0, gen: 1, id: 1, result: {} },
+    ],
+    state,
+  );
+  assert.deepEqual(chartPool(two.state, { type: "detach", key: "a" }).effects, [
+    { type: "post", slot: 0, gen: 1, message: { type: "drop", key: "a" } },
+  ]);
+  assert.throws(() => chartPool(state, { type: "nonsense" }), /unknown chart pool event/);
 });
 
-for (const size of [1, 2]) {
-  test(`at size ${size}, charts pin, a hung Worker is replaced, and the others send their data again`, () => {
+test("ids are compared exactly: a draw id is never matched by its string", () => {
+  const { state } = play([
+    { type: "attach", key: "a" },
+    draw(1, "a"),
+    { type: "ready", slot: 0, gen: 1 },
+  ]);
+  const step = chartPool(state, { type: "answer", slot: 0, gen: 1, id: "1", result: {} });
+  assert.deepEqual(
+    step.effects
+      .filter((effect) => effect.type === "deliver")
+      .map((effect) => effect.result.error.message),
+    [WORKER_FAILED],
+  );
+});
+
+for (const size of [1, 2])
+  test(`at size ${size}: charts pin, a hung Worker is replaced, and only the charts waiting on it move`, () => {
     const keys = ["a", "b", "c", "d"];
     const { state, effects } = play(
       [
@@ -221,7 +326,6 @@ for (const size of [1, 2]) {
       ],
       initialPool(size),
     );
-    // Round-robin over `size` Workers, each started by its first draw.
     assert.deepEqual(
       state.slots.map((slot) => slot.keys),
       size === 1
@@ -232,154 +336,31 @@ for (const size of [1, 2]) {
           ],
     );
     assert.equal(effects.filter((effect) => effect.type === "spawn").length, size);
-    // "a" hangs on Worker 0; "c" (or every chart, at size 1) waits behind it.
-    const hung = play(
-      [
-        ...state.slots.map((_, slot) => ({ type: "ready", slot, gen: 1 })),
-        { type: "start", slot: 0, gen: 1, id: 1 },
-        { type: "drawTimeout", id: 1 },
-      ],
+    const ready = play(
+      state.slots.map((_, slot) => ({ type: "ready", slot, gen: 1 })),
       state,
     );
-    const delivered = hung.effects.filter((effect) => effect.type === "deliver");
+    // Each Worker took its first chart's job; "a" hangs on Worker 0.
     assert.deepEqual(
-      delivered.map((effect) => effect.id),
+      ready.effects.filter((effect) => effect.type === "job").map((effect) => effect.id),
+      size === 1 ? [1] : [1, 2],
+    );
+    const hung = chartPool(ready.state, { type: "jobTimeout", id: 1 });
+    assert.deepEqual(
+      hung.effects.filter((effect) => effect.type === "deliver").map((effect) => effect.id),
       [1],
     );
-    const spawned = hung.effects.filter((effect) => effect.type === "spawn");
-    assert.deepEqual(spawned, [{ type: "spawn", slot: 0, gen: 2 }]);
-    const pinned = state.slots[0].keys;
     assert.deepEqual(
-      hung.effects.filter((effect) => effect.type === "data").map((effect) => effect.key),
-      pinned,
-      "every chart pinned there sends its data to the replacement",
+      hung.effects.filter((effect) => effect.type === "spawn"),
+      [{ type: "spawn", slot: 0, gen: 2 }],
     );
-    assert.deepEqual(
-      posted(hung.effects).map((message) => message.id),
-      pinned.filter((key) => key !== "a").map((key) => keys.indexOf(key) + 1),
-      "and its waiting draws",
-    );
-    // The other Worker, at size 2, is untouched.
-    if (size === 2) assert.equal(hung.state.slots[1].gen, 1);
+    // The replacement takes the next job pinned to it, with that chart's data.
+    const next = chartPool(hung.state, { type: "ready", slot: 0, gen: 2 });
+    const job = next.effects.find((effect) => effect.type === "job");
+    assert.equal(job.key, size === 1 ? "b" : "c");
+    assert.equal(job.withData, true);
+    if (size === 2) assert.equal(next.state.slots[1].gen, 1, "the other Worker is untouched");
   });
-}
-
-test("a Worker that fails or never says ready fails every draw on it, and the next draw starts another", () => {
-  const { state } = play([
-    { type: "attach", key: "a" },
-    { type: "attach", key: "b" },
-    { type: "attach", key: "c" },
-    { type: "attach", key: "d" },
-    draw(1, "a"),
-    draw(2, "d"),
-  ]);
-  for (const event of [
-    { type: "readyTimeout", slot: 0, gen: 1 },
-    { type: "failed", slot: 0, gen: 1, message: "" },
-  ]) {
-    const step = chartPool(state, event);
-    const delivered = step.effects.filter((effect) => effect.type === "deliver");
-    assert.deepEqual(
-      delivered.map((effect) => [effect.id, effect.result.error.message]),
-      [
-        [1, WORKER_DIDNT_START],
-        [2, WORKER_DIDNT_START],
-      ],
-    );
-    assert.equal(step.state.slots[0].phase, "down");
-    assert.deepEqual(step.state.draws, {});
-    const again = chartPool(step.state, draw(3, "a"));
-    assert.deepEqual(again.effects[0], { type: "spawn", slot: 0, gen: 2 });
-  }
-  // A failure names its cause; a readyTimeout after ready, or from an old
-  // Worker, does nothing.
-  const named = chartPool(state, { type: "failed", slot: 0, gen: 1, message: "Script failed." });
-  assert.equal(
-    named.effects.find((effect) => effect.type === "deliver").result.error.message,
-    "Script failed.",
-  );
-  const ready = play([{ type: "ready", slot: 0, gen: 1 }], state).state;
-  assert.equal(chartPool(ready, { type: "readyTimeout", slot: 0, gen: 1 }).state, ready);
-  assert.equal(chartPool(state, { type: "failed", slot: 0, gen: 0 }).state, state);
-});
-
-test("hide terminates busy Workers and holds their draws; show starts them again", () => {
-  const { state } = play([
-    { type: "attach", key: "a" },
-    { type: "attach", key: "b" },
-    draw(1, "a"),
-    { type: "ready", slot: 0, gen: 1 },
-    { type: "start", slot: 0, gen: 1, id: 1 },
-    draw(2, "b"),
-    { type: "ready", slot: 1, gen: 1 },
-    { type: "start", slot: 1, gen: 1, id: 2 },
-    { type: "answer", slot: 1, gen: 1, id: 2, result: {} },
-  ]);
-  const hidden = chartPool(state, { type: "hide" });
-  // Only the busy Worker stops; the idle one keeps its data.
-  assert.deepEqual(types(hidden.effects), ["terminate", "clear", "clear"]);
-  assert.equal(hidden.state.slots[0].phase, "down");
-  assert.equal(hidden.state.slots[1].phase, "ready");
-  assert.equal(hidden.state.draws[1].phase, "held");
-  assert.equal(chartPool(hidden.state, { type: "hide" }).state, hidden.state);
-  // A draw while hidden is held without a message.
-  const more = chartPool(hidden.state, draw(3, "b"));
-  assert.deepEqual(more.effects, []);
-  const shown = chartPool(more.state, { type: "show" });
-  assert.deepEqual(posted(shown.effects), [
-    { type: "draw", id: 1, key: "a" },
-    { type: "draw", id: 3, key: "b" },
-  ]);
-  assert.deepEqual(types(shown.effects).slice(0, 3), ["spawn", "timer", "data"]);
-  assert.equal(chartPool(shown.state, { type: "show" }).state, shown.state);
-  // An abandoned draw is dropped on hide.
-  const abandoned = play(
-    [
-      { type: "attach", key: "a" },
-      { type: "attach", key: "b" },
-      draw(1, "a"),
-      draw(2, "b"),
-      { type: "ready", slot: 0, gen: 1 },
-      { type: "start", slot: 0, gen: 1, id: 1 },
-      { type: "cancel", id: 1 },
-    ],
-    initialPool(1),
-  ).state;
-  assert.equal(abandoned.draws[1].phase, "abandoned");
-  const dropped = chartPool(abandoned, { type: "hide" }).state;
-  assert.equal(dropped.draws[1], undefined);
-  assert.equal(dropped.draws[2].phase, "held");
-});
-
-test("detach drops a chart's draws and data; the last chart on a Worker terminates it", () => {
-  const { state } = play([
-    { type: "attach", key: "a" },
-    { type: "attach", key: "b" },
-    { type: "attach", key: "c" },
-    { type: "attach", key: "d" },
-    draw(1, "a"),
-    draw(2, "d"),
-    { type: "ready", slot: 0, gen: 1 },
-    { type: "start", slot: 0, gen: 1, id: 1 },
-  ]);
-  // "d" leaves with a queued draw: cancel it and drop its data.
-  const d = chartPool(state, { type: "detach", key: "d" });
-  assert.deepEqual(posted(d.effects), [
-    { type: "cancel", id: 2 },
-    { type: "drop", key: "d" },
-  ]);
-  assert.deepEqual(d.state.slots[0].keys, ["a"]);
-  // "a" leaves with a running draw, the last on its Worker: terminated.
-  const a = chartPool(d.state, { type: "detach", key: "a" });
-  assert.deepEqual(types(a.effects), ["post", "terminate", "clear", "clear"]);
-  assert.equal(a.state.slots[0].phase, "down");
-  assert.deepEqual(a.state.draws, {});
-  assert.equal(chartPool(a.state, { type: "detach", key: "a" }).state, a.state);
-  // A held draw leaves with its chart.
-  const hidden = play([{ type: "hide" }, draw(3, "b"), { type: "detach", key: "b" }], state).state;
-  assert.equal(hidden.draws[3], undefined);
-  assert.throws(() => chartPool(state, { type: "nonsense" }), /unknown chart pool event/);
-});
 
 /** A Worker the interpreter drives, recording what it's sent. */
 class FakeWorker extends EventTarget {
@@ -401,7 +382,7 @@ class FakeWorker extends EventTarget {
   }
 }
 
-test("the interpreter times a draw from its start, with one grace beat when the page ran late", () => {
+test("the interpreter posts a job once its Worker is ready and times it from the post, with one grace beat", () => {
   mock.timers.enable({ apis: ["setTimeout"] });
   try {
     const log = [];
@@ -410,38 +391,34 @@ test("the interpreter times a draw from its start, with one grace beat when the 
     const results = [];
     client.draw({ spec: {} }).subscribe((result) => results.push(result));
     const [worker] = log;
-    assert.deepEqual(
-      worker.sent.map(({ message }) => message.type),
-      ["data", "draw"],
-    );
+    // A cold Worker: nothing is posted, and no job timer runs, before ready.
+    mock.timers.tick(3000);
+    assert.deepEqual(worker.sent, []);
     worker.reply({ type: "ready" });
-    // Queued for a long time: no timer runs until the Worker starts the draw.
-    mock.timers.tick(5000);
-    assert.deepEqual(results, []);
-    const id = worker.sent[1].message.id;
-    worker.reply({ type: "start", id });
+    assert.deepEqual(
+      worker.sent.map(({ message }) => [message.type, Object.hasOwn(message, "datasets")]),
+      [["draw", true]],
+    );
     mock.timers.tick(999);
     assert.deepEqual(results, []);
     mock.timers.tick(1);
     assert.equal(results[0].error.message, TIMED_OUT);
+    assert.equal(results[0].timedOut, true);
     assert.equal(worker.terminated, true);
     assert.equal(log.length, 1, "no replacement waits for a chart alone");
-    // Its next draw starts a Worker with its data.
+    // Its next draw starts a Worker, and sends the data with the job.
     client.draw({ spec: {} }).subscribe(() => {});
-    assert.deepEqual(
-      log[1].sent.map(({ message }) => message.type),
-      ["data", "draw"],
-    );
+    log[1].reply({ type: "ready" });
+    assert.ok(Object.hasOwn(log[1].sent[0].message, "datasets"));
     client.detach();
     assert.equal(log[1].terminated, true);
   } finally {
     mock.timers.reset();
   }
-  // The grace beat: a timer that fires LATE_MS late waits GRACE_MS once more.
   assert.ok(LATE_MS > GRACE_MS);
 });
 
-test("the interpreter fails a Worker that never says ready, and sends a copy of data that can't cross as a failure", () => {
+test("the interpreter fails a Worker that never says ready, and a chart whose data can't cross", () => {
   mock.timers.enable({ apis: ["setTimeout"] });
   try {
     const log = [];
@@ -456,15 +433,126 @@ test("the interpreter fails a Worker that never says ready, and sends a copy of 
     });
     const results = [];
     client.draw({ spec: {} }).subscribe((result) => results.push(result));
-    assert.deepEqual(log[0].sent[0].message, {
-      type: "data",
-      key: "chart-1",
-      failed: "Function object could not be cloned.",
-    });
     mock.timers.tick(300);
     assert.equal(results[0].error.message, WORKER_DIDNT_START);
     assert.equal(log[0].terminated, true);
+    client.draw({ spec: {} }).subscribe((result) => results.push(result));
+    log[1].reply({ type: "ready" });
+    const { message } = log[1].sent[0];
+    assert.equal(message.failed, "Function object could not be cloned.");
+    assert.equal(Object.hasOwn(message, "datasets"), false);
     client.detach();
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("the interpreter checks every Worker message, and bounds the error text it passes on", () => {
+  const log = [];
+  const pool = createChartPool({ create: () => new FakeWorker(log), size: 1, timeoutMs: 1000 });
+  const client = pool.attach(() => ({ datasets: {}, transfer: [] }));
+  const draws = [];
+  const next = () => {
+    const results = [];
+    client.draw({ spec: {} }).subscribe((result) => results.push(result));
+    draws.push(results);
+    const worker = log.at(-1);
+    if (!worker.sent.length) worker.reply({ type: "ready" });
+    return { worker, id: worker.sent.at(-1).message.id, results };
+  };
+  // Malformed envelopes kill the Worker and fail the job.
+  for (const data of [null, "answer", [], { type: "start", id: 1 }, { type: "answer" }]) {
+    const { worker, results } = next();
+    worker.reply(data);
+    assert.equal(worker.terminated, true, JSON.stringify(data));
+    assert.equal(results[0].error.message, WORKER_FAILED);
+  }
+  {
+    const { worker, id, results } = next();
+    worker.reply({ type: "answer", id: String(id) });
+    assert.equal(worker.terminated, true, "a string id is not the job's id");
+    assert.equal(results[0].error.message, WORKER_FAILED);
+  }
+  // Error text: one bounded line, and a refusal only with valid text.
+  for (const [error, expected] of [
+    [
+      { message: "x".repeat(10_000_000), refusal: true },
+      { message: "", refusal: false },
+    ],
+    [
+      { message: "Two\nlines.", refusal: true },
+      { message: "Two lines.", refusal: true },
+    ],
+    [
+      { message: "bell\u0007", refusal: true },
+      { message: "", refusal: false },
+    ],
+    [
+      { message: 42, refusal: "yes" },
+      { message: "", refusal: false },
+    ],
+    [
+      { message: "A sentence.", refusal: 1 },
+      { message: "A sentence.", refusal: false },
+    ],
+  ]) {
+    const { worker, id, results } = next();
+    worker.reply({ type: "answer", id, error });
+    assert.deepEqual(results[0], { error: expected });
+  }
+  client.detach();
+});
+
+test("virtual time: a Worker that takes the job and never answers, even before starting it, is cut off", () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const log = [];
+    const pool = createChartPool({ create: () => new FakeWorker(log), size: 1, timeoutMs: 1000 });
+    const client = pool.attach(() => ({ datasets: { d: { rows: [] } }, transfer: [] }));
+    const results = [];
+    client.draw({ spec: {} }).subscribe((result) => results.push(result));
+    log[0].reply({ type: "ready" });
+    // The Worker decodes the data, or hangs doing it: it sends nothing more.
+    mock.timers.tick(999);
+    assert.deepEqual(results, []);
+    mock.timers.tick(1);
+    assert.equal(results[0]?.error.message, TIMED_OUT);
+    assert.equal(log[0].terminated, true);
+    client.detach();
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("virtual time: a job cancelled while its Worker runs it stays watched, and the next draw runs on a replacement", () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const log = [];
+    const pool = createChartPool({ create: () => new FakeWorker(log), size: 1, timeoutMs: 1000 });
+    const a = pool.attach(() => ({ datasets: { d: { rows: [] } }, transfer: [] }));
+    const b = pool.attach(() => ({ datasets: { d: { rows: [] } }, transfer: [] }));
+    const results = { a: [], b: [] };
+    const first = a.draw({ spec: {} }).subscribe((result) => results.a.push(result));
+    b.draw({ spec: {} }).subscribe((result) => results.b.push(result));
+    log[0].reply({ type: "ready" });
+    // A resize supersedes a's draw after the Worker took it; the Worker hangs.
+    first.unsubscribe();
+    a.draw({ spec: {}, width: 200 }).subscribe((result) => results.a.push(result));
+    mock.timers.tick(5000);
+    assert.equal(log[0].terminated, true, "the hung Worker is cut off");
+    assert.equal(log.length, 2, "a replacement takes the waiting draws");
+    assert.deepEqual(results.a, [], "the cancelled draw's chart hears nothing");
+    log[1].reply({ type: "ready" });
+    // One job at a time, with the chart's data, since this Worker has none.
+    const [job] = log[1].sent.map(({ message }) => message);
+    assert.equal(log[1].sent.length, 1);
+    assert.equal(job.type, "draw");
+    assert.deepEqual(job.datasets, { d: { rows: [] } });
+    log[1].reply({ type: "answer", id: job.id, scene: { marktype: "group", items: [] } });
+    assert.equal(log[1].sent.length, 2, "the next job goes once the first answers");
+    assert.ok(results.a.length + results.b.length === 1);
+    a.detach();
+    b.detach();
   } finally {
     mock.timers.reset();
   }

@@ -570,7 +570,7 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
       switchMap((pooled) => {
         if (!pooled) return [];
         // A chart already on screen redraws behind charts not yet drawn.
-        return pooled.draw({ spec: plain, theme, width, redraw: drawing !== null });
+        return pooled.draw({ spec: plain, theme, width }, { redraw: drawing !== null });
       }),
       switchMap((answer) => {
         if (answer.error) return [{ error: answer.error, timedOut: answer.timedOut === true }];
