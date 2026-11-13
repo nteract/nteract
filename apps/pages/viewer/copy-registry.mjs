@@ -4,10 +4,14 @@
 // Clipboard HTML is untrusted: any web page can put a Page's dataframe
 // reference into what a person copies. A paste only moves a table's data
 // when this browser put that table on the clipboard itself. On copy, the
-// editor writes a copy record here (a random id, the Page, the assets the
-// copy holds) and marks the clipboard HTML with one hidden element holding
-// the id. On paste, the id is the only field read from the clipboard: the
-// Page and asset ids that count are the record's.
+// editor writes a copy record here (a random id, the Page and its title,
+// the assets the copy holds) and marks the clipboard HTML with one hidden
+// element holding the id. On paste, the id is the only field read from the
+// clipboard: the Page, title and asset ids that count are the record's.
+//
+// The id leaves the browser with the clipboard, so a record shows that this
+// browser copied a table, not that the person means to move its data into
+// the Page they paste into. The paste asks first (dataframe-copy-machine.mjs).
 //
 // The record is versioned and keyed by kind (`assets` today) so later kinds
 // of reference can join it. The registry keeps the newest COPY_LIMIT copies,
@@ -25,7 +29,11 @@ import {
 export const COPY_ATTR = "data-pages-copy";
 export const COPY_FORMAT = 1;
 export const COPY_LIMIT = 20;
-export const COPY_TTL_MS = 24 * 60 * 60 * 1000;
+// An hour covers copying in one tab and pasting in another; a shorter life
+// leaves less time for a copy id that left the browser to come back.
+export const COPY_TTL_MS = 60 * 60 * 1000;
+/** The longest source Page title a record keeps. */
+export const COPY_TITLE_MAX = 200;
 const KEY = "pages.clipboard-copies.v1";
 const COPY_ID = /^[0-9a-f]{32}$/;
 
@@ -42,6 +50,7 @@ function readAll(storage, now) {
         validPageId(entry.page) &&
         Array.isArray(entry.assets) &&
         entry.assets.every(validAssetId) &&
+        (entry.title === undefined || typeof entry.title === "string") &&
         Number.isSafeInteger(entry.at) &&
         entry.at <= now &&
         now - entry.at < COPY_TTL_MS,
@@ -57,10 +66,15 @@ function randomId() {
   return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
 }
 
-/** Record a copy of `assets` from `pageId`. Returns its id, or null when
- * nothing could be recorded. */
+const recordTitle = (title) =>
+  typeof title === "string"
+    ? title.replace(/\s+/g, " ").trim().slice(0, COPY_TITLE_MAX) || undefined
+    : undefined;
+
+/** Record a copy of `assets` from `pageId`, titled `title` there. Returns
+ * its id, or null when nothing could be recorded. */
 export function recordCopy(
-  { pageId, assets },
+  { pageId, assets, title },
   { storage = defaultStorage, now = Date.now(), id = randomId() } = {},
 ) {
   if (!validPageId(pageId) || !assets.length || !assets.every(validAssetId)) return null;
@@ -68,7 +82,14 @@ export function recordCopy(
     const store = storage();
     if (!store) return null;
     const entries = readAll(storage, now);
-    entries.push({ id, page: pageId, assets: [...new Set(assets)], at: now });
+    const named = recordTitle(title);
+    entries.push({
+      id,
+      page: pageId,
+      assets: [...new Set(assets)],
+      ...(named && { title: named }),
+      at: now,
+    });
     store.setItem(KEY, JSON.stringify(entries.slice(-COPY_LIMIT)));
     return id;
   } catch {
@@ -76,11 +97,19 @@ export function recordCopy(
   }
 }
 
-/** The live copy record for `id`: `{ id, page, assets }`, or null. */
+/** The live copy record for `id`: `{ id, page, assets, title }`, or null.
+ * `title` is the source Page's title when it was copied, or null. */
 export function lookupCopy(id, { storage = defaultStorage, now = Date.now() } = {}) {
   if (typeof id !== "string" || !COPY_ID.test(id)) return null;
   const entry = readAll(storage, now).find((item) => item.id === id);
-  return entry ? { id: entry.id, page: entry.page, assets: entry.assets } : null;
+  return entry
+    ? {
+        id: entry.id,
+        page: entry.page,
+        assets: entry.assets,
+        title: recordTitle(entry.title) ?? null,
+      }
+    : null;
 }
 
 /** The marker element for copy `id`. Empty and hidden, so other apps paste
@@ -105,10 +134,10 @@ export function clipboardCopyId(html, parser = new DOMParser()) {
 
 /**
  * Outgoing clipboard HTML from `pageId`'s editor: when it holds dataframes
- * on this Page, record the copy and append its marker. Anything else is
- * returned unchanged.
+ * on this Page, record the copy, with the Page's `title` for the paste to
+ * name, and append its marker. Anything else is returned unchanged.
  */
-export function markCopiedHTML(html, pageId, { parser = new DOMParser(), ...options } = {}) {
+export function markCopiedHTML(html, pageId, { parser = new DOMParser(), title, ...options } = {}) {
   if (!html.includes(DATAFRAME_ATTR)) return html;
   const doc = parser.parseFromString(html, "text/html");
   const assets = [];
@@ -121,7 +150,7 @@ export function markCopiedHTML(html, pageId, { parser = new DOMParser(), ...opti
     if (path?.pageId === pageId) assets.push(path.assetId);
   }
   if (!assets.length) return html;
-  const id = recordCopy({ pageId, assets }, options);
+  const id = recordCopy({ pageId, assets, title }, options);
   return id ? html + copyMarker(id) : html;
 }
 

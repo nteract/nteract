@@ -121,12 +121,11 @@ import {
 import {
   COPYING,
   createDataframeCopier,
-  heldPasteChange,
+  landHeldPaste,
   pastedSlice,
   readsPastedHTML,
 } from "./dataframe-copy.mjs";
 import { markCopiedHTML } from "./copy-registry.mjs";
-import { markerType } from "../model/node-registry.mjs";
 import { caretGlideFor, createGlideRunner, mediaMatches$ } from "./caret-glide.mjs";
 import { glideSettings } from "./feature-flags.mjs";
 import "./wordgard.css";
@@ -438,7 +437,9 @@ export function WordgardEditor(props) {
         // A copy or cut holding this Page's tables is recorded, and the
         // clipboard says so, so a paste into another Page can bring their
         // data (copy-registry.mjs).
-        Wordgard.clipboardOutputHTMLFilter.of((html) => markCopiedHTML(html, replica.doc.page_id)),
+        Wordgard.clipboardOutputHTMLFilter.of((html) =>
+          markCopiedHTML(html, replica.doc.page_id, { title: replica.doc.title }),
+        ),
         // A pasted URL becomes a bare link.
         bareLinkPaste(),
         Wordgard.domEventObserver("focusout", (event, wg) => {
@@ -622,13 +623,6 @@ export function WordgardEditor(props) {
     imageUploader.current = uploader;
     setCopyStatus(null);
     let detached = null;
-    const blockDataframes = (sources) =>
-      A.spans(replica.doc, ["blocks", id, "richText"]).filter(
-        (span) =>
-          span.type === "block" &&
-          markerType(span.value) === "dataframe" &&
-          sources.has(String(span.value.attrs?.src)),
-      ).length;
     const copier = createDataframeCopier({
       pageId: replica.doc.page_id,
       insert: (html, target, copied) => {
@@ -646,24 +640,24 @@ export function WordgardEditor(props) {
           document: detached,
           filters: editor.state.facet(Wordgard.clipboardInputFilter),
         });
-        const changes = heldPasteChange(replica, target, bound.current.map, slice);
-        const local = new Set(copied.values());
-        const before = blockDataframes(local);
-        // The shape Wordgard's own paste dispatches: corrected as a whole
-        // and kept narrow, so an opened node doesn't swallow what follows.
-        editor.dispatch({ changes: { correct: changes, local: true }, userEvent: "input.paste" });
-        // The editor reports a refused write through its exception sink; say
-        // so rather than leave the person thinking the table landed.
-        if (local.size && blockDataframes(local) <= before)
-          throw Error("The table's data copied, but the paste didn't land. Paste it again.");
+        landHeldPaste({
+          replica,
+          target,
+          map: bound.current.map,
+          slice,
+          selection: editor.state.selection,
+          dispatch: (spec) => editor.dispatch(spec),
+        });
       },
       onState: (state) =>
         setCopyStatus(
-          state.name === "copying"
-            ? { pending: true, message: COPYING }
-            : state.name === "failed"
-              ? { pending: false, message: state.message }
-              : null,
+          state.name === "confirming"
+            ? { confirming: true, pending: true, message: copier.question }
+            : state.name === "copying"
+              ? { pending: true, message: COPYING }
+              : state.name === "failed"
+                ? { pending: false, message: state.message }
+                : null,
         ),
     });
     dataframeCopier.current = copier;
@@ -1071,7 +1065,8 @@ export function WordgardEditor(props) {
     if (!editor) return;
     if (!editable) {
       imageUploader.current?.cancel();
-      if (dataframeCopier.current?.state.name === "copying") dataframeCopier.current.cancel();
+      if (["confirming", "copying"].includes(dataframeCopier.current?.state.name))
+        dataframeCopier.current.cancel();
     }
     editor.dispatch({
       effects: permissions.current.reconfigure(
@@ -1459,6 +1454,16 @@ export function WordgardEditor(props) {
       {copyStatus && (
         <div className="image-upload-status" role="status" aria-live="polite">
           <span>{copyStatus.message}</span>
+          {copyStatus.confirming && (
+            <>
+              <button type="button" onClick={() => dataframeCopier.current?.confirm()}>
+                Bring data
+              </button>
+              <button type="button" onClick={() => dataframeCopier.current?.decline()}>
+                Paste titles only
+              </button>
+            </>
+          )}
           <button type="button" onClick={() => dataframeCopier.current?.cancel()}>
             {copyStatus.pending ? "Cancel" : "Dismiss"}
           </button>

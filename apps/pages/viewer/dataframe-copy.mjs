@@ -4,11 +4,14 @@
 // keyed by token; the machine sees only tokens. The editor owns the
 // document: it captures where the paste goes when it starts and lands it
 // when asked.
+import * as A from "@automerge/automerge/slim";
 import { Node, parse } from "wordgard/doc";
 import { dataframeCopyMachine } from "./dataframe-copy-machine.mjs";
 import { foreignDataframes } from "./wordgard-model.mjs";
 import { clipboardCopyId, lookupCopy } from "./copy-registry.mjs";
-import { resolveImageInsertion } from "./image-upload.mjs";
+import { resolveImageInsertion, selectionUnmoved } from "./image-upload.mjs";
+import { GardSelection } from "wordgard/state";
+import { sameHeads } from "./wordgard-projection-state.mjs";
 import { imageAssetUrl, validAssetId } from "../shared/image-assets.mjs";
 import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 
@@ -19,7 +22,14 @@ export const PASTE_TABLE_LIMIT = 8;
 /** Copies one paste runs at a time. */
 export const PASTE_COPY_CONCURRENCY = 2;
 export const NOT_BROUGHT =
-  "This table's data wasn't brought over, so it pasted as its title. Copy the table from its Page in this browser to bring its data.";
+  "A table's data wasn't brought over, so it pasted as its title. Copy the table from its Page in this browser to bring its data.";
+
+/** What the Page asks before a paste brings `count` tables' data from the
+ * Page titled `title` in the copy record (never the clipboard's title). */
+export const confirmQuestion = ({ count, title }) =>
+  `Bring the data for ${count === 1 ? "1 table" : `${count} tables`} from ${
+    title ? `"${title}"` : "another Page"
+  } into this Page?`;
 export const OVER_LIMIT = `Only ${PASTE_TABLE_LIMIT} tables' data copies in one paste; the rest pasted as titles.`;
 
 /** Run `task` over `items`, PASTE_COPY_CONCURRENCY at a time, settling as
@@ -129,6 +139,40 @@ export function heldPasteChange(replica, target, map, insert) {
   return { from: to ?? from, insert, fit: true };
 }
 
+/**
+ * Where the caret goes once a held paste lands with `change`. If the
+ * person's selection is where it was when they pasted, the caret goes after
+ * the pasted content, as after Wordgard's own paste. If they typed or moved
+ * it while the paste was held, the selection is theirs: undefined lets the
+ * editor map it through the change.
+ */
+export function heldPasteSelection(replica, target, map, selection, change) {
+  if (!selectionUnmoved(replica, target.to, map, selection)) return undefined;
+  const end = change.to ?? change.from;
+  return (cx, changes) => GardSelection.near(cx, changes.mapPos(end, 1), -1);
+}
+
+/**
+ * Land a held paste: replace the captured range with `slice`, in the shape
+ * Wordgard's own paste dispatches (corrected as a whole and kept narrow, so
+ * an opened node doesn't swallow what follows), and put the caret after it
+ * when the selection hasn't moved. `dispatch(spec)` applies the transaction
+ * through the editor. Throws when it didn't land: the binding writes an
+ * applied transaction to the document at once, so unchanged heads mean the
+ * editor refused it, whatever the paste replaced.
+ */
+export function landHeldPaste({ replica, target, map, slice, selection, dispatch }) {
+  const change = heldPasteChange(replica, target, map, slice);
+  const before = A.getHeads(replica.doc);
+  dispatch({
+    changes: { correct: change, local: true },
+    selection: heldPasteSelection(replica, target, map, selection, change),
+    userEvent: "input.paste",
+  });
+  if (sameHeads(before, A.getHeads(replica.doc)))
+    throw Error("The paste didn't land. Paste it again.");
+}
+
 /** What the Page says when a table's data didn't copy. */
 export function copyFailure(error) {
   const status = error?.status;
@@ -168,6 +212,7 @@ export function createDataframeCopier({
     next = 0,
     alive = true;
   const jobs = new Map();
+  const held = () => state.name === "confirming" || state.name === "copying";
   function step(event) {
     if (!alive) return { state, effects: [], rejected: "closed" };
     const result = dataframeCopyMachine.step(state, event);
@@ -222,7 +267,7 @@ export function createDataframeCopier({
      * those tables as titles; when the tables weren't this browser's own,
      * the Page says so. */
     accept(html, target) {
-      if (!alive || state.name === "copying") return false;
+      if (!alive || held()) return false;
       const foreign = foreignDataframes(html, pageId, parser);
       if (!foreign.length) return false;
       // Only the id is read from the clipboard; the record says which Page
@@ -233,7 +278,9 @@ export function createDataframeCopier({
       );
       const sources = own.slice(0, PASTE_TABLE_LIMIT);
       const skipped =
-        own.length < foreign.length ? NOT_BROUGHT : own.length > sources.length ? OVER_LIMIT : null;
+        [own.length > sources.length && OVER_LIMIT, own.length < foreign.length && NOT_BROUGHT]
+          .filter(Boolean)
+          .join(" ") || null;
       if (!sources.length) {
         step({ type: "problem", message: skipped });
         return false;
@@ -245,14 +292,34 @@ export function createDataframeCopier({
         return false;
       }
       const token = ++next;
-      jobs.set(token, { html, target: at, sources, skipped, copied: new Map() });
+      jobs.set(token, {
+        html,
+        target: at,
+        sources,
+        skipped,
+        title: record.title,
+        copied: new Map(),
+      });
       return !step({ type: "start", token }).rejected;
+    },
+    /** While confirming: what the Page asks, from the copy record. */
+    get question() {
+      const job = state.name === "confirming" && jobs.get(state.token);
+      return job ? confirmQuestion({ count: job.sources.length, title: job.title }) : null;
+    },
+    /** Bring the held paste's data: the copies start. */
+    confirm() {
+      return step({ type: "confirm" });
+    },
+    /** Land the held paste now, its tables from other Pages as titles. */
+    decline() {
+      return step({ type: "decline" });
     },
     cancel() {
       return step({ type: "cancel" });
     },
     destroy() {
-      if (state.name === "copying") step({ type: "cancel" });
+      if (held()) step({ type: "cancel" });
       alive = false;
     },
   };

@@ -289,23 +289,31 @@ else replaces the screen with a Reload notice and leaves the Page unchanged.
   when this browser copied it. A copy or cut holding this Page's tables
   writes a copy record to this origin's `localStorage`
   ([`viewer/copy-registry.mjs`](viewer/copy-registry.mjs)): a random 128-bit
-  id, the Page and the asset ids. The clipboard HTML gets one empty hidden
+  id, the Page, its title and the asset ids. The clipboard HTML gets one empty hidden
   `span[data-pages-copy]` holding `{"v": 1, "id": …}`; other apps paste
   nothing from it, and Pages strips it before reading a paste. The registry
-  keeps the 20 newest copies, each for 24 hours. Without `localStorage`
-  nothing is recorded and nothing copies.
+  keeps the 20 newest copies, each for one hour: long enough to paste in
+  another tab, and short, because the id leaves the browser with the
+  clipboard. Without `localStorage` nothing is recorded and nothing copies.
 
   A paste or drop reading HTML that holds tables from another Page looks up
   the clipboard's copy id. A table copies only when the record exists, names
   the Page in the table's `src` and lists its asset; no other field of the
-  clipboard element counts. The paste then waits while the host copies each
-  dataset onto this Page (`POST /api/pages/:pageId/assets/:sha256` with
+  clipboard element counts. A record shows that this browser copied the
+  table, not that the person means to move its data here: another site that
+  saw the clipboard can hand the id back inside its own content. So the
+  paste is held while the Page asks, in the paste's status row, whether to
+  bring the data for the tables from the Page the record names, by the
+  record's title, never the clipboard's. Bring data starts the copies;
+  Paste titles only lands the paste now with those tables as titles; Cancel
+  drops it. Nothing is requested before Bring data. The paste then waits
+  while the host copies each dataset onto this Page (`POST /api/pages/:pageId/assets/:sha256` with
   `{"from_page_id": …}`), at most 8 tables a paste and 2 at a time, and
   lands with each `src` on this Page, replacing the selection as any paste
-  does. A table that didn't copy (not this browser's copy, past the limit,
+  does, with the caret after it. A table that didn't copy (not this browser's copy, past the limit,
   or refused by the host) lands as its title, and the Page says why. In a
   code block and for paste-as-plain-text, Wordgard reads the clipboard's
-  text and nothing is held. A paste made while another is copying takes the
+  text and nothing is held. A paste made while another is held takes the
   editor's own path: its tables from other Pages land as titles, with no
   message of its own. The lifecycle is
   [`viewer/dataframe-copy-machine.mjs`](viewer/dataframe-copy-machine.mjs).
