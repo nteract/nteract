@@ -358,6 +358,26 @@ test("a edit_page receipt names the marks a replace_match dropped, per edit and 
   assert.equal(f.applications(), 1);
 });
 
+test("a Markdown edit whose list restarts at 1 lists the warning with its edit", async (t) => {
+  const f = richMutationFixture(t);
+  const args = {
+    nonce: "list-numbers-reset-receipt",
+    revision: await f.revision(),
+    operations: [
+      { op: "replace_block_markdown", node_id: f.block, markdown: "Steps.\n\n3. Third\n4. Fourth" },
+    ],
+  };
+  const receipt = await documentMutation(f.context(args, "edit_page"));
+  const [entry] = receipt.result.edits[0].warnings;
+  assert.equal(entry.code, "list_numbers_reset");
+  assert.deepEqual(entry.lists, [{ start: 3, first_item: "Third" }]);
+  assert.deepEqual(receipt.warnings, [{ ...entry, edit_index: 0, node_id: f.block }]);
+  // The items are kept and numbered from 1.
+  assert.match(f.handle.doc().blocks[f.blockId].richText, /Third/);
+  // An exact retry replays the same warning.
+  assert.deepEqual(await documentMutation(f.context(args, "edit_page")), receipt);
+});
+
 test("old receipts without warnings are replayed unchanged despite a currently duplicate heading", async (t) => {
   const f = richMutationFixture(t);
   const args = {

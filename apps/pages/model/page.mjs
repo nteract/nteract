@@ -25,6 +25,7 @@ import { COMMENTS_FEATURE } from "./comments-doc.mjs";
 import { orderedBlockIds, positionForInsertion } from "./order.mjs";
 import { anchorOccurrence, formatMatch, replaceMatch, withinNode } from "./replace-match.mjs";
 import { setNode } from "./set-node.mjs";
+import { listStartWarning } from "./list-start-warning.mjs";
 import { insertOperation, insertedTypes } from "./node-registry.mjs";
 import { RESERVED_VIEW_IDS, VIEW_BLOCK, VIEW_ID_PATTERN, validViewId } from "../shared/views.mjs";
 import { stampFeatures } from "./schema-features.mjs";
@@ -323,6 +324,12 @@ const insertedBlock = (doc, op, key) => ({
   node_id: blockAddress(doc, key),
   nodes: nodeAddresses(doc, key),
 });
+// A Markdown write whose ordered lists restart at 1 says so in its entry; the
+// receipt lists the warning with the edit it came from.
+const withListWarning = (result, markdown) => {
+  const warning = listStartWarning(markdown);
+  return warning ? { ...result, warnings: [warning] } : result;
+};
 
 // `trace` records where each operation landed, for agent presence, by block
 // key. It never enters the result, so stored receipts and retries are
@@ -350,7 +357,7 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
     setRichMarkdown(doc, key, op.markdown);
     touched.push(key);
     trace?.push({ type: "block", block_id: key });
-    return insertedBlock(doc, "insert_markdown", key);
+    return withListWarning(insertedBlock(doc, "insert_markdown", key), op.markdown);
   }
   if (op.op === "insert_image") {
     validateImageInsertion(op);
@@ -443,7 +450,10 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
     // falls through to a plain rewrite.
     setRichMarkdownKeepingNodes(doc, id, op.markdown);
     trace?.push({ type: "block", block_id: id });
-    return { op: "replace_block_markdown", node_id: op.node_id, nodes: nodeAddresses(doc, id) };
+    return withListWarning(
+      { op: "replace_block_markdown", node_id: op.node_id, nodes: nodeAddresses(doc, id) },
+      op.markdown,
+    );
   }
   if (op.op === "delete_block") {
     delete doc.blocks[id];
