@@ -8,7 +8,11 @@
  * itself; this machine compares keys only. A new key is a new drawing.
  *
  * States (each carries `generation`, the number of the newest load started):
- * - waiting: nothing to draw yet; the view document is still being found.
+ * - waiting: nothing to draw yet; the view document, or the sources document
+ *   it reads, is still being found.
+ * - unreachable: nothing to draw yet; the view reads a source this tab
+ *   hasn't stored, and the Page is offline. It draws once a connection
+ *   brings the sources document.
  * - blocked: nothing to draw, and one sentence says why: the view isn't on
  *   this Page, can't be read, or its spec was refused.
  * - loading: the tables for plan `key` are loading as load `generation`.
@@ -20,7 +24,9 @@
  * - destroyed: the embed is gone. Nothing runs again.
  *
  * Events:
- * - pending: the view document isn't known yet.
+ * - pending: the view document, or a source it reads, isn't known yet.
+ * - unreachable: the view reads a source this tab hasn't stored, and the
+ *   Page is offline.
  * - blocked: there is nothing to draw, for `sentence`.
  * - plan: draw plan `key`.
  * - loaded / loadFailed: load `generation` finished or failed. A load that
@@ -69,6 +75,7 @@ const cause = (value) => check(CAUSES.includes(value.cause), "cause is load or d
 
 export const STATES = Object.freeze([
   "waiting",
+  "unreachable",
   "blocked",
   "loading",
   "drawn",
@@ -79,7 +86,16 @@ export const STATES = Object.freeze([
 export const viewDrawSpec = Object.freeze({
   name: "view-draw",
   states: STATES,
-  events: ["pending", "blocked", "plan", "loaded", "loadFailed", "drawFailed", "destroy"],
+  events: [
+    "pending",
+    "unreachable",
+    "blocked",
+    "plan",
+    "loaded",
+    "loadFailed",
+    "drawFailed",
+    "destroy",
+  ],
   cases: {
     "blocked/blocked": ["same", "other"],
     "loading/plan": ["same", "other"],
@@ -92,6 +108,7 @@ export const viewDrawSpec = Object.freeze({
   validate: {
     states: {
       waiting: shape("name", ["generation"], generation),
+      unreachable: shape("name", ["generation"], generation),
       blocked: shape("name", ["generation", "sentence"], generation, sentence),
       loading: shape("name", ["generation", "key"], positive, key),
       drawn: shape("name", ["generation", "key"], positive, key),
@@ -100,6 +117,7 @@ export const viewDrawSpec = Object.freeze({
     },
     events: {
       pending: shape("type", []),
+      unreachable: shape("type", []),
       blocked: shape("type", ["sentence"], sentence),
       plan: shape("type", ["key"], key),
       loaded: settled,
@@ -140,8 +158,14 @@ function transition(state, event) {
   switch (event.type) {
     case "pending":
       // A view that is being found again (a reconnect) keeps what it drew.
-      if (state.name !== "blocked") return reject(state, REJECT.keep);
+      if (state.name !== "blocked" && state.name !== "unreachable")
+        return reject(state, REJECT.keep);
       return ok({ name: "waiting", generation: current });
+    case "unreachable":
+      if (state.name === "unreachable") return reject(state, REJECT.same);
+      // Like pending, a drawing, a load or a sentence for one stays.
+      if (state.name !== "waiting" && state.name !== "blocked") return reject(state, REJECT.keep);
+      return ok({ name: "unreachable", generation: current });
     case "blocked":
       if (state.name === "blocked" && state.sentence === event.sentence)
         return reject(state, REJECT.same);

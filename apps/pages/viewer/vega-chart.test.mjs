@@ -21,6 +21,7 @@ const {
   drawnWidths,
 } = await import("./vega-chart.mjs");
 const {
+  compileChart,
   runChart,
   serveCharts,
   sizedSpec,
@@ -929,11 +930,7 @@ test("every static spec in the corpus passes both checks, and uses every listed 
   for (const [index, spec] of CORPUS.entries()) {
     const checked = checkChartSpec(spec);
     assert.equal(checked.ok, true, `${index}: ${checked.error}`);
-    const runtime = vega.parse(
-      vl.compile(sizedSpec(spec, 400), { config: themeConfig(theme) }).spec,
-      null,
-      { ast: true },
-    );
+    const runtime = vega.parse(compileChart(spec, 400, themeConfig(theme)), null, { ast: true });
     assert.equal(runtimeProblem(runtime), null, `${index}: ${JSON.stringify(spec).slice(0, 160)}`);
     const used = usedIn(runtime);
     for (const type of used.operators) operators.add(type);
@@ -1241,17 +1238,57 @@ test("every mark shows its encoded fields on hover unless the spec turns it off"
 });
 
 test("a single view fills the width it's given; a composite sizes itself", () => {
-  assert.deepEqual(sizedSpec({ mark: "line" }, 500), {
-    mark: "line",
-    width: 500,
-    height: 260,
-    autosize: { type: "fit-x", contains: "padding" },
-  });
+  assert.deepEqual(sizedSpec({ mark: "line" }, 500), { mark: "line", width: 500, height: 260 });
   // A discrete y axis keeps Vega-Lite's step height.
   assert.equal(sizedSpec(stacked, 500).height, undefined);
   const composite = { hconcat: [{ mark: "bar" }] };
   assert.equal(sizedSpec(composite, 500), composite);
   assert.equal(sizedSpec({ mark: "bar", width: 200 }, 500).width, 200);
+});
+
+test("Vega fits each chart on the axes that don't size by step, and Vega-Lite drops no fit", () => {
+  const warnings = [];
+  const warn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(" "));
+  try {
+    const nominal = { field: "tool", type: "nominal" };
+    const count = { field: "calls", type: "quantitative" };
+    const bar = (encoding, extra = {}) => ({
+      data: { name: "calls" },
+      mark: "bar",
+      encoding,
+      ...extra,
+    });
+    const fit = (spec, width = 500) => compileChart(spec, width, themeConfig(theme)).autosize;
+    const padded = (type) => ({ type, contains: "padding" });
+    // A discrete x with a measured width, and a continuous x: the width is
+    // a number and fits.
+    assert.deepEqual(fit(bar({ x: nominal, y: count })), padded("fit-x"));
+    assert.deepEqual(
+      fit({ data: { name: "calls" }, mark: "line", encoding: { x: count, y: count } }),
+      padded("fit-x"),
+    );
+    // A discrete y keeps its step height; the width still fits.
+    assert.deepEqual(fit(stacked), padded("fit-x"));
+    // A discrete x with no width to fill, or a step width: the height fits.
+    assert.deepEqual(fit(bar({ x: nominal, y: count }), 0), padded("fit-y"));
+    assert.deepEqual(fit(bar({ x: nominal, y: count }, { width: { step: 30 } })), padded("fit-y"));
+    // Both axes by step: nothing fits.
+    assert.deepEqual(
+      fit(bar({ x: nominal, y: { field: "client", type: "nominal" } }), 0),
+      padded("pad"),
+    );
+    // A spec's own autosize, and a composite, are Vega-Lite's to compile.
+    assert.equal(fit(bar({ x: count, y: count }, { autosize: "pad" })), undefined);
+    assert.equal(fit({ hconcat: [bar({ x: nominal, y: count })] }), undefined);
+    for (const spec of CORPUS) for (const width of [400, 0]) fit(spec, width);
+  } finally {
+    console.warn = warn;
+  }
+  assert.deepEqual(
+    warnings.filter((line) => line.includes("Dropping")),
+    [],
+  );
 });
 
 test("Vega draws with string code generation disabled, as under the viewer CSP", () => {

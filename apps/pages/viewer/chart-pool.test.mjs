@@ -47,8 +47,26 @@ const draw = (id, key, redraw = false) => ({
 });
 const gen = (state, slot = 0) => state.slots[slot]?.gen ?? 0;
 
-/** One line for a state and the results its step delivered: the hidden
- * flag, slot 0's phase, each job's phase by id, and each delivery's kind. */
+/** One effect, short: what it does and to what. Deliveries are summarized
+ * apart. */
+function effectName(effect) {
+  switch (effect.type) {
+    case "timer":
+      return `timer:${effect.kind}`;
+    case "clear":
+      return `clear:${effect.name.split(":")[0]}`;
+    case "post":
+      return `post:${effect.message.type}`;
+    case "job":
+      return `job:${effect.id}${effect.withData ? "+data" : ""}`;
+    default:
+      return effect.type;
+  }
+}
+
+/** One line for a state and the results its step delivered: the warm and
+ * hidden flags, slot 0's phase, each job's phase by id, each delivery's
+ * kind, and the other effects in order. */
 function summary(state, effects) {
   const jobs = [...state.jobs]
     .sort(([a], [b]) => a - b)
@@ -61,7 +79,8 @@ function summary(state, effects) {
         `${id}=${result.timedOut ? "timeout" : result.error ? "error" : "answer"}`,
     )
     .join(" ");
-  return `${state.hidden ? "hidden " : ""}${state.slots[0].phase} ${jobs || "-"} ${delivered || "-"}`;
+  const others = effects.filter((effect) => effect.type !== "deliver").map(effectName);
+  return `${state.warm ? "warm " : ""}${state.hidden ? "hidden " : ""}${state.slots[0].phase} ${jobs || "-"} ${delivered || "-"}${others.length ? ` [${others.join(" ")}]` : ""}`;
 }
 
 // The states a one-Worker pool reaches with charts "a" and "b" attached.
@@ -78,6 +97,24 @@ STATES.idle = play([{ type: "answer", slot: 0, gen: 1, id: 1, result: {} }], STA
 STATES["busy+waiting"] = play([draw(2, "b")], STATES.busy).state;
 STATES["abandoned+waiting"] = play([{ type: "cancel", id: 1 }], STATES["busy+waiting"]).state;
 STATES.hidden = play([{ type: "hide" }], STATES["busy+waiting"]).state;
+// A Page with a chart warms its pool before any chart attaches.
+STATES.warm = play([{ type: "warm" }]).state;
+STATES["warm idle"] = play(started(0, 1), STATES.warm).state;
+STATES["warm, drawn"] = play(
+  [
+    { type: "attach", key: "a" },
+    draw(1, "a"),
+    { type: "answer", slot: 0, gen: 1, id: 1, result: {} },
+  ],
+  STATES["warm idle"],
+).state;
+STATES["warm probing"] = play([{ type: "ready", slot: 0, gen: 1 }], STATES.warm).state;
+STATES["warm hidden"] = play([{ type: "hide" }], STATES.warm).state;
+STATES["warm busy"] = play([{ type: "attach", key: "a" }, draw(1, "a")], STATES["warm idle"]).state;
+// Its chart left while the job ran: no keys, and the Worker stays warm.
+STATES["warm abandoned"] = play([{ type: "detach", key: "a" }], STATES["warm busy"]).state;
+// A hung job replaced the Worker: generation 2 starts for the waiting job.
+STATES.replaced = play([{ type: "jobTimeout", id: 1 }], STATES["busy+waiting"]).state;
 
 const EVENTS = {
   "draw a": () => draw(3, "a"),
@@ -96,14 +133,21 @@ const EVENTS = {
   "detach a": () => ({ type: "detach", key: "a" }),
   "detach b": () => ({ type: "detach", key: "b" }),
   "attach c": () => ({ type: "attach", key: "c" }),
+  warm: () => ({ type: "warm" }),
+  cool: () => ({ type: "cool" }),
+  // An older Worker generation's messages; its error reaches the pool as
+  // `failed`.
+  "stale ready": (state) => ({ type: "ready", slot: 0, gen: gen(state) - 1 }),
+  "stale probed": (state) => probed(0, gen(state) - 1),
+  "stale failed": (state) => ({ type: "failed", slot: 0, gen: gen(state) - 1, message: "" }),
 };
 
 // Every state against every event: the slot phase, the jobs, and what was
 // delivered. A stale or unknown answer kills the Worker (WORKER_FAILED).
 const TABLE = {
   down: {
-    "draw a": "starting 3:waiting -",
-    "redraw a": "starting 3:waiting -",
+    "draw a": "starting 3:waiting - [spawn timer:ready]",
+    "redraw a": "starting 3:waiting - [spawn timer:ready]",
     "cancel 1": "down - -",
     "cancel 2": "down - -",
     ready: "down - -",
@@ -118,24 +162,34 @@ const TABLE = {
     "detach a": "down - -",
     "detach b": "down - -",
     "attach c": "down - -",
+    warm: "warm starting - - [spawn timer:ready]",
+    cool: "down - -",
+    "stale ready": "down - -",
+    "stale probed": "down - -",
+    "stale failed": "down - -",
   },
   starting: {
     "draw a": "starting 1:waiting 3:waiting -",
     "redraw a": "starting 1:waiting 3:waiting -",
     "cancel 1": "starting - -",
     "cancel 2": "starting 1:waiting -",
-    ready: "probing 1:waiting -",
-    probed: "down - 1=error",
-    "answer 1": "down - 1=error",
-    "answer 2": "down - 1=error",
+    ready: "probing 1:waiting - [probe]",
+    probed: "down - 1=error [terminate clear:ready clear:job]",
+    "answer 1": "down - 1=error [terminate clear:ready clear:job]",
+    "answer 2": "down - 1=error [terminate clear:ready clear:job]",
     "timeout 1": "starting 1:waiting -",
-    failed: "down - 1=error",
-    readyTimeout: "down - 1=error",
-    hide: "hidden down 1:waiting -",
+    failed: "down - 1=error [terminate clear:ready clear:job]",
+    readyTimeout: "down - 1=error [terminate clear:ready clear:job]",
+    hide: "hidden down 1:waiting - [terminate clear:ready]",
     show: "starting 1:waiting -",
     "detach a": "starting - -",
     "detach b": "starting 1:waiting -",
     "attach c": "starting 1:waiting -",
+    warm: "warm starting 1:waiting -",
+    cool: "starting 1:waiting -",
+    "stale ready": "starting 1:waiting -",
+    "stale probed": "starting 1:waiting -",
+    "stale failed": "starting 1:waiting -",
   },
   probing: {
     "draw a": "probing 1:waiting 3:waiting -",
@@ -143,53 +197,68 @@ const TABLE = {
     "cancel 1": "probing - -",
     "cancel 2": "probing 1:waiting -",
     ready: "probing 1:waiting -",
-    probed: "busy 1:running -",
-    "answer 1": "down - 1=error",
-    "answer 2": "down - 1=error",
+    probed: "busy 1:running - [clear:ready job:1+data timer:job]",
+    "answer 1": "down - 1=error [terminate clear:ready clear:job]",
+    "answer 2": "down - 1=error [terminate clear:ready clear:job]",
     "timeout 1": "probing 1:waiting -",
-    failed: "down - 1=error",
-    readyTimeout: "down - 1=error",
-    hide: "hidden down 1:waiting -",
+    failed: "down - 1=error [terminate clear:ready clear:job]",
+    readyTimeout: "down - 1=error [terminate clear:ready clear:job]",
+    hide: "hidden down 1:waiting - [terminate clear:ready]",
     show: "probing 1:waiting -",
     "detach a": "probing - -",
     "detach b": "probing 1:waiting -",
     "attach c": "probing 1:waiting -",
-  },
-  idle: {
-    "draw a": "busy 3:running -",
-    "redraw a": "busy 3:running -",
-    "cancel 1": "idle - -",
-    "cancel 2": "idle - -",
-    ready: "idle - -",
-    probed: "down - -",
-    "answer 1": "down - -",
-    "answer 2": "down - -",
-    "timeout 1": "idle - -",
-    failed: "down - -",
-    readyTimeout: "idle - -",
-    hide: "hidden idle - -",
-    show: "idle - -",
-    "detach a": "idle - -",
-    "detach b": "idle - -",
-    "attach c": "idle - -",
+    warm: "warm probing 1:waiting -",
+    cool: "probing 1:waiting -",
+    "stale ready": "probing 1:waiting -",
+    "stale probed": "probing 1:waiting -",
+    "stale failed": "probing 1:waiting -",
   },
   busy: {
     "draw a": "busy 1:running 3:waiting -",
     "redraw a": "busy 1:running 3:waiting -",
-    "cancel 1": "down - -",
+    "cancel 1": "down - - [terminate clear:ready clear:job]",
     "cancel 2": "busy 1:running -",
     ready: "busy 1:running -",
-    probed: "down - 1=error",
-    "answer 1": "idle - 1=answer",
-    "answer 2": "down - 1=error",
-    "timeout 1": "down - 1=timeout",
-    failed: "down - 1=error",
+    probed: "down - 1=error [terminate clear:ready clear:job]",
+    "answer 1": "idle - 1=answer [clear:job]",
+    "answer 2": "down - 1=error [terminate clear:ready clear:job]",
+    "timeout 1": "down - 1=timeout [terminate clear:ready clear:job]",
+    failed: "down - 1=error [terminate clear:ready clear:job]",
     readyTimeout: "busy 1:running -",
-    hide: "hidden down 1:waiting -",
+    hide: "hidden down 1:waiting - [terminate clear:ready]",
     show: "busy 1:running -",
-    "detach a": "busy 1:abandoned -",
+    "detach a": "busy 1:abandoned - [post:drop]",
     "detach b": "busy 1:running -",
     "attach c": "busy 1:running -",
+    warm: "warm busy 1:running -",
+    cool: "busy 1:running -",
+    "stale ready": "busy 1:running -",
+    "stale probed": "busy 1:running -",
+    "stale failed": "busy 1:running -",
+  },
+  idle: {
+    "draw a": "busy 3:running - [job:3 timer:job]",
+    "redraw a": "busy 3:running - [job:3 timer:job]",
+    "cancel 1": "idle - -",
+    "cancel 2": "idle - -",
+    ready: "idle - -",
+    probed: "down - - [terminate clear:ready]",
+    "answer 1": "down - - [terminate clear:ready]",
+    "answer 2": "down - - [terminate clear:ready]",
+    "timeout 1": "idle - -",
+    failed: "down - - [terminate clear:ready]",
+    readyTimeout: "idle - -",
+    hide: "hidden idle - -",
+    show: "idle - -",
+    "detach a": "idle - - [post:drop]",
+    "detach b": "idle - -",
+    "attach c": "idle - -",
+    warm: "warm idle - -",
+    cool: "idle - -",
+    "stale ready": "idle - -",
+    "stale probed": "idle - -",
+    "stale failed": "idle - -",
   },
   "busy+waiting": {
     "draw a": "busy 1:running 2:waiting 3:waiting -",
@@ -197,17 +266,22 @@ const TABLE = {
     "cancel 1": "busy 1:abandoned 2:waiting -",
     "cancel 2": "busy 1:running -",
     ready: "busy 1:running 2:waiting -",
-    probed: "starting 2:waiting 1=error",
-    "answer 1": "busy 2:running 1=answer",
-    "answer 2": "starting 2:waiting 1=error",
-    "timeout 1": "starting 2:waiting 1=timeout",
-    failed: "starting 2:waiting 1=error",
+    probed: "starting 2:waiting 1=error [terminate clear:ready clear:job spawn timer:ready]",
+    "answer 1": "busy 2:running 1=answer [clear:job job:2+data timer:job]",
+    "answer 2": "starting 2:waiting 1=error [terminate clear:ready clear:job spawn timer:ready]",
+    "timeout 1": "starting 2:waiting 1=timeout [terminate clear:ready clear:job spawn timer:ready]",
+    failed: "starting 2:waiting 1=error [terminate clear:ready clear:job spawn timer:ready]",
     readyTimeout: "busy 1:running 2:waiting -",
-    hide: "hidden down 1:waiting 2:waiting -",
+    hide: "hidden down 1:waiting 2:waiting - [terminate clear:ready]",
     show: "busy 1:running 2:waiting -",
-    "detach a": "busy 1:abandoned 2:waiting -",
+    "detach a": "busy 1:abandoned 2:waiting - [post:drop]",
     "detach b": "busy 1:running -",
     "attach c": "busy 1:running 2:waiting -",
+    warm: "warm busy 1:running 2:waiting -",
+    cool: "busy 1:running 2:waiting -",
+    "stale ready": "busy 1:running 2:waiting -",
+    "stale probed": "busy 1:running 2:waiting -",
+    "stale failed": "busy 1:running 2:waiting -",
   },
   "abandoned+waiting": {
     "draw a": "busy 1:abandoned 2:waiting 3:waiting -",
@@ -215,17 +289,22 @@ const TABLE = {
     "cancel 1": "busy 1:abandoned 2:waiting -",
     "cancel 2": "busy 1:abandoned -",
     ready: "busy 1:abandoned 2:waiting -",
-    probed: "starting 2:waiting -",
-    "answer 1": "busy 2:running -",
-    "answer 2": "starting 2:waiting -",
-    "timeout 1": "starting 2:waiting -",
-    failed: "starting 2:waiting -",
+    probed: "starting 2:waiting - [terminate clear:ready clear:job spawn timer:ready]",
+    "answer 1": "busy 2:running - [clear:job job:2+data timer:job]",
+    "answer 2": "starting 2:waiting - [terminate clear:ready clear:job spawn timer:ready]",
+    "timeout 1": "starting 2:waiting - [terminate clear:ready clear:job spawn timer:ready]",
+    failed: "starting 2:waiting - [terminate clear:ready clear:job spawn timer:ready]",
     readyTimeout: "busy 1:abandoned 2:waiting -",
-    hide: "hidden down 2:waiting -",
+    hide: "hidden down 2:waiting - [terminate clear:ready clear:job]",
     show: "busy 1:abandoned 2:waiting -",
-    "detach a": "busy 1:abandoned 2:waiting -",
+    "detach a": "busy 1:abandoned 2:waiting - [post:drop]",
     "detach b": "busy 1:abandoned -",
     "attach c": "busy 1:abandoned 2:waiting -",
+    warm: "warm busy 1:abandoned 2:waiting -",
+    cool: "busy 1:abandoned 2:waiting -",
+    "stale ready": "busy 1:abandoned 2:waiting -",
+    "stale probed": "busy 1:abandoned 2:waiting -",
+    "stale failed": "busy 1:abandoned 2:waiting -",
   },
   hidden: {
     "draw a": "hidden down 1:waiting 2:waiting 3:waiting -",
@@ -240,10 +319,199 @@ const TABLE = {
     failed: "hidden down 1:waiting 2:waiting -",
     readyTimeout: "hidden down 1:waiting 2:waiting -",
     hide: "hidden down 1:waiting 2:waiting -",
-    show: "starting 1:waiting 2:waiting -",
+    show: "starting 1:waiting 2:waiting - [spawn timer:ready]",
     "detach a": "hidden down 2:waiting -",
     "detach b": "hidden down 1:waiting -",
     "attach c": "hidden down 1:waiting 2:waiting -",
+    warm: "warm hidden down 1:waiting 2:waiting -",
+    cool: "hidden down 1:waiting 2:waiting -",
+    "stale ready": "hidden down 1:waiting 2:waiting -",
+    "stale probed": "hidden down 1:waiting 2:waiting -",
+    "stale failed": "hidden down 1:waiting 2:waiting -",
+  },
+  warm: {
+    "draw a": "warm starting - -",
+    "redraw a": "warm starting - -",
+    "cancel 1": "warm starting - -",
+    "cancel 2": "warm starting - -",
+    ready: "warm probing - - [probe]",
+    probed: "warm down - - [terminate clear:ready]",
+    "answer 1": "warm down - - [terminate clear:ready]",
+    "answer 2": "warm down - - [terminate clear:ready]",
+    "timeout 1": "warm starting - -",
+    failed: "warm down - - [terminate clear:ready]",
+    readyTimeout: "warm down - - [terminate clear:ready]",
+    hide: "warm hidden down - - [terminate clear:ready]",
+    show: "warm starting - -",
+    "detach a": "warm starting - -",
+    "detach b": "warm starting - -",
+    "attach c": "warm starting - -",
+    warm: "warm starting - -",
+    cool: "down - - [terminate clear:ready]",
+    "stale ready": "warm starting - -",
+    "stale probed": "warm starting - -",
+    "stale failed": "warm starting - -",
+  },
+  "warm idle": {
+    "draw a": "warm idle - -",
+    "redraw a": "warm idle - -",
+    "cancel 1": "warm idle - -",
+    "cancel 2": "warm idle - -",
+    ready: "warm idle - -",
+    probed: "warm down - - [terminate clear:ready]",
+    "answer 1": "warm down - - [terminate clear:ready]",
+    "answer 2": "warm down - - [terminate clear:ready]",
+    "timeout 1": "warm idle - -",
+    failed: "warm down - - [terminate clear:ready]",
+    readyTimeout: "warm idle - -",
+    hide: "warm hidden idle - -",
+    show: "warm idle - -",
+    "detach a": "warm idle - -",
+    "detach b": "warm idle - -",
+    "attach c": "warm idle - -",
+    warm: "warm idle - -",
+    cool: "down - - [terminate clear:ready]",
+    "stale ready": "warm idle - -",
+    "stale probed": "warm idle - -",
+    "stale failed": "warm idle - -",
+  },
+  "warm, drawn": {
+    "draw a": "warm busy 3:running - [job:3 timer:job]",
+    "redraw a": "warm busy 3:running - [job:3 timer:job]",
+    "cancel 1": "warm idle - -",
+    "cancel 2": "warm idle - -",
+    ready: "warm idle - -",
+    probed: "warm down - - [terminate clear:ready]",
+    "answer 1": "warm down - - [terminate clear:ready]",
+    "answer 2": "warm down - - [terminate clear:ready]",
+    "timeout 1": "warm idle - -",
+    failed: "warm down - - [terminate clear:ready]",
+    readyTimeout: "warm idle - -",
+    hide: "warm hidden idle - -",
+    show: "warm idle - -",
+    "detach a": "warm idle - - [post:drop]",
+    "detach b": "warm idle - -",
+    "attach c": "warm idle - -",
+    warm: "warm idle - -",
+    cool: "idle - -",
+    "stale ready": "warm idle - -",
+    "stale probed": "warm idle - -",
+    "stale failed": "warm idle - -",
+  },
+  "warm probing": {
+    "draw a": "warm probing - -",
+    "redraw a": "warm probing - -",
+    "cancel 1": "warm probing - -",
+    "cancel 2": "warm probing - -",
+    ready: "warm probing - -",
+    probed: "warm idle - - [clear:ready]",
+    "answer 1": "warm down - - [terminate clear:ready]",
+    "answer 2": "warm down - - [terminate clear:ready]",
+    "timeout 1": "warm probing - -",
+    failed: "warm down - - [terminate clear:ready]",
+    readyTimeout: "warm down - - [terminate clear:ready]",
+    hide: "warm hidden down - - [terminate clear:ready]",
+    show: "warm probing - -",
+    "detach a": "warm probing - -",
+    "detach b": "warm probing - -",
+    "attach c": "warm probing - -",
+    warm: "warm probing - -",
+    cool: "down - - [terminate clear:ready]",
+    "stale ready": "warm probing - -",
+    "stale probed": "warm probing - -",
+    "stale failed": "warm probing - -",
+  },
+  "warm hidden": {
+    "draw a": "warm hidden down - -",
+    "redraw a": "warm hidden down - -",
+    "cancel 1": "warm hidden down - -",
+    "cancel 2": "warm hidden down - -",
+    ready: "warm hidden down - -",
+    probed: "warm hidden down - -",
+    "answer 1": "warm hidden down - -",
+    "answer 2": "warm hidden down - -",
+    "timeout 1": "warm hidden down - -",
+    failed: "warm hidden down - -",
+    readyTimeout: "warm hidden down - -",
+    hide: "warm hidden down - -",
+    show: "warm starting - - [spawn timer:ready]",
+    "detach a": "warm hidden down - -",
+    "detach b": "warm hidden down - -",
+    "attach c": "warm hidden down - -",
+    warm: "warm hidden down - -",
+    cool: "hidden down - -",
+    "stale ready": "warm hidden down - -",
+    "stale probed": "warm hidden down - -",
+    "stale failed": "warm hidden down - -",
+  },
+  "warm busy": {
+    "draw a": "warm busy 1:running 3:waiting -",
+    "redraw a": "warm busy 1:running 3:waiting -",
+    "cancel 1": "warm down - - [terminate clear:ready clear:job]",
+    "cancel 2": "warm busy 1:running -",
+    ready: "warm busy 1:running -",
+    probed: "warm down - 1=error [terminate clear:ready clear:job]",
+    "answer 1": "warm idle - 1=answer [clear:job]",
+    "answer 2": "warm down - 1=error [terminate clear:ready clear:job]",
+    "timeout 1": "warm down - 1=timeout [terminate clear:ready clear:job]",
+    failed: "warm down - 1=error [terminate clear:ready clear:job]",
+    readyTimeout: "warm busy 1:running -",
+    hide: "warm hidden down 1:waiting - [terminate clear:ready]",
+    show: "warm busy 1:running -",
+    "detach a": "warm busy 1:abandoned - [post:drop]",
+    "detach b": "warm busy 1:running -",
+    "attach c": "warm busy 1:running -",
+    warm: "warm busy 1:running -",
+    cool: "busy 1:running -",
+    "stale ready": "warm busy 1:running -",
+    "stale probed": "warm busy 1:running -",
+    "stale failed": "warm busy 1:running -",
+  },
+  "warm abandoned": {
+    "draw a": "warm busy 1:abandoned -",
+    "redraw a": "warm busy 1:abandoned -",
+    "cancel 1": "warm busy 1:abandoned -",
+    "cancel 2": "warm busy 1:abandoned -",
+    ready: "warm busy 1:abandoned -",
+    probed: "warm down - - [terminate clear:ready clear:job]",
+    "answer 1": "warm idle - - [clear:job]",
+    "answer 2": "warm down - - [terminate clear:ready clear:job]",
+    "timeout 1": "warm down - - [terminate clear:ready clear:job]",
+    failed: "warm down - - [terminate clear:ready clear:job]",
+    readyTimeout: "warm busy 1:abandoned -",
+    hide: "warm hidden down - - [terminate clear:ready clear:job]",
+    show: "warm busy 1:abandoned -",
+    "detach a": "warm busy 1:abandoned -",
+    "detach b": "warm busy 1:abandoned -",
+    "attach c": "warm busy 1:abandoned -",
+    warm: "warm busy 1:abandoned -",
+    cool: "down - - [terminate clear:ready clear:job]",
+    "stale ready": "warm busy 1:abandoned -",
+    "stale probed": "warm busy 1:abandoned -",
+    "stale failed": "warm busy 1:abandoned -",
+  },
+  replaced: {
+    "draw a": "starting 2:waiting 3:waiting -",
+    "redraw a": "starting 2:waiting 3:waiting -",
+    "cancel 1": "starting 2:waiting -",
+    "cancel 2": "starting - -",
+    ready: "probing 2:waiting - [probe]",
+    probed: "down - 2=error [terminate clear:ready clear:job]",
+    "answer 1": "down - 2=error [terminate clear:ready clear:job]",
+    "answer 2": "down - 2=error [terminate clear:ready clear:job]",
+    "timeout 1": "starting 2:waiting -",
+    failed: "down - 2=error [terminate clear:ready clear:job]",
+    readyTimeout: "down - 2=error [terminate clear:ready clear:job]",
+    hide: "hidden down 2:waiting - [terminate clear:ready]",
+    show: "starting 2:waiting -",
+    "detach a": "starting 2:waiting -",
+    "detach b": "starting - -",
+    "attach c": "starting 2:waiting -",
+    warm: "warm starting 2:waiting -",
+    cool: "starting 2:waiting -",
+    "stale ready": "starting 2:waiting -",
+    "stale probed": "starting 2:waiting -",
+    "stale failed": "starting 2:waiting -",
   },
 };
 
@@ -256,6 +524,16 @@ test("the states the table starts from are the ones they're named for", () => {
   assert.equal(summary(STATES["busy+waiting"], []), "busy 1:running 2:waiting -");
   assert.equal(summary(STATES["abandoned+waiting"], []), "busy 1:abandoned 2:waiting -");
   assert.equal(summary(STATES.hidden, []), "hidden down 1:waiting 2:waiting -");
+  assert.equal(summary(STATES.warm, []), "warm starting - -");
+  assert.equal(summary(STATES["warm idle"], []), "warm idle - -");
+  assert.equal(summary(STATES["warm, drawn"], []), "warm idle - -");
+  assert.equal(summary(STATES["warm probing"], []), "warm probing - -");
+  assert.equal(summary(STATES["warm hidden"], []), "warm hidden down - -");
+  assert.equal(summary(STATES["warm busy"], []), "warm busy 1:running -");
+  assert.equal(summary(STATES["warm abandoned"], []), "warm busy 1:abandoned -");
+  assert.deepEqual(STATES["warm abandoned"].slots[0].keys, []);
+  assert.equal(summary(STATES.replaced, []), "starting 2:waiting -");
+  assert.equal(gen(STATES.replaced), 2);
 });
 
 for (const [name, start] of Object.entries(STATES))
@@ -266,6 +544,30 @@ for (const [name, start] of Object.entries(STATES))
       assert.equal(summary(state, effects), TABLE[name][label], `${name} + ${label}`);
     }
   });
+
+test("a warm pool starts its Worker when its document shows, however it was hidden", () => {
+  const spawned = (effects) => effects.filter((effect) => effect.type === "spawn");
+  // Hidden before it warmed: nothing starts until it shows.
+  const early = play([{ type: "hide" }, { type: "warm" }]);
+  assert.deepEqual(spawned(early.effects), []);
+  const shown = chartPool(early.state, { type: "show" });
+  assert.deepEqual(shown.effects, [
+    { type: "spawn", slot: 0, gen: 1 },
+    { type: "timer", name: "ready:0", kind: "ready", slot: 0, gen: 1 },
+  ]);
+  // Hidden while the warm Worker started: it stops, and starts again on show.
+  const starting = play([{ type: "warm" }, { type: "hide" }]);
+  assert.deepEqual(types(starting.effects), ["spawn", "timer", "terminate", "clear"]);
+  const again = chartPool(starting.state, { type: "show" });
+  assert.deepEqual(spawned(again.effects), [{ type: "spawn", slot: 0, gen: 2 }]);
+  // A warm Worker already up isn't started twice, and a cooled pool starts
+  // nothing on show.
+  const up = play([{ type: "warm" }, ...started(0, 1), { type: "hide" }, { type: "show" }]);
+  assert.equal(spawned(up.effects).length, 1);
+  const cooled = play([{ type: "warm" }, { type: "hide" }, { type: "cool" }, { type: "show" }]);
+  assert.equal(spawned(cooled.effects).length, 1);
+  assert.equal(cooled.state.slots[0].phase, "down");
+});
 
 test("a job carries its chart's data the first time a Worker draws that chart", () => {
   const { state, effects } = play([{ type: "attach", key: "a" }, draw(1, "a"), ...started(0, 1)]);
@@ -672,4 +974,94 @@ test("a probe answer is checked like any Worker message", () => {
   assert.equal(log[0].terminated, true);
   assert.equal(results[0].error.message, WORKER_FAILED);
   client.detach();
+});
+
+test("a warm pool starts one Worker before any chart, which the first chart draws in at once", () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const log = [];
+    const pool = createChartPool({ create: () => new FakeWorker(log), size: 1, timeoutMs: 1000 });
+    const first = pool.warm();
+    const second = pool.warm();
+    assert.equal(log.length, 1, "one Worker for every caller that warms");
+    log[0].start();
+    const client = pool.attach(() => ({ datasets: { d: { rows: [] } }, transfer: [] }));
+    const results = [];
+    client.draw({ spec: {} }).subscribe((result) => results.push(result));
+    assert.equal(log.length, 1);
+    assert.deepEqual(
+      log[0].sent.map(({ message }) => [message.type, Object.hasOwn(message, "datasets")]),
+      [["draw", true]],
+      "the job goes out with no wait for ready",
+    );
+    log[0].reply({ type: "answer", id: log[0].sent[0].message.id, scene: null });
+    assert.equal(results.length, 1);
+    // Warm, the Worker outlives its last chart; cooled, it goes with it.
+    client.detach();
+    assert.equal(log[0].terminated, false);
+    first();
+    first();
+    assert.equal(log[0].terminated, false, "one caller still holds it warm");
+    second();
+    assert.equal(log[0].terminated, true);
+    assert.equal(log.length, 1);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("a warm Worker that fails to start says nothing; the first chart starts its own", () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    for (const failure of ["throws", "never ready"]) {
+      const log = [];
+      let refuse = failure === "throws";
+      const pool = createChartPool({
+        create: () => {
+          if (refuse) throw Error("no Workers here");
+          return new FakeWorker(log);
+        },
+        size: 1,
+        timeoutMs: 1000,
+      });
+      const release = pool.warm();
+      refuse = false;
+      mock.timers.tick(10_000);
+      if (failure === "never ready")
+        assert.equal(log[0].terminated, true, "cut off at its ready timer");
+      const before = log.length;
+      const client = pool.attach(() => ({ datasets: {}, transfer: [] }));
+      const results = [];
+      client.draw({ spec: {} }).subscribe((result) => results.push(result));
+      assert.equal(log.length, before + 1, `${failure}: the chart's draw starts a Worker`);
+      log.at(-1).start();
+      assert.equal(log.at(-1).sent[0].message.type, "draw");
+      assert.deepEqual(results, [], "no failure reaches the chart");
+      client.detach();
+      release();
+    }
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("a hidden document warms nothing, and listens only while warm or drawing", () => {
+  const log = [];
+  const listeners = new Set();
+  const doc = {
+    visibilityState: "hidden",
+    addEventListener: (_type, listener) => listeners.add(listener),
+    removeEventListener: (_type, listener) => listeners.delete(listener),
+  };
+  const pool = createChartPool({
+    create: () => new FakeWorker(log),
+    size: 1,
+    timeoutMs: 1000,
+    doc,
+  });
+  const release = pool.warm();
+  assert.equal(log.length, 0);
+  assert.equal(listeners.size, 1);
+  release();
+  assert.equal(listeners.size, 0);
 });

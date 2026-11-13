@@ -9,7 +9,7 @@
 // changes. A pinned binding (`{ source_id, revision }`) reads the source's
 // history state for that revision and ignores later revisions; it still
 // redraws when the source is removed.
-import { map, of, switchMap } from "rxjs";
+import { combineLatest, map, of, switchMap } from "rxjs";
 import { SourceUnavailable } from "./page-source-store.mjs";
 import { versionKey } from "./source-follow.mjs";
 import { viewDrawMachine } from "./view-draw-machine.mjs";
@@ -19,6 +19,7 @@ import { viewDrawMachine } from "./view-draw-machine.mjs";
 export const VIEW_STATUS = Object.freeze({
   waiting: "Loading chart…",
   failed: "This chart's data couldn't be loaded.",
+  unreachable: "This chart's data isn't on this device yet. It draws when Pages reconnects.",
   broken: "This chart couldn't be drawn.",
 });
 
@@ -55,7 +56,8 @@ export function viewNote(problems) {
  * names the spec reads (`names`), resolved against `sources` now. `serial`
  * numbers the projection, so a rewritten view always makes a new key. Each
  * entry is `{ name, version }`, `version` null for data the Page can't
- * supply; that data draws as no rows.
+ * supply; that data draws as no rows. `missing` says whether a binding
+ * names a source the Page's sources document doesn't hold.
  */
 export function viewPlan(view, names, sources, serial) {
   const entries = [];
@@ -79,7 +81,13 @@ export function viewPlan(view, names, sources, serial) {
     `${view.view_id}#${serial}@${view.revision}`,
     ...entries.map(({ name, version }) => `${name}=${version ? versionKey(version) : "none"}`),
   ].join("|");
-  return { key, view, entries, note: viewNote(problems) };
+  return {
+    key,
+    view,
+    entries,
+    note: viewNote(problems),
+    missing: problems.some((problem) => problem.reason === "missing"),
+  };
 }
 
 /**
@@ -89,14 +97,29 @@ export function viewPlan(view, names, sources, serial) {
  *   resolves with is the dataset the chart reads.
  * - `checkChartSpec(spec, { datasets })`: shared/chart-spec.mjs. It runs
  *   before every plan, so a refused spec loads nothing.
+ * - `sourcesAnswer$`: what the Page knows about its sources document
+ *   (page-source-store.mjs `sourcesAnswer`). A plan that names a source the
+ *   store doesn't hold draws without it only once the answer is `known`;
+ *   while it is `unknown` the embed waits, and while it is `unreachable` it
+ *   waits saying it draws when Pages reconnects. Omitted, the store's
+ *   contents are the answer.
  * - `render.draw({ view, datasets, note })` mounts a chart and returns
  *   `{ destroy }`; `render.show({ state, sentence, note, title })` shows the
  *   embed's state after each step.
  * Returns `{ destroy, state }`.
  */
 const BROKEN = Object.freeze({ type: "blocked", sentence: VIEW_STATUS.broken });
+const PENDING = Object.freeze({ type: "pending" });
+const UNREACHABLE = Object.freeze({ type: "unreachable" });
 
-export function createViewDraw({ view$, sources, decode, checkChartSpec, render }) {
+export function createViewDraw({
+  view$,
+  sources,
+  sourcesAnswer$ = of("known"),
+  decode,
+  checkChartSpec,
+  render,
+}) {
   let model = viewDrawMachine.initial;
   let latest = null;
   let chart = null;
@@ -115,9 +138,11 @@ export function createViewDraw({ view$, sources, decode, checkChartSpec, render 
             ? model.cause === "draw"
               ? VIEW_STATUS.broken
               : VIEW_STATUS.failed
-            : model.name === "waiting" || (model.name === "loading" && !chart)
-              ? VIEW_STATUS.waiting
-              : null,
+            : model.name === "unreachable"
+              ? VIEW_STATUS.unreachable
+              : model.name === "waiting" || (model.name === "loading" && !chart)
+                ? VIEW_STATUS.waiting
+                : null,
       note: shown?.note ?? null,
       title,
     });
@@ -270,13 +295,17 @@ export function createViewDraw({ view$, sources, decode, checkChartSpec, render 
         }
         if (!checked.ok) return of({ type: "blocked", sentence: checked.error });
         const ids = [...new Set(checked.names.map((name) => view.data[name].source_id))];
-        return sources.versions(ids).pipe(
-          map(() => {
+        return combineLatest([sources.versions(ids), sourcesAnswer$]).pipe(
+          map(([, answer]) => {
+            let plan;
             try {
-              latest = viewPlan(view, checked.names, sources, number);
+              plan = viewPlan(view, checked.names, sources, number);
             } catch {
               return BROKEN;
             }
+            if (plan.missing && answer === "unknown") return PENDING;
+            if (plan.missing && answer === "unreachable") return UNREACHABLE;
+            latest = plan;
             return { type: "plan", key: latest.key };
           }),
         );

@@ -19,7 +19,7 @@
 // waits on a source it doesn't hold, so a Page whose sources document isn't
 // open yet keeps looking for it (host-doc-replica.mjs demand). Nothing asks
 // while every source read is there.
-import { Observable, distinctUntilChanged, map } from "rxjs";
+import { Observable, combineLatest, distinctUntilChanged, map } from "rxjs";
 import { readSource } from "../model/sources-doc.mjs";
 import { imageAssetUrl, validAssetId } from "../shared/image-assets.mjs";
 import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
@@ -65,6 +65,41 @@ export function projectSources(doc) {
   }
   return Object.freeze(sources);
 }
+
+/**
+ * What the Page knows about its sources document, from the document's
+ * lookup state (host-doc-open-machine.mjs) and the Page's connection link
+ * (sync-status-machine.mjs `link`, the one its status shows as Offline):
+ * - `known`: the document is open, or the host or this build settled that
+ *   there is none to read.
+ * - `unreachable`: this tab's stored copy doesn't hold it (`closed` and
+ *   `checked`) and the Page is offline, or lookups kept failing (`failed`).
+ *   Only a connection reads it now.
+ * - `unknown`: not looked up yet, a lookup is running, or a stored miss
+ *   while the connection is still being made.
+ */
+export function sourcesAnswer(state, link) {
+  switch (state?.name) {
+    case "closed":
+      return state.checked && link === "offline" ? "unreachable" : "unknown";
+    case "opening":
+    case "retrying":
+      return "unknown";
+    case "failed":
+      return "unreachable";
+    default:
+      return "known";
+  }
+}
+
+/** `sourcesAnswer` for the sources replica's `state$` and the session's
+ * sync-status `sync$` states, on change only: what view-draw.mjs reads as
+ * `sourcesAnswer$`. */
+export const sourcesAnswer$ = (state$, sync$) =>
+  combineLatest([state$, sync$]).pipe(
+    map(([state, sync]) => sourcesAnswer(state, sync?.link)),
+    distinctUntilChanged(),
+  );
 
 /** Two projections hold the same sources: same ids, and each id's name,
  * asset, media type and revision alike. */
