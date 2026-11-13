@@ -1835,10 +1835,13 @@ node for that exact line at the view's own place: the same count of that text
 in the block, in the same container instance (a quote or list item is told
 from others of its kind by order). A paragraph whose text names no stored view
 is prose and is never refused, so a block can hold `[View: x]` as text beside a
-dataframe. A rewrite that adds or removes a copy of a stored view's line
-anywhere in the block, or puts it in another quote or list item (a container
-added before the view's shifts its place), is refused with `markdownless_node`;
-the view never moves. An outline entry has
+dataframe. Views with different ids may be reordered among the paragraphs of
+one container by reordering their lines. A view can't change container: its
+line in another quote or list item, or a quote or list item of its kind added,
+removed or moved before its own, is refused with `markdownless_node`, naming
+the node operations (`insert_node`, `move_block`, `delete_node`) to use
+instead. Identical lines make a rewrite ambiguous, so adding or removing a copy
+of a stored view's line anywhere in the block is refused too. An outline entry has
 `type: "view"`, `attrs: { view_id }`, and
 `summary: { title, media_type }` when the view exists. Comments refuse a view
 node. A view stored inside a text container reads as a notice.

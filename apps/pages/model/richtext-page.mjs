@@ -207,21 +207,22 @@ const capital = (text) => text[0].toUpperCase() + text.slice(1);
  * the same kind of quote or list item it's stored in. That line becomes the
  * original node again, unknown attrs included. A dataframe's line (a link)
  * may move among its siblings. A view's line is text a paragraph can also
- * hold, so the view keeps the line at its own place: the same count of that
- * text in the whole block, in its own container (the same quote or list
- * item, told apart from others of its kind by order), and it may move among
- * its siblings there. A paragraph with text no stored view reads as is
- * prose. Throws `markdownless_node`, rather than dropping, inventing or
- * moving a node, when a line:
+ * hold, so a view takes the line that is the same count of that text in the
+ * whole block, and only in its own container: the same quote or list item,
+ * told apart from others of its kind by order. Views with different ids may
+ * be reordered among the paragraphs of one container by reordering their
+ * lines; a view never changes container. A paragraph whose text names no
+ * stored view is prose. Throws `markdownless_node`, rather than dropping,
+ * inventing or moving a node across containers, when a line:
  *
- * - moves into or out of a quote, list or table, into another quote or list
- *   item, or sits in a heading (a quote or list item added before a view's
- *   container moves its place too);
+ * - moves into or out of a quote, list or table, or sits in a heading;
+ * - for a view, stands in another quote or list item, including when one of
+ *   its kind is added, removed or moved before the view's;
  * - is missing or edited;
  * - outnumbers the block's dataframes with that line;
  * - reads like a dataframe the block doesn't hold;
- * - for a view, has its text added or removed anywhere in the block, which
- *   leaves the view's line unclear.
+ * - for a view, has an identical line added or removed anywhere in the
+ *   block, which makes the rewrite ambiguous.
  */
 export function setRichMarkdownKeepingNodes(doc, id, source) {
   const block = doc.blocks[id];
@@ -323,21 +324,44 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
       });
   }
   const tree = parseAgentMarkdown(source);
-  const unmatched = [...existing];
+  // Kept nodes not yet brought back. A view is found by its text and
+  // occurrence, a dataframe by its container path and line, first stored
+  // first: one lookup per line, so a rewrite is linear in its lines.
+  const pending = new Set(existing);
+  const lineKey = (line) => `${line.href ?? ""}\n${line.text}`;
+  const viewsByText = new Map();
+  const framesByLine = new Map();
+  const entriesByLine = new Map();
+  for (const entry of existing) {
+    const own = entry.kind.line(entry.node.param);
+    if (!own) continue;
+    const key = lineKey(own);
+    entriesByLine.set(key, [...(entriesByLine.get(key) ?? []), entry]);
+    if (entry.occurrence !== null) viewsByText.set(`${entry.occurrence}\n${own.text}`, entry);
+    else {
+      const frameKey = `${entry.path}\n${key}`;
+      framesByLine.set(frameKey, [...(framesByLine.get(frameKey) ?? []), entry]);
+    }
+  }
+  const takeFrame = (path, line) => {
+    const queue = framesByLine.get(`${path}\n${lineKey(line)}`) ?? [];
+    const entry = queue.find((candidate) => pending.has(candidate));
+    if (entry) pending.delete(entry);
+    return entry;
+  };
   const refuse = (message) => {
     throw Object.assign(Error(message), { code: "markdownless_node" });
   };
   // Look-alike lines the walk found, `problem → kind`; the most specific
   // problem is reported.
   const problems = new Map();
-  const sameNode = (entry, line) => {
-    const own = entry.kind.line(entry.node.param);
-    return !!own && own.href === line.href && own.text === line.text;
-  };
   // Text lines the walk has read, by text, and the kept nodes whose line
   // stood at their count but not in their own container.
   const sourceTexts = new Map();
   const textElsewhere = new Set();
+  // Views whose line stood at their count and container kinds, but in
+  // another quote or list item than the one they're stored in.
+  const shifted = new Set();
   const restore = (node, path, instance) => {
     const line = node.type.spec.inlineContent ? lineLink(node) : null;
     // A text line brings a view back only as the same count of that text in
@@ -345,34 +369,30 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
     // A line reading as no stored view's is prose.
     if (line?.href === null) {
       const n = countText(sourceTexts, line.text);
-      const entry = unmatched.find(
-        (candidate) => candidate.occurrence === n && sameNode(candidate, line),
-      );
-      if (!entry) return node;
-      if (node.type !== Paragraph.type || entry.path !== path || entry.instance !== instance) {
+      const entry = viewsByText.get(`${n}\n${line.text}`);
+      if (!entry || !pending.has(entry)) return node;
+      if (node.type !== Paragraph.type || entry.path !== path) {
         textElsewhere.add(entry);
         return node;
       }
-      unmatched.splice(unmatched.indexOf(entry), 1);
+      if (entry.instance !== instance) {
+        shifted.add(entry);
+        return node;
+      }
+      pending.delete(entry);
       return entry.node;
     }
     if (line) {
-      const matches = existing.filter((entry) => entry.path === path && sameNode(entry, line));
+      const same = entriesByLine.get(lineKey(line)) ?? [];
+      const matches = same.filter((entry) => entry.path === path);
       if (matches.some((entry) => !entry.node.eq(matches[0].node)))
         refuse(
           `Duplicate ${matches[0].kind.name} lines carry different hidden attributes. Use targeted edits instead of guessing their correspondence.`,
         );
       // Only a paragraph can stand where a kept node was: a heading, code
       // block or table cell can't hold one.
-      const index =
-        node.type === Paragraph.type
-          ? unmatched.findIndex((entry) => entry.path === path && sameNode(entry, line))
-          : -1;
-      if (index !== -1) {
-        const [original] = unmatched.splice(index, 1);
-        return original.node;
-      }
-      const same = existing.filter((entry) => sameNode(entry, line));
+      const original = node.type === Paragraph.type ? takeFrame(path, line) : null;
+      if (original) return original.node;
       // A line that reads as a kept node's line is kept as a plain link
       // that would read exactly like the node, so it's refused unless it
       // brings a node back.
@@ -401,12 +421,19 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
   const ambiguous = existing.find(
     (entry) =>
       entry.occurrence !== null &&
-      (!unmatched.includes(entry) || textElsewhere.has(entry)) &&
+      (!pending.has(entry) || textElsewhere.has(entry) || shifted.has(entry)) &&
       (sourceTexts.get(textOf(entry)) ?? 0) !== storedTexts.get(textOf(entry)),
   );
   if (ambiguous)
     refuse(
       `This block's Markdown has ${sourceTexts.get(textOf(ambiguous)) ?? 0} lines reading ${textOf(ambiguous)}, where the block stores ${storedTexts.get(textOf(ambiguous))}, its view's line included, so the view's line is unclear. Keep those lines as read_page shows them; change the text around them, or use replace_match for that text.`,
+    );
+  const unmatched = existing.filter((entry) => pending.has(entry));
+  const container = (entry) => (/quote/.test(entry.path.split("/").at(-1)) ? "quote" : "list item");
+  const moved = unmatched.find((entry) => shifted.has(entry));
+  if (moved && !unmatched.some((entry) => textElsewhere.has(entry)))
+    refuse(
+      `The ${container(moved)} holding view ${readViewNode(moved.node.param).view_id} changed position: a ${container(moved)} was added, removed or moved before it, or the view's line went into another ${container(moved)}. A Markdown rewrite can't follow a view through that. Make the structural change with insert_node, move_block and delete_node by node_id, or change only text outside the view's ${container(moved)} with replace_match or insert_markdown.`,
     );
   const movedText = unmatched.find((entry) => textElsewhere.has(entry));
   if (movedText) problems.set("moved", movedText.kind);

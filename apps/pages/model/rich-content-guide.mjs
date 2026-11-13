@@ -140,8 +140,12 @@ line, takes it into or out of a quote, list, table or heading, has more copies
 of a dataframe's line than the block has such dataframes, or adds a line that
 reads like a dataframe the block doesn't hold: Markdown never creates or copies
 a node. A view's line is plain text: one naming a view the block doesn't hold
-stays text, and adding or removing a copy of a stored view's line is refused,
-since it leaves the view's line unclear.
+stays text. Views with different ids may be reordered among the paragraphs of
+one container by reordering their lines, but a view can't change container
+(another quote or list item, or one added or removed before its own), and
+adding or removing a copy of a stored view's line makes the rewrite ambiguous:
+both are refused. Make such structural changes with insert_node, move_block
+and delete_node.
 Moving the line among its neighbours keeps the node's attrs but writes it as a
 new node.
 ${typedReadFields()}

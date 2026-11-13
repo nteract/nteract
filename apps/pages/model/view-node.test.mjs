@@ -300,6 +300,11 @@ const viewsAt = (doc, id) =>
     );
 const Q = ["blockquote"];
 const LI = ["unordered-list-item"];
+// The refusal for a view whose quote or list item changed position.
+const shiftedContainer = (container, viewId) =>
+  `The ${container} holding view ${viewId} changed position: a ${container} was added, removed or moved before it, or the view's line went into another ${container}. A Markdown rewrite can't follow a view through that. Make the structural change with insert_node, move_block and delete_node by node_id, or change only text outside the view's ${container} with replace_match or insert_markdown.`;
+const refusedWith = (message) => (error) =>
+  error.code === "markdownless_node" && error.message === message;
 
 test("a view in one quote stays there; prose in another quote never takes it", () => {
   const { doc, id, node } = spansBlock([
@@ -323,17 +328,30 @@ test("a view in one quote stays there; prose in another quote never takes it", (
     () => rewrite(doc, node, `> First quote\n>\n> [View: daily]\n\nBetween\n\n> ${line("daily")}`),
     (error) => error.code === "markdownless_node" && /unclear/.test(error.message),
   );
-  // The view's line moved to the first quote, its own quote emptied: refused.
-  assert.throws(
-    () => rewrite(doc, node, `> First quote\n>\n> ${line("daily")}\n\nBetween\n\n> Emptied`),
-    (error) => error.code === "markdownless_node" && /can't go inside a quote/.test(error.message),
-  );
-  // A quote added before the view's quote shifts which quote it is in:
-  // refused, never moved into the new quote.
-  assert.throws(
-    () => rewrite(doc, node, `> New quote\n\n${markdown}`),
-    (error) => error.code === "markdownless_node" && /can't go inside a quote/.test(error.message),
-  );
+  // The view's line moved to the first quote, its own quote emptied, a quote
+  // added before the view's quote, or the first quote removed: the view's
+  // quote changed position. Refused, never moved into another quote.
+  for (const changed of [
+    `> First quote\n>\n> ${line("daily")}\n\nBetween\n\n> Emptied`,
+    `> New quote\n\n${markdown}`,
+    `Between\n\n> ${line("daily")}`,
+  ])
+    assert.throws(
+      () => rewrite(doc, node, changed),
+      refusedWith(shiftedContainer("quote", "daily")),
+      changed,
+    );
+  // Out of its quote, or into a heading: the container kind changed.
+  for (const changed of [
+    `> First quote\n\nBetween\n\n${line("daily")}`,
+    `> First quote\n\nBetween\n\n> # ${line("daily")}`,
+  ])
+    assert.throws(
+      () => rewrite(doc, node, changed),
+      (error) =>
+        error.code === "markdownless_node" && /can't go inside a quote/.test(error.message),
+      changed,
+    );
 });
 
 test("two views in two quotes keep their quotes through an unchanged rewrite", () => {
@@ -348,15 +366,12 @@ test("two views in two quotes keep their quotes through an unchanged rewrite", (
   const same = rewrite(doc, node, markdown);
   assert.deepEqual(viewsAt(same, id), ["daily@blockquote", "weekly@blockquote"]);
   assert.equal(projectPage(same).blocks[0].markdown, markdown);
-  // Swapping the two lines moves each view to the other quote: refused.
+  // Swapping the two lines would move each view to the other quote: refused.
   const swapped = markdown
     .replace("daily", "TMP")
     .replace("weekly", "daily")
     .replace("TMP", "weekly");
-  assert.throws(
-    () => rewrite(doc, node, swapped),
-    (error) => error.code === "markdownless_node",
-  );
+  assert.throws(() => rewrite(doc, node, swapped), refusedWith(shiftedContainer("quote", "daily")));
 });
 
 test("a view in one list item stays there; prose in another item, at any depth, never takes it", () => {
@@ -372,6 +387,19 @@ test("a view in one list item stays there; prose in another item, at any depth, 
   const same = rewrite(doc, node, markdown);
   assert.deepEqual(viewsAt(same, id), ["daily@unordered-list-item"]);
   assert.equal(projectPage(same).blocks[0].markdown, markdown);
+  // An item added before the view's item, or the first item removed, shifts
+  // the view's item: refused with what to do instead.
+  for (const changed of [
+    `- New item\n${markdown}`,
+    markdown.replace(/^- First item\n  - Nested item\n/, ""),
+  ]) {
+    assert.notEqual(changed, markdown);
+    assert.throws(
+      () => rewrite(doc, node, changed),
+      refusedWith(shiftedContainer("list item", "daily")),
+      changed,
+    );
+  }
   for (const added of [
     markdown.replace("First item", "First item\n\n  [View: daily]"),
     markdown.replace("Nested item", "Nested item\n\n    [View: daily]"),
@@ -382,6 +410,39 @@ test("a view in one list item stays there; prose in another item, at any depth, 
       (error) => error.code === "markdownless_node" && /unclear/.test(error.message),
       added,
     );
+  }
+});
+
+test("views with different ids reorder among one container's paragraphs by reordering their lines", () => {
+  const markers = (doc, id) =>
+    A.spans(doc, textPath(id)).filter(
+      (span) => span.type === "block" && String(span.value.type) === "view",
+    );
+  for (const parents of [[], LI]) {
+    const { doc, id, node } = spansBlock([
+      ...(parents.length ? [marker("unordered-list-item")] : []),
+      ...paragraph("Intro", parents),
+      viewIn("daily", parents),
+      viewIn("weekly", parents),
+    ]);
+    const markdown = projectPage(doc).blocks[0].markdown;
+    const swapped = markdown
+      .replace(line("daily"), "TMP")
+      .replace(line("weekly"), line("daily"))
+      .replace("TMP", line("weekly"));
+    assert.notEqual(swapped, markdown);
+    const next = rewrite(doc, node, swapped);
+    assert.equal(projectPage(next).blocks[0].markdown, swapped);
+    // Each view is its own stored marker, view_id intact, in its container.
+    const after = markers(next, id);
+    assert.deepEqual(
+      after.map((span) => String(span.value.attrs.view_id)),
+      ["weekly", "daily"],
+    );
+    for (const span of after) {
+      assert.deepEqual(span.value.parents.map(String), parents);
+      assert.deepEqual(Object.keys(span.value.attrs), ["view_id"]);
+    }
   }
 });
 
