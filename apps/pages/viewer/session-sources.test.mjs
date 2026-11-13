@@ -2,7 +2,8 @@
 // them, a reader that asks for a missing source looks again, the Page's
 // source store reads them, and a replaced replica opens its own.
 // The machine is covered by host-doc-open-machine.test.mjs, its interpreter by
-// host-doc-replica.test.mjs, and retirement by session-revoke.test.mjs.
+// host-doc-replica.test.mjs, and retirement on every real path (sources and
+// views) by session-revoke.test.mjs.
 import test from "node:test";
 import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
@@ -203,24 +204,6 @@ test("a held view is looked up by its derived id on each admitted connection", a
   assert.deepEqual(session.views.open, ["costs", "sales"]);
   sales.release();
   costs.release();
-});
-
-test("retiring the Page retires every view replica, and none opens after", async (t) => {
-  const { session, admit } = fixture(t, { viewDocumentId });
-  admit(withoutSources);
-  const held = session.views.hold("sales");
-  await tick();
-  const lookup = session.repo.calls[0];
-  session.views.retire();
-  assert.equal(lookup.signal.aborted, true, "the running lookup stops");
-  assert.equal(session.views.replica("sales").state$.snapshot().name, "retired");
-  const later = session.views.hold("costs");
-  const seen = [];
-  later.view$.subscribe((view) => seen.push(view));
-  await tick();
-  assert.equal(session.repo.calls.length, 1, "nothing is looked up after retirement");
-  assert.equal(seen.at(-1).reason, "closed");
-  held.release();
 });
 
 test("a session made without a view derivation has no view replicas", (t) => {

@@ -65,6 +65,15 @@ before(async () => {
     "large",
     "SELECT 'r' || (i % 20) AS region, i::BIGINT AS total, i * 0.5 AS share FROM range(100000) t(i)",
   );
+  write(
+    "typed",
+    `SELECT * FROM (VALUES
+      (12.34::DECIMAL(10,2), 9007199254740993::BIGINT, 5::UBIGINT, '12:00:01.5'::TIME,
+       INTERVAL 1 DAY, DATE '2024-01-02', TIMESTAMP '2024-01-02 03:04:05.123', 'east'::VARCHAR,
+       [1, 2], 7, 8),
+      (NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+    ) t(price, big, unsigned, clock, span, day, stamp, region, list, "__proto__", "constructor")`,
+  );
   connection.close();
 });
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -155,6 +164,27 @@ test("a Parquet source decodes once into an Arrow table the renderer reads", asy
   );
 });
 
+test("each column reaches a chart in a form Vega reads", async () => {
+  const { datasetRows } = await import("./vega-chart.mjs");
+  const table = await decodeArrow(files.typed, DATAFRAME_LIMITS);
+  assert.ok(!table.schema.fields.some((field) => field.name === "__proto__"));
+  const [row, empty] = datasetRows(table);
+  assert.equal(row.price, 12.34);
+  assert.equal(row.big, 9007199254740992, "past the safe range: the nearest double");
+  assert.equal(row.unsigned, 5);
+  assert.equal(row.clock, 43_201_500, "time of day in milliseconds");
+  assert.equal(row.span, null);
+  assert.equal(row.day, Date.UTC(2024, 0, 2));
+  assert.equal(row.stamp, Date.UTC(2024, 0, 2, 3, 4, 5, 123));
+  assert.equal(row.region, "east");
+  assert.deepEqual(row.list, [1, 2]);
+  assert.equal(Object.getPrototypeOf(row), Object.prototype, "no column replaced the prototype");
+  assert.ok(Object.hasOwn(row, "constructor"));
+  assert.equal(row.constructor, 8);
+  for (const name of ["price", "big", "unsigned", "clock", "span", "day", "stamp", "region"])
+    assert.equal(empty[name], null, `${name} keeps its null`);
+});
+
 test("an embed draws its view, redraws on a new source version, and shows its sentences", () =>
   withDom(async (window) => {
     const { mountViewEmbed } = await import("./view-embed.mjs");
@@ -236,6 +266,8 @@ test("a 100,000-row source decodes and draws, and the cost is reported", () =>
     const converted = performance.now();
     assert.equal(rows.length, 100_000);
     assert.equal(typeof rows[0].total, "number", "a 64-bit integer column reads as numbers");
+    assert.equal(rows[3].share, 1.5, "a decimal column reads at its scale");
+    assert.equal(rows[99_999].share, 49_999.5);
 
     const sources = sourcesOf({ sales: asset("c") });
     const { store } = storeOver(sources, { [asset("c")]: files.large });

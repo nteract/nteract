@@ -9,7 +9,12 @@ const waiting = (generation = 2) => ({ name: "waiting", generation });
 const blocked = (sentence = "No.", generation = 2) => ({ name: "blocked", generation, sentence });
 const loading = (key = "k1", generation = 2) => ({ name: "loading", generation, key });
 const drawn = (key = "k1", generation = 2) => ({ name: "drawn", generation, key });
-const failed = (key = "k1", generation = 2) => ({ name: "failed", generation, key });
+const failed = (key = "k1", generation = 2, cause = "load") => ({
+  name: "failed",
+  generation,
+  key,
+  cause,
+});
 const destroyed = (generation = 2) => ({ name: "destroyed", generation });
 
 const pending = { type: "pending" };
@@ -17,10 +22,12 @@ const block = (sentence = "No.") => ({ type: "blocked", sentence });
 const plan = (key = "k1") => ({ type: "plan", key });
 const loaded = (generation = 2) => ({ type: "loaded", generation });
 const loadFailed = (generation = 2) => ({ type: "loadFailed", generation });
+const drawFailed = (generation = 2) => ({ type: "drawFailed", generation });
 const destroy = { type: "destroy" };
 
 const load = (key, generation = 3) => ({ type: "load", generation, key });
 const cancel = (generation = 2) => ({ type: "cancel", generation });
+const release = (generation = 2) => ({ type: "release", generation });
 const draw = (generation = 2) => ({ type: "draw", generation });
 const clear = { type: "clear" };
 
@@ -35,9 +42,12 @@ const row = (label, state, event, expect, kase) => ({
 });
 
 /** A state with no current load: every load answer is a cancelled one. */
-const lateLoads = (state) => [
+const lateLoads = (state, { drawn = false } = {}) => [
   row(`${state.name}: a cancelled load finishes`, state, loaded(), no(state, REJECT.stale)),
   row(`${state.name}: a cancelled load fails`, state, loadFailed(), no(state, REJECT.stale)),
+  ...(drawn
+    ? []
+    : [row(`${state.name}: no chart is drawing`, state, drawFailed(), no(state, REJECT.stale))]),
 ];
 
 const ROWS = [
@@ -80,13 +90,25 @@ const ROWS = [
     no(loading(), REJECT.stale),
     "stale",
   ),
-  row("loading: the load fails", loading(), loadFailed(), go(failed(), [clear]), "current"),
+  row(
+    "loading: the load fails and is released",
+    loading(),
+    loadFailed(),
+    go(failed(), [release(), clear]),
+    "current",
+  ),
   row(
     "loading: a cancelled load fails late",
     loading(),
     loadFailed(1),
     no(loading(), REJECT.stale),
     "stale",
+  ),
+  row(
+    "loading: an earlier chart's failure while a new load runs",
+    loading(),
+    drawFailed(1),
+    no(loading(), REJECT.stale),
   ),
   row("loading: destroy cancels the load", loading(), destroy, go(destroyed(), [cancel(), clear])),
 
@@ -101,7 +123,21 @@ const ROWS = [
     go(loading("k2", 3), [load("k2")]),
     "other",
   ),
-  ...lateLoads(drawn()),
+  ...lateLoads(drawn(), { drawn: true }),
+  row(
+    "drawn: the chart threw while mounting",
+    drawn(),
+    drawFailed(),
+    go(failed("k1", 2, "draw"), [clear]),
+    "current",
+  ),
+  row(
+    "drawn: an earlier chart's failure",
+    drawn(),
+    drawFailed(1),
+    no(drawn(), REJECT.stale),
+    "stale",
+  ),
   row("drawn: destroy", drawn(), destroy, go(destroyed(), [clear])),
 
   // The tables failed to load.
@@ -119,7 +155,7 @@ const ROWS = [
   row("failed: destroy", failed(), destroy, go(destroyed(), [clear])),
 
   // Gone.
-  ...[pending, block(), plan(), loaded(), loadFailed(), destroy].map((event) =>
+  ...[pending, block(), plan(), loaded(), loadFailed(), drawFailed(), destroy].map((event) =>
     row(
       `destroyed: ${event.type} does nothing`,
       destroyed(),
@@ -131,7 +167,7 @@ const ROWS = [
 
 test("the view-draw table covers every state and event", async () => {
   const result = await runTable(viewDrawMachine, ROWS);
-  assert.equal(result.pairs, 36);
+  assert.equal(result.pairs, 42);
   assert.equal(result.unreachable, 0);
 });
 

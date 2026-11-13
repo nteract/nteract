@@ -1546,11 +1546,14 @@ connection. The viewer derives the document's id from the Page id instead
 ([viewer/derived-documents.mjs](viewer/derived-documents.mjs)) and looks it up
 on the live connection when a reader asks for a source the Page doesn't hold
 and the machine is `absent`. A miss there is the host saying the document
-doesn't exist yet: the repo's unavailable answer is forgotten so the next
-lookup asks again, the lookup retries twice on the backoff, and the machine
-rests in `absent` with a 10 s look-again window, in which further asks run
-one lookup when the window ends. A Page with no sources and nothing asking
-looks nothing up.
+doesn't exist yet. The lookup retries twice on the backoff, then the machine
+rests in `absent` behind a look-again window: asks inside it run one lookup
+when it ends, and each further miss widens it (10 s, 30 s, then 60 s) until a
+new connection starts over. Before each lookup that follows a miss, the
+repo's cached unavailable answer is evicted so the lookup asks the host;
+eviction runs only while the repo still holds that answer and no replica has
+the document installed. A Page with no sources and nothing asking looks
+nothing up.
 
 The Page's source store ([viewer/page-source-store.mjs](viewer/page-source-store.mjs))
 projects the document's readable sources by id, skipping an entry the host

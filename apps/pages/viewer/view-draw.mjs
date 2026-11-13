@@ -14,11 +14,12 @@ import { SourceUnavailable } from "./page-source-store.mjs";
 import { versionKey } from "./source-follow.mjs";
 import { viewDrawMachine } from "./view-draw-machine.mjs";
 
-/** What an embed says while its view or its tables load, and when they
- * fail to. */
+/** What an embed says while its view or its tables load, when they fail
+ * to, and when the chart itself can't be drawn. */
 export const VIEW_STATUS = Object.freeze({
   waiting: "Loading chart…",
   failed: "This chart's data couldn't be loaded.",
+  broken: "This chart couldn't be drawn.",
 });
 
 const quoted = (ids) =>
@@ -93,6 +94,8 @@ export function viewPlan(view, names, sources, serial) {
  *   embed's state after each step.
  * Returns `{ destroy, state }`.
  */
+const BROKEN = Object.freeze({ type: "blocked", sentence: VIEW_STATUS.broken });
+
 export function createViewDraw({ view$, sources, decode, checkChartSpec, render }) {
   let model = viewDrawMachine.initial;
   let latest = null;
@@ -109,7 +112,9 @@ export function createViewDraw({ view$, sources, decode, checkChartSpec, render 
         model.name === "blocked"
           ? model.sentence
           : model.name === "failed"
-            ? VIEW_STATUS.failed
+            ? model.cause === "draw"
+              ? VIEW_STATUS.broken
+              : VIEW_STATUS.failed
             : model.name === "waiting" || (model.name === "loading" && !chart)
               ? VIEW_STATUS.waiting
               : null,
@@ -118,13 +123,25 @@ export function createViewDraw({ view$, sources, decode, checkChartSpec, render 
     });
   };
 
+  // Events an effect raises (a chart that threw while mounting) wait until
+  // the current step's effects have run.
+  const raised = [];
+  let stepping = false;
   const step = (event) => {
-    const result = viewDrawMachine.step(model, event);
-    if (result.rejected) return result;
-    model = result.state;
-    for (const effect of result.effects) run(effect);
-    show();
-    return result;
+    raised.push(event);
+    if (stepping) return;
+    stepping = true;
+    try {
+      while (raised.length) {
+        const result = viewDrawMachine.step(model, raised.shift());
+        if (result.rejected) continue;
+        model = result.state;
+        for (const effect of result.effects) run(effect);
+        show();
+      }
+    } finally {
+      stepping = false;
+    }
   };
 
   const free = (datasets) => {
@@ -142,18 +159,31 @@ export function createViewDraw({ view$, sources, decode, checkChartSpec, render 
         free(load?.owned);
         return;
       }
+      case "release": {
+        const load = loads.get(effect.generation);
+        loads.delete(effect.generation);
+        free(load?.owned);
+        return;
+      }
       case "draw": {
         const load = loads.get(effect.generation);
         loads.delete(effect.generation);
         chart?.instance.destroy();
-        const instance = render.draw({
-          view: load.plan.view,
-          datasets: load.datasets,
-          note: load.plan.note,
-        });
-        chart = { instance, plan: load.plan };
-        // The chart turned the tables into its own rows when it mounted.
-        free(load.owned);
+        chart = null;
+        try {
+          const instance = render.draw({
+            view: load.plan.view,
+            datasets: load.datasets,
+            note: load.plan.note,
+          });
+          chart = { instance, plan: load.plan };
+        } catch {
+          step({ type: "drawFailed", generation: effect.generation });
+        } finally {
+          // The chart turned the tables into its own rows when it mounted;
+          // a chart that threw keeps nothing.
+          free(load.owned);
+        }
         return;
       }
       case "clear":
@@ -177,9 +207,7 @@ export function createViewDraw({ view$, sources, decode, checkChartSpec, render 
       resolver = sources.resolver(decode);
     } catch {
       // The Page's sources closed: this load can't run.
-      queueMicrotask(() => {
-        if (loads.get(generation) === load) step({ type: "loadFailed", generation });
-      });
+      queueMicrotask(() => step({ type: "loadFailed", generation }));
       return;
     }
     const byVersion = new Map();
@@ -201,7 +229,8 @@ export function createViewDraw({ view$, sources, decode, checkChartSpec, render 
       );
       if (controller.signal.aborted || loads.get(generation) !== load) return free(owned);
       if (results.some((result) => result.status === "rejected")) {
-        free(owned);
+        // The failed load's record goes with the machine's release.
+        load.owned = owned;
         return step({ type: "loadFailed", generation });
       }
       load.owned = owned;
@@ -223,12 +252,23 @@ export function createViewDraw({ view$, sources, decode, checkChartSpec, render 
         const { view } = projection;
         const number = ++serial;
         title = view.title;
-        const checked = checkChartSpec(view.spec, { datasets: Object.keys(view.data) });
+        // A check or a plan that throws blocks this view with one sentence;
+        // the stream lives on, so the view's next revision draws.
+        let checked;
+        try {
+          checked = checkChartSpec(view.spec, { datasets: Object.keys(view.data) });
+        } catch {
+          return of(BROKEN);
+        }
         if (!checked.ok) return of({ type: "blocked", sentence: checked.error });
         const ids = [...new Set(checked.names.map((name) => view.data[name].source_id))];
         return sources.versions(ids).pipe(
           map(() => {
-            latest = viewPlan(view, checked.names, sources, number);
+            try {
+              latest = viewPlan(view, checked.names, sources, number);
+            } catch {
+              return BROKEN;
+            }
             return { type: "plan", key: latest.key };
           }),
         );
@@ -240,6 +280,11 @@ export function createViewDraw({ view$, sources, decode, checkChartSpec, render 
   return {
     get state() {
       return model;
+    },
+    /** Loads this embed still holds a record of: running, or loaded and not
+     * yet drawn. */
+    get loads() {
+      return loads.size;
     },
     destroy() {
       subscription.unsubscribe();

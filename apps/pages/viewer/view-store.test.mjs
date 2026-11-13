@@ -43,13 +43,13 @@ test("a ready view document projects its title, parsed spec, bindings and revisi
   assert.equal(view.title, "Sales by region");
   assert.equal(view.media_type, VIEW_MEDIA_TYPE);
   assert.deepEqual(view.spec, spec);
-  assert.deepEqual(view.data, { sales: { source_id: "sales" } });
+  assert.deepEqual({ ...view.data }, { sales: { source_id: "sales" } });
   assert.equal(view.revision, "1");
   const pinned = projectView(
     "sales",
     viewDoc({ data: { sales: { source_id: "sales", revision: "3" } } }),
   );
-  assert.deepEqual(pinned.view.data, { sales: { source_id: "sales", revision: "3" } });
+  assert.deepEqual({ ...pinned.view.data }, { sales: { source_id: "sales", revision: "3" } });
 });
 
 test("a view the host holds no document for isn't on this Page", () => {
@@ -135,4 +135,27 @@ test("the stream emits the current projection, then only changes that draw diffe
   assert.equal(seen.length, count + 1);
   assert.equal(seen.at(-1).view.spec.mark, "line");
   assert.equal(seen.at(-1).view.revision, "2");
+});
+
+test("a data name like __proto__ stays a binding, not a prototype", () => {
+  // Automerge refuses a `__proto__` key, so this value is a plain object; a
+  // `constructor` key reaches the viewer from a stored document.
+  const plain = {
+    ...JSON.parse(JSON.stringify(viewDoc())),
+    data: JSON.parse('{"__proto__": {"source_id": "sales"}}'),
+  };
+  const fromProto = projectView("sales", plain);
+  assert.equal(fromProto.status, "ready");
+  assert.equal(Object.getPrototypeOf(fromProto.view.data), null);
+  assert.deepEqual(Object.keys(fromProto.view.data), ["__proto__"]);
+  assert.equal(fromProto.view.data.__proto__.source_id, "sales");
+  const stored = projectView("sales", viewDoc({ data: { constructor: { source_id: "costs" } } }));
+  assert.deepEqual(Object.keys(stored.view.data), ["constructor"]);
+  assert.equal(stored.view.data.constructor.source_id, "costs");
+});
+
+test("an empty view document (a slot whose write didn't finish) reads as unavailable", () => {
+  for (const doc of [{}, A.from({}), A.from({ title: "Only a title" })])
+    assert.equal(projectView("sales", doc).reason, "malformed");
+  assert.equal(viewProjection("sales", { name: "ready", id: "d" }, {}).status, "unavailable");
 });

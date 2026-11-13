@@ -19,6 +19,17 @@ export const LOOKUP_TIMEOUT_MS = 15_000;
 /** Repo's answer when the host said it holds no such document. */
 export const UNAVAILABLE = /^Document \S+ is unavailable$/;
 
+/**
+ * Drop `repo`'s cached answer that document `id` is unavailable, so the next
+ * find asks the host. Only an entry still unavailable is evicted: the repo's
+ * eviction closes the document for anyone holding it, so a document that
+ * loaded since the miss stays.
+ */
+export async function evictUnavailable(repo, id) {
+  if (repo?.findWithProgress?.(id).peek().state !== "unavailable") return;
+  await repo.removeFromCache(id);
+}
+
 export class HostDocReplica {
   /** The machine's state (host-doc-open-machine.mjs). */
   state$ = new Store(hostDocOpenMachine.initial);
@@ -31,9 +42,13 @@ export class HostDocReplica {
   #onChange;
   #lookup;
   #timer;
-  #forgetting = Promise.resolve();
+  /** The id whose unavailable answer the repo still holds from this
+   * replica's last miss, until the next lookup of it evicts that answer. */
+  #stale;
   #find;
   #forget;
+  #claims;
+  #installed;
   #link;
   #derive;
   #derived;
@@ -46,7 +61,10 @@ export class HostDocReplica {
   /**
    * `find(id, { signal })` looks a document up in the replica's repo.
    * `forget(id)` drops the repo's record of a document it found
-   * unavailable, so the next find asks the host again.
+   * unavailable, so the next find asks the host again. It is called only
+   * just before this replica looks `id` up again, and never for an id in
+   * `claims`, the ids every replica on this repo has installed; the caller's
+   * `forget` still checks the repo holds the unavailable answer.
    * `link()` names the connection a lookup runs on (undefined while none is
    * up): an unavailable answer on a link that is still up is the host's
    * answer, and one after the link changed is a lost connection.
@@ -57,6 +75,7 @@ export class HostDocReplica {
   constructor({
     find,
     forget = async () => {},
+    claims = new Set(),
     link = () => true,
     derive,
     scheduler = asyncScheduler,
@@ -64,6 +83,7 @@ export class HostDocReplica {
   }) {
     this.#find = find;
     this.#forget = forget;
+    this.#claims = claims;
     this.#link = link;
     this.#derive = derive;
     this.#scheduler = scheduler;
@@ -150,9 +170,7 @@ export class HostDocReplica {
         this.#timer = undefined;
         return;
       case "forget":
-        this.#forgetting = Promise.resolve()
-          .then(() => this.#forget(effect.id))
-          .catch(() => {});
+        this.#stale = effect.id;
         return;
       case "install":
         return this.#install();
@@ -170,9 +188,20 @@ export class HostDocReplica {
     });
   }
 
+  /** Evict the repo's unavailable answer for `id` if this replica's last
+   * miss left one, right before looking `id` up again. */
+  async #evict(id) {
+    if (this.#stale !== id) return;
+    this.#stale = undefined;
+    if (this.#claims.has(id)) return;
+    try {
+      await this.#forget(id);
+    } catch {}
+  }
+
   /** One lookup. Its result reaches the machine only through events that
-   * name its attempt, so a cancelled one is ignored there. It waits for a
-   * pending forget, so it never reads the repo's earlier answer. */
+   * name its attempt, so a cancelled one is ignored there. A stale answer
+   * from this replica's last miss is evicted first. */
   #start({ attempt, id }) {
     this.#lookup?.abort();
     const lookup = new AbortController();
@@ -187,8 +216,11 @@ export class HostDocReplica {
       if (lookup.signal.aborted && lookup.signal.reason?.name !== "TimeoutError") return;
       this.step(event);
     };
-    this.#forgetting
-      .then(() => this.#find(id, { signal: lookup.signal }))
+    this.#evict(id)
+      .then(() => {
+        lookup.signal.throwIfAborted();
+        return this.#find(id, { signal: lookup.signal });
+      })
       .then(
         (handle) => {
           if (lookup.signal.aborted) return settle({ type: "lookupFailed", attempt });
@@ -217,6 +249,8 @@ export class HostDocReplica {
     this.#found = undefined;
     this.#uninstall();
     this.#handle = handle;
+    this.#installed = this.state$.snapshot().id;
+    this.#claims.add(this.#installed);
     this.#onChange = () => {
       if (this.#handle === handle) this.#doc.next(handle.doc());
     };
@@ -226,6 +260,8 @@ export class HostDocReplica {
 
   #uninstall() {
     if (this.#handle) this.#handle.off?.("change", this.#onChange);
+    if (this.#installed !== undefined) this.#claims.delete(this.#installed);
+    this.#installed = undefined;
     this.#handle = this.#onChange = undefined;
     if (this.#doc.getValue() !== undefined) this.#doc.next(undefined);
   }

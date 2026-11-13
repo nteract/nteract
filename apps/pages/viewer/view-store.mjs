@@ -10,8 +10,9 @@
 //   one sentence the embed shows. `reason` is `missing` (no such view on this
 //   Page, as for a chart pasted from another Page), `unreadable` (a host or
 //   media type this build doesn't read), `malformed` (a document no host write
-//   produces), `failed` (lookups kept failing) or `closed` (the replica was
-//   retired).
+//   produces), `failed` (lookups kept failing), `closed` (the replica was
+//   retired) or `limit` (the Page already shows MAX_VIEWS views,
+//   view-replicas.mjs).
 //
 // A host-written view is checked again here: a field the contract doesn't
 // allow makes the whole view malformed, rather than drawing part of it.
@@ -37,6 +38,7 @@ export const VIEW_SENTENCES = Object.freeze({
   malformed: "This chart's view can't be read.",
   failed: "This chart couldn't be loaded.",
   closed: "This chart isn't available.",
+  limit: "A Page shows at most 10 charts.",
 });
 
 const PENDING = Object.freeze({ status: "pending" });
@@ -82,7 +84,8 @@ export function projectView(viewId, doc) {
     return unavailable("malformed");
   }
   if (!isPlainObject(parsed)) return unavailable("malformed");
-  const bindings = {};
+  // Data names are the writer's: a name like `__proto__` stays an own key.
+  const bindings = Object.create(null);
   for (const name of Object.keys(data).sort()) {
     const binding = readBinding(data[name]);
     if (!binding) return unavailable("malformed");

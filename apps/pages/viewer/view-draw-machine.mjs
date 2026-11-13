@@ -14,7 +14,9 @@
  * - loading: the tables for plan `key` are loading as load `generation`.
  *   Whatever was drawn before stays on screen until they arrive.
  * - drawn: plan `key` is drawn.
- * - failed: plan `key`'s tables couldn't load; a sentence says so.
+ * - failed: plan `key` couldn't be shown, for `cause`: its tables didn't
+ *   load (`load`) or the chart threw while mounting (`draw`). A sentence
+ *   says so.
  * - destroyed: the embed is gone. Nothing runs again.
  *
  * Events:
@@ -23,11 +25,13 @@
  * - plan: draw plan `key`.
  * - loaded / loadFailed: load `generation` finished or failed. A load that
  *   isn't the current one was cancelled; its answer is ignored.
+ * - drawFailed: drawing load `generation` threw.
  * - destroy: the embed was removed.
  *
  * Effects:
  * - load: load plan `key`'s tables as load `generation`.
  * - cancel: abort load `generation` and free what it decoded.
+ * - release: forget failed load `generation`, freeing anything it holds.
  * - draw: replace the drawn chart with load `generation`'s tables, and free
  *   the tables it replaces.
  * - clear: remove the drawn chart and free its tables.
@@ -60,6 +64,8 @@ const shape =
     for (const fn of checks) fn(value);
   };
 const settled = shape("type", ["generation"], positive);
+const CAUSES = ["load", "draw"];
+const cause = (value) => check(CAUSES.includes(value.cause), "cause is load or draw");
 
 export const STATES = Object.freeze([
   "waiting",
@@ -73,7 +79,7 @@ export const STATES = Object.freeze([
 export const viewDrawSpec = Object.freeze({
   name: "view-draw",
   states: STATES,
-  events: ["pending", "blocked", "plan", "loaded", "loadFailed", "destroy"],
+  events: ["pending", "blocked", "plan", "loaded", "loadFailed", "drawFailed", "destroy"],
   cases: {
     "blocked/blocked": ["same", "other"],
     "loading/plan": ["same", "other"],
@@ -81,6 +87,7 @@ export const viewDrawSpec = Object.freeze({
     "failed/plan": ["same", "other"],
     "loading/loaded": ["current", "stale"],
     "loading/loadFailed": ["current", "stale"],
+    "drawn/drawFailed": ["current", "stale"],
   },
   validate: {
     states: {
@@ -88,7 +95,7 @@ export const viewDrawSpec = Object.freeze({
       blocked: shape("name", ["generation", "sentence"], generation, sentence),
       loading: shape("name", ["generation", "key"], positive, key),
       drawn: shape("name", ["generation", "key"], positive, key),
-      failed: shape("name", ["generation", "key"], positive, key),
+      failed: shape("name", ["generation", "key", "cause"], positive, key, cause),
       destroyed: shape("name", ["generation"], generation),
     },
     events: {
@@ -97,11 +104,13 @@ export const viewDrawSpec = Object.freeze({
       plan: shape("type", ["key"], key),
       loaded: settled,
       loadFailed: settled,
+      drawFailed: settled,
       destroy: shape("type", []),
     },
     effects: {
       load: shape("type", ["generation", "key"], positive, key),
       cancel: shape("type", ["generation"], positive),
+      release: shape("type", ["generation"], positive),
       draw: shape("type", ["generation"], positive),
       clear: shape("type", []),
     },
@@ -155,7 +164,16 @@ function transition(state, event) {
     case "loadFailed":
       if (state.name !== "loading" || event.generation !== current)
         return reject(state, REJECT.stale);
-      return ok({ name: "failed", generation: current, key: state.key }, [{ type: "clear" }]);
+      return ok({ name: "failed", generation: current, key: state.key, cause: "load" }, [
+        { type: "release", generation: current },
+        { type: "clear" },
+      ]);
+    case "drawFailed":
+      if (state.name !== "drawn" || event.generation !== current)
+        return reject(state, REJECT.stale);
+      return ok({ name: "failed", generation: current, key: state.key, cause: "draw" }, [
+        { type: "clear" },
+      ]);
     case "destroy":
       return ok({ name: "destroyed", generation: current }, stop(state));
   }

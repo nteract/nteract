@@ -92,7 +92,7 @@ const view = ({ revision = "1", names = ["sales"], data, title = "Sales" } = {})
   },
 });
 
-function fixture({ sources: initial } = {}) {
+function fixture({ sources: initial, check = checkChartSpec, throwOnDraw = () => false } = {}) {
   const host = hostSources();
   for (const [id, char] of Object.entries(initial ?? { sales: "a" })) host.set(id, asset(char));
   const doc$ = new BehaviorSubject(host.doc);
@@ -117,9 +117,10 @@ function fixture({ sources: initial } = {}) {
     view$,
     sources: store,
     decode: decoder.decode,
-    checkChartSpec,
+    checkChartSpec: check,
     render: {
       draw(input) {
+        if (throwOnDraw(input)) throw Error("mount threw");
         const entry = { ...input, destroyed: false };
         draws.push(entry);
         return { destroy: () => (entry.destroyed = true) };
@@ -338,4 +339,69 @@ test("the sentence for data a chart can't read names each source", () => {
     ]),
     `This chart's sources "a", "b" and "c" aren't on this Page.`,
   );
+});
+
+test("a chart that throws while mounting shows a sentence and frees its tables", async () => {
+  let throwing = false;
+  const f = fixture({ throwOnDraw: () => throwing });
+  f.view$.next(view());
+  await settle();
+  f.decoder.calls[0].resolve();
+  await settle();
+  assert.equal(f.draws.length, 1);
+  throwing = true;
+  f.write("sales", "b");
+  await settle();
+  f.decoder.calls[1].resolve();
+  await settle();
+  assert.equal(f.draws[0].destroyed, true, "the replaced chart is gone");
+  assert.equal(f.decoder.calls[1].table.freed, 1, "the thrown chart's table is freed");
+  assert.equal(f.draw.state.name, "failed");
+  assert.equal(f.shown.at(-1).sentence, VIEW_STATUS.broken);
+  // A later version draws again.
+  throwing = false;
+  f.write("sales", "c");
+  await settle();
+  f.decoder.calls[2].resolve();
+  await settle();
+  assert.equal(f.draw.state.name, "drawn");
+  assert.equal(f.draws.length, 2);
+});
+
+test("a spec check that throws blocks one revision; the next revision draws", async () => {
+  let throwing = true;
+  const f = fixture({
+    check: (spec, options) => {
+      if (throwing) throw Error("check threw");
+      return checkChartSpec(spec, options);
+    },
+  });
+  f.view$.next(view());
+  await settle();
+  assert.equal(f.shown.at(-1).state, "blocked");
+  assert.equal(f.shown.at(-1).sentence, VIEW_STATUS.broken);
+  assert.equal(f.decoder.calls.length, 0);
+  throwing = false;
+  f.view$.next(view({ revision: "2" }));
+  await settle();
+  f.decoder.calls[0].resolve();
+  await settle();
+  assert.equal(f.draw.state.name, "drawn");
+});
+
+test("failed loads are released, through repeated failures and destroy", async () => {
+  const f = fixture();
+  f.view$.next(view());
+  for (const char of ["b", "c", "d"]) {
+    await settle();
+    f.decoder.calls.at(-1).reject(Error("corrupt"));
+    await settle();
+    assert.equal(f.draw.state.name, "failed");
+    assert.equal(f.draw.loads, 0, "a failed load keeps no record");
+    f.write("sales", char);
+  }
+  await settle();
+  assert.equal(f.draw.loads, 1, "the newest load runs");
+  f.draw.destroy();
+  assert.equal(f.draw.loads, 0);
 });

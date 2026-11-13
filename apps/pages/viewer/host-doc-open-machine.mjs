@@ -16,15 +16,18 @@
  *   no such document doesn't serve the type. That is an older host.
  * - `derived`: the replica derived the id, so the answer means the document
  *   doesn't exist yet (or isn't on this Page). The lookup retries on a short
- *   backoff, then the replica rests in `absent`. A later ask looks again, at
- *   most once per LOOK_AGAIN_MS.
+ *   backoff, then the replica rests in `absent`, counting `misses`. From
+ *   there an ask runs one lookup per look-again window, and each miss
+ *   widens the window (lookAgainDelay: 10 s, 30 s, then 60 s). A new
+ *   connection starts over.
  *
  * States:
  * - closed: no replica, or no connection admitted since it opened.
  * - absent: there is no such document. Discovery named none, or a derived
- *   lookup was answered "none". After a derived miss it holds the `id` it
- *   looked up, and `cooling` while the look-again timer is armed; an ask in
- *   that window sets `asked`, and the lookup runs when the timer fires.
+ *   lookup was answered "none". After derived misses it holds the `id` it
+ *   looked up and how many times it rested (`misses`), and `cooling` while
+ *   the look-again timer is armed; an ask in that window sets `asked`, and
+ *   one lookup runs when the timer fires.
  * - unserved: the host doesn't serve the document to this build: its
  *   discovery has no document map, or its socket answered a named document
  *   as unknown. Both are an older host that doesn't know the type. `id` is
@@ -32,6 +35,8 @@
  * - unreadable: discovery names the document at a format this build doesn't
  *   read. Nothing is looked up.
  * - opening: lookup `attempt` for document `id` is running, started `via`.
+ *   A lookup after the replica rested carries its `misses`; it doesn't
+ *   retry a "none" answer.
  * - retrying: lookup `attempt` failed or missed; the next one waits on a
  *   timer.
  * - failed: lookups kept failing. The next admitted connection starts over.
@@ -80,8 +85,10 @@ export { OPEN_ATTEMPTS, retryDelay };
 /** Derived lookups the host answers "none" before the replica rests: the
  * first and two retries, 1 s and 2 s apart. */
 export const MISSING_ATTEMPTS = 3;
-/** The shortest wait between derived lookups after the replica rests. */
-export const LOOK_AGAIN_MS = 10_000;
+/** The look-again windows after each rest, widening; the last one holds. */
+export const LOOK_AGAIN_MS = Object.freeze([10_000, 30_000, 60_000]);
+/** The look-again window after the replica rested `misses` times. */
+export const lookAgainDelay = (misses) => LOOK_AGAIN_MS[Math.min(misses, LOOK_AGAIN_MS.length) - 1];
 
 const ANSWERS = ["named", "derived", "none", "unaware", "unreadable"];
 const VIA = ["named", "derived"];
@@ -108,12 +115,23 @@ const answer = (value) => {
   check(carriesId === (value.id !== undefined), "only a named or derived answer has an id");
   optionalId(value);
 };
+const optionalMisses = (value) =>
+  check(
+    value.misses === undefined || (Number.isSafeInteger(value.misses) && value.misses > 0),
+    "misses is a positive integer or absent",
+  );
 const absentShape = (value) => {
   optionalId(value);
+  optionalMisses(value);
   check(value.cooling === undefined || value.cooling === true, "cooling is true or absent");
   check(value.asked === undefined || value.asked === true, "asked is true or absent");
-  check(value.cooling === undefined || value.id !== undefined, "only a missed lookup cools");
+  check(value.misses === undefined || value.id !== undefined, "only a missed lookup counts");
+  check(value.cooling === undefined || value.misses !== undefined, "only a rested lookup cools");
   check(value.asked === undefined || value.cooling === true, "only a cooling state is asked");
+};
+const lookupMisses = (value) => {
+  optionalMisses(value);
+  check(value.misses === undefined || value.via === "derived", "only a derived lookup misses");
 };
 const shape =
   (head, keys, ...checks) =>
@@ -122,7 +140,14 @@ const shape =
     for (const fn of checks) fn(value);
   };
 const bare = shape("name", []);
-const lookupState = shape("name", ["attempt", "id", "via"], attempt, id, via);
+const lookupState = shape(
+  "name",
+  ["attempt", "id", "via", "misses"],
+  attempt,
+  id,
+  via,
+  lookupMisses,
+);
 const settled = shape("type", ["attempt"], attempt);
 
 export const STATES = Object.freeze([
@@ -164,17 +189,17 @@ export const hostDocOpenSpec = Object.freeze({
     "opening/discovered": ["lookup", ...QUIET],
     "retrying/discovered": ["lookup", ...QUIET],
     "ready/discovered": ["same", "other", ...QUIET],
-    "absent/wanted": ["look", "ask", "asked"],
+    "absent/wanted": ["look", "again", "ask", "asked"],
     "opening/opened": ["current", "stale"],
     "opening/lookupFailed": ["retry", "exhausted", "stale"],
-    "opening/unknown": ["unserved", "retry", "missing", "stale"],
+    "opening/unknown": ["unserved", "retry", "missing", "again", "stale"],
     "retrying/timer": ["current", "stale"],
     "absent/cooled": ["look", "rest", "stale"],
   },
   validate: {
     states: {
       closed: bare,
-      absent: shape("name", ["id", "cooling", "asked"], absentShape),
+      absent: shape("name", ["id", "misses", "cooling", "asked"], absentShape),
       unserved: shape("name", ["id"], optionalId),
       unreadable: bare,
       opening: lookupState,
@@ -229,8 +254,18 @@ function leave(state) {
   return [];
 }
 
-const start = (from, documentId, how, stop = leave(from)) =>
-  ok({ name: "opening", attempt: 1, id: documentId, via: how }, [
+/** A lookup's state fields: `misses` stays with a derived lookup after the
+ * replica rested, so its answer doesn't start another burst. */
+const lookup = (name, attempt, documentId, how, misses) => ({
+  name,
+  attempt,
+  id: documentId,
+  via: how,
+  ...(misses !== undefined && { misses }),
+});
+
+const start = (from, documentId, how, stop = leave(from), misses) =>
+  ok(lookup("opening", 1, documentId, how, misses), [
     ...stop,
     { type: "lookup", attempt: 1, id: documentId },
   ]);
@@ -269,7 +304,8 @@ function wanted(state, event) {
     case "retrying":
       return reject(state, REJECT.looking);
     case "absent":
-      if (!state.cooling) return start(state, event.id, "derived");
+      // After a rest, one lookup; the window it opens paces the next.
+      if (!state.cooling) return start(state, event.id, "derived", [], state.misses);
       if (state.asked) return reject(state, REJECT.asked);
       return ok({ ...state, asked: true });
   }
@@ -277,18 +313,21 @@ function wanted(state, event) {
   return reject(state, REJECT.answered);
 }
 
-/** The host answered lookup `state` that it holds no such document. */
+/** The host answered lookup `state` that it holds no such document. A
+ * first burst retries; after that, each miss rests the replica again behind
+ * a wider window. */
 function missing(state) {
   if (state.via === "named") return ok({ name: "unserved", id: state.id });
   const forget = { type: "forget", id: state.id };
-  if (state.attempt < MISSING_ATTEMPTS)
-    return ok({ name: "retrying", attempt: state.attempt, id: state.id, via: state.via }, [
+  if (state.misses === undefined && state.attempt < MISSING_ATTEMPTS)
+    return ok(lookup("retrying", state.attempt, state.id, state.via), [
       forget,
       { type: "schedule", attempt: state.attempt, delay: retryDelay(state.attempt) },
     ]);
-  return ok({ name: "absent", id: state.id, cooling: true }, [
+  const misses = (state.misses ?? 0) + 1;
+  return ok({ name: "absent", id: state.id, misses, cooling: true }, [
     forget,
-    { type: "cool", delay: LOOK_AGAIN_MS },
+    { type: "cool", delay: lookAgainDelay(misses) },
   ]);
 }
 
@@ -305,8 +344,8 @@ function transition(state, event) {
     case "lookupFailed":
       if (!current("opening")) return reject(state, REJECT.stale);
       if (state.attempt >= OPEN_ATTEMPTS)
-        return ok({ name: "failed", attempt: state.attempt, id: state.id, via: state.via });
-      return ok({ name: "retrying", attempt: state.attempt, id: state.id, via: state.via }, [
+        return ok(lookup("failed", state.attempt, state.id, state.via, state.misses));
+      return ok(lookup("retrying", state.attempt, state.id, state.via, state.misses), [
         { type: "schedule", attempt: state.attempt, delay: retryDelay(state.attempt) },
       ]);
     case "unknown":
@@ -314,14 +353,14 @@ function transition(state, event) {
       return missing(state);
     case "timer":
       if (!current("retrying")) return reject(state, REJECT.stale);
-      return ok({ name: "opening", attempt: state.attempt + 1, id: state.id, via: state.via }, [
+      return ok(lookup("opening", state.attempt + 1, state.id, state.via, state.misses), [
         { type: "lookup", attempt: state.attempt + 1, id: state.id },
       ]);
     case "cooled":
       if (state.name !== "absent" || !state.cooling) return reject(state, REJECT.stale);
       // The timer already fired: nothing is left to clear.
-      if (state.asked) return start(state, state.id, "derived", []);
-      return ok({ name: "absent", id: state.id });
+      if (state.asked) return start(state, state.id, "derived", [], state.misses);
+      return ok({ name: "absent", id: state.id, misses: state.misses });
     case "retire":
       if (state.name === "retired") return reject(state, REJECT.retired);
       return ok({ name: "retired" }, leave(state));

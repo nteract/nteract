@@ -7,12 +7,12 @@ import assert from "node:assert/strict";
 import { runTable } from "../shared/machine-test.mjs";
 import { parseDocumentDescriptor } from "../model/document-types.mjs";
 import {
-  LOOK_AGAIN_MS,
   MISSING_ATTEMPTS,
   OPEN_ATTEMPTS,
   REJECT,
   discoveryEvent,
   hostDocOpenMachine,
+  lookAgainDelay,
   retryDelay,
 } from "./host-doc-open-machine.mjs";
 
@@ -20,13 +20,19 @@ const S1 = "s1";
 const S2 = "s2";
 const closed = { name: "closed" };
 const absent = { name: "absent" };
-const missed = { name: "absent", id: S1 };
-const cooling = { name: "absent", id: S1, cooling: true };
-const asked = { name: "absent", id: S1, cooling: true, asked: true };
+const missed = { name: "absent", id: S1, misses: 1 };
+const cooling = { name: "absent", id: S1, misses: 1, cooling: true };
+const asked = { name: "absent", id: S1, misses: 1, cooling: true, asked: true };
 const unserved = { name: "unserved" };
 const unreadable = { name: "unreadable" };
 const retired = { name: "retired" };
-const opening = (attempt, id = S1, via = "named") => ({ name: "opening", attempt, id, via });
+const opening = (attempt, id = S1, via = "named", misses) => ({
+  name: "opening",
+  attempt,
+  id,
+  via,
+  ...(misses && { misses }),
+});
 const retrying = (attempt, id = S1, via = "named") => ({ name: "retrying", attempt, id, via });
 const failed = { name: "failed", attempt: OPEN_ATTEMPTS, id: S1, via: "named" };
 const ready = (id = S1) => ({ name: "ready", id });
@@ -162,11 +168,11 @@ const ROWS = [
     "cooling",
   ),
   row(
-    "absent after a miss, rested: an ask looks again at once",
+    "absent after a rest: an ask runs one lookup at once",
     missed,
     wanted(),
-    go(opening(1, S1, "derived"), [lookup(1)]),
-    "look",
+    go(opening(1, S1, "derived", 1), [lookup(1)]),
+    "again",
   ),
   row("cooling: an ask waits for the look-again timer", cooling, wanted(), go(asked), "ask"),
   row(
@@ -200,10 +206,10 @@ const ROWS = [
     "rest",
   ),
   row(
-    "cooling, asked: the timer fires and the lookup runs",
+    "cooling, asked: the timer fires and one lookup runs",
     asked,
     cooled,
-    go(opening(1, S1, "derived"), [lookup(1)]),
+    go(opening(1, S1, "derived", 1), [lookup(1)]),
     "look",
   ),
 
@@ -288,8 +294,18 @@ const ROWS = [
     "opening: the last derived miss rests and arms the look-again timer",
     opening(MISSING_ATTEMPTS, S1, "derived"),
     settled("unknown", MISSING_ATTEMPTS),
-    go(cooling, [forget(), { type: "cool", delay: LOOK_AGAIN_MS }]),
+    go(cooling, [forget(), { type: "cool", delay: lookAgainDelay(1) }]),
     "missing",
+  ),
+  row(
+    "opening: a miss after a rest doesn't retry, and widens the window",
+    opening(1, S1, "derived", 1),
+    settled("unknown", 1),
+    go({ name: "absent", id: S1, misses: 2, cooling: true }, [
+      forget(),
+      { type: "cool", delay: lookAgainDelay(2) },
+    ]),
+    "again",
   ),
   row(
     "opening: a cancelled lookup's unknown answer",
@@ -437,6 +453,31 @@ test("a derived document the host never holds is asked for a bounded number of t
   // Nobody asks: the timer fires and nothing more runs.
   ({ state } = hostDocOpenMachine.step(state, cooled));
   assert.deepEqual(state, missed);
+});
+
+test("with steady demand, a missing document gets one lookup per window, widening to 60 s", () => {
+  let { state } = hostDocOpenMachine.step(hostDocOpenMachine.initial, derived());
+  for (let attempt = 1; attempt < MISSING_ATTEMPTS; attempt++) {
+    ({ state } = hostDocOpenMachine.step(state, settled("unknown", attempt)));
+    ({ state } = hostDocOpenMachine.step(state, settled("timer", attempt)));
+  }
+  const windows = [];
+  for (let rest = 1; rest <= 5; rest++) {
+    const missedOnce = hostDocOpenMachine.step(state, settled("unknown", state.attempt));
+    const cool = missedOnce.effects.find((effect) => effect.type === "cool");
+    windows.push(cool.delay);
+    assert.ok(
+      !missedOnce.effects.some((effect) => effect.type === "schedule"),
+      "no burst after a rest",
+    );
+    ({ state } = hostDocOpenMachine.step(missedOnce.state, wanted()));
+    ({ state } = hostDocOpenMachine.step(state, cooled));
+    assert.deepEqual(state, opening(1, S1, "derived", rest));
+  }
+  assert.deepEqual(windows, [10_000, 30_000, 60_000, 60_000, 60_000]);
+  // A new connection starts over with a fresh burst.
+  ({ state } = hostDocOpenMachine.step(state, derived()));
+  assert.deepEqual(state, opening(1, S1, "derived"));
 });
 
 test("a discovery answer becomes one event", () => {

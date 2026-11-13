@@ -19,21 +19,29 @@ import { PlainSync, treeOf } from "../worker/plain-sync.mjs";
 import { BUILD_FEATURES } from "../model/schema-features.mjs";
 import { readableFormats } from "../model/document-types.mjs";
 import { setSources, sourcesGenesis } from "../model/sources-doc.mjs";
-import { LOOK_AGAIN_MS, MISSING_ATTEMPTS, retryDelay } from "./host-doc-open-machine.mjs";
-import { LOOKUP_TIMEOUT_MS, HostDocReplica, UNAVAILABLE } from "./host-doc-replica.mjs";
+import { MISSING_ATTEMPTS, lookAgainDelay, retryDelay } from "./host-doc-open-machine.mjs";
+import {
+  LOOKUP_TIMEOUT_MS,
+  HostDocReplica,
+  UNAVAILABLE,
+  evictUnavailable,
+} from "./host-doc-replica.mjs";
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const ID = "sources-1";
 const named = (id = ID) => ({ documents: { sources: { id, type: "pages.sources", format: 1 } } });
 const none = { documents: { page: { id: "p", type: "pages.page", format: 3 } } };
 
-/** A repo whose `find` calls are held until the test settles them. */
-function heldFind() {
+/** A repo whose `find` calls are held until the test settles them. With
+ * `ignoreAbort`, an aborted find still settles however the test settles it,
+ * as a find whose answer was already on its way does. */
+function heldFind({ ignoreAbort = false } = {}) {
   const calls = [];
   const find = (id, { signal } = {}) =>
     new Promise((resolve, reject) => {
       calls.push({ id, signal, resolve, reject });
-      signal?.addEventListener("abort", () => reject(signal.reason ?? Error("aborted")));
+      if (!ignoreAbort)
+        signal?.addEventListener("abort", () => reject(signal.reason ?? Error("aborted")));
     });
   return { calls, find };
 }
@@ -54,9 +62,9 @@ function handleOf(doc) {
   };
 }
 
-function replica({ link = () => 1, derive } = {}) {
+function replica({ link = () => 1, derive, ignoreAbort } = {}) {
   const scheduler = new VirtualTimeScheduler();
-  const repo = heldFind();
+  const repo = heldFind({ ignoreAbort });
   const forgotten = [];
   const derivations = [];
   const sources = new HostDocReplica({
@@ -113,7 +121,7 @@ test("a Page with no sources document looks nothing up and publishes nothing", a
 test("a Page with no sources document and nothing asking derives nothing", async () => {
   const r = replica();
   r.sources.discovered(none);
-  r.advance(10 * LOOK_AGAIN_MS);
+  r.advance(600_000);
   await tick();
   assert.equal(r.derivations.length, 0);
   assert.equal(r.repo.calls.length, 0);
@@ -143,7 +151,7 @@ test("an ask on an absent document looks it up by its derived id on this connect
   assert.equal(r.repo.calls.length, 1);
 });
 
-test("a derived miss forgets the answer, retries on the backoff, then rests", async () => {
+test("a derived miss is forgotten just before the next lookup, and the replica rests", async () => {
   const r = replica();
   r.sources.discovered(none);
   r.sources.want();
@@ -151,27 +159,52 @@ test("a derived miss forgets the answer, retries on the backoff, then rests", as
   for (let attempt = 1; attempt <= MISSING_ATTEMPTS; attempt++) {
     r.repo.calls[attempt - 1].reject(missing());
     await tick();
-    assert.deepEqual(r.forgotten, Array(attempt).fill(DERIVED), "each miss is forgotten");
+    assert.equal(r.forgotten.length, attempt - 1, "nothing is evicted at the miss");
     if (attempt === MISSING_ATTEMPTS) break;
     r.advance(retryDelay(attempt) - 1);
     await tick();
     assert.equal(r.repo.calls.length, attempt, "no lookup before the delay");
     r.advance(1);
     await tick();
+    assert.equal(r.forgotten.length, attempt, "the retry evicts the miss first");
     assert.equal(r.repo.calls.length, attempt + 1);
   }
-  assert.deepEqual(r.state(), { name: "absent", id: DERIVED, cooling: true });
+  assert.deepEqual(r.state(), { name: "absent", id: DERIVED, misses: 1, cooling: true });
   // Nobody asks: the window passes and nothing runs.
-  r.advance(LOOK_AGAIN_MS);
+  r.advance(lookAgainDelay(1));
   await tick();
-  assert.deepEqual(r.state(), { name: "absent", id: DERIVED });
-  r.advance(10 * LOOK_AGAIN_MS);
+  assert.deepEqual(r.state(), { name: "absent", id: DERIVED, misses: 1 });
+  r.advance(600_000);
   await tick();
   assert.equal(r.repo.calls.length, MISSING_ATTEMPTS);
-  // A later ask looks at once.
+  // A later ask runs one lookup at once, evicting the last miss first.
   r.sources.want();
   await tick();
   assert.equal(r.repo.calls.length, MISSING_ATTEMPTS + 1);
+  assert.equal(r.forgotten.length, MISSING_ATTEMPTS);
+});
+
+test("with steady demand, a document that never appears is looked up at fixed times", async () => {
+  const r = replica();
+  const times = [];
+  const seen = new Set();
+  r.sources.discovered(none);
+  // Something asks on every state change, as an embed that keeps asking would.
+  r.sources.state$.state$.subscribe(() => r.sources.want());
+  await tick();
+  const deadline = 200_000;
+  while (r.scheduler.frame <= deadline) {
+    for (const call of r.repo.calls) {
+      if (seen.has(call)) continue;
+      seen.add(call);
+      times.push(r.scheduler.frame);
+      call.reject(missing());
+    }
+    await tick();
+    r.advance(500);
+    await tick();
+  }
+  assert.deepEqual(times, [0, 1_000, 3_000, 13_000, 43_000, 103_000, 163_000]);
 });
 
 test("asks inside the look-again window run one lookup when it ends", async () => {
@@ -190,12 +223,90 @@ test("asks inside the look-again window run one lookup when it ends", async () =
   for (let i = 0; i < 20; i++) r.sources.want();
   await tick();
   assert.equal(r.repo.calls.length, before, "asks wait for the window");
-  r.advance(LOOK_AGAIN_MS);
+  r.advance(lookAgainDelay(1));
   await tick();
   assert.equal(r.repo.calls.length, before + 1, "twenty asks are one lookup");
+  // That lookup misses too: no burst, and the next window is wider.
+  r.repo.calls.at(-1).reject(missing());
+  await tick();
+  assert.deepEqual(r.state(), { name: "absent", id: DERIVED, misses: 2, cooling: true });
+  r.sources.want();
+  r.advance(lookAgainDelay(2) - 1);
+  await tick();
+  assert.equal(r.repo.calls.length, before + 1);
+  r.advance(1);
+  await tick();
+  assert.equal(r.repo.calls.length, before + 2);
   r.repo.calls.at(-1).resolve(handleOf(sourcesDoc()));
   await tick();
   assert.equal(r.state().name, "ready");
+});
+
+test("an id another replica installed is never evicted, however late the eviction runs", async () => {
+  const claims = new Set();
+  const evicted = [];
+  let releaseForget;
+  const repo = heldFind();
+  const scheduler = new VirtualTimeScheduler();
+  const advance = (ms) => {
+    const target = scheduler.frame + ms;
+    scheduler.maxFrames = target;
+    scheduler.flush();
+    scheduler.frame = target;
+    scheduler.maxFrames = Infinity;
+  };
+  const make = () =>
+    new HostDocReplica({
+      find: repo.find,
+      claims,
+      // A slow eviction: it settles only when the test lets it.
+      forget: (id) =>
+        new Promise((resolve) => {
+          releaseForget = () => {
+            evicted.push(id);
+            resolve();
+          };
+        }),
+      derive: async () => DERIVED,
+      scheduler,
+    });
+  const first = make();
+  first.connected();
+  await tick();
+  repo.calls[0].reject(missing());
+  await tick();
+  // A second replica on the same repo finds and installs the same document.
+  const second = make();
+  second.connected();
+  await tick();
+  repo.calls[1].resolve(handleOf(sourcesDoc()));
+  await tick();
+  assert.equal(second.state$.snapshot().name, "ready");
+  assert.ok(claims.has(DERIVED));
+  // The first replica's retry comes due: it doesn't evict what the second holds.
+  advance(retryDelay(1));
+  await tick();
+  assert.equal(releaseForget, undefined, "no eviction was started");
+  assert.equal(repo.calls.length, 3, "the retry looks up without evicting");
+  second.close();
+  assert.ok(!claims.has(DERIVED), "closing gives up the claim");
+
+  // An eviction already under way when the lookup is cancelled stops there:
+  // no find runs after it.
+  const third = make();
+  third.connected();
+  await tick();
+  repo.calls.at(-1).reject(missing());
+  await tick();
+  advance(retryDelay(1));
+  await tick();
+  const finds = repo.calls.length;
+  third.retire();
+  releaseForget();
+  await tick();
+  assert.deepEqual(evicted, [DERIVED]);
+  assert.equal(repo.calls.length, finds, "a cancelled lookup finds nothing after evicting");
+  first.close();
 });
 
 test("a new connection looks a derived document up again at once", async () => {
@@ -303,7 +414,7 @@ test("a lookup that outlasts its timeout counts as failed", async () => {
 });
 
 test("a lookup running when a new connection is admitted restarts on it", async () => {
-  const r = replica();
+  const r = replica({ ignoreAbort: true });
   r.sources.discovered(named());
   await tick();
   r.sources.discovered(named());
@@ -368,8 +479,9 @@ test("retiring cancels a lookup, drops the document, and nothing opens again", a
   assert.equal(r.repo.calls.length, 1);
   assert.deepEqual(r.state(), { name: "retired" });
 
-  // A lookup in flight at retirement is cancelled and never installs.
-  const other = replica();
+  // A lookup in flight at retirement is cancelled and never installs, even
+  // when its find resolves after the abort.
+  const other = replica({ ignoreAbort: true });
   other.sources.discovered(named());
   await tick();
   other.sources.retire();
@@ -530,7 +642,7 @@ test("over a real host, a document created after a derived miss opens on the sam
   const h = await hostWithSources(t, { seed: false });
   const sources = new HostDocReplica({
     find: (id, options) => h.repo.find(id, options),
-    forget: (id) => h.repo.removeFromCache(id),
+    forget: (id) => evictUnavailable(h.repo, id),
     derive: async () => h.sourcesId,
   });
   sources.discovered(none);
@@ -547,4 +659,14 @@ test("over a real host, a document created after a derived miss opens on the sam
   });
   assert.equal(sources.doc.sources.usage.current.asset_id, "a".repeat(64));
   sources.close();
+});
+
+test("over a real host, eviction leaves a document that has loaded since the miss", async (t) => {
+  const h = await hostWithSources(t);
+  await h.write("usage", "a".repeat(64));
+  const handle = await h.repo.find(h.sourcesId);
+  await evictUnavailable(h.repo, h.sourcesId);
+  // The handle still follows the host's writes.
+  await h.write("usage", "b".repeat(64), "1");
+  await until(() => handle.doc().sources.usage.revision === "2", { label: "a write after" });
 });

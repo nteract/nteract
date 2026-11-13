@@ -63,10 +63,10 @@ import {
   viewerReconnectMachine,
 } from "./reconnect-machine.mjs";
 import { commentsOpenMachine } from "./comments-open-machine.mjs";
-import { HostDocReplica } from "./host-doc-replica.mjs";
+import { HostDocReplica, evictUnavailable } from "./host-doc-replica.mjs";
 import { PageSourceStore } from "./page-source-store.mjs";
 import { sourcesDocumentId } from "./derived-documents.mjs";
-import { ViewReplicas } from "./view-replicas.mjs";
+import { VIEW_CLOSE_DELAY_MS, ViewReplicas } from "./view-replicas.mjs";
 import { fullStatus, overlayStatus, viewerSyncStatusMachine } from "./sync-status-machine.mjs";
 import { FORMAT_GATE_INITIAL, PAGE_FORMAT_UNSUPPORTED, formatGateStep } from "./format-gate.mjs";
 import { validNonce } from "../model/nonce.mjs";
@@ -233,8 +233,6 @@ const recordBytes = (record) => ({
 export const STABLE_CONNECTION_MS = 15_000;
 // A Page being left keeps syncing this long for its receipt before closing.
 export const CLOSE_DRAIN_MS = 10_000;
-/** How long a view replica stays open after its last embed lets go. */
-export const VIEW_CLOSE_DELAY_MS = 2_000;
 // Status ids (STATUS_IDS in sync-status-machine.mjs) in which a Page being
 // left may still save. These read ids, never labels.
 const DRAINING_STATES = new Set(["connecting", "reconnecting", "syncing", "saving"]);
@@ -541,10 +539,14 @@ export class PageSession {
     // lifetimes. Readers of `peers` and `agentProgress` use it too.
     this.now = now;
     // How the sources and view replicas reach the repo. A host document a
-    // derived lookup missed is forgotten, so the next lookup asks the host.
+    // derived lookup missed is evicted just before the next lookup of it, so
+    // that lookup asks the host. Eviction happens only while the repo still
+    // holds the unavailable answer and no replica has the id installed
+    // (`claims`): the repo's eviction closes the document for every holder.
     const lookups = {
       find: (id, options) => this.repo.find(id, options),
-      forget: (id) => this.repo?.removeFromCache?.(id),
+      forget: (id) => evictUnavailable(this.repo, id),
+      claims: new Set(),
       // A lookup's connection: the admitted one, or none while disconnected.
       link: () => (this.sockets.size ? this.connectionGeneration : undefined),
       scheduler,
@@ -559,8 +561,6 @@ export class PageSession {
         pageId,
         viewDocumentId,
         linked: () => this.lookupsOpen,
-        // Longer than an embed's park (wordgard-dataframes.mjs), so an embed
-        // the editor moves keeps its view document.
         closeDelay: VIEW_CLOSE_DELAY_MS,
       });
     this.recoveryCapture = new RecoveryCapture({

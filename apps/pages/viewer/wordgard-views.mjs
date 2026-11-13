@@ -34,7 +34,7 @@ export const viewEventReachesEditor = (event) =>
  * line for the time before it draws. */
 export function viewFrame({ viewId }) {
   const dom = document.createElement("section");
-  dom.className = "wordgard-widget wordgard-view";
+  dom.className = "wordgard-widget wordgard-view-embed";
   dom.dataset.viewId = viewId;
   dom.setAttribute("aria-roledescription", "chart");
   const canvas = dom.appendChild(document.createElement("div"));
@@ -49,31 +49,34 @@ export function viewFrame({ viewId }) {
 }
 
 /**
- * One embed's lifecycle. The view is held (its replica open) from connect
- * to disconnect, so the view document is found as soon as the node is in
- * the Page; the chart chunk and the data load only near the viewport, under
- * dataframeLifecycle's rules.
+ * One embed's lifecycle, under dataframeLifecycle's rules: nothing happens
+ * until the embed nears the viewport (or at once, `eager`). Then the chart
+ * chunk loads and the embed holds its view (opening its replica) for as long
+ * as the chart is mounted, so an offscreen embed costs no lookup and no
+ * timer. The chart is mounted until the embed is disconnected past its park.
  */
 export function viewLifecycle({ viewId, views, sources, frame, load = VIEW_RENDERER, ...options }) {
-  let held = null;
-  const hold = () => {
-    if (held || !views) return;
-    held = views.hold(viewId);
-    // An embed that appears asks for its view again, if an earlier lookup
-    // found nothing.
-    held.want();
-  };
   const lifecycle = dataframeLifecycle({
     ...frame,
     load: () =>
       load().then((chunk) => ({
         mount: (canvas) => {
           // A Page without views reads every view as not on this Page.
-          if (!held || !sources) {
+          if (!views || !sources) {
             canvas.textContent = VIEW_NOT_HERE;
             return { destroy: () => (canvas.textContent = "") };
           }
-          return chunk.mount(canvas, { view$: held.view$, sources });
+          const held = views.hold(viewId);
+          // An embed that appears asks for its view again, if an earlier
+          // lookup found nothing.
+          held.want();
+          const chart = chunk.mount(canvas, { view$: held.view$, sources });
+          return {
+            destroy() {
+              chart.destroy();
+              held.release();
+            },
+          };
         },
       })),
     attrs: {},
@@ -83,15 +86,8 @@ export function viewLifecycle({ viewId, views, sources, frame, load = VIEW_RENDE
     ...options,
   });
   return {
-    connect() {
-      hold();
-      lifecycle.connect();
-    },
-    disconnect() {
-      lifecycle.disconnect();
-      held?.release();
-      held = null;
-    },
+    connect: () => lifecycle.connect(),
+    disconnect: () => lifecycle.disconnect(),
     get state() {
       return lifecycle.state;
     },
