@@ -702,3 +702,199 @@ test("a stored dataset with image metadata or the wrong Page fails closed", asyn
     assert.equal(response.status, 500);
   }
 });
+
+// Copying a dataset between Pages: POST to the asset's URL on the
+// destination, naming the source Page. pageId is the destination and otherId
+// the source throughout.
+const copyRequest = (f, assetId, { from = otherId, id = pageId, headers = {}, body } = {}) =>
+  run(f, {
+    id,
+    asset: assetId,
+    method: "POST",
+    headers: { "content-type": "application/json", ...headers },
+    body: body ?? JSON.stringify({ from_page_id: from }),
+  });
+async function sourceDataset(f) {
+  return upload(f, {
+    id: otherId,
+    body: parquetBytes(),
+    headers: { "content-type": PARQUET_MEDIA_TYPE },
+  });
+}
+const share = (f, id, role) => {
+  const page = f.pages.get(id);
+  page.metadata.owner = "user:someone-else";
+  page.metadata.acl = { members: { [f.principal]: { role, generation: 1 } } };
+};
+const puts = (f) => f.env.PAGES_ASSETS.calls.filter(([method]) => method === "put").length;
+
+test("a dataset copies to another Page under the same id, once", async (t) => {
+  const f = await fixture(t),
+    dataset = await sourceDataset(f);
+  assert.equal((await run(f, { asset: dataset.asset_id })).status, 404);
+  const copied = await copyRequest(f, dataset.asset_id);
+  assert.equal(copied.status, 201, await copied.clone().text());
+  privateHeaders(copied);
+  const body = await copied.json();
+  const url = `/api/pages/${pageId}/assets/${dataset.asset_id}`;
+  assert.deepEqual(body, {
+    asset_id: dataset.asset_id,
+    url,
+    asset_url: url,
+    mime_type: PARQUET_MEDIA_TYPE,
+    size: parquetBytes().length,
+  });
+  const stored = f.env.PAGES_ASSETS.objects.get(imageAssetKey(pageId, dataset.asset_id));
+  assert.deepEqual(stored.customMetadata, { page_id: pageId, hash: dataset.asset_id });
+  const read = await run(f, { asset: dataset.asset_id });
+  assert.equal(read.status, 200);
+  assert.deepEqual(new Uint8Array(await read.arrayBuffer()), parquetBytes());
+  // A repeat, and a dataset already on the destination, are success with no
+  // second write.
+  const before = puts(f);
+  const again = await copyRequest(f, dataset.asset_id);
+  assert.equal(again.status, 200);
+  assert.deepEqual(await again.json(), body);
+  assert.equal(puts(f), before);
+  // Uploading the same bytes after the copy finds them too.
+  const uploaded = await run(f, {
+    body: parquetBytes(),
+    headers: { "content-type": PARQUET_MEDIA_TYPE },
+  });
+  assert.equal(uploaded.status, 200);
+  assert.equal(puts(f), before);
+});
+
+test("a copy needs edit access to the destination and read access to the source", async (t) => {
+  const f = await fixture(t),
+    dataset = await sourceDataset(f);
+  const cases = [
+    // [destination role, source role, status]
+    ["viewer", "viewer", 403],
+    ["commenter", "editor", 403],
+    ["none", "viewer", 403],
+    ["editor", "none", 403],
+    ["none", "none", 403],
+    ["editor", "viewer", 201],
+  ];
+  for (const [target, source, status] of cases) {
+    share(f, pageId, target);
+    share(f, otherId, source);
+    const before = f.env.PAGES_ASSETS.calls.length;
+    const response = await copyRequest(f, dataset.asset_id);
+    assert.equal(
+      response.status,
+      status,
+      `${target} → ${source}: ${await response.clone().text()}`,
+    );
+    privateHeaders(response);
+    if (status !== 201)
+      assert.equal(f.env.PAGES_ASSETS.calls.length, before, `${target}/${source}`);
+  }
+  // A session cookie needs same-origin evidence, as an upload does.
+  const crossSite = await run(f, {
+    asset: dataset.asset_id,
+    method: "POST",
+    authenticated: false,
+    headers: {
+      cookie: f.cookie,
+      origin: "https://attacker.invalid",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ from_page_id: otherId }),
+  });
+  assert.ok([401, 403].includes(crossSite.status), await crossSite.clone().text());
+  // A read-only credential can't copy, even for the owner of both Pages.
+  for (const id of [pageId, otherId]) f.pages.get(id).metadata.owner = f.principal;
+  const readOnly = await copyRequest(f, dataset.asset_id, {
+    headers: { authorization: `Bearer ${f.auth.apiKey({ scopes: ["cloud:read"] })}` },
+  });
+  assert.equal(readOnly.status, 403);
+  // Neither does an upload capability, which authorizes only a byte upload.
+  const capability = await copyRequest(f, dataset.asset_id, {
+    headers: { authorization: "Pages-Upload pu1.forged" },
+  });
+  assert.equal(capability.status, 401);
+  assert.equal((await capability.json()).code, "upload_capability_invalid");
+});
+
+test("a source the caller can't read answers the same whether the dataset is there", async (t) => {
+  const f = await fixture(t),
+    dataset = await sourceDataset(f);
+  share(f, otherId, "none");
+  const before = f.env.PAGES_ASSETS.calls.length;
+  const present = await copyRequest(f, dataset.asset_id);
+  const absent = await copyRequest(f, "0".repeat(64));
+  assert.equal(present.status, 403);
+  assert.equal(absent.status, present.status);
+  assert.deepEqual(await absent.json(), await present.json());
+  // Neither looked at storage.
+  assert.equal(f.env.PAGES_ASSETS.calls.length, before);
+  // A readable source says when the dataset isn't there.
+  share(f, otherId, "viewer");
+  const missing = await copyRequest(f, "0".repeat(64));
+  assert.equal(missing.status, 404);
+  assert.equal((await missing.json()).code, "dataset_not_found");
+});
+
+test("only a Parquet dataset copies; an image or a bad request is refused", async (t) => {
+  const f = await fixture(t);
+  const image = await upload(f, { id: otherId });
+  const before = puts(f);
+  const refused = await copyRequest(f, image.asset_id);
+  assert.equal(refused.status, 415, await refused.clone().text());
+  privateHeaders(refused);
+  assert.equal(puts(f), before);
+  for (const [body, headers] of [
+    ["not json", {}],
+    [JSON.stringify({ from_page_id: "not-a-page" }), {}],
+    [JSON.stringify({ from_page_id: otherId, extra: 1 }), {}],
+    [JSON.stringify([otherId]), {}],
+    [JSON.stringify({ from_page_id: otherId }), { "content-type": "text/plain" }],
+    [JSON.stringify({ from_page_id: otherId, pad: "x".repeat(2048) }), {}],
+  ]) {
+    const response = await copyRequest(f, image.asset_id, { body, headers });
+    assert.ok([400, 413, 415].includes(response.status), `${body}: ${response.status}`);
+    privateHeaders(response);
+  }
+  assert.equal(puts(f), before);
+});
+
+test("a copy meets the destination's limits as an upload does", async (t) => {
+  const f = await fixture(t),
+    dataset = await sourceDataset(f);
+  // A Page whose recovery is blocked takes no new assets.
+  f.pages.get(pageId).metadata.recoveryBlocked = { code: "history_capacity" };
+  const blocked = await copyRequest(f, dataset.asset_id);
+  assert.equal(blocked.status, 409);
+  assert.equal((await blocked.json()).code, "page_recovery_blocked");
+  delete f.pages.get(pageId).metadata.recoveryBlocked;
+  // A source object over the dataset limit is refused before its bytes are
+  // read or anything is stored.
+  const key = imageAssetKey(otherId, dataset.asset_id);
+  const stored = f.env.PAGES_ASSETS.objects.get(key);
+  f.env.PAGES_ASSETS.objects.set(key, { ...stored, size: DATASET_MAX_BYTES + 1 });
+  const before = f.env.PAGES_ASSETS.calls.length;
+  const large = await copyRequest(f, dataset.asset_id);
+  assert.equal(large.status, 413, await large.clone().text());
+  assert.deepEqual(
+    f.env.PAGES_ASSETS.calls.slice(before).map(([method]) => method),
+    ["head", "head"],
+  );
+  // Bytes that aren't a valid container are refused as an upload refuses them.
+  f.env.PAGES_ASSETS.objects.set(key, {
+    ...stored,
+    bytes: parquetBytes().subarray(0, 64),
+    size: 64,
+  });
+  assert.equal((await copyRequest(f, dataset.asset_id)).status, 415);
+  assert.equal(f.env.PAGES_ASSETS.objects.has(imageAssetKey(pageId, dataset.asset_id)), false);
+  // Revoking edit access during the copy refuses its result.
+  f.env.PAGES_ASSETS.objects.set(key, stored);
+  const put = f.env.PAGES_ASSETS.put.bind(f.env.PAGES_ASSETS);
+  f.env.PAGES_ASSETS.put = async (...args) => {
+    share(f, pageId, "viewer");
+    return put(...args);
+  };
+  assert.equal((await copyRequest(f, dataset.asset_id)).status, 403);
+});

@@ -420,8 +420,52 @@ try {
   await expect.poll(async () => (await markdownOf()).match(/\[Dataframe/g)?.length ?? 0).toBe(2);
   complete("Click, Cmd-X and paste move the table");
 
-  // An HTML drop of a dataframe copied from another Page lands as its title,
-  // never as a node naming another Page's asset.
+  // Copy a table on one Page and paste it into another: the paste waits
+  // while the host copies the dataset onto the second Page, then lands with
+  // its src there, and the table draws its rows.
+  {
+    const listing = (await tool(owner, "list_pages")).body;
+    const target = await tool(owner, "create_page", {
+      title: "Datasets paste target",
+      markdown: "Pasted from another Page:",
+      ...retry(listing),
+    });
+    assert.equal(target.status, 200, JSON.stringify(target.body));
+    const targetId = target.body.page_id;
+    created.push(targetId);
+    const local = `/api/pages/${targetId}/assets/${dataset.asset_id}`;
+    const stored = () =>
+      owner.evaluate(async (path) => (await fetch(path, { method: "HEAD" })).status, local);
+    assert.equal(await stored(), 404);
+    await other.locator(".wordgard-dataframe-title").click();
+    await expect(selected(other)).toHaveCount(1);
+    await owner.keyboard.press("ControlOrMeta+C");
+    const second = await owner.context().newPage();
+    second.on("pageerror", (error) => report.errors.push(`paste target: ${error.message}`));
+    await second.goto(`${origin}/p/${targetId}`);
+    await content(second).click();
+    await second.keyboard.press("ControlOrMeta+End");
+    await second.keyboard.press("ControlOrMeta+V");
+    await expect(tables(second)).toHaveCount(1, { timeout: 20000 });
+    const pasted = tables(second).first();
+    await expect(pasted).toHaveAttribute("aria-label", "Usage by day");
+    for (const text of ["surface", "browser", "mcp"])
+      await expect(pasted).toContainText(text, { timeout: 20000 });
+    await expect(second.getByRole("status").filter({ hasText: "Copying" })).toHaveCount(0);
+    const markdown = (await tool(owner, "read_page", { page_id: targetId })).body.blocks
+      .map((block) => block.markdown)
+      .join("\n");
+    assert.ok(markdown.includes(`[Dataframe: Usage by day](${local})`), markdown);
+    assert.equal(markdown.includes(pageId), false, markdown);
+    assert.equal(await stored(), 200);
+    await second.screenshot({ path: `${output}/sift-table-pasted.png`, fullPage: true });
+    await second.close();
+  }
+  complete("A table copied from one Page and pasted into another arrives with its data");
+
+  // An HTML drop of a dataframe from a Page that doesn't exist (or that the
+  // person can't read) lands as its title, never as a node naming another
+  // Page's asset, and the Page says why.
   const foreign = `/api/pages/44444444-4444-4444-8444-444444444444/assets/${"a".repeat(64)}`;
   await content(owner).evaluate((element, src) => {
     const data = new DataTransfer();
@@ -446,7 +490,15 @@ try {
   await expect.poll(markdownOf).toContain("Foreign table");
   assert.equal((await markdownOf()).includes("44444444-4444-4444-8444-444444444444"), false);
   await expect(tables(owner)).toHaveCount(2);
-  complete("An HTML drop of another Page's dataframe lands as its title");
+  await expect(
+    owner.getByRole("status").filter({ hasText: "Pasted its title instead" }),
+  ).toBeVisible();
+  await owner
+    .getByRole("status")
+    .filter({ hasText: "Pasted its title instead" })
+    .getByRole("button", { name: "Dismiss" })
+    .click();
+  complete("An HTML drop of another Page's dataframe it can't copy lands as its title");
 
   for (const page of [owner, viewer])
     assert.equal(await page.locator("[data-block-error]").count(), 0, "a block failed to draw");
