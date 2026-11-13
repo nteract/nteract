@@ -6,7 +6,15 @@
 // phone width keeps the chart inside its frame. Reports the renderer chunk's
 // size and writes light and dark screenshots.
 //
+// Then, in each engine in PAGES_CHART_ENGINES (default chromium, the engine
+// the e2e harness installs), it draws scripts/fixtures/chart-hostile-fixture.mjs:
+// charts whose spec or data put a CSS url() in every position that reaches a
+// style, hovers every mark, and fails on any request off the fixture origin
+// from the renderer. The unprotected "raw" layer's requests are recorded as
+// the baseline in report.json.
+//
 //   node scripts/chart-smoke.mjs        # or: node scripts/e2e.mjs chart
+//   PAGES_CHART_ENGINES=chromium,firefox,webkit node scripts/chart-smoke.mjs
 //
 // Output goes to PAGES_E2E_OUTPUT (set by scripts/e2e.mjs) or
 // test-results/chart-smoke.
@@ -16,7 +24,7 @@ import { createServer } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
-import { chromium, expect } from "@playwright/test";
+import { chromium, expect, firefox, webkit } from "@playwright/test";
 import { build } from "esbuild";
 import { VIEWER_CSP } from "./viewer-chunks.mjs";
 
@@ -24,7 +32,12 @@ const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const output = process.env.PAGES_E2E_OUTPUT ?? path.join(app, "test-results/chart-smoke");
 const site = path.join(output, "site");
 await mkdir(site, { recursive: true });
-const report = { completed: [], errors: [], csp: [], requests: [] };
+const report = { completed: [], errors: [], csp: [], requests: [], hostile: {} };
+const ENGINES = { chromium, firefox, webkit };
+const engines = (process.env.PAGES_CHART_ENGINES ?? "chromium")
+  .split(",")
+  .map((name) => name.trim());
+for (const name of engines) assert.ok(ENGINES[name], `unknown engine ${name}`);
 const complete = (name) => {
   report.completed.push(name);
   console.log(`[Chart E2E] ${name}`);
@@ -63,6 +76,37 @@ console.log(
   `[Chart E2E] renderer chunk ${(report.chunk.bytes / 1024).toFixed(1)} KiB, ` +
     `${(report.chunk.gzip / 1024).toFixed(1)} KiB gzip`,
 );
+// The hostile fixture builds on its own, so its direct Vega imports don't
+// change how the renderer's chunk is measured above.
+await build({
+  entryPoints: { fixture: path.join(app, "scripts/fixtures/chart-hostile-fixture.mjs") },
+  bundle: true,
+  format: "esm",
+  platform: "browser",
+  target: "es2022",
+  minify: true,
+  splitting: true,
+  outdir: path.join(site, "hostile"),
+  chunkNames: "chunks/[hash]",
+  define: { "process.env.NODE_ENV": '"production"' },
+  logLevel: "error",
+});
+await writeFile(
+  path.join(site, "hostile/index.html"),
+  `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Hostile chart fixture</title>
+    <link rel="stylesheet" href="/hostile/fixture.css" />
+  </head>
+  <body>
+    <main id="charts" style="display: grid; grid-template-columns: repeat(3, 300px); gap: 8px; padding: 8px"></main>
+    <script type="module" src="/hostile/fixture.js"></script>
+  </body>
+</html>
+`,
+);
 await writeFile(
   path.join(site, "index.html"),
   `<!doctype html>
@@ -87,7 +131,7 @@ await writeFile(
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
 const server = createServer(async (request, response) => {
   const name = new URL(request.url, "http://localhost").pathname;
-  const file = path.join(site, name === "/" ? "index.html" : name);
+  const file = path.join(site, name.endsWith("/") ? `${name}index.html` : name);
   try {
     if (!file.startsWith(site)) throw new Error("outside the fixture");
     const body = await readFile(file);
@@ -112,6 +156,98 @@ page.on("console", (message) => {
   else if (message.type() === "error") report.errors.push(`console: ${message.text()}`);
 });
 page.on("request", (request) => report.requests.push(request.url()));
+
+/**
+ * Draw the hostile fixture in `engine`, hover every mark, and fail on any
+ * request off the fixture origin from the "mount" or "draw" layer. Requests
+ * are aborted, never sent.
+ */
+async function hostileCheck(engine) {
+  const instance =
+    engine === "chromium" ? browser : await ENGINES[engine].launch({ headless: true });
+  const hostileContext = await instance.newContext({ viewport: { width: 1000, height: 900 } });
+  const hostile = await hostileContext.newPage();
+  const fetched = [];
+  await hostileContext.route(
+    (url) => !url.href.startsWith(origin),
+    (route) => route.abort(),
+  );
+  hostile.on("request", (request) => {
+    if (!request.url().startsWith(origin)) fetched.push(request.url());
+  });
+  try {
+    await hostile.goto(`${origin}/hostile/`, { waitUntil: "load" });
+    await expect(hostile.locator("body[data-fixture=ready]")).toBeAttached({ timeout: 30_000 });
+    const sections = hostile.locator("section[data-layer]");
+    for (let i = 0, n = await sections.count(); i < n; i++) {
+      const section = sections.nth(i);
+      await section.scrollIntoViewIfNeeded();
+      const points = await section.evaluate((element) =>
+        [...element.querySelectorAll("svg, svg path, svg text, svg rect")].map((node) => {
+          const box = node.getBoundingClientRect();
+          return [box.x + box.width / 2, box.y + box.height / 2];
+        }),
+      );
+      for (const [x, y] of points) await hostile.mouse.move(x, y);
+    }
+    await hostile.waitForTimeout(1000);
+    const outcomes = JSON.parse(await hostile.locator("body").getAttribute("data-outcomes"));
+    const leaked = (layer) =>
+      [
+        ...new Set(
+          fetched
+            .filter((url) => url.includes(`/${layer}/`))
+            .map((url) =>
+              url
+                .split("/")
+                .at(-1)
+                .replace(/\.svg.*$/, ""),
+            ),
+        ),
+      ].sort();
+    report.hostile[engine] = {
+      fetched: { mount: leaked("mount"), draw: leaked("draw"), raw: leaked("raw") },
+      outcomes,
+      requests: fetched,
+    };
+    console.log(
+      `[Chart E2E] ${engine}: the unprotected renderer fetched for ${leaked("raw").join(", ") || "nothing"}`,
+    );
+    assert.deepEqual(leaked("mount"), [], `${engine}: mount fetched`);
+    assert.deepEqual(leaked("draw"), [], `${engine}: drawChart fetched`);
+    assert.deepEqual(
+      fetched.filter((url) => !/\/(mount|draw|raw)\//.test(url)),
+      [],
+      `${engine}: requests from outside the fixture's layers`,
+    );
+    // Through mount, a url() or a non-keyword cursor in the spec is refused,
+    // and so is data() in an expression; a value a field carries into a paint
+    // channel draws, cleaned.
+    const drawsThroughMount = new Set([
+      "fill-data",
+      "stroke-data",
+      "gradient-data",
+      "text-fill-data",
+    ]);
+    for (const { layer, position, status } of outcomes.filter((o) => o.layer === "mount"))
+      assert.equal(
+        status,
+        drawsThroughMount.has(position) ? "rendered" : "error",
+        `${engine}: mount ${position}`,
+      );
+    complete(
+      `${engine}: charts with url() in every style position, in the spec and in the data, draw or refuse and fetch nothing`,
+    );
+  } catch (error) {
+    await hostile
+      .screenshot({ path: path.join(output, `failure-hostile-${engine}.png`), fullPage: true })
+      .catch(() => {});
+    throw error;
+  } finally {
+    await hostileContext.close();
+    if (instance !== browser) await instance.close();
+  }
+}
 
 const figure = page.locator("figure.pages-chart");
 const frame = figure.locator(".pages-chart-frame");
@@ -195,6 +331,8 @@ try {
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.csp, []);
   complete("No page errors, Content-Security-Policy refusals or requests off the fixture origin");
+
+  for (const engine of engines) await hostileCheck(engine);
 } catch (error) {
   report.failure = error.stack || error.message;
   await page.screenshot({ path: path.join(output, "failure.png"), fullPage: true }).catch(() => {});

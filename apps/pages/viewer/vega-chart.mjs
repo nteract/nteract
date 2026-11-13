@@ -2,10 +2,39 @@
 // chunk: load it with `import("./vega-chart.mjs")` where a chart is shown, the
 // way wordgard-dataframes.mjs loads sift-table.jsx for tables.
 //
-// The viewer CSP has no 'unsafe-eval', so Vega runs with its expression
-// interpreter, and its loader refuses every request: a chart's only data is
-// the rows the caller passes, and it can't fetch an image or follow a link.
-// shared/chart-spec.mjs refuses the same things first, with a sentence.
+// A chart is static: marks, axes, legends and Vega's hover tooltip. Nothing
+// else listens to the reader; selections, bindings, hover encodings and every
+// other event stream are refused, and the View is made without `hover`,
+// because each review of the interactive surface found another way through
+// it. The tooltip handler formats every value without calling its own
+// toString, and a tooltip that fails moves the chart to its error state.
+//
+// The spec and the rows are both untrusted. Four layers keep a chart from
+// running code, fetching or navigating:
+// - shared/chart-spec.mjs refuses a spec before anything compiles, with one
+//   sentence: allowlists for data, transforms, parameters and expression
+//   functions, no URL anywhere, keyword cursors, numbers in
+//   CHART_NUMBER_RANGE. `datasetRows` puts the data's numbers in that range.
+// - `runtimeProblem` is the boundary on what runs. It refuses a compiled Vega
+//   dataflow, root or any subflow, that has any event stream, signal handler
+//   or binding, any operator type outside STATIC_OPERATORS, a hover
+//   encoding, or any expression outside the policy with VEGA_LITE_FUNCTIONS,
+//   before the dataflow runs.
+// - The viewer CSP has no 'unsafe-eval', so Vega runs with its expression
+//   interpreter, and `deniedLoader` refuses every load and link.
+// - The "pages-svg" renderer cleans each item's fill, stroke, font, blend and
+//   cursor before Vega writes them, and the container's cursor setter takes
+//   keywords only, so a data value can't put `url(...)` into a style.
+//
+// A chart still runs on the reader's main thread. `datasetRows` copies at
+// most CHART_MAX_CELLS cells per dataset, nested values included, and
+// `guardTransforms` checks the values bin, kde and regression read at run
+// time. A spec that passes every check can still fail to terminate in a
+// reader's tab: the guards cover the cases reviews have found, and Vega's and
+// d3's numeric loops aren't proven to end. Compiling and running the dataflow
+// in a Worker with a kill timer, and rendering its scenegraph here, is the
+// next change. An error after the first draw moves the chart to its error
+// state.
 //
 // The look is bare: the caller's title above, one thin rounded border around
 // the drawing, and Vega-Lite's own axes, legend and hover tooltip inside it.
@@ -14,10 +43,20 @@
 import * as vega from "vega";
 import * as vl from "vega-lite";
 import { expressionInterpreter } from "vega-interpreter";
-import { Handler as TooltipHandler, formatValue } from "vega-tooltip";
+import { Handler as TooltipHandler } from "vega-tooltip";
 import { BehaviorSubject, Observable, Subscription, combineLatest, concat } from "rxjs";
 import { debounceTime, distinctUntilChanged, skip, switchMap, take } from "rxjs/operators";
-import { checkChartSpec } from "../shared/chart-spec.mjs";
+import {
+  CHART_CURSORS,
+  CHART_EXPRESSION_FUNCTIONS,
+  CHART_MAX_CELLS,
+  CHART_MAX_ROWS,
+  chartNumber,
+  checkChartSpec,
+  checkFormatCall,
+  expressionProblem,
+  loadsResource,
+} from "../shared/chart-spec.mjs";
 import { maximizeButton } from "./diagram-icons.mjs";
 import { openDiagramViewer } from "./diagram-viewer.mjs";
 
@@ -28,6 +67,80 @@ const MIN_WIDTH = 120;
  * once at its end. */
 export const RESIZE_SETTLE_MS = 120;
 
+/**
+ * Guards on the values Vega's looping transforms read at run time. The spec
+ * check bounds literals and `datasetRows` bounds the data, but a `calculate`,
+ * an aggregate or a window can derive a number outside CHART_NUMBER_RANGE
+ * (`datum.x / 1e150 / 1e150 / 1e23` is about 1e-323), and these transforms
+ * loop on what they read:
+ *
+ * | Transform  | Reads                                  | Loop                                 |
+ * | ---------- | -------------------------------------- | ------------------------------------ |
+ * | bin        | extent (from data), span, step, steps, | vega-statistics bin multiplies a step |
+ * |            | minstep, anchor                        | that underflows to 0 forever         |
+ * | kde        | extent and the field's values          | sampleCurve subdivides to span/steps |
+ * | regression | extent and the x field's values        | sampleCurve, as kde                  |
+ *
+ * Each throws before the stock code runs when a value it reads isn't 0 or in
+ * CHART_NUMBER_RANGE, so the chart moves to its error state. With every input
+ * in range, a bin step is at least its span over 1e6 and a curve's stop is at
+ * least its span over 500, both far above 0. Checked and left alone:
+ * timeunit picks a unit from a fixed table, quantile's probabilities come
+ * from the spec, and d3's linear ticks return none for a span they can't
+ * step. Vega is bundled into this chunk alone, so the registry patch reaches
+ * charts and nothing else.
+ */
+const GUARDED = Symbol.for("pages.chart.guarded");
+
+const readable = (value) => {
+  if (value == null) return true;
+  let number;
+  try {
+    number = +value;
+  } catch {
+    return true;
+  }
+  return Number.isNaN(number) || chartNumber(number) === number;
+};
+
+function guardValues(values, transform) {
+  for (const value of values)
+    if (!readable(value))
+      throw new Error(
+        `A ${transform} read a computed value outside what a chart can draw: 0, or 1e-150 to 1e150 in size.`,
+      );
+}
+
+function guardTransforms(registry) {
+  if (registry[GUARDED]) return;
+  registry[GUARDED] = true;
+  const bin = registry.bin.prototype;
+  const stockBins = bin._bins;
+  bin._bins = function (_) {
+    if (!this.value || _.modified()) {
+      guardValues(_.extent ?? [], "bin");
+      guardValues([_.span, _.step, _.minstep, _.anchor, ...(_.steps ?? [])], "bin");
+    }
+    return stockBins.call(this, _);
+  };
+  for (const [name, field] of [
+    ["kde", "field"],
+    ["regression", "x"],
+  ]) {
+    const proto = registry[name].prototype;
+    const stock = proto.transform;
+    proto.transform = function (_, pulse) {
+      guardValues(_.extent ?? [], name);
+      const read = _[field];
+      if (typeof read === "function")
+        for (const tuple of pulse.materialize(pulse.SOURCE).source ?? [])
+          guardValues([read(tuple)], name);
+      return stock.call(this, _, pulse);
+    };
+  }
+}
+guardTransforms(vega.transforms);
+
 /** A loader that refuses every load and every link, so no spec can reach the
  * network or navigate. */
 export const deniedLoader = Object.freeze({
@@ -37,14 +150,139 @@ export const deniedLoader = Object.freeze({
   file: () => Promise.reject(Error("A chart can't load a file.")),
 });
 
-const plainValue = (value) =>
-  typeof value === "bigint"
-    ? Number(value)
-    : value instanceof Date || value === null || typeof value !== "object"
-      ? value
-      : JSON.parse(
-          JSON.stringify(value, (_key, item) => (typeof item === "bigint" ? Number(item) : item)),
-        );
+/**
+ * One data value as a chart reads it. Numbers go through `chartNumber`
+ * (bigints become numbers first). Vega coerces strings in arithmetic, so a
+ * string that reads as a number outside CHART_NUMBER_RANGE, or as Infinity,
+ * becomes that number's chart value.
+ */
+function plainScalar(value) {
+  if (typeof value === "bigint") return chartNumber(Number(value));
+  if (typeof value === "number") return chartNumber(value);
+  if (typeof value === "string" && value.trim() !== "") {
+    const read = Number(value);
+    if (!Number.isNaN(read) && chartNumber(read) !== read) return chartNumber(read);
+  }
+  return value;
+}
+
+/** Nesting a copied value keeps; anything deeper becomes null. */
+const MAX_NESTING = 32;
+
+/** A dataset that needs more than CHART_MAX_CELLS cells to copy. */
+class CellBudgetSpent extends Error {}
+
+/** The cells left for one dataset's copy, top-level and nested together. */
+function cellBudget(limit) {
+  let left = limit;
+  return (cells) => {
+    left -= cells;
+    if (left < 0) throw new CellBudgetSpent();
+  };
+}
+
+// Arrow's nested values: a list cell is a Vector, a struct cell a StructRow
+// and a map cell a MapRow. Their toJSON reads every element at once, so they
+// are walked one entry at a time instead, after their size is charged.
+const ARROW_PARENT = Symbol.for("parent");
+const ARROW_KEYS = Symbol.for("keys");
+const isArrowVector = (value) =>
+  typeof value.get === "function" &&
+  Number.isInteger(value.length) &&
+  Array.isArray(value.data) &&
+  value.type !== undefined;
+const arrowRowSize = (value) => {
+  if (value[ARROW_KEYS] !== undefined) return value.size;
+  if (value[ARROW_PARENT] !== undefined) return value[ARROW_PARENT].type?.children?.length;
+  return undefined;
+};
+
+/** Define `key` on `copy` as an own property, so "__proto__" stays a key, as
+ * JSON.parse makes it. */
+const defineKey = (copy, key, value) =>
+  Object.defineProperty(copy, key, { value, enumerable: true, writable: true, configurable: true });
+
+/**
+ * A copy of one data value, spending a cell for every array element and
+ * object key before reading it, nested ones included, so a payload shared by
+ * every row counts once per row. A field path reaches nested values, so they
+ * get `plainScalar` too. Objects copy as plain objects, since Vega coerces
+ * some (a gradient paint) to strings. Arrow lists, structs and maps are
+ * walked entry by entry; another object's `toJSON` is honored after the depth
+ * check. A cycle, a value deeper than MAX_NESTING or a property that throws
+ * becomes null.
+ */
+function plainValue(value, spend, depth = 0, ancestors = []) {
+  if (value instanceof Date || value === null || typeof value !== "object")
+    return plainScalar(value);
+  if (depth >= MAX_NESTING || ancestors.includes(value)) return null;
+  ancestors.push(value);
+  try {
+    const next = (item) => plainValue(item, spend, depth + 1, ancestors);
+    if (isArrowVector(value)) {
+      spend(value.length);
+      const copy = new Array(value.length);
+      for (let i = 0; i < value.length; i++) copy[i] = next(value.get(i));
+      return copy;
+    }
+    const rowSize = arrowRowSize(value);
+    if (rowSize !== undefined) {
+      spend(Number.isInteger(rowSize) ? rowSize : Number.POSITIVE_INFINITY);
+      const copy = {};
+      for (const [key, item] of value) defineKey(copy, String(key), next(item));
+      return copy;
+    }
+    if (typeof value.toJSON === "function") {
+      let json;
+      try {
+        json = value.toJSON();
+      } catch {
+        return null;
+      }
+      return json === value ? null : next(json);
+    }
+    if (Array.isArray(value) || ArrayBuffer.isView(value)) {
+      spend(value.length);
+      const copy = new Array(value.length);
+      for (let i = 0; i < value.length; i++) copy[i] = next(value[i]);
+      return copy;
+    }
+    const copy = {};
+    for (const key of Object.keys(value)) {
+      spend(1);
+      let item;
+      try {
+        item = value[key];
+      } catch {
+        item = null;
+      }
+      defineKey(copy, key, next(item));
+    }
+    return copy;
+  } finally {
+    ancestors.pop();
+  }
+}
+
+const tooManyCells = (name) =>
+  `The dataset "${name}" has more than ${CHART_MAX_CELLS.toLocaleString("en-US")} cells (rows × columns, nested values included); a chart reads at most that many.`;
+
+/** Rows in a dataset, before any are copied. */
+const rowCount = (dataset) =>
+  Array.isArray(dataset) ? dataset.length : isArrowTable(dataset) ? dataset.numRows : 0;
+
+/** Cells a copy of the dataset would hold, counted without copying: an Arrow
+ * table's rows × columns, or each row's own keys, stopping once past `limit`. */
+function cellCount(dataset, limit) {
+  if (isArrowTable(dataset)) return dataset.numRows * dataset.schema.fields.length;
+  if (!Array.isArray(dataset)) return 0;
+  let cells = 0;
+  for (const row of dataset) {
+    if (row && typeof row === "object") cells += Object.keys(row).length;
+    if (cells > limit) break;
+  }
+  return cells;
+}
 
 const isArrowTable = (value) =>
   !!value &&
@@ -55,14 +293,26 @@ const isArrowTable = (value) =>
 
 /**
  * Plain rows for Vega from a dataset: an array of row objects, or an Arrow
- * table. Rows are copied, since Vega tags each row it ingests, and 64-bit
- * integers become numbers, since Vega's scales take only numbers.
+ * table, or null for anything else. Rows are copied, since Vega tags each row
+ * it ingests, and each value goes through `plainValue`: 64-bit integers
+ * become numbers, since Vega's scales take only numbers, and every number
+ * lands in CHART_NUMBER_RANGE or becomes 0 or null. Each copy has a null
+ * prototype, so a column named `__proto__` stays a column and a missing
+ * `constructor` or `toString` column reads as undefined.
+ *
+ * The copy spends at most `limit` cells, top-level and nested together, and
+ * throws CellBudgetSpent past it.
  */
-export function datasetRows(dataset) {
+export function datasetRows(dataset, limit = CHART_MAX_CELLS) {
+  const spend = cellBudget(limit);
   if (Array.isArray(dataset))
     return dataset.map((row) => {
-      const copy = {};
-      for (const [key, value] of Object.entries(row ?? {})) copy[key] = plainValue(value);
+      const copy = Object.create(null);
+      if (!row || typeof row !== "object") return copy;
+      for (const key of Object.keys(row)) {
+        spend(1);
+        copy[key] = plainValue(row[key], spend);
+      }
       return copy;
     });
   if (isArrowTable(dataset)) {
@@ -70,16 +320,20 @@ export function datasetRows(dataset) {
       name: field.name,
       vector: dataset.getChildAt(index),
     }));
+    spend(dataset.numRows * columns.length);
     const rows = new Array(dataset.numRows);
     for (let r = 0; r < rows.length; r++) {
-      const row = {};
-      for (const { name, vector } of columns) row[name] = plainValue(vector?.get(r) ?? null);
+      const row = Object.create(null);
+      for (const { name, vector } of columns) row[name] = plainValue(vector?.get(r) ?? null, spend);
       rows[r] = row;
     }
     return rows;
   }
   return null;
 }
+
+/** True when `error` is datasetRows running out of cells. */
+export const spentCellBudget = (error) => error instanceof CellBudgetSpent;
 
 /** The categorical palette, light and dark steps of the same eight hues
  * (validated for adjacent-pair color-vision separation). */
@@ -152,6 +406,7 @@ export function sizedSpec(spec, width) {
 
 /** One sentence from an error Vega or Vega-Lite threw. */
 function errorSentence(error) {
+  if (error instanceof ChartRefusal) return error.message;
   const message = String(error?.message ?? error ?? "").trim();
   const first = message
     .split(/(?<=[.!?])\s/)[0]
@@ -160,36 +415,422 @@ function errorSentence(error) {
   return message ? `This chart couldn't be drawn: ${first}` : "This chart couldn't be drawn.";
 }
 
-// A tooltip value's `image` key would load a URL into an <img>; a chart's
-// tooltip shows its fields and nothing else.
-export const formatTooltip = (value, valueToHtml, maxDepth, baseURL) => {
-  if (value && typeof value === "object" && !Array.isArray(value) && "image" in value) {
-    const { image: _image, ...rest } = value;
-    value = rest;
+const TOOLTIP_TEXT_MAX = 400;
+const TOOLTIP_ROWS_MAX = 40;
+
+/** Read `object[key]`, or `fallback` if a getter throws. */
+function readKey(object, key, fallback = "[Value]") {
+  try {
+    return object[key];
+  } catch {
+    return fallback;
   }
-  return formatValue(value, valueToHtml, maxDepth, baseURL);
-};
+}
+
+/**
+ * JSON-like text for a tooltip value that stops once it holds `max`
+ * characters: arrays are read only as far as the text reaches, object keys
+ * are enumerated only as far, nested objects past `maxDepth` become
+ * "[Object]" and cycles "[Circular]". Never calls a value's own `toString` or
+ * `valueOf`, and a getter that throws reads as "[Value]".
+ */
+function boundedText(root, maxDepth, max) {
+  let out = "";
+  const ancestors = [];
+  const full = () => out.length >= max;
+  const literal = (text) => JSON.stringify(text.length > max ? text.slice(0, max) : text);
+  const visit = (value, depth) => {
+    if (full()) return;
+    if (typeof value === "string") out += literal(value);
+    else if (typeof value === "number") out += Number.isFinite(value) ? String(value) : "null";
+    else if (typeof value === "boolean" || typeof value === "bigint") out += String(value);
+    else if (value === null || typeof value !== "object") out += "null";
+    else if (value instanceof Date)
+      out += literal(Number.isNaN(value.getTime()) ? "Invalid date" : value.toISOString());
+    else if (ancestors.includes(value)) out += '"[Circular]"';
+    else if (depth > maxDepth) out += '"[Object]"';
+    else {
+      ancestors.push(value);
+      if (Array.isArray(value) || ArrayBuffer.isView(value)) {
+        out += "[";
+        const length = readKey(value, "length", 0);
+        for (let i = 0; i < length && !full(); i++) {
+          if (i) out += ",";
+          visit(readKey(value, i), depth + 1);
+        }
+        out += "]";
+      } else {
+        out += "{";
+        let first = true;
+        for (const key in value) {
+          if (full()) break;
+          if (!Object.hasOwn(value, key)) continue;
+          const item = readKey(value, key);
+          if (item === undefined || typeof item === "function") continue;
+          out += `${first ? "" : ","}${literal(key)}:`;
+          first = false;
+          visit(item, depth + 1);
+        }
+        out += "}";
+      }
+      ancestors.pop();
+    }
+  };
+  visit(root, 0);
+  return out;
+}
+
+/** Text for one tooltip value, whatever it holds, at most TOOLTIP_TEXT_MAX
+ * characters. Strings show as they are; anything else as bounded JSON. */
+export function tooltipText(value, maxDepth = 2) {
+  let text;
+  try {
+    if (typeof value === "string") text = value.slice(0, TOOLTIP_TEXT_MAX + 1);
+    else if (value === null || typeof value !== "object") text = String(value);
+    else if (value instanceof Date)
+      text = Number.isNaN(value.getTime()) ? "Invalid date" : value.toISOString();
+    else text = boundedText(value, maxDepth, TOOLTIP_TEXT_MAX + 1);
+  } catch {
+    text = "[Value]";
+  }
+  return text.length > TOOLTIP_TEXT_MAX ? `${text.slice(0, TOOLTIP_TEXT_MAX - 1)}…` : text;
+}
+
+/**
+ * The tooltip's HTML: a title, then a table of the other fields, at most
+ * TOOLTIP_ROWS_MAX of them, enumerated no further than that. `valueToHtml`
+ * escapes each text. An `image` key is dropped, since vega-tooltip would load
+ * its URL into an <img>; a chart's tooltip shows its fields and nothing else.
+ */
+export function formatTooltip(value, valueToHtml, maxDepth = 2) {
+  const html = (item) => valueToHtml(tooltipText(item, maxDepth));
+  if (!value || typeof value !== "object" || Array.isArray(value) || value instanceof Date)
+    return html(value);
+  let content = "";
+  let rows = "";
+  let shown = 0;
+  let more = false;
+  try {
+    for (const key in value) {
+      if (!Object.hasOwn(value, key) || key === "image") continue;
+      const item = readKey(value, key);
+      if (item === undefined) continue;
+      if (key === "title") {
+        if (item) content += `<h2>${html(item)}</h2>`;
+        continue;
+      }
+      if (shown === TOOLTIP_ROWS_MAX) {
+        more = true;
+        break;
+      }
+      rows += `<tr><td class="key">${html(key)}</td><td class="value">${html(item)}</td></tr>`;
+      shown++;
+    }
+  } catch {
+    return html("[Value]");
+  }
+  if (more) rows += `<tr><td class="key">…</td><td class="value">more fields</td></tr>`;
+  if (rows) content += `<table>${rows}</table>`;
+  return content || "{}";
+}
 
 let tooltipCount = 0;
 
 /**
+ * Functions a static chart's compiled dataflow may call: the ones a spec may
+ * call itself, plus what Vega-Lite 6.5.0 generates for static charts. The
+ * corpus test in viewer/vega-chart.test.mjs compiles static specs across
+ * marks, transforms and composition and fails if Vega-Lite emits a call
+ * outside this set.
+ */
+export const VEGA_LITE_FUNCTIONS = Object.freeze(
+  new Set([
+    ...CHART_EXPRESSION_FUNCTIONS,
+    // A scale by its name in the chart's own scope, for band offsets and
+    // label positions.
+    "bandwidth",
+    "scale",
+    // Scale lookups by Vega's internal scale reference, for encodings.
+    "_bandwidth",
+    "_range",
+    "_scale",
+    // Band and point scale layout: padding as a fraction of the step.
+    "bandspace",
+    // A facet's cell count and a layout's extent read the chart's own data.
+    "data",
+    // A scale's domain and range, for axis and legend layout.
+    "domain",
+    "range",
+    // Legend symbol layout by column.
+    "flush",
+    // A continuous color legend's gradient.
+    "gradient",
+    // Multi-line titles and labels, joined from the spec's own strings.
+    "join",
+    // Linear interpolation for legend gradients and offsets.
+    "lerp",
+    // Time-unit labels for temporal axes.
+    "timeUnitSpecifier",
+  ]),
+);
+
+/**
+ * Operator types a static chart's compiled dataflow uses, from the corpus
+ * test. Interaction adds others (selection tuples, Voronoi for nearest
+ * points), and those never run.
+ */
+export const STATIC_OPERATORS = Object.freeze(
+  new Set([
+    "aggregate",
+    "axisticks",
+    "bin",
+    "bound",
+    "collect",
+    "datajoin",
+    "encode",
+    "extent",
+    "facet",
+    "filter",
+    "fold",
+    "formula",
+    "geoshape",
+    "impute",
+    "joinaggregate",
+    "kde",
+    "legendentries",
+    "lookup",
+    "mark",
+    "multiextent",
+    "operator",
+    "overlap",
+    "pivot",
+    "prefacet",
+    "projection",
+    "proxy",
+    "quantile",
+    "regression",
+    "relay",
+    "render",
+    "sample",
+    "scale",
+    "sequence",
+    "sieve",
+    "sortitems",
+    "stack",
+    "timeunit",
+    "tupleindex",
+    "values",
+    "viewlayout",
+    "window",
+  ]),
+);
+
+/** A refusal whose message is the sentence a reader sees. */
+class ChartRefusal extends Error {}
+
+const STATIC = "charts are static, with hover tooltips";
+
+/** True for `timeUnitSpecifier(...)` over literals, which Vega-Lite passes
+ * as a temporal axis's label specifier. */
+const literalTimeUnitSpecifier = (node) =>
+  node?.type === "CallExpression" &&
+  node.callee?.type === "Identifier" &&
+  node.callee.name === "timeUnitSpecifier" &&
+  node.arguments.every(function literal(arg) {
+    if (arg.type === "Literal") return true;
+    if (arg.type === "ArrayExpression") return arg.elements.every(literal);
+    if (arg.type === "ObjectExpression")
+      return arg.properties.every((property) => literal(property.value));
+    return false;
+  });
+
+/** The spec's call check, except that a format specifier may also be a
+ * literal `timeUnitSpecifier(...)`. */
+const checkCompiledCall = (call) =>
+  literalTimeUnitSpecifier(call.arguments[1]) ? null : checkFormatCall(call);
+
+/**
+ * Why a parsed Vega dataflow can't run, or null. In the root and in every
+ * `$subflow`: no event stream, signal handler or binding, and only
+ * STATIC_OPERATORS. Anywhere: no hover encoding, no image mark, and every
+ * expression within the policy with VEGA_LITE_FUNCTIONS.
+ */
+export function runtimeProblem(runtime) {
+  if (!runtime || typeof runtime !== "object") return "This chart didn't compile.";
+  const seen = new Set();
+  const stack = [runtime];
+  while (stack.length) {
+    const node = stack.pop();
+    if (!node || typeof node !== "object" || seen.has(node)) continue;
+    seen.add(node);
+    // The root and every `$subflow` (a facet's or a repeat's cells) is a
+    // dataflow of its own, with its own operators and streams.
+    if (node === runtime) {
+      const problem = flowProblem(node);
+      if (problem) return problem;
+    }
+    if (node.$subflow && typeof node.$subflow === "object") {
+      const problem = flowProblem(node.$subflow);
+      if (problem) return problem;
+    }
+    if (node.marktype === "image") return "This chart can't draw image marks.";
+    // A hover encoding would run on pointer events.
+    if (node.$encode && typeof node.$encode === "object" && "hover" in node.$encode)
+      return `This chart changes on hover; ${STATIC}.`;
+    if (node.ast) {
+      const problem = expressionProblem(node.ast, VEGA_LITE_FUNCTIONS, checkCompiledCall);
+      if (problem) return `This chart's compiled code ${problem}.`;
+    }
+    for (const child of Object.values(node))
+      if (child && typeof child === "object") stack.push(child);
+  }
+  return null;
+}
+
+/** Why one dataflow, the root or a subflow, isn't static, or null. */
+function flowProblem(flow) {
+  for (const key of ["streams", "updates", "bindings"])
+    if (flow[key] !== undefined && (!Array.isArray(flow[key]) || flow[key].length))
+      return `This chart listens for events; ${STATIC}.`;
+  if (flow.operators !== undefined && !Array.isArray(flow.operators))
+    return "This chart didn't compile.";
+  for (const operator of flow.operators ?? [])
+    if (!STATIC_OPERATORS.has(operator?.type))
+      return `This chart uses a ${operator?.type} operator; ${STATIC}.`;
+  return null;
+}
+
+// A paint is a color, never a reference: hex, a color keyword, or one color
+// function with no nested parentheses, quotes or escapes.
+const PAINT =
+  /^(?:#[0-9a-f]{3,8}|[a-z]+|(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\([^()\\;:"']*\))$/i;
+const BLENDS = new Set([
+  "normal",
+  "multiply",
+  "screen",
+  "overlay",
+  "darken",
+  "lighten",
+  "color-dodge",
+  "color-burn",
+  "hard-light",
+  "soft-light",
+  "difference",
+  "exclusion",
+  "hue",
+  "saturation",
+  "color",
+  "luminosity",
+]);
+const safeColor = (value) => (typeof value === "string" && PAINT.test(value.trim()) ? value : null);
+
+/** A fill or stroke the SVG renderer may write: a color, or a gradient whose
+ * stops are colors. Vega writes its own `url(#id)` for a gradient. */
+export function safePaint(value) {
+  if (value && typeof value === "object" && value.gradient) {
+    for (const stop of Array.isArray(value.stops) ? value.stops : [])
+      if (stop && typeof stop === "object") stop.color = safeColor(stop.color) ?? "transparent";
+    return Array.isArray(value.stops) ? value : null;
+  }
+  return safeColor(value);
+}
+
+/** Clean the scene item properties that reach a style or a cursor. */
+export function cleanItem(item) {
+  for (const key of ["fill", "stroke"])
+    if (item[key] != null) {
+      const safe = safePaint(item[key]);
+      if (safe !== item[key]) item[key] = safe;
+    }
+  if (
+    item.font != null &&
+    (typeof item.font !== "string" || loadsResource(item.font) || /[\\();{}]/.test(item.font))
+  )
+    item.font = null;
+  if (item.blend != null && !BLENDS.has(item.blend)) item.blend = null;
+  if (item.cursor != null && !CHART_CURSORS.has(item.cursor)) item.cursor = null;
+}
+
+/** Vega's SVG renderer, cleaning each item before it writes it. `_update`
+ * writes a mark's attributes (a text's font among them) and then calls
+ * `style`; a group's background calls `style` directly. */
+class PagesSVGRenderer extends vega.SVGRenderer {
+  _update(mdef, el, item) {
+    if (item) cleanItem(item);
+    return super._update(mdef, el, item);
+  }
+  style(el, item) {
+    if (item) cleanItem(item);
+    return super.style(el, item);
+  }
+  background(color) {
+    if (!arguments.length) return super.background();
+    return super.background(safeColor(color));
+  }
+}
+vega.renderModule("pages-svg", {
+  renderer: PagesSVGRenderer,
+  headless: PagesSVGRenderer,
+  handler: vega.SVGHandler,
+});
+
+/** Vega sets the view's cursor with `container.style.cursor = value`. Let it
+ * set keywords only. */
+function guardCursor(element) {
+  const style = element.style;
+  let proto = Object.getPrototypeOf(style);
+  while (proto && !Object.hasOwn(proto, "cursor")) proto = Object.getPrototypeOf(proto);
+  const accessor = proto && Object.getOwnPropertyDescriptor(proto, "cursor");
+  if (!accessor?.set) return;
+  Object.defineProperty(style, "cursor", {
+    configurable: true,
+    get: () => accessor.get.call(style),
+    set: (value) => accessor.set.call(style, CHART_CURSORS.has(value) ? value : ""),
+  });
+}
+
+/** Vega's logger, handing each error to `onError`. An operator that throws
+ * during a run logs and lets the run finish, so the logger is how a chart
+ * learns it failed, on the first draw or any later run. */
+function reportingLogger(onError) {
+  const logger = vega.logger(vega.Warn);
+  const error = logger.error;
+  logger.error = (...args) => {
+    onError(new Error(args.map((arg) => arg?.message ?? String(arg)).join(" ")));
+    return error.apply(logger, args);
+  };
+  return logger;
+}
+
+/**
  * Draw `spec` over `data` (name → plain rows) into `target`. Resolves with the
  * Vega view; rejects with Vega's error after finalizing a half-built view.
+ * `onError(error)` hears an error from any run after the first.
  */
-export async function drawChart(target, { spec, data, theme, width, tooltip }) {
+export async function drawChart(target, { spec, data, theme, width, tooltip, onError }) {
   const compiled = vl.compile(sizedSpec(spec, width), { config: themeConfig(theme) }).spec;
-  const view = new vega.View(vega.parse(compiled, null, { ast: true }), {
+  const runtime = vega.parse(compiled, null, { ast: true });
+  const problem = runtimeProblem(runtime);
+  if (problem) throw new ChartRefusal(problem);
+  guardCursor(target);
+  let firstError = null;
+  let drawn = false;
+  const view = new vega.View(runtime, {
     expr: expressionInterpreter,
     loader: deniedLoader,
-    renderer: "svg",
+    renderer: "pages-svg",
     container: target,
-    hover: true,
     ...(tooltip && { tooltip }),
-    logLevel: vega.Warn,
+    logger: reportingLogger((error) => {
+      if (!drawn) firstError ??= error;
+      else onError?.(error);
+    }),
   });
   try {
     for (const [name, rows] of Object.entries(data)) view.data(name, rows);
     await view.runAsync();
+    if (firstError) throw firstError;
+    drawn = true;
     return view;
   } catch (error) {
     view.finalize();
@@ -258,12 +899,28 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
     if (svg) viewer = openDiagramViewer({ svg, label: title || "Chart", opener: maximize });
   };
 
+  // Each step runs whether or not an earlier one throws, so the figure and
+  // the tooltip always leave the document; the first failure is reported, not
+  // thrown at the caller. `removeTooltip` is set once the tooltip exists.
+  let removeTooltip = null;
   const teardown = () => {
-    viewer?.close();
+    const closing = viewer;
+    const finalizing = view;
     viewer = null;
-    view?.finalize();
     view = null;
-    figure.remove();
+    let failure = null;
+    for (const step of [
+      () => closing?.close(),
+      () => finalizing?.finalize(),
+      () => figure.remove(),
+      () => removeTooltip?.(),
+    ])
+      try {
+        step();
+      } catch (error) {
+        failure ??= error;
+      }
+    if (failure) (win?.reportError ?? console.error)(failure);
   };
 
   // Plain JSON: functions, cycles and prototypes never reach Vega-Lite.
@@ -274,11 +931,28 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
     plain = undefined;
   }
   const checked = checkChartSpec(plain, { datasets: Object.keys(datasets) });
-  const data = {};
+  // Keyed by dataset name, so neither map answers to a name it wasn't given.
+  const given = (name) => (Object.hasOwn(datasets, name) ? datasets[name] : undefined);
+  const data = Object.create(null);
   let refusal = checked.ok ? null : checked.error;
   if (!refusal)
     for (const name of checked.names) {
-      data[name] = datasetRows(datasets[name]);
+      const rows = rowCount(given(name));
+      if (rows > CHART_MAX_ROWS) {
+        refusal = `The dataset "${name}" has ${rows.toLocaleString("en-US")} rows; a chart reads at most ${CHART_MAX_ROWS.toLocaleString("en-US")}.`;
+        break;
+      }
+      if (cellCount(given(name), CHART_MAX_CELLS) > CHART_MAX_CELLS) {
+        refusal = tooManyCells(name);
+        break;
+      }
+      try {
+        data[name] = datasetRows(given(name));
+      } catch (error) {
+        if (!spentCellBudget(error)) throw error;
+        refusal = tooManyCells(name);
+        break;
+      }
       if (!data[name]) {
         refusal = `The dataset "${name}" must be rows or an Arrow table.`;
         break;
@@ -290,12 +964,36 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
   }
 
   const tooltipId = `pages-chart-tooltip-${++tooltipCount}`;
+  removeTooltip = () => doc.getElementById(tooltipId)?.remove();
   const tooltip = new TooltipHandler({
     id: tooltipId,
     theme: "pages",
     disableDefaultStyle: true,
     formatTooltip,
   });
+  // Finalizing a view hides its tooltip, and vega-tooltip creates the element
+  // to hide it. After destroy, a late draw's finalize must not.
+  let mounted = true;
+  // A failure after the chart drew (a later run, a tooltip that can't show)
+  // leaves it in its error state. Deferred, so a view isn't finalized inside
+  // its own run or event. `target` is the drawing that failed; a newer one
+  // stays.
+  const fail = (error, target = canvas.firstChild) =>
+    queueMicrotask(() => {
+      if (!mounted || !target || canvas.firstChild !== target) return;
+      view?.finalize();
+      view = null;
+      canvas.replaceChildren();
+      show("error", errorSentence(error));
+    });
+  const showTooltip = (...args) => {
+    if (!mounted) return;
+    try {
+      tooltip.call(...args);
+    } catch (error) {
+      fail(error);
+    }
+  };
   const themes = new BehaviorSubject(pageTheme(container));
   const watchTheme = win?.MutationObserver
     ? new win.MutationObserver(() => themes.next(pageTheme(container)))
@@ -316,7 +1014,8 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
     new Observable((subscriber) => {
       let cancelled = false;
       const target = doc.createElement("div");
-      drawChart(target, { spec: plain, data, theme, width, tooltip: tooltip.call }).then(
+      const onError = (error) => fail(error, target);
+      drawChart(target, { spec: plain, data, theme, width, tooltip: showTooltip, onError }).then(
         (drawn) => {
           if (cancelled) drawn.finalize();
           else subscriber.next({ view: drawn, target });
@@ -347,13 +1046,11 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
 
   return {
     destroy() {
+      mounted = false;
       subscription.unsubscribe();
       watchTheme?.disconnect();
       watchSize?.disconnect();
       teardown();
-      // After the view: finalizing it hides the tooltip, which recreates the
-      // element.
-      doc.getElementById(tooltipId)?.remove();
     },
   };
 }
