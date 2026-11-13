@@ -65,7 +65,11 @@ import {
 import { commentsOpenMachine } from "./comments-open-machine.mjs";
 import { HostDocReplica, evictUnavailable } from "./host-doc-replica.mjs";
 import { PageSourceStore } from "./page-source-store.mjs";
-import { sourcesDocumentId } from "./derived-documents.mjs";
+import {
+  derivedDocumentId,
+  sourcesDocUuid,
+  viewDocumentId as deriveViewDocumentId,
+} from "../shared/document-ids.mjs";
 import { VIEW_CLOSE_DELAY_MS, ViewReplicas } from "./view-replicas.mjs";
 import { fullStatus, overlayStatus, viewerSyncStatusMachine } from "./sync-status-machine.mjs";
 import { FORMAT_GATE_INITIAL, PAGE_FORMAT_UNSUPPORTED, formatGateStep } from "./format-gate.mjs";
@@ -457,9 +461,8 @@ export class PageSession {
   /** The Page's source store over `sources`, once something reads it. */
   sourceStore;
   /** The Page's view documents on this replica, read-only
-   * (view-replicas.mjs), or null for a session made without a view
-   * derivation. Like `sources`, they are the host's alone. */
-  views = null;
+   * (view-replicas.mjs). Like `sources`, they are the host's alone. */
+  views;
   /** What the status line says about receipts and the connection (see
    * sync-status-machine.mjs). `status` renders it with the phase's pauses. */
   sync$ = new Store(viewerSyncStatusMachine.initial);
@@ -523,7 +526,7 @@ export class PageSession {
       random = Math.random,
       now = monotonicNow,
       buildFeatures = BUILD_FEATURES,
-      viewDocumentId,
+      viewDocumentId = deriveViewDocumentId,
     } = {},
   ) {
     this.pageId = pageId;
@@ -554,15 +557,14 @@ export class PageSession {
     };
     this.sources = new HostDocReplica({
       ...lookups,
-      derive: () => sourcesDocumentId(pageId),
+      derive: async () => derivedDocumentId(await sourcesDocUuid(pageId)),
     });
-    if (viewDocumentId)
-      this.views = new ViewReplicas({
-        ...lookups,
-        pageId,
-        viewDocumentId,
-        closeDelay: VIEW_CLOSE_DELAY_MS,
-      });
+    this.views = new ViewReplicas({
+      ...lookups,
+      pageId,
+      viewDocumentId,
+      closeDelay: VIEW_CLOSE_DELAY_MS,
+    });
     this.recoveryCapture = new RecoveryCapture({
       capture: (id) => this.captureRecoveryCopy(id),
       persist: (copy) => saveRecoveryCopy({ principal: copy.principal }, copy),
@@ -651,7 +653,7 @@ export class PageSession {
   openSources() {
     if (this.hidden || !this.connection || !this.backend) return;
     this.sources.discovered(this.connection);
-    this.views?.connected();
+    this.views.connected();
   }
   get alive() {
     return isLive(this.phase$.snapshot());
@@ -1011,7 +1013,7 @@ export class PageSession {
     // capture or the archive. Their synced bytes stay in the replica's
     // database, as the Page's and comments' do.
     this.sources.retire();
-    this.views?.retire();
+    this.views.retire();
     let live = this.closedRecovery;
     if (!live) {
       try {
@@ -3621,7 +3623,7 @@ export class PageSession {
       // The replica goes, and with it any comments, sources or view lookup.
       this.commentsOpen({ type: "close" });
       this.sources.close();
-      this.views?.close();
+      this.views.close();
       this.repo = this.backend = this.storage = this.local = undefined;
       this.commentsHandle = this.pendingComments = undefined;
     }

@@ -169,6 +169,36 @@ export function viewerSplit(metafile) {
   };
 }
 
+const CHART_INPUT = "../viewer/view-chart.mjs";
+const EDITOR_INPUT = "../viewer/WordgardEditor.jsx";
+const VEGA_INPUT = /node_modules\/vega[^/]*\//;
+
+/**
+ * The chart chunk a view embed loads (viewer/view-chart.mjs) and its size in
+ * bytes. Vega and Vega-Lite are its alone: neither app.js nor the editor
+ * chunk reaches them through static imports, so a Page with no chart near
+ * the viewport never downloads them.
+ */
+export function chartChunk(metafile) {
+  const holding = (input) =>
+    Object.keys(metafile.outputs).filter(
+      (file) => !file.endsWith(".map") && Object.hasOwn(metafile.outputs[file].inputs, input),
+    );
+  const [chart, ...others] = holding(CHART_INPUT);
+  if (!chart || others.length) throw new Error("view-chart.mjs must build into one chunk");
+  const [editor] = holding(EDITOR_INPUT);
+  if (!editor) throw new Error("The viewer build has no editor chunk");
+  for (const entry of [VIEWER_ENTRY, editor])
+    for (const output of staticOutputs(metafile, entry)) {
+      if (output === chart) throw new Error(`${entry} must load the chart chunk lazily`);
+      const vega = Object.keys(metafile.outputs[output].inputs).find((input) =>
+        VEGA_INPUT.test(input),
+      );
+      if (vega) throw new Error(`${output} holds ${vega}; Vega belongs in the chart chunk`);
+    }
+  return { chunk: chart, bytes: metafile.outputs[chart].bytes, editor };
+}
+
 /** True when every rule of a chunk's CSS appears in app.css. */
 export const stylesCovered = (chunkCss, appCss) =>
   chunkCss

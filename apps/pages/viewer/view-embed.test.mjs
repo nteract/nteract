@@ -195,7 +195,7 @@ test("each column reaches a chart in a form Vega reads", async () => {
   assert.equal(row.stamp, Date.UTC(2024, 0, 2, 3, 4, 5, 123));
   assert.equal(row.region, "east");
   assert.deepEqual(row.list, [1, 2]);
-  assert.equal(Object.getPrototypeOf(row), Object.prototype, "no column replaced the prototype");
+  assert.equal(Object.getPrototypeOf(row), null, "rows hold only their columns");
   assert.ok(Object.hasOwn(row, "constructor"));
   assert.equal(row.constructor, 8);
   for (const name of ["price", "big", "unsigned", "clock", "span", "day", "stamp", "region"])

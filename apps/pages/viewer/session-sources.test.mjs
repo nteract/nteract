@@ -11,7 +11,11 @@ import * as A from "@automerge/automerge";
 import { VirtualTimeScheduler } from "rxjs";
 import { LOOK_AGAIN_MS, MISSING_ATTEMPTS, retryDelay } from "./host-doc-open-machine.mjs";
 import { PageSession } from "./session.mjs";
-import { sourcesDocumentId } from "./derived-documents.mjs";
+import {
+  derivedDocumentId,
+  sourcesDocUuid,
+  viewDocumentId as hostViewDocumentId,
+} from "../shared/document-ids.mjs";
 import { until } from "../sync/test-helpers.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { setSources, sourcesGenesis } from "../model/sources-doc.mjs";
@@ -166,7 +170,7 @@ test("a Page's first source, created while the tab is open, opens when a table a
   const versions = [];
   session.pageSources.versions(["usage"]).subscribe((v) => versions.push(v.usage));
   await until(() => session.repo.calls.length === 1, { label: "the derived lookup" });
-  assert.equal(session.repo.calls[0].id, await sourcesDocumentId(pageId));
+  assert.equal(session.repo.calls[0].id, derivedDocumentId(await sourcesDocUuid(pageId)));
   session.repo.calls[0].resolve({ doc: () => sourcesWith("a".repeat(64)), on() {}, off() {} });
   await tick();
   assert.equal(session.sources.state$.snapshot().name, "ready");
@@ -245,7 +249,11 @@ test("a held view is looked up by its derived id on each admitted connection", a
   costs.release();
 });
 
-test("a session made without a view derivation has no view replicas", (t) => {
-  const { session } = fixture(t);
-  assert.equal(session.views, null);
+test("a session derives each view's document id as the host does", async (t) => {
+  const { session, admit, pageId } = fixture(t);
+  admit(withoutSources);
+  const sales = session.views.hold("sales");
+  await until(() => session.repo.calls.length === 1, { label: "the view lookup" });
+  assert.equal(session.repo.calls[0].id, await hostViewDocumentId(pageId, "sales"));
+  sales.release();
 });

@@ -75,6 +75,7 @@ const viewDoc = (title) => ({
   spec: JSON.stringify({ mark: "bar" }),
   data: {},
   revision: "1",
+  producer: { kind: "edit_page", at: "2026-11-12T00:00:00.000Z", by: { principal: "agent" } },
 });
 const latest = (held) => {
   let value;

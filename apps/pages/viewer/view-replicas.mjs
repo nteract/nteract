@@ -35,10 +35,10 @@
 import { BehaviorSubject, asyncScheduler, of, switchMap, timer } from "rxjs";
 import { HostDocReplica } from "./host-doc-replica.mjs";
 import { slotted, viewHoldMachine } from "./view-hold-machine.mjs";
-import { VIEW_SENTENCES, validViewId, viewStore } from "./view-store.mjs";
+import { MAX_VIEWS, validViewId } from "../shared/views.mjs";
+import { VIEW_SENTENCES, viewStore } from "./view-store.mjs";
 
-/** The most views a Page holds (the contract's MAX_VIEWS). */
-export const MAX_VIEWS = 10;
+export { MAX_VIEWS };
 /** How long a view replica stays open after its last holder lets go: longer
  * than an embed's park (wordgard-dataframes.mjs), so an embed the editor
  * moves keeps its view document. */
@@ -186,14 +186,15 @@ export class ViewReplicas {
    * them, and nothing opens again. */
   retire() {
     this.#retired = true;
-    for (const entry of [...this.#entries.values()]) this.#step(entry, { type: "retire" });
+    // A step may drop its entry, so each walk reads a copy.
+    for (const entry of Array.from(this.#entries.values())) this.#step(entry, { type: "retire" });
   }
 
   /** The Page's replica closed or is being replaced: every view replica
    * closes, as the sources replica does. A view still held looks its
    * document up again on the next admitted connection. */
   close() {
-    for (const entry of [...this.#entries.values()]) this.#step(entry, { type: "close" });
+    for (const entry of Array.from(this.#entries.values())) this.#step(entry, { type: "close" });
     this.#admit();
   }
 

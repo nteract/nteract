@@ -8,6 +8,8 @@
 // Maximize control Mermaid diagrams have. The chart code is its own chunk
 // (view-chart.mjs), loaded only when a Page shows a view near the viewport.
 import { Decoration, Widget } from "wordgard/editor";
+import { PagesView } from "../model/wordgard-doc.mjs";
+import { readViewNode } from "../shared/views.mjs";
 import { dataframeLifecycle } from "./wordgard-dataframes.mjs";
 import { reportRendererUnavailable } from "./wordgard-widgets.mjs";
 
@@ -142,22 +144,20 @@ const viewEmbed = Widget.define({
 });
 
 /**
- * Editor config that draws every view node as its chart. `nodeType` is the
- * view node type (the Page model's `view` node) and `readView(param)` reads
- * a node's attrs as `{ view_id }`. `views` is the Page's view replicas
- * (view-replicas.mjs) and `sources` its source store; without them every
- * embed says its chart isn't on this Page. `eager` draws each chart at once
- * rather than near the viewport.
+ * Editor config that draws every view node (the Page model's PagesView) as
+ * its chart. `views` is the Page's view replicas (view-replicas.mjs) and
+ * `sources` its source store; without them every embed says its chart isn't
+ * on this Page. `eager` draws each chart at once rather than near the
+ * viewport. An editor without this config draws the node's own inert
+ * figure, as a card does.
  */
-export function wordgardViews({ nodeType, readView, views = null, sources = null, eager = false }) {
-  if (!nodeType || typeof readView !== "function")
-    throw Error("wordgardViews needs the view node type and its reader");
+export function wordgardViews({ views = null, sources = null, eager = false } = {}) {
   return [
     Decoration.Tag.shape(
-      nodeType,
+      PagesView,
       (tag) =>
         viewEmbed.of({
-          viewId: readView(tag.param)?.view_id ?? "",
+          viewId: readViewNode(tag.param)?.view_id ?? "",
           views,
           sources,
           eager,

@@ -10,7 +10,6 @@ import {
   VIEW_MEDIA_TYPE,
   VIEW_SENTENCES,
   projectView,
-  validViewId,
   viewProjection,
   viewStore,
 } from "./view-store.mjs";
@@ -95,13 +94,7 @@ test("a malformed view document draws nothing and says it can't be read", () => 
       reason: "malformed",
       sentence: VIEW_SENTENCES.malformed,
     });
-  assert.equal(projectView("sales", null).reason, "malformed");
-});
-
-test("view ids follow the contract", () => {
-  for (const id of ["sales", "a", "s-1_b", "a".repeat(64)]) assert.ok(validViewId(id), id);
-  for (const id of ["", "Sales", "1a", "a".repeat(65), "__proto__", "constructor", 7])
-    assert.ok(!validViewId(id), String(id));
+  assert.equal(projectView("sales", null).reason, "missing", "no record holds no view");
 });
 
 test("the stream emits the current projection, then only changes that draw differently", () => {
@@ -137,25 +130,20 @@ test("the stream emits the current projection, then only changes that draw diffe
   assert.equal(seen.at(-1).view.revision, "2");
 });
 
-test("a data name like __proto__ stays a binding, not a prototype", () => {
+test("a data name no host write stores makes the view malformed", () => {
   // Automerge refuses a `__proto__` key, so this value is a plain object; a
-  // `constructor` key reaches the viewer from a stored document.
+  // `constructor` key could reach the viewer from a stored document.
   const plain = {
     ...JSON.parse(JSON.stringify(viewDoc())),
     data: JSON.parse('{"__proto__": {"source_id": "sales"}}'),
   };
-  const fromProto = projectView("sales", plain);
-  assert.equal(fromProto.status, "ready");
-  assert.equal(Object.getPrototypeOf(fromProto.view.data), null);
-  assert.deepEqual(Object.keys(fromProto.view.data), ["__proto__"]);
-  assert.equal(fromProto.view.data.__proto__.source_id, "sales");
+  assert.equal(projectView("sales", plain).reason, "malformed");
   const stored = projectView("sales", viewDoc({ data: { constructor: { source_id: "costs" } } }));
-  assert.deepEqual(Object.keys(stored.view.data), ["constructor"]);
-  assert.equal(stored.view.data.constructor.source_id, "costs");
+  assert.equal(stored.reason, "malformed");
 });
 
-test("an empty view document (a slot whose write didn't finish) reads as unavailable", () => {
-  for (const doc of [{}, A.from({}), A.from({ title: "Only a title" })])
-    assert.equal(projectView("sales", doc).reason, "malformed");
-  assert.equal(viewProjection("sales", { name: "ready", id: "d" }, {}).status, "unavailable");
+test("a stored view document with no revision yet isn't on this Page until its write lands", () => {
+  for (const doc of [{}, A.from({}), A.from({ title: "Only a title", spec: "", data: {} })])
+    assert.equal(projectView("sales", doc).reason, "missing");
+  assert.equal(viewProjection("sales", { name: "ready", id: "d" }, {}).reason, "missing");
 });

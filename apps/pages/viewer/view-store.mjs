@@ -14,23 +14,15 @@
 //   retired) or `limit` (the Page already shows MAX_VIEWS views,
 //   view-replicas.mjs).
 //
-// A host-written view is checked again here: a field the contract doesn't
-// allow makes the whole view malformed, rather than drawing part of it.
+// A host-written view is read with the host's own reader: a record no host
+// write produces makes the whole view malformed, rather than drawing part
+// of it.
 import { combineLatest, distinctUntilChanged, map } from "rxjs";
-import { validSourceId } from "../model/sources-doc.mjs";
+import { readView } from "../model/view-record.mjs";
+import { VIEW_MEDIA_TYPES } from "../shared/views.mjs";
 
-/** The one media type a view holds in v1. */
-export const VIEW_MEDIA_TYPE = "application/vnd.vegalite.v6+json";
-/** The longest view title. */
-export const VIEW_TITLE_MAX = 200;
-
-const VIEW_ID = /^[a-z][a-z0-9_-]{0,63}$/;
-const RESERVED = new Set(["constructor", "prototype", "__proto__"]);
-/** A view id as the contract allows it. */
-export const validViewId = (id) => typeof id === "string" && VIEW_ID.test(id) && !RESERVED.has(id);
-
-const REVISION = /^[1-9][0-9]{0,15}$/;
-const validRevision = (value) => typeof value === "string" && REVISION.test(value);
+/** The media type a view holds in v1. */
+export const VIEW_MEDIA_TYPE = VIEW_MEDIA_TYPES[0];
 
 export const VIEW_SENTENCES = Object.freeze({
   missing: "This chart isn't on this Page.",
@@ -45,63 +37,37 @@ const PENDING = Object.freeze({ status: "pending" });
 const unavailable = (reason, sentence = VIEW_SENTENCES[reason]) =>
   Object.freeze({ status: "unavailable", reason, sentence });
 
-const isPlainObject = (value) => !!value && typeof value === "object" && !Array.isArray(value);
-
-/** One binding as stored: `{ source_id }` or `{ source_id, revision }`, as a
- * frozen copy, or null for anything else. */
-function readBinding(value) {
-  if (!isPlainObject(value)) return null;
-  const keys = Object.keys(value);
-  if (!validSourceId(value.source_id)) return null;
-  if (keys.length === 1) return Object.freeze({ source_id: value.source_id });
-  if (keys.length === 2 && validRevision(value.revision))
-    return Object.freeze({ source_id: value.source_id, revision: value.revision });
-  return null;
-}
-
 /**
  * The projection of view `viewId`'s document value `doc` (the replica's
- * `doc$`). A document is always read whole: any field outside the contract
- * makes it malformed.
+ * `doc$`), read with the host's own reader (model/view-record.mjs readView): a
+ * record no host write produces is malformed, and a document that holds no
+ * view yet (stored, with no revision) reads as not on this Page until its
+ * first write lands.
  */
 export function projectView(viewId, doc) {
   if (doc === undefined) return PENDING;
-  if (!isPlainObject(doc)) return unavailable("malformed");
-  const { title, media_type, spec, data, revision } = doc;
-  if (typeof media_type !== "string") return unavailable("malformed");
-  if (media_type !== VIEW_MEDIA_TYPE)
-    return unavailable("unreadable", `This build can't show ${media_type.slice(0, 80)}.`);
-  if (typeof title !== "string" || !title || title.length > VIEW_TITLE_MAX)
-    return unavailable("malformed");
-  if (!validRevision(revision) || !isPlainObject(data)) return unavailable("malformed");
-  // Automerge text reads as a string.
-  const text = typeof spec === "string" ? spec : spec?.toString?.();
-  if (typeof text !== "string") return unavailable("malformed");
-  let parsed;
+  let view;
   try {
-    parsed = JSON.parse(text);
+    view = readView(doc, viewId);
   } catch {
     return unavailable("malformed");
   }
-  if (!isPlainObject(parsed)) return unavailable("malformed");
-  // Data names are the writer's: a name like `__proto__` stays an own key.
-  const bindings = Object.create(null);
-  for (const name of Object.keys(data).sort()) {
-    const binding = readBinding(data[name]);
-    if (!binding) return unavailable("malformed");
-    bindings[name] = binding;
-  }
+  if (!view) return unavailable("missing");
+  const { title, media_type, spec, data, revision } = view;
+  if (!VIEW_MEDIA_TYPES.includes(media_type))
+    return unavailable("unreadable", `This build can't show ${media_type.slice(0, 80)}.`);
+  const bindings = Object.entries(data).map(([name, binding]) => [name, Object.freeze(binding)]);
   return Object.freeze({
     status: "ready",
     view: Object.freeze({
       view_id: viewId,
       title,
       media_type,
-      spec: parsed,
-      data: Object.freeze(bindings),
+      spec,
+      data: Object.freeze(Object.fromEntries(bindings)),
       revision,
       // The spec as stored, for comparing two projections cheaply.
-      specText: text,
+      specText: String(doc.spec),
     }),
   });
 }
