@@ -138,7 +138,14 @@ async function withSummary(source, datasetSummary) {
     datasetSummary && source.media_type === PARQUET_MEDIA_TYPE
       ? await datasetSummary(source.asset_id)
       : null;
-  return { ...current, summary, producer, history, history_truncated };
+  // A copy: the read budget may trim its columns, and the host keeps the original.
+  return {
+    ...current,
+    summary: summary && { ...summary },
+    producer,
+    history,
+    history_truncated,
+  };
 }
 
 /** The views a read_page asks for: `{ views }` listing every view for
@@ -325,6 +332,21 @@ export async function readTool(
       body.outline.entries.pop();
       body.outline.next_offset = body.outline.offset + body.outline.entries.length;
     }
+  }
+  // A source's dataset summary is advisory: it gives up columns, from the
+  // end, before the read is refused.
+  const summary = body.source?.summary;
+  if (!fits(body) && summary?.columns.length) {
+    const columns = summary.columns;
+    let [low, high] = [0, columns.length];
+    while (low < high) {
+      const keep = Math.ceil((low + high) / 2);
+      summary.columns = columns.slice(0, keep);
+      if (fits(body)) low = keep;
+      else high = keep - 1;
+    }
+    summary.columns = columns.slice(0, low);
+    summary.columns_truncated = true;
   }
   if (!fits(body) && sourcesOnly) {
     status = 413;

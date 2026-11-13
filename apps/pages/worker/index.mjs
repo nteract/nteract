@@ -5374,10 +5374,10 @@ export class Page {
   /** The summary of one of this Page's datasets (dataset-summary.mjs), or
    * null. A summary is advisory: a missing bucket, a failure or a slow read
    * leaves it out rather than failing what asked for it. One store per host
-   * keeps summaries in memory between reads. */
+   * keeps summaries in memory between reads; a purge closes it for good. */
   async datasetSummary(assetId) {
     const bucket = this.env.PAGES_ASSETS;
-    if (!bucket) return null;
+    if (!bucket || this.datasetSummariesClosed) return null;
     this.datasetSummaries ??= new DatasetSummaries({ bucket, pageId: this.metadata.pageId });
     try {
       return await withTimeout(
@@ -7826,6 +7826,9 @@ export class Page {
         for (const documentId of viewDocumentIds) await this.repo.delete(documentId);
         this.dropSources();
         this.dropViews();
+        // Before the asset prefix goes, so no summary lands after it.
+        this.datasetSummariesClosed = true;
+        this.datasetSummaries?.close();
         await this.deleteAssets();
         await this.plain.forget(
           [

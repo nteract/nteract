@@ -1616,14 +1616,21 @@ The Page host reads the dataset's end from R2 with ranged reads, at most
 1 MiB of footer, and passes it to Sift's `parquet_footer_summary`, loaded
 from `@nteract/sift/wasm` as a second Worker module beside
 `automerge.wasm` ([scripts/worker-modules.mjs](scripts/worker-modules.mjs)).
-The result is stored as `pages/<page>/assets/<asset>/footer-summary.v1.json`:
-an asset id names immutable bytes, so its summary never changes, and the
-asset prefix that permanent deletion clears holds it. The object is derived;
-deleting it costs a recomputation. A footer Sift refuses is stored as
-unreadable and reads as `summary: null`. `set_source` summarizes each named
-dataset after its receipt is durable, so a later read finds it stored. A
-read waits at most 5 seconds for a summary and leaves it null on a timeout
-or a bucket or WASM failure; the read itself never fails for it.
+The agent summary is stored as
+`pages/<page>/assets/<asset>/footer-summary.v1.json`: an asset id names
+immutable bytes, so its summary never changes, and the asset prefix that
+permanent deletion clears holds it. The object is derived; deleting it costs
+a recomputation. Its columns stop at 200 or 32 KiB of JSON, and a read whose
+`max_bytes` can't hold the rest drops columns from the end, with
+`columns_truncated`, before it refuses. A footer Sift refuses is stored as
+unreadable and reads as `summary: null`. A WASM trap stores that footer as
+unreadable too, and the isolate's Sift module summarizes nothing more: its
+memory is in no known state, and the glue can't be initialized again.
+`set_source` summarizes each named dataset after its receipt is durable, so
+a later read finds it stored. A read waits at most 5 seconds for a summary
+and leaves it null on a timeout or a bucket or WASM failure; the read itself
+never fails for it. Purge closes the host's summaries before it deletes the
+asset prefix, and a summary write still in flight deletes what it wrote.
 
 Trash and restore keep the document. Permanent deletion deletes its stored
 bytes with the Page's. Page assets are never collected, so a source's

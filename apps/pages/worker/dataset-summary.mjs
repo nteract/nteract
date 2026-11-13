@@ -3,7 +3,7 @@
 // (`parquet_footer_summary`); no data page is read.
 //
 // An asset id names the SHA-256 of immutable bytes, so its summary never
-// changes. The asset is normative; the summary is derived from it and kept
+// changes. The asset is normative; the agent summary is derived from it and kept
 // beside it in the Page's bucket, under the asset prefix that permanent
 // deletion clears (image-assets.mjs `deleteUploadedAssets`). Deleting the
 // object costs one recomputation. A change to what is stored changes
@@ -16,8 +16,11 @@ export const SUMMARY_FORMAT = 1;
 export const TAIL_BYTES = 64 * 1024;
 /** A longer footer is not summarized. */
 export const MAX_FOOTER_BYTES = 1024 * 1024;
-/** Columns an agent summary lists; the rest are counted. */
+/** Columns an agent summary lists; `column_count` counts them all. */
 export const MAX_SUMMARY_COLUMNS = 200;
+/** JSON bytes an agent summary's columns stay within, so a source read
+ * keeps room under the default read budget. */
+export const MAX_SUMMARY_BYTES = 32 * 1024;
 /** A text bound longer than this is left out rather than cut. */
 export const MAX_TEXT_BOUND = 200;
 /** Summaries a Page host keeps in memory. A Page holds up to 64 sources. */
@@ -58,19 +61,29 @@ export class FooterUnreadable extends Error {}
 
 /**
  * The agent's view of Sift's summary: `{ rows, row_groups, created_by,
- * columns }`, each column `{ name, type, nullable, null_count, min, max,
- * bounds_exact }`. `type` is the Arrow type the file reads as. `min` and
- * `max` bound the whole file or are null: Sift reports per-file bounds only
- * when every row group's statistics are usable. Dates are `YYYY-MM-DD` and
- * timestamps ISO 8601 in UTC; Sift reports both in epoch milliseconds.
- * `bounds_exact` is false when a writer truncated a text bound. Past
- * MAX_SUMMARY_COLUMNS columns the list stops and `columns_truncated` is true.
+ * column_count, columns }`, each column `{ name, type, nullable, null_count,
+ * min, max, bounds_exact }`. `type` is the Arrow type the file reads as.
+ * `min` and `max` bound the whole file or are null: Sift reports per-file
+ * bounds only when every row group's statistics are usable. Dates are
+ * `YYYY-MM-DD`, timestamps ISO 8601 in UTC (Sift reports both in epoch
+ * milliseconds), and an infinite bound the string `"Infinity"` or
+ * `"-Infinity"`, so the summary is plain JSON. `bounds_exact` is false when a
+ * writer truncated a text bound. The list stops at MAX_SUMMARY_COLUMNS
+ * columns or MAX_SUMMARY_BYTES of JSON, with `columns_truncated` true.
  */
 export function agentSummary(sift) {
-  const columns = sift.columns.slice(0, MAX_SUMMARY_COLUMNS).map((column) => {
+  const summary = {
+    rows: sift.num_rows,
+    row_groups: sift.num_row_groups,
+    created_by: textOrNull(sift.created_by),
+    column_count: sift.columns.length,
+    columns: [],
+  };
+  let bytes = jsonBytes(summary);
+  for (const column of sift.columns.slice(0, MAX_SUMMARY_COLUMNS)) {
     const bounded = column.bounded_row_groups === sift.num_row_groups;
     const bound = (value) => (bounded ? boundValue(value, column.data_type) : null);
-    return {
+    const entry = {
       name: column.name,
       type: column.data_type,
       nullable: column.nullable,
@@ -79,39 +92,49 @@ export function agentSummary(sift) {
       max: bound(column.max),
       bounds_exact: bounded && column.bounds_exact,
     };
-  });
-  return {
-    rows: sift.num_rows,
-    row_groups: sift.num_row_groups,
-    created_by: sift.created_by,
-    columns,
-    ...(sift.columns.length > MAX_SUMMARY_COLUMNS && { columns_truncated: true }),
-  };
+    // One more for the comma between entries.
+    bytes += jsonBytes(entry) + 1;
+    if (bytes > MAX_SUMMARY_BYTES) break;
+    summary.columns.push(entry);
+  }
+  if (summary.columns.length < sift.columns.length) summary.columns_truncated = true;
+  return summary;
 }
+
+const jsonBytes = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+const textOrNull = (value) =>
+  typeof value === "string" && value.length <= MAX_TEXT_BOUND ? value : null;
 
 function boundValue(value, type) {
   if (value === null || value === undefined) return null;
-  if (typeof value === "string") return value.length <= MAX_TEXT_BOUND ? value : null;
+  if (typeof value === "string") return textOrNull(value);
   if (typeof value !== "number") return value;
-  // ±Infinity has no JSON number.
   if (!Number.isFinite(value)) return Number.isNaN(value) ? null : String(value);
   if (/^Date(32|64)$/.test(type)) return new Date(value).toISOString().slice(0, 10);
   if (type.startsWith("Timestamp(")) return new Date(value).toISOString();
   return value;
 }
 
+/** Sift modules that trapped. A trap leaves a module's memory in no known
+ * state, and wasm-bindgen glue can't be initialized again, so a trapped
+ * module summarizes nothing more until its isolate is replaced. */
+const trapped = new WeakSet();
+
 /**
  * One Page host's dataset summaries: memory, then the stored summary, then
- * Sift over the dataset's footer, storing what it finds. `sift` loads the
- * `#sift-wasm` module; tests pass their own. `summary(assetId)` resolves to
- * the agent summary, or null when the dataset is missing or its footer is
- * unreadable. Bucket and Sift failures reject.
+ * Sift over the dataset's footer, storing the agent summary it gives.
+ * `sift` loads the `#sift-wasm` module; tests pass their own.
+ * `summary(assetId)` resolves to the agent summary, or null when the dataset
+ * is missing or its footer is unreadable. Bucket failures and a trapped
+ * Sift reject. After `close()` nothing is stored: a write already in flight
+ * deletes what it wrote, so a purge's prefix deletion leaves nothing behind.
  */
 export class DatasetSummaries {
   #bucket;
   #pageId;
   #sift;
   #memory = new Map();
+  #closed = false;
 
   constructor({ bucket, pageId, sift = () => import("#sift-wasm") }) {
     this.#bucket = bucket;
@@ -119,25 +142,26 @@ export class DatasetSummaries {
     this.#sift = sift;
   }
 
-  async summary(assetId) {
-    const stored = await this.#stored(assetId);
-    return stored?.summary ? agentSummary(stored.summary) : null;
+  /** Stop storing summaries: the Page's assets are being deleted. */
+  close() {
+    this.#closed = true;
   }
 
-  async #stored(assetId) {
-    if (this.#memory.has(assetId)) return this.#memory.get(assetId);
+  async summary(assetId) {
+    if (this.#memory.has(assetId)) return this.#memory.get(assetId).summary ?? null;
     const key = datasetSummaryKey(this.#pageId, assetId);
     const cached = await this.#bucket.get(key);
     const stored = cached ? JSON.parse(await cached.text()) : await this.#compute(assetId, key);
     if (stored === null) return null;
     this.#memory.set(assetId, stored);
     if (this.#memory.size > MEMORY_ENTRIES) this.#memory.delete(this.#memory.keys().next().value);
-    return stored;
+    return stored.summary ?? null;
   }
 
   /** `{ summary }` or `{ unreadable }`, stored; null for a missing dataset. */
   async #compute(assetId, key) {
     const sift = await this.#sift();
+    if (trapped.has(sift)) throw Error("Sift trapped earlier in this isolate");
     let stored;
     try {
       const read = await readParquetTail(
@@ -146,15 +170,22 @@ export class DatasetSummaries {
         sift.parquet_footer_length,
       );
       if (!read) return null;
-      stored = { summary: sift.parquet_footer_summary(read.tail, read.size) };
+      stored = { summary: agentSummary(sift.parquet_footer_summary(read.tail, read.size)) };
     } catch (error) {
-      // Sift refuses a footer by throwing its message as a string.
-      if (!(error instanceof FooterUnreadable) && typeof error !== "string") throw error;
-      stored = { unreadable: String(error instanceof Error ? error.message : error) };
+      if (error instanceof WebAssembly.RuntimeError) {
+        trapped.add(sift);
+        // The same bytes trap again; record them as unreadable.
+        stored = { unreadable: `Sift trapped on this footer: ${error.message}` };
+      } else if (error instanceof FooterUnreadable || typeof error === "string") {
+        // Sift refuses a footer by throwing its message as a string.
+        stored = { unreadable: String(error instanceof Error ? error.message : error) };
+      } else throw error;
     }
+    if (this.#closed) return stored;
     await this.#bucket.put(key, JSON.stringify(stored), {
       httpMetadata: { contentType: "application/json" },
     });
+    if (this.#closed) await this.#bucket.delete(key);
     return stored;
   }
 }

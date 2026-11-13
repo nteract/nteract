@@ -732,3 +732,30 @@ test("read_page source_id carries its dataset's summary, stored once at set_sour
   assert.equal(failed.status, 200);
   assert.equal(failed.body.source.summary, null);
 });
+
+test("a source read gives up summary columns before it refuses for max_bytes", async (t) => {
+  const h = await sourcesHost(t);
+  assert.equal((await h.setSource(h.host, [usage()])).status, 200);
+  const columns = Array.from({ length: 200 }, (_, i) => ({
+    name: `column_${i}`,
+    type: "Int64",
+    nullable: true,
+    null_count: 0,
+    min: 0,
+    max: i,
+    bounds_exact: true,
+  }));
+  const held = { rows: 1, row_groups: 1, created_by: null, column_count: 200, columns };
+  h.host.datasetSummary = async () => held;
+
+  const maxBytes = 8192;
+  const read = await h.tool(h.host, "read_page", { source_id: "usage", max_bytes: maxBytes });
+  assert.equal(read.status, 200);
+  const { summary } = read.body.source;
+  assert.equal(summary.columns_truncated, true);
+  assert.ok(summary.columns.length > 0 && summary.columns.length < 200);
+  assert.deepEqual(summary.columns, columns.slice(0, summary.columns.length));
+  assert.ok(new TextEncoder().encode(JSON.stringify(read.body)).byteLength <= maxBytes);
+  assert.equal(held.columns.length, 200, "the host's summary is untouched");
+  assert.equal(held.columns_truncated, undefined);
+});

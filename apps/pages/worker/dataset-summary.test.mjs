@@ -10,6 +10,7 @@ import {
   FooterUnreadable,
   MAX_FOOTER_BYTES,
   MAX_SUMMARY_COLUMNS,
+  MAX_SUMMARY_BYTES,
   MAX_TEXT_BOUND,
   TAIL_BYTES,
   agentSummary,
@@ -44,7 +45,11 @@ function bucket() {
       };
     },
     async put(key, value) {
+      await this.beforePut?.(key);
       objects.set(key, typeof value === "string" ? new TextEncoder().encode(value) : value);
+    },
+    async delete(key) {
+      objects.delete(key);
     },
   };
 }
@@ -105,7 +110,7 @@ test("summarizes a dataset from its footer and stores the summary beside it", as
   const stored = JSON.parse(
     new TextDecoder().decode(store.objects.get(datasetSummaryKey(pageId, assetId))),
   );
-  assert.equal(stored.summary.num_rows, 4);
+  assert.deepEqual(stored.summary, summary);
 });
 
 test("a stored summary answers without Sift; memory answers without the bucket", async () => {
@@ -212,5 +217,96 @@ test("agent summaries keep only whole-file bounds and JSON-safe values", () => {
     ),
   });
   assert.equal(wide.columns.length, MAX_SUMMARY_COLUMNS);
+  assert.equal(wide.column_count, MAX_SUMMARY_COLUMNS + 1);
   assert.equal(wide.columns_truncated, true);
+
+  // Long names and bounds stop the list at the byte cap, whatever the count.
+  const cjk = "東".repeat(MAX_TEXT_BOUND);
+  const heavy = agentSummary({
+    num_rows: 1,
+    num_row_groups: 1,
+    created_by: null,
+    columns: Array.from({ length: MAX_SUMMARY_COLUMNS }, (_, i) =>
+      column(`${cjk}${i}`, "Utf8", cjk, cjk, { bounded_row_groups: 1 }),
+    ),
+  });
+  const bytes = new TextEncoder().encode(JSON.stringify(heavy)).byteLength;
+  assert.ok(bytes <= MAX_SUMMARY_BYTES, `${bytes} bytes`);
+  assert.ok(heavy.columns.length > 0 && heavy.columns.length < MAX_SUMMARY_COLUMNS);
+  assert.equal(heavy.columns_truncated, true);
+});
+
+/** A Sift stand-in that answers `summarize` for every footer. */
+function fakeSift(summarize) {
+  return { parquet_footer_length: () => 4, parquet_footer_summary: summarize };
+}
+
+test("an infinite bound reads the same from a new host as from the one that computed it", async () => {
+  const { store } = summaries(salesParquet());
+  const sift = fakeSift(() => ({
+    num_rows: 1,
+    num_row_groups: 1,
+    created_by: null,
+    columns: [
+      {
+        name: "x",
+        data_type: "Float64",
+        nullable: false,
+        null_count: 0,
+        min: -Infinity,
+        max: Infinity,
+        bounded_row_groups: 1,
+        bounds_exact: true,
+        has_infinite: true,
+      },
+    ],
+  }));
+  const host = () => new DatasetSummaries({ bucket: store, pageId, sift: async () => sift });
+  const computed = await host().summary(assetId);
+  assert.deepEqual([computed.columns[0].min, computed.columns[0].max], ["-Infinity", "Infinity"]);
+  assert.deepEqual(await host().summary(assetId), computed);
+});
+
+test("a trapped Sift stores that footer as unreadable and summarizes nothing more", async () => {
+  const { store } = summaries(salesParquet());
+  const other = "b".repeat(64);
+  store.objects.set(imageAssetKey(pageId, other), salesParquet());
+  let calls = 0;
+  const sift = fakeSift(() => {
+    calls++;
+    throw new WebAssembly.RuntimeError("unreachable");
+  });
+  const host = new DatasetSummaries({ bucket: store, pageId, sift: async () => sift });
+  assert.equal(await host.summary(assetId), null);
+  const stored = JSON.parse(
+    new TextDecoder().decode(store.objects.get(datasetSummaryKey(pageId, assetId))),
+  );
+  assert.match(stored.unreadable, /trapped/);
+  await assert.rejects(host.summary(other), /trapped earlier/);
+  assert.equal(calls, 1);
+  assert.equal(store.objects.has(datasetSummaryKey(pageId, other)), false);
+});
+
+test("after close nothing is stored, and a write in flight takes back what it wrote", async () => {
+  const { store, make } = summaries(salesParquet());
+  const host = make();
+  let release;
+  store.beforePut = () => {
+    host.close();
+    return new Promise((resolve) => (release = resolve));
+  };
+  const pending = host.summary(assetId);
+  while (!release) await new Promise((resolve) => setImmediate(resolve));
+  release();
+  assert.equal((await pending).rows, 4, "the read still answers");
+  assert.equal(store.objects.has(datasetSummaryKey(pageId, assetId)), false);
+
+  // A closed store never writes.
+  store.beforePut = () => assert.fail("a closed store wrote");
+  const closed = summaries(salesParquet());
+  const shut = closed.make();
+  shut.close();
+  closed.store.beforePut = store.beforePut;
+  assert.equal((await shut.summary(assetId)).rows, 4);
+  assert.equal(closed.store.objects.has(datasetSummaryKey(pageId, assetId)), false);
 });
