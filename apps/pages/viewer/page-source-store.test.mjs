@@ -7,7 +7,14 @@ import * as A from "@automerge/automerge";
 import { BehaviorSubject } from "rxjs";
 import { setSources, sourcesGenesis } from "../model/sources-doc.mjs";
 import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
-import { PageSourceStore, SourceUnavailable, projectSources } from "./page-source-store.mjs";
+import {
+  PageSourceStore,
+  SourceUnavailable,
+  knownSources$,
+  projectSources,
+  sourcesKnown,
+} from "./page-source-store.mjs";
+import { STATES as OPEN_STATES } from "./host-doc-open-machine.mjs";
 import { followSource, markDrawnVersion, versionKey } from "./source-follow.mjs";
 
 const PAGE = "0b9f2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f";
@@ -373,4 +380,15 @@ test("a followed table redraws on a refresh, frees the version it replaced, and 
   follow.destroy();
   doc$.next(host.doc);
   assert.equal(renders.length, 3, "a destroyed table follows nothing");
+});
+
+test("the sources document is known once its lookup has an answer", () => {
+  const unanswered = OPEN_STATES.filter((name) => !sourcesKnown({ name }));
+  assert.deepEqual(unanswered, ["closed", "opening", "retrying"]);
+  const states = new BehaviorSubject({ name: "closed" });
+  const seen = [];
+  const subscription = knownSources$(states).subscribe((known) => seen.push(known));
+  for (const name of ["opening", "retrying", "opening", "ready", "absent"]) states.next({ name });
+  subscription.unsubscribe();
+  assert.deepEqual(seen, [false, true], "on change only");
 });

@@ -94,13 +94,14 @@ const view = ({ revision = "1", names = ["sales"], data, title = "Sales" } = {})
 
 function fixture({
   sources: initial,
+  sourcesKnown$,
   check = checkChartSpec,
   throwOnDraw = () => false,
   throwOnDestroy = () => false,
 } = {}) {
   const host = hostSources();
   for (const [id, char] of Object.entries(initial ?? { sales: "a" })) host.set(id, asset(char));
-  const doc$ = new BehaviorSubject(host.doc);
+  const doc$ = new BehaviorSubject(initial === null ? undefined : host.doc);
   const fetches = [];
   const asks = [];
   const store = new PageSourceStore({
@@ -121,6 +122,7 @@ function fixture({
   const draw = createViewDraw({
     view$,
     sources: store,
+    ...(sourcesKnown$ && { sourcesKnown$ }),
     decode: decoder.decode,
     checkChartSpec: check,
     render: {
@@ -316,6 +318,42 @@ test("a removed source draws empty, names the source, and asks for the sources d
   assert.equal(latest.note, `This chart's source "costs" isn't on this Page.`);
   assert.equal(f.shown.at(-1).note, latest.note);
   assert.ok(f.asks.length > 0, "a missing source asks for the sources document");
+});
+
+test("a view ready before its sources document is read waits, then draws its data once", async () => {
+  // The Page's sources document is still being read from storage: the store
+  // holds no document, and the lookup has no answer.
+  const known$ = new BehaviorSubject(false);
+  const f = fixture({ sources: null, sourcesKnown$: known$ });
+  f.host.set("sales", asset("a"));
+  f.view$.next(view());
+  await settle();
+  assert.deepEqual(f.draws, [], "nothing draws as missing while the document is unread");
+  assert.equal(f.shown.at(-1).sentence, VIEW_STATUS.waiting);
+  assert.equal(f.shown.at(-1).note, null);
+  assert.ok(f.asks.length > 0, "it asks for the sources document");
+  f.doc$.next(f.host.doc);
+  known$.next(true);
+  await settle();
+  f.decoder.calls[0].resolve();
+  await settle();
+  assert.equal(f.draws.length, 1);
+  assert.equal(f.draws[0].note, null);
+  assert.equal(f.draws[0].datasets.sales, f.decoder.calls[0].table);
+});
+
+test("a source the answered sources document doesn't hold draws empty, with its note", async () => {
+  const known$ = new BehaviorSubject(false);
+  const f = fixture({ sources: null, sourcesKnown$: known$ });
+  f.view$.next(view());
+  await settle();
+  assert.deepEqual(f.draws, []);
+  // The host answered: there is no sources document.
+  known$.next(true);
+  await settle();
+  assert.equal(f.draws.length, 1);
+  assert.deepEqual(f.draws[0].datasets.sales, []);
+  assert.equal(f.draws[0].note, `This chart's source "sales" isn't on this Page.`);
 });
 
 test("a pinned binding reads its history state and ignores later revisions", async () => {

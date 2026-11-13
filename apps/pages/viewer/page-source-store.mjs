@@ -66,6 +66,19 @@ export function projectSources(doc) {
   return Object.freeze(sources);
 }
 
+/** The sources document's lookup states (host-doc-open-machine.mjs) that
+ * have no answer yet: not looked up, or read only from a stored copy that
+ * didn't hold it, or a lookup still running. Every other state has one: the
+ * document is open, or there is none to read. */
+const UNANSWERED = new Set(["closed", "opening", "retrying"]);
+
+/** Whether the sources document's lookup, at `state`, has an answer. */
+export const sourcesKnown = (state) => !UNANSWERED.has(state?.name);
+
+/** `sourcesKnown` for each state `state$` emits, on change only: what
+ * view-draw.mjs reads as `sourcesKnown$`. */
+export const knownSources$ = (state$) => state$.pipe(map(sourcesKnown), distinctUntilChanged());
+
 /** Two projections hold the same sources: same ids, and each id's name,
  * asset, media type and revision alike. */
 const sameVersion = (a, b) =>

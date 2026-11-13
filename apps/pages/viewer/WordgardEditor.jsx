@@ -86,6 +86,7 @@ import {
 } from "./wordgard-model.mjs";
 import { wordgardViews } from "./wordgard-views.mjs";
 import { viewHeights } from "./view-heights.mjs";
+import { knownSources$ } from "./page-source-store.mjs";
 import { DATASET_ACCEPT } from "../shared/dataset-assets.mjs";
 import { markdownShortcuts } from "./wordgard-shortcuts.mjs";
 import { displaySymbols } from "./wordgard-symbols.mjs";
@@ -454,6 +455,9 @@ export function WordgardEditor(props) {
         wordgardViews({
           views: replica.views ?? null,
           sources: replica.pageSources ?? null,
+          sourcesKnown$: replica.sources?.state$
+            ? knownSources$(replica.sources.state$.state$)
+            : null,
           heights: viewHeights(typeof window === "undefined" ? undefined : window, {
             account: replica.identity?.principal,
             pageId: replica.doc.page_id,

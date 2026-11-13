@@ -25,8 +25,8 @@ import { viewHeight } from "./view-heights.mjs";
 import { dataframeLifecycle } from "./wordgard-dataframes.mjs";
 import { reportRendererUnavailable } from "./wordgard-widgets.mjs";
 
-/** The chart chunk, with `mount(container, { view$, sources })` returning
- * `{ destroy }`. */
+/** The chart chunk, with `mount(container, { view$, sources, sourcesKnown$
+ * })` returning `{ destroy }`. */
 export const VIEW_RENDERER = () => import("./view-chart.mjs");
 
 /** What an embed says before its chart chunk is drawing, and if the chunk
@@ -84,6 +84,7 @@ export function viewLifecycle({
   viewId,
   views,
   sources,
+  sourcesKnown$ = null,
   frame,
   load = VIEW_RENDERER,
   onUnavailable = reportRendererUnavailable,
@@ -116,7 +117,7 @@ export function viewLifecycle({
           const held = views.hold(viewId);
           let chart;
           try {
-            chart = chunk.mount(canvas, { view$: held.view$, sources });
+            chart = chunk.mount(canvas, { view$: held.view$, sources, sourcesKnown$ });
           } catch (error) {
             held.release();
             throw error;
@@ -296,6 +297,7 @@ const viewEmbed = Widget.define({
     a.viewId === b.viewId &&
     a.views === b.views &&
     a.sources === b.sources &&
+    a.sourcesKnown$ === b.sourcesKnown$ &&
     a.eager === b.eager &&
     a.heights === b.heights &&
     a.warmup === b.warmup,
@@ -308,6 +310,7 @@ const viewEmbed = Widget.define({
         viewId: attrs.viewId,
         views: attrs.views,
         sources: attrs.sources,
+        sourcesKnown$: attrs.sourcesKnown$,
         frame,
         ...(attrs.eager && { observe: alwaysNear }),
       }),
@@ -335,7 +338,9 @@ const viewEmbed = Widget.define({
  * Editor config that draws every view node (the Page model's PagesView) as
  * its chart. `views` is the Page's view replicas (view-replicas.mjs) and
  * `sources` its source store; without them every embed says its chart isn't
- * on this Page. `eager` draws each chart at once rather than near the
+ * on this Page. `sourcesKnown$` says whether the sources document's lookup
+ * has an answer (page-source-store.mjs `knownSources$`), so a chart waits
+ * for a source the store hasn't read yet rather than drawing without it. `eager` draws each chart at once rather than near the
  * viewport. `heights` (view-heights.mjs) remembers each chart's drawn height
  * for the next render's reserve; without it every embed reserves the
  * default. With views and sources, a connected embed warms the chart path
@@ -345,6 +350,7 @@ const viewEmbed = Widget.define({
 export function wordgardViews({
   views = null,
   sources = null,
+  sourcesKnown$ = null,
   eager = false,
   heights = null,
 } = {}) {
@@ -357,6 +363,7 @@ export function wordgardViews({
           viewId: readViewNode(tag.param)?.view_id ?? "",
           views,
           sources,
+          sourcesKnown$,
           eager,
           heights,
           warmup,

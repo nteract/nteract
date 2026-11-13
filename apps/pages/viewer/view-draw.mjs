@@ -9,7 +9,7 @@
 // changes. A pinned binding (`{ source_id, revision }`) reads the source's
 // history state for that revision and ignores later revisions; it still
 // redraws when the source is removed.
-import { map, of, switchMap } from "rxjs";
+import { combineLatest, map, of, switchMap } from "rxjs";
 import { SourceUnavailable } from "./page-source-store.mjs";
 import { versionKey } from "./source-follow.mjs";
 import { viewDrawMachine } from "./view-draw-machine.mjs";
@@ -55,7 +55,8 @@ export function viewNote(problems) {
  * names the spec reads (`names`), resolved against `sources` now. `serial`
  * numbers the projection, so a rewritten view always makes a new key. Each
  * entry is `{ name, version }`, `version` null for data the Page can't
- * supply; that data draws as no rows.
+ * supply; that data draws as no rows. `missing` says whether a binding
+ * names a source the Page's sources document doesn't hold.
  */
 export function viewPlan(view, names, sources, serial) {
   const entries = [];
@@ -79,7 +80,13 @@ export function viewPlan(view, names, sources, serial) {
     `${view.view_id}#${serial}@${view.revision}`,
     ...entries.map(({ name, version }) => `${name}=${version ? versionKey(version) : "none"}`),
   ].join("|");
-  return { key, view, entries, note: viewNote(problems) };
+  return {
+    key,
+    view,
+    entries,
+    note: viewNote(problems),
+    missing: problems.some((problem) => problem.reason === "missing"),
+  };
 }
 
 /**
@@ -89,14 +96,27 @@ export function viewPlan(view, names, sources, serial) {
  *   resolves with is the dataset the chart reads.
  * - `checkChartSpec(spec, { datasets })`: shared/chart-spec.mjs. It runs
  *   before every plan, so a refused spec loads nothing.
+ * - `sourcesKnown$`: whether the sources document's lookup has an answer
+ *   (page-source-store.mjs `sourcesKnown`). Until it does, a source the store
+ *   doesn't hold may be one it hasn't read yet, so a plan with a missing
+ *   source waits instead of drawing without it. Omitted, the store's
+ *   contents are the answer.
  * - `render.draw({ view, datasets, note })` mounts a chart and returns
  *   `{ destroy }`; `render.show({ state, sentence, note, title })` shows the
  *   embed's state after each step.
  * Returns `{ destroy, state }`.
  */
 const BROKEN = Object.freeze({ type: "blocked", sentence: VIEW_STATUS.broken });
+const PENDING = Object.freeze({ type: "pending" });
 
-export function createViewDraw({ view$, sources, decode, checkChartSpec, render }) {
+export function createViewDraw({
+  view$,
+  sources,
+  sourcesKnown$ = of(true),
+  decode,
+  checkChartSpec,
+  render,
+}) {
   let model = viewDrawMachine.initial;
   let latest = null;
   let chart = null;
@@ -270,13 +290,16 @@ export function createViewDraw({ view$, sources, decode, checkChartSpec, render 
         }
         if (!checked.ok) return of({ type: "blocked", sentence: checked.error });
         const ids = [...new Set(checked.names.map((name) => view.data[name].source_id))];
-        return sources.versions(ids).pipe(
-          map(() => {
+        return combineLatest([sources.versions(ids), sourcesKnown$]).pipe(
+          map(([, known]) => {
+            let plan;
             try {
-              latest = viewPlan(view, checked.names, sources, number);
+              plan = viewPlan(view, checked.names, sources, number);
             } catch {
               return BROKEN;
             }
+            if (plan.missing && !known) return PENDING;
+            latest = plan;
             return { type: "plan", key: latest.key };
           }),
         );
