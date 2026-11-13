@@ -84,18 +84,25 @@ test("a screen shows each banner once", () => {
   assert.deepEqual(bannerMessages([]), []);
 });
 
-test("the session-check banner waits for an outage when the account is known", () => {
+test("the session-check banner says what the session-refresh machine's notice says", () => {
   const down = Object.assign(Error("The server returned an unexpected response (503)"), {
     status: 503,
   });
-  assert.equal(sessionCheckBanner(down, { outage: false, signedIn: true }), undefined);
-  assert.equal(sessionCheckBanner(down, { outage: true, signedIn: true }), SERVER_UNREACHABLE);
+  const timedOut = Object.assign(Error("The request timed out. Please try again."), {
+    name: "TimeoutError",
+    code: "REQUEST_TIMEOUT",
+  });
+  for (const error of [down, timedOut]) {
+    assert.equal(sessionCheckBanner(error, { notice: "quiet" }), undefined);
+    assert.equal(sessionCheckBanner(error, { notice: "outage" }), SERVER_UNREACHABLE);
+  }
   // A first check has nothing else on screen.
-  assert.equal(sessionCheckBanner(down, { signedIn: false }), SERVER_UNREACHABLE_ACTION);
+  assert.equal(sessionCheckBanner(down, { notice: "failure" }), SERVER_UNREACHABLE_ACTION);
+  assert.equal(sessionCheckBanner(timedOut, { notice: "failure" }), timedOut.message);
   // A failure the server answered keeps its message.
   assert.equal(
     sessionCheckBanner(Object.assign(Error("Storage is read-only"), { status: 500 }), {
-      signedIn: true,
+      notice: "failure",
     }),
     "Storage is read-only",
   );
