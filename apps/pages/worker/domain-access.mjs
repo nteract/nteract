@@ -64,6 +64,10 @@ export async function verifiedCompanyDomains(env, identity, now = Date.now()) {
   const leases = [];
   for (const domain of companyViewDomains(env)) {
     if (identity.credentialKind === "api-key" && identity.verifiedEmail) {
+      // The email is evidence only until the provider answer that verified it
+      // stops being current (api-key-verifier.mjs); without that time, none.
+      const until = Math.min(identity.expiresAt, identity.verifiedEmailUntil);
+      if (!(until > now)) continue;
       let email;
       try {
         email = normalizeInviteEmail(identity.verifiedEmail);
@@ -71,7 +75,7 @@ export async function verifiedCompanyDomains(env, identity, now = Date.now()) {
         continue;
       }
       if (email.slice(email.lastIndexOf("@") + 1) === domain)
-        leases.push({ domain, namespace, expiresAt: identity.expiresAt });
+        leases.push({ domain, namespace, expiresAt: until });
     } else if (identity.credentialKind === "upload-capability") {
       // An upload capability carries the lease its issuer held, signed by the
       // Page (asset-uploads.mjs), and holds it no longer than the issuer did.

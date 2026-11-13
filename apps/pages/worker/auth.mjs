@@ -383,6 +383,9 @@ export async function authenticate(request, env) {
         // authenticated account endpoint returns server-verified account email.
         verifiedEmail:
           identity.metadata.emailVerified === true ? identity.metadata.email : undefined,
+        // When the provider answer that verified it stops being current; a
+        // cached answer keeps the deadline of the lookup behind it.
+        verifiedEmailUntil: identity.answerUntil,
         expiresAt: Date.now() + 60_000,
       },
       env,

@@ -31,6 +31,7 @@ import { accessRows, listingRestricted } from "./catalog-index.mjs";
 import { plainStub } from "./plain-stub.mjs";
 import { Storage } from "./projects-fixture.mjs";
 import { purgeImpact } from "./trash.mjs";
+import { providerAnswerUntil } from "./api-key-verifier.mjs";
 
 const now = 1_800_000_000_000;
 const namespace = "user:anaconda";
@@ -171,6 +172,7 @@ const companyApiKeyOwner = {
   ...owner,
   credentialKind: "api-key",
   verifiedEmail: "Owner@Anaconda.com",
+  verifiedEmailUntil: owner.expiresAt,
 };
 const ownerProofDenied = /Sign in with a verified anaconda\.com email to share with anaconda\.com/;
 const ownerProofExpired =
@@ -409,14 +411,28 @@ test("domain evidence requires verified exact company email and has a nonrenewab
     ),
     undefined,
   );
+  const apiKey = {
+    ...employee,
+    credentialKind: "api-key",
+    verifiedEmail: " Person@ANACONDA.COM ",
+    verifiedEmailUntil: employee.expiresAt,
+  };
+  assert.deepEqual(await domainAccessForIdentity(env, apiKey, now), {
+    ...domainView,
+    expiresAt: employee.expiresAt,
+  });
+  // An API key's email is evidence until the provider answer behind it stops
+  // being current, never past it, and not at all without that time.
   assert.deepEqual(
-    await domainAccessForIdentity(
-      env,
-      { ...employee, credentialKind: "api-key", verifiedEmail: " Person@ANACONDA.COM " },
-      now,
-    ),
-    { ...domainView, expiresAt: employee.expiresAt },
+    await domainAccessForIdentity(env, { ...apiKey, verifiedEmailUntil: now + 1000 }, now),
+    { ...domainView, expiresAt: now + 1000 },
   );
+  for (const verifiedEmailUntil of [now, undefined, Number.NaN])
+    assert.equal(
+      await domainAccessForIdentity(env, { ...apiKey, verifiedEmailUntil }, now),
+      undefined,
+      String(verifiedEmailUntil),
+    );
 });
 
 test("dynamic viewer authority never overrides an explicit grant or deny and expires independently", () => {
@@ -1023,10 +1039,17 @@ test("a domain editor's upload URL carries the issuer's domain lease and expires
     new DocumentPolicy({ metadata: () => record, now: () => clock }).account(identity, true);
     return identity;
   };
-  // An API key's domain lease lasts as long as its 60-second identity.
+  // An API key's domain lease lasts as long as its 60-second identity, here
+  // backed by a provider answer just as fresh.
   const apiKey = (verifiedEmail = "person@anaconda.com") =>
     withDomainAccess(
-      { ...employee, credentialKind: "api-key", verifiedEmail, expiresAt: clock + 60_000 },
+      {
+        ...employee,
+        credentialKind: "api-key",
+        verifiedEmail,
+        verifiedEmailUntil: clock + 60_000,
+        expiresAt: clock + 60_000,
+      },
       env,
     );
   const issuer = await apiKey();
@@ -1092,6 +1115,97 @@ test("a domain editor's upload URL carries the issuer's domain lease and expires
       "invalid",
       JSON.stringify(bad),
     );
+});
+
+test("a cached provider answer keeps its own deadline: an API key's domain lease and upload URL never outlive it", async (t) => {
+  const fixture = await createAuthFixture();
+  // The provider's answer for the key, read at each lookup.
+  let email = "person@anaconda.com";
+  let lookups = 0;
+  t.mock.method(globalThis, "fetch", async (...args) => {
+    lookups += 1;
+    const body = await (await fixture.fetch(...args)).json();
+    body.passport.profile.email = email;
+    return Response.json(body);
+  });
+  const start = Date.now();
+  let clock = start;
+  t.mock.method(Date, "now", () => clock);
+  const companyNamespace = fixture.env.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE;
+  const companyEnv = { ...fixture.env, PAGES_COMPANY_VIEW_DOMAINS: "anaconda.com" };
+  const lease = (expiresAt) => ({ domain: "anaconda.com", namespace: companyNamespace, expiresAt });
+  const token = fixture.apiKey();
+  const signIn = () =>
+    authenticate(
+      new Request("https://pages.invalid/api/connect?page=test", {
+        headers: { authorization: `Bearer ${token}` },
+      }),
+      companyEnv,
+    );
+  const first = await signIn();
+  assert.equal(first.verifiedEmailUntil, start + 60_000);
+  assert.deepEqual(first.domainAccess, lease(start + 60_000));
+  // The account's email changes at the provider. Until its lookup expires the
+  // verifier answers from it, with the old email, to a fresh 60-second
+  // identity; the lease still ends when that lookup's answer does.
+  email = "person@gmail.com";
+  clock = start + 59_000;
+  const cached = await signIn();
+  assert.equal(lookups, 1);
+  assert.equal(cached.verifiedEmail, "person@anaconda.com");
+  assert.equal(cached.expiresAt, start + 119_000);
+  assert.deepEqual(cached.domainAccess, lease(start + 60_000));
+  // An upload URL issued from the cached answer, by a domain editor, signs
+  // that deadline and ends with it.
+  const storage = new Storage();
+  const pageId = "domain-cache-upload-page";
+  const page = {
+    pageId,
+    owner: `${companyNamespace}:owner`,
+    acl: {
+      revision: 1,
+      members: {},
+      invites: {},
+      domainView: { domain: "anaconda.com", namespace: companyNamespace, role: "editor" },
+    },
+  };
+  const issued = await issueAssetUpload(storage, {
+    pageId,
+    identity: cached,
+    args: { page_id: pageId },
+    origin: "https://pages.invalid",
+    now: clock,
+    accessUntil: (claims) => uploaderEditUntil(page, claims, companyEnv),
+  });
+  assert.equal(issued.expires_at, new Date(start + 60_000).toISOString());
+  const claims = await verifyAssetUpload(
+    storage,
+    issued.headers.Authorization.slice("Pages-Upload ".length),
+    { pageId, now: clock, grantActive: () => assert.fail("an API-key capability names no grant") },
+  );
+  assert.equal(claims.exp, start + 60_000);
+  assert.equal(claims.domain_exp, start + 60_000);
+  // Past the cache boundary a new lookup sees the changed email: no lease.
+  clock = start + 61_001;
+  const fresh = await signIn();
+  assert.equal(lookups, 2);
+  assert.equal(fresh.verifiedEmail, "person@gmail.com");
+  assert.equal(fresh.domainAccess, undefined);
+});
+
+test("an API key's answer deadline follows the lookup that may have answered it", () => {
+  const start = Date.now();
+  const token = `answer-${crypto.randomUUID()}`;
+  // A first call opens a window; calls inside it get its deadline.
+  assert.equal(providerAnswerUntil(token, start), start + 60_000);
+  assert.equal(providerAnswerUntil(token, start + 59_999), start + 60_000);
+  // Just past the window the verifier may still answer from the old lookup,
+  // so the call gets the old deadline, and may have started a new lookup,
+  // whose window later calls get.
+  assert.equal(providerAnswerUntil(token, start + 60_500), start + 60_000);
+  assert.equal(providerAnswerUntil(token, start + 100_000), start + 120_500);
+  // Well past every window, the call starts a new lookup.
+  assert.equal(providerAnswerUntil(token, start + 200_000), start + 260_000);
 });
 
 test("an API-key agent edits through a company domain editor grant, publishes its presence, and loses the grant with its lease", async (t) => {
