@@ -34,6 +34,42 @@ const markers = (doc, id) =>
     .filter((span) => span.type === "block")
     .map((span) => [String(span.value.type), { ...span.value.attrs }]);
 
+test("a Markdown operation without Markdown is refused", () => {
+  const { doc, id } = fixture("Keep this paragraph.\n\n- and this list");
+  for (const markdown of [undefined, null, 7, ["text"]]) {
+    const field = markdown === undefined ? {} : { markdown };
+    refuses(
+      doc,
+      [{ op: "replace_block_markdown", block_id: id, ...field }],
+      /replace_block_markdown requires a markdown string/,
+    );
+    refuses(
+      doc,
+      [{ op: "insert_markdown", ...field }],
+      /insert_markdown requires a markdown string/,
+    );
+  }
+  // One bad operation refuses the whole batch.
+  refuses(
+    doc,
+    [
+      { op: "set_title", title: "Changed" },
+      { op: "replace_block_markdown", block_id: id },
+    ],
+    /requires a markdown string/,
+  );
+  // A rewrite still works, and so does an explicit empty string: Page
+  // transfer empties a block that way (scripts/project-transfer.mjs).
+  const { after } = apply(doc, [
+    { op: "replace_block_markdown", block_id: id, markdown: "Rewritten." },
+    { op: "insert_markdown", markdown: "" },
+  ]);
+  assert.equal(md(after, id).trim(), "Rewritten.");
+  assert.equal(orderedBlockIds(after).length, orderedBlockIds(doc).length + 1);
+  const emptied = apply(doc, [{ op: "replace_block_markdown", block_id: id, markdown: "" }]).after;
+  assert.equal(md(emptied, id).trim(), "");
+});
+
 test("format_match occurrence picks one match in document order", () => {
   const { doc, id } = fixture("Ship it. Ship it now. Ship it later.");
   const { after, result } = apply(doc, [
