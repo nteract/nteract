@@ -1,8 +1,10 @@
 // One host-written document on this replica, read-only: the interpreter for
 // host-doc-open-machine.mjs. The Page's sources document and each view
 // document run one each. It finds the document discovery names, or the one
-// its derived id names when something on the Page asks for it, retries a
-// failed lookup on a timer, and publishes the open document's current value
+// its derived id names when something on the Page asks for it: on an
+// admitted connection, or before one in this tab's stored bytes when the
+// Page is open from them. It retries a failed lookup on a connection on a
+// timer, and publishes the open document's current value
 // as `doc$`, the only thing it exposes besides its state. Nothing here writes
 // the document; the host refuses any change a browser sends for it. On
 // retirement the replica drops the document from memory; its synced bytes
@@ -21,12 +23,6 @@ export const LOOKUP_TIMEOUT_MS = 15_000;
 export const UNAVAILABLE = /^Document \S+ is unavailable$/;
 
 /**
- * Drop `repo`'s cached answer that document `id` is unavailable, so the next
- * find asks the host. Only an entry still unavailable is evicted: the repo's
- * eviction closes the document for anyone holding it, so a document that
- * loaded since the miss stays.
- */
-/**
  * The monotonic clock deadlines are measured on, in ms: monotonicNow
  * (monotonic.mjs) when timers run on RxJS's asyncScheduler, whose own now()
  * is the wall clock and can jump, and the scheduler's clock otherwise (a
@@ -35,8 +31,20 @@ export const UNAVAILABLE = /^Document \S+ is unavailable$/;
 export const monotonicClock = (scheduler) =>
   scheduler === asyncScheduler ? monotonicNow : () => scheduler.now();
 
-export async function evictUnavailable(repo, id) {
-  if (repo?.findWithProgress?.(id).peek().state !== "unavailable") return;
+/**
+ * Drop `repo`'s cached answer that document `id` is unavailable, so the next
+ * find asks the host. Only an entry still unavailable is evicted: the repo's
+ * eviction closes the document for anyone holding it, so a document that
+ * loaded since the miss stays. An entry still loading is a cancelled read
+ * whose answer hasn't settled (a stored read with no connection settles
+ * unavailable a moment later): the eviction waits for that answer, until
+ * `signal` aborts.
+ */
+export async function evictUnavailable(repo, id, { signal } = {}) {
+  const progress = repo?.findWithProgress?.(id);
+  if (!progress) return;
+  if (progress.peek().state === "loading") await progress.whenReady({ signal }).catch(() => {});
+  if (progress.peek().state !== "unavailable") return;
   await repo.removeFromCache(id);
 }
 
@@ -52,8 +60,11 @@ export class HostDocReplica {
   #onChange;
   #lookup;
   #timer;
-  /** The id whose unavailable answer the repo still holds from this
-   * replica's last miss, until the next lookup of it evicts that answer. */
+  /** The obligation each `forget` effect sets, `{ id }`: the repo may hold
+   * an unavailable answer for `id` from this replica's last miss or
+   * cancelled read, until a lookup of it completes an eviction. A new
+   * `forget` replaces it with a new object, so an eviction started for an
+   * earlier one never clears it. */
   #stale;
   #find;
   #forget;
@@ -65,6 +76,7 @@ export class HostDocReplica {
   #scheduler;
   #lookupTimeout;
   #linked;
+  #stored;
   /** How many things on the Page ask for the document now (demand()). */
   #demand = 0;
   #clock;
@@ -78,8 +90,9 @@ export class HostDocReplica {
 
   /**
    * `find(id, { signal })` looks a document up in the replica's repo.
-   * `forget(id)` drops the repo's record of a document it found
-   * unavailable, so the next find asks the host again. It is called only
+   * `forget(id, { signal })` drops the repo's record of a document it found
+   * unavailable, so the next find asks the host again; `signal` is the
+   * lookup's, which ends any wait for that record. It is called only
    * just before this replica looks `id` up again, and never for an id in
    * `claims`, the ids every replica on this repo has installed; the caller's
    * `forget` still checks the repo holds the unavailable answer.
@@ -91,6 +104,10 @@ export class HostDocReplica {
    * `linked()` says whether lookups may run now (a connection is admitted
    * and the Page is shown); an ask while it is false waits for the next
    * connection.
+   * `stored()` says whether the Page is open from this tab's stored copy and
+   * shown. While it is true and `linked()` is false, an ask reads the
+   * document from this tab's stored bytes, once (host-doc-open-machine.mjs
+   * `stored`). Nothing reads storage until something asks.
    * `scheduler` runs the retry, look-again and lookup timers. `clock()`
    * reads monotonic ms for the look-again deadline (monotonicClock).
    */
@@ -100,6 +117,7 @@ export class HostDocReplica {
     claims = new Set(),
     link = () => true,
     linked = () => true,
+    stored = () => false,
     derive,
     scheduler = asyncScheduler,
     lookupTimeout = LOOKUP_TIMEOUT_MS,
@@ -111,6 +129,7 @@ export class HostDocReplica {
     this.#claims = claims;
     this.#link = link;
     this.#linked = linked;
+    this.#stored = stored;
     this.#derive = derive;
     this.#scheduler = scheduler;
     this.#lookupTimeout = lookupTimeout;
@@ -153,12 +172,24 @@ export class HostDocReplica {
     return Math.max(0, Math.min(left, this.#lookAgainWindow));
   }
 
-  /** Something on the Page asks for the document. Only an absent one is
-   * looked up again, at most once per look-again window. A replica in any
-   * other state answers at once, without deriving anything. */
+  /** Something on the Page asks for the document. On a connection, only an
+   * absent one is looked up again, at most once per look-again window.
+   * Before one, a fresh closed replica reads this tab's stored copy once,
+   * when the Page is open from it. A replica in any other state answers at
+   * once, without deriving anything. */
   want() {
-    if (this.state$.snapshot().name !== "absent" || !this.#linked()) return;
-    this.#withId((id) => ({ type: "wanted", id }));
+    const state = this.state$.snapshot();
+    if (state.name === "absent" && this.#linked())
+      return this.#withId((id) => ({ type: "wanted", id }));
+    if (!this.#unread(state) || this.#linked() || !this.#stored()) return;
+    // The derivation settles later: a connection admitted meanwhile looks
+    // the document up on it instead.
+    this.#withId((id) => (this.#linked() || !this.#stored() ? undefined : { type: "stored", id }));
+  }
+
+  /** A closed replica that hasn't read this tab's copy and has no misses. */
+  #unread(state) {
+    return state.name === "closed" && state.misses === undefined && !state.checked;
   }
 
   /** Something on the Page keeps asking for the document until it calls the
@@ -197,14 +228,17 @@ export class HostDocReplica {
     return result;
   }
 
-  /** Step `event(id)` once the derived id is known. */
+  /** Step `event(id)` once the derived id is known, unless it reads
+   * undefined then. */
   #withId(event) {
     if (!this.#derive) return;
     const epoch = this.#epoch;
     this.#derived ??= Promise.resolve().then(() => this.#derive());
     this.#derived.then(
       (id) => {
-        if (epoch === this.#epoch) this.step(event(id));
+        if (epoch !== this.#epoch) return;
+        const next = event(id);
+        if (next) this.step(next);
       },
       () => {
         // A derivation that failed is tried again by the next ask.
@@ -235,7 +269,7 @@ export class HostDocReplica {
         this.#timer = undefined;
         return;
       case "forget":
-        this.#stale = effect.id;
+        this.#stale = { id: effect.id };
         return;
       case "install":
         return this.#install();
@@ -254,15 +288,26 @@ export class HostDocReplica {
     });
   }
 
-  /** Evict the repo's unavailable answer for `id` if this replica's last
-   * miss left one, right before looking `id` up again. */
-  async #evict(id) {
-    if (this.#stale !== id) return;
-    this.#stale = undefined;
-    if (this.#claims.has(id)) return;
+  /** Evict the repo's unavailable answer for `id` if an obligation names
+   * it, right before looking `id` up again. The obligation stands until an
+   * eviction for it completes without `signal` aborting and without
+   * failing: an interrupted eviction is run again by the next lookup of
+   * `id`. Completing clears only the obligation it started for, never one a
+   * later `forget` set. An id another replica installed (`claims`) is never
+   * evicted, and its obligation is dropped. */
+  async #evict(id, signal) {
+    const stale = this.#stale;
+    if (stale?.id !== id) return;
+    const done = () => {
+      if (this.#stale === stale) this.#stale = undefined;
+    };
+    if (this.#claims.has(id)) return done();
     try {
-      await this.#forget(id);
-    } catch {}
+      await this.#forget(id, { signal });
+    } catch {
+      return;
+    }
+    if (!signal?.aborted) done();
   }
 
   /** One lookup. Its result reaches the machine only through events that
@@ -282,7 +327,7 @@ export class HostDocReplica {
       if (lookup.signal.aborted && lookup.signal.reason?.name !== "TimeoutError") return;
       this.step(event);
     };
-    this.#evict(id)
+    this.#evict(id, lookup.signal)
       .then(() => {
         lookup.signal.throwIfAborted();
         return this.#find(id, { signal: lookup.signal });

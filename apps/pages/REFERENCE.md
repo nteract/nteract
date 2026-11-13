@@ -1823,9 +1823,10 @@ draws.
 Each data name resolves through the Page's source store: `{ source_id }`
 follows the source, and `{ source_id, revision }` reads that revision's
 history state. Each source version is fetched and decoded once
-([viewer/view-arrow.mjs](viewer/view-arrow.mjs)) into an Arrow table whose
-values convert to what a chart reads as the renderer copies them: decimals at
-their scale, 64-bit integers and times as numbers, nested values as plain
+([viewer/view-arrow.mjs](viewer/view-arrow.mjs)) into Arrow IPC bytes. Each
+chart sends its own copy to the chart Worker, which reads the values as a
+chart reads them ([viewer/chart-arrow.mjs](viewer/chart-arrow.mjs)): decimals
+at their scale, 64-bit integers and times as numbers, nested values as plain
 arrays and objects. A data name whose source is missing, or whose pinned
 revision the history no longer holds, draws as no rows with one sentence
 naming the source under the chart. A spec `checkChartSpec` refuses, or one

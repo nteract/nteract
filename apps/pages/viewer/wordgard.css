@@ -748,13 +748,66 @@
 /* A view node's embed (viewer/wordgard-views.mjs, viewer/view-embed.mjs):
    the chart above, or the chart's own frame with one sentence while there is
    no chart to show. A sentence naming a source the chart couldn't read sits
-   under the chart. */
+   under the chart.
+
+   Until the chart draws, the embed reserves the height this browser last
+   drew it at (`--pages-view-reserve`, set by wordgard-views.mjs from
+   view-heights.mjs), or the default, 387px: what a Vega-Lite bar chart with
+   a title and no height in its spec draws at here (vega-chart.mjs
+   DEFAULT_HEIGHT for the plot, plus the x axis, the frame and the title
+   row), measured in Chromium with a 1280px window (scripts/views-layout-smoke.mjs).
+   The frame with its sentence stretches to fill the reserve, and the
+   placeholder keeps its title row's room while reserved (a drawn chart
+   always has that row, for its Maximize control), so neither the title
+   arriving nor the chart drawing moves anything.
+
+   The reserve lets go once the embed shows a chart Vega has finished (drawn
+   or in its error state), or a sentence that stays: a blocked view or one
+   not on this Page, data that couldn't load (view-draw.mjs "blocked" and
+   "failed"), or a chart chunk that didn't load. */
 .wordgard-view-embed {
+  display: flex;
+  flex-direction: column;
   margin: 0;
   min-width: 0;
   cursor: default;
 }
+.wordgard-view-embed:not(
+  :has(
+    .pages-view-chart:not([hidden]) .pages-chart:not([data-chart-status="drawing"]),
+    [data-view-state="blocked"],
+    [data-view-state="failed"]
+  ),
+  [data-embed-state="failed"]
+) {
+  min-height: var(--pages-view-reserve, 387px);
+}
+.wordgard-view-embed:not(
+    :has(
+      .pages-view-chart:not([hidden]) .pages-chart:not([data-chart-status="drawing"]),
+      [data-view-state="blocked"],
+      [data-view-state="failed"]
+    ),
+    [data-embed-state="failed"]
+  )
+  .pages-view-placeholder
+  .pages-chart-header[hidden] {
+  display: flex;
+  visibility: hidden;
+}
+.wordgard-view-canvas,
+.wordgard-view-canvas > .pages-view {
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+.pages-view-placeholder,
+.pages-view-placeholder .pages-chart-frame {
+  flex: 1 0 auto;
+}
 .wordgard-view-status {
+  order: -1;
   margin: 0;
   padding: 12px 0;
   color: var(--muted-foreground);

@@ -2626,6 +2626,16 @@ details.account-actions > div a:hover {
 html:has(.library-view) {
   scrollbar-gutter: stable;
 }
+/* A Page or a Project's content, and the preview shown while it opens, always
+   draw the vertical scrollbar track where scrollbars take room, so the
+   centered column and the header's actions hold still when the Page grows
+   past the window as its charts, images and tables draw. Sheets and fixed
+   panels sit beside the track, as on any Page that scrolls. A maximized chart
+   or diagram (wordgard.css) and comment review (comments.css) hide the root's
+   overflow, so the track goes while they are open. */
+html:has(main.workspace.document) {
+  overflow-y: scroll;
+}
 /* Group accents (library-groups.mjs groupAccent): six for Projects, and one
    each for Shared with you and On this device. Each reads as text at 4.5:1 or
    more on the page and on its heading's tint, in both themes

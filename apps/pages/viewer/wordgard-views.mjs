@@ -7,9 +7,17 @@
 // The embed is bare: the view's title, the chart in one thin border, and the
 // Maximize control Mermaid diagrams have. The chart code is its own chunk
 // (view-chart.mjs), loaded only when a Page shows a view near the viewport.
+//
+// Until its chart draws, an embed reserves the height the chart last drew at
+// in this browser (view-heights.mjs), or wordgard.css's default, so the Page
+// below it holds still while the chunk, the view and the data load. The
+// reserve is one inline custom property, `--pages-view-reserve`; the CSS
+// applies it and releases it once the embed shows a chart or a sentence that
+// stays.
 import { Decoration, Widget } from "wordgard/editor";
 import { PagesView } from "../model/wordgard-doc.mjs";
 import { readViewNode } from "../shared/views.mjs";
+import { viewHeight } from "./view-heights.mjs";
 import { dataframeLifecycle } from "./wordgard-dataframes.mjs";
 import { reportRendererUnavailable } from "./wordgard-widgets.mjs";
 
@@ -26,6 +34,8 @@ export const VIEW_EMBED_STATUS = Object.freeze({
 export const VIEW_EMBED_UNAVAILABLE = "Chart unavailable.";
 /** What an embed says on a Page that can't hold views. */
 export const VIEW_NOT_HERE = "This chart isn't on this Page.";
+/** The custom property that holds an embed's remembered height. */
+export const VIEW_RESERVE_PROPERTY = "--pages-view-reserve";
 
 /** Events on the chart's own controls (Maximize) are the chart's; everything
  * else on the embed reaches Wordgard, which selects the node. */
@@ -33,11 +43,14 @@ export const viewEventReachesEditor = (event) =>
   !event.target?.closest?.(".wordgard-diagram-actions");
 
 /** The embed's frame: the canvas the chart chunk draws into, and a status
- * line for the time before it draws. */
-export function viewFrame({ viewId }) {
+ * line for the time before it draws. `heights` (view-heights.mjs) supplies
+ * the height to reserve when this browser has drawn the chart before. */
+export function viewFrame({ viewId, heights = null }) {
   const dom = document.createElement("section");
   dom.className = "wordgard-widget wordgard-view-embed";
   dom.dataset.viewId = viewId;
+  const reserve = heights?.read(viewId) ?? null;
+  if (reserve !== null) dom.style.setProperty(VIEW_RESERVE_PROPERTY, `${reserve}px`);
   dom.setAttribute("aria-roledescription", "chart");
   const canvas = dom.appendChild(document.createElement("div"));
   canvas.className = "wordgard-view-canvas";
@@ -58,17 +71,41 @@ export function viewFrame({ viewId }) {
  * and no timer. The chart stays mounted until the embed is disconnected past
  * its park, offscreen included; view-replicas.mjs takes the slot of a held
  * view whose document is missing when another view needs it.
+ *
+ * The section carries `data-embed-state="failed"` while the lifecycle is in
+ * its failed state (the chunk didn't load), so wordgard.css releases the
+ * reserve around "Chart unavailable."
  */
-export function viewLifecycle({ viewId, views, sources, frame, load = VIEW_RENDERER, ...options }) {
+export function viewLifecycle({
+  viewId,
+  views,
+  sources,
+  frame,
+  load = VIEW_RENDERER,
+  onUnavailable = reportRendererUnavailable,
+  ...options
+}) {
+  const mirror = () => {
+    if (!frame.dom?.dataset) return;
+    if (lifecycle.state === "failed") frame.dom.dataset.embedState = "failed";
+    else delete frame.dom.dataset.embedState;
+  };
   const lifecycle = dataframeLifecycle({
     ...frame,
     load: () =>
       load().then((chunk) => ({
         mount: (canvas) => {
-          // A Page without views reads every view as not on this Page.
+          // A Page without views reads every view as not on this Page: a
+          // sentence that stays, like a blocked view (view-draw.mjs).
           if (!views || !sources) {
             canvas.textContent = VIEW_NOT_HERE;
-            return { destroy: () => (canvas.textContent = "") };
+            if (canvas.dataset) canvas.dataset.viewState = "blocked";
+            return {
+              destroy() {
+                canvas.textContent = "";
+                if (canvas.dataset) delete canvas.dataset.viewState;
+              },
+            };
           }
           // A held view asks for its document for as long as the chart is
           // mounted (view-replicas.mjs).
@@ -97,14 +134,65 @@ export function viewLifecycle({ viewId, views, sources, frame, load = VIEW_RENDE
     attrs: {},
     texts: VIEW_EMBED_STATUS,
     unavailable: VIEW_EMBED_UNAVAILABLE,
-    onUnavailable: reportRendererUnavailable,
+    onUnavailable: () => {
+      mirror();
+      onUnavailable?.();
+    },
     ...options,
   });
   return {
-    connect: () => lifecycle.connect(),
-    disconnect: () => lifecycle.disconnect(),
+    connect() {
+      lifecycle.connect();
+      mirror();
+    },
+    disconnect() {
+      lifecycle.disconnect();
+      mirror();
+    },
     get state() {
       return lifecycle.state;
+    },
+  };
+}
+
+/** Whether the embed shows its view drawn (view-draw.mjs "drawn") as a chart
+ * Vega has finished (vega-chart.mjs "rendered"). */
+const chartDrawn = (dom) =>
+  !!dom.querySelector?.(
+    '.pages-view[data-view-state="drawn"] .pages-view-chart:not([hidden]) .pages-chart[data-chart-status="rendered"]',
+  );
+
+/** Whether a chart or diagram is open in the expanded viewer
+ * (diagram-viewer.mjs): a modal over the Page that hides the root's
+ * overflow, so the Page behind it isn't laid out as a reader sees it. */
+const maximized = (dom) => !!dom.ownerDocument?.querySelector?.(".diagram-viewer[open]");
+
+/**
+ * Remembers the height an embed's chart draws at in `heights`
+ * (view-heights.mjs), so the next render reserves it. It writes only while
+ * the chart is drawn and nothing is maximized, in whole CSS px, and only a
+ * height that changed. `connect` starts watching the section's size and
+ * `disconnect` stops; without `heights` or a ResizeObserver it does nothing.
+ */
+export function heightRecorder({ dom, viewId, heights, Observer = globalThis.ResizeObserver }) {
+  let observer = null;
+  let recorded = heights?.read(viewId) ?? null;
+  const record = (entries) => {
+    if (!chartDrawn(dom) || maximized(dom)) return;
+    const box = entries.at(-1)?.borderBoxSize?.[0];
+    const px = viewHeight(box ? box.blockSize : dom.getBoundingClientRect().height);
+    if (px === null || px === recorded) return;
+    recorded = heights.write(viewId, px) ?? recorded;
+  };
+  return {
+    connect() {
+      if (!heights || !Observer || observer) return;
+      observer = new Observer(record);
+      observer.observe(dom);
+    },
+    disconnect() {
+      observer?.disconnect();
+      observer = null;
     },
   };
 }
@@ -119,26 +207,34 @@ const alwaysNear = (_element, onChange) => {
 
 const viewEmbed = Widget.define({
   eq: (a, b) =>
-    a.viewId === b.viewId && a.views === b.views && a.sources === b.sources && a.eager === b.eager,
+    a.viewId === b.viewId &&
+    a.views === b.views &&
+    a.sources === b.sources &&
+    a.eager === b.eager &&
+    a.heights === b.heights,
   render(attrs) {
     const frame = viewFrame(attrs);
-    mounted.set(
-      frame.dom,
-      viewLifecycle({
+    mounted.set(frame.dom, {
+      lifecycle: viewLifecycle({
         viewId: attrs.viewId,
         views: attrs.views,
         sources: attrs.sources,
         frame,
         ...(attrs.eager && { observe: alwaysNear }),
       }),
-    );
+      recorder: heightRecorder({ dom: frame.dom, viewId: attrs.viewId, heights: attrs.heights }),
+    });
     return frame.dom;
   },
   connect(_value, dom) {
-    mounted.get(dom)?.connect();
+    const embed = mounted.get(dom);
+    embed?.lifecycle.connect();
+    embed?.recorder.connect();
   },
   disconnect(_value, dom) {
-    mounted.get(dom)?.disconnect();
+    const embed = mounted.get(dom);
+    embed?.recorder.disconnect();
+    embed?.lifecycle.disconnect();
   },
   propagateEvent: viewEventReachesEditor,
 });
@@ -148,10 +244,17 @@ const viewEmbed = Widget.define({
  * its chart. `views` is the Page's view replicas (view-replicas.mjs) and
  * `sources` its source store; without them every embed says its chart isn't
  * on this Page. `eager` draws each chart at once rather than near the
- * viewport. An editor without this config draws the node's own inert
- * figure, as a card does.
+ * viewport. `heights` (view-heights.mjs) remembers each chart's drawn height
+ * for the next render's reserve; without it every embed reserves the
+ * default. An editor without this config draws the node's own inert figure,
+ * as a card does.
  */
-export function wordgardViews({ views = null, sources = null, eager = false } = {}) {
+export function wordgardViews({
+  views = null,
+  sources = null,
+  eager = false,
+  heights = null,
+} = {}) {
   return [
     Decoration.Tag.shape(
       PagesView,
@@ -161,6 +264,7 @@ export function wordgardViews({ views = null, sources = null, eager = false } = 
           views,
           sources,
           eager,
+          heights,
         }),
       { atom: true },
     ),

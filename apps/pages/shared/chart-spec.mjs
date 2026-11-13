@@ -16,12 +16,11 @@
 //
 // Cost: spec bytes, views, nesting, rows and cells per dataset, folds, bins,
 // steps, windows, ticks, sizes and scale, axis and legend counts are
-// bounded, and every number is in CHART_NUMBER_RANGE. A chart still runs on
-// the reader's main thread. A spec that passes every check can still fail to
-// terminate there: the guards here and in viewer/vega-chart.mjs cover the
-// cases reviews have found, and Vega's and d3's numeric loops aren't proven to
-// end. Compiling and running the dataflow in a Worker with a kill timer is the
-// next change.
+// bounded, and every number is in CHART_NUMBER_RANGE. A spec that passes
+// every check can still fail to terminate: the guards here and in
+// viewer/chart-dataflow.mjs cover the cases reviews have found, and Vega's and
+// d3's numeric loops aren't proven to end, so viewer/vega-chart.mjs runs the
+// dataflow in a Worker and terminates a draw that outlasts its timer.
 import { parseExpression } from "vega-expression";
 
 export const CHART_SPEC_LIMITS = Object.freeze({
@@ -59,7 +58,7 @@ export const CHART_MAX_CELLS = 2_000_000;
  * - At most 1e150, a square stays finite, so variance, regression and
  *   distances never reach Infinity.
  *
- * viewer/vega-chart.mjs applies `chartNumber` to every number in the data.
+ * viewer/chart-data.mjs applies `chartNumber` to every number in the data.
  */
 export const CHART_NUMBER_RANGE = Object.freeze({ min: 1e-150, max: 1e150 });
 
@@ -182,7 +181,7 @@ const FORBIDDEN_NAMES = new Set(["constructor", "__proto__", "prototype"]);
 // Names every plain object answers to. Vega and Vega-Lite key their own
 // plain objects by dataset, field and style names, so a chart named
 // "toString" or a field named "constructor" fails inside them. A spec may not
-// use one as a key or as a whole string; viewer/vega-chart.mjs copies rows
+// use one as a key or as a whole string; viewer/chart-data.mjs copies rows
 // into null-prototype objects, so a column with such a name that no spec
 // reads is harmless.
 const RESERVED_NAMES = new Set([
@@ -453,6 +452,25 @@ const DATA_NUMBER_KEYS = new Set([
   "tickMinStep",
 ]);
 const MAX_LAYOUT_NUMBER = 1e6;
+
+/** Vega's own symbol shapes. A chart's symbols draw only these: Vega parses
+ * a custom SVG path shape into a module-wide cache that nothing clears. */
+export const CHART_SYMBOL_SHAPES = Object.freeze(
+  new Set([
+    "circle",
+    "square",
+    "cross",
+    "diamond",
+    "triangle-up",
+    "triangle-down",
+    "triangle-right",
+    "triangle-left",
+    "triangle",
+    "arrow",
+    "wedge",
+    "stroke",
+  ]),
+);
 
 /** CSS cursor keywords. A cursor is never a URL or an expression. */
 export const CHART_CURSORS = Object.freeze(
@@ -961,9 +979,27 @@ function sizeAllowed(value) {
   return within(value, 0, MAX_SIZE);
 }
 
+/** Whether the string at `path` names a symbol shape: a mark's or config's
+ * `shape`, a legend's `symbolType`, a `shape` channel's value (directly or
+ * in a condition), a `shape` channel scale's range, or `config.range.symbol`. */
+function isShapeValue(path) {
+  const keys = path.filter((part) => typeof part === "string");
+  const [last, second, third] = [keys.at(-1), keys.at(-2), keys.at(-3)];
+  if (last === "shape" || last === "symbolType") return true;
+  if (last === "value") return second === "shape" || (second === "condition" && third === "shape");
+  if (last === "range" && second === "scale" && third === "shape") return true;
+  return last === "symbol" && second === "range" && third === "config";
+}
+
+const SHAPE_SENTENCE = `A chart's symbols are Vega's own shapes: ${[...CHART_SYMBOL_SHAPES].slice(0, -1).join(", ")} or ${[...CHART_SYMBOL_SHAPES].at(-1)}; it can't draw a custom SVG path`;
+
 function walk(value, path, names) {
   if (isString(value)) {
     checkString(value, path);
+    // A scale's range may name Vega's own range of shapes.
+    const namedRange = path.at(-1) === "range" && value === "symbol";
+    if (isShapeValue(path) && !namedRange && !CHART_SYMBOL_SHAPES.has(value))
+      refuse(`${SHAPE_SENTENCE}${at(path)}.`);
     return;
   }
   if (typeof value === "number") {

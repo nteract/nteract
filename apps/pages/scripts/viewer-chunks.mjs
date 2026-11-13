@@ -58,6 +58,11 @@ export function digestHash(digest) {
 }
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
+/** The dist path the chart Worker (viewer/chart-worker.mjs) ships under: one
+ * more content-hashed chunk, named from its bytes the way a shell asset is, so
+ * every target admits it and staging checks its digest like any chunk. */
+export const chartWorkerChunk = (bytes) => `public/chunks/${digestHash(sha256(bytes))}.js`;
+
 /** The dist path a shell asset ships under, e.g. public/app-ABCDEFGH.js. */
 export function hashedAssetPath(name, bytes) {
   if (!VIEWER_ASSETS.includes(name)) throw new Error(`Unknown viewer asset ${name}`);

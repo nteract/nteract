@@ -26,6 +26,14 @@ import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { chromium, expect, firefox, webkit } from "@playwright/test";
 import { build } from "esbuild";
+import { CHART_WORKER_CSP } from "../shared/chart-worker-csp.mjs";
+import { CODE, NETWORK, STORAGE } from "./fixtures/chart-escapes.mjs";
+import {
+  ECMASCRIPT_GLOBALS,
+  HOST_CONSTANTS,
+  NEUTERED,
+  WORKER_GLOBALS,
+} from "../viewer/chart-lockdown.mjs";
 import { VIEWER_CSP } from "./viewer-chunks.mjs";
 
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -43,6 +51,62 @@ const complete = (name) => {
   console.log(`[Chart E2E] ${name}`);
 };
 
+// The chart Worker, built as scripts/build.mjs builds it, and a fixture
+// Worker with every check and guard off for the freeze page.
+const workerBuild = (entry, outfile) =>
+  build({
+    entryPoints: [path.join(app, entry)],
+    bundle: true,
+    format: "iife",
+    platform: "browser",
+    target: "es2022",
+    minify: true,
+    outfile: path.join(site, outfile),
+    define: { "process.env.NODE_ENV": '"production"' },
+    logLevel: "error",
+  });
+await workerBuild("viewer/chart-worker.mjs", "chart-worker.js");
+await workerBuild("scripts/fixtures/chart-worker-unguarded.mjs", "unguarded-worker.js");
+// The escape Workers: the real chart Worker with code after it that tries
+// every way out, and the same attempts with no lockdown. Each is served under
+// the chart Worker's CSP, and under /open/ with no CSP at all.
+await workerBuild("scripts/fixtures/chart-worker-escape.mjs", "escape-worker.js");
+await workerBuild("scripts/fixtures/chart-worker-escape.mjs", "open/escape-worker.js");
+await workerBuild("scripts/fixtures/chart-worker-escape-bare.mjs", "escape-bare-worker.js");
+await workerBuild("scripts/fixtures/chart-worker-escape-bare.mjs", "open/escape-bare-worker.js");
+// The chart Worker with a recorder in front of every host global it reads,
+// under the chart Worker's CSP. Its page builds Arrow IPC with code the
+// viewer CSP refuses, so the page is served under /open/.
+await workerBuild("scripts/fixtures/chart-worker-recorder.mjs", "recorder-worker.js");
+// The real chart Worker with a listener that measures text with Vega's own
+// metrics, for the measured-against-drawn check.
+await workerBuild("scripts/fixtures/chart-worker-metrics.mjs", "metrics-worker.js");
+await build({
+  entryPoints: { fixture: path.join(app, "scripts/fixtures/chart-recorder-fixture.mjs") },
+  bundle: true,
+  format: "esm",
+  platform: "browser",
+  target: "es2022",
+  outdir: path.join(site, "open/recorder"),
+  define: { "process.env.NODE_ENV": '"production"' },
+  logLevel: "error",
+});
+await writeFile(
+  path.join(site, "open/recorder/index.html"),
+  `<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8" /><title>Chart Worker globals</title></head>
+  <body><script type="module" src="/open/recorder/fixture.js"></script></body>
+</html>
+`,
+);
+const workerBytes = await readFile(path.join(site, "chart-worker.js"));
+report.worker = {
+  bytes: workerBytes.byteLength,
+  gzip: gzipSync(workerBytes, { level: 9 }).byteLength,
+};
+const workerDefine = { __PAGES_CHART_WORKER_URL__: '"/chart-worker.js"' };
+
 // The same esbuild settings as the viewer (scripts/viewer-chunks.mjs): ESM,
 // split chunks, minified, so the renderer's chunk is the one a Page would load.
 const built = await build({
@@ -56,7 +120,7 @@ const built = await build({
   outdir: site,
   chunkNames: "chunks/[hash]",
   metafile: true,
-  define: { "process.env.NODE_ENV": '"production"' },
+  define: { "process.env.NODE_ENV": '"production"', ...workerDefine },
   logLevel: "error",
 });
 const rendererInput = "viewer/vega-chart.mjs";
@@ -74,7 +138,8 @@ const entryBytes = await readFile(path.join(site, "fixture.js"));
 assert.ok(entryBytes.byteLength < 20_000, "Vega stays out of the page that loads the renderer");
 console.log(
   `[Chart E2E] renderer chunk ${(report.chunk.bytes / 1024).toFixed(1)} KiB, ` +
-    `${(report.chunk.gzip / 1024).toFixed(1)} KiB gzip`,
+    `${(report.chunk.gzip / 1024).toFixed(1)} KiB gzip; Worker ` +
+    `${(report.worker.bytes / 1024).toFixed(1)} KiB, ${(report.worker.gzip / 1024).toFixed(1)} KiB gzip`,
 );
 // The hostile fixture builds on its own, so its direct Vega imports don't
 // change how the renderer's chunk is measured above.
@@ -88,9 +153,114 @@ await build({
   splitting: true,
   outdir: path.join(site, "hostile"),
   chunkNames: "chunks/[hash]",
-  define: { "process.env.NODE_ENV": '"production"' },
+  define: { "process.env.NODE_ENV": '"production"', ...workerDefine },
   logLevel: "error",
 });
+await build({
+  entryPoints: { fixture: path.join(app, "scripts/fixtures/chart-freeze-fixture.mjs") },
+  bundle: true,
+  format: "esm",
+  platform: "browser",
+  target: "es2022",
+  minify: true,
+  splitting: true,
+  outdir: path.join(site, "freeze"),
+  chunkNames: "chunks/[hash]",
+  define: { "process.env.NODE_ENV": '"production"', ...workerDefine },
+  logLevel: "error",
+});
+await build({
+  entryPoints: { fixture: path.join(app, "scripts/fixtures/chart-large-fixture.mjs") },
+  bundle: true,
+  format: "esm",
+  platform: "browser",
+  target: "es2022",
+  minify: true,
+  splitting: true,
+  outdir: path.join(site, "large"),
+  chunkNames: "chunks/[hash]",
+  define: { "process.env.NODE_ENV": '"production"', ...workerDefine },
+  logLevel: "error",
+});
+await build({
+  entryPoints: { fixture: path.join(app, "scripts/fixtures/chart-metrics-fixture.mjs") },
+  bundle: true,
+  format: "esm",
+  platform: "browser",
+  target: "es2022",
+  minify: true,
+  splitting: true,
+  outdir: path.join(site, "metrics"),
+  chunkNames: "chunks/[hash]",
+  define: { "process.env.NODE_ENV": '"production"', ...workerDefine },
+  logLevel: "error",
+});
+await writeFile(
+  path.join(site, "metrics/index.html"),
+  `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Chart text metrics</title>
+    <link rel="stylesheet" href="/metrics/fixture.css" />
+  </head>
+  <body>
+    <main id="charts" style="display: grid; gap: 8px; padding: 8px"></main>
+    <script type="module" src="/metrics/fixture.js"></script>
+  </body>
+</html>
+`,
+);
+await build({
+  entryPoints: { fixture: path.join(app, "scripts/fixtures/chart-escape-fixture.mjs") },
+  bundle: true,
+  format: "esm",
+  platform: "browser",
+  target: "es2022",
+  outdir: path.join(site, "breakout"),
+  logLevel: "error",
+});
+await writeFile(
+  path.join(site, "breakout/index.html"),
+  `<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8" /><title>Chart escape fixture</title></head>
+  <body><script type="module" src="/breakout/fixture.js"></script></body>
+</html>
+`,
+);
+await writeFile(
+  path.join(site, "large/index.html"),
+  `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Large chart fixture</title>
+    <link rel="stylesheet" href="/large/fixture.css" />
+  </head>
+  <body>
+    <main id="charts" style="display: grid; grid-template-columns: repeat(2, 480px); gap: 8px; padding: 8px"></main>
+    <script type="module" src="/large/fixture.js"></script>
+  </body>
+</html>
+`,
+);
+await writeFile(
+  path.join(site, "freeze/index.html"),
+  `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Chart freeze fixture</title>
+    <link rel="stylesheet" href="/freeze/fixture.css" />
+  </head>
+  <body>
+    <main id="charts" style="display: grid; grid-template-columns: repeat(2, 360px); gap: 8px; padding: 8px"></main>
+    <script type="module" src="/freeze/fixture.js"></script>
+  </body>
+</html>
+`,
+);
 await writeFile(
   path.join(site, "hostile/index.html"),
   `<!doctype html>
@@ -129,20 +299,44 @@ await writeFile(
 );
 
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
+// Worker scripts carry the chart Worker's own CSP, as the Pages Worker serves
+// every /chunks/ script; everything else carries the page's, and /open/ none.
+const WORKER_SCRIPTS = new Set([
+  "/chart-worker.js",
+  "/unguarded-worker.js",
+  "/escape-worker.js",
+  "/escape-bare-worker.js",
+  "/recorder-worker.js",
+  "/metrics-worker.js",
+]);
+// Requests from an escape Worker: none may arrive.
+report.escapeRequests = [];
 const server = createServer(async (request, response) => {
   const name = new URL(request.url, "http://localhost").pathname;
+  if (name.startsWith("/escape/")) {
+    report.escapeRequests.push(name);
+    response.writeHead(404).end();
+    return;
+  }
   const file = path.join(site, name.endsWith("/") ? `${name}index.html` : name);
   try {
     if (!file.startsWith(site)) throw new Error("outside the fixture");
     const body = await readFile(file);
     response.writeHead(200, {
       "Content-Type": types[path.extname(file)] ?? "application/octet-stream",
-      "Content-Security-Policy": VIEWER_CSP,
+      // /open/ has no CSP: the escape controls and the recorder page.
+      ...(!name.startsWith("/open/") && {
+        "Content-Security-Policy": WORKER_SCRIPTS.has(name) ? CHART_WORKER_CSP : VIEWER_CSP,
+      }),
     });
     response.end(body);
   } catch {
     response.writeHead(404).end();
   }
+});
+server.on("upgrade", (request, socket) => {
+  report.escapeRequests.push(new URL(request.url, "http://localhost").pathname);
+  socket.destroy();
 });
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 const origin = `http://127.0.0.1:${server.address().port}`;
@@ -249,6 +443,349 @@ async function hostileCheck(engine) {
   }
 }
 
+/**
+ * Open the freeze fixture in `engine`: two charts whose Worker never finishes.
+ * Each must end in its error state within the timer and a second, while the
+ * page keeps painting and answering, and no Worker may be left running.
+ */
+async function freezeCheck(engine) {
+  const instance =
+    engine === "chromium" ? browser : await ENGINES[engine].launch({ headless: true });
+  const freezeContext = await instance.newContext({ viewport: { width: 800, height: 600 } });
+  const freeze = await freezeContext.newPage();
+  const errors = [];
+  freeze.on("pageerror", (error) => errors.push(error.message));
+  try {
+    await freeze.goto(`${origin}/freeze/`, { waitUntil: "load" });
+    await expect(freeze.locator("body[data-fixture=ready]")).toBeAttached({ timeout: 30_000 });
+    const timeout = await freeze.evaluate(() => window.chartTimeout);
+    // While the Workers spin, the page paints and answers.
+    await freeze.waitForTimeout(1500);
+    const statuses = await freeze
+      .locator("figure.pages-chart")
+      .evaluateAll((figures) => figures.map((figure) => figure.dataset.chartStatus));
+    // The first bar chart drew; the hung charts and the chart behind them wait.
+    assert.deepEqual(
+      statuses,
+      ["rendered", "drawing", "drawing", "drawing"],
+      `${engine}: still drawing`,
+    );
+    const framesBefore = await freeze.evaluate(() => window.chartFrames());
+    const started = Date.now();
+    await freeze.evaluate(() => 1);
+    const roundTrip = Date.now() - started;
+    await freeze.waitForTimeout(1000);
+    const painted = (await freeze.evaluate(() => window.chartFrames())) - framesBefore;
+    assert.ok(roundTrip < 100, `${engine}: an evaluate round trip took ${roundTrip} ms`);
+    assert.ok(painted > 20, `${engine}: ${painted} frames in a second while the Workers spun`);
+    // Each hung chart ends in the error state within its timer and a second,
+    // one after the other on the one Worker; the last chart draws on the
+    // second replacement.
+    const elapsed = await freeze.evaluate(async () => {
+      const figures = [...document.querySelectorAll("figure.pages-chart")];
+      while (figures.some((figure) => figure.dataset.chartStatus === "drawing"))
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      return performance.now() - Number(document.body.dataset.started);
+    });
+    const ended = await freeze.evaluate(() => window.chartEnded);
+    assert.ok(ended["log-base"] <= timeout + 1000, `${engine}: ${JSON.stringify(ended)}`);
+    assert.ok(ended["derived-bin"] <= 2 * timeout + 2000, `${engine}: ${JSON.stringify(ended)}`);
+    assert.ok(ended["bars-b"] >= ended["derived-bin"], `${engine}: ${JSON.stringify(ended)}`);
+    assert.ok(elapsed <= 2 * timeout + 3000, `${engine}: ended after ${Math.round(elapsed)} ms`);
+    const messages = (
+      await freeze.locator("figure.pages-chart .pages-chart-message").allInnerTexts()
+    ).filter(Boolean);
+    const final = await freeze
+      .locator("figure.pages-chart")
+      .evaluateAll((figures) => figures.map((figure) => figure.dataset.chartStatus));
+    assert.deepEqual(final, ["rendered", "error", "error", "rendered"], `${engine}: ended`);
+    assert.deepEqual(messages, [
+      "This chart took too long to draw.",
+      "This chart took too long to draw.",
+    ]);
+    // One Worker for four charts, and a replacement for each hung one.
+    assert.deepEqual(
+      await freeze.evaluate(() => window.chartWorkers),
+      { started: 3, terminated: 2 },
+      `${engine}: each hung Worker was terminated and replaced`,
+    );
+    await freeze.evaluate(() => window.destroyCharts());
+    assert.deepEqual(
+      await freeze.evaluate(() => window.chartWorkers),
+      { started: 3, terminated: 3 },
+      `${engine}: no Worker outlives its charts`,
+    );
+    await expect.poll(() => freeze.workers().length, { timeout: 15_000 }).toBe(0);
+    assert.deepEqual(errors, [], `${engine}: page errors`);
+    report.freeze ??= {};
+    report.freeze[engine] = { timeout, ended, roundTrip, painted };
+    complete(
+      `${engine}: charts that never finish end as an error at ${ended["log-base"]} and ` +
+        `${ended["derived-bin"]} ms (timer ${timeout} ms each, one Worker), the chart behind ` +
+        `them draws at ${ended["bars-b"]} ms, the page painting ${painted} frames a second ` +
+        `and answering in ${roundTrip} ms`,
+    );
+  } catch (error) {
+    await freeze
+      .screenshot({ path: path.join(output, `failure-freeze-${engine}.png`), fullPage: true })
+      .catch(() => {});
+    throw error;
+  } finally {
+    await freezeContext.close();
+    if (instance !== browser) await instance.close();
+  }
+}
+
+// Ways out the chart Worker's CSP alone lets through, by engine; the
+// lockdown closes each. The smoke fails if this list is wrong either way.
+const KNOWN_CSP_LEAKS = { chromium: [], firefox: ["EventSource", "FontFace"], webkit: [] };
+// Code from strings the lockdown alone leaves: any function's constructor
+// compiles a string. The Worker's CSP closes it.
+const KNOWN_LOCKDOWN_LEAKS = ["Function"];
+
+/**
+ * In `engine`, run code in a chart Worker that tries every way out
+ * (scripts/fixtures/chart-escapes.mjs), in four Workers: no lockdown and no
+ * CSP (the positive control: every way out present in the engine works),
+ * the real Worker under its own CSP, the lockdown alone, and the CSP alone.
+ * A network way out counts as open when the server received its request.
+ */
+async function escapeCheck(engine) {
+  const instance =
+    engine === "chromium" ? browser : await ENGINES[engine].launch({ headless: true });
+  const escapeContext = await instance.newContext();
+  const escape = await escapeContext.newPage();
+  try {
+    const before = report.escapeRequests.length;
+    await escape.goto(`${origin}/breakout/`, { waitUntil: "load" });
+    await expect(escape.locator("body[data-fixture=ready]")).toBeAttached({ timeout: 60_000 });
+    const escapes = await escape.evaluate(() => window.escapes);
+    const requests = report.escapeRequests.slice(before);
+    for (const variant of ["control", "both", "lockdown", "csp"])
+      assert.ok(
+        escapes[variant]?.results,
+        `${engine} ${variant}: ${JSON.stringify(escapes[variant])}`,
+      );
+    // A way out is open when its request reached the server (network) or
+    // its attempt worked (code, storage).
+    const open = (variant) => {
+      const { results } = escapes[variant];
+      const reached = new Set(
+        requests
+          .filter((path) => path.startsWith(`/escape/${variant}/`))
+          .map((path) => path.split("/").at(-1)),
+      );
+      return [
+        ...Object.entries(NETWORK)
+          .filter(([, [file]]) => reached.has(file))
+          .map(([name]) => name),
+        ...Object.keys({ ...CODE, ...STORAGE }).filter((name) => results[name] === "open"),
+      ].sort();
+    };
+    const absent = Object.keys(STORAGE).filter(
+      (name) => escapes.control.results[name] === "absent",
+    );
+    const present = [...Object.keys(NETWORK), ...Object.keys(CODE), ...Object.keys(STORAGE)]
+      .filter((name) => !absent.includes(name))
+      .sort();
+    assert.deepEqual(open("control"), present, `${engine}: the control must get out every way`);
+    assert.deepEqual(open("both"), [], `${engine}: lockdown and CSP together`);
+    assert.deepEqual(open("lockdown"), KNOWN_LOCKDOWN_LEAKS, `${engine}: the lockdown alone`);
+    // The CSP doesn't govern storage or channels: each the engine has stays
+    // open, with the engine's known network leaks.
+    const storage = Object.keys(STORAGE).filter((name) => !absent.includes(name));
+    assert.deepEqual(
+      open("csp"),
+      [...KNOWN_CSP_LEAKS[engine], ...storage].sort(),
+      `${engine}: the CSP alone`,
+    );
+    // Nothing but the allowlist is left on the locked-down Worker.
+    const allowed = new Set([
+      ...ECMASCRIPT_GLOBALS,
+      ...WORKER_GLOBALS,
+      ...NEUTERED,
+      ...HOST_CONSTANTS,
+    ]);
+    assert.deepEqual(
+      escapes.both.remaining.filter((name) => !allowed.has(name)),
+      [],
+      `${engine}: unlisted names left on the Worker`,
+    );
+    report.escapes ??= {};
+    report.escapes[engine] = { escapes, absent };
+    complete(
+      `${engine}: code in the chart Worker reaches nothing (${present.length} ways out, each ` +
+        `shown open with no lockdown and no CSP${absent.length ? `; absent here: ${absent.join(", ")}` : ""}); ` +
+        `the lockdown alone leaves only ${KNOWN_LOCKDOWN_LEAKS.join(", ")}; the CSP alone leaves ` +
+        `${storage.join(", ")}${KNOWN_CSP_LEAKS[engine].length ? `, and on the network ${KNOWN_CSP_LEAKS[engine].join(", ")}` : ", and nothing on the network"}; ` +
+        `${escapes.both.remaining.length} names left, all on the allowlist`,
+    );
+  } finally {
+    await escapeContext.close();
+    if (instance !== browser) await instance.close();
+  }
+}
+
+/**
+ * In `engine`, draw every corpus spec and the other chart kinds through the
+ * chart Worker with a recorder in front, and fail if its code read a host
+ * global the lockdown's allowlist (viewer/chart-lockdown.mjs) doesn't keep.
+ */
+async function globalsCheck(engine) {
+  const instance =
+    engine === "chromium" ? browser : await ENGINES[engine].launch({ headless: true });
+  const recordContext = await instance.newContext();
+  const recorder = await recordContext.newPage();
+  const errors = [];
+  recorder.on("pageerror", (error) => errors.push(error.message));
+  recorder.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  try {
+    await recorder.goto(`${origin}/open/recorder/`, { waitUntil: "load" });
+    await expect(recorder.locator("body[data-fixture=ready]"))
+      .toBeAttached({ timeout: 120_000 })
+      .catch((error) => {
+        throw new Error(`${engine}: the recorder page didn't finish: ${errors.join(" | ")}`, {
+          cause: error,
+        });
+      });
+    const { names, statuses } = await recorder.evaluate(() => window.recorded);
+    const drawn = statuses.filter((status) => status === "drawn").length;
+    assert.ok(drawn >= 90, `${engine}: ${drawn} drawn: ${[...new Set(statuses)].join(" | ")}`);
+    const kept = new Set([...WORKER_GLOBALS, ...NEUTERED]);
+    assert.deepEqual(
+      names.filter((name) => !kept.has(name)),
+      [],
+      `${engine}: the chart Worker reads host globals the lockdown removes`,
+    );
+    report.globals ??= {};
+    report.globals[engine] = names;
+    complete(
+      `${engine}: the chart Worker reads only allowlisted host globals (${names.join(", ")})`,
+    );
+  } finally {
+    await recordContext.close();
+    if (instance !== browser) await instance.close();
+  }
+}
+
+/** Vega's default label limits, in px: an axis label or legend label is
+ * truncated with an ellipsis to fit, by the width the Worker measures. */
+const LABEL_LIMITS = { "axis-label": 180, "legend-label": 160 };
+
+/**
+ * In `engine`, check that the chart Worker measures text as the page draws
+ * it, in whichever font stack the page's probe chose for the Worker
+ * (viewer/chart-font.mjs): for a long title, axis titles longer than their
+ * axes, a crowded band axis of long labels, a continuous axis Vega thins and
+ * a legend that truncates, at a wide and a phone width, in light and dark,
+ * every text's width by the Worker's own text metrics is within 1 px or 2
+ * percent of its drawn width. Vega lays out, truncates and thins text by the
+ * measured width, so with the widths equal, truncated text fits its limit,
+ * the labels Vega keeps don't overlap, and every text lies inside the SVG.
+ */
+async function metricsCheck(engine) {
+  const instance =
+    engine === "chromium" ? browser : await ENGINES[engine].launch({ headless: true });
+  const metricsContext = await instance.newContext({ viewport: { width: 1000, height: 900 } });
+  const metrics = await metricsContext.newPage();
+  try {
+    await metrics.goto(`${origin}/metrics/`, { waitUntil: "load" });
+    await expect(metrics.locator("body[data-fixture=ready]")).toBeAttached({ timeout: 60_000 });
+    const charts = await metrics.evaluate(() => window.chartMetrics);
+    (report.metricsCharts ??= {})[engine] = charts;
+    assert.equal(charts.length, 20, `${engine}: ${charts.length} charts measured`);
+    let worst = 0;
+    let count = 0;
+    for (const chart of charts) {
+      const label = `${engine} ${chart.name} at ${chart.width}px${chart.dark ? ", dark" : ""}`;
+      assert.equal(chart.status, "rendered", label);
+      assert.ok(chart.texts.length >= 3, `${label}: ${chart.texts.length} texts`);
+      for (const text of chart.texts) {
+        const off = Math.abs(text.measured - text.drawn);
+        worst = Math.max(worst, off);
+        count++;
+        assert.ok(
+          off <= Math.max(1, 0.02 * text.drawn),
+          `${label}: "${text.text}" measures ${text.measured} in the Worker, drawn ${text.drawn}`,
+        );
+        if (text.role in LABEL_LIMITS)
+          assert.ok(
+            text.drawn <= LABEL_LIMITS[text.role] + 1,
+            `${label}: "${text.text}" is ${text.drawn} px past its ${LABEL_LIMITS[text.role]} px limit`,
+          );
+        assert.ok(
+          text.box.left >= chart.svg.left - 1 &&
+            text.box.right <= chart.svg.right + 1 &&
+            text.box.top >= chart.svg.top - 1 &&
+            text.box.bottom <= chart.svg.bottom + 1,
+          `${label}: "${text.text}" lies outside the SVG`,
+        );
+      }
+      // Vega thins a continuous axis's labels by their measured width; a
+      // band axis's labels it only truncates.
+      if (chart.name !== "thinned") continue;
+      const labels = chart.texts.filter((text) => text.role === "axis-label");
+      assert.ok(labels.length >= 3, `${label}: ${labels.length} labels kept`);
+      for (const [i, a] of labels.entries())
+        for (const b of labels.slice(i + 1)) {
+          const across = Math.min(a.box.right, b.box.right) - Math.max(a.box.left, b.box.left);
+          const down = Math.min(a.box.bottom, b.box.bottom) - Math.max(a.box.top, b.box.top);
+          assert.ok(across <= 1 || down <= 1, `${label}: "${a.text}" overlaps "${b.text}"`);
+        }
+    }
+    const fonts = [...new Set(charts.flatMap((chart) => chart.fonts))];
+    assert.equal(fonts.length, 1, `${engine}: one font across every chart: ${fonts.join(" | ")}`);
+    const kept = fonts[0] === charts[0].pageFont;
+    report.metrics ??= {};
+    report.metrics[engine] = { worst, count, font: fonts[0], pageFont: charts[0].pageFont, kept };
+    complete(
+      `${engine}: charts draw in ${kept ? "the Page's stack" : `the fallback, ${fonts[0]}`}, and the ` +
+        `chart Worker measures text as the page draws it: ${count} texts, light and dark, ` +
+        `wide and phone width, within ${worst.toFixed(2)} px; titles fit inside the chart`,
+    );
+  } finally {
+    await metricsContext.close();
+    if (instance !== browser) await instance.close();
+  }
+}
+
+/**
+ * Time the largest chart the budgets admit through the real Worker in
+ * `engine`: each must draw well inside the timer.
+ */
+async function largeCheck(engine) {
+  const instance =
+    engine === "chromium" ? browser : await ENGINES[engine].launch({ headless: true });
+  const largeContext = await instance.newContext({ viewport: { width: 1000, height: 700 } });
+  const large = await largeContext.newPage();
+  try {
+    await large.goto(`${origin}/large/`, { waitUntil: "load" });
+    await expect(large.locator("body[data-fixture=ready]")).toBeAttached({ timeout: 60_000 });
+    const times = await large.evaluate(() => window.chartTimes);
+    report.large ??= {};
+    report.large[engine] = times;
+    for (const [name, { status, ms, message }] of Object.entries(times))
+      assert.equal(status, "rendered", `${engine} ${name}: ${message} after ${ms} ms`);
+    // Axis labels and the title land inside the drawing, offset by Vega's
+    // layout origin as well as its padding.
+    const labels = await large.evaluate(() => window.chartLabels);
+    assert.equal(labels.status, "rendered", `${engine}: the labels chart`);
+    assert.ok(labels.count >= 6, `${engine}: ${labels.count} texts`);
+    assert.deepEqual(labels.outside, [], `${engine}: texts outside the SVG`);
+    complete(
+      `${engine}: the largest admitted chart draws through the Worker: ` +
+        Object.entries(times)
+          .map(([name, { ms }]) => `${name} ${ms} ms`)
+          .join(", "),
+    );
+  } finally {
+    await largeContext.close();
+    if (instance !== browser) await instance.close();
+  }
+}
+
 const figure = page.locator("figure.pages-chart");
 const frame = figure.locator(".pages-chart-frame");
 const bars = frame.locator("path[role='graphics-symbol']");
@@ -332,7 +869,12 @@ try {
   assert.deepEqual(report.csp, []);
   complete("No page errors, Content-Security-Policy refusals or requests off the fixture origin");
 
+  for (const engine of engines) await globalsCheck(engine);
+  for (const engine of engines) await escapeCheck(engine);
   for (const engine of engines) await hostileCheck(engine);
+  for (const engine of engines) await freezeCheck(engine);
+  for (const engine of engines) await metricsCheck(engine);
+  for (const engine of engines) await largeCheck(engine);
 } catch (error) {
   report.failure = error.stack || error.message;
   await page.screenshot({ path: path.join(output, "failure.png"), fullPage: true }).catch(() => {});
