@@ -28,6 +28,12 @@
 // the ones that give way: every existing view gets a slot, and draws, while
 // its embed holds it.
 //
+// Before a connection, a held view with a slot reads this tab's stored copy
+// once. A view whose stored read missed keeps its slot until a connection
+// answers: its replica is closed, neither undrawn nor due, so nothing evicts
+// it. On a Page that names more than the limit, a view this tab stored can
+// wait behind one of those until the connection is admitted.
+//
 // A waiting view reads as over the limit, or as missing (or failed) once it
 // gave its slot up. A view that gave its slot up after failing is looked up
 // again when it next has one; one with a slot is looked up again on each

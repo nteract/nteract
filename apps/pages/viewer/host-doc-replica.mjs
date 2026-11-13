@@ -60,8 +60,11 @@ export class HostDocReplica {
   #onChange;
   #lookup;
   #timer;
-  /** The id whose unavailable answer the repo still holds from this
-   * replica's last miss, until the next lookup of it evicts that answer. */
+  /** The obligation each `forget` effect sets, `{ id }`: the repo may hold
+   * an unavailable answer for `id` from this replica's last miss or
+   * cancelled read, until a lookup of it completes an eviction. A new
+   * `forget` replaces it with a new object, so an eviction started for an
+   * earlier one never clears it. */
   #stale;
   #find;
   #forget;
@@ -266,7 +269,7 @@ export class HostDocReplica {
         this.#timer = undefined;
         return;
       case "forget":
-        this.#stale = effect.id;
+        this.#stale = { id: effect.id };
         return;
       case "install":
         return this.#install();
@@ -285,15 +288,26 @@ export class HostDocReplica {
     });
   }
 
-  /** Evict the repo's unavailable answer for `id` if this replica's last
-   * miss left one, right before looking `id` up again. */
+  /** Evict the repo's unavailable answer for `id` if an obligation names
+   * it, right before looking `id` up again. The obligation stands until an
+   * eviction for it completes without `signal` aborting and without
+   * failing: an interrupted eviction is run again by the next lookup of
+   * `id`. Completing clears only the obligation it started for, never one a
+   * later `forget` set. An id another replica installed (`claims`) is never
+   * evicted, and its obligation is dropped. */
   async #evict(id, signal) {
-    if (this.#stale !== id) return;
-    this.#stale = undefined;
-    if (this.#claims.has(id)) return;
+    const stale = this.#stale;
+    if (stale?.id !== id) return;
+    const done = () => {
+      if (this.#stale === stale) this.#stale = undefined;
+    };
+    if (this.#claims.has(id)) return done();
     try {
       await this.#forget(id, { signal });
-    } catch {}
+    } catch {
+      return;
+    }
+    if (!signal?.aborted) done();
   }
 
   /** One lookup. Its result reaches the machine only through events that

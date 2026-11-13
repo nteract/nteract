@@ -471,14 +471,16 @@ test("before a connection, a held view this tab stored draws, and one it didn't 
   costs.release();
 });
 
-test("a stored miss keeps its slot and counts as no look; the connection decides", async () => {
+test("a stored miss holds its slot until the connection answers, even with a view waiting", async () => {
   const f = fixture({ linked: false, stored: true, limit: 1 });
   const first = f.views.hold("first");
   await tick();
   await serve(f, new Set());
   assert.deepEqual(f.views.replica("first").state$.snapshot(), { name: "closed", checked: true });
-  // A view named while the slot is taken waits: the stored miss doesn't give
-  // the slot up.
+  // A view named while the slot is taken waits until a connection is
+  // admitted, even if this tab stored it: the slot rules don't evict a stored
+  // miss. Every view waited for the connection before stored reads, so this
+  // costs nothing that was there; it leaves a gain on the table.
   const second = f.views.hold("second");
   await tick();
   assert.deepEqual(f.views.open, ["first"]);

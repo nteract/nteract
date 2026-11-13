@@ -1006,6 +1006,109 @@ test("a replica closed mid-read evicts the read's answer before its next lookup 
   assert.deepEqual(r.state(), { name: "opening", attempt: 1, id: DERIVED, via: "derived" });
 });
 
+/** A replica with no connection until `connect()`, whose evictions wait
+ * until the test settles them (or their lookup's signal aborts, unless
+ * `ignoreAbort`). */
+function slowEviction({ ignoreAbort = false } = {}) {
+  let up = false;
+  const repo = heldFind();
+  const evictions = [];
+  const sources = new HostDocReplica({
+    find: repo.find,
+    forget: (id, { signal } = {}) =>
+      new Promise((resolve) => {
+        evictions.push({ id, signal, resolve });
+        if (!ignoreAbort) signal?.addEventListener("abort", () => resolve());
+      }),
+    link: () => (up ? 1 : undefined),
+    linked: () => up,
+    stored: () => true,
+    derive: async () => DERIVED,
+  });
+  return {
+    sources,
+    repo,
+    evictions,
+    connect() {
+      up = true;
+    },
+    disconnect() {
+      up = false;
+    },
+  };
+}
+
+test("an eviction interrupted by its lookup's cancellation runs again on the next lookup", async () => {
+  for (const interrupt of ["discovered", "close"]) {
+    const r = slowEviction();
+    r.sources.want();
+    await tick();
+    // A connection interrupts the stored read: the named lookup first evicts
+    // the read's answer, and the eviction waits on the still-loading entry.
+    r.connect();
+    r.sources.discovered(named(DERIVED));
+    await tick();
+    assert.equal(r.evictions.length, 1);
+    assert.equal(r.repo.calls.length, 1, "no find before the eviction completes");
+    // The eviction itself is interrupted.
+    if (interrupt === "close") r.sources.close();
+    r.sources.discovered(named(DERIVED));
+    await tick();
+    assert.equal(r.evictions[0].signal.aborted, true, interrupt);
+    assert.equal(r.evictions.length, 2, `${interrupt}: the next lookup evicts again`);
+    r.evictions[1].resolve();
+    await tick();
+    assert.equal(r.repo.calls.length, 2, "the find follows the completed eviction");
+    r.repo.calls[1].resolve(handleOf(sourcesDoc()));
+    await tick();
+    assert.equal(r.sources.state$.snapshot().name, "ready");
+    // Completed: the next lookup of the id evicts nothing.
+    r.sources.close();
+    r.sources.discovered(named(DERIVED));
+    await tick();
+    assert.equal(r.evictions.length, 2);
+    assert.equal(r.repo.calls.length, 3);
+    r.sources.close();
+  }
+});
+
+test("an earlier eviction settling late never clears an obligation a later forget set", async () => {
+  const r = slowEviction({ ignoreAbort: true });
+  r.sources.want();
+  await tick();
+  r.connect();
+  r.sources.discovered(named(DERIVED));
+  await tick();
+  assert.equal(r.evictions.length, 1);
+  // The lookup is closed mid-eviction; with no connection, a new stored
+  // read misses and sets a new obligation.
+  r.sources.close();
+  r.disconnect();
+  r.sources.want();
+  await tick();
+  // The new read evicts first (the interrupted obligation still stands),
+  // then reads, and misses.
+  assert.equal(r.evictions.length, 2);
+  r.evictions[1].resolve();
+  await tick();
+  r.repo.calls.at(-1).reject(missing());
+  await tick();
+  assert.deepEqual(r.sources.state$.snapshot(), { name: "closed", checked: true });
+  // The first eviction settles now: the miss's obligation stands.
+  r.evictions[0].resolve();
+  await tick();
+  r.connect();
+  r.sources.discovered(named(DERIVED));
+  await tick();
+  assert.equal(r.evictions.length, 3, "the stored miss's answer is evicted before the lookup");
+  r.evictions[2].resolve();
+  await tick();
+  r.repo.calls.at(-1).resolve(handleOf(sourcesDoc()));
+  await tick();
+  assert.equal(r.sources.state$.snapshot().name, "ready");
+  r.sources.close();
+});
+
 test("after a stored miss, the next lookup never evicts an id another replica installed", async () => {
   const claims = new Set();
   const forgotten = [];
@@ -1134,27 +1237,34 @@ test("over a real host, a connection admitted while a stored read settles still 
   await h.write("usage", "a".repeat(64));
   // The repo's answer to the stored read is on its way for a few turns: admit
   // the connection a little later each round, through and past that window.
-  for (let round = 0; round < 24; round++) {
-    const tab = await h.browser(new MemoryByteStore());
-    let admitted;
-    const replica = storedReplica(tab, h.sourcesId, {
-      onFind: (up) => {
-        if (up) return;
-        admitted = (async () => {
-          for (let i = 0; i < round; i++) await Promise.resolve();
-          replica.admit();
-        })();
-      },
-    });
-    const { sources, states } = replica;
-    sources.want();
-    await until(() => admitted !== undefined, { label: "stored read" });
-    await admitted;
-    await until(() => sources.state$.snapshot().name === "ready", {
-      label: `found on the link, round ${round}`,
-    });
-    assert.ok(!states.includes("unserved"), `round ${round} never unserved`);
-    sources.close();
-    await tab.unload();
-  }
+  // With `twice`, a second admission follows at once and cancels the first
+  // lookup while its eviction still waits on the read.
+  for (const twice of [false, true])
+    for (let round = 0; round < 24; round++) {
+      const label = `round ${round}${twice ? ", admitted twice" : ""}`;
+      const tab = await h.browser(new MemoryByteStore());
+      let admitted;
+      const replica = storedReplica(tab, h.sourcesId, {
+        onFind: (up) => {
+          if (up) return;
+          admitted = (async () => {
+            for (let i = 0; i < round; i++) await Promise.resolve();
+            replica.admit();
+            if (!twice) return;
+            await Promise.resolve();
+            replica.admit();
+          })();
+        },
+      });
+      const { sources, states } = replica;
+      sources.want();
+      await until(() => admitted !== undefined, { label: "stored read" });
+      await admitted;
+      await until(() => sources.state$.snapshot().name === "ready", {
+        label: `found on the link, ${label}`,
+      });
+      assert.ok(!states.includes("unserved"), `${label}: never unserved`);
+      sources.close();
+      await tab.unload();
+    }
 });
