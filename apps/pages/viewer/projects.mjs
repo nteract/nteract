@@ -311,8 +311,3 @@ export function watchPageLocation(
   changed();
   return { changed, stop: () => dispatch({ type: "stop" }), state: () => state };
 }
-
-/** Breadcrumbs for an open Page, limited to what this account can open. */
-export async function pageBreadcrumbs(call, pageId) {
-  return (await pageLocation(call, pageId)).breadcrumbs;
-}

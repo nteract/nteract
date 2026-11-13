@@ -9,7 +9,6 @@ test("the format gate stops on document_format_unsupported and never reopens", (
   const cases = [
     [open, { type: "refused", code: FORMAT_UNSUPPORTED_CODE }, "stopped", false],
     [open, { type: "refused", code: "schema_unsupported" }, "open", true],
-    [open, { type: "refused", code: "signing_key_rejected" }, "open", true],
     [open, { type: "edit" }, "open", true],
     [stopped, { type: "refused", code: FORMAT_UNSUPPORTED_CODE }, "stopped", false],
     [stopped, { type: "refused", code: "schema_unsupported" }, "stopped", false],

@@ -1450,10 +1450,6 @@ const gateway = {
           identity
             ? {
                 identity: publicIdentity(identity),
-                editor: "wordgard",
-                // Viewers from before plain-only sync read this to create
-                // their drafts in plain storage.
-                recordStorage: "automerge",
                 canWrite: identity.canWrite,
                 expiresAt: identity.expiresAt,
                 // This host serves account-auth.mjs, which only a browser

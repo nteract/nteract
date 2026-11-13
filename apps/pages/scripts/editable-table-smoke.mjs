@@ -111,8 +111,8 @@ try {
     await page.goto(origin + "/api/auth/login");
     await expect(page.getByRole("button", { name: /, switch page$/ })).toBeVisible();
     assert.equal(
-      await page.evaluate(async () => (await (await fetch("/api/auth/session")).json()).editor),
-      "wordgard",
+      await page.evaluate(async () => (await (await fetch("/api/auth/session")).json()).canWrite),
+      true,
     );
   }
 

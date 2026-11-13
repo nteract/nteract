@@ -216,7 +216,6 @@ try {
   });
   checkBudget(true);
   const session = await page.evaluate(async () => (await fetch("/api/auth/session")).json());
-  assert.equal(session.editor, "wordgard");
   assert.ok(session.identity && session.canWrite, "local OIDC session can edit");
   complete(stage);
 

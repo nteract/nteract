@@ -97,7 +97,7 @@ test("client close interpretation accepts only matching code and reason pairs", 
     code: "page_access_denied",
     ...ADMISSION_OUTCOMES.page_access_denied,
   });
-  assert.equal(admissionCloseOutcome({ code: 4422, reason: "signing_key_rejected" }).retry, "stop");
+  assert.equal(admissionCloseOutcome({ code: 4426, reason: "schema_unsupported" }).retry, "stop");
   assert.equal(admissionCloseOutcome({ code: 4503, reason: "" }).retry, "backoff");
   assert.equal(admissionCloseOutcome({ code: 4403, reason: "temporarily_unavailable" }), undefined);
   for (const code of [1000, 1001, 1006, 4000, 4999])
