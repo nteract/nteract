@@ -50,7 +50,7 @@ test("tool schemas use only the JSON Schema subset clients forward as written", 
 
 test("tool catalog has a deliberate size ceiling", () => {
   assert.ok(
-    JSON.stringify(tools).length <= 39500,
+    JSON.stringify(tools).length <= 39539,
     "Tool catalog grew; raise the ceiling on purpose when a tool grows",
   );
 });
@@ -975,7 +975,7 @@ test("MCP lists create_page_asset_upload for any client with write scope, and po
     /API key or OAuth/,
     /Pages-Upload/,
     /never send your own key/,
-    /expires_at \(10 minutes\)/,
+    /expires_at \(at most 10 minutes\)/,
     /curl/,
     /not multipart or base64/,
     /same bytes always return the same asset_id/,

@@ -513,6 +513,8 @@ describe("dev identity", () => {
 
 describe("Anaconda API key identity", () => {
   it("validates Anaconda API key bearer tokens through whoami", async (t) => {
+    const now = 1_800_000_000_000;
+    t.mock.method(Date, "now", () => now);
     const token = anacondaApiKeyToken();
     const calls: Array<{ url: string; authorization: string | null; userAgent: string | null }> =
       [];
@@ -555,6 +557,7 @@ describe("Anaconda API key identity", () => {
         displayName: "Kyle Kelley",
         email: "rgbkrk@gmail.com",
         emailVerified: true,
+        emailVerifiedUntil: now + 60_000,
       },
     });
     assert.deepEqual(calls, [
@@ -710,6 +713,118 @@ describe("Anaconda API key identity", () => {
     assert.equal(first.principal, "user:anaconda:cached-api-key-user");
     assert.equal(second.principal, "user:anaconda:cached-api-key-user");
     assert.deepEqual(calls, [`Bearer ${token}`]);
+  });
+
+  it("reports when a cached API key email stops being current", async (t) => {
+    const start = 1_800_000_000_000;
+    let clock = start;
+    t.mock.method(Date, "now", () => clock);
+    const token = anacondaApiKeyToken();
+    let lookups = 0;
+    t.mock.method(globalThis, "fetch", async () => {
+      lookups += 1;
+      return jsonResponse(
+        anacondaWhoami({
+          userId: "until-api-key-user",
+          email: "until@example.com",
+          scopes: ["cloud:read"],
+        }),
+      );
+    });
+    const verify = async () =>
+      (
+        await authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/topic-viz/sync?scope=viewer", {
+            headers: { Authorization: `Bearer ${token}` },
+          }),
+          anacondaApiKeyEnv(),
+        )
+      ).metadata.emailVerifiedUntil;
+
+    // Calls answered from one lookup report that lookup's deadline.
+    assert.equal(await verify(), start + 60_000);
+    clock = start + 59_000;
+    assert.equal(await verify(), start + 60_000);
+    assert.equal(lookups, 1);
+    // A call after it looks the account up again and reports a later one.
+    clock = start + 61_000;
+    assert.equal(await verify(), start + 121_000);
+    assert.equal(lookups, 2);
+  });
+
+  describe("an API key email's deadline is the lookup that answered it", () => {
+    const start = 1_800_000_000_000;
+    const whoami = (userId: string) =>
+      jsonResponse(
+        anacondaWhoami({ userId, email: `${userId}@example.com`, scopes: ["cloud:read"] }),
+      );
+    const deadline = async (token: string) =>
+      (
+        await authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/topic-viz/sync?scope=viewer", {
+            headers: { Authorization: `Bearer ${token}` },
+          }),
+          anacondaApiKeyEnv(),
+        )
+      ).metadata.emailVerifiedUntil;
+
+    it("for a caller that joined a lookup in flight", async (t) => {
+      let clock = start;
+      t.mock.method(Date, "now", () => clock);
+      const token = anacondaApiKeyToken();
+      let lookups = 0;
+      let started!: () => void;
+      const fetchStarted = new Promise<void>((resolve) => (started = resolve));
+      let answer!: (response: Response) => void;
+      t.mock.method(globalThis, "fetch", () => {
+        lookups += 1;
+        started();
+        return new Promise<Response>((resolve) => (answer = resolve));
+      });
+      const first = deadline(token);
+      await fetchStarted;
+      // A second caller arrives a second later and waits on the same lookup.
+      clock = start + 1_000;
+      const joined = deadline(token);
+      answer(whoami("in-flight-user"));
+      assert.equal(await first, start + 60_000);
+      assert.equal(await joined, start + 60_000);
+      assert.equal(lookups, 1);
+    });
+
+    it("after a failed attempt, from the retry", async (t) => {
+      let clock = start;
+      t.mock.method(Date, "now", () => clock);
+      const token = anacondaApiKeyToken();
+      let lookups = 0;
+      t.mock.method(globalThis, "fetch", async () => {
+        lookups += 1;
+        return lookups === 1 ? new Response("unavailable", { status: 503 }) : whoami("retry-user");
+      });
+      await assert.rejects(() => deadline(token), { status: 503 });
+      clock = start + 10_000;
+      assert.equal(await deadline(token), start + 70_000);
+      assert.equal(lookups, 2);
+    });
+
+    it("after eviction, from a new lookup", async (t) => {
+      let clock = start;
+      t.mock.method(Date, "now", () => clock);
+      const token = anacondaApiKeyToken({ sub: "evicted-api-key-subject" });
+      let lookups = 0;
+      t.mock.method(globalThis, "fetch", async () => {
+        lookups += 1;
+        return whoami(`evicted-user-${lookups}`);
+      });
+      assert.equal(await deadline(token), start + 60_000);
+      // More keys than ANACONDA_API_KEY_CACHE_MAX_ENTRIES push it out.
+      clock = start + 1_000;
+      for (let index = 0; index < 300; index += 1)
+        await deadline(anacondaApiKeyToken({ sub: `evicting-api-key-${index}` }));
+      clock = start + 2_000;
+      assert.equal(await deadline(token), start + 62_000);
+      assert.equal(lookups, 302);
+    });
   });
 
   it("bounds successful API key whoami cache entries", async (t) => {

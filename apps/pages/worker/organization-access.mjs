@@ -35,11 +35,14 @@ export function configuredOrganizationAccess(metadata, env) {
     : null;
 }
 
-/** The Page's link audience as the listing index keys it, or null. */
-export function pageAudienceKey(metadata, env) {
+/** The Page's link audience as the listing index keys it, with the role it
+ * grants: `{ key, role }`, or null when it has none. */
+export function pageAudience(metadata, env) {
   const organization = configuredOrganizationAccess(metadata, env);
-  if (organization) return organizationAudienceKey(organization.id);
-  return configuredDomainView(metadata, env)?.domain ?? null;
+  if (organization)
+    return { key: organizationAudienceKey(organization.id), role: organization.role };
+  const domain = configuredDomainView(metadata, env);
+  return domain ? { key: domain.domain, role: domain.role } : null;
 }
 
 /** The audience key a reader opened the Page through, from its access

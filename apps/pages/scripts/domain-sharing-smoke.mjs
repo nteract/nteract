@@ -333,6 +333,61 @@ try {
   complete(
     "Company viewer receives native edits; OAuth write scope cannot exceed domain view role; explicit invite still edits",
   );
+  // The invited editor's acceptance moved the ACL revision outside the
+  // owner's UI, so the owner reads sharing again first (as selectDomain does).
+  await owner.reload();
+  await expect(content(owner)).toContainText("shared garden");
+  await openSharing();
+  const companyRole = owner.getByRole("combobox", { name: "People can", exact: true });
+  await expect(companyRole).toHaveValue("viewer");
+  await companyRole.selectOption("editor");
+  await expect(companyRole).toHaveValue("editor");
+  await expect(companyRole).toBeEnabled();
+  await expect(owner.getByRole("dialog", { name: "Share Page" })).toContainText(
+    "Can edit. People who sign in with a verified anaconda.com email",
+  );
+  assert.equal((await api(owner, `/api/access?page=${pageId}`)).body.domainView?.role, "editor");
+  const editorAccess = (await api(employee, `/api/connect?page=${pageId}`)).body.access;
+  assert.equal(editorAccess.role, "editor");
+  assert.equal(editorAccess.canWrite, true);
+  assert.equal(editorAccess.canManageAccess, false);
+  const agentRead = await mcp(keys.employee, "read_page", { page_id: pageId });
+  await mcp(keys.employee, "edit_page", {
+    page_id: pageId,
+    revision: agentRead.revision,
+    ...retry(agentRead),
+    operations: [
+      {
+        op: "replace_match",
+        node_id: agentRead.blocks[0].node_id,
+        match_text: "garden.",
+        replacement: "garden. Company agent edit.",
+      },
+    ],
+  });
+  await expect(content(owner)).toContainText("Company agent edit.");
+  await mcp(keys.blockedEmployee, "read_page", { page_id: pageId }, false);
+  await employee.reload();
+  await expect(content(employee)).toHaveAttribute("contenteditable", "true");
+  await content(employee).focus();
+  await employee.keyboard.press("ControlOrMeta+End");
+  await employee.keyboard.insertText(" Company editor edit.");
+  await expect(content(owner)).toContainText("Company editor edit.");
+  await companyRole.selectOption("viewer");
+  await expect(companyRole).toHaveValue("viewer");
+  await expect(companyRole).toBeEnabled();
+  const downgraded = (await api(employee, `/api/connect?page=${pageId}`)).body.access;
+  assert.equal(downgraded.role, "viewer");
+  assert.equal(downgraded.canWrite, false);
+  await denyMcpWrite(keys.employee);
+  assert.ok(
+    !(await api(owner, `/api/access?page=${pageId}`)).body.members.some(
+      (member) => member.principal === identities[1].body.identity.principal,
+    ),
+  );
+  complete(
+    "Owner raises the company audience to Can edit: a domain editor writes in the browser and over MCP without a member row, and Can view takes it back",
+  );
   await selectDomain("");
   await expect(employee.getByText(/no longer have access/i).first()).toBeVisible({
     timeout: 15000,

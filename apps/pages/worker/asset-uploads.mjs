@@ -10,7 +10,8 @@
  * (write scope and current edit access) and signs it with its retry key
  * under a distinct purpose (operation-journal.mjs signCapability). It names
  * the Page, the principal, the credential kind (and an OAuth grant), its
- * issue and expiry times, and optionally the file's content type and size.
+ * issue and expiry times, the issuer's company domain lease when it held one,
+ * and optionally the file's content type and size.
  * The upload request carries it as `Authorization: Pages-Upload
  * <token>`. The gateway never passes that header to authenticate(), so it is
  * not sent to the API-key verifier or read as an OAuth token anywhere.
@@ -30,12 +31,14 @@
  * route with its own cookie. An API key's revocation isn't seen here (the
  * host never holds the key), so its capabilities end at their expiry, at most
  * ten minutes; removing the principal's Page access or revoking an OAuth
- * connection ends them at once.
+ * connection ends them at once. A caller that edits only through a link
+ * audience lease gets a capability that expires with that lease.
  *
  * A capability holds no server state, so it has no lifecycle beyond its
  * expiry. uploadVerdict is the pure decision on a verified payload.
  */
-import { HttpError } from "./auth.mjs";
+import { audienceEditUntil } from "./access.mjs";
+import { HttpError, withDomainAccess } from "./auth.mjs";
 import { openCapability, signCapability } from "./operation-journal.mjs";
 import { ASSET_UPLOAD_SCHEME, assetUploadCommand } from "../agent-client-setup.mjs";
 import { IMAGE_MAX_BYTES, IMAGE_MEDIA_TYPES } from "../shared/image-assets.mjs";
@@ -118,7 +121,7 @@ function storedBinding(claims) {
  */
 export function uploadVerdict(claims, { pageId, now }) {
   if (!claims || typeof claims !== "object" || Array.isArray(claims)) return "invalid";
-  const { page, principal, namespace, kind, grant, iat, exp } = claims;
+  const { page, principal, namespace, kind, grant, iat, exp, domain, domain_exp } = claims;
   if (
     typeof pageId !== "string" ||
     page !== pageId ||
@@ -126,6 +129,13 @@ export function uploadVerdict(claims, { pageId, now }) {
     !principal ||
     principal.length > 1024 ||
     (namespace !== undefined && (typeof namespace !== "string" || namespace.length > 512)) ||
+    (domain !== undefined &&
+      (namespace === undefined ||
+        typeof domain !== "string" ||
+        domain.length > 253 ||
+        !Number.isSafeInteger(domain_exp) ||
+        domain_exp > exp)) ||
+    (domain === undefined && domain_exp !== undefined) ||
     !ISSUING_KINDS.has(kind) ||
     (kind === "oauth") !== (typeof grant === "string" && grant.length > 0) ||
     !Number.isSafeInteger(iat) ||
@@ -202,10 +212,16 @@ export function uploadScreen(claims, { pageId, now }) {
  * Sign an upload capability for `identity` on `pageId`. The caller has
  * checked write scope and current edit access. An OAuth capability names its
  * grant, checked again at upload. Returns the tool result.
+ *
+ * `accessUntil(claims)` answers when the edit access the capability's own
+ * identity would hold ends without renewal: the end of the link audience
+ * lease (company domain or organization) it edits through, or Infinity when
+ * it edits without one. The capability expires then if that is sooner, so
+ * `expires_at` is the deadline the upload actually has.
  */
 export async function issueAssetUpload(
   storage,
-  { pageId, identity, args, origin, now = Date.now() },
+  { pageId, identity, args, origin, now = Date.now(), accessUntil = async () => Infinity },
 ) {
   const binding = uploadBinding(args, pageId);
   const kind = identity?.credentialKind;
@@ -221,25 +237,39 @@ export async function issueAssetUpload(
     throw Error("An OAuth identity is missing its grant");
   // A Kilo agent token's capability ends with the token's lease, so it can't
   // outlast the check Kilo made of the token.
-  const expiresAt =
+  const lifetime =
     kind === "kilo-token"
       ? Math.min(now + ASSET_UPLOAD_TTL_MS, identity.expiresAt)
       : now + ASSET_UPLOAD_TTL_MS;
+  const namespace = typeof identity.namespace === "string" ? identity.namespace : undefined;
+  // The issuer's company domain lease, which no store holds: its evidence is
+  // the issuer's credential. It ends when the lease does, never later.
+  const domain =
+    namespace !== undefined &&
+    identity.domainAccess?.namespace === namespace &&
+    typeof identity.domainAccess.domain === "string" &&
+    Number.isSafeInteger(identity.domainAccess.expiresAt)
+      ? identity.domainAccess
+      : null;
+  const claimsUntil = (exp) => ({
+    page: pageId,
+    principal: identity.principal,
+    // The principal's namespace, so the upload's identity can hold the
+    // organization leases its evidence supports, as the issuer's did.
+    ...(namespace !== undefined && { namespace }),
+    ...(domain && { domain: domain.domain, domain_exp: Math.min(domain.expiresAt, exp) }),
+    kind,
+    ...(kind === "oauth" && { grant: identity.grantId }),
+    iat: now,
+    exp,
+    ...binding,
+  });
+  const expiresAt = Math.min(lifetime, await accessUntil(claimsUntil(lifetime)));
+  if (!(expiresAt > now)) throw new HttpError(403, "Page is read-only", "access_denied");
   const token = await signCapability(storage, {
     purpose: PURPOSE,
     prefix: PREFIX,
-    payload: {
-      page: pageId,
-      principal: identity.principal,
-      // The principal's namespace, so the upload's identity can hold the
-      // organization leases its evidence supports, as the issuer's did.
-      ...(typeof identity.namespace === "string" && { namespace: identity.namespace }),
-      kind,
-      ...(kind === "oauth" && { grant: identity.grantId }),
-      iat: now,
-      exp: expiresAt,
-      ...binding,
-    },
+    payload: claimsUntil(expiresAt),
   });
   const uploadUrl = `${origin}/api/pages/${pageId}/assets`;
   const contentType = binding.content_type ?? "application/octet-stream";
@@ -275,12 +305,17 @@ export async function verifyAssetUpload(storage, token, { pageId, now = Date.now
 
 /** The identity a verified capability stands for: its principal (and its
  * namespace, when the capability names one) with write scope until the
- * capability expires, and the binding the upload must match. It decides
- * nothing itself; the Page's record decides access. */
+ * capability expires, and the binding the upload must match. A capability
+ * that names a company domain carries it as `domainEvidence`, which
+ * domain-access.mjs turns into a lease while the deployment still allows the
+ * domain. It decides nothing itself; the Page's record decides access. */
 export function uploadIdentity(claims) {
   return Object.freeze({
     principal: claims.principal,
     ...(claims.namespace !== undefined && { namespace: claims.namespace }),
+    ...(claims.domain !== undefined && {
+      domainEvidence: Object.freeze({ domain: claims.domain, expiresAt: claims.domain_exp }),
+    }),
     displayName: claims.principal,
     accountDisplayName: null,
     driver: "API",
@@ -289,4 +324,13 @@ export function uploadIdentity(claims) {
     expiresAt: claims.exp,
     upload: Object.freeze(storedBinding(claims)),
   });
+}
+
+/** `issueAssetUpload`'s `accessUntil` for a Page host: when the edit access of
+ * the identity `claims` would stand for ends on the record `metadata`, with
+ * its leases derived as the upload will derive them (`audienceEditUntil`), or
+ * 0 when it can't edit. */
+export async function uploaderEditUntil(metadata, claims, env, now = Date.now()) {
+  const uploader = await withDomainAccess(uploadIdentity(claims), env);
+  return audienceEditUntil(metadata, uploader, { now }) ?? 0;
 }

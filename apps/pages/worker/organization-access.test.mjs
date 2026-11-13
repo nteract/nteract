@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
 import { pageAccess, restrictAccessDuringCommit } from "./access.mjs";
-import { issueAssetUpload, uploadIdentity, verifyAssetUpload } from "./asset-uploads.mjs";
+import {
+  ASSET_UPLOAD_TTL_MS,
+  issueAssetUpload,
+  uploaderEditUntil,
+  uploadIdentity,
+  verifyAssetUpload,
+} from "./asset-uploads.mjs";
 import { errorResponse, HttpError, withDomainAccess } from "./auth.mjs";
 import {
   listingRestricted,
@@ -19,6 +25,8 @@ import {
   resetMembershipCache,
 } from "./kilo-membership.mjs";
 import { identityAudienceKeys, organizationAudienceKey } from "./organization-access.mjs";
+import { projectObject } from "./authz.mjs";
+import { PROJECT_ACCESS_LEASE_MS } from "./project-access.mjs";
 import { plainStub } from "./plain-stub.mjs";
 import { Storage } from "./projects-fixture.mjs";
 import { DocumentPolicy, leaseExpiryError } from "./policy.mjs";
@@ -560,4 +568,108 @@ test("an organization editor's upload capability carries its namespace, so the u
   // A capability without a namespace holds no organization lease.
   const bare = await withDomainAccess(uploadIdentity({ ...claims, namespace: undefined }), env);
   assert.equal(bare.organizations, undefined);
+});
+
+test("an organization editor's upload URL expires when its membership evidence does, like a domain editor's", async (t) => {
+  let clock = now;
+  t.mock.method(Date, "now", () => clock);
+  const env = kiloEnv(t);
+  // Evidence that ends two minutes from now.
+  await recordKiloMembership(
+    env,
+    reader.principal,
+    [acme],
+    now - KILO_MEMBERSHIP_SECONDS * 1000 + 120_000,
+  );
+  const storage = new Storage();
+  const pageId = "org-upload-deadline";
+  const metadata = { ...page(grant("editor")), pageId };
+  const credential = { ...reader, credentialKind: "oauth", grantId: "grant-1" };
+  const oauthMember = {
+    ...credential,
+    expiresAt: now + 3_600_000,
+    organizations: await organizationLeases(env, { ...credential, expiresAt: now + 3_600_000 }),
+  };
+  const issue = (record) =>
+    issueAssetUpload(storage, {
+      pageId,
+      identity: oauthMember,
+      args: { page_id: pageId },
+      origin: "https://pages.invalid",
+      now: clock,
+      accessUntil: (claims) => uploaderEditUntil(record, claims, env),
+    });
+  const issued = await issue(metadata);
+  assert.equal(issued.expires_at, new Date(now + 120_000).toISOString());
+  const token = issued.headers.Authorization.slice("Pages-Upload ".length);
+  clock = now + 120_000;
+  await assert.rejects(
+    verifyAssetUpload(storage, token, { pageId, now: clock, grantActive: () => true }),
+    { code: "upload_capability_expired" },
+  );
+  // A member editor keeps the full ten minutes: the upload doesn't depend on
+  // the organization.
+  clock = now;
+  const memberRecord = structuredClone(metadata);
+  memberRecord.acl.members[reader.principal] = { role: "editor", generation: 1 };
+  assert.equal(
+    (await issue(memberRecord)).expires_at,
+    new Date(now + ASSET_UPLOAD_TTL_MS).toISOString(),
+  );
+});
+
+test("a Project organization editor's upload URL on a Page in the Project ends with the membership evidence, not the Project lease", async (t) => {
+  let clock = now;
+  t.mock.method(Date, "now", () => clock);
+  const env = kiloEnv(t);
+  const storage = new Storage();
+  const pageId = "project-org-upload";
+  // The Project shares with Acme as editor; the Page has no grant of its own.
+  const projectRecord = {
+    space_id: "prj_00000000-0000-4000-8000-000000000003",
+    owner: owner.principal,
+    acl: { revision: 1, members: {}, invites: {}, organizationAccess: grant("editor") },
+  };
+  const inProject = {
+    pageId,
+    owner: owner.principal,
+    deleted: false,
+    acl: { revision: 1, members: {}, invites: {} },
+    // The host's cached copy of the Project, good for its short lease.
+    projectAccess: {
+      ...projectObject(projectRecord),
+      members: {},
+      valid_until: now + PROJECT_ACCESS_LEASE_MS,
+    },
+  };
+  const credential = { ...reader, credentialKind: "oauth", grantId: "grant-2" };
+  const issue = async () => {
+    const identity = {
+      ...credential,
+      expiresAt: now + 3_600_000,
+      organizations: await organizationLeases(env, { ...credential, expiresAt: now + 3_600_000 }),
+    };
+    assert.equal(pageAccess(inProject, identity, { now: clock }).canWrite, true);
+    return issueAssetUpload(storage, {
+      pageId,
+      identity,
+      args: { page_id: pageId },
+      origin: "https://pages.invalid",
+      now: clock,
+      accessUntil: (claims) => uploaderEditUntil(inProject, claims, env),
+    });
+  };
+  // Evidence that ends in two minutes: the URL ends then, long after the
+  // fifteen-second Project lease the host renews on every request.
+  await recordKiloMembership(
+    env,
+    reader.principal,
+    [acme],
+    now - KILO_MEMBERSHIP_SECONDS * 1000 + 120_000,
+  );
+  assert.equal((await issue()).expires_at, new Date(now + 120_000).toISOString());
+  // Fresh evidence: the full ten minutes.
+  resetMembershipCache();
+  await recordKiloMembership(env, reader.principal, [acme], now + 1);
+  assert.equal((await issue()).expires_at, new Date(now + ASSET_UPLOAD_TTL_MS).toISOString());
 });
