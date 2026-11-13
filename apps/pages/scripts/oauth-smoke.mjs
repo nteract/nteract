@@ -7,6 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { purgeTrashedFixture } from "./purge-fixture.mjs";
+import { OAUTH_REFRESH_REUSE_SECONDS } from "../shared/oauth-grant.mjs";
 
 export async function runOAuthSmoke({ origin, output, restart, ownerKey } = {}) {
   const base = new URL(origin);
@@ -506,18 +507,29 @@ export async function runOAuthSmoke({ origin, output, restart, ownerKey } = {}) 
     );
     assert.notEqual(ownerGrant.data.tokens.refresh_token, prior);
     await call(ownerClient, "read_page", { page_id: pageId });
-    const replay = await form("/oauth/token", {
-      grant_type: "refresh_token",
-      refresh_token: prior,
-      client_id: clientId,
-      resource: endpoint,
-    });
+    const spentAgain = () =>
+      form("/oauth/token", {
+        grant_type: "refresh_token",
+        refresh_token: prior,
+        client_id: clientId,
+        resource: endpoint,
+      });
+    // Inside the reuse window a second process of the same client gets its own
+    // tokens and the first one's keep working.
+    const beside = await spentAgain();
+    assert.equal(beside.status, 200);
+    const besideTokens = await beside.json();
+    assert.notEqual(besideTokens.refresh_token, ownerGrant.data.tokens.refresh_token);
+    assert.equal(await bearerStatus(besideTokens.access_token), 200);
+    assert.equal(await bearerStatus(ownerGrant.data.tokens.access_token), 200);
+    complete("SDK refresh rotates tokens; a second use inside the reuse window issues beside it");
+    await new Promise((resolve) => setTimeout(resolve, (OAUTH_REFRESH_REUSE_SECONDS + 2) * 1000));
+    const replay = await spentAgain();
     assert.equal(replay.status, 400);
     assert.equal((await replay.json()).error, "invalid_grant");
     assert.equal(await bearerStatus(ownerGrant.data.tokens.access_token), 401);
-    complete(
-      "SDK refresh rotates tokens; replay rejects and revokes the grant's descendant access tokens",
-    );
+    assert.equal(await bearerStatus(besideTokens.access_token), 401);
+    complete("Replay after the reuse window revokes the grant and every descendant access token");
     const revoked = await form("/oauth/revoke", {
       token: collaboratorGrant.data.tokens.refresh_token,
       client_id: clientId,

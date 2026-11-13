@@ -99,7 +99,8 @@ test("setup leads with API keys and keeps OAuth for interactive clients", async 
   const oauthText = oauth.textContent.replace(/\s+/g, " ");
   for (const fact of [
     "Access tokens last 10 minutes",
-    "Each refresh token works once and is replaced on use",
+    "Each refresh token is replaced on use",
+    "Several processes can share one OAuth connection",
     "nothing has to run in the background",
     "30 days after you approve it",
     "revokes the whole connection",

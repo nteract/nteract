@@ -364,7 +364,18 @@ test("the OAuth flow records consent, code, tokens, reuse and revocation without
   const next = await refreshed.json();
   secrets.push(next.access_token, next.refresh_token);
 
-  // Presenting the spent refresh token again revokes the whole grant.
+  // Presenting the spent refresh token again inside the reuse window issues
+  // beside the first refresh.
+  const beside = await tokenRequest(env, {
+    grant_type: "refresh_token",
+    refresh_token: tokens.refresh_token,
+  });
+  assert.equal(beside.status, 200);
+  const other = await beside.json();
+  secrets.push(other.access_token, other.refresh_token);
+
+  // After the window it revokes the whole grant.
+  env.DB.sqlite.exec("UPDATE pages_oauth_refresh_tokens SET consumed_at = consumed_at - 3600");
   const reused = await tokenRequest(env, {
     grant_type: "refresh_token",
     refresh_token: tokens.refresh_token,
@@ -406,6 +417,8 @@ test("the OAuth flow records consent, code, tokens, reuse and revocation without
     "oauth.token_issued",
     "oauth.token_issued",
     "oauth.refresh_reused",
+    "oauth.token_issued",
+    "oauth.refresh_reused",
     "oauth.grant_revoked",
     "oauth.token_refused",
     "oauth.consent_granted",
@@ -414,7 +427,15 @@ test("the OAuth flow records consent, code, tokens, reuse and revocation without
     "oauth.grant_revoked",
     "oauth.token_refused",
   ]);
-  const [initial, refresh, secondIssue] = capture.find("oauth.token_issued");
+  const [initial, refresh, besideRefresh, secondIssue] = capture.find("oauth.token_issued");
+  assert.equal(besideRefresh.grant, initial.grant);
+  assert.deepEqual(
+    capture.find("oauth.refresh_reused").map(({ reason, grant }) => ({ reason, grant })),
+    [
+      { reason: "within_window", grant: initial.grant },
+      { reason: undefined, grant: initial.grant },
+    ],
+  );
   for (const event of capture.events) {
     assert.equal(event.principal ?? principal, principal);
     assert.equal(event.client_id, "pages-kilo");

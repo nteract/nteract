@@ -109,19 +109,20 @@ test("GET llms.txt is readable without authentication and explains the supported
       guide.indexOf("### Other MCP clients (API key)"),
   );
   // API keys lead; OAuth follows for interactive clients, with its lifecycle
-  // and the shared-token warning.
+  // and how processes share one connection.
   assert.ok(
     guide.indexOf("### Kilo Desktop / CLI (API key, recommended)") <
       guide.indexOf("### ChatGPT / cloud connection (OAuth)"),
   );
   assert.ok(
     guide.indexOf("### ChatGPT / cloud connection (OAuth)") <
-      guide.indexOf("### Kilo Desktop / CLI (OAuth, one process at a time)"),
+      guide.indexOf("### Kilo Desktop / CLI (OAuth)"),
   );
   const prose = guide.replace(/\s+/g, " ");
   for (const fact of [
     "access tokens expire after 10 minutes",
-    "each one works once and is replaced on use",
+    "each one is replaced on use",
+    "can be used again for 30 seconds after its first use",
     "The grant expires 30 days after authorization",
     "Nothing needs to run in the background",
     "revokes the whole grant",
