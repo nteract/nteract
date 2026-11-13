@@ -4,7 +4,8 @@
 // shell in light and dark and uploads both. The owner's grid then shows the
 // image from the card-image route instead of the JSON card. A member sees
 // it too, a stranger can't fetch it, and removing the member stops her
-// fetches on the next request.
+// fetches on the next request. A second Page opens with a chart: the shell
+// draws it from the Page's view and source before it rasterizes.
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -24,6 +25,7 @@ const complete = (name) => {
 };
 const browser = await chromium.launch({ headless: true });
 const PARQUET = "application/vnd.apache.parquet";
+const VEGA_LITE = "application/vnd.vegalite.v6+json";
 // A real two-row, three-column table (day, surface, events) written by pyarrow.
 const parquet =
   "UEFSMRUEFTgVOEwVBBUAEgAACgAAADIwMjYtMTEtMDEKAAAAMjAyNi0xMS0wMhUAFRIVEiwVBBUQFQYVBhw2ACgKMjAyNi0xMS0wMhgKMjAyNi0xMS0wMRERAAAAAgAAAAQBAQMCFQQVJBUkTBUEFQASAAADAAAAbWNwBwAAAGJyb3dzZXIVABUSFRIsFQQVEBUGFQYcNgAoA21jcBgHYnJvd3NlchERAAAAAgAAAAQBAQMCFQQVIBUgTBUEFQASAAAqAAAAAAAAAAcAAAAAAAAAFQAVEhUSLBUEFRAVBhUGHBgIKgAAAAAAAAAYCAcAAAAAAAAAFgAoCCoAAAAAAAAAGAgHAAAAAAAAABERAAAAAgAAAAQBAQMCFQQZTDUAGAZzY2hlbWEVBgAVDCUCGANkYXklAEwcAAAAFQwlAhgHc3VyZmFjZSUATBwAAAAVBCUCGAZldmVudHMAFgQZHBk8JgAcFQwZNQAGEBkYA2RheRUAFgQWxAEWxAEmXCYIHDYAKAoyMDI2LTExLTAyGAoyMDI2LTExLTAxEREAGSwVBBUAFQIAFQAVEBUCADwWKBkGGSYABAAAACYAHBUMGTUABhAZGAdzdXJmYWNlFQAWBBacARacASaMAibMARw2ACgDbWNwGAdicm93c2VyEREAGSwVBBUAFQIAFQAVEBUCADwWFBkGGSYABAAAACYAHBUEGTUABhAZGAZldmVudHMVABYEFswBFswBJqQDJugCHBgIKgAAAAAAAAAYCAcAAAAAAAAAFgAoCCoAAAAAAAAAGAgHAAAAAAAAABERABksFQQVABUCABUAFRAVAgA8KQYZJgAEAAAAFqwEFgQmCBasBAAZHBgMQVJST1c6c2NoZW1hGKwCLy8vLy85Z0FBQUFRQUFBQUFBQUtBQXdBQmdBRkFBZ0FDZ0FBQUFBQkJBQU1BQUFBQ0FBSUFBQUFCQUFJQUFBQUJBQUFBQU1BQUFCOEFBQUFRQUFBQUFRQUFBQ2cvLy8vQUFBQkFoQUFBQUFnQUFBQUJBQUFBQUFBQUFBR0FBQUFaWFpsYm5SekFBQUlBQXdBQ0FBSEFBZ0FBQUFBQUFBQlFBQUFBTmovLy84QUFBRUZFQUFBQUJnQUFBQUVBQUFBQUFBQUFBY0FBQUJ6ZFhKbVlXTmxBTXovLy84UUFCUUFDQUFHQUFjQURBQUFBQkFBRUFBQUFBQUFBUVVRQUFBQUdBQUFBQVFBQUFBQUFBQUFBd0FBQUdSaGVRQUVBQVFBQkFBQUFBQUFBQUE9ABggcGFycXVldC1jcHAtYXJyb3cgdmVyc2lvbiAyNi4wLjAZPBwAABwAABwAAADYAgAAUEFSMQ==";
@@ -58,6 +60,33 @@ const fetchImage = (page, url) =>
 
 async function signIn(email, viewport = { width: 1280, height: 900 }, options = {}) {
   const context = await browser.newContext({ viewport, ...options });
+  // Each capture's shell, read just after it rasterizes (card-shell.mjs
+  // measures `pages-card-capture` while the shell is still mounted): the
+  // status of each chart in it and how many marks it drew. Each shell's
+  // document is kept, to check the shell emptied it before it went.
+  await context.addInitScript(() => {
+    const measure = performance.measure.bind(performance);
+    window.__cardShellCharts = [];
+    window.__cardShellDocs = new Set();
+    performance.measure = (name, ...rest) => {
+      if (name === "pages-card-capture")
+        for (const frame of document.querySelectorAll("iframe")) {
+          const shell = frame.contentDocument?.querySelector(".card-shell");
+          if (!shell) continue;
+          window.__cardShellDocs.add(frame.contentDocument);
+          window.__cardShellCharts.push(
+            [...shell.querySelectorAll("figure.pages-chart:not(.pages-view-placeholder)")].map(
+              (figure) => ({
+                status: figure.dataset.chartStatus,
+                marks: figure.querySelectorAll(".pages-chart-canvas path[role='graphics-symbol']")
+                  .length,
+              }),
+            ),
+          );
+        }
+      return measure(name, ...rest);
+    };
+  });
   const page = await context.newPage();
   page.on("pageerror", (error) => report.errors.push(`${email}: ${error.stack}`));
   const begin = await context.request.get(`${origin}/api/auth/login`, { maxRedirects: 0 });
@@ -290,6 +319,139 @@ try {
   const after = await tool(alice, "page_cards", { page_ids: [pageId] });
   assert.deepEqual(after.body.cards, { [pageId]: null });
   complete("After removal, the member's next image fetch is refused");
+
+  // A Page whose first screen is a chart: a source, a view over it, and the
+  // view node under a heading and a line of text.
+  const chartPage = await tool(owner, "create_page", {
+    title: "Chart card",
+    markdown: "# Events by surface\n\nEach surface's events over two days.",
+    nonce: crypto.randomUUID(),
+  });
+  assert.equal(chartPage.status, 200, JSON.stringify(chartPage.body));
+  const chartId = chartPage.body.page_id;
+  const chartData = await owner.evaluate(
+    async ({ pageId, parquet, type }) => {
+      const bytes = Uint8Array.from(atob(parquet), (c) => c.charCodeAt(0));
+      const response = await fetch(`/api/pages/${pageId}/assets`, {
+        method: "POST",
+        headers: { "Content-Type": type },
+        body: bytes,
+      });
+      return { status: response.status, body: await response.json() };
+    },
+    { pageId: chartId, parquet, type: PARQUET },
+  );
+  assert.equal(chartData.status, 201, JSON.stringify(chartData.body));
+  for (const operation of [
+    {
+      op: "set_source",
+      source_id: "usage",
+      name: "usage",
+      asset_id: chartData.body.asset_id,
+      source_revision: null,
+    },
+    {
+      op: "set_view",
+      view_id: "by_surface",
+      title: "Events by surface",
+      media_type: VEGA_LITE,
+      spec: {
+        data: { name: "usage" },
+        mark: "bar",
+        encoding: {
+          x: { field: "surface", type: "nominal" },
+          y: { field: "events", type: "quantitative" },
+        },
+      },
+      data: { usage: { source_id: "usage" } },
+      view_revision: null,
+    },
+    { op: "insert_node", node: { type: "view", attrs: { view_id: "by_surface" } } },
+  ]) {
+    const current = await tool(owner, "read_page", { page_id: chartId, comments: "none" });
+    const result = await tool(owner, "edit_page", {
+      page_id: chartId,
+      revision: current.body.revision,
+      nonce: crypto.randomUUID(),
+      operations: [operation],
+    });
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+  }
+  await owner.evaluate(() => {
+    window.__cardShellCharts = [];
+    window.__cardShellDocs = new Set();
+  });
+  await owner.goto(`${origin}/p/${chartId}`);
+  await expect(
+    owner.locator('figure.pages-chart[data-chart-status="rendered"]').first(),
+  ).toBeVisible({ timeout: 30000 });
+  await expect
+    .poll(async () => (await api(owner, `/api/pages/${chartId}/card-image`)).body.card_hash, {
+      timeout: 60000,
+      intervals: [500],
+    })
+    .toMatch(/^[0-9a-f]{64}$/);
+  report.chartShells = await owner.evaluate(() => window.__cardShellCharts);
+  // The last light and dark capture are the ones the host kept.
+  assert.ok(report.chartShells.length >= 2, JSON.stringify(report.chartShells));
+  for (const charts of report.chartShells.slice(-2)) {
+    assert.equal(charts.length, 1, JSON.stringify(report.chartShells));
+    assert.equal(charts[0].status, "rendered", JSON.stringify(report.chartShells));
+    assert.equal(charts[0].marks, 2, JSON.stringify(report.chartShells));
+  }
+  let chartImage;
+  await expect
+    .poll(
+      async () => {
+        const answer = await tool(owner, "page_cards", { page_ids: [chartId] });
+        chartImage = answer.body.cards[chartId]?.image;
+        return chartImage?.card_hash ?? null;
+      },
+      { timeout: 30000, intervals: [500] },
+    )
+    .toMatch(/^[0-9a-f]{64}$/);
+  for (const theme of ["light", "dark"]) {
+    const bytes = await owner.evaluate(async (url) => {
+      const response = await fetch(url, { cache: "no-store" });
+      return Array.from(new Uint8Array(await response.arrayBuffer()));
+    }, chartImage[theme]);
+    const ext = chartImage[theme].split(".").at(-1);
+    await writeFile(path.join(shots, `card-images-chart-${theme}.${ext}`), Uint8Array.from(bytes));
+    // The chart drew at the frame's width, not Vega-Lite's default step
+    // width: the right half of the plot holds bar pixels (the chart theme's
+    // first category color, blue in both themes).
+    const right = await owner.evaluate(async (url) => {
+      const blob = await (await fetch(url, { cache: "no-store" })).blob();
+      const bitmap = await createImageBitmap(blob);
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const context = canvas.getContext("2d");
+      context.drawImage(bitmap, 0, 0);
+      const x = Math.round(bitmap.width * 0.5);
+      const y = Math.round(bitmap.height * 0.45);
+      const { data } = context.getImageData(
+        x,
+        y,
+        Math.round(bitmap.width * 0.42),
+        Math.round(bitmap.height * 0.33),
+      );
+      let blue = 0;
+      for (let i = 0; i < data.length; i += 4)
+        if (data[i + 2] > 150 && data[i + 2] - data[i] > 80) blue++;
+      return blue;
+    }, chartImage[theme]);
+    assert.ok(right > 1000, `${theme}: ${right} bar pixels in the plot's right half`);
+  }
+  // Each shell emptied its document before it went, so its widgets
+  // disconnected and let go of their views and charts.
+  const leftover = await owner.evaluate(() =>
+    [...window.__cardShellDocs].map((doc) => doc.body?.childElementCount ?? 0),
+  );
+  assert.ok(leftover.length >= 1, "a shell document was seen");
+  assert.deepEqual(
+    leftover,
+    leftover.map(() => 0),
+  );
+  complete("A chart on the first screen draws at full width in both card images");
   assert.deepEqual(report.errors, []);
 } catch (error) {
   report.failure = error.stack ?? String(error);
