@@ -49,6 +49,23 @@ holds superseded notes; don't follow them.
   the Project. The Project owner owns every Page in it, including Pages an
   editor adds. Only the owner shares, moves or trashes Project Pages. Direct
   Page grants never reach a Page's Project, siblings or descendants.
+- Every stored fact has one normative home, and each table or key says so where
+  it is created. Durable Objects and D1 are both durable, and neither is
+  inherently the source of truth. Name which kind of state you are adding:
+  - **Normative in a Durable Object, projected into D1.** The Durable Object
+    (Page host, Catalog, Project) is the truth and the D1 row is a derived copy
+    kept in sync with it, for listing and search. A projection table can be
+    cleared and rebuilt; its code never invents data. The `pages_catalog_`
+    prefix means this kind.
+  - **Normative in D1.** The D1 table is the only copy, with no Durable Object
+    behind it (Page tags in `page_tags`, quota rules, memberships,
+    invitations, sessions and OAuth grants). Never name it `pages_catalog_*`,
+    and no reconcile pass, repair or migration may clear or rewrite its rows.
+    Add a Durable Object only for state with a real-time or single-writer
+    need; do not add one to mirror D1 data that needs only REST access.
+  - Don't call a table an index, a cache or a projection unless something can
+    regenerate it. Say "normative" when nothing can. See
+    [Where state lives](DEPLOYMENT.md#where-state-lives).
 - Respect observed revisions, conflict scopes and idempotency receipts. A retry
   resumes the recorded operation; it never duplicates a mutation.
 - Async lifecycles use the repository's state-machine and RxJS rules. Keep

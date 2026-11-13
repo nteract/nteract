@@ -50,7 +50,7 @@ test("tool schemas use only the JSON Schema subset clients forward as written", 
 
 test("tool catalog has a deliberate size ceiling", () => {
   assert.ok(
-    JSON.stringify(tools).length <= 36900,
+    JSON.stringify(tools).length <= 39400,
     "Tool catalog grew; raise the ceiling on purpose when a tool grows",
   );
 });
@@ -218,6 +218,7 @@ test("MCP tools declare every annotation hint, and each tool's hints are intende
     update_project: write,
     restore_page: write,
     move_page: write,
+    update_page_tags: write,
     report_page_progress: { ...write, idempotentHint: false },
     import_page_image: { ...write, openWorldHint: true },
     create_page_asset_upload: write,
@@ -1276,10 +1277,13 @@ test("every write takes a nonce, a Page write a revision, and nothing takes head
     "since_heads",
   ])
     assert.doesNotMatch(schemas, new RegExp(name), name);
+  // update_page_tags edits a set: adding or removing a tag twice changes
+  // nothing, so a repeat needs no receipt.
   const unkeyed = new Set([
     "report_page_progress",
     "create_page_asset_upload",
     "import_page_image",
+    "update_page_tags",
   ]);
   for (const tool of tools) {
     if (tool.annotations.readOnlyHint || unkeyed.has(tool.name)) continue;

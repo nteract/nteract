@@ -22,6 +22,13 @@ const PARQUET = "application/vnd.apache.parquet";
 const parquet =
   "UEFSMRUEFTgVOEwVBBUAEgAACgAAADIwMjYtMTEtMDEKAAAAMjAyNi0xMS0wMhUAFRIVEiwVBBUQFQYVBhw2ACgKMjAyNi0xMS0wMhgKMjAyNi0xMS0wMRERAAAAAgAAAAQBAQMCFQQVJBUkTBUEFQASAAADAAAAbWNwBwAAAGJyb3dzZXIVABUSFRIsFQQVEBUGFQYcNgAoA21jcBgHYnJvd3NlchERAAAAAgAAAAQBAQMCFQQVIBUgTBUEFQASAAAqAAAAAAAAAAcAAAAAAAAAFQAVEhUSLBUEFRAVBhUGHBgIKgAAAAAAAAAYCAcAAAAAAAAAFgAoCCoAAAAAAAAAGAgHAAAAAAAAABERAAAAAgAAAAQBAQMCFQQZTDUAGAZzY2hlbWEVBgAVDCUCGANkYXklAEwcAAAAFQwlAhgHc3VyZmFjZSUATBwAAAAVBCUCGAZldmVudHMAFgQZHBk8JgAcFQwZNQAGEBkYA2RheRUAFgQWxAEWxAEmXCYIHDYAKAoyMDI2LTExLTAyGAoyMDI2LTExLTAxEREAGSwVBBUAFQIAFQAVEBUCADwWKBkGGSYABAAAACYAHBUMGTUABhAZGAdzdXJmYWNlFQAWBBacARacASaMAibMARw2ACgDbWNwGAdicm93c2VyEREAGSwVBBUAFQIAFQAVEBUCADwWFBkGGSYABAAAACYAHBUEGTUABhAZGAZldmVudHMVABYEFswBFswBJqQDJugCHBgIKgAAAAAAAAAYCAcAAAAAAAAAFgAoCCoAAAAAAAAAGAgHAAAAAAAAABERABksFQQVABUCABUAFRAVAgA8KQYZJgAEAAAAFqwEFgQmCBasBAAZHBgMQVJST1c6c2NoZW1hGKwCLy8vLy85Z0FBQUFRQUFBQUFBQUtBQXdBQmdBRkFBZ0FDZ0FBQUFBQkJBQU1BQUFBQ0FBSUFBQUFCQUFJQUFBQUJBQUFBQU1BQUFCOEFBQUFRQUFBQUFRQUFBQ2cvLy8vQUFBQkFoQUFBQUFnQUFBQUJBQUFBQUFBQUFBR0FBQUFaWFpsYm5SekFBQUlBQXdBQ0FBSEFBZ0FBQUFBQUFBQlFBQUFBTmovLy84QUFBRUZFQUFBQUJnQUFBQUVBQUFBQUFBQUFBY0FBQUJ6ZFhKbVlXTmxBTXovLy84UUFCUUFDQUFHQUFjQURBQUFBQkFBRUFBQUFBQUFBUVVRQUFBQUdBQUFBQVFBQUFBQUFBQUFBd0FBQUdSaGVRQUVBQVFBQkFBQUFBQUFBQUE9ABggcGFycXVldC1jcHAtYXJyb3cgdmVyc2lvbiAyNi4wLjAZPBwAABwAABwAAADYAgAAUEFSMQ==";
 const parquetBytes = Buffer.from(parquet, "base64");
+// The same table with its "browser" surface renamed "desktop": another asset
+// with the same shape. The name is as long, and still sorts before "mcp", so
+// every offset and statistic stays valid.
+const refreshedBytes = Buffer.from(
+  parquetBytes.toString("latin1").replaceAll("browser", "desktop"),
+  "latin1",
+);
 const report = { completed: [], errors: [], csp: [] };
 const people = new Map();
 const created = [];
@@ -257,6 +264,87 @@ try {
     people.set("dev@localhost", owner);
   }
   complete("A tap on a table's title row selects it on a phone");
+
+  // A table drawn from a named source follows it. No stored node names a
+  // source yet, so this harness supplies the binding through the viewer's
+  // loopback test seam (viewer/dataframe-binding.mjs): "Follows usage" reads
+  // the source `usage`, and "Pinned usage" its own asset.
+  {
+    const listing = (await tool(owner, "list_pages")).body;
+    const made = await tool(owner, "create_page", {
+      title: "Datasets follow a source",
+      markdown: "Usage, refreshed by an agent.",
+      ...retry(listing),
+    });
+    assert.equal(made.status, 200, JSON.stringify(made.body));
+    const followId = made.body.page_id;
+    created.push(followId);
+    const upload = async (bytes) => {
+      const response = await fetch(`${origin}/api/pages/${followId}/assets`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${keys.owner}`, "Content-Type": PARQUET },
+        body: bytes,
+      });
+      assert.ok([200, 201].includes(response.status), await response.clone().text());
+      return response.json();
+    };
+    const first = await upload(parquetBytes);
+    const second = await upload(refreshedBytes);
+    assert.notEqual(first.asset_id, second.asset_id);
+    const edit = async (operations) => {
+      const read = (await tool(owner, "read_page", { page_id: followId })).body;
+      const result = await tool(owner, "edit_page", {
+        page_id: followId,
+        revision: read.revision,
+        ...retry(read),
+        operations,
+      });
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      return result.body;
+    };
+    await edit([
+      dataframe(first.asset_id, "Follows usage"),
+      dataframe(first.asset_id, "Pinned usage"),
+    ]);
+    const setUsage = (asset_id, source_revision) =>
+      edit([{ op: "set_source", source_id: "usage", name: "Usage", asset_id, source_revision }]);
+    await setUsage(first.asset_id, null);
+
+    const reader = await signIn("dev@localhost");
+    await reader.context().addInitScript((name) => {
+      globalThis[name] = (dataframe) =>
+        dataframe.title === "Follows usage" ? { source_id: "usage" } : null;
+    }, "__PAGES_TEST_DATAFRAME_BINDING__");
+    await reader.goto(`${origin}/p/${followId}`);
+    await expect(tables(reader)).toHaveCount(2, { timeout: 15000 });
+    const follows = tables(reader).filter({ hasText: "Follows usage" });
+    const pinned = tables(reader).filter({ hasText: "Pinned usage" });
+    const followsCanvas = follows.locator(".wordgard-dataframe-canvas");
+    await expect(followsCanvas).toHaveAttribute("data-source-id", "usage");
+    await expect(followsCanvas).toHaveAttribute("data-source-revision", "1", { timeout: 20000 });
+    await expect(followsCanvas).toHaveAttribute("data-asset-id", first.asset_id);
+    await expect(follows).toContainText("browser", { timeout: 20000 });
+    await expect(pinned).toContainText("browser", { timeout: 20000 });
+    await reader.screenshot({ path: `${output}/source-follow-before.png`, fullPage: true });
+
+    // An agent refreshes the source with a new asset. The followed table
+    // redraws from it; the pinned one stays on its asset.
+    await setUsage(second.asset_id, "1");
+    await expect(followsCanvas).toHaveAttribute("data-source-revision", "2", { timeout: 20000 });
+    await expect(followsCanvas).toHaveAttribute("data-asset-id", second.asset_id);
+    await expect(follows).toContainText("desktop", { timeout: 20000 });
+    await expect(follows).not.toContainText("browser");
+    await expect(pinned).toContainText("browser");
+    assert.equal(
+      await pinned.locator(".wordgard-dataframe-canvas").getAttribute("data-source-id"),
+      null,
+      "the pinned table follows nothing",
+    );
+    await reader.screenshot({ path: `${output}/source-follow-after.png`, fullPage: true });
+    await reader.context().close();
+    people.set("dev@localhost", owner);
+  }
+  complete("A table bound to a source redraws when an agent refreshes it; a pinned one stays");
 
   const rewrite = await editPage([
     { op: "replace_block_markdown", node_id: node.node_id, markdown: "gone" },

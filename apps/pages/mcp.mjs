@@ -390,6 +390,12 @@ const WRITE = {
   openWorldHint: false,
 };
 const DESTRUCTIVE = { ...WRITE, destructiveHint: true };
+const tagList = {
+  type: "array",
+  items: { type: "string", maxLength: 64 },
+  maxItems: 32,
+  uniqueItems: true,
+};
 const accessRevision = {
   type: "integer",
   minimum: 0,
@@ -500,7 +506,7 @@ export const tools = [
   ),
   tool(
     "list_pages",
-    "List Pages this account can open, with account and quota. Without project_id, Project Pages you never opened may be missing: use list_projects, then list_pages with project_id. Each Page has content_updated_at (null means unknown, not empty). in_trash:true lists your trashed Pages instead. Pass next_cursor back as cursor until null; pages are not a snapshot, and a short result doesn't prove a Page is absent.",
+    "List Pages this account can open, with account and quota. Without project_id, Project Pages you never opened may be missing: use list_projects, then list_pages with project_id. Each Page has content_updated_at (null means unknown, not empty) and tags (an array; missing means they could not be read). tags filters by a boolean expression over them. in_trash:true lists your trashed Pages instead. Pass next_cursor back as cursor until null; pages are not a snapshot, and a short result doesn't prove a Page is absent.",
     {
       query: {
         ...string,
@@ -545,13 +551,34 @@ export const tools = [
         description:
           "activity (default): last edited by content_updated_at (last trashed with in_trash). created lists the newest first. title: by lowercased code point.",
       },
+      include_tags: {
+        type: "boolean",
+        description: "Add each Page's tags (an array) to the result. Implied by tags.",
+      },
+      tags: {
+        ...string,
+        maxLength: 256,
+        description:
+          "Only Pages whose tags satisfy this expression: tags joined by AND or OR, NOT before a tag or group, parentheses to group. Operators are uppercase; tags are lowercase a-z 0-9 . _ : / - (case is folded). AND and OR can't mix at one level: write (a OR b) AND c. Examples: hello AND world; hello OR world; hello AND NOT world; (repo:nteract OR repo:kilo) AND status:reviewing. The result echoes the canonical expression as tag_filter; if it is missing, the host ignored the filter.",
+      },
     },
     [],
     READ,
   ),
   tool(
+    "update_page_tags",
+    "Add and remove tags on a Page you can edit. A tag is a lowercase label (a-z, 0-9 and . _ : / -, starting with a letter or digit, up to 64 characters; case is folded; and, or and not are reserved). Other agents find Pages with list_pages tags. A tag such as session:<id> is a claim by whoever added it, not proof of who wrote the Page: anyone who can edit the Page can add or remove it. A Page holds at most 32. Adding a tag it has, or removing one it lacks, changes nothing, so a retry is safe and needs no nonce. Tags are stored apart from the Page's content: this never changes its revision. Anyone who can see a Page sees its tags, so put no secrets in them. Returns the Page's full tag set.",
+    {
+      page_id: page,
+      add: { ...tagList, description: "Tags to add." },
+      remove: { ...tagList, description: "Tags to remove." },
+    },
+    ["page_id"],
+    WRITE,
+  ),
+  tool(
     "create_page",
-    "Create a rich-text Page. Returns url and revision, so the first edit needs no read. Omit project_id and parent_id for Your items; parent_id makes a sub-page (max 9 levels). Project owners and editors can add Pages; a Page added to someone else's Project is owned by its owner.",
+    "Create a rich-text Page. Returns url and revision, so the first edit needs no read. Omit project_id and parent_id for Your items; parent_id makes a sub-page (max 9 levels). Project owners and editors can add Pages; a Page added to someone else's Project is owned by its owner. tags adds tags as update_page_tags does; if the Page is created but its tags are not written the result says tags_applied:false; only for tags_unavailable does the same call again retry them.",
     {
       title,
       markdown: markdownBody,
@@ -561,6 +588,7 @@ export const tools = [
         type: "string",
         description: "Parent Page ID; implies its Project.",
       },
+      tags: { ...tagList, description: "Tags to put on the new Page." },
       nonce,
     },
     ["title", "nonce"],
@@ -1074,6 +1102,13 @@ export async function handleMcp(request, invoke, env, { onInitialize } = {}) {
           code: "outcome_unknown",
           error:
             "Upload URL request failed; nothing was stored and the document was not edited. Request a new upload URL.",
+          retryable: true,
+        });
+      if (params.name === "update_page_tags")
+        return failed({
+          code: "outcome_unknown",
+          error:
+            "Request failed; the tags may or may not have changed. Send the same request again: adding or removing a tag twice changes nothing.",
           retryable: true,
         });
       return failed(

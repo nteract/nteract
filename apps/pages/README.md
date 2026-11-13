@@ -29,8 +29,14 @@ before changing the document model, sync, or agent tools.
 | Comments document | Automerge | Threads and messages anchored by cursors into the Page document |
 | Wordgard tree | Memory only | `decode(spans)` of one block; the editor renders it, readers and export walk it |
 | Page host | celld Durable Object | Admission, authorization, persistence, durable receipts, plain Automerge sync |
-| Catalog | celld Durable Object + D1 | Per-account Page and Project listings, Trash, quotas |
+| Catalog | celld Durable Object (source of truth) + D1 projection | Per-account Page and Project entries, Trash, quotas. The D1 `pages_catalog_*` tables are a rebuildable index of them for listing and search |
+| Page tags | D1 table `page_tags` (source of truth, no Durable Object) | Each Page's tags. Not a projection and not in the document; searched with `list_pages tags` |
 | Agent edge | `/api/tools`, `/mcp` | Markdown and outline reads, node operations, idempotent receipts |
+
+Each fact has one normative home: a Durable Object, or, for Page tags, quotas
+and sign-in state, a D1 table. D1 also holds projections of the Durable Objects,
+which can be rebuilt; see [Where state
+lives](DEPLOYMENT.md#where-state-lives).
 
 Browser replicas and UI state never confer access or prove durability. The host
 decides both. Pages has its own documents; notebook `NotebookDoc`,

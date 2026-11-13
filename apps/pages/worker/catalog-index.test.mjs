@@ -3529,9 +3529,10 @@ test("listings past rejected candidates show every visible Page once, in order, 
 });
 
 test("schema v8 drops the Project root-Page column from a fresh database and from one at version 7", async (t) => {
-  assert.equal(CATALOG_MIGRATIONS.at(-1).version, 8);
+  const latest = CATALOG_MIGRATIONS.at(-1).version;
+  assert.equal(CATALOG_MIGRATIONS[7].version, 8);
   const fresh = sqliteD1(t).open();
-  assert.equal(await migrateCatalogIndex(fresh), 8);
+  assert.equal(await migrateCatalogIndex(fresh), latest);
   const spaceColumns = (db) => columnsOf(db, "pages_catalog_spaces").sort();
   const expected = ["created_at", "owner", "space_id", "title", "title_search", "updated_at"];
   assert.deepEqual(spaceColumns(fresh), expected);
@@ -3547,7 +3548,7 @@ test("schema v8 drops the Project root-Page column from a fresh database and fro
       VALUES ('prj_a', 'owner', 'Launch', 'launch', 'doc', 't0', 't1')`,
     )
     .run();
-  assert.equal(await migrateCatalogIndex(upgraded), 8);
+  assert.equal(await migrateCatalogIndex(upgraded), latest);
   assert.deepEqual(spaceColumns(upgraded), expected);
   assert.deepEqual(
     upgraded.rows("SELECT * FROM pages_catalog_spaces").map((row) => ({ ...row })),
@@ -3563,5 +3564,5 @@ test("schema v8 drops the Project root-Page column from a fresh database and fro
     ],
   );
   assert.ok(indexesOf(upgraded).includes("pages_catalog_spaces_listing"));
-  assert.equal(await migrateCatalogIndex(upgraded), 8, "applied once");
+  assert.equal(await migrateCatalogIndex(upgraded), latest, "applied once");
 });
