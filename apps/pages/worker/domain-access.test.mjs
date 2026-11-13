@@ -31,7 +31,6 @@ import { accessRows, listingRestricted } from "./catalog-index.mjs";
 import { plainStub } from "./plain-stub.mjs";
 import { Storage } from "./projects-fixture.mjs";
 import { purgeImpact } from "./trash.mjs";
-import { providerAnswerUntil } from "./api-key-verifier.mjs";
 
 const now = 1_800_000_000_000;
 const namespace = "user:anaconda";
@@ -1193,19 +1192,41 @@ test("a cached provider answer keeps its own deadline: an API key's domain lease
   assert.equal(fresh.domainAccess, undefined);
 });
 
-test("an API key's answer deadline follows the lookup that may have answered it", () => {
+test("after a failed lookup, an API key's domain lease ends with the lookup that answered", async (t) => {
+  const fixture = await createAuthFixture();
+  // The provider is down for the first lookup only.
+  let lookups = 0;
+  t.mock.method(globalThis, "fetch", async (...args) => {
+    lookups += 1;
+    if (lookups === 1) return new Response("unavailable", { status: 503 });
+    const body = await (await fixture.fetch(...args)).json();
+    body.passport.profile.email = "person@anaconda.com";
+    return Response.json(body);
+  });
+  t.mock.method(console, "error", () => {});
   const start = Date.now();
-  const token = `answer-${crypto.randomUUID()}`;
-  // A first call opens a window; calls inside it get its deadline.
-  assert.equal(providerAnswerUntil(token, start), start + 60_000);
-  assert.equal(providerAnswerUntil(token, start + 59_999), start + 60_000);
-  // Just past the window the verifier may still answer from the old lookup,
-  // so the call gets the old deadline, and may have started a new lookup,
-  // whose window later calls get.
-  assert.equal(providerAnswerUntil(token, start + 60_500), start + 60_000);
-  assert.equal(providerAnswerUntil(token, start + 100_000), start + 120_500);
-  // Well past every window, the call starts a new lookup.
-  assert.equal(providerAnswerUntil(token, start + 200_000), start + 260_000);
+  let clock = start;
+  t.mock.method(Date, "now", () => clock);
+  const companyEnv = { ...fixture.env, PAGES_COMPANY_VIEW_DOMAINS: "anaconda.com" };
+  const token = fixture.apiKey();
+  const signIn = () =>
+    authenticate(
+      new Request("https://pages.invalid/api/connect?page=test", {
+        headers: { authorization: `Bearer ${token}` },
+      }),
+      companyEnv,
+    );
+  await assert.rejects(signIn(), { status: 503 });
+  // Nothing was cached, so the next call looks the account up, at +10 s.
+  clock = start + 10_000;
+  assert.equal((await signIn()).domainAccess.expiresAt, start + 70_000);
+  // At +62 s the verifier still answers from that lookup, and the lease
+  // ends with it, not 60 s from now.
+  clock = start + 62_000;
+  const cached = await signIn();
+  assert.equal(lookups, 2);
+  assert.equal(cached.expiresAt, start + 122_000);
+  assert.equal(cached.domainAccess.expiresAt, start + 70_000);
 });
 
 test("an API-key agent edits through a company domain editor grant, publishes its presence, and loses the grant with its lease", async (t) => {

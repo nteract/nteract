@@ -385,7 +385,10 @@ export async function authenticate(request, env) {
           identity.metadata.emailVerified === true ? identity.metadata.email : undefined,
         // When the provider answer that verified it stops being current; a
         // cached answer keeps the deadline of the lookup behind it.
-        verifiedEmailUntil: identity.answerUntil,
+        verifiedEmailUntil:
+          identity.metadata.emailVerified === true
+            ? identity.metadata.emailVerifiedUntil
+            : undefined,
         expiresAt: Date.now() + 60_000,
       },
       env,

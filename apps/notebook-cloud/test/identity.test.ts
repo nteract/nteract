@@ -513,6 +513,8 @@ describe("dev identity", () => {
 
 describe("Anaconda API key identity", () => {
   it("validates Anaconda API key bearer tokens through whoami", async (t) => {
+    const now = 1_800_000_000_000;
+    t.mock.method(Date, "now", () => now);
     const token = anacondaApiKeyToken();
     const calls: Array<{ url: string; authorization: string | null; userAgent: string | null }> =
       [];
@@ -555,6 +557,7 @@ describe("Anaconda API key identity", () => {
         displayName: "Kyle Kelley",
         email: "rgbkrk@gmail.com",
         emailVerified: true,
+        emailVerifiedUntil: now + 60_000,
       },
     });
     assert.deepEqual(calls, [
@@ -710,6 +713,43 @@ describe("Anaconda API key identity", () => {
     assert.equal(first.principal, "user:anaconda:cached-api-key-user");
     assert.equal(second.principal, "user:anaconda:cached-api-key-user");
     assert.deepEqual(calls, [`Bearer ${token}`]);
+  });
+
+  it("reports when a cached API key email stops being current", async (t) => {
+    const start = 1_800_000_000_000;
+    let clock = start;
+    t.mock.method(Date, "now", () => clock);
+    const token = anacondaApiKeyToken();
+    let lookups = 0;
+    t.mock.method(globalThis, "fetch", async () => {
+      lookups += 1;
+      return jsonResponse(
+        anacondaWhoami({
+          userId: "until-api-key-user",
+          email: "until@example.com",
+          scopes: ["cloud:read"],
+        }),
+      );
+    });
+    const verify = async () =>
+      (
+        await authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/topic-viz/sync?scope=viewer", {
+            headers: { Authorization: `Bearer ${token}` },
+          }),
+          anacondaApiKeyEnv(),
+        )
+      ).metadata.emailVerifiedUntil;
+
+    // Calls answered from one lookup report that lookup's deadline.
+    assert.equal(await verify(), start + 60_000);
+    clock = start + 59_000;
+    assert.equal(await verify(), start + 60_000);
+    assert.equal(lookups, 1);
+    // A call after it looks the account up again and reports a later one.
+    clock = start + 61_000;
+    assert.equal(await verify(), start + 121_000);
+    assert.equal(lookups, 2);
   });
 
   it("bounds successful API key whoami cache entries", async (t) => {
