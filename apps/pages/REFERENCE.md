@@ -1150,8 +1150,9 @@ original receipt. `list_page_comments`, `read_page` and `read_page_changes`
 return `author.agent` when stored. The comment thread reads "<agent name> via
 <driver> for <person>" with the model in the tooltip. These are what the client
 said about itself, shown under the authenticated account: they grant nothing and
-verify nothing. `read_page_changes` still reports `attribution: "unavailable"`
-for document edits.
+verify nothing. An `edit_page` call stores the resolved assertion on its
+writer ([Edit writers](#edit-writers)); it joins that request's fingerprint the
+same way, so the same `nonce` with other labels is `nonce_conflict`.
 
 `Browser` is the one driver a bearer credential can't claim: viewers show a
 browser session by the person's name alone, so on a request with an API key or
@@ -2013,14 +2014,14 @@ close counts too. Each connection also logs `page.sync_rounds`, its sync-round
 latency from frame arrival to ack, summarised every 256 rounds and at close rather
 than per keystroke ([worker/plain-sync-log.mjs](worker/plain-sync-log.mjs)).
 
-Journaled host edits use a fresh actor per mutation: the Page host's persisted
-random eight-byte prefix followed by eight random bytes. Concurrent producers
-can build candidates from the same heads without sharing an actor sequence.
-SyncHost refuses new changes from browsers under this prefix, including actors
-it has never seen; trusted host changes need no per-edit claim. Existing host
-claims remain readable. Chunk parts, the descriptor, any browser claims and
-the manifest share one DO put for ordinary appends; the journal's pending and
-terminal writes remain separate barriers.
+Journaled host edits use a fresh actor per mutation, under the Page host's
+persisted random eight-byte prefix. Concurrent producers can build candidates
+from the same heads without sharing an actor sequence. SyncHost refuses new
+changes from browsers under this prefix, including actors it has never seen;
+trusted host changes need no per-edit claim. Existing host claims remain
+readable. Chunk parts, the descriptor, any browser claims and the manifest
+share one DO put for ordinary appends; the journal's pending and terminal
+writes remain separate barriers.
 
 Attribution is host-attested: an actor binds to the first authenticated
 principal that sends a change with it. With no signatures, the host can't tell
@@ -2109,6 +2110,42 @@ Edits from the API go through the host's Repo and the same admission queue.
 `worker/plain-sync.test.mjs` covers registration, restart and a browser
 through the Page host; `npm run test:contract` runs Repo 3's
 backend contract.
+
+### Edit writers
+
+A journaled mutation a caller asked for (`edit_page`, including a title or
+source write, and comment writes) records its writer
+([worker/host-writers.mjs](worker/host-writers.mjs)). The writer is the
+`authorOf` shape comments and sources store: `{ principal, displayName,
+driver, agent? }`, with `agent` the `{ name?, model? }` the request's
+fingerprint covers. Its actor is three parts of eight bytes: the host prefix,
+the writer id (the first eight bytes of the SHA-256 of the canonical writer
+record) and a fresh random nonce. The record is stored once per distinct
+writer, as CBOR under `plain/writer/<id>`, in the same put as the pending
+journal entry that holds the change bytes; the entry names it as `writer`. A
+different record already stored under an id refuses the write
+(`writer_conflict`). An exact retry replays the journaled bytes, so it keeps
+its first attempt's writer. A Page edit journaled before writers were
+recorded replays under its old fingerprint, which lacks the assertion.
+
+A host actor of the prefix and eight bytes alone names no writer: the host's
+own edits (registration, migrations, direct handle changes) and every host
+edit stored before writers were recorded. Writer records and claims are never
+removed by an access change, so a removed member's edits stay attributed to
+them; a purge deletes them with the rest of `plain/`. Nothing lists
+`plain/writer/` at startup or on connect: a change read resolves the actors
+in its delta, one storage read per distinct writer.
+
+`read_page_changes` resolves each changed actor: a host actor through its
+writer record (`via: "tool"`), any other through its actor claim
+(`via: "sync"`). A host claim, an unclaimed actor or a host actor without a
+writer is `{ recorded: false }`. The response has `attribution: "block"`, a
+`writers` table, `written_by` on every content change and `title_written_by`
+beside a title change: indexes into `writers` of the authors of every change
+since the baseline that wrote that block (ops resolved to blocks as admission
+does, [model/block-shape.mjs](model/block-shape.mjs) `changeWrites`) or the
+title. A node change names every writer of its block. The table counts toward
+`max_bytes`.
 
 ### Page quotas
 
@@ -2470,9 +2507,9 @@ an inserted or moved node, at the baseline for a deleted one, null when none
 follows. Two nodes that have ids never name the same successor, so a caller
 rebuilds the order of a block's nodes that have ids from its baseline and the
 delta. A paragraph of unmarked text has no id and isn't placed among them; it
-is reached through its block. It is not an event/audit
-log and does not supply historical person/client attribution or deleted message
-bodies. A revision the host no longer knows returns `resync_required`; oversized
+is reached through its block. Each change names its block's writers since the
+baseline ([Edit writers](#edit-writers)). It is not an event/audit log and
+does not supply deleted message bodies. A revision the host no longer knows returns `resync_required`; oversized
 deltas return `changes_budget_exceeded`, never partial success. Advance a saved
 revision only after consuming a successful response or resynchronizing with
 focused reads.

@@ -358,6 +358,7 @@ import { legibleEnv, overloadRetryAfterMs, withRepeatSafety } from "./host-busy.
 import { readTool } from "./tool-reads.mjs";
 import { checkArguments } from "./tool-arguments.mjs";
 import { readChangesTool } from "./tool-changes.mjs";
+import { resolveWriters } from "./host-writers.mjs";
 import { PageActivity } from "./page-activity.mjs";
 import {
   checkPurgePreview,
@@ -6201,6 +6202,15 @@ export class Page {
             commentsDoc: this.commentsView(),
             sourcesDoc: this.sourcesView(),
             revisions: this.revisionTable(),
+            writers: (actors) =>
+              resolveWriters(
+                {
+                  storage: this.ctx.storage,
+                  prefix: this.plain.hostActorPrefix,
+                  claim: (actor) => this.plain.claim(actor),
+                },
+                actors,
+              ),
           };
           const result =
             body.operation === "read_page_changes"
@@ -6280,6 +6290,9 @@ export class Page {
           operation: body.operation,
           args: body.arguments,
           identity,
+          // The edit's writer keeps what the client said about itself, and
+          // the retry fingerprint covers it, as a comment's does.
+          agent: agentFromProvenance(identity.clientProvenance),
           prepare: inserts.length
             ? async () => {
                 if (inserts.length > 100)

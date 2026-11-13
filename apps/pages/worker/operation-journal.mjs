@@ -255,14 +255,20 @@ function capabilityInput(purpose, bytes) {
 
 /** The entry stored under `key`, checked against this request's digest: the
  * same key with another digest is `nonce_conflict`. */
-export async function inspectOperation(storage, { key, digest, pendingEntry }) {
+export async function inspectOperation(storage, { key, digest, legacyDigest, pendingEntry }) {
   const stored = await storage.get(key);
   // Only the internal admission owner may supply its exact retained pending
   // intent after a failed journal put. This is not a caller-controlled fallback.
   if (!stored && pendingEntry !== undefined && pendingEntry.pending !== true)
     throw new TypeError("Only a trusted pending admission may resume without a journal row");
   const entry = stored ?? pendingEntry;
-  if (entry && entry.fingerprint !== digest)
+  // `legacyDigest` matches only an entry that records no writer: one
+  // journaled before its request's fingerprint covered the writer's agent.
+  if (
+    entry &&
+    entry.fingerprint !== digest &&
+    !(legacyDigest && entry.writer === undefined && entry.fingerprint === legacyDigest)
+  )
     reject(409, "nonce_conflict", "This nonce was used for a different request");
   return { entry };
 }

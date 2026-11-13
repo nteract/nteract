@@ -16,6 +16,7 @@ import {
 } from "./operation-journal.mjs";
 import { PAGE_FAMILY } from "./document-modules.mjs";
 import { fencedHeads, parseRevision, revisionPlan } from "./revisions.mjs";
+import { hostWriter, recordWriter, writerActor } from "./host-writers.mjs";
 
 /** The document a journal entry writes. */
 export const PAGE_DOC = "page";
@@ -118,6 +119,13 @@ const requiredRevision = (args) => {
  * them unchanged. `onHeads(heads)` receives the document heads the receipt
  * describes. `pageHeads()` returns the live Page heads a revision refusal
  * names; it defaults to `handle`'s heads when `handle` holds the Page.
+ *
+ * A caller's mutation records its writer (worker/host-writers.mjs): the
+ * account and the `agent` assertion the fingerprint covers. The change's
+ * actor names the writer's record, and a new record goes in the same put as
+ * the pending entry that holds the change bytes. An exact retry replays
+ * those bytes, so it keeps the writer of its first attempt. An `internal`
+ * mutation has no writer.
  */
 export async function documentMutation({
   storage,
@@ -147,7 +155,11 @@ export async function documentMutation({
     ? `${INTERNAL_PREFIX}${args.nonce}`
     : await operationKey(args, identity, lane);
   const digest = await fingerprint(operation, args, identity, agent);
-  const inspected = await inspectOperation(storage, { key, digest });
+  // A Page edit journaled before its writer was recorded has a fingerprint
+  // without the agent assertion; its exact retry still replays.
+  const legacyDigest =
+    doc === PAGE_DOC && agent ? await fingerprint(operation, args, identity) : undefined;
+  const inspected = await inspectOperation(storage, { key, digest, legacyDigest });
   let entry = inspected.entry;
   if (entry && entryDoc(entry) !== doc)
     throw new Error("A journal entry names another document than its lane");
@@ -156,6 +168,10 @@ export async function documentMutation({
     // A new intent never edits a Page stamped with a schema feature this build
     // can't express. A recorded receipt still replays.
     requireSupportedSchema(handle.doc());
+    const writer =
+      hostActorPrefix && !internal && identity?.principal
+        ? await recordWriter(storage, hostWriter(identity, agent))
+        : undefined;
     // Check external prerequisites only for new intents. A retry must replay
     // its original bytes/receipt even if an external service is unavailable.
     const targetScope = args.conflict_scope === "target";
@@ -215,12 +231,15 @@ export async function documentMutation({
     // Each host mutation has a fresh actor so concurrent producers can build
     // candidates from the same heads without reusing an (actor, seq). SyncHost
     // refuses host-prefixed actors from browsers, without a per-edit claim.
+    // A caller's actor names its writer between the prefix and the nonce.
     const actor =
       hostActorPrefix &&
-      hostActorPrefix +
-        Array.from(crypto.getRandomValues(new Uint8Array(8)), (byte) =>
-          byte.toString(16).padStart(2, "0"),
-        ).join("");
+      (writer
+        ? writerActor(hostActorPrefix, writer.id)
+        : hostActorPrefix +
+          Array.from(crypto.getRandomValues(new Uint8Array(8)), (byte) =>
+            byte.toString(16).padStart(2, "0"),
+          ).join(""));
     const candidate = A.clone(before, actor ? { actor } : undefined);
     // No await between the head guard and immutable edit construction.
     try {
@@ -241,6 +260,7 @@ export async function documentMutation({
         fingerprint: digest,
         pending: true,
         ...(doc !== PAGE_DOC && { doc }),
+        ...(writer && { writer: writer.id }),
         heads,
         changes: A.getChanges(before, after),
         receipt: { page_id: pageId, result: result ?? null },
@@ -277,7 +297,7 @@ export async function documentMutation({
         ...(warnings.length ? { warnings } : {}),
         ...(receiptFields && (await receiptFields(plan))),
       };
-      await storage.put({ [key]: entry, ...plan.writes });
+      await storage.put({ [key]: entry, ...plan.writes, ...writer?.writes });
       await storage.sync();
       await plan.settle();
       recorded = true;

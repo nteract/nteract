@@ -181,12 +181,20 @@ test("plain API edit write costs at 1, 10 and 100 consecutive edits", async (t) 
       );
   }
   assert.equal(actors.size, 100);
+  // Each actor is the host prefix, the caller's writer id and a fresh nonce.
+  const writer = [...actors][0].slice(16, 32);
   assert.ok(
     [...actors].every(
-      (actor) => actor.startsWith(host.plain.hostActorPrefix) && /^[a-f0-9]{32}$/.test(actor),
+      (actor) =>
+        actor.startsWith(host.plain.hostActorPrefix + writer) && /^[a-f0-9]{48}$/.test(actor),
     ),
   );
   assert.equal((await f.storage.list({ prefix: "plain/actor/" })).size, initialClaims);
+  // One writer record for one caller, however many edits it makes.
+  assert.deepEqual(
+    [...(await f.storage.list({ prefix: "plain/writer/" })).keys()],
+    [`plain/writer/${writer}`],
+  );
   assert.ok(stats.plainBytes < 60_000, JSON.stringify(stats));
   assert.ok(stats.puts <= 301, JSON.stringify(stats));
   assert.equal(stats.deletes, 0);

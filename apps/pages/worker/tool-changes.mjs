@@ -1,5 +1,5 @@
 import * as A from "@automerge/automerge";
-import { projectReadChanges } from "../model/read-changes.mjs";
+import { changeActors, projectReadChanges } from "../model/read-changes.mjs";
 
 const DEFAULT_BYTES = 128 * 1024;
 const bytes = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
@@ -18,11 +18,14 @@ const invalid = (message) => {
  * (`revisions`, as readTool takes it); a handle it no longer holds is
  * `resync_required`. The result names the current revisions as handles.
  * Oversized results fail as a whole; current heads never imply a partial delta.
+ * `writers(actors)` resolves the actors of the changes since the baseline to
+ * a Map of writers (worker/host-writers.mjs); without it the result has no
+ * attribution.
  */
 export async function readChangesTool(
   doc,
   args,
-  { revisions, recovery, historyIncomplete, commentsDoc } = {},
+  { revisions, recovery, historyIncomplete, commentsDoc, writers } = {},
 ) {
   const heads = A.getHeads(doc);
   let maxBytes = DEFAULT_BYTES,
@@ -56,6 +59,7 @@ export async function readChangesTool(
       args.since_comment_revision === undefined
         ? undefined
         : await revisions.heads("comments", args.since_comment_revision, "since_comment_revision");
+    const resolved = writers && (await writers(changeActors(doc, since)));
     const {
       since_heads: _since,
       heads: _heads,
@@ -70,6 +74,7 @@ export async function readChangesTool(
         max_bytes: maxBytes,
       },
       commentsDoc,
+      resolved ? { writerOf: (actor) => resolved.get(actor) ?? null } : {},
     );
     payload = { ...delta, since_revision: args.since_revision };
   } catch (error) {
