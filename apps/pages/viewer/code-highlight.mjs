@@ -69,6 +69,12 @@ export function languageFor(stored) {
   return byName.get(name) ?? null;
 }
 
+/** The CodeMirror language data the language's parser carries, such as
+ * `commentTokens` and `closeBrackets`. Empty for an unknown language. */
+export function languageData(stored) {
+  return languageFor(stored)?.parser.languageData ?? {};
+}
+
 // Mermaid never gets token decorations. Its block renders through a shape with
 // a hidden native content hole, and range decorations inside that hole stop
 // remote source edits from reaching it (Wordgard 0.6.2; see wordgard-widgets).
@@ -135,6 +141,47 @@ function readToken(token, stream, state) {
   }
   stream.skipToEnd();
   return "";
+}
+
+/** Whether `probe`, appended to `prefix`, joins a string, quote or comment
+ * token as `parser` reads it. */
+function probeJoinsString(parser, prefix, probe) {
+  const state = parser.startState ? parser.startState(2) : true;
+  const lines = (prefix + probe).split("\n");
+  const last = lines.pop();
+  for (const line of lines) {
+    const stream = new StringStream(line, 4, 2);
+    if (stream.eol()) parser.blankLine?.(state, 2);
+    while (!stream.eol()) readToken(parser.token, stream, state);
+  }
+  const stream = new StringStream(last, 4, 2);
+  for (;;) {
+    const token = readToken(parser.token, stream, state);
+    if (stream.eol()) return /string|quote|comment/.test(token || "");
+  }
+}
+
+/** Whether `offset` in code block `text` of `stored` language lies inside a
+ * string or a comment, as the highlighter's tokenizer reads the block up to
+ * it. The tokenizer reads a probe character placed at `offset`: inside a
+ * string or comment it joins that token. Each probe can start one by itself
+ * elsewhere (">" makes CSS `url(>` an unquoted string and JavaScript `-->` a
+ * comment; ")" is an unquoted HTML attribute value), so the offset counts as
+ * inside only when both join.
+ *
+ * Tokenizers that keep no state for an unfinished string read the probe as
+ * outside it: a multi-line YAML quoted scalar, an R backtick name, and Shell
+ * text right after `$` in a double-quoted string. Past the highlight cap the
+ * answer is true, so callers that pair quotes hold back. Null for a language
+ * with no highlighter. */
+export function insideStringOrComment(stored, text, offset) {
+  const language = languageFor(stored);
+  if (!language) return null;
+  if (offset >= MAX_HIGHLIGHT) return true;
+  const prefix = text.slice(0, offset);
+  return (
+    probeJoinsString(language.parser, prefix, ">") && probeJoinsString(language.parser, prefix, ")")
+  );
 }
 
 /** Add token decorations for the code block at `pos`, in document positions. */
