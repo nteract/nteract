@@ -99,6 +99,12 @@ try {
     import { SiftFocusStatus } from "@nteract/sift/handoff";
     // The worker entry must resolve for bundlers; there is no Worker here to run it.
     import "@nteract/sift/worker";
+    // A host without a DOM, such as a Cloudflare Worker, calls the bindings directly.
+    import { initSync, parquet_footer_summary } from "@nteract/sift/wasm";
+    declare const siftModule: WebAssembly.Module;
+    initSync({ module: siftModule });
+    const footerRows: number = parquet_footer_summary(new Uint8Array(), 0).num_rows;
+    void footerRows;
     setWorkerFactory(() => new Worker(new URL("@nteract/sift/worker", import.meta.url), { type: "module" }));
     const view = <SiftTable source={{ kind: "url", url: "/local.arrow" }} />;
     const status = <SiftFocusStatus label="Table focused" />;
@@ -193,6 +199,23 @@ try {
   } finally {
     wasm.free(handle);
   }
+  // `@nteract/sift/wasm` is the same glue, reached through the export map. A
+  // footer summary reads only the file's tail.
+  const bindings = await import(pathToFileURL(resolve(packed, manifest.exports["./wasm"].import)));
+  bindings.initSync({ module: binary });
+  const parquet = bindings.write_parquet_ipc(fixture);
+  const tail = parquet.subarray(-(bindings.parquet_footer_length(parquet) + 8));
+  const summary = bindings.parquet_footer_summary(tail, parquet.length);
+  assert.equal(summary.num_rows, 3);
+  assert.deepEqual(
+    [
+      summary.columns[0].name,
+      summary.columns[0].null_count,
+      summary.columns[0].min,
+      summary.columns[0].max,
+    ],
+    ["value", 1, 1, 3],
+  );
   if (process.argv.includes("--browser")) {
     const { testPackageBrowser } = await import("./test-package-browser.mjs");
     await testPackageBrowser({
@@ -204,7 +227,7 @@ try {
     });
   }
   console.log(
-    "Packed Sift: exports, declarations, compiled CSS, standalone imports, and real WASM decode/sort passed.",
+    "Packed Sift: exports, declarations, compiled CSS, standalone imports, real WASM decode/sort, and the wasm bindings export passed.",
   );
 } finally {
   await rm(scratch, { recursive: true, force: true });
