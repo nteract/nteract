@@ -56,7 +56,12 @@ Source layout under this directory:
 ### Charts
 
 `viewer/vega-chart.mjs` draws a Vega-Lite spec over datasets the caller
-supplies, in the Page's own document. Nothing in production loads it yet.
+supplies, in the Page's own document. The editor draws each `view` node with
+it ([viewer/wordgard-views.mjs](viewer/wordgard-views.mjs)): the node names a
+view, the host's `pages.view` document holds its spec and data bindings, and
+each binding reads one of the Page's sources. The chart code is its own chunk
+(`viewer/view-chart.mjs`), loaded only when a view nears the viewport; cards
+and previews draw a view as the node's figure and never load it.
 
 A chart is static: marks, axes, legends and Vega's hover tooltip. Selections,
 bindings, `param` predicates, hover encodings and every other event stream are

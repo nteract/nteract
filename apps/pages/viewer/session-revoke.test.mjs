@@ -92,6 +92,9 @@ function browser(t) {
 /** A Page with one paragraph and one comment in its comments document, as a
  * collaborator's browser holds it: an open session with both documents and a
  * written checkpoint of both. */
+/** A stand-in view document id, as the shared derivation returns one. */
+const VIEW_DOCUMENT_ID = async (pageId, viewId) => `view:${pageId}:${viewId}`;
+
 async function openCopy(auth = authentication(), { grant = access(), key = "1:writer" } = {}) {
   const pageId = crypto.randomUUID();
   const documentId = interpretAsDocumentId(generateAutomergeUrl());
@@ -110,6 +113,7 @@ async function openCopy(auth = authentication(), { grant = access(), key = "1:wr
   const session = new PageSession(pageId, {
     authentication: auth,
     refreshSession: async () => auth,
+    viewDocumentId: VIEW_DOCUMENT_ID,
   });
   session.acceptAuthentication(auth);
   session.access = grant;
@@ -251,12 +255,16 @@ test("each host answer retires, deletes or keeps the open copy", async (t) => {
             Response.json({ identity: auth.identity, documentId, access: access("none", 1, 2) })),
       );
       t.after(() => session.close());
+      const held = session.views.hold("sales");
       await session.retryConnection();
       await session.cacheTail?.catch(() => {});
       clearTimeout(session.retryTimer);
+      const viewState = session.views.replica("sales").state$.snapshot().name;
+      held.release();
       const stored = await readLocalPage(auth.identity, pageId, { markers: true });
       const recoveries = await listLocalRecoveries(auth.identity, pageId);
       if (answer.outcome === "kept") {
+        assert.notEqual(viewState, "retired");
         assert.equal(session.hidden, false);
         assert.equal(session.revoked, false);
         assert.equal(session.deleted, false);
@@ -268,6 +276,7 @@ test("each host answer retires, deletes or keeps the open copy", async (t) => {
         return;
       }
       assert.equal(session.hidden, true);
+      assert.equal(viewState, "retired", "a held view retires with the copy");
       assert.equal(session.revoked, answer.outcome === "revoked");
       assert.equal(session.deleted, answer.outcome === "deleted");
       assert.equal(session.alive, false);
@@ -560,8 +569,11 @@ test("the host's 4404 page_deleted socket close retires the copy as deleted", as
   const socket = { close() {} };
   session.sockets.add(socket);
   session.socketOutcomes.set(socket, admissionCloseOutcome({ code: 4404, reason: "page_deleted" }));
+  const held = session.views.hold("sales");
   session.socketDisconnected(socket);
   assert.equal(session.deleted, true, "not the signing-key refusal");
+  assert.equal(session.views.replica("sales").state$.snapshot().name, "retired");
+  held.release();
   assert.equal(session.snapshot(), null);
   await session.closeSettled();
   assert.equal(session.phase$.snapshot().name, "retired");
@@ -1317,6 +1329,11 @@ test("a comments serialization that throws fails the retirement and keeps both d
   lookups[0].resolve({ doc: () => sources, on() {}, off() {} });
   await tick();
   assert.deepEqual(Object.keys(session.pageSources.snapshot()), ["usage"]);
+  // A view is held and its lookup is running.
+  session.views.hold("sales");
+  await until(() => lookups.length === 2, "the view lookup");
+  const viewLookup = lookups[1];
+  assert.equal(viewLookup.id, await VIEW_DOCUMENT_ID(pageId, "sales"));
   const releases = t.mock.method(session, "releaseLocal", async () => {});
   const before = await readLocalPage(auth.identity, pageId, { markers: true });
   await session.revoke();
@@ -1325,8 +1342,11 @@ test("a comments serialization that throws fails the retirement and keeps both d
     reason: "access",
     held: true,
   });
-  // The sources document retires anyway: nothing in it waits on capture.
+  // The sources and view documents retire anyway: nothing in them waits on
+  // capture.
   assert.deepEqual(session.sources.state$.snapshot(), { name: "retired" });
+  assert.equal(session.views.replica("sales").state$.snapshot().name, "retired");
+  assert.equal(viewLookup.signal.aborted, true);
   assert.equal(session.sources.doc, undefined);
   assert.deepEqual(session.pageSources.snapshot(), {});
   assert.equal(session.hidden, true, "the Page stays hidden");
@@ -1599,6 +1619,8 @@ test("revocation retires the sources replica with the Page's others and archives
   assert.equal(session.sources.state$.snapshot().name, "ready");
   const versions = [];
   session.pageSources.versions(["usage"]).subscribe((v) => versions.push(v.usage));
+  const held = session.views.hold("sales");
+  await until(() => lookups.length === 2, "the view lookup");
 
   t.mock.method(
     globalThis,
@@ -1610,11 +1632,18 @@ test("revocation retires the sources replica with the Page's others and archives
   assert.equal(session.revoked, true);
   assert.deepEqual(session.sources.state$.snapshot(), { name: "retired" });
   assert.equal(session.sources.doc, undefined, "nothing reads the retired sources document");
+  assert.equal(lookups[1].signal.aborted, true, "the view lookup stops");
+  lookups[1].resolve({ doc: () => A.from({ title: "late" }), on() {}, off() {} });
+  await tick();
+  assert.equal(session.views.replica("sales").state$.snapshot().name, "retired");
+  assert.equal(session.views.replica("sales").doc, undefined, "its late handle never installs");
+  held.release();
   // A discovery after retirement opens nothing.
   session.openSources();
   session.sources.discovered(session.connection);
+  session.views.hold("costs");
   await tick();
-  assert.equal(lookups.length, 1);
+  assert.equal(lookups.length, 2);
   // The archive holds the Page and its comments, and nothing of the sources.
   const records = await listLocalRecoveries(auth.identity, pageId);
   assert.equal(records.length, 1);

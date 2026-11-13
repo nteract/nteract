@@ -1,6 +1,15 @@
 import * as A from "@automerge/automerge/slim";
 import { boundedWriter } from "./author.mjs";
 import { readSource, validSourceId } from "./sources-doc.mjs";
+import {
+  bindingOf,
+  fail,
+  isMap,
+  readView,
+  validRevision,
+  validTitle,
+  validTime,
+} from "./view-record.mjs";
 import { SOURCE_ID_PATTERN } from "../shared/sources.mjs";
 import { checkViewSpec } from "../shared/view-spec.mjs";
 import {
@@ -11,7 +20,6 @@ import {
   VIEW_DATA_NAME_PATTERN,
   VIEW_ID_PATTERN,
   VIEW_MEDIA_TYPES,
-  VIEW_REVISION_PATTERN,
   validDataName,
   validViewId,
 } from "../shared/views.mjs";
@@ -47,26 +55,7 @@ import {
  * (a write stored the document and stopped before its change applied).
  */
 
-const STATUS = {
-  invalid_view: 400,
-  view_not_found: 404,
-  stale_view: 409,
-  unknown_source: 400,
-  unknown_source_revision: 400,
-};
 const FIELDS = ["op", "view_id", "title", "media_type", "spec", "data", "view_revision"];
-const REVISION = new RegExp(VIEW_REVISION_PATTERN);
-
-function fail(code, message, details) {
-  throw Object.assign(Error(message), { status: STATUS[code], code, ...(details && { details }) });
-}
-const isMap = (value) => !!value && typeof value === "object" && !Array.isArray(value);
-const validRevision = (value) =>
-  typeof value === "string" && REVISION.test(value) && Number.isSafeInteger(Number(value));
-const validTitle = (title) =>
-  typeof title === "string" && !!title.trim() && title.trim().length <= MAX_VIEW_TITLE;
-const validTime = (value) =>
-  typeof value === "string" && value.length <= 64 && !Number.isNaN(Date.parse(value));
 
 /** Hex of 16 bytes: the genesis actor for a view document. */
 function genesisActor(uuid) {
@@ -89,72 +78,7 @@ export function viewGenesis(uuid) {
   );
 }
 
-/** A binding as a plain object, or undefined for one no host write stores. */
-function bindingOf(value) {
-  if (!isMap(value) || !validSourceId(value.source_id)) return undefined;
-  const keys = Object.keys(value);
-  if (keys.some((key) => key !== "source_id" && key !== "revision")) return undefined;
-  if (value.revision === undefined) return { source_id: value.source_id };
-  return validRevision(value.revision)
-    ? { source_id: value.source_id, revision: value.revision }
-    : undefined;
-}
-
-/** A stored `data` map as plain bindings, or undefined when one is not a
- * binding a host write stores. */
-function dataOf(data) {
-  if (!isMap(data)) return undefined;
-  const entries = Object.entries(data);
-  if (entries.length > MAX_VIEW_DATA) return undefined;
-  const out = [];
-  for (const [name, value] of entries) {
-    const binding = bindingOf(value);
-    if (!binding || !validDataName(name)) return undefined;
-    out.push([name, binding]);
-  }
-  // Built from entries, so no key can reach a prototype.
-  return Object.fromEntries(out);
-}
-
-/** The view a document holds, as an agent reads it with its spec, or
- * undefined for a document with no view yet. A record no host write
- * produces is invalid_view. */
-export function readView(doc, viewId) {
-  if (!doc || doc.revision === undefined) return undefined;
-  const producer = doc.producer;
-  const data = dataOf(doc.data);
-  let spec;
-  try {
-    spec = JSON.parse(String(doc.spec ?? ""));
-  } catch {
-    spec = undefined;
-  }
-  if (
-    !validRevision(doc.revision) ||
-    !validTitle(doc.title) ||
-    typeof doc.media_type !== "string" ||
-    !data ||
-    !isMap(spec) ||
-    !isMap(producer) ||
-    typeof producer.kind !== "string" ||
-    !validTime(producer.at) ||
-    !isMap(producer.by)
-  )
-    fail("invalid_view", "Malformed view record");
-  return {
-    view_id: viewId,
-    title: doc.title,
-    media_type: doc.media_type,
-    revision: doc.revision,
-    data,
-    spec,
-    producer: {
-      kind: producer.kind,
-      at: producer.at,
-      by: JSON.parse(JSON.stringify(producer.by)),
-    },
-  };
-}
+export { readView };
 
 /** One view as read_page `views: true` lists it: no spec, no producer. */
 export function viewSummary(doc, viewId) {
@@ -164,8 +88,9 @@ export function viewSummary(doc, viewId) {
   return { view_id, title, media_type, revision, data };
 }
 
-// A title a write may set; a stored title is read with validTitle alone, as
-// a source name is (model/sources-doc.mjs).
+// A title a write may set holds no control characters; a stored title is
+// read by its length and trimmed text alone (model/view-record.mjs), as a
+// source name is (model/sources-doc.mjs).
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001f\u007f]/;
 

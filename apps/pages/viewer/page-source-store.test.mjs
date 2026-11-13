@@ -101,8 +101,79 @@ test("the projection reads each source, and an entry the host would refuse hides
       asset_id: asset("a"),
       media_type: PARQUET_MEDIA_TYPE,
       revision: "1",
+      pins: { 1: { asset_id: asset("a"), media_type: PARQUET_MEDIA_TYPE } },
     },
   });
+});
+
+test("a pinned binding reads the history state its revision names", () => {
+  const host = hostDoc();
+  host.set("usage", asset("a"));
+  host.set("usage", asset("b"));
+  const { store } = storeOver(host.set("usage", asset("c")));
+  assert.deepEqual(store.resolve({ source_id: "usage", revision: "2" }), {
+    source_id: "usage",
+    asset_id: asset("b"),
+    media_type: PARQUET_MEDIA_TYPE,
+    revision: "2",
+  });
+  assert.equal(store.resolve({ source_id: "usage" }).asset_id, asset("c"));
+  assert.throws(
+    () => store.resolve({ source_id: "usage", revision: "9" }),
+    (error) => error instanceof SourceUnavailable && error.reason === "revision",
+  );
+  assert.throws(
+    () => store.resolve({ source_id: "gone", revision: "1" }),
+    (error) => error instanceof SourceUnavailable && error.reason === "missing",
+  );
+});
+
+test("a reader waiting on a source the store doesn't hold asks for the document while it waits", () => {
+  const host = hostDoc();
+  const doc$ = new BehaviorSubject(undefined);
+  let asks = 0;
+  let standing = 0;
+  const demand = () => {
+    asks++;
+    standing++;
+    let held = true;
+    return () => {
+      if (held) standing--;
+      held = false;
+    };
+  };
+  const store = new PageSourceStore({ pageId: PAGE, doc$, demand });
+  // Nothing reads a source: nothing asks.
+  assert.equal(asks, 0);
+  const seen = [];
+  const follower = store.versions(["usage"]).subscribe((v) => seen.push(v.usage));
+  assert.deepEqual([asks, standing], [1, 1], "a follower of a missing source keeps asking");
+  assert.throws(() => store.resolve({ source_id: "usage" }), SourceUnavailable);
+  assert.deepEqual([asks, standing], [2, 1], "a resolve of a missing source asks once");
+  doc$.next(host.set("usage", asset("a")));
+  assert.equal(seen.at(-1).asset_id, asset("a"));
+  assert.equal(standing, 0, "a source that arrived stops the asking");
+  doc$.next(host.set("costs", asset("b")));
+  assert.deepEqual([asks, standing], [2, 0], "a change to another source asks nothing");
+  follower.unsubscribe();
+
+  const waiting = store.versions(["gone"]).subscribe(() => {});
+  assert.equal(standing, 1);
+  waiting.unsubscribe();
+  assert.equal(standing, 0, "a reader that stops waiting stops asking");
+});
+
+test("each decoder gets its own resolver over the Page's one byte cache", async () => {
+  const host = hostDoc();
+  const { store, fetches: fetcher } = storeOver(host.set("usage", asset("a")));
+  const tables = store.resolver(async (bytes) => ({ kind: "table", bytes }));
+  const charts = store.resolver(async (bytes) => ({ kind: "chart", bytes }));
+  assert.notEqual(tables, charts);
+  const version = store.resolve({ source_id: "usage" });
+  assert.equal((await tables.load(version)).table.kind, "table");
+  assert.equal((await charts.load(version)).table.kind, "chart");
+  assert.equal(fetcher.calls.length, 1, "both read one download");
+  assert.deepEqual(charts.cached(), [asset("a")]);
 });
 
 test("a refresh reaches the subscriber of that source and not another", () => {

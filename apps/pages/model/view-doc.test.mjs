@@ -94,6 +94,25 @@ test("setView writes the view, mints revisions and replaces the spec as text", (
   assert.ok(!patches.some((patch) => patch.action === "put" && patch.path[0] === "spec"));
 });
 
+test("a padded title is stored and read trimmed, and a stored title is bounded before any trim", () => {
+  const sourcesDoc = sources();
+  const doc = A.change(viewGenesis(uuid), (draft) =>
+    setView(draft, op({ title: "  Daily  " }), { sourcesDoc, by }),
+  );
+  assert.equal(doc.title, "Daily");
+  assert.equal(readView(doc, "daily").title, "Daily");
+
+  const stored = (title) =>
+    A.change(A.clone(doc), (draft) => {
+      draft.title = title;
+    });
+  // A record the writer never stores: its trimmed text is what a reader sees.
+  assert.equal(readView(stored(" Daily "), "daily").title, "Daily");
+  assert.equal(readView(stored(`D${" ".repeat(199)}`), "daily").title, "D");
+  for (const title of [`D${" ".repeat(200)}`, `D${" ".repeat(10_000)}`, "   "])
+    assert.throws(() => readView(stored(title), "daily"), { code: "invalid_view" });
+});
+
 test("checkView refuses unknown sources, unheld pinned revisions and stale revisions", () => {
   const sourcesDoc = sources(2);
   const refusal = (fields, doc) => {

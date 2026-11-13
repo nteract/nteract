@@ -1529,8 +1529,8 @@ reader that syncs it sees each source's `producer.by` and every earlier
 writer in its changes, as comment authors are visible to comment readers.
 
 The viewer declares `pages.sources:1` and syncs the document read-only
-([viewer/sources-replica.mjs](viewer/sources-replica.mjs), with its states in
-[viewer/sources-open-machine.mjs](viewer/sources-open-machine.mjs)). Each
+([viewer/host-doc-replica.mjs](viewer/host-doc-replica.mjs), with its states in
+[viewer/host-doc-open-machine.mjs](viewer/host-doc-open-machine.mjs)). Each
 connection the host admits brings its discovery, which moves the machine:
 no `documents.sources` is `absent` and looks nothing up; a descriptor at a
 format this build doesn't read is `unreadable`; a discovery without a
@@ -1546,19 +1546,38 @@ Page deleted) cancels a lookup, drops the document from memory and moves the
 machine to `retired`, from which nothing opens it again; a reopened retired
 Page opens nothing either. It does this on every path, a failed recovery
 capture included. The document's synced bytes stay in the tab's replica
-database, the same as the Page's and comments' synced bytes. A
-document the host creates while a tab is open reaches that tab at its next
-admitted connection: the host tells no open socket that the record gained
-the type.
+database, the same as the Page's and comments' synced bytes.
+
+The host tells no open socket that the record gained the type, so a document
+it creates while a tab is open isn't named until the next admitted
+connection. The viewer derives the document's id from the Page id instead
+([shared/document-ids.mjs](shared/document-ids.mjs)) and looks it up
+on the live connection when a reader asks for a source the Page doesn't hold
+and the machine is `absent`. A miss there is the host saying the document
+doesn't exist yet. The lookup retries twice on the backoff, then the machine
+rests in `absent` behind a look-again window: asks inside it run one lookup
+when it ends, and each further miss widens it (10 s, 30 s, then 60 s). The
+misses outlast a closed replica and a new connection: a lookup by the derived
+id after one waits out what is left of the window, then looks once, with no
+new burst. A reader still waiting on a missing source is
+standing demand: while it waits, one lookup runs as each window ends, so a
+document the host creates later is found; when nothing waits, nothing runs.
+View documents work the same way, with a held view embed as the demand.
+Before each lookup that follows a miss, the
+repo's cached unavailable answer is evicted so the lookup asks the host;
+eviction runs only while the repo still holds that answer and no replica has
+the document installed. A Page with no sources and nothing asking looks
+nothing up.
 
 The Page's source store ([viewer/page-source-store.mjs](viewer/page-source-store.mjs))
 projects the document's readable sources by id, skipping an entry the host
 would refuse as `invalid_source`. `versions(ids)` emits only when one of
-those sources changes. Its one resolver per session turns `{ source_id }` or
-`{ asset_id }` into `{ asset_id, media_type, revision }` and loads the
-table through Sift's loader, sharing a byte cache of the four most recent
-assets; each table decodes its own copy and frees it when unmounted,
-replaced or abandoned mid-load. Released with the session, the store reads
+those sources changes. `resolve` turns `{ source_id }`, `{ source_id,
+revision }` (the source's history state at that revision) or `{ asset_id }`
+into `{ asset_id, media_type, revision }`. Each decoder (Sift's loader for a
+table, an Arrow decoder for a chart) gets its own resolver over one byte
+cache of the four most recent assets; each table decodes its own copy and
+frees it when unmounted, replaced or abandoned mid-load. Released with the session, the store reads
 as a Page with no sources: its versions emit null and resolve refuses. The
 editor draws every dataframe from its pinned asset
 ([viewer/dataframe-binding.mjs](viewer/dataframe-binding.mjs)), fetching the
@@ -1754,9 +1773,42 @@ with `data-view-id`. `insert_node` with `{ type: "view", attrs: { view_id }
 `replace_block_markdown` keeps the node for that exact line as it keeps a
 dataframe's. An outline entry has `type: "view"`, `attrs: { view_id }`, and
 `summary: { title, media_type }` when the view exists. Comments refuse a view
-node. A view stored inside a text container reads as a notice. Until the
-viewer draws charts, the editor, cards and previews show a view as a figure
-naming its view id.
+node. A view stored inside a text container reads as a notice.
+
+### Drawing a view
+
+The editor, editable or read-only, draws each `view` node as its chart
+([viewer/wordgard-views.mjs](viewer/wordgard-views.mjs)). Cards and previews
+draw the node's own figure naming its view id, and load no chart code. Near
+the viewport an embed loads the chart chunk
+([viewer/view-chart.mjs](viewer/view-chart.mjs): Vega, Vega-Lite and the
+Arrow decoder) and holds its view while the chart is mounted.
+
+The viewer opens each held view's document read-only by its derived id on the
+live connection ([viewer/view-replicas.mjs](viewer/view-replicas.mjs)), with
+the sources document's lookup machine
+([viewer/host-doc-open-machine.mjs](viewer/host-doc-open-machine.mjs)): a view
+whose document doesn't exist yet, such as one written while the tab is open,
+is looked up again once per look-again window while its embed holds it. The
+document is read with the host's reader
+([model/view-record.mjs](model/view-record.mjs) `readView`): a document with
+no `revision` reads as not on this Page, and a record no host write produces
+reads as one that can't be read. At most 10 views have an open replica; a
+view named past that waits for a slot, and a view whose document is missing
+gives its slot to one that hasn't had one, so every view the Page holds
+draws.
+
+Each data name resolves through the Page's source store: `{ source_id }`
+follows the source, and `{ source_id, revision }` reads that revision's
+history state. Each source version is fetched and decoded once
+([viewer/view-arrow.mjs](viewer/view-arrow.mjs)) into an Arrow table whose
+values convert to what a chart reads as the renderer copies them: decimals at
+their scale, 64-bit integers and times as numbers, nested values as plain
+arrays and objects. A data name whose source is missing, or whose pinned
+revision the history no longer holds, draws as no rows with one sentence
+naming the source under the chart. A spec `checkChartSpec` refuses, or one
+the renderer refuses at draw, shows its sentence; a chart that throws
+draws nothing and says it couldn't be drawn.
 
 `read_page` takes `views: true`, listing `{ view_id, title, media_type,
 revision, data }` for each view, and `view_id`, which reads one with its

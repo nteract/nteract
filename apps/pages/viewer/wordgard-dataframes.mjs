@@ -70,6 +70,8 @@ export const DATAFRAME_STATUS = Object.freeze({
   waiting: "This table loads when you scroll to it.",
   loading: "Loading table…",
 });
+/** What a table says when its renderer chunk can't load. */
+export const DATAFRAME_UNAVAILABLE = "Table unavailable.";
 
 /** How far outside the viewport a table starts loading, so it's usually
  * drawn by the time a reader scrolls to it. */
@@ -124,7 +126,9 @@ export const observeNearViewport = (element, onChange) =>
  * Runs dataframeTableMachine (dataframe-table-machine.mjs) for one table,
  * with its effects at the edge: the viewport watcher, the one armed timer,
  * the renderer chunk and the mounted instance. A media type with no renderer
- * (`load` undefined) never connects.
+ * (`load` undefined) never connects. `texts` (waiting, loading) and
+ * `unavailable` are what it shows; a chart embed (wordgard-views.mjs) passes
+ * its own.
  */
 export function dataframeLifecycle({
   load,
@@ -138,6 +142,8 @@ export function dataframeLifecycle({
   observe = observeNearViewport,
   scheduler = asyncScheduler,
   onUnavailable,
+  texts = DATAFRAME_STATUS,
+  unavailable = DATAFRAME_UNAVAILABLE,
 }) {
   let model = dataframeTableMachine.initial,
     timer = null,
@@ -153,7 +159,7 @@ export function dataframeLifecycle({
     switch (effect.type) {
       case "showStatus":
         status.hidden = false;
-        status.textContent = DATAFRAME_STATUS[effect.status];
+        status.textContent = texts[effect.status];
         return;
       case "observe":
         stopWatching?.();
@@ -204,8 +210,8 @@ export function dataframeLifecycle({
       case "fail":
         onUnavailable?.();
         status.hidden = false;
-        status.textContent = "Table unavailable.";
-        if (announce) announce.textContent = "Table unavailable.";
+        status.textContent = unavailable;
+        if (announce) announce.textContent = unavailable;
         return;
       case "destroy":
         instance?.destroy();
