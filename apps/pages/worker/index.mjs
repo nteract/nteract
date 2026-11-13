@@ -28,6 +28,7 @@ import {
   parseDeclaredFeatures,
   requireSupportedSchema,
   schemaUnsupported,
+  unsupportedFeatures,
 } from "../model/schema-features.mjs";
 import { unsupportedMarkdown, unsupportedMarkdownError } from "../model/markdown-scan.mjs";
 import { applyComment, commentsMigrated } from "../model/comments.mjs";
@@ -5210,14 +5211,17 @@ export class Page {
       // cap, and purge still removes it.
       if (format !== WRITTEN_FORMATS[VIEW_MODULE.type]) continue;
       const opened = this.views?.get(viewId)?.state.name === "ready";
-      await this.viewEvent(viewId, { type: "boot", recorded: true });
       // A slot no write landed in: the host stopped between the key and the
       // journal entry, or the write failed after the key. Released only by
-      // the boot that opened it, before any socket can hold the document.
-      // A failed release fails the boot; the next boot retries it.
+      // the boot that opened it, before any socket can hold the document,
+      // and not while its journal can't replay (a pending intent may fill
+      // it). A release that fails leaves the slot `releasing`, unserved and
+      // unlisted, and the Page boots; the next boot or write to the id runs
+      // it again.
+      await this.releasingTolerated(viewId, { type: "boot", recorded: true });
       const doc = this.viewDoc(viewId);
-      if (!opened && doc && doc.revision === undefined)
-        await this.viewEvent(viewId, { type: "release" });
+      if (!opened && doc && doc.revision === undefined && this.pageEditable())
+        await this.releasingTolerated(viewId, { type: "release" });
       this.forgetIdleView(viewId);
     }
     await this.restoreTitleProjection();
@@ -5495,12 +5499,13 @@ export class Page {
         this.sourcesHandle = await this.importDerived(SOURCES_MODULE, this.sourcesUuid);
         this.assertNotAbandoned();
         if (effect === "load") {
-          await recoverDocumentMutations(
-            this.ctx.storage,
-            this.sourcesHandle,
-            () => this.flush(),
-            SOURCES_DOC,
-          );
+          if (this.pageEditable())
+            await recoverDocumentMutations(
+              this.ctx.storage,
+              this.sourcesHandle,
+              () => this.flush(),
+              SOURCES_DOC,
+            );
           return { type: "loaded" };
         }
         await this.plain.flush([documentId]);
@@ -5523,6 +5528,15 @@ export class Page {
       default:
         throw Error(`Unknown sources effect ${effect}`);
     }
+  }
+
+  /** Whether this build can write the Page's documents: the Page's schema
+   * stamp names no feature it lacks. While it does, a pending intent for
+   * the sources or a view document isn't replayed (SyncHost's gate would
+   * refuse it, and the boot with it); it stays pending for a build that
+   * supports the stamp, and the document loads at its stored state. */
+  pageEditable() {
+    return !unsupportedFeatures(this.handle.doc()).length;
   }
 
   /** Forget the sources document: the Page's documents are gone. */
@@ -5593,6 +5607,17 @@ export class Page {
     if (this.views?.get(viewId)?.state.name === "absent") this.views.delete(viewId);
   }
 
+  /** Step view `viewId` with `event`; a failed release, which leaves the
+   * view `releasing`, is logged instead of thrown. Any other failure throws. */
+  async releasingTolerated(viewId, event) {
+    try {
+      await this.viewEvent(viewId, event);
+    } catch (error) {
+      if (this.views?.get(viewId)?.state.name !== "releasing") throw error;
+      logFailure(error, "view-release");
+    }
+  }
+
   /** Run `step` after every earlier one. A write takes its view slot here,
    * so the view cap is read and the key written as one step. */
   viewSlot(step) {
@@ -5637,12 +5662,13 @@ export class Page {
         entry.handle = await this.importDerived(VIEW_MODULE, entry.uuid);
         this.assertNotAbandoned();
         if (effect === "load") {
-          await recoverDocumentMutations(
-            this.ctx.storage,
-            entry.handle,
-            () => this.flush(),
-            keyedDoc(VIEW_MODULE, viewId),
-          );
+          if (this.pageEditable())
+            await recoverDocumentMutations(
+              this.ctx.storage,
+              entry.handle,
+              () => this.flush(),
+              keyedDoc(VIEW_MODULE, viewId),
+            );
           return { type: "loaded" };
         }
         await this.plain.flush([derivedDocumentId(entry.uuid)]);
@@ -7126,7 +7152,7 @@ export class Page {
     // covers it, as a comment's does.
     const agent = agentFromProvenance(identity.clientProvenance);
     await this.sourcesDocumentId();
-    if (this.sourcesView())
+    if (this.sourcesView() && this.pageEditable())
       await recoverDocumentMutations(
         this.ctx.storage,
         this.sourcesHandle,
@@ -7152,7 +7178,14 @@ export class Page {
         args,
         identity,
         agent,
-        guard: (input) => input,
+        // The Page's stamp gates every document of the Page, as SyncHost's
+        // gate does, so it is checked before the intent is journaled. A
+        // recorded receipt still replays.
+        guard: (input) => {
+          requireSupportedSchema(this.handle.doc());
+          return input;
+        },
+        schemaDoc: () => this.handle.doc(),
         pageHeads: () => A.getHeads(this.handle.doc()),
         prepare: async () => {
           let assetIds;
@@ -7230,7 +7263,7 @@ export class Page {
     // a source's does.
     const agent = agentFromProvenance(identity.clientProvenance);
     const uuid = this.views?.get(viewId)?.uuid ?? (await viewDocUuid(this.metadata.pageId, viewId));
-    if (this.viewDoc(viewId))
+    if (this.viewDoc(viewId) && this.pageEditable())
       await recoverDocumentMutations(
         this.ctx.storage,
         this.views.get(viewId).handle,
@@ -7256,7 +7289,14 @@ export class Page {
         args,
         identity,
         agent,
-        guard: (input) => input,
+        // The Page's stamp gates every document of the Page, as SyncHost's
+        // gate does, so it is checked before the intent is journaled. A
+        // recorded receipt still replays.
+        guard: (input) => {
+          requireSupportedSchema(this.handle.doc());
+          return input;
+        },
+        schemaDoc: () => this.handle.doc(),
         pageHeads: () => A.getHeads(this.handle.doc()),
         prepare: async () => {
           try {
@@ -7293,9 +7333,19 @@ export class Page {
             this.policy.account(current, true);
             const entry = await this.viewEntry(viewId);
             try {
-              // A release a failed boot or create left unfinished ends first.
+              // A release a boot or an earlier write left unfinished ends
+              // first; until it does, the id takes no write.
               if (entry.state.name === "releasing") {
-                await this.viewEvent(viewId, { type: "release" });
+                try {
+                  await this.viewEvent(viewId, { type: "release" });
+                } catch (error) {
+                  logFailure(error, "view-release");
+                  throw new HttpError(
+                    503,
+                    `The view "${viewId}" is still being cleared after a failed write. Try again shortly.`,
+                    "view_unavailable",
+                  );
+                }
                 listed.splice(listed.indexOf(viewId), 1);
               }
               await this.viewEvent(viewId, { type: "create", recorded: listed.includes(viewId) });

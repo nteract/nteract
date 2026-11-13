@@ -17,10 +17,12 @@
 //              the journal like every tool write
 //   releasing  a slot the boot that opened it found with no write: the host
 //              stops serving the document and removes it, then deletes the
-//              key and syncs. It stays here until the key is gone; a failed
-//              release fails the boot, and the next boot (or, in a host
-//              that is already running, the next write to this id) runs it
-//              again. Nothing is created under the id meanwhile
+//              key and syncs. It stays here until the key is gone. A failed
+//              release leaves it here in a running host: the Page boots and
+//              works, the view is not served, listed or writable, and the
+//              next boot or the next write to this id runs the release again
+//              (that write proceeds once it finishes, and is refused as
+//              retryable while it fails)
 //
 // The document is served from `storing` on, so a tab that is open when the
 // view is created can sync it as soon as the Page body names it; nothing
@@ -29,7 +31,9 @@
 // whose write failed, is never advertised. A running host never removes a
 // served document: every refusal known in advance comes before the slot is
 // taken, a slot whose write failed stays, and only boot releases, before
-// any socket can hold the document.
+// any socket can hold the document. Boot doesn't release while the Page's
+// schema stamp names a feature this build lacks: the view's journal isn't
+// replayed then, and a pending intent may still fill the slot.
 //
 // Each persisted step is idempotent: the document id and genesis are fixed
 // by the Page id and view id, so storing again stores nothing new, and the

@@ -564,6 +564,9 @@ export const RETRYABLE_SERVER_CODES = Object.freeze([
   "tags_unavailable",
   // Kilo could not check an agent token (kilo-token.mjs).
   "sign_in_unavailable",
+  // A view slot's release after a failed write hasn't finished
+  // (view-lifecycle.mjs `releasing`).
+  "view_unavailable",
 ]);
 
 const LOGGED_ERROR_TYPES = [

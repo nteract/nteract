@@ -91,8 +91,9 @@ const TABLE = {
     drop: ["absent", []],
   },
   releasing: {
-    // A boot or the host's own release event runs the release again; no
-    // create is taken until it finishes.
+    // Reachable in a running host after a failed release. A boot or the
+    // host's own release event (before a write to the id) runs the release
+    // again; no create is taken until it finishes.
     "boot:recorded": ["releasing", ["release"]],
     "boot:unrecorded": ["releasing", ["release"]],
     "create:recorded": null,

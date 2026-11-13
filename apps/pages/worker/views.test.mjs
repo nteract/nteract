@@ -36,7 +36,10 @@ class PlainStorage extends Storage {
   failDeletes = [];
   // Tests of this storage: the next sync one passes throws once.
   failSyncs = [];
+  // Tests in `stuck` fail every time they pass, until removed.
+  stuck = [];
   async sync() {
+    if (this.stuck.some((test) => test.sync?.(this))) throw Error("Simulated sync failure");
     const index = this.failSyncs.findIndex((test) => test(this));
     if (index >= 0) {
       this.failSyncs.splice(index, 1);
@@ -46,6 +49,8 @@ class PlainStorage extends Storage {
   }
   async delete(key) {
     const names = Array.isArray(key) ? key : [key];
+    if (this.stuck.some((test) => names.some((name) => test.delete?.(name))))
+      throw Error("Simulated delete failure");
     const index = this.failDeletes.findIndex((test) => names.some(test));
     if (index >= 0) {
       this.failDeletes.splice(index, 1);
@@ -663,51 +668,122 @@ test("boot releases a slot no write landed in", async (t) => {
   assert.equal(written.body.view_revision, "1");
 });
 
-for (const [step, fail] of [
-  // The release deletes the document, then the key, then syncs.
-  [
-    "the document delete",
-    async (storage) => {
-      const tree = `plain/sync/${treeOf(await viewDocumentId(pageId, "daily"))}/`;
-      storage.failDeletes.push((name) => name.startsWith(tree));
-    },
-  ],
-  ["the key delete", (storage) => storage.failDeletes.push((name) => name === "host/view/daily")],
-  [
-    "the sync after the key delete",
-    (storage) =>
-      storage.failSyncs.push(
-        (self) => !self.values.has("host/view/daily") && self.synced.has("host/view/daily"),
-      ),
-  ],
-])
-  test(`a boot whose release fails at ${step} fails, and the next boot finishes it`, async (t) => {
+/** Each step of an empty slot's release, failing every time it runs. */
+const releaseSteps = async () => {
+  const tree = `plain/sync/${treeOf(await viewDocumentId(pageId, "daily"))}/`;
+  return [
+    ["the document delete", { delete: (name) => name.startsWith(tree) }],
+    ["the key delete", { delete: (name) => name === "host/view/daily" }],
+  ];
+};
+const syncAfterKeyDelete = (storage) =>
+  !storage.values.has("host/view/daily") && storage.synced.has("host/view/daily");
+
+// A sync that keeps failing fails every write to the Page, so only the
+// deletes are made to fail every time.
+for (const step of ["the document delete", "the key delete"])
+  test(`a release that keeps failing at ${step} leaves the Page readable and editable, and the id takes no write until it finishes`, async (t) => {
     const h = await viewsHost(t);
     await emptySlot(h);
-    await fail(h.storage);
-    const failed = h.page();
-    const read = await h.tool(failed, "read_page", { views: true });
-    assert.equal(read.status, 500, JSON.stringify(read.body));
-    assert.equal(h.storage.failDeletes.length + h.storage.failSyncs.length, 0, "the failure ran");
+    const stuck = new Map(await releaseSteps()).get(step);
+    h.storage.stuck.push(stuck);
+    for (let boot = 0; boot < 2; boot++) {
+      const host = h.page();
+      const read = await h.tool(host, "read_page", { comments: "none" });
+      assert.equal(read.status, 200, JSON.stringify(read.body));
+      assert.equal(host.views.get("daily").state.name, "releasing");
+      const edited = await h.edit(host, [{ op: "set_title", title: `Usage ${boot}` }]);
+      assert.equal(edited.status, 200, JSON.stringify(edited.body));
+      const listed = (await h.tool(host, "read_page", { views: true })).body.views;
+      assert.ok(!listed.some((view) => view.view_id === "daily"));
+      assert.equal(
+        (await h.call(host, `/api/connect?page=${pageId}`)).body.documents.views?.daily,
+        undefined,
+      );
+      const answer = await browser(host.plain).ask(await viewDocumentId(pageId, "daily"));
+      assert.notEqual(answer.has, true, "the document isn't served");
+      const refused = await h.setView(host);
+      assert.equal(refused.status, 503, JSON.stringify(refused.body));
+      assert.equal(refused.body.code, "view_unavailable");
+      assert.equal(refused.body.retryable, true);
+      assert.equal(host.views.get("daily").state.name, "releasing");
+      const other = await h.setView(host, { view_id: `other-${boot}` });
+      assert.equal(other.status, 200, "other ids work");
+    }
+    // Once storage recovers, the next write to the id finishes the release
+    // and creates the view.
+    h.storage.stuck.length = 0;
     const host = h.page();
-    assert.deepEqual((await h.tool(host, "read_page", { views: true })).body.views, []);
-    assert.deepEqual(await h.keys("host/view/"), []);
-    assert.deepEqual(await h.viewStored("daily"), []);
     const written = await h.setView(host);
     assert.equal(written.status, 200, JSON.stringify(written.body));
     assert.equal(written.body.view_revision, "1");
     assert.deepEqual((await h.call(host, `/api/connect?page=${pageId}`)).body.documents.views, {
       daily: await viewDocumentId(pageId, "daily"),
+      "other-0": await viewDocumentId(pageId, "other-0"),
+      "other-1": await viewDocumentId(pageId, "other-1"),
     });
   });
+
+test("a release whose sync after the key delete fails leaves the Page working, and the next write to the id finishes it", async (t) => {
+  const h = await viewsHost(t);
+  await emptySlot(h);
+  h.storage.failSyncs.push(syncAfterKeyDelete);
+  const host = h.page();
+  const read = await h.tool(host, "read_page", { comments: "none" });
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.equal(h.storage.failSyncs.length, 0, "the failure ran");
+  assert.equal(host.views.get("daily").state.name, "releasing");
+  assert.equal((await h.edit(host, [{ op: "set_title", title: "Edited" }])).status, 200);
+  const written = await h.setView(host);
+  assert.equal(written.status, 200, JSON.stringify(written.body));
+  assert.equal(written.body.view_revision, "1");
+  assert.deepEqual(await h.keys("host/view/"), ["host/view/daily"]);
+});
+
+test("a release that failed is finished by the next boot", async (t) => {
+  const h = await viewsHost(t);
+  await emptySlot(h);
+  const [, stuck] = (await releaseSteps())[1];
+  h.storage.stuck.push(stuck);
+  const failed = h.page();
+  assert.equal((await h.tool(failed, "read_page", { views: true })).status, 200);
+  assert.deepEqual(await h.keys("host/view/"), ["host/view/daily"]);
+  h.storage.stuck.length = 0;
+  const host = h.page();
+  assert.deepEqual((await h.tool(host, "read_page", { views: true })).body.views, []);
+  assert.deepEqual(await h.keys("host/view/"), []);
+  assert.deepEqual(await h.viewStored("daily"), []);
+  assert.equal(host.views?.has("daily") ?? false, false);
+});
 
 test("a view stored in a format this build doesn't write is never opened, counts, refuses writes and purges", async (t) => {
   const h = await viewsHost(t);
   assert.equal((await h.setView(h.host, { view_id: "known" })).status, 200);
-  // A later build wrote `future` in format 2.
+  // A later build wrote `future` in format 2: its document, its key and a
+  // pending intent for it.
+  assert.equal((await h.setView(h.host, { view_id: "future" })).status, 200);
+  h.storage.crashes.push({
+    test: (name, value) => name.startsWith("host/operation/") && value?.pending === true,
+    before: false,
+  });
+  assert.equal(
+    (await h.setView(h.host, { view_id: "future", title: "Later", view_revision: "1" })).status,
+    500,
+  );
   await h.storage.put("host/view/future", { format: 2 });
   for (let n = 0; n < 8; n++)
     assert.equal((await h.setView(h.host, { view_id: `v${n}` })).status, 200);
+  const journal = async () =>
+    [...(await h.storage.list({ prefix: "host/operation/" }))].filter(
+      ([, entry]) => entry.pending === true && entry.doc === "view:future",
+    );
+  const pendingBefore = await journal();
+  assert.equal(pendingBefore.length, 1, "a pending view:future intent");
+  const storedBefore = await h.viewStored("future");
+  assert.ok(storedBefore.length > 0);
+  const bytes = async () =>
+    Promise.all(storedBefore.map((key) => h.storage.get(key).then((v) => v && Buffer.from(v))));
+  const bytesBefore = await bytes();
   const host = h.page();
   const listed = await h.tool(host, "read_page", { views: true });
   assert.deepEqual(
@@ -720,6 +796,11 @@ test("a view stored in a format this build doesn't write is never opened, counts
     undefined,
   );
   assert.deepEqual(await h.keys("host/view/future"), ["host/view/future"], "not released");
+  assert.deepEqual(await journal(), pendingBefore, "its intent is left pending, not replayed");
+  assert.deepEqual(await h.viewStored("future"), storedBefore);
+  assert.deepEqual(await bytes(), bytesBefore, "its document bytes are untouched");
+  const answer = await browser(host.plain).ask(await viewDocumentId(pageId, "future"));
+  assert.notEqual(answer.has, true, "plain sync doesn't serve it");
   for (const view_revision of [null, "1"]) {
     const refused = await h.setView(host, { view_id: "future", view_revision });
     assert.equal(refused.status, 409, JSON.stringify(refused.body));
@@ -742,6 +823,7 @@ test("a view stored in a format this build doesn't write is never opened, counts
   });
   assert.equal(purged.status, 200, JSON.stringify(purged.body));
   assert.deepEqual(await h.keys("host/view/"), []);
+  assert.deepEqual(await h.viewStored("future"), [], "purge removes its document bytes");
 });
 
 test("two editors racing to create one view: one creates it, the other is stale", async (t) => {
@@ -831,3 +913,89 @@ for (const [kind, documentId] of [
     assert.equal(await storage.get("host/creation"), undefined, "no intent is stored");
     assert.equal(await storage.get("host/document"), undefined);
   });
+
+/** Stamp the live Page with a schema feature this build lacks, as a newer
+ * build would before a rollback. */
+async function stampFuture(host) {
+  const features = documentFeatures(host.handle.doc());
+  await host.handle.update(
+    (doc) =>
+      A.change(doc, (draft) => {
+        draft.schema = { features: [...features, "future-feature"] };
+      }),
+    { internal: true },
+  );
+  assert.ok(documentFeatures(host.handle.doc()).includes("future-feature"));
+}
+
+test("a set_view on a Page stamped with a feature this build lacks is refused before it is journaled, and the Page still boots", async (t) => {
+  const h = await viewsHost(t);
+  assert.equal((await h.setView(h.host)).status, 200);
+  await stampFuture(h.host);
+  const operations = () => h.keys("host/operation/");
+  const before = await operations();
+  const refused = await h.setView(h.host, { title: "Renamed", view_revision: "1" });
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.code, "unsupported_schema_feature");
+  assert.deepEqual(await operations(), before, "nothing is journaled");
+  const host = h.page();
+  const read = await h.tool(host, "read_page", { views: true });
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.equal(read.body.views[0].title, "Daily usage");
+});
+
+test("a set_source on a Page stamped with a feature this build lacks is refused before it is journaled, and the Page still boots", async (t) => {
+  const h = await viewsHost(t);
+  await stampFuture(h.host);
+  const operations = () => h.keys("host/operation/");
+  const before = await operations();
+  const refused = await h.edit(h.host, [
+    {
+      op: "set_source",
+      source_id: "usage",
+      name: "Renamed",
+      asset_id: first,
+      source_revision: "2",
+    },
+  ]);
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.code, "unsupported_schema_feature");
+  assert.deepEqual(await operations(), before, "nothing is journaled");
+  const host = h.page();
+  const read = await h.tool(host, "read_page", { sources: true });
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+});
+
+test("a pending view intent the Page's stamp now refuses stays pending, the Page boots, and its retry gets the schema refusal", async (t) => {
+  const h = await viewsHost(t);
+  assert.equal((await h.setView(h.host)).status, 200);
+  h.storage.crashes.push({
+    test: (name, value) => name.startsWith("host/operation/") && value?.pending === true,
+    before: false,
+  });
+  const read = await h.tool(h.host, "read_page", { include_content: false });
+  const args = {
+    revision: read.body.revision,
+    nonce: "pending-rewrite",
+    operations: [{ op: "set_view", ...chart({ title: "Renamed", view_revision: "1" }) }],
+  };
+  assert.equal((await h.tool(h.host, "edit_page", args)).status, 500);
+  const pending = async () =>
+    [...(await h.storage.list({ prefix: "host/operation/" })).values()].filter(
+      (entry) => entry.pending === true,
+    ).length;
+  assert.equal(await pending(), 1);
+  await stampFuture(h.host);
+  await h.host.flush();
+
+  const host = h.page();
+  const views = await h.tool(host, "read_page", { views: true });
+  assert.equal(views.status, 200, JSON.stringify(views.body));
+  assert.equal(views.body.views[0].revision, "1");
+  assert.equal(views.body.views[0].title, "Daily usage");
+  assert.equal(await pending(), 1, "the intent stays pending");
+  const retried = await h.tool(host, "edit_page", args);
+  assert.equal(retried.status, 409, JSON.stringify(retried.body));
+  assert.equal(retried.body.code, "unsupported_schema_feature");
+  assert.equal(await pending(), 1);
+});

@@ -1662,14 +1662,27 @@ a served view document, so a tab that synced the genesis keeps its
 subscription. Boot releases a listed view it opened that still has no
 `revision` once its journal is replayed (`releasing`: delete the document,
 then the key, then sync), before any socket can hold it. A failed release
-fails the boot, and the next boot runs it again; no create is taken under
-the id until it finishes. Slot allocation runs in one per-Page queue, so the
-cap is read and the key written as one step.
+leaves the view `releasing` and the Page boots: the view is not served,
+listed or writable. The next boot runs the release again, and so does the
+next `set_view` to that id, which proceeds once the release finishes and is
+refused `503 view_unavailable` (retryable) while it fails. Slot allocation
+runs in one per-Page queue, so the cap is read and the key written as one
+step.
+
+The Page's schema stamp gates writes to its sources and views as it does
+the body (SyncHost's gate). `set_source` and `set_view` check it before the
+intent is journaled and refuse with `409 unsupported_schema_feature`. While
+the stamp names a feature this build lacks (a newer build wrote it, then the
+host rolled back), boot doesn't replay a pending sources or view intent,
+which stays pending for a build that supports the stamp; the document loads
+at its stored state and the Page boots. A retry of that intent gets the same
+refusal. Boot releases no empty view slot in that state either.
 
 A view whose key names a format this build doesn't write is never opened:
-not served, replayed, rewritten or released. It counts toward the cap,
-`set_view` on it is refused with `409 document_format_unsupported`, and purge
-removes it.
+not served, replayed, rewritten or released, and its pending intents and
+document bytes are left as they are. It counts toward the cap, `set_view` on
+it is refused with `409 document_format_unsupported`, and purge removes its
+key and document.
 
 Every derived document id (comments, sources, each view) is served under one
 kind only. Registration refuses a `document_id` equal to the Page's derived
@@ -1716,6 +1729,8 @@ writer record:
 | an eleventh view | `400 view_limit`, naming the ten in `details.view_ids` |
 | the Page's own document id is this view's derived id | `409 document_conflict` |
 | the view's key names a format this build doesn't write | `409 document_format_unsupported` |
+| the Page's schema stamp names a feature this build lacks | `409 unsupported_schema_feature` |
+| a release of this id's empty slot hasn't finished | `503 view_unavailable`, retryable |
 
 A pinned revision is checked against `history` because it holds the asset of
 each revision it keeps; a source keeps its newest 50.

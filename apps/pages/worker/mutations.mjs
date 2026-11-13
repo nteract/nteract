@@ -160,6 +160,10 @@ export async function documentMutation({
   pageHeads = () => (doc === PAGE_DOC ? A.getHeads(handle.doc()) : undefined),
   agent,
   writerAgent = agent,
+  // The document whose schema stamp gates writes to `doc`, for a document
+  // the Page's stamp gates (plain-sync.mjs #gate). A pending intent replays
+  // only while this build supports that stamp.
+  schemaDoc,
 }) {
   requireNonce(args);
   const key = internal
@@ -328,6 +332,9 @@ export async function documentMutation({
     }
   }
   if (entry.pending) {
+    // The gate would refuse the replay; it stays pending for a build that
+    // supports the stamp, and the caller gets the schema refusal.
+    if (schemaDoc) requireSupportedSchema(schemaDoc());
     // Also retries an ambiguous intent put from the admission cache. Do not
     // replace these bytes with a newly authored edit if storage.get was empty.
     if (!recorded) {
