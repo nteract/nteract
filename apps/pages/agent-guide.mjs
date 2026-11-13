@@ -579,7 +579,7 @@ Nothing needs to run in the background: the client refreshes on its next use
 within those 30 days. After 30 days, authorize again.
 
 A client can keep one stored token set for several processes: Kilo Desktop
-beside the CLI, several worktrees, or several Claude Code sessions. When two of
+beside the CLI, or Kilo in several worktrees. When two of
 them refresh in the same moment, each gets its own tokens, because a refresh
 token can be used again for ${OAUTH_REFRESH_REUSE_SECONDS} seconds after its first use. Each process
 must read the stored tokens before it refreshes. A refresh token presented
