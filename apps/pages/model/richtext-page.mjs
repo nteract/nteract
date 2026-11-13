@@ -11,12 +11,14 @@ import {
   parseAssetPath,
   readDataframe,
 } from "../shared/dataset-assets.mjs";
+import { VIEW_BLOCK, readViewNode, viewLabel, viewPath } from "../shared/views.mjs";
 import {
   decode,
   schema,
   Paragraph,
   PagesImage,
   PagesDataframe,
+  PagesView,
   PagesLink,
 } from "./wordgard-doc.mjs";
 import { parseAgentMarkdown, parseMarkdown } from "./markdown-import.mjs";
@@ -151,29 +153,64 @@ export function setRichImage(doc, id, { src, dark_src = null, alt, title = null 
 }
 /** Write one node with no Markdown form as a block's whole content. */
 export function setRichNode(doc, id, { type, attrs }) {
-  if (type !== DATAFRAME_BLOCK) throw Error(`Unsupported node type: ${type}`);
-  const tree = schema.doc([PagesDataframe.of(dataframeAttrs(attrs))]);
-  const spans = pageSpans(tree);
+  const node =
+    type === DATAFRAME_BLOCK
+      ? PagesDataframe.of(dataframeAttrs(attrs))
+      : type === VIEW_BLOCK && readViewNode(attrs)
+        ? PagesView.of(readViewNode(attrs))
+        : null;
+  if (!node) throw Error(`Unsupported node type: ${type}`);
+  const spans = pageSpans(schema.doc([node]));
   updateSpansExactly(doc, textPath(id), spans, updateSpansConfig);
   stampSpans(doc, spans);
 }
 
+// The nodes with no Markdown form that a rewrite keeps, each read back as a
+// one-link line: `line(param, pageId)` is that line's `{ text, href }`, or
+// null for attrs this build can't read; `looksLike(line)` is true for a link
+// that reads as one of them; the rest name it in a refusal.
+const KEPT_NODES = Object.freeze([
+  {
+    type: PagesDataframe,
+    name: DATAFRAME_BLOCK,
+    one: "a dataframe",
+    line: (param) =>
+      readDataframe(param) ? { text: dataframeLabel(param.title), href: param.src } : null,
+    looksLike: (line) => /^Dataframe(: .*)?$/.test(line.text) && parseAssetPath(line.href) !== null,
+    insert: "insert_node with its asset_id",
+  },
+  {
+    type: PagesView,
+    name: VIEW_BLOCK,
+    one: "a view",
+    line: (param, pageId) => {
+      const view = readViewNode(param);
+      return view ? { text: viewLabel(view.view_id), href: viewPath(pageId, view.view_id) } : null;
+    },
+    looksLike: (line) =>
+      line.text.startsWith("View: ") && /^\/p\/[^/]+\/view\/[^/]+$/.test(line.href),
+    insert: "insert_node with its view_id",
+  },
+]);
+const keptKind = (node) => KEPT_NODES.find((kind) => kind.type === node.type);
+const capital = (text) => text[0].toUpperCase() + text.slice(1);
+
 /**
- * Rewrite a block from agent Markdown, keeping its dataframes. Applies only
- * when the block holds one; otherwise this is a plain Markdown rewrite, and a
- * dataframe-like line stays a link.
+ * Rewrite a block from agent Markdown, keeping its dataframes and views.
+ * Applies only when the block holds one; otherwise this is a plain Markdown
+ * rewrite, and a line that looks like one stays a link.
  *
- * Each dataframe must appear in `source` as its read-back line, unchanged, in
- * the same place in the block's structure: at the top level, or inside the
- * same kind of quote or list item it's stored in. That line becomes the
+ * Each such node must appear in `source` as its read-back line, unchanged,
+ * in the same place in the block's structure: at the top level, or inside
+ * the same kind of quote or list item it's stored in. That line becomes the
  * original node again, unknown attrs included. Lines may move among their
  * siblings. Throws `markdownless_node`, rather than dropping or inventing a
  * node, when a line:
  *
  * - moves into or out of a quote, list or table, or sits in a heading;
  * - is missing or edited;
- * - outnumbers the block's dataframes with that line;
- * - reads like a dataframe the block doesn't hold.
+ * - outnumbers the block's nodes with that line;
+ * - reads like a node the block doesn't hold.
  */
 export function setRichMarkdownKeepingNodes(doc, id, source) {
   const block = doc.blocks[id];
@@ -211,70 +248,76 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
     }
     return spans;
   };
-  // Each dataframe with its container path: the node types from the block's
+  const pageId = doc.page_id;
+  // Each kept node with its container path: the node types from the block's
   // root down to it, "" at the top level.
   const existing = [];
   (function collect(node, path) {
     for (const child of node.content ?? []) {
-      if (child.type === PagesDataframe) existing.push({ node: child, path });
+      const kind = keptKind(child);
+      if (kind) existing.push({ node: child, path, kind });
       else if (child.isPlot && !child.type.spec.inlineContent)
         collect(child, path ? `${path}/${readKind(child)}` : readKind(child));
     }
   })(richDoc(block), "");
-  // Every dataframe counts, readable or not: one whose attrs this build can't
-  // read never matches a line, so the rewrite is refused rather than dropping
-  // it.
-  const storedCount = A.spans(block, ["richText"]).filter(
-    (span) => span.type === "block" && markerType(span.value) === "dataframe",
-  ).length;
-  if (existing.length !== storedCount)
-    throw Object.assign(Error("A stored dataframe cannot be restored losslessly"), {
-      code: "markdownless_node",
-    });
+  // Every stored one counts, readable or not: one whose attrs this build
+  // can't read never matches a line, so the rewrite is refused rather than
+  // dropping it.
+  for (const kind of KEPT_NODES) {
+    const storedCount = A.spans(block, ["richText"]).filter(
+      (span) => span.type === "block" && markerType(span.value) === kind.name,
+    ).length;
+    if (existing.filter((entry) => entry.kind === kind).length !== storedCount)
+      throw Object.assign(Error(`A stored ${kind.name} cannot be restored losslessly`), {
+        code: "markdownless_node",
+      });
+  }
   const tree = parseAgentMarkdown(source);
   const unmatched = [...existing];
   const refuse = (message) => {
     throw Object.assign(Error(message), { code: "markdownless_node" });
   };
-  // Look-alike lines the walk found; the most specific one is reported.
-  const problems = new Set();
+  // Look-alike lines the walk found, `problem → kind`; the most specific
+  // problem is reported.
+  const problems = new Map();
   // The link a textblock holds when its whole text is one link: the shape of
-  // a dataframe's read-back line. Table cells hold their text directly.
+  // a kept node's read-back line. Table cells hold their text directly.
   const lineLink = (node) => {
     const only = node.type.spec.inlineContent && node.content.length === 1 ? node.content[0] : null;
     const link = only?.isText ? only.mark(PagesLink) : null;
     return link ? { href: link.href, text: only.param } : null;
   };
-  const sameNode = (candidate, line) =>
-    candidate.param.src === line.href && dataframeLabel(candidate.param.title) === line.text;
-  // A line that reads as a dataframe's read-back line: a "Dataframe" label
-  // linking a Page asset. Kept as a plain link it would read exactly like the
-  // node, so it's refused unless it brings a node back.
-  const looksLikeNode = (line) =>
-    /^Dataframe(: .*)?$/.test(line.text) && parseAssetPath(line.href) !== null;
+  const sameNode = (entry, line) => {
+    const own = entry.kind.line(entry.node.param, pageId);
+    return !!own && own.href === line.href && own.text === line.text;
+  };
   const restore = (node, path) => {
     const line = node.type.spec.inlineContent ? lineLink(node) : null;
     if (line) {
-      const matches = existing.filter((entry) => entry.path === path && sameNode(entry.node, line));
+      const matches = existing.filter((entry) => entry.path === path && sameNode(entry, line));
       if (matches.some((entry) => !entry.node.eq(matches[0].node)))
         refuse(
-          "Duplicate dataframe lines carry different hidden attributes. Use targeted edits instead of guessing their correspondence.",
+          `Duplicate ${matches[0].kind.name} lines carry different hidden attributes. Use targeted edits instead of guessing their correspondence.`,
         );
-      // Only a paragraph can stand where a dataframe was: a heading, code
+      // Only a paragraph can stand where a kept node was: a heading, code
       // block or table cell can't hold one.
       const index =
         node.type === Paragraph.type
-          ? unmatched.findIndex((entry) => entry.path === path && sameNode(entry.node, line))
+          ? unmatched.findIndex((entry) => entry.path === path && sameNode(entry, line))
           : -1;
       if (index !== -1) {
         const [original] = unmatched.splice(index, 1);
         return original.node;
       }
-      const same = existing.filter((entry) => sameNode(entry.node, line));
+      const same = existing.filter((entry) => sameNode(entry, line));
+      // A line that reads as a kept node's line is kept as a plain link
+      // that would read exactly like the node, so it's refused unless it
+      // brings a node back.
+      const lookalike = KEPT_NODES.find((kind) => kind.looksLike(line));
       if (same.some((entry) => entry.path === path && node.type === Paragraph.type))
-        problems.add("duplicate");
-      else if (same.length) problems.add("moved");
-      else if (looksLikeNode(line)) problems.add("foreign");
+        problems.set("duplicate", same[0].kind);
+      else if (same.length) problems.set("moved", same[0].kind);
+      else if (lookalike) problems.set("foreign", lookalike);
       return node;
     }
     if (!node.isPlot || node.type.spec.inlineContent) return node;
@@ -282,37 +325,43 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
     const children = node.content.map((child) => restore(child, inner));
     return node === tree ? schema.doc(children) : node.tag.create(children);
   };
-  // Without stored dataframes, dataframe-like lines are ordinary links.
+  // Without stored kept nodes, lines that look like them are ordinary links.
   const kept = existing.length ? restore(tree, "") : tree;
   if (problems.has("moved"))
     refuse(
-      "A dataframe's line can't go inside a quote, list or table, into a heading, or out of the quote or list item it's stored in. Keep it where read_page shows it; it may move among its neighbours.",
+      `${capital(problems.get("moved").one)}'s line can't go inside a quote, list or table, into a heading, or out of the quote or list item it's stored in. Keep it where read_page shows it; it may move among its neighbours.`,
     );
   if (unmatched.length) {
-    const line = (node) =>
-      readDataframe(node.param)
-        ? `[${dataframeLabel(node.param.title)}](${node.param.src})`
-        : unknownNodeNotice("dataframe");
-    const lines = [...new Set(unmatched.map((entry) => line(entry.node)))];
+    const line = (entry) => {
+      const own = entry.kind.line(entry.node.param, pageId);
+      return own ? `[${own.text}](${own.href})` : unknownNodeNotice(entry.kind.name);
+    };
+    const lines = [...new Set(unmatched.map(line))];
     const counted = lines.map((text) => {
-      const total = existing.filter((entry) => line(entry.node) === text).length;
+      const total = existing.filter((entry) => line(entry) === text).length;
       return total > 1 ? `${text} (the block holds ${total}; keep one line for each)` : text;
     });
+    const kinds = [...new Set(unmatched.map((entry) => entry.kind))];
+    const noun = kinds.length === 1 ? kinds[0].name : "node";
     throw Object.assign(
       Error(
-        `This block holds ${unmatched.length === 1 ? "a dataframe" : `${unmatched.length} dataframes`} with no line in your Markdown. A dataframe has no Markdown form; keep its line unchanged to keep it: ${counted.join(", ")}. To remove one, use edit_page delete_node with its node_id from read_page's outline.`,
+        `This block holds ${unmatched.length === 1 ? (kinds[0].one ?? `a ${noun}`) : `${unmatched.length} ${noun}s`} with no line in your Markdown. A ${noun} has no Markdown form; keep its line unchanged to keep it: ${counted.join(", ")}. To remove one, use edit_page delete_node with its node_id from read_page's outline.`,
       ),
       { code: "markdownless_node" },
     );
   }
-  if (problems.has("duplicate"))
+  if (problems.has("duplicate")) {
+    const kind = problems.get("duplicate");
     refuse(
-      "A dataframe's line appears more times than the block has dataframes with that line. Each dataframe keeps exactly one line; to copy one, use insert_node with its asset_id.",
+      `${capital(kind.one)}'s line appears more times than the block has ${kind.name}s with that line. Each ${kind.name} keeps exactly one line; to copy one, use ${kind.insert}.`,
     );
-  if (problems.has("foreign"))
+  }
+  if (problems.has("foreign")) {
+    const kind = problems.get("foreign");
     refuse(
-      "This line reads as a dataframe this block doesn't hold. Markdown can't create or move a dataframe; use insert_node with its asset_id.",
+      `This line reads as ${kind.one} this block doesn't hold. Markdown can't create or move ${kind.one}; use ${kind.insert}.`,
     );
+  }
   const spans = keepImages(pageSpans(kept));
   writeMarkdownSpans(doc, id, spans);
 }

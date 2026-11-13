@@ -7,6 +7,7 @@ import { SETTABLE_ATTRS, retypeTargets } from "./model/node-registry.mjs";
 import { richContentInstructions } from "./model/rich-content-guide.mjs";
 import { MAX_SOURCE_NAME, SOURCE_ID_PATTERN, SOURCE_REVISION_PATTERN } from "./shared/sources.mjs";
 import { MAX_PAGE_TITLE } from "./shared/page-title.mjs";
+import { VIEW_MEDIA_TYPES } from "./shared/views.mjs";
 import {
   RENAMED_TOOLS,
   refusalCode,
@@ -165,6 +166,8 @@ const readSelectors = {
     pattern: SOURCE_ID_PATTERN,
     description: "Reads one source, who set it when, and its history. Alone, skips content.",
   },
+  views: { type: "boolean", description: "true lists views. Alone, skips content." },
+  view_id: { type: "string", description: "One view with its spec. Alone, skips content." },
   max_bytes: readBudget,
 };
 const nonce = {
@@ -251,9 +254,10 @@ const editOperation = {
         "format_match",
         "set_node",
         "set_source",
+        "set_view",
       ),
       description:
-        "set_title: title. replace_block_markdown: node_id, markdown. insert_markdown: markdown, after_node_id. move_block: node_id, after_node_id. delete_block: node_id. insert_image: asset_id, alt; optional dark_asset_id, title, after_node_id. set_image: node_id and the fields to change. insert_node: node, after_node_id. delete_node: node_id. replace_match: node_id, match_text, replacement or replacement_markdown. format_match: node_id, match_text, add or remove; optional all. set_node: node_id, match_text, type or attrs. set_source: source_id, name, asset_id, source_revision; in set_source-only batches.",
+        "set_title: title. replace_block_markdown: node_id, markdown. insert_markdown: markdown, after_node_id. move_block: node_id, after_node_id. delete_block: node_id. insert_image: asset_id, alt; optional dark_asset_id, title, after_node_id. set_image: node_id and the fields to change. insert_node: node, after_node_id. delete_node: node_id. replace_match: node_id, match_text, replacement or replacement_markdown. format_match: node_id, match_text, add or remove; optional all. set_node: node_id, match_text, type or attrs. set_source: source_id, name, asset_id, source_revision; in set_source-only batches. set_view: view_id, title, media_type, spec, data, view_revision; alone.",
     },
     node_id: {
       ...address,
@@ -263,7 +267,7 @@ const editOperation = {
     title: {
       type: ["string", "null"],
       maxLength: 2048,
-      description: `set_title: the Page title, a string up to ${MAX_PAGE_TITLE} characters. Image ops: the image's title; null clears it.`,
+      description: `set_title: the Page title, a string up to ${MAX_PAGE_TITLE} characters. Image ops: the image's title; null clears it. set_view: the chart's.`,
     },
     markdown: markdownBody,
     after_node_id: {
@@ -288,6 +292,17 @@ const editOperation = {
       pattern: SOURCE_REVISION_PATTERN,
       description: "set_source: source_revision you read; null creates. Else stale_source.",
     },
+    view_id: { type: "string", description: "set_view: its ID, like a source_id." },
+    media_type: { ...choice(...VIEW_MEDIA_TYPES), description: "set_view." },
+    spec: { type: "object", description: 'set_view: Vega-Lite; data by {"name"} only.' },
+    data: {
+      type: "object",
+      description: "set_view: each name the spec reads → {source_id, revision?}.",
+    },
+    view_revision: {
+      type: ["string", "null"],
+      description: "set_view: view_revision you read; null creates. Else stale_view.",
+    },
     dark_asset_id: {
       ...assetId,
       type: ["string", "null"],
@@ -304,8 +319,8 @@ const editOperation = {
       description: "insert_node: the node to place in its own block.",
       properties: {
         type: {
-          ...choice("dataframe"),
-          description: "An interactive table of a dataset asset.",
+          ...choice("dataframe", "view"),
+          description: "dataframe: a dataset's table. view: a set_view chart.",
         },
         attrs: {
           type: "object",
@@ -320,8 +335,8 @@ const editOperation = {
               ...choice("application/vnd.apache.parquet"),
               description: "Defaults to Parquet.",
             },
+            view_id: { type: "string" },
           },
-          required: ["asset_id"],
           additionalProperties: false,
         },
       },

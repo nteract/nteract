@@ -19,11 +19,12 @@ import {
   MEMBER_TYPES,
 } from "./document-types.mjs";
 
-test("the registry names Page format 3, comments format 2 and sources format 1", () => {
+test("the registry names Page format 3, comments format 2, sources format 1 and view format 1", () => {
   assert.deepEqual(DOCUMENT_TYPES, {
     "pages.page": { 3: { type: "pages.page", format: 3 } },
     "pages.comments": { 2: { type: "pages.comments", format: 2 } },
     "pages.sources": { 1: { type: "pages.sources", format: 1 } },
+    "pages.view": { 1: { type: "pages.view", format: 1 } },
   });
   assert.ok(Object.isFrozen(DOCUMENT_TYPES));
   for (const formats of Object.values(DOCUMENT_TYPES)) {
@@ -58,6 +59,14 @@ test("descriptors name a sources document only when the host gives its id", () =
   assert.deepEqual(parseDocumentDescriptor(documents.sources), documents.sources);
 });
 
+test("descriptors list views by view id only when the Page has one", () => {
+  const formats = { ...MEMBER_FORMATS, "pages.view": 1 };
+  assert.equal(pageDocuments(formats, "page", "comments", undefined, {}).views, undefined);
+  assert.equal(pageDocuments(formats, "page", "comments").views, undefined);
+  const views = { daily: "daily-id", weekly: "weekly-id" };
+  assert.deepEqual(pageDocuments(formats, "page", "comments", undefined, views).views, views);
+});
+
 test("descriptors carry the formats they are given, not the build's", () => {
   assert.deepEqual(
     pageDocuments({ "pages.page": 99, "pages.comments": 7 }, "page-id", "comments-id"),
@@ -69,7 +78,12 @@ test("descriptors carry the formats they are given, not the build's", () => {
 });
 
 test("a host record's formats are its documentFormats stamp", () => {
-  assert.deepEqual(WRITTEN_FORMATS, { "pages.page": 3, "pages.comments": 2, "pages.sources": 1 });
+  assert.deepEqual(WRITTEN_FORMATS, {
+    "pages.page": 3,
+    "pages.comments": 2,
+    "pages.sources": 1,
+    "pages.view": 1,
+  });
   assert.ok(Object.isFrozen(WRITTEN_FORMATS));
   const stamped = { pageId: "p", documentFormats: { "pages.page": 99, "pages.comments": 2 } };
   assert.deepEqual(recordDocumentFormats(stamped), stamped.documentFormats);
@@ -195,14 +209,16 @@ test("a build reads and writes the formats the registry lists", () => {
     "pages.page": [3],
     "pages.comments": [2],
     "pages.sources": [1],
+    "pages.view": [1],
   });
   assert.deepEqual(readableFormats(), [
     { type: "pages.page", format: 3 },
     { type: "pages.comments", format: 2 },
     { type: "pages.sources", format: 1 },
+    { type: "pages.view", format: 1 },
   ]);
   assert.deepEqual(formatPairs(WRITTEN_FORMATS), readableFormats());
-  assert.equal(BUILD_FORMATS, "pages.comments:2,pages.page:3,pages.sources:1");
+  assert.equal(BUILD_FORMATS, "pages.comments:2,pages.page:3,pages.sources:1,pages.view:1");
 });
 
 test("declared formats encode sorted and parse back", () => {

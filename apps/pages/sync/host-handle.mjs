@@ -72,8 +72,13 @@ export class HostRepo {
     );
   }
 
-  delete(id) {
-    return this.#handle(id).close(() => this.host.remove(hostTreeOf(id)));
+  /** Remove document `id`. A handle held from before stays closed; once the
+   * removal finishes, the next find or import of `id` gets a new handle, so a
+   * document that is deleted can be made again under the same id. */
+  async delete(id) {
+    const handle = this.#handle(id);
+    await handle.close(() => this.host.remove(hostTreeOf(id)));
+    if (this.#handles.get(handle.tree) === handle) this.#handles.delete(handle.tree);
   }
 
   shutdown() {

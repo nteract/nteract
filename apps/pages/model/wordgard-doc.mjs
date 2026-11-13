@@ -44,6 +44,7 @@ import {
   updateSpansConfig,
 } from "./marks.mjs";
 import { DATAFRAME_BLOCK, readDataframe } from "../shared/dataset-assets.mjs";
+import { VIEW_ATTR, VIEW_BLOCK, VIEW_ID_ATTR, readViewNode } from "../shared/views.mjs";
 import { imageAttrs } from "./image-attrs.mjs";
 import { markerParents } from "./richtext-format.mjs";
 import {
@@ -277,6 +278,42 @@ export const PagesDataframe = Leaf.Type.define("PagesDataframe", {
       ),
   },
 });
+// A view: a block with no text whose `view_id` names one of the Page's
+// views, a chart in its own document (model/view-doc.mjs). Its value is the
+// stored attrs as scalars, including any this build doesn't know, so encode
+// writes them back unchanged (shared/views.mjs readViewNode). The leaf's
+// shape is what copy writes and what a build without a chart widget draws:
+// a figure naming the view id, which its parse rule reads back on paste.
+export const PagesView = Leaf.Type.define("PagesView", {
+  group: Node.Group.Content,
+  selectable: true,
+  validate(value) {
+    if (!readViewNode(value) || Object.values(value).some((v) => !scalar(v)))
+      throw Error("Invalid Pages view");
+  },
+  parseRules: [
+    {
+      selector: `figure[${VIEW_ATTR}]`,
+      readElement(element) {
+        const value = readViewNode({ view_id: element.getAttribute(VIEW_ID_ATTR) });
+        return value ?? parse.Reject;
+      },
+    },
+  ],
+  shape: {
+    structure: (value) =>
+      Elt.mk(
+        "figure",
+        {
+          class: "wordgard-view",
+          [VIEW_ATTR]: "",
+          [VIEW_ID_ATTR]: value.view_id,
+          "aria-label": `View ${value.view_id}`,
+        },
+        [value.view_id],
+      ),
+  },
+});
 // A node this build doesn't know, written by a newer build. Its feature stamp
 // makes the Page read-only here (schemaGateStep in viewer/session.mjs), so it
 // is drawn as a notice. Its value is the stored marker: type, attrs, parents
@@ -403,6 +440,7 @@ export const elements = [
   HorizontalRule,
   PagesImage,
   PagesDataframe,
+  PagesView,
   PagesUnknownBlock,
   PagesUnknownEmbed,
   Aside,
@@ -854,6 +892,7 @@ export function decode(spans) {
     // block) can't be drawn there. No Pages writer puts one there; one from
     // a peer takes the unknown-node path below (an inline notice, lossy).
     const inText = value.parents.some((parent) => TEXT_CONTAINERS.has(String(parent)));
+    // A view takes the same path.
     const dataframe =
       type === DATAFRAME_BLOCK &&
       !inText &&
@@ -861,12 +900,23 @@ export function decode(spans) {
       Object.values(attrs).every(scalar)
         ? attrs
         : null;
-    const builtIn = type === "horizontal-rule" || !!dataframe;
+    const view =
+      type === VIEW_BLOCK && !inText && readViewNode(attrs) && Object.values(attrs).every(scalar)
+        ? attrs
+        : null;
+    const builtIn = type === "horizontal-rule" || !!dataframe || !!view;
     let desc = builtIn || unreadable ? null : descriptor(type, attrs);
     // The node itself nests the same way. A table part no container in its
     // chain holds is drawn inside the table containers it needs
     // (TABLE_PART_OUTER), which have no marker of their own.
-    const own = type === "horizontal-rule" ? HorizontalRule : dataframe ? PagesDataframe : desc;
+    const own =
+      type === "horizontal-rule"
+        ? HorizontalRule
+        : dataframe
+          ? PagesDataframe
+          : view
+            ? PagesView
+            : desc;
     const fits = (tag) => {
       const depth = nestIn(outer, tag);
       if (depth === null) return false;
@@ -940,6 +990,7 @@ export function decode(spans) {
       } else leaf(PagesUnknownBlock.of(unknownValue(value)));
     } else if (type === "horizontal-rule") leaf(HorizontalRule);
     else if (dataframe) leaf(PagesDataframe.of(dataframe));
+    else if (view) leaf(PagesView.of(view));
     else open(desc.tag, true, type);
   }
   // Empty text, which a merge can leave too: one empty unmarked paragraph.
@@ -1015,6 +1066,10 @@ export function encode(doc) {
     }
     if (node.type === PagesDataframe) {
       marker(DATAFRAME_BLOCK, parents, node.param);
+      return;
+    }
+    if (node.type === PagesView) {
+      marker(VIEW_BLOCK, parents, node.param);
       return;
     }
     if (!node.isPlot) throw Error(`Unsupported Wordgard block: ${node.name}`);

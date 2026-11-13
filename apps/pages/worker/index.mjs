@@ -18,6 +18,7 @@ import {
   initializePage,
   applyPageOperation,
   insertedAssets,
+  insertedViews,
   orderedBlockIds,
 } from "../model/page.mjs";
 import { insertOperation } from "../model/node-registry.mjs";
@@ -27,12 +28,16 @@ import {
   parseDeclaredFeatures,
   requireSupportedSchema,
   schemaUnsupported,
+  unsupportedFeatures,
 } from "../model/schema-features.mjs";
 import { unsupportedMarkdown, unsupportedMarkdownError } from "../model/markdown-scan.mjs";
 import { applyComment, commentsMigrated } from "../model/comments.mjs";
 import { guardCommentIntent, passageComment } from "../model/comment-guard.mjs";
 import { authorOf } from "../model/author.mjs";
 import { checkSources, setSources, validateSourceBatch } from "../model/sources-doc.mjs";
+import { checkView, setView, validateViewOperation } from "../model/view-doc.mjs";
+import { MAX_VIEWS, validViewId } from "../shared/views.mjs";
+import { viewDocUuid } from "../shared/document-ids.mjs";
 import {
   commentsDocUuid,
   commentsDocumentId,
@@ -40,6 +45,7 @@ import {
   derivedDocumentId,
 } from "./comments-store.mjs";
 import { SOURCES_ABSENT, sourcesStep } from "./sources-lifecycle.mjs";
+import { VIEW_ABSENT, viewStep } from "./view-lifecycle.mjs";
 import {
   MEMBER_FORMATS,
   MEMBER_TYPES,
@@ -135,8 +141,10 @@ import {
 import {
   inspectOperation,
   journalTime,
+  operationEntryBytes,
   raiseHorizon,
   readRevisions,
+  requireJournalRoom,
   reserveOperation,
   revisionClock,
 } from "./operation-journal.mjs";
@@ -144,8 +152,20 @@ import { fencedHeads, headsFor, revisionPlan } from "./revisions.mjs";
 import { STORAGE_KEYS_PER_CALL, guardContext } from "./storage-guard.mjs";
 import { pageRecordsCall } from "./page-records.mjs";
 export { PageRecords } from "./page-records.mjs";
-import { COMMENTS_MODULE, PAGE_MODULE, SOURCES_MODULE } from "./document-modules.mjs";
-import { HOST_SENDER_ID, PlainSync, clearPrefixes, plainSessionReplaced } from "./plain-sync.mjs";
+import {
+  COMMENTS_MODULE,
+  PAGE_MODULE,
+  SOURCES_MODULE,
+  VIEW_MODULE,
+  keyedDoc,
+} from "./document-modules.mjs";
+import {
+  HOST_SENDER_ID,
+  PlainSync,
+  clearPrefixes,
+  plainSessionReplaced,
+  treeOf,
+} from "./plain-sync.mjs";
 import { logSyncRefused, logSyncRounds } from "./plain-sync-log.mjs";
 import { BLOCKING as BLOCKING_COMMENT_CODES } from "../sync/comments.mjs";
 import { DocumentPolicy, PermissionDenied, leaseExpiryError } from "./policy.mjs";
@@ -611,6 +631,21 @@ const sourceRefusal = (error) =>
     new HttpError(error.status ?? 400, error.message, error.code ?? "invalid_source"),
     error.details && { details: error.details },
   );
+/** A view refusal (model/view-doc.mjs) as the agent edge answers it, with
+ * its view_id and current view_revision where it has them. */
+const viewRefusal = (error) =>
+  Object.assign(
+    new HttpError(error.status ?? 400, error.message, error.code ?? "invalid_view"),
+    error.details && { details: error.details },
+  );
+
+/** The Page host's list of its views: one key per view whose document the
+ * host created, `host/view/<view_id>` → `{ format }`. Normative: written in
+ * the same put as the record step of the view's lifecycle
+ * (view-lifecycle.mjs), read at boot, for /api/connect, the view cap and
+ * purge, so the host never reads the Page body to find its views. */
+const VIEW_KEY_PREFIX = "host/view/";
+const viewKey = (viewId) => `${VIEW_KEY_PREFIX}${viewId}`;
 
 /** Page host routes a record in a format this build doesn't write still
  * answers once the caller may read it: the shared-Page check and sharing
@@ -5166,6 +5201,37 @@ export class Page {
     }
     await this.loadComments();
     await this.sourcesEvent({ type: "boot", recorded: recordNamesSources(this.metadata) });
+    for (const [viewId, format] of await this.storedViews()) {
+      // A view in a format this build doesn't write is never opened: not
+      // served, replayed, rewritten or released. It still counts toward the
+      // cap, and purge still removes it.
+      if (format !== WRITTEN_FORMATS[VIEW_MODULE.type]) continue;
+      // A key whose document a release already removed: importing would
+      // create its genesis, which SyncHost's gate refuses while the Page's
+      // stamp names a feature this build lacks, failing the boot. The slot
+      // stays, unserved, until a build that supports the stamp boots.
+      if (
+        !this.pageEditable() &&
+        this.views?.get(viewId) === undefined &&
+        !(await this.plain.stored(
+          derivedDocumentId(await viewDocUuid(this.metadata.pageId, viewId)),
+        ))
+      )
+        continue;
+      const opened = this.views?.get(viewId)?.state.name === "ready";
+      // A slot no write landed in: the host stopped between the key and the
+      // journal entry, or the write failed after the key. Released only by
+      // the boot that opened it, before any socket can hold the document,
+      // and not while its journal can't replay (a pending intent may fill
+      // it). A release that fails leaves the slot `releasing`, unserved and
+      // unlisted, and the Page boots; the next boot or write to the id runs
+      // it again.
+      await this.releasingTolerated(viewId, { type: "boot", recorded: true });
+      const doc = this.viewDoc(viewId);
+      if (!opened && doc && doc.revision === undefined && this.pageEditable())
+        await this.releasingTolerated(viewId, { type: "release" });
+      this.forgetIdleView(viewId);
+    }
     await this.restoreTitleProjection();
     // After recovery: a replayed journal entry was accepted before the
     // restart, not now.
@@ -5441,12 +5507,13 @@ export class Page {
         this.sourcesHandle = await this.importDerived(SOURCES_MODULE, this.sourcesUuid);
         this.assertNotAbandoned();
         if (effect === "load") {
-          await recoverDocumentMutations(
-            this.ctx.storage,
-            this.sourcesHandle,
-            () => this.flush(),
-            SOURCES_DOC,
-          );
+          if (this.pageEditable())
+            await recoverDocumentMutations(
+              this.ctx.storage,
+              this.sourcesHandle,
+              () => this.flush(),
+              SOURCES_DOC,
+            );
           return { type: "loaded" };
         }
         await this.plain.flush([documentId]);
@@ -5471,6 +5538,15 @@ export class Page {
     }
   }
 
+  /** Whether this build can write the Page's documents: the Page's schema
+   * stamp names no feature it lacks. While it does, a pending intent for
+   * the sources or a view document isn't replayed (SyncHost's gate would
+   * refuse it, and the boot with it); it stays pending for a build that
+   * supports the stamp, and the document loads at its stored state. */
+  pageEditable() {
+    return !unsupportedFeatures(this.handle.doc()).length;
+  }
+
   /** Forget the sources document: the Page's documents are gone. */
   dropSources() {
     this.sourcesHandle = undefined;
@@ -5480,6 +5556,196 @@ export class Page {
   /** The Page's sources document, or undefined while it doesn't exist. */
   sourcesView() {
     return this.sourcesState?.name === "ready" ? this.sourcesHandle?.doc() : undefined;
+  }
+
+  /** The views the host lists (VIEW_KEY_PREFIX), `[view_id, format]` by
+   * id, whatever their format. At most MAX_VIEWS, so one list call reads
+   * them all. */
+  async storedViews() {
+    const keys = await this.ctx.storage.list({ prefix: VIEW_KEY_PREFIX });
+    return [...keys]
+      .map(([key, value]) => [key.slice(VIEW_KEY_PREFIX.length), value?.format])
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  }
+
+  /** The ids of the views the host lists, whatever their format. */
+  async storedViewIds() {
+    return (await this.storedViews()).map(([viewId]) => viewId);
+  }
+
+  /** The refusal for a write to view `viewId` when its key names a format
+   * this build doesn't write, or undefined. */
+  async viewFormatRefusal(viewId) {
+    const stored = await this.ctx.storage.get(viewKey(viewId));
+    if (stored === undefined || stored?.format === WRITTEN_FORMATS[VIEW_MODULE.type]) return;
+    return Object.assign(
+      new HttpError(
+        409,
+        `The view "${viewId}" is stored in a format this version of Pages doesn't open.`,
+        "document_format_unsupported",
+      ),
+      { details: { view_id: viewId } },
+    );
+  }
+
+  /** The host's entry for view `viewId`: its document UUID, handle,
+   * lifecycle state (view-lifecycle.mjs) and the queue its events run in.
+   * `views` is keyed by view id. An entry is made by boot or by a write that
+   * passed its checks, in the slot queue, and dropped there once it is
+   * absent (forgetIdleView). */
+  async viewEntry(viewId) {
+    this.views ??= new Map();
+    let entry = this.views.get(viewId);
+    if (!entry) {
+      entry = {
+        uuid: await viewDocUuid(this.metadata.pageId, viewId),
+        handle: undefined,
+        state: VIEW_ABSENT,
+        queue: Promise.resolve(),
+      };
+      // Another caller may have made it while the UUID was hashed.
+      if (this.views.has(viewId)) return this.views.get(viewId);
+      this.views.set(viewId, entry);
+    }
+    return entry;
+  }
+
+  /** Drop view `viewId`'s entry once it is absent. */
+  forgetIdleView(viewId) {
+    if (this.views?.get(viewId)?.state.name === "absent") this.views.delete(viewId);
+  }
+
+  /** Step view `viewId` with `event`; a failed release, which leaves the
+   * view `releasing`, is logged instead of thrown. Any other failure throws. */
+  async releasingTolerated(viewId, event) {
+    try {
+      await this.viewEvent(viewId, event);
+    } catch (error) {
+      if (this.views?.get(viewId)?.state.name !== "releasing") throw error;
+      logFailure(error, "view-release");
+    }
+  }
+
+  /** Run `step` after every earlier one. A write takes its view slot here,
+   * so the view cap is read and the key written as one step. */
+  viewSlot(step) {
+    const run = (this.viewSlots ?? Promise.resolve()).then(step);
+    this.viewSlots = run.catch(() => {});
+    return run;
+  }
+
+  /** Step view `viewId`'s lifecycle and run its effects in order, after its
+   * earlier events. A failed effect steps `failed` and throws. */
+  async viewEvent(viewId, event) {
+    const entry = await this.viewEntry(viewId);
+    const run = entry.queue.then(() => this.stepView(viewId, entry, event));
+    entry.queue = run.catch(() => {});
+    return run;
+  }
+
+  async stepView(viewId, entry, event) {
+    const result = viewStep(entry.state, event);
+    if (result.rejected)
+      throw Error(`The view lifecycle refused ${event.type} in ${entry.state.name}`);
+    entry.state = result.state;
+    for (const effect of result.effects) {
+      let done;
+      try {
+        done = await this.viewEffect(viewId, entry, effect);
+      } catch (error) {
+        entry.state = viewStep(entry.state, { type: "failed" }).state;
+        throw error;
+      }
+      await this.stepView(viewId, entry, done);
+    }
+  }
+
+  /** One view lifecycle effect. Returns the event that reports it. */
+  async viewEffect(viewId, entry, effect) {
+    switch (effect) {
+      case "load":
+      case "store": {
+        // Served from here on: a tab the Page body tells about the view can
+        // sync it at once.
+        entry.handle = await this.importDerived(VIEW_MODULE, entry.uuid);
+        this.assertNotAbandoned();
+        if (effect === "load") {
+          if (this.pageEditable())
+            await recoverDocumentMutations(
+              this.ctx.storage,
+              entry.handle,
+              () => this.flush(),
+              keyedDoc(VIEW_MODULE, viewId),
+            );
+          return { type: "loaded" };
+        }
+        await this.plain.flush([derivedDocumentId(entry.uuid)]);
+        await this.ctx.storage.sync();
+        return { type: "stored" };
+      }
+      case "record":
+        // The key alone records the view. The Page record never names
+        // `pages.view`, so a host that predates views opens the Page.
+        await this.ctx.storage.put(viewKey(viewId), {
+          format: WRITTEN_FORMATS[VIEW_MODULE.type],
+        });
+        await this.ctx.storage.sync();
+        return { type: "recorded" };
+      case "release":
+        // The document first, then the key: until the key is gone, the next
+        // boot or create finds the view `releasing` and runs this again.
+        // Each step is idempotent.
+        entry.handle = undefined;
+        await this.repo.delete(derivedDocumentId(entry.uuid));
+        await this.ctx.storage.delete(viewKey(viewId));
+        await this.ctx.storage.sync();
+        return { type: "released" };
+      default:
+        throw Error(`Unknown view effect ${effect}`);
+    }
+  }
+
+  /** Forget every view: the Page's documents are gone. */
+  dropViews() {
+    for (const entry of this.views?.values() ?? []) {
+      entry.handle = undefined;
+      entry.state = viewStep(entry.state, { type: "drop" }).state;
+    }
+  }
+
+  /** View `viewId`'s document, or undefined while it doesn't exist. */
+  viewDoc(viewId) {
+    const entry = this.views?.get(viewId);
+    return entry?.state.name === "ready" ? entry.handle?.doc() : undefined;
+  }
+
+  /** `[viewId, entry]` of each view whose document is served, by id. */
+  servedViews() {
+    return [...(this.views ?? [])]
+      .filter(([, entry]) => entry.handle)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  }
+
+  /** `{ [view_id]: documentId }` of each view that holds a write. A slot
+   * with no revision is never advertised. */
+  viewDocumentIds() {
+    return Object.fromEntries(
+      this.servedViews()
+        .filter(([viewId]) => this.viewDoc(viewId)?.revision !== undefined)
+        .map(([viewId, entry]) => [viewId, derivedDocumentId(entry.uuid)]),
+    );
+  }
+
+  /** What a read sees of the Page's views: the ids of the views that hold
+   * one, and each one's document. */
+  viewReads() {
+    return {
+      ids: () =>
+        this.servedViews()
+          .map(([viewId]) => viewId)
+          .filter((viewId) => this.viewDoc(viewId)?.revision !== undefined),
+      doc: (viewId) => this.viewDoc(viewId),
+    };
   }
 
   /** Boot plain Automerge sync for the Page: DocumentPolicy for access, and
@@ -5940,7 +6206,7 @@ export class Page {
   }
 
   /** The repo document IDs this Page host holds: the Page and, once open,
-   * its comments and sources documents. A record in a format this build
+   * its comments and sources documents and its views. A record in a format this build
    * doesn't write holds none. */
   documentIds() {
     if (this.formatRefusal()) return [];
@@ -5948,6 +6214,7 @@ export class Page {
       this.metadata.documentId,
       ...(this.commentsHandle ? [commentsDocumentId(this.commentsUuid)] : []),
       ...(this.sourcesHandle ? [derivedDocumentId(this.sourcesUuid)] : []),
+      ...this.servedViews().map(([, entry]) => derivedDocumentId(entry.uuid)),
     ];
   }
 
@@ -6358,14 +6625,14 @@ export class Page {
           documentId: this.metadata.documentId,
           // The comments document syncs on the same socket.
           ...(this.commentsHandle && { commentsDocumentId: commentsId }),
-          // The sources document, once it exists, syncs on the same socket
-          // to a client that declares its format; nothing in the viewer
-          // reads it yet.
+          // The sources document and each view, once they exist, sync on
+          // the same socket to a client that declares their formats.
           documents: pageDocuments(
             recordDocumentFormats(this.metadata),
             this.metadata.documentId,
             commentsId,
             this.sourcesView() ? derivedDocumentId(this.sourcesUuid) : undefined,
+            this.viewDocumentIds(),
           ),
           recordStorage: "automerge",
           serverSenderId: this.serverSenderId,
@@ -6431,6 +6698,7 @@ export class Page {
             getPresence: (doc) => this.activityState().read(doc),
             commentsDoc: this.commentsView(),
             sourcesDoc: this.sourcesView(),
+            views: this.viewReads(),
             revisions: this.revisionTable(),
             writers: (changes) =>
               resolveWriters(
@@ -6526,6 +6794,16 @@ export class Page {
             "invalid_arguments",
           );
         if (sourceOps) return json(await this.writeSources(request, identity, body));
+        // A set_view writes one view's document: its batch holds it alone.
+        if (ops.some((op) => op?.op === "set_view")) {
+          if (ops.length !== 1)
+            throw new HttpError(
+              400,
+              "A batch with set_view holds only that one operation. Send the other operations in a second edit_page request.",
+              "invalid_arguments",
+            );
+          return json(await this.writeView(request, identity, body));
+        }
         // Ops that create a node naming a stored asset (model/node-registry.mjs).
         const inserts = ops.filter((op) => insertOperation(op?.op) || op?.op === "set_image");
         // Where this batch landed, captured inside the change so the cursors
@@ -6560,6 +6838,14 @@ export class Page {
                     assetId,
                     ...(mediaType && { mediaType }),
                   });
+                // Each view node names a view this Page holds.
+                for (const viewId of insertedViews(inserts))
+                  if (this.viewDoc(viewId)?.revision === undefined)
+                    throw new HttpError(
+                      400,
+                      `No view "${viewId}" on this Page. Create it with set_view, then insert its node.`,
+                      "unknown_view",
+                    );
                 // The Page queue orders ACL changes; OAuth/key expiry and revocation
                 // can still happen while immutable object metadata is being read.
                 this.policy.account(await authenticate(request, this.env), true);
@@ -6874,7 +7160,7 @@ export class Page {
     // covers it, as a comment's does.
     const agent = agentFromProvenance(identity.clientProvenance);
     await this.sourcesDocumentId();
-    if (this.sourcesView())
+    if (this.sourcesView() && this.pageEditable())
       await recoverDocumentMutations(
         this.ctx.storage,
         this.sourcesHandle,
@@ -6900,7 +7186,14 @@ export class Page {
         args,
         identity,
         agent,
-        guard: (input) => input,
+        // The Page's stamp gates every document of the Page, as SyncHost's
+        // gate does, so it is checked before the intent is journaled. A
+        // recorded receipt still replays.
+        guard: (input) => {
+          requireSupportedSchema(this.handle.doc());
+          return input;
+        },
+        schemaDoc: () => this.handle.doc(),
         pageHeads: () => A.getHeads(this.handle.doc()),
         prepare: async () => {
           let assetIds;
@@ -6933,6 +7226,171 @@ export class Page {
             throw sourceRefusal(error);
           }
         },
+        flush: () => this.flush(),
+      });
+    } finally {
+      if (genesis) A.free(genesis);
+    }
+  }
+
+  /** The pre-slot checks of set_view `op`, then its view slot: the Page's
+   * stamp, the operation against the view as it stands, the cap, room in
+   * the journal and the caller's access, then the view's document (created
+   * when the Page has none under this id). Every refusal known in advance
+   * comes before the slot is taken, so a write that fails after it fails
+   * from I/O or a crash; its slot stays, unlisted until a write lands, and
+   * the next boot releases it if none does. Returns false, having taken
+   * nothing, when it first finished a release a boot or an earlier write
+   * left unfinished: the caller runs it again, since the release awaited
+   * storage. */
+  async takeViewSlot(request, identity, op, args, handle) {
+    const viewId = op.view_id;
+    requireSupportedSchema(this.handle.doc());
+    try {
+      checkView(handle.doc(), op, { sourcesDoc: this.sourcesView() });
+    } catch (error) {
+      throw viewRefusal(error);
+    }
+    return this.viewSlot(async () => {
+      const listed = await this.storedViewIds();
+      if (!listed.includes(viewId) && listed.length >= MAX_VIEWS)
+        throw Object.assign(
+          new HttpError(
+            400,
+            `A Page holds up to ${MAX_VIEWS} views, and this one holds ${listed.join(", ")}. Rewrite one of them with set_view and its view_revision.`,
+            "view_limit",
+          ),
+          { details: { view_ids: listed } },
+        );
+      // The journal's own check stays the check of record; this one is
+      // generous, so it refuses before the slot.
+      await requireJournalRoom(this.ctx.storage, {
+        bytes: 2 * operationEntryBytes("", args) + 4096,
+      });
+      // Access can change while the view list is read. The credential is the
+      // request's own, so it names the principal the write is attributed to,
+      // or the write is refused.
+      const current = await authenticate(request, this.env);
+      if (current.principal !== identity.principal)
+        throw new HttpError(403, "Document access denied");
+      this.policy.account(current, true);
+      const entry = await this.viewEntry(viewId);
+      try {
+        // Until a release a boot or an earlier write left unfinished ends,
+        // the id takes no write.
+        if (entry.state.name === "releasing") {
+          try {
+            await this.viewEvent(viewId, { type: "release" });
+          } catch (error) {
+            logFailure(error, "view-release");
+            throw new HttpError(
+              503,
+              `The view "${viewId}" is still being cleared after a failed write. Try again shortly.`,
+              "view_unavailable",
+            );
+          }
+          return false;
+        }
+        await this.viewEvent(viewId, { type: "create", recorded: listed.includes(viewId) });
+        return true;
+      } finally {
+        this.forgetIdleView(viewId);
+      }
+    });
+  }
+
+  /**
+   * One edit_page set_view: the view's document (model/view-doc.mjs),
+   * written through the journal. The caller holds edit access. Like a source
+   * write, it names the Page `revision` it read, fenced like any edit_page
+   * write, and never conflicts with a Page change; the operation's
+   * `view_revision` is the revision it checks instead.
+   *
+   * A journaled write to this view whose apply didn't finish is replayed
+   * first. For a new intent, `prepare` checks the operation, its spec
+   * (shared/view-spec.mjs) and its bindings against the Page's sources,
+   * then, in the slot queue, the view cap and the caller's access, and only
+   * then creates the view's document when the Page has none under this id
+   * (view-lifecycle.mjs). Until then the journal reads the fixed genesis
+   * and the host holds no entry for the view. The journal's room is checked
+   * before the slot too, so a write that fails after it fails from I/O or a
+   * crash: its slot stays unlisted until a write lands, and the next boot
+   * releases it if none does. A view whose key names a format this build
+   * doesn't write is refused first. The receipt's `view_revision` is the
+   * view's revision after the write; an exact retry replays it.
+   */
+  async writeView(request, identity, body) {
+    const args = body.arguments ?? {};
+    const op = args.operations[0];
+    // The view id names the document, so it is checked before anything
+    // else; the rest is checked in `prepare`, against the stored view.
+    try {
+      if (!validViewId(op?.view_id)) validateViewOperation(op);
+    } catch (error) {
+      throw viewRefusal(error);
+    }
+    const viewId = op.view_id;
+    const doc = keyedDoc(VIEW_MODULE, viewId);
+    const unsupported = await this.viewFormatRefusal(viewId);
+    if (unsupported) throw unsupported;
+    // Stored as the view's producer, so the retry fingerprint covers it, as
+    // a source's does.
+    const agent = agentFromProvenance(identity.clientProvenance);
+    const uuid = this.views?.get(viewId)?.uuid ?? (await viewDocUuid(this.metadata.pageId, viewId));
+    if (this.viewDoc(viewId) && this.pageEditable())
+      await recoverDocumentMutations(
+        this.ctx.storage,
+        this.views.get(viewId).handle,
+        () => this.flush(),
+        doc,
+      );
+    let genesis;
+    let viewRevision;
+    const handle = {
+      doc: () => this.viewDoc(viewId) ?? (genesis ??= VIEW_MODULE.derived.genesis(uuid)),
+      update: (fn, options) => this.views.get(viewId).handle.update(fn, options),
+    };
+    try {
+      return await documentMutation({
+        storage: this.ctx.storage,
+        hostActorPrefix: this.plain.hostActorPrefix,
+        handle,
+        doc,
+        // edit_page's nonces share one lane, whichever document a batch writes.
+        lane: PAGE_DOC,
+        pageId: this.metadata.pageId,
+        operation: body.operation,
+        args,
+        identity,
+        agent,
+        // The Page's stamp gates every document of the Page, as SyncHost's
+        // gate does, so it is checked before the intent is journaled. A
+        // recorded receipt still replays.
+        guard: (input) => {
+          requireSupportedSchema(this.handle.doc());
+          return input;
+        },
+        schemaDoc: () => this.handle.doc(),
+        pageHeads: () => A.getHeads(this.handle.doc()),
+        prepare: async () => {
+          // A release this write finishes first awaits storage, so every
+          // check runs again after it, from the top. A release only runs
+          // from `releasing`, so the second pass takes the slot or refuses.
+          while (!(await this.takeViewSlot(request, identity, op, args, handle)));
+        },
+        apply: (draft, effectiveArgs) => {
+          try {
+            const edit = setView(draft, effectiveArgs.operations[0], {
+              sourcesDoc: this.sourcesView(),
+              by: authorOf(publicIdentity(identity), agent),
+            });
+            viewRevision = edit.view_revision;
+            return { edits: [edit] };
+          } catch (error) {
+            throw viewRefusal(error);
+          }
+        },
+        receiptFields: async () => ({ view_revision: viewRevision }),
         flush: () => this.flush(),
       });
     } finally {
@@ -7314,24 +7772,42 @@ export class Page {
         return;
       case "deleteDocument": {
         await this.forgetContent();
-        // Every document goes together: the Page, its comments and its
-        // sources. From metadata, not loaded handles: a deleted Page boots
-        // without them.
+        // Every document goes together: the Page, its comments, its sources
+        // and its views. From metadata and the view list, not loaded
+        // handles: a deleted Page boots without them.
         const sourcesId =
           (recordNamesSources(this.metadata) || this.sourcesHandle) &&
           (await this.sourcesDocumentId());
+        // Every listed view, and any served whose record step didn't finish.
+        const viewIds = new Set([
+          ...(await this.storedViewIds()),
+          ...this.servedViews().map(([viewId]) => viewId),
+        ]);
+        const viewDocumentIds = [];
+        for (const viewId of viewIds)
+          viewDocumentIds.push(
+            derivedDocumentId(
+              this.views?.get(viewId)?.uuid ?? (await viewDocUuid(this.metadata.pageId, viewId)),
+            ),
+          );
         await this.repo.delete(this.metadata.documentId);
         if (this.commentsUuid) await this.repo.delete(commentsDocumentId(this.commentsUuid));
         if (sourcesId) await this.repo.delete(sourcesId);
+        for (const documentId of viewDocumentIds) await this.repo.delete(documentId);
         this.dropSources();
+        this.dropViews();
         await this.deleteAssets();
         await this.plain.forget(
           [
             this.metadata.documentId,
             this.commentsUuid && commentsDocumentId(this.commentsUuid),
             sourcesId,
+            ...viewDocumentIds,
           ].filter(Boolean),
         );
+        // After the documents: a restart that still finds the list repeats
+        // the deletes above.
+        await clearPrefixes(this.ctx.storage, [VIEW_KEY_PREFIX]);
         if (this.metadata.recordStorageMigratedFrom) await this.purgeConvertedRecords();
         return;
       }
@@ -7349,6 +7825,7 @@ export class Page {
         this.handle = undefined;
         this.commentsHandle = undefined;
         this.dropSources();
+        this.dropViews();
         return;
       case "loadDocument":
         await this.loadDocument();
@@ -7521,6 +7998,21 @@ export class Page {
       } else {
         const { doc, bytes } = readRegistration(args);
         try {
+          // The Page's comments and sources documents derive their ids from
+          // the Page id. A draft under one of those ids would be served
+          // under two kinds, and its initialization would fail on every
+          // boot, so it is refused before the intent is stored. A view's id
+          // is open-ended; the view write refuses that collision itself.
+          const derived = [
+            commentsDocumentId(await commentsDocUuid(args.page_id)),
+            derivedDocumentId(await derivedDocUuid(SOURCES_MODULE.derived.label, args.page_id)),
+          ];
+          if (derived.some((id) => treeOf(id) === treeOf(args.document_id)))
+            throw new HttpError(
+              409,
+              "This document_id is one the Page derives for its own comments or sources. Register the draft under a new document id.",
+              "document_conflict",
+            );
           const metadata = {
             recordStorage: "automerge",
             pageId: args.page_id,

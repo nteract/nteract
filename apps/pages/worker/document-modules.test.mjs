@@ -15,9 +15,13 @@ import {
   PAGE_FAMILY_MODULES,
   PAGE_MODULE,
   SOURCES_MODULE,
+  VIEW_MODULE,
+  documentModule,
+  keyedDoc,
   modulesByKind,
 } from "./document-modules.mjs";
 import { commentsDocUuid, derivedDocUuid } from "./comments-store.mjs";
+import { viewDocUuid, viewDocumentId } from "../shared/document-ids.mjs";
 import { PlainSync, treeOf } from "./plain-sync.mjs";
 import { REVISION_DOCS, REVISION_PATTERN, formatRevision, parseRevision } from "./revisions.mjs";
 
@@ -192,6 +196,41 @@ test("the sources module refuses every browser change, blocks no one, and admits
   }
 });
 
+test("the view module refuses every browser change to a view, blocks no one, and admits the host", async () => {
+  const id = await viewDocumentId("33333333-3333-4333-8333-333333333333", "revenue");
+  const seed = A.from(
+    { title: "Revenue", spec: "{}", data: {}, revision: "1" },
+    { actor: "00".repeat(16) },
+  );
+  const f = await fixture({ modules: PAGE_FAMILY_MODULES, documents: [[id, "view", seed]] });
+  try {
+    const writer = connect(f.plain, [...BUILD_FEATURES]);
+    for (const edit of [
+      (d) => (d.title = "forged"),
+      (d) => A.updateText(d, ["spec"], '{"mark":"bar"}'),
+      (d) => (d.data.x = { source_id: "x" }),
+      (d) => delete d.revision,
+    ]) {
+      const refused = await writer.write(id, seed, edit);
+      assert.equal(refused.t, "refused");
+      assert.equal(refused.code, "request_rejected");
+      assert.equal(refused.fatal, false);
+    }
+    assert.deepEqual(
+      { ...(await f.plain.host.document(treeOf(id))) },
+      { title: "Revenue", spec: "{}", data: {}, revision: "1" },
+    );
+    assert.deepEqual(f.writes, []);
+    assert.deepEqual(f.accounted, [], "no browser holds write access to it, so none is asked");
+    assert.equal(f.plain.blocked.size, 0, "a refused view change blocks no principal");
+    const handle = await f.plain.repo.find(id);
+    await handle.change((d) => (d.title = "host"));
+    assert.equal((await f.plain.host.document(treeOf(id))).title, "host");
+  } finally {
+    await f.plain.close();
+  }
+});
+
 test("a module that refuses denied writes refuses a reader's frame by name; one that strips drops it", async () => {
   const id = docId(11);
   const seed = A.from({ lines: {} }, { actor: "00".repeat(16) });
@@ -296,12 +335,17 @@ test("a document whose kind has no module is refused cleanly, and the host keeps
 });
 
 test("revision handles take each module's letter and name its document", () => {
+  const lettered = PAGE_FAMILY_MODULES.filter((module) => module.revisionLetter !== null);
   assert.deepEqual(
     REVISION_DOCS,
-    Object.fromEntries(PAGE_FAMILY_MODULES.map((module) => [module.kind, module.revisionLetter])),
+    Object.fromEntries(lettered.map((module) => [module.kind, module.revisionLetter])),
   );
   assert.deepEqual(REVISION_DOCS, { page: "r", comments: "c", sources: "s" });
-  for (const module of PAGE_FAMILY_MODULES) {
+  // A view carries its own revision; the agent edge names no handle for it.
+  assert.equal(VIEW_MODULE.revisionLetter, null);
+  assert.equal(VIEW_MODULE.revisionField, null);
+  assert.throws(() => formatRevision("view", 1), TypeError);
+  for (const module of lettered) {
     const handle = formatRevision(module.kind, 42);
     assert.equal(handle, `${module.revisionLetter}42`);
     assert.ok(REVISION_PATTERN.test(handle));
@@ -323,16 +367,23 @@ test("revision handles take each module's letter and name its document", () => {
   );
 });
 
-test("the Page family is three modules with distinct kinds and handle letters", () => {
-  assert.deepEqual([...PAGE_FAMILY.keys()], ["page", "comments", "sources"]);
+test("the Page family is four modules with distinct kinds and handle letters", () => {
+  assert.deepEqual([...PAGE_FAMILY.keys()], ["page", "comments", "sources", "view"]);
   assert.equal(PAGE_FAMILY.get("page"), PAGE_MODULE);
   assert.equal(PAGE_FAMILY.get("comments"), COMMENTS_MODULE);
   assert.equal(PAGE_FAMILY.get("sources"), SOURCES_MODULE);
+  assert.equal(PAGE_FAMILY.get("view"), VIEW_MODULE);
   assert.deepEqual(
     PAGE_FAMILY_MODULES.map((module) => module.type),
-    [...MEMBER_TYPES, "pages.sources"],
-    "one module for each member type of a Page, and one for the sources a Page may hold",
+    [...MEMBER_TYPES, "pages.sources", "pages.view"],
+    "one module for each member type of a Page, and one for each type a Page may hold",
   );
+  // Journal entries name one view's document by its key.
+  assert.equal(keyedDoc(VIEW_MODULE, "revenue"), "view:revenue");
+  assert.equal(documentModule("view:revenue"), VIEW_MODULE);
+  assert.equal(documentModule("sources"), SOURCES_MODULE);
+  assert.equal(documentModule("sources:x"), undefined, "only a keyed module takes a key");
+  assert.equal(documentModule("notes"), undefined);
   const other = notesModule().module;
   assert.throws(() => modulesByKind([PAGE_MODULE, { ...other, kind: "page" }]), /kind/);
   assert.throws(
@@ -341,12 +392,14 @@ test("the Page family is three modules with distinct kinds and handle letters", 
   );
 });
 
-test("page and comments strip a denied browser write; sources refuses every one", () => {
+test("page and comments strip a denied browser write; sources and views refuse every one", () => {
   assert.equal(PAGE_MODULE.deniedWrites, "strip");
   assert.equal(COMMENTS_MODULE.deniedWrites, "strip");
-  assert.equal(SOURCES_MODULE.deniedWrites, "refuse");
-  assert.equal(SOURCES_MODULE.writeAccess, null);
-  assert.equal(Object.hasOwn(SOURCES_MODULE, "admit"), false);
+  for (const module of [SOURCES_MODULE, VIEW_MODULE]) {
+    assert.equal(module.deniedWrites, "refuse");
+    assert.equal(module.writeAccess, null);
+    assert.equal(Object.hasOwn(module, "admit"), false);
+  }
 });
 
 test("a derived document's module carries its label and fixed genesis", async () => {
@@ -360,13 +413,34 @@ test("a derived document's module carries its label and fixed genesis", async ()
     await derivedDocUuid(SOURCES_MODULE.derived.label, pageId),
     await commentsDocUuid(pageId),
   );
-  for (const module of [COMMENTS_MODULE, SOURCES_MODULE]) {
+  for (const module of [COMMENTS_MODULE, SOURCES_MODULE, VIEW_MODULE]) {
     const uuid = await derivedDocUuid(module.derived.label, pageId);
     const [first, again] = [module.derived.genesis(uuid), module.derived.genesis(uuid)];
     assert.deepEqual(A.getHeads(first), A.getHeads(again), `${module.kind} genesis is fixed`);
     A.free(first);
     A.free(again);
   }
+  // A view's id derives from the Page id and its view id, so each view of a
+  // Page, and the same view id on another Page, has its own document.
+  assert.equal(VIEW_MODULE.keyed, true);
+  assert.equal(
+    await viewDocUuid(pageId, "revenue"),
+    await derivedDocUuid(VIEW_MODULE.derived.label, `${pageId}\0revenue`),
+  );
+  const other = "44444444-4444-4444-8444-444444444444";
+  const ids = new Set([
+    await viewDocumentId(pageId, "revenue"),
+    await viewDocumentId(pageId, "costs"),
+    await viewDocumentId(other, "revenue"),
+  ]);
+  assert.equal(ids.size, 3);
+  const [a, b] = [
+    VIEW_MODULE.derived.genesis(await viewDocUuid(pageId, "revenue")),
+    VIEW_MODULE.derived.genesis(await viewDocUuid(pageId, "costs")),
+  ];
+  assert.notDeepEqual(A.getHeads(a), A.getHeads(b), "each view has its own genesis");
+  A.free(a);
+  A.free(b);
 });
 
 /** Host source files under worker/ and sync/: everything but tests. */

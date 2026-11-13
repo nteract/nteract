@@ -4,6 +4,8 @@ import { agentBlock, projectReadContent } from "../model/read-content.mjs";
 import { projectReadComments } from "../model/read-comments.mjs";
 import { documentFeatures } from "../model/schema-features.mjs";
 import { listSources, readSource } from "../model/sources-doc.mjs";
+import { readView, viewSummary } from "../model/view-doc.mjs";
+import { validViewId } from "../shared/views.mjs";
 
 export const DEFAULT_READ_BYTES = 128 * 1024;
 /** The largest max_bytes a read takes (read_page, list_page_comments,
@@ -32,6 +34,8 @@ const selectorKeys = [
   "revision",
   "sources",
   "source_id",
+  "views",
+  "view_id",
 ];
 const commentKeys = ["state", "node_id", "thread_ids", "include_messages", "max_bytes", "revision"];
 /** Read refusals that reach the caller with their own code. */
@@ -45,6 +49,8 @@ export const READ_ERROR_CODES = new Set([
   "wrong_address_kind",
   "invalid_source",
   "source_not_found",
+  "invalid_view",
+  "view_not_found",
 ]);
 function invalid(message) {
   throw Object.assign(new Error(message), { status: 400, code: "invalid_read_selector" });
@@ -71,6 +77,10 @@ function validate(operation, args) {
     invalid("sources must be a boolean: true lists the Page's sources");
   if (args.source_id !== undefined && typeof args.source_id !== "string")
     invalid("source_id must be one source's ID");
+  if (args.views !== undefined && typeof args.views !== "boolean")
+    invalid("views must be a boolean: true lists the Page's views");
+  if (args.view_id !== undefined && typeof args.view_id !== "string")
+    invalid("view_id must be one view's ID");
   return { maxBytes, offset, limit };
 }
 /** A read's `revision` against the revision it reads. The handle resolves
@@ -116,6 +126,29 @@ function sourcesRead(sourcesDoc, { sources, source_id }) {
   };
 }
 
+/** The views a read_page asks for: `{ views }` listing every view for
+ * `views: true`, `{ view }` with its spec for `view_id`, or both. `views` is
+ * the host's `{ ids(), doc(view_id) }` (worker/index.mjs viewReads). */
+function viewsRead(views, { views: list, view_id }) {
+  const view = () => {
+    if (!validViewId(view_id))
+      throw Object.assign(Error("Invalid view ID"), { status: 400, code: "invalid_view" });
+    const found = views?.ids().includes(view_id) ? readView(views.doc(view_id), view_id) : null;
+    if (!found)
+      throw Object.assign(Error("No view with this ID on this Page"), {
+        status: 404,
+        code: "view_not_found",
+      });
+    return found;
+  };
+  return {
+    ...(list === true && {
+      views: (views?.ids() ?? []).map((id) => viewSummary(views.doc(id), id)),
+    }),
+    ...(view_id !== undefined && { view: view() }),
+  };
+}
+
 /** One captured CRDT revision supplies content, comments and revisions.
  * `revisions` is the host's handle table: `handles([[doc, heads], ...])`
  * names revisions, minting handles when needed, and `heads(doc, handle)`
@@ -127,22 +160,33 @@ function sourcesRead(sourcesDoc, { sources, source_id }) {
  * host's own use.
  *
  * read_page's `sources` and `source_id` read the Page's sources
- * (`sourcesDoc`). Alone, they read them without the Page's content; beside
+ * (`sourcesDoc`), and `views` and `view_id` its views (`views`, the host's
+ * viewReads). Alone, they read them without the Page's content; beside
  * other selectors, such as include_content false, they add them to that
- * read. */
+ * read. An outline entry for a view node carries its view's title and media
+ * type. */
 export async function readTool(
   doc,
   operation,
   args,
-  { revisions, recovery, historyIncomplete, getPresence, commentsDoc, sourcesDoc } = {},
+  { revisions, recovery, historyIncomplete, getPresence, commentsDoc, sourcesDoc, views } = {},
 ) {
   const heads = A.getHeads(doc);
   const commentHeads = commentsDoc ? A.getHeads(commentsDoc) : undefined;
   const sourceHeads = sourcesDoc ? A.getHeads(sourcesDoc) : undefined;
   // validate() refuses arguments that aren't an object.
-  const { sources, source_id, ...contentArgs } = args ?? {};
+  const { sources, source_id, views: listViews, view_id, ...contentArgs } = args ?? {};
   const sourceSelector = { sources, source_id };
+  const viewSelector = { views: listViews, view_id };
   const readsSources = sources === true || source_id !== undefined;
+  const readsViews = listViews === true || view_id !== undefined;
+  const reads = () => ({
+    ...(readsSources && sourcesRead(sourcesDoc, sourceSelector)),
+    ...(readsViews && viewsRead(views, viewSelector)),
+  });
+  const summaries = {
+    viewSummary: (id) => (views?.ids().includes(id) ? viewSummary(views.doc(id), id) : undefined),
+  };
   let settings = { maxBytes: DEFAULT_READ_BYTES, offset: 0, limit: 100 },
     legacy = false,
     // A read of sources alone has no outline to offer when it is too large.
@@ -151,7 +195,7 @@ export async function readTool(
     payload,
     status = 200;
   const outline = () => {
-    content ??= projectReadContent(doc, { include_content: false });
+    content ??= projectReadContent(doc, { include_content: false }, summaries);
     return outlinePage(content.outline, settings.offset, settings.limit);
   };
   try {
@@ -165,14 +209,14 @@ export async function readTool(
         comments: projectReadComments(doc, { state: "open", ...filters }, commentsDoc),
       };
     } else if (
-      readsSources &&
+      (readsSources || readsViews) &&
       Object.keys(contentArgs).every((key) => ["page_id", "max_bytes", "revision"].includes(key))
     ) {
       sourcesOnly = true;
       payload = {
         page_id: doc.page_id,
         title: doc.title,
-        ...sourcesRead(sourcesDoc, sourceSelector),
+        ...reads(),
       };
     } else if (Object.keys(args).every((key) => key === "page_id")) {
       // A read with no selector: every block whole and every thread with its
@@ -185,7 +229,7 @@ export async function readTool(
         comments: projectReadComments(doc, { state: "all" }, commentsDoc),
       };
     } else {
-      content = projectReadContent(doc, contentArgs);
+      content = projectReadContent(doc, contentArgs, summaries);
       const mode = args.comments ?? (args.include_content === false ? "none" : "summary");
       payload = {
         page_id: doc.page_id,
@@ -207,7 +251,7 @@ export async function readTool(
               ),
         ...(content.selection && { selection: content.selection }),
         ...(args.include_presence && { presence: getPresence(doc) }),
-        ...(readsSources && sourcesRead(sourcesDoc, sourceSelector)),
+        ...reads(),
       };
     }
   } catch (error) {

@@ -7,6 +7,7 @@ import * as A from "@automerge/automerge";
 import featureFile from "./features.json" with { type: "json" };
 import {
   ALIGNMENTS,
+  DATA_LEAVES,
   INSERT_OPERATIONS,
   insertOperation,
   NODE_TYPES,
@@ -17,7 +18,7 @@ import {
   validHeadingLevel,
 } from "./node-registry.mjs";
 import { PagesUnknownBlock, PagesUnknownEmbed, decode, encode } from "./wordgard-doc.mjs";
-import { insertedAssets } from "./page.mjs";
+import { insertedAssets, insertedViews } from "./page.mjs";
 import { validateRichSpans } from "./richtext-spans.mjs";
 
 test("every stored block type has exactly one registry entry", () => {
@@ -83,6 +84,7 @@ test("the Wordgard model draws every block type as a known node", () => {
         media_type: S("application/vnd.apache.parquet"),
       }),
     ],
+    view: [marker("view", [], { view_id: S("revenue") })],
     image: [
       marker("paragraph"),
       {
@@ -145,9 +147,29 @@ test("helpers read the registry", () => {
     assert.equal(insertOperation(name), undefined, String(name));
   assert.equal(nodeType("task-list-item").governsFirstParagraph, true);
   assert.deepEqual(INSERT_OPERATIONS, {
-    insert_image: { block: "image", asset: "image" },
-    insert_node: { block: "dataframe", asset: "dataset" },
+    insert_image: { image: { asset: "image", view: false } },
+    insert_node: {
+      dataframe: { asset: "dataset", view: false },
+      view: { asset: null, view: true },
+    },
   });
+  assert.deepEqual([...DATA_LEAVES].sort(), ["dataframe", "view"]);
+  for (const block of DATA_LEAVES) assert.equal(nodeType(block).kind, "leaf");
+});
+
+test("insertedViews lists each view a batch's view nodes name, validated", () => {
+  const b = "b".repeat(64);
+  assert.deepEqual(
+    insertedViews([
+      { op: "insert_node", node: { type: "view", attrs: { view_id: "revenue" } } },
+      { op: "insert_node", node: { type: "dataframe", attrs: { asset_id: b } } },
+      { op: "insert_node", node: { type: "view", attrs: { view_id: "revenue" } } },
+      { op: "insert_node", node: { type: "view", attrs: { view_id: "costs" } } },
+    ]),
+    ["revenue", "costs"],
+  );
+  for (const attrs of [{}, { view_id: "Bad" }, { view_id: "__proto__" }, { view_id: "a", x: 1 }])
+    assert.throws(() => insertedViews([{ op: "insert_node", node: { type: "view", attrs } }]));
 });
 
 test("insertedAssets lists each stored asset a batch names, validated", () => {

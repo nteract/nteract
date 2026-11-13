@@ -254,6 +254,7 @@ for (const fails of [true, false])
             "pages.page": [3],
             "pages.comments": [2],
             "pages.sources": [1],
+            "pages.view": [1],
           });
           assert.ok(options.releaseFiles.includes("index.js"));
           assert.ok(options.releaseFiles.includes("public/chunks/ABCDEFGH.js"));
