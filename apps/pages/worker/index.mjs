@@ -42,7 +42,7 @@ import { storedFormUnsupported } from "../model/stored-form.mjs";
 import { readTargets, writeTargets } from "../model/agent-presence.mjs";
 import { assertDocumentLimits, assertIntentSize } from "../model/limits.mjs";
 import { RECORD_STORAGE_MODES } from "../shared/record-storage.mjs";
-import { handleMcp } from "../mcp.mjs";
+import { handleMcp, isModernMcpRequest } from "../mcp.mjs";
 import { forwardClientProvenance, withMcpAgent } from "./client-provenance.mjs";
 import {
   REPLAYED_RECEIPT_HEADER,
@@ -54,6 +54,7 @@ import {
   usageDropped,
   usageOperation,
   withModernMcpClient,
+  withoutMcpSession,
 } from "./usage.mjs";
 import { flushUsage } from "./usage-store.mjs";
 import { runScheduled } from "./scheduled.mjs";
@@ -1274,7 +1275,13 @@ const gateway = {
             env,
           );
         }
-        const identity = await authenticate(request, env);
+        // A 2026-07-28 request has no session, so the Mcp-Session-Id it sends is
+        // ignored: authentication never sees it, and a malformed one can't
+        // refuse the request.
+        const identity = await authenticate(
+          (await isModernMcpRequest(request)) ? withoutMcpSession(request) : request,
+          env,
+        );
         return await handleMcp(
           request,
           async (operation, args, { kind = "tool", agent, client } = {}) => {

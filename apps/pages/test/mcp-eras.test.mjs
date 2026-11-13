@@ -453,6 +453,16 @@ test("a legacy client's responses are pinned", async () => {
         error: { code: -32700, message: "Parse error: Invalid JSON-RPC message" },
       },
     })),
+    ...["2024-01-01", "not-a-date"].map((version) => ({
+      name: `a malformed body under MCP-Protocol-Version ${version}`,
+      request: post("{}", { "MCP-Protocol-Version": version }),
+      status: 400,
+      body: {
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32700, message: "Parse error: Invalid JSON-RPC message" },
+      },
+    })),
     {
       name: "an empty batch",
       request: post("[]"),

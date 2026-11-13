@@ -23,7 +23,6 @@ import {
   CLIENT_INFO_META_KEY,
   PROTOCOL_VERSION_META_KEY,
   SERVER_INFO_META_KEY,
-  SUPPORTED_PROTOCOL_VERSIONS,
   Server,
   WebStandardStreamableHTTPServerTransport,
   createMcpHandler,
@@ -1085,15 +1084,15 @@ const SERVER_INFO = Object.freeze({ name: PRODUCT_NAME, version: "0.1.0" });
  * body the runtime delivers. */
 const LEGACY_MAX_REQUEST_BODY_BYTES = 100 * 1024 * 1024;
 
+/** The first protocol revision served without initialize. */
+const FIRST_MODERN_REVISION = "2026-07-28";
+
 /** True when a request claims revision 2026-07-28 or later: a protocol version
  * in some message's params._meta, or an MCP-Protocol-Version header naming a
- * revision that initialize never negotiates. isLegacyRequest also hands the
- * modern leg bodies with no such claim (malformed JSON-RPC, an empty batch, a
- * body over 4 MiB); those stay on the legacy leg, which answers them with the
- * initialize-era errors. */
+ * revision dated 2026-07-28 or later. */
 async function claimsModernRevision(request) {
   const header = request.headers.get("mcp-protocol-version");
-  if (header && !SUPPORTED_PROTOCOL_VERSIONS.includes(header)) return true;
+  if (header && /^\d{4}-\d{2}-\d{2}$/.test(header) && header >= FIRST_MODERN_REVISION) return true;
   let body;
   try {
     body = await request.clone().json();
@@ -1109,6 +1108,21 @@ async function claimsModernRevision(request) {
       Object.hasOwn(meta, PROTOCOL_VERSION_META_KEY)
     );
   });
+}
+
+/** True when /mcp serves `request` under revision 2026-07-28. The SDK's
+ * isLegacyRequest must route it there, and the request must claim that
+ * revision itself: isLegacyRequest also routes malformed JSON-RPC, an empty
+ * batch and a body over 4 MiB there, and without a claim those stay on the
+ * legacy leg, which answers them as initialize-era clients expect. Reads a
+ * clone of the body; `request` stays readable. */
+export async function isModernMcpRequest(request) {
+  try {
+    return !(await isLegacyRequest(request)) && (await claimsModernRevision(request));
+  } catch {
+    // The legacy transport reports an unreadable body itself.
+    return false;
+  }
 }
 
 const securityHeaders = (response) => {
@@ -1148,14 +1162,7 @@ export async function handleMcp(request, invoke, env, { onInitialize } = {}) {
         { status: 413 },
       ),
     );
-  let legacy;
-  try {
-    legacy = (await isLegacyRequest(request)) || !(await claimsModernRevision(request));
-  } catch {
-    // The legacy transport reports an unreadable body itself.
-    legacy = true;
-  }
-  if (!legacy) {
+  if (await isModernMcpRequest(request)) {
     // No handler here emits a notification before its result, so every modern
     // response is a single JSON body, like the legacy leg's.
     const handler = createMcpHandler(() => createServer(true), { legacy: "reject" });

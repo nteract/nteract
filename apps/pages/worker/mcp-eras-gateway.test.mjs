@@ -130,6 +130,34 @@ test("a 2026-07-28 client's declared clientInfo names it in usage and presence",
   assert.equal(call.client, "connector/2.0");
   assert.match(call.session, /^[0-9a-f]{16}$/);
 
+  // A malformed one is ignored too: authentication never reads it.
+  const malformed = await presence(first, { "Mcp-Session-Id": "!" });
+  assert.equal(malformed.status, 200, await malformed.clone().text());
+  assert.equal((await malformed.json()).result.isError, undefined);
+  assert.equal(forwardedSessions.at(-1), await modernMcpClientId(first));
+  assert.equal(toolCalls().at(-1).session, call.session);
+  // A legacy request still has its session id checked.
+  const legacyCall = await worker.fetch(
+    new Request("http://127.0.0.1:9477/mcp", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${token}`,
+        "Mcp-Session-Id": "!",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "read_page_presence", arguments: { page_id: pageId } },
+      }),
+    }),
+    env,
+    { waitUntil: () => {} },
+  );
+  assert.equal(legacyCall.status, 400);
+
   // The same client keeps its presence tag across stateless requests; another
   // client, or one with no clientInfo, gets its own.
   assert.equal((await presence(first)).status, 200);

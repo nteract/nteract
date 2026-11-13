@@ -138,6 +138,15 @@ export async function modernMcpClientId(clientInfo) {
   return uuid === MODERN_MCP_CLIENT_UUID ? uuid : mcpSessionId(clientInfo, uuid);
 }
 
+/** `request`'s headers without the Mcp-Session-Id, as the gateway
+ * authenticates an MCP protocol 2026-07-28 request. Only the headers are
+ * copied: the body stays on `request` for the MCP handler. */
+export function withoutMcpSession(request) {
+  const headers = new Headers(request.headers);
+  headers.delete("mcp-session-id");
+  return new Request(request.url, { method: request.method, headers });
+}
+
 /** `request` as the gateway invokes a tool for an MCP protocol 2026-07-28
  * request. That revision has no session: every request declares its
  * clientInfo in `_meta`, and a client's Mcp-Session-Id header is ignored. The
