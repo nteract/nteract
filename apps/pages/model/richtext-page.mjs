@@ -11,7 +11,7 @@ import {
   parseAssetPath,
   readDataframe,
 } from "../shared/dataset-assets.mjs";
-import { VIEW_BLOCK, readViewNode, viewLabel, viewPath } from "../shared/views.mjs";
+import { VIEW_BLOCK, readViewNode, viewLine } from "../shared/views.mjs";
 import {
   decode,
   schema,
@@ -166,8 +166,9 @@ export function setRichNode(doc, id, { type, attrs }) {
 }
 
 // The nodes with no Markdown form that a rewrite keeps, each read back as a
-// one-link line: `line(param, pageId)` is that line's `{ text, href }`, or
-// null for attrs this build can't read; `looksLike(line)` is true for a link
+// line of its own: `line(param)` is that line's `{ text, href }`, a link
+// (a dataframe's) or plain text with `href` null (a view's), or null for
+// attrs this build can't read; `looksLike(line)` is true for a line
 // that reads as one of them; the rest name it in a refusal.
 const KEPT_NODES = Object.freeze([
   {
@@ -183,12 +184,11 @@ const KEPT_NODES = Object.freeze([
     type: PagesView,
     name: VIEW_BLOCK,
     one: "a view",
-    line: (param, pageId) => {
+    line: (param) => {
       const view = readViewNode(param);
-      return view ? { text: viewLabel(view.view_id), href: viewPath(pageId, view.view_id) } : null;
+      return view ? { text: viewLine(view.view_id), href: null } : null;
     },
-    looksLike: (line) =>
-      line.text.startsWith("View: ") && /^\/p\/[^/]+\/view\/[^/]+$/.test(line.href),
+    looksLike: (line) => line.href === null && /^\[View: [^\]]*\]$/.test(line.text),
     insert: "insert_node with its view_id",
   },
 ]);
@@ -248,7 +248,6 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
     }
     return spans;
   };
-  const pageId = doc.page_id;
   // Each kept node with its container path: the node types from the block's
   // root down to it, "" at the top level.
   const existing = [];
@@ -280,15 +279,18 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
   // Look-alike lines the walk found, `problem → kind`; the most specific
   // problem is reported.
   const problems = new Map();
-  // The link a textblock holds when its whole text is one link: the shape of
-  // a kept node's read-back line. Table cells hold their text directly.
+  // The line a textblock holds when its whole text is one link, or one run
+  // of unformatted text (href null): the shapes of a kept node's read-back
+  // line. Table cells hold their text directly.
   const lineLink = (node) => {
     const only = node.type.spec.inlineContent && node.content.length === 1 ? node.content[0] : null;
-    const link = only?.isText ? only.mark(PagesLink) : null;
-    return link ? { href: link.href, text: only.param } : null;
+    if (!only?.isText) return null;
+    const link = only.mark(PagesLink);
+    if (link) return { href: link.href, text: only.param };
+    return only.marks.length ? null : { href: null, text: only.param };
   };
   const sameNode = (entry, line) => {
-    const own = entry.kind.line(entry.node.param, pageId);
+    const own = entry.kind.line(entry.node.param);
     return !!own && own.href === line.href && own.text === line.text;
   };
   const restore = (node, path) => {
@@ -333,8 +335,9 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
     );
   if (unmatched.length) {
     const line = (entry) => {
-      const own = entry.kind.line(entry.node.param, pageId);
-      return own ? `[${own.text}](${own.href})` : unknownNodeNotice(entry.kind.name);
+      const own = entry.kind.line(entry.node.param);
+      if (!own) return unknownNodeNotice(entry.kind.name);
+      return own.href === null ? own.text : `[${own.text}](${own.href})`;
     };
     const lines = [...new Set(unmatched.map(line))];
     const counted = lines.map((text) => {

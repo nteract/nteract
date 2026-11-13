@@ -10,6 +10,7 @@ import {
   cardImagePaths,
   indexPaths,
   linkPreviewPaths,
+  pageSlugPaths,
   projectAssetPaths,
   projectPaths,
   siftPaths,
@@ -296,10 +297,16 @@ const lifecycle = (f) =>
     .map(({ args }) => args.join(" "));
 
 const digest = (text) => createHash("sha256").update(text).digest("hex");
-// A live target's routes without link previews, card images and Project
-// assets: the route set the release before them sealed.
+// A live target's routes without Page slugs: the route set the release before
+// them sealed.
+const beforeSlugs = (config) => config.replace(pageSlugPaths, "");
+// Without link previews, card images and Project assets either: the route
+// set the release before those sealed.
 const beforePreviews = (config) =>
-  config.replace(linkPreviewPaths, "").replace(cardImagePaths, "").replace(projectAssetPaths, "");
+  beforeSlugs(config)
+    .replace(linkPreviewPaths, "")
+    .replace(cardImagePaths, "")
+    .replace(projectAssetPaths, "");
 function priorConfig(config) {
   return beforePreviews(config).replace(accountPaths, "").replace(whoamiPaths, "");
 }
@@ -1871,11 +1878,62 @@ test("link previews, card images and Project assets are the only difference from
     assert.equal(prior.includes("card-image"), false);
     assert.equal(prior.includes("projects/(prj|sp)"), false);
     assert.equal(
-      current.length - prior.length,
+      beforeSlugs(current).length - prior.length,
       linkPreviewPaths.length + cardImagePaths.length + projectAssetPaths.length,
     );
   }
 });
+
+test("Page slugs are the only difference from the last sealed route set", () => {
+  // routesFor(target) as the release before Page slugs published it.
+  for (const [target, sealed] of [
+    ["page10", "16a862190609fe804dc14873914f944082840b27a70d39f2970dd59569b87f95"],
+    ["pages", "0bd2976080db6b91e719947d479313744b6ad7223e34489cc50b51e1b60559fe"],
+    ["pages2", "5ce2c01e54839e9f8380c0ce2cdb73f674dde505599e6f04badda5ef4026d8ae"],
+    ["page11", "4de3c8fabf6ffa360a9fdab1e263a36078b78d825ff6e11c3117bcaed88e079a"],
+  ]) {
+    const current = routesFor(target);
+    assert.equal(current.split(pageSlugPaths).length, 2, target);
+    assert.equal(digest(beforeSlugs(current)), sealed, target);
+    const route = new RegExp(/^    path: (.+)$/m.exec(current)[1]);
+    for (const pathname of [
+      `/p/${previewUuid}/My-Dashboard`,
+      `/p/${previewUuid}/My-Dashboard/`,
+      `/p/${previewUuid}/q3_plan-v2`,
+      `/p/${previewUuid}/${"a".repeat(80)}`,
+    ])
+      assert.equal(route.test(pathname), true, `${target} ${pathname}`);
+    for (const pathname of [
+      `/p/${previewUuid}/My.Dashboard`,
+      `/p/${previewUuid}/My%20Dashboard`,
+      `/p/${previewUuid}/${"a".repeat(81)}`,
+      `/p/${previewUuid}/My-Dashboard/more`,
+      `/p/${previewUuid}//My-Dashboard`,
+      `/p/${previewUuid.toUpperCase()}/My-Dashboard`,
+    ])
+      assert.equal(route.test(pathname), false, `${target} ${pathname}`);
+  }
+});
+
+for (const target of ["page10", "pages", "pages2", "page11"])
+  for (const state of ["sealed", "pending-old", "pending-new"])
+    test(`${target} adds Page slugs to its sealed installation (${state})`, (t) => {
+      const f = fixture(t, { target, sharedTunnel: !["pages2", "page11"].includes(target) });
+      const x = slotInstall(f, beforeSlugs, { state });
+      const units = x.plan.slots.map((slot) => fs.readFileSync(f.local(slot.unitPath), "utf8"));
+      const result = f.execute();
+      assert.equal(result.routesUpdated, true);
+      assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.plan.config);
+      assert.equal(installedReceipt(f), slotReceipt(x.plan.config, x.plan.unitSha256));
+      // Only the routes changed.
+      assert.deepEqual(
+        x.plan.slots.map((slot) => fs.readFileSync(f.local(slot.unitPath), "utf8")),
+        units,
+      );
+      assertNoGap(f);
+      f.calls.length = 0;
+      assert.equal(f.execute().routesUpdated, false);
+    });
 
 // The installation the account-route release sealed, without this release's
 // groups.

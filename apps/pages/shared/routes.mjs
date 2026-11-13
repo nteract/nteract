@@ -1,8 +1,33 @@
 const pageIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-export function pagePath(id) {
+/**
+ * A Page link may carry a slug after its id, `/p/<id>/<slug>`, which names
+ * nothing: the id alone finds and authorizes the Page. The slug only gives a
+ * link preview words to show (pageSlugWords) for a Page its unfurler can't
+ * read. Grammar: 1 to 80 of `A-Z a-z 0-9 _ -`, at least one letter or digit,
+ * and not `view` in any case. No dot, so a file route under `/p/<id>/`
+ * (`meta.json`, `card.json`) never reads as one, and nothing that needs
+ * percent-encoding, so the address shows it as typed. Anything else after
+ * the id is not a Page route.
+ */
+const pageSlugPattern = /^[A-Za-z0-9_-]{1,80}$/;
+const RESERVED_SLUGS = new Set(["view"]);
+export const isPageSlug = (slug) =>
+  typeof slug === "string" &&
+  pageSlugPattern.test(slug) &&
+  /[A-Za-z0-9]/.test(slug) &&
+  !RESERVED_SLUGS.has(slug.toLowerCase());
+
+/** A slug as words: `-` and `_` become spaces, runs of spaces collapse to
+ * one, and the ends are trimmed. "My-Dashboard" reads "My Dashboard". */
+export const pageSlugWords = (slug) => slug.replace(/[-_]+/g, " ").trim();
+
+/** A Page's address, with `slug` after its id when one is given. */
+export function pagePath(id, slug = null) {
   if (!pageIdPattern.test(id ?? "")) throw Error("Invalid Page ID");
-  return `/p/${id}`;
+  if (slug === null) return `/p/${id}`;
+  if (!isPageSlug(slug)) throw Error("Invalid Page slug");
+  return `/p/${id}/${slug}`;
 }
 
 // New Projects get prj_ IDs; sp_ IDs predate the Project name and stay valid.
@@ -158,12 +183,15 @@ export function readPageRoute(input) {
     return isProjectId(project[1])
       ? { kind: "project", projectId: project[1], path: projectPath(project[1]) }
       : { kind: "missing" };
-  const match = /^\/p\/([^/]+)\/?$/.exec(url.pathname);
+  // `path` is the Page's canonical address, without the slug; `slug` is the
+  // one the address carries (isPageSlug), or null.
+  const match = /^\/p\/([^/]+)(?:\/([^/]+))?\/?$/.exec(url.pathname);
   const legacy = url.pathname === "/" && url.searchParams.has("page");
   const id = match?.[1] ?? (legacy ? url.searchParams.get("page") : null);
   if (id !== null) {
-    if (!pageIdPattern.test(id)) return { kind: "missing" };
-    return { kind: "page", pageId: id, path: pagePath(id) };
+    const slug = match?.[2] ?? null;
+    if (!pageIdPattern.test(id) || (slug !== null && !isPageSlug(slug))) return { kind: "missing" };
+    return { kind: "page", pageId: id, path: pagePath(id), slug };
   }
   if (url.pathname !== "/") return { kind: "missing" };
   const library = readLibraryView(url.searchParams);
@@ -189,12 +217,15 @@ export const anchorFragment = (anchor) => (anchor ? `#${encodeURIComponent(ancho
  * Show Page or Project `id` in the address (`/` for none). `anchor` names a
  * heading to add as the fragment. Without one, a replace keeps the current
  * fragment: it rewrites the same visit's address into canonical form, and a
- * heading link that opened the Page still names its heading. A push is a new
- * visit and starts without one.
+ * heading link that opened the Page still names its heading. A replace also
+ * keeps the slug the address shows for the same Page, so a link's words stay
+ * as typed. A push is a new visit and starts without either.
  */
 export function writePageRoute(id, options = {}) {
   const { anchor = null, location = globalThis.location, ...rest } = options;
-  const path = id ? (isProjectId(id) ? projectPath(id) : pagePath(id)) : "/";
+  const shown = rest.replace && location?.href ? readPageRoute(location.href) : null;
+  const slug = shown?.kind === "page" && shown.pageId === id ? shown.slug : null;
+  const path = id ? (isProjectId(id) ? projectPath(id) : pagePath(id, slug)) : "/";
   const fragment = !id
     ? ""
     : anchor

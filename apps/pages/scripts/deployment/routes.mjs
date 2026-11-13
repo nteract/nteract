@@ -31,6 +31,10 @@ export const imagePaths =
   "pages/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/assets(/[0-9a-f]{64})?|";
 // A lowercase v4 UUID, as the groups above spell it out.
 const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+// A Page link with a slug (shared/routes.mjs isPageSlug): /p/<id>/<slug>,
+// beside the plain /p/<id> above. The Worker checks the rest of the slug
+// grammar. No dot, so the JSON files below never match it.
+export const pageSlugPaths = `p/${uuid}/[A-Za-z0-9_-]{1,80}/?|`;
 // What a link shows its reader (worker/link-previews.mjs readLinkRoute):
 // /p/<page_id>/meta.json and /card.json, and the same two files under
 // /project/<prj|sp>_<uuid>. No trailing slash; /s/<id> has no JSON routes.
@@ -71,6 +75,7 @@ export function routesFor(target) {
     (profile.whoami === true ? whoamiPaths : "") +
     (authenticatedAssets ? oauthPaths : "") +
     "(automerge|subduction)[.]wasm|health|mcp|llms[.]txt|p/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/?|" +
+    pageSlugPaths +
     projects +
     index +
     (profile.linkPreviews === true ? linkPreviewPaths : "") +

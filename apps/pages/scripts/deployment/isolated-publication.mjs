@@ -16,6 +16,7 @@ import {
   accountPaths,
   cardImagePaths,
   linkPreviewPaths,
+  pageSlugPaths,
   projectAssetPaths,
   routesFor,
   siftPaths,
@@ -256,7 +257,11 @@ export function publishIsolated(
       ...extra,
     }) + "\n";
   const receipt = receiptFor(plan.config);
-  // The route set the last release sealed, before link previews, card images
+  // The route set the last release sealed: this one without Page slugs
+  // (pageSlugPaths). Every history below is stated against it, so each keeps
+  // its exact bytes and migrates straight to plan.config.
+  const slugless = plan.config.replace(pageSlugPaths, "");
+  // The route set before link previews, card images
   // and Project assets (linkPreviewPaths, cardImagePaths, projectAssetPaths).
   // A target without those flags keeps plan.config.
   const linkPreviews = profile.linkPreviews === true;
@@ -266,10 +271,7 @@ export function publishIsolated(
     [linkPreviews, linkPreviewPaths],
     [cardImages, cardImagePaths],
     [projectAssets, projectAssetPaths],
-  ].reduce(
-    (config, [enabled, group]) => (enabled ? config.replace(group, "") : config),
-    plan.config,
-  );
+  ].reduce((config, [enabled, group]) => (enabled ? config.replace(group, "") : config), slugless);
   // The route set before the account routes (accountPaths). Every history
   // below is stated against it, so those predecessors keep their exact bytes,
   // and each one migrates straight to plan.config.
@@ -354,8 +356,12 @@ export function publishIsolated(
     predecessor(base, false);
     if (slotted) predecessor(base, true);
   }
-  if (sealedRoutes !== plan.config) {
-    // The installation the last release sealed: the account route set,
+  // The installation the last release sealed, on slot units or the legacy
+  // unit. Only the Page slug routes differ.
+  predecessor(slugless, false);
+  if (slotted) predecessor(slugless, true);
+  if (sealedRoutes !== slugless) {
+    // The installation the release before it sealed: the account route set,
     // without link previews, card images and Project assets, on slot units.
     // A target still on its legacy unit at that route set migrates too.
     // Units and every other route stay byte-identical.
@@ -584,6 +590,11 @@ export function publishIsolated(
       ["/p/" + uuid + "/card.json", linkPreviews ? plan.listen : "http_status:404"],
       ["/project/prj_" + uuid + "/meta.json", linkPreviews ? plan.listen : "http_status:404"],
       ["/project/sp_" + uuid + "/card.json", linkPreviews ? plan.listen : "http_status:404"],
+      ["/p/" + uuid + "/Some-Title", plan.listen],
+      ["/p/" + uuid + "/Some-Title/", plan.listen],
+      ["/p/" + uuid + "/Some.Title", "http_status:404"],
+      ["/p/" + uuid + "/Some-Title/more", "http_status:404"],
+      ["/p/" + uuid + "/" + "a".repeat(81), "http_status:404"],
       ["/p/" + uuid + "/meta.json/", "http_status:404"],
       ["/p/" + uuid + "/other.json", "http_status:404"],
       ["/p/" + uuid.toUpperCase() + "/meta.json", "http_status:404"],

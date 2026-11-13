@@ -439,7 +439,7 @@ test("insert_node places a view the Page holds and refuses one it doesn't", asyn
   assert.deepEqual(edit.attrs, { view_id: "daily" });
 
   const read = await h.tool(h.host, "read_page", { comments: "none" });
-  const line = `[View: daily](/p/${pageId}/view/daily)`;
+  const line = String.raw`\[View: daily\]`;
   assert.ok(
     read.body.blocks.some((block) => block.markdown === line),
     JSON.stringify(read.body),

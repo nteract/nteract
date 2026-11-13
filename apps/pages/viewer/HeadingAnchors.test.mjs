@@ -243,7 +243,10 @@ test("a read-only link to a heading scrolls in place and puts it in the address"
     link.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true })),
   );
   assert.deepEqual(opened, [
-    { route: { kind: "page", pageId: otherId, path: `/p/${otherId}` }, anchor: "intro" },
+    {
+      route: { kind: "page", pageId: otherId, path: `/p/${otherId}`, slug: null },
+      anchor: "intro",
+    },
   ]);
   // A modified click keeps the browser's new tab; an outside link is left alone.
   const modified = new window.MouseEvent("click", {

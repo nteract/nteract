@@ -9,7 +9,7 @@
 //
 import { MARK_REGISTRY } from "./marks.mjs";
 import { readDataframe } from "../shared/dataset-assets.mjs";
-import { readViewNode, viewLabel, viewPath } from "../shared/views.mjs";
+import { readViewNode, viewLine } from "../shared/views.mjs";
 import { escapeLiteralSyntax } from "./markdown-scan.mjs";
 import { dataframeLabel, unknownNodeNotice } from "./richtext-notices.mjs";
 import {
@@ -684,20 +684,15 @@ const NODES = {
     else state.write(`[${state.esc(dataframeLabel(attrs.title))}](${attrs.src})`);
     state.closeBlock(node);
   },
-  // A view reads as a link to its own address, labeled with its view id:
+  // A view reads as bracketed text naming its view id, `[View: <view_id>]`:
   // only what the node stores, so the line stays the same when the view's
-  // title changes. replace_block_markdown keeps the node for that exact line,
-  // as it does a dataframe's. A read names the Page in the node it reads
-  // (`page_id`, model/native-read.mjs); without one the label stands alone.
+  // title changes, and no link, since a view has no address of its own.
+  // replace_block_markdown keeps the node for that exact line, as it does a
+  // dataframe's.
   view(state, node) {
     const view = readViewNode(node.param);
     if (!view) notice(state, node, "view");
-    else if (typeof node.param.page_id !== "string")
-      state.write(`[${state.esc(viewLabel(view.view_id))}]`);
-    else
-      state.write(
-        `[${state.esc(viewLabel(view.view_id))}](${viewPath(node.param.page_id, view.view_id)})`,
-      );
+    else state.write(state.esc(viewLine(view.view_id)));
     state.closeBlock(node);
   },
   // A node this build doesn't know, written by a newer build. It reads as a

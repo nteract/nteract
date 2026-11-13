@@ -23,7 +23,9 @@ import { pagePreview } from "./page-preview.mjs";
 import { markdownlessNode } from "./richtext-spans.mjs";
 
 const pageId = "33333333-3333-4333-8333-333333333333";
-const line = (viewId) => `[View: ${viewId}](/p/${pageId}/view/${viewId})`;
+// A view's Markdown line: bracketed text with no link, its brackets escaped
+// as an unknown node's notice's are.
+const line = (viewId) => `\\[View: ${viewId}\\]`;
 const S = (value) => new A.ImmutableString(value);
 const fresh = () =>
   A.change(A.from(createPageData({ pageId })), (doc) => initializePage(doc, "Intro"));
@@ -83,7 +85,8 @@ test("insert_node refuses a malformed view node", () => {
 test("a view reads back as its line, from the node alone", () => {
   const { doc } = edit(fresh(), [view()]);
   assert.equal(projectPage(doc).blocks[1].markdown, line("daily"));
-  // Markdown never creates one: the same line inserted is a link.
+  assert.equal(projectPage(doc).blocks[1].markdown.includes("/view/"), false);
+  // Markdown never creates one: the same line inserted is text.
   const linked = edit(fresh(), [{ op: "insert_markdown", markdown: line("daily") }]).doc;
   const [, id] = orderedBlockIds(linked);
   assert.equal(
@@ -106,12 +109,21 @@ test("replace_block_markdown keeps a view whose line is unchanged, and refuses d
     ["paragraph", "view"],
   );
   assert.equal(projectPage(kept).blocks[1].markdown, `Before\n\n${line("daily")}`);
+  // The same text unescaped is the same line.
+  const plain = edit(doc, [
+    { op: "replace_block_markdown", node_id: node, markdown: "[View: daily]\n\nAfter" },
+  ]).doc;
+  assert.equal(projectPage(plain).blocks[1].markdown, `${line("daily")}\n\nAfter`);
   for (const [markdown, pattern] of [
     ["Gone", /holds a view with no line/],
     [line("weekly"), /holds a view with no line/],
     [`> ${line("daily")}`, /A view's line can't go inside a quote/],
     [`${line("daily")}\n\n${line("daily")}`, /A view's line appears more times/],
     [`${line("daily")}\n\n${line("weekly")}`, /reads as a view this block doesn't hold/],
+    // A link or formatted text isn't the line: refused, never a view
+    // dropped for a plain link.
+    [`[View: daily](/p/${pageId}/view/daily)`, /holds a view with no line/],
+    ["**[View: daily]**", /holds a view with no line/],
   ])
     assert.throws(
       () => edit(doc, [{ op: "replace_block_markdown", node_id: node, markdown }]),

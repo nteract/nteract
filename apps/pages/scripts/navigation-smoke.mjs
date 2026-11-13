@@ -209,6 +209,43 @@ try {
   await expect(peer.locator('a.index-row-link[href="/p/' + plainId + '"]')).toHaveCount(0);
   await page.reload();
   await expect(page.locator('a.index-row-link[href="/p/' + plainId + '"]')).toHaveCount(0);
+  // A link with a slug opens the same Page. The address keeps the slug, the
+  // tab shows the Page's own title, and an in-page heading link works.
+  const filler = (label) =>
+    Array.from({ length: 30 }, (_, i) => `${label} paragraph ${i + 1}.`).join("\n\n");
+  const realTitle = "Real title " + Date.now();
+  const slugged = await api(page, "create_page", {
+    title: realTitle,
+    nonce: "navigation-" + crypto.randomUUID(),
+    markdown: `[Skip to the plan](#the-plan)\n\n${filler("Before")}\n\n## The plan\n\n${filler("After")}`,
+  });
+  const sluggedUrl = `${origin}/p/${slugged.page_id}/Some-Title`;
+  // A visitor with no session, as a link unfurler: the slug's words, never
+  // the Page's title, and the same bytes as for a Page that doesn't exist.
+  const unfurled = await (await fetch(sluggedUrl)).text();
+  assert.match(unfurled, /<title>Some Title · [^<]+<\/title>/);
+  assert.match(unfurled, /<meta property="og:title" content="Some Title" \/>/);
+  assert.ok(!unfurled.includes(realTitle));
+  const nobody = await (await fetch(`${origin}/p/${crypto.randomUUID()}/Some-Title`)).text();
+  assert.equal(unfurled, nobody);
+  await peer.goto(sluggedUrl);
+  await expect(peer.locator("wg-content").first()).toContainText("Skip to the plan", {
+    timeout: 20000,
+  });
+  await expect(peer).toHaveURL(sluggedUrl);
+  await expect(peer).toHaveTitle(new RegExp(`^${realTitle} `));
+  await peer.locator("wg-content a", { hasText: "Skip to the plan" }).click();
+  const go = peer.getByRole("link", { name: "Go to section" });
+  await expect(go).toBeVisible();
+  await go.click();
+  await expect(peer).toHaveURL(`${sluggedUrl}#the-plan`);
+  await expect(peer.getByRole("heading", { name: "The plan" })).toBeInViewport();
+  await peer.reload();
+  await expect(peer).toHaveURL(`${sluggedUrl}#the-plan`);
+  await expect(peer.getByRole("heading", { name: "The plan" })).toBeInViewport();
+  // Out-of-grammar segments are not a Page route.
+  await peer.goto(`${origin}/p/${slugged.page_id}/view`);
+  await expect(peer.getByRole("alert")).toContainText("not valid");
   // Missing routes remain visible instead of silently displaying an unrelated document.
   await peer.goto(origin + "/p/not-a-page");
   await expect(peer.getByRole("alert")).toContainText("not valid");
@@ -232,6 +269,7 @@ try {
         "discard rejected local draft",
         "account renewal refreshes route",
         "cross-tab deletion stays deleted",
+        "slugged link: unfurl title, address, tab title, heading link",
         "invalid link feedback",
       ],
     }),

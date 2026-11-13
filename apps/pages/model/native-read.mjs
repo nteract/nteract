@@ -389,13 +389,7 @@ export function nativeReadSpans(input, pageId) {
     if (leafNode && DATA_LEAVES.has(type)) {
       if (!shown) notice(type);
       else if (type === "dataframe") append(PagesDataframe.of(attrs), at, attrs);
-      // A view's read node names the Page it's read on (`page_id`), which
-      // its Markdown line links to. Read trees are never encoded, so the
-      // field is never stored; a stored `page_id` attr is not read.
-      else {
-        const { page_id: _stored, ...own } = attrs;
-        append(PagesView.of(pageId === undefined ? own : { ...own, page_id: pageId }), at, attrs);
-      }
+      else append(PagesView.of(attrs), at, attrs);
     } else if (leafNode) append(HorizontalRule.type.of(null), at, attrs);
     else if (desc.tag.type === ReadUnknown && inline()) notice(type);
     else open(desc, at, attrs);

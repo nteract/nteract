@@ -427,6 +427,7 @@ import {
   linkUnavailable,
   readLinkRoute,
 } from "./link-previews.mjs";
+import { pageShellSlug, slugShellResponse } from "./page-shell.mjs";
 import { titleProjection } from "./title-projection.mjs";
 
 const operations = new Set([
@@ -1750,6 +1751,10 @@ const gateway = {
         return setResponseHeaders(await env.ASSETS.fetch(request), [
           ["Content-Security-Policy", CHART_WORKER_CSP],
         ]);
+      // A Page link with a slug: the shell titled with the slug's words, for
+      // link previews (page-shell.mjs).
+      const slug = pageShellSlug(request, url);
+      if (slug) return await slugShellResponse(request, env.ASSETS, slug);
       return env.ASSETS.fetch(request);
     } catch (error) {
       const response = errorResponse(error, "gateway");

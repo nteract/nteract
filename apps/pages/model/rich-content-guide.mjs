@@ -131,8 +131,8 @@ code block, table cell, image and dataframe is a node with typed attributes,
 and formatting is a native mark on its characters. Markdown is one way to read
 and write them; node operations (insert_image, insert_node, set_node, delete_node) are the
 other. Some nodes have no Markdown form: ${NODE_OPERATIONS.map(([, text]) => text).join("; ")}
-(see Datasets below). They read back as a labeled link on its own line, a
-view's as [View: <view_id>](/p/<page_id>/view/<view_id>);
+(see Datasets below). They read back as a line of their own: a dataframe's
+is a labeled link, a view's the text [View: <view_id>];
 replace_block_markdown keeps the node when that line is unchanged and stays
 where the node is stored: at the top level of the block, or inside the same kind
 of quote or list item. It refuses with markdownless_node a rewrite that drops or edits the

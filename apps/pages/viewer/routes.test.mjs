@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  isPageSlug,
   pagePath,
+  pageSlugWords,
   readPageRoute,
   writePageRoute,
   writeRoute,
@@ -28,14 +30,122 @@ import {
 } from "../shared/routes.mjs";
 const id = "1a160b47-6df1-4983-81eb-489ca5a26812";
 test("canonical and existing shared Page links resolve to the same document", () => {
-  const expected = { kind: "page", pageId: id, path: `/p/${id}` };
+  const expected = { kind: "page", pageId: id, path: `/p/${id}`, slug: null };
   assert.deepEqual(readPageRoute(`/p/${id}`), expected);
   assert.deepEqual(readPageRoute(`/?page=${id}`), expected);
   assert.deepEqual(readPageRoute(`/p/${id}/`), expected);
   assert.deepEqual(readPageRoute("/"), { kind: "home", library: LIBRARY_DEFAULTS, path: "/" });
-  for (const path of ["/p/nope", "/p/", "/p/" + id + "/other", "/missing", "/?page=bad"])
+  for (const path of ["/p/nope", "/p/", "/p/" + id + "/other/more", "/missing", "/?page=bad"])
     assert.equal(readPageRoute(path).kind, "missing");
   assert.throws(() => pagePath("../api/auth/logout"), /Invalid Page/);
+});
+test("a slug after a Page id opens the same Page and stays out of its canonical path", () => {
+  const page = (slug) => ({ kind: "page", pageId: id, path: `/p/${id}`, slug });
+  for (const [path, slug] of [
+    [`/p/${id}/My-Dashboard`, "My-Dashboard"],
+    [`/p/${id}/My-Dashboard/`, "My-Dashboard"],
+    [`/p/${id}/My-Dashboard#q3-goals`, "My-Dashboard"],
+    [`/p/${id}/My-Dashboard?x=1`, "My-Dashboard"],
+    [`/p/${id}/q3_plan`, "q3_plan"],
+    [`/p/${id}/2026`, "2026"],
+    [`/p/${id}/${"a".repeat(80)}`, "a".repeat(80)],
+    [`https://pages.example/p/${id}/Notes`, "Notes"],
+  ])
+    assert.deepEqual(readPageRoute(path), page(slug), path);
+  // The old Page forms are unchanged and carry none.
+  assert.deepEqual(readPageRoute(`/?page=${id}`), page(null));
+  assert.deepEqual(readPageRoute(`/p/${id}`), page(null));
+  assert.equal(readPageRoute(`/s/sp_${id}`).kind, "project");
+});
+test("a slug outside the grammar, or a reserved one, is not a Page route", () => {
+  for (const slug of [
+    "view",
+    "View",
+    "VIEW",
+    "meta.json",
+    "card.json",
+    "My.Dashboard",
+    "a".repeat(81),
+    "-",
+    "_-_",
+    "My%20Dashboard",
+    "%3Cscript%3E",
+    "%3Cscript%3Ealert(1)%3C%2Fscript%3E",
+    "caf%C3%A9",
+    "a~b",
+    "a+b",
+    "a'b",
+    "a&b",
+    "a=b",
+    "(x)",
+  ]) {
+    assert.equal(readPageRoute(`/p/${id}/${slug}`).kind, "missing", slug);
+    assert.equal(isPageSlug(slug), false, slug);
+  }
+  // A literal space, quote or angle bracket arrives percent-encoded.
+  for (const raw of ["<script>", "a b", 'a"b', "x<y"])
+    assert.equal(readPageRoute(`/p/${id}/${raw}`).kind, "missing", raw);
+  for (const slug of [null, undefined, "", 5, {}]) assert.equal(isPageSlug(slug), false);
+});
+test("a slug reads as words: separators become one space, nothing else changes", () => {
+  assert.equal(pageSlugWords("My-Dashboard"), "My Dashboard");
+  assert.equal(pageSlugWords("q3_plan--v2"), "q3 plan v2");
+  assert.equal(pageSlugWords("-_Lead-and-trail_-"), "Lead and trail");
+  assert.equal(pageSlugWords("ALLCAPS"), "ALLCAPS");
+  assert.equal(pageSlugWords("2026"), "2026");
+});
+test("pagePath builds a slugged link that reads back as the same Page", () => {
+  assert.equal(pagePath(id, "My-Dashboard"), `/p/${id}/My-Dashboard`);
+  assert.equal(pagePath(id, null), `/p/${id}`);
+  assert.equal(pagePath(id), `/p/${id}`);
+  for (const slug of ["My-Dashboard", "q3_plan", "x"]) {
+    const route = readPageRoute(pagePath(id, slug));
+    assert.deepEqual(route, { kind: "page", pageId: id, path: `/p/${id}`, slug });
+    assert.equal(pagePath(route.pageId, route.slug), pagePath(id, slug));
+  }
+  for (const slug of ["view", "a.b", "", "a/b"])
+    assert.throws(() => pagePath(id, slug), /Invalid Page slug/, slug);
+});
+test("a replace keeps the slug the address shows for the same Page; a push or another Page drops it", () => {
+  const calls = [];
+  const location = {};
+  const at = (path) => {
+    const url = new URL(path, "https://pages.example");
+    Object.assign(location, {
+      href: url.href,
+      pathname: url.pathname,
+      search: url.search,
+      hash: url.hash,
+    });
+  };
+  const history = Object.fromEntries(
+    ["pushState", "replaceState"].map((method) => [
+      method,
+      (state, _, path) => {
+        calls.push({ method, path });
+        at(path);
+      },
+    ]),
+  );
+  const other = "2b160b47-6df1-4983-81eb-489ca5a26812";
+  at(`/p/${id}/My-Dashboard#goals`);
+  // Opening the Page the address names rewrites nothing: slug and fragment stay.
+  writePageRoute(id, { history, location, replace: true });
+  at(`/p/${id}/My-Dashboard/`);
+  writePageRoute(id, { history, location, replace: true });
+  // An anchor written in place keeps the slug.
+  writePageRoute(id, { history, location, replace: true, anchor: "risks" });
+  // Another Page, and a new visit, start without it. A replace keeps the
+  // visit's fragment as it always does.
+  writePageRoute(other, { history, location, replace: true });
+  at(`/p/${id}/My-Dashboard`);
+  writePageRoute(id, { history, location });
+  assert.deepEqual(calls, [
+    { method: "replaceState", path: `/p/${id}/My-Dashboard` },
+    { method: "replaceState", path: `/p/${id}/My-Dashboard#risks` },
+    { method: "replaceState", path: `/p/${other}#risks` },
+    { method: "pushState", path: `/p/${id}` },
+  ]);
 });
 test("a Page's JSON routes are the Worker's, never a Page the app opens", () => {
   // The gateway answers /p/<id>/meta.json and /card.json; if one ever

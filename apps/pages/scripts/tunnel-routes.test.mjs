@@ -102,6 +102,8 @@ const VIEWER_ROUTES = [
   `/?page=${U}`,
   `/p/${U}`,
   `/p/${U}/`,
+  `/p/${U}/Some-Title`,
+  `/p/${U}/Some-Title/`,
   `/project/prj_${U}`,
   `/project/sp_${U}/`,
   `/s/sp_${U}`,
@@ -149,7 +151,10 @@ const NEAR_MISSES = [
   `/p/${U}/card.json/`,
   `/p/${U}/other.json`,
   `/p/${U}/meta.JSON`,
-  `/p/${U}/metaXjson`,
+  // A slug never holds a dot, and `.` in the JSON routes matches only a dot.
+  `/p/${U}/meta+json`,
+  `/p/${U}/Some.Title`,
+  `/p/${U}/Some-Title/more`,
   `/p/${U}/meta.json/private`,
   `/p/${U}//meta.json`,
   `/p/${U.toUpperCase()}/meta.json`,
@@ -393,7 +398,14 @@ test("every target's ingress pattern refuses private routes, extra segments and 
   const page = "/p/12345678-1234-4123-8123-123456789abc";
   for (const target of QUALIFIED_TARGETS) {
     const pattern = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
-    for (const pathname of [page, page + "/", "/api/pages/register", "/llms.txt"])
+    for (const pathname of [
+      page,
+      page + "/",
+      page + "/Some-Title",
+      page + "/Some-Title/",
+      "/api/pages/register",
+      "/llms.txt",
+    ])
       assert.equal(pattern.test(pathname), true, target + " admits " + pathname);
     for (const pathname of [
       "/state",
@@ -407,7 +419,8 @@ test("every target's ingress pattern refuses private routes, extra segments and 
       "/llms.txt/extra",
       "/llmsXtxt",
       "/p/not-a-page",
-      page + "/private",
+      page + "/private/more",
+      page + "/private.json",
       page + "x",
       // A Page ID is a v4 UUID: the version and variant digits are checked.
       page.replace("-4123-", "-5123-"),
