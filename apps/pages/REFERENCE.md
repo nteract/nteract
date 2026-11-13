@@ -1420,7 +1420,7 @@ the account `principal`, `displayName`, `driver`, and `agent` `{ name?,
 model? }` when the client asserted one. The asserted agent is part of the
 write's retry fingerprint, so a retry that changes it is `409
 nonce_conflict`. `current` and `producer` are each replaced as one map. A
-Page holds up to 64 sources. Nothing on the Page draws from a source yet.
+Page holds up to 64 sources. No stored node draws from a source yet.
 
 `history` is an Automerge list of the source's newest states, oldest first,
 each `{ revision, name, media_type, asset_id, at, by }`. The write that
@@ -1466,9 +1466,45 @@ write access and refuses rather than strips a browser frame that changes it:
 `request_rejected`, not fatal, and the principal isn't blocked. Host writes
 go through the journal and `admitTrusted`. The socket serves it only to a
 client that declared `pages.sources:1`; discovery names it in
-`documents.sources` once it exists. The viewer doesn't open it yet. A
+`documents.sources` once it exists. A
 reader that syncs it sees each source's `producer.by` and every earlier
 writer in its changes, as comment authors are visible to comment readers.
+
+The viewer declares `pages.sources:1` and syncs the document read-only
+([viewer/sources-replica.mjs](viewer/sources-replica.mjs), with its states in
+[viewer/sources-open-machine.mjs](viewer/sources-open-machine.mjs)). Each
+connection the host admits brings its discovery, which moves the machine:
+no `documents.sources` is `absent` and looks nothing up; a descriptor at a
+format this build doesn't read is `unreadable`; a discovery without a
+`documents` map, or a socket that answers the named document as unknown while
+still connected, is `unserved` (an older host); a named one is looked up with
+the comments document's timeout and backoff. An open document stays open
+across reconnects, and anything else starts over on the next admitted
+connection. The open document's value is all the viewer exposes; its handle
+stays inside the replica, so nothing queues, retries or resends a change to
+it. The document isn't in the local checkpoint or the recovery archive: the
+host holds all of it. A retirement (access removed, Page deleted) cancels a
+lookup, drops the document and moves the machine to `retired`, from which
+nothing opens it again; a reopened retired Page opens nothing either. A
+document the host creates while a tab is open reaches that tab at its next
+admitted connection: the host tells no open socket that the record gained
+the type.
+
+The Page's source store ([viewer/page-source-store.mjs](viewer/page-source-store.mjs))
+projects the document's readable sources by id, skipping an entry the host
+would refuse as `invalid_source`. `versions(ids)` emits only when one of
+those sources changes. Its one resolver per session turns `{ source_id }` or
+`{ asset_id }` into `{ asset_id, media_type, revision }` and loads the
+table through Sift's loader, sharing a byte cache of the four most recent
+assets; each table decodes its own copy and frees it when unmounted,
+replaced or abandoned mid-load. The editor draws every dataframe from its
+pinned asset ([viewer/dataframe-binding.mjs](viewer/dataframe-binding.mjs)).
+A table given a source binding follows it
+([viewer/source-follow.mjs](viewer/source-follow.mjs)): each new version
+replaces the table, and its canvas records `data-source-id`, `data-asset-id`
+and `data-source-revision` for the version it drew. No stored node names a
+source yet; on a loopback origin a browser test can supply a binding through
+`globalThis.__PAGES_TEST_DATAFRAME_BINDING__`.
 
 Agents write it with `edit_page` `set_source` operations (`source_id`,
 `name`, `asset_id`, `source_revision`) in a batch with no other operation;

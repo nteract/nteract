@@ -1537,3 +1537,105 @@ test("a superseded retirement archives its own comments, never the newer grant's
   const stored = await readLocalPage(first.auth.identity, first.pageId);
   assert.match(commentsText(stored), /Tab B/, "the newer grant's comments stay");
 });
+
+/** Open `copy`'s sources document as an admitted connection's discovery
+ * names it, from a repo whose lookups the test settles. */
+async function openSourcesOf(copy) {
+  const { session } = copy;
+  const lookups = [];
+  session.repo.find = (id, { signal } = {}) =>
+    new Promise((resolve, reject) => {
+      lookups.push({ id, signal, resolve });
+      signal?.addEventListener("abort", () => reject(signal.reason ?? Error("aborted")));
+    });
+  session.backend ??= {};
+  session.sockets.add({ close() {} });
+  const sourcesId = "5".repeat(32);
+  session.connection = {
+    documentId: copy.documentId,
+    documents: { sources: { id: sourcesId, type: "pages.sources", format: 1 } },
+  };
+  session.openSources();
+  await tick();
+  return { lookups, sourcesId };
+}
+
+test("revocation retires the sources replica with the Page's others and archives none of it", async (t) => {
+  browser(t);
+  const copy = await openCopy();
+  const { session, auth, pageId } = copy;
+  const { lookups, sourcesId } = await openSourcesOf(copy);
+  assert.equal(lookups.length, 1);
+  assert.equal(lookups[0].id, sourcesId);
+  let sources = A.from({ sources: {} });
+  lookups[0].resolve({ doc: () => sources, on() {}, off() {} });
+  await tick();
+  assert.equal(session.sources.state$.snapshot().name, "ready");
+  const versions = [];
+  session.pageSources.versions(["usage"]).subscribe((v) => versions.push(v.usage));
+
+  t.mock.method(
+    globalThis,
+    "fetch",
+    respond(403, { error: "Document access denied", code: "page_access_denied" }),
+  );
+  await session.retryConnection();
+  await session.closeSettled();
+  assert.equal(session.revoked, true);
+  assert.deepEqual(session.sources.state$.snapshot(), { name: "retired" });
+  assert.equal(session.sources.doc, undefined, "nothing reads the retired sources document");
+  // A discovery after retirement opens nothing.
+  session.openSources();
+  session.sources.discovered(session.connection);
+  await tick();
+  assert.equal(lookups.length, 1);
+  // The archive holds the Page and its comments, and nothing of the sources.
+  const records = await listLocalRecoveries(auth.identity, pageId);
+  assert.equal(records.length, 1);
+  assert.deepEqual(
+    Object.keys(records[0]).filter((key) => /source/i.test(key)),
+    [],
+    "the archive carries no sources field",
+  );
+  assert.deepEqual(versions, [null]);
+});
+
+test("a sources lookup running at retirement is cancelled and never installs", async (t) => {
+  browser(t);
+  const copy = await openCopy();
+  const { lookups } = await openSourcesOf(copy);
+  await copy.session.revoke();
+  assert.equal(lookups[0].signal.aborted, true);
+  lookups[0].resolve({ doc: () => A.from({ sources: {} }), on() {}, off() {} });
+  await tick();
+  await tick();
+  assert.equal(copy.session.sources.doc, undefined);
+  assert.equal(copy.session.sources.state$.snapshot().name, "retired");
+});
+
+test("a revoked Page doesn't open its sources document on reopen", async (t) => {
+  browser(t);
+  const first = await openCopy();
+  t.mock.method(
+    globalThis,
+    "fetch",
+    respond(403, { error: "Document access denied", code: "page_access_denied" }),
+  );
+  await first.session.retryConnection();
+  await first.session.closeSettled();
+  const session = await PageSession.open(first.pageId, {
+    authentication: first.auth,
+    refreshSession: async () => first.auth,
+  });
+  t.after(() => session.close());
+  assert.equal(session.revoked, true);
+  // The reopened copy retires at once; its sources replica with it.
+  assert.equal(session.sources.state$.snapshot().name, "retired");
+  session.connection = {
+    documents: { sources: { id: "5".repeat(32), type: "pages.sources", format: 1 } },
+  };
+  session.openSources();
+  assert.equal(session.sources.state$.snapshot().name, "retired", "a hidden Page opens nothing");
+  assert.equal(session.sources.doc, undefined);
+  assert.deepEqual(session.pageSources.snapshot(), {});
+});

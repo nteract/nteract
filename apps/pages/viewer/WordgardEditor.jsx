@@ -98,6 +98,7 @@ import {
 } from "./wordgard-collaboration.mjs";
 import { wordgardWidgets, wordgardCodeLanguages } from "./wordgard-widgets.mjs";
 import { wordgardDataframes } from "./wordgard-dataframes.mjs";
+import { editorBinding } from "./dataframe-binding.mjs";
 import { wordgardImages } from "./wordgard-images.mjs";
 import { pageNodes } from "./wordgard-page-config.mjs";
 import { selectionToolbarPosition } from "./selection-toolbar.mjs";
@@ -389,7 +390,13 @@ export function WordgardEditor(props) {
           currentProjectId: () => currentProject.current,
         }),
         wordgardWidgets(),
-        wordgardDataframes({ pageId: replica.doc.page_id }),
+        // Every table draws its pinned asset (dataframe-binding.mjs); a
+        // source binding draws through the Page's source store.
+        wordgardDataframes({
+          pageId: replica.doc.page_id,
+          sources: replica.pageSources ?? null,
+          binding: editorBinding(),
+        }),
         wordgardImages(),
         wordgardCodeNewlines,
         wordgardForeignMarks,
