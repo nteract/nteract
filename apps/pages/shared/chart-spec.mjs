@@ -7,7 +7,8 @@
 // hover tooltip, and nothing else interactive. Selections, bindings, hover
 // encodings and raw signals are refused here, because each review of the
 // interactive surface found another way through it. What a spec may use is listed, not excluded:
-// data is `{ "name": ... }` only, transforms and their parameters come from
+// data is `{ "name": ... }` only, each unit view's mark comes from CHART_MARKS
+// and each field's type from CHART_ENCODING_TYPES, transforms and their parameters come from
 // TRANSFORMS with ranged numbers, expressions call only
 // CHART_EXPRESSION_FUNCTIONS (every ExprRef and SignalRef, wherever it is), a
 // cursor is a keyword, no string may hold a CSS url(), and every number is in
@@ -514,6 +515,44 @@ export const CHART_CURSORS = Object.freeze(
   ]),
 );
 
+/** Vega-Lite 6's mark types (`Mark` in vega-lite's src/mark.ts, and the
+ * composite marks registered in src/compositemark/index.ts), without image,
+ * which loads a URL. A mark of any other type compiles to nothing Vega can
+ * draw. */
+export const CHART_MARKS = Object.freeze(
+  new Set([
+    "arc",
+    "area",
+    "bar",
+    "boxplot",
+    "circle",
+    "errorband",
+    "errorbar",
+    "geoshape",
+    "line",
+    "point",
+    "rect",
+    "rule",
+    "square",
+    "text",
+    "tick",
+    "trail",
+  ]),
+);
+
+/** Vega-Lite 6's encoding types (`Type` in vega-lite's src/type.ts). Vega-Lite
+ * reads a type case-insensitively and takes q, t, o and n for the first four
+ * (`getFullName`), so those pass too; anything else leaves the field untyped
+ * and the chart undrawable. */
+export const CHART_ENCODING_TYPES = Object.freeze(
+  new Set(["quantitative", "temporal", "ordinal", "nominal", "geojson"]),
+);
+const ENCODING_TYPE_SHORTHANDS = new Set(["q", "t", "o", "n"]);
+const encodingTypeAllowed = (type) =>
+  isString(type) &&
+  (CHART_ENCODING_TYPES.has(type.toLowerCase()) ||
+    ENCODING_TYPE_SHORTHANDS.has(type.toLowerCase()));
+
 const CSS_ESCAPE = /\\(?:([0-9a-fA-F]{1,6})\s?|(.))/gs;
 /** A string with CSS escapes decoded, so `u\72l(` reads as `url(`. */
 const cssText = (text) =>
@@ -937,6 +976,59 @@ function viewShape(spec, folds = 1) {
   return { views, folds: largest };
 }
 
+const listing = (values) => `${values.slice(0, -1).join(", ")} or ${values.at(-1)}`;
+const MARK_SENTENCE = `A chart's mark must be ${listing([...CHART_MARKS])}, as a string or an object's type`;
+const TYPE_SENTENCE = `A chart encoding's type must be ${listing([...CHART_ENCODING_TYPES])}`;
+
+/** Refuse an encoding type Vega-Lite can't read on a field definition and on
+ * each condition it holds. */
+function checkFieldType(def, path) {
+  if (!isObject(def)) return;
+  if ("type" in def && !encodingTypeAllowed(def.type))
+    refuse(`${TYPE_SENTENCE}${at([...path, "type"])}.`);
+  const conditions = Array.isArray(def.condition) ? def.condition : [def.condition];
+  conditions.forEach((condition, index) =>
+    checkFieldType(
+      condition,
+      Array.isArray(def.condition) ? [...path, "condition", index] : [...path, "condition"],
+    ),
+  );
+}
+
+/**
+ * Refuse a view Vega-Lite can't compile: a unit view (one with no layer,
+ * concatenation or inner spec) whose mark isn't in CHART_MARKS, and any
+ * encoding or facet field whose type isn't in CHART_ENCODING_TYPES. Walks
+ * layers, concatenations and the inner spec of a facet or repeat; depth is
+ * bounded by the depth pass.
+ */
+function checkMarksAndTypes(spec, path) {
+  if (!isObject(spec)) return;
+  const composed = VIEW_ARRAYS.some((key) => Array.isArray(spec[key])) || isObject(spec.spec);
+  if (!composed) {
+    const type = isObject(spec.mark) ? spec.mark.type : spec.mark;
+    if (!CHART_MARKS.has(type))
+      refuse(
+        `${MARK_SENTENCE}${at(isObject(spec.mark) ? [...path, "mark", "type"] : [...path, "mark"])}.`,
+      );
+  }
+  if (isObject(spec.encoding))
+    for (const [channel, def] of Object.entries(spec.encoding))
+      if (Array.isArray(def))
+        def.forEach((item, index) => checkFieldType(item, [...path, "encoding", channel, index]));
+      else checkFieldType(def, [...path, "encoding", channel]);
+  if (isObject(spec.facet)) {
+    const headers = ["row", "column"].filter((key) => key in spec.facet);
+    if (headers.length)
+      for (const key of headers) checkFieldType(spec.facet[key], [...path, "facet", key]);
+    else checkFieldType(spec.facet, [...path, "facet"]);
+  }
+  for (const key of VIEW_ARRAYS)
+    if (Array.isArray(spec[key]))
+      spec[key].forEach((child, index) => checkMarksAndTypes(child, [...path, key, index]));
+  if (isObject(spec.spec)) checkMarksAndTypes(spec.spec, [...path, "spec"]);
+}
+
 /** Refuse a string that holds a CSS url() or is a reserved name. */
 function checkString(value, path) {
   if (loadsResource(value)) refuse(`A chart can't load anything from a URL${at(path)}.`);
@@ -1147,6 +1239,7 @@ export function checkChartSpec(spec, { datasets } = {}) {
     const names = [];
     walk(rest, [], names);
     checkEveryExpression(rest);
+    checkMarksAndTypes(rest, []);
     const shape = viewShape(plain);
     if (shape.views > CHART_SPEC_LIMITS.maxViews)
       return { ok: false, error: `A chart can have at most ${CHART_SPEC_LIMITS.maxViews} views.` };
@@ -1161,7 +1254,7 @@ export function checkChartSpec(spec, { datasets } = {}) {
       if (missing !== undefined)
         return {
           ok: false,
-          error: `This chart reads "${missing}", but no dataset has that name.`,
+          error: `This chart reads ${JSON.stringify(missing.slice(0, 64))}, but no dataset has that name.`,
         };
     }
     return { ok: true, names };

@@ -847,14 +847,22 @@ starting with a letter or _; a view binds at most 32. view_revision is null to c
 view_revision you read to rewrite the view; the receipt names the new
 view_revision. A Page holds up to 10 views.
 
-Refusals create nothing: invalid_view (a malformed field, a spec over 64 KiB or
-one a chart can't draw, or data that doesn't match the names the spec reads),
+Charts are static. A spec is at most 64 KiB, nested at most 32 levels. Each
+mark is arc, area, bar, boxplot, circle, errorband, errorbar, geoshape, line,
+point, rect, rule, square, text, tick or trail; each field type quantitative,
+temporal, ordinal, nominal or geojson. Transforms: aggregate, joinaggregate,
+bin, calculate, density, extent, filter, fold, lookup, pivot (with limit),
+quantile, regression, sample, stack, timeUnit, window. A chart reads at most
+100,000 rows of each dataset; past that it shows a sentence, not a chart.
+
+Refusals create nothing: invalid_view (a malformed field, a spec a chart can't
+draw, checked before data, or data that doesn't match the names the spec reads),
 unknown_source (data names a source this Page doesn't have),
 unknown_source_revision (a pinned revision its history no longer holds),
 stale_view (409, the view changed or exists), view_not_found (404, a
 view_revision for a view that doesn't exist) and view_limit (an eleventh view;
 the refusal names the ten). insert_node with a view_id this Page doesn't hold
-is unknown_view.
+is unknown_view, naming the views it holds.
 
 read_page with views:true lists each view's view_id, title, media_type,
 revision and data; view_id:"<view_id>" reads one with its spec and producer.

@@ -46,7 +46,7 @@ import { BACKEND_LIMITS } from "../model/limits.mjs";
 import { BUILD_FORMATS } from "../model/document-types.mjs";
 import { MISSING_EDITS_MESSAGE } from "../shared/receipts.mjs";
 import { admissionCloseOutcome } from "../shared/admission.mjs";
-import { isTransientFailure, request } from "./request.mjs";
+import { isTransientFailure, isUnansweredFailure, request } from "./request.mjs";
 import { connectUrl, requestConnect } from "./early-session.mjs";
 import { SERVER_UNREACHABLE } from "./alerts.mjs";
 import { monotonicNow } from "./monotonic.mjs";
@@ -412,7 +412,7 @@ export class PageSession {
   // Why the last connection attempt failed, when the person should see it.
   // It shows as `problem` unless a local save failure is in front of it.
   connectionProblem = "";
-  // The last connection attempt failed transiently (isTransientFailure). The
+  // The last connection attempt went unanswered (isUnansweredFailure). The
   // status says Offline while retries continue; no banner until the reconnect
   // machine reports an outage. A connection admitted later clears it.
   unreachable = false;
@@ -2579,11 +2579,11 @@ export class PageSession {
       if (refusal) await this.applyRefusal(refusal);
       else if (error.status === 401) this.requireSignIn(this.authProblem || undefined);
       else if (
-        isTransientFailure(error) ||
+        isUnansweredFailure(error) ||
         (error.admission && !countsAsRefusal(error.admission))
       ) {
-        // The host may be restarting or briefly busy. Retry quietly; the
-        // reconnect machine reports an outage if this lasts.
+        // The host may be restarting, briefly busy or slow to answer. Retry
+        // quietly; the reconnect machine reports an outage if this lasts.
         this.showUnreachable();
         this.scheduleReconnect({
           refused: countsAsRefusal(error.admission),

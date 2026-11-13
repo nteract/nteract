@@ -1773,16 +1773,35 @@ The nonce shares `edit_page`'s lane, and the writer is recorded as for any
 edit ([Edit writers](#edit-writers)) and as `producer.by`.
 
 The spec passes `checkViewSpec` ([shared/view-spec.mjs](shared/view-spec.mjs)):
-a JSON object of at most 64 KiB, accepted by `checkChartSpec`
-([shared/chart-spec.mjs](shared/chart-spec.mjs)) with `datasets` the keys of
-`data`, whose refusal sentence reaches the caller as it is, and reading every
-name `data` binds. Refused, creating no document, no listed view and no
-writer record:
+a JSON object of at most 64 KiB, nested at most 32 levels, accepted by
+`checkChartSpec` ([shared/chart-spec.mjs](shared/chart-spec.mjs)), whose
+refusal sentence reaches the caller as it is, and reading exactly the names
+`data` binds. The spec is checked before `data`, so a spec that can't draw is
+the refusal whatever `data` holds, and an empty `data` names the data names
+the spec reads. `checkChartSpec` takes from allowlists:
+
+- each unit view's mark: `arc`, `area`, `bar`, `boxplot`, `circle`,
+  `errorband`, `errorbar`, `geoshape`, `line`, `point`, `rect`, `rule`,
+  `square`, `text`, `tick` or `trail` (`CHART_MARKS`; Vega-Lite 6's marks
+  without `image`), as a string or a mark object's `type`, in every layer,
+  concatenation and inner spec;
+- each encoding, condition and facet field's `type`: `quantitative`,
+  `temporal`, `ordinal`, `nominal` or `geojson` (`CHART_ENCODING_TYPES`),
+  in any case, or Vega-Lite's `q`, `t`, `o` and `n`;
+- transforms: `aggregate`, `joinaggregate`, `bin`, `calculate`, `density`,
+  `extent`, `filter`, `fold`, `lookup`, `pivot`, `quantile`, `regression`,
+  `sample`, `stack`, `timeUnit` and `window`, each with ranged parameters.
+
+A chart reads at most 100,000 rows and 2,000,000 cells from one dataset; the
+viewer refuses more when it draws, and the host doesn't count rows on write.
+A view stored before a check refused its spec still reads, lists, rewrites
+and deletes as any view; the viewer shows the check's sentence in its place.
+Refused, creating no document, no listed view and no writer record:
 
 | Request | Result |
 | --- | --- |
-| malformed `view_id`, `title`, `media_type`, `data` or `view_revision` | `400 invalid_view` |
-| spec not an object, over 64 KiB, or refused by `checkChartSpec` | `400 invalid_view` |
+| malformed `view_id`, `title`, `media_type`, `data` or `view_revision` | `400 invalid_view`, naming the field |
+| spec not an object, over 64 KiB, or refused by `checkChartSpec` | `400 invalid_view`, naming the spec path |
 | `data` binds a name the spec doesn't read, or lacks one it reads | `400 invalid_view` |
 | a data name that isn't a safe key, a malformed `source_id`, or over 32 names | `400 invalid_view`, naming the key |
 | `data` names a source this Page doesn't hold | `400 unknown_source` |
@@ -1804,11 +1823,14 @@ A `view` node is a top-level leaf with one attr, `view_id`; feature `view`
 gates it ([model/features.json](model/features.json)), so a build without it
 opens a Page with one read-only. Its DOM form is `figure[data-pages-view]`
 with `data-view-id`. `insert_node` with `{ type: "view", attrs: { view_id }
-}` places one; the view must exist on the Page (`400 unknown_view`).
+}` places one; the view must exist on the Page (`400 unknown_view`, naming
+the views it holds in the sentence and `details.view_ids`). A malformed view
+node is `400 invalid_edit_selector`, naming the field and its rule.
 `delete_node` removes the node and keeps the view. Markdown reads it as the
 text `[View: <view_id>]` (brackets escaped), from the node alone, with no
 link: a view has no address of its own. `replace_block_markdown` keeps the
-node for that exact line as it keeps a dataframe's. An outline entry has `type: "view"`, `attrs: { view_id }`, and
+node for that exact line as it keeps a dataframe's. An outline entry has
+`type: "view"`, `attrs: { view_id }`, and
 `summary: { title, media_type }` when the view exists. Comments refuse a view
 node. A view stored inside a text container reads as a notice.
 

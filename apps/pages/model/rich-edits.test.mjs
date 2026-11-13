@@ -100,7 +100,7 @@ test("edit_page rejects fields from another operation", () => {
         node: { type: "dataframe", attrs: { asset_id: "a".repeat(64) } },
       },
     ],
-    /insert_node requires/,
+    /insert_node does not take type; it takes node and after_node_id/,
   );
   refuses(doc, [null], /Each operation is an object with an op/);
   refuses(doc, [[]], /Each operation is an object with an op/);

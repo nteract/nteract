@@ -692,8 +692,8 @@ export function errorResponse(error, stage = "request") {
               ? error.details.view_revision.slice(0, 16)
               : null,
         }),
-      // The view cap names the Page's views, at most ten.
-      ...(error?.code === "view_limit" &&
+      // The view cap and an unknown view name the Page's views, at most ten.
+      ...(["view_limit", "unknown_view"].includes(error?.code) &&
         Array.isArray(error.details?.view_ids) && {
           view_ids: error.details.view_ids.slice(0, 10).map((id) => String(id).slice(0, 64)),
         }),

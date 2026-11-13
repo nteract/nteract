@@ -324,7 +324,28 @@ test("every set_view refusal creates no document, no listed view and no writer",
       { data: { other: { source_id: "usage" } } },
       400,
       "invalid_view",
-      checkChartSpec(SPEC, { datasets: ["other"] }).error,
+      'The spec reads "usage", but data doesn\'t map it to a source.',
+    ],
+    // The spec's own problem comes before data's, and empty data names what
+    // the spec reads.
+    [{ spec: refusedByChart, data: {} }, 400, "invalid_view", expected.error],
+    [
+      { spec: { ...SPEC, mark: "bogus" } },
+      400,
+      "invalid_view",
+      checkChartSpec({ ...SPEC, mark: "bogus" }).error,
+    ],
+    [
+      { data: {} },
+      400,
+      "invalid_view",
+      'data must map each data name the spec reads ("usage") to a source: {"usage": {"source_id": "<source_id>"}}',
+    ],
+    [
+      { data: { usage: {} } },
+      400,
+      "invalid_view",
+      "data.usage needs a source_id: a source this Page holds",
     ],
     [{ data: { usage: { source_id: "usage", extra: 1 } } }, 400, "invalid_view"],
     // A data name is a safe key, and a source_id is checked before a lookup.
@@ -380,6 +401,15 @@ test("every set_view refusal creates no document, no listed view and no writer",
   assert.equal(mixed.status, 400);
   assert.equal(mixed.body.code, "invalid_arguments");
   assert.deepEqual(await h.snapshot(), before);
+  // Beside a set_source, set_view's rule is the one named.
+  const withSource = await h.edit(h.host, [
+    { op: "set_view", ...chart() },
+    { op: "set_source", source_id: "usage", name: "Usage", asset_id: "a".repeat(64) },
+  ]);
+  assert.equal(withSource.status, 400);
+  assert.equal(withSource.body.code, "invalid_arguments");
+  assert.match(withSource.body.error, /^A batch with set_view holds only that one operation\./);
+  assert.deepEqual(await h.snapshot(), before);
 });
 
 test("a Page holds ten views, each served; an eleventh is refused naming them", async (t) => {
@@ -421,6 +451,11 @@ test("insert_node places a view the Page holds and refuses one it doesn't", asyn
   ]);
   assert.equal(unknown.status, 400, JSON.stringify(unknown.body));
   assert.equal(unknown.body.code, "unknown_view");
+  assert.equal(
+    unknown.body.error,
+    'No view "daily" on this Page, which holds none. Create it with set_view, then insert its node.',
+  );
+  assert.deepEqual(unknown.body.view_ids, []);
   const after = await h.tool(h.host, "read_page", { include_content: false });
   assert.equal(after.body.revision, before.body.revision, "the Page is unchanged");
   const malformed = await h.edit(h.host, [
@@ -428,8 +463,18 @@ test("insert_node places a view the Page holds and refuses one it doesn't", asyn
   ]);
   assert.equal(malformed.status, 400, JSON.stringify(malformed.body));
   assert.equal(malformed.body.code, "invalid_edit_selector");
+  assert.match(malformed.body.error, /^attrs\.view_id must match /);
 
   assert.equal((await h.setView(h.host)).status, 200);
+  const other = await h.edit(h.host, [
+    { op: "insert_node", node: { type: "view", attrs: { view_id: "weekly" } } },
+  ]);
+  assert.equal(other.body.code, "unknown_view");
+  assert.equal(
+    other.body.error,
+    'No view "weekly" on this Page, which holds daily. Create it with set_view, then insert its node.',
+  );
+  assert.deepEqual(other.body.view_ids, ["daily"]);
   const inserted = await h.edit(h.host, [
     { op: "insert_node", node: { type: "view", attrs: { view_id: "daily" } } },
   ]);

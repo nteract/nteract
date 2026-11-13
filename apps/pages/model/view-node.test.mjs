@@ -66,20 +66,44 @@ test("insert_node writes one view marker with its view_id and stamps the feature
   assert.deepEqual(A.getHeads(after), A.getHeads(doc));
 });
 
-test("insert_node refuses a malformed view node", () => {
-  for (const attrs of [
-    {},
-    { view_id: "" },
-    { view_id: "Daily" },
-    { view_id: "constructor" },
-    { view_id: "daily", title: "x" },
-    { asset_id: "d".repeat(64) },
+test("insert_node refuses a malformed view node, naming the attr and its rule", () => {
+  const pattern = "attrs.view_id must match ^[a-z][a-z0-9_-]{0,63}$, not constructor or prototype";
+  for (const [attrs, message] of [
+    [undefined, "a view node's attrs must be {view_id}"],
+    [[], "a view node's attrs must be {view_id}"],
+    [{}, "a view node needs attrs.view_id: the view_id a set_view on this Page created"],
+    [{ view_id: "" }, pattern],
+    [{ view_id: "Daily" }, pattern],
+    [{ view_id: 7 }, pattern],
+    [{ view_id: "constructor" }, pattern],
+    [{ view_id: "daily", title: "x" }, `a view node's attrs take view_id only, not "title"`],
+    [{ asset_id: "d".repeat(64) }, `a view node's attrs take view_id only, not "asset_id"`],
   ])
     assert.throws(
       () => validateNodeInsertion({ op: "insert_node", node: { type: "view", attrs } }),
-      /insert_node requires node/,
+      { message },
       JSON.stringify(attrs),
     );
+  for (const [op, message] of [
+    [{ op: "insert_node" }, /: insert_node requires node: /],
+    [
+      { op: "insert_node", node: { type: "view", attrs: { view_id: "a" } }, after: "x" },
+      /: insert_node does not take after; it takes node and after_node_id$/,
+    ],
+    [
+      { op: "insert_node", node: { type: "view", attrs: { view_id: "a" }, id: 1 } },
+      /: insert_node's node takes type and attrs, not "id"$/,
+    ],
+    [
+      { op: "insert_node", node: { type: "chart", attrs: { view_id: "a" } } },
+      /: node\.type must be .*view, not "chart"$/,
+    ],
+    [
+      { op: "insert_node", node: { type: "view", attrs: { view_id: "a" } }, after_node_id: 7 },
+      /: after_node_id must be a block's id, or null to insert first$/,
+    ],
+  ])
+    assert.throws(() => validateNodeInsertion(op), message, JSON.stringify(op));
 });
 
 test("a view reads back as its line, from the node alone", () => {

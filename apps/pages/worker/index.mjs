@@ -6823,17 +6823,9 @@ export class Page {
           );
         if (body.operation !== "edit_page") throw new HttpError(400, "Unknown document operation");
         const ops = Array.isArray(body.arguments?.operations) ? body.arguments.operations : [];
-        // One journal entry writes one document: a batch with a set_source
-        // writes the sources document and nothing else.
-        const sourceOps = ops.filter((op) => op?.op === "set_source").length;
-        if (sourceOps && sourceOps !== ops.length)
-          throw new HttpError(
-            400,
-            "A batch with set_source holds only set_source operations. Send the other operations in a second edit_page request.",
-            "invalid_arguments",
-          );
-        if (sourceOps) return json(await this.writeSources(request, identity, body));
-        // A set_view writes one view's document: its batch holds it alone.
+        // One journal entry writes one document. A set_view writes one view's
+        // document: its batch holds it alone, whatever else the batch holds,
+        // so its rule is the one a mixed batch hears.
         if (ops.some((op) => op?.op === "set_view")) {
           if (ops.length !== 1)
             throw new HttpError(
@@ -6843,6 +6835,16 @@ export class Page {
             );
           return json(await this.writeView(request, identity, body));
         }
+        // A batch with a set_source writes the sources document and nothing
+        // else.
+        const sourceOps = ops.filter((op) => op?.op === "set_source").length;
+        if (sourceOps && sourceOps !== ops.length)
+          throw new HttpError(
+            400,
+            "A batch with set_source holds only set_source operations. Send the other operations in a second edit_page request.",
+            "invalid_arguments",
+          );
+        if (sourceOps) return json(await this.writeSources(request, identity, body));
         // Ops that create a node naming a stored asset (model/node-registry.mjs).
         const inserts = ops.filter((op) => insertOperation(op?.op) || op?.op === "set_image");
         // Where this batch landed, captured inside the change so the cursors
@@ -6877,14 +6879,22 @@ export class Page {
                     assetId,
                     ...(mediaType && { mediaType }),
                   });
-                // Each view node names a view this Page holds.
+                // Each view node names a view this Page holds. The refusal
+                // names the ones a view node can name, at most MAX_VIEWS.
                 for (const viewId of insertedViews(inserts))
-                  if (this.viewDoc(viewId)?.revision === undefined)
-                    throw new HttpError(
-                      400,
-                      `No view "${viewId}" on this Page. Create it with set_view, then insert its node.`,
-                      "unknown_view",
+                  if (this.viewDoc(viewId)?.revision === undefined) {
+                    const held = (await this.storedViewIds()).filter(
+                      (id) => this.viewDoc(id)?.revision !== undefined,
                     );
+                    throw Object.assign(
+                      new HttpError(
+                        400,
+                        `No view "${viewId}" on this Page, which holds ${held.length ? held.join(", ") : "none"}. Create it with set_view, then insert its node.`,
+                        "unknown_view",
+                      ),
+                      { details: { view_ids: held } },
+                    );
+                  }
                 // The Page queue orders ACL changes; OAuth/key expiry and revocation
                 // can still happen while immutable object metadata is being read.
                 this.policy.account(await authenticate(request, this.env), true);

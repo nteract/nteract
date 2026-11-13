@@ -1487,6 +1487,12 @@ const cloudflare503 = () =>
     status: 503,
     headers: { "Content-Type": "text/html; charset=UTF-8" },
   });
+// request()'s own deadline (REQUEST_TIMEOUT_MS) passing with no answer.
+const timedOut = () =>
+  Object.assign(Error("The request timed out. Please try again."), {
+    name: "TimeoutError",
+    code: "REQUEST_TIMEOUT",
+  });
 const restartFailures = [
   ["Cloudflare's HTML 503", { connect: cloudflare503 }],
   ["an empty 502", { connect: () => new Response(null, { status: 502 }) }],
@@ -1506,6 +1512,22 @@ const restartFailures = [
     {
       connect: () => {
         throw new TypeError("Failed to fetch");
+      },
+    },
+  ],
+  [
+    "a connection discovery past its deadline",
+    {
+      connect: () => {
+        throw timedOut();
+      },
+    },
+  ],
+  [
+    "a session refresh past its deadline",
+    {
+      refresh: () => {
+        throw timedOut();
       },
     },
   ],

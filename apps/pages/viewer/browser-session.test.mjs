@@ -12,7 +12,7 @@ import {
   sessionAnswerNotice,
   sessionCheckBanner,
 } from "./alerts.mjs";
-import { request as pagesRequest } from "./request.mjs";
+import { REQUEST_TIMEOUT_MS, request as pagesRequest } from "./request.mjs";
 
 const TABLE = new URL("../test/fixtures/machines/session-refresh.json", import.meta.url);
 const identity = { principal: "one", displayName: "Kyle" };
@@ -24,7 +24,7 @@ function fixture(request, { onSession, onError, now } = {}) {
     listeners = new Set(),
     sessions = [],
     errors = [],
-    outages = [];
+    notices = [];
   let id = 0;
   const document = {
     visibilityState: "hidden",
@@ -43,7 +43,7 @@ function fixture(request, { onSession, onError, now } = {}) {
     },
     onError: (error, info) => {
       errors.push(error);
-      outages.push(info.outage);
+      notices.push(info.notice);
       onError?.(error, info);
     },
     ...(now && { now }),
@@ -60,7 +60,7 @@ function fixture(request, { onSession, onError, now } = {}) {
     listeners,
     sessions,
     errors,
-    outages,
+    notices,
     resume() {
       document.visibilityState = "visible";
       for (const fn of listeners) fn();
@@ -99,10 +99,10 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 test("the session-refresh table runs through the pure machine", async () => {
   assert.deepEqual(await runTable(sessionRefreshMachine, loadTable(TABLE)), {
-    rows: 36,
+    rows: 38,
     pairs: 13,
     unreachable: 2,
-    cases: 15,
+    cases: 17,
   });
 });
 
@@ -303,8 +303,13 @@ function sessionCheckScreen({ injectNow = true } = {}) {
   let at = 0,
     answer = "ok",
     notice = null,
-    account = null;
+    account = null,
+    deadline = 0;
+  // request()'s deadline timers, which expireRequest() fires.
+  const deadlines = new Map();
   const responses = {
+    // The server never answers; request() gives up at its deadline.
+    hang: () => new Promise(() => {}),
     ok: () => Response.json(signedIn),
     down: () =>
       new Response("<!DOCTYPE html><title>503: origin unreachable | Cloudflare</title>", {
@@ -316,15 +321,27 @@ function sessionCheckScreen({ injectNow = true } = {}) {
       Response.json({ error: "Sign in with a verified anaconda.com email." }, { status: 403 }),
   };
   const f = fixture(
-    () => pagesRequest("/api/auth/session", {}, { fetch: async () => responses[answer]() }),
+    () =>
+      pagesRequest(
+        "/api/auth/session",
+        {},
+        {
+          fetch: async () => responses[answer](),
+          setTimeout: (fn, ms) => {
+            deadlines.set(++deadline, { fn, ms });
+            return deadline;
+          },
+          clearTimeout: (id) => deadlines.delete(id),
+        },
+      ),
     {
       ...(injectNow && { now: () => at }),
       onSession: (result, { refusal }) => {
         notice = sessionAnswerNotice(refusal, { signedIn: !!account });
         account = result.identity;
       },
-      onError: (error, { outage }) => {
-        const banner = sessionCheckBanner(error, { outage, signedIn: !!account });
+      onError: (error, info) => {
+        const banner = sessionCheckBanner(error, info);
         if (banner !== undefined) notice = { message: banner, signIn: false };
       },
     },
@@ -347,6 +364,28 @@ function sessionCheckScreen({ injectNow = true } = {}) {
       at += ms;
       await f.maintenance.refresh().catch(() => {});
     },
+    /** Let the one pending request's deadline pass while the server hangs. */
+    async expireRequest() {
+      await flush();
+      assert.equal(deadlines.size, 1, "one session request waits on its deadline");
+      at += REQUEST_TIMEOUT_MS;
+      for (const [id, { fn, ms }] of deadlines) {
+        assert.equal(ms, REQUEST_TIMEOUT_MS);
+        deadlines.delete(id);
+        fn();
+      }
+      await f.idle();
+    },
+    /** Let the renewal timer fire `ms` after the last answer while the
+     * server hangs, past request()'s deadline. */
+    async renewTimingOut(ms) {
+      answer = "hang";
+      at += ms;
+      void f
+        .takeTimer()()
+        .catch(() => {});
+      await this.expireRequest();
+    },
   };
 }
 
@@ -359,12 +398,12 @@ test("a library screen with a persistent 503 shows one notice after the threshol
   screen.set("down");
   // The first failed renewal starts the run; it stays quiet.
   await screen.renewAfter(60_000);
-  assert.deepEqual(screen.f.outages, [false]);
+  assert.deepEqual(screen.f.notices, ["quiet"]);
   assert.deepEqual(screen.banners(), []);
   assert.equal(screen.f.timers.size, 1, "renewals continue");
   // The next one is past the threshold: exactly one plain sentence.
   await screen.renewAfter(60_000);
-  assert.deepEqual(screen.f.outages, [false, true]);
+  assert.deepEqual(screen.f.notices, ["quiet", "outage"]);
   assert.deepEqual(screen.banners(), [SERVER_UNREACHABLE]);
   await screen.renewAfter(60_000);
   assert.deepEqual(screen.banners(), [SERVER_UNREACHABLE]);
@@ -377,7 +416,7 @@ test("a library screen with a persistent 503 shows one notice after the threshol
   // The run starts over after a success.
   screen.set("down");
   await screen.renewAfter(60_000);
-  assert.deepEqual(screen.f.outages.slice(-1), [false]);
+  assert.deepEqual(screen.f.notices.slice(-1), ["quiet"]);
   assert.deepEqual(screen.banners(), []);
 });
 
@@ -409,13 +448,13 @@ test("session refreshes from Page reconnects during a short restart stay quiet",
   // Reconnect attempts ask for the session on their backoff, many times in a
   // few seconds; none of them is an outage.
   for (const delay of [250, 500, 1000, 2000, 4000]) await screen.refreshAfter(delay);
-  assert.equal(screen.f.outages.length, 5);
-  assert.ok(screen.f.outages.every((outage) => !outage));
+  assert.equal(screen.f.notices.length, 5);
+  assert.ok(screen.f.notices.every((notice) => notice === "quiet"));
   assert.deepEqual(screen.banners(), []);
   // The same run, which began with the first failure 250 ms in, reaches
   // the threshold if it keeps going.
   await screen.refreshAfter(OUTAGE_MS + 250 - 7750);
-  assert.deepEqual(screen.f.outages.at(-1), true);
+  assert.deepEqual(screen.f.notices.at(-1), "outage");
   assert.deepEqual(screen.banners(), [SERVER_UNREACHABLE]);
   screen.set("ok");
   await screen.refreshAfter(250);
@@ -494,5 +533,82 @@ test("a tab that was never signed in gets no session-ended banner", async (t) =>
   t.after(() => screen.f.maintenance.stop());
   screen.set("expired");
   await screen.f.maintenance.refresh().catch(() => {});
+  assert.deepEqual(screen.banners(), []);
+});
+
+test("a signed-in tab's renewal that times out stays quiet and renews a minute later", async (t) => {
+  const screen = sessionCheckScreen();
+  t.after(() => screen.f.maintenance.stop());
+  await screen.f.maintenance.refresh();
+  await screen.renewTimingOut(60_000);
+  assert.equal(screen.f.errors[0].code, "REQUEST_TIMEOUT");
+  assert.deepEqual(screen.f.notices, ["quiet"]);
+  assert.deepEqual(screen.banners(), []);
+  assert.equal(screen.f.sessions.length, 1, "the account stays as it was");
+  assert.equal(screen.f.timers.size, 1, "the next renewal is scheduled");
+  assert.equal(screen.f.maintenance.store.snapshot().failingSince, screen.at);
+
+  // The next renewal, a minute after the timeout, is answered.
+  screen.set("ok");
+  await screen.renewAfter(60_000);
+  assert.equal(screen.f.sessions.length, 2);
+  assert.deepEqual(screen.banners(), []);
+  assert.equal(screen.f.maintenance.store.snapshot().failingSince, null);
+});
+
+test("renewals that keep timing out report one outage, and an answer clears it", async (t) => {
+  const screen = sessionCheckScreen();
+  t.after(() => screen.f.maintenance.stop());
+  await screen.f.maintenance.refresh();
+  await screen.renewTimingOut(60_000);
+  assert.deepEqual(screen.banners(), []);
+  // The next one times out 90 s after the first: past OUTAGE_MS.
+  await screen.renewTimingOut(60_000);
+  assert.ok(60_000 + REQUEST_TIMEOUT_MS >= OUTAGE_MS);
+  assert.deepEqual(screen.f.notices, ["quiet", "outage"]);
+  assert.deepEqual(screen.banners(), [SERVER_UNREACHABLE]);
+  screen.set("ok");
+  await screen.renewAfter(60_000);
+  assert.deepEqual(screen.banners(), []);
+});
+
+test("a refusal after a timed-out renewal signs the tab out as any refusal does", async (t) => {
+  for (const [answer, message] of [
+    ["expired", SESSION_ENDED],
+    ["forbidden", "Sign in with a verified anaconda.com email."],
+  ])
+    await t.test(answer, async (t) => {
+      const screen = sessionCheckScreen();
+      t.after(() => screen.f.maintenance.stop());
+      await screen.f.maintenance.refresh();
+      await screen.renewTimingOut(60_000);
+      assert.deepEqual(screen.banners(), []);
+      screen.set(answer);
+      await screen.renewAfter(60_000);
+      assert.equal(screen.f.sessions.at(-1).identity, null);
+      assert.deepEqual(screen.banners(), [message]);
+      assert.equal(screen.f.timers.size, 0, "signed out, renewals stop");
+    });
+});
+
+test("a first session check that times out says so: nothing else is on screen", async (t) => {
+  const screen = sessionCheckScreen();
+  t.after(() => screen.f.maintenance.stop());
+  screen.set("hang");
+  const first = screen.f.maintenance.refresh();
+  first.catch(() => {});
+  await screen.expireRequest();
+  await assert.rejects(first, { code: "REQUEST_TIMEOUT" });
+  assert.deepEqual(screen.f.notices, ["failure"]);
+  assert.deepEqual(screen.banners(), ["The request timed out. Please try again."]);
+  // Past OUTAGE_MS it still says the error: the outage sentence promises
+  // changes saved on this device, and no account has loaded.
+  await screen.renewTimingOut(60_000);
+  assert.deepEqual(screen.f.notices, ["failure", "failure"]);
+  assert.deepEqual(screen.banners(), ["The request timed out. Please try again."]);
+  // It still renews, and the answer clears the notice.
+  screen.set("ok");
+  await screen.renewAfter(60_000);
+  assert.deepEqual(screen.f.sessions.at(-1).identity, identity);
   assert.deepEqual(screen.banners(), []);
 });
