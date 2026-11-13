@@ -35,9 +35,8 @@ const MS_PER = {
 
 const DROPPED = "__proto__";
 
-/** A decimal's unscaled value `big` at `scale`, as the nearest number. The
- * whole and fractional parts convert apart, so a wide decimal keeps its
- * cents. */
+/** A decimal's unscaled value `big` at `scale`, as a number. The whole and
+ * fractional parts convert apart, so a wide decimal keeps its cents. */
 export function decimalNumber(big, scale) {
   if (scale <= 0) return Number(big) * 10 ** -scale;
   const unit = 10n ** BigInt(scale);
@@ -50,6 +49,23 @@ const unscaled = (words) => {
   let big = 0n;
   for (let index = words.length - 1; index >= 0; index--) big = (big << 32n) | BigInt(words[index]);
   return BigInt.asIntN(words.length * 32, big);
+};
+
+const TWO_32 = 2 ** 32;
+const SAFE_HIGH = 2 ** 21;
+
+/** A decimal's value at `scale`. When its unscaled value is a safe integer
+ * (every high word is the low two's sign) and 10 ** scale is exact, one
+ * double division gives the nearest number; anything wider goes through
+ * BigInt. */
+const decimalValue = (words, scale) => {
+  const high = words[1] | 0;
+  const sign = high < 0 ? 0xffffffff : 0;
+  let small = Math.abs(scale) <= 22 && high > -SAFE_HIGH && high < SAFE_HIGH;
+  for (let index = 2; small && index < words.length; index++) small = words[index] === sign;
+  if (!small) return decimalNumber(unscaled(words), scale);
+  const whole = high * TWO_32 + words[0];
+  return scale <= 0 ? whole * 10 ** -scale : whole / 10 ** scale;
 };
 
 /** Any BigInt in `value`, nested or not, as a number. */
@@ -68,8 +84,7 @@ const nullable = (read) => (value) => (value === null || value === undefined ? n
 /** How to read one value of `type` as a chart reads it. */
 export function chartReader(type) {
   if (DataType.isDictionary(type)) return chartReader(type.dictionary);
-  if (DataType.isDecimal(type))
-    return nullable((value) => decimalNumber(unscaled(value), type.scale));
+  if (DataType.isDecimal(type)) return nullable((value) => decimalValue(value, type.scale));
   if (DataType.isInt(type) && type.bitWidth === 64) return nullable(Number);
   if (DataType.isTime(type)) return nullable((value) => Number(value) * MS_PER[type.unit]);
   if (DataType.isDate(type) || DataType.isTimestamp(type)) return nullable(Number);

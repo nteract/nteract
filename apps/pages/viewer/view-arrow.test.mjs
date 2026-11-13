@@ -60,6 +60,11 @@ test("a decimal reads as its number at any scale", () => {
       { cents: -0.05, whole: -42, hundreds: -300 },
     ],
   );
+  // Past a safe integer, the value goes through BigInt and reads the same.
+  const wide = 12345678901234567812n;
+  const [big, small] = rowsOf({ cents: decimals(2, [wide, -(2n ** 53n) + 1n]) });
+  assert.equal(big.cents, decimalNumber(wide, 2));
+  assert.equal(small.cents, (-(2 ** 53) + 1) / 100);
 });
 
 test("a dictionary of decimals reads each value at the dictionary's scale", () => {
