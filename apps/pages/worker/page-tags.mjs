@@ -53,13 +53,21 @@ export function normalizeTag(value) {
   if (typeof value !== "string") throw new TagError("A tag must be a string");
   const tag = value.trim().toLowerCase();
   if (RESERVED_TAGS.includes(tag))
-    throw new TagError(`"${tag}" is reserved: AND, OR and NOT are operators, so it can't be a tag`);
+    throw new TagError(
+      `"${tag}" is reserved: AND, OR and NOT are operators, written uppercase, so it can't be a tag`,
+    );
   if (!TAG_PATTERN.test(tag))
     throw new TagError(
-      "A tag is 1 to 64 characters of a-z, 0-9 and . _ : / -, starting with a letter or digit",
+      `${quoted(value.trim())} isn't a tag: a tag is 1 to 64 characters of a-z, 0-9 and . _ : / -, starting with a letter or digit`,
     );
   return tag;
 }
+/** `value` as a refusal quotes it: JSON-escaped, so a control character
+ * shows as an escape, and cut to a tag's length. */
+const quoted = (value) =>
+  value.length > 64
+    ? `${JSON.stringify(value.slice(0, 64)).slice(0, -1)}…"`
+    : JSON.stringify(value);
 
 const OPERATORS = new Set(["AND", "OR", "NOT"]);
 
@@ -146,7 +154,12 @@ export function parseTagExpression(input) {
       const token = peek();
       if (!token || token.text === ")") break;
       if (token.text !== "AND" && token.text !== "OR")
-        throw new TagError(`Expected AND, OR or the end but found ${token.text}`, token.position);
+        throw new TagError(
+          ["AND", "OR"].includes(token.text.toUpperCase())
+            ? `Operators are uppercase: write ${token.text.toUpperCase()}, not ${token.text}`
+            : `Expected AND, OR or the end but found ${token.text}`,
+          token.position,
+        );
       if (operator && operator !== token.text)
         throw new TagError(
           "AND and OR can't mix at one level: add parentheses, as in (a AND b) OR c",

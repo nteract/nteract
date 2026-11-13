@@ -10,6 +10,7 @@ import { documentFeatures } from "./schema-features.mjs";
 import { decode, encode } from "./wordgard-doc.mjs";
 import { blockAddress, nodeAddresses } from "./addresses.mjs";
 import { imageIds } from "./image-ids.mjs";
+import { MAX_PAGE_TITLE } from "../shared/page-title.mjs";
 
 function fixture(markdown) {
   let doc = A.from(createPageData({ pageId: "rich_edits", title: "Rich edits" }));
@@ -36,6 +37,41 @@ const markers = (doc, id) =>
     .filter((span) => span.type === "block")
     .map((span) => [String(span.value.type), { ...span.value.attrs }]);
 
+test("set_title refuses a title past the limit instead of cutting it, and keeps an empty one", () => {
+  const { doc } = fixture("Hello");
+  const longest = "t".repeat(MAX_PAGE_TITLE);
+  assert.equal(apply(doc, [{ op: "set_title", title: longest }]).after.title, longest);
+  refuses(
+    doc,
+    [{ op: "set_title", title: `${longest}t` }],
+    new RegExp(
+      `^Error: set_title's title is at most ${MAX_PAGE_TITLE} characters; this one has ${MAX_PAGE_TITLE + 1}$`,
+    ),
+  );
+  // An empty title is stored as written; listings show it as Untitled.
+  assert.equal(apply(doc, [{ op: "set_title", title: "" }]).after.title, "");
+});
+
+test("set_title takes back a stored title over the limit unchanged", () => {
+  const { doc: base, id } = fixture("Hello");
+  // A browser merge can store a title past the limit set_title writes.
+  const long = "L".repeat(MAX_PAGE_TITLE + 100);
+  const doc = A.change(A.clone(base), (draft) => A.updateText(draft, ["title"], long));
+  // Alone, the echo is a no-op success that writes nothing.
+  const echoed = apply(doc, [{ op: "set_title", title: long }]).after;
+  assert.equal(echoed.title, long);
+  assert.deepEqual(A.getHeads(echoed), A.getHeads(doc));
+  // Beside a body edit, the batch applies whole.
+  const { after } = apply(doc, [
+    { op: "replace_block_markdown", node_id: blockAddress(doc, id), markdown: "Changed" },
+    { op: "set_title", title: long },
+  ]);
+  assert.equal(after.title, long);
+  assert.equal(md(after, id), "Changed");
+  // A different long title is still refused.
+  refuses(doc, [{ op: "set_title", title: `${long}!` }], /at most 500 characters/);
+});
+
 test("edit_page rejects fields from another operation", () => {
   const { doc } = fixture("Hello");
   refuses(
@@ -48,7 +84,7 @@ test("edit_page rejects fields from another operation", () => {
     [{ op: "insert_markdown", markdown: "New", match_text: "Hello" }],
     /insert_markdown does not take match_text/,
   );
-  refuses(doc, [{ op: "set_title", title: null }], /set_title requires a title string/);
+  refuses(doc, [{ op: "set_title", title: null }], /set_title takes title as a string/);
   // Each is a valid insert apart from the top-level type.
   refuses(
     doc,
