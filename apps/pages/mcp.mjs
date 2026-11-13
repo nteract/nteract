@@ -447,7 +447,7 @@ export const tools = [
   ),
   tool(
     "manage_page_access",
-    "Change direct Page sharing as its owner, at access.revision from get_page_access. invite: email and role. set_role: principal and role (null removes). revoke_invite: invite_id. set_domain_view: a domain from domainOptions, or null. set_organization_access: organization_id from organizationOptions and role, or null. Grants never cover sub-pages. Needs pages:share consent.",
+    "Change direct Page sharing as its owner, at access.revision from get_page_access. invite: email and role. set_role: principal and role (null removes). revoke_invite: invite_id. set_domain_view: a domainOptions domain (or domainView's to lower) and role, or null. set_organization_access: organization_id from organizationOptions and role, or null. Grants never cover sub-pages. Needs pages:share consent.",
     {
       page_id: page,
       action: {
@@ -706,7 +706,7 @@ export const tools = [
   ),
   tool(
     ASSET_UPLOAD_OPERATION,
-    "Get an upload URL for a local image or Parquet file (API key or OAuth). Returns upload_url, headers (a Pages-Upload capability; never send your own key there), expires_at (10 minutes) and a curl example. POST raw bytes, not multipart or base64; the same bytes always return the same asset_id. Access is checked again at upload. Then place it with edit_page insert_image or insert_node. Without a shell, or when the POST can't leave your sandbox (a proxy 403), ask the person to use Insert image in the browser; ChatGPT attachments use import_page_image.",
+    "Get an upload URL for a local image or Parquet file (API key or OAuth). Returns upload_url, headers (a Pages-Upload capability; never send your own key there), expires_at (at most 10 minutes) and a curl example. POST raw bytes, not multipart or base64; the same bytes always return the same asset_id. Access is checked again at upload. Then place it with edit_page insert_image or insert_node. Without a shell, or when the POST can't leave your sandbox (a proxy 403), ask the person to use Insert image in the browser; ChatGPT attachments use import_page_image.",
     {
       page_id: page,
       content_type: {

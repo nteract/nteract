@@ -205,6 +205,44 @@
       ]
     },
     {
+      "name": "a company grant at editor or commenter gives that role, and a removal tombstone beats it",
+      "modes": ["built-in", "external"],
+      "object": "page:company-roles",
+      "lifecycle": "active",
+      "revision": 8,
+      "relationships": [
+        "page:company-roles#owner@user:alice",
+        "page:company-roles#editor@organization:anaconda#member",
+        "page:company-roles#commenter@organization:research#member",
+        "page:company-roles#removed@user:gail",
+        "organization:anaconda#member@user:gail",
+        "organization:anaconda#member@user:dana",
+        "organization:research#member@user:gail",
+        "organization:research#member@user:erin"
+      ],
+      "principals": [
+        { "subject": "user:gail", "credential": "write", "capabilities": [] },
+        {
+          "subject": "user:dana",
+          "credential": "write",
+          "capabilities": ["read", "comment", "edit"],
+          "basis": { "relation": "editor", "via": "organization" }
+        },
+        {
+          "subject": "user:erin",
+          "credential": "write",
+          "capabilities": ["read", "comment"],
+          "basis": { "relation": "commenter", "via": "organization" }
+        },
+        {
+          "subject": "user:dana",
+          "credential": "read",
+          "capabilities": ["read"],
+          "basis": { "relation": "editor", "via": "organization" }
+        }
+      ]
+    },
+    {
       "name": "a Project's organization grant reaches its members on the Project's items at the grant's role, beside member rows",
       "modes": ["built-in", "external"],
       "object": "page:guild_item",

@@ -1524,72 +1524,92 @@ test("a browser change that leaves a block out of shape is refused, non-fatally,
   assert.ok(!reader.frames.some((frame) => frame.t === "refused"));
 });
 
-test("an organization's editor edits through browser sync without a member row, and a downgrade or withdrawal closes the socket", async (t) => {
-  const f = await fixture(t);
-  const host = f.page();
-  assert.ok((await f.register(host)).ok);
-  const namespace = "user:anaconda-fixture";
-  const organization = { id: "org-sync", name: "Sync Guild", namespace };
-  const share = (role) => {
-    host.metadata = {
-      ...host.metadata,
-      acl: {
-        ...host.metadata.acl,
-        organizationAccess: role ? { ...organization, role } : null,
-      },
+// A link audience (an organization or a company domain) and the lease its
+// readers hold: the organizations list, or the single domain lease.
+const syncNamespace = "user:anaconda-fixture";
+const syncOrganization = { id: "org-sync", name: "Sync Guild", namespace: syncNamespace };
+const syncAudiences = [
+  {
+    kind: "organization",
+    grant: (role) => ({ organizationAccess: role ? { ...syncOrganization, role } : null }),
+    lease: (expiresAt) => ({
+      organizations: [
+        {
+          id: syncOrganization.id,
+          name: syncOrganization.name,
+          namespace: syncNamespace,
+          expiresAt,
+        },
+      ],
+    }),
+  },
+  {
+    kind: "company domain",
+    grant: (role) => ({
+      domainView: role ? { domain: "anaconda.com", namespace: syncNamespace, role } : null,
+    }),
+    lease: (expiresAt) => ({
+      domainAccess: { domain: "anaconda.com", namespace: syncNamespace, expiresAt },
+    }),
+  },
+];
+
+for (const audience of syncAudiences)
+  test(`a ${audience.kind}'s editor edits through browser sync without a member row, and a downgrade or withdrawal closes the socket`, async (t) => {
+    const f = await fixture(t);
+    const host = f.page();
+    assert.ok((await f.register(host)).ok);
+    const namespace = syncNamespace;
+    const share = (role) => {
+      host.metadata = {
+        ...host.metadata,
+        acl: { ...host.metadata.acl, ...audience.grant(role) },
+      };
+      host.plain.refresh();
     };
-    host.plain.refresh();
-  };
-  const identity = (principal) => ({
-    principal: `${namespace}:${principal}`,
-    namespace,
-    displayName: principal,
-    driver: "Browser",
-    canWrite: true,
-    expiresAt: Date.now() + 3_600_000,
-    organizations: [
-      {
-        id: organization.id,
-        name: organization.name,
-        namespace,
-        expiresAt: Date.now() + 3_600_000,
-      },
-    ],
+    const identity = (principal) => ({
+      principal: `${namespace}:${principal}`,
+      namespace,
+      displayName: principal,
+      driver: "Browser",
+      canWrite: true,
+      expiresAt: Date.now() + 3_600_000,
+      ...audience.lease(Date.now() + 3_600_000),
+    });
+    const open = async (role) => {
+      const browser = await connectBrowser(host, identity(role), `s-${role}`);
+      t.after(() => browser.repo.shutdown());
+      return { browser, handle: await browser.repo.find(f.args.document_id) };
+    };
+    // An editor's change is admitted.
+    share("editor");
+    const editor = await open("editor");
+    editor.handle.change((d) => (d.from_editor = true));
+    await until(() => host.handle.doc().from_editor === true);
+    const closedByChange = async (connection) => {
+      await until(() => connection.browser.link.client.closed);
+      assert.equal(connection.browser.link.client.closeReason, "access_changed");
+    };
+    // A commenter's and a viewer's Page changes are stripped. Each change of
+    // the grant ends the sockets whose access it changes.
+    for (const [role, next] of [
+      ["commenter", "viewer"],
+      ["viewer", null],
+    ]) {
+      share(role);
+      if (role === "commenter") await closedByChange(editor);
+      const reader = await open(role);
+      reader.handle.change((d) => (d[`from_${role}`] = true));
+      // The host's own later change reaches this browser, and the repo's sync
+      // throttle has long passed before the host is checked.
+      await host.handle.change((d) => (d[`marker_${role}`] = true));
+      await host.flush();
+      await until(() => reader.handle.doc()[`marker_${role}`] === true);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      await host.flush();
+      assert.equal(host.handle.doc()[`from_${role}`], undefined, role);
+      share(next);
+      await closedByChange(reader);
+    }
+    assert.deepEqual(host.metadata.acl.members ?? {}, {});
   });
-  const open = async (role) => {
-    const browser = await connectBrowser(host, identity(role), `s-${role}`);
-    t.after(() => browser.repo.shutdown());
-    return { browser, handle: await browser.repo.find(f.args.document_id) };
-  };
-  // An editor's change is admitted.
-  share("editor");
-  const editor = await open("editor");
-  editor.handle.change((d) => (d.from_editor = true));
-  await until(() => host.handle.doc().from_editor === true);
-  const closedByChange = async (connection) => {
-    await until(() => connection.browser.link.client.closed);
-    assert.equal(connection.browser.link.client.closeReason, "access_changed");
-  };
-  // A commenter's and a viewer's Page changes are stripped. Each change of
-  // the grant ends the sockets whose access it changes.
-  for (const [role, next] of [
-    ["commenter", "viewer"],
-    ["viewer", null],
-  ]) {
-    share(role);
-    if (role === "commenter") await closedByChange(editor);
-    const reader = await open(role);
-    reader.handle.change((d) => (d[`from_${role}`] = true));
-    // The host's own later change reaches this browser, and the repo's sync
-    // throttle has long passed before the host is checked.
-    await host.handle.change((d) => (d[`marker_${role}`] = true));
-    await host.flush();
-    await until(() => reader.handle.doc()[`marker_${role}`] === true);
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    await host.flush();
-    assert.equal(host.handle.doc()[`from_${role}`], undefined, role);
-    share(next);
-    await closedByChange(reader);
-  }
-  assert.deepEqual(host.metadata.acl.members ?? {}, {});
-});

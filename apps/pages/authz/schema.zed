@@ -124,8 +124,8 @@ definition page {
 
 	/**
 	 * editor, commenter and viewer are direct grants to write, to comment and to
-	 * read. organization#member is a link audience: company view is always a
-	 * viewer, and an organization grant sits in the relation its role names.
+	 * read. organization#member in any of them is a link audience: a company
+	 * domain or an organization grant, in the relation its role names.
 	 */
 	relation editor: user | group#member | organization#member
 	relation commenter: user | group#member | organization#member

@@ -23,6 +23,19 @@ test("domain link access is restricted until the host reports an explicit Page g
     "anaconda.com",
   );
 });
+test("a stored company domain grant carries its role, viewer when it names none", () => {
+  const at = (domainView) => linkAccessProjection({ ...owner, domainView });
+  assert.equal(domainSharingProjection(owner).role, null);
+  assert.equal(at(null).role, null);
+  assert.equal(at({ domain: "anaconda.com" }).role, "viewer");
+  for (const role of ["viewer", "commenter", "editor"]) {
+    const view = at({ domain: "anaconda.com", role });
+    assert.equal(view.domain, "anaconda.com");
+    assert.equal(view.role, role);
+    assert.equal(view.organization, null);
+  }
+  assert.equal(at({ domain: "anaconda.com", role: "owner" }).role, "viewer");
+});
 test("owner or provider email never invents domain options; nonowners cannot configure link access", () => {
   for (const email of ["owner@gmail.com", "owner@outlook.com", "owner@anaconda.com"]) {
     assert.equal(domainSharingProjection({ access: owner.access, owner: { email } }), null);

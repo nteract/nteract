@@ -1,6 +1,7 @@
 import { appSessionHasFreshVerifiedEmail } from "@cloud/app-session.ts";
 import { MEMBER_ROLES, pageAccess, proposeAccessUpdate } from "./access.mjs";
 import { HttpError } from "./auth.mjs";
+import { domainViewRole } from "./authz.mjs";
 import { inviteEmail } from "./invite-email.mjs";
 import { fingerprint, operationKey } from "./mutations.mjs";
 import { companyDomainProof, companyViewDomains, configuredDomainView } from "./domain-access.mjs";
@@ -143,6 +144,47 @@ const audienceSet = (current) =>
     "link_audience_set",
   );
 
+/** The company domain grant `set_domain_view` asks for, or null to withdraw
+ * it. `role` is viewer when omitted. Choosing a domain, or a higher role for
+ * the one already set, needs the caller's own fresh verified email at that
+ * domain; lowering the stored grant's role or withdrawing needs nothing, so an
+ * owner can always narrow or stop sharing. */
+async function domainGrant(acl, identity, args, env, now) {
+  const domain = args.domain;
+  if (domain === null) return null;
+  if (!companyViewDomains(env).includes(domain))
+    throw new HttpError(400, "Choose a supported company domain");
+  const role = args.role === undefined ? "viewer" : args.role;
+  if (!roleValid(role)) throw new HttpError(400, "Choose Can view, Can comment or Can edit");
+  if (acl.organizationAccess) throw audienceSet(acl.organizationAccess.name || "an organization");
+  const namespace = env.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE.trim();
+  const proof = narrowsDomainGrant(acl.domainView, { domain, namespace, role })
+    ? "verified"
+    : (await companyDomainProof(env, identity, now))[domain];
+  if (proof !== "verified")
+    throw new HttpError(
+      403,
+      proof === "expired"
+        ? `Your ${domain} email verification expired. Sign in again with the same account to share with ${domain}`
+        : `Sign in with a verified ${domain} email to share with ${domain}`,
+      "company_email_proof_required",
+    );
+  return { domain, namespace, role };
+}
+
+/** Whether `next` keeps the stored grant's domain and namespace and only
+ * lowers its role. Lowering widens nothing, so it needs no proof; a new or
+ * different domain, the same role again or a higher one does. */
+function narrowsDomainGrant(stored, next) {
+  const current = stored ? domainViewRole(stored) : null;
+  return (
+    !!current &&
+    stored.domain === next.domain &&
+    stored.namespace === next.namespace &&
+    MEMBER_ROLES.indexOf(next.role) < MEMBER_ROLES.indexOf(current)
+  );
+}
+
 /** The organization grant `set_organization_access` asks for, or null to
  * withdraw it. Choosing an organization, or a new role for the one already
  * set, needs the caller's own current membership in it; withdrawing needs
@@ -188,32 +230,7 @@ export async function proposeSharingMutation(metadata, identity, args, now = Dat
     Object.entries(acl.invites ?? {}).filter(([, invite]) => invite.expiresAt > now),
   );
   if (args.action === "set_domain_view") {
-    if (args.domain !== null && !companyViewDomains(env).includes(args.domain))
-      throw new HttpError(400, "Choose a supported company domain");
-    if (args.role !== undefined && args.role !== "viewer")
-      throw new HttpError(400, "Company domain access is view-only");
-    if (args.domain !== null && acl.organizationAccess)
-      throw audienceSet(acl.organizationAccess.name || "an organization");
-    // Only someone who proves the company email may present a Page to that
-    // company. Restricted needs no proof, so an owner can always withdraw.
-    if (args.domain !== null) {
-      const proof = (await companyDomainProof(env, identity, now))[args.domain];
-      if (proof !== "verified")
-        throw new HttpError(
-          403,
-          proof === "expired"
-            ? `Your ${args.domain} email verification expired. Sign in again with the same account to share with ${args.domain}`
-            : `Sign in with a verified ${args.domain} email to share with ${args.domain}`,
-          "company_email_proof_required",
-        );
-    }
-    acl.domainView =
-      args.domain === null
-        ? null
-        : {
-            domain: args.domain,
-            namespace: env.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE.trim(),
-          };
+    acl.domainView = await domainGrant(acl, identity, args, env, now);
     acl.revision++;
   } else if (args.action === "set_organization_access") {
     acl.organizationAccess = await organizationGrant(acl, identity, args, env, now);
