@@ -25,7 +25,8 @@ import { COMMENTS_FEATURE } from "./comments-doc.mjs";
 import { orderedBlockIds, positionForInsertion } from "./order.mjs";
 import { anchorOccurrence, formatMatch, replaceMatch, withinNode } from "./replace-match.mjs";
 import { setNode } from "./set-node.mjs";
-import { insertOperation } from "./node-registry.mjs";
+import { insertOperation, insertedTypes } from "./node-registry.mjs";
+import { VIEW_BLOCK, validViewId } from "../shared/views.mjs";
 import { stampFeatures } from "./schema-features.mjs";
 export { orderedBlockIds } from "./order.mjs";
 // A stored block holds its order and its text. Its id is its key in `blocks`.
@@ -115,12 +116,29 @@ export function validateImageChange(op) {
     );
 }
 const NODE_INSERTION_USAGE =
-  'insert_node requires node: {type: "dataframe", attrs: {asset_id, title?, media_type?}} and optional after_node_id';
+  'insert_node requires node: {type: "dataframe", attrs: {asset_id, title?, media_type?}} or {type: "view", attrs: {view_id}}, and optional after_node_id';
 const only = (value, keys) =>
   !!value &&
   typeof value === "object" &&
   !Array.isArray(value) &&
   Object.keys(value).every((key) => keys.includes(key));
+// The attrs an agent gives each type insert_node creates, checked without a
+// Page: `check(attrs)` is true for attrs it may store, and `stored(pageId,
+// attrs)` is the node's stored attrs.
+const NODE_INSERTIONS = Object.freeze({
+  [DATAFRAME_BLOCK]: {
+    check: (attrs) =>
+      only(attrs, ["asset_id", "media_type", "title"]) &&
+      validAssetId(attrs.asset_id) &&
+      // Title and media type rules live with the node.
+      !!dataframeFor("00000000-0000-4000-8000-000000000000", attrs),
+    stored: (pageId, attrs) => dataframeFor(pageId, attrs),
+  },
+  [VIEW_BLOCK]: {
+    check: (attrs) => only(attrs, ["view_id"]) && validViewId(attrs.view_id),
+    stored: (_pageId, attrs) => ({ view_id: attrs.view_id }),
+  },
+});
 /** Check an insert_node operation without a Page: its shape, the node type and
  * the attrs an agent may set. Returns the agent's attrs. */
 export function validateNodeInsertion(op) {
@@ -128,15 +146,24 @@ export function validateNodeInsertion(op) {
   if (
     !only(op, ["op", "node", "after_node_id"]) ||
     !only(node, ["type", "attrs"]) ||
-    node.type !== DATAFRAME_BLOCK ||
-    !only(node.attrs, ["asset_id", "media_type", "title"]) ||
-    !validAssetId(node.attrs.asset_id) ||
-    !afterAnchor(op.after_node_id)
+    !insertedTypes("insert_node").includes(node.type) ||
+    !afterAnchor(op.after_node_id) ||
+    !NODE_INSERTIONS[node.type].check(node.attrs)
   )
     throw Error(NODE_INSERTION_USAGE);
-  // Title and media type rules live with the node.
-  dataframeFor("00000000-0000-4000-8000-000000000000", node.attrs);
   return node.attrs;
+}
+/** The view ids a batch's insert_node operations name, each once, in order.
+ * Each operation is validated first; an invalid one throws. The host checks
+ * every one is a view on the Page before the change. */
+export function insertedViews(operations) {
+  const views = [];
+  for (const op of operations) {
+    if (!insertOperation(op?.op)?.[op?.node?.type]?.view) continue;
+    const { view_id } = validateNodeInsertion(op);
+    if (!views.includes(view_id)) views.push(view_id);
+  }
+  return views;
 }
 /** The stored assets a batch's node-creating operations name, for the host
  * to check before the change (`apply` can't await). Each operation is
@@ -158,8 +185,19 @@ export function insertedAssets(operations, pageId) {
       }
       continue;
     }
-    const insert = insertOperation(name);
-    if (!insert) continue;
+    const types = insertOperation(name);
+    if (!types) continue;
+    // insert_image creates one type; insert_node names its type.
+    const insert = name === "insert_node" ? types[op?.node?.type] : Object.values(types)[0];
+    if (!insert) {
+      validateNodeInsertion(op);
+      continue;
+    }
+    // A view names no asset; insertedViews lists the views to check.
+    if (insert.view) {
+      validateNodeInsertion(op);
+      continue;
+    }
     if (insert.asset === "image") {
       validateImageInsertion(op);
       for (const assetId of [op.asset_id, op.dark_asset_id].filter(Boolean)) {
@@ -309,7 +347,7 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
   if (op.op === "insert_node") {
     const input = validateNodeInsertion(op);
     const key = crypto.randomUUID();
-    const attrs = dataframeFor(doc.page_id, input);
+    const attrs = NODE_INSERTIONS[op.node.type].stored(doc.page_id, input);
     doc.blocks[key] = block(positionForInsertion(doc, afterKey(at.after_node_id)));
     setRichNode(doc, key, { type: op.node.type, attrs });
     touched.push(key);
@@ -317,7 +355,7 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
     return {
       ...insertedBlock(doc, "insert_node", key),
       type: op.node.type,
-      attrs: { asset_id: input.asset_id, ...attrs },
+      attrs: { ...input, ...attrs },
     };
   }
   const target = at.node_id;

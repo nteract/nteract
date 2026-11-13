@@ -3,6 +3,7 @@
 // shares; this module re-exports them and adds the editor's DOM-only helpers.
 import { parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
 import { DATAFRAME_ATTR, plainAttrs } from "../model/wordgard-doc.mjs";
+import { VIEW_ATTR } from "../shared/views.mjs";
 import { normalizePastedHTML, unwrapPastedAsides } from "./clipboard-html.mjs";
 import { COPY_ATTR, stripCopyMarkers } from "./copy-registry.mjs";
 
@@ -71,7 +72,22 @@ export const pastedPageHTML = (html, pageId, parser = new DOMParser(), copied) =
     copied,
   );
 
+/** HTML with each view figure replaced by a paragraph of its text, for a
+ * composer that can't hold a view. */
+function viewsAsText(html, parser) {
+  if (!html.includes(VIEW_ATTR)) return html;
+  const doc = parser.parseFromString(html, "text/html");
+  const figures = doc.body.querySelectorAll(`figure[${VIEW_ATTR}]`);
+  if (!figures.length) return html;
+  for (const figure of figures) {
+    const text = doc.createElement("p");
+    text.textContent = figure.textContent;
+    figure.replaceWith(text);
+  }
+  return doc.body.innerHTML;
+}
+
 /** Pasted HTML as the comment composer reads it: no aside from outside
- * Pages, and no dataframe. */
+ * Pages, and no dataframe or view. */
 export const pastedCommentHTML = (html, parser = new DOMParser()) =>
-  filterPastedDataframes(unwrapPastedAsides(html, parser), null, parser);
+  viewsAsText(filterPastedDataframes(unwrapPastedAsides(html, parser), null, parser), parser);

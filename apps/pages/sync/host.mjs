@@ -164,9 +164,17 @@ export class SyncHost {
     return this;
   }
 
-  /** Declare a document this host serves. Its live doc loads on first use. */
+  /** Declare a document this host serves. Its live doc loads on first use.
+   * One id is one document of one kind: declaring a served id under another
+   * kind (a derived id that equals the Page's own, say) is refused, so no
+   * document is ever written under two kinds' rules. */
   register(id, kind = "page") {
     let doc = this.#docs.get(id);
+    if (doc && doc.kind !== kind)
+      throw Object.assign(
+        Error(`This Page already serves that document as ${doc.kind}, not ${kind}`),
+        { status: 409, code: "document_conflict" },
+      );
     if (!doc) {
       doc = {
         id,

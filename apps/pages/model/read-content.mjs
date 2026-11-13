@@ -2,6 +2,7 @@ import { orderedBlockIds } from "./order.mjs";
 import { readableNodeIds } from "./node-ids.mjs";
 import { readableImageIds } from "./image-ids.mjs";
 import { DATAFRAME_TITLE_MAX, parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
+import { readViewNode } from "../shared/views.mjs";
 import { headingAnchorsByBlock } from "./heading-anchors.mjs";
 import { quotableNodeType } from "./richtext-notices.mjs";
 import {
@@ -178,7 +179,8 @@ const bounded = (name, values, max) =>
  * - `attrs`: the node's own stored attributes, under the names set_node and
  *   insert_node take (`level`, `language`, a dataframe's `asset_id`).
  * - `summary`: values computed from the node's children (a task list's
- *   states, a table's size and column alignment).
+ *   states, a table's size and column alignment), or for a view, its
+ *   view's `title` and `media_type` when `viewSummary(view_id)` reads them.
  * - `node_type`: the type of a node this build doesn't know.
  * - `readable: false`: a dataframe this build can't show. richDoc already
  *   reads one naming another Page's asset as a notice paragraph, so this is
@@ -187,10 +189,13 @@ const bounded = (name, values, max) =>
  *
  * Nested lists read as their own Markdown. `maxItems` bounds per-item
  * arrays. */
-export function nodeFields(node, { pageId, maxItems = Infinity, imageIds, metadata } = {}) {
+export function nodeFields(
+  node,
+  { pageId, maxItems = Infinity, imageIds, metadata, viewSummary } = {},
+) {
   // Child-index paths are relative to this top-level node at the read revision,
   // not stable identities. Image occurrences stay bounded even in change feeds.
-  const fields = ownNodeFields(node, { pageId, maxItems, metadata });
+  const fields = ownNodeFields(node, { pageId, maxItems, metadata, viewSummary });
   const images = [];
   let count = 0;
   const limit = Math.min(maxItems, OUTLINE_MAX_ITEMS);
@@ -232,8 +237,17 @@ export function nodeFields(node, { pageId, maxItems = Infinity, imageIds, metada
   return fields;
 }
 
-function ownNodeFields(node, { pageId, maxItems, metadata }) {
+function ownNodeFields(node, { pageId, maxItems, metadata, viewSummary }) {
   switch (readKind(node)) {
+    case "view": {
+      const value = readViewNode(node.param);
+      if (!value) return { readable: false };
+      const view = viewSummary?.(value.view_id);
+      return {
+        attrs: { view_id: value.view_id },
+        ...(view && { summary: { title: view.title, media_type: view.media_type } }),
+      };
+    }
     case "heading":
       return { attrs: { level: node.tag.param } };
     case "code-block":
@@ -288,7 +302,7 @@ function ownNodeFields(node, { pageId, maxItems, metadata }) {
   }
 }
 
-function outlineEntry(entry, pageId) {
+function outlineEntry(entry, pageId, viewSummary) {
   return {
     // Stable across edits. Null for a paragraph of unmarked text, which a
     // merge can leave and the next write to the block marks, and in a block
@@ -315,6 +329,7 @@ function outlineEntry(entry, pageId) {
       maxItems: OUTLINE_MAX_ITEMS,
       imageIds: entry.imageIds,
       metadata: entry.metadata,
+      viewSummary,
     }),
   };
 }
@@ -406,27 +421,33 @@ function projectedSlices(doc, nodes) {
 
 /** A node node_ids names, read whole: its Markdown and every typed field,
  * with no per-item cap, as the change feed reports a node. */
-const namedNode = (entry, pageId) => ({
+const namedNode = (entry, pageId, viewSummary) => ({
   node_id: entry.nodeId,
   block: entry.block,
   type: readKind(entry.node),
   heading_path: entry.headingPath,
   markdown: markdownFor([entry.node]),
-  ...nodeFields(entry.node, { pageId, imageIds: entry.imageIds, metadata: entry.metadata }),
+  ...nodeFields(entry.node, {
+    pageId,
+    imageIds: entry.imageIds,
+    metadata: entry.metadata,
+    viewSummary,
+  }),
 });
 
 /** Pure projection of one captured Automerge document. The caller binds the
  * response to its heads and enforces response/outline budgets. No bytes are
  * silently omitted here. Wrapper-only options are deliberately ignored.
- * `nodes` is present when node_ids names a node.
+ * `nodes` is present when node_ids names a node. `viewSummary(view_id)` is
+ * the `{ title, media_type }` of one of the Page's views, or undefined.
  */
-export function projectReadContent(doc, args = {}) {
+export function projectReadContent(doc, args = {}, { viewSummary } = {}) {
   validateSelectors(doc, args);
   const named = namedAddresses(doc, args),
     { nodes, trees } = indexNodes(doc),
     inScope = (entry) => !named || named.blocks.has(entry.blockId) || named.nodes.has(entry.nodeId),
     chosen = selectedNodes(nodes, args, inScope),
-    outline = nodes.filter(inScope).map((entry) => outlineEntry(entry, doc.page_id)),
+    outline = nodes.filter(inScope).map((entry) => outlineEntry(entry, doc.page_id, viewSummary)),
     content = args.include_content !== false,
     selectedNodeEntries = named ? nodes.filter((entry) => named.nodes.has(entry.nodeId)) : [];
   if (named && selectedNodeEntries.length !== named.nodes.size)
@@ -441,7 +462,9 @@ export function projectReadContent(doc, args = {}) {
   return {
     blocks,
     ...(named?.nodes.size && {
-      nodes: content ? selectedNodeEntries.map((entry) => namedNode(entry, doc.page_id)) : [],
+      nodes: content
+        ? selectedNodeEntries.map((entry) => namedNode(entry, doc.page_id, viewSummary))
+        : [],
     }),
     outline,
     ...(chosen.selection

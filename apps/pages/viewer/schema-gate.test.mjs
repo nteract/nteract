@@ -198,9 +198,12 @@ test("the sync address declares this build's features; none means the baseline",
   assert.equal(declared.searchParams.get("schema_features"), "a,b");
   assert.equal(
     declared.searchParams.get("formats"),
-    "pages.comments:2,pages.page:3,pages.sources:1",
+    "pages.comments:2,pages.page:3,pages.sources:1,pages.view:1",
   );
-  assert.equal(plain.searchParams.get("formats"), "pages.comments:2,pages.page:3,pages.sources:1");
+  assert.equal(
+    plain.searchParams.get("formats"),
+    "pages.comments:2,pages.page:3,pages.sources:1,pages.view:1",
+  );
 });
 
 test("a receipt refused for an unsupported feature makes the Page read-only without retrying", async (t) => {

@@ -24,6 +24,7 @@ import {
   LineBreak,
   PagesImage,
   PagesDataframe,
+  PagesView,
   PagesUnknownEmbed,
   PagesUnknownBlock,
   PagesForeignMarks,
@@ -40,7 +41,14 @@ import { treeMarkdown } from "./markdown-serializer.mjs";
 import { codeTextUnmarked } from "./richtext-format.mjs";
 import { unknownNodeNotice } from "./richtext-notices.mjs";
 import { parseAssetPath, readDataframe } from "../shared/dataset-assets.mjs";
-import { isKnownBlock, TEXT_CONTAINERS, markerName, markerType } from "./node-registry.mjs";
+import { readViewNode } from "../shared/views.mjs";
+import {
+  DATA_LEAVES,
+  isKnownBlock,
+  TEXT_CONTAINERS,
+  markerName,
+  markerType,
+} from "./node-registry.mjs";
 
 // Never installed in the editor schema: a stored unknown container is readable,
 // but constructing this projection does not make it editable or admissible.
@@ -67,6 +75,7 @@ const READ_KINDS = new Map([
   [LineBreak.type, "hard-break"],
   [PagesImage, "image"],
   [PagesDataframe, "dataframe"],
+  [PagesView, "view"],
   [PagesUnknownEmbed, "unknown-inline"],
 ]);
 export function readKind(node) {
@@ -185,6 +194,9 @@ function descriptor(type, attrs = {}) {
       return { tag: ReadUnknown.of(type) };
   }
 }
+
+// The read node type of each leaf that draws stored data.
+const LEAVES = Object.freeze({ dataframe: PagesDataframe, view: PagesView });
 
 export function nativeRead(block, pageId) {
   return nativeReadSpans(A.spans(block, ["richText"]), pageId);
@@ -341,17 +353,22 @@ export function nativeReadSpans(input, pageId) {
     // A dataframe it can't show reads as a notice where it is stored: in a
     // text container, from another Page, or with attrs it can't read (as
     // decode reads them), so no reader is handed their src.
-    const readable =
-      !!readDataframe(attrs) &&
-      Object.values(attrs).every(
-        (value) => value === null || ["string", "number", "boolean"].includes(typeof value),
-      );
-    const shown = !(parents.some((parent) => TEXT_CONTAINERS.has(parent)) || foreign) && readable;
-    let leafNode = type === "dataframe" || type === "horizontal-rule";
-    if (type === "dataframe" && !shown) {
+    // A view it can't show (in a text container, or with attrs it can't
+    // read) reads as a notice too.
+    const scalars = Object.values(attrs).every(
+      (value) => value === null || ["string", "number", "boolean"].includes(typeof value),
+    );
+    const readable = scalars && (type === "view" ? !!readViewNode(attrs) : !!readDataframe(attrs));
+    const shown =
+      !(
+        parents.some((parent) => TEXT_CONTAINERS.has(parent)) ||
+        (type === "dataframe" && foreign)
+      ) && readable;
+    let leafNode = DATA_LEAVES.has(type) || type === "horizontal-rule";
+    if (DATA_LEAVES.has(type) && !shown) {
       if (!inlineAt()) fits(PagesUnknownBlock);
     } else if (leafNode) {
-      if (!fits(type === "dataframe" ? PagesDataframe : HorizontalRule)) {
+      if (!fits(LEAVES[type] ?? HorizontalRule)) {
         leafNode = false;
         unknownNode();
       }
@@ -369,9 +386,16 @@ export function nativeReadSpans(input, pageId) {
       common++;
     while (stack.length > common) close();
     for (let i = common; i < outer.length; i++) open(outer[i]);
-    if (leafNode && type === "dataframe") {
+    if (leafNode && DATA_LEAVES.has(type)) {
       if (!shown) notice(type);
-      else append(PagesDataframe.of(attrs), at, attrs);
+      else if (type === "dataframe") append(PagesDataframe.of(attrs), at, attrs);
+      // A view's read node names the Page it's read on (`page_id`), which
+      // its Markdown line links to. Read trees are never encoded, so the
+      // field is never stored; a stored `page_id` attr is not read.
+      else {
+        const { page_id: _stored, ...own } = attrs;
+        append(PagesView.of(pageId === undefined ? own : { ...own, page_id: pageId }), at, attrs);
+      }
     } else if (leafNode) append(HorizontalRule.type.of(null), at, attrs);
     else if (desc.tag.type === ReadUnknown && inline()) notice(type);
     else open(desc, at, attrs);
