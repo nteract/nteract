@@ -434,16 +434,64 @@ function plainTooltip(value) {
   }
 }
 
-/** The scenegraph as plain objects, for postMessage and sceneFromJSON. */
-export function plainScene(node) {
-  if (Array.isArray(node)) return node.map(plainScene);
+const GRADIENT_KEYS = ["gradient", "id", "x1", "y1", "x2", "y2", "r1", "r2"];
+
+/** A gradient without its `stop` method: the keys and stops the SVG
+ * renderer reads. */
+function plainGradient(value) {
+  const out = {};
+  for (const key of GRADIENT_KEYS) if (value[key] !== undefined) out[key] = value[key];
+  out.stops = Array.isArray(value.stops)
+    ? value.stops.map(({ offset, color }) => ({ offset, color }))
+    : [];
+  return out;
+}
+
+/** One scene value as structured clone and the page's renderer take it:
+ * primitives as they are, arrays as JSON, gradients without their methods.
+ * Anything else (a function, a class instance) is left out. */
+function plainSceneValue(key, value) {
+  if (key === "tooltip") return plainTooltip(value);
+  if (value === null || typeof value !== "object")
+    return typeof value === "function" ? undefined : value;
+  if ((key === "fill" || key === "stroke") && value.gradient) return plainGradient(value);
+  return Array.isArray(value) ? (plainTooltip(value) ?? undefined) : undefined;
+}
+
+/** A shape mark's items draw from a function on the mark (geoshape's
+ * projected path), which can't cross to the page. The Worker runs it and
+ * sends a path mark with each item's SVG path string. */
+function shapeItem(mark, item) {
+  const generator = mark.shape || item.shape;
+  const out = plainItem(item);
+  out.path = typeof generator?.context === "function" ? (generator.context(null)(item) ?? "") : "";
+  return out;
+}
+
+function plainItem(node) {
   const out = {};
   for (const key of SCENE_KEYS) {
     const value = node[key];
-    if (value === undefined) continue;
-    out[key] =
-      key === "items" ? value.map(plainScene) : key === "tooltip" ? plainTooltip(value) : value;
+    if (value === undefined || key === "items" || key === "shape") continue;
+    const plain = plainSceneValue(key, value);
+    if (plain !== undefined) out[key] = plain;
   }
+  // A symbol's shape is a name or an SVG path string.
+  if (typeof node.shape === "string") out.shape = node.shape;
+  return out;
+}
+
+/** The scenegraph as plain objects, for postMessage and sceneFromJSON. */
+export function plainScene(node) {
+  if (Array.isArray(node)) return node.map(plainScene);
+  if (node.marktype === "shape") {
+    const out = plainItem(node);
+    out.marktype = "path";
+    out.items = (node.items ?? []).map((item) => shapeItem(node, item));
+    return out;
+  }
+  const out = plainItem(node);
+  if (Array.isArray(node.items)) out.items = node.items.map(plainScene);
   return out;
 }
 

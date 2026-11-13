@@ -182,10 +182,14 @@ class InProcessWorker extends EventTarget {
     workers.created++;
     workers.live.add(this);
     this.scope = new EventTarget();
-    this.scope.postMessage = (data) =>
+    // Clone on send, as a real Worker's postMessage does: a value that can't
+    // cross throws inside the Worker.
+    this.scope.postMessage = (message) => {
+      const data = structuredClone(message);
       setTimeout(() => {
         if (workers.live.has(this)) this.dispatchEvent(new MessageEvent("message", { data }));
       });
+    };
     serveCharts(this.scope);
   }
   postMessage(message) {
@@ -220,7 +224,8 @@ async function drawChart(target, { spec, data, theme, width, tooltip, checkSpec 
     Object.entries(data).map(([name, set]) => [name, datasetRows(set)]),
   );
   const result = await runChart({ spec, data: rows, theme, width }, { checkSpec });
-  return drawScene(target, result, tooltip);
+  // The scene crosses from the Worker by structured clone.
+  return drawScene(target, structuredClone(result), tooltip);
 }
 
 function container(window, width = 640) {
@@ -1970,3 +1975,64 @@ test("the scene that crosses to the page keeps tooltips and cursors, and nothing
   const item = scene.items[0].items[0].items[0];
   assert.deepEqual(item, { x: 1, fill: "red", tooltip: { tool: "read_page" }, cursor: "pointer" });
 });
+
+test("a gradient legend and a geoshape cross to the page and draw", () =>
+  withWindow(async (window) => {
+    const target = window.document.body.appendChild(window.document.createElement("div"));
+    const heat = await drawChart(target, {
+      spec: {
+        data: { name: "d" },
+        mark: "rect",
+        encoding: {
+          x: { field: "a", type: "nominal" },
+          color: { field: "n", type: "quantitative" },
+        },
+      },
+      data: {
+        d: [
+          { a: "x", n: 1 },
+          { a: "y", n: 9 },
+        ],
+      },
+      theme,
+      width: 400,
+    });
+    const gradient = target.querySelector("linearGradient");
+    assert.ok(gradient, "the legend's gradient is drawn");
+    assert.ok(gradient.querySelectorAll("stop").length >= 2);
+    heat.finalize();
+    target.replaceChildren();
+
+    const square = (x) => ({
+      type: "Feature",
+      properties: { n: x },
+      geometry: {
+        type: "Polygon",
+        coordinates: [
+          [
+            [x, 0],
+            [x + 1, 0],
+            [x + 1, 1],
+            [x, 1],
+            [x, 0],
+          ],
+        ],
+      },
+    });
+    const map = await drawChart(target, {
+      spec: {
+        data: { name: "d" },
+        mark: "geoshape",
+        projection: { type: "mercator" },
+        encoding: { color: { field: "properties.n", type: "quantitative" } },
+      },
+      data: { d: [square(0), square(2)] },
+      theme,
+      width: 400,
+    });
+    const shapes = [...target.querySelectorAll("path[role='graphics-symbol'], g.mark-path path")]
+      .map((path) => path.getAttribute("d") ?? "")
+      .filter((d) => d.startsWith("M"));
+    assert.equal(shapes.length, 2, "each feature draws as a path");
+    map.finalize();
+  }));
