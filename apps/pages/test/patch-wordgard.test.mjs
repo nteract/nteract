@@ -28,18 +28,19 @@ test("Wordgard patch accepts only the pinned original source and makes each edit
     const manifest = (version) =>
       writeFileSync(join(root, "package.json"), JSON.stringify({ name: "wordgard", version }));
     const file = join(root, "dist/editor.js");
-    manifest("0.6.2");
+    manifest("0.7.0");
     writeFileSync(file, original);
     patchWordgard(root);
     const patched = readFileSync(file, "utf8");
     assert.equal(patched, installed);
     assert.equal(patched.split("\n").length, original.split("\n").length, "no line moves");
-    assert.match(patched, /let posA = posB \+ off;/);
+    assert.match(patched, /if \(cur != "inherit" \|\| \/\^\(br\|/);
+    assert.match(patched, /: \(this\.reused\.set\(child, 1\), child\)\);/);
     assert.match(patched, /tile\.posAtCoords\(this\.flushedState, coords\.x, coords\.y\)/);
     assert.throws(() => patchWordgard(root), /source hash/);
     writeFileSync(file, `${original}\n`);
     assert.throws(() => patchWordgard(root), /source hash/);
-    manifest("0.6.3");
+    manifest("0.7.1");
     writeFileSync(file, original);
     assert.throws(() => patchWordgard(root), /package version/);
     assert.equal(readFileSync(file, "utf8"), original);

@@ -130,8 +130,12 @@ export function codeWordSelection(state, pos, bias = 1) {
 export function codeWordMouseSelection(wg, event) {
   if (event.button !== 0 || event.detail !== 2) return null;
   const posAt = ({ clientX, clientY }) => wg.posAtCoords({ x: clientX, y: clientY });
+  // Wordgard's wordAt is null where no textblock holds the position; its own
+  // gesture falls back to the nearest selection there.
   const wordAt = ({ pos, side }) =>
-    codeWordSelection(wg.state, pos, side || 1) ?? wg.state.wordAt(pos, side || 1);
+    codeWordSelection(wg.state, pos, side || 1) ??
+    wg.state.wordAt(pos, side || 1) ??
+    GardSelection.near(wg.state, pos, side || 1);
   let start = posAt(event);
   if (!codeWordSelection(wg.state, start.pos)) return null;
   let startSel = wg.state.selection;

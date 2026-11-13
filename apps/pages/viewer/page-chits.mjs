@@ -11,7 +11,7 @@
 // Markdown exports `<url>`, copy writes an ordinary link, and older clients
 // show the URL.
 //
-// Wordgard 0.6.2 has no decoration that replaces a range with a widget, so a
+// Wordgard 0.7.0 has no decoration that replaces a range with a widget, so a
 // chit is two decorations over the unchanged text:
 //
 // - a range wrapper that hides the link's text (`wg-chit-source`, outside
