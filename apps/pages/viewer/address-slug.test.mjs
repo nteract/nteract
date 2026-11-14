@@ -175,3 +175,56 @@ test("an address already showing the slug, or showing something else, is left al
   assert.deepEqual(moved.writes, []);
   stopMoved();
 });
+
+test("a Page hidden while its title waits writes nothing, then or later", () => {
+  const scheduler = new VirtualTimeScheduler();
+  const { writes, location, history } = browser(`/p/${id}`);
+  const page = session("Plan");
+  const stop = followTitleInAddress(page, { history, location, scheduler });
+  advance(scheduler, ADDRESS_SLUG_DEBOUNCE_MS / 2);
+  page.hidden = true;
+  page.emit();
+  advance(scheduler, ADDRESS_SLUG_DEBOUNCE_MS * 5);
+  assert.deepEqual(writes, []);
+  stop();
+});
+
+test("a Page hidden and shown again with the same title writes it once, a quiet time after", () => {
+  const scheduler = new VirtualTimeScheduler();
+  const { writes, location, history } = browser(`/p/${id}`);
+  const page = session("Plan");
+  const stop = followTitleInAddress(page, { history, location, scheduler });
+  advance(scheduler, ADDRESS_SLUG_DEBOUNCE_MS / 2);
+  page.hidden = true;
+  page.emit();
+  advance(scheduler, ADDRESS_SLUG_DEBOUNCE_MS * 2);
+  page.hidden = false;
+  page.emit();
+  advance(scheduler, ADDRESS_SLUG_DEBOUNCE_MS - 1);
+  assert.deepEqual(writes, []);
+  advance(scheduler, 1);
+  assert.equal(writes.length, 1);
+  advance(scheduler, ADDRESS_SLUG_DEBOUNCE_MS * 5);
+  assert.deepEqual(
+    writes.map((write) => write.path),
+    [`/p/${id}/Plan`],
+  );
+  stop();
+});
+
+test("a title that changes during the quiet time writes only the last one, once", () => {
+  const scheduler = new VirtualTimeScheduler();
+  const { writes, location, history } = browser(`/p/${id}`);
+  const page = session("Plan");
+  const stop = followTitleInAddress(page, { history, location, scheduler });
+  advance(scheduler, ADDRESS_SLUG_DEBOUNCE_MS - 1);
+  page.retitle("Plan B");
+  advance(scheduler, ADDRESS_SLUG_DEBOUNCE_MS - 1);
+  page.retitle("Plan C");
+  advance(scheduler, ADDRESS_SLUG_DEBOUNCE_MS * 5);
+  assert.deepEqual(
+    writes.map((write) => write.path),
+    [`/p/${id}/Plan-C`],
+  );
+  stop();
+});

@@ -7,12 +7,13 @@
 // history.replaceState calls in 30 seconds, so nothing writes per keystroke.
 // The write is a replace in place: the fragment and the entry's history
 // state stay, and no history entry is added. A title with no slug leaves the
-// address as it is. The timer runs through an RxJS scheduler, so tests drive
-// it on virtual time.
+// address as it is. A hidden Page, a session with no document, or a newer
+// title cancels a pending write. The timer runs through an RxJS scheduler, so
+// tests drive it on virtual time.
 //
 // This module reaches neither Automerge nor the editor, so the shell
 // (main.jsx) imports it directly.
-import { Subject, debounceTime, distinctUntilChanged } from "rxjs";
+import { EMPTY, Subject, distinctUntilChanged, map, switchMap, timer } from "rxjs";
 import { pagePath, pageTitleSlug, readPageRoute } from "../shared/routes.mjs";
 
 /** Quiet time after the last title change before the address follows it. */
@@ -54,15 +55,17 @@ export function followTitleInAddress(
   if (!history || !location) return () => {};
   const titles = new Subject();
   const subscription = titles
-    .pipe(distinctUntilChanged(), debounceTime(ADDRESS_SLUG_DEBOUNCE_MS, scheduler))
+    .pipe(
+      distinctUntilChanged(),
+      switchMap((title) =>
+        title === null ? EMPTY : timer(ADDRESS_SLUG_DEBOUNCE_MS, scheduler).pipe(map(() => title)),
+      ),
+    )
     .subscribe((title) => {
       const path = addressSlugPath(location.href, session.pageId, title);
       if (path !== null) history.replaceState(history.state, "", path);
     });
-  const report = () => {
-    const title = sessionTitle(session);
-    if (title !== null) titles.next(title);
-  };
+  const report = () => titles.next(sessionTitle(session));
   const unsubscribe = session.subscribe(report);
   report();
   return () => {
