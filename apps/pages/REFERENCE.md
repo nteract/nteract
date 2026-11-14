@@ -1501,6 +1501,30 @@ viewer shows no comments.
 
 ## Sources document
 
+The Page title has a read-only sources line outside the content document
+([viewer/SourcesLine.jsx](viewer/SourcesLine.jsx)). It reads the session's
+source store, including unused sources, and uses the existing host-document
+lookup machine to discover the first source while a Page is already open.
+On a visible, connected Page without sources, this holds lookup demand:
+three initial attempts, then one lookup after 10 seconds, 30 seconds, and
+every 60 seconds until the document exists. This also applies to Pages with
+no data consumers. The first source can therefore take about a minute to
+appear; once the document is open, source changes arrive through live sync.
+No sources, or a sources document that hasn't arrived, renders no line and
+keeps the title's normal spacing. A stored sources document supplies the
+same metadata offline; this does not cache Parquet bytes.
+
+One to three sources show alphabetical names with a database icon beside
+each name. Four or more show a count and the newest/oldest last-set times;
+three also use this summary below 600 px of article width. Names truncate
+with their full text on hover. Revision `1` says **added**, later revisions
+say **refreshed**, even when the asset is unchanged. These are host source-set
+times, not asset upload times or dates inside the data. Dates are relative
+for seven days, then local calendar dates; each has its exact local timestamp
+on hover and in its accessible name. A minute clock updates the visible ages
+without changing content. Readers and editors see the same noninteractive
+line; it has no panel, refresh controls, or staleness warning.
+
 A Page's named sources live in a third Automerge document, `pages.sources`
 format 1 ([model/sources-doc.mjs](model/sources-doc.mjs)), owned by the same
 Page Durable Object. Only the host writes it. Its root is `sources`, a map

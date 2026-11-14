@@ -214,12 +214,25 @@
   white-space: nowrap;
 }
 .sourceName {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
   color: var(--foreground);
   font-weight: 450;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 26ch;
+}
+.sourceName > svg {
+  align-self: center;
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+}
+.sourceNameText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .sourceEntry > span:last-child {
   flex-shrink: 0;

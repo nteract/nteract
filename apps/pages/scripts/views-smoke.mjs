@@ -274,6 +274,156 @@ async function measureOpen(pageId, label, count) {
 try {
   owner = await signIn("dev@localhost");
 
+  // Metadata follows even unused sources, without entering the content tree.
+  {
+    const id = await createPage("Usage report", "Usage across the team.");
+    const asset = await upload(id, parquet.first);
+    const before = (await tool(owner, "read_page", { page_id: id })).body;
+    const tab = await signIn("dev@localhost");
+    await tab.goto(`${origin}/p/${id}`);
+    await expect(tab.locator(".document-title")).toHaveText("Usage report");
+    const line = tab.getByRole("group", { name: "Sources", exact: true });
+    await expect(line).toHaveCount(0);
+    const margin = await tab
+      .locator(".document-title")
+      .evaluate((el) => getComputedStyle(el).marginBottom);
+    await tab.screenshot({ path: `${output}/sources-zero.png` });
+    await editOk(id, [
+      {
+        op: "set_source",
+        source_id: "usage",
+        name: "Usage",
+        asset_id: asset,
+        source_revision: null,
+      },
+    ]);
+    // Existing discovery retries an absent sources document while the title
+    // subscribes; no table/chart is needed to trigger the lookup.
+    await expect(line).toContainText("Usage", { timeout: 75000 });
+    await expect(line).toContainText("added just now");
+    await expect(line.locator("svg")).toHaveCount(1);
+    const firstTime = await line.locator("time").getAttribute("datetime");
+    await editOk(id, [
+      {
+        op: "set_source",
+        source_id: "usage",
+        name: "Usage",
+        asset_id: asset,
+        source_revision: "1",
+      },
+    ]);
+    await expect(line).toContainText("refreshed just now");
+    await expect(line.locator("time")).not.toHaveAttribute("datetime", firstTime);
+    await expect(line.locator("time")).toHaveAttribute("title", /^Refreshed /);
+    await tab.screenshot({ path: `${output}/sources-one.png` });
+    await editOk(id, [
+      {
+        op: "set_source",
+        source_id: "sales",
+        name: "Sales",
+        asset_id: asset,
+        source_revision: null,
+      },
+    ]);
+    await expect(line.locator("li")).toHaveCount(2);
+    await tab.setViewportSize({ width: 390, height: 844 });
+    await tab.screenshot({ path: `${output}/sources-two-phone.png` });
+    await editOk(id, [
+      {
+        op: "set_source",
+        source_id: "usage",
+        name: "Usage across all production organizations and regions",
+        asset_id: asset,
+        source_revision: "2",
+      },
+      {
+        op: "set_source",
+        source_id: "sales",
+        name: "Sales across all production organizations and regions",
+        asset_id: asset,
+        source_revision: "1",
+      },
+    ]);
+    await expect(line).toContainText("Usage across all");
+    assert.ok(await line.evaluate((el) => el.scrollWidth <= el.clientWidth));
+    assert.ok((await line.boundingBox()).height <= 44);
+    await tab.screenshot({ path: `${output}/sources-long-phone.png` });
+    await editOk(id, [
+      {
+        op: "set_source",
+        source_id: "usage",
+        name: "Usage",
+        asset_id: asset,
+        source_revision: "3",
+      },
+      {
+        op: "set_source",
+        source_id: "sales",
+        name: "Sales",
+        asset_id: asset,
+        source_revision: "2",
+      },
+    ]);
+    await editOk(id, [
+      {
+        op: "set_source",
+        source_id: "targets",
+        name: "Targets",
+        asset_id: asset,
+        source_revision: null,
+      },
+    ]);
+    await expect(line).toHaveAttribute("data-source-count", "3");
+    await expect(line.locator(".sources-line-summary")).toBeVisible();
+    await expect(line.locator("ul")).toBeHidden();
+    await tab.screenshot({ path: `${output}/sources-three-phone.png` });
+    await tab.setViewportSize({ width: 1280, height: 900 });
+    await expect(line.locator("ul")).toBeVisible();
+    assert.deepEqual(await line.locator("li .sources-line-name").allTextContents(), [
+      "Sales",
+      "Targets",
+      "Usage",
+    ]);
+    await tab.screenshot({ path: `${output}/sources-three-desktop.png` });
+    const more = Array.from({ length: 61 }, (_, i) => ({
+      op: "set_source",
+      source_id: `extra-${i}`,
+      name: `An unusually long source name ${i}`,
+      asset_id: asset,
+      source_revision: null,
+    }));
+    await editOk(id, more.slice(0, 5));
+    await expect(line).toContainText("8 sources");
+    await tab.screenshot({ path: `${output}/sources-eight-desktop.png` });
+    await editOk(id, more.slice(5));
+    await expect(line).toContainText("64 sources");
+    await expect(line.locator("li")).toHaveCount(0);
+    for (const width of [1280, 390]) {
+      await tab.setViewportSize({ width, height: 900 });
+      assert.ok(await line.evaluate((el) => el.scrollWidth <= el.clientWidth));
+      assert.ok((await line.boundingBox()).height <= 44);
+    }
+    await tab.screenshot({ path: `${output}/sources-many-phone.png` });
+    const after = (await tool(owner, "read_page", { page_id: id })).body;
+    assert.equal(after.revision, before.revision);
+    assert.equal(after.markdown, before.markdown);
+    await tab.context().setOffline(true);
+    await expect(line).toContainText("64 sources");
+    await tab.context().setOffline(false);
+    const empty = await createPage("No sources", "A plain document.");
+    await tab.goto(`${origin}/p/${empty}`);
+    await expect(tab.locator(".document-title")).toHaveText("No sources");
+    await expect(line).toHaveCount(0);
+    assert.equal(
+      await tab.locator(".document-title").evaluate((el) => getComputedStyle(el).marginBottom),
+      margin,
+    );
+    await tab.context().close();
+    complete(
+      "sources line: zero/first/refresh/three/many, narrow layout, offline retention, unchanged content and Page navigation",
+    );
+  }
+
   // (a) An agent writes a source, a view and its node; the Page draws it.
   const pageA = await createPage("Views qualification", "Sales by region, drawn from a source.");
   const first = await upload(pageA, parquet.first);

@@ -6,12 +6,27 @@ import { Button } from "@/components/ui/button";
 import styles from "./pages-sources-line-example.module.css";
 
 type LabelStyle = "none" | "text" | "icon";
-type Source = { name: string; refreshed: string; instant: string };
+type Source = { name: string; when: string; instant: string; version: number };
 const counts = [0, 1, 2, 3, 8, 64] as const;
 // Fixed examples: this is a design fixture, not a clock or a sources client.
-const usage: Source = { name: "Usage", refreshed: "2 hours ago", instant: "2026-11-14T15:00:00Z" };
-const sales: Source = { name: "Sales", refreshed: "yesterday", instant: "2026-11-13T17:00:00Z" };
-const targets: Source = { name: "Targets", refreshed: "Nov 2", instant: "2026-11-02T17:00:00Z" };
+const usage: Source = {
+  name: "Usage",
+  when: "2 hours ago",
+  instant: "2026-11-14T15:00:00Z",
+  version: 3,
+};
+const sales: Source = {
+  name: "Sales",
+  when: "1 day ago",
+  instant: "2026-11-13T17:00:00Z",
+  version: 2,
+};
+const targets: Source = {
+  name: "Targets",
+  when: "Nov 2",
+  instant: "2026-11-02T17:00:00Z",
+  version: 1,
+};
 const fixtureNames = [
   "Accounts",
   "Deployments",
@@ -34,9 +49,9 @@ function sourcesFor(count: number, longNames: boolean): Source[] {
           : count === 3
             ? [sales, targets, usage]
             : Array.from({ length: count }, (_, index) => ({
+                version: index === 0 ? 1 : 2,
                 name: fixtureNames[index] ?? `Workspace ${String(index + 1).padStart(2, "0")}`,
-                refreshed:
-                  index === 0 ? "Oct 2" : index === count - 1 ? "2 hours ago" : "yesterday",
+                when: index === 0 ? "Oct 2" : index === count - 1 ? "2 hours ago" : "1 day ago",
                 instant:
                   index === 0
                     ? "2026-10-02T17:00:00Z"
@@ -49,20 +64,21 @@ function sourcesFor(count: number, longNames: boolean): Source[] {
     : sources;
 }
 
-function SourceEntry({ source }: { source: Source }) {
+function SourceEntry({ source, icon = false }: { source: Source; icon?: boolean }) {
   return (
     <span className={styles.sourceEntry}>
       <span className={styles.sourceName} title={source.name}>
-        {source.name}
+        {icon && <Database size={13} strokeWidth={1.5} aria-hidden="true" />}
+        <span className={styles.sourceNameText}>{source.name}</span>
       </span>
       <span aria-hidden="true"> · </span>
       <span>
-        refreshed{" "}
+        {source.version === 1 ? "added" : "refreshed"}{" "}
         <time
           dateTime={source.instant}
           title={`${source.instant} · Set by Daily refresh for Morgan Chen`}
         >
-          {source.refreshed}
+          {source.when}
         </time>
       </span>
     </span>
@@ -77,10 +93,10 @@ function FreshnessSummary({ sources }: { sources: Source[] }) {
     <span className={styles.summary}>
       <span className={styles.sourceName}>{sources.length} sources</span>
       <span>
-        · newest refresh <time dateTime={newest.instant}>{newest.refreshed}</time>
+        · newest <time dateTime={newest.instant}>{newest.when}</time>
       </span>
       <span>
-        · oldest <time dateTime={oldest.instant}>{oldest.refreshed}</time>
+        · oldest <time dateTime={oldest.instant}>{oldest.when}</time>
       </span>
     </span>
   );
@@ -92,16 +108,15 @@ function SourcesLine({ sources, labelStyle }: { sources: Source[]; labelStyle: L
   const icon =
     labelStyle === "icon" ? <Database size={13} strokeWidth={1.5} aria-hidden="true" /> : null;
   const entries = (
-    <span className={styles.sourceGroup} data-labeled={labelStyle !== "none"}>
-      {labelStyle !== "none" && (
+    <span className={styles.sourceGroup} data-labeled={labelStyle === "text"}>
+      {labelStyle === "text" && (
         <strong className={styles.sourceLabel}>
-          {icon}
           {sources.length === 1 ? "Source" : "Sources"}
         </strong>
       )}
       <span className={styles.sourceItems}>
         {sources.map((source) => (
-          <SourceEntry key={source.name} source={source} />
+          <SourceEntry key={source.name} source={source} icon={labelStyle === "icon"} />
         ))}
       </span>
     </span>
@@ -226,7 +241,7 @@ export function PagesSourcesLineExample({ embedded = false }: { embedded?: boole
   const [count, setCount] = useState(1);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [phone, setPhone] = useState(false);
-  const [labelStyle, setLabelStyle] = useState<LabelStyle>("text");
+  const [labelStyle, setLabelStyle] = useState<LabelStyle>("icon");
   const [longNames, setLongNames] = useState(false);
   const Root = embedded ? "div" : "main";
   return (
@@ -347,12 +362,12 @@ export function PagesSourcesLineExample({ embedded = false }: { embedded?: boole
               [
                 "text",
                 "A · Source label",
-                "Recommended. Names the metadata without suggesting a new action.",
+                "A separate label identifies the line as source metadata.",
               ],
               [
                 "icon",
-                "B · Icon and label",
-                "A little more visual separation. The icon still has a text label.",
+                "B · Icon on each source",
+                "The source name carries its own cue. No separate Source label.",
               ],
             ] as const
           ).map(([value, label, description]) => (
