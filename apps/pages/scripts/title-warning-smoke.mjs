@@ -6,6 +6,7 @@ import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { parseEnv } from "node:util";
 import { purgeTrashedFixture } from "./purge-fixture.mjs";
+import { pageUrl } from "../shared/routes.mjs";
 
 const origin = process.env.PAGES_ORIGIN ?? "http://localhost:9896";
 const target = new URL(origin);
@@ -168,12 +169,13 @@ function warning(receipt, headingId) {
     "Advisory must identify the actual opening heading",
   );
 }
-function mutationReceipt(value) {
-  // MCP decorates the stored receipt with a navigable URL; HTTP returns the
-  // receipt directly. All persisted fields, especially warnings and heads,
-  // must match across transports and retries.
+function mutationReceipt(value, title) {
+  // A result carries a navigable URL, with the title's slug when the result
+  // has the title (`title`, for a create) and the bare link when it doesn't.
+  // All persisted fields, especially warnings and heads, must match across
+  // transports and retries.
   const { url, ...receipt } = value;
-  if (url !== undefined) assert.equal(url, `${origin}/p/${value.page_id}`);
+  if (url !== undefined) assert.equal(url, pageUrl(origin, { page_id: value.page_id, title }));
   return receipt;
 }
 const read = () => mcp("read_page", { page_id: pageId });
@@ -221,7 +223,15 @@ try {
   complete(stage);
 
   stage = "exact create retry through MCP returns the original receipt";
-  assert.deepEqual(mutationReceipt(await mcp("create_page", createArgs)), mutationReceipt(created));
+  const recreated = await mcp("create_page", createArgs);
+  // The retry links the Page exactly as the first receipt did: the title's
+  // slug after the id.
+  assert.equal(created.url, pageUrl(origin, { page_id: pageId, title: fixtureTitle }));
+  assert.equal(recreated.url, created.url);
+  assert.deepEqual(
+    mutationReceipt(recreated, fixtureTitle),
+    mutationReceipt(created, fixtureTitle),
+  );
   complete(stage);
 
   stage = "an introduction and distinct heading need no warning";

@@ -764,15 +764,17 @@ test("MCP creation and listings use the configured HTTPS origin behind an HTTP p
     async () => Response.json({ page_id: pageId, title: "Test" }),
   );
   const created = JSON.parse((await response.json()).result.content[0].text);
-  assert.equal(created.url, `https://pages.example/p/${pageId}`);
+  // A result's url carries the title's slug; a resource uri is the bare link.
+  assert.equal(created.url, `https://pages.example/p/${pageId}/Test`);
   const list = await handleMcp(request("resources/list"), async () =>
     Response.json({ pages: [{ page_id: pageId, title: "Test" }] }),
   );
-  assert.equal((await list.json()).result.resources[0].uri, created.url);
+  assert.equal((await list.json()).result.resources[0].uri, `https://pages.example/p/${pageId}`);
 });
 test("MCP reads canonical and legacy links while rejecting ambiguous resource URLs", async () => {
   for (const uri of [
     `https://pages.example/p/${pageId}`,
+    `https://pages.example/p/${pageId}/Any-Title`,
     `https://pages.example/?page=${pageId}`,
   ]) {
     let invoked = false;
@@ -788,6 +790,8 @@ test("MCP reads canonical and legacy links while rejecting ambiguous resource UR
   for (const uri of [
     `https://pages.example/p/${pageId}?other=1`,
     `https://pages.example/p/${pageId}#other`,
+    `https://pages.example/p/${pageId}/Any-Title/`,
+    `https://pages.example/p/${pageId}/view`,
     `https://pages.example/?page=${pageId}&other=1`,
     `http://127.0.0.1:9477/p/${pageId}`,
     `http://pages.example/p/${pageId}`,
@@ -852,6 +856,23 @@ test("MCP list and read tool links use the public origin regardless of proxy hea
   for (const [name, body] of [
     ["list_pages", { pages: [{ page_id: pageId, title: "Test" }] }],
     ["read_page", { page_id: pageId, title: "Test", blocks: [] }],
+  ]) {
+    const response = await handleMcp(
+      request("tools/call", {
+        name,
+        arguments: name === "read_page" ? { page_id: pageId } : {},
+      }),
+      async () => Response.json(body),
+    );
+    const result = JSON.parse((await response.json()).result.content[0].text);
+    assert.equal((result.pages?.[0] ?? result).url, `https://pages.example/p/${pageId}/Test`);
+  }
+  // A result without the title links to the bare address: nothing reads the
+  // title just to build a link.
+  for (const [name, body] of [
+    ["list_pages", { pages: [{ page_id: pageId }] }],
+    ["read_page", { page_id: pageId, blocks: [] }],
+    ["list_pages", { pages: [{ page_id: pageId, title: "日本語" }] }],
   ]) {
     const response = await handleMcp(
       request("tools/call", {

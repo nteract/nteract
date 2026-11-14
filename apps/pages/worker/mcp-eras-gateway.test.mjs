@@ -18,6 +18,8 @@ const MODERN = "2026-07-28";
 const origin = "https://pages.example";
 const pageId = "44444444-4444-4444-8444-444444444444";
 const pageUri = `${origin}/p/${pageId}`;
+// A tool result's url carries the title's slug; a resource uri is the bare link.
+const pageUrl = `${pageUri}/Notes`;
 
 const envelope = (clientInfo) => ({
   "io.modelcontextprotocol/protocolVersion": MODERN,
@@ -286,7 +288,7 @@ test("the official SDK client speaks 2026-07-28 to the Worker without a handshak
     );
     const called = await client.callTool({ name: "list_pages", arguments: {} });
     assert.equal(called.isError, undefined);
-    assert.equal(called.structuredContent.pages[0].url, pageUri);
+    assert.equal(called.structuredContent.pages[0].url, pageUrl);
     const resources = await client.listResources();
     assert.equal(resources.resources[0].uri, pageUri);
     const read = await client.readResource({ uri: pageUri });

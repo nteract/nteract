@@ -159,3 +159,21 @@ test("a slugged shell always answers in full, and HEAD answers its headers", asy
   const post = await send(`/p/${known}/Plan`, { method: "POST" });
   assert.equal(post.body, SHELL);
 });
+
+test("no log line carries the slug of a Page link it served", async (t) => {
+  const { send } = harness(t);
+  const slug = "Quarterly-Secret-Plan";
+  for (const [path, init] of [
+    [`/p/${known}/${slug}`, {}],
+    [`/p/${unknown}/${slug}`, {}],
+    [`/p/${known}/${slug}`, { method: "HEAD" }],
+    [`/p/${known}/${slug}`, { method: "POST" }],
+    [`/p/${known}/${slug}/extra`, {}],
+    [`/p/${known}/${slug}.json`, {}],
+  ])
+    await send(path, init);
+  const lines = ["log", "info", "warn", "error"].flatMap((level) =>
+    console[level].mock.calls.map((call) => JSON.stringify(call.arguments)),
+  );
+  for (const line of lines) assert.ok(!line.includes("Secret"), line);
+});

@@ -20,6 +20,7 @@
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
+import { pageAddress } from "./page-address.mjs";
 
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost", "Generated fixture requires local OIDC");
@@ -497,7 +498,7 @@ try {
   stage = "open in place";
   await hover(page, link(page, target.page_id).first(), "readable");
   await card(page).getByRole("link", { name: "Open", exact: true }).click();
-  await expect(page).toHaveURL(`${origin}/p/${target.page_id}`, { timeout: 15000 });
+  await expect(page).toHaveURL(pageAddress(origin, target.page_id), { timeout: 15000 });
   await expect(page.locator("wg-content").first()).toContainText("Tonight's list, with an owner", {
     timeout: 30000,
   });

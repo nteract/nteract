@@ -12,7 +12,7 @@
  * no nonce is consumed and a retry with the new names applies once.
  */
 import { pagesPublicOrigin } from "../agent-guide.mjs";
-import { pagePath, projectPath } from "../shared/routes.mjs";
+import { pageUrl, projectPath } from "../shared/routes.mjs";
 import { HttpError } from "./auth.mjs";
 import { PROJECT_CONTENT_OPERATIONS } from "./project-content.mjs";
 
@@ -116,19 +116,23 @@ export function toProjectBody(operation, body) {
 /** Browser links for a successful result, the same over JSON and MCP: url for
  * a Page that still exists (a purge receipt carries `deleted`), url for a
  * Project, and url on each listed Page or Project. Project content read with
- * read_page links to its Project. */
+ * read_page links to its Project. A Page's url carries its title's slug
+ * (pageUrl) when the result has the title, and is `/p/<id>` when it doesn't:
+ * nothing reads a title just to build a link, and the id alone opens the Page
+ * either way. */
 export function withBrowserLinks(body, origin) {
   if (!body || typeof body !== "object" || Array.isArray(body)) return body;
   const out = { ...body };
   if (out.kind === "project" && out.project_id)
     out.url = new URL(projectPath(out.project_id), origin).href;
-  else if (out.page_id && !out.deleted) out.url = new URL(pagePath(out.page_id), origin).href;
+  else if (out.page_id && !out.deleted)
+    out.url = pageUrl(origin, { page_id: out.page_id, title: out.title });
   else if (out.project_id && out.document_id)
     out.url = new URL(projectPath(out.project_id), origin).href;
   if (Array.isArray(out.pages))
     out.pages = out.pages.map((page) => ({
       ...page,
-      url: new URL(pagePath(page.page_id), origin).href,
+      url: pageUrl(origin, page),
     }));
   if (Array.isArray(out.projects))
     out.projects = out.projects.map((entry) => ({

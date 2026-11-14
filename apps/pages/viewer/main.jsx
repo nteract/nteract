@@ -47,6 +47,7 @@ import { PagePreview } from "./PagePreview.jsx";
 import { PageBlocks, ScreenBoundary } from "./BlockBoundary.jsx";
 import { BootPreview, visiblePreview } from "./boot-preview.mjs";
 import { HeadingScroll } from "./heading-scroll.mjs";
+import { followTitleInAddress, sessionTitle } from "./address-slug.mjs";
 import { openPageWithRetry } from "./page-open.mjs";
 // app.css carries the editor's styles too, ahead of style.css so the cascade
 // matches the editor modules' own import order.
@@ -596,14 +597,27 @@ function App() {
     }
   }
   /** Open a Page. `nameIt` is for a Page just created: focus its title
-   * rather than its empty body. Project routes resolve their content document
-   * inside the same fenced navigation, without rewriting the address. */
+   * rather than its empty body. `slug` is the Page's title slug when the
+   * link that opened it knew the title, so the address shows it at once.
+   * Project routes resolve their content document inside the same fenced
+   * navigation, without rewriting the address. */
   async function open(
     id,
-    { focus = false, historyMode = "push", nameIt = false, projectId = null, anchor = null } = {},
+    {
+      focus = false,
+      historyMode = "push",
+      nameIt = false,
+      projectId = null,
+      anchor = null,
+      slug = null,
+    } = {},
   ) {
     if (historyMode !== "none")
-      writePageRoute(projectId ?? id, { replace: historyMode === "replace", anchor });
+      writePageRoute(projectId ?? id, {
+        replace: historyMode === "replace",
+        anchor,
+        slug: projectId ? null : slug,
+      });
     headingScroll.navigated(projectId ?? id);
     bootPreview.dispatch({ type: "navigated", pageId: id });
     picker.close();
@@ -1018,6 +1032,8 @@ function App() {
   // The owner's tab draws the Page's grid card images (card-capture.mjs);
   // it watches the session for the owner's access itself.
   useEffect(() => (session ? editor.module?.captureCards?.(session) : undefined), [session]);
+  // The address carries the open Page's title as its slug (address-slug.mjs).
+  useEffect(() => (session ? followTitleInAddress(session) : undefined), [session]);
   function composing() {
     const state = titleCompositionRef.current;
     return !!state && !!editor.module?.composingTitle(state, session);
@@ -1194,8 +1210,12 @@ function App() {
       const projectId =
         pageId === host.current?.pageId &&
         (projectOpen || (placement?.kind === "project" && placement.project_id));
+      // The open Page's link carries its title's slug now, whether or not
+      // the address has caught up with the title yet.
+      const title = pageId === host.current?.pageId ? sessionTitle(host.current) : null;
       await navigator.clipboard.writeText(
-        new URL(path ?? copyLinkPath(projectId || pageId, location.href), location.origin).href,
+        new URL(path ?? copyLinkPath(projectId || pageId, location.href, title), location.origin)
+          .href,
       );
       setNotice("Link copied");
       if (documentDisclosure.current) documentDisclosure.current.open = false;
@@ -2131,7 +2151,7 @@ function App() {
               principal={account.principal}
               identity={authentication.current?.identity}
               onBack={() => home(null)}
-              onOpen={(id) => open(id)}
+              onOpen={(id, link) => open(id, { slug: link?.slug ?? null })}
               onRestored={async () => {
                 listingCache.forgetOwnedViews();
                 setNotice("Page restored");
@@ -2154,7 +2174,7 @@ function App() {
               creating={creating}
               onNavigate={navigateIndex}
               onViewChange={index ? followLibrary(index.visit, index.principal) : followAddress}
-              onOpen={(id) => open(id)}
+              onOpen={(id, link) => open(id, { slug: link?.slug ?? null })}
               onOpenProject={(id) => openProject(id)}
               onCreate={create}
               onTrash={showTrash}

@@ -15,6 +15,7 @@ import { MAX_DEPTH, deriveLocation } from "../model/location.mjs";
 import { locationEntries } from "./catalog-location.mjs";
 import { tools } from "../mcp.mjs";
 import { invokeProjectApi, withBrowserLinks } from "./project-api.mjs";
+import { readPageRoute } from "../shared/routes.mjs";
 import { ids, locationOf, world } from "./projects-fixture.mjs";
 
 /** Object state for direct index calls; the test awaits each one. */
@@ -162,9 +163,10 @@ test("JSON create_project, create_page and read_page receipts carry browser link
   assert.equal(content.body.url, `https://pages.invalid/project/${linked.project_id}`);
   const created = await w.createPage({ title: "Linked", project_id: linked.project_id });
   assert.equal(created.status, 200);
-  assert.equal(created.body.url, `https://pages.invalid/p/${created.body.page_id}`);
+  // A result that has the Page's title carries its slug.
+  assert.equal(created.body.url, `https://pages.invalid/p/${created.body.page_id}/Linked`);
   const read = await w.call("owner", "read_page", { page_id: created.body.page_id });
-  assert.equal(read.body.url, `https://pages.invalid/p/${created.body.page_id}`);
+  assert.equal(read.body.url, `https://pages.invalid/p/${created.body.page_id}/Linked`);
   const refused = await w.call("owner", "read_page", { page_id: crypto.randomUUID() });
   assert.equal(refused.body.url, undefined);
 });
@@ -175,9 +177,12 @@ test("every JSON result for a live Page carries its url, as MCP results do", asy
   const project = await w.createProject("Links");
   const created = await w.createPage({ title: "Linked", project_id: project.project_id });
   const pageId = created.body.page_id;
-  const link = `https://pages.invalid/p/${pageId}`;
+  const link = `https://pages.invalid/p/${pageId}/Linked`;
   const listed = await w.call("owner", "list_pages", { project_id: project.project_id });
   assert.equal(listed.body.pages.find((page) => page.page_id === pageId).url, link);
+  // A receipt links its Page with or without the title, whichever it has; the
+  // id in the link, not the link's text, is what names the Page.
+  const names = (url) => readPageRoute(url).pageId;
   const projects = await w.call("owner", "list_projects");
   assert.equal(
     projects.body.projects[0].url,
@@ -192,13 +197,35 @@ test("every JSON result for a live Page carries its url, as MCP results do", asy
     nonce: w.key(),
   });
   assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
-  assert.equal(trashed.body.url, link);
+  assert.equal(names(trashed.body.url), pageId);
   const restored = await w.call("owner", "restore_page", {
     page_id: pageId,
     nonce: w.key(),
   });
   assert.equal(restored.status, 200, JSON.stringify(restored.body));
-  assert.equal(restored.body.url, link);
+  assert.equal(names(restored.body.url), pageId);
+});
+
+test("REST and MCP results link a Page with its title's slug, and no log line carries it", async (t) => {
+  const lines = [];
+  for (const level of ["log", "info", "warn", "error"])
+    t.mock.method(console, level, (...args) => lines.push(JSON.stringify(args)));
+  const w = await world(t);
+  w.env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN = "https://pages.invalid";
+  const created = await w.createPage({ title: "Quarterly secret plan" });
+  const pageId = created.body.page_id;
+  const slugged = `https://pages.invalid/p/${pageId}/Quarterly-secret-plan`;
+  assert.equal(created.body.url, slugged);
+  const listed = await w.call("owner", "list_pages");
+  assert.equal(listed.body.pages.find((page) => page.page_id === pageId).url, slugged);
+  const read = await w.mcp("owner", "read_page", { page_id: pageId });
+  assert.equal(read.isError, false);
+  assert.equal(read.body.url, slugged);
+  const mcpListed = await w.mcp("owner", "list_pages");
+  assert.equal(mcpListed.body.pages.find((page) => page.page_id === pageId).url, slugged);
+  // Usage and failure lines name the Page by id; the title and its slug stay out.
+  assert.ok(lines.length > 0, "the calls logged usage");
+  for (const line of lines) assert.ok(!/secret/i.test(line), line);
 });
 
 test("the gateway links Page edit receipts, and leaves refusals and unlinked calls alone", async () => {

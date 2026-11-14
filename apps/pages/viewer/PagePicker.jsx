@@ -1,5 +1,11 @@
 import { matchingPages } from "./page-list.mjs";
-import { PROJECTS_PATH, pagePath, projectPath, isPlainNavigation } from "../shared/routes.mjs";
+import {
+  PROJECTS_PATH,
+  pageLinkPath,
+  pageTitleSlug,
+  projectPath,
+  isPlainNavigation,
+} from "../shared/routes.mjs";
 import { useEffect, useRef, useState } from "react";
 import { Boxes, Check, FileText, Files, Plus, Search, Trash2, X } from "lucide-react";
 
@@ -123,14 +129,14 @@ export function PagePicker({
           {matches.map((page) => (
             <a
               className="picker-page"
-              href={pagePath(page.page_id)}
+              href={pageLinkPath(page)}
               key={page.page_id}
               aria-current={page.page_id === currentId ? "page" : undefined}
               onClick={(event) => {
                 if (!isPlainNavigation(event)) return;
                 event.preventDefault();
                 onClose();
-                void onOpen(page.page_id);
+                void onOpen(page.page_id, { slug: pageTitleSlug(page.title) });
               }}
             >
               <FileText size={18} aria-hidden="true" />

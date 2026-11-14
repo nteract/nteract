@@ -1,5 +1,5 @@
 import { Boxes, FileText, Plus } from "lucide-react";
-import { pagePath, projectPath, isPlainNavigation } from "../shared/routes.mjs";
+import { pageLinkPath, pageTitleSlug, projectPath, isPlainNavigation } from "../shared/routes.mjs";
 import { projectTree } from "./projects.mjs";
 
 function PageRows({ rows, onOpen }) {
@@ -11,11 +11,11 @@ function PageRows({ rows, onOpen }) {
     >
       <a
         className="page-card"
-        href={pagePath(page.page_id)}
+        href={pageLinkPath(page)}
         onClick={(event) => {
           if (!isPlainNavigation(event)) return;
           event.preventDefault();
-          void onOpen(page.page_id);
+          void onOpen(page.page_id, { slug: pageTitleSlug(page.title) });
         }}
       >
         <FileText size={19} aria-hidden="true" />
@@ -86,14 +86,12 @@ export function Breadcrumbs({ crumbs, onOpenProject, onOpenPage }) {
         {crumbs.map((crumb) => (
           <li key={crumb.project_id ?? crumb.page_id}>
             <a
-              href={
-                crumb.kind === "project" ? projectPath(crumb.project_id) : pagePath(crumb.page_id)
-              }
+              href={crumb.kind === "project" ? projectPath(crumb.project_id) : pageLinkPath(crumb)}
               onClick={(event) => {
                 if (!isPlainNavigation(event)) return;
                 event.preventDefault();
                 if (crumb.kind === "project") onOpenProject(crumb.project_id);
-                else void onOpenPage(crumb.page_id);
+                else void onOpenPage(crumb.page_id, { slug: pageTitleSlug(crumb.title) });
               }}
             >
               {crumb.title || "Untitled"}

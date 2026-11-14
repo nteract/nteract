@@ -327,6 +327,7 @@ test("library Page rows retain only host-disclosed Project membership", () => {
     id: pageId,
     title: "Untitled",
     href: `/p/${pageId}`,
+    slug: null,
     activityAt: null,
     contentUpdatedAt: null,
     project: { id: projectId, title: "Launch", href: `/project/${projectId}` },
@@ -352,6 +353,20 @@ test("library Page rows retain only host-disclosed Project membership", () => {
   assert.equal(pageRow({ page_id: pageId, shared: true }).project, null);
   assert.equal(pageRow({ page_id: pageId, project_id: projectId }).href, `/p/${pageId}`);
   assert.equal(pageRow({ page_id: pageId, shared: true }).href, `/p/${pageId}`);
+});
+
+test("a library row links to its Page with the title's slug, and opens it at that address", () => {
+  const row = pageRow({ page_id: pageId, title: "Q3: Launch plan" });
+  assert.equal(row.title, "Q3: Launch plan");
+  assert.equal(row.href, `/p/${pageId}/Q3-Launch-plan`);
+  assert.equal(row.slug, "Q3-Launch-plan");
+  // A title with no slug, or none at all, links to the bare address; the
+  // shown "Untitled" never becomes a slug.
+  for (const title of ["", "日本語", "view", undefined]) {
+    const bare = pageRow({ page_id: pageId, title });
+    assert.equal(bare.href, `/p/${pageId}`, String(title));
+    assert.equal(bare.slug, null, String(title));
+  }
 });
 
 test("a /projects row carries its description only when there is one", () => {

@@ -21,7 +21,8 @@ import {
   LIBRARY_DEFAULTS,
   libraryRequest,
   normalizePagesQuery,
-  pagePath,
+  pageLinkPath,
+  pageTitleSlug,
   projectPath,
 } from "../shared/routes.mjs";
 
@@ -284,7 +285,10 @@ export function pageRow(page, projectTitles = new Map(), { local = false } = {})
   return {
     id: page.page_id,
     title: page.title || "Untitled",
-    href: pagePath(page.page_id),
+    // A link carries the title's slug, and opening it in place pushes the
+    // same address (onOpen's `slug`).
+    href: pageLinkPath(page),
+    slug: pageTitleSlug(page.title),
     activityAt: activityAt(page),
     // The grid keys a card by it, so an edit since the last ask asks again.
     contentUpdatedAt: page.content_updated_at ?? null,
