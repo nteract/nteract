@@ -11,6 +11,7 @@ test("every preview state/event pair rejects invalid transitions", () => {
     loaded: ["loading"],
     edit: ["ready"],
     choose_cover: ["ready"],
+    choose_visual: ["ready"],
     prepare: ["ready"],
     prepared: ["rendering"],
     publish: ["ready"],
@@ -29,6 +30,7 @@ test("every preview state/event pair rejects invalid transitions", () => {
         prepared: {},
         patch: {},
         file: {},
+        visual: "text",
         nonce: "n",
         error: "Error",
       });

@@ -49,6 +49,17 @@ export function previewTextLines(context, text, width, count) {
   return visible;
 }
 
+/** Center-crop a cover to fill the social card without stretching it. */
+export function previewCoverRect(width, height) {
+  const scale = Math.max(1200 / width, 630 / height);
+  return {
+    x: (1200 - width * scale) / 2,
+    y: (630 - height * scale) / 2,
+    width: width * scale,
+    height: height * scale,
+  };
+}
+
 /** Rasterize once, then show and upload the same bytes. No generated content,
  * remote model call, or live-document update can change the approved image. */
 export async function renderPublishedPreview(draft, visuals, signal) {
@@ -64,11 +75,8 @@ export async function renderPublishedPreview(draft, visuals, signal) {
   background.addColorStop(1, "#dceae3");
   context.fillStyle = background;
   context.fillRect(0, 0, 1200, 630);
-  context.fillStyle = "#37665c";
-  context.font = "600 24px system-ui, sans-serif";
-  context.fillText(PRODUCT_NAME, 64, 62);
-  let titleY = 180;
-  if (draft.visual !== "text") {
+  const textOnly = draft.visual === "text";
+  if (!textOnly) {
     let visual;
     if (draft.visual === "upload") {
       if (!draft.file) throw Error("Choose a cover image first.");
@@ -80,28 +88,47 @@ export async function renderPublishedPreview(draft, visuals, signal) {
       const { domToCanvas } = await import("modern-screenshot");
       visual = await domToCanvas(node, { backgroundColor: "#ffffff", scale: 2 });
     }
-    signal.throwIfAborted();
-    const scale = Math.min(1072 / visual.width, 300 / visual.height);
-    context.drawImage(
-      visual,
-      (1200 - visual.width * scale) / 2,
-      90,
-      visual.width * scale,
-      visual.height * scale,
-    );
-    visual.close?.();
-    titleY = 448;
+    try {
+      signal.throwIfAborted();
+      const { x, y, width, height } = previewCoverRect(visual.width, visual.height);
+      context.drawImage(visual, x, y, width, height);
+    } finally {
+      visual.close?.();
+    }
+    // Keep the image visible above the title while giving white text a
+    // predictable dark ground, even on a nearly white cover.
+    const shade = context.createLinearGradient(0, 0, 0, 630);
+    shade.addColorStop(0, "rgba(0, 0, 0, 0.28)");
+    shade.addColorStop(0.35, "rgba(0, 0, 0, 0.30)");
+    shade.addColorStop(0.58, "rgba(0, 0, 0, 0.64)");
+    shade.addColorStop(1, "rgba(0, 0, 0, 0.86)");
+    context.fillStyle = shade;
+    context.fillRect(0, 0, 1200, 630);
   }
-  const textOnly = draft.visual === "text";
-  context.fillStyle = "#172a2b";
-  context.font = `600 ${textOnly ? 62 : 40}px system-ui, sans-serif`;
+  context.fillStyle = textOnly ? "#37665c" : "#ffffff";
+  context.font = "600 24px system-ui, sans-serif";
+  context.fillText(PRODUCT_NAME, 64, 62);
+  const titleSize = textOnly ? 62 : 58;
+  const titleHeight = textOnly ? 76 : 68;
+  const descriptionHeight = textOnly ? 40 : 36;
+  context.font = `600 ${titleSize}px system-ui, sans-serif`;
   const titleLines = previewTextLines(context, draft.title, 1072, textOnly ? 3 : 2);
-  titleLines.forEach((line, i) => context.fillText(line, 64, titleY + i * (textOnly ? 76 : 49)));
-  context.fillStyle = "#536466";
-  context.font = `${textOnly ? 30 : 24}px system-ui, sans-serif`;
-  const descriptionY = titleY + titleLines.length * (textOnly ? 76 : 49) + 24;
-  previewTextLines(context, draft.description, 1072, textOnly ? 3 : 2).forEach((line, i) =>
-    context.fillText(line, 64, descriptionY + i * (textOnly ? 40 : 30)),
+  context.font = `${textOnly ? 30 : 28}px system-ui, sans-serif`;
+  const descriptionLines = previewTextLines(context, draft.description, 1072, textOnly ? 3 : 2);
+  const titleY = textOnly
+    ? 180
+    : 566 -
+      Math.max(0, titleLines.length - 1) * titleHeight -
+      (descriptionLines.length ? 24 + descriptionLines.length * descriptionHeight : 0);
+  context.fillStyle = textOnly ? "#172a2b" : "#ffffff";
+  context.font = `600 ${titleSize}px system-ui, sans-serif`;
+  titleLines.forEach((line, i) => context.fillText(line, 64, titleY + i * titleHeight));
+  context.fillStyle = textOnly ? "#536466" : "#ffffff";
+  context.font = `${textOnly ? 30 : 28}px system-ui, sans-serif`;
+  const descriptionY =
+    titleY + Math.max(0, titleLines.length - 1) * titleHeight + 24 + descriptionHeight;
+  descriptionLines.forEach((line, i) =>
+    context.fillText(line, 64, descriptionY + i * descriptionHeight),
   );
   signal.throwIfAborted();
   return new Promise((resolve, reject) =>

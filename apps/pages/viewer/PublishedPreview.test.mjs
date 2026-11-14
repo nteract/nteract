@@ -123,11 +123,11 @@ test("owner must prepare and approve exact image bytes; publishing and removal u
     assert.equal(calls.length, 4);
     assert.ok(document.body.textContent.includes("Preview removed."));
     assert.equal(document.querySelector("img[alt='Currently published preview']"), null);
-    await settle(() => {
-      const source = document.querySelector("select");
-      source.value = "upload";
-      source.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
-    });
+    assert.equal(
+      document.querySelector("select"),
+      null,
+      "a cover is optional, not a separate template",
+    );
     await settle(() => {
       const input = document.querySelector("input[type='file']");
       Object.defineProperty(input, "files", {
@@ -145,6 +145,12 @@ test("owner must prepare and approve exact image bytes; publishing and removal u
       "choosing a cover previews it locally without uploading or publishing",
     );
     assert.equal(button("Publish preview").disabled, false);
+    await settle(() => document.querySelector("button[aria-label='Remove cover']").click());
+    assert.equal(
+      document.querySelector("img[alt='Exact image that will be published']").getAttribute("src"),
+      `data:image/png;base64,${Buffer.from("test raster").toString("base64")}`,
+    );
+    assert.equal(calls.length, 4, "removing the cover also stays a local preview");
   } finally {
     await act(async () => root.unmount());
     dom.window.close();

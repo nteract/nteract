@@ -9,6 +9,7 @@ import {
   Info,
   LockKeyhole,
   Upload,
+  X,
 } from "lucide-react";
 import { PRODUCT_NAME } from "../shared/product.mjs";
 import { request } from "./request.mjs";
@@ -195,29 +196,14 @@ export function PublishedPreview({ session, onBack }) {
               />
             </div>
             <div className="preview-field">
-              <label htmlFor={`${id}-visual`}>Image source</label>
-              <select
-                id={`${id}-visual`}
-                aria-label="Preview image"
-                value={state.draft.visual}
-                disabled={!ready}
-                onChange={(event) => edit({ visual: event.target.value })}
-              >
-                <option value="text">Title and description card</option>
-                {visuals.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.label}
-                  </option>
-                ))}
-                <option value="upload">Upload a cover</option>
-              </select>
-              {state.draft.visual === "upload" && (
+              <div className="preview-field-label">
+                <span className="preview-cover-label">Cover</span>
+                <span>Optional</span>
+              </div>
+              <div className="preview-cover-controls">
                 <label className="preview-upload">
                   <Upload size={17} />
-                  <span>
-                    {state.draft.file?.name || "Choose a cover image"}
-                    <small>PNG, JPEG or WebP</small>
-                  </span>
+                  <span>{state.draft.visual === "text" ? "Add cover" : "Replace cover"}</span>
                   <input
                     aria-label="Cover image"
                     type="file"
@@ -228,6 +214,33 @@ export function PublishedPreview({ session, onBack }) {
                     }
                   />
                 </label>
+                {state.draft.visual !== "text" && (
+                  <button
+                    type="button"
+                    className="preview-clear-cover"
+                    disabled={!ready}
+                    aria-label="Remove cover"
+                    onClick={() => dispatch({ type: "choose_visual", visual: "text" })}
+                  >
+                    <X size={16} />
+                  </button>
+                )}
+              </div>
+              {visuals.length > 0 && (
+                <div className="preview-page-visuals" role="group" aria-label="Page visuals">
+                  {visuals.map((item) => (
+                    <button
+                      type="button"
+                      key={item.id}
+                      disabled={!ready}
+                      aria-pressed={state.draft.visual === item.id}
+                      onClick={() => dispatch({ type: "choose_visual", visual: item.id })}
+                    >
+                      <Image size={14} />
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
               )}
             </div>
           </div>
