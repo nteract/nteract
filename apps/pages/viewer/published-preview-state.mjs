@@ -131,7 +131,7 @@ export function previewEditorTransition(state, event) {
       return ["loading", "uploading_cover", "uploading", "publishing", "unpublishing"].includes(
         state.name,
       )
-        ? { ...state, name: "failed", error: event.error, prepared: null }
+        ? { ...state, name: "failed", error: event.error }
         : state;
     case "reload":
       return ["ready", "failed"].includes(state.name)

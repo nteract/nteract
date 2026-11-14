@@ -1,12 +1,62 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { JSDOM } from "jsdom";
 import {
+  previewVisuals,
+  previewVisualNode,
   previewCoverRect,
   previewTextLines,
   renderPublishedPreview,
 } from "./published-preview-image.mjs";
 
 const context = { measureText: (text) => ({ width: Array.from(text).length }) };
+
+test("cover choices include rendered chart content, never toolbar icons or pending charts", () => {
+  const { window } = new JSDOM(`
+    <div class="rich-editor">
+      <figure class="pages-chart" data-chart-status="rendered" aria-label="Events by day">
+        <button aria-label="Maximize chart"><svg id="maximize"></svg></button>
+        <div class="pages-chart-canvas"><div><svg id="chart"></svg></div></div>
+      </figure>
+      <figure class="pages-chart" data-chart-status="drawing">
+        <div class="pages-chart-canvas"><svg id="pending"></svg></div>
+      </figure>
+      <div class="wordgard-diagram-canvas"><div class="pele-zoom"><button><svg id="zoom"></svg></button></div><svg id="diagram"><svg id="nested"></svg></svg></div>
+      <div class="wordgard-diagram-canvas"><div class="pele-zoom"><button><svg id="zoom-only"></svg></button></div></div>
+      <img id="photo" alt="A cover photo">
+    </div>
+    <svg id="outside"></svg>
+  `);
+  window.Element.prototype.getBoundingClientRect = () => ({ width: 400, height: 200 });
+  const choices = previewVisuals(window.document);
+  assert.deepEqual(
+    choices.map((choice) => previewVisualNode(choice).id),
+    ["chart", "diagram", "photo"],
+  );
+  assert.deepEqual(
+    choices.map(({ label }) => label),
+    ["Events by day", "Diagram 2", "A cover photo"],
+  );
+  const previousChart = previewVisualNode(choices[0]);
+  const redrawnChart = window.document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  redrawnChart.id = "redrawn-chart";
+  choices[0].node.replaceChildren(redrawnChart);
+  assert.equal(previousChart.isConnected, false);
+  assert.equal(
+    previewVisualNode(choices[0]),
+    redrawnChart,
+    "text edits use the resized or refreshed chart",
+  );
+  choices[0].node.replaceChildren();
+  assert.equal(
+    previewVisualNode(choices[0]),
+    null,
+    "an empty canvas never falls back to its toolbar",
+  );
+  choices[0].node.remove();
+  assert.equal(previewVisualNode(choices[0]), null);
+  window.close();
+});
 
 test("preview cards wrap at word boundaries and fit truncated lines", () => {
   assert.deepEqual(previewTextLines(context, "A lovely little Page", 14, 3), [

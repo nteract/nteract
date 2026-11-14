@@ -5,10 +5,10 @@ import { PRODUCT_NAME } from "../shared/product.mjs";
 export function previewVisuals(root = document) {
   return [
     ...root.querySelectorAll(
-      ".rich-editor img, .rich-editor .pages-chart svg, .rich-editor .pages-chart canvas, .rich-editor .wordgard-diagram-canvas svg",
+      '.rich-editor img, .rich-editor .pages-chart[data-chart-status="rendered"] .pages-chart-canvas, .rich-editor .wordgard-diagram-canvas',
     ),
   ]
-    .filter((node) => node.getBoundingClientRect().width > 0)
+    .filter((node) => previewVisualNode({ node })?.getBoundingClientRect().width > 0)
     .map((node, index) => ({
       id: String(index),
       node,
@@ -16,9 +16,20 @@ export function previewVisuals(root = document) {
         node.tagName === "IMG"
           ? node.alt || `Image ${index + 1}`
           : node.closest(".pages-chart")
-            ? `Chart ${index + 1}`
+            ? node.closest(".pages-chart").getAttribute("aria-label") || `Chart ${index + 1}`
             : `Diagram ${index + 1}`,
     }));
+}
+
+/** Charts replace their SVG when their data, theme, or width changes. Keep
+ * the content container as the selection and resolve its current artwork. */
+export function previewVisualNode(choice) {
+  const node = choice?.node;
+  if (!node?.isConnected) return null;
+  if (node.tagName === "IMG") return node;
+  return node.querySelector(
+    node.matches(".wordgard-diagram-canvas") ? ":scope > svg" : "svg, canvas",
+  );
 }
 
 export function previewTextLines(context, text, width, count) {
@@ -93,9 +104,8 @@ export async function renderPublishedPreview(draft, visuals, signal, pageId) {
       if (!source) throw Error("Choose a cover image first.");
       visual = await createImageBitmap(source);
     } else {
-      const node = visuals.find((item) => item.id === draft.visual)?.node;
-      if (!node?.isConnected)
-        throw Error("That visual changed. Reopen Link preview to choose it again.");
+      const node = previewVisualNode(visuals.find((item) => item.id === draft.visual));
+      if (!node) throw Error("That visual changed. Reopen Link preview to choose it again.");
       const { domToCanvas } = await import("modern-screenshot");
       visual = await domToCanvas(node, { backgroundColor: "#ffffff", scale: 2 });
     }
