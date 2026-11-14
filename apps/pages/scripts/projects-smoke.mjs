@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
 import { pageAddress, pageIdOf } from "./page-address.mjs";
+import { pageUrl } from "../shared/routes.mjs";
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost");
 assert.equal(new URL(origin).protocol, "http:");
@@ -1695,7 +1696,7 @@ try {
   assert.equal(moved.parent_id, roadmap.page_id);
   assert.equal(moved.project_id, project.project_id);
   assert.ok(Number.isSafeInteger(moved.location_revision) && moved.location_revision >= 1);
-  assert.equal(moved.url, `${origin}/p/${plan.page_id}`);
+  assert.equal(moved.url, pageUrl(origin, { page_id: plan.page_id, title: moved.title }));
   const nestedAgain = await ok("owner", "list_pages", { parent_id: roadmap.page_id });
   assert.deepEqual(
     nestedAgain.pages.map((page) => [page.page_id, page.parent_id, page.position]),
