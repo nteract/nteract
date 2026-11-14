@@ -444,6 +444,10 @@ try {
     await expect(pinned).toContainText("browser");
     await reader.screenshot({ path: `${output}/source-deleted.png`, fullPage: true });
     await edit([{ op: "set_node", node_id: nodeId, attrs: { asset_id: second.asset_id } }]);
+    // The tool's answer can arrive before the reader's replica syncs the
+    // edit, which redraws this table in a new frame. The frame that drew the
+    // deleted source carries data-source-id; the asset-bound one never does.
+    await expect(followsCanvas).not.toHaveAttribute("data-source-id");
     await follows.scrollIntoViewIfNeeded();
     await expect(follows).toContainText("desktop", { timeout: 20000 });
     await reader.context().close();
