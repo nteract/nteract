@@ -10,7 +10,7 @@ import { createAuthFixture } from "../auth-fixtures.mjs";
 import { MEMBER_FORMATS } from "../model/document-types.mjs";
 import { Storage, pageId } from "./trash-fixture.mjs";
 import { derivedDocUuid, derivedDocumentId } from "./comments-store.mjs";
-import { SOURCE_HISTORY_LIMIT, WRITER_LIMITS } from "../model/sources-doc.mjs";
+import { SOURCE_HISTORY_LIMIT, WRITER_LIMITS, deletedSource } from "../model/sources-doc.mjs";
 import { SOURCES_MODULE } from "./document-modules.mjs";
 import { DEFAULT_READ_BYTES } from "./tool-reads.mjs";
 import { Page } from "./index.mjs";
@@ -805,9 +805,17 @@ test("stored usage tables follow or pin in place; deletion is fenced, durable an
     nonce: "delete-usage",
     operations: [{ op: "delete_source", source_id: "usage", source_revision: "2" }],
   };
+  const before = Date.now();
   const deleted = await h.tool(h.host, "edit_page", args);
   assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
   assert.deepEqual(deleted.body.result.edits, [{ op: "delete_source", source_id: "usage" }]);
+  const tombstone = deletedSource(h.host.sourcesView(), "usage");
+  assert.deepEqual(tombstone.by, {
+    principal: `user:anaconda-fixture:${h.auth.subject}`,
+    displayName: "Fixture Person",
+    driver: "ChatGPT",
+  });
+  assert.ok(Date.parse(tombstone.at) >= before && Date.parse(tombstone.at) <= Date.now());
   assert.equal((await table(h.host)).node_id, node_id);
   assert.deepEqual((await h.tool(h.host, "read_page", { sources: true })).body.sources, []);
   assert.equal((await h.tool(h.host, "read_page", { source_id: "usage" })).status, 404);
@@ -815,6 +823,11 @@ test("stored usage tables follow or pin in place; deletion is fenced, durable an
   const replay = await h.tool(restarted, "edit_page", args);
   assert.equal(replay.status, 200, JSON.stringify(replay.body));
   assert.deepEqual(replay.body.result.edits, deleted.body.result.edits);
+  assert.deepEqual(
+    deletedSource(restarted.sourcesView(), "usage"),
+    tombstone,
+    "a replayed delete keeps the first delete's time and writer",
+  );
   assert.equal((await table(restarted)).node_id, node_id);
   assert.equal(
     (await h.setSource(restarted, [usage()])).status,

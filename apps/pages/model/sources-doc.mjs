@@ -29,6 +29,10 @@ export { MAX_SOURCE_NAME, MAX_SOURCES, MAX_SOURCE_IDS };
  *       history: [                 // oldest first, at most SOURCE_HISTORY_LIMIT
  *         { revision, name, media_type, asset_id, at, by },
  *       ],
+ *     } | {
+ *       deleted: true,             // a tombstone: the source was deleted
+ *       at?: string,               // ISO 8601, the host's clock when it deleted
+ *       by?: { principal, displayName, driver, agent?: { name?, model? } },
  *     }
  *   }
  * }
@@ -49,6 +53,13 @@ export { MAX_SOURCE_NAME, MAX_SOURCES, MAX_SOURCE_IDS };
  * name, revision, `current` and `producer`; a read refuses an entry where it
  * doesn't. Older states remain in the document's Automerge history, but no
  * read returns them.
+ *
+ * A tombstone replaces a deleted source's whole entry. Its id is retired: no
+ * read returns it as a source, it still counts toward MAX_SOURCE_IDS, and a
+ * write that names it is refused, so the id is never reused. `at` and `by`
+ * record the delete the way `producer` records a write; a tombstone written
+ * without them holds `deleted: true` alone, and deletedSource reads both
+ * forms.
  */
 
 const SOURCE_ID = new RegExp(SOURCE_ID_PATTERN);
@@ -241,6 +252,19 @@ export function readSource(doc, sourceId) {
   return project(sourceId, sources[sourceId]);
 }
 
+/** A retired source id's tombstone: `{ source_id, at, by }`, with `at` and
+ * `by` null for a tombstone that holds no valid time and writer. Null for an
+ * id that names an active source or none. */
+export function deletedSource(doc, sourceId) {
+  const sources = sourceMap(doc);
+  if (!validSourceId(sourceId) || !Object.hasOwn(sources, sourceId)) return null;
+  const entry = sources[sourceId];
+  if (entry?.deleted !== true) return null;
+  return validTime(entry.at) && validWriter(entry.by)
+    ? { source_id: sourceId, at: entry.at, by: writerCopy(entry.by) }
+    : { source_id: sourceId, at: null, by: null };
+}
+
 /** Every source, ordered by id, without producers or history. Empty for a
  * Page with no sources document. */
 export function listSources(doc) {
@@ -330,7 +354,7 @@ export function setSources(
     const previous = previousOf[index];
     if (op.op === "delete_source") {
       // Retire the ID rather than letting a later create reuse revision 1.
-      sources[id] = { deleted: true };
+      sources[id] = { deleted: true, at, by: writerCopy(by) };
       return { op: "delete_source", source_id: id };
     }
     const mediaType = mediaTypes.get(op.asset_id);
