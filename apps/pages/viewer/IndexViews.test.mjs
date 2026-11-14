@@ -230,9 +230,9 @@ test("the library lists every Page with Project labels, opens rows and Projects 
         projects: [{ project_id: projectId, title: "Launch" }],
         onNavigate: (kind) => events.push(["navigate", kind]),
         onViewChange: (view, how) => events.push(["view", view, how]),
-        onOpen: (pageId) => events.push(["open", pageId]),
+        onOpen: (pageId, link) => events.push(["open", pageId, link?.slug]),
         onOpenProject: (id) => events.push(["project", id]),
-        onCopyLink: (pageId) => events.push(["copy", pageId]),
+        onCopyLink: (pageId, path) => events.push(["copy", pageId, path]),
         onWarm: () => events.push(["warm"]),
         onError: (message) => events.push(["error", message]),
       }),
@@ -245,7 +245,8 @@ test("the library lists every Page with Project labels, opens rows and Projects 
   assert.ok(host.querySelector('ul.index-page-list[aria-label="Pages"]'), "one list named Pages");
   assert.deepEqual(
     [...host.querySelectorAll(".index-row-link")].map((link) => link.getAttribute("href")),
-    [`/p/${id(1)}`, `/p/${id(2)}`],
+    // A row links with its title's slug; an untitled one has none.
+    [`/p/${id(1)}/Roadmap`, `/p/${id(2)}`],
   );
   const label = host.querySelector(".index-row-project");
   assert.equal(label.getAttribute("href"), `/project/${projectId}`);
@@ -275,7 +276,12 @@ test("the library lists every Page with Project labels, opens rows and Projects 
   await click(button(host, "Copy link to Roadmap"));
   assert.deepEqual(
     events.filter(([kind]) => kind !== "view"),
-    [["warm"], ["open", id(1)], ["project", projectId], ["copy", id(1)]],
+    [
+      ["warm"],
+      ["open", id(1), "Roadmap"],
+      ["project", projectId],
+      ["copy", id(1), `/p/${id(1)}/Roadmap`],
+    ],
     "a Project label opens the Project, and a modified click stays with the browser",
   );
 
@@ -993,9 +999,9 @@ test("the grid needs no flag, remembers either display mode, and never nests lin
     assert.deepEqual(
       cards.map((card) => [card.textContent, card.getAttribute("href")]),
       [
-        ["Roadmap", `/p/${id(1)}`],
-        ["Launch", `/p/${id(2)}`],
-        ["Loose notes", `/p/${id(3)}`],
+        ["Roadmap", `/p/${id(1)}/Roadmap`],
+        ["Launch", `/p/${id(2)}/Launch`],
+        ["Loose notes", `/p/${id(3)}/Loose-notes`],
       ],
     );
     assert.equal(grid.querySelectorAll("a a").length, 0, "a card holds no link inside its link");
@@ -1016,7 +1022,7 @@ test("the grid needs no flag, remembers either display mode, and never nests lin
     assert.ok(again.host.querySelector(".index-grid"), "a remount reads the stored mode");
     await click(again.host.querySelector('button[aria-label="List view"]'));
     await click(again.host.querySelector('button[aria-label="Copy link to Launch"]'));
-    assert.deepEqual(events.at(-1), ["copy", id(2), `/p/${id(2)}`]);
+    assert.deepEqual(events.at(-1), ["copy", id(2), `/p/${id(2)}/Launch`]);
     assert.equal(window.localStorage.getItem("nteract.pages.view"), "list");
     await mounted.pop().unmount();
 

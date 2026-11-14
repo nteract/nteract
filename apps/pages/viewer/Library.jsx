@@ -685,7 +685,7 @@ function PageList({
                     className="index-row-link"
                     href={row.href}
                     onPointerDown={onWarm}
-                    onClick={follow(() => onOpen(row.id))}
+                    onClick={follow(() => onOpen(row.id, { slug: row.slug }))}
                   >
                     {row.title}
                   </a>
@@ -768,7 +768,7 @@ function GridCard({ row, cards, onOpen, onWarm }) {
         className="index-card-link"
         href={row.href}
         onPointerDown={onWarm}
-        onClick={follow(() => onOpen(row.id))}
+        onClick={follow(() => onOpen(row.id, { slug: row.slug }))}
       >
         <span className="index-card-header">
           <FileText className="index-card-icon" size={16} aria-hidden="true" />

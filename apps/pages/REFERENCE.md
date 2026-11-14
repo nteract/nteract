@@ -355,9 +355,14 @@ links); browser Back/Forward restores the corresponding Page and heading, and
 legacy query links normalize, keeping the fragment. Direct links work independently of the
 catalog but never bypass Page permissions.
 
-A link may carry a slug after the id, `/p/<page_id>/<slug>`, for link
-previews. It opens the same Page; the id alone finds and authorizes it, and
-the address keeps the slug while the Page is open. A slug is 1 to 80 of
+A link may carry a slug after the id, `/p/<page_id>/<slug>`, which reads as
+the Page's title for people and link previews. It opens the same Page; the id
+alone finds and authorizes it, so a stale or hand-typed slug still opens it.
+The slug comes from the title (`pageTitleSlug`): accents come off ("Café"
+gives `Cafe`), case stays as typed, every run of other characters becomes one
+`-`, and it is cut at 80 characters on a `-` when one is near. A title with
+no Latin letter or digit, an empty title and one that reads `view` give no
+slug; nothing transliterates. A slug is 1 to 80 of
 `A-Z a-z 0-9 _ -`, holds a letter or digit, and isn't `view` in any case
 (`isPageSlug` in [shared/routes.mjs](shared/routes.mjs)); any other segment
 after the id is not a Page route. The gateway serves such a path the app
@@ -366,10 +371,24 @@ runs collapse, the ends trim) beside the product name, and an `og:title` of
 the words alone, HTML-escaped ([worker/page-shell.mjs](worker/page-shell.mjs)).
 It looks nothing up, so the shell is the same bytes whether the Page exists or
 the caller can read it, and it answers `Cache-Control: no-store` with no
-ETag. A signed-in reader's tab title is the Page's own. Both "Copy link"
-actions (the document menu and Share) copy `copyLinkPath`: the slug the
-address shows for that Page, or `/p/<page_id>` with none. Nothing derives a
-slug from a title, and the `url` fields tools return stay `/p/<page_id>`.
+ETag. A bare `/p/<page_id>` is served the plain shell, unchanged: the gateway
+never looks up a title to redirect or to fill it in. A signed-in reader's tab
+title is the Page's own.
+
+Every link Pages hands out for a Page whose title it has carries the slug
+(`pageLinkPath`, `pageUrl`): library and Project rows, breadcrumbs, the Browse
+picker, Trash, and the `url` field of tool and REST results. A result built
+without the title, such as an edit receipt, links to `/p/<page_id>`; nothing
+reads a title just to build a link. MCP resource URIs stay `/p/<page_id>`, and
+`resources/read` also takes the slugged form. While a Page is open, the address
+follows its title in place, rename included (`history.replaceState` about a
+second after the last title change, keeping the fragment and history state;
+[viewer/address-slug.mjs](viewer/address-slug.mjs)). A title with no slug
+leaves the address as it is. Both "Copy link" actions (the document menu and
+Share) copy `copyLinkPath`: the current title's slug, else the slug the
+address shows for that Page, else `/p/<page_id>`. The slug is the title, so
+anyone who sees a link sees the title it had when the link was made. Worker
+logs and usage records name a Page by id and never carry a request path.
 
 Browser creation allocates the Page and history locally, persists them to
 IndexedDB, and opens the editor while authenticated registration proceeds.

@@ -10,6 +10,8 @@ const env = { NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.example" };
 const MODERN = "2026-07-28";
 const pageId = "1a160b47-6df1-4983-81eb-489ca5a26812";
 const pageUri = `https://pages.example/p/${pageId}`;
+// A tool result's url carries the title's slug; a resource uri is the bare link.
+const pageUrl = `${pageUri}/Notes`;
 const clientInfo = { name: "era-test", version: "3.1" };
 const serverInfo = { name: PRODUCT_NAME, version: "0.1.0" };
 
@@ -119,7 +121,7 @@ test("2026-07-28 tools/call hands invoke() the declared client and agent asserti
   assert.equal(status, 200);
   assert.equal(body.result.resultType, "complete");
   assert.equal(body.result.isError, undefined);
-  assert.equal(body.result.structuredContent.pages[0].url, pageUri);
+  assert.equal(body.result.structuredContent.pages[0].url, pageUrl);
   assert.deepEqual(JSON.parse(body.result.content[0].text), body.result.structuredContent);
   assert.deepEqual(calls, [
     {
@@ -375,10 +377,10 @@ test("a legacy client's responses are pinned", async () => {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ pages: [{ page_id: pageId, title: "Notes", url: pageUri }] }),
+              text: JSON.stringify({ pages: [{ page_id: pageId, title: "Notes", url: pageUrl }] }),
             },
           ],
-          structuredContent: { pages: [{ page_id: pageId, title: "Notes", url: pageUri }] },
+          structuredContent: { pages: [{ page_id: pageId, title: "Notes", url: pageUrl }] },
         },
       },
     },

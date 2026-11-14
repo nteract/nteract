@@ -9,6 +9,7 @@ import { build } from "esbuild";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { SERVER_UNREACHABLE_ACTION } from "./alerts.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
+import { readPageRoute } from "../shared/routes.mjs";
 
 // Sign-out leaves for / through location.href, a navigation jsdom can't
 // follow. Every other jsdom error still prints.
@@ -183,6 +184,10 @@ async function boot(session, tools = {}, { connect, head, paths = {} } = {}) {
       [...document.querySelectorAll(".error[role=alert]")].map((node) => node.textContent),
   };
 }
+
+/** The Page route the address shows, without its slug, which names nothing
+ * and follows the Page's title. */
+const shownPagePath = () => readPageRoute(location.href).path;
 
 test("a first visit whose session check answers 401 lands signed out with no banner", async () => {
   const app = await boot(() => Response.json({ error: "Sign in required" }, { status: 401 }));
@@ -394,7 +399,7 @@ test("a Page opened from a /pages search keeps its address when the editor fails
     });
     await settle();
     // Reload reloads this address, so it must still name the Page.
-    assert.equal(location.pathname + location.search, `/p/${pageId}`);
+    assert.equal(shownPagePath(), `/p/${pageId}`);
     assert.ok(document.querySelector(".build-update[role=alert]"), "the reload banner shows");
     // The listing behind the banner kept the search that was typed.
     assert.equal(document.querySelector("main h1")?.textContent, "Pages");
@@ -517,7 +522,9 @@ test("Back from a Page paints the library from memory and lists it once", async 
   );
   await click(row);
   await settle();
-  assert.equal(location.pathname, `/p/${ROADMAP}`);
+  // The row knew the title: the address carries its slug from the click on,
+  // though the Page never opens.
+  assert.equal(location.pathname, `/p/${ROADMAP}/Roadmap`);
   assert.equal(markup(".library-view"), null, "the library left the screen");
   const from = app.requests.length;
   let release;
@@ -561,7 +568,7 @@ test("the stopped screen for a Page in an unopened format leaves with its route"
     );
   await open();
   await settle();
-  assert.equal(location.pathname, `/p/${ROADMAP}`);
+  assert.equal(shownPagePath(), `/p/${ROADMAP}`);
   assert.equal(stopped(), "owner");
   assert.deepEqual(rows(), [], "the library left the screen");
   // Back to the library: the stopped screen goes with its Page.
@@ -573,7 +580,7 @@ test("the stopped screen for a Page in an unopened format leaves with its route"
   // Forward to the Page again shows it again.
   history.forward();
   await settle();
-  assert.equal(location.pathname, `/p/${ROADMAP}`);
+  assert.equal(shownPagePath(), `/p/${ROADMAP}`);
   assert.equal(stopped(), "owner");
   // An address that isn't a Page link leaves it too.
   history.pushState(null, "", "/p/not-a-page");
@@ -602,7 +609,7 @@ test("the stopped screen asks the host again for an account that signs in over i
   assert.equal(stopped(), "owner");
   who.current = "two";
   await sessionCheck();
-  assert.equal(location.pathname, `/p/${ROADMAP}`);
+  assert.equal(shownPagePath(), `/p/${ROADMAP}`);
   assert.equal(stopped(), "reader", "the other account is asked, and isn't the owner");
   history.replaceState(null, "", "/");
 });
@@ -711,7 +718,7 @@ test("navigating away and back to the Page doesn't bring the boot preview back",
   assert.equal(showing(), false);
   history.back();
   await settle();
-  assert.equal(location.pathname, `/p/${PREVIEW_PAGE}`);
+  assert.equal(shownPagePath(), `/p/${PREVIEW_PAGE}`);
   assert.equal(document.querySelector('[role="status"]')?.textContent, "Opening…");
   assert.equal(showing(), false);
 });
@@ -1010,7 +1017,7 @@ test("Project and legacy links open the existing document editor and tree", asyn
   }
 });
 
-test("the document menu's Copy link keeps the address's slug and adds none", async (t) => {
+test("the document menu's Copy link carries the title's slug, else the address's", async (t) => {
   cleanUp(t);
   globalThis.__editor = editorSurface;
   const copied = [];
@@ -1022,20 +1029,38 @@ test("the document menu's Copy link keeps the address's slug and adds none", asy
   t.after(() =>
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: previousClipboard }),
   );
-  globalThis.__openPage = async (id) => fakeSession(id, "one", "Plan content");
-  for (const [address, expected, shown] of [
-    [`/p/${PLAN}`, `http://localhost/p/${PLAN}`, `/p/${PLAN}`],
-    [`/p/${PLAN}/Some-Title`, `http://localhost/p/${PLAN}/Some-Title`, `/p/${PLAN}/Some-Title`],
-    [`/p/${PLAN}/Some-Title/`, `http://localhost/p/${PLAN}/Some-Title`, `/p/${PLAN}/Some-Title`],
+  // The copy never waits for the address to catch up with the title. Each
+  // case opens its own Page: an earlier boot's App stays mounted and keeps
+  // its own Page's address on that Page's title.
+  for (const [n, path, title, expected] of [
+    [1, "", "Plan content", "/Plan-content"],
+    [2, "/Some-Title", "Plan content", "/Plan-content"],
+    // A title with no slug keeps the one the address shows, or none.
+    [3, "/Some-Title/", "日本語", "/Some-Title"],
+    [4, "", "", ""],
   ]) {
+    const id = `3c160b47-6df1-4983-81eb-00000000000${n}`;
+    const address = `/p/${id}${path}`;
+    globalThis.__openPage = async (opened) => fakeSession(opened, "one", title);
     history.replaceState(null, "", address);
     await boot(signedIn, {
       ...catalog,
       read_page: ({ page_id }) => ({ page_id, kind: "page", breadcrumbs: [] }),
     });
+    // This boot's Page, not the one before it, is on screen.
+    await until(
+      () => document.querySelector('input[aria-label="Page title"]')?.value === title || null,
+    );
+    const before = copied.length;
     await click(await until(() => pageAction("Copy link")));
-    assert.equal(copied.at(-1), expected, address);
-    assert.equal(location.pathname, shown, `${address}: the address keeps its slug`);
+    await until(() => copied.length > before);
+    assert.equal(copied.length, before + 1, address);
+    assert.equal(
+      copied.at(-1),
+      `http://localhost/p/${id}${expected}`,
+      `${address} titled ${JSON.stringify(title)}`,
+    );
+    assert.equal(shownPagePath(), `/p/${id}`, address);
   }
 });
 
@@ -1073,7 +1098,7 @@ test("leaving a resolving Project cannot install its late document", async (t) =
   gate.release({ document_id: ROADMAP });
   await settle();
   assert.deepEqual(opened, [PLAN]);
-  assert.equal(location.pathname, `/p/${PLAN}`);
+  assert.equal(shownPagePath(), `/p/${PLAN}`);
 });
 
 test("Project navigation detaches the previous Page while its checkpoint drains, then retries a failed lookup", async (t) => {
@@ -1221,7 +1246,7 @@ test("a directly granted content document opens without exposing Project access"
   const app = await boot(signedIn, { ...catalog, read_page: { kind: "page", breadcrumbs: [] } });
   await until(() => document.querySelector(".document-print-title"));
   assert.equal(toolCalls(app, "get_project"), 0);
-  assert.equal(location.pathname, `/p/${ROADMAP}`);
+  assert.equal(shownPagePath(), `/p/${ROADMAP}`);
   assert.equal(document.querySelector(".project-pages"), null);
   assert.equal(document.querySelector(".project-chip"), null);
   assert.equal(sharing, null, "direct access never opens Project membership controls");
@@ -1255,7 +1280,7 @@ test("a late document location cannot disclose a Project after an account change
     }),
   );
   await settle();
-  assert.equal(location.pathname, `/p/${ROADMAP}`, "late metadata cannot rewrite the URL");
+  assert.equal(shownPagePath(), `/p/${ROADMAP}`, "late metadata cannot rewrite the URL");
   assert.equal(toolCalls(app, "get_project"), 0);
   assert.equal(projectListings.length, 0, "the stale Project tree is never requested");
   assert.equal(document.querySelector(".project-chip"), null);
@@ -1288,7 +1313,7 @@ test("late Project tree rows never paint over the next document", async (t) => {
     }),
   );
   await settle();
-  assert.equal(location.pathname, `/p/${PLAN}`);
+  assert.equal(shownPagePath(), `/p/${PLAN}`);
   assert.equal(document.querySelector(".project-pages"), null);
   assert.doesNotMatch(document.body.textContent, /Stale child/);
 });
@@ -1548,7 +1573,7 @@ test("Project content documents offer neither Move nor Trash", async (t) => {
   assert.deepEqual(rows(), ["Roadmap", "Plan"]);
   globalThis.__openPage = (id) => Promise.resolve(fakeSession(id, "one", "Plan"));
   await openRow("Plan");
-  assert.equal(location.pathname, `/p/${PLAN}`);
+  assert.equal(shownPagePath(), `/p/${PLAN}`);
   assert.ok(await until(() => pageAction("Copy link")), "the Page is open");
   assert.equal(!!pageAction("Move to Trash"), false, "unknown placement cannot be trashed");
   assert.ok(pageAction("Move to…"), "offered before read_page answers; it asks when chosen");
@@ -1596,7 +1621,7 @@ test("clicking Trash on a local draft preserves it when the host refuses deletio
   await settle();
   assert.equal(toolCalls(app, "delete_page"), 1);
   assert.equal(leaves, 0);
-  assert.equal(location.pathname, `/p/${PLAN}`);
+  assert.equal(shownPagePath(), `/p/${PLAN}`);
   assert.equal(document.querySelector(".document-print-title")?.textContent, "Local content");
   assert.ok(app.banners().length);
 });
@@ -1722,7 +1747,7 @@ test("a Page created in this tab finds its place once it registers", async (t) =
   await settle();
   await click(button("New Page"));
   await settle();
-  assert.equal(location.pathname, `/p/${PLAN}`);
+  assert.equal(shownPagePath(), `/p/${PLAN}`);
   assert.ok(await until(() => pageAction("Move to…")), "Move to… is offered");
   assert.equal(toolCalls(app, "read_page"), 1, "asked once, and refused");
   assert.equal(markup(".breadcrumbs"), null);
@@ -1756,7 +1781,7 @@ test("a Page created in this tab is in the library when Back returns there", asy
   globalThis.__createPage = () => Promise.resolve(fakeSession(PLAN, "one", "Untitled"));
   await click(button("New Page"));
   await settle();
-  assert.equal(location.pathname, `/p/${PLAN}`);
+  assert.equal(shownPagePath(), `/p/${PLAN}`);
   Object.assign(gate, closed());
   history.back();
   await settle();

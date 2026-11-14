@@ -2,10 +2,13 @@ const pageIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[
 
 /**
  * A Page link may carry a slug after its id, `/p/<id>/<slug>`, which names
- * nothing: the id alone finds and authorizes the Page. The slug only gives a
- * link preview words to show (pageSlugWords) for a Page its unfurler can't
- * read. Grammar: 1 to 80 of `A-Z a-z 0-9 _ -`, at least one letter or digit,
- * and not `view` in any case. No dot, so a file route under `/p/<id>/`
+ * nothing: the id alone finds and authorizes the Page. The slug gives a
+ * reader and a link preview words to show (pageSlugWords) for a Page its
+ * unfurler can't read. Every link Pages builds for a Page whose title it has
+ * carries the title's slug (pageTitleSlug, pageLinkPath), in the app, in
+ * tool results and in the open Page's address; a link with an older or
+ * hand-typed slug opens the same Page. Grammar: 1 to 80 of
+ * `A-Z a-z 0-9 _ -`, at least one letter or digit, and not `view` in any case. No dot, so a file route under `/p/<id>/`
  * (`meta.json`, `card.json`) never reads as one, and nothing that needs
  * percent-encoding, so the address shows it as typed. Anything else after
  * the id is not a Page route.
@@ -22,6 +25,41 @@ export const isPageSlug = (slug) =>
  * one, and the ends are trimmed. "My-Dashboard" reads "My Dashboard". */
 export const pageSlugWords = (slug) => slug.replace(/[-_]+/g, " ").trim();
 
+const PAGE_SLUG_MAX = 80;
+/** How far back from the cap a long slug looks for a `-` to end at. */
+const PAGE_SLUG_BOUNDARY_WINDOW = 24;
+
+/**
+ * The slug for a Page titled `title`, or null when the title gives none.
+ * Accents come off (NFKD, then combining marks dropped: "Café" is "Cafe"),
+ * letter case stays as typed, and every run of anything else outside
+ * `A-Z a-z 0-9` becomes one `-`, trimmed from both ends. A slug over 80
+ * characters ends at the last `-` within the final stretch before the cap,
+ * or at the cap when there is none. A title with no Latin letter or digit,
+ * an empty one and one that reads `view` give null (isPageSlug). There is no
+ * transliteration: a title in another script gives null.
+ */
+export function pageTitleSlug(title) {
+  if (typeof title !== "string") return null;
+  let slug = title
+    .normalize("NFKD")
+    .replace(/\p{M}+/gu, "")
+    .replace(/[^A-Za-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (slug.length > PAGE_SLUG_MAX) {
+    const cut = slug.slice(0, PAGE_SLUG_MAX);
+    const boundary = cut.lastIndexOf("-");
+    slug =
+      slug[PAGE_SLUG_MAX] === "-"
+        ? cut
+        : boundary >= PAGE_SLUG_MAX - PAGE_SLUG_BOUNDARY_WINDOW
+          ? cut.slice(0, boundary)
+          : cut;
+    slug = slug.replace(/-+$/, "");
+  }
+  return isPageSlug(slug) ? slug : null;
+}
+
 /** A Page's address, with `slug` after its id when one is given. */
 export function pagePath(id, slug = null) {
   if (!pageIdPattern.test(id ?? "")) throw Error("Invalid Page ID");
@@ -29,6 +67,14 @@ export function pagePath(id, slug = null) {
   if (!isPageSlug(slug)) throw Error("Invalid Page slug");
   return `/p/${id}/${slug}`;
 }
+
+/** The address a link to `page` (`{ page_id, title }`) carries: its title's
+ * slug after the id when the title gives one, else `/p/<id>`. */
+export const pageLinkPath = (page) => pagePath(page.page_id, pageTitleSlug(page.title));
+
+/** The full URL of a link to `page` (`{ page_id, title }`) at `origin`. A
+ * caller without the title passes none and gets `/p/<id>`. */
+export const pageUrl = (origin, page) => new URL(pageLinkPath(page), origin).href;
 
 // New Projects get prj_ IDs; sp_ IDs predate the Project name and stay valid.
 const projectIdPattern =
@@ -200,14 +246,22 @@ export function readPageRoute(input) {
 
 /**
  * The path a "Copy link" action copies for Page or Project `id`, with `href`
- * the address showing now. A Page link keeps the slug the address shows for
- * that same Page, read through readPageRoute, so it is always one isPageSlug
- * admits; with none it is `/p/<id>`. Nothing derives a slug from a title.
+ * the address showing now and `title` the Page's title when the caller has
+ * it. A Page link carries the title's slug (pageTitleSlug). When the title
+ * gives none, or no title is passed, it keeps the slug the address shows for
+ * that same Page, read through readPageRoute; with neither it is `/p/<id>`.
+ * Either way the slug is one isPageSlug admits.
  */
-export function copyLinkPath(id, href = globalThis.location?.href) {
+export function copyLinkPath(id, href = globalThis.location?.href, title = null) {
   if (isProjectId(id)) return projectPath(id);
+  return pagePath(id, pageTitleSlug(title) ?? shownSlug(id, href));
+}
+
+/** The slug address `href` shows for Page `id`, or null when it shows none
+ * or shows something else. */
+function shownSlug(id, href) {
   const shown = href ? readPageRoute(href) : null;
-  return pagePath(id, shown?.kind === "page" && shown.pageId === id ? shown.slug : null);
+  return shown?.kind === "page" && shown.pageId === id ? shown.slug : null;
 }
 
 // Modified and auxiliary clicks retain normal browser link behavior.
@@ -229,14 +283,18 @@ export const anchorFragment = (anchor) => (anchor ? `#${encodeURIComponent(ancho
  * Show Page or Project `id` in the address (`/` for none). `anchor` names a
  * heading to add as the fragment. Without one, a replace keeps the current
  * fragment: it rewrites the same visit's address into canonical form, and a
- * heading link that opened the Page still names its heading. A replace also
- * keeps the slug the address shows for the same Page, so a link's words stay
- * as typed. A push is a new visit and starts without either.
+ * heading link that opened the Page still names its heading. `slug` is the
+ * Page's slug when the caller knows its title (pageTitleSlug); without one, a
+ * replace keeps the slug the address shows for the same Page, until the open
+ * Page's title gives its own (viewer/address-slug.mjs). A push is a new
+ * visit and starts with neither fragment nor shown slug.
  */
 export function writePageRoute(id, options = {}) {
-  const { anchor = null, location = globalThis.location, ...rest } = options;
-  const shown = rest.replace && location?.href ? readPageRoute(location.href) : null;
-  const slug = shown?.kind === "page" && shown.pageId === id ? shown.slug : null;
+  const { anchor = null, slug: given = null, location = globalThis.location, ...rest } = options;
+  const slug =
+    id && !isProjectId(id)
+      ? (given ?? (rest.replace ? shownSlug(id, location?.href) : null))
+      : null;
   const path = id ? (isProjectId(id) ? projectPath(id) : pagePath(id, slug)) : "/";
   const fragment = !id
     ? ""
@@ -251,8 +309,20 @@ export function writePageRoute(id, options = {}) {
 // A history entry's scroll position, in its state under SCROLL_STATE_KEY:
 // `{ path, y }`, where `path` is the address (without fragment) it was
 // measured at. The Page shown at an address swaps in place, so a position
-// counts only for the address it was measured at.
+// counts only for the address it was measured at, compared as sameScrollAddress
+// does: a Page's slug names nothing, so the title's slug arriving in the
+// address, or changing with a rename, keeps the position.
 export const SCROLL_STATE_KEY = "scroll";
+
+/** The part of `path` (pathname and search) a scroll position belongs to: a
+ * Page route's canonical path, or `path` itself for any other route. */
+const scrollAddress = (path) => {
+  const route = readPageRoute(path);
+  return route.kind === "page" ? route.path : path;
+};
+/** Whether a position measured at `a` counts at `b`. */
+export const sameScrollAddress = (a, b) =>
+  typeof a === "string" && typeof b === "string" && scrollAddress(a) === scrollAddress(b);
 
 /** Record scroll position `y` in the current history entry. */
 export function rememberScroll(
@@ -269,7 +339,8 @@ export function rememberScroll(
 /** The scroll position recorded for the current history entry, or null. */
 export function savedScroll({ history = globalThis.history, location = globalThis.location } = {}) {
   const saved = history.state?.[SCROLL_STATE_KEY];
-  return saved?.path === `${location.pathname}${location.search}` && Number.isFinite(saved.y)
+  return sameScrollAddress(saved?.path, `${location.pathname}${location.search}`) &&
+    Number.isFinite(saved.y)
     ? saved.y
     : null;
 }
@@ -278,7 +349,8 @@ export function savedScroll({ history = globalThis.history, location = globalThi
  * Push (or replace) `path` unless the address already shows it. A push first
  * records the current scroll position in the entry it leaves, so Back can
  * return to it, and starts the new entry without one. A replace keeps the
- * entry's position while the address (without fragment) stays the same.
+ * entry's position while the address (without fragment) stays the same, by
+ * sameScrollAddress.
  */
 export function writeRoute(
   path,
@@ -299,7 +371,7 @@ export function writeRoute(
   }
   if (replace) {
     const url = new URL(path, "https://pages.invalid");
-    if (saved && saved.path === `${url.pathname}${url.search}`)
+    if (saved && sameScrollAddress(saved.path, `${url.pathname}${url.search}`))
       next = { ...next, [SCROLL_STATE_KEY]: saved };
   } else rememberScroll(scrollY, { history, location });
   history[replace ? "replaceState" : "pushState"](next, "", path);

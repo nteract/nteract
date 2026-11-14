@@ -889,6 +889,7 @@ create_page_asset_upload) takes project_id in its place to address a Project's
 content; give one, never both
 (invalid_arguments). Such a read answers with kind "project", project_id and the
 content's page_id, whose revision it names. Browser link: ${origin}/p/<page_id>.
+A result's url may add the title after the id; the id alone identifies the Page.
 read_page also returns schema_features, the non-baseline features the Page uses (new
 Pages list "comments-doc"); if Pages doesn't support one of them, edits fail with code
 unsupported_schema_feature and the Page stays readable.

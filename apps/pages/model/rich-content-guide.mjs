@@ -76,7 +76,7 @@ export function headingLinks() {
  * chit with the target's current title; a label freezes one title for
  * everyone. */
 export function pageLinks() {
-  return "To link another Page or a Project, write its full URL as an autolink, <https://…/p/<page_id>> or <https://…/project/<project_id>>: each person sees it as a chip with the title they can see now, or Page unavailable, so a rename never leaves it stale. Write [label](url) only when the sentence needs other words, and don't turn an autolink into [Title](url). Its stored text is the URL, so match_text and selected_text use the URL, not the title people see.";
+  return "To link another Page or a Project, write its full URL as an autolink, <https://…/p/<page_id>> (a result's url may add the title after the id; either opens the Page) or <https://…/project/<project_id>>: each person sees it as a chip with the title they can see now, or Page unavailable, so a rename never leaves it stale. Write [label](url) only when the sentence needs other words, and don't turn an autolink into [Title](url). Its stored text is the URL, so match_text and selected_text use the URL, not the title people see.";
 }
 
 /** The Markdown Pages accepts, in a few sentences. */
