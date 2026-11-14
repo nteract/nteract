@@ -110,6 +110,7 @@ test("the projection reads each source, and an entry the host would refuse hides
       asset_id: asset("a"),
       media_type: PARQUET_MEDIA_TYPE,
       revision: "1",
+      set_at: broken.sources.usage.producer.at,
       pins: { 1: { asset_id: asset("a"), media_type: PARQUET_MEDIA_TYPE } },
     },
   });
@@ -135,6 +136,36 @@ test("a pinned binding reads the history state its revision names", () => {
     () => store.resolve({ source_id: "gone", revision: "1" }),
     (error) => error instanceof SourceUnavailable && error.reason === "missing",
   );
+});
+
+test("source metadata updates independently of dataset versions, and removal clears the line's input", () => {
+  const host = hostDoc();
+  const doc = host.set("usage", asset("a"));
+  const { store, doc$ } = storeOver(doc);
+  const metadata = [];
+  const versions = [];
+  const line = store.sources$.subscribe((value) => metadata.push(value));
+  const consumer = store.versions(["usage"]).subscribe((value) => versions.push(value));
+  const at = "2026-11-14T00:00:00.000Z";
+  doc$.next(
+    A.change(doc, (draft) => {
+      draft.sources.usage.producer.at = at;
+      draft.sources.usage.history[0].at = at;
+    }),
+  );
+  assert.equal(metadata.length, 2);
+  assert.equal(metadata.at(-1).usage.set_at, at);
+  assert.equal(versions.length, 1, "time-only metadata does not reload a dataset");
+  doc$.next(
+    A.change(doc$.value, (draft) => {
+      delete draft.sources.usage;
+    }),
+  );
+  assert.deepEqual(store.snapshot(), {});
+  assert.deepEqual(versions.at(-1), { usage: null });
+  line.unsubscribe();
+  consumer.unsubscribe();
+  store.destroy();
 });
 
 test("a reader waiting on a source the store doesn't hold asks for the document while it waits", () => {

@@ -30,7 +30,8 @@ const NO_SOURCES = Object.freeze({});
 
 /**
  * Every readable source in a sources document, by id: `{ source_id, name,
- * asset_id, media_type, revision, pins }`, where `pins` maps each revision
+ * asset_id, media_type, revision, set_at, pins }`, where `set_at` is the
+ * host's last-set instant and `pins` maps each revision
  * the source's history holds to `{ asset_id, media_type }`. An entry the
  * host would refuse to read
  * (model/sources-doc.mjs) reads here as missing, so one broken entry hides
@@ -53,6 +54,7 @@ export function projectSources(doc) {
       asset_id: source.asset_id,
       media_type: source.media_type,
       revision: source.source_revision,
+      set_at: source.producer.at,
       pins: Object.freeze(
         Object.fromEntries(
           source.history.map((state) => [
@@ -113,7 +115,10 @@ export const sameVersion = (a, b) =>
     a.name === b.name);
 const sameSources = (a, b) => {
   const keys = Object.keys(a);
-  return keys.length === Object.keys(b).length && keys.every((id) => sameVersion(a[id], b[id]));
+  return (
+    keys.length === Object.keys(b).length &&
+    keys.every((id) => sameVersion(a[id], b[id]) && a[id].set_at === b[id]?.set_at)
+  );
 };
 
 /** A binding that names nothing this store can read. `reason` is

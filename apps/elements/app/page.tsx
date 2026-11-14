@@ -50,6 +50,12 @@ const catalogGroups = [
     title: "Shell",
     entries: [
       {
+        title: "Pages sources line",
+        description: "Source freshness beneath a Page title, from zero to many sources.",
+        href: "/pages-sources-line",
+        icon: Rows3,
+      },
+      {
         title: "Cloud Python packages",
         description: "Package installation, saved requirements, and session state.",
         href: "/docs/cloud-packages",
