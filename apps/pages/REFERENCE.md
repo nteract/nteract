@@ -17,6 +17,14 @@ instead choose a rendered image, chart or Mermaid diagram from the open Page,
 or upload a cover. The browser shows the exact bytes before uploading them;
 the host validates the raster and publishes only that Page-local asset.
 
+When publishing an uploaded cover, its original bytes also enter the existing
+private Page asset storage. The publication record retains the cover asset ID
+and filename for owner settings; public metadata and image routes expose only
+the composed card. Reopening the editor restores that cover so text edits can
+redraw it. Removing the cover clears the reference on the next publication.
+Render errors leave the draft editable and offer a retry; refreshing settings
+after a network error preserves local edits while reading the current revision.
+
 This does not grant document access. The separate `host/published-preview`
 record is owned by the Page host, outside Automerge. Publishing and removal
 require the owner and write credentials, an observed publication revision and

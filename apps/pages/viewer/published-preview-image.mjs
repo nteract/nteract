@@ -1,3 +1,4 @@
+import { imageAssetUrl } from "../shared/image-assets.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
 
 /** Only visual nodes, never the editor chrome, comments, or full document. */
@@ -62,7 +63,7 @@ export function previewCoverRect(width, height) {
 
 /** Rasterize once, then show and upload the same bytes. No generated content,
  * remote model call, or live-document update can change the approved image. */
-export async function renderPublishedPreview(draft, visuals, signal) {
+export async function renderPublishedPreview(draft, visuals, signal, pageId) {
   await document.fonts?.ready;
   signal.throwIfAborted();
   const canvas = document.createElement("canvas");
@@ -79,8 +80,18 @@ export async function renderPublishedPreview(draft, visuals, signal) {
   if (!textOnly) {
     let visual;
     if (draft.visual === "upload") {
-      if (!draft.file) throw Error("Choose a cover image first.");
-      visual = await createImageBitmap(draft.file);
+      let source = draft.file;
+      if (!source && draft.cover && pageId) {
+        const response = await fetch(imageAssetUrl(pageId, draft.cover.asset_id), {
+          signal,
+          credentials: "same-origin",
+        });
+        if (!response.ok) throw Error("Could not load the cover. Try again or replace it.");
+        source = await response.blob();
+        signal.throwIfAborted();
+      }
+      if (!source) throw Error("Choose a cover image first.");
+      visual = await createImageBitmap(source);
     } else {
       const node = visuals.find((item) => item.id === draft.visual)?.node;
       if (!node?.isConnected)

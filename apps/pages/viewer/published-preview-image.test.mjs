@@ -78,6 +78,25 @@ test("an uploaded cover fills the canvas beneath a dark gradient and white text"
   assert.ok(text.every((entry) => entry.color === "#ffffff"));
   assert.ok(text.every((entry) => entry.y < 630));
   assert.equal(bitmap.close.mock.callCount(), 1);
+  const source = new Blob(["original pixels"], { type: "image/png" });
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    assert.equal(url, `/api/pages/page-id/assets/${"a".repeat(64)}`);
+    assert.equal(options.credentials, "same-origin");
+    assert.ok(options.signal);
+    return new Response(source);
+  });
+  await renderPublishedPreview(
+    {
+      title: "Reopened",
+      description: "Changed",
+      visual: "upload",
+      cover: { asset_id: "a".repeat(64), name: "cover.png" },
+    },
+    [],
+    new AbortController().signal,
+    "page-id",
+  );
+  assert.equal(paints.length, 2, "a reopened cover is drawn from its private source asset");
   text.length = 0;
   await renderPublishedPreview(
     { title: "Title alone", description: "", visual: "upload", file: {} },

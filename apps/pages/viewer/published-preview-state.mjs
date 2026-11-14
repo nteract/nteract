@@ -2,6 +2,8 @@ export const PREVIEW_STATES = [
   "loading",
   "ready",
   "rendering",
+  "render_failed",
+  "uploading_cover",
   "uploading",
   "publishing",
   "unpublishing",
@@ -16,6 +18,7 @@ export const PREVIEW_EVENTS = [
   "prepared",
   "publish",
   "uploaded",
+  "cover_uploaded",
   "unpublish",
   "saved",
   "failed",
@@ -32,19 +35,21 @@ export function previewEditorTransition(state, event) {
       return {
         name: "ready",
         value: event.value,
-        draft: event.value.snapshot
-          ? {
-              title: event.value.snapshot.title,
-              description: event.value.snapshot.description,
-              visual: "text",
-            }
-          : state.draft,
+        draft:
+          !state.edited && event.value.snapshot
+            ? {
+                title: event.value.snapshot.title,
+                description: event.value.snapshot.description,
+                visual: event.value.snapshot.cover ? "upload" : "text",
+                cover: event.value.snapshot.cover,
+              }
+            : state.draft,
         prepared: null,
-        edited: false,
+        edited: state.edited ?? false,
         error: null,
       };
     case "edit":
-      return ["ready", "rendering"].includes(state.name)
+      return ["ready", "rendering", "render_failed"].includes(state.name)
         ? {
             ...state,
             name: "rendering",
@@ -55,15 +60,15 @@ export function previewEditorTransition(state, event) {
           }
         : state;
     case "prepare":
-      return state.name === "ready" && state.draft.title.trim()
+      return ["ready", "render_failed"].includes(state.name) && state.draft.title.trim()
         ? { ...state, name: "rendering", error: null }
         : state;
     case "choose_cover":
-      return ["ready", "rendering"].includes(state.name) && event.file
+      return ["ready", "rendering", "render_failed"].includes(state.name) && event.file
         ? {
             ...state,
             name: "rendering",
-            draft: { ...state.draft, visual: "upload", file: event.file },
+            draft: { ...state.draft, visual: "upload", file: event.file, cover: null },
             prepared: null,
             edited: true,
             error: null,
@@ -71,11 +76,12 @@ export function previewEditorTransition(state, event) {
           }
         : state;
     case "choose_visual":
-      return ["ready", "rendering"].includes(state.name) && typeof event.visual === "string"
+      return ["ready", "rendering", "render_failed"].includes(state.name) &&
+        typeof event.visual === "string"
         ? {
             ...state,
             name: "rendering",
-            draft: { ...state.draft, visual: event.visual, file: undefined },
+            draft: { ...state.draft, visual: event.visual, file: undefined, cover: null },
             prepared: null,
             edited: true,
             error: null,
@@ -88,7 +94,15 @@ export function previewEditorTransition(state, event) {
         : state;
     case "publish":
       return state.name === "ready" && state.prepared && state.draft.title.trim()
-        ? { ...state, name: "uploading", nonce: event.nonce }
+        ? { ...state, name: state.draft.file ? "uploading_cover" : "uploading", nonce: event.nonce }
+        : state;
+    case "cover_uploaded":
+      return state.name === "uploading_cover"
+        ? {
+            ...state,
+            name: "uploading",
+            draft: { ...state.draft, cover: event.cover, file: undefined },
+          }
         : state;
     case "uploaded":
       return state.name === "uploading"
@@ -110,7 +124,11 @@ export function previewEditorTransition(state, event) {
           }
         : state;
     case "failed":
-      return ["loading", "rendering", "uploading", "publishing", "unpublishing"].includes(
+      if (state.name === "rendering")
+        return event.draft === state.draft
+          ? { ...state, name: "render_failed", error: event.error, prepared: null }
+          : state;
+      return ["loading", "uploading_cover", "uploading", "publishing", "unpublishing"].includes(
         state.name,
       )
         ? { ...state, name: "failed", error: event.error, prepared: null }

@@ -182,3 +182,36 @@ test("publication state/event matrix and lifecycle fence", () => {
     }
   assert.doesNotMatch(previewTags(origin, "id", null), /og:image/);
 });
+
+test("source covers survive owner reads but never enter the public envelope", async (t) => {
+  const { w, id, send, manage, command } = await fixture(t);
+  const cover = { asset_id: "c".repeat(64), name: "original-cover.png" };
+  const publish = { ...command(), cover };
+  assert.equal((await manage(publish)).status, 400, "the cover must belong to this Page");
+  await w.env.PAGES_ASSETS.put(imageAssetKey("another-page", cover.asset_id), image);
+  assert.equal((await manage(publish)).status, 400, "a cross-Page cover is refused");
+  await w.env.PAGES_ASSETS.put(
+    imageAssetKey(id, cover.asset_id),
+    new TextEncoder().encode("<svg/>"),
+  );
+  assert.equal((await manage(publish)).status, 415, "the source must be a valid raster");
+  await w.env.PAGES_ASSETS.put(imageAssetKey(id, cover.asset_id), image);
+  assert.equal((await manage(publish)).status, 200);
+  const settings = await (await manage()).json();
+  assert.deepEqual(settings.snapshot.cover, cover);
+  assert.equal((await manage(publish)).status, 200, "exact replay is idempotent");
+  assert.equal((await manage({ ...publish, cover: { ...cover, name: "other.png" } })).status, 409);
+  assert.equal((await manage({ ...publish, cover: { ...cover, asset_id: asset } })).status, 409);
+  const publicJson = await (await send(`/p/${id}/preview.json`)).text();
+  const publicHtml = await (await send(`/p/${id}`)).text();
+  for (const text of [publicJson, publicHtml]) {
+    assert.ok(!text.includes(cover.asset_id));
+    assert.ok(!text.includes(cover.name));
+  }
+  assert.equal((await send(`/api/pages/${id}/assets/${cover.asset_id}`)).status, 401);
+  const edited = { ...command(1), description: "Edited after reopening", cover };
+  assert.equal((await manage(edited)).status, 200);
+  assert.deepEqual((await (await manage()).json()).snapshot.cover, cover);
+  assert.equal((await manage({ ...command(2), cover: null })).status, 200);
+  assert.equal((await (await manage()).json()).snapshot.cover, null);
+});

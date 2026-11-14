@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { PRODUCT_NAME } from "../shared/product.mjs";
 import { request } from "./request.mjs";
-import { uploadPageImage } from "./image-upload.mjs";
+import { uploadPageImage, validateImageFile } from "./image-upload.mjs";
 import { previewEditorTransition } from "./published-preview-state.mjs";
 import { previewVisuals, renderPublishedPreview } from "./published-preview-image.mjs";
 import "./published-preview.css";
@@ -32,19 +32,36 @@ export function PublishedPreview({ session, onBack }) {
   useEffect(() => {
     const controller = new AbortController();
     const { signal } = controller;
-    if (!["loading", "rendering", "uploading", "publishing", "unpublishing"].includes(state.name))
+    if (
+      ![
+        "loading",
+        "rendering",
+        "uploading_cover",
+        "uploading",
+        "publishing",
+        "unpublishing",
+      ].includes(state.name)
+    )
       return;
     const subscription = defer(async () => {
       if (state.name === "loading")
         return { type: "loaded", value: await request(endpoint, { signal }) };
       if (state.name === "rendering") {
-        const blob = await renderPublishedPreview(state.draft, visuals, signal);
+        const blob = await renderPublishedPreview(state.draft, visuals, signal, session.pageId);
         // The viewer CSP permits data images, not blob URLs. Display the same
         // PNG bytes that uploadPageImage will send after approval.
         const bytes = new Uint8Array(await blob.arrayBuffer());
         signal.throwIfAborted();
         const url = `data:image/png;base64,${btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(""))}`;
         return { type: "prepared", draft: state.draft, prepared: { blob, url } };
+      }
+      if (state.name === "uploading_cover") {
+        validateImageFile(state.draft.file);
+        const asset = await uploadPageImage(session.pageId, state.draft.file, signal);
+        return {
+          type: "cover_uploaded",
+          cover: { asset_id: asset.asset_id, name: state.draft.file.name.slice(0, 1024) },
+        };
       }
       if (state.name === "uploading")
         return {
@@ -63,13 +80,14 @@ export function PublishedPreview({ session, onBack }) {
             title: state.draft.title,
             description: state.draft.description,
             asset_id: state.asset.asset_id,
+            cover: state.draft.cover ?? null,
           }),
         }),
       });
       return { type: "saved", value };
     }).subscribe({
       next: (event) => dispatch(event),
-      error: (error) => dispatch({ type: "failed", error: error.message }),
+      error: (error) => dispatch({ type: "failed", error: error.message, draft: state.draft }),
     });
     return () => {
       controller.abort();
@@ -77,11 +95,13 @@ export function PublishedPreview({ session, onBack }) {
     };
   }, [state.name, state.nonce, state.draft, endpoint, session, visuals]);
   const ready = state.name === "ready";
-  const editable = ready || state.name === "rendering";
+  const editable = ready || ["rendering", "render_failed"].includes(state.name);
+  const canPrepare = ready || state.name === "render_failed";
+  const coverName = state.draft.file?.name || state.draft.cover?.name;
   const edit = (patch) => dispatch({ type: "edit", patch });
   const published = state.value?.snapshot;
   const showPublished = published && !state.edited && !state.prepared;
-  const busy = !["ready", "failed", "loading"].includes(state.name);
+  const busy = !["ready", "failed", "render_failed", "loading"].includes(state.name);
   return (
     <section className="published-preview" aria-labelledby={`${id}-title`}>
       <header className="published-preview-header">
@@ -208,9 +228,7 @@ export function PublishedPreview({ session, onBack }) {
                   <Upload size={17} />
                   <span>
                     {state.draft.visual === "text" ? "Add cover" : "Replace cover"}
-                    {state.draft.file?.name && (
-                      <small title={state.draft.file.name}>{state.draft.file.name}</small>
-                    )}
+                    {coverName && <small title={coverName}>{coverName}</small>}
                   </span>
                   <input
                     aria-label="Cover image"
@@ -259,9 +277,11 @@ export function PublishedPreview({ session, onBack }) {
                 <button
                   className="preview-text-button"
                   type="button"
-                  onClick={() => dispatch({ type: "reload" })}
+                  onClick={() =>
+                    dispatch({ type: state.name === "render_failed" ? "prepare" : "reload" })
+                  }
                 >
-                  Reload settings
+                  {state.name === "render_failed" ? "Retry preview" : "Reload settings"}
                 </button>
               </p>
             )}
@@ -291,9 +311,9 @@ export function PublishedPreview({ session, onBack }) {
                   className={state.prepared ? "preview-secondary" : "preview-primary"}
                   type="button"
                   disabled={
-                    !ready ||
+                    !canPrepare ||
                     !state.draft.title.trim() ||
-                    (state.draft.visual === "upload" && !state.draft.file)
+                    (state.draft.visual === "upload" && !state.draft.file && !state.draft.cover)
                   }
                   onClick={() => dispatch({ type: "prepare" })}
                 >

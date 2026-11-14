@@ -40,13 +40,19 @@ test("owner must prepare and approve exact image bytes; publishing and removal u
   const saved = new Map();
   const pending = [];
   let holdRenders = false;
+  let renderError = null;
   for (const [key, value] of Object.entries({
     window: dom.window,
     document: dom.window.document,
     IS_REACT_ACT_ENVIRONMENT: true,
     renderPreviewForTest: (draft, signal) => {
+      if (renderError) throw Error(renderError);
       const blob = new Blob(
-        [draft.file ? `cover:${draft.file.name}${draft.description}` : "test raster"],
+        [
+          draft.file || draft.cover
+            ? `cover:${draft.file?.name || draft.cover.name}${draft.description}`
+            : "test raster",
+        ],
         { type: "image/png" },
       );
       return holdRenders
@@ -60,35 +66,41 @@ test("owner must prepare and approve exact image bytes; publishing and removal u
   const calls = [];
   const id = "12345678-1234-4123-8123-123456789abc";
   const asset = "a".repeat(64);
+  const coverAsset = "c".repeat(64);
+  let server = { revision: 0, snapshot: null };
   t.mock.method(globalThis, "fetch", async (url, options = {}) => {
     calls.push({ url, options });
     if (url.endsWith("/assets")) {
-      assert.equal(await options.body.text(), "test raster");
+      const bytes = await options.body.text();
+      const uploadedAsset = bytes === "cover" ? coverAsset : asset;
       return Response.json({
-        asset_id: asset,
-        url: `/api/pages/${id}/assets/${asset}`,
+        asset_id: uploadedAsset,
+        url: `/api/pages/${id}/assets/${uploadedAsset}`,
         mime_type: "image/png",
       });
     }
     const command = options.body ? JSON.parse(options.body) : null;
-    if (!command) return Response.json({ revision: 0, snapshot: null });
+    if (!command) return Response.json(server);
+    assert.equal(command.expected_revision, server.revision);
     if (command.action === "publish") {
-      assert.equal(command.expected_revision, 0);
       assert.equal(command.asset_id, asset);
       assert.equal(command.title, "Text-only Page");
-      return Response.json({
-        revision: 1,
+      server = {
+        revision: server.revision + 1,
         snapshot: {
           title: command.title,
-          description: "",
+          description: command.description,
+          cover: command.cover,
           asset_id: asset,
           published_at: "2026-11-14T12:00:00Z",
         },
-      });
+      };
+      return Response.json(server);
     }
     assert.equal(command.action, "unpublish");
     assert.equal(command.expected_revision, 1);
-    return Response.json({ revision: 2, snapshot: null });
+    server = { revision: 2, snapshot: null };
+    return Response.json(server);
   });
   const { createRoot } = await import("react-dom/client");
   const root = createRoot(document.getElementById("root"));
@@ -142,7 +154,7 @@ test("owner must prepare and approve exact image bytes; publishing and removal u
     await settle(() => {
       const input = document.querySelector("input[type='file']");
       Object.defineProperty(input, "files", {
-        value: [new dom.window.File(["cover"], "cover.png", { type: "image/png" })],
+        value: [new File(["cover"], "cover.png", { type: "image/png" })],
       });
       input.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
     });
@@ -198,6 +210,55 @@ test("owner must prepare and approve exact image bytes; publishing and removal u
       `data:image/png;base64,${Buffer.from("test raster").toString("base64")}`,
     );
     assert.equal(calls.length, 4, "removing the cover also stays a local preview");
+    await settle(() =>
+      document
+        .querySelector("input[type=file]")
+        .dispatchEvent(new dom.window.Event("change", { bubbles: true })),
+    );
+    await settle(() => button("Publish preview").click());
+    assert.equal(
+      calls.length,
+      7,
+      "publish uploads the source cover, composed card, then the snapshot",
+    );
+    assert.deepEqual(server.snapshot.cover, { asset_id: coverAsset, name: "cover.png" });
+    await settle(() =>
+      root.render(
+        createElement(PublishedPreview, {
+          key: "reopened",
+          session: { pageId: id, snapshot: () => ({ title: "Text-only Page" }) },
+        }),
+      ),
+    );
+    assert.equal(document.querySelector(".preview-upload small").textContent, "cover.png");
+    const reopenedDescription = document.querySelector("textarea");
+    const editReopened = (value) => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value").set.call(
+        reopenedDescription,
+        value,
+      );
+      reopenedDescription.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    };
+    renderError = "Could not load cover";
+    await settle(() => editReopened("Keep this draft"));
+    assert.equal(reopenedDescription.disabled, false);
+    assert.equal(reopenedDescription.value, "Keep this draft");
+    assert.ok(button("Retry preview"));
+    assert.equal(button("Reload settings"), undefined);
+    renderError = null;
+    await settle(() => button("Retry preview").click());
+    assert.equal(
+      document.querySelector(".published-preview-image").src,
+      `data:image/png;base64,${Buffer.from("cover:cover.pngKeep this draft").toString("base64")}`,
+    );
+    await settle(() => button("Update public preview").click());
+    assert.equal(
+      calls.length,
+      10,
+      "reopening and editing reuses the saved cover without uploading it again",
+    );
+    assert.equal(server.snapshot.description, "Keep this draft");
+    assert.deepEqual(server.snapshot.cover, { asset_id: coverAsset, name: "cover.png" });
   } finally {
     await act(async () => root.unmount());
     dom.window.close();

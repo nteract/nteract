@@ -42,6 +42,8 @@ export function publicationTransition(state, command, snapshot) {
     command.title,
     command.description,
     command.asset_id,
+    command.cover?.asset_id,
+    command.cover?.name,
   ]);
   if (state.receipt?.nonce === command.nonce) {
     if (state.receipt.fingerprint !== fingerprint)
@@ -75,7 +77,18 @@ export function previewFields(command) {
       400,
       "Use a title up to 160 characters, a description up to 400, and a Page image",
     );
-  return { title: title.trim(), description: description.trim(), asset_id };
+  const cover = command.cover;
+  if (
+    cover != null &&
+    (!validAssetId(cover.asset_id) || typeof cover.name !== "string" || cover.name.length > 1024)
+  )
+    throw new HttpError(400, "Use a Page image and filename for the cover");
+  return {
+    title: title.trim(),
+    description: description.trim(),
+    asset_id,
+    cover: cover == null ? null : { asset_id: cover.asset_id, name: cover.name },
+  };
 }
 
 /** Called only inside the Page's serial queue. No anonymous caller reaches
@@ -118,6 +131,7 @@ export async function publicationHost(host, request) {
           title: value.snapshot.title,
           description: value.snapshot.description,
           asset_id: value.snapshot.asset_id,
+          cover: value.snapshot.cover ?? null,
           published_at: value.snapshot.published_at,
         }
       : null,
@@ -132,6 +146,14 @@ export async function publicationHost(host, request) {
     if (!object) throw new HttpError(400, "Choose an uploaded image from this Page");
     const bytes = await readImageBody(new Response(object.body));
     const image = inspectImage(bytes);
+    // Source covers stay private. Only the composed asset is served publicly.
+    if (fields.cover) {
+      const cover = await host.env.PAGES_ASSETS?.get(
+        imageAssetKey(record.pageId, fields.cover.asset_id),
+      );
+      if (!cover) throw new HttpError(400, "Choose an uploaded cover from this Page");
+      inspectImage(await readImageBody(new Response(cover.body)));
+    }
     next = publicationTransition(state, command, {
       ...fields,
       mime_type: image.mime_type,

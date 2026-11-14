@@ -9,16 +9,17 @@ import {
 test("every preview state/event pair rejects invalid transitions", () => {
   const allowed = {
     loaded: ["loading"],
-    edit: ["ready", "rendering"],
-    choose_cover: ["ready", "rendering"],
-    choose_visual: ["ready", "rendering"],
-    prepare: ["ready"],
+    edit: ["ready", "rendering", "render_failed"],
+    choose_cover: ["ready", "rendering", "render_failed"],
+    choose_visual: ["ready", "rendering", "render_failed"],
+    prepare: ["ready", "render_failed"],
     prepared: ["rendering"],
     publish: ["ready"],
     uploaded: ["uploading"],
+    cover_uploaded: ["uploading_cover"],
     unpublish: ["ready"],
     saved: ["publishing", "unpublishing"],
-    failed: ["loading", "rendering", "uploading", "publishing", "unpublishing"],
+    failed: ["loading", "rendering", "uploading_cover", "uploading", "publishing", "unpublishing"],
     reload: ["ready", "failed"],
   };
   for (const name of PREVIEW_STATES)
@@ -92,4 +93,37 @@ test("edits invalidate approval; rendering, publishing and removing block duplic
   const failed = step(publishing, { type: "failed", error: "Connection lost" });
   assert.equal(failed.value.revision, 1);
   assert.equal(step(failed, { type: "reload" }).name, "loading");
+});
+
+test("reopening restores the private cover and render recovery preserves edited text", () => {
+  const cover = { asset_id: "a".repeat(64), name: "cover.png" };
+  const value = { revision: 1, snapshot: { title: "Published", description: "Before", cover } };
+  const loaded = step({ name: "loading", draft: {} }, { type: "loaded", value });
+  assert.equal(loaded.draft.visual, "upload");
+  assert.deepEqual(loaded.draft.cover, cover);
+  const edited = step(loaded, { type: "edit", patch: { description: "After" } });
+  const failed = step(edited, { type: "failed", draft: edited.draft, error: "Decode failed" });
+  assert.equal(failed.name, "render_failed");
+  const retry = step(failed, { type: "prepare" });
+  assert.equal(retry.name, "rendering");
+  assert.equal(retry.draft, edited.draft);
+  assert.equal(step(failed, { type: "edit", patch: { title: "Corrected" } }).name, "rendering");
+  assert.equal(
+    step(failed, { type: "choose_cover", file: { name: "replacement.png" } }).name,
+    "rendering",
+  );
+  const prepared = step(retry, { type: "prepared", draft: retry.draft, prepared: {} });
+  const upload = step(prepared, { type: "publish", nonce: "n" });
+  assert.equal(upload.name, "uploading", "a saved cover does not need another upload");
+  const uploadFailed = step(upload, { type: "failed", error: "Offline" });
+  const reloaded = step(step(uploadFailed, { type: "reload" }), { type: "loaded", value });
+  assert.equal(reloaded.edited, true, "the retained draft is not presented as the published image");
+  assert.equal(
+    reloaded.draft,
+    edited.draft,
+    "a network-error reload refreshes the revision without discarding the draft",
+  );
+  const replacement = step(prepared, { type: "choose_cover", file: { name: "new.png" } });
+  const ready = step(replacement, { type: "prepared", draft: replacement.draft, prepared: {} });
+  assert.equal(step(ready, { type: "publish" }).name, "uploading_cover");
 });
