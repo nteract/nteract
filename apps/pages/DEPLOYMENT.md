@@ -1603,40 +1603,77 @@ configuration.
 
 ## Outbound requests
 
-The OAuth server for `/mcp` reads a client's client ID metadata document from
-the client's `client_id`, an `https` URL
-([worker/oauth-clients.mjs](worker/oauth-clients.mjs)). One setting decides
-which URLs it reads:
+The OAuth server for `/mcp` accepts every valid HTTPS client ID metadata URL.
+Known client names are display labels, not an access list. All clients still
+need valid metadata, a listed callback, PKCE S256, sign-in and consent.
+`PAGES_OAUTH_ANY_CLIENT_DOCUMENT` is obsolete and has no effect.
 
-| `PAGES_OAUTH_ANY_CLIENT_DOCUMENT` | Documents the Worker reads | Who can ask a person for access |
-| --- | --- | --- |
-| unset, or anything but `true` | Three fixed URLs: ChatGPT's and the two Claude publishes | ChatGPT, Claude, Claude Code, and the fixed ids `pages-chatgpt` and `pages-kilo` |
-| `true` | Any `https` URL on a public DNS name that a signed-in person's request names | Any client that publishes a document |
+Fetching metadata requires `PAGES_OAUTH_METADATA_EGRESS=public-https`. This is
+an **operator assertion of a network boundary**, not a switch that creates
+one. With it unset or any other value, new metadata-based authorizations
+return 503 without making a request, for known and unknown clients alike.
+Existing grants can still refresh and revoke without fetching metadata.
+The fixed `pages-kilo` and `pages-chatgpt` clients do not fetch metadata.
 
-With the setting off, any other `https` client ID gets `invalid_client` and
-nothing is fetched. Turning it off later refuses those clients' token and
-revocation requests too. Their access tokens last at most ten more minutes,
-and a person can still disconnect them from Connected agents.
+The native installer can install nftables output rules for the dedicated service
+UID before publishing to an active node, and again in `ExecStartPre` on every
+start. It does **not** enable the boundary or metadata fetching automatically.
+It reads the operator-owned `/etc/<service>/oauth-metadata-egress` file; only a regular,
+root-owned file that is not group/world writable can select a phase. `prepared`
+installs the local boundary while leaving metadata fetching disabled.
+`public-https` installs the boundary and sets the Worker variable. A missing
+file leaves fetching disabled and does not introduce HTTPS filtering; malformed
+qualification stops installation before any writes. This marker is outside
+release artifacts and is never created by the installer.
 
-Turn it on only where outbound connections from the Worker cannot reach a
-private network. The Worker checks how a hostname is spelled, not where it
-resolves. It refuses IP literals, single-label names and reserved suffixes such
-as `.internal` and `.local`, but a public name can resolve to a private
-address. The Worker then opens a TLS connection to port 443 at that address.
-Nothing is read back unless the service there holds a valid certificate for
-the name, so what a signed-in person can learn is whether something answers.
+Those rules reject outbound TCP port 443 connections to private, loopback, link-local, shared-address,
+reserved and multicast destinations. IPv6 permits global unicast only,
+excluding special-use ranges and transition ranges. The decision applies to
+actual packets after DNS resolution, including a changed DNS answer; there is
+no DNS preflight followed by an unrestricted fetch. DNS, runtime instance
+credentials on port 80, peer RPC, and replies to incoming connections keep
+their existing paths. Private HTTPS identity providers or object stores are
+therefore incompatible with public metadata egress on this service UID.
 
-Before turning it on, make the runtime or the network refuse outbound
-connections from the Worker to private, loopback and link-local addresses,
-the cloud provider's instance metadata address included. This matters most
-for an on-premises deployment, where the Worker's host sits on the network it
-would reach. Nothing here says what a given runtime refuses by default: check
-it for the deployment.
+Roll out in two phases, including when upgrading an existing deployment:
 
-A Workers package sets it in the profile's `vars`
-([Cloudflare Workers package](#cloudflare-workers-package)). The host
-installer ([install.mjs](scripts/deployment/install.mjs)) writes no value for
-it, so every target it installs has the setting off.
+1. A greenfield service must first complete an unqualified install to create
+   its ownership record; do not pre-create its configuration directory.
+   New metadata-based authorizations return 503, including ChatGPT, Codex and
+   Claude; existing grants continue working. After confirming that the
+   service does not depend on private HTTPS endpoints, create
+   `/etc/<service>/oauth-metadata-egress` containing `prepared` (root-owned,
+   mode 0600) and install the new firewall helper and startup hook on **every**
+   serving node and on the image used to add future nodes.
+2. Verify the network boundary on every node, including proxies and address
+   translation. Then change the operator file to `public-https` and rerun
+   install. This records that the whole fleet is qualified, not just this node. Removing the
+   file and rerunning install disables new metadata-based authorizations.
+   Existing egress rules are retained even with no marker: other nodes or
+   in-flight requests may still be using an enabled release. Remove the rules
+   manually only after metadata fetching is disabled throughout the fleet.
+
+A fleet deployment pointer can be adopted without a restart. The installer
+configures the local node only and cannot discover another node's firewall;
+its release must never infer fleet qualification from that local success.
+Custom deployments, including Cloudflare packages and local development, must enforce the equivalent
+public-only HTTPS policy in their runtime or network before setting the value
+in Wrangler vars or `.dev.vars`. Do not set it merely because URL validation
+passes: a public DNS name can resolve to a private address. Private routing,
+HTTPS proxies, NAT64, and destination translation must not route apparently
+public HTTPS destinations into a private network. No unrestricted metadata
+fetch fallback exists.
+
+The Worker fetches only after sign-in, sends no cookies or authorization,
+requires port 443, never follows redirects, and bounds time, bytes, cache
+entries and concurrent fetches. Product names do not bypass any of these
+checks. `node scripts/oauth-egress-smoke.mjs` uses a disposable Docker network
+namespace to exercise the generated rules with real IPv4 and IPv6 sockets,
+without modifying the host firewall. It proves the rule semantics, not the
+network policy on a live deployment.
+
+The installer must be updated with this build; copying the Worker
+alone does not establish the egress boundary.
 
 ## Telemetry
 
@@ -1689,8 +1726,7 @@ are deleted. Each line has `action`, `timestamp`, and, where known,
 `principal`, `credential` (`oidc`, `oauth` or `api-key`), `client_id`,
 `grant`, `scope` and a coded `reason`. `client_id` is the full id of a client
 Pages recognizes (`pages-kilo`, ChatGPT's and Claude's document URLs) and the
-host alone for any other metadata-document client, which a deployment admits
-only with `PAGES_OAUTH_ANY_CLIENT_DOCUMENT` ([Outbound requests](#outbound-requests)):
+host alone for any other metadata-document client ([Outbound requests](#outbound-requests)):
 
 | `action` | When | Extra fields |
 |---|---|---|

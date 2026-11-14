@@ -10,13 +10,10 @@
  *   URL listed. A signed-in person still has to approve the consent screen,
  *   which shows the URL's host.
  *
- * Which documents are read is the deployment's choice. By default only the
- * document URLs in `CLIENT_NAMES` are: ChatGPT's and Claude's. With
- * `PAGES_OAUTH_ANY_CLIENT_DOCUMENT` set to "true", any `https` URL that passes
- * `metadataClientUrl` is, so anyone who can publish a document can ask. The
- * Worker checks how that URL's host is spelled, not where it resolves, so the
- * setting belongs only where outbound requests cannot reach a private
- * network (DEPLOYMENT.md, Outbound requests).
+ * Every valid metadata URL is admitted. Product names below are display hints,
+ * never an access policy. Fetching requires an operator-configured public-only
+ * HTTPS egress boundary (DEPLOYMENT.md, Outbound requests). URL spelling alone
+ * cannot prevent a public DNS name from resolving to a private address.
  *
  * There is no dynamic registration and no client secret. */
 
@@ -62,11 +59,8 @@ const PRIVATE_SUFFIXES = new Set([
   "onion",
   "test",
 ]);
-/** The client ids Pages recognizes, with their product names. A document URL
- * here is one Pages reads in every deployment; the document still lists the
- * callbacks. Where the deployment admits any client document, the table adds
- * nothing to admission and only names these clients: any other
- * metadata-document client is called by its host. */
+/** Display names for familiar clients. Metadata URLs need no entry here to
+ * connect; their document still has to pass the same validation. */
 const CLIENT_NAMES = new Map([
   ["pages-chatgpt", "ChatGPT"],
   [CHATGPT_CLIENT, "ChatGPT"],
@@ -129,18 +123,12 @@ export function metadataClientUrl(clientId, origin) {
   return url;
 }
 
-/** Whether this deployment reads a metadata document from any `https` client
- * id, not only the ones in `CLIENT_NAMES`. Off unless the setting is exactly
- * "true". */
-export function admitsAnyClientDocument(env) {
-  return env?.PAGES_OAUTH_ANY_CLIENT_DOCUMENT === "true";
-}
-
-/** The URL of the metadata document this deployment reads for `clientId`, or
- * null when it admits no such client. */
-export function admittedClientUrl(clientId, origin, env) {
-  const url = metadataClientUrl(clientId, origin);
-  return url && (CLIENT_NAMES.has(clientId) || admitsAnyClientDocument(env)) ? url : null;
+/** Whether the operator has installed the public-only HTTPS egress boundary.
+ * This is a runtime/network contract, not a DNS preflight or a client policy.
+ * The native installer reads an operator qualification outside the release;
+ * installing one node never implicitly qualifies the entire fleet. */
+export function metadataEgressConfigured(env) {
+  return env?.PAGES_OAUTH_METADATA_EGRESS === "public-https";
 }
 
 /** The name a person knows a client by, in the account's "Connected agents"
@@ -447,7 +435,15 @@ function keepClient(id, client, freshUntil) {
  * request for the same id waits on its own timer until that fetch is over,
  * then reads the cache, or fetches for itself when nothing was kept (a failed
  * fetch, or a document that says not to store it). */
-export async function metadataClient(url) {
+export async function metadataClient(url, env) {
+  // Check before consulting the shared cache too. A differently configured
+  // request must never borrow a previous deployment's successful fetch.
+  if (!metadataEgressConfigured(env))
+    throw new OAuthError(
+      "temporarily_unavailable",
+      "OAuth client metadata fetching is not configured. Ask the Pages operator to configure public-only HTTPS egress.",
+      503,
+    );
   const id = url.href;
   const giveUp = Date.now() + metadataFetchTimeouts.wait;
   for (;;) {

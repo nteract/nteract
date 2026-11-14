@@ -6,7 +6,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { sourceFingerprint } from "./source-fingerprint.mjs";
 import { configureDns } from "./deployment/dns.mjs";
-import { pagesFirewall } from "./deployment/firewall.mjs";
+import {
+  pagesFirewall,
+  enforcePublicHttps,
+  metadataEgressQualification,
+} from "./deployment/firewall.mjs";
 import * as profiles from "./deployment/profiles.mjs";
 import { CRONS } from "../shared/schedule.mjs";
 import * as activation from "./deployment/activation.mjs";
@@ -101,6 +105,17 @@ test("service firewall uses its own cgroup, table and mark", () => {
   assert.doesNotMatch(rules, /nteract-pages.service|nteract_operator|0x40000000|0x80000000/);
   assert.throws(() => pagesFirewall(0, false, "page10"));
   assert.throws(() => pagesFirewall(998), /Unknown Pages deployment target/);
+});
+
+test("egress preparation is opt-in and installed rules survive qualification removal", () => {
+  for (const phase of ["unconfigured", "prepared", "public-https"])
+    for (const installed of [false, true]) {
+      const enabled = enforcePublicHttps(phase, installed);
+      assert.equal(enabled, installed || phase !== "unconfigured");
+      const rules = pagesFirewall(998, false, "page10", enabled);
+      assert.equal(rules.includes("chain public_https"), enabled);
+      assert.ok(rules.includes("chain private_listener"));
+    }
 });
 
 function dnsFixture(initial = []) {
@@ -540,7 +555,8 @@ function installFixture(
       if (
         (pendingFailure === "deploy" && command === "runuser") ||
         (pendingFailure === "restart" && command === "systemctl" && args[0] === "restart") ||
-        (pendingFailure === "verify" && command === "systemd-analyze")
+        (pendingFailure === "verify" && command === "systemd-analyze") ||
+        (pendingFailure === "firewall" && command === "/usr/bin/node")
       ) {
         pendingFailure = undefined;
         throw Object.assign(Error("injected command failure"), { status: 1 });
@@ -635,6 +651,7 @@ function installFixture(
     },
     "./activation.mjs": activation,
     "./session-keys.mjs": sessionKeys,
+    "./firewall.mjs": { metadataEgressQualification },
   };
   const read = (file) => fs.readFileSync(local(file), "utf8");
   const execute = (flags = []) =>
@@ -921,6 +938,7 @@ for (const target of profiles.QUALIFIED_TARGETS)
     const deployment = profiles.deploymentProfile(target).deployment;
     const config = JSON.parse(fixture.read(fixture.release + "/wrangler.json"));
     assert.equal(config.vars.NOTEBOOK_CLOUD_PUBLIC_ORIGIN, "https://" + deployment.hostname);
+    assert.equal(config.vars.PAGES_OAUTH_METADATA_EGRESS, undefined);
     assert.equal(
       config.vars.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI,
       "https://" + deployment.hostname + "/oidc",
@@ -1627,6 +1645,73 @@ test("a rendered unit that differs on disk is rewritten, reloaded and restarted"
   assert.equal(commands(f, "daemon-reload").length, 1);
   assert.equal(commands(f, "restart").length, 1);
   assert.deepEqual(f.outputs.at(-1).restart_reasons, ["unit"]);
+});
+
+test("preparing a node does not enable metadata fetching for the fleet", (t) => {
+  const f = liveFixture(t);
+  f.write(f.configDir + "/oauth-metadata-egress", "prepared");
+  f.execute();
+  assert.equal(
+    JSON.parse(f.read(f.release + "/wrangler.json")).vars.PAGES_OAUTH_METADATA_EGRESS,
+    undefined,
+  );
+});
+
+test("install requires an external operator qualification before enabling fleet metadata fetches", (t) => {
+  const f = liveFixture(t);
+  const configPath = "/opt/nteract-page10/releases/" + "a".repeat(40) + "/wrangler.json";
+  assert.equal(JSON.parse(f.read(configPath)).vars.PAGES_OAUTH_METADATA_EGRESS, undefined);
+  assert.equal(fs.existsSync(f.local(f.configDir + "/oauth-metadata-egress")), false);
+  f.write(f.configDir + "/oauth-metadata-egress", "public-https\n");
+  f.execute();
+  assert.equal(JSON.parse(f.read(configPath)).vars.PAGES_OAUTH_METADATA_EGRESS, "public-https");
+  assert.equal(f.outputs.at(-1).firewall_applied, true);
+});
+
+for (const kind of ["invalid", "symlink", "writable"])
+  test(`a ${kind} egress qualification stops install before any mutation`, (t) => {
+    const f = installFixture(t);
+    const marker = f.configDir + "/oauth-metadata-egress";
+    f.write(marker, kind === "invalid" ? "true" : "public-https");
+    if (kind === "symlink") {
+      fs.renameSync(f.local(marker), f.local(marker + "-target"));
+      fs.symlinkSync(f.local(marker + "-target"), f.local(marker));
+    }
+    if (kind === "writable") fs.chmodSync(f.local(marker), 0o666);
+    assert.throws(() => f.execute(), /Invalid operator egress qualification/);
+    assert.deepEqual(f.mutations, []);
+  });
+
+test("installing one node never enables metadata fetching on an unqualified fleet", (t) => {
+  const f = installFixture(t, {
+    nodes: [
+      { node: "node_" + "1".repeat(32), addr: "127.0.0.1:19480", expires_ms: 9e15 },
+      { node: "node_" + "2".repeat(32), addr: "10.0.0.2:19480", expires_ms: 9e15 },
+    ],
+  });
+  f.execute();
+  assert.equal(
+    JSON.parse(f.read(f.release + "/wrangler.json")).vars.PAGES_OAUTH_METADATA_EGRESS,
+    undefined,
+  );
+});
+
+test("the egress boundary is installed before an active node can adopt new vars", (t) => {
+  const f = liveFixture(t);
+  nextRelease(f);
+  f.execute();
+  const firewall = f.calls.findIndex(({ command }) => command === "/usr/bin/node");
+  const publish = f.calls.findIndex(({ command }) => command === "runuser");
+  assert.ok(firewall >= 0 && firewall < publish);
+});
+
+test("failed egress installation prevents publishing a deployment", (t) => {
+  const f = installFixture(t, { failure: "firewall", service: { active: true } });
+  assert.throws(() => f.execute(), /failed/);
+  assert.equal(
+    f.calls.some(({ command }) => command === "runuser"),
+    false,
+  );
 });
 
 test("a changed firewall helper applies in place without a restart", (t) => {

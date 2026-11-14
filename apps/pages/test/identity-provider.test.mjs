@@ -165,9 +165,8 @@ test("the guide and the connect page for a provider with no API key describe OAu
 });
 
 test("the guide keeps the same error codes, email note and client list for each provider", () => {
-  const anyClient = { ...kilo, PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "true" };
-  assert.match(agentGuide(anyClient), /client ID is the https URL of its client ID metadata/);
-  assert.match(agentGuide(kilo), /ChatGPT, Claude and Claude Code by their client ID/);
+  for (const env of [kilo, production])
+    assert.match(agentGuide(env), /client ID is the https URL of its client ID metadata/);
   // The email note belongs to a provider that doesn't verify every account's
   // email, not to Kilo by name.
   assert.doesNotMatch(agentGuide(production), /whose email address \w+ has verified/);

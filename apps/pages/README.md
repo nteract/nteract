@@ -136,6 +136,11 @@ because the browser would send the Pages session cookie there. A client that
 listens on `127.0.0.1` needs the default, `localhost`. Sign-in and the `/mcp`
 address follow the name: `http://127.0.0.1:9894/mcp`.
 
+Metadata-based OAuth also needs public-only HTTPS egress. Local development
+leaves metadata fetching disabled until that network boundary is configured;
+see [Outbound requests](DEPLOYMENT.md#outbound-requests). Fixed-client OAuth
+and local sign-in do not need metadata fetching.
+
 Local sign-in uses a loopback-only OIDC issuer that a public deployment can't
 enable. State persists under `dist/.celld`. A Page records its storage
 mode at creation; changing a persistence flag doesn't migrate local documents.
