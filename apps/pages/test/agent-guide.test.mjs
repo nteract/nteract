@@ -283,30 +283,15 @@ test("guide documents account-safe onboarding and truthful listing metadata", ()
     assert.ok(prose.includes(fact), fact);
 });
 
-test("guide states which OAuth client documents this deployment reads", () => {
-  // `env` has a getter that refuses to be read, so it is extended, not copied.
-  const prose = (extra) =>
-    agentGuide(Object.assign(Object.create(env), extra)).replace(/\s+/g, " ");
-  const closed = prose({});
+test("guide offers metadata OAuth to every client without an admission setting", () => {
+  const guide = agentGuide(env).replace(/\s+/g, " ");
   assert.match(
-    closed,
-    /this deployment accepts ChatGPT, Claude and Claude Code by their client ID metadata documents, and the configured Kilo client/,
-  );
-  assert.match(
-    closed,
-    /reads a client ID metadata document only for ChatGPT, Claude and Claude Code/,
-  );
-  assert.doesNotMatch(closed, /Any other MCP client connects the same way/);
-  const open = prose({ PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "true" });
-  assert.match(
-    open,
+    guide,
     /this deployment accepts a client whose client ID is the https URL of its client ID metadata document, and the configured Kilo client/,
   );
-  assert.match(open, /Any other MCP client connects the same way/);
-  assert.doesNotMatch(open, /only for ChatGPT, Claude and Claude Code/);
-  // Claude's recipe is the same in both.
-  for (const guide of [closed, open])
-    assert.match(guide, /claude mcp add --transport http pages https?:\/\/\S+\/mcp/);
+  assert.match(guide, /Any other MCP client connects the same way/);
+  assert.doesNotMatch(guide, /only for ChatGPT, Claude and Claude Code/);
+  assert.match(guide, /claude mcp add --transport http pages https?:\/\/\S+\/mcp/);
 });
 
 test("guide teaches project_id content addressing and document_id with no home concept", () => {

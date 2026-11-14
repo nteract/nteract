@@ -1603,40 +1603,74 @@ configuration.
 
 ## Outbound requests
 
-The OAuth server for `/mcp` reads a client's client ID metadata document from
-the client's `client_id`, an `https` URL
-([worker/oauth-clients.mjs](worker/oauth-clients.mjs)). One setting decides
-which URLs it reads:
+The OAuth server for `/mcp` accepts every valid HTTPS client ID metadata URL.
+Known client names are display labels, not an access list. All clients still
+need valid metadata, a listed callback, PKCE S256, sign-in and consent.
+`PAGES_OAUTH_ANY_CLIENT_DOCUMENT` is obsolete and has no effect.
 
-| `PAGES_OAUTH_ANY_CLIENT_DOCUMENT` | Documents the Worker reads | Who can ask a person for access |
-| --- | --- | --- |
-| unset, or anything but `true` | Three fixed URLs: ChatGPT's and the two Claude publishes | ChatGPT, Claude, Claude Code, and the fixed ids `pages-chatgpt` and `pages-kilo` |
-| `true` | Any `https` URL on a public DNS name that a signed-in person's request names | Any client that publishes a document |
+### Cloudflare Workers and pages-dev
 
-With the setting off, any other `https` client ID gets `invalid_client` and
-nothing is fetched. Turning it off later refuses those clients' token and
-revocation requests too. Their access tokens last at most ten more minutes,
-and a person can still disconnect them from Connected agents.
+The Cloudflare package supplies both of these as required structural settings:
 
-Turn it on only where outbound connections from the Worker cannot reach a
-private network. The Worker checks how a hostname is spelled, not where it
-resolves. It refuses IP literals, single-label names and reserved suffixes such
-as `.internal` and `.local`, but a public name can resolve to a private
-address. The Worker then opens a TLS connection to port 443 at that address.
-Nothing is read back unless the service there holds a valid certificate for
-the name, so what a signed-in person can learn is whether something answers.
+```json
+{
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  "vars": { "PAGES_OAUTH_METADATA_EGRESS": "public-https" }
+}
+```
 
-Before turning it on, make the runtime or the network refuse outbound
-connections from the Worker to private, loopback and link-local addresses,
-the cloud provider's instance metadata address included. This matters most
-for an on-premises deployment, where the Worker's host sits on the network it
-would reach. Nothing here says what a given runtime refuses by default: check
-it for the deployment.
+The flag makes global `fetch` use Cloudflare's public Internet routing,
+including requests to the Worker's own zone. Without it, same-zone requests
+can bypass the zone's security settings and go straight to its origin.
+Cloudflare owns DNS resolution and the connection; Pages does not do a DNS
+preflight followed by an unrestricted connection. See Cloudflare's
+[flag contract](https://developers.cloudflare.com/workers/configuration/compatibility-flags/#global-fetch-strictly-public)
+and [fetch/SSRF boundary](https://blog.cloudflare.com/workers-environment-live-object-bindings/).
+Metadata uses global `fetch`, never a service or VPC binding. Public sites
+remain reachable; a site's authentication must still protect it from public
+Internet callers.
 
-A Workers package sets it in the profile's `vars`
-([Cloudflare Workers package](#cloudflare-workers-package)). The host
-installer ([install.mjs](scripts/deployment/install.mjs)) writes no value for
-it, so every target it installs has the setting off.
+`cloudflare-stage.mjs` generates these together, including for existing
+profiles that have neither setting. A profile cannot override them. The
+release archive carries the same pair in `wrangler.json` and its manifest.
+When updating the release pin for **pages-dev**, mirror both in
+`Kilo-Org/cloud/services/pages/wrangler.jsonc` in that same PR. Its predeploy
+build compares structural fields and variables before deploying, so an old
+config refuses the new package at build time while the previous Worker keeps
+serving. Copy the complete `compatibility_flags` array from the package;
+do not keep `global_fetch_private_origin` alongside it. No host marker,
+firewall rollout, new secret or client-by-client opt-in is needed.
+
+The variable records the package's runtime contract; it does not itself make
+fetch safe. Keep the flag and variable together when deploying by another
+path. The flag affects all global fetches, including identity-provider calls;
+private services need explicit bindings instead of implicit origin routing.
+D1, R2 and Durable Object bindings keep their existing paths. This source
+change does not qualify a live deployment: after updating the pages-dev pin,
+check a fresh metadata-client authorization through sign-in and consent.
+
+### Native celld and other runtimes
+
+The native installer does not implement Cloudflare's routing flag and does
+not configure metadata egress. New metadata-based authorizations return 503
+unless the operator has established equivalent public-only HTTPS fetching
+and set `PAGES_OAUTH_METADATA_EGRESS=public-https`. The boundary must cover the
+actual connection after DNS resolution, including changed answers, private
+IPv4/IPv6 destinations, proxies and destination translation. Setting the
+variable without that boundary is unsafe. There is no unrestricted fallback
+or exception for a familiar product name.
+
+This changes new metadata sign-ins on unqualified native deployments,
+including disposable page10; existing grants still refresh and revoke, and
+fixed `pages-kilo` and `pages-chatgpt` clients do not fetch metadata. Local
+sign-in and fixed-client tests continue working. `pages.runtimed.run` stays
+on `pages-format-1` and does not receive this change. No native host firewall
+or private HTTPS storage/identity-provider traffic is changed by this patch.
+
+Across runtimes, the Worker fetches only after sign-in, sends no cookies or
+authorization, requires port 443, never follows redirects, and bounds time,
+bytes, cache entries and concurrent fetches. Product names bypass none of
+these checks.
 
 ## Telemetry
 
@@ -1689,8 +1723,7 @@ are deleted. Each line has `action`, `timestamp`, and, where known,
 `principal`, `credential` (`oidc`, `oauth` or `api-key`), `client_id`,
 `grant`, `scope` and a coded `reason`. `client_id` is the full id of a client
 Pages recognizes (`pages-kilo`, ChatGPT's and Claude's document URLs) and the
-host alone for any other metadata-document client, which a deployment admits
-only with `PAGES_OAUTH_ANY_CLIENT_DOCUMENT` ([Outbound requests](#outbound-requests)):
+host alone for any other metadata-document client ([Outbound requests](#outbound-requests)):
 
 | `action` | When | Extra fields |
 |---|---|---|
@@ -1976,8 +2009,10 @@ The archive's `wrangler.json` is `structuralConfig()` in
 [cloudflare-stage.mjs](scripts/cloudflare-stage.mjs), not a deployable file: it
 has no `name`. The operator's own Wrangler file deploys it. These fields are
 structural, fixed by the code: `main`, `no_bundle`, `compatibility_date`,
+`compatibility_flags`,
 `assets`, `durable_objects`, `migrations`, `triggers`, `preview_urls`,
-`observability`, and the variable `NOTEBOOK_CLOUD_OIDC_FLOW`. These are
+`observability`, and the variables `NOTEBOOK_CLOUD_OIDC_FLOW` and
+`PAGES_OAUTH_METADATA_EGRESS`. These are
 profile-bound and absent from the package: `name`, `account_id`, `workers_dev`,
 `routes`, `d1_databases`, `r2_buckets`, and every other variable. A change to
 `worker-shape.mjs` or `structuralConfig()` changes what an operator must

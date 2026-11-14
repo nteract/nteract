@@ -40,7 +40,7 @@ export const PACKAGE_ENTRIES = Object.freeze([
   "wrangler.json",
 ]);
 // The top-level wrangler.json fields a consumer compares. `vars` is compared
-// key by key: only NOTEBOOK_CLOUD_OIDC_FLOW is structural.
+// key by key: the flow and metadata egress contract are structural.
 export const STRUCTURAL_FIELDS = Object.freeze(Object.keys(structuralConfig()));
 const BUILD_ID = /^[0-9a-f]{12}$/;
 const COMMIT = /^[0-9a-f]{40}$/;

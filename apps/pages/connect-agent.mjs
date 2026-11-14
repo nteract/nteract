@@ -18,7 +18,6 @@ import {
 import { FAVICON_LINK } from "./shared/favicon.mjs";
 import { PRODUCT_NAME, tabTitle } from "./shared/product.mjs";
 import { STYLESHEET, THEME_SCRIPT } from "./shared/shell-assets.mjs";
-import { admitsAnyClientDocument } from "./worker/oauth-clients.mjs";
 
 const escapeHtml = (value) =>
   value.replace(
@@ -181,9 +180,7 @@ function apiKeyContent(setup, provider) {
 
 // The page for a provider with no API keys. Every client connects by OAuth.
 function oauthOnlyContent(setup, provider, env) {
-  const otherClientsParagraph = admitsAnyClientDocument(env)
-    ? `<p>Add a remote MCP server using <strong>Streamable HTTP</strong> and the server URL above, and choose OAuth. A client whose client ID is the https URL of its client ID metadata document can connect. Pages reads the document after you sign in and accepts only a callback it lists. A client that offers only dynamic client registration cannot connect, because Pages has no registration endpoint.</p>`
-    : `<p>Add a remote MCP server using <strong>Streamable HTTP</strong> and the server URL above, and choose OAuth. This deployment admits ChatGPT, Claude, Claude Code and Kilo. Other clients cannot connect here. A client that offers only dynamic client registration cannot connect, because Pages has no registration endpoint.</p>`;
+  const otherClientsParagraph = `<p>Add a remote MCP server using <strong>Streamable HTTP</strong> and the server URL above, and choose OAuth. A client whose client ID is the https URL of its client ID metadata document can connect. Pages reads the document after you sign in and accepts only a callback it lists. A client that offers only dynamic client registration cannot connect, because Pages has no registration endpoint.</p>`;
   return {
     intro: `<p>Agents sign in with your ${provider.label} account through OAuth. This deployment has no API keys. Your agent can prepare the settings while you authorize access.</p>`,
     sections: `  <section aria-labelledby="setup-client"><h2 id="setup-client"><span>1</span> Add the server to your client</h2>

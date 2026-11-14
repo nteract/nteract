@@ -78,6 +78,19 @@ function customDomainRoute(profile, origin) {
   return { pattern: hostname, zone_name: zone, custom_domain: true };
 }
 
+/** Cloudflare's public Internet fetch boundary travels with the code. Both
+ * the staged deployment and the release package require these settings, so
+ * consumers validate them before deploying a new pin. Do not put these in
+ * workerShape(): celld does not implement Cloudflare's routing flag. */
+function cloudflareShape() {
+  const shape = workerShape();
+  return {
+    ...shape,
+    compatibility_flags: ["global_fetch_strictly_public"],
+    vars: { ...shape.vars, PAGES_OAUTH_METADATA_EGRESS: "public-https" },
+  };
+}
+
 /** The Wrangler configuration for one Cloudflare deployment of this build.
  *
  * Everything the build decides is fixed here: the entry module, the Durable
@@ -98,7 +111,7 @@ export function cloudflareConfig(profile) {
     throw new Error("Profile workers_dev must be true or false");
   if (!matches(BUCKET_NAME, profile.r2_bucket))
     throw new Error("Profile r2_bucket must be an R2 bucket name");
-  const shape = workerShape();
+  const shape = cloudflareShape();
   // A variable shares one namespace with the bindings; Wrangler refuses a
   // name declared twice.
   const bindings = new Set([
@@ -151,12 +164,12 @@ export function cloudflareConfig(profile) {
  * supplies those. The release package (release-package.mjs) ships exactly this
  * object as its wrangler.json.
  *
- * Structural: main, no_bundle, compatibility_date, assets, durable_objects,
- * migrations, triggers, preview_urls, observability, and the one shape var,
- * NOTEBOOK_CLOUD_OIDC_FLOW. Profile-bound: name, account_id, workers_dev,
+ * Structural: main, no_bundle, compatibility_date, compatibility_flags, assets, durable_objects,
+ * migrations, triggers, preview_urls, observability, and the shape vars,
+ * NOTEBOOK_CLOUD_OIDC_FLOW and PAGES_OAUTH_METADATA_EGRESS. Profile-bound: name, account_id, workers_dev,
  * routes, d1_databases, r2_buckets and every other var. */
 export function structuralConfig() {
-  const shape = workerShape();
+  const shape = cloudflareShape();
   return {
     main: "worker/index.js",
     ...shape,

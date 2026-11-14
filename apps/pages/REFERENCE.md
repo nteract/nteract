@@ -1152,10 +1152,13 @@ resource validation, sign-in, and consent. Two kinds are admitted
 (`pages-chatgpt`, `pages-kilo`) each have one exact callback. Any other client
 names itself with a client ID metadata document: its `client_id` is an `https`
 URL on a public DNS name, with the default port, a path, and no query or
-fragment. By default Pages reads only three such URLs, ChatGPT's and the two
-Claude publishes, and answers any other with `invalid_client`. A deployment
-that sets `PAGES_OAUTH_ANY_CLIENT_DOCUMENT` to `true` reads any
-([DEPLOYMENT.md](DEPLOYMENT.md#outbound-requests) says when that is safe).
+fragment. Every such URL is admitted without an entry in a client table; known names
+only label the client. The Cloudflare package enables metadata fetching together
+with `global_fetch_strictly_public` as required deployment configuration.
+Other runtimes must establish equivalent public-only HTTPS fetching before
+setting `PAGES_OAUTH_METADATA_EGRESS=public-https`; without it, new metadata
+sign-ins return 503 for every client without fetching
+([DEPLOYMENT.md](DEPLOYMENT.md#outbound-requests)).
 Once a person has signed in, Pages fetches the URL without following
 redirects, reading at most 5 KB of JSON within five seconds, and keeps a valid
 document for its `max-age`, five minutes at most, in a 64-entry cache. The
