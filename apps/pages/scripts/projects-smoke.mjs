@@ -10,6 +10,8 @@
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
+import { pageAddress, pageIdOf } from "./page-address.mjs";
+import { pageUrl } from "../shared/routes.mjs";
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost");
 assert.equal(new URL(origin).protocol, "http:");
@@ -477,7 +479,7 @@ try {
   const beforePicker = await ok("owner", "list_pages", { project_id: project.project_id });
   await pickerCreate.getByRole("button", { name: `New Page In ${title}` }).click();
   await expect(picker).toBeHidden({ timeout: 30000 });
-  await expect(owner).not.toHaveURL(`${origin}/p/${topPage.page_id}`, { timeout: 30000 });
+  await expect(owner).not.toHaveURL(pageAddress(origin, topPage.page_id), { timeout: 30000 });
   await expect(owner.getByLabel("Page title")).toBeVisible({ timeout: 30000 });
   const afterPicker = await ok("owner", "list_pages", { project_id: project.project_id });
   assert.equal(afterPicker.pages.length, beforePicker.pages.length + 1);
@@ -486,7 +488,7 @@ try {
   );
   assert.equal(pickerCreated.parent_id, null, "In <Project> is its top level");
   assert.equal(pickerCreated.project_id, project.project_id);
-  await expect(owner).toHaveURL(`${origin}/p/${pickerCreated.page_id}`);
+  await expect(owner).toHaveURL(pageAddress(origin, pickerCreated.page_id));
   complete(
     "The picker's New Page offers the Project and Your items; In <Project> lands at its top level",
   );
@@ -516,7 +518,7 @@ try {
   // The whole row is one target: a mouse click on the time opens the Page.
   const timeBox = await updated.boundingBox();
   await owner.mouse.click(timeBox.x + timeBox.width / 2, timeBox.y + timeBox.height / 2);
-  await expect(owner).toHaveURL(`${origin}/p/${plan.page_id}`);
+  await expect(owner).toHaveURL(pageAddress(origin, plan.page_id));
   await owner.goBack();
   await expect(owner).toHaveURL(`${origin}/pages`);
   await owner.screenshot({ path: `${output}/pages-list-desktop.png` });
@@ -532,7 +534,8 @@ try {
     "true",
   );
   const card = desktopPages.getByRole("link", { name: "Q4 plan", exact: true });
-  await expect(card).toHaveAttribute("href", `/p/${plan.page_id}`);
+  // A card links with the title's slug, and a click lands there.
+  await expect(card).toHaveAttribute("href", `/p/${plan.page_id}/Q4-plan`);
   await expect(desktopPages.locator("a a")).toHaveCount(0);
   await owner.screenshot({ path: `${output}/pages-grid-desktop.png` });
   await owner.reload();
@@ -542,7 +545,7 @@ try {
     { timeout: 60000 },
   );
   await card.click();
-  await expect(owner).toHaveURL(`${origin}/p/${plan.page_id}`);
+  await expect(owner).toHaveURL(`${origin}/p/${plan.page_id}/Q4-plan`);
   await owner.goBack();
   await expect(owner).toHaveURL(`${origin}/pages`);
   await display.getByRole("button", { name: "List view" }).click();
@@ -727,7 +730,7 @@ try {
   const row = pageRow("Q4 plan");
   const box = await row.boundingBox();
   await row.tap({ position: { x: box.width - 12, y: box.height - 8 } });
-  await expect(phone).toHaveURL(`${origin}/p/${plan.page_id}`);
+  await expect(phone).toHaveURL(pageAddress(origin, plan.page_id));
   await expect(phone.locator("wg-content").first()).toContainText("The fourth quarter.", {
     timeout: 30000,
   });
@@ -814,7 +817,7 @@ try {
   );
   assert.equal(rowCreated.parent_id, null, "New Page lands at the top level");
   assert.equal(rowCreated.project_id, project.project_id);
-  await expect(phone).toHaveURL(`${origin}/p/${rowCreated.page_id}`);
+  await expect(phone).toHaveURL(pageAddress(origin, rowCreated.page_id));
   // The phone header (⋯) starts below 601px, so at 640px the page menu is
   // Document actions. New sub-page there creates under the open Page.
   await phone.locator('summary[aria-label="Document actions"]').tap();
@@ -828,7 +831,7 @@ try {
     })
     .toHaveLength(1);
   const [sub] = (await ok("owner", "list_pages", { parent_id: rowCreated.page_id })).pages;
-  await expect(phone).toHaveURL(`${origin}/p/${sub.page_id}`, { timeout: 30000 });
+  await expect(phone).toHaveURL(pageAddress(origin, sub.page_id), { timeout: 30000 });
   await expect(phone.getByLabel("Page title")).toBeVisible({ timeout: 30000 });
   await fitsScreen("a new sub-page at 640px");
   complete(
@@ -889,7 +892,7 @@ try {
     timeout: 30000,
   });
   await expect(alice.locator("wg-content").first()).toHaveAttribute("contenteditable", "true");
-  await expect(alice).toHaveURL(`${origin}/p/${project.document_id}`, {
+  await expect(alice).toHaveURL(pageAddress(origin, project.document_id), {
     timeout: 30000,
   });
   await expect(alice.getByRole("navigation", { name: "Project", exact: true })).toHaveCount(0);
@@ -1237,7 +1240,7 @@ try {
   );
   complete("Back and Forward over a grouping send no request and keep focus");
   await rowLink("Zeta loose note").click();
-  await expect(alice).toHaveURL(`${origin}/p/${zeta.page_id}`);
+  await expect(alice).toHaveURL(pageAddress(origin, zeta.page_id));
   await expect(alice.locator("wg-content").first()).toContainText("Outside any Project.", {
     timeout: 30000,
   });
@@ -1466,8 +1469,8 @@ try {
     await expect(newPage).toBeVisible({ timeout: 30000 });
     await tab.screenshot({ path: `${output}/project-editor-new-page.png` });
     await newPage.click();
-    await expect(tab).toHaveURL(/\/p\/[0-9a-f-]{36}$/, { timeout: 30000 });
-    const created = new URL(tab.url()).pathname.split("/").pop();
+    await expect(tab).toHaveURL(/\/p\/[0-9a-f-]{36}(?:\/[A-Za-z0-9_-]+)?$/, { timeout: 30000 });
+    const created = pageIdOf(tab.url());
     await expect(tab.getByLabel("Page title")).toBeFocused({ timeout: 30000 });
     // A Page alice added offers New sub-page to her too, and no Move or Trash.
     await tab.locator('summary[aria-label="Document actions"]').click();
@@ -1508,7 +1511,7 @@ try {
   const inProject = fresh.getByRole("region", { name: `Pages in ${title}` }).getByRole("list");
   await expect(fresh.locator("wg-content").first()).toContainText("Where the launch lives.");
   await inProject.getByRole("link", { name: "Roadmap" }).tap();
-  await expect(fresh).toHaveURL(`${origin}/p/${roadmap.page_id}`);
+  await expect(fresh).toHaveURL(pageAddress(origin, roadmap.page_id));
   await expect(fresh.locator("wg-content").first()).toContainText("What ships when.", {
     timeout: 30000,
   });
@@ -1693,7 +1696,7 @@ try {
   assert.equal(moved.parent_id, roadmap.page_id);
   assert.equal(moved.project_id, project.project_id);
   assert.ok(Number.isSafeInteger(moved.location_revision) && moved.location_revision >= 1);
-  assert.equal(moved.url, `${origin}/p/${plan.page_id}`);
+  assert.equal(moved.url, pageUrl(origin, { page_id: plan.page_id, title: moved.title }));
   const nestedAgain = await ok("owner", "list_pages", { parent_id: roadmap.page_id });
   assert.deepEqual(
     nestedAgain.pages.map((page) => [page.page_id, page.parent_id, page.position]),

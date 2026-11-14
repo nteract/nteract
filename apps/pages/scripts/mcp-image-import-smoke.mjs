@@ -12,6 +12,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { startImageSource } from "./fixtures/local-mcp-image-source.mjs";
 import { imageDownloadUrl, imageFileId, imagePng } from "./fixtures/local-mcp-images.mjs";
 import { purgeTrashedFixture } from "./purge-fixture.mjs";
+import { pageUrl } from "../shared/routes.mjs";
 
 const origin = process.env.PAGES_ORIGIN;
 assert.equal(new URL(origin).origin, origin);
@@ -265,7 +266,7 @@ try {
   assert.equal(asset.page_id, pageId);
   assert.equal(asset.asset_id, createHash("sha256").update(imagePng()).digest("hex"));
   assert.equal(asset.asset_url, `/api/pages/${pageId}/assets/${asset.asset_id}`);
-  assert.equal(asset.url, origin + `/p/${pageId}`);
+  assert.equal(asset.url, pageUrl(origin, { page_id: pageId, title: asset.title }));
   assert.deepEqual(asset.insert, { op: "insert_image", asset_id: asset.asset_id });
   assert.equal(asset.mime_type, "image/png");
   assert.equal(asset.size, imagePng().length);
@@ -303,7 +304,7 @@ try {
     ],
   };
   const inserted = await call(ownerGrant.client, "edit_page", insertion);
-  assert.equal(inserted.url, origin + `/p/${pageId}`);
+  assert.equal(inserted.url, pageUrl(origin, { page_id: pageId, title: inserted.title }));
   assert.equal(inserted.result.edits.length, 1);
   const insertedImage = inserted.result.edits[0];
   assert.deepEqual(insertedImage, {

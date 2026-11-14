@@ -8,6 +8,8 @@ import { TOOL_REQUEST_TIMEOUT_MS } from "./tool-deadline.mjs";
 const pageId = "33333333-3333-4333-8333-333333333333";
 const publicOrigin = "https://page10.runtimed.run";
 const pageUrl = `${publicOrigin}/p/${pageId}`;
+// A tool result's url carries the title's slug; a resource uri is the bare link.
+const resultUrl = `${pageUrl}/Public-link`;
 
 test("MCP gateway returns its normal error response when public origin is missing", async (t) => {
   const auth = await createAuthFixture();
@@ -82,7 +84,7 @@ test("MCP gateway passes the configured public origin through a private HTTP tun
     const result = await rpc("tools/call", { name, arguments: args });
     assert.equal(result.result.isError, undefined);
     const body = JSON.parse(result.result.content[0].text);
-    assert.equal((body.pages?.[0] ?? body).url, pageUrl);
+    assert.equal((body.pages?.[0] ?? body).url, resultUrl);
   }
   const resources = await rpc("resources/list");
   assert.equal(resources.result.resources[0].uri, pageUrl);

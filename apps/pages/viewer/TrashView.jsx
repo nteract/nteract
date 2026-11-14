@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { FileText, RotateCcw, Trash2 } from "lucide-react";
-import { pagePath, isPlainNavigation } from "../shared/routes.mjs";
+import { pageLinkPath, pageTitleSlug, isPlainNavigation } from "../shared/routes.mjs";
 import {
   confirmPurge,
   listTrash,
@@ -102,11 +102,11 @@ export function TrashView({ tool, principal, identity, onOpen, onRestored, onPur
           <li className="page-row trash-row" key={page.page_id}>
             <a
               className="page-card"
-              href={pagePath(page.page_id)}
+              href={pageLinkPath(page)}
               onClick={(event) => {
                 if (isPlainNavigation(event)) {
                   event.preventDefault();
-                  void onOpen(page.page_id);
+                  void onOpen(page.page_id, { slug: pageTitleSlug(page.title) });
                 }
               }}
             >

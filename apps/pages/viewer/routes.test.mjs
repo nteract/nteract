@@ -5,6 +5,10 @@ import {
   isPageSlug,
   pagePath,
   pageSlugWords,
+  pageTitleSlug,
+  pageLinkPath,
+  pageUrl,
+  sameScrollAddress,
   readPageRoute,
   writePageRoute,
   writeRoute,
@@ -107,7 +111,116 @@ test("pagePath builds a slugged link that reads back as the same Page", () => {
   for (const slug of ["view", "a.b", "", "a/b"])
     assert.throws(() => pagePath(id, slug), /Invalid Page slug/, slug);
 });
-test("a copied link keeps the slug the address shows for that Page, and derives none", () => {
+test("a title gives the slug a reader would type for it, or none", () => {
+  const cases = [
+    ["Quarterly plan", "Quarterly-plan"],
+    ["Q3: Plan / Review (draft)", "Q3-Plan-Review-draft"],
+    ["Café crème brûlée", "Cafe-creme-brulee"],
+    ["Ångström Über naïve", "Angstrom-Uber-naive"],
+    ["ﬁnal ½ report", "final-1-2-report"],
+    ["🚀 Launch day 🎉", "Launch-day"],
+    ["  --Leading and trailing--  ", "Leading-and-trailing"],
+    ["snake_case_title", "snake-case-title"],
+    ["MixedCase API", "MixedCase-API"],
+    ["2026", "2026"],
+    ["東京 2026 計画", "2026"],
+    ["日本語のタイトル", null],
+    ["Привет мир", null],
+    ["🚀🎉", null],
+    ["", null],
+    ["   ", null],
+    ["view", null],
+    ["View", null],
+    ["  VIEW! ", null],
+    ["views", "views"],
+    [null, null],
+    [undefined, null],
+    [42, null],
+  ];
+  for (const [title, slug] of cases) {
+    assert.equal(pageTitleSlug(title), slug, JSON.stringify(title));
+    if (slug !== null) assert.equal(isPageSlug(slug), true, slug);
+  }
+});
+test("a long title's slug stops at 80 characters, at a word boundary when one is near", () => {
+  // Words end exactly at the cap: the whole of them, no trailing separator.
+  const exact = `${"a".repeat(39)} ${"b".repeat(40)} tail`;
+  assert.equal(pageTitleSlug(exact), `${"a".repeat(39)}-${"b".repeat(40)}`);
+  // A word crosses the cap: the slug ends at the last separator before it.
+  const words = Array.from({ length: 20 }, (_, index) => `word${index}`).join(" ");
+  const slug = pageTitleSlug(words);
+  assert.ok(slug.length <= 80, slug);
+  assert.ok(`${words.replaceAll(" ", "-")}-`.startsWith(`${slug}-`), slug);
+  assert.ok(slug.length > 80 - 24, slug);
+  // One long word: cut at the cap.
+  assert.equal(pageTitleSlug("x".repeat(200)), "x".repeat(80));
+  // A separator early on and none near the cap: cut at the cap, never at
+  // the early one.
+  assert.equal(pageTitleSlug(`ab ${"y".repeat(200)}`), `ab-${"y".repeat(77)}`);
+  // A separator right at the cut never leaves a trailing `-`.
+  const edge = pageTitleSlug(`${"z".repeat(79)} ${"q".repeat(10)}`);
+  assert.equal(edge, "z".repeat(79));
+  for (const title of [exact, words, `${"m".repeat(79)}--${"n".repeat(30)}`]) {
+    const cut = pageTitleSlug(title);
+    assert.ok(cut.length <= 80 && !cut.endsWith("-") && isPageSlug(cut), cut);
+  }
+});
+test("a Page link carries its title's slug when the title gives one", () => {
+  assert.equal(pageLinkPath({ page_id: id, title: "Launch plan" }), `/p/${id}/Launch-plan`);
+  for (const title of [undefined, null, "", "日本語", "view"])
+    assert.equal(pageLinkPath({ page_id: id, title }), `/p/${id}`, String(title));
+  assert.equal(
+    pageUrl("https://pages.example", { page_id: id, title: "Launch plan" }),
+    `https://pages.example/p/${id}/Launch-plan`,
+  );
+  assert.equal(pageUrl("https://pages.example", { page_id: id }), `https://pages.example/p/${id}`);
+  // The link reads back as the same Page.
+  const route = readPageRoute(pageLinkPath({ page_id: id, title: "Launch plan" }));
+  assert.equal(route.pageId, id);
+  assert.equal(route.path, `/p/${id}`);
+  assert.throws(() => pageLinkPath({ page_id: "nope", title: "x" }), /Invalid Page ID/);
+});
+test("a push carries the slug its caller gives; a replace keeps the shown one unless given", () => {
+  const calls = [];
+  const location = {
+    pathname: `/p/${id}/Shown`,
+    search: "",
+    hash: "",
+    get href() {
+      return `https://pages.example${this.pathname}${this.search}${this.hash}`;
+    },
+  };
+  const history = {
+    state: null,
+    pushState: (state, _, path) => calls.push(["push", path]),
+    replaceState: (state, _, path) => calls.push(["replace", path]),
+  };
+  const other = "2b160b47-6df1-4983-81eb-489ca5a26812";
+  writePageRoute(other, { history, location, slug: "Launch-plan" });
+  writePageRoute(other, { history, location });
+  writePageRoute(id, { history, location, replace: true, slug: "Renamed" });
+  writePageRoute(`prj_${id}`, { history, location, slug: "Ignored" });
+  assert.deepEqual(calls, [
+    ["push", `/p/${other}/Launch-plan`],
+    ["push", `/p/${other}`],
+    ["replace", `/p/${id}/Renamed`],
+    ["push", `/project/prj_${id}`],
+  ]);
+});
+test("a copied link carries the title's slug, and falls back to the address's", () => {
+  const other = "2b160b47-6df1-4983-81eb-489ca5a26812";
+  const at = (path) => `https://pages.example${path}`;
+  assert.equal(copyLinkPath(id, at(`/p/${id}`), "Quarterly plan"), `/p/${id}/Quarterly-plan`);
+  // The title wins over a different slug the address shows.
+  assert.equal(copyLinkPath(id, at(`/p/${id}/Old-name#goals`), "New name"), `/p/${id}/New-name`);
+  // A title with no slug keeps the address's slug for the same Page.
+  assert.equal(copyLinkPath(id, at(`/p/${id}/Old-name`), "日本語"), `/p/${id}/Old-name`);
+  assert.equal(copyLinkPath(id, at(`/p/${id}/Old-name`), ""), `/p/${id}/Old-name`);
+  assert.equal(copyLinkPath(id, at(`/p/${other}/Old-name`), "view"), `/p/${id}`);
+  // A Project link takes no slug.
+  assert.equal(copyLinkPath(`prj_${id}`, at(`/p/${id}`), "Quarterly plan"), `/project/prj_${id}`);
+});
+test("a copied link without a title keeps the slug the address shows for that Page", () => {
   const other = "2b160b47-6df1-4983-81eb-489ca5a26812";
   const at = (path) => `https://pages.example${path}`;
   assert.equal(copyLinkPath(id, at(`/p/${id}`)), `/p/${id}`);
@@ -392,6 +505,50 @@ test("a push records the scroll position in the entry it leaves; a replace keeps
   // No scroll position to read (outside a browser): nothing is recorded.
   rememberScroll(undefined, { history, location });
   assert.deepEqual(entries[2].state, { [SCROLL_STATE_KEY]: { path: "/pages", y: 10 } });
+});
+test("a Page's scroll position survives its slug arriving or changing in the address", () => {
+  const location = {
+    pathname: `/p/${id}`,
+    search: "",
+    hash: "#plan",
+    get href() {
+      return `https://pages.example${this.pathname}${this.search}${this.hash}`;
+    },
+  };
+  const entries = [{ state: { pageId: id }, path: `/p/${id}#plan` }];
+  const history = {
+    get state() {
+      return entries[0].state;
+    },
+    replaceState(state, _, path) {
+      entries[0] = { state, path: path ?? entries[0].path };
+      if (path === undefined) return;
+      const url = new URL(path, "https://pages.invalid");
+      Object.assign(location, { pathname: url.pathname, search: url.search, hash: url.hash });
+    },
+  };
+  rememberScroll(640, { history, location });
+  // The title's slug arrives in place, the way address-slug.mjs writes it.
+  history.replaceState(history.state, "", `/p/${id}/Quarterly-plan#plan`);
+  assert.equal(savedScroll({ history, location }), 640);
+  // A rename changes it; a reload or Back to this entry still restores.
+  history.replaceState(history.state, "", `/p/${id}/Annual-plan#plan`);
+  assert.equal(savedScroll({ history, location }), 640);
+  // Measuring again at the slugged address records it there, once.
+  rememberScroll(700, { history, location });
+  assert.deepEqual(entries[0].state[SCROLL_STATE_KEY], { path: `/p/${id}/Annual-plan`, y: 700 });
+  // A replace that canonicalizes the same Page keeps the position.
+  writePageRoute(id, { history, location, replace: true, scrollY: 700 });
+  assert.equal(location.pathname, `/p/${id}/Annual-plan`);
+  writeRoute(`/p/${id}#notes`, { history, location, replace: true, state: { pageId: id } });
+  assert.equal(savedScroll({ history, location }), 700);
+  // Another Page's position never counts here.
+  const other = "2b160b47-6df1-4983-81eb-489ca5a26812";
+  assert.equal(sameScrollAddress(`/p/${other}/Annual-plan`, `/p/${id}/Annual-plan`), false);
+  assert.equal(sameScrollAddress(`/p/${id}`, `/p/${id}/Annual-plan`), true);
+  assert.equal(sameScrollAddress("/pages?q=a", "/pages?q=a"), true);
+  assert.equal(sameScrollAddress("/pages?q=a", "/pages"), false);
+  assert.equal(sameScrollAddress(undefined, `/p/${id}`), false);
 });
 test("modified clicks preserve open-in-new-tab behavior", () => {
   assert.equal(isPlainNavigation({ button: 0 }), true);

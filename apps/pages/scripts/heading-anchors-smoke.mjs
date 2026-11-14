@@ -12,6 +12,7 @@
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
+import { pageAddress } from "./page-address.mjs";
 
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost", "Generated fixture requires local OIDC");
@@ -231,6 +232,8 @@ try {
     ].join("\n\n"),
   });
   const targetUrl = (anchor) => `${origin}/p/${pageId}#${encodeURIComponent(anchor)}`;
+  // The address names the same heading with or without the title's slug.
+  const targetAddress = (anchor) => pageAddress(origin, pageId, `#${encodeURIComponent(anchor)}`);
 
   // alice reads the target Page as a viewer.
   const access = await api(owner.page, `/api/access?page=${pageId}`);
@@ -266,7 +269,7 @@ try {
     await page.goto(targetUrl(TARGET_ANCHOR));
     const section = heading(page, TARGET);
     await expectInView(section);
-    expect(page.url()).toBe(targetUrl(TARGET_ANCHOR));
+    expect(page.url()).toMatch(targetAddress(TARGET_ANCHOR));
     // The image above the heading draws only now, pushing the heading down
     // the document; the heading stays in view.
     const before = await docTop(section);
@@ -334,7 +337,7 @@ try {
     // Still at the top from the unknown anchor.
     await page.evaluate(() => (window.__anchorMarker = "same document"));
     await page.locator("wg-content table a", { hasText: TARGET }).click();
-    await expect(page).toHaveURL(targetUrl(TARGET_ANCHOR));
+    await expect(page).toHaveURL(targetAddress(TARGET_ANCHOR));
     await expectInView(heading(page, TARGET));
     await expect(page.getByRole("dialog", { name: "Link" })).toHaveCount(0);
     expect(await page.evaluate(() => window.__anchorMarker)).toBe("same document");
@@ -353,7 +356,7 @@ try {
     await expect(go).toBeVisible();
     await go.click();
     await expect(page.getByRole("dialog", { name: "Link" })).toHaveCount(0);
-    await expect(page).toHaveURL(targetUrl("notes-1"));
+    await expect(page).toHaveURL(targetAddress("notes-1"));
     await expectInView(heading(page, "Notes", 1));
     expect(await page.evaluate(() => window.__anchorMarker)).toBe("same document");
     expect(owner.context.pages()).toHaveLength(1);
@@ -390,8 +393,10 @@ try {
       await copy.click();
       await expect(page.getByText("Link to section copied")).toBeVisible();
       // The copied link is the viewer's anchor, and the outline's.
-      expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(targetUrl(anchor));
-      await expect(page).toHaveURL(targetUrl(anchor));
+      expect(await page.evaluate(() => navigator.clipboard.readText())).toMatch(
+        targetAddress(anchor),
+      );
+      await expect(page).toHaveURL(targetAddress(anchor));
     }
     await page.screenshot({ path: `${output}/heading-anchor-copy.png` });
     checkpoint("the # copies the full link, matching read_page's anchors");
@@ -409,7 +414,7 @@ try {
     const before = await scrollY(page);
     expect(before).toBeGreaterThan(0);
     await skip.click();
-    await expect(page).toHaveURL(targetUrl(UNICODE_ANCHOR));
+    await expect(page).toHaveURL(targetAddress(UNICODE_ANCHOR));
     await expectInView(heading(page, UNICODE));
     const landed = await scrollY(page);
     await page.mouse.move(640, 400);
@@ -418,12 +423,12 @@ try {
     await expectRecorded(page);
     const after = await scrollY(page);
     await page.goBack();
-    await expect(page).toHaveURL(`${origin}/p/${pageId}`);
+    await expect(page).toHaveURL(pageAddress(origin, pageId));
     await expectScrollY(page, before);
     await frames(page);
     await expectScrollY(page, before);
     await page.goForward();
-    await expect(page).toHaveURL(targetUrl(UNICODE_ANCHOR));
+    await expect(page).toHaveURL(targetAddress(UNICODE_ANCHOR));
     await expectScrollY(page, after);
     await frames(page);
     await expectScrollY(page, after);
@@ -446,7 +451,7 @@ try {
     const before = await scrollY(page);
     expect(before).toBeGreaterThan(0);
     await open.click();
-    await expect(page).toHaveURL(targetUrl(TARGET_ANCHOR));
+    await expect(page).toHaveURL(targetAddress(TARGET_ANCHOR));
     await expectInView(heading(page, TARGET));
     expect(await page.evaluate(() => window.__anchorMarker)).toBe("same document");
     expect(owner.context.pages()).toHaveLength(1);
@@ -459,7 +464,7 @@ try {
     const after = await scrollY(page);
     // Back shows the source Page again in the same document, where it was.
     await page.goBack();
-    await expect(page).toHaveURL(`${origin}/p/${source.page_id}`);
+    await expect(page).toHaveURL(pageAddress(origin, source.page_id));
     await expect(link).toBeAttached();
     await expectScrollY(page, before);
     await frames(page);
@@ -468,7 +473,7 @@ try {
     expect(await page.evaluate(() => window.__anchorMarker)).toBe("same document");
     // Forward returns to where the reader left the other Page, not its heading.
     await page.goForward();
-    await expect(page).toHaveURL(targetUrl(TARGET_ANCHOR));
+    await expect(page).toHaveURL(targetAddress(TARGET_ANCHOR));
     await expectScrollY(page, after);
     await frames(page);
     await expectScrollY(page, after);

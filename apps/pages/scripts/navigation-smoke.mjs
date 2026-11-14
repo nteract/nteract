@@ -42,9 +42,9 @@ try {
   await page.getByRole("button", { name: "New Page", exact: true }).click();
   await expect(titleInput(page)).toBeFocused({ timeout: 3000 });
   const titleReadyMs = Math.round(performance.now() - started);
+  // An untitled Page has no slug: its address is the bare link.
   await expect(page).toHaveURL(/\/p\/[0-9a-f-]{36}$/);
-  const url = page.url(),
-    id = new URL(url).pathname.split("/")[2];
+  const id = new URL(page.url()).pathname.split("/")[2];
   const title = "Local creation " + Date.now();
   await titleInput(page).fill(title);
   // Keys typed straight after Enter belong to the new Page's first block,
@@ -55,6 +55,9 @@ try {
   const editableMs = Math.round(performance.now() - started);
   await expect(titleInput(page)).toHaveValue(title);
   await expect(editor(page)).toHaveText("Written while registration is held.");
+  // The address takes the title's slug once typing in the title pauses.
+  const url = `${origin}/p/${id}/${title.replaceAll(" ", "-")}`;
+  await expect(page).toHaveURL(url);
   await expect.poll(() => registrations).toBeGreaterThan(0);
   await expect(saveStatus(page)).not.toHaveText("Saved");
   await page.getByRole("link", { name: PRODUCT_NAME, exact: true }).click();
@@ -179,7 +182,7 @@ try {
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Move to Trash", exact: true }).click();
   await expect(page).toHaveURL(origin + "/");
-  await expect(page.locator('a.index-row-link[href="/p/' + rejectedId + '"]')).toHaveCount(0);
+  await expect(page.locator(`a.index-row-link[href^="/p/${rejectedId}"]`)).toHaveCount(0);
   await page.unroute("**/api/pages/register");
   // Losing and renewing the same account refreshes the current home route.
   await page.route("**/api/auth/session", (route) =>
@@ -193,9 +196,9 @@ try {
   await expect(page.getByRole("link", { name: "Sign in", exact: true })).toBeVisible();
   await page.unroute("**/api/auth/session");
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-  await expect(page.locator('a.index-row-link[href="/p/' + plainId + '"]')).toBeVisible();
+  await expect(page.locator(`a.index-row-link[href^="/p/${plainId}"]`)).toBeVisible();
   // Trash in one tab must survive the other tab's final local checkpoint.
-  await page.locator('a.index-row-link[href="/p/' + plainId + '"]').click();
+  await page.locator(`a.index-row-link[href^="/p/${plainId}"]`).click();
   await peer.goto(plainUrl);
   await expect(editor(peer)).toHaveText("Written and saved without reopening.");
   await saved(page);
@@ -206,14 +209,16 @@ try {
   // An open tab of the owner learns the Page moved to Trash.
   await expect(peer.getByText("This Page is in Trash.")).toBeVisible({ timeout: 20000 });
   await peer.getByRole("link", { name: PRODUCT_NAME, exact: true }).click();
-  await expect(peer.locator('a.index-row-link[href="/p/' + plainId + '"]')).toHaveCount(0);
+  await expect(peer.locator(`a.index-row-link[href^="/p/${plainId}"]`)).toHaveCount(0);
   await page.reload();
-  await expect(page.locator('a.index-row-link[href="/p/' + plainId + '"]')).toHaveCount(0);
-  // A link with a slug opens the same Page. The address keeps the slug, the
-  // tab shows the Page's own title, and an in-page heading link works.
+  await expect(page.locator(`a.index-row-link[href^="/p/${plainId}"]`)).toHaveCount(0);
+  // A link with any slug opens the same Page. The address takes the Page's
+  // own title as its slug, the tab shows that title, and an in-page heading
+  // link works.
   const filler = (label) =>
     Array.from({ length: 30 }, (_, i) => `${label} paragraph ${i + 1}.`).join("\n\n");
-  const realTitle = "Real title " + Date.now();
+  const stamp = Date.now();
+  const realTitle = "Real title " + stamp;
   const slugged = await api(page, "create_page", {
     title: realTitle,
     nonce: "navigation-" + crypto.randomUUID(),
@@ -232,17 +237,52 @@ try {
   await expect(peer.locator("wg-content").first()).toContainText("Skip to the plan", {
     timeout: 20000,
   });
-  await expect(peer).toHaveURL(sluggedUrl);
+  const titledUrl = `${origin}/p/${slugged.page_id}/Real-title-${stamp}`;
+  await expect(peer).toHaveURL(titledUrl);
   await expect(peer).toHaveTitle(new RegExp(`^${realTitle} `));
   await peer.locator("wg-content a", { hasText: "Skip to the plan" }).click();
   const go = peer.getByRole("link", { name: "Go to section" });
   await expect(go).toBeVisible();
   await go.click();
-  await expect(peer).toHaveURL(`${sluggedUrl}#the-plan`);
+  await expect(peer).toHaveURL(`${titledUrl}#the-plan`);
   await expect(peer.getByRole("heading", { name: "The plan" })).toBeInViewport();
+  // A reload at the titled address opens the same Page at the same heading.
   await peer.reload();
-  await expect(peer).toHaveURL(`${sluggedUrl}#the-plan`);
+  await expect(peer).toHaveURL(`${titledUrl}#the-plan`);
+  await expect(editor(peer)).toContainText("Skip to the plan", { timeout: 20000 });
   await expect(peer.getByRole("heading", { name: "The plan" })).toBeInViewport();
+  // A rename moves the address in place, keeping the heading it names.
+  const renamed = `Renamed: plan ${stamp}`;
+  await titleInput(peer).fill(renamed);
+  const renamedUrl = `${origin}/p/${slugged.page_id}/Renamed-plan-${stamp}`;
+  await expect(peer).toHaveURL(`${renamedUrl}#the-plan`);
+  // Copy link carries the title as it is now, without waiting for the address.
+  await peerContext.grantPermissions(["clipboard-read", "clipboard-write"], { origin });
+  const third = `Third name ${stamp}`;
+  await titleInput(peer).fill(third);
+  await peer.getByLabel("Document actions", { exact: true }).click();
+  await peer.getByRole("button", { name: "Copy link", exact: true }).click();
+  await expect(peer.getByText("Link copied")).toBeVisible();
+  const thirdUrl = `${origin}/p/${slugged.page_id}/Third-name-${stamp}`;
+  assert.equal(await peer.evaluate(() => navigator.clipboard.readText()), thirdUrl);
+  await expect(peer).toHaveURL(`${thirdUrl}#the-plan`);
+  // Back and Forward between the library and the titled Page.
+  await peer.getByRole("link", { name: PRODUCT_NAME, exact: true }).click();
+  await expect(peer).toHaveURL(origin + "/");
+  const row = peer.locator(`a.index-row-link[href^="/p/${slugged.page_id}"]`);
+  await expect(row).toHaveAttribute("href", `/p/${slugged.page_id}/Third-name-${stamp}`);
+  await peer.goBack();
+  await expect(peer).toHaveURL(`${thirdUrl}#the-plan`);
+  await expect(editor(peer)).toContainText("Skip to the plan");
+  await peer.goForward();
+  await expect(peer).toHaveURL(origin + "/");
+  // A click from the library lands on the titled address at once, well
+  // before the address would follow the title on its own.
+  await row.click();
+  await expect(peer).toHaveURL(thirdUrl, { timeout: 500 });
+  await expect(editor(peer)).toContainText("Skip to the plan");
+  await peer.goBack();
+  await expect(peer).toHaveURL(origin + "/");
   // Out-of-grammar segments are not a Page route.
   await peer.goto(`${origin}/p/${slugged.page_id}/view`);
   await expect(peer.getByRole("alert")).toContainText("not valid");
@@ -270,6 +310,7 @@ try {
         "account renewal refreshes route",
         "cross-tab deletion stays deleted",
         "slugged link: unfurl title, address, tab title, heading link",
+        "address follows the title: open, reload, rename, Copy link, Back and Forward, library click",
         "invalid link feedback",
       ],
     }),
