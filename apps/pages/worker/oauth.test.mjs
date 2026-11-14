@@ -79,8 +79,7 @@ const claudeCodeDocument = {
   token_endpoint_auth_method: "none",
 };
 const verifier = "v".repeat(43);
-// The deployment setting that admits a client document Pages has no entry for.
-const anyDocument = { PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "true" };
+
 /** Answer metadata fetches from `documents`, uncached, and record each one. */
 function serve(t, documents) {
   const calls = [];
@@ -94,6 +93,7 @@ function serve(t, documents) {
 }
 function fixture(t, extra = {}) {
   const env = {
+    PAGES_OAUTH_METADATA_EGRESS: "public-https",
     NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin,
     NOTEBOOK_CLOUD_OIDC_FLOW: "server",
     NOTEBOOK_CLOUD_OIDC_ISSUER: "https://issuer.example",
@@ -453,7 +453,7 @@ test("codes enforce S256, client, callback, resource and one-use; no confidentia
 });
 
 test("a metadata-document client is fetched only for a signed-in person, and never when its id is malformed", async (t) => {
-  const env = fixture(t, anyDocument),
+  const env = fixture(t),
     login = await session(env);
   const calls = serve(t, { [metadataUrl]: metadata(), [claude]: claudeDocument });
   // Signed out: the request names no client yet and nothing is fetched.
@@ -531,82 +531,76 @@ test("a metadata-document client is fetched only for a signed-in person, and nev
   assert.equal(calls.length, 1);
 });
 
-test("by default only the documents Pages recognizes are read; any other client id is refused with no fetch", async (t) => {
-  const stranger = "https://stranger.example/client.json",
-    landing = "https://stranger.example/landing";
-  const documents = {
-    [metadataUrl]: metadata(),
-    [claude]: claudeDocument,
-    [claudeCode]: claudeCodeDocument,
-    [stranger]: {
-      client_id: stranger,
-      client_name: "Stranger",
-      redirect_uris: [landing],
+test("unknown harnesses complete OAuth with hosted and variable loopback callbacks", async (t) => {
+  const client_id = "https://new-harness.example/oauth/client.json";
+  const env = fixture(t, { PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "false" });
+  const login = await session(env);
+  const calls = serve(t, {
+    [client_id]: {
+      client_id,
+      client_name: "ChatGPT",
       token_endpoint_auth_method: "none",
+      redirect_uris: ["https://new-harness.example/callback", "http://localhost/callback"],
     },
-  };
-  // Unset, and any value but "true", leave the setting off.
-  for (const extra of [
-    {},
-    { PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "false" },
-    { PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "1" },
-    { PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "TRUE" },
-    { PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "" },
+  });
+  for (const redirect_uri of [
+    "https://new-harness.example/callback",
+    "http://localhost:49152/callback",
   ]) {
-    const env = fixture(t, extra),
-      login = await session(env);
-    const calls = serve(t, documents);
-    for (const cookie of [login.cookie, null]) {
-      const result = await handleOAuth(
-        get(
-          "/oauth/authorize?" +
-            (await authorization(env, { client_id: stranger, redirect_uri: landing })),
-          cookie,
-        ),
-        env,
-      );
-      assert.equal(result.status, 400);
-      assert.equal(result.headers.get("location"), null);
-      const text = await result.text();
-      assert.match(text, /This OAuth client is not supported\./);
-      assert.doesNotMatch(text, /Sign in<\/a>|<form/);
-    }
-    const exchanged = await exchange(env, "c".repeat(43), {
-      client_id: stranger,
-      redirect_uri: landing,
-    });
-    assert.equal((await exchanged.json()).error, "invalid_client");
-    const revoked = await handleOAuth(
-      post("/oauth/revoke", { client_id: stranger, token: "pages_rt_" + "r".repeat(43) }),
+    const options = { client_id, redirect_uri };
+    const screen = await consent(env, login, options);
+    assert.match(screen.text, /Connect new-harness\.example to Pages/);
+    assert.match(screen.text, /It calls itself/);
+    const approved = await approve(env, login, screen.fields);
+    const target = new URL(approved.headers.get("location"));
+    assert.equal(target.origin + target.pathname, redirect_uri);
+    const exchanged = await exchange(env, target.searchParams.get("code"), options);
+    assert.equal(exchanged.status, 200);
+    const tokens = await exchanged.json();
+    // Existing grants keep refreshing and can be revoked even if metadata
+    // egress becomes unavailable. Neither endpoint fetches metadata.
+    delete env.PAGES_OAUTH_METADATA_EGRESS;
+    const refreshed = await handleOAuth(
+      post("/oauth/token", {
+        grant_type: "refresh_token",
+        client_id,
+        resource: origin + "/mcp",
+        refresh_token: tokens.refresh_token,
+      }),
       env,
     );
-    assert.equal((await revoked.json()).error, "invalid_client");
-    assert.equal(calls.length, 0, JSON.stringify(extra));
-    // The three documents Pages recognizes still reach the consent screen.
-    for (const [client_id, redirect_uri, heading] of [
-      [metadataUrl, callback, "Connect ChatGPT to Pages"],
-      [claude, claudeCallback, "Connect Claude to Pages"],
-      [claudeCode, "http://localhost:3118/callback", "Connect Claude Code to Pages"],
-    ]) {
-      const screen = await consent(env, login, { client_id, redirect_uri });
-      assert.ok(screen.text.includes(`<h1>${heading}</h1>`), heading);
-    }
-    assert.deepEqual(
-      calls.map((call) => call.url),
-      [metadataUrl, claude, claudeCode],
+    assert.equal(refreshed.status, 200);
+    const next = await refreshed.json();
+    const access = await readAccessToken(env, next.access_token, { resource: origin + "/mcp" });
+    assert.equal(access.clientId, client_id);
+    assert.equal(access.identity.principal, "user:anaconda:person");
+    assert.equal(
+      (await handleOAuth(post("/oauth/revoke", { client_id, token: next.refresh_token }), env))
+        .status,
+      200,
     );
-    globalThis.fetch.mock.restore();
+    assert.equal(
+      await readAccessToken(env, next.access_token, { resource: origin + "/mcp" }),
+      null,
+    );
+    env.PAGES_OAUTH_METADATA_EGRESS = "public-https";
   }
-  // Turned on, the same request from the unknown client reaches consent.
-  const env = fixture(t, anyDocument),
-    login = await session(env);
-  const calls = serve(t, documents);
-  const screen = await consent(env, login, { client_id: stranger, redirect_uri: landing });
-  assert.match(screen.text, /<h1>Connect stranger\.example to Pages<\/h1>/);
-  assert.deepEqual(
-    calls.map((call) => call.url),
-    [stranger],
-  );
+  assert.equal(calls.length, 2);
+});
+
+test("missing metadata egress configuration fails closed for every product", async (t) => {
+  const env = fixture(t, { PAGES_OAUTH_METADATA_EGRESS: undefined });
+  const login = await session(env);
+  const calls = serve(t, {});
+  for (const client_id of [metadataUrl, "https://new-harness.example/client.json"]) {
+    const result = await handleOAuth(
+      get("/oauth/authorize?" + (await authorization(env, { client_id })), login.cookie),
+      env,
+    );
+    assert.equal(result.status, 503);
+    assert.match(await result.text(), /public-only HTTPS egress/);
+  }
+  assert.equal(calls.length, 0);
 });
 
 test("Claude connects by its metadata document: consent, code, refresh and revoke", async (t) => {
@@ -775,7 +769,7 @@ test("a local Pages server refuses a native client on its own loopback name and 
     );
   }
   // A public deployment keeps the plain refusal.
-  const env = fixture(t, anyDocument),
+  const env = fixture(t),
     login = await session(env);
   const client_id = "https://app.example/client.json";
   const redirect_uri = "https://page10.example:8443/cb";
@@ -794,7 +788,7 @@ test("a local Pages server refuses a native client on its own loopback name and 
 });
 
 test("a client Pages has no name for is shown by its host; the name it claims is quoted and escaped", async (t) => {
-  const env = fixture(t, anyDocument),
+  const env = fixture(t),
     login = await session(env);
   const client_id = "https://claude.ai.attacker.example/oauth/mcp-oauth-client-metadata";
   const redirect_uri = "https://collector.example/cb?kind=mcp";
@@ -863,7 +857,7 @@ test("a client Pages has no name for is shown by its host; the name it claims is
 });
 
 test("a document that changes its callbacks after consent does not move a pending consent or an issued code", async (t) => {
-  const env = fixture(t, anyDocument),
+  const env = fixture(t),
     login = await session(env);
   const client_id = "https://changing.example/client.json";
   const first = "https://changing.example/callback",
@@ -902,7 +896,7 @@ test("a document that changes its callbacks after consent does not move a pendin
 });
 
 test("a request waiting on another request's document fetch resumes on its own timer and finishes its store work", async (t) => {
-  const env = fixture(t, anyDocument),
+  const env = fixture(t),
     login = await session(env);
   const saved = { ...metadataFetchTimeouts };
   t.after(() => Object.assign(metadataFetchTimeouts, saved));
@@ -984,7 +978,7 @@ test("a request waiting on another request's document fetch resumes on its own t
 });
 
 test("a metadata-document client gets no redirect until the person chooses", async (t) => {
-  const env = fixture(t, anyDocument),
+  const env = fixture(t),
     login = await session(env);
   const client_id = "https://stranger.example/client.json",
     redirect_uri = "https://stranger.example/landing";

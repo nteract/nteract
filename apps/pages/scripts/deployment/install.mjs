@@ -40,6 +40,7 @@ import {
   unitInput,
 } from "./activation.mjs";
 import { installedRecord, parseKeyring, sessionVars, withSessionVars } from "./session-keys.mjs";
+import { metadataEgressQualification } from "./firewall.mjs";
 const [stage, apply, ...flags] = process.argv.slice(2);
 const target = stageTarget(stage);
 assertQualifiedDeploymentTarget(target);
@@ -122,6 +123,14 @@ if (owned) {
   if (ownership.prefix !== expected.prefix || ownership.hostname !== expected.hostname)
     throw new Error("Existing service has different ownership");
 }
+// Fleet-wide egress is an operator qualification, not something installing
+// one node can establish. The marker lives outside release artifacts and is
+// never created by this installer. Missing means metadata fetching stays off.
+const metadataEgressPath = configDir + "/oauth-metadata-egress";
+const metadataEgressPhase = owned
+  ? metadataEgressQualification(metadataEgressPath, { existsSync, lstatSync, readFileSync })
+  : "unconfigured";
+const metadataEgressQualified = metadataEgressPhase === "public-https";
 // A keyring file (written by `deploy.mjs rotate-key`) replaces the single
 // session secret in the Worker's vars; rotation moves `session-secret` aside,
 // so only one of them is read. Check before anything is written, so a
@@ -322,6 +331,7 @@ const configPath = release + "/wrangler.json",
 if (config.main !== "index.js" || config.no_bundle !== true || config.build || config.containers)
   throw new Error("Unexpected build configuration");
 config.vars = {
+  ...(metadataEgressQualified ? { PAGES_OAUTH_METADATA_EGRESS: "public-https" } : {}),
   ...(profile.companyViewDomains ? { PAGES_COMPANY_VIEW_DOMAINS: profile.companyViewDomains } : {}),
   ...(profile.catalogIndex ? { PAGES_CATALOG_INDEX: profile.catalogIndex } : {}),
   ...(profile.pageQuota ? { PAGES_DEFAULT_PAGE_QUOTA: profile.pageQuota } : {}),
@@ -511,6 +521,11 @@ if (keyring)
   } catch {
     liveBefore = null;
   }
+// An active node can adopt the pointer immediately after deploy. Apply the
+// egress boundary first, even when this installation will restart it later.
+// Inactive nodes install the same rules in ExecStartPre before serving.
+const firewallApplied = serviceActive();
+if (firewallApplied) run("/usr/bin/node", [base + "/firewall.mjs", "--target", target]);
 const receipt = run("runuser", [
   "-u",
   expected.service,
@@ -624,10 +639,7 @@ const wait = (options) => {
   }
 };
 if (activation.action === "restart") run("systemctl", ["restart", expected.service]);
-// The firewall rules name the service cgroup, which a running process keeps,
-// so a changed helper applies in place.
-else if (activation.applyFirewall)
-  run("/usr/bin/node", [base + "/firewall.mjs", "--target", target]);
+// Active nodes already received the firewall before publishing the pointer.
 // The local gateway serves the new build. This proves only this node.
 const local = wait({
   what: `Local node ${expected.listen} build ${wantBuild}`,
@@ -739,7 +751,7 @@ console.log(
     hostname: expected.hostname,
     activation: activation.action,
     ...(activation.reasons.length && { restart_reasons: activation.reasons }),
-    ...(activation.applyFirewall && { firewall_applied: true }),
+    ...((firewallApplied || activation.action === "restart") && { firewall_applied: true }),
     build: wantBuild,
     local_serving_after_ms: local.waitedMs,
     deployment_version: deployedVersion,

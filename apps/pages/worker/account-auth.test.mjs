@@ -336,7 +336,7 @@ test("sign out everywhere needs this origin and a browser session", async (t) =>
 
 test("the connected agents list names a metadata-document client by product or host, never by its own claim", async (t) => {
   const env = fixture(t);
-  env.PAGES_OAUTH_ANY_CLIENT_DOCUMENT = "true";
+  env.PAGES_OAUTH_METADATA_EGRESS = "public-https";
   const login = await signIn(env);
   const claudeCode = "https://claude.ai/oauth/claude-code-client-metadata";
   const stranger = "https://app.example/client.json";

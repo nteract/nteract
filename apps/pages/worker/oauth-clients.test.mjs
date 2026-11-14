@@ -5,14 +5,12 @@ import {
   CHATGPT_REDIRECT,
   KILO_REDIRECT,
   OAuthError,
-  admitsAnyClientDocument,
-  admittedClientUrl,
   clientFromMetadata,
   formActionSource,
   loggedClientId,
   loopbackNameClash,
   loopbackRedirect,
-  metadataClient,
+  metadataClient as fetchMetadataClient,
   metadataClientUrl,
   metadataFetchTimeouts,
   namedClient,
@@ -21,6 +19,9 @@ import {
   redirectAllowed,
 } from "./oauth-clients.mjs";
 
+// Unit fetches are mocked; the network-boundary tests exercise enforcement.
+const publicEgress = { PAGES_OAUTH_METADATA_EGRESS: "public-https" };
+const metadataClient = (url) => fetchMetadataClient(url, publicEgress);
 const origin = "https://pages.example";
 // The documents Anthropic and OpenAI publish at these client ids.
 const CLAUDE = "https://claude.ai/oauth/mcp-oauth-client-metadata";
@@ -164,29 +165,43 @@ test("a metadata-document client id is a canonical https URL on a public DNS nam
     assert.equal(metadataClientUrl(id, origin), null, String(id));
 });
 
-test("a deployment reads only the documents Pages recognizes unless it admits any client document", () => {
-  const stranger = "https://app.example/client.json";
-  const on = { PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "true" };
-  for (const env of [undefined, {}, { PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "false" }]) {
-    assert.equal(admitsAnyClientDocument(env), false);
-    for (const id of [CLAUDE, CLAUDE_CODE, CHATGPT_CLIENT])
-      assert.equal(admittedClientUrl(id, origin, env)?.href, id);
-    assert.equal(admittedClientUrl(stranger, origin, env), null);
-    // A recognized host is not enough: the whole client id is.
-    assert.equal(admittedClientUrl("https://claude.ai/oauth/another-client", origin, env), null);
-    assert.equal(admittedClientUrl(CLAUDE + "/confidential_client", origin, env), null);
-  }
-  assert.equal(admitsAnyClientDocument(on), true);
-  assert.equal(admittedClientUrl(stranger, origin, on)?.href, stranger);
-  assert.equal(admittedClientUrl(CLAUDE, origin, on)?.href, CLAUDE);
-  // The setting never admits a URL Pages would not fetch, or a fixed id.
+test("client URL admission does not depend on a known product name", () => {
   for (const id of [
-    "https://10.0.0.8/c.json",
-    "https://app.internal/c.json",
-    "pages-kilo",
-    origin + "/c.json",
+    CHATGPT_CLIENT,
+    CLAUDE,
+    CLAUDE_CODE,
+    "https://app.example/client.json",
+    "https://claude.ai/oauth/another-client",
   ])
-    assert.equal(admittedClientUrl(id, origin, on), null, id);
+    assert.equal(metadataClientUrl(id, origin)?.href, id);
+});
+
+test("metadata needs a configured egress boundary, including for known and cached clients", async (t) => {
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (id) => {
+    calls.push(id);
+    return Response.json(document(id), { headers: { "Cache-Control": "max-age=300" } });
+  });
+  for (const id of [CHATGPT_CLIENT, "https://boundary.example/client.json"]) {
+    const url = new URL(id);
+    for (const env of [
+      undefined,
+      {},
+      { PAGES_OAUTH_METADATA_EGRESS: "true" },
+      { PAGES_OAUTH_ANY_CLIENT_DOCUMENT: "true" },
+    ])
+      await assert.rejects(fetchMetadataClient(url, env), {
+        error: "temporarily_unavailable",
+        status: 503,
+      });
+    assert.equal(calls.length, id === CHATGPT_CLIENT ? 0 : 1);
+    await metadataClient(url);
+    await assert.rejects(fetchMetadataClient(url, {}), {
+      error: "temporarily_unavailable",
+      status: 503,
+    });
+  }
+  assert.equal(calls.length, 2);
 });
 
 test("Pages names its own clients; any other is called by the host of its id", () => {

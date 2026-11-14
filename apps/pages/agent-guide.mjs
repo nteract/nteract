@@ -16,7 +16,6 @@ import {
 } from "./agent-client-setup.mjs";
 import { PRODUCT_NAME } from "./shared/product.mjs";
 import { MAX_PAGE_TITLE } from "./shared/page-title.mjs";
-import { admitsAnyClientDocument } from "./worker/oauth-clients.mjs";
 import { richContentGuide, typedReadFields } from "./model/rich-content-guide.mjs";
 
 /** Public onboarding contains no account or document data. URLs come only from
@@ -45,12 +44,11 @@ export const guideUploadCommand = (origin) =>
 
 export function agentGuide(env) {
   const origin = pagesPublicOrigin(env);
-  const anyClientDocument = admitsAnyClientDocument(env);
   const provider = identityProvider(env);
   const part = (provider.apiKey ? keyedParts : oauthOnlyParts)({
     origin,
     provider,
-    acceptedClients: acceptedOAuthClients(anyClientDocument),
+    acceptedClients: acceptedOAuthClients,
     uploadCommand: guideUploadCommand(origin),
   });
   const emailInviteNote = provider.verifiedEmail
@@ -439,20 +437,14 @@ ${part.humanAuthorizesParagraph}
 
 ${part.oauthDiscoveryParagraph}
 
-${
-  anyClientDocument
-    ? `Any other MCP client connects the same way when its client ID is the https URL
+Any other MCP client connects the same way when its client ID is the https URL
 of a client ID metadata document it publishes. Pages reads the document once a
 person has signed in and accepts only a callback the document lists; the port
 of a http://localhost or http://127.0.0.1 callback may differ. The client must
 be public (token_endpoint_auth_method none) and use the authorization code flow.
 The consent screen names such a client by the host of its client ID. Pages has
 no registration endpoint, so a client that offers only dynamic client
-registration cannot connect by OAuth.`
-    : `This deployment reads a client ID metadata document only for ChatGPT, Claude
-and Claude Code. Any other client ID gets invalid_client, and Pages has no
-registration endpoint, so another client cannot connect by OAuth here.`
-}
+registration cannot connect by OAuth.
 
 ${part.claudeConnectorParagraph}
 
@@ -1680,10 +1672,8 @@ current, which a sign-in or an agent token exchange confirms for eight hours; an
 agent connected by OAuth holds its person's organizations on the same terms.`;
 
 /** The OAuth clients a deployment admits besides the ones Pages names. */
-const acceptedOAuthClients = (anyClientDocument) =>
-  anyClientDocument
-    ? "a client whose client ID is the https URL of its client ID metadata document"
-    : "ChatGPT, Claude and Claude Code by their client ID metadata documents";
+const acceptedOAuthClients =
+  "a client whose client ID is the https URL of its client ID metadata document";
 
 // The guide is one template. Each passage that depends on the provider is one
 // entry of keyedParts (a provider with an API key) or oauthOnlyParts (one
