@@ -1,8 +1,4 @@
-// What a dataframe node draws from. A stored node names one dataset asset
-// (its `src`), and nothing in the stored document names a source yet, so the
-// editor draws every node from its pinned asset. The drawing code
-// (wordgard-dataframes.mjs) takes the binding as a function, so a source
-// binding can be supplied without a stored shape.
+// The reference stored on a dataframe, shared by the editor and renderer.
 import { parseAssetPath } from "../shared/dataset-assets.mjs";
 import { imageAssetUrl } from "../shared/image-assets.mjs";
 
@@ -30,30 +26,11 @@ export function assetPath(src, pageId, binding) {
 
 /** A binding as the drawing code compares it: one source or one asset. */
 export function bindingKey(binding) {
-  if (binding && typeof binding.source_id === "string") return `source:${binding.source_id}`;
+  if (binding && typeof binding.source_id === "string")
+    return `source:${binding.source_id}:${binding.revision ?? "follow"}`;
   if (binding && typeof binding.asset_id === "string") return `asset:${binding.asset_id}`;
   return "none";
 }
 
-const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
-/** The global a browser test sets before the app loads, on a loopback origin
- * only, to draw tables from a binding of its own. */
-export const TEST_BINDING_GLOBAL = "__PAGES_TEST_DATAFRAME_BINDING__";
-
-/**
- * The binding the editor draws with: pinnedBinding, unless this is a
- * loopback origin and a browser test set TEST_BINDING_GLOBAL to a function.
- * Then that function decides, and a node it returns nothing for draws its
- * pinned asset. This test seam goes when a node can name its source.
- */
-export function editorBinding(scope = globalThis) {
-  const custom = LOOPBACK.has(scope.location?.hostname) ? scope[TEST_BINDING_GLOBAL] : undefined;
-  if (typeof custom !== "function") return pinnedBinding;
-  return (dataframe) => {
-    try {
-      return custom(dataframe) ?? pinnedBinding(dataframe);
-    } catch {
-      return pinnedBinding(dataframe);
-    }
-  };
-}
+/** The node's stored reference, with the original asset form still supported. */
+export const storedBinding = (dataframe) => dataframe?.binding ?? pinnedBinding(dataframe);

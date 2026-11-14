@@ -103,7 +103,7 @@ export const sourcesAnswer$ = (state$, sync$) =>
 
 /** Two projections hold the same sources: same ids, and each id's name,
  * asset, media type and revision alike. */
-const sameVersion = (a, b) =>
+export const sameVersion = (a, b) =>
   a === b ||
   (!!a &&
     !!b &&

@@ -141,14 +141,20 @@ export function markCopiedHTML(html, pageId, { parser = new DOMParser(), title, 
   if (!html.includes(DATAFRAME_ATTR)) return html;
   const doc = parser.parseFromString(html, "text/html");
   const assets = [];
+  let sourceBindings = false;
   for (const figure of doc.body.querySelectorAll(`figure[${DATAFRAME_ATTR}]`)) {
     let value = null;
     try {
       value = readDataframe(plainAttrs(JSON.parse(figure.getAttribute(DATAFRAME_ATTR))));
     } catch {}
+    if (value?.binding) {
+      figure.setAttribute("data-pages-source-page", pageId);
+      sourceBindings = true;
+    }
     const path = value && parseAssetPath(value.src);
     if (path?.pageId === pageId) assets.push(path.assetId);
   }
+  if (sourceBindings) html = doc.body.innerHTML;
   if (!assets.length) return html;
   const id = recordCopy({ pageId, assets, title }, options);
   return id ? html + copyMarker(id) : html;

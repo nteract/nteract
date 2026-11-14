@@ -34,7 +34,12 @@ import { unsupportedMarkdown, unsupportedMarkdownError } from "../model/markdown
 import { applyComment, commentsMigrated } from "../model/comments.mjs";
 import { guardCommentIntent, passageComment } from "../model/comment-guard.mjs";
 import { authorOf } from "../model/author.mjs";
-import { checkSources, setSources, validateSourceBatch } from "../model/sources-doc.mjs";
+import {
+  checkSources,
+  setSources,
+  validateSourceBatch,
+  readSource,
+} from "../model/sources-doc.mjs";
 import { checkView, setView, validateViewOperation } from "../model/view-doc.mjs";
 import { MAX_VIEWS, validViewId } from "../shared/views.mjs";
 import { CHART_WORKER_CSP, CHUNK_PATH } from "../shared/chart-worker-csp.mjs";
@@ -6832,16 +6837,20 @@ export class Page {
         }
         // A batch with a set_source writes the sources document and nothing
         // else.
-        const sourceOps = ops.filter((op) => op?.op === "set_source").length;
+        const sourceOps = ops.filter((op) =>
+          ["set_source", "delete_source"].includes(op?.op),
+        ).length;
         if (sourceOps && sourceOps !== ops.length)
           throw new HttpError(
             400,
-            "A batch with set_source holds only set_source operations. Send the other operations in a second edit_page request.",
+            "A batch with set_source or delete_source holds only source operations. Send the other operations in a second edit_page request.",
             "invalid_arguments",
           );
         if (sourceOps) return json(await this.writeSources(request, identity, body));
         // Ops that create a node naming a stored asset (model/node-registry.mjs).
-        const inserts = ops.filter((op) => insertOperation(op?.op) || op?.op === "set_image");
+        const inserts = ops.filter(
+          (op) => insertOperation(op?.op) || op?.op === "set_image" || op?.op === "set_node",
+        );
         // Where this batch landed, captured inside the change so the cursors
         // name the characters it wrote. A replayed receipt has no caret.
         let caret = null;
@@ -6874,6 +6883,23 @@ export class Page {
                     assetId,
                     ...(mediaType && { mediaType }),
                   });
+                // A new table binding must resolve now. Existing consumers remain
+                // readable after deletion or history eviction.
+                for (const op of inserts) {
+                  const binding =
+                    op.op === "insert_node" ? op.node?.attrs?.binding : op.attrs?.binding;
+                  if (!binding) continue;
+                  const source = readSource(this.sourcesView(), binding.source_id);
+                  if (
+                    binding.revision !== undefined &&
+                    !source.history.some((state) => state.revision === binding.revision)
+                  )
+                    throw new HttpError(
+                      400,
+                      "The source history does not hold that revision",
+                      "unknown_source_revision",
+                    );
+                }
                 // Each view node names a view this Page holds. The refusal
                 // names the ones a view node can name, at most MAX_VIEWS.
                 for (const viewId of insertedViews(inserts))

@@ -47,6 +47,8 @@ export function filterPastedDataframes(html, pageId, parser = new DOMParser(), c
   for (const figure of doc.body.querySelectorAll(`figure[${DATAFRAME_ATTR}]`)) {
     const value = figureAttrs(figure);
     const path = value && parseAssetPath(value.src);
+    if (value?.binding && pageId && figure.getAttribute("data-pages-source-page") === pageId)
+      continue;
     if (path && pageId && path.pageId === pageId) continue;
     const local = value && copied.get(value.src);
     if (local && parseAssetPath(local)?.pageId === pageId) {

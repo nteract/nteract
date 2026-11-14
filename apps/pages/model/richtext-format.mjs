@@ -23,12 +23,26 @@ export const markerParents = (value) =>
 
 // A stored name that isn't one keys as its own JSON, so it never equals a name.
 const nameKey = (raw) => markerName(raw) ?? { raw };
+// Structured attrs (source bindings) have no meaningful map key order.
+// Comparing their incidental insertion order would replace an unchanged marker.
+const attrKey = (value) =>
+  A.isImmutableString(value)
+    ? String(value)
+    : Array.isArray(value)
+      ? value.map(attrKey)
+      : value && typeof value === "object"
+        ? Object.fromEntries(
+            Object.keys(value)
+              .sort()
+              .map((key) => [key, attrKey(value[key])]),
+          )
+        : value;
 const markerKey = (value) =>
   JSON.stringify([
     nameKey(value.type),
     Array.isArray(value.parents) ? value.parents.map(nameKey) : [value.parents ?? null],
     Object.entries(value.attrs ?? {})
-      .map(([key, item]) => [key, A.isImmutableString(item) ? String(item) : item])
+      .map(([key, item]) => [key, attrKey(item)])
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
     !!value.isEmbed,
   ]);

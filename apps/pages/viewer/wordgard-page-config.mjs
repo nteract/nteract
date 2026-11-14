@@ -73,7 +73,7 @@ export function readOnlyPageConfig({
     GardState.schemaElement.of(elements),
     Decoration.Mark.shape(PagesLink, { element: "a", attributes: () => ({}) }),
     wordgardWidgets(),
-    wordgardDataframes({ pageId, eager: eagerDataframes }),
+    wordgardDataframes({ pageId, eager: eagerDataframes, sources }),
     ...(views && sources ? [wordgardViews({ views, sources })] : []),
     wordgardImages(),
     wordgardCodeNewlines,

@@ -5,6 +5,7 @@ import { DocStore, MemoryByteStore } from "../sync/doc-store.mjs";
 import { authorOf } from "./author.mjs";
 import {
   MAX_SOURCES,
+  MAX_SOURCE_IDS,
   SOURCE_HISTORY_LIMIT,
   WRITER_LIMITS,
   listSources,
@@ -12,6 +13,7 @@ import {
   setSources,
   sourcesGenesis,
   validateSourceBatch,
+  checkSources,
 } from "./sources-doc.mjs";
 
 const PARQUET = "application/vnd.apache.parquet";
@@ -37,6 +39,21 @@ const write = (doc, operations, by = OWNER, at = AT) =>
     setSources(draft, operations, { mediaTypes, by, at });
   });
 const initial = () => write(A.clone(sourcesGenesis(uuid)), [op()]);
+
+test("retired IDs are bounded without preventing an existing source's update or deletion", () => {
+  const doc = { sources: { ...initial().sources } };
+  for (let i = 1; i < MAX_SOURCE_IDS; i++) doc.sources[`retired_${i}`] = { deleted: true };
+  assert.throws(
+    () => checkSources(doc, [op({ source_id: "new_source" })]),
+    /including deleted sources/,
+  );
+  assert.doesNotThrow(() => checkSources(doc, [op({ source_revision: "1" })]));
+  assert.doesNotThrow(() =>
+    checkSources(doc, [{ op: "delete_source", source_id: "usage", source_revision: "1" }]),
+  );
+  assert.throws(() => checkSources(doc, [op({ source_id: "retired_1" })]), /was deleted/);
+  assert.equal(listSources(doc).length, 1);
+});
 
 test("the genesis is a pure function of the document id", () => {
   const one = sourcesGenesis(uuid);
@@ -232,7 +249,7 @@ test("every malformed field is invalid_source, before anything is written", () =
   assert.throws(() => validateSourceBatch([]), { code: "invalid_source" });
   assert.throws(() => validateSourceBatch([op(), op({ name: "Again" })]), {
     code: "invalid_source",
-    message: "A batch cannot set the same source twice",
+    message: "A batch cannot change the same source twice",
   });
   assert.deepEqual(validateSourceBatch([op(), op({ source_id: "b", asset_id: first })]), [first]);
 });

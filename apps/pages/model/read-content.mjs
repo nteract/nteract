@@ -282,11 +282,13 @@ function ownNodeFields(node, { pageId, maxItems, metadata, viewSummary }) {
       // dataframe is readable only when it names an asset on this Page.
       const value = readDataframe(node.param);
       const asset = value && parseAssetPath(value.src);
-      if (!asset || (pageId && asset.pageId !== pageId)) return { readable: false };
+      if (!value || (!value.binding && (!asset || (pageId && asset.pageId !== pageId))))
+        return { readable: false };
       return {
         attrs: {
-          asset_id: asset.assetId,
-          src: value.src,
+          ...(value.binding
+            ? { binding: value.binding }
+            : { asset_id: asset.assetId, src: value.src }),
           media_type: value.media_type,
           // Writers cap a title; a peer-written one can be longer.
           title: value.title?.slice(0, DATAFRAME_TITLE_MAX) ?? null,

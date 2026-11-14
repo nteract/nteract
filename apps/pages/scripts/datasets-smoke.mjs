@@ -265,10 +265,8 @@ try {
   }
   complete("A tap on a table's title row selects it on a phone");
 
-  // A table drawn from a named source follows it. No stored node names a
-  // source yet, so this harness supplies the binding through the viewer's
-  // loopback test seam (viewer/dataframe-binding.mjs): "Follows usage" reads
-  // the source `usage`, and "Pinned usage" its own asset.
+  // The usage Page case: the stored table and chart follow one source;
+  // refreshing it edits no Page content and keeps every node address.
   {
     const listing = (await tool(owner, "list_pages")).body;
     const made = await tool(owner, "create_page", {
@@ -302,29 +300,98 @@ try {
       assert.equal(result.status, 200, JSON.stringify(result.body));
       return result.body;
     };
-    await edit([
-      dataframe(first.asset_id, "Follows usage"),
-      dataframe(first.asset_id, "Pinned usage"),
-    ]);
     const setUsage = (asset_id, source_revision) =>
       edit([{ op: "set_source", source_id: "usage", name: "Usage", asset_id, source_revision }]);
     await setUsage(first.asset_id, null);
-
+    const inserted = await edit([
+      {
+        op: "insert_node",
+        node: {
+          type: "dataframe",
+          attrs: { binding: { source_id: "usage" }, title: "Follows usage" },
+        },
+      },
+      dataframe(first.asset_id, "Pinned usage"),
+      {
+        op: "insert_node",
+        node: {
+          type: "dataframe",
+          attrs: { binding: { source_id: "usage", revision: "1" }, title: "Pinned source" },
+        },
+      },
+    ]);
+    const nodeId = inserted.result.edits[0].nodes[0];
+    await edit([
+      {
+        op: "set_view",
+        view_id: "usage",
+        title: "Usage chart",
+        media_type: "application/vnd.vegalite.v6+json",
+        spec: {
+          data: { name: "usage" },
+          mark: "bar",
+          encoding: {
+            x: { field: "surface", type: "nominal" },
+            y: { field: "events", type: "quantitative" },
+          },
+        },
+        data: { usage: { source_id: "usage" } },
+        view_revision: null,
+      },
+    ]);
+    await edit([{ op: "insert_node", node: { type: "view", attrs: { view_id: "usage" } } }]);
     const reader = await signIn("dev@localhost");
-    await reader.context().addInitScript((name) => {
-      globalThis[name] = (dataframe) =>
-        dataframe.title === "Follows usage" ? { source_id: "usage" } : null;
-    }, "__PAGES_TEST_DATAFRAME_BINDING__");
+    await reader.addInitScript(() => {
+      const measure = performance.measure.bind(performance);
+      window.__cardTables = [];
+      performance.measure = (name, ...rest) => {
+        if (name === "pages-card-capture")
+          for (const frame of document.querySelectorAll("iframe")) {
+            const shell = frame.contentDocument?.querySelector(".card-shell");
+            if (shell)
+              window.__cardTables.push(
+                ...[...shell.querySelectorAll(".wordgard-dataframe-canvas")].map((canvas) => ({
+                  source: canvas.dataset.sourceId,
+                  revision: canvas.dataset.sourceRevision,
+                  text: canvas.textContent,
+                })),
+              );
+          }
+        return measure(name, ...rest);
+      };
+    });
     await reader.goto(`${origin}/p/${followId}`);
-    await expect(tables(reader)).toHaveCount(2, { timeout: 15000 });
+    await expect(tables(reader)).toHaveCount(3, { timeout: 15000 });
     const follows = tables(reader).filter({ hasText: "Follows usage" });
     const pinned = tables(reader).filter({ hasText: "Pinned usage" });
+    const sourcePin = tables(reader).filter({ hasText: "Pinned source" });
+    const chart = reader.locator('section.wordgard-view-embed[data-view-id="usage"]');
+    await chart.scrollIntoViewIfNeeded();
+    await expect(chart.locator(".pages-chart-canvas svg")).toContainText("browser", {
+      timeout: 30000,
+    });
+    await follows.scrollIntoViewIfNeeded();
     const followsCanvas = follows.locator(".wordgard-dataframe-canvas");
     await expect(followsCanvas).toHaveAttribute("data-source-id", "usage");
     await expect(followsCanvas).toHaveAttribute("data-source-revision", "1", { timeout: 20000 });
     await expect(followsCanvas).toHaveAttribute("data-asset-id", first.asset_id);
     await expect(follows).toContainText("browser", { timeout: 20000 });
     await expect(pinned).toContainText("browser", { timeout: 20000 });
+    await expect
+      .poll(
+        () =>
+          reader.evaluate(() =>
+            window.__cardTables.some(
+              (table) =>
+                table.source === "usage" &&
+                table.revision === "1" &&
+                table.text.includes("browser"),
+            ),
+          ),
+        { timeout: 30000 },
+      )
+      .toBe(true);
+    complete("Page cards render the stored source binding through the source resolver");
     await reader.screenshot({ path: `${output}/source-follow-before.png`, fullPage: true });
 
     // An agent refreshes the source with a new asset. The followed table
@@ -334,6 +401,17 @@ try {
     await expect(followsCanvas).toHaveAttribute("data-asset-id", second.asset_id);
     await expect(follows).toContainText("desktop", { timeout: 20000 });
     await expect(follows).not.toContainText("browser");
+    await expect(sourcePin).toContainText("browser");
+    await chart.scrollIntoViewIfNeeded();
+    await expect(chart.locator(".pages-chart-canvas svg")).toContainText("desktop", {
+      timeout: 30000,
+    });
+    const readBack = (await tool(owner, "read_page", { page_id: followId, include_content: false }))
+      .body;
+    assert.equal(
+      readBack.outline.entries.find((n) => n.attrs?.title === "Follows usage").node_id,
+      nodeId,
+    );
     await expect(pinned).toContainText("browser");
     assert.equal(
       await pinned.locator(".wordgard-dataframe-canvas").getAttribute("data-source-id"),
@@ -341,6 +419,33 @@ try {
       "the pinned table follows nothing",
     );
     await reader.screenshot({ path: `${output}/source-follow-after.png`, fullPage: true });
+    await reader.setViewportSize({ width: 390, height: 844 });
+    await follows.scrollIntoViewIfNeeded();
+    await reader.screenshot({ path: `${output}/source-follow-phone.png`, fullPage: true });
+    await reader.setViewportSize({ width: 1280, height: 900 });
+    await edit([
+      {
+        op: "set_node",
+        node_id: nodeId,
+        attrs: { binding: { source_id: "usage", revision: "1" } },
+      },
+    ]);
+    await expect(followsCanvas).toHaveAttribute("data-source-revision", "1", { timeout: 20000 });
+    await expect(follows).toContainText("browser");
+    await edit([{ op: "set_node", node_id: nodeId, attrs: { binding: { source_id: "usage" } } }]);
+    await expect(follows).toContainText("desktop");
+    await edit([{ op: "delete_source", source_id: "usage", source_revision: "2" }]);
+    await expect(follows).toContainText('Source "usage"');
+    await expect(follows).not.toContainText("desktop");
+    await expect(sourcePin).toContainText('Source "usage"');
+    await chart.scrollIntoViewIfNeeded();
+    await expect(chart).toContainText("usage");
+    await expect(chart.locator(".pages-chart-canvas svg")).not.toContainText("desktop");
+    await expect(pinned).toContainText("browser");
+    await reader.screenshot({ path: `${output}/source-deleted.png`, fullPage: true });
+    await edit([{ op: "set_node", node_id: nodeId, attrs: { asset_id: second.asset_id } }]);
+    await follows.scrollIntoViewIfNeeded();
+    await expect(follows).toContainText("desktop", { timeout: 20000 });
     await reader.context().close();
     people.set("dev@localhost", owner);
   }

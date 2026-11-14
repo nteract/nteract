@@ -1,3 +1,4 @@
+import { dataframeValue } from "../shared/dataset-assets.mjs";
 // Read-only projection of stored spans. Ordinary nodes are Wordgard nodes;
 // unknown containers retain their logical children in a reader-only Plot.
 // Neither this projection nor its source correspondence is an editor document.
@@ -348,6 +349,7 @@ export function nativeReadSpans(input, pageId) {
     const inlineAt = () =>
       !!outer.findLast((entry) => entry.tag.type !== ReadUnknown)?.tag.type.spec.inlineContent;
     const foreign =
+      !attrs.binding &&
       pageId !== undefined &&
       parseAssetPath(typeof attrs.src === "string" ? attrs.src : "")?.pageId !== pageId;
     // A dataframe it can't show reads as a notice where it is stored: in a
@@ -358,7 +360,10 @@ export function nativeReadSpans(input, pageId) {
     const scalars = Object.values(attrs).every(
       (value) => value === null || ["string", "number", "boolean"].includes(typeof value),
     );
-    const readable = scalars && (type === "view" ? !!readViewNode(attrs) : !!readDataframe(attrs));
+    const readable =
+      type === "view"
+        ? scalars && !!readViewNode(attrs)
+        : !!readDataframe(attrs) && Object.entries(attrs).every(([k, v]) => dataframeValue(k, v));
     const shown =
       !(
         parents.some((parent) => TEXT_CONTAINERS.has(parent)) ||
