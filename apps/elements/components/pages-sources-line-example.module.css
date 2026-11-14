@@ -1,0 +1,397 @@
+.exploration {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 40px 32px 64px;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+.embedded {
+  padding: 12px 0;
+}
+.intro {
+  margin-bottom: 28px;
+}
+.eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--muted-foreground);
+  font-weight: 650;
+}
+.intro h1 {
+  font-size: clamp(26px, 3vw, 36px);
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  margin: 10px 0 8px;
+  line-height: 1.2;
+}
+.intro p,
+.sectionHeading p {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+  margin: 0;
+}
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px 28px;
+  padding: 16px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.controls fieldset {
+  border: 0;
+  padding: 0;
+  min-width: 0;
+  margin: 0;
+}
+.controls legend {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  margin-bottom: 5px;
+}
+.controls fieldset > div {
+  display: flex;
+  gap: 2px;
+}
+.longNames {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  padding-top: 18px;
+}
+.previewStage {
+  padding: 24px 0;
+}
+.desktop,
+.phone {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-inline: auto;
+}
+.desktop {
+  width: 100%;
+}
+.phone {
+  width: 390px;
+  max-width: 100%;
+}
+.pageFrame {
+  container-type: inline-size;
+  background: var(--background);
+  color: var(--foreground);
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+}
+/* Scope both palettes so the mockup's light/dark control is independent of Elements. */
+.pageFrame[data-theme="light"] {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --border: oklch(0.922 0 0);
+  --primary: oklch(0.205 0 0);
+  --chart-main: #7771b4;
+  --chart-secondary: #bbb7d6;
+}
+.pageFrame[data-theme="dark"] {
+  --chart-main: #aaa4df;
+  --chart-secondary: #625d89;
+}
+.appHeader {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 24px;
+  gap: 16px;
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.035em;
+}
+.appActions {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+.appActions > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  justify-content: center;
+  font-size: 10px;
+  border: 1px solid var(--border);
+  color: var(--foreground);
+}
+/* Title and article spacing mirror Pages' style.css. The only new spacing
+   rule is .hasSources .title; the empty case keeps its original margin. */
+.paper {
+  max-width: 1056px;
+  margin: 16px auto 0;
+  padding: 16px 48px 48px;
+}
+.title {
+  font-size: clamp(32px, 4cqi, 38.4px);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.045em;
+  padding: 4px 0 9.6px;
+  margin: 0 0 24px;
+  border-bottom: 2px solid transparent;
+}
+.hasSources .title {
+  margin-bottom: 4px;
+}
+.sourcesLine {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 24px;
+  row-gap: 4px;
+  margin: 0 0 24px;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--muted-foreground);
+}
+.sourceEntry {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  max-width: 100%;
+  white-space: nowrap;
+}
+.sourceName {
+  color: var(--foreground);
+  font-weight: 450;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 26ch;
+}
+.sourceEntry > span:last-child {
+  flex-shrink: 0;
+}
+.wideEntries {
+  display: contents;
+}
+.narrowSummary {
+  display: none;
+}
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 6px;
+}
+.summary > span {
+  white-space: nowrap;
+}
+.body,
+.excerpt {
+  font-size: 16px;
+  line-height: 1.75;
+}
+.body p {
+  margin: 0 0 24px;
+}
+.body h2 {
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.3;
+  margin: 34px 0 12px;
+}
+.chart {
+  margin: 30px 0 0;
+  max-width: 780px;
+}
+.bars {
+  height: 145px;
+  display: flex;
+  align-items: end;
+  justify-content: space-around;
+  gap: 18px;
+  border-bottom: 1px solid var(--border);
+  padding: 0 12px;
+  background: repeating-linear-gradient(
+    to top,
+    transparent 0,
+    transparent 47px,
+    var(--border) 48px,
+    transparent 49px
+  );
+}
+.bars > div {
+  background: var(--chart-main);
+  flex: 1;
+  max-width: 42px;
+  display: flex;
+  flex-direction: column;
+  justify-content: end;
+}
+.bars > div > span {
+  display: block;
+  background: var(--chart-secondary);
+}
+.chartAxis {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 10px 0;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+.legend {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+  font-size: 11px;
+  color: var(--muted-foreground);
+  margin-top: 12px;
+}
+.legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.legend i {
+  background: var(--chart-main);
+  width: 9px;
+  height: 9px;
+}
+.legend span + span i {
+  background: var(--chart-secondary);
+}
+.comparison {
+  margin-top: 32px;
+}
+.sectionHeading {
+  margin-bottom: 20px;
+}
+.sectionHeading h2 {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  margin: 0 0 6px;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+}
+.example {
+  margin: 0;
+  min-width: 0;
+}
+.example figcaption {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: baseline;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+.example figcaption strong {
+  font-weight: 600;
+}
+.example figcaption span {
+  color: var(--muted-foreground);
+}
+.compact {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  min-height: 193px;
+  overflow: hidden;
+}
+.compact .paper {
+  margin: 0;
+  padding: 24px;
+}
+.compact .title {
+  font-size: 28px;
+}
+.excerpt {
+  margin: 0;
+  font-size: 14px;
+}
+.option {
+  min-width: 0;
+}
+.option > p {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+  min-height: 40px;
+  margin: 12px 0 16px;
+}
+.footnote {
+  font-size: 12px;
+  color: var(--muted-foreground);
+  margin-top: 36px;
+}
+@container (max-width: 900px) {
+  .paper {
+    margin-top: 0;
+    padding: 16px 19.2px 32px;
+  }
+  .appHeader {
+    padding-inline: 12px;
+  }
+}
+@container (max-width: 600px) {
+  .wideEntries {
+    display: none;
+  }
+  .narrowSummary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+  }
+  .sourceName {
+    max-width: 18ch;
+  }
+  .sourcesLine {
+    column-gap: 20px;
+  }
+  .presence,
+  .share {
+    display: none !important;
+  }
+  .appActions {
+    gap: 14px;
+  }
+  .bars {
+    gap: 9px;
+  }
+}
+@media (max-width: 700px) {
+  .exploration {
+    padding: 24px 16px 40px;
+  }
+  .grid {
+    grid-template-columns: 1fr;
+  }
+  .controls {
+    gap: 12px;
+  }
+  .longNames {
+    padding-top: 0;
+  }
+}
