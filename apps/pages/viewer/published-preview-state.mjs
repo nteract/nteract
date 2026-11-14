@@ -37,6 +37,7 @@ export function previewEditorTransition(state, event) {
             }
           : state.draft,
         prepared: null,
+        edited: false,
         error: null,
       };
     case "edit":
@@ -45,6 +46,7 @@ export function previewEditorTransition(state, event) {
             ...state,
             draft: { ...state.draft, ...event.patch },
             prepared: null,
+            edited: true,
             error: null,
             message: null,
           }
@@ -76,6 +78,7 @@ export function previewEditorTransition(state, event) {
             name: "ready",
             value: event.value,
             prepared: null,
+            edited: false,
             message: event.value.snapshot ? "Preview published." : "Preview removed.",
           }
         : state;

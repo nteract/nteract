@@ -42,6 +42,11 @@ test("edits invalidate approval; rendering, publishing and removing block duplic
   };
   const edited = step(state, { type: "edit", patch: { description: "changed" } });
   assert.equal(edited.prepared, null);
+  assert.equal(
+    edited.edited,
+    true,
+    "a local draft no longer presents the published image as its preview",
+  );
   assert.equal(step(edited, { type: "publish" }), edited);
   const publishing = step(state, { type: "publish", nonce: "nonce" });
   assert.equal(step(publishing, { type: "edit", patch: { title: "late" } }), publishing);

@@ -23,10 +23,13 @@ async function fixture(t) {
   const w = await world(t);
   w.env.PAGES_ASSETS = cardBucket();
   w.env.ASSETS = {
-    fetch: async () =>
-      new Response("<html><head><title>Pages</title></head><body>app</body></html>", {
+    fetch: async (request) => {
+      if (new URL(request.url).pathname === "/index.html")
+        return new Response(null, { status: 307, headers: { location: "/" } });
+      return new Response("<html><head><title>Pages</title></head><body>app</body></html>", {
         headers: { "content-type": "text/html", etag: "old" },
-      }),
+      });
+    },
   };
   const created = await w.createPage({ title: "Secret actual title" });
   assert.equal(created.status, 200, JSON.stringify(created.body));
@@ -68,6 +71,9 @@ test("private Pages get generic OG; only the owner can publish an independent sn
   html = await (await send(`/p/${id}`)).text();
   assert.match(html, /Approved title/);
   assert.doesNotMatch(html, /Secret actual title/);
+  const slugged = await (await send(`/p/${id}/Unapproved-slug`)).text();
+  assert.match(slugged, /Approved title/);
+  assert.doesNotMatch(slugged, /Unapproved slug|Secret actual title/);
   const preview = await send(`/p/${id}/preview.json`);
   assert.equal(preview.headers.get("cache-control"), "no-store");
   const body = await preview.json();
@@ -124,12 +130,11 @@ test("trash and restore cannot resurrect a published snapshot", async (t) => {
   assert.equal((await manage(command())).status, 200);
   const trashed = await w.call("owner", "delete_page", {
     page_id: id,
-    base_heads: w.heads(id),
-    idempotency_key: w.key(),
+    nonce: w.key(),
   });
   assert.equal(trashed.status, 200, JSON.stringify(trashed.body));
   assert.equal((await send(`/p/${id}/preview.json`)).status, 404);
-  const restored = await w.call("owner", "restore_page", { page_id: id, idempotency_key: w.key() });
+  const restored = await w.call("owner", "restore_page", { page_id: id, nonce: w.key() });
   assert.equal(restored.status, 200, JSON.stringify(restored.body));
   assert.equal((await send(`/p/${id}/preview.json`)).status, 404);
   assert.equal((await manage()).status, 200);

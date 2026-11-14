@@ -223,7 +223,9 @@ export async function publicPreviewResponse(request, env, pageId, file, fallback
       headers: { ...headers, "content-type": preview.mime_type },
     });
   }
-  const shell = await env.ASSETS.fetch(new Request(new URL("/index.html", request.url)));
+  // Fetch the canonical shell asset. celld redirects /index.html to /;
+  // passing that redirect through would send every Page link to the library.
+  const shell = await env.ASSETS.fetch(new Request(new URL("/", request.url)));
   if (!shell.ok) return shell;
   const html = (await shell.text()).replace(
     "</head>",

@@ -20,22 +20,33 @@ export function previewVisuals(root = document) {
     }));
 }
 
-function lines(context, text, width, count) {
+export function previewTextLines(context, text, width, count) {
   const result = [];
   let line = "";
-  for (const char of Array.from(text.replace(/\s+/g, " "))) {
-    if (context.measureText(line + char).width > width && line) {
-      result.push(line.trim());
-      line = "";
-      if (result.length === count) {
-        result[count - 1] = `${result[count - 1].slice(0, -2)}…`;
-        return result;
-      }
+  for (const word of text.trim().split(/\s+/u)) {
+    const next = line ? `${line} ${word}` : word;
+    if (context.measureText(next).width <= width) {
+      line = next;
+      continue;
     }
-    line += char;
+    if (line) result.push(line);
+    line = "";
+    // Break only words too wide to fit on a line, preserving Unicode points.
+    for (const character of word) {
+      if (line && context.measureText(line + character).width > width) {
+        result.push(line);
+        line = "";
+      }
+      line += character;
+    }
   }
-  if (line) result.push(line.trim());
-  return result;
+  if (line) result.push(line);
+  if (result.length <= count) return result;
+  const visible = result.slice(0, count);
+  const last = Array.from(visible[count - 1]);
+  while (last.length && context.measureText(last.join("") + "…").width > width) last.pop();
+  visible[count - 1] = last.join("").trimEnd() + "…";
+  return visible;
 }
 
 /** Rasterize once, then show and upload the same bytes. No generated content,
@@ -47,10 +58,13 @@ export async function renderPublishedPreview(draft, visuals, signal) {
   canvas.width = 1200;
   canvas.height = 630;
   const context = canvas.getContext("2d");
-  context.fillStyle = "#f7f8f5";
+  const background = context.createLinearGradient(0, 630, 1200, 0);
+  background.addColorStop(0, "#f7f8f5");
+  background.addColorStop(0.6, "#f7f8f5");
+  background.addColorStop(1, "#dceae3");
+  context.fillStyle = background;
   context.fillRect(0, 0, 1200, 630);
-  context.fillStyle = "#0b766e";
-  context.fillRect(0, 0, 12, 630);
+  context.fillStyle = "#37665c";
   context.font = "600 24px system-ui, sans-serif";
   context.fillText(PRODUCT_NAME, 64, 62);
   let titleY = 180;
@@ -81,12 +95,12 @@ export async function renderPublishedPreview(draft, visuals, signal) {
   const textOnly = draft.visual === "text";
   context.fillStyle = "#172a2b";
   context.font = `600 ${textOnly ? 62 : 40}px system-ui, sans-serif`;
-  const titleLines = lines(context, draft.title, 1072, textOnly ? 3 : 2);
+  const titleLines = previewTextLines(context, draft.title, 1072, textOnly ? 3 : 2);
   titleLines.forEach((line, i) => context.fillText(line, 64, titleY + i * (textOnly ? 76 : 49)));
   context.fillStyle = "#536466";
   context.font = `${textOnly ? 30 : 24}px system-ui, sans-serif`;
   const descriptionY = titleY + titleLines.length * (textOnly ? 76 : 49) + 24;
-  lines(context, draft.description, 1072, textOnly ? 3 : 2).forEach((line, i) =>
+  previewTextLines(context, draft.description, 1072, textOnly ? 3 : 2).forEach((line, i) =>
     context.fillText(line, 64, descriptionY + i * (textOnly ? 40 : 30)),
   );
   signal.throwIfAborted();

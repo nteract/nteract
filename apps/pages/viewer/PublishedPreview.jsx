@@ -1,24 +1,23 @@
-import React, { useEffect, useId, useMemo, useReducer, useState } from "react";
+import React, { useEffect, useId, useMemo, useReducer } from "react";
 import { defer } from "rxjs";
+import {
+  ArrowLeft,
+  ArrowUpRight,
+  Check,
+  Globe,
+  Image,
+  Info,
+  LockKeyhole,
+  Upload,
+} from "lucide-react";
+import { PRODUCT_NAME } from "../shared/product.mjs";
 import { request } from "./request.mjs";
 import { uploadPageImage } from "./image-upload.mjs";
 import { previewEditorTransition } from "./published-preview-state.mjs";
 import { previewVisuals, renderPublishedPreview } from "./published-preview-image.mjs";
 import "./published-preview.css";
 
-function PreparedImage({ blob }) {
-  const [url, setUrl] = useState(null);
-  useEffect(() => {
-    const next = URL.createObjectURL(blob);
-    setUrl(next);
-    return () => URL.revokeObjectURL(next);
-  }, [blob]);
-  return url ? (
-    <img className="published-preview-image" src={url} alt="Exact image that will be published" />
-  ) : null;
-}
-
-export function PublishedPreview({ session }) {
+export function PublishedPreview({ session, onBack }) {
   const id = useId();
   const visuals = useMemo(() => previewVisuals(), []);
   const [state, dispatch] = useReducer(previewEditorTransition, null, () => ({
@@ -37,15 +36,19 @@ export function PublishedPreview({ session }) {
     const subscription = defer(async () => {
       if (state.name === "loading")
         return { type: "loaded", value: await request(endpoint, { signal }) };
-      if (state.name === "rendering")
-        return {
-          type: "prepared",
-          prepared: await renderPublishedPreview(state.draft, visuals, signal),
-        };
+      if (state.name === "rendering") {
+        const blob = await renderPublishedPreview(state.draft, visuals, signal);
+        // The viewer CSP permits data images, not blob URLs. Display the same
+        // PNG bytes that uploadPageImage will send after approval.
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        signal.throwIfAborted();
+        const url = `data:image/png;base64,${btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(""))}`;
+        return { type: "prepared", prepared: { blob, url } };
+      }
       if (state.name === "uploading")
         return {
           type: "uploaded",
-          asset: await uploadPageImage(session.pageId, state.prepared, signal),
+          asset: await uploadPageImage(session.pageId, state.prepared.blob, signal),
         };
       const value = await request(endpoint, {
         method: "POST",
@@ -74,110 +77,220 @@ export function PublishedPreview({ session }) {
   }, [state.name, state.nonce, endpoint, session, visuals]);
   const ready = state.name === "ready";
   const edit = (patch) => dispatch({ type: "edit", patch });
+  const published = state.value?.snapshot;
+  const showPublished = published && !state.edited && !state.prepared;
+  const busy = !["ready", "failed", "loading"].includes(state.name);
   return (
     <section className="published-preview" aria-labelledby={`${id}-title`}>
-      <h3 id={`${id}-title`}>Link preview</h3>
-      <p>
-        Publish a title, description, and image anyone with the link can see. Page access stays
-        restricted.
-      </p>
+      <header className="published-preview-header">
+        {onBack && (
+          <button
+            className="preview-back"
+            type="button"
+            aria-label="Back to sharing"
+            onClick={onBack}
+          >
+            <ArrowLeft size={18} />
+          </button>
+        )}
+        <h2 id={`${id}-title`}>Link preview</h2>
+        <details className="preview-info">
+          <summary aria-label="About link previews" title="About link previews">
+            <Info size={15} />
+          </summary>
+          <p>
+            Only the approved preview is public; Page access stays the same. Edits don’t update it
+            automatically. Other services may cache a copy after removal.
+          </p>
+        </details>
+        <span className="preview-publication-state" data-published={!!published}>
+          {published ? <Globe size={13} /> : <LockKeyhole size={13} />}
+          {published ? "Published" : "Not published"}
+        </span>
+      </header>
       {state.name === "loading" ? (
-        <p role="status">Loading preview settings…</p>
+        <p className="preview-loading" role="status">
+          Loading preview settings…
+        </p>
       ) : (
         <>
-          <label htmlFor={`${id}-name`}>Preview title</label>
-          <input
-            id={`${id}-name`}
-            value={state.draft.title}
-            maxLength={160}
-            disabled={!ready}
-            onChange={(event) => edit({ title: event.target.value })}
-          />
-          <label htmlFor={`${id}-description`}>Description</label>
-          <textarea
-            id={`${id}-description`}
-            value={state.draft.description}
-            maxLength={400}
-            rows={3}
-            disabled={!ready}
-            onChange={(event) => edit({ description: event.target.value })}
-          />
-          <label htmlFor={`${id}-visual`}>Preview image</label>
-          <select
-            id={`${id}-visual`}
-            value={state.draft.visual}
-            disabled={!ready}
-            onChange={(event) => edit({ visual: event.target.value })}
-          >
-            <option value="text">Title and description card</option>
-            {visuals.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.label}
-              </option>
-            ))}
-            <option value="upload">Upload a cover</option>
-          </select>
-          {state.draft.visual === "upload" && (
-            <input
-              aria-label="Cover image"
-              type="file"
-              accept="image/png,image/jpeg,image/webp"
-              disabled={!ready}
-              onChange={(event) => edit({ file: event.target.files?.[0] })}
-            />
-          )}
-          {state.prepared && <PreparedImage blob={state.prepared} />}
-          <p className="published-preview-note">
-            This publishes a snapshot. Later Page edits stay private until you update the preview.
-            Other services may keep copies after you remove it.
-          </p>
-          <div className="published-preview-actions">
-            <button
-              type="button"
-              disabled={!ready || !state.draft.title.trim()}
-              onClick={() => dispatch({ type: "prepare" })}
-            >
-              Prepare preview
-            </button>
-            <button
-              type="button"
-              disabled={!ready || !state.prepared}
-              onClick={() => dispatch({ type: "publish", nonce: crypto.randomUUID() })}
-            >
-              {state.value?.snapshot ? "Update public preview" : "Publish preview"}
-            </button>
-            {state.value?.snapshot && (
-              <button
-                type="button"
+          <div className="published-preview-body">
+            <figure className="preview-card">
+              {state.prepared ? (
+                <img
+                  className="published-preview-image"
+                  src={state.prepared.url}
+                  alt="Exact image that will be published"
+                />
+              ) : showPublished ? (
+                <img
+                  className="published-preview-image"
+                  src={`/p/${session.pageId}/preview.png?v=${state.value.revision}`}
+                  alt="Currently published preview"
+                />
+              ) : (
+                <div className="preview-card-draft">
+                  <span className="preview-card-brand">{PRODUCT_NAME}</span>
+                  {state.draft.visual !== "text" && (
+                    <Image size={32} strokeWidth={1.25} aria-hidden="true" />
+                  )}
+                  <strong>{state.draft.title || "Your Page title"}</strong>
+                  <p>{state.draft.description || "Description"}</p>
+                </div>
+              )}
+              <figcaption>
+                <span>
+                  {state.prepared ? (
+                    <>
+                      <Check size={13} /> Ready to publish
+                    </>
+                  ) : showPublished ? (
+                    <>
+                      <Globe size={13} /> Currently published
+                    </>
+                  ) : (
+                    "Draft"
+                  )}
+                </span>
+                {showPublished ? (
+                  <a
+                    target="_blank"
+                    rel="noreferrer"
+                    href={`/p/${session.pageId}/preview.png?v=${state.value.revision}`}
+                    aria-label="Open published image"
+                  >
+                    <ArrowUpRight size={15} />
+                  </a>
+                ) : (
+                  <span>1200 × 630</span>
+                )}
+              </figcaption>
+            </figure>
+            <div className="preview-field">
+              <div className="preview-field-label">
+                <label htmlFor={`${id}-name`}>Preview title</label>
+                <span>{state.draft.title.length}/160</span>
+              </div>
+              <input
+                id={`${id}-name`}
+                value={state.draft.title}
+                maxLength={160}
                 disabled={!ready}
-                onClick={() => dispatch({ type: "unpublish", nonce: crypto.randomUUID() })}
+                onChange={(event) => edit({ title: event.target.value })}
+              />
+            </div>
+            <div className="preview-field">
+              <div className="preview-field-label">
+                <label htmlFor={`${id}-description`}>Description</label>
+                <span>Optional</span>
+              </div>
+              <textarea
+                id={`${id}-description`}
+                value={state.draft.description}
+                maxLength={400}
+                rows={2}
+                placeholder="Add a description…"
+                disabled={!ready}
+                onChange={(event) => edit({ description: event.target.value })}
+              />
+            </div>
+            <div className="preview-field">
+              <label htmlFor={`${id}-visual`}>Image source</label>
+              <select
+                id={`${id}-visual`}
+                aria-label="Preview image"
+                value={state.draft.visual}
+                disabled={!ready}
+                onChange={(event) => edit({ visual: event.target.value })}
               >
-                Remove preview
-              </button>
-            )}
+                <option value="text">Title and description card</option>
+                {visuals.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.label}
+                  </option>
+                ))}
+                <option value="upload">Upload a cover</option>
+              </select>
+              {state.draft.visual === "upload" && (
+                <label className="preview-upload">
+                  <Upload size={17} />
+                  <span>
+                    {state.draft.file?.name || "Choose a cover image"}
+                    <small>PNG, JPEG or WebP</small>
+                  </span>
+                  <input
+                    aria-label="Cover image"
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    disabled={!ready}
+                    onChange={(event) => edit({ file: event.target.files?.[0] })}
+                  />
+                </label>
+              )}
+            </div>
           </div>
-          {state.value?.snapshot && (
-            <p>
-              Published {new Date(state.value.snapshot.published_at).toLocaleString()}.{" "}
-              <a target="_blank" rel="noreferrer" href={`/p/${session.pageId}/preview.json`}>
-                View published details
-              </a>
-            </p>
-          )}
+          <footer className="published-preview-footer">
+            {state.error && (
+              <p role="alert">
+                {state.error}{" "}
+                <button
+                  className="preview-text-button"
+                  type="button"
+                  onClick={() => dispatch({ type: "reload" })}
+                >
+                  Reload settings
+                </button>
+              </p>
+            )}
+            {busy && (
+              <p role="status">
+                {state.name === "rendering" ? "Preparing image…" : "Saving preview…"}
+              </p>
+            )}
+            {state.message && (
+              <p className="preview-success" role="status">
+                <Check size={14} /> {state.message}
+              </p>
+            )}
+            <div className="published-preview-actions">
+              {published && (
+                <button
+                  className="preview-remove"
+                  type="button"
+                  disabled={!ready}
+                  onClick={() => dispatch({ type: "unpublish", nonce: crypto.randomUUID() })}
+                >
+                  Remove preview
+                </button>
+              )}
+              <div className="preview-primary-actions">
+                <button
+                  className={state.prepared ? "preview-secondary" : "preview-primary"}
+                  type="button"
+                  disabled={
+                    !ready ||
+                    !state.draft.title.trim() ||
+                    (state.draft.visual === "upload" && !state.draft.file)
+                  }
+                  onClick={() => dispatch({ type: "prepare" })}
+                >
+                  Prepare preview
+                </button>
+                {state.prepared && (
+                  <button
+                    className="preview-primary"
+                    type="button"
+                    disabled={!ready}
+                    onClick={() => dispatch({ type: "publish", nonce: crypto.randomUUID() })}
+                  >
+                    {published ? "Update public preview" : "Publish preview"}
+                  </button>
+                )}
+              </div>
+            </div>
+          </footer>
         </>
       )}
-      {!["ready", "failed", "loading"].includes(state.name) && (
-        <p role="status">{state.name === "rendering" ? "Preparing image…" : "Saving preview…"}</p>
-      )}
-      {state.error && (
-        <p role="alert">
-          {state.error}{" "}
-          <button type="button" onClick={() => dispatch({ type: "reload" })}>
-            Reload settings
-          </button>
-        </p>
-      )}
-      {state.message && <p role="status">{state.message}</p>}
     </section>
   );
 }

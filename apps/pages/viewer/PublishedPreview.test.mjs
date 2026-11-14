@@ -96,17 +96,33 @@ test("owner must prepare and approve exact image bytes; publishing and removal u
         }),
       ),
     );
-    assert.equal(button("Publish preview").disabled, true);
+    assert.equal(button("Publish preview"), undefined);
     assert.equal(calls.length, 1);
     await settle(() => button("Prepare preview").click());
-    assert.ok(document.querySelector("img[alt='Exact image that will be published']"));
+    const preparedImage = document.querySelector("img[alt='Exact image that will be published']");
+    assert.ok(preparedImage);
+    assert.equal(
+      preparedImage.getAttribute("src"),
+      `data:image/png;base64,${Buffer.from("test raster").toString("base64")}`,
+      "the viewer CSP allows the exact prepared bytes as a data image",
+    );
     assert.equal(calls.length, 1, "preparing is local, not a publication or upload");
     await settle(() => button("Publish preview").click());
     assert.equal(calls.length, 3);
     assert.ok(document.body.textContent.includes("Preview published."));
+    assert.equal(
+      document.querySelector("img[alt='Currently published preview']").getAttribute("src"),
+      `/p/${id}/preview.png?v=1`,
+    );
+    assert.equal(
+      button("Update public preview"),
+      undefined,
+      "publishing again requires preparing a fresh image",
+    );
     await settle(() => button("Remove preview").click());
     assert.equal(calls.length, 4);
     assert.ok(document.body.textContent.includes("Preview removed."));
+    assert.equal(document.querySelector("img[alt='Currently published preview']"), null);
   } finally {
     await act(async () => root.unmount());
     dom.window.close();
