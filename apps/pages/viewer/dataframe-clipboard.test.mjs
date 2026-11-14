@@ -72,3 +72,27 @@ test("with no Page (the comment editor), every pasted dataframe becomes text", (
   assert.equal(filtered.includes("data-pages-dataframe"), false);
   assert.match(filtered, /Usage &lt;by&gt; day/);
 });
+
+test("a source-bound table keeps its binding only when pasted into its original Page", async (t) => {
+  const { markCopiedHTML } = await import("./copy-registry.mjs");
+  const dom = new JSDOM();
+  t.after(() => dom.window.close());
+  const parser = new dom.window.DOMParser();
+  const value = {
+    binding: { source_id: "usage", revision: "2" },
+    media_type: PARQUET_MEDIA_TYPE,
+    title: "Usage",
+  };
+  const raw = serialize(schema.doc([PagesDataframe.of(value)])).toDOM(dom.window.document)
+    .firstChild.outerHTML;
+  const html = markCopiedHTML(raw, pageId, { parser });
+  const body = dom.window.document.createElement("body");
+  body.innerHTML = filterPastedDataframes(html, pageId, parser);
+  assert.deepEqual(parse(schema, body).firstChild.param, value);
+  for (const destination of [otherPage, null]) {
+    const text = filterPastedDataframes(html, destination, parser);
+    assert.equal(text.includes("data-pages-dataframe"), false);
+    assert.match(text, /Usage/);
+  }
+  assert.equal(filterPastedDataframes(raw, pageId, parser).includes("data-pages-dataframe"), false);
+});

@@ -5,13 +5,16 @@ import { DocStore, MemoryByteStore } from "../sync/doc-store.mjs";
 import { authorOf } from "./author.mjs";
 import {
   MAX_SOURCES,
+  MAX_SOURCE_IDS,
   SOURCE_HISTORY_LIMIT,
   WRITER_LIMITS,
+  deletedSource,
   listSources,
   readSource,
   setSources,
   sourcesGenesis,
   validateSourceBatch,
+  checkSources,
 } from "./sources-doc.mjs";
 
 const PARQUET = "application/vnd.apache.parquet";
@@ -37,6 +40,82 @@ const write = (doc, operations, by = OWNER, at = AT) =>
     setSources(draft, operations, { mediaTypes, by, at });
   });
 const initial = () => write(A.clone(sourcesGenesis(uuid)), [op()]);
+
+test("retired IDs are bounded without preventing an existing source's update or deletion", () => {
+  const doc = { sources: { ...initial().sources } };
+  for (let i = 1; i < MAX_SOURCE_IDS; i++) doc.sources[`retired_${i}`] = { deleted: true };
+  assert.throws(
+    () => checkSources(doc, [op({ source_id: "new_source" })]),
+    /including deleted sources/,
+  );
+  assert.doesNotThrow(() => checkSources(doc, [op({ source_revision: "1" })]));
+  assert.doesNotThrow(() =>
+    checkSources(doc, [{ op: "delete_source", source_id: "usage", source_revision: "1" }]),
+  );
+  assert.throws(() => checkSources(doc, [op({ source_id: "retired_1" })]), /was deleted/);
+  assert.equal(listSources(doc).length, 1);
+});
+
+test("a delete records the batch's time and writer in the tombstone", () => {
+  const deleter = writer("user:test:editor", { name: "Claude", model: "opus" });
+  const later = "2026-11-12T12:00:00.000Z";
+  const doc = write(
+    initial(),
+    [{ op: "delete_source", source_id: "usage", source_revision: "1" }],
+    deleter,
+    later,
+  );
+  const by = {
+    principal: "user:test:editor",
+    displayName: "Owner",
+    driver: "MCP",
+    agent: { name: "Claude", model: "opus" },
+  };
+  assert.deepEqual(
+    { ...doc.sources.usage, by: { ...doc.sources.usage.by } },
+    {
+      deleted: true,
+      at: later,
+      by,
+    },
+  );
+  assert.deepEqual(deletedSource(doc, "usage"), { source_id: "usage", at: later, by });
+  assert.throws(() => readSource(doc, "usage"), { code: "source_not_found" });
+  assert.deepEqual(listSources(doc), []);
+  assert.throws(
+    () => write(doc, [op({ source_id: "usage" })]),
+    { code: "source_not_found" },
+    "a retired id is not reused",
+  );
+});
+
+test("deletedSource reads both tombstone forms and nothing else", () => {
+  const doc = initial();
+  const by = { principal: "user:test:owner", displayName: "Owner", driver: "MCP" };
+  const stored = {
+    ...doc.sources,
+    bare: { deleted: true },
+    full: { deleted: true, at: AT, by },
+    bad_at: { deleted: true, at: "not a time", by },
+    bad_by: { deleted: true, at: AT, by: { principal: 7 } },
+  };
+  const tombstones = { sources: stored };
+  assert.equal(deletedSource(tombstones, "usage"), null, "an active source");
+  assert.equal(deletedSource(tombstones, "missing"), null, "an unknown id");
+  assert.equal(deletedSource(tombstones, "constructor"), null, "a reserved id");
+  assert.equal(deletedSource(undefined, "usage"), null, "no sources document");
+  assert.deepEqual(deletedSource(tombstones, "full"), { source_id: "full", at: AT, by });
+  for (const id of ["bare", "bad_at", "bad_by"])
+    assert.deepEqual(deletedSource(tombstones, id), { source_id: id, at: null, by: null });
+  for (const id of ["bare", "full", "bad_at", "bad_by"]) {
+    assert.throws(() => readSource(tombstones, id), { code: "source_not_found" });
+    assert.throws(() => checkSources(tombstones, [op({ source_id: id })]), /was deleted/);
+  }
+  assert.deepEqual(
+    listSources(tombstones).map((source) => source.source_id),
+    ["usage"],
+  );
+});
 
 test("the genesis is a pure function of the document id", () => {
   const one = sourcesGenesis(uuid);
@@ -232,7 +311,7 @@ test("every malformed field is invalid_source, before anything is written", () =
   assert.throws(() => validateSourceBatch([]), { code: "invalid_source" });
   assert.throws(() => validateSourceBatch([op(), op({ name: "Again" })]), {
     code: "invalid_source",
-    message: "A batch cannot set the same source twice",
+    message: "A batch cannot change the same source twice",
   });
   assert.deepEqual(validateSourceBatch([op(), op({ source_id: "b", asset_id: first })]), [first]);
 });

@@ -92,6 +92,7 @@ import { reloadGate } from "./build-freshness.mjs";
 import { EditorLoader } from "./editor-loader.mjs";
 import { SessionHost } from "./session-host.mjs";
 import { useStore } from "./store.mjs";
+import { SourcesLine } from "./SourcesLine.jsx";
 import { CommentComposer, draftRecord, hasDraftText } from "./comment-composer.mjs";
 import { focusReturnTarget } from "./focus-return.mjs";
 import { timer } from "rxjs";
@@ -1995,6 +1996,7 @@ function App() {
                         ?.focus();
                   }}
                 />
+                <SourcesLine key={session.pageId} session={session} />
                 <PageBlocks
                   blocks={page.blocks}
                   renderBlock={(block) => (

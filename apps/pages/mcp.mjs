@@ -236,6 +236,17 @@ const attrSchema = ({ spec }) =>
 const assetId = { type: "string", pattern: "^[a-f0-9]{64}$" };
 /** One edit_page operation: every field its ops take, each named for its
  * ops. */
+const sourceBinding = {
+  type: "object",
+  properties: {
+    source_id: { type: "string", pattern: SOURCE_ID_PATTERN },
+    revision: { type: "string", pattern: SOURCE_REVISION_PATTERN },
+  },
+  required: ["source_id"],
+  additionalProperties: false,
+  description:
+    "Follow a Page source; add revision to pin one retained version. Mutually exclusive with asset_id.",
+};
 const editOperation = {
   type: "object",
   properties: {
@@ -254,10 +265,11 @@ const editOperation = {
         "format_match",
         "set_node",
         "set_source",
+        "delete_source",
         "set_view",
       ),
       description:
-        "set_title: title. replace_block_markdown: node_id, markdown. insert_markdown: markdown, after_node_id. move_block: node_id, after_node_id. delete_block: node_id. insert_image: asset_id, alt; optional dark_asset_id, title, after_node_id. set_image: node_id and the fields to change. insert_node: node, after_node_id. delete_node: node_id. replace_match: node_id, match_text, replacement or replacement_markdown. format_match: node_id, match_text, add or remove; optional all. set_node: node_id, match_text, type or attrs. set_source: source_id, name, asset_id, source_revision; in set_source-only batches. set_view: view_id, title, media_type, spec, data, view_revision; alone.",
+        "set_title: title. replace_block_markdown: node_id, markdown. insert_markdown: markdown, after_node_id. move_block: node_id, after_node_id. delete_block: node_id. insert_image: asset_id, alt; optional dark_asset_id, title, after_node_id. set_image: node_id and the fields to change. insert_node: node, after_node_id. delete_node: node_id. replace_match: node_id, match_text, replacement or replacement_markdown. format_match: node_id, match_text, add or remove; optional all. set_node: node_id, match_text, type or attrs; a dataframe takes node_id and attrs without match_text, preserving its identity. set_source: source_id, name, asset_id, source_revision. delete_source: source_id, source_revision; retires the ID. Source operations batch only with source operations. set_view: view_id, title, media_type, spec, data, view_revision; alone.",
     },
     node_id: {
       ...address,
@@ -280,7 +292,11 @@ const editOperation = {
       description:
         "Image ops and set_source: asset uploaded to this Page (create_page_asset_upload).",
     },
-    source_id: { type: "string", pattern: SOURCE_ID_PATTERN, description: "set_source: its ID." },
+    source_id: {
+      type: "string",
+      pattern: SOURCE_ID_PATTERN,
+      description: "set_source or delete_source: its ID.",
+    },
     name: {
       ...string,
       minLength: 1,
@@ -290,7 +306,8 @@ const editOperation = {
     source_revision: {
       type: ["string", "null"],
       pattern: SOURCE_REVISION_PATTERN,
-      description: "set_source: source_revision you read; null creates. Else stale_source.",
+      description:
+        "Source revision you read; null creates with set_source only. Else stale_source.",
     },
     view_id: { type: "string", description: "set_view: its ID, like a source_id." },
     media_type: { ...choice(...VIEW_MEDIA_TYPES), description: "set_view." },
@@ -325,7 +342,11 @@ const editOperation = {
         attrs: {
           type: "object",
           properties: {
-            asset_id: { ...assetId, description: "Parquet asset uploaded to this Page." },
+            asset_id: {
+              ...assetId,
+              description: "Parquet asset uploaded to this Page; mutually exclusive with binding.",
+            },
+            binding: sourceBinding,
             title: {
               type: "string",
               maxLength: 200,
@@ -374,12 +395,18 @@ const editOperation = {
     attrs: {
       type: "object",
       description: "set_node: attributes to set, keeping the node's text.",
-      properties: Object.fromEntries(
-        Object.entries(SETTABLE_ATTRS).map(([name, attr]) => [
-          name,
-          { ...attrSchema(attr), description: ATTR_DESCRIPTIONS[name] ?? name },
-        ]),
-      ),
+      properties: {
+        binding: sourceBinding,
+        asset_id: assetId,
+        title: { type: ["string", "null"], maxLength: 200 },
+        media_type: { type: "string", enum: ["application/vnd.apache.parquet"] },
+        ...Object.fromEntries(
+          Object.entries(SETTABLE_ATTRS).map(([name, attr]) => [
+            name,
+            { ...attrSchema(attr), description: ATTR_DESCRIPTIONS[name] ?? name },
+          ]),
+        ),
+      },
       additionalProperties: false,
       minProperties: 1,
     },

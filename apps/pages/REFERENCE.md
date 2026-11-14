@@ -265,7 +265,8 @@ else replaces the screen with a Reload notice and leaves the Page unchanged.
   language are shared content; rendered SVG is not stored. Cmd/Ctrl+Enter
   continues in a paragraph. Pages does not execute code.
 - **Dataframes:** a `dataframe` block marker with no text. Its attrs are
-  `src` (a Page asset path), `media_type` and an optional `title`
+  either `src` (a Page asset path) or `binding` (`{source_id, revision?}`),
+  plus `media_type` and an optional `title`
   ([`shared/dataset-assets.mjs`](shared/dataset-assets.mjs)). The viewer picks
   a renderer by media type
   ([`viewer/wordgard-dataframes.mjs`](viewer/wordgard-dataframes.mjs));
@@ -1520,6 +1521,30 @@ viewer shows no comments.
 
 ## Sources document
 
+The Page title has a read-only sources line outside the content document
+([viewer/SourcesLine.jsx](viewer/SourcesLine.jsx)). It reads the session's
+source store, including unused sources, and uses the existing host-document
+lookup machine to discover the first source while a Page is already open.
+On a visible, connected Page without sources, this holds lookup demand:
+three initial attempts, then one lookup after 10 seconds, 30 seconds, and
+every 60 seconds until the document exists. This also applies to Pages with
+no data consumers. The first source can therefore take about a minute to
+appear; once the document is open, source changes arrive through live sync.
+No sources, or a sources document that hasn't arrived, renders no line and
+keeps the title's normal spacing. A stored sources document supplies the
+same metadata offline; this does not cache Parquet bytes.
+
+One to three sources show alphabetical names with a database icon beside
+each name. Four or more show a count and the newest/oldest last-set times;
+three also use this summary below 600 px of article width. Names truncate
+with their full text on hover. Revision `1` says **added**, later revisions
+say **refreshed**, even when the asset is unchanged. These are host source-set
+times, not asset upload times or dates inside the data. Dates are relative
+for seven days, then local calendar dates; each has its exact local timestamp
+on hover and in its accessible name. A minute clock updates the visible ages
+without changing content. Readers and editors see the same noninteractive
+line; it has no panel, refresh controls, or staleness warning.
+
 A Page's named sources live in a third Automerge document, `pages.sources`
 format 1 ([model/sources-doc.mjs](model/sources-doc.mjs)), owned by the same
 Page Durable Object. Only the host writes it. Its root is `sources`, a map
@@ -1634,19 +1659,31 @@ table, an Arrow decoder for a chart) gets its own resolver over one byte
 cache of the four most recent assets; each table decodes its own copy and
 frees it when unmounted, replaced or abandoned mid-load. Released with the session, the store reads
 as a Page with no sources: its versions emit null and resolve refuses. The
-editor draws every dataframe from its pinned asset
-([viewer/dataframe-binding.mjs](viewer/dataframe-binding.mjs)), fetching the
-node's own `src`, so a `src` on another Page is still refused before any
-request.
-A table given a source binding follows it
-([viewer/source-follow.mjs](viewer/source-follow.mjs)): each new version
-replaces the table, and its canvas records `data-source-id`, `data-asset-id`
-and `data-source-revision` for the version it drew. No stored node names a
-source yet; on a loopback origin a browser test can supply a binding through
-`globalThis.__PAGES_TEST_DATAFRAME_BINDING__`.
+editor draws a dataframe's stored `binding: {source_id}` or
+`binding: {source_id, revision}` through the same resolver used by views.
+Asset-pinned tables keep their original `src`, which is refused before a
+request when it belongs to another Page. Source-bound nodes store no resolved
+asset URL. Each refresh replaces the drawn table without changing the Page
+or its node/comment identity. A revision pin draws only while the source's
+history still holds that revision (its newest 50 states); a table that must
+keep its data names the dataset with `asset_id`.
+
+`insert_node` takes dataframe attrs with either `asset_id` or `binding`, plus
+optional `title` and `media_type`. `set_node` takes the dataframe's `node_id`
+and `attrs`, without `match_text`, to change that reference in place in either
+direction. These edits use the Page revision fence; target conflict scope
+still requires a text match. `read_page` reports the binding and Markdown
+names the source ID and optional revision. The additive `dataframe-source`
+feature gates older writers. Plain rich-text tables are unchanged.
+
+Same-Page clipboard copies retain source bindings. Cross-Page source-bound
+copies paste descriptive text; copying or rebinding sources across Pages is
+not implemented. Parquet bytes remain in the session's bounded memory cache;
+there is no persistent browser Parquet cache.
 
 Agents write it with `edit_page` `set_source` operations (`source_id`,
-`name`, `asset_id`, `source_revision`) in a batch with no other operation;
+`name`, `asset_id`, `source_revision`) or `delete_source` (`source_id`,
+`source_revision`) in a batch containing only source operations;
 a mixed batch is `400 invalid_arguments`. `source_revision` is null to
 create, or the revision the caller read. A mismatch is `409 stale_source`
 and an unknown source with a non-null revision `404 source_not_found`, each
@@ -1664,6 +1701,17 @@ before a new one is built. `read_page` takes `sources: true`, which lists
 and `history_truncated`; both together return
 both. Alone they read no Page content; beside other selectors they add to
 them. Reads name `sources_revision` once the document exists.
+
+`delete_source` checks the source revision, returns `{op, source_id}`, and
+leaves tables and views in place. All consumers of that source, including
+revision pins, draw empty and identify it. An asset-pinned table still reads
+its asset: deleting a source does not delete dataset files. The sources doc
+retains a small `{deleted: true}` tombstone, excluded from the active source
+cap and every read, so the ID cannot be reused and old pins cannot silently
+resolve to a different dataset. Use a new source ID after deletion. A Page
+holds at most 64 active sources and 1,024 total source IDs, including deleted
+ones; existing sources can still be updated or deleted at that limit. The
+journal makes deletion retries and recovery durable like source updates.
 
 A source's `summary` describes the dataset it names now, from the Parquet
 footer alone ([worker/dataset-summary.mjs](worker/dataset-summary.mjs)).

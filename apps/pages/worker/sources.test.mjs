@@ -10,7 +10,7 @@ import { createAuthFixture } from "../auth-fixtures.mjs";
 import { MEMBER_FORMATS } from "../model/document-types.mjs";
 import { Storage, pageId } from "./trash-fixture.mjs";
 import { derivedDocUuid, derivedDocumentId } from "./comments-store.mjs";
-import { SOURCE_HISTORY_LIMIT, WRITER_LIMITS } from "../model/sources-doc.mjs";
+import { SOURCE_HISTORY_LIMIT, WRITER_LIMITS, deletedSource } from "../model/sources-doc.mjs";
 import { SOURCES_MODULE } from "./document-modules.mjs";
 import { DEFAULT_READ_BYTES } from "./tool-reads.mjs";
 import { Page } from "./index.mjs";
@@ -758,4 +758,113 @@ test("a source read gives up summary columns before it refuses for max_bytes", a
   assert.ok(new TextEncoder().encode(JSON.stringify(read.body)).byteLength <= maxBytes);
   assert.equal(held.columns.length, 200, "the host's summary is untouched");
   assert.equal(held.columns_truncated, undefined);
+});
+
+test("stored usage tables follow or pin in place; deletion is fenced, durable and replayable", async (t) => {
+  const h = await sourcesHost(t);
+  const write = async (operations, extra = {}) => {
+    const result = await h.setSource(h.host, operations, extra);
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    return result.body;
+  };
+  await write([usage()]);
+  const inserted = await write([
+    { op: "insert_node", node: { type: "dataframe", attrs: { asset_id: first, title: "Usage" } } },
+  ]);
+  const node_id = inserted.result.edits[0].nodes[0];
+  const block_id = inserted.result.edits[0].node_id;
+  const comment = await h.tool(h.host, "manage_page_comment", {
+    action: "add",
+    node_id: block_id,
+    body: "Keep this table",
+    nonce: "table-comment",
+  });
+  assert.equal(comment.status, 200, JSON.stringify(comment.body));
+  await write([{ op: "set_node", node_id, attrs: { binding: { source_id: "usage" } } }]);
+  const table = async (host) => {
+    const read = await h.tool(host, "read_page", { comments: "all", include_content: false });
+    assert.equal(read.status, 200, JSON.stringify(read.body));
+    assert.equal(read.body.comments[0].node_id, block_id);
+    return read.body.outline.entries.find((n) => n.type === "dataframe");
+  };
+  assert.deepEqual((await table(h.host)).attrs.binding, { source_id: "usage" });
+  assert.equal((await table(h.host)).attrs.src, undefined);
+  await write([usage({ asset_id: second, source_revision: "1" })]);
+  assert.equal((await table(h.host)).node_id, node_id);
+  await write([
+    { op: "set_node", node_id, attrs: { binding: { source_id: "usage", revision: "1" } } },
+  ]);
+  assert.deepEqual((await table(h.host)).attrs.binding, { source_id: "usage", revision: "1" });
+  const stale = await h.setSource(h.host, [
+    { op: "delete_source", source_id: "usage", source_revision: "1" },
+  ]);
+  assert.equal(stale.status, 409, JSON.stringify(stale.body));
+  const read = await h.tool(h.host, "read_page");
+  const args = {
+    revision: read.body.revision,
+    nonce: "delete-usage",
+    operations: [{ op: "delete_source", source_id: "usage", source_revision: "2" }],
+  };
+  const before = Date.now();
+  const deleted = await h.tool(h.host, "edit_page", args);
+  assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+  assert.deepEqual(deleted.body.result.edits, [{ op: "delete_source", source_id: "usage" }]);
+  const tombstone = deletedSource(h.host.sourcesView(), "usage");
+  assert.deepEqual(tombstone.by, {
+    principal: `user:anaconda-fixture:${h.auth.subject}`,
+    displayName: "Fixture Person",
+    driver: "ChatGPT",
+  });
+  assert.ok(Date.parse(tombstone.at) >= before && Date.parse(tombstone.at) <= Date.now());
+  assert.equal((await table(h.host)).node_id, node_id);
+  assert.deepEqual((await h.tool(h.host, "read_page", { sources: true })).body.sources, []);
+  assert.equal((await h.tool(h.host, "read_page", { source_id: "usage" })).status, 404);
+  const restarted = h.page();
+  const replay = await h.tool(restarted, "edit_page", args);
+  assert.equal(replay.status, 200, JSON.stringify(replay.body));
+  assert.deepEqual(replay.body.result.edits, deleted.body.result.edits);
+  assert.deepEqual(
+    deletedSource(restarted.sourcesView(), "usage"),
+    tombstone,
+    "a replayed delete keeps the first delete's time and writer",
+  );
+  assert.equal((await table(restarted)).node_id, node_id);
+  assert.equal(
+    (await h.setSource(restarted, [usage()])).status,
+    404,
+    "deleted IDs cannot revive old pins",
+  );
+  await write([{ op: "set_node", node_id, attrs: { asset_id: first } }]);
+  assert.equal((await table(h.host)).attrs.binding, undefined);
+  assert.equal((await table(h.host)).attrs.asset_id, first);
+});
+
+test("new table bindings require a source and retained revision; failed edits leave the table unchanged", async (t) => {
+  const h = await sourcesHost(t);
+  await h.setSource(h.host, [usage()]);
+  for (const binding of [
+    { source_id: "missing" },
+    { source_id: "usage", revision: "9" },
+    { source_id: "usage", revision: 1 },
+  ]) {
+    const refused = await h.setSource(h.host, [
+      { op: "insert_node", node: { type: "dataframe", attrs: { binding } } },
+    ]);
+    assert.ok(refused.status >= 400 && refused.status < 500, JSON.stringify(refused.body));
+  }
+  const made = await h.setSource(h.host, [
+    { op: "insert_node", node: { type: "dataframe", attrs: { binding: { source_id: "usage" } } } },
+  ]);
+  assert.equal(made.status, 200, JSON.stringify(made.body));
+  const node_id = made.body.result.edits[0].nodes[0];
+  h.assets.head = async () => null;
+  const refused = await h.setSource(h.host, [
+    { op: "set_node", node_id, attrs: { asset_id: second } },
+  ]);
+  assert.equal(refused.status, 404);
+  const read = await h.tool(h.host, "read_page", { include_content: false });
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.deepEqual(read.body.outline.entries.find((n) => n.node_id === node_id).attrs.binding, {
+    source_id: "usage",
+  });
 });

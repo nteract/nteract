@@ -29,6 +29,12 @@ export const SOURCE_MISSING = "This table's source isn't on this Page.";
 export function mount(container, { src, pageId, binding, sources }) {
   ensureSiftStyles(container.ownerDocument, SIFT_CSS);
   const root = createRoot(container);
+  if (binding?.source_id && !sources) {
+    root.render(
+      <p className="wordgard-dataframe-missing">{`Source "${binding.source_id}" is unavailable.`}</p>,
+    );
+    return { destroy: () => root.unmount() };
+  }
   if (binding?.source_id && sources) {
     container.dataset.sourceId = binding.source_id;
     const follow = followSource({
@@ -39,7 +45,9 @@ export function mount(container, { src, pageId, binding, sources }) {
       render: (key, load) => {
         if (!load) {
           markDrawnVersion(container, null);
-          root.render(<p className="wordgard-dataframe-missing">{SOURCE_MISSING}</p>);
+          root.render(
+            <p className="wordgard-dataframe-missing">{`Source "${binding.source_id}"${binding.revision ? ` at revision ${binding.revision}` : ""} is unavailable.`}</p>,
+          );
           return;
         }
         // Sift frees the table a load returns when this keyed table unmounts.

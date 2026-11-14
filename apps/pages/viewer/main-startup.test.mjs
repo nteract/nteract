@@ -740,6 +740,7 @@ const ROADMAP_AND_PLAN = [
  * holds `title`. `rename` changes the title as an edit would. */
 function fakeSession(pageId, principal, title, { draft = false } = {}) {
   const phase = new BehaviorSubject({ name: "open" });
+  const sources = new BehaviorSubject({});
   const doc = { title };
   const listeners = new Set();
   const close = async () => phase.next({ name: "closed" });
@@ -749,6 +750,8 @@ function fakeSession(pageId, principal, title, { draft = false } = {}) {
     doc,
     alive: true,
     phase$: { snapshot: () => phase.value, state$: phase },
+    pageSources: { snapshot: () => sources.value, sources$: sources.asObservable() },
+    sources: { demand: () => () => {} },
     canWrite: false,
     canComment: false,
     canDelete: true,

@@ -19,7 +19,12 @@ import { updateSpansConfig } from "./marks.mjs";
 import { stampSpans } from "./schema-features.mjs";
 import { imageAssetUrl, validAssetId } from "../shared/image-assets.mjs";
 import { MAX_PAGE_TITLE } from "../shared/page-title.mjs";
-import { DATAFRAME_BLOCK, dataframeFor } from "../shared/dataset-assets.mjs";
+import {
+  DATAFRAME_BLOCK,
+  dataframeFor,
+  readDataframe,
+  parseAssetPath,
+} from "../shared/dataset-assets.mjs";
 import { projectComments } from "./comments.mjs";
 import { COMMENTS_FEATURE } from "./comments-doc.mjs";
 import { orderedBlockIds, positionForInsertion } from "./order.mjs";
@@ -117,7 +122,7 @@ export function validateImageChange(op) {
     );
 }
 const NODE_INSERTION_USAGE =
-  'insert_node requires node: {type: "dataframe", attrs: {asset_id, title?, media_type?}} or {type: "view", attrs: {view_id}}, and optional after_node_id';
+  'insert_node requires node: {type: "dataframe", attrs: {asset_id or binding, title?, media_type?}} or {type: "view", attrs: {view_id}}, and optional after_node_id';
 const isPlainObject = (value) => !!value && typeof value === "object" && !Array.isArray(value);
 /** The first key of `value` outside `keys`, or undefined. */
 const extraKey = (value, keys) => Object.keys(value).find((key) => !keys.includes(key));
@@ -129,11 +134,11 @@ const NODE_INSERTIONS = Object.freeze({
   [DATAFRAME_BLOCK]: {
     problem: (attrs) => {
       if (!isPlainObject(attrs))
-        return "a dataframe node's attrs must be {asset_id, title?, media_type?}";
-      const extra = extraKey(attrs, ["asset_id", "media_type", "title"]);
+        return "a dataframe node's attrs must be {asset_id or binding, title?, media_type?}";
+      const extra = extraKey(attrs, ["asset_id", "binding", "media_type", "title"]);
       if (extra !== undefined)
-        return `a dataframe node's attrs take asset_id, media_type and title, not ${quoted(extra)}`;
-      if (!validAssetId(attrs.asset_id))
+        return `a dataframe node's attrs take asset_id or binding, media_type and title, not ${quoted(extra)}`;
+      if (attrs.binding === undefined && !validAssetId(attrs.asset_id))
         return "attrs.asset_id is 64 lowercase hex characters: the asset_id an upload returned";
       // Title and media type rules live with the node, and throw their own.
       dataframeFor("00000000-0000-4000-8000-000000000000", attrs);
@@ -204,6 +209,11 @@ export function insertedAssets(operations, pageId) {
   const seen = new Set();
   for (const op of operations) {
     const name = op?.op;
+    if (name === "set_node" && op.attrs?.asset_id !== undefined) {
+      const attrs = dataframeFor(pageId, op.attrs);
+      assets.push({ asset: "dataset", assetId: op.attrs.asset_id, mediaType: attrs.media_type });
+      continue;
+    }
     if (name === "set_image") {
       validateImageChange(op);
       for (const assetId of [op.asset_id, op.dark_asset_id].filter(Boolean)) {
@@ -235,6 +245,7 @@ export function insertedAssets(operations, pageId) {
       }
     } else if (insert.asset === "dataset") {
       const attrs = dataframeFor(pageId, validateNodeInsertion(op));
+      if (attrs.binding) continue;
       assets.push({
         asset: "dataset",
         assetId: op.node.attrs.asset_id,
@@ -396,6 +407,61 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
   if (!target) throw Error("Unsupported edit operation");
   const id = target.key;
   touched.push(id);
+  if (op.op === "set_node" && target.kind === "node" && op.match_text === undefined) {
+    const spans = A.spans(doc, textPath(id));
+    let offset = 0;
+    const index = spans.findIndex((span) => {
+      const here = offset;
+      offset += span.type === "text" ? span.value.length : 1;
+      return here === target.start;
+    });
+    const marker = spans[index];
+    if (String(marker?.value?.type) !== DATAFRAME_BLOCK)
+      throw Error("set_node without match_text requires a dataframe node's id");
+    if (
+      op.type !== undefined ||
+      ["context_before", "context_after", "occurrence"].some((k) => op[k] !== undefined)
+    )
+      throw Error("A dataframe edit takes node_id and attrs only");
+    const changes = op.attrs;
+    if (
+      !isPlainObject(changes) ||
+      !Object.keys(changes).length ||
+      extraKey(changes, ["asset_id", "binding", "media_type", "title"]) !== undefined
+    )
+      throw Error("A dataframe edit takes attrs: {asset_id or binding, media_type?, title?}");
+    const previous = readDataframe(
+      Object.fromEntries(
+        Object.entries(marker.value.attrs).map(([k, v]) => [
+          k,
+          A.isImmutableString(v) ? String(v) : v,
+        ]),
+      ),
+    );
+    if (!previous || (!previous.binding && parseAssetPath(previous.src)?.pageId !== doc.page_id))
+      throw Error("This dataframe cannot be edited by this build");
+    const reference =
+      changes.binding !== undefined || changes.asset_id !== undefined
+        ? { binding: changes.binding, asset_id: changes.asset_id }
+        : previous.binding
+          ? { binding: previous.binding }
+          : { asset_id: previous.src.split("/").at(-1) };
+    const next = dataframeFor(doc.page_id, {
+      ...reference,
+      media_type: changes.media_type === undefined ? previous.media_type : changes.media_type,
+      title: changes.title === undefined ? previous.title : changes.title,
+    });
+    const attrs = { ...marker.value.attrs };
+    delete attrs.src;
+    delete attrs.binding;
+    for (const [key, value] of Object.entries(next))
+      attrs[key] = typeof value === "string" ? new A.ImmutableString(value) : value;
+    spans[index] = { ...marker, value: { ...marker.value, attrs } };
+    updateSpansExactly(doc, textPath(id), spans, updateSpansConfig);
+    stampSpans(doc, spans);
+    trace?.push({ type: "block", block_id: id });
+    return { op: "set_node", node_id: op.node_id, attrs: next };
+  }
   if (op.op === "set_image") {
     validateImageChange(op);
     const spans = A.spans(doc, textPath(id));

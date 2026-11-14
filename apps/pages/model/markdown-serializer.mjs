@@ -1,3 +1,4 @@
+import { dataframeLine } from "../shared/dataset-assets.mjs";
 // Pages Markdown from the Wordgard editor tree: the projection for reads and
 // exports. DOM-free and ProseMirror-free, so the Worker and the browser share
 // it.
@@ -681,6 +682,7 @@ const NODES = {
   dataframe(state, node) {
     const attrs = node.param;
     if (!readDataframe(attrs)) notice(state, node, "dataframe");
+    else if (attrs.binding) state.write(state.esc(dataframeLine(attrs)));
     else state.write(`[${state.esc(dataframeLabel(attrs.title))}](${attrs.src})`);
     state.closeBlock(node);
   },

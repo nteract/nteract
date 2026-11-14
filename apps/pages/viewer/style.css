@@ -718,6 +718,84 @@ details.document-actions > div button {
   outline: none;
   border-bottom-color: var(--ring);
 }
+/* Source metadata is outside the document. No line means no change to the
+   title's existing spacing. Width follows the article, including comments. */
+.document article:has(> .sources-line) {
+  container-type: inline-size;
+  container-name: page-sources;
+}
+.document-title:has(+ .sources-line) {
+  margin-bottom: 0.25rem;
+}
+.sources-line {
+  margin: 0 0 1.5rem;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  line-height: 20px;
+}
+.sources-line-entries {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 24px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sources-line-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+.sources-line-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 26ch;
+  color: var(--foreground);
+  font-weight: 450;
+}
+.sources-line-name svg {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+}
+.sources-line-name > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sources-line-age {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.sources-line-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 6px;
+}
+.sources-line-summary > span {
+  white-space: nowrap;
+}
+.sources-line[data-source-count="3"] .sources-line-summary {
+  display: none;
+}
+/* Even three long names take at most two rows on a wide article. */
+.sources-line[data-source-count="3"] .sources-line-entry {
+  max-width: calc((100% - 24px) / 2);
+}
+@container page-sources (width < 600px) {
+  .sources-line-name {
+    max-width: 18ch;
+  }
+  .sources-line[data-source-count="3"] .sources-line-entries {
+    display: none;
+  }
+  .sources-line[data-source-count="3"] .sources-line-summary {
+    display: flex;
+  }
+}
 .toolbar-host {
   position: sticky;
   top: 64px;

@@ -12,7 +12,7 @@ import { reportRendererUnavailable } from "./wordgard-widgets.mjs";
 import { PARQUET_MEDIA_TYPE, readDataframe } from "../shared/dataset-assets.mjs";
 import { asyncScheduler, timer as rxTimer } from "rxjs";
 import { dataframeTableMachine } from "./dataframe-table-machine.mjs";
-import { bindingKey, pinnedBinding } from "./dataframe-binding.mjs";
+import { bindingKey, storedBinding } from "./dataframe-binding.mjs";
 
 /** Media type -> lazily loaded renderer module with
  * `mount(container, { src, pageId, binding?, sources? })` returning
@@ -283,7 +283,7 @@ const dataframeTable = Widget.define({
  *
  * `binding` maps a node's read attrs to what its table draws from:
  * `{ asset_id }`, `{ source_id }` or null (dataframe-binding.mjs). Every node
- * draws its pinned asset unless a caller supplies another. A source binding
+ * draws its stored binding (or its original asset URL). A source binding
  * draws through `sources`, the Page's source store (page-source-store.mjs);
  * without one, the node draws its pinned asset.
  */
@@ -291,7 +291,7 @@ export function wordgardDataframes({
   pageId,
   eager = false,
   sources = null,
-  binding = pinnedBinding,
+  binding = storedBinding,
 } = {}) {
   if (typeof pageId !== "string" || !pageId)
     throw Error("wordgardDataframes needs the Page id it shows");
