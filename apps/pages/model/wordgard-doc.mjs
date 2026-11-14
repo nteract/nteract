@@ -1,3 +1,4 @@
+import { dataframeValue } from "../shared/dataset-assets.mjs";
 // Adapted from rgbkrk/wordgard-automerge c9c6ea8 (BSD-3-Clause); see
 // viewer/WORDGARD-NOTICE.
 // The Pages document model: the Wordgard schema (node and mark types), the
@@ -243,13 +244,13 @@ export const DATAFRAME_ATTR = "data-pages-dataframe";
 const scalar = (v) => v === null || ["string", "number", "boolean"].includes(typeof v);
 export const plainAttrs = (value) =>
   value && typeof value === "object" && !Array.isArray(value)
-    ? Object.fromEntries(Object.entries(value).filter(([, v]) => scalar(v)))
+    ? Object.fromEntries(Object.entries(value).filter(([k, v]) => dataframeValue(k, v)))
     : null;
 export const PagesDataframe = Leaf.Type.define("PagesDataframe", {
   group: Node.Group.Content,
   selectable: true,
   validate(value) {
-    if (!readDataframe(value) || Object.values(value).some((v) => !scalar(v)))
+    if (!readDataframe(value) || !Object.entries(value).every(([k, v]) => dataframeValue(k, v)))
       throw Error("Invalid Pages dataframe");
   },
   parseRules: [
@@ -897,7 +898,7 @@ export function decode(spans) {
       type === DATAFRAME_BLOCK &&
       !inText &&
       readDataframe(attrs) &&
-      Object.values(attrs).every(scalar)
+      Object.entries(attrs).every(([k, v]) => dataframeValue(k, v))
         ? attrs
         : null;
     const view =

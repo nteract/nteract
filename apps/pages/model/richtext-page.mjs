@@ -1,3 +1,4 @@
+import { dataframeLine } from "../shared/dataset-assets.mjs";
 // Page block writers and readers: a block's Markdown projection, and the
 // writes that replace a block's rich text from Markdown, an image or a node.
 import { markerType } from "./node-registry.mjs";
@@ -176,9 +177,13 @@ const KEPT_NODES = Object.freeze([
     name: DATAFRAME_BLOCK,
     one: "a dataframe",
     line: (param) =>
-      readDataframe(param) ? { text: dataframeLabel(param.title), href: param.src } : null,
+      readDataframe(param)
+        ? param.binding
+          ? { text: dataframeLine(param), href: null }
+          : { text: dataframeLabel(param.title), href: param.src }
+        : null,
     looksLike: (line) => /^Dataframe(: .*)?$/.test(line.text) && parseAssetPath(line.href) !== null,
-    insert: "insert_node with its asset_id",
+    insert: "insert_node with its asset_id or binding",
   },
   {
     type: PagesView,
@@ -329,7 +334,7 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
   // first: one lookup per line, so a rewrite is linear in its lines.
   const pending = new Set(existing);
   const lineKey = (line) => `${line.href ?? ""}\n${line.text}`;
-  const viewsByText = new Map();
+  const nodesByText = new Map();
   const framesByLine = new Map();
   const entriesByLine = new Map();
   for (const entry of existing) {
@@ -337,7 +342,7 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
     if (!own) continue;
     const key = lineKey(own);
     entriesByLine.set(key, [...(entriesByLine.get(key) ?? []), entry]);
-    if (entry.occurrence !== null) viewsByText.set(`${entry.occurrence}\n${own.text}`, entry);
+    if (entry.occurrence !== null) nodesByText.set(`${entry.occurrence}\n${own.text}`, entry);
     else {
       const frameKey = `${entry.path}\n${key}`;
       framesByLine.set(frameKey, [...(framesByLine.get(frameKey) ?? []), entry]);
@@ -369,7 +374,7 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
     // A line reading as no stored view's is prose.
     if (line?.href === null) {
       const n = countText(sourceTexts, line.text);
-      const entry = viewsByText.get(`${n}\n${line.text}`);
+      const entry = nodesByText.get(`${n}\n${line.text}`);
       if (!entry || !pending.has(entry)) return node;
       if (node.type !== Paragraph.type || entry.path !== path) {
         textElsewhere.add(entry);
@@ -426,14 +431,14 @@ export function setRichMarkdownKeepingNodes(doc, id, source) {
   );
   if (ambiguous)
     refuse(
-      `This block's Markdown has ${sourceTexts.get(textOf(ambiguous)) ?? 0} lines reading ${textOf(ambiguous)}, where the block stores ${storedTexts.get(textOf(ambiguous))}, its view's line included, so the view's line is unclear. Keep those lines as read_page shows them; change the text around them, or use replace_match for that text.`,
+      `This block's Markdown has ${sourceTexts.get(textOf(ambiguous)) ?? 0} lines reading ${textOf(ambiguous)}, where the block stores ${storedTexts.get(textOf(ambiguous))}, its ${ambiguous.kind.name}'s line included, so the ${ambiguous.kind.name}'s line is unclear. Keep those lines as read_page shows them; change the text around them, or use replace_match for that text.`,
     );
   const unmatched = existing.filter((entry) => pending.has(entry));
   const container = (entry) => (/quote/.test(entry.path.split("/").at(-1)) ? "quote" : "list item");
   const moved = unmatched.find((entry) => shifted.has(entry));
   if (moved && !unmatched.some((entry) => textElsewhere.has(entry)))
     refuse(
-      `The ${container(moved)} holding view ${readViewNode(moved.node.param).view_id} changed position: a ${container(moved)} was added, removed or moved before it, or the view's line went into another ${container(moved)}. A Markdown rewrite can't follow a view through that. Make the structural change with insert_node, move_block and delete_node by node_id, or change only text outside the view's ${container(moved)} with replace_match or insert_markdown.`,
+      `The ${container(moved)} holding ${moved.kind.name} ${moved.kind.name === VIEW_BLOCK ? readViewNode(moved.node.param).view_id : moved.node.param.binding.source_id} changed position: a ${container(moved)} was added, removed or moved before it, or the ${moved.kind.name}'s line went into another ${container(moved)}. A Markdown rewrite can't follow a ${moved.kind.name} through that. Make the structural change with insert_node, move_block and delete_node by node_id, or change only text outside the ${moved.kind.name}'s ${container(moved)} with replace_match or insert_markdown.`,
     );
   const movedText = unmatched.find((entry) => textElsewhere.has(entry));
   if (movedText) problems.set("moved", movedText.kind);

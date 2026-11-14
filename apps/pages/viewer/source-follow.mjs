@@ -3,6 +3,9 @@
 // The renderer (sift-table.jsx) supplies `render`; this module owns the
 // subscription and the loads.
 
+import { map, distinctUntilChanged } from "rxjs";
+import { SourceUnavailable, sameVersion } from "./page-source-store.mjs";
+
 /** The `data-*` attributes a followed table carries for the version it drew:
  * `sourceId`, `assetId` and `sourceRevision`. */
 export function markDrawnVersion(element, version) {
@@ -35,22 +38,34 @@ export function followSource({ binding, sources, loadTableFile, render, onDrawn 
   const id = binding.source_id;
   const resolver = sources.resolver(loadTableFile);
   let current = null;
-  const subscription = sources.versions([id]).subscribe((versions) => {
-    current?.abort();
-    const version = versions[id];
-    const controller = new AbortController();
-    current = controller;
-    const load = async () => {
-      const loaded = await resolver.load(version, { signal: controller.signal });
-      if (controller.signal.aborted) {
-        loaded.table.dispose?.();
-        throw new DOMException("Source load stopped", "AbortError");
-      }
-      onDrawn?.(version);
-      return loaded.table;
-    };
-    render(versionKey(version), version ? load : null, version);
-  });
+  const subscription = sources
+    .versions([id])
+    .pipe(
+      map(() => {
+        try {
+          return sources.resolve(binding);
+        } catch (error) {
+          if (!(error instanceof SourceUnavailable)) throw error;
+          return null;
+        }
+      }),
+      distinctUntilChanged(sameVersion),
+    )
+    .subscribe((version) => {
+      current?.abort();
+      const controller = new AbortController();
+      current = controller;
+      const load = async () => {
+        const loaded = await resolver.load(version, { signal: controller.signal });
+        if (controller.signal.aborted) {
+          loaded.table.dispose?.();
+          throw new DOMException("Source load stopped", "AbortError");
+        }
+        onDrawn?.(version);
+        return loaded.table;
+      };
+      render(versionKey(version), version ? load : null, version);
+    });
   return {
     destroy() {
       subscription.unsubscribe();

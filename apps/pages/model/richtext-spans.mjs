@@ -33,7 +33,8 @@ export function markdownlessNode(block, pageId) {
     if (
       type === DATAFRAME_BLOCK &&
       (parents.some((parent) => TEXT_CONTAINERS.has(parent)) ||
-        (pageId !== undefined &&
+        (!span.value?.attrs?.binding &&
+          pageId !== undefined &&
           parseAssetPath(
             A.isImmutableString(src) ? String(src) : typeof src === "string" ? src : "",
           )?.pageId !== pageId))
@@ -151,7 +152,7 @@ export function validateRichSpans(spans, maxBytes = 262144) {
           ),
         )
       )
-        throw Error("Invalid dataframe: src must be a Page asset path");
+        throw Error("Invalid dataframe: expected a Page asset path or source binding");
       if (
         type === VIEW_BLOCK &&
         !readViewNode(

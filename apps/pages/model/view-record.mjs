@@ -2,7 +2,8 @@
 // rules a host write keeps, shared by the host, which writes views, and the
 // viewer, which draws them. It imports no spec checker, so the viewer's
 // editor chunk reads views without the chart code.
-import { validSourceId } from "./sources-doc.mjs";
+import { bindingOf } from "../shared/sources.mjs";
+export { bindingOf };
 import {
   MAX_VIEW_DATA,
   MAX_VIEW_TITLE,
@@ -37,17 +38,6 @@ const storedTitle = (title) =>
     : undefined;
 export const validTime = (value) =>
   typeof value === "string" && value.length <= 64 && !Number.isNaN(Date.parse(value));
-
-/** A binding as a plain object, or undefined for one no host write stores. */
-export function bindingOf(value) {
-  if (!isMap(value) || !validSourceId(value.source_id)) return undefined;
-  const keys = Object.keys(value);
-  if (keys.some((key) => key !== "source_id" && key !== "revision")) return undefined;
-  if (value.revision === undefined) return { source_id: value.source_id };
-  return validRevision(value.revision)
-    ? { source_id: value.source_id, revision: value.revision }
-    : undefined;
-}
 
 /** A stored `data` map as plain bindings, or undefined when one is not a
  * binding a host write stores. */

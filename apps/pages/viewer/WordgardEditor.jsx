@@ -103,7 +103,7 @@ import {
 } from "./wordgard-collaboration.mjs";
 import { wordgardWidgets, wordgardCodeLanguages } from "./wordgard-widgets.mjs";
 import { wordgardDataframes } from "./wordgard-dataframes.mjs";
-import { editorBinding } from "./dataframe-binding.mjs";
+import { storedBinding } from "./dataframe-binding.mjs";
 import { wordgardImages } from "./wordgard-images.mjs";
 import { pageNodes } from "./wordgard-page-config.mjs";
 import { selectionToolbarPosition } from "./selection-toolbar.mjs";
@@ -446,7 +446,7 @@ export function WordgardEditor(props) {
         wordgardDataframes({
           pageId: replica.doc.page_id,
           sources: replica.pageSources ?? null,
-          binding: editorBinding(),
+          binding: storedBinding,
         }),
         // Every view node draws its chart from the Page's view and source
         // documents; the chart chunk loads near the viewport. Each embed

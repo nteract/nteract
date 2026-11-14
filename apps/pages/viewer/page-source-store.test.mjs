@@ -453,3 +453,46 @@ test("a stored miss reads as unreachable only while the Page shows Offline, and 
   subscription.unsubscribe();
   stop();
 });
+
+test("tables and charts resolve the same usage refresh, pins stay put, and deletion empties every consumer", () => {
+  const host = hostDoc();
+  host.set("usage", asset("a"));
+  const { doc$, store } = storeOver(host.doc);
+  const follow = { source_id: "usage" },
+    pin = { source_id: "usage", revision: "1" };
+  const following = [],
+    pinned = [];
+  const mounts = [
+    [follow, following],
+    [pin, pinned],
+  ].map(([binding, seen]) =>
+    followSource({
+      binding,
+      sources: store,
+      loadTableFile: async () => ({}),
+      render: (_key, _load, version) => seen.push(version),
+    }),
+  );
+  doc$.next(host.set("usage", asset("b")));
+  assert.equal(following.at(-1).asset_id, asset("b"));
+  assert.equal(
+    store.resolve(follow).asset_id,
+    following.at(-1).asset_id,
+    "chart and table use the same resolver",
+  );
+  assert.equal(pinned.length, 1, "a refresh does not remount a pinned table");
+  assert.equal(pinned[0].asset_id, asset("a"));
+  const deleted = A.change(A.clone(host.doc), (draft) =>
+    setSources(draft, [{ op: "delete_source", source_id: "usage", source_revision: "2" }], {
+      mediaTypes: new Map(),
+      by: writer,
+    }),
+  );
+  doc$.next(deleted);
+  assert.equal(following.at(-1), null);
+  assert.equal(pinned.at(-1), null);
+  assert.throws(() => store.resolve(follow), SourceUnavailable);
+  assert.throws(() => store.resolve(pin), SourceUnavailable);
+  for (const mount of mounts) mount.destroy();
+  store.destroy();
+});

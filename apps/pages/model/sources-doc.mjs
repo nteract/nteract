@@ -4,11 +4,12 @@ import { validAssetId } from "../shared/image-assets.mjs";
 import {
   MAX_SOURCE_NAME,
   MAX_SOURCES,
+  MAX_SOURCE_IDS,
   SOURCE_ID_PATTERN,
   SOURCE_REVISION_PATTERN,
 } from "../shared/sources.mjs";
 
-export { MAX_SOURCE_NAME, MAX_SOURCES };
+export { MAX_SOURCE_NAME, MAX_SOURCES, MAX_SOURCE_IDS };
 
 /** A Page's named sources live in their own Automerge document, the
  * `pages.sources` type, which only the Page's host writes. Its shape:
@@ -54,6 +55,7 @@ const SOURCE_ID = new RegExp(SOURCE_ID_PATTERN);
 const RESERVED = new Set(["constructor", "prototype", "__proto__"]);
 const REVISION = new RegExp(SOURCE_REVISION_PATTERN);
 const FIELDS = ["op", "source_id", "name", "asset_id", "source_revision"];
+const DELETE_FIELDS = ["op", "source_id", "source_revision"];
 
 const STATUS = { invalid_source: 400, source_not_found: 404, stale_source: 409 };
 function fail(code, message, details) {
@@ -234,7 +236,7 @@ function project(id, entry) {
 export function readSource(doc, sourceId) {
   if (!validSourceId(sourceId)) fail("invalid_source", "Invalid source ID");
   const sources = sourceMap(doc);
-  if (!Object.hasOwn(sources, sourceId))
+  if (!Object.hasOwn(sources, sourceId) || sources[sourceId]?.deleted === true)
     fail("source_not_found", "No source with this ID on this Page");
   return project(sourceId, sources[sourceId]);
 }
@@ -244,6 +246,7 @@ export function readSource(doc, sourceId) {
 export function listSources(doc) {
   const sources = sourceMap(doc);
   return Object.keys(sources)
+    .filter((id) => sources[id]?.deleted !== true)
     .sort()
     .map((id) => {
       const {
@@ -256,13 +259,20 @@ export function listSources(doc) {
     });
 }
 
-/** Refuse a set_source operation with an unknown or malformed field. */
+/** Refuse a source operation with an unknown or malformed field. */
 export function validateSourceOperation(op) {
-  if (!isMap(op) || op.op !== "set_source") fail("invalid_source", "Not a set_source operation");
-  const unknown = Object.keys(op).find((field) => !FIELDS.includes(field));
-  if (unknown) fail("invalid_source", `set_source does not take ${String(unknown).slice(0, 64)}`);
+  if (!isMap(op) || !["set_source", "delete_source"].includes(op.op))
+    fail("invalid_source", "Not a source operation");
+  const fields = op.op === "delete_source" ? DELETE_FIELDS : FIELDS;
+  const unknown = Object.keys(op).find((field) => !fields.includes(field));
+  if (unknown) fail("invalid_source", `${op.op} does not take ${String(unknown).slice(0, 64)}`);
   if (!validSourceId(op.source_id))
     fail("invalid_source", `source_id must match ${SOURCE_ID_PATTERN}, not ${RESERVED_NAMED}`);
+  if (op.op === "delete_source") {
+    if (!validRevision(op.source_revision))
+      fail("invalid_source", "delete_source requires the source_revision you read");
+    return op;
+  }
   if (!validName(op.name))
     fail("invalid_source", `name must be 1 to ${MAX_SOURCE_NAME} characters, not only spaces`);
   if (CONTROL.test(op.name))
@@ -288,10 +298,11 @@ export function validateSourceBatch(operations) {
   const ids = new Set();
   for (const op of operations) {
     validateSourceOperation(op);
-    if (ids.has(op.source_id)) fail("invalid_source", "A batch cannot set the same source twice");
+    if (ids.has(op.source_id))
+      fail("invalid_source", "A batch cannot change the same source twice");
     ids.add(op.source_id);
   }
-  return [...new Set(operations.map((op) => op.asset_id))];
+  return [...new Set(operations.filter((op) => op.op === "set_source").map((op) => op.asset_id))];
 }
 
 /**
@@ -317,6 +328,11 @@ export function setSources(
   return operations.map((op, index) => {
     const id = op.source_id;
     const previous = previousOf[index];
+    if (op.op === "delete_source") {
+      // Retire the ID rather than letting a later create reuse revision 1.
+      sources[id] = { deleted: true };
+      return { op: "delete_source", source_id: id };
+    }
     const mediaType = mediaTypes.get(op.asset_id);
     if (typeof mediaType !== "string") throw Error("A source's asset has no checked media type");
     const revision = String(previous ? Number(previous.source_revision) + 1 : 1);
@@ -350,11 +366,27 @@ export function setSources(
 export function checkSources(doc, operations) {
   validateSourceBatch(operations);
   const sources = sourceMap(doc);
-  const created = operations.filter((op) => !Object.hasOwn(sources, op.source_id)).length;
-  if (created && Object.keys(sources).length + created > MAX_SOURCES)
+  const created = operations.filter(
+    (op) => op.op === "set_source" && !Object.hasOwn(sources, op.source_id),
+  ).length;
+  const removed = operations.filter((op) => op.op === "delete_source").length;
+  if (created && Object.keys(sources).length + created > MAX_SOURCE_IDS)
+    fail(
+      "invalid_source",
+      `A Page holds up to ${MAX_SOURCE_IDS} source IDs, including deleted sources`,
+    );
+  if (
+    created &&
+    Object.values(sources).filter((entry) => entry?.deleted !== true).length + created - removed >
+      MAX_SOURCES
+  )
     fail("invalid_source", `A Page holds up to ${MAX_SOURCES} sources`);
   return operations.map((op) => {
     const id = op.source_id;
+    if (sources[id]?.deleted === true)
+      fail("source_not_found", "This source was deleted; create a source with a new ID", {
+        source_id: id,
+      });
     const previous = Object.hasOwn(sources, id) ? project(id, sources[id]) : null;
     if (!previous && op.source_revision !== null)
       fail(

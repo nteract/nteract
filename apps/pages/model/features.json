@@ -37,6 +37,11 @@
       "id": "view",
       "description": "View nodes: a block with no text whose one attr, view_id, names one of the Page's views, a chart stored in its own pages.view document. It reads in Markdown as a [View: <view_id>] line of text: agents write one with the insert_node operation.",
       "blocks": ["view"]
+    },
+    {
+      "id": "dataframe-source",
+      "description": "Dataframes may store a source binding instead of an asset URL.",
+      "attributes": [{ "block": "dataframe", "name": "binding" }]
     }
   ]
 }
