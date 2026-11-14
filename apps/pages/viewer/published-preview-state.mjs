@@ -23,7 +23,8 @@ export const PREVIEW_EVENTS = [
 ];
 
 /** The draft and prepared image are local UI state. Only the server's value
- * reports publication. A changed draft invalidates the exact image approved. */
+ * reports publication. While rendering edits, retain the last image for display
+ * but block publication until the new image is ready. */
 export function previewEditorTransition(state, event) {
   switch (event.type) {
     case "loaded":
@@ -43,11 +44,11 @@ export function previewEditorTransition(state, event) {
         error: null,
       };
     case "edit":
-      return state.name === "ready"
+      return ["ready", "rendering"].includes(state.name)
         ? {
             ...state,
+            name: "rendering",
             draft: { ...state.draft, ...event.patch },
-            prepared: null,
             edited: true,
             error: null,
             message: null,
@@ -58,7 +59,7 @@ export function previewEditorTransition(state, event) {
         ? { ...state, name: "rendering", error: null }
         : state;
     case "choose_cover":
-      return state.name === "ready" && event.file
+      return ["ready", "rendering"].includes(state.name) && event.file
         ? {
             ...state,
             name: "rendering",
@@ -70,7 +71,7 @@ export function previewEditorTransition(state, event) {
           }
         : state;
     case "choose_visual":
-      return state.name === "ready" && typeof event.visual === "string"
+      return ["ready", "rendering"].includes(state.name) && typeof event.visual === "string"
         ? {
             ...state,
             name: "rendering",
@@ -82,7 +83,7 @@ export function previewEditorTransition(state, event) {
           }
         : state;
     case "prepared":
-      return state.name === "rendering"
+      return state.name === "rendering" && event.draft === state.draft
         ? { ...state, name: "ready", prepared: event.prepared }
         : state;
     case "publish":

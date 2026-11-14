@@ -9,9 +9,9 @@ import {
 test("every preview state/event pair rejects invalid transitions", () => {
   const allowed = {
     loaded: ["loading"],
-    edit: ["ready"],
-    choose_cover: ["ready"],
-    choose_visual: ["ready"],
+    edit: ["ready", "rendering"],
+    choose_cover: ["ready", "rendering"],
+    choose_visual: ["ready", "rendering"],
     prepare: ["ready"],
     prepared: ["rendering"],
     publish: ["ready"],
@@ -26,6 +26,7 @@ test("every preview state/event pair rejects invalid transitions", () => {
       const state = { name, draft: { title: "Title" }, prepared: {}, value: { snapshot: {} } };
       const next = step(state, {
         type,
+        draft: state.draft,
         value: { snapshot: null },
         prepared: {},
         patch: {},
@@ -55,7 +56,7 @@ test("choosing a cover renders immediately without publishing, even before a tit
   assert.equal(rendering.name, "rendering");
   assert.equal(rendering.draft.file, file);
   assert.equal(rendering.value, state.value, "the published snapshot remains unchanged");
-  const prepared = step(rendering, { type: "prepared", prepared: {} });
+  const prepared = step(rendering, { type: "prepared", draft: rendering.draft, prepared: {} });
   assert.equal(
     step(prepared, { type: "publish", nonce: "n" }),
     prepared,
@@ -70,7 +71,15 @@ test("edits invalidate approval; rendering, publishing and removing block duplic
     value: { revision: 1, snapshot: {} },
   };
   const edited = step(state, { type: "edit", patch: { description: "changed" } });
-  assert.equal(edited.prepared, null);
+  assert.equal(edited.name, "rendering");
+  assert.equal(edited.prepared, state.prepared, "keep the last image visible while rendering");
+  const cleared = step(edited, { type: "edit", patch: { description: "" } });
+  assert.equal(cleared.draft.description, "");
+  assert.equal(
+    step(cleared, { type: "prepared", draft: edited.draft, prepared: {} }),
+    cleared,
+    "a late render cannot replace newer text",
+  );
   assert.equal(
     edited.edited,
     true,

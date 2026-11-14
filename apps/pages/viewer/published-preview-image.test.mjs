@@ -78,4 +78,15 @@ test("an uploaded cover fills the canvas beneath a dark gradient and white text"
   assert.ok(text.every((entry) => entry.color === "#ffffff"));
   assert.ok(text.every((entry) => entry.y < 630));
   assert.equal(bitmap.close.mock.callCount(), 1);
+  text.length = 0;
+  await renderPublishedPreview(
+    { title: "Title alone", description: "", visual: "upload", file: {} },
+    [],
+    new AbortController().signal,
+  );
+  assert.deepEqual(
+    text.map((entry) => entry.value),
+    ["Pages", "Title alone"],
+    "an empty description adds no placeholder or extra text",
+  );
 });

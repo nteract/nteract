@@ -44,7 +44,7 @@ export function PublishedPreview({ session, onBack }) {
         const bytes = new Uint8Array(await blob.arrayBuffer());
         signal.throwIfAborted();
         const url = `data:image/png;base64,${btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(""))}`;
-        return { type: "prepared", prepared: { blob, url } };
+        return { type: "prepared", draft: state.draft, prepared: { blob, url } };
       }
       if (state.name === "uploading")
         return {
@@ -75,8 +75,9 @@ export function PublishedPreview({ session, onBack }) {
       controller.abort();
       subscription.unsubscribe();
     };
-  }, [state.name, state.nonce, endpoint, session, visuals]);
+  }, [state.name, state.nonce, state.draft, endpoint, session, visuals]);
   const ready = state.name === "ready";
+  const editable = ready || state.name === "rendering";
   const edit = (patch) => dispatch({ type: "edit", patch });
   const published = state.value?.snapshot;
   const showPublished = published && !state.edited && !state.prepared;
@@ -136,12 +137,14 @@ export function PublishedPreview({ session, onBack }) {
                     <Image size={32} strokeWidth={1.25} aria-hidden="true" />
                   )}
                   <strong>{state.draft.title || "Your Page title"}</strong>
-                  <p>{state.draft.description || "Description"}</p>
+                  {state.draft.description && <p>{state.draft.description}</p>}
                 </div>
               )}
               <figcaption>
                 <span>
-                  {state.prepared ? (
+                  {state.name === "rendering" ? (
+                    "Updating preview…"
+                  ) : state.prepared ? (
                     <>
                       <Check size={13} /> Ready to publish
                     </>
@@ -176,7 +179,7 @@ export function PublishedPreview({ session, onBack }) {
                 id={`${id}-name`}
                 value={state.draft.title}
                 maxLength={160}
-                disabled={!ready}
+                disabled={!editable}
                 onChange={(event) => edit({ title: event.target.value })}
               />
             </div>
@@ -191,7 +194,7 @@ export function PublishedPreview({ session, onBack }) {
                 maxLength={400}
                 rows={2}
                 placeholder="Add a description…"
-                disabled={!ready}
+                disabled={!editable}
                 onChange={(event) => edit({ description: event.target.value })}
               />
             </div>
@@ -203,12 +206,17 @@ export function PublishedPreview({ session, onBack }) {
               <div className="preview-cover-controls">
                 <label className="preview-upload">
                   <Upload size={17} />
-                  <span>{state.draft.visual === "text" ? "Add cover" : "Replace cover"}</span>
+                  <span>
+                    {state.draft.visual === "text" ? "Add cover" : "Replace cover"}
+                    {state.draft.file?.name && (
+                      <small title={state.draft.file.name}>{state.draft.file.name}</small>
+                    )}
+                  </span>
                   <input
                     aria-label="Cover image"
                     type="file"
                     accept="image/png,image/jpeg,image/webp"
-                    disabled={!ready}
+                    disabled={!editable}
                     onChange={(event) =>
                       dispatch({ type: "choose_cover", file: event.target.files?.[0] })
                     }
@@ -218,7 +226,7 @@ export function PublishedPreview({ session, onBack }) {
                   <button
                     type="button"
                     className="preview-clear-cover"
-                    disabled={!ready}
+                    disabled={!editable}
                     aria-label="Remove cover"
                     onClick={() => dispatch({ type: "choose_visual", visual: "text" })}
                   >
@@ -232,7 +240,7 @@ export function PublishedPreview({ session, onBack }) {
                     <button
                       type="button"
                       key={item.id}
-                      disabled={!ready}
+                      disabled={!editable}
                       aria-pressed={state.draft.visual === item.id}
                       onClick={() => dispatch({ type: "choose_visual", visual: item.id })}
                     >

@@ -5,7 +5,6 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
 
 const require = createRequire(import.meta.url);
 const bundle = await build({
@@ -26,7 +25,7 @@ const bundle = await build({
         build.onLoad({ filter: /\.css$/ }, () => ({ contents: "", loader: "empty" }));
         build.onLoad({ filter: /published-preview-image\.mjs$/ }, () => ({
           contents:
-            'export const previewVisuals = () => []; export const renderPublishedPreview = async (draft) => new Blob([draft.file ? "cover:" + draft.file.name : "test raster"], {type:"image/png"});',
+            "export const previewVisuals = () => []; export const renderPublishedPreview = async (draft, visuals, signal) => globalThis.renderPreviewForTest(draft, signal);",
         }));
       },
     },
@@ -39,10 +38,21 @@ const { PublishedPreview } = await import(
 test("owner must prepare and approve exact image bytes; publishing and removal use the server revision", async (t) => {
   const dom = new JSDOM("<div id='root'></div>", { url: "https://pages.invalid" });
   const saved = new Map();
+  const pending = [];
+  let holdRenders = false;
   for (const [key, value] of Object.entries({
     window: dom.window,
     document: dom.window.document,
     IS_REACT_ACT_ENVIRONMENT: true,
+    renderPreviewForTest: (draft, signal) => {
+      const blob = new Blob(
+        [draft.file ? `cover:${draft.file.name}${draft.description}` : "test raster"],
+        { type: "image/png" },
+      );
+      return holdRenders
+        ? new Promise((resolve) => pending.push({ draft, signal, resolve: () => resolve(blob) }))
+        : blob;
+    },
   })) {
     saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, key, { configurable: true, value });
@@ -80,6 +90,7 @@ test("owner must prepare and approve exact image bytes; publishing and removal u
     assert.equal(command.expected_revision, 1);
     return Response.json({ revision: 2, snapshot: null });
   });
+  const { createRoot } = await import("react-dom/client");
   const root = createRoot(document.getElementById("root"));
   const settle = async (fn = () => {}) =>
     act(async () => {
@@ -145,6 +156,42 @@ test("owner must prepare and approve exact image bytes; publishing and removal u
       "choosing a cover previews it locally without uploading or publishing",
     );
     assert.equal(button("Publish preview").disabled, false);
+    assert.equal(document.querySelector(".preview-upload small").textContent, "cover.png");
+    const coverSrc = document.querySelector(".published-preview-image").src;
+    const description = document.querySelector("textarea");
+    const setDescription = (value) => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value").set.call(
+        description,
+        value,
+      );
+      description.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    };
+    holdRenders = true;
+    await settle(() => setDescription("First edit"));
+    assert.equal(pending.length, 1);
+    assert.equal(description.disabled, false, "typing continues during rendering");
+    assert.equal(document.querySelector(".published-preview-image").src, coverSrc);
+    assert.equal(
+      button("Publish preview").disabled,
+      true,
+      "the old render cannot be published with new text",
+    );
+    await settle(() => setDescription(""));
+    assert.equal(pending.length, 2);
+    assert.equal(pending[0].signal.aborted, true);
+    assert.equal(pending[1].draft.description, "");
+    await settle(() => pending[1].resolve());
+    assert.equal(button("Publish preview").disabled, false);
+    assert.equal(document.querySelector(".published-preview-image").src, coverSrc);
+    await settle(() => pending[0].resolve());
+    assert.equal(
+      document.querySelector(".published-preview-image").src,
+      coverSrc,
+      "late renders cannot restore the removed description",
+    );
+    assert.equal(document.querySelector(".preview-upload small").textContent, "cover.png");
+    assert.equal(calls.length, 4, "text edits stay local");
+    holdRenders = false;
     await settle(() => document.querySelector("button[aria-label='Remove cover']").click());
     assert.equal(
       document.querySelector("img[alt='Exact image that will be published']").getAttribute("src"),
