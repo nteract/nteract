@@ -1621,8 +1621,9 @@ editor draws a dataframe's stored `binding: {source_id}` or
 Asset-pinned tables keep their original `src`, which is refused before a
 request when it belongs to another Page. Source-bound nodes store no resolved
 asset URL. Each refresh replaces the drawn table without changing the Page
-or its node/comment identity. A pin stays on its retained revision; eviction
-from the source's newest 50 states makes that pin unavailable.
+or its node/comment identity. A revision pin draws only while the source's
+history still holds that revision (its newest 50 states); a table that must
+keep its data names the dataset with `asset_id`.
 
 `insert_node` takes dataframe attrs with either `asset_id` or `binding`, plus
 optional `title` and `media_type`. `set_node` takes the dataframe's `node_id`

@@ -8,6 +8,7 @@ import {
   MAX_SOURCE_IDS,
   SOURCE_HISTORY_LIMIT,
   WRITER_LIMITS,
+  deletedSource,
   listSources,
   readSource,
   setSources,
@@ -53,6 +54,67 @@ test("retired IDs are bounded without preventing an existing source's update or 
   );
   assert.throws(() => checkSources(doc, [op({ source_id: "retired_1" })]), /was deleted/);
   assert.equal(listSources(doc).length, 1);
+});
+
+test("a delete records the batch's time and writer in the tombstone", () => {
+  const deleter = writer("user:test:editor", { name: "Claude", model: "opus" });
+  const later = "2026-11-12T12:00:00.000Z";
+  const doc = write(
+    initial(),
+    [{ op: "delete_source", source_id: "usage", source_revision: "1" }],
+    deleter,
+    later,
+  );
+  const by = {
+    principal: "user:test:editor",
+    displayName: "Owner",
+    driver: "MCP",
+    agent: { name: "Claude", model: "opus" },
+  };
+  assert.deepEqual(
+    { ...doc.sources.usage, by: { ...doc.sources.usage.by } },
+    {
+      deleted: true,
+      at: later,
+      by,
+    },
+  );
+  assert.deepEqual(deletedSource(doc, "usage"), { source_id: "usage", at: later, by });
+  assert.throws(() => readSource(doc, "usage"), { code: "source_not_found" });
+  assert.deepEqual(listSources(doc), []);
+  assert.throws(
+    () => write(doc, [op({ source_id: "usage" })]),
+    { code: "source_not_found" },
+    "a retired id is not reused",
+  );
+});
+
+test("deletedSource reads both tombstone forms and nothing else", () => {
+  const doc = initial();
+  const by = { principal: "user:test:owner", displayName: "Owner", driver: "MCP" };
+  const stored = {
+    ...doc.sources,
+    bare: { deleted: true },
+    full: { deleted: true, at: AT, by },
+    bad_at: { deleted: true, at: "not a time", by },
+    bad_by: { deleted: true, at: AT, by: { principal: 7 } },
+  };
+  const tombstones = { sources: stored };
+  assert.equal(deletedSource(tombstones, "usage"), null, "an active source");
+  assert.equal(deletedSource(tombstones, "missing"), null, "an unknown id");
+  assert.equal(deletedSource(tombstones, "constructor"), null, "a reserved id");
+  assert.equal(deletedSource(undefined, "usage"), null, "no sources document");
+  assert.deepEqual(deletedSource(tombstones, "full"), { source_id: "full", at: AT, by });
+  for (const id of ["bare", "bad_at", "bad_by"])
+    assert.deepEqual(deletedSource(tombstones, id), { source_id: id, at: null, by: null });
+  for (const id of ["bare", "full", "bad_at", "bad_by"]) {
+    assert.throws(() => readSource(tombstones, id), { code: "source_not_found" });
+    assert.throws(() => checkSources(tombstones, [op({ source_id: id })]), /was deleted/);
+  }
+  assert.deepEqual(
+    listSources(tombstones).map((source) => source.source_id),
+    ["usage"],
+  );
 });
 
 test("the genesis is a pure function of the document id", () => {

@@ -37,7 +37,7 @@ export const BLOCK_SYNTAX = Object.freeze([
 export const NODE_OPERATIONS = Object.freeze([
   [
     "dataframe",
-    'insert_node with node {type: "dataframe", attrs: {asset_id, title}} shows an uploaded Parquet dataset as a table; attrs {binding: {source_id, revision?}, title?} follows a source or pins a retained revision. set_node with its node_id and attrs changes either reference in place, without match_text',
+    'insert_node with node {type: "dataframe", attrs: {asset_id, title}} shows an uploaded Parquet dataset as a table; attrs {binding: {source_id, revision?}, title?} follows a source or pins a retained revision. A revision pin draws only while the history of the source still holds that revision (its newest 50 states), so a table that must keep its data names the dataset with asset_id. set_node with its node_id and attrs changes either reference in place, without match_text',
   ],
   [
     "view",
