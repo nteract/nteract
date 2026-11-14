@@ -80,6 +80,43 @@ Where `page_tags` is read together with the projection, the projection only
 supplies candidates (a Page the caller can see) and the tag table decides
 whether a candidate matches. See [Page tags](REFERENCE.md#page-tags).
 
+## Optional Slack Work Objects
+
+The source includes a single-workspace app endpoint at `/api/slack/events`.
+It is disabled (404) unless the host supplies all of
+`PAGES_SLACK_SIGNING_SECRET`, `PAGES_SLACK_BOT_TOKEN`, and
+`PAGES_SLACK_TEAM_ID`. Keep the signing secret and bot token in the host's
+secret configuration, not source or generated artifacts. The public origin
+must be set to the deployment's HTTPS URL.
+
+In a Slack app owned by the operator:
+
+1. Enable Work Object Previews with the Content Item entity type.
+2. Request bot scopes `links:read` and `links:write` and install the app in
+   the configured workspace.
+3. Register the Pages hostname as an unfurl domain.
+4. Set the Events API request URL to the deployment's `/api/slack/events`;
+   subscribe to `link_shared` and `entity_details_requested`.
+5. Publish a test Page preview, then check composer unfurls, channel unfurls,
+   image expansion, detail refresh, update, and removal in that workspace.
+
+The endpoint verifies Slack's HMAC signature, rejects timestamps older than
+five minutes and events from other workspaces, and sends only the published
+envelope. Up to five matching links are resolved concurrently with a bounded
+host lookup and Slack API call. Failed delivery is not acknowledged as success,
+allowing Slack to retry; operations replace unfurls instead of posting new
+messages. Cold-host latency and real Slack rendering still require the live
+qualification above. The flexpane currently shows the public snapshot, not
+private document content. No Slack installation or credentials are provisioned
+by building Pages.
+
+The tunnel routes include the preview JSON/image, owner-management and Slack
+event endpoints on profiles with link previews enabled. Deploy the route update
+with the Worker; local tests alone do not exercise the public ingress.
+
+References: [Work Objects](https://docs.slack.dev/messaging/work-objects-implementation/)
+and [request verification](https://docs.slack.dev/authentication/verifying-requests-from-slack/).
+
 ## Pages release
 
 The `pages` profile owns `pages.runtimed.run`:

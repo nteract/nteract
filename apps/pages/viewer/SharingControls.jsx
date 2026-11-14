@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Copy, Share2 } from "lucide-react";
+import { ChevronRight, Copy, Image, Share2 } from "lucide-react";
 import { SharingPanel, nativePrimitives } from "../../../src/components/sharing/SharingPanel.tsx";
 
 /** Grantable Page roles and their labels, weakest first. */
@@ -26,6 +26,8 @@ import { LinkAccess } from "./LinkAccess.jsx";
 import { pageMarkdown } from "../model/markdown-export.mjs";
 import { copyLinkPath, readPageRoute } from "../shared/routes.mjs";
 import { sessionTitle } from "./address-slug.mjs";
+
+import { PublishedPreview } from "./PublishedPreview.jsx";
 
 function projection(value, manage) {
   const rows = [];
@@ -110,6 +112,7 @@ function PageSharing({
   triggerRef,
 }) {
   const [own, setOwn] = useState(false),
+    [previewOpen, setPreviewOpen] = useState(false),
     [email, setEmail] = useState(""),
     [role, setRole] = useState("viewer"),
     [copyError, setCopyError] = useState(""),
@@ -277,102 +280,122 @@ function PageSharing({
           aria-label="Share Page"
           tabIndex={trigger ? undefined : -1}
         >
-          <SharingPanel
-            resourceLabel="Page"
-            title="Share Page"
-            description={
-              showInvite
-                ? "Invite by email, then share the link."
-                : session.access?.role === "viewer"
-                  ? "You can view this Page. Only the owner can invite people."
-                  : session.access?.role === "commenter"
-                    ? "You can view and comment on this Page. Only the owner can invite people."
-                    : "Only the owner can invite people."
-            }
-            sections={{
-              publicAccess: false,
-              invites: showInvite,
-              accessRequests: false,
-              runtimeAccess: false,
-            }}
-            emptyAccessMessage={
-              inheritedProject
-                ? "No direct collaborators are listed."
-                : manage
-                  ? "Only you have access."
-                  : "Access is managed by the Page owner."
-            }
-            accessProjection={projection(value, manage)}
-            busyAction={busy}
-            copyLinkLabel="Copy link"
-            compactCopyLinkLabel="Copy link"
-            onCopyLink={copyLink}
-            formError={error || null}
-            message={showInvite ? message || null : error || message || null}
-            messageKind={error ? "error" : "info"}
-            inviteEmail={email}
-            onInviteEmailChange={setEmail}
-            inviteScope={role}
-            onInviteScopeChange={setRole}
-            inviteReady={!busy && !!email.trim() && manage}
-            onSubmitInvite={(event) => {
-              event.preventDefault();
-              void mutate({ action: "invite", email, role }, "invite");
-            }}
-            onRemoveAccessRow={(row) =>
-              void mutate(
-                row.kind === "invite"
-                  ? { action: "revoke_invite", invite_id: row.id }
-                  : { action: "set_role", principal: row.principal, role: null },
-                row.id,
-              )
-            }
-            onResolveAccessRequest={() => {}}
-            onTogglePublicAccess={() => {}}
-            publicBusy={false}
-            publicEnabled={false}
-            showInitialAccessLoading={loading}
-            primitives={primitives}
-            concealEmails
-          />
-          {inheritedProject && (
-            <p className="page-sharing-note">
-              If {inheritedProject} has members or is shared with an organization, they also have
-              access through the Project. These settings manage this Page's direct grants only.
-            </p>
+          {manage && previewOpen ? (
+            <PublishedPreview session={session} onBack={() => setPreviewOpen(false)} />
+          ) : (
+            <>
+              <SharingPanel
+                resourceLabel="Page"
+                title="Share Page"
+                description={
+                  showInvite
+                    ? "Invite by email, then share the link."
+                    : session.access?.role === "viewer"
+                      ? "You can view this Page. Only the owner can invite people."
+                      : session.access?.role === "commenter"
+                        ? "You can view and comment on this Page. Only the owner can invite people."
+                        : "Only the owner can invite people."
+                }
+                sections={{
+                  publicAccess: false,
+                  invites: showInvite,
+                  accessRequests: false,
+                  runtimeAccess: false,
+                }}
+                emptyAccessMessage={
+                  inheritedProject
+                    ? "No direct collaborators are listed."
+                    : manage
+                      ? "Only you have access."
+                      : "Access is managed by the Page owner."
+                }
+                accessProjection={projection(value, manage)}
+                busyAction={busy}
+                copyLinkLabel="Copy link"
+                compactCopyLinkLabel="Copy link"
+                onCopyLink={copyLink}
+                formError={error || null}
+                message={showInvite ? message || null : error || message || null}
+                messageKind={error ? "error" : "info"}
+                inviteEmail={email}
+                onInviteEmailChange={setEmail}
+                inviteScope={role}
+                onInviteScopeChange={setRole}
+                inviteReady={!busy && !!email.trim() && manage}
+                onSubmitInvite={(event) => {
+                  event.preventDefault();
+                  void mutate({ action: "invite", email, role }, "invite");
+                }}
+                onRemoveAccessRow={(row) =>
+                  void mutate(
+                    row.kind === "invite"
+                      ? { action: "revoke_invite", invite_id: row.id }
+                      : { action: "set_role", principal: row.principal, role: null },
+                    row.id,
+                  )
+                }
+                onResolveAccessRequest={() => {}}
+                onTogglePublicAccess={() => {}}
+                publicBusy={false}
+                publicEnabled={false}
+                showInitialAccessLoading={loading}
+                primitives={primitives}
+                concealEmails
+              />
+              {manage && (
+                <button
+                  type="button"
+                  className="page-preview-entry"
+                  onClick={() => setPreviewOpen(true)}
+                >
+                  <Image size={18} aria-hidden="true" />
+                  <span>
+                    <strong>Link preview</strong>
+                  </span>
+                  <ChevronRight size={16} aria-hidden="true" />
+                </button>
+              )}
+              {inheritedProject && (
+                <p className="page-sharing-note">
+                  If {inheritedProject} has members or is shared with an organization, they also
+                  have access through the Project. These settings manage this Page's direct grants
+                  only.
+                </p>
+              )}
+              {state.error && available && (
+                <button
+                  className="subtle-button page-sharing-retry"
+                  disabled={state.refreshing || !!busy}
+                  onClick={() => void cache.read({ force: true }).catch(() => {})}
+                >
+                  Retry sharing settings
+                </button>
+              )}
+              {linkAccess && (
+                <LinkAccess
+                  linkAccess={linkAccess}
+                  resource="Page"
+                  busy={!!busy}
+                  refreshing={!!state.refreshing}
+                  onChange={(change) => void mutate(change, "domain-view")}
+                  onRefresh={() => void cache.read({ force: true }).catch(() => {})}
+                />
+              )}
+              <div className="page-sharing-export">
+                <button
+                  type="button"
+                  className="subtle-button"
+                  disabled={!session.access?.canRead || session.accessDenied}
+                  onClick={copyMarkdown}
+                >
+                  <Copy size={16} aria-hidden="true" /> Copy as Markdown
+                </button>
+                <p className="copy-status" role="status" aria-live="polite" aria-atomic="true">
+                  {copyMessage}
+                </p>
+              </div>
+            </>
           )}
-          {state.error && available && (
-            <button
-              className="subtle-button page-sharing-retry"
-              disabled={state.refreshing || !!busy}
-              onClick={() => void cache.read({ force: true }).catch(() => {})}
-            >
-              Retry sharing settings
-            </button>
-          )}
-          {linkAccess && (
-            <LinkAccess
-              linkAccess={linkAccess}
-              resource="Page"
-              busy={!!busy}
-              refreshing={!!state.refreshing}
-              onChange={(change) => void mutate(change, "domain-view")}
-              onRefresh={() => void cache.read({ force: true }).catch(() => {})}
-            />
-          )}
-          <div className="page-sharing-export">
-            <button
-              type="button"
-              className="subtle-button"
-              disabled={!session.access?.canRead || session.accessDenied}
-              onClick={copyMarkdown}
-            >
-              <Copy size={16} aria-hidden="true" /> Copy as Markdown
-            </button>
-            <p className="copy-status" role="status" aria-live="polite" aria-atomic="true">
-              {copyMessage}
-            </p>
-          </div>
         </div>
       )}
     </div>

@@ -1,5 +1,5 @@
 // The app shell for /p/<id>/<slug>: the slug's words as the title a link
-// unfurler sees, and nothing that depends on the Page.
+// unfurler sees when no approved snapshot has been published.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -21,7 +21,17 @@ function harness(t) {
     throw new Error("no request leaves the process");
   });
   const asked = [];
-  // Any host lookup fails the test: the shell never asks about the Page.
+  const previewLookups = [];
+  const pages = {
+    getByName: (name) => ({
+      fetch: async (request) => {
+        assert.equal(new URL(request.url).pathname, "/internal/published-preview");
+        previewLookups.push({ name, path: new URL(request.url).pathname });
+        return new Response("null", { headers: { "content-type": "application/json" } });
+      },
+    }),
+  };
+  // Shells may check the Page's approved publication, never its catalog or Project.
   const host = {
     getByName: (name) => {
       throw new Error(`the shell looked up ${name}`);
@@ -44,7 +54,7 @@ function harness(t) {
         });
       },
     },
-    PAGES: host,
+    PAGES: pages,
     CATALOGS: host,
     PROJECTS: host,
   };
@@ -56,7 +66,7 @@ function harness(t) {
       body: init.method === "HEAD" ? "" : await response.text(),
     };
   };
-  return { send, asked };
+  return { send, asked, previewLookups };
 }
 
 test("a slugged Page link's shell carries the slug's words as its title and og:title", async (t) => {
@@ -129,17 +139,26 @@ test("a slug's words are escaped, and its grammar admits no markup", async (t) =
   }
 });
 
-test("a Page link without a slug is served exactly as before", async (t) => {
-  const { send } = harness(t);
-  for (const path of [`/p/${known}`, `/p/${known}/`, `/?page=${known}`]) {
+test("an unpublished canonical Page link carries only generic OG with no cache validator", async (t) => {
+  const { send, previewLookups } = harness(t);
+  for (const path of [`/p/${known}`, `/p/${known}/`]) {
     const answer = await send(path);
-    assert.equal(answer.body, SHELL, path);
-    assert.equal(answer.headers.etag, '"shell"', path);
-    assert.equal(answer.headers["cache-control"], "public, max-age=0, must-revalidate", path);
+    assert.equal(answer.status, 200);
+    assert.match(answer.body, /<meta property="og:title" content="Pages">/);
+    assert.match(answer.body, /Sign in to check your access/);
+    assert.doesNotMatch(answer.body, /og:image/);
+    assert.equal(answer.headers.etag, undefined, path);
+    assert.equal(answer.headers["cache-control"], "no-store", path);
   }
-  // The caller's validators still reach the asset there.
+  assert.equal(previewLookups.length, 2);
+  // A cached shell cannot hide a newly published or removed snapshot.
   const revalidated = await send(`/p/${known}`, { headers: { "if-none-match": '"shell"' } });
-  assert.equal(revalidated.status, 304);
+  assert.equal(revalidated.status, 200);
+  assert.equal(revalidated.headers.etag, undefined);
+  // The old query route remains the plain app shell.
+  const query = await send(`/?page=${known}`);
+  assert.equal(query.body, SHELL);
+  assert.equal(query.headers.etag, '"shell"');
 });
 
 test("a slugged shell always answers in full, and HEAD answers its headers", async (t) => {

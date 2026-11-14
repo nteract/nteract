@@ -8,6 +8,48 @@ The native path uses Wordgard for both reads and writes; ProseMirror is absent
 from the production graph. [DIRECTION.md](DIRECTION.md#what-changes-from-today)
 lists what the next format and tool surface change.
 
+## Published link previews
+
+The Page owner can open **Share → Link preview**, supply a title (160
+characters) and description (400 characters), then prepare and explicitly
+publish a raster image. The default is a 1200×630 text card. The owner can
+instead choose a rendered image, chart or Mermaid diagram from the open Page,
+or upload a cover. The browser shows the exact bytes before uploading them;
+the host validates the raster and publishes only that Page-local asset.
+
+When publishing an uploaded cover, its original bytes also enter the existing
+private Page asset storage. The publication record retains the cover asset ID
+and filename for owner settings; public metadata and image routes expose only
+the composed card. Reopening the editor restores that cover so text edits can
+redraw it. Removing the cover clears the reference on the next publication.
+Render errors leave the draft editable and offer a retry; refreshing settings
+after a network error preserves local edits while reading the current revision.
+
+This does not grant document access. The separate `host/published-preview`
+record is owned by the Page host, outside Automerge. Publishing and removal
+require the owner and write credentials, an observed publication revision and
+a nonce. The last receipt makes a lost-response retry idempotent; stale writes
+are refused. Edits never update a published snapshot automatically. Trashing
+and restoring a Page invalidates the snapshot's lifecycle fence, so restore
+does not silently republish it.
+
+`GET /api/link-preview?page=<id>` reads owner settings; `POST` publishes or
+removes them. Anonymous readers of `/p/<id>` get OG metadata from the approved
+snapshot, or generic product metadata when no preview is published. The
+public `/p/<id>/preview.json` and `/p/<id>/preview.png?v=<revision>` routes
+serve only the current publication and use `no-store`. A removed or superseded
+image URL returns 404. Other services may retain copies they already fetched.
+Private `meta.json`, `card.json`, assets and document routes retain their access
+checks. There is no public Page mode or model-provider dependency.
+
+The optional single-workspace Slack adapter (`worker/slack-previews.mjs`)
+turns the same public snapshot into a Content Item Work Object, including its
+image and a full-size image preview. Both unfurls and detail panes currently
+show only published information. They never infer Pages access from a Slack
+user or channel. Private live details require a future account-linking flow;
+today users open Pages and use its normal sign-in. See
+[Slack setup](DEPLOYMENT.md#optional-slack-work-objects).
+
 ## Editor and content features
 
 A Page holds its title, blocks keyed by ID with a fractional `position`, and

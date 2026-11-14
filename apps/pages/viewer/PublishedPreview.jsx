@@ -1,0 +1,339 @@
+import React, { useEffect, useId, useMemo, useReducer } from "react";
+import { defer } from "rxjs";
+import {
+  ArrowLeft,
+  ArrowUpRight,
+  Check,
+  Globe,
+  Image,
+  Info,
+  LockKeyhole,
+  Upload,
+  X,
+} from "lucide-react";
+import { PRODUCT_NAME } from "../shared/product.mjs";
+import { request } from "./request.mjs";
+import { uploadPageImage, validateImageFile } from "./image-upload.mjs";
+import { previewEditorTransition } from "./published-preview-state.mjs";
+import { previewVisuals, renderPublishedPreview } from "./published-preview-image.mjs";
+import "./published-preview.css";
+
+export function PublishedPreview({ session, onBack }) {
+  const id = useId();
+  const visuals = useMemo(() => previewVisuals(), []);
+  const [state, dispatch] = useReducer(previewEditorTransition, null, () => ({
+    name: "loading",
+    draft: { title: session.snapshot()?.title || "Untitled Page", description: "", visual: "text" },
+    value: null,
+    prepared: null,
+    error: null,
+  }));
+  const endpoint = `/api/link-preview?page=${encodeURIComponent(session.pageId)}`;
+  useEffect(() => {
+    const controller = new AbortController();
+    const { signal } = controller;
+    if (
+      ![
+        "loading",
+        "rendering",
+        "uploading_cover",
+        "uploading",
+        "publishing",
+        "unpublishing",
+      ].includes(state.name)
+    )
+      return;
+    const subscription = defer(async () => {
+      if (state.name === "loading")
+        return { type: "loaded", value: await request(endpoint, { signal }) };
+      if (state.name === "rendering") {
+        const blob = await renderPublishedPreview(state.draft, visuals, signal, session.pageId);
+        // The viewer CSP permits data images, not blob URLs. Display the same
+        // PNG bytes that uploadPageImage will send after approval.
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        signal.throwIfAborted();
+        const url = `data:image/png;base64,${btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(""))}`;
+        return { type: "prepared", draft: state.draft, prepared: { blob, url } };
+      }
+      if (state.name === "uploading_cover") {
+        validateImageFile(state.draft.file);
+        const asset = await uploadPageImage(session.pageId, state.draft.file, signal);
+        return {
+          type: "cover_uploaded",
+          cover: { asset_id: asset.asset_id, name: state.draft.file.name.slice(0, 1024) },
+        };
+      }
+      if (state.name === "uploading")
+        return {
+          type: "uploaded",
+          asset: await uploadPageImage(session.pageId, state.prepared.blob, signal),
+        };
+      const value = await request(endpoint, {
+        method: "POST",
+        signal,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: state.name === "publishing" ? "publish" : "unpublish",
+          expected_revision: state.value.revision,
+          nonce: state.nonce,
+          ...(state.name === "publishing" && {
+            title: state.draft.title,
+            description: state.draft.description,
+            asset_id: state.asset.asset_id,
+            cover: state.draft.cover ?? null,
+          }),
+        }),
+      });
+      return { type: "saved", value };
+    }).subscribe({
+      next: (event) => dispatch(event),
+      error: (error) => dispatch({ type: "failed", error: error.message, draft: state.draft }),
+    });
+    return () => {
+      controller.abort();
+      subscription.unsubscribe();
+    };
+  }, [state.name, state.nonce, state.draft, endpoint, session, visuals]);
+  const ready = state.name === "ready";
+  const editable = ready || ["rendering", "render_failed"].includes(state.name);
+  const canPrepare = ready || state.name === "render_failed";
+  const coverName = state.draft.file?.name || state.draft.cover?.name;
+  const edit = (patch) => dispatch({ type: "edit", patch });
+  const published = state.value?.snapshot;
+  const showPublished = published && !state.edited && !state.prepared;
+  const busy = !["ready", "failed", "render_failed", "loading"].includes(state.name);
+  return (
+    <section className="published-preview" aria-labelledby={`${id}-title`}>
+      <header className="published-preview-header">
+        {onBack && (
+          <button
+            className="preview-back"
+            type="button"
+            aria-label="Back to sharing"
+            onClick={onBack}
+          >
+            <ArrowLeft size={18} />
+          </button>
+        )}
+        <h2 id={`${id}-title`}>Link preview</h2>
+        <details className="preview-info">
+          <summary aria-label="About link previews" title="About link previews">
+            <Info size={15} />
+          </summary>
+          <p>
+            Only the approved preview is public; Page access stays the same. Edits don’t update it
+            automatically. Other services may cache a copy after removal.
+          </p>
+        </details>
+        <span className="preview-publication-state" data-published={!!published}>
+          {published ? <Globe size={13} /> : <LockKeyhole size={13} />}
+          {published ? "Published" : "Not published"}
+        </span>
+      </header>
+      {state.name === "loading" ? (
+        <p className="preview-loading" role="status">
+          Loading preview settings…
+        </p>
+      ) : (
+        <>
+          <div className="published-preview-body">
+            <figure className="preview-card">
+              {state.prepared ? (
+                <img
+                  className="published-preview-image"
+                  src={state.prepared.url}
+                  alt="Exact image that will be published"
+                />
+              ) : showPublished ? (
+                <img
+                  className="published-preview-image"
+                  src={`/p/${session.pageId}/preview.png?v=${state.value.revision}`}
+                  alt="Currently published preview"
+                />
+              ) : (
+                <div className="preview-card-draft">
+                  <span className="preview-card-brand">{PRODUCT_NAME}</span>
+                  {state.draft.visual !== "text" && (
+                    <Image size={32} strokeWidth={1.25} aria-hidden="true" />
+                  )}
+                  <strong>{state.draft.title || "Your Page title"}</strong>
+                  {state.draft.description && <p>{state.draft.description}</p>}
+                </div>
+              )}
+              <figcaption>
+                <span>
+                  {state.name === "rendering" ? (
+                    "Updating preview…"
+                  ) : state.prepared ? (
+                    <>
+                      <Check size={13} /> Ready to publish
+                    </>
+                  ) : showPublished ? (
+                    <>
+                      <Globe size={13} /> Currently published
+                    </>
+                  ) : (
+                    "Draft"
+                  )}
+                </span>
+                {showPublished ? (
+                  <a
+                    target="_blank"
+                    rel="noreferrer"
+                    href={`/p/${session.pageId}/preview.png?v=${state.value.revision}`}
+                    aria-label="Open published image"
+                  >
+                    <ArrowUpRight size={15} />
+                  </a>
+                ) : (
+                  <span>1200 × 630</span>
+                )}
+              </figcaption>
+            </figure>
+            <div className="preview-field">
+              <div className="preview-field-label">
+                <label htmlFor={`${id}-name`}>Preview title</label>
+                <span>{state.draft.title.length}/160</span>
+              </div>
+              <input
+                id={`${id}-name`}
+                value={state.draft.title}
+                maxLength={160}
+                disabled={!editable}
+                onChange={(event) => edit({ title: event.target.value })}
+              />
+            </div>
+            <div className="preview-field">
+              <div className="preview-field-label">
+                <label htmlFor={`${id}-description`}>Description</label>
+                <span>Optional</span>
+              </div>
+              <textarea
+                id={`${id}-description`}
+                value={state.draft.description}
+                maxLength={400}
+                rows={2}
+                placeholder="Add a description…"
+                disabled={!editable}
+                onChange={(event) => edit({ description: event.target.value })}
+              />
+            </div>
+            <div className="preview-field">
+              <div className="preview-field-label">
+                <span className="preview-cover-label">Cover</span>
+                <span>Optional</span>
+              </div>
+              <div className="preview-cover-controls">
+                <label className="preview-upload">
+                  <Upload size={17} />
+                  <span>
+                    {state.draft.visual === "text" ? "Add cover" : "Replace cover"}
+                    {coverName && <small title={coverName}>{coverName}</small>}
+                  </span>
+                  <input
+                    aria-label="Cover image"
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    disabled={!editable}
+                    onChange={(event) =>
+                      dispatch({ type: "choose_cover", file: event.target.files?.[0] })
+                    }
+                  />
+                </label>
+                {state.draft.visual !== "text" && (
+                  <button
+                    type="button"
+                    className="preview-clear-cover"
+                    disabled={!editable}
+                    aria-label="Remove cover"
+                    onClick={() => dispatch({ type: "choose_visual", visual: "text" })}
+                  >
+                    <X size={16} />
+                  </button>
+                )}
+              </div>
+              {visuals.length > 0 && (
+                <div className="preview-page-visuals" role="group" aria-label="Page visuals">
+                  {visuals.map((item) => (
+                    <button
+                      type="button"
+                      key={item.id}
+                      disabled={!editable}
+                      aria-pressed={state.draft.visual === item.id}
+                      onClick={() => dispatch({ type: "choose_visual", visual: item.id })}
+                    >
+                      <Image size={14} />
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+          <footer className="published-preview-footer">
+            {state.error && (
+              <p role="alert">
+                {state.error}{" "}
+                <button
+                  className="preview-text-button"
+                  type="button"
+                  onClick={() =>
+                    dispatch({ type: state.name === "render_failed" ? "prepare" : "reload" })
+                  }
+                >
+                  {state.name === "render_failed" ? "Retry preview" : "Reload settings"}
+                </button>
+              </p>
+            )}
+            {busy && (
+              <p role="status">
+                {state.name === "rendering" ? "Preparing image…" : "Saving preview…"}
+              </p>
+            )}
+            {state.message && (
+              <p className="preview-success" role="status">
+                <Check size={14} /> {state.message}
+              </p>
+            )}
+            <div className="published-preview-actions">
+              {published && (
+                <button
+                  className="preview-remove"
+                  type="button"
+                  disabled={!ready}
+                  onClick={() => dispatch({ type: "unpublish", nonce: crypto.randomUUID() })}
+                >
+                  Remove preview
+                </button>
+              )}
+              <div className="preview-primary-actions">
+                <button
+                  className={state.prepared ? "preview-secondary" : "preview-primary"}
+                  type="button"
+                  disabled={
+                    !canPrepare ||
+                    !state.draft.title.trim() ||
+                    (state.draft.visual === "upload" && !state.draft.file && !state.draft.cover)
+                  }
+                  onClick={() => dispatch({ type: "prepare" })}
+                >
+                  Prepare preview
+                </button>
+                {state.prepared && (
+                  <button
+                    className="preview-primary"
+                    type="button"
+                    disabled={!ready || !state.draft.title.trim()}
+                    onClick={() => dispatch({ type: "publish", nonce: crypto.randomUUID() })}
+                  >
+                    {published ? "Update public preview" : "Publish preview"}
+                  </button>
+                )}
+              </div>
+            </div>
+          </footer>
+        </>
+      )}
+    </section>
+  );
+}
