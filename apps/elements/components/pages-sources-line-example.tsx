@@ -1,11 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { Check, ChevronDown, Ellipsis, MessageSquare, Share2, Users } from "lucide-react";
+import { Check, ChevronDown, Database, Ellipsis, MessageSquare, Share2, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import styles from "./pages-sources-line-example.module.css";
 
-type Overflow = "summary" | "names";
+type LabelStyle = "none" | "text" | "icon";
 type Source = { name: string; refreshed: string; instant: string };
 const counts = [0, 1, 2, 3, 8, 64] as const;
 // Fixed examples: this is a design fixture, not a clock or a sources client.
@@ -87,16 +87,31 @@ function FreshnessSummary({ sources }: { sources: Source[] }) {
 }
 
 /** Plain, noninteractive text. No placeholder or reserved space when empty. */
-function SourcesLine({ sources, overflow }: { sources: Source[]; overflow: Overflow }) {
+function SourcesLine({ sources, labelStyle }: { sources: Source[]; labelStyle: LabelStyle }) {
   if (!sources.length) return null;
+  const icon =
+    labelStyle === "icon" ? <Database size={13} strokeWidth={1.5} aria-hidden="true" /> : null;
   const entries = (
-    <>
-      {sources.map((source) => (
-        <SourceEntry key={source.name} source={source} />
-      ))}
-    </>
+    <span className={styles.sourceGroup} data-labeled={labelStyle !== "none"}>
+      {labelStyle !== "none" && (
+        <strong className={styles.sourceLabel}>
+          {icon}
+          {sources.length === 1 ? "Source" : "Sources"}
+        </strong>
+      )}
+      <span className={styles.sourceItems}>
+        {sources.map((source) => (
+          <SourceEntry key={source.name} source={source} />
+        ))}
+      </span>
+    </span>
   );
-  const summary = <FreshnessSummary sources={sources} />;
+  const summary = (
+    <span className={styles.summaryGroup}>
+      {icon}
+      <FreshnessSummary sources={sources} />
+    </span>
+  );
   return (
     <div
       className={styles.sourcesLine}
@@ -110,20 +125,8 @@ function SourcesLine({ sources, overflow }: { sources: Source[]; overflow: Overf
           <span className={styles.wideEntries}>{entries}</span>
           <span className={styles.narrowSummary}>{summary}</span>
         </>
-      ) : overflow === "summary" ? (
-        summary
       ) : (
-        <>
-          <span className={styles.wideEntries}>
-            {sources.slice(0, 2).map((source) => (
-              <SourceEntry key={source.name} source={source} />
-            ))}
-            <span>+{sources.length - 2} sources</span>
-          </span>
-          <span className={styles.narrowSummary}>
-            <SourceEntry source={sources[0]} /> <span>+{sources.length - 1} sources</span>
-          </span>
-        </>
+        summary
       )}
     </div>
   );
@@ -168,13 +171,13 @@ function DocumentBody() {
 function DocumentPreview({
   count,
   theme,
-  overflow,
+  labelStyle,
   longNames = false,
   compact = false,
 }: {
   count: number;
   theme: "light" | "dark";
-  overflow: Overflow;
+  labelStyle: LabelStyle;
   longNames?: boolean;
   compact?: boolean;
 }) {
@@ -208,7 +211,7 @@ function DocumentPreview({
       )}
       <article className={`${styles.paper} ${sources.length ? styles.hasSources : ""}`}>
         <h1 className={styles.title}>Workspace usage</h1>
-        <SourcesLine sources={sources} overflow={overflow} />
+        <SourcesLine sources={sources} labelStyle={labelStyle} />
         {compact ? (
           <p className={styles.excerpt}>How people and agents use tools across the workspace.</p>
         ) : (
@@ -223,7 +226,7 @@ export function PagesSourcesLineExample({ embedded = false }: { embedded?: boole
   const [count, setCount] = useState(1);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [phone, setPhone] = useState(false);
-  const [overflow, setOverflow] = useState<Overflow>("summary");
+  const [labelStyle, setLabelStyle] = useState<LabelStyle>("text");
   const [longNames, setLongNames] = useState(false);
   const Root = embedded ? "div" : "main";
   return (
@@ -293,7 +296,12 @@ export function PagesSourcesLineExample({ embedded = false }: { embedded?: boole
       </div>
       <div className={styles.previewStage}>
         <div className={phone ? styles.phone : styles.desktop} data-main-preview>
-          <DocumentPreview count={count} theme={theme} overflow={overflow} longNames={longNames} />
+          <DocumentPreview
+            count={count}
+            theme={theme}
+            labelStyle={labelStyle}
+            longNames={longNames}
+          />
         </div>
       </div>
       <section className={styles.comparison} aria-label="Compare source counts">
@@ -319,7 +327,7 @@ export function PagesSourcesLineExample({ embedded = false }: { embedded?: boole
               <DocumentPreview
                 count={value}
                 theme={theme}
-                overflow={overflow}
+                labelStyle={labelStyle}
                 longNames={longNames}
                 compact
               />
@@ -327,36 +335,39 @@ export function PagesSourcesLineExample({ embedded = false }: { embedded?: boole
           ))}
         </div>
       </section>
-      <section className={styles.comparison} aria-label="Overflow alternatives">
+      <section className={styles.comparison} aria-label="Source label alternatives">
         <div className={styles.sectionHeading}>
-          <h2>When the names stop fitting</h2>
-          <p>Try either treatment in the previews above. Neither opens a panel.</p>
+          <h2>Make the source context explicit</h2>
+          <p>The freshness summary is settled. Compare how a single source identifies itself.</p>
         </div>
-        <div className={styles.grid}>
-          <div className={styles.option}>
-            <Button
-              variant={overflow === "summary" ? "secondary" : "outline"}
-              aria-pressed={overflow === "summary"}
-              onClick={() => setOverflow("summary")}
-            >
-              A · Freshness summary
-            </Button>
-            <p>Recommended. Keeps the newest and oldest refresh visible, even with 64 sources.</p>
-            <DocumentPreview count={8} theme={theme} overflow="summary" compact />
-          </div>
-          <div className={styles.option}>
-            <Button
-              variant={overflow === "names" ? "secondary" : "outline"}
-              aria-pressed={overflow === "names"}
-              onClick={() => setOverflow("names")}
-            >
-              B · Names and a count
-            </Button>
-            <p>
-              Keeps some names visible, but says nothing about the freshness of the hidden sources.
-            </p>
-            <DocumentPreview count={8} theme={theme} overflow="names" compact />
-          </div>
+        <div className={styles.labelOptions}>
+          {(
+            [
+              ["none", "Original · Name only", "Quiet, but can read like a subtitle."],
+              [
+                "text",
+                "A · Source label",
+                "Recommended. Names the metadata without suggesting a new action.",
+              ],
+              [
+                "icon",
+                "B · Icon and label",
+                "A little more visual separation. The icon still has a text label.",
+              ],
+            ] as const
+          ).map(([value, label, description]) => (
+            <div className={styles.option} key={value}>
+              <Button
+                variant={labelStyle === value ? "secondary" : "outline"}
+                aria-pressed={labelStyle === value}
+                onClick={() => setLabelStyle(value)}
+              >
+                {label}
+              </Button>
+              <p>{description}</p>
+              <DocumentPreview count={1} theme={theme} labelStyle={value} compact />
+            </div>
+          ))}
         </div>
       </section>
       <p className={styles.footnote}>

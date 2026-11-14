@@ -12,10 +12,11 @@ This is a design fixture for **Pages**, with fixed source names and refresh time
 ## Proposed behavior
 
 - No sources: render nothing, keeping today's title and body spacing.
-- One or two: show each name and its last refresh time.
+- One or two: show each name and its last refresh time, with a small Source/Sources label to distinguish the line from a subtitle.
 - Three: show the names when there is room; use the summary on narrow layouts.
-- More: compare a count with newest/oldest refresh times against a few names and a remainder count. The summary is the proposed default.
+- More: show the accepted freshness summary, a count with newest/oldest refresh times.
+- Compare the original unlabeled line with a text label and an icon-plus-label treatment. These are noninteractive metadata; no button styling or implied action.
 - Keep the line as plain text, identical for readers and editors. No panel or binding controls in this design.
 - Source order is alphabetical and does not change on refresh. Old dates get no warning color because a Page has no expected refresh interval.
 
-The title, typography, and article spacing mirror `apps/pages/viewer/style.css`; the fixture's controls are outside the Page. The production implementation will read the Page session's source store and the host's last-set timestamp, including a refresh that finds unchanged rows. Exact date wording, overflow, and long-name handling remain design choices to review here.
+The title, typography, and article spacing mirror `apps/pages/viewer/style.css`; the fixture's controls are outside the Page. The production implementation will read the Page session's source store and the host's last-set timestamp, including a refresh that finds unchanged rows. Exact date wording, source labeling, and long-name handling remain design choices to review here.

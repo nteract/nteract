@@ -163,14 +163,48 @@
   margin-bottom: 4px;
 }
 .sourcesLine {
-  display: flex;
-  flex-wrap: wrap;
-  column-gap: 24px;
-  row-gap: 4px;
+  display: block;
   margin: 0 0 24px;
   font-size: 12px;
   line-height: 20px;
   color: var(--muted-foreground);
+}
+.sourceGroup[data-labeled="true"] {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 12px;
+}
+.sourceLabel {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  font-weight: 600;
+}
+.sourceLabel svg {
+  align-self: center;
+}
+.sourceItems {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 24px;
+  min-width: 0;
+}
+.summaryGroup {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.summaryGroup > svg {
+  flex-shrink: 0;
+  align-self: center;
+}
+.labelOptions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 24px;
+}
+.labelOptions .compact .paper {
+  padding: 20px;
 }
 .sourceEntry {
   display: inline-flex;
@@ -386,6 +420,9 @@
     padding: 24px 16px 40px;
   }
   .grid {
+    grid-template-columns: 1fr;
+  }
+  .labelOptions {
     grid-template-columns: 1fr;
   }
   .controls {
