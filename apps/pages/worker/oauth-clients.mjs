@@ -11,8 +11,8 @@
  *   which shows the URL's host.
  *
  * Every valid metadata URL is admitted. Product names below are display hints,
- * never an access policy. Fetching requires an operator-configured public-only
- * HTTPS egress boundary (DEPLOYMENT.md, Outbound requests). URL spelling alone
+ * never an access policy. The Cloudflare package supplies a public-only HTTPS fetch boundary
+ * (DEPLOYMENT.md, Outbound requests). Other runtimes must supply their own. URL spelling alone
  * cannot prevent a public DNS name from resolving to a private address.
  *
  * There is no dynamic registration and no client secret. */
@@ -123,10 +123,10 @@ export function metadataClientUrl(clientId, origin) {
   return url;
 }
 
-/** Whether the operator has installed the public-only HTTPS egress boundary.
- * This is a runtime/network contract, not a DNS preflight or a client policy.
- * The native installer reads an operator qualification outside the release;
- * installing one node never implicitly qualifies the entire fleet. */
+/** The Cloudflare package sets this alongside global_fetch_strictly_public
+ * as required deployment configuration. On another runtime, the operator must
+ * establish equivalent public-only HTTPS fetching first. It is not a client
+ * policy or a DNS preflight, and the string alone cannot provide a boundary. */
 export function metadataEgressConfigured(env) {
   return env?.PAGES_OAUTH_METADATA_EGRESS === "public-https";
 }

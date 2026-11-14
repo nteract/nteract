@@ -1092,11 +1092,12 @@ resource validation, sign-in, and consent. Two kinds are admitted
 names itself with a client ID metadata document: its `client_id` is an `https`
 URL on a public DNS name, with the default port, a path, and no query or
 fragment. Every such URL is admitted without an entry in a client table; known names
-only label the client. Metadata fetching needs a configured public-only HTTPS
-egress boundary (`PAGES_OAUTH_METADATA_EGRESS=public-https`), enforced by the
-native installer's firewall or the custom deployment's runtime/network
-([DEPLOYMENT.md](DEPLOYMENT.md#outbound-requests)). Without it, new
-metadata-based authorizations return 503 for every client without fetching.
+only label the client. The Cloudflare package enables metadata fetching together
+with `global_fetch_strictly_public` as required deployment configuration.
+Other runtimes must establish equivalent public-only HTTPS fetching before
+setting `PAGES_OAUTH_METADATA_EGRESS=public-https`; without it, new metadata
+sign-ins return 503 for every client without fetching
+([DEPLOYMENT.md](DEPLOYMENT.md#outbound-requests)).
 Once a person has signed in, Pages fetches the URL without following
 redirects, reading at most 5 KB of JSON within five seconds, and keeps a valid
 document for its `max-age`, five minutes at most, in a 64-entry cache. The

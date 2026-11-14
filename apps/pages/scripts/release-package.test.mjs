@@ -156,7 +156,14 @@ test("the shipped wrangler.json is the structural config and names no deployment
   assert.deepEqual(Object.keys(shipped).sort(), [...STRUCTURAL_FIELDS].sort());
   for (const bound of ["name", "account_id", "workers_dev", "routes", "d1_databases", "r2_buckets"])
     assert.ok(!(bound in shipped), bound);
-  assert.deepEqual(Object.keys(shipped.vars), ["NOTEBOOK_CLOUD_OIDC_FLOW"]);
+  assert.deepEqual(Object.keys(shipped.vars), [
+    "NOTEBOOK_CLOUD_OIDC_FLOW",
+    "PAGES_OAUTH_METADATA_EGRESS",
+  ]);
+  assert.deepEqual(shipped.compatibility_flags, ["global_fetch_strictly_public"]);
+  assert.equal(shipped.vars.PAGES_OAUTH_METADATA_EGRESS, "public-https");
+  assert.ok(manifest.structural_fields.includes("compatibility_flags"));
+  assert.ok(manifest.structural_vars.includes("PAGES_OAUTH_METADATA_EGRESS"));
   assert.deepEqual(manifest.bindings, { d1: ["DB", "PAGES_USAGE"], r2: ["PAGES_ASSETS"] });
 
   // Drift guard: a deployment profile's config agrees with the package on every
@@ -172,9 +179,10 @@ test("the shipped wrangler.json is the structural config and names no deployment
     vars: { NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages-example.example.workers.dev" },
   });
   for (const field of STRUCTURAL_FIELDS) {
-    if (field === "vars")
-      assert.equal(full.vars.NOTEBOOK_CLOUD_OIDC_FLOW, shipped.vars.NOTEBOOK_CLOUD_OIDC_FLOW);
-    else assert.deepEqual(full[field], shipped[field], field);
+    if (field === "vars") {
+      for (const [key, value] of Object.entries(shipped.vars))
+        assert.equal(full.vars[key], value, key);
+    } else assert.deepEqual(full[field], shipped[field], field);
   }
   assert.deepEqual(
     [d1Bindings(full), full.r2_buckets.map((r) => r.binding)],

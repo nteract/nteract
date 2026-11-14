@@ -19,8 +19,11 @@ import {
   redirectAllowed,
 } from "./oauth-clients.mjs";
 
-// Unit fetches are mocked; the network-boundary tests exercise enforcement.
-const publicEgress = { PAGES_OAUTH_METADATA_EGRESS: "public-https" };
+import { structuralConfig } from "../scripts/cloudflare-stage.mjs";
+
+// Fetches are mocked. Use the shipped Cloudflare configuration, not an opt-in
+// invented by the fixture. Cloudflare owns the actual network boundary.
+const publicEgress = structuralConfig().vars;
 const metadataClient = (url) => fetchMetadataClient(url, publicEgress);
 const origin = "https://pages.example";
 // The documents Anthropic and OpenAI publish at these client ids.

@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { stageCloudflareFiles, cloudflareConfig } from "./cloudflare-stage.mjs";
+import { stageCloudflareFiles, cloudflareConfig, structuralConfig } from "./cloudflare-stage.mjs";
 import { workerShape } from "./worker-shape.mjs";
 import { releaseArtifacts, releaseFilesOf } from "./stage-artifacts.mjs";
 import { VIEWER_ASSETS, hashedAssetPath } from "./viewer-chunks.mjs";
@@ -101,6 +101,7 @@ test("the profile supplies the deployment's name, databases, bucket and variable
     NOTEBOOK_CLOUD_OIDC_ISSUER: "https://id.example/auth",
     PAGES_CATALOG_INDEX: "d1",
     NOTEBOOK_CLOUD_OIDC_FLOW: "server",
+    PAGES_OAUTH_METADATA_EGRESS: "public-https",
   });
   assert.equal(config.routes, undefined, "a profile without a custom domain sets no route");
   const account = "0123456789abcdef0123456789abcdef";
@@ -246,4 +247,25 @@ test("a profile is refused when it is incomplete, carries a secret or names an u
     "PAGES_E2E_ONLY",
   ])
     refuses({ vars: { ...vars, [secret]: "x" } }, /does not belong/);
+});
+
+test("existing Cloudflare profiles get public metadata fetching with its routing boundary", () => {
+  // No new opt-in in the input: upgrading an existing profile must not turn
+  // known clients' sign-ins off. Both settings are part of the release contract.
+  const existing = profile();
+  assert.equal(existing.vars.PAGES_OAUTH_METADATA_EGRESS, undefined);
+  for (const config of [cloudflareConfig(existing), structuralConfig()]) {
+    assert.deepEqual(config.compatibility_flags, ["global_fetch_strictly_public"]);
+    assert.equal(config.vars.PAGES_OAUTH_METADATA_EGRESS, "public-https");
+  }
+  const overridden = cloudflareConfig(
+    profile({
+      vars: { ...existing.vars, PAGES_OAUTH_METADATA_EGRESS: "false" },
+    }),
+  );
+  assert.equal(overridden.vars.PAGES_OAUTH_METADATA_EGRESS, "public-https");
+  // celld does not implement the Cloudflare boundary. Never give its build
+  // the assertion just because both runtimes share the Worker shape.
+  assert.equal(workerShape().vars.PAGES_OAUTH_METADATA_EGRESS, undefined);
+  assert.equal(workerShape().compatibility_flags, undefined);
 });

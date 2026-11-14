@@ -1571,72 +1571,69 @@ Known client names are display labels, not an access list. All clients still
 need valid metadata, a listed callback, PKCE S256, sign-in and consent.
 `PAGES_OAUTH_ANY_CLIENT_DOCUMENT` is obsolete and has no effect.
 
-Fetching metadata requires `PAGES_OAUTH_METADATA_EGRESS=public-https`. This is
-an **operator assertion of a network boundary**, not a switch that creates
-one. With it unset or any other value, new metadata-based authorizations
-return 503 without making a request, for known and unknown clients alike.
-Existing grants can still refresh and revoke without fetching metadata.
-The fixed `pages-kilo` and `pages-chatgpt` clients do not fetch metadata.
+### Cloudflare Workers and pages-dev
 
-The native installer can install nftables output rules for the dedicated service
-UID before publishing to an active node, and again in `ExecStartPre` on every
-start. It does **not** enable the boundary or metadata fetching automatically.
-It reads the operator-owned `/etc/<service>/oauth-metadata-egress` file; only a regular,
-root-owned file that is not group/world writable can select a phase. `prepared`
-installs the local boundary while leaving metadata fetching disabled.
-`public-https` installs the boundary and sets the Worker variable. A missing
-file leaves fetching disabled and does not introduce HTTPS filtering; malformed
-qualification stops installation before any writes. This marker is outside
-release artifacts and is never created by the installer.
+The Cloudflare package supplies both of these as required structural settings:
 
-Those rules reject outbound TCP port 443 connections to private, loopback, link-local, shared-address,
-reserved and multicast destinations. IPv6 permits global unicast only,
-excluding special-use ranges and transition ranges. The decision applies to
-actual packets after DNS resolution, including a changed DNS answer; there is
-no DNS preflight followed by an unrestricted fetch. DNS, runtime instance
-credentials on port 80, peer RPC, and replies to incoming connections keep
-their existing paths. Private HTTPS identity providers or object stores are
-therefore incompatible with public metadata egress on this service UID.
+```json
+{
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  "vars": { "PAGES_OAUTH_METADATA_EGRESS": "public-https" }
+}
+```
 
-Roll out in two phases, including when upgrading an existing deployment:
+The flag makes global `fetch` use Cloudflare's public Internet routing,
+including requests to the Worker's own zone. Without it, same-zone requests
+can bypass the zone's security settings and go straight to its origin.
+Cloudflare owns DNS resolution and the connection; Pages does not do a DNS
+preflight followed by an unrestricted connection. See Cloudflare's
+[flag contract](https://developers.cloudflare.com/workers/configuration/compatibility-flags/#global-fetch-strictly-public)
+and [fetch/SSRF boundary](https://blog.cloudflare.com/workers-environment-live-object-bindings/).
+Metadata uses global `fetch`, never a service or VPC binding. Public sites
+remain reachable; a site's authentication must still protect it from public
+Internet callers.
 
-1. A greenfield service must first complete an unqualified install to create
-   its ownership record; do not pre-create its configuration directory.
-   New metadata-based authorizations return 503, including ChatGPT, Codex and
-   Claude; existing grants continue working. After confirming that the
-   service does not depend on private HTTPS endpoints, create
-   `/etc/<service>/oauth-metadata-egress` containing `prepared` (root-owned,
-   mode 0600) and install the new firewall helper and startup hook on **every**
-   serving node and on the image used to add future nodes.
-2. Verify the network boundary on every node, including proxies and address
-   translation. Then change the operator file to `public-https` and rerun
-   install. This records that the whole fleet is qualified, not just this node. Removing the
-   file and rerunning install disables new metadata-based authorizations.
-   Existing egress rules are retained even with no marker: other nodes or
-   in-flight requests may still be using an enabled release. Remove the rules
-   manually only after metadata fetching is disabled throughout the fleet.
+`cloudflare-stage.mjs` generates these together, including for existing
+profiles that have neither setting. A profile cannot override them. The
+release archive carries the same pair in `wrangler.json` and its manifest.
+When updating the release pin for **pages-dev**, mirror both in
+`Kilo-Org/cloud/services/pages/wrangler.jsonc` in that same PR. Its predeploy
+build compares structural fields and variables before deploying, so an old
+config refuses the new package at build time while the previous Worker keeps
+serving. Copy the complete `compatibility_flags` array from the package;
+do not keep `global_fetch_private_origin` alongside it. No host marker,
+firewall rollout, new secret or client-by-client opt-in is needed.
 
-A fleet deployment pointer can be adopted without a restart. The installer
-configures the local node only and cannot discover another node's firewall;
-its release must never infer fleet qualification from that local success.
-Custom deployments, including Cloudflare packages and local development, must enforce the equivalent
-public-only HTTPS policy in their runtime or network before setting the value
-in Wrangler vars or `.dev.vars`. Do not set it merely because URL validation
-passes: a public DNS name can resolve to a private address. Private routing,
-HTTPS proxies, NAT64, and destination translation must not route apparently
-public HTTPS destinations into a private network. No unrestricted metadata
-fetch fallback exists.
+The variable records the package's runtime contract; it does not itself make
+fetch safe. Keep the flag and variable together when deploying by another
+path. The flag affects all global fetches, including identity-provider calls;
+private services need explicit bindings instead of implicit origin routing.
+D1, R2 and Durable Object bindings keep their existing paths. This source
+change does not qualify a live deployment: after updating the pages-dev pin,
+check a fresh metadata-client authorization through sign-in and consent.
 
-The Worker fetches only after sign-in, sends no cookies or authorization,
-requires port 443, never follows redirects, and bounds time, bytes, cache
-entries and concurrent fetches. Product names do not bypass any of these
-checks. `node scripts/oauth-egress-smoke.mjs` uses a disposable Docker network
-namespace to exercise the generated rules with real IPv4 and IPv6 sockets,
-without modifying the host firewall. It proves the rule semantics, not the
-network policy on a live deployment.
+### Native celld and other runtimes
 
-The installer must be updated with this build; copying the Worker
-alone does not establish the egress boundary.
+The native installer does not implement Cloudflare's routing flag and does
+not configure metadata egress. New metadata-based authorizations return 503
+unless the operator has established equivalent public-only HTTPS fetching
+and set `PAGES_OAUTH_METADATA_EGRESS=public-https`. The boundary must cover the
+actual connection after DNS resolution, including changed answers, private
+IPv4/IPv6 destinations, proxies and destination translation. Setting the
+variable without that boundary is unsafe. There is no unrestricted fallback
+or exception for a familiar product name.
+
+This changes new metadata sign-ins on unqualified native deployments,
+including disposable page10; existing grants still refresh and revoke, and
+fixed `pages-kilo` and `pages-chatgpt` clients do not fetch metadata. Local
+sign-in and fixed-client tests continue working. `pages.runtimed.run` stays
+on `pages-format-1` and does not receive this change. No native host firewall
+or private HTTPS storage/identity-provider traffic is changed by this patch.
+
+Across runtimes, the Worker fetches only after sign-in, sends no cookies or
+authorization, requires port 443, never follows redirects, and bounds time,
+bytes, cache entries and concurrent fetches. Product names bypass none of
+these checks.
 
 ## Telemetry
 
@@ -1975,8 +1972,10 @@ The archive's `wrangler.json` is `structuralConfig()` in
 [cloudflare-stage.mjs](scripts/cloudflare-stage.mjs), not a deployable file: it
 has no `name`. The operator's own Wrangler file deploys it. These fields are
 structural, fixed by the code: `main`, `no_bundle`, `compatibility_date`,
+`compatibility_flags`,
 `assets`, `durable_objects`, `migrations`, `triggers`, `preview_urls`,
-`observability`, and the variable `NOTEBOOK_CLOUD_OIDC_FLOW`. These are
+`observability`, and the variables `NOTEBOOK_CLOUD_OIDC_FLOW` and
+`PAGES_OAUTH_METADATA_EGRESS`. These are
 profile-bound and absent from the package: `name`, `account_id`, `workers_dev`,
 `routes`, `d1_databases`, `r2_buckets`, and every other variable. A change to
 `worker-shape.mjs` or `structuralConfig()` changes what an operator must

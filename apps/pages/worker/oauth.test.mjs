@@ -12,6 +12,7 @@ import {
   SERVER_SESSION_COOKIE,
 } from "@cloud/oidc-session-store.ts";
 import { handleOAuth, mcpAuthChallenge } from "./oauth.mjs";
+import { cloudflareConfig, structuralConfig } from "../scripts/cloudflare-stage.mjs";
 import { metadataFetchTimeouts } from "./oauth-clients.mjs";
 import { FAVICON_LINK } from "../shared/favicon.mjs";
 import { readAccessToken } from "./oauth-store.mjs";
@@ -93,7 +94,7 @@ function serve(t, documents) {
 }
 function fixture(t, extra = {}) {
   const env = {
-    PAGES_OAUTH_METADATA_EGRESS: "public-https",
+    ...structuralConfig().vars,
     NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin,
     NOTEBOOK_CLOUD_OIDC_FLOW: "server",
     NOTEBOOK_CLOUD_OIDC_ISSUER: "https://issuer.example",
@@ -586,6 +587,56 @@ test("unknown harnesses complete OAuth with hosted and variable loopback callbac
     env.PAGES_OAUTH_METADATA_EGRESS = "public-https";
   }
   assert.equal(calls.length, 2);
+});
+
+test("an existing Cloudflare profile upgrades with fresh known and unknown client sign-ins", async (t) => {
+  const config = cloudflareConfig({
+    name: "pages-dev",
+    workers_dev: false,
+    d1: {
+      auth: { database_name: "auth", database_id: "11111111-1111-4111-8111-111111111111" },
+      usage: { database_name: "usage", database_id: "22222222-2222-4222-8222-222222222222" },
+    },
+    r2_bucket: "pages-dev-assets",
+    // An existing profile: no egress or arbitrary-client opt-in.
+    vars: { NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin },
+  });
+  assert.deepEqual(config.compatibility_flags, ["global_fetch_strictly_public"]);
+  const env = fixture(t, config.vars);
+  const login = await session(env);
+  const ids = [
+    metadataUrl,
+    "https://chatgpt.com/oauth/codex/client.json",
+    claude,
+    claudeCode,
+    "https://new-upgrade-harness.example/client.json",
+  ];
+  const calls = serve(
+    t,
+    Object.fromEntries(
+      ids.map((client_id) => [
+        client_id,
+        {
+          client_id,
+          client_name: "Harness",
+          redirect_uris: [callback],
+          token_endpoint_auth_method: "none",
+        },
+      ]),
+    ),
+  );
+  for (const client_id of ids) {
+    const options = { client_id };
+    const screen = await consent(env, login, options);
+    const approved = await approve(env, login, screen.fields);
+    const code = new URL(approved.headers.get("location")).searchParams.get("code");
+    const exchanged = await exchange(env, code, options);
+    assert.equal(exchanged.status, 200, client_id);
+    const tokens = await exchanged.json();
+    const access = await readAccessToken(env, tokens.access_token, { resource: origin + "/mcp" });
+    assert.equal(access.clientId, client_id);
+  }
+  assert.equal(calls.length, ids.length, "every fresh client authorization fetched its metadata");
 });
 
 test("missing metadata egress configuration fails closed for every product", async (t) => {
