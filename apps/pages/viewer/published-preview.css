@@ -167,6 +167,24 @@
 .preview-card figcaption a {
   color: inherit;
 }
+.preview-render-indicator {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+.preview-render-indicator svg {
+  animation: preview-render-spin 1s linear infinite;
+}
+@keyframes preview-render-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .preview-render-indicator svg {
+    animation: none;
+  }
+}
 .preview-field {
   display: grid;
   gap: 6px;

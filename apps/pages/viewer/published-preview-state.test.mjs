@@ -92,6 +92,7 @@ test("edits invalidate approval; rendering, publishing and removing block duplic
   assert.equal(step(publishing, { type: "publish", nonce: "other" }), publishing);
   const failed = step(publishing, { type: "failed", error: "Connection lost" });
   assert.equal(failed.value.revision, 1);
+  assert.equal(failed.prepared, state.prepared, "a failed upload keeps the prepared image visible");
   assert.equal(step(failed, { type: "reload" }).name, "loading");
 });
 
@@ -116,6 +117,7 @@ test("reopening restores the private cover and render recovery preserves edited 
   const upload = step(prepared, { type: "publish", nonce: "n" });
   assert.equal(upload.name, "uploading", "a saved cover does not need another upload");
   const uploadFailed = step(upload, { type: "failed", error: "Offline" });
+  assert.equal(uploadFailed.prepared, prepared.prepared);
   const reloaded = step(step(uploadFailed, { type: "reload" }), { type: "loaded", value });
   assert.equal(reloaded.edited, true, "the retained draft is not presented as the published image");
   assert.equal(

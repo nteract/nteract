@@ -41,6 +41,7 @@ test("owner must prepare and approve exact image bytes; publishing and removal u
   const pending = [];
   let holdRenders = false;
   let renderError = null;
+  let uploadFails = false;
   for (const [key, value] of Object.entries({
     window: dom.window,
     document: dom.window.document,
@@ -71,6 +72,7 @@ test("owner must prepare and approve exact image bytes; publishing and removal u
   t.mock.method(globalThis, "fetch", async (url, options = {}) => {
     calls.push({ url, options });
     if (url.endsWith("/assets")) {
+      if (uploadFails) return Response.json({ error: "Upload unavailable" }, { status: 500 });
       const bytes = await options.body.text();
       const uploadedAsset = bytes === "cover" ? coverAsset : asset;
       return Response.json({
@@ -170,6 +172,8 @@ test("owner must prepare and approve exact image bytes; publishing and removal u
     assert.equal(button("Publish preview").disabled, false);
     assert.equal(document.querySelector(".preview-upload small").textContent, "cover.png");
     const coverSrc = document.querySelector(".published-preview-image").src;
+    const footerBeforeEdit = document.querySelector(".published-preview-footer").textContent;
+    const renderIndicator = document.querySelector(".preview-render-indicator");
     const description = document.querySelector("textarea");
     const setDescription = (value) => {
       Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value").set.call(
@@ -182,6 +186,9 @@ test("owner must prepare and approve exact image bytes; publishing and removal u
     await settle(() => setDescription("First edit"));
     assert.equal(pending.length, 1);
     assert.equal(description.disabled, false, "typing continues during rendering");
+    assert.equal(document.querySelector(".published-preview-footer").textContent, footerBeforeEdit);
+    assert.equal(document.querySelector(".preview-render-indicator"), renderIndicator);
+    assert.equal(renderIndicator.textContent, "Updating preview");
     assert.equal(document.querySelector(".published-preview-image").src, coverSrc);
     assert.equal(
       button("Publish preview").disabled,
@@ -193,6 +200,8 @@ test("owner must prepare and approve exact image bytes; publishing and removal u
     assert.equal(pending[0].signal.aborted, true);
     assert.equal(pending[1].draft.description, "");
     await settle(() => pending[1].resolve());
+    assert.equal(document.querySelector(".preview-render-indicator"), renderIndicator);
+    assert.equal(renderIndicator.textContent, "");
     assert.equal(button("Publish preview").disabled, false);
     assert.equal(document.querySelector(".published-preview-image").src, coverSrc);
     await settle(() => pending[0].resolve());
@@ -259,6 +268,18 @@ test("owner must prepare and approve exact image bytes; publishing and removal u
     );
     assert.equal(server.snapshot.description, "Keep this draft");
     assert.deepEqual(server.snapshot.cover, { asset_id: coverAsset, name: "cover.png" });
+    uploadFails = true;
+    await settle(() => editReopened("Keep the cover after a failed upload"));
+    const failedUploadImage = document.querySelector(".published-preview-image").src;
+    await settle(() => button("Update public preview").click());
+    assert.equal(document.querySelector(".published-preview-image").src, failedUploadImage);
+    assert.ok(document.querySelector("[role='alert']").textContent.includes("Upload unavailable"));
+    assert.equal(button("Update public preview").disabled, true);
+    assert.ok(button("Reload settings"));
+    assert.equal(
+      document.querySelector(".preview-card figcaption").textContent.includes("Ready to publish"),
+      false,
+    );
   } finally {
     await act(async () => root.unmount());
     dom.window.close();

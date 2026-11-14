@@ -7,6 +7,7 @@ import {
   Globe,
   Image,
   Info,
+  LoaderCircle,
   LockKeyhole,
   Upload,
   X,
@@ -162,9 +163,7 @@ export function PublishedPreview({ session, onBack }) {
               )}
               <figcaption>
                 <span>
-                  {state.name === "rendering" ? (
-                    "Updating preview…"
-                  ) : state.prepared ? (
+                  {state.prepared && !["rendering", "failed"].includes(state.name) ? (
                     <>
                       <Check size={13} /> Ready to publish
                     </>
@@ -176,18 +175,32 @@ export function PublishedPreview({ session, onBack }) {
                     "Draft"
                   )}
                 </span>
-                {showPublished ? (
-                  <a
-                    target="_blank"
-                    rel="noreferrer"
-                    href={`/p/${session.pageId}/preview.png?v=${state.value.revision}`}
-                    aria-label="Open published image"
+                <span>
+                  <span
+                    className="preview-render-indicator"
+                    role="status"
+                    title={state.name === "rendering" ? "Updating preview" : undefined}
                   >
-                    <ArrowUpRight size={15} />
-                  </a>
-                ) : (
-                  <span>1200 × 630</span>
-                )}
+                    {state.name === "rendering" && (
+                      <>
+                        <LoaderCircle size={14} aria-hidden="true" />
+                        <span className="sr-only">Updating preview</span>
+                      </>
+                    )}
+                  </span>
+                  {showPublished ? (
+                    <a
+                      target="_blank"
+                      rel="noreferrer"
+                      href={`/p/${session.pageId}/preview.png?v=${state.value.revision}`}
+                      aria-label="Open published image"
+                    >
+                      <ArrowUpRight size={15} />
+                    </a>
+                  ) : (
+                    <span>1200 × 630</span>
+                  )}
+                </span>
               </figcaption>
             </figure>
             <div className="preview-field">
@@ -285,11 +298,7 @@ export function PublishedPreview({ session, onBack }) {
                 </button>
               </p>
             )}
-            {busy && (
-              <p role="status">
-                {state.name === "rendering" ? "Preparing image…" : "Saving preview…"}
-              </p>
-            )}
+            {busy && state.name !== "rendering" && <p role="status">Saving preview…</p>}
             {state.message && (
               <p className="preview-success" role="status">
                 <Check size={14} /> {state.message}
