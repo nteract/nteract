@@ -89,6 +89,10 @@ const GATEWAY = [
     ]),
   ),
   ["access", "GET", `/api/access?page=${U}`],
+  ["published preview", "GET", `/api/link-preview?page=${U}`],
+  ["published preview", "GET", `/p/${U}/preview.json`],
+  ["published preview", "GET", `/p/${U}/preview.png?v=1`],
+  ["slack preview", "POST", "/api/slack/events"],
   // ADMISSION_ROUTES.
   ["admission", "GET", `/api/connect?page=${U}`],
   ["admission", "GET", `/api/sync?page=${U}`],
@@ -304,6 +308,7 @@ test("every exact path, path regex and route handler in the gateway has a sample
       "handleLocalOidcRequest",
       "handleMcp",
       "handleOAuth",
+      "handleSlackPreview",
       "readLinkRoute",
     ],
     "the gateway dispatches to a new handler; add its paths to GATEWAY and routes.mjs",

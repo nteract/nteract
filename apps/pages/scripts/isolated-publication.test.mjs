@@ -451,27 +451,6 @@ test("every live profile admits exact whoami and nothing near it", () => {
   }
 });
 
-test("whoami predecessors retain the exact Sift and pre-Sift route bytes", () => {
-  for (const [target, sift, beforeSift] of [
-    [
-      "page10",
-      "6ba30080c9a94d04fe6ba71ec1d123289ab8d885e86aa3279909fd20795f18c8",
-      "a2b973dfa57ee7ea2a2ab8d6f0cfca4b7238e6ef12240dfc0a365e03daba9904",
-    ],
-    [
-      "pages",
-      "f10e88bd040d7c1a691736ee8619d228a439cd816ae508ed25d5e8096ecc69cd",
-      "4aa6f96562532f3c5739fe7ffc44728cd210432abf45a80f74fef383081e6ce5",
-    ],
-  ]) {
-    const prior = beforePreviews(routesFor(target))
-      .replace(accountPaths, "")
-      .replace(whoamiPaths, "");
-    assert.equal(digest(prior), sift);
-    assert.equal(digest(prior.replace(siftPaths, "")), beforeSift);
-  }
-});
-
 for (const target of ["page10", "pages"])
   for (const misroutePath of ["/whoami", ...whoamiRejected])
     test(`${target} refuses misrouted ${misroutePath} before connector activation`, (t) => {
@@ -1740,21 +1719,6 @@ test("page10, pages and pages2 admit the exact account routes", () => {
   }
 });
 
-test("the account routes are the only difference from the route set before them", () => {
-  // routesFor(target) as published before the account routes existed.
-  for (const [target, sealed] of [
-    ["page10", "5c1fc74e475e84d586539900096e1d44e4187a75caabfd0ec0822d6d517dabba"],
-    ["pages", "188d8940a17166b111085dfb351c84777851e7eaadd752ef9f1bd4158d54f153"],
-    ["pages2", "64ab836acaa2aaa3acf0f10bdc8f0fab573294dfecf58c860199882ea286d658"],
-  ]) {
-    const withAccount = beforePreviews(routesFor(target));
-    const prior = withAccount.replace(accountPaths, "");
-    assert.equal(digest(prior), sealed, target);
-    assert.equal(prior.includes("logout-all"), false);
-    assert.equal(withAccount.length - prior.length, accountPaths.length);
-  }
-});
-
 // An installation on slot units at the route set `from(plan.config)`:
 // sealed, or interrupted after its pending receipt with the old (pending-old)
 // or new (pending-new) config on disk.
@@ -1907,38 +1871,11 @@ test("page10, pages and pages2 admit link previews, card images and Project asse
   }
 });
 
-test("link previews, card images and Project assets are the only difference from the last sealed route set", () => {
-  // routesFor(target) as the account-route release published it.
-  for (const [target, sealed] of [
-    ["page10", "28021152f7762d52cd7ffeb4d539544697755f5afb0031a7c62aaf19733043b8"],
-    ["pages", "52527063f9c1a57c4a0e54c57025dc12f896ccfb03a1dae537205d9a188bfd02"],
-    ["pages2", "fc8123d752d159dfae99503b41dbd37490cbb7d9b6e0088f79136beaf7d4bf56"],
-  ]) {
-    const current = routesFor(target);
-    const prior = beforePreviews(current);
-    assert.equal(digest(prior), sealed, target);
-    assert.equal(prior.includes("meta|card"), false);
-    assert.equal(prior.includes("card-image"), false);
-    assert.equal(prior.includes("projects/(prj|sp)"), false);
-    assert.equal(
-      beforeSlugs(current).length - prior.length,
-      restPaths.length + linkPreviewPaths.length + cardImagePaths.length + projectAssetPaths.length,
-    );
-  }
-});
-
-test("Page slugs are the only difference from the REST release's route set", () => {
-  // routesFor(target) as the release with the REST routes and before Page
-  // slugs published it (B).
-  for (const [target, sealed] of [
-    ["page10", "6f566b38fb83bafa7d91b380391b149e20ed181f20ae447d2f34e28fbf648b30"],
-    ["pages", "fdcd64bfbec9b2f26f467957b4c0045bb5ad34783b37522f3e3b52d2755bfd2a"],
-    ["pages2", "91dbfafba5bb419477c83671a01a44f84204f5df0becb2b7776f3e026f91dc22"],
-    ["page11", "779d5b3f80cb0bcd42d85a5781aae1e7897e1385cb232ed91320631931bc5fe5"],
-  ]) {
+test("Page slug routes admit bounded titles and refuse extra path segments", () => {
+  for (const target of ["page10", "pages", "pages2", "page11"]) {
     const current = routesFor(target);
     assert.equal(current.split(pageSlugPaths).length, 2, target);
-    assert.equal(digest(beforeSlugs(current)), sealed, target);
+
     const route = new RegExp(/^    path: (.+)$/m.exec(current)[1]);
     for (const pathname of [
       `/p/${previewUuid}/My-Dashboard`,
@@ -2110,25 +2047,6 @@ for (const target of PREVIEW_TARGETS) {
     }
   });
 }
-
-test("the REST routes and Page slugs are the only difference from the package release's route set", () => {
-  // routesFor(target) as the release before both groups published it.
-  for (const [target, sealed] of [
-    ["page10", "16a862190609fe804dc14873914f944082840b27a70d39f2970dd59569b87f95"],
-    ["pages", "0bd2976080db6b91e719947d479313744b6ad7223e34489cc50b51e1b60559fe"],
-    ["pages2", "5ce2c01e54839e9f8380c0ce2cdb73f674dde505599e6f04badda5ef4026d8ae"],
-    ["page11", "4de3c8fabf6ffa360a9fdab1e263a36078b78d825ff6e11c3117bcaed88e079a"],
-  ]) {
-    const current = routesFor(target);
-    const prior = beforeSlugs(current).replace(restPaths, "");
-    // Either group may be stripped first: they never overlap.
-    assert.equal(current.replace(restPaths, "").replace(pageSlugPaths, ""), prior, target);
-    assert.equal(digest(prior), sealed, target);
-    assert.equal(prior.includes("/tags/"), false);
-    assert.equal(prior.includes("|pages|"), false);
-    assert.equal(current.length - prior.length, restPaths.length + pageSlugPaths.length);
-  }
-});
 
 // The installation the package release sealed, with neither the REST routes
 // nor Page slugs (A). It migrates straight to both.

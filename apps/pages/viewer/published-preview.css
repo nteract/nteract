@@ -1,0 +1,70 @@
+.published-preview {
+  border-top: 1px solid var(--border);
+  padding: 16px 0 0;
+  margin-top: 16px;
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.published-preview h3,
+.published-preview p {
+  margin: 0;
+}
+.published-preview h3 {
+  font-size: 15px;
+}
+.published-preview p {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+.published-preview label {
+  font-size: 12px;
+  font-weight: 600;
+}
+.published-preview :is(input, textarea, select) {
+  width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 13px;
+}
+.published-preview textarea {
+  resize: vertical;
+}
+.published-preview-image {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.published-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.published-preview button {
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--foreground);
+  cursor: pointer;
+}
+.published-preview button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.published-preview :is(input, textarea, select, button):focus-visible {
+  outline: 2px solid var(--foreground);
+  outline-offset: 2px;
+}
+.published-preview [role="alert"] {
+  color: var(--destructive, #b42318);
+}

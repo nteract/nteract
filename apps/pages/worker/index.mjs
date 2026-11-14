@@ -213,6 +213,13 @@ import {
 import { claimInvitation, proposeSharingMutation, sharingProjection } from "./sharing.mjs";
 import { identityAudienceKeys, openedAudienceKey } from "./organization-access.mjs";
 import { pageAccess, pageRelation, pageState, restrictAccessDuringCommit } from "./access.mjs";
+import {
+  PREVIEW_READ,
+  PREVIEW_MANAGE,
+  publicationHost,
+  publicPreviewResponse,
+} from "./published-preview.mjs";
+import { handleSlackPreview } from "./slack-previews.mjs";
 
 import {
   capacityFor,
@@ -1440,6 +1447,7 @@ const gateway = {
         if (local) return local;
       }
       if (url.pathname === "/connect") return connectAgentResponse(request, env);
+      if (url.pathname === "/api/slack/events") return await handleSlackPreview(request, env);
       if (url.pathname === "/llms.txt") return agentGuideResponse(request, env);
       if (url.pathname === "/health")
         return json({ ok: true, prototype: "pages-celld-native", ...buildAdvertisement() });
@@ -1774,6 +1782,23 @@ const gateway = {
           recheckUpload: () => authorizeImage(request, env, pageId, false),
         });
       }
+      if (url.pathname === "/api/link-preview") {
+        await authenticate(request, env);
+        const pageId = url.searchParams.get("page");
+        if (!validPageId(pageId)) throw new HttpError(400, "Invalid page_id");
+        if (!["GET", "POST"].includes(request.method)) throw new HttpError(405, "Use GET or POST");
+        const internal = forwarded(
+          request,
+          PREVIEW_MANAGE,
+          request.method === "GET" ? { action: "read" } : await readJson(request),
+        );
+        if (!internal.headers.has("origin"))
+          internal.headers.set(
+            "origin",
+            new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin,
+          );
+        return env.PAGES.getByName(pageId).fetch(internal);
+      }
       if (url.pathname === "/api/access") {
         await authenticate(request, env);
         const pageId = url.searchParams.get("page");
@@ -1811,6 +1836,11 @@ const gateway = {
       // and /s/ is the app's.
       const linkRoute = readLinkRoute(url.pathname);
       if (linkRoute) return await handleLinkPreview(request, env, linkRoute, { logFailure });
+      const publicPreview = /^\/p\/([^/]+)(?:\/(preview\.json|preview\.png))?\/?$/.exec(
+        url.pathname,
+      );
+      if (publicPreview && validPageId(publicPreview[1]))
+        return await publicPreviewResponse(request, env, publicPreview[1], publicPreview[2]);
       if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/internal/"))
         return json({ error: "Not found" }, 404);
       // A chart Worker runs under the CSP delivered with its own script, so
@@ -1823,7 +1853,10 @@ const gateway = {
       // A Page link with a slug: the shell titled with the slug's words, for
       // link previews (page-shell.mjs).
       const slug = pageShellSlug(request, url);
-      if (slug) return await slugShellResponse(request, env.ASSETS, slug);
+      if (slug)
+        return await publicPreviewResponse(request, env, url.pathname.split("/")[2], null, () =>
+          slugShellResponse(request, env.ASSETS, slug),
+        );
       return env.ASSETS.fetch(request);
     } catch (error) {
       // A browser opening a sign-in route while Pages starts gets a page
@@ -6336,6 +6369,8 @@ export class Page {
       // below: it records no usage, claims no invitation, writes no
       // projection or Catalog entry, and boots only for a reader it admitted.
       if (url.pathname === LINK_PREVIEW_PATH) return await this.linkPreviewResponse(request);
+      if ([PREVIEW_READ, PREVIEW_MANAGE].includes(url.pathname))
+        return await publicationHost(this, request);
       // A shared-Page check of a host that hasn't booted answers from its
       // record when it can (page-startup.mjs).
       if (url.pathname === "/internal/catalog") {

@@ -39,6 +39,7 @@ export const pageSlugPaths = `p/${uuid}/[A-Za-z0-9_-]{1,80}/?|`;
 // /p/<page_id>/meta.json and /card.json, and the same two files under
 // /project/<prj|sp>_<uuid>. No trailing slash; /s/<id> has no JSON routes.
 export const linkPreviewPaths = `(p/${uuid}|project/(prj|sp)_${uuid})/(meta|card)[.]json|`;
+export const publishedPreviewPaths = `p/${uuid}/(preview[.]json|preview[.]png)|`;
 // Grid card images (worker/card-images.mjs): GET /api/pages/<id>/card-image
 // (the stored hash) and the owner's PUT ?hash=&theme= upload, which ingress
 // matches by path alone, then GET|HEAD of one image, named as card-images.mjs
@@ -92,8 +93,10 @@ export function routesFor(target) {
     projects +
     index +
     (profile.linkPreviews === true ? linkPreviewPaths : "") +
+    (profile.linkPreviews === true ? publishedPreviewPaths : "") +
     "api/(" +
     access +
+    (profile.linkPreviews === true ? "link-preview|slack/events|" : "") +
     (authenticatedAssets ? imagePaths : "") +
     (profile.accountRoutes === true ? accountPaths : "") +
     (profile.cardImages === true ? cardImagePaths : "") +

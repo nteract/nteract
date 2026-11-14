@@ -27,6 +27,8 @@ import { pageMarkdown } from "../model/markdown-export.mjs";
 import { copyLinkPath, readPageRoute } from "../shared/routes.mjs";
 import { sessionTitle } from "./address-slug.mjs";
 
+import { PublishedPreview } from "./PublishedPreview.jsx";
+
 function projection(value, manage) {
   const rows = [];
   const row = (value) => ({
@@ -110,6 +112,7 @@ function PageSharing({
   triggerRef,
 }) {
   const [own, setOwn] = useState(false),
+    [previewOpen, setPreviewOpen] = useState(false),
     [email, setEmail] = useState(""),
     [role, setRole] = useState("viewer"),
     [copyError, setCopyError] = useState(""),
@@ -335,6 +338,16 @@ function PageSharing({
             primitives={primitives}
             concealEmails
           />
+          {manage && (
+            <details
+              className="page-preview-settings"
+              open={previewOpen}
+              onToggle={(event) => setPreviewOpen(event.currentTarget.open)}
+            >
+              <summary>Link preview</summary>
+              {previewOpen && <PublishedPreview session={session} />}
+            </details>
+          )}
           {inheritedProject && (
             <p className="page-sharing-note">
               If {inheritedProject} has members or is shared with an organization, they also have
