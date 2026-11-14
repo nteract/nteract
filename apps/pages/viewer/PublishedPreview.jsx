@@ -223,7 +223,9 @@ export function PublishedPreview({ session, onBack }) {
                     type="file"
                     accept="image/png,image/jpeg,image/webp"
                     disabled={!ready}
-                    onChange={(event) => edit({ file: event.target.files?.[0] })}
+                    onChange={(event) =>
+                      dispatch({ type: "choose_cover", file: event.target.files?.[0] })
+                    }
                   />
                 </label>
               )}
@@ -280,7 +282,7 @@ export function PublishedPreview({ session, onBack }) {
                   <button
                     className="preview-primary"
                     type="button"
-                    disabled={!ready}
+                    disabled={!ready || !state.draft.title.trim()}
                     onClick={() => dispatch({ type: "publish", nonce: crypto.randomUUID() })}
                   >
                     {published ? "Update public preview" : "Publish preview"}

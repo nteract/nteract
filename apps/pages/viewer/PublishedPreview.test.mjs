@@ -26,7 +26,7 @@ const bundle = await build({
         build.onLoad({ filter: /\.css$/ }, () => ({ contents: "", loader: "empty" }));
         build.onLoad({ filter: /published-preview-image\.mjs$/ }, () => ({
           contents:
-            'export const previewVisuals = () => []; export const renderPublishedPreview = async () => new Blob(["test raster"], {type:"image/png"});',
+            'export const previewVisuals = () => []; export const renderPublishedPreview = async (draft) => new Blob([draft.file ? "cover:" + draft.file.name : "test raster"], {type:"image/png"});',
         }));
       },
     },
@@ -123,6 +123,28 @@ test("owner must prepare and approve exact image bytes; publishing and removal u
     assert.equal(calls.length, 4);
     assert.ok(document.body.textContent.includes("Preview removed."));
     assert.equal(document.querySelector("img[alt='Currently published preview']"), null);
+    await settle(() => {
+      const source = document.querySelector("select");
+      source.value = "upload";
+      source.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    });
+    await settle(() => {
+      const input = document.querySelector("input[type='file']");
+      Object.defineProperty(input, "files", {
+        value: [new dom.window.File(["cover"], "cover.png", { type: "image/png" })],
+      });
+      input.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    });
+    assert.equal(
+      document.querySelector("img[alt='Exact image that will be published']").getAttribute("src"),
+      `data:image/png;base64,${Buffer.from("cover:cover.png").toString("base64")}`,
+    );
+    assert.equal(
+      calls.length,
+      4,
+      "choosing a cover previews it locally without uploading or publishing",
+    );
+    assert.equal(button("Publish preview").disabled, false);
   } finally {
     await act(async () => root.unmount());
     dom.window.close();

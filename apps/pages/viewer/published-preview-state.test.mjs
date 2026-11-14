@@ -10,6 +10,7 @@ test("every preview state/event pair rejects invalid transitions", () => {
   const allowed = {
     loaded: ["loading"],
     edit: ["ready"],
+    choose_cover: ["ready"],
     prepare: ["ready"],
     prepared: ["rendering"],
     publish: ["ready"],
@@ -27,11 +28,37 @@ test("every preview state/event pair rejects invalid transitions", () => {
         value: { snapshot: null },
         prepared: {},
         patch: {},
+        file: {},
         nonce: "n",
         error: "Error",
       });
       assert.equal(next === state, !allowed[type].includes(name), `${name}/${type}`);
     }
+});
+
+test("choosing a cover renders immediately without publishing, even before a title is entered", () => {
+  const state = {
+    name: "ready",
+    draft: { title: "", visual: "upload" },
+    prepared: null,
+    value: { revision: 2, snapshot: {} },
+  };
+  assert.equal(
+    step(state, { type: "choose_cover" }),
+    state,
+    "cancelling the picker keeps the draft",
+  );
+  const file = { name: "cover.png" };
+  const rendering = step(state, { type: "choose_cover", file });
+  assert.equal(rendering.name, "rendering");
+  assert.equal(rendering.draft.file, file);
+  assert.equal(rendering.value, state.value, "the published snapshot remains unchanged");
+  const prepared = step(rendering, { type: "prepared", prepared: {} });
+  assert.equal(
+    step(prepared, { type: "publish", nonce: "n" }),
+    prepared,
+    "a title is still required to publish",
+  );
 });
 test("edits invalidate approval; rendering, publishing and removing block duplicate actions", () => {
   const state = {

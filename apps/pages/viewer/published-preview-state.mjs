@@ -10,6 +10,7 @@ export const PREVIEW_STATES = [
 export const PREVIEW_EVENTS = [
   "loaded",
   "edit",
+  "choose_cover",
   "prepare",
   "prepared",
   "publish",
@@ -55,12 +56,24 @@ export function previewEditorTransition(state, event) {
       return state.name === "ready" && state.draft.title.trim()
         ? { ...state, name: "rendering", error: null }
         : state;
+    case "choose_cover":
+      return state.name === "ready" && event.file
+        ? {
+            ...state,
+            name: "rendering",
+            draft: { ...state.draft, visual: "upload", file: event.file },
+            prepared: null,
+            edited: true,
+            error: null,
+            message: null,
+          }
+        : state;
     case "prepared":
       return state.name === "rendering"
         ? { ...state, name: "ready", prepared: event.prepared }
         : state;
     case "publish":
-      return state.name === "ready" && state.prepared
+      return state.name === "ready" && state.prepared && state.draft.title.trim()
         ? { ...state, name: "uploading", nonce: event.nonce }
         : state;
     case "uploaded":
