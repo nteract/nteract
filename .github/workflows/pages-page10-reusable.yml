@@ -42,7 +42,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: nteract/nteract
-          ref: 25b0cd6bcdd9fc4ee0f2b3042ede5ecaea1f88f6 # Reviewed main helpers: send the pages-release artifact (#4892)
+          ref: 896e5c487dee3ee84beb8dfc34f08a4082e9522e # Reviewed main helpers: explicit restore-skip receipts (#5084)
           persist-credentials: false
           sparse-checkout: .github/preview
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
