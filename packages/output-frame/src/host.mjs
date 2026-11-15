@@ -89,7 +89,9 @@ export function mountEsmOutput(
           typeof data.message === "string" ? data.message.slice(0, 500) : "Output failed.",
         );
       } else if (data.type === "height" && state === "ready" && Number.isFinite(data.height)) {
-        frame.style.height = `${Math.max(180, Math.min(1200, Math.ceil(data.height)))}px`;
+        // A document output grows with its content. Retain an abuse bound, not
+        // a normal widget-sized viewport that makes every tall view scroll twice.
+        frame.style.height = `${Math.max(1, Math.min(100000, Math.ceil(data.height)))}px`;
       }
     }),
   );

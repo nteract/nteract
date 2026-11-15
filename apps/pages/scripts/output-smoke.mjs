@@ -5,7 +5,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { build } from "esbuild";
 import { browserSiftPlugin } from "./browser-sift.mjs";
-import { chromium, expect } from "@playwright/test";
+import { chromium, webkit, expect } from "@playwright/test";
 import "./build-output.mjs";
 const { default: worker } = await import("../output/worker.mjs");
 import { OUTPUT_FRAME_URL } from "../shared/esm-view.mjs";
@@ -60,6 +60,13 @@ const baseStyle = await readFile(
   "utf8",
 );
 const entries = {
+  layout: [
+    Buffer.from(`export default { render({el,signal}) {
+    el.innerHTML='<p style="margin:32px 0">Normal-flow margins</p><label>Selection<input type="range" min="0" max="10" value="5"></label><button>Toggle height</button><div id="tall" style="height:1600px;float:left;width:100%">Tall output</div><div class="output-scroll" role="region" aria-label="Wide results" tabindex="0" style="clear:both;max-height:100px"><div style="width:1800px;height:300px">Deliberately scrollable content</div></div><p style="margin:24px 0">Last line</p>';
+    el.querySelector('button').addEventListener('click',()=>{const t=el.querySelector('#tall');t.style.height=t.style.height==='1600px'?'40px':'1600px'},{signal});
+  } }`),
+    "text/javascript",
+  ],
   code: [Buffer.from(code), "text/javascript"],
   recording: [wav, "audio/wav"],
   broken: [
@@ -137,7 +144,7 @@ const view$=new BehaviorSubject({status:'ready',view});
 let failNext=false;
 const sources={pageId:'${pageId}',request:(...args)=>{if(failNext){failNext=false;return Promise.resolve(new Response('not yet',{status:503}))}return fetch(...args)},versions:()=>changes,resolve:b=>versions[b.source_id]};
 const handle=mount(document.querySelector('main'),{view$,sources,sourcesAnswer$:null});
-window.fixture={transient(){failNext=true;versions.recording={...versions.recording,revision:'3'};changes.next(3)},example(){versions.code=versions.example;view$.next({status:'ready',view:{...view,spec:{module:'code',inputs:['recording','dmel'],state:{description:${JSON.stringify(description)}}},data:{...view.data,dmel:{source_id:'dmel'}}}})},change(){versions.recording={...versions.recording,revision:'2'};changes.next(1)},fail(){versions.code=versions.broken;changes.next(2)},destroy:()=>handle.destroy()};
+window.fixture={layout(){versions.code=versions.layout;changes.next(4)},transient(){failNext=true;versions.recording={...versions.recording,revision:'3'};changes.next(3)},example(){versions.code=versions.example;view$.next({status:'ready',view:{...view,spec:{module:'code',inputs:['recording','dmel'],state:{description:${JSON.stringify(description)}}},data:{...view.data,dmel:{source_id:'dmel'}}}})},change(){versions.recording={...versions.recording,revision:'2'};changes.next(1)},fail(){versions.code=versions.broken;changes.next(2)},destroy:()=>handle.destroy()};
 ${process.env.PAGES_OUTPUT_SERVE ? "window.fixture.example();" : ""}`;
 const result = await build({
   stdin: { contents: fixture, resolveDir: process.cwd(), sourcefile: "output-fixture.mjs" },
@@ -181,9 +188,11 @@ if (process.env.PAGES_OUTPUT_SERVE) {
   await new Promise((resolve) => server.close(resolve));
   process.exit(0);
 }
-const browser = await chromium.launch({ headless: true });
+const browser = await (process.env.PAGES_OUTPUT_BROWSER === "webkit" ? webkit : chromium).launch({
+  headless: true,
+});
 try {
-  const page = await browser.newPage({ viewport: { width: 1200, height: 850 } });
+  const page = await browser.newPage({ viewport: { width: 1200, height: 850 }, hasTouch: true });
   await page.emulateMedia({ colorScheme: "dark" });
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
@@ -268,6 +277,53 @@ try {
     await page.screenshot({ path: new URL("dmel-dark.png", out).pathname });
     await page.getByLabel("Appearance").selectOption("light");
   }
+  await page.evaluate(() => window.fixture.layout());
+  await expect(page.locator("section")).toHaveAttribute("data-output-state", "ready");
+  const assertFits = async () => {
+    await expect
+      .poll(async () =>
+        frame.locator("html").evaluate((html) => ({
+          overflowX: html.scrollWidth - html.clientWidth,
+          overflowY: html.scrollHeight - html.clientHeight,
+          inset: document.body.getBoundingClientRect().left,
+          heightDifference: Math.abs(innerHeight - document.body.getBoundingClientRect().height),
+        })),
+      )
+      .toMatchObject({ overflowX: 0, overflowY: 0, inset: 0 });
+    const gap = await frame
+      .locator("body")
+      .evaluate((body) => innerHeight - body.getBoundingClientRect().height);
+    assert.ok(gap >= 0 && gap < 1, `Frame fits content without guessed padding: ${gap}`);
+  };
+  for (const width of [1200, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    await assertFits();
+    assert.ok((await page.locator("iframe").boundingBox()).height > 1600);
+    const slider = frame.getByRole("slider", { name: "Selection" });
+    assert.ok((await slider.boundingBox()).height >= 44);
+    await expect(slider).toHaveCSS("touch-action", "pan-y pinch-zoom");
+    await slider.tap({ position: { x: (await slider.boundingBox()).width * 0.8, y: 5 } });
+    assert.ok(Number(await slider.inputValue()) > 5, "Touch near the track hits the larger target");
+    await slider.fill("8");
+    await expect(slider).toHaveValue("8");
+    await frame.getByRole("button", { name: "Toggle height" }).click();
+    await expect
+      .poll(async () => (await page.locator("iframe").boundingBox()).height)
+      .toBeLessThan(700);
+    await assertFits();
+    const region = frame.getByRole("region", { name: "Wide results" });
+    const scroll = await region.evaluate((el) => {
+      el.scrollLeft = 100;
+      el.scrollTop = 50;
+      return { x: el.scrollLeft, y: el.scrollTop };
+    });
+    assert.deepEqual(scroll, { x: 100, y: 50 });
+    await page.screenshot({ path: new URL(`layout-${width}.png`, out).pathname });
+    await frame.getByRole("button", { name: "Toggle height" }).click();
+    await expect
+      .poll(async () => (await page.locator("iframe").boundingBox()).height)
+      .toBeGreaterThan(1600);
+  }
   await page.evaluate(() => window.fixture.fail());
   await expect(page.locator("section")).toHaveAttribute("data-output-state", "failed");
   await expect(page.getByText("intentional failure")).toBeVisible();
@@ -284,6 +340,7 @@ try {
           "initialize before render",
           "local model and seeking",
           "wide/narrow",
+          "shared controls, margin/float sizing, tall growth/shrink and explicit scroll regions",
           "resolved light/dark/system theme updates preserve widget state",
           "forged ambient message",
           "automatic render and source-change remount",

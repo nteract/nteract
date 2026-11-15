@@ -21,8 +21,7 @@ export default {
     const style = el.appendChild(document.createElement("style"));
     // Layout belongs to this example; typography, surfaces and controls come
     // from the shared frame stylesheet and the host's live design tokens.
-    el.classList.add("output-surface");
-    style.textContent = `audio,canvas,input{width:100%;display:block}canvas{height:240px;cursor:crosshair;margin-top:16px}label{margin-top:16px}output{font-variant-numeric:tabular-nums}small{display:block;margin-top:12px}`;
+    style.textContent = `audio,canvas{width:100%;display:block}canvas{height:240px;cursor:crosshair;margin-top:16px}label{margin-top:16px}output{font-variant-numeric:tabular-nums}small{display:block;margin-top:12px}`;
     const heading = el.appendChild(document.createElement("h2"));
     heading.textContent = "Listen, then look";
     const description = el.appendChild(document.createElement("p"));

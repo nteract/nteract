@@ -27,13 +27,22 @@
 *::after {
   box-sizing: border-box;
 }
+html,
 body {
-  margin: 8px;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: clip;
+  overscroll-behavior-x: none;
+}
+body {
+  display: flow-root;
+  margin: 0;
 }
 [hidden]:not([hidden="until-found"]) {
   display: none !important;
 }
 main {
+  display: flow-root;
   min-width: 0;
 }
 h1,
@@ -59,7 +68,7 @@ button,
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  min-height: 2.25rem;
+  min-height: 44px;
   padding: 0.4rem 0.85rem;
   border: 1px solid transparent;
   border-radius: calc(var(--radius) - 2px);
@@ -82,7 +91,22 @@ input:disabled {
 }
 :focus-visible {
   outline: 2px solid var(--ring);
-  outline-offset: 3px;
+  outline-offset: 2px;
+}
+button:focus-visible,
+input:not([type="checkbox"]):not([type="radio"]):focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+.output-scroll:focus-visible {
+  outline-offset: -2px;
+}
+input[type="range"] {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-height: 44px;
+  margin: 2px 0;
+  touch-action: pan-y pinch-zoom;
 }
 input:not([type="range"]):not([type="checkbox"]):not([type="radio"]),
 select,
@@ -121,6 +145,12 @@ small,
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+}
+.output-scroll {
+  max-width: 100%;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior-x: contain;
 }
 audio,
 canvas {
