@@ -4,14 +4,16 @@ import { JSDOM } from "jsdom";
 import { VirtualTimeScheduler } from "rxjs";
 import { checkAnywidgetSpec, widgetState } from "../../../packages/output-frame/src/schema.mjs";
 import { preparePayload } from "../../../packages/output-frame/src/payload.mjs";
-import {
+// Resolve the installed package, whose dependencies belong to the Pages install.
+// A direct checkout import accidentally relies on root-level node_modules.
+const {
   createWidgetSession,
   localModel,
   WIDGET_STATES,
   widgetTransition,
   VIEW_STATES,
   viewTransition,
-} from "../../../packages/output-frame/src/anywidget.mjs";
+} = await import(new URL("./anywidget.mjs", import.meta.resolve("@nteract/output-frame/runtime")));
 
 const asset = (text, mediaType = "text/javascript") => ({
   bytes: new TextEncoder().encode(text),
@@ -241,6 +243,75 @@ test("removed views abort their signal and late render cleanup runs exactly once
   f.lifetime.abort();
   await settle();
   assert.equal(cleaned, 1);
+});
+
+test("theme subscriptions follow each view lifetime and unsubscribe independently", async (t) => {
+  let rootHost;
+  const hosts = [],
+    calls = [0, 0],
+    listeners = new Set();
+  let removals = 0;
+  const notify = () => {
+    for (const listener of listeners) listener({ theme: "dark" });
+  };
+  const f = fixture(t, {
+    spec: { _esm: "root", models: { child: { _esm: "child" } } },
+    assets: { root: asset("root"), child: asset("child") },
+    contextHost: {
+      onContextChange(listener) {
+        listeners.add(listener);
+        return () => {
+          removals++;
+          listeners.delete(listener);
+        };
+      },
+    },
+    loadModule: async (code) => ({
+      default: {
+        render({ host }) {
+          if (code === "root") {
+            rootHost = host;
+            return;
+          }
+          const index = hosts.length;
+          hosts.push(host);
+          host.onContextChange(() => calls[index]++);
+        },
+      },
+    }),
+  });
+  await f.session.render(f.el);
+  const child = await rootHost.getWidget("anywidget:child");
+  const left = f.el.appendChild(f.doc.createElement("div"));
+  const right = f.el.appendChild(f.doc.createElement("div"));
+  const controller = new AbortController();
+  await child.render({ el: left, signal: controller.signal });
+  await child.render({ el: right });
+  notify();
+  assert.deepEqual(calls, [1, 1]);
+  controller.abort();
+  notify(); // Even before asynchronous cleanup, an aborted view receives nothing.
+  assert.deepEqual(calls, [1, 2]);
+  await settle();
+  assert.equal(listeners.size, 1);
+  assert.throws(() => hosts[0].onContextChange(() => {}), /abort/i);
+  right.remove();
+  await settle();
+  notify();
+  assert.deepEqual(calls, [1, 2]);
+  assert.equal(listeners.size, 0);
+  assert.throws(() => hosts[1].onContextChange(() => {}), /abort/i);
+  const unsubscribe = rootHost.onContextChange(() => assert.fail("unsubscribed"));
+  unsubscribe();
+  unsubscribe();
+  notify();
+  assert.equal(removals, 3);
+  rootHost.onContextChange(() => assert.fail("disposed root"));
+  f.lifetime.abort();
+  notify();
+  await settle();
+  assert.equal(listeners.size, 0);
+  assert.equal(removals, 4);
 });
 
 test("failed initialization is not retried and no view renders", async (t) => {

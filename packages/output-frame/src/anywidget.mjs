@@ -269,6 +269,20 @@ export function createWidgetSession(
       };
       const host = Object.freeze({
         ...contextHost,
+        onContextChange(listener) {
+          lifetime.signal.throwIfAborted();
+          let active = true;
+          const remove = contextHost.onContextChange((context) => {
+            if (active && !lifetime.signal.aborted) listener(context);
+          });
+          const unsubscribe = () => {
+            if (!active) return;
+            active = false;
+            remove();
+          };
+          cleanup(lifetime.signal, unsubscribe, diagnostic);
+          return unsubscribe;
+        },
         async getModel(ref) {
           lifetime.signal.throwIfAborted();
           return modelFor(resolve(ref));

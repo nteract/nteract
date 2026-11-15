@@ -199,6 +199,7 @@ export default {
 `host.getContext()` returns an immutable snapshot. `host.onContextChange(fn)`
 returns an unsubscribe function; notifications follow the CSS update. Canvas or
 WebGL authors can redraw in that callback. CSS-based components update directly.
+Subscriptions are automatically removed when their view is disposed.
 The context helpers are extensions alongside AFM's composition methods.
 
 For a persistent original-data demo, set `PAGES_OUTPUT_SERVE=1` alongside the CDN,
