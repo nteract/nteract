@@ -1,18 +1,24 @@
 # @nteract/output-frame
 
-A browser host and isolated runtime for a small anywidget-compatible ESM profile.
+A browser host and isolated runtime for [Anywidget Front-End Modules](https://anywidget.dev/en/afm/) with local state.
 Pages is the first consumer. This package owns the frame lifecycle and byte
 transport; the embedding product owns authorization, source selection, revisions,
 and the decision to execute code.
 
 ```js
-import { mountEsmOutput } from '@nteract/output-frame';
-const output = mountEsmOutput(element, {
-  module: { bytes: moduleBytes, mediaType: 'text/javascript' },
-  inputs: { recording: { bytes: wavBytes, mediaType: 'audio/wav' } },
-  state: { time: 0 },
+import { mountAnywidgetOutput } from '@nteract/output-frame';
+const output = mountAnywidgetOutput(element, {
+  spec: {
+    _esm: 'code', _css: 'style', state: { time: 0 },
+    buffers: ['recording'], buffer_paths: [['recording']],
+  },
+  assets: {
+    code: { bytes: moduleBytes, mediaType: 'text/javascript' },
+    style: { bytes: cssBytes, mediaType: 'text/css' },
+    recording: { bytes: wavBytes, mediaType: 'audio/wav' },
+  },
 }, {
-  frameUrl: 'https://pages.kilousercontent.com/frame/v1/',
+  frameUrl: 'https://pages.kilousercontent.com/frame/v2/',
   hostContext: { theme: 'light' },
 });
 // Changes to code or inputs create a new mount.
@@ -33,15 +39,54 @@ before transfer, including when callers provide a subarray of a larger buffer.
 The runtime never receives bearer tokens, storage handles, or a general fetch
 proxy. Its only parent messages report lifecycle, failure, and bounded height.
 
-The default ESM export is an object (or a factory returning one) with `render`
-and optional `initialize`. Both may be async and return cleanup functions. They
-receive an AbortSignal. `model.get/set/on/off` provide session-local values and
-`change:key` notifications; binary input values are DataViews. `save_changes`
-has no persistence effect and `send` explicitly rejects runtime messaging.
-`render` additionally receives `el`, a `host` whose composition methods reject,
-and `output.inputs` with media types and byte views. Relative module imports,
-CSS traits, nested models, kernel comms, and durable widget state are not part of
-this first profile. Use absolute HTTPS imports or self-contained ESM.
+The default ESM export is a standard AFM object or async factory. `initialize`
+runs once per model before any `render`; both may be async. Each receives its
+own lifetime's AbortSignal, and returned cleanup callbacks run on abort, including
+when a hook completes after cancellation. An object returned from `initialize`
+is exposed through the widget handle's `exports`. Initialization times out after
+10 seconds. Failed initialization never retries within the same mount.
+
+`model.get/set/on/off` operate locally. `change:key` callbacks take no arguments. Subscriptions are scoped to the
+initialization or view lifetime: teardown removes them, and one view's `off()`
+cannot clear a sibling's listeners. Values remain shared across views.
+`save_changes()` is a no-op: it never writes to the embedding product or a kernel.
+`send()` throws a descriptive no-backend error. `msg:custom` listeners may be
+registered, but there is no remote peer to supply messages. Removing/reloading
+an output or changing its inputs resets it to the supplied initial state.
+
+`buffers` and `buffer_paths` use Jupyter's parallel buffer/path convention:
+buffers name assets, while paths identify object keys and numeric array indices
+inside `state`. The runtime restores DataViews at those paths. Parent containers
+and array slots must exist (null array placeholders work); object leaves may be
+absent. Paths cannot overlap or traverse prototype keys. Modules use `model.get`
+to read the restored values; there is no proprietary `output.inputs` prop.
+
+Optional `spec.models` maps child IDs to the same widget definition shape (without
+nested `models`). The root ID is `root`. A state value `"anywidget:slider"` refers
+to `models.slider`. `host.getWidget(ref)` waits for initialization and returns
+`{ exports, render }`; `host.getModel(ref)` resolves its local model. Multiple
+views share that model and the factory's closure, with separate view signals.
+Pass an optional signal to `handle.render({el, signal})` to end that view early.
+The resolving parent view's lifetime always applies too, including for content
+rendered outside its DOM. Removing a connected view element aborts
+its signal too. Errors name malformed or missing references; stalled
+initialization rejects. No registry spans iframe mounts or grants access to
+another output's data. Local reference reassignment works for registered models.
+
+CSS is injected once per initialized model and removed on disposal. `_esm` and
+`_css` model traits contain the supplied source text. Relative ESM imports are
+unsupported with Blob modules: use bundled code or absolute HTTPS imports.
+Module/CSS hot replacement requires a new immutable mount, not `model.set`.
+Arbitrary ipywidget managers, Python callbacks, kernel comms and custom Python
+serializers are not provided. Use ordinary AFM types and framework bridges;
+Pages-specific theme helpers are optional extensions.
+
+The Pages envelope has media type `application/vnd.nteract.anywidget.v1+json`.
+This is a versioned asset-binding envelope for AFM, not a claimed upstream MIME
+standard. See [the Pages spec](../../apps/pages/REFERENCE.md#anywidget-outputs)
+for named-source authoring. `preparePayload` requires exactly the referenced
+assets, checks module/CSS media types, and bounds assets to 5 MiB each / 32 MiB
+total. Pages additionally enforces its spec-size and source authorization limits.
 
 The HTTP shell policy allows external HTTPS modules, WASM, and broad network
 access. Output code can disclose every byte supplied to it. Isolation protects

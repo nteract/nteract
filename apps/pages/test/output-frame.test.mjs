@@ -1,30 +1,31 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createHash } from "node:crypto";
-import {
-  checkEsmSpec,
-  ESM_MEDIA_TYPE,
-  ESM_VIEW_MEDIA_TYPE,
-  WAV_MEDIA_TYPE,
-} from "../shared/esm-view.mjs";
+import { ESM_MEDIA_TYPE, ANYWIDGET_MEDIA_TYPE, WAV_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
+import { checkAnywidgetSpec } from "@nteract/output-frame/schema";
 import { outputTransition, OUTPUT_STATES } from "@nteract/output-frame/lifecycle";
 import { inspectOutputAsset } from "../shared/output-assets.mjs";
 import { checkViewSpec } from "../shared/view-spec.mjs";
 import { fetchOutputAsset } from "../viewer/output-assets.mjs";
 import { validateViewOperation } from "../model/view-doc.mjs";
 
-test("an ESM view binds exactly its module and inputs, without host URLs", () => {
-  const spec = { module: "code", inputs: ["recording", "dmel"], state: { frame: 0 } };
+test("an anywidget view binds exactly its module and buffers, without host URLs", () => {
+  const spec = {
+    _esm: "code",
+    buffers: ["recording", "dmel"],
+    buffer_paths: [["recording"], ["dmel"]],
+    state: { frame: 0 },
+  };
   const data = Object.fromEntries(
     ["code", "recording", "dmel"].map((key) => [key, { source_id: key }]),
   );
-  assert.equal(checkViewSpec(spec, data, ESM_VIEW_MEDIA_TYPE).ok, true);
+  assert.equal(checkViewSpec(spec, data, ANYWIDGET_MEDIA_TYPE).ok, true);
   assert.equal(
     validateViewOperation({
       op: "set_view",
       view_id: "audio",
       title: "Listen",
-      media_type: ESM_VIEW_MEDIA_TYPE,
+      media_type: ANYWIDGET_MEDIA_TYPE,
       spec,
       data,
       view_revision: null,
@@ -32,15 +33,15 @@ test("an ESM view binds exactly its module and inputs, without host URLs", () =>
     spec,
   );
   for (const bad of [
-    { ...spec, inputs: ["code"] },
-    { ...spec, inputs: ["__proto__"] },
-    { ...spec, module: "https://example.com/code.js" },
-    { ...spec, state: { recording: "override" } },
+    { ...spec, buffers: ["code"] },
+    { ...spec, buffers: ["__proto__"] },
+    { ...spec, _esm: "https://example.com/code.js" },
+    { ...spec, buffer_paths: [["__proto__"], ["dmel"]] },
     { ...spec, credentials: true },
   ])
-    assert.equal(checkEsmSpec(bad).ok, false);
+    assert.equal(checkAnywidgetSpec(bad).ok, false);
   assert.equal(
-    checkViewSpec(spec, { ...data, unrelated: { source_id: "secret" } }, ESM_VIEW_MEDIA_TYPE).ok,
+    checkViewSpec(spec, { ...data, unrelated: { source_id: "secret" } }, ANYWIDGET_MEDIA_TYPE).ok,
     false,
   );
 });
@@ -131,22 +132,24 @@ test("binary reads are scoped, bounded, media-checked and content-checked", asyn
 test("frame startup timeout and teardown use an injected clock", async (t) => {
   const { JSDOM } = await import("jsdom");
   const { VirtualTimeScheduler } = await import("rxjs");
-  const { mountEsmOutput } = await import("@nteract/output-frame");
+  const { mountAnywidgetOutput } = await import("@nteract/output-frame");
   const dom = new JSDOM("<main></main>", { url: "https://host.example/" });
   t.after(() => dom.window.close());
   const clock = new VirtualTimeScheduler();
   const states = [];
-  const output = mountEsmOutput(
+  const output = mountAnywidgetOutput(
     dom.window.document.querySelector("main"),
     {
-      module: {
-        bytes: new TextEncoder().encode("export default {}"),
-        mediaType: "text/javascript",
+      spec: { _esm: "code" },
+      assets: {
+        code: {
+          bytes: new TextEncoder().encode("export default {}"),
+          mediaType: "text/javascript",
+        },
       },
-      inputs: {},
     },
     {
-      frameUrl: "https://outputs.example/frame/v1/",
+      frameUrl: "https://outputs.example/frame/v2/",
       hostContext: { theme: "light" },
       timeoutMs: 100,
       scheduler: clock,
@@ -166,12 +169,11 @@ test("binary transport does not expose bytes outside an authorized subarray", as
   const { preparePayload } = await import("../../../packages/output-frame/src/payload.mjs");
   const backing = new Uint8Array([99, 1, 2, 99]);
   const payload = preparePayload({
-    module: { bytes: backing.subarray(1, 3), mediaType: ESM_MEDIA_TYPE },
-    inputs: {},
-    state: {},
+    spec: { _esm: "code" },
+    assets: { code: { bytes: backing.subarray(1, 3), mediaType: ESM_MEDIA_TYPE } },
   });
-  assert.deepEqual([...new Uint8Array(payload.module.bytes.buffer)], [1, 2]);
-  assert.notEqual(payload.module.bytes.buffer, backing.buffer);
+  assert.deepEqual([...new Uint8Array(payload.assets.code.bytes.buffer)], [1, 2]);
+  assert.notEqual(payload.assets.code.bytes.buffer, backing.buffer);
 });
 
 test("host context requires resolved themes and replaces a bounded token set", async () => {

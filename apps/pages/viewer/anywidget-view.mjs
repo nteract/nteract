@@ -9,19 +9,29 @@ import {
   switchMap,
 } from "rxjs";
 import { checkViewSpec } from "../shared/view-spec.mjs";
-import { ESM_MEDIA_TYPE, OUTPUT_MAX_TOTAL_BYTES, OUTPUT_FRAME_URL } from "../shared/esm-view.mjs";
+import {
+  ESM_MEDIA_TYPE,
+  CSS_MEDIA_TYPE,
+  OUTPUT_MAX_TOTAL_BYTES,
+  OUTPUT_FRAME_URL,
+} from "../shared/anywidget-view.mjs";
+import { widgetDefinitions } from "@nteract/output-frame/schema";
 import { fetchOutputAsset } from "./output-assets.mjs";
-import { mountEsmOutput, readHostContext } from "@nteract/output-frame";
+import { mountAnywidgetOutput, readHostContext } from "@nteract/output-frame";
 import { themeStore } from "./theme.mjs";
 
-export function esmPlan(view, sources) {
+export function anywidgetPlan(view, sources) {
   const checked = checkViewSpec(view.spec, view.data, view.media_type);
   if (!checked.ok) throw Error(checked.error);
   const versions = Object.fromEntries(
     checked.names.map((name) => [name, sources.resolve(view.data[name])]),
   );
-  if (versions[view.spec.module].media_type !== ESM_MEDIA_TYPE)
-    throw Error("The module source must be text/javascript.");
+  for (const [, definition] of widgetDefinitions(view.spec)) {
+    if (versions[definition._esm].media_type !== ESM_MEDIA_TYPE)
+      throw Error("The _esm source must be text/javascript.");
+    if (definition._css && versions[definition._css].media_type !== CSS_MEDIA_TYPE)
+      throw Error("The _css source must be text/css.");
+  }
   return { view, versions, key: JSON.stringify([view, versions]) };
 }
 
@@ -34,13 +44,13 @@ export function mount(
     sources,
     sourcesAnswer$ = of("known"),
     frameUrl = OUTPUT_FRAME_URL,
-    mountOutput = mountEsmOutput,
+    mountOutput = mountAnywidgetOutput,
     theme = themeStore,
   },
 ) {
   const doc = container.ownerDocument;
   const root = container.appendChild(doc.createElement("section"));
-  root.className = "pages-esm-view";
+  root.className = "pages-anywidget-view";
   const title = root.appendChild(doc.createElement("h3"));
   const message = root.appendChild(doc.createElement("p"));
   const button = root.appendChild(doc.createElement("button"));
@@ -58,7 +68,7 @@ export function mount(
       ]).pipe(
         map(() => {
           try {
-            return esmPlan(view, sources);
+            return anywidgetPlan(view, sources);
           } catch (error) {
             return { error: error.message };
           }
@@ -113,15 +123,12 @@ export function mount(
                               throw Error("This view's inputs exceed 32 MiB.");
                             assets[name] = asset;
                           }
-                          const module = assets[plan.view.spec.module];
-                          delete assets[plan.view.spec.module];
                           outputHandle = mountOutput(
                             output,
                             {
                               title: plan.view.title,
-                              module,
-                              inputs: assets,
-                              state: plan.view.spec.state ?? {},
+                              spec: plan.view.spec,
+                              assets,
                             },
                             {
                               ...(frameUrl && { frameUrl }),

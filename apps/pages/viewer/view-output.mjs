@@ -1,5 +1,5 @@
 import { Observable, Subscription, distinctUntilChanged, map, shareReplay, switchMap } from "rxjs";
-import { ESM_VIEW_MEDIA_TYPE } from "../shared/esm-view.mjs";
+import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
 
 // Preserve the editor's existing chart warm-up lease across the dispatcher.
 export function warm(doc) {
@@ -19,14 +19,16 @@ export function mount(container, options) {
   const subscription = view$
     .pipe(
       map((p) =>
-        p.status === "ready" && p.view.media_type === ESM_VIEW_MEDIA_TYPE ? "esm" : "chart",
+        p.status === "ready" && p.view.media_type === ANYWIDGET_MEDIA_TYPE ? "anywidget" : "chart",
       ),
       distinctUntilChanged(),
       switchMap(
         (kind) =>
           new Observable((subscriber) => {
             let mounted;
-            void (kind === "esm" ? import("./esm-view.mjs") : import("./view-chart.mjs"))
+            void (
+              kind === "anywidget" ? import("./anywidget-view.mjs") : import("./view-chart.mjs")
+            )
               .then((renderer) => {
                 if (!subscriber.closed) mounted = renderer.mount(container, { ...options, view$ });
               })

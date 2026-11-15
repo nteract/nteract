@@ -1805,7 +1805,7 @@ root is:
 ```
 {
   title:      string, 1 to 200 characters; a write refuses control characters
-  media_type: "application/vnd.vegalite.v6+json" | "application/vnd.nteract.esm-view+json"
+  media_type: "application/vnd.vegalite.v6+json" | "application/vnd.nteract.anywidget.v1+json"
   spec:       text, the media-specific spec as JSON
   data:       { [data_name]: { source_id } | { source_id, revision } }
   revision:   decimal string: "1", then one more per write
@@ -1903,39 +1903,78 @@ browser write access and refuses a frame that changes one
 `pages.view:1`; a client that doesn't still opens the Page. Discovery lists
 the views that exist as `documents.views`, `{ [view_id]: documentId }`.
 
-### Interactive ESM outputs
+### Anywidget outputs
 
-`application/vnd.nteract.esm-view+json` takes
-`{ module: "code", inputs: ["recording", "dmel"], state: {} }`. Each listed name,
-including `module`, must have exactly one binding in `data`. Upload the module as
-`text/javascript`, WAV as `audio/wav`, and tables as Parquet, then register each
-asset with `set_source`. WAV and ESM uploads require a content-type-bound upload
-capability and return `insert: null`; place the view with an `insert_node` of
-`{ type: "view", attrs: { view_id } }` after `set_view` succeeds.
+`application/vnd.nteract.anywidget.v1+json` hosts standard
+[Anywidget Front-End Modules (AFM)](https://anywidget.dev/en/afm/) with local model
+state and no backend. A minimal spec is `{ "_esm": "code", "state": { "count": 0 } }`.
 
-Views render automatically when their existing viewport lifecycle mounts them.
-Pages resolves the selected source revisions,
-fetches their authorized assets, checks media types, sizes and hashes, and passes
-only those bytes to the separate output origin. A changed binding, revision or
-spec destroys the running frame and automatically renders the new version. A
-Retry button appears only after loading or rendering fails. Each input is
-limited to 5 MiB and their total to 32 MiB. Code executes only inside the frame;
-stored ESM is served from Pages as an octet-stream attachment with `nosniff`.
+```json
+{
+  "_esm": "code",
+  "_css": "style",
+  "state": { "time": 0, "audio": {} },
+  "buffers": ["recording"],
+  "buffer_paths": [["audio", "bytes"]]
+}
+```
 
-The reusable `@nteract/output-frame` package owns the opaque sandbox, versioned
-MessagePort handshake, transferable bytes and AFM lifecycle. Its initial profile
-supports session-local model state, initialization/render hooks and cleanup.
-Pages also supplies the resolved light/dark theme and its semantic design tokens,
-updating them without restarting the widget. The shell provides shared base
-styles for text, surfaces and native controls. It has network access, but no
-Page credentials or asset-fetch proxy. It does not
-provide kernel messages, persistent state, nested widgets or microphone capture.
-See [the package guide](../../packages/output-frame/README.md) for the API,
-notebook embed boundary, and the linked WAV/Parquet example.
+`_esm` names a `text/javascript` source binding; optional `_css` names a
+`text/css` source binding. `buffers` lists source bindings; the corresponding
+`buffer_paths` insert DataViews into initial `state`, using the same object-key
+and array-index paths as Jupyter widget serialization. Intermediate containers
+must exist; array slots must exist (use null placeholders). Object leaves may be
+absent. Paths cannot overlap or traverse prototype keys. The widget accesses
+these values through `model.get()`, without a Pages-specific input prop.
 
-The shell is deployed independently with `wrangler deploy --config
-wrangler.output.toml` to `pages.kilousercontent.com`. It has no bindings. This
-command does not deploy the Pages application or the notebook output host.
+For composition, optional `models` maps child IDs to definitions with the same
+`_esm`, `_css`, `state`, `buffers` and `buffer_paths` fields. Use
+`"anywidget:<id>"` references in model state and the standard `host.getWidget()` /
+`host.getModel()` APIs. The root model ID is `root`; child IDs are unique safe
+names other than `root`. There are at most 32 models and 32 distinct asset
+bindings. Each referenced asset must have exactly one entry in the view's `data`;
+models can reuse bindings. Initial state and the complete spec remain bounded by
+the view's 64 KiB limit.
+
+Upload ESM, CSS, WAV (`audio/wav`), arbitrary binary (`application/octet-stream`)
+or Parquet, then register each asset with `set_source`. ESM, CSS, WAV and generic
+binary uploads require a content-type-bound capability and return `insert: null`.
+After `set_view` succeeds, place `{ type: "view", attrs: { view_id } }` with
+`insert_node`. Module/CSS assets are immutable content-addressed bytes; source
+revisions select their version just like data. Source history retains its newest
+50 states, so a revision pin is not a permanent release archive.
+
+Views render automatically within the viewport lifecycle. Pages resolves source
+revisions, fetches authorized assets, verifies types, sizes and hashes, and
+transfers only those bytes to the separate output origin. A changed spec or
+source revision destroys the frame and starts fresh from initial state. Local
+interactions are neither shared nor persisted; agents cannot observe them.
+`save_changes()` is callable and local-only. `send()` throws a descriptive
+no-backend error; `msg:custom` subscriptions are accepted but receive no backend
+messages. Python-dependent widgets require adaptation. This is an AFM host,
+not a Jupyter kernel/comm manager or an importer of arbitrary ipywidget bundles.
+
+The reusable `@nteract/output-frame` package owns the sandbox, versioned
+MessagePort handshake, binary transport, local model registry, factory,
+initialization, exports, multi-view rendering and teardown. Async initialization
+has a 10-second timeout; failed instances do not retry within that mount.
+Each asset is at most 5 MiB, and the total is 32 MiB. Stored JavaScript and CSS
+are served from Pages as octet-stream attachments with `nosniff`.
+
+Pages supplies resolved light/dark theme and semantic design tokens; updates
+preserve local widget state. The shell provides responsive layout and base
+styles for native controls. It has network access, but no Page credentials,
+asset-fetch proxy, page writes, kernel messages or microphone capture. ESM must
+be self-contained or use absolute HTTPS imports. Frameworks can be bundled into
+an AFM; Pages does not provide a React/shadcn runtime or Tailwind compiler.
+See [the package guide](../../packages/output-frame/README.md).
+
+The new type replaces the preproduction `application/vnd.nteract.esm-view+json`
+experiment. Existing experimental views must be rewritten with the new spec;
+there is no legacy reader. Deploy the independently hosted `/frame/v2/` shell
+before updating a Pages host to this version. The shell uses
+`wrangler deploy --config wrangler.output.toml` on `pages.kilousercontent.com`,
+with no bindings. This does not deploy Pages or the notebook output host.
 
 ### Writes
 
@@ -1951,7 +1990,7 @@ edit ([Edit writers](#edit-writers)) and as `producer.by`.
 
 The spec passes `checkViewSpec` ([shared/view-spec.mjs](shared/view-spec.mjs)):
 a JSON object of at most 64 KiB, nested at most 32 levels, accepted by
-the media-specific checker (`checkEsmSpec` for ESM,
+the media-specific checker (`checkAnywidgetSpec` for anywidget,
 `checkChartSpec` for Vega-Lite), whose
 refusal sentence reaches the caller as it is, and reading exactly the names
 `data` binds. The spec is checked before `data`, so a spec that can't draw is
