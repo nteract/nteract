@@ -27,7 +27,7 @@ import { reportRendererUnavailable } from "./wordgard-widgets.mjs";
 
 /** The chart chunk, with `mount(container, { view$, sources, sourcesAnswer$
  * })` returning `{ destroy }`. */
-export const VIEW_RENDERER = () => import("./view-chart.mjs");
+export const VIEW_RENDERER = () => import("./view-output.mjs");
 
 /** What an embed says before its chart chunk is drawing, and if the chunk
  * can't load. */

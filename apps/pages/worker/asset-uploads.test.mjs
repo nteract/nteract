@@ -1229,3 +1229,36 @@ test("a size-bound URL refuses another Content-Length before reading, and reads 
   const stored = await upload(w, grant, { headers: { "content-length": String(png.length) } });
   assert.equal(stored.status, 201, JSON.stringify(stored.body));
 });
+
+test("ESM uploads remain private non-executable attachments", async (t) => {
+  const { w, pageId } = await setup(t);
+  editable(w, pageId);
+  const bytes = new TextEncoder().encode(
+    "export default { render({el}) { el.textContent = 'hello'; } }",
+  );
+  const grant = await issued(w, {
+    page_id: pageId,
+    content_type: "text/javascript",
+    size: bytes.length,
+  });
+  const result = await upload(w, grant, { body: bytes });
+  assert.equal(result.status, 201, JSON.stringify(result.body));
+  assert.equal(result.body.insert, null);
+  const assetId = result.body.asset_id;
+  const denied = await worker.fetch(
+    new Request(`${origin}/api/pages/${pageId}/assets/${assetId}`),
+    w.env,
+  );
+  assert.equal(denied.status, 401);
+  const allowed = await worker.fetch(
+    new Request(`${origin}/api/pages/${pageId}/assets/${assetId}`, {
+      headers: { authorization: `Bearer ${w.auth.apiKey()}` },
+    }),
+    w.env,
+  );
+  assert.equal(allowed.status, 200);
+  assert.match(allowed.headers.get("content-disposition"), /^attachment;/);
+  assert.equal(allowed.headers.get("content-type"), "application/octet-stream");
+  assert.equal(allowed.headers.get("x-pages-media-type"), "text/javascript");
+  assert.equal(await allowed.text(), new TextDecoder().decode(bytes));
+});

@@ -120,7 +120,7 @@ export function validateViewOperation(op) {
     );
   // The spec first: a spec that can't draw is the problem to name, whatever
   // data holds, and the names it reads say what data must map.
-  const checked = checkViewSpec(op.spec);
+  const checked = checkViewSpec(op.spec, undefined, op.media_type);
   if (!checked.ok) fail("invalid_view", checked.error);
   if (!isMap(op.data) || !Object.keys(op.data).length)
     fail(

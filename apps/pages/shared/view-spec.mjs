@@ -1,3 +1,4 @@
+import { checkEsmSpec, ESM_VIEW_MEDIA_TYPE } from "./esm-view.mjs";
 // The check a view's spec passes before the host stores it. The viewer runs
 // checkChartSpec again before every draw (viewer/vega-chart.mjs); this adds
 // what a stored view needs beyond a drawable chart: its `data` binding names
@@ -42,7 +43,7 @@ export function viewDataProblem(names, data) {
  * names the spec reads. Returns `{ ok: true, names }`, the data names the
  * spec reads, or `{ ok: false, error }`, one sentence saying what is wrong.
  */
-export function checkViewSpec(spec, data) {
+export function checkViewSpec(spec, data, mediaType) {
   if (!isObject(spec)) return { ok: false, error: "spec must be a JSON object." };
   let json;
   try {
@@ -54,7 +55,7 @@ export function checkViewSpec(spec, data) {
     return { ok: false, error: `spec must be ${VIEW_SPEC_MAX_BYTES / 1024} KiB or smaller.` };
   // The chart check the viewer runs too: its refusal reaches the caller as
   // it is.
-  const checked = checkChartSpec(spec);
+  const checked = mediaType === ESM_VIEW_MEDIA_TYPE ? checkEsmSpec(spec) : checkChartSpec(spec);
   if (!checked.ok || data === undefined) return checked;
   if (!isObject(data)) return { ok: false, error: "data must map each data name to a source." };
   const problem = viewDataProblem(checked.names, data);

@@ -7309,6 +7309,7 @@ export class Page {
             const dataset = await requireStoredDatasetAsset(this.env.PAGES_ASSETS, {
               pageId: this.metadata.pageId,
               assetId,
+              mediaType: null, // Sources may bind any admitted non-image asset.
             });
             mediaTypes.set(assetId, dataset.mime_type);
           }

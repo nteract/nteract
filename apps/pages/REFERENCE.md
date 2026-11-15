@@ -1787,7 +1787,7 @@ current and earlier assets stay stored until the Page is purged.
 
 ## Views
 
-A view is one chart, stored in its own Automerge document of type
+A view is a chart or interactive ESM output, stored in its own Automerge document of type
 `pages.view` format 1 ([model/view-doc.mjs](model/view-doc.mjs)) and owned by
 one Page. A Page holds up to 10. Only the host writes them. The document's
 root is:
@@ -1795,8 +1795,8 @@ root is:
 ```
 {
   title:      string, 1 to 200 characters; a write refuses control characters
-  media_type: "application/vnd.vegalite.v6+json"
-  spec:       text, the Vega-Lite spec as JSON
+  media_type: "application/vnd.vegalite.v6+json" | "application/vnd.nteract.esm-view+json"
+  spec:       text, the media-specific spec as JSON
   data:       { [data_name]: { source_id } | { source_id, revision } }
   revision:   decimal string: "1", then one more per write
   producer:   { kind: "edit_page", at, by }
@@ -1893,6 +1893,40 @@ browser write access and refuses a frame that changes one
 `pages.view:1`; a client that doesn't still opens the Page. Discovery lists
 the views that exist as `documents.views`, `{ [view_id]: documentId }`.
 
+### Interactive ESM outputs
+
+`application/vnd.nteract.esm-view+json` takes
+`{ module: "code", inputs: ["recording", "dmel"], state: {} }`. Each listed name,
+including `module`, must have exactly one binding in `data`. Upload the module as
+`text/javascript`, WAV as `audio/wav`, and tables as Parquet, then register each
+asset with `set_source`. WAV and ESM uploads require a content-type-bound upload
+capability and return `insert: null`; place the view with an `insert_node` of
+`{ type: "view", attrs: { view_id } }` after `set_view` succeeds.
+
+Views render automatically when their existing viewport lifecycle mounts them.
+Pages resolves the selected source revisions,
+fetches their authorized assets, checks media types, sizes and hashes, and passes
+only those bytes to the separate output origin. A changed binding, revision or
+spec destroys the running frame and automatically renders the new version. A
+Retry button appears only after loading or rendering fails. Each input is
+limited to 5 MiB and their total to 32 MiB. Code executes only inside the frame;
+stored ESM is served from Pages as an octet-stream attachment with `nosniff`.
+
+The reusable `@nteract/output-frame` package owns the opaque sandbox, versioned
+MessagePort handshake, transferable bytes and AFM lifecycle. Its initial profile
+supports session-local model state, initialization/render hooks and cleanup.
+Pages also supplies the resolved light/dark theme and its semantic design tokens,
+updating them without restarting the widget. The shell provides shared base
+styles for text, surfaces and native controls. It has network access, but no
+Page credentials or asset-fetch proxy. It does not
+provide kernel messages, persistent state, nested widgets or microphone capture.
+See [the package guide](../../packages/output-frame/README.md) for the API,
+notebook embed boundary, and the linked WAV/Parquet example.
+
+The shell is deployed independently with `wrangler deploy --config
+wrangler.output.toml` to `pages.kilousercontent.com`. It has no bindings. This
+command does not deploy the Pages application or the notebook output host.
+
 ### Writes
 
 `edit_page` `set_view` writes one view: `{ op: "set_view", view_id, title,
@@ -1907,7 +1941,8 @@ edit ([Edit writers](#edit-writers)) and as `producer.by`.
 
 The spec passes `checkViewSpec` ([shared/view-spec.mjs](shared/view-spec.mjs)):
 a JSON object of at most 64 KiB, nested at most 32 levels, accepted by
-`checkChartSpec` ([shared/chart-spec.mjs](shared/chart-spec.mjs)), whose
+the media-specific checker (`checkEsmSpec` for ESM,
+`checkChartSpec` for Vega-Lite), whose
 refusal sentence reaches the caller as it is, and reading exactly the names
 `data` binds. The spec is checked before `data`, so a spec that can't draw is
 the refusal whatever `data` holds, and an empty `data` names the data names

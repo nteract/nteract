@@ -1,0 +1,19 @@
+{
+  "name": "@nteract/output-frame",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/host.mjs"
+    },
+    "./runtime": "./src/runtime.mjs",
+    "./lifecycle": "./src/lifecycle.mjs",
+    "./context": "./src/context.mjs",
+    "./styles.css": "./src/styles.css"
+  },
+  "dependencies": {
+    "rxjs": "^7.8.2"
+  }
+}

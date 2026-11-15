@@ -279,7 +279,7 @@ const editOperation = {
     title: {
       type: ["string", "null"],
       maxLength: 2048,
-      description: `set_title: the Page title, a string up to ${MAX_PAGE_TITLE} characters. Image ops: the image's title; null clears it. set_view: the chart's.`,
+      description: `set_title: the Page title, a string up to ${MAX_PAGE_TITLE} characters. Image ops: the image's title; null clears it. set_view: the view's.`,
     },
     markdown: markdownBody,
     after_node_id: {
@@ -311,7 +311,11 @@ const editOperation = {
     },
     view_id: { type: "string", description: "set_view: its ID, like a source_id." },
     media_type: { ...choice(...VIEW_MEDIA_TYPES), description: "set_view." },
-    spec: { type: "object", description: 'set_view: Vega-Lite; data by {"name"} only.' },
+    spec: {
+      type: "object",
+      description:
+        'set_view: Vega-Lite uses data by {"name"} only. ESM uses {module: binding_name, inputs: [binding_name, ...], state?: object}; module must bind a text/javascript source. All module/input names must appear in data.',
+    },
     data: {
       type: "object",
       description: "set_view: each name the spec reads → {source_id, revision?}.",
@@ -337,7 +341,8 @@ const editOperation = {
       properties: {
         type: {
           ...choice("dataframe", "view"),
-          description: "dataframe: a dataset's table. view: a set_view chart.",
+          description:
+            "dataframe: a dataset's table. view: a set_view chart or interactive ESM view.",
         },
         attrs: {
           type: "object",
@@ -734,7 +739,7 @@ export const tools = [
   {
     ...tool(
       ASSET_UPLOAD_OPERATION,
-      "Add a local image or Parquet file to a Page (API key or OAuth). Returns upload_url, headers (a Pages-Upload capability; never send your own key there), expires_at (at most 10 minutes) and a curl example: POST raw bytes, not multipart or base64. Access is checked again at upload. With file, Pages fetches the file instead. The same bytes return the same asset_id, with insert: the edit_page op that places it (add alt to an image). With no shell and no file, or when the POST can't leave your sandbox (a proxy 403), ask the person to use Insert image in the browser.",
+      "Add a local image, Parquet, WAV or ESM file to a Page (API key or OAuth). Returns upload_url, headers (a Pages-Upload capability; never send your own key there), expires_at (at most 10 minutes) and a curl example: POST raw bytes, not multipart or base64. Access is checked again at upload. With file, Pages fetches the file instead. The same bytes return the same asset_id, with insert: the edit_page op that places it (add alt to an image). WAV and ESM require content_type audio/wav or text/javascript; their insert is null: bind them with set_source and use an ESM set_view. With no shell and no file, or when the POST can't leave your sandbox (a proxy 403), ask the person to use Insert image in the browser.",
       {
         page_id: page,
         content_type: {
