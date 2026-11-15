@@ -11,6 +11,7 @@ on:
       - apps/pages/**
       - apps/notebook-cloud/src/**
       - packages/local-oidc/src/**
+      - packages/output-frame/**
       - packages/runtimed/src/scope-capabilities.ts
       - src/components/markdown/mermaid-renderer.ts
       - src/components/sharing/**
@@ -22,6 +23,7 @@ on:
       - apps/pages/**
       - apps/notebook-cloud/src/**
       - packages/local-oidc/src/**
+      - packages/output-frame/**
       - packages/runtimed/src/scope-capabilities.ts
       - src/components/markdown/mermaid-renderer.ts
       - src/components/sharing/**
@@ -56,6 +58,7 @@ jobs:
             apps/notebook-cloud/src
             packages/runtimed/src
             packages/local-oidc/src
+            packages/output-frame
             src/components/markdown
             src/components/sharing
             src/styles
