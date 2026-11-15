@@ -1,0 +1,32 @@
+---
+title: Pages sources panel
+description: Inspect sources beside the Page, trace connections, and explore future calculations and renderers.
+---
+
+import { PagesSourcesPanelExample } from "@/components/pages-sources-panel-example";
+
+[Open the full-width study](/pages-sources-panel). This is an interactive design proposal with fixed sample data. It makes no requests to Pages and changes no stored documents. Production behavior is unchanged.
+
+<PagesSourcesPanelExample embedded />
+
+## The first panel
+
+Open the source line under the title, or the Sources control, to inspect sources beside the document. Selecting a source exposes its full name, last-set time and writer, dataset preview, version history, and the tables or charts that read it. Binding hints appear on the document only while the panel is open. Source and consumer selection work in both directions.
+
+The existing model can supply source identities, versions, writer labels, and bindings. Row counts and previews require reading dataset metadata or rows. A complete “used by” projection must inspect the Page's dataframe nodes and all relevant view documents, not just currently rendered embeds; repeated placements of a view must remain distinct from the view itself. Missing or unopened view documents cannot be treated as proof that a source is unused. Connections are Page-local today.
+
+Replacement is a proposed management interaction, demonstrated with a local-only sample action. It previews the affected following consumers and identifies pinned consumers that stay put. Whether the first production panel permits replacement, rebinding, or removal remains a product decision. A read-only panel can ship first. There is no upload, download, scheduling, or execution implementation here.
+
+## An expanded map
+
+The panel expands into an ordered connection map with the inspector still on the right. Source-to-consumer arrows read left to right. Solid edges read current data; dashed edges pin a version. Selecting a node highlights its lineage, and “Focus selection” dims unrelated nodes. The inspector also lists every adjacent connection as text, so the diagram is not the only way to navigate. Narrow screens use the panel as the primary surface and allow scrolling the map separately.
+
+This is a dependency inspector, not a canvas for creating relationships by drawing wires. Stable ordering and named inputs should come before free placement. For many sources, search and source-specific neighborhoods should be the entry point; an all-nodes overview needs grouping before it can usefully show a large Page.
+
+## Future vocabulary, still open
+
+The Future pipeline scenario separates **sources**, **calculations**, **results**, and **views**. A calculation reads named inputs and produces an intermediate that can be inspected even without a visible block. A custom renderer is a property of a view, with its inputs shown like those of a native view. It does not become a source merely because it executes code.
+
+This is a visual vocabulary, not a proposed persisted schema or execution graph. It leaves open whether results are stored datasets or ephemeral values, whether output names share the source namespace, where calculations live, who runs them, and how the planner is shared with kernel execution. The map must eventually distinguish the revisions a result actually used from the revisions available now; it must not label an old output current merely because its source refreshed.
+
+Before implementation, settle which management operations belong in the first panel, whether the map opens as an expanded Page surface or an overlay, and how editing permissions affect each action. Fixtures cover no sources, unused sources, a missing source with affected consumers, follow/pin distinctions, version history, replacement impact, and an illustrative future pipeline.

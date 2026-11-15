@@ -50,6 +50,13 @@ const catalogGroups = [
     title: "Shell",
     entries: [
       {
+        title: "Pages sources panel",
+        description:
+          "Inspect sources and trace their connections, from tables to future calculations.",
+        href: "/pages-sources-panel",
+        icon: Workflow,
+      },
+      {
         title: "Pages sources line",
         description: "Source freshness beneath a Page title, from zero to many sources.",
         href: "/pages-sources-line",
