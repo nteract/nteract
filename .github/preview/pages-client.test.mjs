@@ -10,6 +10,32 @@ const env={PAGES_PAGE10_ENABLED:'true',GITHUB_REPOSITORY:'nteract/nteract',GITHU
 const event={workflow_run:{event:'push',head_branch:'main',head_sha:sha,id:20,run_attempt:1,status:'completed',conclusion:'success'}};
 const result={operationId:id,requestedSha:sha,sha,target:'page10',status:'succeeded',build:'b'.repeat(12),
   restorePointKey:'standalone/page10-snapshots/2026-11-04-210000-auto/versions.json',counts:{total:0}};
+test('restore skips require an explicit page10 receipt, while legacy and required receipts still work',async()=>{
+  for(const change of [{},{restorePointMode:'required'},{restorePointMode:'skip-page10',restorePointKey:undefined}]) {
+    const receipt={...result,...change};let posts=0,time=0;
+    const got=await sendPagesDeployment(env,event,{clock:{now:()=>time,sleep:async ms=>time+=ms},fetchImpl:async(url,options)=>{
+      if(String(url).includes('actions.githubusercontent.com')) return Response.json({value:'a.b.c'});
+      if(options.method==='POST') {posts++;return Response.json({operationId:id},{status:202});}
+      return Response.json(receipt);
+    }});
+    assert.equal(posts,1);
+    assert.match(pagesStepSummary(got),change.restorePointMode==='skip-page10'?/Skipped by page10 host policy/:/standalone\/page10-snapshots/);
+  }
+  for(const change of [{restorePointKey:undefined},{restorePointMode:'required',restorePointKey:undefined},
+    {restorePointMode:'skip-page10'},{restorePointMode:'skip',restorePointKey:undefined},
+    {restorePointKey:'private-summary-path-and-error'}]) {
+    let time=0;
+    const pending=sendPagesDeployment(env,event,{clock:{now:()=>time,sleep:async ms=>time+=ms},fetchImpl:async(url,options)=>{
+      if(String(url).includes('actions.githubusercontent.com')) return Response.json({value:'a.b.c'});
+      if(options.method==='POST') return Response.json({operationId:id},{status:202});
+      return Response.json({...result,...change});
+    }});
+    if(typeof {...result,...change}.restorePointKey==='string') await pending;
+    else await assert.rejects(pending,error=>pagesFailureDiagnostic(error).code==='evidence');
+    assert.throws(()=>pagesStepSummary({...result,...change}));
+  }
+  assert.throws(()=>pagesStepSummary({...result,target:'pages',restorePointMode:'skip-page10',restorePointKey:undefined}));
+});
 test('journal summary renders legacy and absent coverage as Unknown, refusing qualified failures',()=>{
   const unknown={schema:1,coverage:'unknown',completeness:'unknown',total:null,byStatus:{},invalidLines:0,envelopes:741,
     parseableMessages:14,textMessages:727,requestSamples:0};

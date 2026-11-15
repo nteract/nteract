@@ -182,8 +182,12 @@ export async function sendPagesDeployment(env,event,{fetchImpl,clock,onAccepted=
     check(result.status!=='failed','Pages operation failed; inspect operation, never replay');
     if(result.status==='succeeded') {
       stage('status','evidence');
-      check(result.sha===sha && /^[a-f0-9]{12}$/.test(result.build) && typeof result.restorePointKey==='string' &&
-        result.counts,'Pages result missing verified release evidence');pagesJournalSummary(result.counts);
+      // Keep strict presentation validation in pagesStepSummary: a completed
+      // operation with an unfamiliar key must not be reported as uninstalled.
+      check(result.sha===sha && /^[a-f0-9]{12}$/.test(result.build) &&
+        (typeof result.restorePointKey==='string'||(result.restorePointMode==='skip-page10'&&result.restorePointKey===undefined)) &&
+        result.counts,'Pages result missing verified release evidence');
+      pagesJournalSummary(result.counts);
       // A v1 source still builds on the host, so artifact evidence may be absent.
       // When present it must name exactly the artifact this request sent.
       check(result.artifact===undefined||(sendArtifact&&result.artifact?.id===body.artifactId&&result.artifact.digest===body.artifactDigest),
@@ -197,13 +201,25 @@ export async function sendPagesDeployment(env,event,{fetchImpl,clock,onAccepted=
     failures.set(error,Object.freeze(diagnostic()));throw error;
   }
 }
+export function pagesRestoreSummary(result) {
+  check(result.target==='page10','restore summary is limited to page10');
+  if(result.restorePointMode==='skip-page10') {
+    check(result.restorePointKey===undefined,'skipped restore cannot name a restore point');
+    return 'Skipped by page10 host policy';
+  }
+  check(result.restorePointMode===undefined||result.restorePointMode==='required','invalid Pages restore policy');
+  check(typeof result.restorePointKey==='string'&&/^standalone\/page10-snapshots\/[a-z0-9-]+\/versions.json$/.test(result.restorePointKey),
+    'Pages restore point evidence is missing or invalid');
+  return result.restorePointKey;
+}
 export function pagesStepSummary(result) {
   sourceSha(result.sha);
-  check(/^[a-f0-9]{12}$/.test(result.build) && /^standalone\/page10-snapshots\/[a-z0-9-]+\/versions.json$/.test(result.restorePointKey) &&
+  check(/^[a-f0-9]{12}$/.test(result.build) &&
     result.counts,'invalid Pages summary evidence');
+  const restore=pagesRestoreSummary(result);
   const journal=pagesJournalSummary(result.counts);
   check(result.artifact===undefined||(/^[1-9][0-9]{0,19}$/.test(String(result.artifact?.id))&&
     typeof result.artifact.digest==='string'&&PAGES_ARTIFACT_DIGEST.test(result.artifact.digest)),'invalid Pages artifact evidence');
   const source=result.artifact?`CI artifact ${result.artifact.id} (\`${result.artifact.digest}\`)`:'Host build';
-  return `Page10 deployed at \`${result.sha}\`.\n\n| Build | Release source | Restore point | HTTP error observations (lab1 journal) |\n| --- | --- | --- | --- |\n| ${result.build} | ${source} | ${result.restorePointKey} | ${journal} |\n`;
+  return `Page10 deployed at \`${result.sha}\`.\n\n| Build | Release source | Restore point | HTTP error observations (lab1 journal) |\n| --- | --- | --- | --- |\n| ${result.build} | ${source} | ${restore} | ${journal} |\n`;
 }

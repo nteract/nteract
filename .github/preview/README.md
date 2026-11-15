@@ -283,3 +283,17 @@ on merge, while the controller controls whether Python bindings are enabled.
 Anaconda authentication is likewise host-owned, never selected by these builds.
 
 Server-login endpoints reject raw provider bearer tokens over HTTP and WebSockets. The login callback still verifies exchanged tokens internally; browser access uses endpoint-local server sessions and workstation access keeps its scoped credentials. Deploy this protection to every existing Anaconda endpoint before enabling automatic previews that share the OAuth client. The exporter always writes `main/assets/__preview-auth.json` to declare this updated application contract, including when Python is disabled. The controller requires it for all Anaconda deployments and rejects automatic Anaconda deployment until every other ready Anaconda endpoint has that contract. The marker it is not an authorization grant or runtime test.
+
+## Page10 restore receipts
+
+The Pages deployment client accepts either a stored restore-point key (including
+legacy receipts without a mode), or an explicit `restorePointMode: "skip-page10"`
+receipt with no key. A bare missing key, unknown mode, or contradictory receipt
+fails validation. Strict summary validation preserves a completed operation and
+tells the operator not to redispatch if its receipt cannot be rendered. Skips appear as "Skipped by page10 host policy" in the
+Actions summary; the workflow request cannot request one.
+
+The controller change lives in `nteract/preview-infra`. After merging this helper,
+activate it through the reviewed reusable-helper, caller and host-allowlist pin
+sequence before enabling the host's skip policy. This patch changes no workflow
+pin or live policy. Keep restores required when rolling back to an older helper.
