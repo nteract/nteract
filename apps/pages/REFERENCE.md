@@ -25,7 +25,8 @@ in its document title and explicit Twitter title, description and image alt tags
 
 When publishing an uploaded cover or a Page-selected image, chart or diagram,
 its uncaptioned raster also enters the existing private Page asset storage.
-For a Page-selected visual this is the exact capture used to compose the card. The publication record retains the cover asset ID
+For a Page-selected visual this is the exact raster used to compose the card,
+bounded to its 1152×390 visual area so large or tall sources fit upload limits. The publication record retains the cover asset ID
 and filename for owner settings; public metadata and image routes expose only
 the composed card. Reopening the editor restores that cover so text edits can
 redraw it without needing the live visual or capturing changed chart data.

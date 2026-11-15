@@ -1,4 +1,4 @@
-import { imageAssetUrl } from "../shared/image-assets.mjs";
+import { imageAssetUrl, IMAGE_MAX_BYTES } from "../shared/image-assets.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
 
 /** Only visual nodes, never the editor chrome, comments, or full document. */
@@ -72,6 +72,16 @@ export function previewCoverRect(width, height) {
   };
 }
 
+/** The card has only this many visual pixels. Keep private sources within
+ * that budget, including tall images whose DOM capture would exceed uploads. */
+export function previewSourceSize(width, height) {
+  const scale = Math.min(1, 1152 / width, 390 / height);
+  return {
+    width: Math.max(1, Math.floor(width * scale)),
+    height: Math.max(1, Math.floor(height * scale)),
+  };
+}
+
 const pngBlob = (canvas) =>
   new Promise((resolve, reject) =>
     canvas.toBlob(
@@ -120,13 +130,26 @@ export async function renderPublishedPreview(draft, visuals, signal, pageId) {
       const node = previewVisualNode(choice);
       if (!node) throw Error("That visual changed. Reopen Link preview to choose it again.");
       const { domToCanvas } = await import("modern-screenshot");
-      visual = await domToCanvas(node, { backgroundColor: "#ffffff", scale: 2 });
+      const bounds = node.getBoundingClientRect();
+      const captured = await domToCanvas(node, {
+        backgroundColor: "#ffffff",
+        scale: Math.min(2, 1152 / bounds.width, 390 / bounds.height),
+      });
       signal.throwIfAborted();
+      // Normalize the capture's actual dimensions too: DOM layout and capture
+      // rounding can differ. Compose and retain this same bounded raster.
+      visual = document.createElement("canvas");
+      const size = previewSourceSize(captured.width, captured.height);
+      visual.width = size.width;
+      visual.height = size.height;
+      visual.getContext("2d").drawImage(captured, 0, 0, size.width, size.height);
       // Preserve the exact uncaptioned raster used below. On approval it is
       // uploaded privately, just like an uploaded cover, for later text edits.
       sourceFile = new File([await pngBlob(visual)], `${choice.label.slice(0, 1000)}.png`, {
         type: "image/png",
       });
+      if (sourceFile.size > IMAGE_MAX_BYTES)
+        throw Error("Could not fit this visual into a preview. Choose a smaller visual.");
     }
     try {
       signal.throwIfAborted();

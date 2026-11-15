@@ -141,8 +141,58 @@ try {
   );
   assert.equal(response.status(), 401);
   await anon.close();
+  // A valid tall Page image would produce a 10,000px capture at scale 2,
+  // exceeding the host's source-image limit even though the final card fits.
+  const tall = await page.evaluate(async (id) => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 64;
+    canvas.height = 5000;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#327d83";
+    ctx.fillRect(0, 0, 64, 5000);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+    const response = await fetch(`/api/pages/${id}/assets`, {
+      method: "POST",
+      headers: { "content-type": "image/png" },
+      body: blob,
+    });
+    if (!response.ok) throw Error(await response.text());
+    return response.json();
+  }, id);
+  const current = await tool("read_page", { page_id: id, comments: "none" });
+  await tool("edit_page", {
+    page_id: id,
+    revision: current.revision,
+    nonce: crypto.randomUUID(),
+    operations: [{ op: "insert_image", asset_id: tall.asset_id, alt: "Tall visual" }],
+  });
+  await page.setViewportSize({ width: 1280, height: 1000 });
+  await page.reload();
+  await expect(page.getByAltText("Tall visual", { exact: true })).toBeVisible();
+  await open();
+  await page
+    .getByRole("group", { name: "Page visuals" })
+    .getByRole("button", { name: "Tall visual", exact: true })
+    .click();
+  await capture("tall-visual");
+  await page.getByRole("button", { name: "Update public preview", exact: true }).click();
+  await expect(page.getByText("Preview published.", { exact: true })).toBeVisible();
+  const tallSettings = (await api("/api/link-preview?page=" + id)).body;
+  const dimensions = await page.evaluate(
+    async ({ id, asset }) => {
+      const response = await fetch(`/api/pages/${id}/assets/${asset}`);
+      const blob = await response.blob();
+      const image = await createImageBitmap(blob);
+      const result = { width: image.width, height: image.height, bytes: blob.size };
+      image.close();
+      return result;
+    },
+    { id, asset: tallSettings.snapshot.cover.asset_id },
+  );
+  assert.ok(dimensions.width <= 1152 && dimensions.height <= 390);
+  assert.ok(dimensions.bytes < 5 * 1024 * 1024);
   console.log(
-    "PASS: retained chart through reopen, byline edit and republish; source stays private.",
+    "PASS: retained chart pixels through reopen and republish; private bounded sources, including a tall Page image.",
   );
 } catch (error) {
   await page.screenshot({ path: output + "failure.png", fullPage: true }).catch(() => {});

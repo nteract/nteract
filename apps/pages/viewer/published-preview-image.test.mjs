@@ -5,11 +5,31 @@ import {
   previewVisuals,
   previewVisualNode,
   previewCoverRect,
+  previewSourceSize,
   previewTextLines,
   renderPublishedPreview,
 } from "./published-preview-image.mjs";
 
 const context = { measureText: (text) => ({ width: Array.from(text).length }) };
+
+test("retained visual sources fit the card and upload budget even for oversized captures", () => {
+  for (const [width, height] of [
+    [16000, 12000],
+    [64, 10000],
+    [20000, 2],
+    [1, 1],
+    [800, 600],
+  ]) {
+    const size = previewSourceSize(width, height);
+    assert.ok(size.width >= 1 && size.width <= 1152);
+    assert.ok(size.height >= 1 && size.height <= 390);
+    assert.ok(size.width <= width && size.height <= height);
+    assert.ok(
+      size.width * size.height * 4 < 2 * 1024 * 1024,
+      "even raw RGBA fits below the 5 MiB upload limit",
+    );
+  }
+});
 
 test("cover choices include rendered chart content, never toolbar icons or pending charts", () => {
   const { window } = new JSDOM(`
