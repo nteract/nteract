@@ -148,10 +148,12 @@ function connect(event) {
       );
       lifetime.signal.throwIfAborted();
       phase("rendered");
+      // The shell owns normal-flow layout. Measuring its flow-root body includes
+      // child margins, floats and padding without a viewport-height feedback loop.
       const observer = new ResizeObserver(() =>
-        send({ type: "height", height: el.getBoundingClientRect().height + 16 }),
+        send({ type: "height", height: document.body.getBoundingClientRect().height }),
       );
-      observer.observe(el);
+      observer.observe(document.body);
       cleanup(() => observer.disconnect());
     } catch (error) {
       if (!lifetime.signal.aborted) {

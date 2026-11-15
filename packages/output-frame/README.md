@@ -71,7 +71,8 @@ package source, refresh the installed copy before running Pages builds/tests.
 ## Validation and example
 
 From `apps/pages`, run `node scripts/output-smoke.mjs` for deterministic browser
-boundary tests. `PAGES_OUTPUT_CDN=1` also loads the audio example's real HTTPS
+boundary tests. `PAGES_OUTPUT_BROWSER=webkit` runs the same checks in WebKit.
+`PAGES_OUTPUT_CDN=1` also loads the audio example's real HTTPS
 Parquet/WASM dependencies. Its default data is deliberately synthetic.
 
 For a native Inkling export, additionally set `PAGES_OUTPUT_ARTIFACT` to the
@@ -83,6 +84,38 @@ It does not rerun the model or publish the research files. Set
 that request with the locally built Worker response.
 
 ## Theme and shared controls
+
+### Document layout
+
+The shell starts borderless, with no body inset. Its normal-flow content determines
+the iframe height, including margins and floats; it grows and shrinks as content
+changes. Heights are rounded up and bounded to 1–100,000 CSS pixels by the host.
+This high safety limit is not intended as a widget viewport. Avoid viewport-relative
+heights on the output root: the viewport itself follows the content height.
+
+Horizontal overflow is clipped at the document boundary, so a near miss beside a
+slider cannot pan the entire output sideways. Range controls fill their available
+width, have 44px touch targets, and reserve horizontal gestures for adjustment
+while allowing vertical scrolling and pinch zoom.
+Buttons also have a 44px minimum height. Ordinary content keeps native page scrolling
+and pinch zoom; the shell does not disable those gestures on an ancestor.
+
+For content that should scroll, wrap it in an explicit `.output-scroll` region.
+Give vertical regions a height or max-height, and make them keyboard-accessible
+with `tabindex="0"`, a suitable role and an accessible label. For example:
+
+```html
+<div class="output-scroll" role="region" aria-label="Detailed results" tabindex="0"
+     style="max-height:24rem">
+  <!-- A wide table or another intentionally scrollable view. -->
+</div>
+```
+
+These are shared defaults, not a CSS sandbox: modules can override them deliberately.
+`.output-surface` remains an opt-in padded card. Application-specific chart sizing
+and interaction belong to the module; iframe sizing and native control fixes do not.
+
+### Host context
 
 Pass `hostContext: { theme: 'light' | 'dark', styles: { variables } }` when
 mounting. The host resolves its own `system` preference; the wire never accepts

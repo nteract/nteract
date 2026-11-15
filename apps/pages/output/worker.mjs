@@ -39,7 +39,9 @@ export default {
           "Referrer-Policy": "no-referrer",
           "Cross-Origin-Resource-Policy": "cross-origin",
           "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
-          "Cache-Control": "no-store",
+          // Origin-dependent CDN injections (such as the RUM beacon) cannot
+          // run correctly in this opaque sandbox. Serve the authored shell.
+          "Cache-Control": "no-store, no-transform",
         },
       },
     );
