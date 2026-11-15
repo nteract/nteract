@@ -79,6 +79,7 @@ import {
 } from "./wordgard-binding.mjs";
 import {
   PagesDataframe,
+  PagesView,
   PagesLink,
   TaskList,
   elements,
@@ -453,6 +454,19 @@ export function WordgardEditor(props) {
         // reserves the height this browser last drew its chart at, for this
         // account and Page.
         wordgardViews({
+          comments: {
+            allowed: () => !!(latest.current.commentable ?? latest.current.editable),
+            open: (dom) => {
+              const editor = view.current;
+              if (!editor || !(latest.current.commentable ?? latest.current.editable)) return;
+              const position = editor.posAtDOM(dom, 0);
+              const node = editor.state.doc.nodeAt(position);
+              if (node?.type !== PagesView) return;
+              editor.dispatch({ selection: GardSelection.node(position, node) });
+              editor.focus();
+              comment();
+            },
+          },
           views: replica.views ?? null,
           sources: replica.pageSources ?? null,
           sourcesAnswer$:
@@ -948,9 +962,11 @@ export function WordgardEditor(props) {
         atom:
           selectedAtom(state)?.node.type === PagesDataframe
             ? "dataframe"
-            : selectedImage(state)
-              ? "image"
-              : null,
+            : selectedAtom(state)?.node.type === PagesView
+              ? "chart"
+              : selectedImage(state)
+                ? "image"
+                : null,
         table: !!selectedTable(state),
         // A selection inside one code block. Code text carries no marks
         // (wordgardCodeNewlines), so the mark controls don't apply. `code`
@@ -1124,6 +1140,10 @@ export function WordgardEditor(props) {
     });
   }, [editable, generation]);
   useEffect(() => {
+    for (const button of view.current?.dom.querySelectorAll("[data-chart-comment]") ?? [])
+      button.dispatchEvent(new Event("pages-chart-comment-access"));
+  }, [commentable, generation]);
+  useEffect(() => {
     if (view.current && !view.current.composing)
       view.current.dispatch({ annotations: remoteAnnotations() });
   }, [threads, commentTarget, commentDraft, generation]);
@@ -1181,8 +1201,8 @@ export function WordgardEditor(props) {
       const contextual =
         !mobile &&
         !selection.empty &&
-        // A selected node (an image, a dataframe, a rule, an unknown block)
-        // has no text to format, so the toolbar doesn't float over it.
+        // Selected nodes have no floating text-formatting toolbar. Charts
+        // keep their comment action beside Maximize.
         !(selection instanceof GardSelection.Node) &&
         !editor.composing &&
         (editor.hasFocus ||
@@ -1371,13 +1391,15 @@ export function WordgardEditor(props) {
             aria-label={
               format?.atom === "dataframe"
                 ? "Table actions"
-                : format?.image
-                  ? "Image actions"
-                  : format?.nodeSelected
-                    ? "Block actions"
-                    : format?.codeBlock
-                      ? "Code block actions"
-                      : "Text formatting"
+                : format?.atom === "chart"
+                  ? "Chart actions"
+                  : format?.image
+                    ? "Image actions"
+                    : format?.nodeSelected
+                      ? "Block actions"
+                      : format?.codeBlock
+                        ? "Code block actions"
+                        : "Text formatting"
             }
             // A press on the bar itself, between its controls, would start a
             // native selection behind it and take focus from the editor.
@@ -1412,9 +1434,11 @@ export function WordgardEditor(props) {
                 <span className="image-selection-label">
                   {format.atom === "dataframe"
                     ? "Table"
-                    : format.atom === "image"
-                      ? "Image"
-                      : "Block"}
+                    : format.atom === "chart"
+                      ? "Chart"
+                      : format.atom === "image"
+                        ? "Image"
+                        : "Block"}
                 </span>
                 {toolbarOpen && insertImageButton}
                 {formatButton(commentControl)}

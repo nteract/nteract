@@ -33,8 +33,9 @@
 //
 // The look is bare: the caller's title above, one thin rounded border around
 // the drawing, and Vega-Lite's own axes, legend and hover tooltip inside it.
-// The one control is the Maximize button a Mermaid diagram has, which opens
-// the same expanded viewer.
+// Maximize opens the same expanded viewer as a Mermaid diagram. The Page
+// editor can also supply a trusted comment action beside it; that callback
+// does not come from the spec or run through Vega's dataflow.
 import { SVGHandler, SVGRenderer, sceneFromJSON } from "vega-scenegraph";
 import { Handler as TooltipHandler } from "vega-tooltip";
 import { BehaviorSubject, Subscription, combineLatest, concat, from } from "rxjs";
@@ -56,7 +57,7 @@ import {
 } from "./chart-data.mjs";
 import { CHART_READY_MS, CHART_WORKERS, TIMED_OUT, createChartPool } from "./chart-pool.mjs";
 import { pageScene } from "./chart-scene.mjs";
-import { maximizeButton } from "./diagram-icons.mjs";
+import { diagramButton, maximizeButton } from "./diagram-icons.mjs";
 import { openDiagramViewer } from "./diagram-viewer.mjs";
 
 /** Wait after the last width change before redrawing, so a drag-resize draws
@@ -436,7 +437,7 @@ function crossing(dataset, transfer, arrow) {
  * start shows one sentence inside the border instead. A chart that timed
  * out doesn't redraw; the caller mounts it again for a new spec or data.
  */
-export function mount(container, { spec, datasets = {}, title = "" }) {
+export function mount(container, { spec, datasets = {}, title = "", comments = null }) {
   const doc = container.ownerDocument;
   const win = doc.defaultView;
   const figure = container.appendChild(doc.createElement("figure"));
@@ -454,6 +455,16 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
   actions.className = "wordgard-diagram-actions";
   actions.setAttribute("role", "group");
   actions.setAttribute("aria-label", "Chart actions");
+  const comment =
+    comments && actions.appendChild(diagramButton("Comment on chart", "comment", "", doc));
+  if (comment) {
+    comment.dataset.chartComment = "";
+    comment.hidden = !comments.allowed();
+    comment.addEventListener("pointerdown", (event) => event.preventDefault());
+    comment.addEventListener("click", () => {
+      if (comments.allowed()) comments.open();
+    });
+  }
   const maximize = actions.appendChild(maximizeButton("Maximize chart", doc));
   const frame = figure.appendChild(doc.createElement("div"));
   frame.className = "pages-chart-frame";
@@ -462,7 +473,14 @@ export function mount(container, { spec, datasets = {}, title = "" }) {
   const message = frame.appendChild(doc.createElement("p"));
   message.className = "pages-chart-message";
   message.hidden = true;
-  const showHeader = () => (header.hidden = !title && maximize.hidden);
+  const showHeader = () =>
+    (header.hidden = !title && maximize.hidden && (!comment || comment.hidden));
+  // Permission changes can arrive after a failed draw, when no further
+  // render will refresh the header. Keep both pieces of visibility here.
+  comment?.addEventListener("pages-chart-comment-access", () => {
+    comment.hidden = !comments.allowed();
+    showHeader();
+  });
   showHeader();
 
   let drawing = null;

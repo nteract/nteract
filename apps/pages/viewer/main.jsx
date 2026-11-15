@@ -1404,7 +1404,8 @@ function App() {
     }
     try {
       const draft = editor.module.captureCommentDraft(session.doc, id, selected);
-      if (composer.start(draft, selected.text.replaceAll("\ufffc", "\n"))) setTarget(null);
+      if (composer.start(draft, selected.label ?? selected.text.replaceAll("\ufffc", "\n")))
+        setTarget(null);
     } catch (error) {
       showError(error);
     }
