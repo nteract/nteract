@@ -25,7 +25,7 @@ const bundle = await build({
         build.onLoad({ filter: /\.css$/ }, () => ({ contents: "", loader: "empty" }));
         build.onLoad({ filter: /published-preview-image\.mjs$/ }, () => ({
           contents:
-            "export const previewVisuals = () => []; export const renderPublishedPreview = async (draft, visuals, signal) => globalThis.renderPreviewForTest(draft, signal);",
+            "export const previewVisuals = () => []; export const renderPublishedPreview = async (draft, visuals, signal) => ({ blob: await globalThis.renderPreviewForTest(draft, signal) });",
         }));
       },
     },

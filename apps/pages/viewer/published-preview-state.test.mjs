@@ -133,3 +133,40 @@ test("reopening restores the private cover and render recovery preserves edited 
   const ready = step(replacement, { type: "prepared", draft: replacement.draft, prepared: {} });
   assert.equal(step(ready, { type: "publish" }).name, "uploading_cover");
 });
+
+test("a selected visual's exact source is uploaded on approval and restored for later text edits", () => {
+  const start = {
+    name: "ready",
+    draft: { title: "Chart", visual: "text" },
+    value: { revision: 0, snapshot: null },
+  };
+  const rendering = step(start, { type: "choose_visual", visual: "chart" });
+  const sourceFile = new File(["chart pixels"], "Chart.png", { type: "image/png" });
+  const ready = step(rendering, {
+    type: "prepared",
+    draft: rendering.draft,
+    prepared: { sourceFile, blob: new Blob(["captioned card"]) },
+  });
+  assert.equal(ready.value.snapshot, null, "preparing does not publish or upload");
+  const uploading = step(ready, { type: "publish", nonce: "nonce" });
+  assert.equal(uploading.name, "uploading_cover");
+  assert.equal(uploading.prepared.sourceFile, sourceFile);
+  const failed = step(uploading, { type: "failed", error: "Offline" });
+  assert.equal(failed.prepared.sourceFile, sourceFile, "failed uploads retain the approved source");
+  const cover = { asset_id: "a".repeat(64), name: "Chart.png" };
+  const covered = step(uploading, { type: "cover_uploaded", cover });
+  assert.equal(covered.name, "uploading");
+  assert.equal(covered.draft.visual, "upload", "text edits no longer depend on the live chart");
+  assert.equal(covered.draft.cover, cover);
+  const value = { revision: 1, snapshot: { title: "Chart", description: "", author: "", cover } };
+  const reopened = step({ name: "loading", draft: {} }, { type: "loaded", value });
+  const edited = step(reopened, { type: "edit", patch: { author: "Kyle Kelley" } });
+  assert.equal(edited.draft.visual, "upload");
+  assert.equal(edited.draft.cover, cover);
+  const newer = step(rendering, { type: "choose_visual", visual: "text" });
+  assert.equal(
+    step(newer, { type: "prepared", draft: rendering.draft, prepared: ready.prepared }),
+    newer,
+    "a stale chart capture cannot restore a removed cover",
+  );
+});

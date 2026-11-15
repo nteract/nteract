@@ -72,6 +72,17 @@ export function previewCoverRect(width, height) {
   };
 }
 
+const pngBlob = (canvas) =>
+  new Promise((resolve, reject) =>
+    canvas.toBlob(
+      (blob) =>
+        blob
+          ? resolve(blob)
+          : reject(Error("Could not draw this preview. Choose a different image.")),
+      "image/png",
+    ),
+  );
+
 /** Rasterize once, then show and upload the same bytes. No generated content,
  * remote model call, or live-document update can change the approved image. */
 export async function renderPublishedPreview(draft, visuals, signal, pageId) {
@@ -88,6 +99,7 @@ export async function renderPublishedPreview(draft, visuals, signal, pageId) {
   context.fillStyle = draft.visual === "text" ? background : "#f7f8f5";
   context.fillRect(0, 0, 1200, 630);
   const textOnly = draft.visual === "text";
+  let sourceFile;
   if (!textOnly) {
     let visual;
     if (draft.visual === "upload") {
@@ -104,10 +116,17 @@ export async function renderPublishedPreview(draft, visuals, signal, pageId) {
       if (!source) throw Error("Choose a cover image first.");
       visual = await createImageBitmap(source);
     } else {
-      const node = previewVisualNode(visuals.find((item) => item.id === draft.visual));
+      const choice = visuals.find((item) => item.id === draft.visual);
+      const node = previewVisualNode(choice);
       if (!node) throw Error("That visual changed. Reopen Link preview to choose it again.");
       const { domToCanvas } = await import("modern-screenshot");
       visual = await domToCanvas(node, { backgroundColor: "#ffffff", scale: 2 });
+      signal.throwIfAborted();
+      // Preserve the exact uncaptioned raster used below. On approval it is
+      // uploaded privately, just like an uploaded cover, for later text edits.
+      sourceFile = new File([await pngBlob(visual)], `${choice.label.slice(0, 1000)}.png`, {
+        type: "image/png",
+      });
     }
     try {
       signal.throwIfAborted();
@@ -149,13 +168,7 @@ export async function renderPublishedPreview(draft, visuals, signal, pageId) {
   context.font = "500 22px system-ui, sans-serif";
   context.fillText(PRODUCT_NAME, textOnly ? 64 : 1060, textOnly ? 62 : 600);
   signal.throwIfAborted();
-  return new Promise((resolve, reject) =>
-    canvas.toBlob(
-      (blob) =>
-        blob
-          ? resolve(blob)
-          : reject(Error("Could not draw this preview. Choose a different image.")),
-      "image/png",
-    ),
-  );
+  const blob = await pngBlob(canvas);
+  signal.throwIfAborted();
+  return { blob, sourceFile };
 }
