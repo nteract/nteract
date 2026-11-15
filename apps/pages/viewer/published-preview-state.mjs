@@ -95,14 +95,18 @@ export function previewEditorTransition(state, event) {
         : state;
     case "publish":
       return state.name === "ready" && state.prepared && state.draft.title.trim()
-        ? { ...state, name: state.draft.file ? "uploading_cover" : "uploading", nonce: event.nonce }
+        ? {
+            ...state,
+            name: state.draft.file || state.prepared.sourceFile ? "uploading_cover" : "uploading",
+            nonce: event.nonce,
+          }
         : state;
     case "cover_uploaded":
       return state.name === "uploading_cover"
         ? {
             ...state,
             name: "uploading",
-            draft: { ...state.draft, cover: event.cover, file: undefined },
+            draft: { ...state.draft, visual: "upload", cover: event.cover, file: undefined },
           }
         : state;
     case "uploaded":

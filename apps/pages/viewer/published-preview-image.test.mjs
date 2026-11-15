@@ -5,11 +5,47 @@ import {
   previewVisuals,
   previewVisualNode,
   previewCoverRect,
+  previewSourceSize,
+  previewCaptureScale,
   previewTextLines,
   renderPublishedPreview,
 } from "./published-preview-image.mjs";
 
 const context = { measureText: (text) => ({ width: Array.from(text).length }) };
+
+test("extreme aspect ratios survive the capture library's dimension rounding", () => {
+  for (const [width, height] of [
+    [1, 8192],
+    [8192, 1],
+    [700, 700 / 8192],
+    [0.25, 2048],
+  ]) {
+    const scale = previewCaptureScale(width, height);
+    assert.ok(Math.floor(width * scale) >= 1);
+    assert.ok(Math.floor(height * scale) >= 1);
+    const size = previewSourceSize(Math.floor(width * scale), Math.floor(height * scale));
+    assert.ok(size.width <= 1152 && size.height <= 390);
+  }
+});
+
+test("retained visual sources fit the card and upload budget even for oversized captures", () => {
+  for (const [width, height] of [
+    [16000, 12000],
+    [64, 10000],
+    [20000, 2],
+    [1, 1],
+    [800, 600],
+  ]) {
+    const size = previewSourceSize(width, height);
+    assert.ok(size.width >= 1 && size.width <= 1152);
+    assert.ok(size.height >= 1 && size.height <= 390);
+    assert.ok(size.width <= width && size.height <= height);
+    assert.ok(
+      size.width * size.height * 4 < 2 * 1024 * 1024,
+      "even raw RGBA fits below the 5 MiB upload limit",
+    );
+  }
+});
 
 test("cover choices include rendered chart content, never toolbar icons or pending charts", () => {
   const { window } = new JSDOM(`

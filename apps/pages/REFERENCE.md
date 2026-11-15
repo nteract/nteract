@@ -23,11 +23,15 @@ The host records the validated image dimensions for OG metadata; older previews
 without dimensions still work. Published HTML also carries the approved title
 in its document title and explicit Twitter title, description and image alt tags.
 
-When publishing an uploaded cover, its original bytes also enter the existing
-private Page asset storage. The publication record retains the cover asset ID
+When publishing an uploaded cover or a Page-selected image, chart or diagram,
+its uncaptioned raster also enters the existing private Page asset storage.
+For a Page-selected visual this is the exact raster used to compose the card,
+bounded to its 1152×390 visual area so large or tall sources fit upload limits. The publication record retains the cover asset ID
 and filename for owner settings; public metadata and image routes expose only
 the composed card. Reopening the editor restores that cover so text edits can
-redraw it. Removing the cover clears the reference on the next publication.
+redraw it without needing the live visual or capturing changed chart data.
+Previews published before source retention need one reselection and publication
+to save their source. Removing the cover clears the reference on the next publication.
 Render errors leave the draft editable and offer a retry; refreshing settings
 after a network error preserves local edits while reading the current revision.
 

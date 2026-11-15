@@ -1,4 +1,4 @@
-import { imageAssetUrl } from "../shared/image-assets.mjs";
+import { imageAssetUrl, IMAGE_MAX_BYTES } from "../shared/image-assets.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
 
 /** Only visual nodes, never the editor chrome, comments, or full document. */
@@ -72,6 +72,33 @@ export function previewCoverRect(width, height) {
   };
 }
 
+/** The card has only this many visual pixels. Keep private sources within
+ * that budget, including tall images whose DOM capture would exceed uploads. */
+export function previewSourceSize(width, height) {
+  const scale = Math.min(1, 1152 / width, 390 / height);
+  return {
+    width: Math.max(1, Math.floor(width * scale)),
+    height: Math.max(1, Math.floor(height * scale)),
+  };
+}
+
+/** Capture rounds dimensions down. Leave a little headroom above one pixel
+ * for thin visuals; the retained raster is bounded separately afterward. */
+export function previewCaptureScale(width, height) {
+  return Math.max(1.1 / width, 1.1 / height, Math.min(2, 1152 / width, 390 / height));
+}
+
+const pngBlob = (canvas) =>
+  new Promise((resolve, reject) =>
+    canvas.toBlob(
+      (blob) =>
+        blob
+          ? resolve(blob)
+          : reject(Error("Could not draw this preview. Choose a different image.")),
+      "image/png",
+    ),
+  );
+
 /** Rasterize once, then show and upload the same bytes. No generated content,
  * remote model call, or live-document update can change the approved image. */
 export async function renderPublishedPreview(draft, visuals, signal, pageId) {
@@ -88,6 +115,7 @@ export async function renderPublishedPreview(draft, visuals, signal, pageId) {
   context.fillStyle = draft.visual === "text" ? background : "#f7f8f5";
   context.fillRect(0, 0, 1200, 630);
   const textOnly = draft.visual === "text";
+  let sourceFile;
   if (!textOnly) {
     let visual;
     if (draft.visual === "upload") {
@@ -104,10 +132,50 @@ export async function renderPublishedPreview(draft, visuals, signal, pageId) {
       if (!source) throw Error("Choose a cover image first.");
       visual = await createImageBitmap(source);
     } else {
-      const node = previewVisualNode(visuals.find((item) => item.id === draft.visual));
+      const choice = visuals.find((item) => item.id === draft.visual);
+      const node = previewVisualNode(choice);
       if (!node) throw Error("That visual changed. Reopen Link preview to choose it again.");
-      const { domToCanvas } = await import("modern-screenshot");
-      visual = await domToCanvas(node, { backgroundColor: "#ffffff", scale: 2 });
+      let captured;
+      if (node.tagName === "IMG") {
+        // Read image pixels directly: a wide image may display at a fraction
+        // of a CSS pixel high, which cannot survive a DOM/SVG capture.
+        const response = await fetch(node.currentSrc || node.src, {
+          signal,
+          credentials: "same-origin",
+        });
+        if (!response.ok) throw Error("Could not load this image. Choose it again or try another.");
+        captured = await createImageBitmap(await response.blob());
+      } else {
+        const { domToCanvas } = await import("modern-screenshot");
+        const bounds = node.getBoundingClientRect();
+        const width = Math.max(1, bounds.width);
+        const height = Math.max(1, bounds.height);
+        captured = await domToCanvas(node, {
+          backgroundColor: "#ffffff",
+          width,
+          height,
+          scale: previewCaptureScale(width, height),
+        });
+      }
+      // Normalize the capture's actual dimensions too: DOM layout and capture
+      // rounding can differ. Compose and retain this same bounded raster.
+      try {
+        signal.throwIfAborted();
+        visual = document.createElement("canvas");
+        const size = previewSourceSize(captured.width, captured.height);
+        visual.width = size.width;
+        visual.height = size.height;
+        visual.getContext("2d").drawImage(captured, 0, 0, size.width, size.height);
+      } finally {
+        captured.close?.();
+      }
+      // Preserve the exact uncaptioned raster used below. On approval it is
+      // uploaded privately, just like an uploaded cover, for later text edits.
+      sourceFile = new File([await pngBlob(visual)], `${choice.label.slice(0, 1000)}.png`, {
+        type: "image/png",
+      });
+      if (sourceFile.size > IMAGE_MAX_BYTES)
+        throw Error("Could not fit this visual into a preview. Choose a smaller visual.");
     }
     try {
       signal.throwIfAborted();
@@ -149,13 +217,7 @@ export async function renderPublishedPreview(draft, visuals, signal, pageId) {
   context.font = "500 22px system-ui, sans-serif";
   context.fillText(PRODUCT_NAME, textOnly ? 64 : 1060, textOnly ? 62 : 600);
   signal.throwIfAborted();
-  return new Promise((resolve, reject) =>
-    canvas.toBlob(
-      (blob) =>
-        blob
-          ? resolve(blob)
-          : reject(Error("Could not draw this preview. Choose a different image.")),
-      "image/png",
-    ),
-  );
+  const blob = await pngBlob(canvas);
+  signal.throwIfAborted();
+  return { blob, sourceFile };
 }

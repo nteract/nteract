@@ -53,20 +53,26 @@ export function PublishedPreview({ session, onBack }) {
       if (state.name === "loading")
         return { type: "loaded", value: await request(endpoint, { signal }) };
       if (state.name === "rendering") {
-        const blob = await renderPublishedPreview(state.draft, visuals, signal, session.pageId);
+        const { blob, sourceFile } = await renderPublishedPreview(
+          state.draft,
+          visuals,
+          signal,
+          session.pageId,
+        );
         // The viewer CSP permits data images, not blob URLs. Display the same
         // PNG bytes that uploadPageImage will send after approval.
         const bytes = new Uint8Array(await blob.arrayBuffer());
         signal.throwIfAborted();
         const url = `data:image/png;base64,${btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(""))}`;
-        return { type: "prepared", draft: state.draft, prepared: { blob, url } };
+        return { type: "prepared", draft: state.draft, prepared: { blob, url, sourceFile } };
       }
       if (state.name === "uploading_cover") {
-        validateImageFile(state.draft.file);
-        const asset = await uploadPageImage(session.pageId, state.draft.file, signal);
+        const file = state.draft.file ?? state.prepared.sourceFile;
+        validateImageFile(file);
+        const asset = await uploadPageImage(session.pageId, file, signal);
         return {
           type: "cover_uploaded",
-          cover: { asset_id: asset.asset_id, name: state.draft.file.name.slice(0, 1024) },
+          cover: { asset_id: asset.asset_id, name: file.name.slice(0, 1024) },
         };
       }
       if (state.name === "uploading")
