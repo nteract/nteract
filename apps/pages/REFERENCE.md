@@ -11,11 +11,17 @@ lists what the next format and tool surface change.
 ## Published link previews
 
 The Page owner can open **Share → Link preview**, supply a title (160
-characters) and description (400 characters), then prepare and explicitly
+characters), optional author (120 characters), and description (400 characters), then prepare and explicitly
 publish a raster image. The default is a 1200×630 text card. The owner can
 instead choose a rendered image, chart or Mermaid diagram from the open Page,
 or upload a cover. The browser shows the exact bytes before uploading them;
-the host validates the raster and publishes only that Page-local asset.
+the host validates the raster and publishes only that Page-local asset. Visuals
+fit above a separate title and byline without cropping or dark overlays.
+The author is explicitly supplied for publication, never inferred from account
+or document ownership. OG, Twitter and Slack descriptions lead with that byline.
+The host records the validated image dimensions for OG metadata; older previews
+without dimensions still work. Published HTML also carries the approved title
+in its document title and explicit Twitter title, description and image alt tags.
 
 When publishing an uploaded cover, its original bytes also enter the existing
 private Page asset storage. The publication record retains the cover asset ID

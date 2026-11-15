@@ -24,7 +24,12 @@ export function PublishedPreview({ session, onBack }) {
   const visuals = useMemo(() => previewVisuals(), []);
   const [state, dispatch] = useReducer(previewEditorTransition, null, () => ({
     name: "loading",
-    draft: { title: session.snapshot()?.title || "Untitled Page", description: "", visual: "text" },
+    draft: {
+      title: session.snapshot()?.title || "Untitled Page",
+      author: "",
+      description: "",
+      visual: "text",
+    },
     value: null,
     prepared: null,
     error: null,
@@ -80,6 +85,7 @@ export function PublishedPreview({ session, onBack }) {
           ...(state.name === "publishing" && {
             title: state.draft.title,
             description: state.draft.description,
+            author: state.draft.author,
             asset_id: state.asset.asset_id,
             cover: state.draft.cover ?? null,
           }),
@@ -158,6 +164,7 @@ export function PublishedPreview({ session, onBack }) {
                     <Image size={32} strokeWidth={1.25} aria-hidden="true" />
                   )}
                   <strong>{state.draft.title || "Your Page title"}</strong>
+                  {state.draft.author && <p>by {state.draft.author}</p>}
                   {state.draft.description && <p>{state.draft.description}</p>}
                 </div>
               )}
@@ -214,6 +221,20 @@ export function PublishedPreview({ session, onBack }) {
                 maxLength={160}
                 disabled={!editable}
                 onChange={(event) => edit({ title: event.target.value })}
+              />
+            </div>
+            <div className="preview-field">
+              <div className="preview-field-label">
+                <label htmlFor={`${id}-author`}>Author</label>
+                <span>Optional</span>
+              </div>
+              <input
+                id={`${id}-author`}
+                value={state.draft.author}
+                maxLength={120}
+                placeholder="Name shown in the byline"
+                disabled={!editable}
+                onChange={(event) => edit({ author: event.target.value })}
               />
             </div>
             <div className="preview-field">

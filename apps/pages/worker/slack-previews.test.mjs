@@ -21,6 +21,7 @@ const env = {
         Response.json({
           title: "Published",
           description: "Approved",
+          author: "Kyle Kelley",
           revision: 2,
           mime_type: "image/png",
           published_at: "2026-11-14T12:00:00Z",
@@ -83,6 +84,10 @@ test("Work Objects unfurl only published fields, including images; composer and 
   );
   assert.equal(calls[0].body.unfurl_id, "composer-id");
   assert.equal(calls[0].body.metadata.entities.length, 1);
+  assert.equal(
+    calls[0].body.metadata.entities[0].entity_payload.fields.description.value,
+    "by Kyle Kelley · Approved",
+  );
   assert.match(
     calls[0].body.metadata.entities[0].entity_payload.fields.preview.image_url,
     /preview.png\?v=2$/,

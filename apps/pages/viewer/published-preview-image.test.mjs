@@ -69,21 +69,23 @@ test("preview cards wrap at word boundaries and fit truncated lines", () => {
   assert.deepEqual(previewTextLines(context, "", 14, 3), []);
 });
 
-test("portrait and wide covers fill the card with a centered crop and no stretching", () => {
+test("portrait and wide covers fit entirely above the caption without cropping or stretching", () => {
   for (const [width, height] of [
     [800, 1200],
     [2400, 800],
     [1200, 630],
   ]) {
     const rect = previewCoverRect(width, height);
-    assert.ok(rect.width >= 1200 && rect.height >= 630);
+    assert.ok(rect.width <= 1152 && rect.height <= 390);
+    assert.ok(rect.x >= 24 && rect.y >= 24);
+    assert.ok(rect.y + rect.height <= 414);
     assert.equal(rect.x + rect.width / 2, 600);
-    assert.equal(rect.y + rect.height / 2, 315);
-    assert.equal(rect.width / rect.height, width / height);
+    assert.equal(rect.y + rect.height / 2, 219);
+    assert.ok(Math.abs(rect.width / rect.height - width / height) < 1e-12);
   }
 });
 
-test("an uploaded cover fills the canvas beneath a dark gradient and white text", async (t) => {
+test("an uploaded cover stays fully visible with a separate title and byline", async (t) => {
   const paints = [],
     text = [],
     gradients = [];
@@ -119,13 +121,20 @@ test("an uploaded cover fills the canvas beneath a dark gradient and white text"
     value: async () => bitmap,
   });
   await renderPublishedPreview(
-    { title: "A cover", description: "A description", visual: "upload", file: {} },
+    {
+      title: "A cover",
+      author: "Kyle Kelley",
+      description: "A description",
+      visual: "upload",
+      file: {},
+    },
     [],
     new AbortController().signal,
   );
-  assert.deepEqual(paints[0], [bitmap, 0, -585, 1200, 1800]);
-  assert.deepEqual(gradients.at(-1).at(-1), [1, "rgba(0, 0, 0, 0.86)"]);
-  assert.ok(text.every((entry) => entry.color === "#ffffff"));
+  assert.deepEqual(paints[0], [bitmap, 470, 24, 260, 390]);
+  assert.ok(gradients.flat().every(([, color]) => !color.startsWith("rgba(0, 0, 0")));
+  assert.ok(text.some((entry) => entry.value === "by Kyle Kelley"));
+  assert.ok(text.every((entry) => entry.y > 438));
   assert.ok(text.every((entry) => entry.y < 630));
   assert.equal(bitmap.close.mock.callCount(), 1);
   const source = new Blob(["original pixels"], { type: "image/png" });
@@ -155,7 +164,7 @@ test("an uploaded cover fills the canvas beneath a dark gradient and white text"
   );
   assert.deepEqual(
     text.map((entry) => entry.value),
-    ["Pages", "Title alone"],
+    ["Title alone", "Pages"],
     "an empty description adds no placeholder or extra text",
   );
 });
