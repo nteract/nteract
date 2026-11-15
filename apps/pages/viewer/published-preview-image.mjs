@@ -61,12 +61,12 @@ export function previewTextLines(context, text, width, count) {
   return visible;
 }
 
-/** Center-crop a cover to fill the social card without stretching it. */
+/** Fit the entire visual above the caption, preserving axes and edge labels. */
 export function previewCoverRect(width, height) {
-  const scale = Math.max(1200 / width, 630 / height);
+  const scale = Math.min(1152 / width, 390 / height);
   return {
     x: (1200 - width * scale) / 2,
-    y: (630 - height * scale) / 2,
+    y: 24 + (390 - height * scale) / 2,
     width: width * scale,
     height: height * scale,
   };
@@ -85,7 +85,7 @@ export async function renderPublishedPreview(draft, visuals, signal, pageId) {
   background.addColorStop(0, "#f7f8f5");
   background.addColorStop(0.6, "#f7f8f5");
   background.addColorStop(1, "#dceae3");
-  context.fillStyle = background;
+  context.fillStyle = draft.visual === "text" ? background : "#f7f8f5";
   context.fillRect(0, 0, 1200, 630);
   const textOnly = draft.visual === "text";
   if (!textOnly) {
@@ -116,41 +116,38 @@ export async function renderPublishedPreview(draft, visuals, signal, pageId) {
     } finally {
       visual.close?.();
     }
-    // Keep the image visible above the title while giving white text a
-    // predictable dark ground, even on a nearly white cover.
-    const shade = context.createLinearGradient(0, 0, 0, 630);
-    shade.addColorStop(0, "rgba(0, 0, 0, 0.28)");
-    shade.addColorStop(0.35, "rgba(0, 0, 0, 0.30)");
-    shade.addColorStop(0.58, "rgba(0, 0, 0, 0.64)");
-    shade.addColorStop(1, "rgba(0, 0, 0, 0.86)");
-    context.fillStyle = shade;
-    context.fillRect(0, 0, 1200, 630);
   }
-  context.fillStyle = textOnly ? "#37665c" : "#ffffff";
-  context.font = "600 24px system-ui, sans-serif";
-  context.fillText(PRODUCT_NAME, 64, 62);
-  const titleSize = textOnly ? 62 : 58;
-  const titleHeight = textOnly ? 76 : 68;
-  const descriptionHeight = textOnly ? 40 : 36;
+  // A separate caption keeps text readable without tinting or covering data.
+  if (!textOnly) {
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 438, 1200, 192);
+  }
+  const titleSize = textOnly ? 62 : 42;
+  const titleHeight = textOnly ? 76 : 52;
   context.font = `600 ${titleSize}px system-ui, sans-serif`;
   const titleLines = previewTextLines(context, draft.title, 1072, textOnly ? 3 : 2);
-  context.font = `${textOnly ? 30 : 28}px system-ui, sans-serif`;
-  const descriptionLines = previewTextLines(context, draft.description, 1072, textOnly ? 3 : 2);
-  const titleY = textOnly
-    ? 180
-    : 566 -
-      Math.max(0, titleLines.length - 1) * titleHeight -
-      (descriptionLines.length ? 24 + descriptionLines.length * descriptionHeight : 0);
-  context.fillStyle = textOnly ? "#172a2b" : "#ffffff";
-  context.font = `600 ${titleSize}px system-ui, sans-serif`;
+  const titleY = textOnly ? 180 : 492;
+  context.fillStyle = "#172a2b";
   titleLines.forEach((line, i) => context.fillText(line, 64, titleY + i * titleHeight));
-  context.fillStyle = textOnly ? "#536466" : "#ffffff";
-  context.font = `${textOnly ? 30 : 28}px system-ui, sans-serif`;
-  const descriptionY =
-    titleY + Math.max(0, titleLines.length - 1) * titleHeight + 24 + descriptionHeight;
-  descriptionLines.forEach((line, i) =>
-    context.fillText(line, 64, descriptionY + i * descriptionHeight),
-  );
+  const captionY = titleY + Math.max(0, titleLines.length - 1) * titleHeight + 48;
+  context.fillStyle = "#536466";
+  context.font = "28px system-ui, sans-serif";
+  const byline = draft.author?.trim() ? `by ${draft.author.trim()}` : "";
+  if (byline) {
+    previewTextLines(context, byline, 920, 1).forEach((line) =>
+      context.fillText(line, 64, captionY),
+    );
+  }
+  // Long descriptions belong in the card's metadata. Text-only cards have
+  // room for an excerpt; visual cards keep the artwork and byline prominent.
+  if (textOnly || !byline) {
+    const descriptionY = captionY + (byline ? 44 : 0);
+    const lines = previewTextLines(context, draft.description, 920, textOnly ? 3 : 1);
+    lines.forEach((line, i) => context.fillText(line, 64, descriptionY + i * 40));
+  }
+  context.fillStyle = "#37665c";
+  context.font = "500 22px system-ui, sans-serif";
+  context.fillText(PRODUCT_NAME, textOnly ? 64 : 1060, textOnly ? 62 : 600);
   signal.throwIfAborted();
   return new Promise((resolve, reject) =>
     canvas.toBlob(

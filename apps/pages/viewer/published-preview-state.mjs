@@ -40,6 +40,7 @@ export function previewEditorTransition(state, event) {
             ? {
                 title: event.value.snapshot.title,
                 description: event.value.snapshot.description,
+                author: event.value.snapshot.author ?? "",
                 visual: event.value.snapshot.cover ? "upload" : "text",
                 cover: event.value.snapshot.cover,
               }

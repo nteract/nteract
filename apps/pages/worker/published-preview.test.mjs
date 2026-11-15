@@ -77,7 +77,13 @@ test("private Pages get generic OG; only the owner can publish an independent sn
   const preview = await send(`/p/${id}/preview.json`);
   assert.equal(preview.headers.get("cache-control"), "no-store");
   const body = await preview.json();
-  assert.deepEqual(Object.keys(body).sort(), ["description", "image_url", "published_at", "title"]);
+  assert.deepEqual(Object.keys(body).sort(), [
+    "author",
+    "description",
+    "image_url",
+    "published_at",
+    "title",
+  ]);
   const png = await send(new URL(body.image_url).pathname + new URL(body.image_url).search);
   assert.equal(png.headers.get("content-type"), "image/png");
   assert.deepEqual(new Uint8Array(await png.arrayBuffer()), image);
@@ -108,6 +114,42 @@ test("snapshot updates are fenced; replay is safe; unpublishing revokes old imag
   assert.equal((await send(`/p/${id}/preview.png?v=2`)).status, 404);
   assert.equal((await send(`/p/${id}/preview.json`)).status, 404);
   assert.equal((await manage(second)).status, 409);
+});
+
+test("approved authors reach every preview with validated dimensions, and are fenced on retry", async (t) => {
+  const { id, send, manage, command } = await fixture(t);
+  for (const author of [null, 42, "x".repeat(121)])
+    assert.equal((await manage({ ...command(), author })).status, 400);
+  const publish = { ...command(), author: "  Kyle Kelley  ", description: "" };
+  const response = await manage(publish);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).snapshot.author, "Kyle Kelley");
+  assert.equal((await manage(publish)).status, 200);
+  assert.equal((await manage({ ...publish, author: "Someone else" })).status, 409);
+  assert.equal((await (await manage()).json()).snapshot.author, "Kyle Kelley");
+  const html = await (await send(`/p/${id}`)).text();
+  assert.match(html, /<title>Approved title · Pages<\/title>/);
+  assert.match(html, /name="description" content="by Kyle Kelley"/);
+  assert.match(html, /property="og:description" content="by Kyle Kelley"/);
+  assert.match(html, /name="twitter:description" content="by Kyle Kelley"/);
+  assert.match(html, /name="twitter:title" content="Approved title"/);
+  assert.match(html, /name="twitter:card" content="summary_large_image"/);
+  assert.match(html, /property="og:image:width" content="3"/);
+  assert.match(html, /property="og:image:height" content="2"/);
+  assert.match(html, /property="og:image:type" content="image\/png"/);
+  assert.equal((await (await send(`/p/${id}/preview.json`)).json()).author, "Kyle Kelley");
+  assert.equal((await manage({ ...command(1), author: '"><script>bad</script>' })).status, 200);
+  const escaped = await (await send(`/p/${id}`)).text();
+  assert.doesNotMatch(escaped, /<script>/);
+  assert.match(escaped, /by &quot;&gt;&lt;script&gt;bad&lt;\/script&gt; · Approved description/);
+  assert.equal((await manage({ ...command(2), author: "" })).status, 200);
+  assert.doesNotMatch(await (await send(`/p/${id}`)).text(), /Kyle Kelley|by /);
+});
+
+test("older published previews need no author or assumed image dimensions", () => {
+  const html = previewTags(origin, "id", { title: "Older", description: "Summary", revision: 1 });
+  assert.match(html, /og:description" content="Summary"/);
+  assert.doesNotMatch(html, /undefined|og:image:width|og:image:height|by /);
 });
 
 test("unknown, cross-Page, and non-image assets never publish; escaping prevents OG injection", async (t) => {

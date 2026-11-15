@@ -4,7 +4,7 @@ import { readPageRoute } from "../shared/routes.mjs";
 // account-linking flow exists, the flexpane shows that same public snapshot;
 // opening the Page uses Pages' normal access checks.
 import { HttpError } from "./auth.mjs";
-import { readPublishedPreview, previewImageUrl } from "./published-preview.mjs";
+import { readPublishedPreview, previewImageUrl, previewDescription } from "./published-preview.mjs";
 import { validPageId } from "./registration.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
 
@@ -29,7 +29,7 @@ export function slackPreviewEntity(origin, pageId, preview, sharedUrl = `${origi
       },
       fields: {
         description: {
-          value: preview?.description ?? "Open this Page. Sign in to check your access.",
+          value: previewDescription(preview),
         },
         ...(preview && {
           preview: {

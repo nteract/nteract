@@ -44,6 +44,7 @@ export function publicationTransition(state, command, snapshot) {
     command.asset_id,
     command.cover?.asset_id,
     command.cover?.name,
+    ...(command.author === undefined ? [] : [command.author]),
   ]);
   if (state.receipt?.nonce === command.nonce) {
     if (state.receipt.fingerprint !== fingerprint)
@@ -71,11 +72,13 @@ export function previewFields(command) {
     title.length > 160 ||
     typeof description !== "string" ||
     description.length > 400 ||
+    (command.author !== undefined &&
+      (typeof command.author !== "string" || command.author.length > 120)) ||
     !validAssetId(asset_id)
   )
     throw new HttpError(
       400,
-      "Use a title up to 160 characters, a description up to 400, and a Page image",
+      "Use a title up to 160 characters, an author up to 120, a description up to 400, and a Page image",
     );
   const cover = command.cover;
   if (
@@ -86,6 +89,7 @@ export function previewFields(command) {
   return {
     title: title.trim(),
     description: description.trim(),
+    author: command.author?.trim() ?? "",
     asset_id,
     cover: cover == null ? null : { asset_id: cover.asset_id, name: cover.name },
   };
@@ -113,8 +117,11 @@ export async function publicationHost(host, request) {
       revision: state.revision,
       title: snapshot.title,
       description: snapshot.description,
+      author: snapshot.author ?? "",
       asset_id: snapshot.asset_id,
       mime_type: snapshot.mime_type,
+      width: snapshot.width,
+      height: snapshot.height,
       published_at: snapshot.published_at,
     });
   }
@@ -130,6 +137,7 @@ export async function publicationHost(host, request) {
       ? {
           title: value.snapshot.title,
           description: value.snapshot.description,
+          author: value.snapshot.author ?? "",
           asset_id: value.snapshot.asset_id,
           cover: value.snapshot.cover ?? null,
           published_at: value.snapshot.published_at,
@@ -157,6 +165,8 @@ export async function publicationHost(host, request) {
     next = publicationTransition(state, command, {
       ...fields,
       mime_type: image.mime_type,
+      width: image.width,
+      height: image.height,
       owner: record.owner,
       lifecycle_revision: record.lifecycleRevision ?? 0,
       published_at: new Date().toISOString(),
@@ -188,9 +198,16 @@ const escape = (value) =>
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
   );
 
+export function previewDescription(preview) {
+  if (!preview) return "Open this Page. Sign in to check your access.";
+  return [preview.author && `by ${preview.author}`, preview.description]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 export function previewTags(origin, pageId, preview) {
   const title = preview?.title ?? PRODUCT_NAME;
-  const description = preview?.description ?? "Open this Page. Sign in to check your access.";
+  const description = previewDescription(preview);
   const tags = {
     "og:type": "article",
     "og:site_name": PRODUCT_NAME,
@@ -198,18 +215,31 @@ export function previewTags(origin, pageId, preview) {
     "og:description": description,
     "og:url": `${origin}/p/${pageId}`,
     "twitter:card": preview ? "summary_large_image" : "summary",
+    "twitter:title": title,
+    "twitter:description": description,
     ...(preview && {
       "og:image": previewImageUrl(origin, pageId, preview.revision),
       "og:image:alt": title,
+      "og:image:type": preview.mime_type,
+      ...(preview.width &&
+        preview.height && {
+          "og:image:width": preview.width,
+          "og:image:height": preview.height,
+        }),
       "twitter:image": previewImageUrl(origin, pageId, preview.revision),
+      "twitter:image:alt": title,
     }),
   };
-  return Object.entries(tags)
-    .map(
-      ([name, value]) =>
-        `<meta ${name.startsWith("twitter:") ? "name" : "property"}="${name}" content="${escape(value)}">`,
-    )
-    .join("\n");
+  return (
+    `<meta name="description" content="${escape(description)}">\n` +
+    Object.entries(tags)
+      .filter(([, value]) => value != null)
+      .map(
+        ([name, value]) =>
+          `<meta ${name.startsWith("twitter:") ? "name" : "property"}="${name}" content="${escape(value)}">`,
+      )
+      .join("\n")
+  );
 }
 
 /** Public routes expose only the approved snapshot, even to a signed-in owner.
@@ -234,6 +264,7 @@ export async function publicPreviewResponse(request, env, pageId, file, fallback
           : JSON.stringify({
               title: preview.title,
               description: preview.description,
+              author: preview.author ?? "",
               image_url: previewImageUrl(origin, pageId, preview.revision),
               published_at: preview.published_at,
             }),
@@ -249,10 +280,12 @@ export async function publicPreviewResponse(request, env, pageId, file, fallback
   // passing that redirect through would send every Page link to the library.
   const shell = await env.ASSETS.fetch(new Request(new URL("/", request.url)));
   if (!shell.ok) return shell;
-  const html = (await shell.text()).replace(
-    "</head>",
-    `${previewTags(origin, pageId, preview)}\n</head>`,
-  );
+  const html = (await shell.text())
+    .replace(
+      /<title>[^<]*<\/title>/,
+      () => `<title>${preview ? `${escape(preview.title)} · ` : ""}${escape(PRODUCT_NAME)}</title>`,
+    )
+    .replace("</head>", () => `${previewTags(origin, pageId, preview)}\n</head>`);
   const outputHeaders = new Headers(shell.headers);
   for (const name of ["content-length", "content-encoding", "etag", "last-modified"])
     outputHeaders.delete(name);

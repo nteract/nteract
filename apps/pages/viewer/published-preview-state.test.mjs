@@ -98,9 +98,13 @@ test("edits invalidate approval; rendering, publishing and removing block duplic
 
 test("reopening restores the private cover and render recovery preserves edited text", () => {
   const cover = { asset_id: "a".repeat(64), name: "cover.png" };
-  const value = { revision: 1, snapshot: { title: "Published", description: "Before", cover } };
+  const value = {
+    revision: 1,
+    snapshot: { title: "Published", description: "Before", author: "Kyle Kelley", cover },
+  };
   const loaded = step({ name: "loading", draft: {} }, { type: "loaded", value });
   assert.equal(loaded.draft.visual, "upload");
+  assert.equal(loaded.draft.author, "Kyle Kelley");
   assert.deepEqual(loaded.draft.cover, cover);
   const edited = step(loaded, { type: "edit", patch: { description: "After" } });
   const failed = step(edited, { type: "failed", draft: edited.draft, error: "Decode failed" });
