@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { sourceFingerprint } from "./source-fingerprint.mjs";
 const root = fileURLToPath(new URL("../", import.meta.url));
-sourceFingerprint(root); // Includes freshness checks for the local frame package.
+sourceFingerprint(root, { verifyInstalled: true });
 const result = await build({
   entryPoints: [fileURLToPath(import.meta.resolve("@nteract/output-frame/runtime"))],
   bundle: true,

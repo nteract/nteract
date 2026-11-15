@@ -34,7 +34,7 @@ import { fileURLToPath } from "node:url";
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
 const dist = path.join(app, "dist");
-const expectedFingerprint = sourceFingerprint(app).sha256;
+const expectedFingerprint = sourceFingerprint(app, { verifyInstalled: true }).sha256;
 // The Worker and viewer embed the same build id; shared/build-identity.mjs
 // reads it. Keep the length aligned with writeBuildReceipt's build_id.
 const buildDefine = { __PAGES_BUILD__: JSON.stringify(expectedFingerprint.slice(0, 12)) };

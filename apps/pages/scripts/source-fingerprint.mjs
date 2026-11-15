@@ -22,7 +22,7 @@ const repository = (app) =>
   execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: app, encoding: "utf8" }).trim();
 
 /** Hash only the Pages app, the pinned upstream setup, and imported local source. */
-export function sourceFingerprint(app, { root = repository(app) } = {}) {
+export function sourceFingerprint(app, { root = repository(app), verifyInstalled = false } = {}) {
   // Install/publish can import the adapter without build dependencies. Only
   // preparation needs TypeScript, resolved from this trusted checkout.
   const ts = createRequire(import.meta.url)("typescript");
@@ -99,23 +99,27 @@ export function sourceFingerprint(app, { root = repository(app) } = {}) {
           add(resolved);
           if (name.startsWith("@nteract/output-frame")) {
             const packageRoot = path.join(root, "packages/output-frame");
-            // npm installs this local dependency as a copy. Never certify a
-            // receipt against new source while bundling an older installed copy.
+            // Always hash package source, including runtime and CSS. Only builds
+            // need its installed copy; artifact preparation has no dependencies.
             if (!outputPackageVerified) {
               outputPackageVerified = true;
-              const installed = path.dirname(
-                path.dirname(
-                  createRequire(path.join(app, "package.json")).resolve("@nteract/output-frame"),
-                ),
-              );
+              const installed = verifyInstalled
+                ? path.dirname(
+                    path.dirname(
+                      createRequire(path.join(app, "package.json")).resolve(
+                        "@nteract/output-frame",
+                      ),
+                    ),
+                  )
+                : null;
               const files = [
                 "package.json",
                 ...readdirSync(path.join(packageRoot, "src")).map((entry) => `src/${entry}`),
               ];
               for (const entry of files) {
                 const source = path.join(packageRoot, entry);
-                const copy = path.join(installed, entry);
-                if (!existsSync(copy) || !readFileSync(source).equals(readFileSync(copy)))
+                const copy = installed && path.join(installed, entry);
+                if (copy && (!existsSync(copy) || !readFileSync(source).equals(readFileSync(copy))))
                   throw new Error(
                     "Installed @nteract/output-frame differs from this checkout. Run npm run setup in apps/pages to refresh it.",
                   );
@@ -187,7 +191,7 @@ export function writeBuildReceipt(
   } = {},
 ) {
   const root = repository(app);
-  const fingerprint = sourceFingerprint(app, { root });
+  const fingerprint = sourceFingerprint(app, { root, verifyInstalled: true });
   if (expectedFingerprint && expectedFingerprint !== fingerprint.sha256)
     throw new Error("Source changed during the build; rebuild before validating");
   const certify = (files) =>
