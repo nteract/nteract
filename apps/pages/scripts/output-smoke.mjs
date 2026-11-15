@@ -1,0 +1,310 @@
+// Browser checks of the real frame boundary and Pages' source adapter.
+import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { build } from "esbuild";
+import { browserSiftPlugin } from "./browser-sift.mjs";
+import { chromium, expect } from "@playwright/test";
+import "./build-output.mjs";
+const { default: worker } = await import("../output/worker.mjs");
+import { OUTPUT_FRAME_URL } from "../shared/esm-view.mjs";
+const out = new URL(
+  process.env.PAGES_OUTPUT_ARTIFACT
+    ? "../test-results/output-real/"
+    : "../test-results/output-smoke/",
+  import.meta.url,
+);
+await mkdir(out, { recursive: true });
+const pageId = "33333333-3333-4333-8333-333333333333";
+const wav = Buffer.alloc(44 + 32000);
+wav.write("RIFF");
+wav.writeUInt32LE(wav.length - 8, 4);
+wav.write("WAVEfmt ", 8);
+wav.writeUInt32LE(16, 16);
+wav.writeUInt16LE(1, 20);
+wav.writeUInt16LE(1, 22);
+wav.writeUInt32LE(8000, 24);
+wav.writeUInt32LE(16000, 28);
+wav.writeUInt16LE(2, 32);
+wav.writeUInt16LE(16, 34);
+wav.write("data", 36);
+wav.writeUInt32LE(wav.length - 44, 40);
+for (let i = 0; i < 16000; i++)
+  wav.writeInt16LE(Math.sin((i * 2 * Math.PI * 261.63) / 8000) * 8000, 44 + i * 2);
+const code = `export default {
+ async initialize({model}) { if(document.documentElement.dataset.theme!=='light') throw Error('Initial theme was not applied'); await Promise.resolve(); model.set('initialized', true); },
+ async render({model,el,host,signal}) {
+  if (!model.get('initialized')) throw Error('render preceded initialize');
+  if (!(model.get('recording') instanceof DataView)) throw Error('binary contract');
+  let domBlocked = false, storageBlocked = false;
+  try { parent.document.body; } catch { domBlocked=true; }
+  try { localStorage.length; } catch { storageBlocked=true; }
+  if (!domBlocked || !storageBlocked || window.__TAURI__) throw Error('isolation failed');
+  await host.getModel('unknown').then(() => {throw Error('unexpected composition');}, () => {});
+  const url=URL.createObjectURL(new Blob([model.get('recording')],{type:'audio/wav'}));
+  el.innerHTML='<h2>Listen and explore</h2><p>Isolated audio with transferred WAV bytes</p><audio controls style="width:100%"></audio><label>Playhead <input type="range" min="0" max="2" step="0.01" value="0"></label><output>0.00</output>';
+  el.dataset.theme=host.getContext().theme; host.onContextChange(context=>{el.dataset.theme=context.theme});
+  const audio=el.querySelector('audio'); audio.src=url;
+  el.querySelector('input').addEventListener('input',e=>{model.set('time',Number(e.target.value));audio.currentTime=model.get('time')},{signal});
+  model.on('change:time',()=>{el.querySelector('output').textContent=model.get('time').toFixed(2)});
+  return ()=>{audio.pause();URL.revokeObjectURL(url)};
+ }
+}`;
+const tokens = await readFile(
+  new URL("../../../src/styles/notebook-tokens.css", import.meta.url),
+  "utf8",
+);
+const baseStyle = await readFile(
+  new URL(import.meta.resolve("@nteract/output-frame/styles.css")),
+  "utf8",
+);
+const entries = {
+  code: [Buffer.from(code), "text/javascript"],
+  recording: [wav, "audio/wav"],
+  broken: [
+    Buffer.from('export default {initialize(){throw Error("intentional failure")},render(){}}'),
+    "text/javascript",
+  ],
+};
+let description = "Synthetic C4 tone and test heatmap data; browser integration fixture.";
+if (process.env.PAGES_OUTPUT_CDN) {
+  const { tableFromArrays, tableToIPC } = await import("apache-arrow");
+  await import("#sift-wasm");
+  const { write_parquet_ipc } = await import("@nteract/sift/wasm");
+  let rows = Array.from({ length: 40 * 80 }, (_, i) => ({
+    frame: Math.floor(i / 80),
+    band: i % 80,
+    code: Math.round(7 + 7 * Math.sin(i / 30)),
+    time_seconds: Math.floor(i / 80) * 0.05,
+  }));
+  if (process.env.PAGES_OUTPUT_ARTIFACT) {
+    assert.ok(
+      process.env.PAGES_OUTPUT_WAV,
+      "PAGES_OUTPUT_WAV must identify the original recording",
+    );
+    const artifact = JSON.parse(await readFile(process.env.PAGES_OUTPUT_ARTIFACT, "utf8"));
+    const original = await readFile(process.env.PAGES_OUTPUT_WAV);
+    const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
+    assert.equal(hash(original), artifact.source.sha256, "Original WAV provenance");
+    assert.equal(
+      hash(Buffer.from(artifact.native.q.flat())),
+      artifact.native.tensor_sha256,
+      "Native tensor provenance",
+    );
+    entries.recording = [original, "audio/wav"];
+    rows = artifact.native.q.flatMap((bands, frame) =>
+      bands.map((code, band) => ({
+        frame,
+        band,
+        code,
+        time_seconds: artifact.timing.frame_centers_seconds[frame],
+      })),
+    );
+    description = `Original ${artifact.source.task_id} recording and actual native Inkling dMel. WAV and tensor SHA-256 verified.`;
+  }
+  const table = tableFromArrays(
+    Object.fromEntries(
+      ["frame", "band", "code", "time_seconds"].map((k) => [k, rows.map((r) => r[k])]),
+    ),
+  );
+  entries.dmel = [
+    Buffer.from(write_parquet_ipc(tableToIPC(table))),
+    "application/vnd.apache.parquet",
+  ];
+  entries.example = [
+    Buffer.from(await readFile(new URL("../output/audio-example.mjs", import.meta.url))),
+    "text/javascript",
+  ];
+}
+const assets = new Map();
+const versions = {};
+for (const [name, [bytes, media_type]] of Object.entries(entries)) {
+  const asset_id = createHash("sha256").update(bytes).digest("hex");
+  assets.set(asset_id, { bytes, media_type });
+  versions[name] = { asset_id, media_type, revision: "1" };
+}
+const fixture = `import { BehaviorSubject } from 'rxjs';
+import { mount } from './viewer/view-output.mjs';
+import { themeStore } from './viewer/theme.mjs';
+themeStore.setMode(${JSON.stringify(process.env.PAGES_OUTPUT_SERVE ? "system" : "light")});
+const appearance=document.querySelector('#appearance');appearance.value=themeStore.getSnapshot().mode;
+appearance.addEventListener('change',()=>themeStore.setMode(appearance.value));
+const versions=${JSON.stringify(versions)};
+const changes=new BehaviorSubject(0);
+const view={view_id:'audio',title:'Audio exploration',media_type:'application/vnd.nteract.esm-view+json',spec:{module:'code',inputs:['recording']},data:{code:{source_id:'code'},recording:{source_id:'recording'}},revision:'1'};
+const view$=new BehaviorSubject({status:'ready',view});
+let failNext=false;
+const sources={pageId:'${pageId}',request:(...args)=>{if(failNext){failNext=false;return Promise.resolve(new Response('not yet',{status:503}))}return fetch(...args)},versions:()=>changes,resolve:b=>versions[b.source_id]};
+const handle=mount(document.querySelector('main'),{view$,sources,sourcesAnswer$:null});
+window.fixture={transient(){failNext=true;versions.recording={...versions.recording,revision:'3'};changes.next(3)},example(){versions.code=versions.example;view$.next({status:'ready',view:{...view,spec:{module:'code',inputs:['recording','dmel'],state:{description:${JSON.stringify(description)}}},data:{...view.data,dmel:{source_id:'dmel'}}}})},change(){versions.recording={...versions.recording,revision:'2'};changes.next(1)},fail(){versions.code=versions.broken;changes.next(2)},destroy:()=>handle.destroy()};
+${process.env.PAGES_OUTPUT_SERVE ? "window.fixture.example();" : ""}`;
+const result = await build({
+  stdin: { contents: fixture, resolveDir: process.cwd(), sourcefile: "output-fixture.mjs" },
+  plugins: [browserSiftPlugin(process.cwd())],
+  bundle: true,
+  format: "esm",
+  write: false,
+});
+const server = createServer((req, res) => {
+  if (req.url === "/styles.css") {
+    res.setHeader("Content-Type", "text/css");
+    res.end(baseStyle + "\n" + tokens);
+    return;
+  }
+  if (req.url === "/app.js") {
+    res.setHeader("Content-Type", "text/javascript");
+    res.end(result.outputFiles[0].text);
+    return;
+  }
+  const asset = assets.get(req.url.split("/").at(-1));
+  if (asset) {
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("X-Pages-Media-Type", asset.media_type);
+    res.end(asset.bytes);
+    return;
+  }
+  res.setHeader(
+    "Content-Security-Policy",
+    `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-src ${new URL(OUTPUT_FRAME_URL).origin}`,
+  );
+  res.end(
+    '<!doctype html><meta name="viewport" content="width=device-width"><title>Audio exploration</title><link rel="stylesheet" href="/styles.css"><label style="max-width:900px;margin:20px auto">Appearance <select id="appearance"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><main style="max-width:900px;margin:30px auto;font:16px system-ui"></main><script type="module" src="/app.js"></script>',
+  );
+});
+await new Promise((resolve) =>
+  server.listen(Number(process.env.PAGES_OUTPUT_PORT ?? 0), "127.0.0.1", resolve),
+);
+if (process.env.PAGES_OUTPUT_SERVE) {
+  console.log(`Demo: http://127.0.0.1:${server.address().port}`);
+  await new Promise((resolve) => process.once("SIGINT", resolve));
+  await new Promise((resolve) => server.close(resolve));
+  process.exit(0);
+}
+const browser = await chromium.launch({ headless: true });
+try {
+  const page = await browser.newPage({ viewport: { width: 1200, height: 850 } });
+  await page.emulateMedia({ colorScheme: "dark" });
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  if (!process.env.PAGES_OUTPUT_LIVE)
+    await page.route(OUTPUT_FRAME_URL, async (route) => {
+      const response = await worker.fetch(new Request(OUTPUT_FRAME_URL));
+      await route.fulfill({
+        status: response.status,
+        headers: Object.fromEntries(response.headers),
+        body: await response.text(),
+      });
+    });
+  await page.goto(`http://127.0.0.1:${server.address().port}`);
+  await expect(page.locator("section")).toHaveAttribute("data-output-state", "ready");
+  await expect(page.getByRole("button", { name: "Retry interactive view" })).toBeHidden();
+  const frame = page.frameLocator("iframe");
+  await expect(frame.getByRole("heading", { name: "Listen and explore" })).toBeVisible();
+  assert.equal(await frame.locator("audio").evaluate((audio) => audio.paused), true);
+  await frame.getByRole("slider").click();
+  await frame.locator("audio").evaluate(async (audio) => {
+    await audio.play();
+    audio.pause();
+  });
+  await frame.getByRole("slider").fill("0.75");
+  await expect(frame.locator("output")).toHaveText("0.75");
+  assert.ok(await frame.locator("audio").evaluate((a) => Math.abs(a.currentTime - 0.75) < 0.05));
+  const themeMatches = async (expected) => {
+    await expect(frame.locator("html")).toHaveAttribute("data-theme", expected);
+    await expect(frame.locator("main")).toHaveAttribute("data-theme", expected);
+    const background = await page
+      .locator("html")
+      .evaluate((el) => getComputedStyle(el).backgroundColor);
+    assert.equal(
+      await frame.locator("html").evaluate((el) => getComputedStyle(el).backgroundColor),
+      background,
+    );
+    assert.equal(
+      await frame.locator("html").evaluate((el) => getComputedStyle(el).colorScheme),
+      expected,
+    );
+  };
+  const frameUrl = await page.locator("iframe").getAttribute("src");
+  await themeMatches("light"); // Explicit light wins even though OS is dark.
+  await page.getByLabel("Appearance").selectOption("dark");
+  await themeMatches("dark");
+  await page.getByLabel("Appearance").selectOption("system");
+  await themeMatches("dark");
+  await page.emulateMedia({ colorScheme: "light" });
+  await themeMatches("light");
+  await page.emulateMedia({ colorScheme: "dark" });
+  await themeMatches("dark");
+  await page.getByLabel("Appearance").selectOption("light");
+  await themeMatches("light");
+  assert.equal(await page.locator("iframe").getAttribute("src"), frameUrl);
+  await expect(frame.locator("output")).toHaveText("0.75");
+  await page.screenshot({ path: new URL("wide.png", out).pathname });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: new URL("narrow.png", out).pathname });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await page.evaluate(() => window.postMessage({ type: "error", message: "forged" }, "*"));
+  await expect(page.locator("section")).toHaveAttribute("data-output-state", "ready");
+  await page.evaluate(() => window.fixture.change());
+  await expect(page.locator("section")).toHaveAttribute("data-output-state", "ready");
+  assert.notEqual(await page.locator("iframe").getAttribute("src"), frameUrl);
+  await expect(page.getByRole("button", { name: "Retry interactive view" })).toBeHidden();
+  await page.evaluate(() => window.fixture.transient());
+  await expect(page.locator("section")).toHaveAttribute("data-output-state", "failed");
+  await expect(page.locator("iframe")).toHaveCount(0);
+  await page.getByRole("button", { name: "Retry interactive view" }).click();
+  await expect(page.locator("section")).toHaveAttribute("data-output-state", "ready");
+  if (process.env.PAGES_OUTPUT_CDN) {
+    await page.evaluate(() => window.fixture.example());
+    await expect(page.locator("section")).toHaveAttribute("data-output-state", "ready", {
+      timeout: 30000,
+    });
+    await expect(frame.locator("canvas")).toBeVisible();
+    await page.screenshot({ path: new URL("dmel-narrow.png", out).pathname });
+    await page.setViewportSize({ width: 1200, height: 850 });
+    await page.screenshot({ path: new URL("dmel-wide.png", out).pathname });
+    await page.getByLabel("Appearance").selectOption("dark");
+    await expect(frame.locator("html")).toHaveAttribute("data-theme", "dark");
+    await page.screenshot({ path: new URL("dmel-dark.png", out).pathname });
+    await page.getByLabel("Appearance").selectOption("light");
+  }
+  await page.evaluate(() => window.fixture.fail());
+  await expect(page.locator("section")).toHaveAttribute("data-output-state", "failed");
+  await expect(page.getByText("intentional failure")).toBeVisible();
+  await expect(page.locator("iframe")).toHaveCount(0);
+  await page.evaluate(() => window.fixture.destroy());
+  assert.deepEqual(errors, []);
+  await writeFile(
+    new URL("report.json", out),
+    JSON.stringify(
+      {
+        passed: [
+          "opaque DOM/storage boundary",
+          "WAV DataView",
+          "initialize before render",
+          "local model and seeking",
+          "wide/narrow",
+          "resolved light/dark/system theme updates preserve widget state",
+          "forged ambient message",
+          "automatic render and source-change remount",
+          "retry after a transient input failure",
+          "failure recovery",
+        ],
+        live: !!process.env.PAGES_OUTPUT_LIVE,
+      },
+      null,
+      2,
+    ),
+  );
+  console.log("Output smoke passed");
+} catch (error) {
+  const failed = browser.contexts()[0]?.pages()[0];
+  if (failed) {
+    console.error(await failed.locator("body").innerText());
+    await failed.screenshot({ path: new URL("failure.png", out).pathname });
+  }
+  throw error;
+} finally {
+  await browser.close();
+  await new Promise((resolve) => server.close(resolve));
+}

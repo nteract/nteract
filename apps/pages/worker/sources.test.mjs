@@ -868,3 +868,33 @@ test("new table bindings require a source and retained revision; failed edits le
     source_id: "usage",
   });
 });
+
+test("ESM and WAV sources bind to an executable view through the real Page host", async (t) => {
+  const h = await sourcesHost(t);
+  h.assets.head = async (key) => ({
+    ...parquetHead(key.slice(-64)),
+    httpMetadata: { contentType: key.endsWith(first) ? "text/javascript" : "audio/wav" },
+  });
+  const source = await h.setSource(h.host, [
+    usage({ source_id: "code" }),
+    usage({ source_id: "recording", asset_id: second }),
+  ]);
+  assert.equal(source.status, 200, JSON.stringify(source.body));
+  const read = await h.tool(h.host, "read_page", { include_content: false });
+  const view = await h.tool(h.host, "edit_page", {
+    revision: read.body.revision,
+    nonce: "esm-view",
+    operations: [
+      {
+        op: "set_view",
+        view_id: "audio",
+        title: "Listen",
+        media_type: "application/vnd.nteract.esm-view+json",
+        spec: { module: "code", inputs: ["recording"] },
+        data: { code: { source_id: "code" }, recording: { source_id: "recording" } },
+        view_revision: null,
+      },
+    ],
+  });
+  assert.equal(view.status, 200, JSON.stringify(view.body));
+});

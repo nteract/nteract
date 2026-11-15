@@ -45,6 +45,7 @@ jobs:
             apps/notebook-cloud/src
             packages/runtimed/src
             packages/local-oidc/src
+            packages/output-frame
             src/components/markdown
             src/components/sharing
             src/styles

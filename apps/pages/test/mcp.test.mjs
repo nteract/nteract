@@ -1008,6 +1008,8 @@ test("MCP lists create_page_asset_upload for any client with write scope, and po
     "image/jpeg",
     "image/webp",
     "application/vnd.apache.parquet",
+    "text/javascript",
+    "audio/wav",
   ]);
   assert.equal(descriptor.inputSchema.properties.size.maximum, 5 * 1024 * 1024);
   assert.match(descriptor.inputSchema.properties.file.description, /never build one/);

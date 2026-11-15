@@ -1,3 +1,5 @@
+import { ESM_MEDIA_TYPE, WAV_MEDIA_TYPE } from "../shared/esm-view.mjs";
+import { inspectOutputAsset } from "../shared/output-assets.mjs";
 import { authenticate, HttpError, errorResponse } from "./auth.mjs";
 import { validPageId } from "./registration.mjs";
 import { setResponseHeaders } from "./response-headers.mjs";
@@ -73,6 +75,13 @@ export function inspectParquet(bytes) {
  * bound, if any: bytes that are neither kind are refused with what that
  * upload takes. */
 export function inspectAsset(bytes, expected) {
+  if (expected === ESM_MEDIA_TYPE || expected === WAV_MEDIA_TYPE) {
+    try {
+      return inspectOutputAsset(bytes, expected);
+    } catch (error) {
+      throw new HttpError(415, error.message);
+    }
+  }
   if (bytes instanceof Uint8Array && bytes.length >= 4 && ascii(bytes, 0, 4) === PARQUET_MAGIC)
     return inspectParquet(bytes);
   try {
@@ -200,9 +209,11 @@ function storedDatasetMetadata(object, pageId, assetId) {
   const metadata = object?.customMetadata;
   if (
     !object ||
-    object.httpMetadata?.contentType !== PARQUET_MEDIA_TYPE ||
+    ![PARQUET_MEDIA_TYPE, ESM_MEDIA_TYPE, WAV_MEDIA_TYPE].includes(
+      object.httpMetadata?.contentType,
+    ) ||
     !Number.isInteger(object.size) ||
-    object.size < 12 ||
+    object.size < 1 ||
     object.size > DATASET_MAX_BYTES ||
     metadata?.page_id !== pageId ||
     metadata?.hash !== assetId ||
@@ -213,12 +224,13 @@ function storedDatasetMetadata(object, pageId, assetId) {
   return {
     asset_id: assetId,
     asset_url: imageAssetUrl(pageId, assetId),
-    mime_type: PARQUET_MEDIA_TYPE,
+    mime_type: object.httpMetadata.contentType,
     size: object.size,
   };
 }
 
-const isDataset = (object) => object?.httpMetadata?.contentType === PARQUET_MEDIA_TYPE;
+const isDataset = (object) =>
+  [PARQUET_MEDIA_TYPE, ESM_MEDIA_TYPE, WAV_MEDIA_TYPE].includes(object?.httpMetadata?.contentType);
 const storedAssetMetadata = (object, pageId, assetId) =>
   isDataset(object)
     ? storedDatasetMetadata(object, pageId, assetId)
@@ -248,7 +260,10 @@ export async function requireStoredImageAsset(bucket, { pageId, assetId }) {
  * set_source, with HEAD only. Like requireStoredImageAsset, the caller
  * enforces Page access. `mediaType`, when given, is the one the dataset must
  * be stored as; without it the stored record's `mime_type` is the answer. */
-export async function requireStoredDatasetAsset(bucket, { pageId, assetId, mediaType }) {
+export async function requireStoredDatasetAsset(
+  bucket,
+  { pageId, assetId, mediaType = PARQUET_MEDIA_TYPE },
+) {
   if (!validPageId(pageId) || !validAssetId(assetId))
     throw new HttpError(400, "Invalid dataset reference");
   if (!bucket) throw new HttpError(503, "Image storage is unavailable");
@@ -257,7 +272,7 @@ export async function requireStoredDatasetAsset(bucket, { pageId, assetId, media
   if (!isDataset(stored))
     throw new HttpError(415, "This asset is an image, not a dataset. Place it with insert_image.");
   const dataset = storedDatasetMetadata(stored, pageId, assetId);
-  if (mediaType !== undefined && dataset.mime_type !== mediaType)
+  if (mediaType != null && dataset.mime_type !== mediaType)
     throw new HttpError(415, `This dataset is ${dataset.mime_type}, not ${mediaType}`);
   return dataset;
 }
@@ -289,7 +304,7 @@ export async function persistPageAsset(bucket, { pageId, bytes, contentTypes = [
   if (!validPageId(pageId)) throw new HttpError(400, "Invalid image reference");
   if (bytes.byteLength > ASSET_MAX_BYTES) throw new HttpError(413, FILE_TOO_LARGE);
   const inspected = inspectAsset(bytes, expect?.content_type);
-  const dataset = inspected.mime_type === PARQUET_MEDIA_TYPE;
+  const dataset = !IMAGE_MEDIA_TYPES.includes(inspected.mime_type);
   if (bytes.byteLength > (dataset ? DATASET_MAX_BYTES : IMAGE_MAX_BYTES))
     throw new HttpError(413, dataset ? "Datasets must be 5 MiB or smaller" : IMAGE_TOO_LARGE);
   for (const contentType of contentTypes) {
@@ -347,9 +362,11 @@ export async function persistPageAsset(bucket, { pageId, bytes, contentTypes = [
  * so the operation leaves it out and edit_page refuses it until alt is added.
  */
 export const assetInsertOperation = ({ asset_id, mime_type }) =>
-  mime_type === PARQUET_MEDIA_TYPE
-    ? { op: "insert_node", node: { type: "dataframe", attrs: { asset_id } } }
-    : { op: "insert_image", asset_id };
+  [ESM_MEDIA_TYPE, WAV_MEDIA_TYPE].includes(mime_type)
+    ? null
+    : mime_type === PARQUET_MEDIA_TYPE
+      ? { op: "insert_node", node: { type: "dataframe", attrs: { asset_id } } }
+      : { op: "insert_image", asset_id };
 
 /** The answer to a stored upload or copy: the asset, its URL under both names,
  * and the operation that places it. */
@@ -363,7 +380,12 @@ const FILE_TOO_LARGE = "Files must be 5 MiB or smaller";
 /** Read an image or dataset body under the shared asset ceiling. */
 export const readAssetBody = (source, { signal } = {}) =>
   readImageBody(source, { signal, maxBytes: ASSET_MAX_BYTES, tooLarge: FILE_TOO_LARGE });
-const SERVED_MEDIA_TYPES = Object.freeze([...IMAGE_MEDIA_TYPES, PARQUET_MEDIA_TYPE]);
+const SERVED_MEDIA_TYPES = Object.freeze([
+  ...IMAGE_MEDIA_TYPES,
+  PARQUET_MEDIA_TYPE,
+  ESM_MEDIA_TYPE,
+  WAV_MEDIA_TYPE,
+]);
 
 /** An upload capability's binding from the Page host's authorization answer,
  * or undefined for an ordinary credential. */
@@ -562,12 +584,15 @@ export async function handleImageAssets(
     if (!SERVED_MEDIA_TYPES.includes(contentType)) throw new Error("Invalid stored asset type");
     // A dataset is data for the viewer to fetch, never a document to open:
     // navigating to it downloads the file.
-    const disposition =
-      contentType === PARQUET_MEDIA_TYPE ? `attachment; filename="${assetId}.parquet"` : "inline";
+    const disposition = !IMAGE_MEDIA_TYPES.includes(contentType)
+      ? `attachment; filename="${assetId}.${contentType === ESM_MEDIA_TYPE ? "mjs" : contentType === WAV_MEDIA_TYPE ? "wav" : "parquet"}"`
+      : "inline";
     return servedAssetResponse(
       new Response(request.method === "HEAD" ? null : object.body, {
         headers: {
-          "Content-Type": contentType,
+          "Content-Type": contentType === ESM_MEDIA_TYPE ? "application/octet-stream" : contentType,
+          "X-Pages-Media-Type": contentType,
+          "Content-Security-Policy": "sandbox; default-src 'none'",
           "Content-Length": String(object.size),
           "Content-Disposition": disposition,
           ...(object.httpEtag && { ETag: object.httpEtag }),

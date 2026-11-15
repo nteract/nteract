@@ -1,3 +1,4 @@
+import { ESM_VIEW_MEDIA_TYPE } from "./esm-view.mjs";
 // A Page's views: charts stored each in its own `pages.view` document
 // (model/view-doc.mjs), placed in the Page body by a `view` node. These are
 // the limits and names the host, the model, the tool schemas (mcp.mjs) and
@@ -10,7 +11,10 @@ export const VIEW_ID_PATTERN = "^[a-z][a-z0-9_-]{0,63}$";
 /** The longest view title, in UTF-16 code units. */
 export const MAX_VIEW_TITLE = 200;
 /** The media types a view's spec may be. */
-export const VIEW_MEDIA_TYPES = Object.freeze(["application/vnd.vegalite.v6+json"]);
+export const VIEW_MEDIA_TYPES = Object.freeze([
+  "application/vnd.vegalite.v6+json",
+  ESM_VIEW_MEDIA_TYPE,
+]);
 /** A view revision: decimal, minted by the host from "1". */
 export const VIEW_REVISION_PATTERN = "^[1-9][0-9]{0,15}$";
 /** A data name: a key of a view's `data` map and the name its spec reads. */

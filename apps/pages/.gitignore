@@ -4,3 +4,5 @@ upstream/
 dist/
 .celld/
 test-results/
+.output-dist/
+.wrangler/

@@ -6,6 +6,8 @@ import { createRequire } from "node:module";
 import { RECORD_STORAGE_MODES, PLAIN_STORAGE_FORMATS } from "../shared/record-storage.mjs";
 
 const excluded = new Set([
+  ".output-dist",
+  ".wrangler",
   "dist",
   "node_modules",
   "upstream",
@@ -27,6 +29,7 @@ export function sourceFingerprint(app, { root = repository(app) } = {}) {
   app = path.resolve(app);
   root = path.resolve(root);
   const inputs = new Set();
+  let outputPackageVerified = false;
   const generated = (file) => {
     const relative = path.relative(app, file);
     return (
@@ -64,11 +67,21 @@ export function sourceFingerprint(app, { root = repository(app) } = {}) {
           ? path.resolve(path.dirname(file), name)
           : name.startsWith("@cloud/")
             ? path.join(root, "apps/notebook-cloud/src", name.slice(7))
-            : name === "@nteract/local-oidc"
-              ? path.join(root, "packages/local-oidc/src/index.ts")
-              : name === "runtimed"
-                ? path.join(root, "packages/runtimed/src/scope-capabilities.ts")
-                : undefined;
+            : name.startsWith("@nteract/output-frame")
+              ? path.join(
+                  root,
+                  "packages/output-frame/src",
+                  name.endsWith("/lifecycle")
+                    ? "lifecycle.mjs"
+                    : name.endsWith("/runtime")
+                      ? "runtime.mjs"
+                      : "host.mjs",
+                )
+              : name === "@nteract/local-oidc"
+                ? path.join(root, "packages/local-oidc/src/index.ts")
+                : name === "runtimed"
+                  ? path.join(root, "packages/runtimed/src/scope-capabilities.ts")
+                  : undefined;
         // An import into a generated directory, such as the pinned upstream
         // checkout, is not source: setup.mjs and upstream-provenance.json pin it.
         if (base && generated(base)) base = undefined;
@@ -84,6 +97,32 @@ export function sourceFingerprint(app, { root = repository(app) } = {}) {
               "Unresolved source import: " + name + " in " + path.relative(root, file),
             );
           add(resolved);
+          if (name.startsWith("@nteract/output-frame")) {
+            const packageRoot = path.join(root, "packages/output-frame");
+            // npm installs this local dependency as a copy. Never certify a
+            // receipt against new source while bundling an older installed copy.
+            if (!outputPackageVerified) {
+              outputPackageVerified = true;
+              const installed = path.dirname(
+                path.dirname(
+                  createRequire(path.join(app, "package.json")).resolve("@nteract/output-frame"),
+                ),
+              );
+              const files = [
+                "package.json",
+                ...readdirSync(path.join(packageRoot, "src")).map((entry) => `src/${entry}`),
+              ];
+              for (const entry of files) {
+                const source = path.join(packageRoot, entry);
+                const copy = path.join(installed, entry);
+                if (!existsSync(copy) || !readFileSync(source).equals(readFileSync(copy)))
+                  throw new Error(
+                    "Installed @nteract/output-frame differs from this checkout. Run npm run setup in apps/pages to refresh it.",
+                  );
+                add(source);
+              }
+            }
+          }
         }
       }
       ts.forEachChild(node, visit);

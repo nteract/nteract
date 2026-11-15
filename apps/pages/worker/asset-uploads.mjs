@@ -1,3 +1,4 @@
+import { ESM_MEDIA_TYPE, WAV_MEDIA_TYPE } from "../shared/esm-view.mjs";
 /**
  * Short-lived, Page-scoped upload capabilities (create_page_asset_upload).
  *
@@ -52,7 +53,12 @@ export { ASSET_UPLOAD_SCHEME };
 /** The Page host route that authorizes asset access, and the only one that
  * reads an upload capability. */
 export const ASSET_AUTHORIZE_PATH = "/internal/assets/authorize";
-export const ASSET_UPLOAD_TYPES = Object.freeze([...IMAGE_MEDIA_TYPES, PARQUET_MEDIA_TYPE]);
+export const ASSET_UPLOAD_TYPES = Object.freeze([
+  ...IMAGE_MEDIA_TYPES,
+  PARQUET_MEDIA_TYPE,
+  ESM_MEDIA_TYPE,
+  WAV_MEDIA_TYPE,
+]);
 export const ASSET_UPLOAD_MAX_BYTES = Math.max(IMAGE_MAX_BYTES, DATASET_MAX_BYTES);
 /** The credential kind of an identity a capability stands for. */
 export const UPLOAD_CREDENTIAL = "upload-capability";
@@ -64,6 +70,8 @@ const PREFIX = "pu1";
 const ISSUING_KINDS = new Set(["api-key", "oauth", "kilo-token"]);
 const ARGUMENTS = new Set(["page_id", "content_type", "size"]);
 const EXTENSIONS = {
+  [ESM_MEDIA_TYPE]: "mjs",
+  [WAV_MEDIA_TYPE]: "wav",
   "image/png": "png",
   "image/jpeg": "jpg",
   "image/webp": "webp",

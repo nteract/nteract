@@ -145,7 +145,7 @@ for (const fails of [true, false])
           "model/document-types.mjs",
           readFileSync(new URL("../model/document-types.mjs", import.meta.url), "utf8"),
         );
-        for (const name of ["favicon.mjs", "product.mjs", "schedule.mjs"])
+        for (const name of ["esm-view.mjs", "favicon.mjs", "product.mjs", "schedule.mjs"])
           write(
             `shared/${name}`,
             readFileSync(new URL(`../shared/${name}`, import.meta.url), "utf8"),

@@ -1,3 +1,4 @@
+import { OUTPUT_FRAME_URL } from "../shared/esm-view.mjs";
 // The viewer bundle is app.js plus content-hashed chunks under public/chunks.
 // app.js renders the shell; the Page editor and the WASM runtimes it waits for
 // load from a chunk (viewer/editor-loader.mjs). These checks run on the build's
@@ -42,8 +43,7 @@ export const IMMUTABLE = "public, max-age=31536000, immutable";
 /** The viewer's Content-Security-Policy. No 'unsafe-eval': only WebAssembly
  * compiles at runtime, so Vega charts run with its expression interpreter
  * (viewer/vega-chart.mjs). scripts/chart-smoke.mjs serves its fixture with it. */
-export const VIEWER_CSP =
-  "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
+export const VIEWER_CSP = `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; frame-src ${new URL(OUTPUT_FRAME_URL).origin}`;
 
 const BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 /** Eight base32 characters from the first five bytes of a sha256 digest. */

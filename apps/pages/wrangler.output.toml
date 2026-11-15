@@ -1,0 +1,8 @@
+name = "nteract-pages-outputs"
+main = "output/worker.mjs"
+compatibility_date = "2026-11-15"
+workers_dev = false
+routes = [{ pattern = "pages.kilousercontent.com", custom_domain = true }]
+
+[build]
+command = "node scripts/build-output.mjs"

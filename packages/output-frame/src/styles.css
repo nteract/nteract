@@ -1,0 +1,128 @@
+/* Framework-independent defaults. HostContext supplies the embedding app's
+   resolved palette using the same semantic tokens as nteract/shadcn. */
+:root {
+  --background: Canvas;
+  --foreground: CanvasText;
+  --card: Canvas;
+  --card-foreground: CanvasText;
+  --primary: Highlight;
+  --primary-foreground: HighlightText;
+  --secondary: ButtonFace;
+  --secondary-foreground: ButtonText;
+  --muted: color-mix(in srgb, CanvasText 6%, Canvas);
+  --muted-foreground: color-mix(in srgb, CanvasText 65%, Canvas);
+  --border: color-mix(in srgb, CanvasText 18%, Canvas);
+  --input: var(--border);
+  --ring: Highlight;
+  --radius: 0.625rem;
+  --output-ui-font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --output-mono-font: ui-monospace, monospace;
+  --output-document-font: var(--output-ui-font);
+  font: 14px/1.5 var(--output-ui-font);
+  color: var(--foreground);
+  background: var(--background);
+}
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+body {
+  margin: 8px;
+}
+[hidden]:not([hidden="until-found"]) {
+  display: none !important;
+}
+main {
+  min-width: 0;
+}
+h1,
+h2,
+h3,
+p {
+  margin: 0 0 0.75rem;
+}
+h2 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+button,
+.output-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 2.25rem;
+  padding: 0.4rem 0.85rem;
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--primary);
+  color: var(--primary-foreground);
+  cursor: pointer;
+}
+button[data-variant="secondary"] {
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  border-color: var(--border);
+}
+button:hover {
+  filter: brightness(0.94);
+}
+button:disabled,
+input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+input:not([type="range"]):not([type="checkbox"]):not([type="radio"]),
+select,
+textarea {
+  color: var(--foreground);
+  background: var(--background);
+  border: 1px solid var(--input);
+  border-radius: calc(var(--radius) - 2px);
+  padding: 0.45rem 0.6rem;
+  max-width: 100%;
+}
+input,
+progress {
+  accent-color: var(--primary);
+}
+label {
+  display: block;
+  font-weight: 500;
+}
+code,
+pre {
+  font-family: var(--output-mono-font);
+}
+small,
+.output-muted {
+  color: var(--muted-foreground);
+}
+.output-surface {
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  color: var(--card-foreground);
+}
+.output-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+audio,
+canvas {
+  max-width: 100%;
+}

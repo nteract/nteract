@@ -51,7 +51,8 @@
     "vega-lite": "6.5.0",
     "vega-scenegraph": "5.3.0",
     "vega-tooltip": "1.1.0",
-    "wordgard": "0.7.0"
+    "wordgard": "0.7.0",
+    "@nteract/output-frame": "file:../../packages/output-frame"
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "2.4.0",
