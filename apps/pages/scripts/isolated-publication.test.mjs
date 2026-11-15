@@ -13,6 +13,8 @@ import {
   pageSlugPaths,
   projectAssetPaths,
   projectPaths,
+  publishedPreviewApiPaths,
+  publishedPreviewPaths,
   restPaths,
   siftPaths,
   whoamiPaths,
@@ -301,7 +303,9 @@ const lifecycle = (f) =>
 const digest = (text) => createHash("sha256").update(text).digest("hex");
 // A live target's routes without Page slugs: the route set the release before
 // them sealed.
-const beforeSlugs = (config) => config.replace(pageSlugPaths, "");
+const beforePublishedPreviews = (config) =>
+  config.replace(publishedPreviewPaths, "").replace(publishedPreviewApiPaths, "");
+const beforeSlugs = (config) => beforePublishedPreviews(config).replace(pageSlugPaths, "");
 // Without link previews, card images and Project assets either: the route
 // set the release before those sealed.
 const beforePreviews = (config) =>
@@ -1743,6 +1747,64 @@ function slotInstall(f, from, { state = "sealed", edit = (config) => config } = 
   f.activate(plan.slots[0].service);
   return { plan, base, receipt };
 }
+for (const state of ["sealed", "pending-old", "pending-new"])
+  test(`page10 publishes explicit previews from its existing slotted installation (${state})`, (t) => {
+    const f = fixture(t, { target: "page10" });
+    const x = slotInstall(f, beforePublishedPreviews, { state });
+    const units = x.plan.slots.map((slot) => fs.readFileSync(f.local(slot.unitPath), "utf8"));
+    const result = f.execute();
+    assert.equal(result.routesUpdated, true);
+    assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.plan.config);
+    assert.equal(installedReceipt(f), slotReceipt(x.plan.config, x.plan.unitSha256));
+    assert.deepEqual(
+      x.plan.slots.map((slot) => fs.readFileSync(f.local(slot.unitPath), "utf8")),
+      units,
+    );
+    assertNoGap(f);
+    f.calls.length = 0;
+    assert.equal(f.execute().routesUpdated, false);
+  });
+
+test("a failed preview-route connector restores the sealed page10 routes and can retry", (t) => {
+  const f = fixture(t, { target: "page10" });
+  const x = slotInstall(f, beforePublishedPreviews);
+  f.failNextStart();
+  assert.throws(f.execute, /injected connector startup failure/);
+  assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.base);
+  assert.equal(installedReceipt(f), slotReceipt(x.base, x.plan.unitSha256));
+  assertNoGap(f);
+  assert.equal(f.execute().routesUpdated, true);
+});
+
+test("page10 migrates the same sealed preview predecessor from a legacy connector", (t) => {
+  const f = fixture(t, { target: "page10" });
+  const plan = isolatedPublicationPlan(inputFor("page10"));
+  const previous = beforePublishedPreviews(plan.config);
+  f.write(plan.configPath, previous);
+  f.write(plan.unitPath, plan.unit);
+  f.write(
+    configDir("page10") + "/tunnel-installation.json",
+    slotReceipt(previous, digest(plan.unit)),
+  );
+  f.activate(plan.service);
+  assert.equal(f.execute().routesUpdated, true);
+  assert.equal(installedReceipt(f), slotReceipt(plan.config, plan.unitSha256));
+  assertNoGap(f);
+});
+
+test("preview-route migration refuses partial route additions and unrelated edits even with matching receipts", (t) => {
+  for (const from of [
+    (config) => config.replace(publishedPreviewPaths, ""),
+    (config) => config.replace(publishedPreviewApiPaths, ""),
+    (config) => beforePublishedPreviews(config).replace("health|", "health|arbitrary|"),
+  ]) {
+    const f = fixture(t, { target: "page10" });
+    slotInstall(f, from);
+    assert.throws(f.execute, /installation differs/);
+    assert.equal(f.writes.length, 0);
+    assert.deepEqual(lifecycle(f), []);
+  }
+});
 // Before the account routes, which also predate link previews, card images
 // and Project assets: it migrates straight to plan.config.
 const accountInstall = (f, options) =>
