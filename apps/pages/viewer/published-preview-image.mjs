@@ -82,6 +82,12 @@ export function previewSourceSize(width, height) {
   };
 }
 
+/** Capture rounds dimensions down. Leave a little headroom above one pixel
+ * for thin visuals; the retained raster is bounded separately afterward. */
+export function previewCaptureScale(width, height) {
+  return Math.max(1.1 / width, 1.1 / height, Math.min(2, 1152 / width, 390 / height));
+}
+
 const pngBlob = (canvas) =>
   new Promise((resolve, reject) =>
     canvas.toBlob(
@@ -129,20 +135,40 @@ export async function renderPublishedPreview(draft, visuals, signal, pageId) {
       const choice = visuals.find((item) => item.id === draft.visual);
       const node = previewVisualNode(choice);
       if (!node) throw Error("That visual changed. Reopen Link preview to choose it again.");
-      const { domToCanvas } = await import("modern-screenshot");
-      const bounds = node.getBoundingClientRect();
-      const captured = await domToCanvas(node, {
-        backgroundColor: "#ffffff",
-        scale: Math.min(2, 1152 / bounds.width, 390 / bounds.height),
-      });
-      signal.throwIfAborted();
+      let captured;
+      if (node.tagName === "IMG") {
+        // Read image pixels directly: a wide image may display at a fraction
+        // of a CSS pixel high, which cannot survive a DOM/SVG capture.
+        const response = await fetch(node.currentSrc || node.src, {
+          signal,
+          credentials: "same-origin",
+        });
+        if (!response.ok) throw Error("Could not load this image. Choose it again or try another.");
+        captured = await createImageBitmap(await response.blob());
+      } else {
+        const { domToCanvas } = await import("modern-screenshot");
+        const bounds = node.getBoundingClientRect();
+        const width = Math.max(1, bounds.width);
+        const height = Math.max(1, bounds.height);
+        captured = await domToCanvas(node, {
+          backgroundColor: "#ffffff",
+          width,
+          height,
+          scale: previewCaptureScale(width, height),
+        });
+      }
       // Normalize the capture's actual dimensions too: DOM layout and capture
       // rounding can differ. Compose and retain this same bounded raster.
-      visual = document.createElement("canvas");
-      const size = previewSourceSize(captured.width, captured.height);
-      visual.width = size.width;
-      visual.height = size.height;
-      visual.getContext("2d").drawImage(captured, 0, 0, size.width, size.height);
+      try {
+        signal.throwIfAborted();
+        visual = document.createElement("canvas");
+        const size = previewSourceSize(captured.width, captured.height);
+        visual.width = size.width;
+        visual.height = size.height;
+        visual.getContext("2d").drawImage(captured, 0, 0, size.width, size.height);
+      } finally {
+        captured.close?.();
+      }
       // Preserve the exact uncaptioned raster used below. On approval it is
       // uploaded privately, just like an uploaded cover, for later text edits.
       sourceFile = new File([await pngBlob(visual)], `${choice.label.slice(0, 1000)}.png`, {
