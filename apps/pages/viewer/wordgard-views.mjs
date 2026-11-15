@@ -41,7 +41,7 @@ export const VIEW_NOT_HERE = "This chart isn't on this Page.";
 /** The custom property that holds an embed's remembered height. */
 export const VIEW_RESERVE_PROPERTY = "--pages-view-reserve";
 
-/** Events on the chart's own controls (Maximize) are the chart's; everything
+/** Events on the chart's own controls (Comment and Maximize) are the chart's; everything
  * else on the embed reaches Wordgard, which selects the node. */
 export const viewEventReachesEditor = (event) =>
   !event.target?.closest?.(".wordgard-diagram-actions");
@@ -88,6 +88,7 @@ export function viewLifecycle({
   frame,
   load = VIEW_RENDERER,
   onUnavailable = reportRendererUnavailable,
+  comments = null,
   ...options
 }) {
   const mirror = () => {
@@ -117,7 +118,14 @@ export function viewLifecycle({
           const held = views.hold(viewId);
           let chart;
           try {
-            chart = chunk.mount(canvas, { view$: held.view$, sources, sourcesAnswer$ });
+            chart = chunk.mount(canvas, {
+              view$: held.view$,
+              sources,
+              sourcesAnswer$,
+              ...(comments && {
+                comments: { allowed: comments.allowed, open: () => comments.open(frame.dom) },
+              }),
+            });
           } catch (error) {
             held.release();
             throw error;
@@ -300,7 +308,8 @@ const viewEmbed = Widget.define({
     a.sourcesAnswer$ === b.sourcesAnswer$ &&
     a.eager === b.eager &&
     a.heights === b.heights &&
-    a.warmup === b.warmup,
+    a.warmup === b.warmup &&
+    a.comments === b.comments,
   render(attrs) {
     const frame = viewFrame(attrs);
     mounted.set(frame.dom, {
@@ -311,6 +320,7 @@ const viewEmbed = Widget.define({
         views: attrs.views,
         sources: attrs.sources,
         sourcesAnswer$: attrs.sourcesAnswer$,
+        comments: attrs.comments,
         frame,
         ...(attrs.eager && { observe: alwaysNear }),
       }),
@@ -353,6 +363,7 @@ export function wordgardViews({
   sourcesAnswer$ = null,
   eager = false,
   heights = null,
+  comments = null,
 } = {}) {
   const warmup = warmupFor({ views, sources });
   return [
@@ -367,6 +378,7 @@ export function wordgardViews({
           eager,
           heights,
           warmup,
+          comments,
         }),
       { atom: true },
     ),

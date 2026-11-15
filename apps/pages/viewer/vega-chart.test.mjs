@@ -461,6 +461,52 @@ test("Maximize opens the chart in the diagram viewer, titled by the chart", () =
 /** Mount `spec` and return the sentence shown inside the frame. */
 const RESERVED = ["__proto__", "constructor", "toString"];
 
+test("the chart comment button calls its host only while comment access is allowed", () =>
+  withWindow(async (window) => {
+    const { element } = container(window);
+    let allowed = true,
+      opened = 0;
+    const chart = mount(element, {
+      spec: stacked,
+      datasets: { calls },
+      comments: { allowed: () => allowed, open: () => opened++ },
+    });
+    await drawn(element);
+    const button = element.querySelector('[aria-label="Comment on chart"]');
+    assert.equal(button.hidden, false);
+    assert.equal(button.nextElementSibling.getAttribute("aria-label"), "Maximize chart");
+    button.click();
+    assert.equal(opened, 1);
+    allowed = false;
+    button.click();
+    assert.equal(opened, 1, "a stale button cannot open a composer after access changes");
+    chart.destroy();
+  }));
+
+test("comment access changes refresh the header of an untitled failed chart", () =>
+  withWindow(async (window) => {
+    const { element } = container(window);
+    let allowed = false;
+    const chart = mount(element, {
+      spec: stacked,
+      datasets: {},
+      comments: { allowed: () => allowed, open() {} },
+    });
+    assert.equal(await drawn(element), "error");
+    const button = element.querySelector("[data-chart-comment]");
+    const header = element.querySelector(".pages-chart-header");
+    assert.equal(header.hidden, true);
+    allowed = true;
+    button.dispatchEvent(new window.Event("pages-chart-comment-access"));
+    assert.equal(button.hidden, false);
+    assert.equal(header.hidden, false);
+    allowed = false;
+    button.dispatchEvent(new window.Event("pages-chart-comment-access"));
+    assert.equal(button.hidden, true);
+    assert.equal(header.hidden, true);
+    chart.destroy();
+  }));
+
 test("columns named like Object.prototype stay columns, in rows and in Arrow tables", () =>
   withWindow(async (window) => {
     // JSON.parse makes "__proto__" an own key, as data from a host would.

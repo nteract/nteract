@@ -1253,6 +1253,17 @@ dialog::backdrop {
   background: color-mix(in srgb, var(--warning) 28%, transparent);
   border-bottom: 2px solid var(--warning);
 }
+/* An atomic chart has no text for the passage fill. Outline its own frame
+   so the comment target stays visible while the composer has focus. */
+.comment-passage .wordgard-view-embed {
+  outline: 1px solid var(--comment-anchor-line);
+  outline-offset: 4px;
+}
+.comment-draft-passage .wordgard-view-embed,
+.comment-passage-active .wordgard-view-embed {
+  outline: 2px solid var(--warning);
+  outline-offset: 4px;
+}
 /* A thread the inline composer just created pulses once, then rests. */
 .comment-passage-created {
   animation: comment-created 1.6s ease-out;

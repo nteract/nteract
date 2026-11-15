@@ -81,6 +81,14 @@ bindings, `param` predicates, hover encodings and every other event stream are
 refused, because each review of the interactive surface found another way
 through it.
 
+People with comment access can use **Comment on chart**, beside Maximize, to
+open the normal Pages composer. The thread anchors to that chart node's
+Automerge marker using the existing selection cursors. It stays with the chart
+when its source refreshes and becomes detached if that node is deleted. This
+is a comment on the whole chart, not a saved point, interval or data revision.
+The action is supplied by Pages; chart specs cannot define it or enable Vega
+event streams.
+
 The spec and the rows are both untrusted. `shared/chart-spec.mjs` checks a
 spec against allowlists: data by name only, Vega-Lite's marks (not `image`)
 and encoding types, transforms and their parameters

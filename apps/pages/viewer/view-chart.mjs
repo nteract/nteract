@@ -16,11 +16,12 @@ setWasmUrl(SIFT_WASM_URL);
 
 /** Mount a view embed: `{ view$, sources, sourcesAnswer$ }` as
  * view-embed.mjs takes them. Returns `{ destroy }`. */
-export function mount(container, { view$, sources, sourcesAnswer$ = null }) {
+export function mount(container, { view$, sources, sourcesAnswer$ = null, comments = null }) {
   return mountViewEmbed(container, {
     view$,
     sources,
     sourcesAnswer$,
+    comments,
     decode: decodeArrow,
     checkChartSpec,
     mount: mountChart,

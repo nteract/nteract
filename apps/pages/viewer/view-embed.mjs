@@ -3,7 +3,7 @@
 // itself is view-draw.mjs; this module only renders what it reports.
 //
 // The embed is bare: the view's title, the chart in one thin border, and the
-// Maximize control the chart renderer adds. A chart drawn without some of its
+// Maximize and optional comment controls the chart renderer adds. A chart drawn without some of its
 // data carries one sentence under it naming the source.
 import { createViewDraw } from "./view-draw.mjs";
 
@@ -16,7 +16,7 @@ import { createViewDraw } from "./view-draw.mjs";
  */
 export function mountViewEmbed(
   container,
-  { view$, sources, sourcesAnswer$, decode, checkChartSpec, mount },
+  { view$, sources, sourcesAnswer$, decode, checkChartSpec, mount, comments = null },
 ) {
   const doc = container.ownerDocument;
   const root = container.appendChild(doc.createElement("div"));
@@ -53,7 +53,12 @@ export function mountViewEmbed(
         // runs right after and settles both.
         chart.hidden = false;
         placeholder.hidden = true;
-        return mount(chart, { spec: view.spec, datasets, title: view.title });
+        return mount(chart, {
+          spec: view.spec,
+          datasets,
+          title: view.title,
+          ...(comments && { comments }),
+        });
       },
       show(status) {
         root.dataset.viewState = status.state;

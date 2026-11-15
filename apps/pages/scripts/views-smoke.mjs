@@ -444,6 +444,88 @@ try {
   await reader.screenshot({ path: `${output}/views-drawn.png`, fullPage: true });
   complete("set_source, set_view and insert_node draw the chart from the source's rows");
 
+  // Chart selection uses Pages' existing cursor comments; Vega's event
+  // streams stay disabled. Two charts ensure the comment names one marker.
+  {
+    await chartOf(embed(reader, "follows")).locator(".pages-chart-title").click();
+    await expect(reader.getByRole("toolbar", { name: "Chart actions" })).toBeHidden();
+    await embed(reader, "follows")
+      .getByRole("button", { name: "Comment on chart", exact: true })
+      .click();
+    const composer = reader.locator("#comment-popover");
+    await expect(composer).toBeVisible();
+    await expect(reader.locator("[data-comment-draft] .wordgard-view-embed")).toHaveAttribute(
+      "data-view-id",
+      "follows",
+    );
+    await composer
+      .getByRole("textbox", { name: "Comment on selection", exact: true })
+      .fill("Could we emphasize the measured points?");
+    await reader.screenshot({ path: `${output}/chart-comment-desktop.png` });
+    await composer.getByRole("button", { name: "Comment", exact: true }).click();
+    await expect(composer).toHaveCount(0);
+    await expect
+      .poll(async () => {
+        const read = (await tool(owner, "read_page", { page_id: pageA, comments: "all" })).body;
+        return read.comments?.filter((thread) => thread.selectionContext?.text === "Chart").length;
+      })
+      .toBe(1);
+    await reader.reload();
+    await expectDrawn(embed(reader, "follows"), ["east", "west", "north"]);
+    await expect(reader.locator("[data-comment-thread] .wordgard-view-embed")).toHaveAttribute(
+      "data-view-id",
+      "follows",
+    );
+    await reader.setViewportSize({ width: 390, height: 844 });
+    await embed(reader, "pinned")
+      .getByRole("button", { name: "Comment on chart", exact: true })
+      .click();
+    await expect(composer).toBeVisible();
+    await expect(composer).toHaveAttribute("data-placement", "sheet");
+    await reader.screenshot({ path: `${output}/chart-comment-phone.png` });
+    await composer.getByRole("button", { name: "Cancel", exact: true }).click();
+    await reader.setViewportSize({ width: 1280, height: 900 });
+    complete(
+      "chart comments: exact chart anchor, normal composer, persistence after reload, and phone sheet",
+    );
+    for (const [email, role] of [
+      ["alice@localhost", "commenter"],
+      ["bob@localhost", "viewer"],
+    ]) {
+      const access = await api(owner, `/api/access?page=${pageA}`);
+      const invited = await api(owner, `/api/access?page=${pageA}`, {
+        action: "invite",
+        email,
+        role,
+        expected_revision: access.body.access.revision,
+        nonce: crypto.randomUUID(),
+      });
+      assert.equal(invited.status, 200, JSON.stringify(invited.body));
+      const guest = await signIn(email);
+      await guest.goto(`${origin}/p/${pageA}`);
+      await expectDrawn(embed(guest, "follows"), ["east", "west", "north"]);
+      const button = embed(guest, "follows").getByRole("button", {
+        name: "Comment on chart",
+        exact: true,
+      });
+      if (role === "viewer") await expect(button).toBeHidden();
+      else {
+        await button.click();
+        await expect(guest.locator("#comment-popover")).toBeVisible();
+        await expect(guest.locator("[data-comment-draft] .wordgard-view-embed")).toHaveAttribute(
+          "data-view-id",
+          "follows",
+        );
+        await guest
+          .locator("#comment-popover")
+          .getByRole("button", { name: "Cancel", exact: true })
+          .click();
+      }
+      await guest.context().close();
+    }
+    complete("chart comment button is available to commenters and hidden from viewers");
+  }
+
   // The chart Worker this Page runs is the built chunk, served through the
   // Pages Worker (worker/index.mjs) with the chart Worker's own CSP. Inside
   // it, the lockdown (viewer/chart-lockdown.mjs) has removed fetch and

@@ -1,6 +1,6 @@
 import * as A from "@automerge/automerge/slim";
 import { Decoration } from "wordgard/editor";
-import { selectionContext } from "../model/comments.mjs";
+import { selectedChart, selectionContext } from "../model/comments.mjs";
 import { resolvePeerSelection } from "../model/presence.mjs";
 import {
   activityIdentity,
@@ -56,11 +56,12 @@ export function wordgardCommentSelection(replica, id, editor, map) {
   if (!range || range.from === range.to) return null;
   const source = replica.doc.blocks[id].richText;
   const text = source.slice(range.from, range.to);
-  if (!text.replaceAll("\ufffc", "").trim()) return null;
+  const chart = selectedChart(replica.doc, id, range.from, range.to);
+  if (!chart && !text.replaceAll("\ufffc", "").trim()) return null;
   let occurrence = 0;
   let index = -1;
   while ((index = source.indexOf(text, index + 1)) >= 0 && index <= range.from) occurrence++;
-  return { text, occurrence };
+  return { text, occurrence, ...(chart && { label: "Chart" }) };
 }
 
 /** Editor ranges for the threads anchored in block `id`. A thread anchored in

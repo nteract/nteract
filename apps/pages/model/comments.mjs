@@ -5,6 +5,23 @@ import { COMMENTS_FEATURE, COMMENT_AGENT_FEATURE, commentThreads } from "./comme
 import { commentDecision, requireCommentDecision } from "./comment-rules.mjs";
 import { documentFeatures, stampFeatures } from "./schema-features.mjs";
 import { storedFormUnsupported } from "./stored-form.mjs";
+import { readViewNode, VIEW_BLOCK } from "../shared/views.mjs";
+
+/** A single selected chart marker. Its existing text cursor is the anchor;
+ * no view data or renderer coordinates are stored in the comments document. */
+export function selectedChart(doc, blockId, from, to) {
+  if (to !== from + 1 || doc?.blocks?.[blockId]?.richText?.[from] !== "\ufffc") return null;
+  let offset = 0;
+  for (const span of A.spans(doc, ["blocks", blockId, "richText"])) {
+    if (offset === from && span.type === "block")
+      return String(span.value.type) === VIEW_BLOCK
+        ? readViewNode({ view_id: String(span.value.attrs?.view_id ?? "") })
+        : null;
+    offset += span.type === "text" ? span.value.length : 1;
+    if (offset > from) break;
+  }
+  return null;
+}
 
 // The text object and final selected character must both survive. Repeated
 // quotes never cause an old comment to silently attach to a different passage.
@@ -31,7 +48,9 @@ export function selectionContext(doc, target) {
       status: "attached",
       start: { blockId: a.blockId, offsetUtf16: from },
       end: { blockId: b.blockId, offsetUtf16: to },
-      text: block.richText.slice(from, to).replaceAll("\ufffc", "\n"),
+      text: selectedChart(doc, a.blockId, from, to)
+        ? "Chart"
+        : block.richText.slice(from, to).replaceAll("\ufffc", "\n"),
     };
   } catch {
     return { status: "detached" };
