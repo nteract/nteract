@@ -1,4 +1,4 @@
-import { OUTPUT_FRAME_URL } from "../shared/esm-view.mjs";
+import { OUTPUT_FRAME_URL } from "../shared/anywidget-view.mjs";
 // The viewer bundle is app.js plus content-hashed chunks under public/chunks.
 // app.js renders the shell; the Page editor and the WASM runtimes it waits for
 // load from a chunk (viewer/editor-loader.mjs). These checks run on the build's

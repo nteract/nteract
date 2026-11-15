@@ -6,7 +6,7 @@ export { readHostContext, OUTPUT_STYLE_VARIABLES } from "./context.mjs";
 
 // One immutable mount, one port, one set of transferred inputs. No inbound
 // method grants asset access, document edits, navigation or kernel calls.
-export function mountEsmOutput(
+export function mountAnywidgetOutput(
   container,
   payload,
   { frameUrl, hostContext, timeoutMs = 20000, scheduler, onState = () => {} } = {},
@@ -55,7 +55,7 @@ export function mountEsmOutput(
       // Transfer to this exact WindowProxy, with a mount-specific handshake.
       step("connect");
       try {
-        frame.contentWindow.postMessage({ type: "nteract-output-connect-v1", nonce }, "*", [
+        frame.contentWindow.postMessage({ type: "nteract-output-connect-v2", nonce }, "*", [
           channel.port2,
         ]);
       } catch (error) {
@@ -68,10 +68,7 @@ export function mountEsmOutput(
       if (!data || typeof data !== "object") return;
       if (data.type === "connected" && state === "handshaking") {
         step("connected");
-        const transfers = [
-          payload.module.bytes.buffer,
-          ...Object.values(payload.inputs).map((input) => input.bytes.buffer),
-        ];
+        const transfers = Object.values(payload.assets).map((asset) => asset.bytes.buffer);
         try {
           step("mount");
           channel.port1.postMessage({ type: "mount", payload, context }, [...new Set(transfers)]);

@@ -1,4 +1,9 @@
-import { ESM_MEDIA_TYPE, WAV_MEDIA_TYPE } from "../shared/esm-view.mjs";
+import {
+  ESM_MEDIA_TYPE,
+  CSS_MEDIA_TYPE,
+  WAV_MEDIA_TYPE,
+  OUTPUT_ASSET_TYPES,
+} from "../shared/anywidget-view.mjs";
 import { inspectOutputAsset } from "../shared/output-assets.mjs";
 import { authenticate, HttpError, errorResponse } from "./auth.mjs";
 import { validPageId } from "./registration.mjs";
@@ -75,7 +80,7 @@ export function inspectParquet(bytes) {
  * bound, if any: bytes that are neither kind are refused with what that
  * upload takes. */
 export function inspectAsset(bytes, expected) {
-  if (expected === ESM_MEDIA_TYPE || expected === WAV_MEDIA_TYPE) {
+  if (OUTPUT_ASSET_TYPES.includes(expected)) {
     try {
       return inspectOutputAsset(bytes, expected);
     } catch (error) {
@@ -209,9 +214,7 @@ function storedDatasetMetadata(object, pageId, assetId) {
   const metadata = object?.customMetadata;
   if (
     !object ||
-    ![PARQUET_MEDIA_TYPE, ESM_MEDIA_TYPE, WAV_MEDIA_TYPE].includes(
-      object.httpMetadata?.contentType,
-    ) ||
+    ![PARQUET_MEDIA_TYPE, ...OUTPUT_ASSET_TYPES].includes(object.httpMetadata?.contentType) ||
     !Number.isInteger(object.size) ||
     object.size < 1 ||
     object.size > DATASET_MAX_BYTES ||
@@ -230,7 +233,7 @@ function storedDatasetMetadata(object, pageId, assetId) {
 }
 
 const isDataset = (object) =>
-  [PARQUET_MEDIA_TYPE, ESM_MEDIA_TYPE, WAV_MEDIA_TYPE].includes(object?.httpMetadata?.contentType);
+  [PARQUET_MEDIA_TYPE, ...OUTPUT_ASSET_TYPES].includes(object?.httpMetadata?.contentType);
 const storedAssetMetadata = (object, pageId, assetId) =>
   isDataset(object)
     ? storedDatasetMetadata(object, pageId, assetId)
@@ -362,7 +365,7 @@ export async function persistPageAsset(bucket, { pageId, bytes, contentTypes = [
  * so the operation leaves it out and edit_page refuses it until alt is added.
  */
 export const assetInsertOperation = ({ asset_id, mime_type }) =>
-  [ESM_MEDIA_TYPE, WAV_MEDIA_TYPE].includes(mime_type)
+  OUTPUT_ASSET_TYPES.includes(mime_type)
     ? null
     : mime_type === PARQUET_MEDIA_TYPE
       ? { op: "insert_node", node: { type: "dataframe", attrs: { asset_id } } }
@@ -383,8 +386,7 @@ export const readAssetBody = (source, { signal } = {}) =>
 const SERVED_MEDIA_TYPES = Object.freeze([
   ...IMAGE_MEDIA_TYPES,
   PARQUET_MEDIA_TYPE,
-  ESM_MEDIA_TYPE,
-  WAV_MEDIA_TYPE,
+  ...OUTPUT_ASSET_TYPES,
 ]);
 
 /** An upload capability's binding from the Page host's authorization answer,
@@ -585,12 +587,14 @@ export async function handleImageAssets(
     // A dataset is data for the viewer to fetch, never a document to open:
     // navigating to it downloads the file.
     const disposition = !IMAGE_MEDIA_TYPES.includes(contentType)
-      ? `attachment; filename="${assetId}.${contentType === ESM_MEDIA_TYPE ? "mjs" : contentType === WAV_MEDIA_TYPE ? "wav" : "parquet"}"`
+      ? `attachment; filename="${assetId}.${contentType === ESM_MEDIA_TYPE ? "mjs" : contentType === CSS_MEDIA_TYPE ? "css" : contentType === WAV_MEDIA_TYPE ? "wav" : contentType === PARQUET_MEDIA_TYPE ? "parquet" : "bin"}"`
       : "inline";
     return servedAssetResponse(
       new Response(request.method === "HEAD" ? null : object.body, {
         headers: {
-          "Content-Type": contentType === ESM_MEDIA_TYPE ? "application/octet-stream" : contentType,
+          "Content-Type": [ESM_MEDIA_TYPE, CSS_MEDIA_TYPE].includes(contentType)
+            ? "application/octet-stream"
+            : contentType,
           "X-Pages-Media-Type": contentType,
           "Content-Security-Policy": "sandbox; default-src 'none'",
           "Content-Length": String(object.size),

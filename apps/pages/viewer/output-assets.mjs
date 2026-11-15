@@ -1,5 +1,5 @@
 import { imageAssetUrl, validAssetId } from "../shared/image-assets.mjs";
-import { OUTPUT_MAX_BYTES } from "../shared/esm-view.mjs";
+import { OUTPUT_MAX_BYTES } from "../shared/anywidget-view.mjs";
 
 // Only the parent uses this function. The frame never receives this URL,
 // the session, or a proxy for arbitrary authenticated requests.

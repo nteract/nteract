@@ -8,7 +8,7 @@ import { browserSiftPlugin } from "./browser-sift.mjs";
 import { chromium, webkit, expect } from "@playwright/test";
 import "./build-output.mjs";
 const { default: worker } = await import("../output/worker.mjs");
-import { OUTPUT_FRAME_URL } from "../shared/esm-view.mjs";
+import { OUTPUT_FRAME_URL } from "../shared/anywidget-view.mjs";
 const out = new URL(
   process.env.PAGES_OUTPUT_ARTIFACT
     ? "../test-results/output-real/"
@@ -60,6 +60,28 @@ const baseStyle = await readFile(
   "utf8",
 );
 const entries = {
+  counter: [
+    await readFile(new URL("../test/fixtures/anywidget-counter/index.mjs", import.meta.url)),
+    "text/javascript",
+  ],
+  counterStyle: [
+    await readFile(new URL("../test/fixtures/anywidget-counter/style.css", import.meta.url)),
+    "text/css",
+  ],
+  composed: [
+    Buffer.from(`export default {
+    async render({model, el, host, signal}) {
+      const child = await host.getWidget(model.get('child'));
+      const same = await host.getModel(model.get('child'));
+      if (same.get('count') !== 42) throw Error('wrong child model');
+      const left=document.createElement('div'), right=document.createElement('div');
+      el.append(left, right);
+      await child.render({el:left, signal});
+      await child.render({el:right, signal});
+    }
+  }`),
+    "text/javascript",
+  ],
   layout: [
     Buffer.from(`export default { render({el,signal}) {
     el.innerHTML='<p style="margin:32px 0">Normal-flow margins</p><label>Selection<input type="range" min="0" max="10" value="5"></label><button>Toggle height</button><div id="tall" style="height:1600px;float:left;width:100%">Tall output</div><div class="output-scroll" role="region" aria-label="Wide results" tabindex="0" style="clear:both;max-height:100px"><div style="width:1800px;height:300px">Deliberately scrollable content</div></div><p style="margin:24px 0">Last line</p>';
@@ -139,12 +161,17 @@ const appearance=document.querySelector('#appearance');appearance.value=themeSto
 appearance.addEventListener('change',()=>themeStore.setMode(appearance.value));
 const versions=${JSON.stringify(versions)};
 const changes=new BehaviorSubject(0);
-const view={view_id:'audio',title:'Audio exploration',media_type:'application/vnd.nteract.esm-view+json',spec:{module:'code',inputs:['recording']},data:{code:{source_id:'code'},recording:{source_id:'recording'}},revision:'1'};
+const view={view_id:'audio',title:'Audio exploration',media_type:'application/vnd.nteract.anywidget.v1+json',spec:{_esm:'code',buffers:['recording'],buffer_paths:[['recording']]},data:{code:{source_id:'code'},recording:{source_id:'recording'}},revision:'1'};
 const view$=new BehaviorSubject({status:'ready',view});
 let failNext=false;
 const sources={pageId:'${pageId}',request:(...args)=>{if(failNext){failNext=false;return Promise.resolve(new Response('not yet',{status:503}))}return fetch(...args)},versions:()=>changes,resolve:b=>versions[b.source_id]};
 const handle=mount(document.querySelector('main'),{view$,sources,sourcesAnswer$:null});
-window.fixture={layout(){versions.code=versions.layout;changes.next(4)},transient(){failNext=true;versions.recording={...versions.recording,revision:'3'};changes.next(3)},example(){versions.code=versions.example;view$.next({status:'ready',view:{...view,spec:{module:'code',inputs:['recording','dmel'],state:{description:${JSON.stringify(description)}}},data:{...view.data,dmel:{source_id:'dmel'}}}})},change(){versions.recording={...versions.recording,revision:'2'};changes.next(1)},fail(){versions.code=versions.broken;changes.next(2)},destroy:()=>handle.destroy()};
+window.fixture={counter(composed=false){
+  view$.next({status:'ready',view:{...view,
+    spec:composed ? {_esm:'composed',state:{child:'anywidget:counter'},models:{counter:{_esm:'counter',_css:'counterStyle',state:{count:42}}}} : {_esm:'counter',_css:'counterStyle',state:{count:42}},
+    data:{counter:{source_id:'counter'},counterStyle:{source_id:'counterStyle'},...(composed?{composed:{source_id:'composed'}}:{})}
+  }});
+},audio(){view$.next({status:'ready',view})},layout(){versions.code=versions.layout;changes.next(4)},transient(){failNext=true;versions.recording={...versions.recording,revision:'3'};changes.next(3)},example(){versions.code=versions.example;view$.next({status:'ready',view:{...view,spec:{_esm:'code',buffers:['recording','dmel'],buffer_paths:[['recording'],['dmel']],state:{description:${JSON.stringify(description)}}},data:{...view.data,dmel:{source_id:'dmel'}}}})},change(){versions.recording={...versions.recording,revision:'2'};changes.next(1)},fail(){versions.code=versions.broken;changes.next(2)},destroy:()=>handle.destroy()};
 ${process.env.PAGES_OUTPUT_SERVE ? "window.fixture.example();" : ""}`;
 const result = await build({
   stdin: { contents: fixture, resolveDir: process.cwd(), sourcefile: "output-fixture.mjs" },
@@ -324,6 +351,25 @@ try {
       .poll(async () => (await page.locator("iframe").boundingBox()).height)
       .toBeGreaterThan(1600);
   }
+  // This frontend is the unchanged upstream getting-started widget. It knows
+  // nothing about Pages, our transport, theme extensions or source bindings.
+  await page.evaluate(() => window.fixture.counter());
+  await expect(frame.getByRole("button", { name: "count is 42" })).toBeVisible();
+  await expect(frame.getByRole("button")).toHaveCSS("background-color", "rgb(234, 88, 12)");
+  await frame.getByRole("button").click();
+  await expect(frame.getByRole("button")).toHaveText("count is 43");
+  await page.getByLabel("Appearance").selectOption("dark");
+  await expect(frame.getByRole("button")).toHaveText("count is 43");
+  await page.screenshot({ path: new URL("upstream-counter-narrow.png", out).pathname });
+  await page.evaluate(() => window.fixture.counter(true));
+  await expect(frame.getByRole("button", { name: "count is 42" })).toHaveCount(2);
+  await frame.getByRole("button").first().click();
+  await expect(frame.getByRole("button", { name: "count is 43" })).toHaveCount(2);
+  await page.setViewportSize({ width: 1200, height: 850 });
+  await page.screenshot({ path: new URL("upstream-composed-wide.png", out).pathname });
+  await page.getByLabel("Appearance").selectOption("light");
+  await page.evaluate(() => window.fixture.audio());
+  await expect(page.locator("section")).toHaveAttribute("data-output-state", "ready");
   await page.evaluate(() => window.fixture.fail());
   await expect(page.locator("section")).toHaveAttribute("data-output-state", "failed");
   await expect(page.getByText("intentional failure")).toBeVisible();
@@ -337,6 +383,8 @@ try {
         passed: [
           "opaque DOM/storage boundary",
           "WAV DataView",
+          "unchanged upstream anywidget counter + CSS; local state resets on remount",
+          "child composition shares one local model across two views",
           "initialize before render",
           "local model and seeking",
           "wide/narrow",

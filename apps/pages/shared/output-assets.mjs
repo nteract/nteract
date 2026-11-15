@@ -1,14 +1,20 @@
-import { ESM_MEDIA_TYPE, WAV_MEDIA_TYPE, OUTPUT_MAX_BYTES } from "./esm-view.mjs";
+import {
+  ESM_MEDIA_TYPE,
+  CSS_MEDIA_TYPE,
+  BINARY_MEDIA_TYPE,
+  WAV_MEDIA_TYPE,
+  OUTPUT_MAX_BYTES,
+} from "./anywidget-view.mjs";
 
 // Validation is container validation, never execution. ESM is served only
 // as an attachment; the opaque output frame is its sole execution surface.
 export function inspectOutputAsset(bytes, mediaType) {
   if (!(bytes instanceof Uint8Array) || !bytes.length || bytes.length > OUTPUT_MAX_BYTES)
     throw Error("Output assets must be 1 byte to 5 MiB.");
-  if (mediaType === ESM_MEDIA_TYPE) {
+  if (mediaType === ESM_MEDIA_TYPE || mediaType === CSS_MEDIA_TYPE) {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     if (!text.trim() || text.includes("\0"))
-      throw Error("ESM must be UTF-8 source without NUL bytes.");
+      throw Error("JavaScript and CSS must be UTF-8 source without NUL bytes.");
   } else if (mediaType === WAV_MEDIA_TYPE) {
     const ascii = (at, n) => String.fromCharCode(...bytes.subarray(at, at + n));
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -41,6 +47,6 @@ export function inspectOutputAsset(bytes, mediaType) {
     }
     if (!format || !data || at !== bytes.length)
       throw Error("WAV needs format and audio data chunks.");
-  } else throw Error("Unsupported output asset type.");
+  } else if (mediaType !== BINARY_MEDIA_TYPE) throw Error("Unsupported output asset type.");
   return { mime_type: mediaType };
 }

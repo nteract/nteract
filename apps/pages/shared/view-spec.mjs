@@ -1,8 +1,7 @@
-import { checkEsmSpec, ESM_VIEW_MEDIA_TYPE } from "./esm-view.mjs";
-// The check a view's spec passes before the host stores it. The viewer runs
-// checkChartSpec again before every draw (viewer/vega-chart.mjs); this adds
-// what a stored view needs beyond a drawable chart: its `data` binding names
-// exactly the data the spec reads.
+import { ANYWIDGET_MEDIA_TYPE } from "./anywidget-view.mjs";
+import { checkAnywidgetSpec } from "@nteract/output-frame/schema";
+// Shared admission and rendering checks. Each media-specific validator reports
+// the asset names its spec reads; stored data must bind exactly those names.
 import { checkChartSpec } from "./chart-spec.mjs";
 
 /** UTF-8 bytes of a view's spec as JSON. */
@@ -53,9 +52,9 @@ export function checkViewSpec(spec, data, mediaType) {
   }
   if (new TextEncoder().encode(json).byteLength > VIEW_SPEC_MAX_BYTES)
     return { ok: false, error: `spec must be ${VIEW_SPEC_MAX_BYTES / 1024} KiB or smaller.` };
-  // The chart check the viewer runs too: its refusal reaches the caller as
-  // it is.
-  const checked = mediaType === ESM_VIEW_MEDIA_TYPE ? checkEsmSpec(spec) : checkChartSpec(spec);
+  // Surface the media-specific refusal directly to the caller.
+  const checked =
+    mediaType === ANYWIDGET_MEDIA_TYPE ? checkAnywidgetSpec(spec) : checkChartSpec(spec);
   if (!checked.ok || data === undefined) return checked;
   if (!isObject(data)) return { ok: false, error: "data must map each data name to a source." };
   const problem = viewDataProblem(checked.names, data);

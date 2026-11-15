@@ -19,9 +19,9 @@ export const FRAME_CSP = [
 export default {
   fetch(request) {
     const path = new URL(request.url).pathname;
-    const valid = path === "/frame/v1/" || path === "/health";
+    const valid = path === "/frame/v2/" || path === "/health";
     const status = !["GET", "HEAD"].includes(request.method) ? 405 : !valid ? 404 : 200;
-    const html = status === 200 && path === "/frame/v1/";
+    const html = status === 200 && path === "/frame/v2/";
     return new Response(
       request.method === "HEAD"
         ? null
@@ -29,7 +29,7 @@ export default {
           ? "Not available"
           : html
             ? FRAME_HTML
-            : "pages-output-v1",
+            : "pages-output-v2",
       {
         status,
         headers: {
