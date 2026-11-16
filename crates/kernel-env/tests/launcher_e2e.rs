@@ -1,4 +1,5 @@
 // Tests can use unwrap/expect freely - panics are acceptable in test code
+#![cfg(feature = "runtime")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 //! End-to-end sanity: create a minimal venv, vendor the launcher package,

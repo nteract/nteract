@@ -818,7 +818,7 @@ async fn create_uv(env_dir: &Path, packages: &[String]) {
 // -- Conda env creation ---------------------------------------------------
 
 async fn create_conda(env_dir: &Path, packages: &[String], channels: &[String]) {
-    use rattler_conda_types::{ChannelConfig, Platform};
+    use rattler_conda_types::{ChannelConfig, Subdir};
     use rattler_solve::{resolvo, SolverImpl, SolverTask};
 
     #[cfg(target_os = "windows")]
@@ -842,7 +842,13 @@ async fn create_conda(env_dir: &Path, packages: &[String], channels: &[String]) 
     let channel_config = ChannelConfig::default_with_root_dir(cache_dir);
 
     progress("channels", "parsing channels");
-    let install_platform = kernel_env::conda_solve_platform();
+    let install_platform = match kernel_env::conda_solve_platform() {
+        Ok(platform) => platform,
+        Err(e) => {
+            emit_failure(e.to_string(), "setup_failed", None);
+            return;
+        }
+    };
     let channels =
         match kernel_env::channels::parse_channels(channels, &channel_config, install_platform) {
             Ok(channels) => channels,
@@ -909,7 +915,7 @@ async fn create_conda(env_dir: &Path, packages: &[String], channels: &[String]) 
         }
     };
 
-    let platforms = vec![install_platform, Platform::NoArch];
+    let platforms = vec![install_platform, Subdir::NoArch];
     let progress_handler = std::sync::Arc::new(kernel_env::LogHandler);
 
     // Virtual packages match the solve platform, not the host.
@@ -1007,8 +1013,13 @@ async fn create_conda(env_dir: &Path, packages: &[String], channels: &[String]) 
     }
 
     if let Some(lock_specs) = lock_specs {
-        let lock = kernel_env::lock::LockFile::new(lock_specs, lock_channels, lock_packages)
-            .with_constraints(lock_constraints);
+        let lock = kernel_env::lock::LockFile::new(
+            lock_specs,
+            lock_channels,
+            lock_packages,
+            install_platform,
+        )
+        .with_constraints(lock_constraints);
         kernel_env::lock::try_write_lock(env_dir, &lock).await;
     }
 

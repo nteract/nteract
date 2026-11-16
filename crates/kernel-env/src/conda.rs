@@ -8,7 +8,7 @@ use anyhow::{anyhow, Context, Result};
 use log::{info, warn};
 use rattler::default_cache_dir;
 use rattler_conda_types::{
-    ChannelConfig, MatchSpec, ParseMatchSpecOptions, ParseStrictness, Platform, PrefixRecord,
+    ChannelConfig, MatchSpec, ParseMatchSpecOptions, ParseStrictness, PrefixRecord, Subdir,
     Version, VersionSpec,
 };
 use rattler_solve::{resolvo, SolverImpl, SolverTask};
@@ -219,7 +219,7 @@ pub async fn prepare_environment_in(
             let expected_specs = build_spec_strings(deps);
             let config = ChannelConfig::default_with_root_dir(cache_dir.to_path_buf());
             let expected_channels =
-                parse_channels(&deps.channels, &config, crate::conda_solve_platform())?
+                parse_channels(&deps.channels, &config, crate::conda_solve_platform()?)?
                     .iter()
                     .map(|channel| channel.name().to_string())
                     .collect::<Vec<_>>();
@@ -408,7 +408,7 @@ async fn prepare_environment_unified_inner(
             let expected_specs = build_spec_strings(deps);
             let config = ChannelConfig::default_with_root_dir(cache_dir.to_path_buf());
             let expected_channels =
-                parse_channels(&deps.channels, &config, crate::conda_solve_platform())?
+                parse_channels(&deps.channels, &config, crate::conda_solve_platform()?)?
                     .iter()
                     .map(|channel| channel.name().to_string())
                     .collect::<Vec<_>>();
@@ -503,7 +503,7 @@ async fn install_conda_env(
     let channel_config = ChannelConfig::default_with_root_dir(cache_dir);
 
     // Parse channels, including Conda's special `defaults` multichannel.
-    let install_platform = crate::conda_solve_platform();
+    let install_platform = crate::conda_solve_platform()?;
     let channels = parse_channels(&deps.channels, &channel_config, install_platform)?;
 
     let channel_names: Vec<String> = channels.iter().map(|c| c.name().to_string()).collect();
@@ -539,7 +539,7 @@ async fn install_conda_env(
     let solved = crate::repodata::solve_with_repodata(
         crate::repodata::RepodataQuery {
             channels,
-            platforms: vec![install_platform, Platform::NoArch],
+            platforms: vec![install_platform, Subdir::NoArch],
             specs: specs.clone(),
             rattler_cache_dir: &rattler_cache_dir,
             download_client: download_client.clone(),
@@ -641,8 +641,13 @@ async fn install_conda_env(
     );
 
     // Write lock file for offline re-creation
-    let lock = crate::lock::LockFile::new(spec_strings_for_lock, channel_names, packages_for_lock)
-        .with_constraints(constraint_strings);
+    let lock = crate::lock::LockFile::new(
+        spec_strings_for_lock,
+        channel_names,
+        packages_for_lock,
+        install_platform,
+    )
+    .with_constraints(constraint_strings);
     crate::lock::try_write_lock(env_path, &lock).await;
 
     Ok(())
@@ -1084,7 +1089,7 @@ pub async fn sync_dependencies(
         .to_path_buf();
     let channel_config = ChannelConfig::default_with_root_dir(cache_dir);
 
-    let install_platform = crate::conda_solve_platform();
+    let install_platform = crate::conda_solve_platform()?;
     let channels = parse_channels(&deps.channels, &channel_config, install_platform)?;
 
     let installed_packages = PrefixRecord::collect_from_prefix::<PrefixRecord>(&env.env_path)?;
@@ -1142,7 +1147,7 @@ pub async fn sync_dependencies(
             let name = r.repodata_record.package_record.name.as_normalized();
             !constrained_names.contains(name)
         })
-        .map(|r| r.repodata_record.clone())
+        .map(|r| &r.repodata_record)
         .collect();
 
     // Fetch repodata (cache first, refreshed once if the cached solve fails)
@@ -1150,7 +1155,7 @@ pub async fn sync_dependencies(
     let solver_result = crate::repodata::solve_with_repodata(
         crate::repodata::RepodataQuery {
             channels,
-            platforms: vec![install_platform, Platform::NoArch],
+            platforms: vec![install_platform, Subdir::NoArch],
             specs: specs.clone(),
             rattler_cache_dir: &rattler_cache_dir,
             download_client: download_client.clone(),
@@ -1161,7 +1166,7 @@ pub async fn sync_dependencies(
             resolvo::Solver.solve(SolverTask {
                 virtual_packages: virtual_packages.clone(),
                 specs: specs.clone(),
-                pinned_packages: vec![python_record.clone()],
+                pinned_packages: vec![python_record],
                 locked_packages: locked_packages.clone(),
                 ..SolverTask::from_iter(repo_data)
             })
@@ -1687,14 +1692,19 @@ mod tests {
         // `conda-forge` channel list.
         let config = ChannelConfig::default_with_root_dir(PathBuf::from("/tmp"));
         let channel_names = |channels: &[String]| -> Vec<String> {
-            parse_channels(channels, &config, crate::conda_solve_platform())
+            parse_channels(channels, &config, crate::conda_solve_platform().unwrap())
                 .unwrap()
                 .iter()
                 .map(|channel| channel.name().to_string())
                 .collect()
         };
         let pool_channels = channel_names(&["conda-forge".to_string()]);
-        let lock = crate::lock::LockFile::new(lock_specs, pool_channels, vec![]);
+        let lock = crate::lock::LockFile::new(
+            lock_specs,
+            pool_channels,
+            vec![],
+            crate::conda_solve_platform().unwrap(),
+        );
         let captured = CondaDependencies {
             dependencies: vec![],
             channels: vec!["conda-forge".to_string()],

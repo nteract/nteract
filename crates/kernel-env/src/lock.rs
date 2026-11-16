@@ -10,7 +10,7 @@
 
 use anyhow::Result;
 use log::{info, warn};
-use rattler_conda_types::RepoDataRecord;
+use rattler_conda_types::{RepoDataRecord, Subdir};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -40,10 +40,15 @@ pub struct LockFile {
 
 impl LockFile {
     /// Create a new lock file from solve results.
-    pub fn new(specs: Vec<String>, channels: Vec<String>, packages: Vec<RepoDataRecord>) -> Self {
+    pub fn new(
+        specs: Vec<String>,
+        channels: Vec<String>,
+        packages: Vec<RepoDataRecord>,
+        platform: Subdir,
+    ) -> Self {
         Self {
             version: 1,
-            platform: crate::conda_solve_platform().to_string(),
+            platform: platform.to_string(),
             specs,
             constraints: Vec::new(),
             channels,
@@ -83,7 +88,8 @@ impl LockFile {
     /// Check specs without regard to order, preserving channel priority order.
     pub fn matches(&self, specs: &[String], channels: &[String]) -> bool {
         self.version == 1
-            && self.platform == crate::conda_solve_platform().to_string()
+            && crate::conda_solve_platform()
+                .is_ok_and(|platform| self.platform == platform.as_str())
             && sorted_eq(&self.specs, specs)
             && self.channels == channels
     }
@@ -115,7 +121,7 @@ pub async fn install_from_lock(
 
     let download_client = crate::channels::download_client()?;
 
-    let install_platform = crate::conda_solve_platform();
+    let install_platform = crate::conda_solve_platform()?;
 
     handler.on_progress(
         env_type,
@@ -146,6 +152,7 @@ mod tests {
             vec!["python>=3.13".into(), "numpy".into()],
             vec!["conda-forge".into()],
             vec![],
+            crate::conda_solve_platform().unwrap(),
         );
         assert!(lock.matches(
             &["numpy".into(), "python>=3.13".into()],
@@ -155,19 +162,34 @@ mod tests {
 
     #[test]
     fn test_lock_file_no_match_different_specs() {
-        let lock = LockFile::new(vec!["numpy".into()], vec!["conda-forge".into()], vec![]);
+        let lock = LockFile::new(
+            vec!["numpy".into()],
+            vec!["conda-forge".into()],
+            vec![],
+            crate::conda_solve_platform().unwrap(),
+        );
         assert!(!lock.matches(&["pandas".into()], &["conda-forge".into()]));
     }
 
     #[test]
     fn test_lock_file_no_match_different_channels() {
-        let lock = LockFile::new(vec!["numpy".into()], vec!["conda-forge".into()], vec![]);
+        let lock = LockFile::new(
+            vec!["numpy".into()],
+            vec!["conda-forge".into()],
+            vec![],
+            crate::conda_solve_platform().unwrap(),
+        );
         assert!(!lock.matches(&["numpy".into()], &["defaults".into()]));
     }
 
     #[test]
     fn lock_preserves_channel_priority() {
-        let lock = LockFile::new(vec![], vec!["main".into(), "main-x".into()], vec![]);
+        let lock = LockFile::new(
+            vec![],
+            vec!["main".into(), "main-x".into()],
+            vec![],
+            crate::conda_solve_platform().unwrap(),
+        );
         assert!(!lock.matches(&[], &["main-x".into(), "main".into()]));
     }
 
@@ -178,6 +200,7 @@ mod tests {
             vec!["numpy".into(), "pandas".into()],
             vec!["conda-forge".into()],
             vec![],
+            crate::conda_solve_platform().unwrap(),
         )
         .with_constraints(vec!["python_abi[build='^.*_cp[0-9]+$']".into()]);
         lock.write_to(dir.path()).await.unwrap();
@@ -186,7 +209,10 @@ mod tests {
         assert_eq!(loaded.specs, lock.specs);
         assert_eq!(loaded.constraints, lock.constraints);
         assert_eq!(loaded.channels, lock.channels);
-        assert_eq!(loaded.platform, crate::conda_solve_platform().to_string());
+        assert_eq!(
+            loaded.platform,
+            crate::conda_solve_platform().unwrap().to_string()
+        );
     }
 
     #[tokio::test]

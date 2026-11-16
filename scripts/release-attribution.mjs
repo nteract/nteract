@@ -102,11 +102,15 @@ function filesUnder(root) {
 const NATIVE = {
   "aws-lc-sys": { versions: ["0.47.0"], files: ["LICENSE", "aws-lc/LICENSE", "aws-lc/third_party/fiat/LICENSE"], expression: "ISC AND Apache-2.0 AND MIT AND BSD-3-Clause AND CC0-1.0" },
   ring: { versions: ["0.17.14"], files: ["LICENSE", "LICENSE-BoringSSL", "LICENSE-other-bits", "third_party/fiat/LICENSE", "src/polyfill/once_cell/LICENSE-APACHE", "src/polyfill/once_cell/LICENSE-MIT"], expression: "ISC AND Apache-2.0 AND MIT" },
-  "zstd-sys": { versions: ["2.0.16+zstd.1.5.7"], files: ["zstd/LICENSE"], expression: "BSD-3-Clause" },
+  "zstd-sys": { versions: ["2.0.16+zstd.1.5.7", "2.1.3+zstd.1.5.7"], files: ["zstd/LICENSE"], expression: "BSD-3-Clause" },
   "libsqlite3-sys": { versions: ["0.30.1"], files: ["sqlcipher/LICENSE"], expression: "LicenseRef-SQLite-Public-Domain" },
-  "signal-hook": { versions: ["0.3.18"], files: ["LICENSE-APACHE"], expression: "Apache-2.0" },
-  "fancy-regex": { versions: ["0.17.0"], excluded: /^tests\/oniguruma\/test_utf8(?:_ignore)?\.c$/ },
-  nix: { versions: ["0.29.0", "0.30.1", "0.31.2"], excluded: /^test\/test_kmod\/hello_mod\/hello\.c$/ },
+  // libdbus-sys's vendored build compiles the library, not the GPL-only tools.
+  // Its 47 C sources select AFL-2.1; the Rust bindings' MIT/Apache terms alone
+  // do not describe the bundled libdbus 1.14.4 implementation.
+  "libdbus-sys": { versions: ["0.2.7"], files: ["vendor/dbus/COPYING"], expression: "AFL-2.1" },
+  "signal-hook": { versions: ["0.3.18", "0.4.6"], files: ["LICENSE-APACHE"], expression: "Apache-2.0" },
+  "fancy-regex": { versions: ["0.17.0", "0.20.2"], excluded: /^tests\/oniguruma\/test_utf8(?:_ignore)?\.c$/ },
+  nix: { versions: ["0.29.0", "0.30.1", "0.31.2", "0.32.0"], excluded: /^test\/test_kmod\/hello_mod\/hello\.c$/ },
   walkdir: { versions: ["2.5.0"], excluded: /^compare\/nftw\.c$/ },
   zeromq: { versions: ["0.7.0"], excluded: /^c_benches\/(client|server)\.c$/ },
   "openssl-sys": { versions: ["0.9.114"], excluded: /^build\/expando\.c$/ },
@@ -197,6 +201,7 @@ export function collectRustReport(report, { root, target }) {
         materials.push({ title: `${pkg.name}@${pkg.version}: ${relative(dirname(pkg.manifest_path), path)}`, text: requiredText(path) });
       }
       if (ids.has("MPL-2.0")) materials.push({ title: `MPL-2.0 source availability: ${pkg.name}@${pkg.version}`, text: `Source for the MPL-covered crate is available in this exact registry archive:\n${archive}\nMPL-2.0 applies to the covered files; consult its terms when modifying or redistributing them.` });
+      if (nativeExpression === "AFL-2.1") materials.push({ title: `AFL-2.1 source availability: ${pkg.name}@${pkg.version}`, text: `The complete bundled libdbus source and copyright notices are in vendor/dbus/ within this exact registry archive:\n${archive}\nThe bundled library selects AFL-2.1; the Rust bindings retain their separately declared terms.` });
       const native = NATIVE[pkg.name];
       if (native?.expression) properties.push(property("bundled-native-license", native.expression));
     } else properties.push(property("source", "workspace"));

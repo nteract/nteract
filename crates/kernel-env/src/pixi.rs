@@ -16,7 +16,7 @@
 use anyhow::{anyhow, Context, Result};
 use log::{debug, info, warn};
 use rattler::default_cache_dir;
-use rattler_conda_types::{ChannelConfig, Platform};
+use rattler_conda_types::{ChannelConfig, Subdir};
 use rattler_solve::{resolvo, SolverImpl, SolverTask};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -63,7 +63,7 @@ pub fn default_cache_dir_pixi() -> PathBuf {
 /// channels, and platform. The environment can later be extended by pixi CLI
 /// or pixi API if needed.
 fn generate_pixi_manifest(name: &str, packages: &[String], channels: &[String]) -> Result<String> {
-    let platform = crate::conda_solve_platform().to_string();
+    let platform = crate::conda_solve_platform()?.to_string();
 
     let channels_str = channels
         .iter()
@@ -180,7 +180,7 @@ pub async fn create_pixi_environment(
         .unwrap_or_else(|| "runtimed-pixi".to_string());
     let channel_config = ChannelConfig::default_with_root_dir(project_dir.to_path_buf());
     let manifest_channels =
-        parse_channels(&channels, &channel_config, crate::conda_solve_platform())?
+        parse_channels(&channels, &channel_config, crate::conda_solve_platform()?)?
             .iter()
             .map(|channel| channel.base_url.to_string())
             .collect::<Vec<_>>();
@@ -245,7 +245,7 @@ async fn install_pixi_env(
     let channel_config = ChannelConfig::default_with_root_dir(cache_dir);
 
     // Parse channels, including Conda's special `defaults` multichannel.
-    let install_platform = crate::conda_solve_platform();
+    let install_platform = crate::conda_solve_platform()?;
     let channels = parse_channels(channels, &channel_config, install_platform)?;
 
     let (specs, constraints) = crate::python::solve_specs(packages)?;
@@ -269,7 +269,7 @@ async fn install_pixi_env(
     let solved = crate::repodata::solve_with_repodata(
         crate::repodata::RepodataQuery {
             channels,
-            platforms: vec![install_platform, Platform::NoArch],
+            platforms: vec![install_platform, Subdir::NoArch],
             specs: specs.clone(),
             rattler_cache_dir: &rattler_cache_dir,
             download_client: download_client.clone(),
@@ -418,8 +418,7 @@ mod tests {
     #[test]
     fn pixi_defaults_use_shared_anaconda_channel_expansion() {
         let config = ChannelConfig::default_with_root_dir(PathBuf::from("/tmp"));
-        let channels =
-            parse_channels(&["defaults".to_string()], &config, Platform::Linux64).unwrap();
+        let channels = parse_channels(&["defaults".to_string()], &config, Subdir::Linux64).unwrap();
 
         assert_eq!(
             channels
@@ -497,7 +496,7 @@ mod tests {
         )
         .unwrap();
 
-        let platform = crate::conda_solve_platform().to_string();
+        let platform = crate::conda_solve_platform().unwrap().to_string();
         assert!(manifest.contains(&format!("platforms = [\"{}\"]", platform)));
     }
 

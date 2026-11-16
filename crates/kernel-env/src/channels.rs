@@ -1,7 +1,7 @@
 //! Shared Conda-channel resolution for Conda and Pixi environments.
 
 use anyhow::Result;
-use rattler_conda_types::{Channel, ChannelConfig, MatchSpec, ParseMatchSpecOptions, Platform};
+use rattler_conda_types::{Channel, ChannelConfig, MatchSpec, ParseMatchSpecOptions, Subdir};
 
 pub(crate) fn resolve_channel_alias(channel: &str) -> &str {
     match channel {
@@ -38,7 +38,7 @@ pub(crate) const ANACONDA_DEFAULT_CHANNELS: &[&str] = &[
 pub fn parse_channels(
     declared_channels: &[String],
     channel_config: &ChannelConfig,
-    platform: Platform,
+    platform: Subdir,
 ) -> Result<Vec<Channel>> {
     if declared_channels.is_empty() {
         return Ok(vec![Channel::from_str("conda-forge", channel_config)?]);
@@ -85,7 +85,7 @@ fn download_client_with_auth(
         )
     });
     Ok(reqwest_middleware::ClientBuilder::new(
-        reqwest::Client::builder()
+        reqwest_rattler::Client::builder()
             // Anaconda's package endpoint rejects requests without a User-Agent.
             .user_agent(concat!("nteract/", env!("CARGO_PKG_VERSION")))
             .build()?,
@@ -200,7 +200,7 @@ mod tests {
         let config = ChannelConfig::default_with_root_dir(PathBuf::from("/tmp"));
         for channel in ["main", "main-x", "conda-forge", "https://example.org/team"] {
             let spec = parse_match_spec(&format!("{channel}::numpy>=1.24")).unwrap();
-            let channels = parse_channels(&[channel.into()], &config, Platform::OsxArm64).unwrap();
+            let channels = parse_channels(&[channel.into()], &config, Subdir::OsxArm64).unwrap();
             assert_eq!(
                 spec.channel.as_ref().unwrap().base_url,
                 channels[0].base_url
@@ -219,7 +219,7 @@ mod tests {
                 "https://packages.example.org/team".into(),
             ],
             &config,
-            Platform::OsxArm64,
+            Subdir::OsxArm64,
         )
         .unwrap();
         assert_eq!(
@@ -241,7 +241,7 @@ mod tests {
         let config = ChannelConfig::default_with_root_dir(PathBuf::from("/tmp"));
         let declared = vec!["defaults".to_string()];
 
-        let unix_channels = parse_channels(&declared, &config, Platform::Linux64).unwrap();
+        let unix_channels = parse_channels(&declared, &config, Subdir::Linux64).unwrap();
         let unix_urls = unix_channels
             .iter()
             .map(|channel| channel.base_url.as_str())
@@ -257,7 +257,7 @@ mod tests {
             .iter()
             .all(|url| !url.contains("conda.anaconda.org/defaults")));
 
-        let windows_channels = parse_channels(&declared, &config, Platform::Win64).unwrap();
+        let windows_channels = parse_channels(&declared, &config, Subdir::Win64).unwrap();
         assert_eq!(
             windows_channels
                 .iter()

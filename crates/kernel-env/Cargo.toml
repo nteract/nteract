@@ -23,7 +23,7 @@ runtime = [
     "dep:rattler_repodata_gateway",
     "dep:rattler_solve",
     "dep:rattler_virtual_packages",
-    "dep:reqwest",
+    "dep:reqwest-rattler",
     "dep:reqwest-middleware",
 ]
 
@@ -52,9 +52,11 @@ rattler_networking = { workspace = true, optional = true }
 rattler_repodata_gateway = { workspace = true, optional = true }
 rattler_solve = { workspace = true, optional = true }
 rattler_virtual_packages = { workspace = true, optional = true }
-reqwest = { workspace = true, optional = true }
+reqwest-rattler = { workspace = true, optional = true }
 reqwest-middleware = { workspace = true, optional = true }
 
 [dev-dependencies]
+bzip2 = "0.6"
+tar = { workspace = true }
 tempfile = { workspace = true }
 which = "7"
