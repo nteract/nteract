@@ -1216,6 +1216,9 @@ pub async fn sync_dependencies_with_cache(
     let install_start = Instant::now();
 
     crate::rattler_installer()
+        .with_package_cache(rattler::package_cache::PackageCache::new(
+            rattler_cache_dir.join(rattler_cache::PACKAGE_CACHE_DIR),
+        ))
         .with_download_client(download_client)
         .with_target_platform(install_platform)
         .with_installed_packages(installed_packages)
