@@ -14,6 +14,8 @@ export const assetPaths =
 export const siftPaths = "sift-[A-Z2-7]{8}[.]wasm|";
 // Exact identity endpoint; the Worker enforces GET and authentication.
 export const whoamiPaths = "whoami|";
+// Public media documentation; keep exact paths rather than opening /llms/* .
+export const mediaGuidePaths = "llms/(assets-and-sources|views|anywidget|vega-lite)[.]txt|";
 // Viewer Project links (shared/routes.mjs readPageRoute): /project/<id> and
 // the older /s/<id>, which the viewer rewrites to /project/<id>.
 export const projectPaths =
@@ -90,6 +92,7 @@ export function routesFor(target) {
     (profile.whoami === true ? whoamiPaths : "") +
     (authenticatedAssets ? oauthPaths : "") +
     "(automerge|subduction)[.]wasm|health|mcp|llms[.]txt|p/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/?|" +
+    mediaGuidePaths +
     pageSlugPaths +
     projects +
     index +

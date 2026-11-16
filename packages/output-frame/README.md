@@ -81,12 +81,19 @@ Arbitrary ipywidget managers, Python callbacks, kernel comms and custom Python
 serializers are not provided. Use ordinary AFM types and framework bridges;
 Pages-specific theme helpers are optional extensions.
 
-The Pages envelope has media type `application/vnd.nteract.anywidget.v1+json`.
-This is a versioned asset-binding envelope for AFM, not a claimed upstream MIME
-standard. See [the Pages spec](../../apps/pages/REFERENCE.md#anywidget-outputs)
-for named-source authoring. `preparePayload` requires exactly the referenced
-assets, checks module/CSS media types, and bounds assets to 5 MiB each / 32 MiB
-total. Pages additionally enforces its spec-size and source authorization limits.
+Pages authors use `application/vnd.nteract.anywidget.v2+json` with direct
+`module: {source_id, revision?}`, optional `stylesheet`, and paired
+`buffers: [{source: {source_id, revision?}, path: [...]}]` references. Child models
+use the same shape. This is a Pages authoring format, not an upstream MIME type.
+See [the Pages spec](../../apps/pages/REFERENCE.md#anywidget-outputs).
+
+The Pages adapter validates and resolves references, then compiles them into the
+named-byte envelope shown above. This library still has no source IDs, revision
+lookup or authorization logic; AFM code sees the same model values. The authoring
+v2 change does not change the iframe `/frame/v2/` endpoint or MessagePort protocol.
+`preparePayload` requires exactly the referenced assets, checks module/CSS media
+types, and bounds assets to 5 MiB each / 32 MiB total. Pages also enforces spec-size
+and source authorization limits.
 
 The HTTP shell policy allows external HTTPS modules, WASM, and broad network
 access. Output code can disclose every byte supplied to it. Isolation protects

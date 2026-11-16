@@ -25,6 +25,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { NOTEBOOK_CLOUD_LOCAL_OIDC_MOUNT_PATH } from "@cloud/dev-oidc.ts";
+import { MEDIA_GUIDES } from "../agent-media-guides.mjs";
 import { routesFor } from "./deployment/routes.mjs";
 import { QUALIFIED_TARGETS } from "./deployment/profiles.mjs";
 import { VIEWER_ASSETS, VIEWER_CHUNK, hashedAssetPath, publicUrl } from "./viewer-chunks.mjs";
@@ -51,6 +52,7 @@ const GATEWAY = [
   // Before authentication.
   ["connect", "GET", "/connect"],
   ["agent guide", "GET", "/llms.txt"],
+  ...MEDIA_GUIDES.map(({ path }) => ["media guide", "GET", path]),
   ["health", "GET", "/health"],
   // worker/oauth.mjs handleOAuth, by OAUTH_ROUTES.
   ...[...OAUTH_ROUTES].map((path) => ["oauth", "PUT", path]),
@@ -266,10 +268,11 @@ test("every exact path, path regex and route handler in the gateway has a sample
       samples.has(path),
       `gateway path ${path} has no GATEWAY sample; admit it in routes.mjs`,
     );
-  // The only prefixes are the gateway's own catch-all 404.
+  // The API/internal catch-alls and the documentation namespace (whose
+  // advertised paths are covered by MEDIA_GUIDES samples above).
   assert.deepEqual(
     [...new Set(matches(gatewaySource, /url\.pathname\.startsWith\("([^"]+)"\)/g))].sort(),
-    ["/api/", "/internal/"],
+    ["/api/", "/internal/", "/llms/"],
   );
   // `url.pathname.match(/.../)`: pinned, and each matches a sample. A new or
   // changed route regex fails here until its samples and allowlist entry are
@@ -438,6 +441,7 @@ test("every target's ingress pattern refuses private routes, extra segments and 
       "/api/pages",
       "/api/pages/register",
       "/llms.txt",
+      ...MEDIA_GUIDES.map(({ path }) => path),
       tags + "/repo:org/name",
       tags + "/repo%3Aorg%2Fname",
     ])
@@ -452,6 +456,9 @@ test("every target's ingress pattern refuses private routes, extra segments and 
       "/api/auth/other",
       "/llms.txt/extra",
       "/llmsXtxt",
+      "/llms/missing.txt",
+      "/llms/anywidget.txt/extra",
+      "/llms/anywidgetXtxt",
       "/p/not-a-page",
       page + "/private/more",
       page + "/private.json",

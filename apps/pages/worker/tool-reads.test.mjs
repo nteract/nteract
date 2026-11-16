@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
-import { createPageData, initializePage, projectPage } from "../model/page.mjs";
+import { createPageData, initializePage, projectPage, applyPageOperation } from "../model/page.mjs";
 import { comment, newCommentsDoc } from "../model/comments-test-support.mjs";
 import { projectReadComments } from "../model/read-comments.mjs";
 import { blockAddress, nodeAddresses } from "../model/addresses.mjs";
 import { readTool } from "./tool-reads.mjs";
 import { revisionTable } from "./revisions-fixture.mjs";
 import { setSources, sourcesGenesis } from "../model/sources-doc.mjs";
+import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
 import { authorOf } from "../model/author.mjs";
 function fixture(t, markdown = "# First\n\nKeep this passage.\n\n# Second\n\nOther content.") {
   let doc = A.from(createPageData({ pageId: "read-fixture", title: "Read fixture" }));
@@ -328,4 +329,49 @@ test("a sources read over its budget names source reads, not the outline", async
     assert.doesNotMatch(body.error, /outline/);
     assert.equal(body.outline, undefined, "a sources read has no outline to offer");
   }
+});
+
+test("a malformed widget keeps Page reads and its repair revision available", async (t) => {
+  const { doc, comments, revisions } = fixture(t);
+  const placed = A.change(doc, (draft) =>
+    applyPageOperation(draft, {
+      operation: "edit_page",
+      arguments: {
+        operations: [{ op: "insert_node", node: { type: "view", attrs: { view_id: "widget" } } }],
+      },
+    }),
+  );
+  const stored = {
+    title: "Repairable widget",
+    media_type: ANYWIDGET_MEDIA_TYPE,
+    revision: "7",
+    data: {},
+    spec: "{}",
+    producer: { kind: "edit_page", at: "2026-11-15T00:00:00.000Z", by: { displayName: "Test" } },
+  };
+  const context = {
+    commentsDoc: comments,
+    revisions,
+    views: { ids: () => ["widget"], doc: () => stored },
+  };
+  const listed = await readTool(placed, "read_page", { views: true }, context);
+  assert.equal(listed.status, 200);
+  assert.deepEqual(listed.body.views, [
+    {
+      view_id: "widget",
+      title: "Repairable widget",
+      media_type: ANYWIDGET_MEDIA_TYPE,
+      revision: "7",
+      dependencies_unavailable: true,
+    },
+  ]);
+  const outline = await readTool(placed, "read_page", { include_content: false }, context);
+  assert.equal(outline.status, 200);
+  assert.ok(
+    outline.body.outline.entries.some((entry) => entry.summary?.title === "Repairable widget"),
+  );
+  const full = await readTool(placed, "read_page", { view_id: "widget" }, context);
+  assert.equal(full.status, 200);
+  assert.deepEqual(full.body.view.spec, {});
+  assert.equal(full.body.view.revision, "7");
 });

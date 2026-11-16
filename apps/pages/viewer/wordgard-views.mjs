@@ -18,6 +18,7 @@
 // applies it and releases it once the embed shows a chart or a sentence that
 // stays.
 import { Decoration, Widget } from "wordgard/editor";
+import { Elt } from "wordgard/doc";
 import { PagesView } from "../model/wordgard-doc.mjs";
 import { readViewNode } from "../shared/views.mjs";
 import { chartWarmupMachine } from "./chart-warmup-machine.mjs";
@@ -369,17 +370,22 @@ export function wordgardViews({
   return [
     Decoration.Tag.shape(
       PagesView,
+      // Wordgard adds selection attributes to an Elt in place. A bare
+      // Widget gets wrapped/unwrapped instead, reparenting and reloading any
+      // iframe inside it even though the widget itself is reused.
       (tag) =>
-        viewEmbed.of({
-          viewId: readViewNode(tag.param)?.view_id ?? "",
-          views,
-          sources,
-          sourcesAnswer$,
-          eager,
-          heights,
-          warmup,
-          comments,
-        }),
+        Elt.mk("div", { class: "wordgard-view-node" }, [
+          viewEmbed.of({
+            viewId: readViewNode(tag.param)?.view_id ?? "",
+            views,
+            sources,
+            sourcesAnswer$,
+            eager,
+            heights,
+            warmup,
+            comments,
+          }),
+        ]),
       { atom: true },
     ),
   ];

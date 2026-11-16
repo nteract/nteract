@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Observable, distinctUntilChanged, map } from "rxjs";
 import { sourceSchemaStore } from "./source-schema-store.mjs";
+import { SOURCE_PREVIEW_TYPES, sourcePreviewStore } from "./source-preview-store.mjs";
 import { ArrowUpRight, ChevronRight, Database, History, Search } from "lucide-react";
 import { COMMENTS_SHEET_QUERY } from "./comments-layout.mjs";
 import { sourceTime } from "./source-line.mjs";
@@ -99,6 +100,68 @@ function SourceSchema({ session, source }) {
           Showing {summary.columns.length} of {summary.column_count} columns.
         </p>
       )}
+    </section>
+  );
+}
+
+function SourceAudio({ bytes }) {
+  const audio = useRef(null);
+  useEffect(() => {
+    const player = audio.current;
+    const url = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+    player.src = url;
+    return () => {
+      player.pause();
+      player.removeAttribute("src");
+      player.load();
+      URL.revokeObjectURL(url);
+    };
+  }, [bytes]);
+  return <audio ref={audio} controls preload="metadata" aria-label="Source audio preview" />;
+}
+
+function SourceFilePreview({ session, source }) {
+  const resource = useMemo(
+    () => sourcePreviewStore(session, source.source_id),
+    [session, source.source_id],
+  );
+  const value = useStore(resource.store);
+  useEffect(() => resource.start(), [resource]);
+  if (value.name !== "ready")
+    return (
+      <p role="status" className="source-schema-status">
+        {value.name === "loading" ? "Loading preview…" : value.message || "Preview unavailable."}
+      </p>
+    );
+  const { preview } = value;
+  return (
+    <section
+      className="source-file-preview"
+      aria-label="Source preview"
+      data-source-revision={value.version.revision}
+    >
+      <h4>
+        {preview.kind === "text"
+          ? "Source code"
+          : preview.kind === "audio"
+            ? "Audio"
+            : "Binary preview"}
+      </h4>
+      {preview.kind === "audio" ? (
+        <SourceAudio key={value.version.asset_id} bytes={preview.bytes} />
+      ) : (
+        <pre tabIndex={0} aria-label={preview.kind === "text" ? "Source code" : "Hex bytes"}>
+          <code>{preview.kind === "text" ? preview.text : preview.hex}</code>
+        </pre>
+      )}
+      <small>
+        {preview.size.toLocaleString()} bytes
+        {preview.truncated
+          ? preview.kind === "text"
+            ? " · preview truncated"
+            : " · first 64 bytes shown"
+          : ""}
+      </small>
     </section>
   );
 }
@@ -332,7 +395,7 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
         {source && (
           <section className="source-inspector" aria-label="Source details">
             <h3>{source.name}</h3>
-            <p className="source-id">{source.source_id}</p>
+            <p className="source-id">Source ID: {source.source_id}</p>
             {unavailable ? (
               <p className="sources-notice">
                 {source.availability === "unreadable"
@@ -368,6 +431,9 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
             )}
             {!unavailable && source.media_type === PARQUET_MEDIA_TYPE && (
               <SourcePreview key={source.source_id} session={session} source={source} />
+            )}
+            {!unavailable && SOURCE_PREVIEW_TYPES.includes(source.media_type) && (
+              <SourceFilePreview key={source.source_id} session={session} source={source} />
             )}
             <div className="source-sections" role="group" aria-label="Source sections">
               <button aria-pressed={tab === "uses"} onClick={() => setTab("uses")}>

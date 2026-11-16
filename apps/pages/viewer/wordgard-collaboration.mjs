@@ -1,5 +1,6 @@
 import * as A from "@automerge/automerge/slim";
 import { Decoration } from "wordgard/editor";
+import { rangeHighlights } from "./range-highlights.mjs";
 import { selectedChart, selectionContext } from "../model/comments.mjs";
 import { resolvePeerSelection } from "../model/presence.mjs";
 import {
@@ -339,7 +340,7 @@ export function createWordgardCollaboration({
   function ranges() {
     const entries = [];
     const add = (from, to, attributes) => {
-      if (from < to) entries.push([Decoration.Range.wrapper("span", { attributes }), from, to]);
+      if (from < to) entries.push(...rangeHighlights(getCurrent().doc, from, to, attributes));
     };
     for (const peer of peers())
       add(peer.from, peer.to, {

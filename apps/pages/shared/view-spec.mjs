@@ -1,7 +1,7 @@
 import { ANYWIDGET_MEDIA_TYPE } from "./anywidget-view.mjs";
-import { checkAnywidgetSpec } from "@nteract/output-frame/schema";
-// Shared admission and rendering checks. Each media-specific validator reports
-// the asset names its spec reads; stored data must bind exactly those names.
+import { compileAnywidgetSpec } from "./anywidget-spec.mjs";
+// Shared admission and rendering checks: charts bind dataset names through
+// data; widgets compile direct source references from spec.
 import { checkChartSpec } from "./chart-spec.mjs";
 
 /** UTF-8 bytes of a view's spec as JSON. */
@@ -38,9 +38,9 @@ export function viewDataProblem(names, data) {
 }
 
 /**
- * Check `spec`, and, when `data` is given, that `data` binds exactly the
- * names the spec reads. Returns `{ ok: true, names }`, the data names the
- * spec reads, or `{ ok: false, error }`, one sentence saying what is wrong.
+ * Check `spec`. Charts return `{ ok: true, names }` and, when data is given,
+ * require exactly those bindings. Widgets reject data and return their
+ * compiled spec and dependencies. Refusals return `{ ok: false, error }`.
  */
 export function checkViewSpec(spec, data, mediaType) {
   if (!isObject(spec)) return { ok: false, error: "spec must be a JSON object." };
@@ -53,8 +53,15 @@ export function checkViewSpec(spec, data, mediaType) {
   if (new TextEncoder().encode(json).byteLength > VIEW_SPEC_MAX_BYTES)
     return { ok: false, error: `spec must be ${VIEW_SPEC_MAX_BYTES / 1024} KiB or smaller.` };
   // Surface the media-specific refusal directly to the caller.
-  const checked =
-    mediaType === ANYWIDGET_MEDIA_TYPE ? checkAnywidgetSpec(spec) : checkChartSpec(spec);
+  if (mediaType === ANYWIDGET_MEDIA_TYPE) {
+    if (data !== undefined)
+      return {
+        ok: false,
+        error: "Anywidget views use direct source references in spec; omit data.",
+      };
+    return compileAnywidgetSpec(spec);
+  }
+  const checked = checkChartSpec(spec);
   if (!checked.ok || data === undefined) return checked;
   if (!isObject(data)) return { ok: false, error: "data must map each data name to a source." };
   const problem = viewDataProblem(checked.names, data);

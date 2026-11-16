@@ -1,3 +1,4 @@
+import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
 // Reading a stored view record (`pages.view`, model/view-doc.mjs): the
 // rules a host write keeps, shared by the host, which writes views, and the
 // viewer, which draws them. It imports no spec checker, so the viewer's
@@ -74,6 +75,7 @@ export function readView(doc, viewId) {
     !title ||
     typeof doc.media_type !== "string" ||
     !data ||
+    (doc.media_type === ANYWIDGET_MEDIA_TYPE && Object.keys(data).length !== 0) ||
     !isMap(spec) ||
     !isMap(producer) ||
     typeof producer.kind !== "string" ||
@@ -86,7 +88,7 @@ export function readView(doc, viewId) {
     title,
     media_type: doc.media_type,
     revision: doc.revision,
-    data,
+    ...(doc.media_type === ANYWIDGET_MEDIA_TYPE ? {} : { data }),
     spec,
     producer: {
       kind: producer.kind,

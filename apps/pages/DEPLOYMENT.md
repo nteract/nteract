@@ -2230,3 +2230,22 @@ may be unrelated, so nothing is adopted automatically:
 A body edit refused with `resync_required` needs none of these: the run rereads
 the Page and writes its whole body again, which gives the same result whether or not the edit
 applied.
+
+## Interactive output host
+
+Set `PAGES_OUTPUT_FRAME_URL` in the deployment's Worker environment to use your
+own output host, for example `https://widgets.example.net/frame/v2/`. Without
+it, Pages uses `https://pages.kilousercontent.com/frame/v2/`. The URL must use
+HTTPS on a separate origin from `NOTEBOOK_CLOUD_PUBLIC_ORIGIN`, without
+credentials, query parameters or fragments. Use a separate registrable domain
+for untrusted widget code, and never put application cookies on that domain.
+
+The gateway puts the configured URL in the delivered app shell and sets its
+`frame-src` CSP to the same origin. Root, Page links and published-preview
+shells all use this configuration. These configured HTML responses are
+`no-store`; hashed application assets keep their normal caching. The build
+artifact does not need rebuilding for a different output host. Cloudflare
+profiles can set the variable in `vars`; other hosts pass it to the Worker
+environment. Deploy the compatible v2 output shell independently using
+`wrangler.output.toml` and its own domain. Changing this setting does not grant
+widgets credentials, Page write access, or microphone access.

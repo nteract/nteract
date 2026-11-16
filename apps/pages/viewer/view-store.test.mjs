@@ -150,3 +150,21 @@ test("a stored view document with no revision yet isn't on this Page until its w
     assert.equal(projectView("sales", doc).reason, "missing");
   assert.equal(viewProjection("sales", { name: "ready", id: "d" }, {}).reason, "missing");
 });
+
+test("direct-reference widgets project without a data alias map; replaced v1 views are unreadable", () => {
+  const spec = { module: { source_id: "counter" }, state: { count: 0 } };
+  const doc = viewDoc({
+    media_type: "application/vnd.nteract.anywidget.v2+json",
+    spec: JSON.stringify(spec),
+    data: {},
+  });
+  const projection = projectView("counter", doc);
+  assert.equal(projection.status, "ready");
+  assert.deepEqual(projection.view.spec, spec);
+  assert.equal(Object.hasOwn(projection.view, "data"), false);
+  const old = projectView(
+    "counter",
+    viewDoc({ media_type: "application/vnd.nteract.anywidget.v1+json" }),
+  );
+  assert.equal(old.reason, "unreadable");
+});

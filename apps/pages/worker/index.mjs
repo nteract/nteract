@@ -445,6 +445,7 @@ import {
   readLinkRoute,
 } from "./link-previews.mjs";
 import { pageShellSlug, slugShellResponse } from "./page-shell.mjs";
+import { outputFrameAssets } from "./output-frame-config.mjs";
 import { titleProjection } from "./title-projection.mjs";
 
 const operations = new Set([
@@ -1448,7 +1449,8 @@ const gateway = {
       }
       if (url.pathname === "/connect") return connectAgentResponse(request, env);
       if (url.pathname === "/api/slack/events") return await handleSlackPreview(request, env);
-      if (url.pathname === "/llms.txt") return agentGuideResponse(request, env);
+      if (url.pathname === "/llms.txt" || url.pathname.startsWith("/llms/"))
+        return agentGuideResponse(request, env);
       if (url.pathname === "/health")
         return json({ ok: true, prototype: "pages-celld-native", ...buildAdvertisement() });
       try {
@@ -1834,6 +1836,17 @@ const gateway = {
       // (link-previews.mjs). Only /p/<id>/{meta,card}.json and
       // /project/<id>/{meta,card}.json; everything else under /p/, /project/
       // and /s/ is the app's.
+      if (env.PAGES_OUTPUT_FRAME_URL !== undefined) {
+        env = Object.create(env, {
+          ASSETS: {
+            value: outputFrameAssets(
+              env.ASSETS,
+              env.PAGES_OUTPUT_FRAME_URL,
+              env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || url.origin,
+            ),
+          },
+        });
+      }
       const linkRoute = readLinkRoute(url.pathname);
       if (linkRoute) return await handleLinkPreview(request, env, linkRoute, { logFailure });
       const publicPreview = /^\/p\/([^/]+)(?:\/(preview\.json|preview\.png))?\/?$/.exec(

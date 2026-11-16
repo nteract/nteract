@@ -4,11 +4,15 @@ import { createServer } from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { build } from "esbuild";
+import { browserMermaidPlugin } from "./browser-mermaid.mjs";
 import { browserSiftPlugin } from "./browser-sift.mjs";
 import { chromium, webkit, expect } from "@playwright/test";
 import "./build-output.mjs";
 const { default: worker } = await import("../output/worker.mjs");
 import { OUTPUT_FRAME_URL } from "../shared/anywidget-view.mjs";
+const configuredFrameUrl = process.env.PAGES_OUTPUT_LIVE
+  ? OUTPUT_FRAME_URL
+  : "https://selfhosted.widgets.example/frame/v2/";
 const out = new URL(
   process.env.PAGES_OUTPUT_ARTIFACT
     ? "../test-results/output-real/"
@@ -59,12 +63,13 @@ const baseStyle = await readFile(
   new URL(import.meta.resolve("@nteract/output-frame/styles.css")),
   "utf8",
 );
+const editorStyle = await readFile(new URL("../viewer/wordgard.css", import.meta.url), "utf8");
 const entries = {
   counter: [
     await readFile(new URL("../test/fixtures/anywidget-counter/index.mjs", import.meta.url)),
     "text/javascript",
   ],
-  counterStyle: [
+  counterstyle: [
     await readFile(new URL("../test/fixtures/anywidget-counter/style.css", import.meta.url)),
     "text/css",
   ],
@@ -154,6 +159,12 @@ for (const [name, [bytes, media_type]] of Object.entries(entries)) {
   versions[name] = { asset_id, media_type, revision: "1" };
 }
 const fixture = `import { BehaviorSubject } from 'rxjs';
+import { Wordgard, Decoration } from 'wordgard/editor';
+import { rangeHighlights } from './viewer/range-highlights.mjs';
+import { GardState, GardSelection } from 'wordgard/state';
+import { Leaf } from 'wordgard/doc';
+import { schema, Paragraph, PagesView } from './viewer/wordgard-model.mjs';
+import { wordgardViews } from './viewer/wordgard-views.mjs';
 import { mount } from './viewer/view-output.mjs';
 import { themeStore } from './viewer/theme.mjs';
 themeStore.setMode(${JSON.stringify(process.env.PAGES_OUTPUT_SERVE ? "system" : "light")});
@@ -161,21 +172,33 @@ const appearance=document.querySelector('#appearance');appearance.value=themeSto
 appearance.addEventListener('change',()=>themeStore.setMode(appearance.value));
 const versions=${JSON.stringify(versions)};
 const changes=new BehaviorSubject(0);
-const view={view_id:'audio',title:'Audio exploration',media_type:'application/vnd.nteract.anywidget.v1+json',spec:{_esm:'code',buffers:['recording'],buffer_paths:[['recording']]},data:{code:{source_id:'code'},recording:{source_id:'recording'}},revision:'1'};
+const view={view_id:'audio',title:'Audio exploration',media_type:'application/vnd.nteract.anywidget.v2+json',spec:{module:{source_id:'code'},buffers:[{source:{source_id:'recording'},path:['recording']}]},revision:'1'};
 const view$=new BehaviorSubject({status:'ready',view});
 let failNext=false;
 const sources={pageId:'${pageId}',request:(...args)=>{if(failNext){failNext=false;return Promise.resolve(new Response('not yet',{status:503}))}return fetch(...args)},versions:()=>changes,resolve:b=>versions[b.source_id]};
 const handle=mount(document.querySelector('main'),{view$,sources,sourcesAnswer$:null});
-window.fixture={counter(composed=false){
+let editor; let highlight=null; const permissions=new GardState.Compartment();
+window.fixture={editor(){
+  handle.destroy();
+  window.fixture.counter();
+  const node=PagesView.of({view_id:'audio'});
+  editor=new Wordgard({parent:document.querySelector('main'),state:GardState.create({
+    doc:schema.doc([node,Paragraph.create([Leaf.text('Outside the widget')])]),
+    config:[permissions.of([GardState.readOnly.of(false),Wordgard.editable.of(true)]),Decoration.Range.source.of(state=>Decoration.Range.set(highlight?rangeHighlights(state.doc,0,1,highlight):[])),schema.elements.map(e=>GardState.schemaElement.of(e)),wordgardViews({eager:true, sources, views:{hold:()=>({view$,release(){}})}})]
+  })});
+  window.fixture.highlight=value=>{highlight=value;editor.dispatch({});editor.flush()};
+  window.fixture.focus=()=>editor.focus();
+  window.fixture.readonly=value=>{editor.dispatch({effects:permissions.reconfigure([GardState.readOnly.of(value),Wordgard.editable.of(!value)])});editor.flush()};
+  window.fixture.select=selected=>{editor.dispatch({selection:selected?GardSelection.node(0,node):GardSelection.cursor(2)});editor.flush()};
+},unavailable(){view$.next({status:'ready',view:{...view,spec:{}}})},counter(composed=false){
   view$.next({status:'ready',view:{...view,
-    spec:composed ? {_esm:'composed',state:{child:'anywidget:counter'},models:{counter:{_esm:'counter',_css:'counterStyle',state:{count:42}}}} : {_esm:'counter',_css:'counterStyle',state:{count:42}},
-    data:{counter:{source_id:'counter'},counterStyle:{source_id:'counterStyle'},...(composed?{composed:{source_id:'composed'}}:{})}
+    spec:composed ? {module:{source_id:'composed'},state:{child:'anywidget:counter'},models:{counter:{module:{source_id:'counter'},stylesheet:{source_id:'counterstyle'},state:{count:42}}}} : {module:{source_id:'counter'},stylesheet:{source_id:'counterstyle'},state:{count:42}}
   }});
-},audio(){view$.next({status:'ready',view})},layout(){versions.code=versions.layout;changes.next(4)},transient(){failNext=true;versions.recording={...versions.recording,revision:'3'};changes.next(3)},example(){versions.code=versions.example;view$.next({status:'ready',view:{...view,spec:{_esm:'code',buffers:['recording','dmel'],buffer_paths:[['recording'],['dmel']],state:{description:${JSON.stringify(description)}}},data:{...view.data,dmel:{source_id:'dmel'}}}})},change(){versions.recording={...versions.recording,revision:'2'};changes.next(1)},fail(){versions.code=versions.broken;changes.next(2)},destroy:()=>handle.destroy()};
+},audio(){view$.next({status:'ready',view})},layout(){versions.code=versions.layout;changes.next(4)},transient(){failNext=true;versions.recording={...versions.recording,revision:'3'};changes.next(3)},example(){versions.code=versions.example;view$.next({status:'ready',view:{...view,spec:{module:{source_id:'code'},buffers:[{source:{source_id:'recording'},path:['recording']},{source:{source_id:'dmel'},path:['dmel']}],state:{description:${JSON.stringify(description)}}}}})},change(){versions.recording={...versions.recording,revision:'2'};changes.next(1)},fail(){versions.code=versions.broken;changes.next(2)},destroy:()=>handle.destroy()};
 ${process.env.PAGES_OUTPUT_SERVE ? "window.fixture.example();" : ""}`;
 const result = await build({
   stdin: { contents: fixture, resolveDir: process.cwd(), sourcefile: "output-fixture.mjs" },
-  plugins: [browserSiftPlugin(process.cwd())],
+  plugins: [browserSiftPlugin(process.cwd()), browserMermaidPlugin(process.cwd())],
   bundle: true,
   format: "esm",
   write: false,
@@ -183,7 +206,7 @@ const result = await build({
 const server = createServer((req, res) => {
   if (req.url === "/styles.css") {
     res.setHeader("Content-Type", "text/css");
-    res.end(baseStyle + "\n" + tokens);
+    res.end(baseStyle + "\n" + tokens + "\n" + editorStyle);
     return;
   }
   if (req.url === "/app.js") {
@@ -200,10 +223,10 @@ const server = createServer((req, res) => {
   }
   res.setHeader(
     "Content-Security-Policy",
-    `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-src ${new URL(OUTPUT_FRAME_URL).origin}`,
+    `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-src ${new URL(configuredFrameUrl).origin}`,
   );
   res.end(
-    '<!doctype html><meta name="viewport" content="width=device-width"><title>Audio exploration</title><link rel="stylesheet" href="/styles.css"><label style="max-width:900px;margin:20px auto">Appearance <select id="appearance"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><main style="max-width:900px;margin:30px auto;font:16px system-ui"></main><script type="module" src="/app.js"></script>',
+    `<!doctype html><meta name="pages-output-frame-url" content="${configuredFrameUrl}"><meta name="viewport" content="width=device-width"><title>Audio exploration</title><link rel="stylesheet" href="/styles.css"><label style="max-width:900px;margin:20px auto">Appearance <select id="appearance"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><main style="max-width:900px;margin:30px auto;font:16px system-ui"></main><script type="module" src="/app.js"></script>`,
   );
 });
 await new Promise((resolve) =>
@@ -224,8 +247,8 @@ try {
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   if (!process.env.PAGES_OUTPUT_LIVE)
-    await page.route(OUTPUT_FRAME_URL, async (route) => {
-      const response = await worker.fetch(new Request(OUTPUT_FRAME_URL));
+    await page.route(configuredFrameUrl, async (route) => {
+      const response = await worker.fetch(new Request(configuredFrameUrl));
       await route.fulfill({
         status: response.status,
         headers: Object.fromEntries(response.headers),
@@ -318,10 +341,19 @@ try {
         })),
       )
       .toMatchObject({ overflowX: 0, overflowY: 0, scrollbarWidth: 0, inset: 0 });
-    const gap = await frame
-      .locator("body")
-      .evaluate((body) => innerHeight - body.getBoundingClientRect().height);
-    assert.ok(gap >= 0 && gap < 1, `Frame fits content without guessed padding: ${gap}`);
+    // ResizeObserver -> MessagePort -> parent style is asynchronous. Wait for
+    // that delivered measurement after changing the viewport, not just ready.
+    await expect
+      .poll(
+        async () => {
+          const gap = await frame
+            .locator("body")
+            .evaluate((body) => innerHeight - body.getBoundingClientRect().height);
+          return gap >= 0 && gap < 1;
+        },
+        { message: "Frame fits its measured content without guessed padding" },
+      )
+      .toBe(true);
   };
   for (const width of [1200, 390]) {
     await page.setViewportSize({ width, height: 844 });
@@ -376,6 +408,78 @@ try {
   await expect(page.getByText("intentional failure")).toBeVisible();
   await expect(page.locator("iframe")).toHaveCount(0);
   await page.evaluate(() => window.fixture.destroy());
+  // Selecting a Wordgard view used to wrap/reparent its iframe, which reloads
+  // the document and trips the navigation guard. The local model must survive.
+  await page.evaluate(() => window.fixture.editor());
+  await expect(frame.getByRole("button", { name: "count is 42" })).toBeVisible();
+  let loads = 0;
+  page.on("framenavigated", (f) => {
+    if (f !== page.mainFrame()) loads++;
+  });
+  for (const width of [1200, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    await frame.getByRole("button").click();
+    const count = width === 1200 ? "count is 43" : "count is 44";
+    for (const selected of [true, false]) {
+      await page.evaluate((selected) => window.fixture.select(selected), selected);
+      await expect(frame.getByRole("button")).toHaveText(count);
+      await expect(page.locator(".pages-anywidget-view")).toHaveAttribute(
+        "data-output-state",
+        "ready",
+      );
+    }
+  }
+  // A peer selection disappears when that peer leaves the editor/window.
+  // The actual collaboration decorations must preserve the frame and model.
+  for (const attributes of [
+    { class: "peer-selection", title: "Collaborator", style: "--peer-color: teal" },
+    { class: "comment-passage", "data-comment-thread": "thread" },
+    null,
+  ]) {
+    await page.evaluate((value) => window.fixture.highlight(value), attributes);
+    await expect(frame.getByRole("button")).toHaveText("count is 44");
+    const wrapper = page.locator(".wordgard-view-node");
+    if (attributes)
+      for (const [name, value] of Object.entries(attributes))
+        if (name === "class") await expect(wrapper).toHaveClass(new RegExp(value));
+        else await expect(wrapper).toHaveAttribute(name, value);
+  }
+  await page.evaluate(() => {
+    window.fixture.select(true);
+    window.fixture.focus();
+  });
+  await page.locator("#appearance").focus();
+  await expect(frame.getByRole("button")).toHaveText("count is 44");
+  await page.evaluate(() => window.fixture.focus());
+  for (const readonly of [true, false]) {
+    await page.evaluate((value) => window.fixture.readonly(value), readonly);
+    await expect(frame.getByRole("button")).toHaveText("count is 44");
+  }
+  assert.equal(
+    loads,
+    0,
+    "Selection, collaboration highlights, blur and permissions must not reload the frame",
+  );
+  // A former chart's reserve must not pad a short widget or a terminal error.
+  const embed = page.locator(".wordgard-view-embed");
+  await embed.evaluate((el) => el.style.setProperty("--pages-view-reserve", "900px"));
+  await expect.poll(async () => (await embed.boundingBox()).height).toBeLessThan(300);
+  await page.evaluate(() => {
+    window.fixture.audio();
+    window.fixture.fail();
+  });
+  await expect(page.locator(".pages-anywidget-view")).toHaveAttribute(
+    "data-output-state",
+    "failed",
+  );
+  await expect.poll(async () => (await embed.boundingBox()).height).toBeLessThan(300);
+  await page.evaluate(() => window.fixture.unavailable());
+  await expect(page.locator(".pages-anywidget-view")).toHaveAttribute(
+    "data-output-state",
+    "unavailable",
+  );
+  await expect.poll(async () => (await embed.boundingBox()).height).toBeLessThan(300);
+
   assert.deepEqual(errors, []);
   await writeFile(
     new URL("report.json", out),
@@ -383,6 +487,7 @@ try {
       {
         passed: [
           "opaque DOM/storage boundary",
+          "deployment-selected iframe endpoint read from the shell",
           "WAV DataView",
           "unchanged upstream anywidget counter + CSS; local state resets on remount",
           "child composition shares one local model across two views",
@@ -395,6 +500,7 @@ try {
           "automatic render and source-change remount",
           "retry after a transient input failure",
           "failure recovery",
+          "Wordgard node selection preserves iframe document and local model at wide/narrow widths",
         ],
         live: !!process.env.PAGES_OUTPUT_LIVE,
       },

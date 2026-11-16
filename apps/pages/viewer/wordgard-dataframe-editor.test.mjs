@@ -482,3 +482,42 @@ test("a tap on an already-selected table, or a modified click, dispatches nothin
     editor.dom.remove();
   }
 });
+
+test("selecting and deselecting a view never reparents its live iframe", async () => {
+  const { PagesView } = await import("./wordgard-model.mjs");
+  const { wordgardViews } = await import("./wordgard-views.mjs");
+  const state = GardState.create({
+    doc: schema.doc([
+      PagesView.of({ view_id: "interactive" }),
+      Paragraph.create([Leaf.text("after")]),
+    ]),
+    config: [schema.elements.map((e) => GardState.schemaElement.of(e)), wordgardViews()],
+  });
+  const editor = new Wordgard({ state, parent: document.body });
+  try {
+    editor.flush();
+    const embed = editor.contentDOM.querySelector(".wordgard-view-embed");
+    const frame = embed.appendChild(document.createElement("iframe"));
+    const observer = new MutationObserver(() => {});
+    observer.observe(editor.contentDOM, { childList: true, subtree: true });
+    for (const selection of [
+      GardSelection.node(0, state.doc.nodeAt(0)),
+      GardSelection.cursor(2),
+      GardSelection.node(0, state.doc.nodeAt(0)),
+      GardSelection.cursor(2),
+    ]) {
+      editor.dispatch({ selection });
+      editor.flush();
+      const removed = observer.takeRecords().flatMap((r) => [...r.removedNodes]);
+      assert.equal(
+        removed.some((n) => n === frame || n.contains?.(frame)),
+        false,
+        "an iframe ancestor was removed; browsers discard its local state",
+      );
+      assert.equal(frame.isConnected, true);
+    }
+    observer.disconnect();
+  } finally {
+    editor.dom.remove();
+  }
+});

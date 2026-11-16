@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium, expect } from "@playwright/test";
+import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
 import { purgeTrashedFixture } from "./purge-fixture.mjs";
 
 const origin = process.env.PAGES_ORIGIN ?? "http://localhost:9894";
@@ -272,6 +273,29 @@ try {
     );
     const css = await upload(Buffer.from(".widget { color: teal; }"), "text/css");
     const binary = await upload(Buffer.from([1, 2, 3, 4]), "application/octet-stream");
+    const wav = Buffer.alloc(32044);
+    wav.write("RIFF");
+    wav.writeUInt32LE(wav.length - 8, 4);
+    wav.write("WAVEfmt ", 8);
+    wav.writeUInt32LE(16, 16);
+    wav.writeUInt16LE(1, 20);
+    wav.writeUInt16LE(1, 22);
+    wav.writeUInt32LE(8000, 24);
+    wav.writeUInt32LE(16000, 28);
+    wav.writeUInt16LE(2, 32);
+    wav.writeUInt16LE(16, 34);
+    wav.write("data", 36);
+    wav.writeUInt32LE(wav.length - 44, 40);
+    const audioAsset = await upload(wav, "audio/wav");
+    await edit([
+      {
+        op: "set_source",
+        source_id: "audio",
+        name: "Audio sample",
+        asset_id: audioAsset,
+        source_revision: null,
+      },
+    ]);
     await edit([
       {
         op: "set_source",
@@ -298,19 +322,13 @@ try {
         op: "set_view",
         view_id: "widget",
         title: "Custom widget",
-        media_type: "application/vnd.nteract.anywidget.v1+json",
+        media_type: ANYWIDGET_MEDIA_TYPE,
         view_revision: null,
         spec: {
-          _esm: "code",
-          _css: "styles",
-          state: {},
-          buffers: ["bytes"],
-          buffer_paths: [["buffer"]],
-        },
-        data: {
-          code: { source_id: "renderer" },
-          styles: { source_id: "styles" },
-          bytes: { source_id: "bytes" },
+          module: { source_id: "renderer" },
+          stylesheet: { source_id: "styles" },
+          buffers: [{ source: { source_id: "bytes" }, path: ["buffer"] }],
+          models: { child: { module: { source_id: "renderer", revision: "1" } } },
         },
       },
       {
@@ -320,8 +338,51 @@ try {
       { op: "insert_node", node: { type: "view", attrs: { view_id: "widget" } } },
     ]);
     await openSources();
+    await panel.getByRole("button", { name: /Widget renderer JavaScript/ }).click();
+    await expect(panel).toContainText("Used on this Page · 2");
+    await expect(panel.getByLabel("Source code", { exact: true })).toContainText("export default");
+    await expect(panel).toContainText("Source ID: renderer");
+    await expect(panel).toContainText("Anywidget · module");
+    await expect(panel).toContainText("Anywidget · models.child.module");
+    await expect(panel).toContainText("Pinned · revision 1");
+    await panel
+      .getByRole("button", { name: /Custom widget Anywidget · module Follows latest/ })
+      .click();
+    await expect(page.locator(".wordgard-view-embed.source-revealed")).toBeFocused();
+    await edit([
+      {
+        op: "set_source",
+        source_id: "renderer",
+        name: "Widget renderer",
+        asset_id: js,
+        source_revision: "1",
+      },
+    ]);
+    await panel.getByRole("button", { name: "Revisions", exact: true }).click();
+    await expect(panel.locator(".source-file-preview")).toHaveAttribute(
+      "data-source-revision",
+      "2",
+    );
+    await expect(panel).toContainText("Revision 2");
+    await expect(panel).toContainText("A connection is pinned here");
+    await panel.getByRole("button", { name: "Connections", exact: true }).click();
+    await page.screenshot({ path: `${output}/anywidget-sources-wide.png` });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(panel).toBeVisible();
+    await expect(panel).toContainText("Anywidget · models.child.module");
+    await page.screenshot({ path: `${output}/anywidget-sources-phone.png` });
+    await panel
+      .getByRole("button", { name: /Custom widget Anywidget · models.child.module/ })
+      .click();
+    await expect(panel).toHaveCount(0);
+    await expect(page.locator(".wordgard-view-embed.source-revealed")).toBeFocused();
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await openSources();
     await panel.getByRole("button", { name: /Widget styles CSS/ }).click();
-    await expect(panel).toContainText("Anywidget · styles", { timeout: 30000 });
+    await expect(panel.getByLabel("Source code", { exact: true })).toHaveText(
+      ".widget { color: teal; }",
+    );
+    await expect(panel).toContainText("Anywidget · stylesheet", { timeout: 30000 });
     const dockWidth = (await panel.boundingBox()).width;
     await panel.getByRole("button", { name: "Expand sources" }).click();
     assert.ok((await panel.boundingBox()).width > dockWidth);
@@ -335,7 +396,22 @@ try {
     await expect(panel.locator(".source-inspector")).toHaveCount(0);
     await expect(panel.getByRole("button", { name: /Widget styles CSS/ })).toBeFocused();
     await panel.getByRole("button", { name: /Binary sample Binary/ }).click();
-    await expect(panel).toContainText("Anywidget · bytes");
+    await expect(panel.getByLabel("Hex bytes")).toHaveText("01 02 03 04");
+    await expect(panel).toContainText("Anywidget · buffers[0].source");
+    await panel.getByRole("button", { name: "All sources" }).click();
+    await panel.getByRole("button", { name: /Audio sample WAV audio/ }).click();
+    const audioPreview = panel.getByLabel("Source audio preview");
+    await expect(audioPreview).toHaveAttribute("src", /^blob:/);
+    await expect.poll(() => audioPreview.evaluate((el) => el.readyState)).toBeGreaterThan(0);
+    assert.equal(await audioPreview.evaluate((el) => el.paused), true, "Preview must not autoplay");
+    const audioHandle = await audioPreview.elementHandle();
+    await audioPreview.evaluate((el) => el.play());
+    await panel.getByRole("button", { name: "All sources" }).click();
+    assert.equal(
+      await audioHandle.evaluate((el) => el.paused && !el.hasAttribute("src")),
+      true,
+      "Closing preview stops and releases audio",
+    );
   } else await openSources();
   await page.getByRole("button", { name: "Comments", exact: true }).click();
   await expect(panel).toHaveCount(0);
@@ -368,7 +444,7 @@ try {
     await expect(panel).toContainText("This source isn't available on this Page", {
       timeout: 30000,
     });
-    await expect(panel).toContainText("Anywidget · styles");
+    await expect(panel).toContainText("Anywidget · stylesheet");
     if (keep) {
       // Keep the demo readable: bind the widget to a new name after deletion.
       const cssReplacement = await upload(Buffer.from(".widget { color: teal; }"), "text/css");
@@ -384,19 +460,13 @@ try {
           op: "set_view",
           view_id: "widget",
           title: "Custom widget",
-          media_type: "application/vnd.nteract.anywidget.v1+json",
+          media_type: ANYWIDGET_MEDIA_TYPE,
           view_revision: "1",
           spec: {
-            _esm: "code",
-            _css: "styles",
-            state: {},
-            buffers: ["bytes"],
-            buffer_paths: [["buffer"]],
-          },
-          data: {
-            code: { source_id: "renderer" },
-            styles: { source_id: "theme" },
-            bytes: { source_id: "bytes" },
+            module: { source_id: "renderer" },
+            stylesheet: { source_id: "theme" },
+            buffers: [{ source: { source_id: "bytes" }, path: ["buffer"] }],
+            models: { child: { module: { source_id: "renderer", revision: "1" } } },
           },
         },
       ]);

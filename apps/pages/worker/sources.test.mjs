@@ -889,12 +889,42 @@ test("ESM and WAV sources bind to an executable view through the real Page host"
         op: "set_view",
         view_id: "audio",
         title: "Listen",
-        media_type: "application/vnd.nteract.anywidget.v1+json",
-        spec: { _esm: "code", buffers: ["recording"], buffer_paths: [["recording"]] },
-        data: { code: { source_id: "code" }, recording: { source_id: "recording" } },
+        media_type: "application/vnd.nteract.anywidget.v2+json",
+        spec: {
+          module: { source_id: "code" },
+          buffers: [{ source: { source_id: "recording" }, path: ["recording"] }],
+        },
         view_revision: null,
       },
     ],
   });
   assert.equal(view.status, 200, JSON.stringify(view.body));
+  const saved = await h.tool(h.host, "read_page", { view_id: "audio" });
+  assert.deepEqual(saved.body.view.spec.module, { source_id: "code" });
+  assert.equal(Object.hasOwn(saved.body.view, "data"), false);
+  const listed = await h.tool(h.host, "read_page", { views: true });
+  assert.deepEqual(
+    listed.body.views[0].dependencies.map((d) => d.source.source_id),
+    ["code", "recording"],
+  );
+  const placed = await h.setSource(h.host, [
+    { op: "insert_node", node: { type: "view", attrs: { view_id: "audio" } } },
+  ]);
+  assert.equal(placed.status, 200, JSON.stringify(placed.body));
+  const bad = await h.setSource(h.host, [
+    {
+      op: "set_view",
+      view_id: "bad-widget",
+      title: "Wrong type",
+      media_type: "application/vnd.nteract.anywidget.v2+json",
+      spec: { module: { source_id: "recording" } },
+      view_revision: null,
+    },
+  ]);
+  assert.equal(bad.status, 400);
+  assert.match(bad.body.error, /spec.module.*text\/javascript/);
+  assert.equal((await h.tool(h.host, "read_page", { views: true })).body.views.length, 1);
+  const restarted = h.page();
+  const again = await h.tool(restarted, "read_page", { view_id: "audio" });
+  assert.deepEqual(again.body.view.spec, saved.body.view.spec);
 });

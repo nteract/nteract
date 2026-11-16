@@ -1606,6 +1606,9 @@ writer attribution, retained revision history, and connections from placed
 tables and views. Agent labels are marked as client-provided. Selecting a
 connection locates its placement in the Page. Following and pinned bindings
 are distinguished, including pins whose revisions are no longer retained.
+Anywidget connections come from the shared direct-reference inventory: module,
+stylesheet and paired buffers, including child models. Each spec location is a
+separate connection even when several locations share one source transfer.
 The inventory includes offscreen and repeated placements; it reads view
 replicas while open and releases that demand when closed. Unreadable content
 and unavailable views explicitly leave the connection inventory incomplete.
@@ -1613,7 +1616,13 @@ Direct-asset tables aren't treated as source consumers. This first inspector
 shows column names, Arrow types and row count from the host's Parquet footer
 summary when the preview area is narrower than 520px. Wider areas show Sift
 using the Page's existing asset cache and source-following renderer. The
-preview stays mounted across Connections and Revisions. Schema reads are
+preview stays mounted across Connections and Revisions. JavaScript and CSS have
+read-only text previews (first 16,000 characters); WAV sources have an audio
+player; binary sources show their first 64 bytes in hexadecimal. These previews
+read authenticated assets with a 5 MiB bound and verify their digest. Code is
+never executed by the inspector. Changing sources or closing the inspector
+cancels pending reads and stops audio. The stable source identifier is labeled
+**Source ID**, separately from the editable display name. Schema reads are
 cancelled on source changes and fenced by immutable asset id. It does not create, replace or remove
 sources or execute code. Search appears when more than one source is listed.
 It inspects only the current Page's placed consumers.
@@ -1824,7 +1833,7 @@ root is:
 ```
 {
   title:      string, 1 to 200 characters; a write refuses control characters
-  media_type: "application/vnd.vegalite.v6+json" | "application/vnd.nteract.anywidget.v1+json"
+  media_type: "application/vnd.vegalite.v6+json" | "application/vnd.nteract.anywidget.v2+json"
   spec:       text, the media-specific spec as JSON
   data:       { [data_name]: { source_id } | { source_id, revision } }
   revision:   decimal string: "1", then one more per write
@@ -1832,9 +1841,11 @@ root is:
 }
 ```
 
-`spec` is collaborative text: a rewrite replaces it with `updateText`. `data`
-names exactly the data the spec reads, each bound to one of the Page's
-sources. A data name matches `^[A-Za-z_][A-Za-z0-9_-]{0,63}$` and is never
+`spec` is collaborative text: a rewrite replaces it with `updateText`. For Vega-Lite, `data`
+names exactly the datasets the spec reads, each bound to one of the Page's
+sources. Anywidget references live only in `spec`; its stored `data` is empty
+and omitted from API reads/writes. View summaries expose derived `dependencies`
+with `{source, role, location}` for those references. If a stored widget spec cannot be inspected, its summary retains the view metadata and revision with `dependencies_unavailable: true` instead of breaking the Page read. A data name matches `^[A-Za-z_][A-Za-z0-9_-]{0,63}$` and is never
 `constructor`, `prototype` or `__proto__`; a view binds at most 32. Every map
 keyed by a data name, view id or source id is built from entries or is a
 `Map`, so no key reaches a prototype. `{ source_id }` follows the source's current revision;
@@ -1924,36 +1935,40 @@ the views that exist as `documents.views`, `{ [view_id]: documentId }`.
 
 ### Anywidget outputs
 
-`application/vnd.nteract.anywidget.v1+json` hosts standard
+`application/vnd.nteract.anywidget.v2+json` hosts standard
 [Anywidget Front-End Modules (AFM)](https://anywidget.dev/en/afm/) with local model
-state and no backend. A minimal spec is `{ "_esm": "code", "state": { "count": 0 } }`.
+state and no backend. A minimal spec is `{ "module": { "source_id": "counter-module" }, "state": { "count": 0 } }`.
 
 ```json
 {
-  "_esm": "code",
-  "_css": "style",
+  "module": { "source_id": "audio-module", "revision": "3" },
+  "stylesheet": { "source_id": "audio-style" },
   "state": { "time": 0, "audio": {} },
-  "buffers": ["recording"],
-  "buffer_paths": [["audio", "bytes"]]
+  "buffers": [{ "source": { "source_id": "recording" }, "path": ["audio", "bytes"] }]
 }
 ```
 
-`_esm` names a `text/javascript` source binding; optional `_css` names a
-`text/css` source binding. `buffers` lists source bindings; the corresponding
-`buffer_paths` insert DataViews into initial `state`, using the same object-key
-and array-index paths as Jupyter widget serialization. Intermediate containers
-must exist; array slots must exist (use null placeholders). Object leaves may be
-absent. Paths cannot overlap or traverse prototype keys. The widget accesses
+`module` references a `text/javascript` source; optional `stylesheet` references
+`text/css`. Each reference is `{source_id, revision?}`. A buffer pairs its
+`source` with a `path` that inserts a DataView into initial `state`. Intermediate
+containers and array slots must exist (use null placeholders); object leaves may
+be absent. Paths cannot overlap or traverse prototype keys. The widget accesses
 these values through `model.get()`, without a Pages-specific input prop.
 
-For composition, optional `models` maps child IDs to definitions with the same
-`_esm`, `_css`, `state`, `buffers` and `buffer_paths` fields. Use
-`"anywidget:<id>"` references in model state and the standard `host.getWidget()` /
-`host.getModel()` APIs. The root model ID is `root`; child IDs are unique safe
-names other than `root`. There are at most 32 models and 32 distinct asset
-bindings. Each referenced asset must have exactly one entry in the view's `data`;
-models can reuse bindings. Initial state and the complete spec remain bounded by
-the view's 64 KiB limit.
+Optional `models` maps child IDs to definitions with the same `module`,
+`stylesheet`, `state` and paired `buffers` fields. Use `"anywidget:<id>"`
+references in state and the standard `host.getWidget()` / `host.getModel()` APIs.
+The root ID is `root`; child IDs are unique safe names other than `root`.
+There are at most 32 models, 32 buffers per model and 32 distinct source-version
+references. Equal references share one byte transfer; following and pinned
+references stay distinct. The complete spec is bounded by 64 KiB.
+
+The Pages adapter (`shared/anywidget-spec.mjs`) compiles these references to the
+output-frame library's existing named-byte envelope. `viewDependencies` provides
+the inventory used by admission, view summaries and renderer subscriptions.
+The host checks each source, retained pin and module/CSS media type before
+saving; the renderer rechecks types when following a changed source. The stored
+view accepts no `data` alias map. The AFM API and iframe transport are unchanged.
 
 Upload ESM, CSS, WAV (`audio/wav`), arbitrary binary (`application/octet-stream`)
 or Parquet, then register each asset with `set_source`. ESM, CSS, WAV and generic
@@ -1988,17 +2003,18 @@ be self-contained or use absolute HTTPS imports. Frameworks can be bundled into
 an AFM; Pages does not provide a React/shadcn runtime or Tailwind compiler.
 See [the package guide](../../packages/output-frame/README.md).
 
-The new type replaces the preproduction `application/vnd.nteract.esm-view+json`
-experiment. Existing experimental views must be rewritten with the new spec;
-there is no legacy reader. Deploy the independently hosted `/frame/v2/` shell
-before updating a Pages host to this version. The shell uses
-`wrangler deploy --config wrangler.output.toml` on `pages.kilousercontent.com`,
-with no bindings. This does not deploy Pages or the notebook output host.
+The v2 type replaces the preproduction `application/vnd.nteract.anywidget.v1+json`
+alias-based envelope. Old experimental views are unsupported until explicitly
+rewritten with v2 spec and their observed view revision. There is no legacy
+renderer or automatic content conversion; Pages and their assets are not reset.
+The independently hosted `/frame/v2/` shell and MessagePort protocol do not change
+for this authoring-format update. The shell deployment remains separate from
+Pages and the notebook output host.
 
 ### Writes
 
 `edit_page` `set_view` writes one view: `{ op: "set_view", view_id, title,
-media_type, spec, data, view_revision }`, alone in its batch (otherwise
+media_type, spec, view_revision }` (plus `data` for Vega-Lite only), alone in its batch (otherwise
 `400 invalid_arguments`). It names the Page `revision` it read, fenced like
 any edit; a newer Page revision doesn't refuse it. `view_revision` is null to
 create, or the view's current `revision`. The receipt carries
@@ -2008,13 +2024,11 @@ The nonce shares `edit_page`'s lane, and the writer is recorded as for any
 edit ([Edit writers](#edit-writers)) and as `producer.by`.
 
 The spec passes `checkViewSpec` ([shared/view-spec.mjs](shared/view-spec.mjs)):
-a JSON object of at most 64 KiB, nested at most 32 levels, accepted by
-the media-specific checker (`checkAnywidgetSpec` for anywidget,
-`checkChartSpec` for Vega-Lite), whose
-refusal sentence reaches the caller as it is, and reading exactly the names
-`data` binds. The spec is checked before `data`, so a spec that can't draw is
-the refusal whatever `data` holds, and an empty `data` names the data names
-the spec reads. `checkChartSpec` takes from allowlists:
+a JSON object of at most 64 KiB accepted by the media-specific checker.
+Anywidget uses `compileAnywidgetSpec`, which validates direct references and
+reuses the runtime's model/path checks. Vega-Lite uses `checkChartSpec` and must
+bind exactly the dataset names it reads in `data`; its nesting is limited to
+32 levels. The checker refusal reaches the caller as written. `checkChartSpec` takes from allowlists:
 
 - each unit view's mark: `arc`, `area`, `bar`, `boxplot`, `circle`,
   `errorband`, `errorbar`, `geoshape`, `line`, `point`, `rect`, `rule`,
@@ -3154,7 +3168,15 @@ and `PUT|DELETE /api/pages/<page_id>/tags/<tag>` ([Page tags](#page-tags)). MCP 
 token or Anaconda API key in `Authorization: Bearer ...`; `X-Pages-Driver` is an
 optional client label and `X-Pages-Agent` an optional session label. OAuth
 scopes and current Page permissions apply on every call. The public `/llms.txt`
-is the tool usage and authentication reference.
+is the tool usage and authentication reference. Its media-authoring index links to
+`/llms/assets-and-sources.txt`, `/llms/views.txt`, `/llms/anywidget.txt`, and
+`/llms/vega-lite.txt`. These focused guides contain deployment-supported examples,
+not proposed schemas. They are served from `agent-media-guides.mjs` before session
+lookup, as public plain text with GET/HEAD support; unknown `/llms/` paths return
+404 instead of the editor shell. Links use the configured public origin, not
+request headers. MCP server instructions and the upload/edit tool descriptions
+advertise the relevant guides. The guide tests validate the source/view examples
+against the current admission validators and follow the documentation links.
 
 `/mcp` serves two protocol eras on the one endpoint, both statelessly
 ([mcp.mjs](mcp.mjs), on `@modelcontextprotocol/server`):

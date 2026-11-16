@@ -2,24 +2,23 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createHash } from "node:crypto";
 import { ESM_MEDIA_TYPE, ANYWIDGET_MEDIA_TYPE, WAV_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
-import { checkAnywidgetSpec } from "@nteract/output-frame/schema";
+import { compileAnywidgetSpec } from "../shared/anywidget-spec.mjs";
 import { outputTransition, OUTPUT_STATES } from "@nteract/output-frame/lifecycle";
 import { inspectOutputAsset } from "../shared/output-assets.mjs";
 import { checkViewSpec } from "../shared/view-spec.mjs";
 import { fetchOutputAsset } from "../viewer/output-assets.mjs";
 import { validateViewOperation } from "../model/view-doc.mjs";
 
-test("an anywidget view binds exactly its module and buffers, without host URLs", () => {
+test("an anywidget view references its module and paired binary inputs directly", () => {
   const spec = {
-    _esm: "code",
-    buffers: ["recording", "dmel"],
-    buffer_paths: [["recording"], ["dmel"]],
+    module: { source_id: "code" },
+    buffers: [
+      { source: { source_id: "recording" }, path: ["recording"] },
+      { source: { source_id: "dmel", revision: "1" }, path: ["dmel"] },
+    ],
     state: { frame: 0 },
   };
-  const data = Object.fromEntries(
-    ["code", "recording", "dmel"].map((key) => [key, { source_id: key }]),
-  );
-  assert.equal(checkViewSpec(spec, data, ANYWIDGET_MEDIA_TYPE).ok, true);
+  assert.equal(checkViewSpec(spec, undefined, ANYWIDGET_MEDIA_TYPE).ok, true);
   assert.equal(
     validateViewOperation({
       op: "set_view",
@@ -27,23 +26,19 @@ test("an anywidget view binds exactly its module and buffers, without host URLs"
       title: "Listen",
       media_type: ANYWIDGET_MEDIA_TYPE,
       spec,
-      data,
       view_revision: null,
     }).spec,
     spec,
   );
   for (const bad of [
-    { ...spec, buffers: ["code"] },
-    { ...spec, buffers: ["__proto__"] },
-    { ...spec, _esm: "https://example.com/code.js" },
-    { ...spec, buffer_paths: [["__proto__"], ["dmel"]] },
+    { ...spec, buffers: ["recording"] },
+    { ...spec, module: "code" },
+    { ...spec, module: { source_id: "code", url: "https://example.com/code.js" } },
+    { ...spec, buffers: [{ source: { source_id: "recording" }, path: ["__proto__"] }] },
     { ...spec, credentials: true },
   ])
-    assert.equal(checkAnywidgetSpec(bad).ok, false);
-  assert.equal(
-    checkViewSpec(spec, { ...data, unrelated: { source_id: "secret" } }, ANYWIDGET_MEDIA_TYPE).ok,
-    false,
-  );
+    assert.equal(compileAnywidgetSpec(bad).ok, false);
+  assert.equal(checkViewSpec(spec, {}, ANYWIDGET_MEDIA_TYPE).ok, false, "no duplicate binding map");
 });
 
 test("every lifecycle state/event is defined and stopped mounts never revive", () => {

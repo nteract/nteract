@@ -1,3 +1,5 @@
+import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
+import { viewDependencies } from "../shared/view-dependencies.mjs";
 import * as A from "@automerge/automerge/slim";
 import { boundedWriter } from "./author.mjs";
 import { readSource, validSourceId } from "./sources-doc.mjs";
@@ -29,7 +31,7 @@ import {
   validViewId,
 } from "../shared/views.mjs";
 
-/** A view is one chart in its own Automerge document, the `pages.view`
+/** A view is one configured renderer in its own Automerge document, the `pages.view`
  * type, which only the Page's host writes. One document per view; its id
  * derives from the Page id and the view id (shared/document-ids.mjs). Its
  * shape:
@@ -39,7 +41,7 @@ import {
  *   title: string,               // 1 to MAX_VIEW_TITLE characters
  *   media_type: string,          // one of VIEW_MEDIA_TYPES
  *   spec: Text,                  // the spec as JSON, replaced with updateText
- *   data: {                      // exactly the data names the spec reads
+ *   data: {                      // chart dataset bindings; empty for anywidget
  *     [data_name]: { source_id } | { source_id, revision },
  *   },
  *   revision: string,            // decimal, minted by the host: "1", then +1
@@ -53,7 +55,8 @@ import {
  *
  * `{ source_id }` follows the source's current revision; `{ source_id,
  * revision }` is pinned to a revision the source's history held when the
- * view was written. `spec` is collaborative text so an editor can change it
+ * view was written. Anywidget references live in spec; charts bind them in data.
+ * `spec` is collaborative text so an editor can change it
  * in place later without a format change. `data` and `producer` are each
  * replaced as one map value per write. The genesis holds an empty `spec` and
  * `data` and no revision: a document with no `revision` holds no view yet
@@ -90,7 +93,22 @@ export function viewSummary(doc, viewId) {
   const view = readView(doc, viewId);
   if (!view) return undefined;
   const { view_id, title, media_type, revision, data } = view;
-  return { view_id, title, media_type, revision, data };
+  const summary = { view_id, title, media_type, revision };
+  if (media_type !== ANYWIDGET_MEDIA_TYPE) return { ...summary, data };
+  try {
+    return {
+      ...summary,
+      dependencies: viewDependencies(view).map(({ source, role, location }) => ({
+        source,
+        role,
+        location,
+      })),
+    };
+  } catch {
+    // Retain the identity/revision needed to inspect and repair this view.
+    // An unreadable dependency inventory must not break the containing Page.
+    return { ...summary, dependencies_unavailable: true };
+  }
 }
 
 // A title a write may set holds no control characters; a stored title is
@@ -118,10 +136,15 @@ export function validateViewOperation(op) {
       "invalid_view",
       "view_revision is the view's revision from read_page, or null to create the view",
     );
-  // The spec first: a spec that can't draw is the problem to name, whatever
-  // data holds, and the names it reads say what data must map.
-  const checked = checkViewSpec(op.spec, undefined, op.media_type);
+  // Widgets validate their references in spec and reject data. Charts validate
+  // their spec before checking the dataset names that data must bind.
+  const checked = checkViewSpec(
+    op.spec,
+    op.media_type === ANYWIDGET_MEDIA_TYPE ? op.data : undefined,
+    op.media_type,
+  );
   if (!checked.ok) fail("invalid_view", checked.error);
+  if (op.media_type === ANYWIDGET_MEDIA_TYPE) return op;
   if (!isMap(op.data) || !Object.keys(op.data).length)
     fail(
       "invalid_view",
@@ -164,7 +187,7 @@ export function validateViewOperation(op) {
  */
 export function checkView(doc, op, { sourcesDoc } = {}) {
   validateViewOperation(op);
-  for (const [name, binding] of Object.entries(op.data)) {
+  for (const { source: binding, location, mediaType } of viewDependencies(op)) {
     let source;
     try {
       source = readSource(sourcesDoc, binding.source_id);
@@ -172,7 +195,7 @@ export function checkView(doc, op, { sourcesDoc } = {}) {
       if (error.code !== "source_not_found") throw error;
       fail(
         "unknown_source",
-        `data.${name} names source "${binding.source_id}", which isn't a source on this Page. Add it with set_source first.`,
+        `${location} names source "${binding.source_id}", which isn't a source on this Page. Add it with set_source first.`,
         { source_id: binding.source_id },
       );
     }
@@ -185,8 +208,17 @@ export function checkView(doc, op, { sourcesDoc } = {}) {
     )
       fail(
         "unknown_source_revision",
-        `data.${name} pins source "${binding.source_id}" to revision ${binding.revision}, which its history doesn't hold. Read the source for the revisions it keeps.`,
+        `${location} pins source "${binding.source_id}" to revision ${binding.revision}, which its history doesn't hold. Read the source for the revisions it keeps.`,
         { source_id: binding.source_id, source_revision: source.source_revision },
+      );
+    const version =
+      binding.revision === undefined
+        ? source
+        : source.history.find((state) => state.revision === binding.revision);
+    if (mediaType && version.media_type !== mediaType)
+      fail(
+        "invalid_view",
+        `${location} source "${binding.source_id}" must be ${mediaType}; received ${version.media_type}.`,
       );
   }
   const previous = readView(doc, op.view_id);
@@ -227,7 +259,11 @@ export function setView(doc, op, { sourcesDoc, by, at = new Date().toISOString()
   const spec = JSON.stringify(op.spec);
   if (typeof doc.spec !== "string") doc.spec = spec;
   else if (doc.spec !== spec) A.updateText(doc, ["spec"], spec);
-  doc.data = Object.fromEntries(Object.entries(op.data).map(([name, b]) => [name, bindingOf(b)]));
+  // Preserve the generic record shape; widget references live only in spec.
+  doc.data =
+    op.media_type === ANYWIDGET_MEDIA_TYPE
+      ? {}
+      : Object.fromEntries(Object.entries(op.data).map(([name, b]) => [name, bindingOf(b)]));
   doc.revision = revision;
   doc.producer = { kind: "edit_page", at, by: boundedWriter(by) };
   return { op: "set_view", view_id: op.view_id, view_revision: revision };
