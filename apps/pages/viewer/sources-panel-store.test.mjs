@@ -54,6 +54,55 @@ test("native placements retain marker identity after prose changes and repeated 
   );
   assert.deepEqual(sourcePlacements(edited), before);
 });
+
+test("attached tables appear without named sources and never become named-source consumers", () => {
+  const pageId = crypto.randomUUID();
+  const src = `/api/pages/${pageId}/assets/${"a".repeat(64)}`;
+  const doc = A.change(A.from(createPageData({ pageId, title: "Attachments" })), (draft) => {
+    initializePage(draft, "Tables", "intro");
+    applyPageOperation(draft, {
+      operation: "edit_page",
+      arguments: {
+        operations: ["Results", "Second placement"].map((title) => ({
+          op: "insert_node",
+          node: {
+            type: "dataframe",
+            attrs: {
+              asset_id: "a".repeat(64),
+              title,
+              media_type: "application/vnd.apache.parquet",
+            },
+          },
+        })),
+      },
+    });
+  });
+  const cache = new WeakMap();
+  const placements = sourcePlacements(doc, cache);
+  const attachment = projectSourcesPanel(undefined, placements, {}).sources[0];
+  assert.equal(attachment.kind, "attachment");
+  assert.equal(attachment.name, "Results");
+  assert.equal(attachment.src, src);
+  assert.equal(attachment.asset_id, "a".repeat(64));
+  assert.equal(attachment.media_type, "application/vnd.apache.parquet");
+  assert.equal(attachment.uses.length, 2);
+  assert.equal(new Set(attachment.uses.map((use) => use.key)).size, 2);
+  const mixed = projectSourcesPanel(sourceDoc(), placements, {}).sources;
+  assert.equal(mixed.length, 2);
+  assert.equal(mixed.find((item) => item.source_id === "usage").uses.length, 0);
+
+  const removed = A.change(doc, (draft) => {
+    delete draft.blocks[placements.placements[0].blockId];
+  });
+  const remaining = projectSourcesPanel(undefined, sourcePlacements(removed, cache), {}).sources;
+  assert.equal(remaining.length, 1);
+  assert.equal(remaining[0].name, "Second placement");
+  assert.equal(remaining[0].uses.length, 1);
+  const empty = A.change(removed, (draft) => {
+    delete draft.blocks[placements.placements[1].blockId];
+  });
+  assert.deepEqual(projectSourcesPanel(undefined, sourcePlacements(empty, cache), {}).sources, []);
+});
 test("view demand is shared by placements, follows updates and releases on removal", () => {
   let doc = pageWithViews();
   const listeners = new Set();

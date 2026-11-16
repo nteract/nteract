@@ -2,12 +2,27 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Observable, distinctUntilChanged, map } from "rxjs";
 import { sourceSchemaStore } from "./source-schema-store.mjs";
 import { SOURCE_PREVIEW_TYPES, sourcePreviewStore } from "./source-preview-store.mjs";
-import { ArrowUpRight, ChevronRight, Database, History, Search } from "lucide-react";
+import {
+  ArrowUpRight,
+  ChartNoAxesCombined,
+  ChevronRight,
+  Database,
+  File,
+  FileAudio,
+  FileCode,
+  FileDigit,
+  History,
+  Paintbrush,
+  Puzzle,
+  Search,
+  Table2,
+} from "lucide-react";
 import { COMMENTS_SHEET_QUERY } from "./comments-layout.mjs";
 import { sourceTime } from "./source-line.mjs";
 import { sourceMediaLabel, sourcesPanelStore } from "./sources-panel-store.mjs";
 import { dataframeFrame, dataframeLifecycle } from "./wordgard-dataframes.mjs";
 import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
+import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
 import { useStore } from "./store.mjs";
 import { PaneBack, PaneClose, PaneExpand, PaneHeader, PaneNavigation } from "./PaneHeader.jsx";
 import "./sources-panel.css";
@@ -19,6 +34,20 @@ const sourceNotices = {
     "This version of Pages can't read this Page's sources format. Update Pages to inspect its sources.",
   unserved: "This host doesn't support sources inspection for this version of Pages.",
 };
+
+function SourceIcon({ mediaType }) {
+  const Icon =
+    {
+      [PARQUET_MEDIA_TYPE]: Table2,
+      "text/javascript": FileCode,
+      "text/css": Paintbrush,
+      "application/octet-stream": FileDigit,
+      "audio/wav": FileAudio,
+      "application/vnd.vegalite.v6+json": ChartNoAxesCombined,
+      [ANYWIDGET_MEDIA_TYPE]: Puzzle,
+    }[mediaType] ?? File;
+  return <Icon size={16} aria-hidden="true" />;
+}
 
 function Timestamp({ value }) {
   const time = sourceTime(value, Date.now());
@@ -50,14 +79,16 @@ function SourceTable({ session, source }) {
       ...frame,
       attrs: {
         pageId: session.pageId,
-        binding: { source_id: source.source_id },
+        ...(source.kind === "attachment"
+          ? { src: source.src }
+          : { binding: { source_id: source.source_id } }),
         sources: session.pageSources,
       },
       park: 0,
     });
     lifecycle.connect();
     return () => lifecycle.disconnect();
-  }, [session, source.source_id]);
+  }, [session, source.source_id, source.kind, source.src]);
   return <div className="source-table-preview" ref={container} />;
 }
 
@@ -194,6 +225,10 @@ function SourcePreview({ session, source }) {
         <p className="source-schema-status">Loading preview…</p>
       ) : wide ? (
         <SourceTable session={session} source={source} />
+      ) : source.kind === "attachment" ? (
+        <p className="source-schema-status">
+          Open a connection below to inspect this table in the document.
+        </p>
       ) : (
         <SourceSchema session={session} source={source} />
       )}
@@ -254,6 +289,7 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
   }, [mobile]);
 
   const source = value.sources.find((item) => item.source_id === selected);
+  const attached = source?.kind === "attachment";
   const unavailable = source && source.availability !== "available";
   const incomplete = value.unresolvedViews.length > 0 || value.unreadableBlocks > 0;
   const searchable = value.sources.length > 1;
@@ -351,7 +387,7 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
                     data-source-id={item.source_id}
                     onClick={() => choose(item.source_id)}
                   >
-                    <Database size={16} aria-hidden="true" />
+                    <SourceIcon mediaType={item.media_type} />
                     <span>
                       <strong>{item.name}</strong>
                       <small>
@@ -360,7 +396,8 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
                           : item.availability === "missing"
                             ? "Unavailable source"
                             : sourceMediaLabel(item.media_type)}{" "}
-                        · {item.uses.length} {item.uses.length === 1 ? "connection" : "connections"}
+                        {item.kind === "attachment" ? "· Attached file " : ""}· {item.uses.length}{" "}
+                        {item.uses.length === 1 ? "connection" : "connections"}
                         {incomplete ? " found" : ""}
                       </small>
                     </span>
@@ -375,7 +412,7 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
               <div className="sources-empty">
                 <Database size={28} aria-hidden="true" />
                 <h3>No sources yet</h3>
-                <p>Named sources added to this Page will appear here.</p>
+                <p>Sources and attached tables added to this Page will appear here.</p>
               </div>
             )
           ))}
@@ -395,7 +432,7 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
         {source && (
           <section className="source-inspector" aria-label="Source details">
             <h3>{source.name}</h3>
-            <p className="source-id">Source ID: {source.source_id}</p>
+            {!attached && <p className="source-id">Source ID: {source.source_id}</p>}
             {unavailable ? (
               <p className="sources-notice">
                 {source.availability === "unreadable"
@@ -403,6 +440,11 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
                   : value.answer === "known"
                     ? "This source isn't available on this Page. Its connections are listed below."
                     : "This source hasn't been loaded. Its connections are listed below."}
+              </p>
+            ) : attached ? (
+              <p className="source-type">
+                {sourceMediaLabel(source.media_type)} · Attached file. This table uses a fixed file
+                and doesn't follow source updates.
               </p>
             ) : (
               <>
@@ -439,13 +481,13 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
               <button aria-pressed={tab === "uses"} onClick={() => setTab("uses")}>
                 Connections
               </button>
-              {!unavailable && (
+              {!unavailable && !attached && (
                 <button aria-pressed={tab === "history"} onClick={() => setTab("history")}>
                   <History size={14} aria-hidden="true" /> Revisions
                 </button>
               )}
             </div>
-            {tab === "uses" || unavailable ? (
+            {tab === "uses" || unavailable || attached ? (
               <>
                 <h4>Used on this Page · {source.uses.length}</h4>
                 {source.uses.length === 0 && (
@@ -470,7 +512,11 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
                         {use.input ? ` · ${use.input}` : ""}
                       </small>
                       <small>
-                        {use.revision ? `Pinned · revision ${use.revision}` : "Follows latest"}
+                        {attached
+                          ? "Attached file"
+                          : use.revision
+                            ? `Pinned · revision ${use.revision}`
+                            : "Follows latest"}
                         {use.revision &&
                         !unavailable &&
                         !source.history.some((version) => version.revision === use.revision)
