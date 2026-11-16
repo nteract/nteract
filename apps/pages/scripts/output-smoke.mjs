@@ -7,7 +7,8 @@ import { build } from "esbuild";
 import { browserMermaidPlugin } from "./browser-mermaid.mjs";
 import { browserSiftPlugin } from "./browser-sift.mjs";
 import { chromium, webkit, expect } from "@playwright/test";
-import "./build-output.mjs";
+import { prepareFrameHtml } from "./build-output.mjs";
+await prepareFrameHtml();
 const { default: worker } = await import("../output/worker.mjs");
 import { OUTPUT_FRAME_URL } from "../shared/anywidget-view.mjs";
 const configuredFrameUrl = process.env.PAGES_OUTPUT_LIVE

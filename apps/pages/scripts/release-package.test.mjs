@@ -14,8 +14,10 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { cloudflareConfig, structuralConfig } from "./cloudflare-stage.mjs";
+import { cloudflareConfig, outputStructuralConfig, structuralConfig } from "./cloudflare-stage.mjs";
 import {
+  OUTPUT_ENTRIES,
+  OUTPUT_STRUCTURAL_FIELDS,
   PACKAGE_ENTRIES,
   STRUCTURAL_FIELDS,
   entryProblems,
@@ -24,12 +26,13 @@ import {
   tarOf,
   writeReleasePackage,
 } from "./release-package.mjs";
-import { releaseArtifacts, releaseFilesOf } from "./stage-artifacts.mjs";
+import { OUTPUT_WORKER, releaseArtifacts, releaseFilesOf } from "./stage-artifacts.mjs";
 import { VIEWER_ASSETS, hashedAssetPath } from "./viewer-chunks.mjs";
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const BUILD_ID = "0123456789ab";
 const COMMIT = "a".repeat(40);
+const OUTPUT_MODULE = `export default { fetch() { return new Response("pages-output-v2 ${BUILD_ID}"); } };\n`;
 
 /** A complete fake dist the way build.mjs leaves it, with local-only files
  * beside it that a package must never carry. */
@@ -53,12 +56,16 @@ function fakeDist(dir) {
     files: Object.fromEntries(
       releaseFilesOf([chunk], Object.keys(assets)).map((file) => [file, sha256(contents(file))]),
     ),
+    output_frame_paths: ["/frame/v2/"],
+    output_files: { [OUTPUT_WORKER]: sha256(OUTPUT_MODULE) },
   };
   for (const file of [...releaseArtifacts, chunk, ...Object.keys(assets)])
     writeFileSync(
       path.join(dist, file),
       file === "build-receipt.json" ? JSON.stringify(receipt) : contents(file),
     );
+  mkdirSync(path.join(dist, "output"));
+  writeFileSync(path.join(dist, OUTPUT_WORKER), OUTPUT_MODULE);
   writeFileSync(path.join(dist, ".dev.vars"), "secret-that-must-stay-local");
   mkdirSync(path.join(dist, ".celld"));
   writeFileSync(path.join(dist, ".celld", "private.db"), "private");
@@ -133,6 +140,22 @@ test("the release package holds exactly the package entries, no symlinks, and a 
     "index.js",
     "sift.wasm",
   ]);
+  // The output Worker: the certified module and its structural config, both
+  // listed in the manifest's entries.
+  assert.deepEqual(readdirSync(path.join(extracted, "output")).sort(), [
+    "worker.js",
+    "wrangler.json",
+  ]);
+  assert.deepEqual(
+    files.filter((file) => file.startsWith("output/")),
+    [...OUTPUT_ENTRIES],
+  );
+  assert.equal(readFileSync(path.join(extracted, "output/worker.js"), "utf8"), OUTPUT_MODULE);
+  for (const file of OUTPUT_ENTRIES)
+    assert.ok(
+      manifest.entries.some((entry) => entry.path === file),
+      file,
+    );
   assert.ok(files.every((file) => !file.includes(".dev.vars") && !file.includes(".celld")));
 });
 
@@ -191,8 +214,56 @@ test("the shipped wrangler.json is the structural config and names no deployment
 });
 const d1Bindings = (config) => config.d1_databases.map((database) => database.binding);
 
+test("the shipped output/wrangler.json is the output structural config and names no deployment", (t) => {
+  const dir = scratch(t);
+  const out = path.join(dir, "out");
+  const manifest = writeReleasePackage(fakeDist(dir), out);
+  const extracted = path.join(dir, "extracted");
+  mkdirSync(extracted);
+  execFileSync("tar", ["-xzf", path.join(out, manifest.archive.name), "-C", extracted]);
+  const shipped = JSON.parse(readFileSync(path.join(extracted, "output/wrangler.json"), "utf8"));
+  assert.deepEqual(shipped, outputStructuralConfig());
+  // Exactly the documented fields: no name, route, account, workers_dev,
+  // binding or variable, and no compatibility flag the code does not need.
+  assert.deepEqual(OUTPUT_STRUCTURAL_FIELDS, ["main", "no_bundle", "compatibility_date"]);
+  assert.deepEqual(Object.keys(shipped), [...OUTPUT_STRUCTURAL_FIELDS]);
+  assert.equal(shipped.main, "worker.js");
+  assert.equal(shipped.no_bundle, true);
+  assert.match(shipped.compatibility_date, /^\d{4}-\d{2}-\d{2}$/);
+  assert.deepEqual(manifest.output_structural_fields, [...OUTPUT_STRUCTURAL_FIELDS]);
+  // The receipt in the archive names the frame paths this shell serves.
+  const receipt = JSON.parse(readFileSync(path.join(extracted, "build-receipt.json"), "utf8"));
+  assert.deepEqual(receipt.output_frame_paths, ["/frame/v2/"]);
+});
+
+test("an output Worker that changed since the build, or a receipt without one, is refused", (t) => {
+  const dir = scratch(t);
+  const dist = fakeDist(dir);
+  const receiptPath = path.join(dist, "build-receipt.json");
+  const { output_files: certified, ...receipt } = JSON.parse(readFileSync(receiptPath, "utf8"));
+  writeFileSync(path.join(dist, OUTPUT_WORKER), "export default {};\n");
+  assert.throws(
+    () => writeReleasePackage(dist, path.join(dir, "changed")),
+    /changed since the build: output\/worker\.js/,
+  );
+  writeFileSync(receiptPath, JSON.stringify(receipt));
+  assert.throws(() => writeReleasePackage(dist, path.join(dir, "uncertified")), /output_files/);
+  writeFileSync(
+    receiptPath,
+    JSON.stringify({ ...receipt, output_files: certified, output_frame_paths: ["frame/v2"] }),
+  );
+  assert.throws(() => writeReleasePackage(dist, path.join(dir, "paths")), /frame paths/);
+});
+
 test("entryProblems refuses extra, missing and nested entries", () => {
-  const ok = ["build-receipt.json", "public/index.html", "worker/index.js", "wrangler.json"];
+  const ok = [
+    "build-receipt.json",
+    "output/worker.js",
+    "output/wrangler.json",
+    "public/index.html",
+    "worker/index.js",
+    "wrangler.json",
+  ];
   assert.deepEqual(entryProblems(ok), []);
   assert.match(entryProblems([...ok, ".dev.vars"]).join(), /\.dev\.vars is not part/);
   assert.match(entryProblems(ok.filter((f) => f !== "wrangler.json")).join(), /no wrangler\.json/);
@@ -200,6 +271,27 @@ test("entryProblems refuses extra, missing and nested entries", () => {
   assert.match(
     entryProblems(ok.filter((f) => f !== "worker/index.js").concat("worker/a.js")).join(),
     /no worker\/index\.js/,
+  );
+  // output/ is required and holds exactly its two files, flat.
+  assert.match(
+    entryProblems(ok.filter((f) => !f.startsWith("output/"))).join(),
+    /The package has no output/,
+  );
+  assert.match(
+    entryProblems([...ok, "output/extra.js"]).join(),
+    /output\/extra\.js is not part of output, which holds only output\/worker\.js and output\/wrangler\.json/,
+  );
+  assert.match(
+    entryProblems([...ok, "output/nested/worker.js"]).join(),
+    /output\/nested\/worker\.js is not part of output/,
+  );
+  assert.match(
+    entryProblems(ok.filter((f) => f !== "output/wrangler.json")).join(),
+    /no output\/wrangler\.json/,
+  );
+  assert.match(
+    entryProblems(ok.filter((f) => f !== "output/worker.js")).join(),
+    /no output\/worker\.js/,
   );
 });
 

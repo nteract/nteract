@@ -6,7 +6,8 @@ import { mermaidSource } from "./browser-mermaid.mjs";
 import { siftWasmPath } from "./browser-sift.mjs";
 import { formatsByType } from "../model/document-types.mjs";
 import { sourceFingerprint, writeBuildReceipt } from "./source-fingerprint.mjs";
-import { releaseFilesOf } from "./stage-artifacts.mjs";
+import { OUTPUT_WORKER, releaseFilesOf } from "./stage-artifacts.mjs";
+import { bundleOutputWorker } from "./build-output.mjs";
 import {
   VIEWER_ASSETS,
   VIEWER_CSP,
@@ -168,6 +169,10 @@ await build({
   define: { ...buildDefine, ...shellAssetDefine(Object.values(assets)) },
   plugins: [celldCborPlugin(), workerWasmPlugin(dist)],
 });
+// The output Worker, with the same build id: the module the release package
+// ships as output/worker.js and wrangler.output.toml deploys.
+await mkdir(path.join(dist, "output"), { recursive: true });
+await writeFile(path.join(dist, OUTPUT_WORKER), await bundleOutputWorker(app, buildDefine));
 await copyFile(path.join(app, "viewer/connect-agent.js"), path.join(dist, "public/connect.js"));
 await writeFile(
   path.join(dist, "public/index.html"),
@@ -223,6 +228,7 @@ writeBuildReceipt(app, {
   viewerChunks,
   viewerAssets: Object.values(assets),
   releaseFiles: releaseFilesOf(viewerChunks, Object.values(assets)),
+  outputFiles: [OUTPUT_WORKER],
   documentFormats: formatsByType(),
 });
 console.log("Built native Pages Worker, WASM and viewer into dist.");
