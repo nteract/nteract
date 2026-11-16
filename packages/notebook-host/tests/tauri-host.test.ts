@@ -382,7 +382,7 @@ describe("createTauriHost()", () => {
     expect(received).toContainEqual({ runtime: "python" });
     unlisten();
     await Promise.resolve();
-    expect(mockUnlisten).toHaveBeenCalledTimes(1);
+    expect(mockUnlisten).toHaveBeenCalledTimes(3);
   });
 
   it("daemonEvents.onReadyLive subscribes without cached backfill", async () => {

@@ -1,3 +1,4 @@
+import { subscribeReadyWithBackfill } from "../ready-backfill";
 import { createChannelReviewTrust } from "../channel-review-trust";
 /**
  * `createTauriHost()` — Tauri desktop app implementation of `NotebookHost`.
@@ -236,25 +237,17 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     // before the subsequent `get_daemon_ready_info`. By the time the
     // cached value reaches us, the listener is attached, so a live event
     // can't land in a gap and be dropped.
-    onReady: (cb) => {
-      // Track cancellation across both the live-event subscription and the
-      // cache backfill. If the subscriber unmounts before either async
-      // operation resolves, neither path invokes the callback on a dead
-      // component. React StrictMode's double-mount exercises this path.
-      let cancelled = false;
-      const unlistenLive = listenWebview<DaemonReadyPayload>("daemon:ready", (p) => {
-        if (!cancelled) cb(p);
-      });
-      invoke<DaemonReadyPayload | null>("get_daemon_ready_info")
-        .then((info) => {
-          if (!cancelled && info) cb(info);
-        })
-        .catch(() => {});
-      return () => {
-        cancelled = true;
-        unlistenLive();
-      };
-    },
+    onReady: (cb) =>
+      subscribeReadyWithBackfill(
+        {
+          live: (listener) => listenWebview<DaemonReadyPayload>("daemon:ready", listener),
+          disconnected: (listener) => listenWebview<void>("daemon:disconnected", listener),
+          unavailable: (listener) =>
+            listenWebview<DaemonUnavailablePayload>("daemon:unavailable", listener),
+          cached: () => invoke<DaemonReadyPayload | null>("get_daemon_ready_info"),
+        },
+        cb,
+      ),
     onProgress: (cb) => listenWebview<DaemonProgressPayload>("daemon:progress", cb),
     // Notification-only: the reconnect governor's host-level listener owns
     // the automatic redial, so N subscribers never means N reconnect loops.
