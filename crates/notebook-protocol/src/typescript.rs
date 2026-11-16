@@ -35,6 +35,8 @@ pub const NOTEBOOK_REQUEST_TYPES: &[&str] = &[
     "clone_as_ephemeral",
     "sync_environment",
     "approve_trust",
+    "approve_related_channels",
+    "decline_related_channels",
     "approve_project_environment",
     "approve_project_trust",
     "decline_project_trust",
@@ -397,6 +399,8 @@ export type NotebookRequest =
       include_pep723?: boolean;
       reviewed_pep723_dependencies?: string[] | null;
     }}
+  | {{ type: "approve_related_channels"; review_id: string }}
+  | {{ type: "decline_related_channels"; review_id: string }}
   | {{ type: "approve_project_environment"; project_file_path?: string | null }}
   | {{ type: "approve_project_trust"; directory: string }}
   | {{ type: "decline_project_trust"; directory: string; remember?: boolean }}

@@ -1,3 +1,4 @@
+import { createChannelReviewTrust } from "../channel-review-trust";
 /**
  * Browser/dev implementation of `NotebookHost`.
  *
@@ -548,6 +549,7 @@ export async function createBrowserHost(
     },
     blobs: browserBlobHost,
     trust: {
+      ...createChannelReviewTrust(transport),
       async approve(options) {
         const response = (await transport.sendRequest({
           type: "approve_trust",

@@ -283,6 +283,15 @@ export class NotebookClient {
     }
   }
 
+  /** Approve only the daemon's current, revision-fenced channel review. */
+  approveRelatedChannels(reviewId: string): Promise<NotebookResponse> {
+    return this.sendRequest({ type: "approve_related_channels", review_id: reviewId });
+  }
+
+  declineRelatedChannels(reviewId: string): Promise<NotebookResponse> {
+    return this.sendRequest({ type: "decline_related_channels", review_id: reviewId });
+  }
+
   /** Approve creating/syncing the current project-file environment. */
   async approveProjectEnvironment(projectFilePath?: string): Promise<NotebookResponse> {
     try {

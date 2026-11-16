@@ -1,3 +1,4 @@
+import { createChannelReviewTrust } from "../channel-review-trust";
 import {
   createHttpBlobResolver,
   NotebookClient,
@@ -163,6 +164,7 @@ export function createElectronHost(options: CreateElectronHostOptions): Notebook
     },
     blobs,
     trust: {
+      ...createChannelReviewTrust(transport),
       async approve(approveOptions) {
         const response = (await transport.sendRequest({
           type: "approve_trust",

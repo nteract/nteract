@@ -60,6 +60,8 @@ export function createFixtureNotebookHost({
       },
     },
     trust: {
+      approveRelatedChannels: asyncNoop,
+      declineRelatedChannels: asyncNoop,
       approve: asyncNoop,
     },
     deps: {

@@ -91,6 +91,7 @@ fn runtime_trust_state(trust: &TrustState) -> TrustRuntimeState {
         approved_pixi_dependencies: trust.info.approved_pixi_dependencies.clone(),
         approved_pixi_pypi_dependencies: trust.info.approved_pixi_pypi_dependencies.clone(),
         approved_pixi_channels: trust.info.approved_pixi_channels.clone(),
+        related_channel_review: None,
     }
 }
 

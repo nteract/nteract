@@ -176,7 +176,26 @@ export type EnvProgressEvent = EnvProgressPhase & {
  */
 export type TrustStatus = "trusted" | "untrusted" | "no_dependencies";
 
+export interface RelatedChannelRelation {
+  declaring_channel: string;
+  subdir: string;
+  kind: "base" | "overrides";
+  target_channel: string;
+  ignored_for_priority: boolean;
+}
+
+export interface RelatedChannelReview {
+  review_id: string;
+  owner_label: string;
+  state: "pending" | "declined";
+  declared_channels: string[];
+  effective_channels: string[];
+  uninspected_channels: string[];
+  relations: RelatedChannelRelation[];
+}
+
 export interface TrustState {
+  related_channel_review?: RelatedChannelReview | null;
   status: TrustStatus;
   needs_approval: boolean;
   pep723_dependencies?: string[];

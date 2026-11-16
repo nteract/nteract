@@ -983,6 +983,22 @@ impl RoomHostEngine {
         let request: serde_json::Value = serde_json::from_slice(payload)
             .map_err(|e| RoomHostError::new(format!("decode request: {e}")))?;
         match request.get("action").and_then(|v| v.as_str()) {
+            Some("approve_related_channels") | Some("decline_related_channels") => {
+                let payload = serde_json::to_vec(&serde_json::json!({
+                    "id": request.get("id").and_then(|id| id.as_str()),
+                    "result": "error",
+                    "error": "Related channel approval is not enabled on this runtime",
+                }))
+                .map_err(|error| RoomHostError::new(format!("encode refusal: {error}")))?;
+                Ok(RoomHostFrameResult {
+                    outbound: vec![RoomHostOutboundFrame {
+                        peer_id: peer_id.into(),
+                        frame_type: frame_types::RESPONSE,
+                        payload,
+                    }],
+                    ..RoomHostFrameResult::empty()
+                })
+            }
             Some("execute_cell") | Some("execute_cell_guarded") => {
                 self.require_request_heads(&request)?;
                 self.handle_execute_cell(&request, peer_id, submitter_actor_label)
@@ -3425,6 +3441,38 @@ mod tests {
             .expect("second set");
         assert!(!second.changed);
         assert!(second.outbound.is_empty());
+    }
+
+    #[test]
+    fn related_channel_review_is_refused_without_mutating_hosted_documents() {
+        let mut host =
+            RoomHostEngine::create_empty("demo", "system/schema:notebook-cloud-room").unwrap();
+        let before = host.state_doc.read_state();
+        for action in ["approve_related_channels", "decline_related_channels"] {
+            let request = serde_json::to_vec(
+                &json!({ "id": "request-1", "action": action, "review_id": "review-1" }),
+            )
+            .unwrap();
+            assert!(host
+                .receive_request("viewer", "viewer", false, &request)
+                .is_err());
+            let result = host
+                .receive_request("owner", "owner", true, &request)
+                .unwrap();
+            assert!(!result.changed);
+            assert_eq!(result.outbound.len(), 1);
+            assert_eq!(result.outbound[0].frame_type, frame_types::RESPONSE);
+            assert_eq!(result.outbound[0].peer_id, "owner");
+            let response: serde_json::Value =
+                serde_json::from_slice(&result.outbound[0].payload).unwrap();
+            assert_eq!(response["id"], "request-1");
+            assert_eq!(response["result"], "error");
+            assert_eq!(
+                response["error"],
+                "Related channel approval is not enabled on this runtime"
+            );
+            assert_eq!(host.state_doc.read_state(), before);
+        }
     }
 
     #[test]

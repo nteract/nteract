@@ -873,6 +873,16 @@ pub enum NotebookRequest {
         reviewed_pep723_dependencies: Option<Vec<String>>,
     },
 
+    /// Approve exactly the server-owned related-channel review.
+    ApproveRelatedChannels {
+        review_id: String,
+    },
+
+    /// Decline this review without changing notebook or environment contents.
+    DeclineRelatedChannels {
+        review_id: String,
+    },
+
     /// Approve creating/syncing a project-file environment for the current
     /// project file snapshot. This is intentionally separate from
     /// `ApproveTrust`: it records local project setup approval and does not
@@ -1616,6 +1626,12 @@ mod tests {
                 include_pep723: true,
                 reviewed_pep723_dependencies: None,
             },
+            NotebookRequest::ApproveRelatedChannels {
+                review_id: "review-1".into(),
+            },
+            NotebookRequest::DeclineRelatedChannels {
+                review_id: "review-1".into(),
+            },
             NotebookRequest::ApproveProjectEnvironment {
                 project_file_path: Some("/tmp/project/environment.yml".into()),
             },
@@ -1872,6 +1888,14 @@ mod tests {
                     "action": "approve_trust",
                     "observed_heads": ["abc"],
                 }),
+            ),
+            (
+                "approve_related_channels",
+                serde_json::json!({ "action": "approve_related_channels", "review_id": "review-1" }),
+            ),
+            (
+                "decline_related_channels",
+                serde_json::json!({ "action": "decline_related_channels", "review_id": "review-1" }),
             ),
             (
                 "approve_project_environment",

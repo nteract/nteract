@@ -1,6 +1,7 @@
 import {
   DEFAULT_FONT_FAMILIES,
   createCommandRegistry,
+  createChannelReviewTrust,
   type NotebookHost,
   type Unlisten,
 } from "@nteract/notebook-host";
@@ -190,6 +191,7 @@ export function createCloudNotebookHost({
       resolver: async () => blobResolver,
     },
     trust: {
+      ...createChannelReviewTrust(transport),
       approve: async () => {
         throw new Error("Hosted notebook trust approval is not available from this client.");
       },

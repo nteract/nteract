@@ -1,3 +1,4 @@
+import { RelatedChannelReviewDialog } from "@/components/notebook/RelatedChannelReviewDialog";
 import { NotebookCommentPreview } from "@/components/notebook/NotebookCommentPreview";
 import {
   useCallback,
@@ -141,6 +142,7 @@ import {
 } from "@/components/notebook";
 import {
   useRuntimeState,
+  useRuntimeStateLoaded,
   useWorkstationAttachment,
 } from "@/components/notebook/state/runtime-state";
 import { beginOidcLogin } from "./oidc-auth";
@@ -594,6 +596,7 @@ export function NotebookViewer({
     [profilesSnapshot, user],
   );
   const runtimeState = useRuntimeState();
+  const runtimeStateLoaded = useRuntimeStateLoaded();
   const cloudKernelLifecycle = runtimeState.kernel.lifecycle;
   const cloudKernelErrorDetails =
     runtimeState.kernel.error_details && runtimeState.kernel.error_details.length > 0
@@ -1970,6 +1973,13 @@ export function NotebookViewer({
 
   return (
     <NotebookHostProvider host={cloudNotebookHost}>
+      <RelatedChannelReviewDialog
+        review={runtimeState.trust.related_channel_review}
+        loaded={runtimeStateLoaded}
+        canApprove={
+          connectionScope === "owner" && shellCapabilities.auth.canUseAuthenticatedIdentity
+        }
+      />
       {shouldShowCloudWorkstationsPanel ? (
         <WorkstationPairingDialog
           pairing={workstationPairing}

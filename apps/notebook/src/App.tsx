@@ -1,3 +1,5 @@
+import { RelatedChannelReviewDialog } from "@/components/notebook/RelatedChannelReviewDialog";
+import { useRuntimeStateLoaded } from "@/components/notebook/state/runtime-state";
 import { NotebookCommentPreview } from "@/components/notebook/NotebookCommentPreview";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -531,6 +533,7 @@ function AppContent() {
   // derivers below and the path read further down. Single subscription
   // point; the derivers are pure and don't add re-renders.
   const runtimeState = useRuntimeState();
+  const runtimeStateLoaded = useRuntimeStateLoaded();
 
   // Notebook runtime type — reactive read from WASM Automerge doc.
   // Re-renders automatically when metadata changes (bootstrap, sync, writes).
@@ -2191,6 +2194,10 @@ function AppContent() {
           />
         )}
         {showIsolationTest && <IsolationTest />}
+        <RelatedChannelReviewDialog
+          review={runtimeState.trust.related_channel_review}
+          loaded={runtimeStateLoaded}
+        />
         <TrustDialog
           open={trustDialogOpen}
           onOpenChange={handleTrustDialogOpenChange}

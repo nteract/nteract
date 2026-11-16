@@ -63,3 +63,5 @@ export {
   type RelayBootstrapCoordinatorOptions,
   type RelayBootstrapTrigger,
 } from "./relay-bootstrap";
+
+export { createChannelReviewTrust } from "./channel-review-trust";
