@@ -11,6 +11,8 @@ use runtime_doc::RuntimeLifecycle;
 /// Per-call state (readers, writers, Automerge `peer_state`) stays in plain
 /// parameters.
 pub(crate) struct PeerConnectionContext {
+    /// The opt-in from this connection's own handshake, never room state.
+    pub(crate) scoped_channel_review_v1: bool,
     pub(crate) room: Arc<NotebookRoom>,
     pub(crate) rooms: NotebookRooms,
     pub(crate) notebook_id: String,

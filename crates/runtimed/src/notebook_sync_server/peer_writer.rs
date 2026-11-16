@@ -262,6 +262,7 @@ pub(super) fn spawn_peer_request_worker(
     peer_id: String,
     submitter_actor_label: String,
     allows_notebook_write: bool,
+    channel_review_connection: Arc<super::channel_review_connection::ChannelReviewConnection>,
 ) -> PeerRequestWorker {
     let (tx, mut rx) = mpsc::channel::<notebook_protocol::protocol::NotebookRequestEnvelope>(
         PEER_REQUEST_QUEUE_CAPACITY,
@@ -280,7 +281,11 @@ pub(super) fn spawn_peer_request_worker(
             let start = std::time::Instant::now();
             let response = match wait_for_required_heads(&room, &envelope.required_heads).await {
                 Ok(()) => {
-                    if matches!(
+                    if let Some(response) =
+                        channel_review_connection.reject_review_request(&peer_id, &envelope.request)
+                    {
+                        response
+                    } else if matches!(
                         envelope.request,
                         NotebookRequest::AcknowledgeNotebookSync {}
                     ) {

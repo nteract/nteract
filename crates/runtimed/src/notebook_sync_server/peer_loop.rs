@@ -65,6 +65,13 @@ where
     let peer_id = ctx.peer_id.as_str();
     let connection_identity = &ctx.connection_identity;
     let client_protocol_version = ctx.client_protocol_version;
+    let (channel_review_connection, _channel_review_lease) =
+        super::channel_review_connection::ChannelReviewConnection::open(
+            ctx.peer_id.clone(),
+            ctx.scoped_channel_review_v1,
+            connection_identity.scope() == nteract_identity::ConnectionScope::Owner
+                && !room.is_hosted(),
+        );
 
     // Hand the reader off to a dedicated FramedReader actor before bootstrap.
     // The initial file-backed load can then safely wait for client sync replies
@@ -205,6 +212,7 @@ where
         peer_id.to_string(),
         connection_identity.actor_label().as_str().to_string(),
         connection_identity.allows_notebook_write(),
+        channel_review_connection,
     );
     let mut put_blob_worker = spawn_put_blob_worker(
         room.blob_store.clone(),

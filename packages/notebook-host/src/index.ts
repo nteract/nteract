@@ -47,7 +47,12 @@ export {
   isNotebookCommand,
 } from "./commands";
 
-export { NotebookHostProvider, type NotebookHostProviderProps, useNotebookHost } from "./react";
+export {
+  NotebookHostProvider,
+  type NotebookHostProviderProps,
+  useNotebookHost,
+  useScopedChannelReviewCapability,
+} from "./react";
 
 export {
   DEFAULT_FONT_FAMILIES,

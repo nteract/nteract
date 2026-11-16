@@ -166,6 +166,7 @@ impl CreateNotebookSpec {
     /// typed bootstrap; the operator suffix comes from `actor_label`.
     fn into_request(self) -> CreateNotebookRequest {
         CreateNotebookRequest {
+            scoped_channel_review_v1: false,
             runtime: self.runtime,
             working_dir: self.working_dir.map(|p| p.to_string_lossy().to_string()),
             notebook_id: self.notebook_id,
@@ -277,6 +278,7 @@ pub async fn connect_with_options(
 
     // Send handshake
     let handshake = Handshake::NotebookSync {
+        scoped_channel_review_v1: false,
         notebook_id: notebook_id.clone(),
         protocol: Some(PROTOCOL_V4.to_string()),
         typed_bootstrap: Some(true),
@@ -334,6 +336,7 @@ pub async fn connect_open(
 
     // Send open handshake
     let handshake = Handshake::OpenNotebook {
+        scoped_channel_review_v1: false,
         path: path.to_string_lossy().to_string(),
         typed_bootstrap: Some(true),
         operator: operator_from_actor_label(actor_label),
@@ -395,6 +398,7 @@ pub async fn connect_open_hosted(
     connection::send_preamble(&mut writer).await?;
 
     let handshake = Handshake::OpenHostedNotebook {
+        scoped_channel_review_v1: false,
         url: url.to_string(),
         typed_bootstrap: Some(true),
         operator,
@@ -686,6 +690,7 @@ pub async fn connect_open_relay_with_operator(
 
     // Send open handshake
     let handshake = Handshake::OpenNotebook {
+        scoped_channel_review_v1: false,
         path: path.to_string_lossy().to_string(),
         typed_bootstrap: Some(true),
         operator,
@@ -739,6 +744,7 @@ pub async fn connect_open_hosted_relay_with_operator(
     connection::send_preamble(&mut writer).await?;
 
     let handshake = Handshake::OpenHostedNotebook {
+        scoped_channel_review_v1: false,
         url: url.to_string(),
         typed_bootstrap: Some(true),
         operator,
@@ -833,6 +839,7 @@ pub async fn connect_relay_with_operator(
 
     // Send notebook sync handshake
     let handshake = Handshake::NotebookSync {
+        scoped_channel_review_v1: false,
         notebook_id: notebook_id.clone(),
         protocol: Some(PROTOCOL_V4.to_string()),
         typed_bootstrap: Some(true),

@@ -3390,6 +3390,7 @@ impl Daemon {
                 .await
             }
             Handshake::NotebookSync {
+                scoped_channel_review_v1,
                 notebook_id,
                 protocol,
                 typed_bootstrap,
@@ -3674,6 +3675,7 @@ impl Daemon {
                     reader,
                     writer,
                     crate::notebook_sync_server::PeerConnectionContext {
+                        scoped_channel_review_v1,
                         room,
                         rooms: self.notebook_rooms.clone(),
                         notebook_id,
@@ -3695,6 +3697,7 @@ impl Daemon {
                 .await
             }
             Handshake::OpenNotebook {
+                scoped_channel_review_v1,
                 path,
                 typed_bootstrap,
                 operator,
@@ -3704,11 +3707,13 @@ impl Daemon {
                     path,
                     typed_bootstrap.unwrap_or(false),
                     operator,
+                    scoped_channel_review_v1,
                     client_protocol_version,
                 )
                 .await
             }
             Handshake::OpenHostedNotebook {
+                scoped_channel_review_v1,
                 url,
                 typed_bootstrap,
                 operator,
@@ -3718,6 +3723,7 @@ impl Daemon {
                     url,
                     typed_bootstrap.unwrap_or(false),
                     operator,
+                    scoped_channel_review_v1,
                     client_protocol_version,
                 )
                 .await
@@ -4009,6 +4015,7 @@ impl Daemon {
         url: String,
         typed_bootstrap: bool,
         operator: Option<String>,
+        scoped_channel_review_v1: bool,
         client_protocol_version: u8,
     ) -> anyhow::Result<()>
     where
@@ -4110,6 +4117,7 @@ impl Daemon {
             reader,
             writer,
             crate::notebook_sync_server::PeerConnectionContext {
+                scoped_channel_review_v1,
                 room,
                 rooms: self.notebook_rooms.clone(),
                 notebook_id,
@@ -4354,6 +4362,7 @@ impl Daemon {
         path: String,
         typed_bootstrap: bool,
         operator: Option<String>,
+        scoped_channel_review_v1: bool,
         client_protocol_version: u8,
     ) -> anyhow::Result<()>
     where
@@ -4434,6 +4443,7 @@ impl Daemon {
                 }
                 let settings = self.settings.read().await.get_all();
                 let request = notebook_protocol::connection::CreateNotebookRequest {
+                    scoped_channel_review_v1,
                     working_dir: Some(dir_path),
                     typed_bootstrap: Some(typed_bootstrap),
                     operator,
@@ -4772,6 +4782,7 @@ impl Daemon {
             reader,
             writer,
             crate::notebook_sync_server::PeerConnectionContext {
+                scoped_channel_review_v1,
                 room,
                 rooms: self.notebook_rooms.clone(),
                 notebook_id,
@@ -4813,6 +4824,7 @@ impl Daemon {
         };
 
         let CreateNotebookRequest {
+            scoped_channel_review_v1,
             runtime,
             working_dir,
             notebook_id: notebook_id_hint,
@@ -5066,6 +5078,7 @@ impl Daemon {
             reader,
             writer,
             crate::notebook_sync_server::PeerConnectionContext {
+                scoped_channel_review_v1,
                 room,
                 rooms: self.notebook_rooms.clone(),
                 notebook_id,

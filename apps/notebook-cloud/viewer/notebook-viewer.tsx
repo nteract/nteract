@@ -1976,9 +1976,8 @@ export function NotebookViewer({
       <RelatedChannelReviewDialog
         review={runtimeState.trust.related_channel_review}
         loaded={runtimeStateLoaded}
-        canApprove={
-          connectionScope === "owner" && shellCapabilities.auth.canUseAuthenticatedIdentity
-        }
+        // Hosted route has not negotiated scoped-channel review support.
+        canApprove={false}
       />
       {shouldShowCloudWorkstationsPanel ? (
         <WorkstationPairingDialog

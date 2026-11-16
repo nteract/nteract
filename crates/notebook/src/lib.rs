@@ -303,6 +303,12 @@ impl SyncReadyState {
         if let Some(gate) = frame_channels.get_mut(label) {
             gate.tx.send_replace(None);
         }
+        // A previous ready payload cannot authorize the next relay attempt.
+        // Keep the same gates -> cache lock order as record_ready/readback.
+        self.last_ready
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(label);
         // A new attempt supersedes the prior refusal, even if it later fails
         // for a transient endpoint reason instead of a definitive room refusal.
         self.attachment_failures
@@ -425,6 +431,7 @@ impl SyncReadyState {
         if gates
             .get(label)
             .is_none_or(|gate| gate.generation != generation)
+            || payload.relay_generation != generation
         {
             return false;
         }
@@ -499,11 +506,16 @@ impl SyncReadyState {
     /// Look up the cached payload on demand. Idempotent — multiple callers
     /// during startup all see the same value.
     fn get_cached_ready(&self, label: &str) -> Option<DaemonReadyPayload> {
+        let gates = self.gates.lock().unwrap_or_else(|error| error.into_inner());
+        let generation = gates.get(label)?.generation;
         let cache = match self.last_ready.lock() {
             Ok(c) => c,
             Err(e) => e.into_inner(),
         };
-        cache.get(label).cloned()
+        cache
+            .get(label)
+            .filter(|payload| payload.relay_generation == generation)
+            .cloned()
     }
 
     /// Update the cached payload's `ephemeral` + `notebook_path` fields to
@@ -572,6 +584,8 @@ use tauri::{RunEvent, WindowEvent};
 /// and trust prompts without additional round-trips.
 #[derive(Clone, Serialize)]
 struct DaemonReadyPayload {
+    /// Effective daemon result for the accepted relay_generation only.
+    scoped_channel_review_v1: bool,
     notebook_id: String,
     /// Current Tauri relay bootstrap epoch for this window. Frontend bootstrap
     /// uses this as an acknowledgement token so a stale WASM reset cannot
@@ -1003,6 +1017,7 @@ async fn initialize_notebook_sync_open(
         runtime: None,
         actor_label: info.capabilities.actor_label.clone(),
         connection_scope: info.capabilities.connection_scope.clone(),
+        scoped_channel_review_v1: info.capabilities.scoped_channel_review_v1,
         local_environment_selection: info.capabilities.local_environment_selection,
         comments_doc_id: info.capabilities.comments_doc_id.clone(),
         comments_notebook_ref: info.capabilities.comments_notebook_ref.clone(),
@@ -1090,6 +1105,7 @@ async fn initialize_notebook_sync_create(
         runtime: Some(runtime),
         actor_label: info.capabilities.actor_label.clone(),
         connection_scope: info.capabilities.connection_scope.clone(),
+        scoped_channel_review_v1: info.capabilities.scoped_channel_review_v1,
         local_environment_selection: info.capabilities.local_environment_selection,
         comments_doc_id: info.capabilities.comments_doc_id.clone(),
         comments_notebook_ref: info.capabilities.comments_notebook_ref.clone(),
@@ -1221,6 +1237,7 @@ fn attach_ready_payload(
         runtime,
         actor_label: capabilities.actor_label,
         connection_scope: capabilities.connection_scope,
+        scoped_channel_review_v1: capabilities.scoped_channel_review_v1,
         local_environment_selection: capabilities.local_environment_selection,
         comments_doc_id: capabilities.comments_doc_id,
         comments_notebook_ref: capabilities.comments_notebook_ref,
@@ -1324,6 +1341,7 @@ async fn initialize_notebook_sync_hosted(
         runtime: None,
         actor_label: info.capabilities.actor_label.clone(),
         connection_scope: info.capabilities.connection_scope.clone(),
+        scoped_channel_review_v1: info.capabilities.scoped_channel_review_v1,
         local_environment_selection: info.capabilities.local_environment_selection,
         comments_doc_id: info.capabilities.comments_doc_id.clone(),
         comments_notebook_ref: info.capabilities.comments_notebook_ref.clone(),
@@ -2377,6 +2395,32 @@ mod tests {
         assert!(state.get_attachment_failure("other-window").is_none());
         state.emit_generic_unavailable("other-window", || emitted.push("sync_failed".into()));
         assert_eq!(emitted, [original, "sync_failed"]);
+    }
+
+    #[test]
+    fn scoped_review_ready_flag_cannot_cross_relay_generations() {
+        let state = SyncReadyState::default();
+        state.reset_for_generation("window", 1);
+        let mut capabilities = notebook_protocol::connection::ProtocolCapabilities::v4(None);
+        capabilities.scoped_channel_review_v1 = true;
+        let old = super::attach_ready_payload("room".into(), 1, None, None, capabilities);
+        assert!(old.scoped_channel_review_v1);
+        state.reset_for_generation("window", 2);
+        assert!(!state.record_ready("window", 1, old.clone()));
+        assert!(!state.record_ready("window", 2, old));
+        let current = super::attach_ready_payload(
+            "room".into(),
+            2,
+            None,
+            None,
+            notebook_protocol::connection::ProtocolCapabilities::v4(None),
+        );
+        assert!(state.record_ready("window", 2, current));
+        let cached = state.get_cached_ready("window").unwrap();
+        assert_eq!(cached.relay_generation, 2);
+        assert!(!cached.scoped_channel_review_v1);
+        state.reset_for_generation("window", 3);
+        assert!(state.get_cached_ready("window").is_none());
     }
 
     #[test]

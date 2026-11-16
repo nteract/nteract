@@ -98,6 +98,7 @@ describe("createBrowserHost()", () => {
     );
 
     expect(ready).toHaveBeenCalledWith({
+      scoped_channel_review_v1: false,
       notebook_id: "nb-1",
       cell_count: 0,
       ephemeral: true,
@@ -111,6 +112,42 @@ describe("createBrowserHost()", () => {
     );
     await expect(host.daemon.getReadyInfo()).resolves.toMatchObject({ notebook_id: "nb-1" });
   });
+
+  it.each(["disconnected", "unavailable"])(
+    "clears cached ready on %s and never enables hosted review",
+    async (type) => {
+      FakeWebSocket.instances = [];
+      const host = await createBrowserHost({
+        fetchImpl: fetchConfig(),
+        WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+      });
+      const ws = FakeWebSocket.instances[0];
+      ws.open();
+      ws.message(
+        JSON.stringify({
+          type: "ready",
+          payload: {
+            notebook_id: "nb-1",
+            scoped_channel_review_v1: true,
+            relay_generation: 1,
+            connection_scope: "owner",
+          },
+        }),
+      );
+      await expect(host.daemon.getReadyInfo()).resolves.toMatchObject({
+        scoped_channel_review_v1: false,
+      });
+      const pendingBackfill = vi.fn();
+      host.daemonEvents.onReady(pendingBackfill);
+      ws.message(JSON.stringify({ type, payload: {} }));
+      await Promise.resolve();
+      expect(pendingBackfill).not.toHaveBeenCalled();
+      await expect(host.daemon.getReadyInfo()).resolves.toBeNull();
+      const ready = vi.fn();
+      host.daemonEvents.onReady(ready);
+      expect(ready).not.toHaveBeenCalled();
+    },
+  );
 
   it("buffers daemon frames until the relay is marked ready", async () => {
     FakeWebSocket.instances = [];

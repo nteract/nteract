@@ -172,7 +172,7 @@ import {
 import { getCellById, getNotebookCellsSnapshot } from "@/components/notebook/state/cell-store";
 import { useNotebookViewModel } from "@/components/notebook/state/view-model-store";
 import { useDetectRuntime, useNotebookMetadata } from "./lib/notebook-metadata";
-import { useNotebookHost } from "@nteract/notebook-host";
+import { useNotebookHost, useScopedChannelReviewCapability } from "@nteract/notebook-host";
 import { notebookUiPolicy } from "./lib/notebook-ui-policy";
 import { registerNotebookRailCommands } from "./lib/notebook-presentation";
 import { startWindowFocusHandler } from "./lib/window-focus";
@@ -339,6 +339,7 @@ function resolveCommOutputs(
 
 function AppContent() {
   const host = useNotebookHost();
+  const canReviewRelatedChannels = useScopedChannelReviewCapability(true);
   const railSide = host.presentation?.rail?.side ?? "left";
   const [railVisible, setRailVisible] = useState(host.presentation?.rail?.visible ?? true);
   const { commentsEnabled } = notebookUiPolicy(host.name);
@@ -2197,6 +2198,7 @@ function AppContent() {
         <RelatedChannelReviewDialog
           review={runtimeState.trust.related_channel_review}
           loaded={runtimeStateLoaded}
+          canApprove={canReviewRelatedChannels}
         />
         <TrustDialog
           open={trustDialogOpen}

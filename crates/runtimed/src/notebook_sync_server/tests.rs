@@ -447,6 +447,7 @@ async fn notebook_doc_interactive_waits_for_initial_sync_convergence() {
 
     let server_task = {
         let ctx = PeerConnectionContext {
+            scoped_channel_review_v1: false,
             room: room.clone(),
             rooms,
             notebook_id,
@@ -597,6 +598,7 @@ async fn file_backed_initial_load_applies_buffered_replies_before_ready() {
 
     let server_task = {
         let ctx = PeerConnectionContext {
+            scoped_channel_review_v1: false,
             room: room.clone(),
             rooms,
             notebook_id,
@@ -730,6 +732,7 @@ async fn file_backed_initial_load_reaches_ready_without_streaming_replies() {
 
     let server_task = {
         let ctx = PeerConnectionContext {
+            scoped_channel_review_v1: false,
             room: room.clone(),
             rooms,
             notebook_id,
@@ -3167,6 +3170,12 @@ async fn peer_journal_failure_rolls_back_document_and_sync_ack() {
             room.id.to_string(),
             "receipt-peer".into(),
         );
+        let (review_connection, _review_lease) =
+            super::channel_review_connection::ChannelReviewConnection::open(
+                "receipt-peer".into(),
+                false,
+                true,
+            );
         let worker = super::peer_writer::spawn_peer_request_worker(
             room.clone(),
             daemon,
@@ -3176,6 +3185,7 @@ async fn peer_journal_failure_rolls_back_document_and_sync_ack() {
             "receipt-peer".into(),
             identity.actor_label().to_string(),
             true,
+            review_connection,
         );
         let envelope = NotebookRequestEnvelope {
             id: Some("failed-storage-receipt".into()),
@@ -14653,6 +14663,12 @@ async fn save_request_aborted_by_peer_disconnect_after_commit_keeps_room_saveabl
     let (_client, server) = tokio::io::duplex(64 * 1024);
     let (writer, writer_task) =
         super::peer_writer::spawn_peer_writer(server, room.id.to_string(), "closing-peer".into());
+    let (review_connection, _review_lease) =
+        super::channel_review_connection::ChannelReviewConnection::open(
+            "closing-peer".into(),
+            false,
+            true,
+        );
     let mut worker = super::peer_writer::spawn_peer_request_worker(
         room.clone(),
         daemon.clone(),
@@ -14662,6 +14678,7 @@ async fn save_request_aborted_by_peer_disconnect_after_commit_keeps_room_saveabl
         "closing-peer".into(),
         "closing-peer".into(),
         true,
+        review_connection,
     );
     let envelope = NotebookRequestEnvelope {
         id: Some("save-then-close".into()),
@@ -16956,4 +16973,104 @@ async fn decline_with_remember_persists() {
         found.decision,
         crate::trusted_packages::DirectoryDecision::NotebookEnv
     );
+}
+
+#[tokio::test]
+async fn scoped_channel_deny_bridge_does_not_mutate_room_or_launch() {
+    use notebook_protocol::protocol::{NotebookRequestEnvelope, NotebookResponseEnvelope};
+    for (requested, disconnected) in [(false, false), (true, false), (true, true)] {
+        let tmp = tempfile::tempdir().unwrap();
+        let room = Arc::new(NotebookRoom::new_fresh(
+            Uuid::new_v4(),
+            None,
+            &tmp.path().join("docs"),
+            test_blob_store(&tmp),
+            false,
+        ));
+        let daemon = crate::daemon::Daemon::new_for_test(test_daemon_config(&tmp)).unwrap();
+        let before = room
+            .state
+            .read(|doc| serde_json::to_value(doc.read_state()).unwrap())
+            .unwrap();
+        let (mut client, server) = tokio::io::duplex(64 * 1024);
+        let (writer, _writer_task) = super::peer_writer::spawn_peer_writer(
+            server,
+            room.id.to_string(),
+            "review-peer".into(),
+        );
+        let (review_connection, lease) =
+            super::channel_review_connection::ChannelReviewConnection::open(
+                "review-peer".into(),
+                requested,
+                true,
+            );
+        let mut lease = Some(lease);
+        if disconnected {
+            drop(lease.take());
+        }
+        let worker = super::peer_writer::spawn_peer_request_worker(
+            room.clone(),
+            daemon,
+            writer.clone(),
+            super::blob_upload::MultipartUploadState::new(&room.blob_store),
+            room.id.to_string(),
+            "review-peer".into(),
+            "review-peer".into(),
+            true,
+            review_connection,
+        );
+        for request in [
+            crate::protocol::NotebookRequest::ApproveRelatedChannels {
+                review_id: "unredeemable-id".into(),
+            },
+            crate::protocol::NotebookRequest::DeclineRelatedChannels {
+                review_id: "unredeemable-id".into(),
+            },
+        ] {
+            let envelope = NotebookRequestEnvelope {
+                id: Some("review".into()),
+                required_heads: vec![],
+                request,
+            };
+            super::peer_writer::enqueue_notebook_request(
+                &worker,
+                &writer,
+                &serde_json::to_vec(&envelope).unwrap(),
+                &room.id.to_string(),
+                "review-peer",
+                nteract_identity::ConnectionScope::Owner,
+            )
+            .unwrap();
+            let frame = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                notebook_protocol::connection::recv_typed_frame(&mut client),
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+            let response: NotebookResponseEnvelope =
+                serde_json::from_slice(&frame.payload).unwrap();
+            assert_eq!(response.id, envelope.id);
+            let expected = if disconnected {
+                "inactive connection"
+            } else if requested {
+                "not available"
+            } else {
+                "not requested"
+            };
+            assert!(matches!(
+                response.response,
+                crate::protocol::NotebookResponse::Error { error } if error.contains(expected)
+            ));
+        }
+        assert_eq!(
+            before,
+            room.state
+                .read(|doc| serde_json::to_value(doc.read_state()).unwrap())
+                .unwrap()
+        );
+        assert!(room.current_runtime_agent_id.read().await.is_none());
+        assert!(room.runtime_agent_env_path.read().await.is_none());
+    }
 }

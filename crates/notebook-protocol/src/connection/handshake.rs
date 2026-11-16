@@ -23,6 +23,10 @@ pub enum Handshake {
     /// v4 clients receive SessionControl frames. After handshake, the server
     /// sends a `ProtocolCapabilities` response before starting sync.
     NotebookSync {
+        /// Per-connection protocol opt-in, never approval or installation authority.
+        /// Missing/false keeps related-channel expansion unavailable.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        scoped_channel_review_v1: bool,
         notebook_id: String,
         /// Protocol version requested by client (`v4`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -51,6 +55,10 @@ pub enum Handshake {
     /// The daemon returns `NotebookConnectionInfo` before starting sync.
     /// After that, the connection becomes a normal notebook sync connection.
     OpenNotebook {
+        /// Per-connection protocol opt-in, never approval or installation authority.
+        /// Missing/false keeps related-channel expansion unavailable.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        scoped_channel_review_v1: bool,
         /// Path to the .ipynb file.
         path: String,
         /// When true, the daemon sends `NotebookConnectionInfo` as a typed
@@ -71,6 +79,10 @@ pub enum Handshake {
     /// starting sync; after that the connection is a normal notebook sync
     /// connection. Credentials never ride this handshake.
     OpenHostedNotebook {
+        /// Per-connection protocol opt-in, never approval or installation authority.
+        /// Missing/false keeps related-channel expansion unavailable.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        scoped_channel_review_v1: bool,
         /// Hosted notebook URL, `https://<host>/n/<notebook_id>[/...]`.
         url: String,
         /// When true, the daemon sends `NotebookConnectionInfo` as a typed
@@ -115,6 +127,9 @@ pub enum Handshake {
 /// Field order is the wire serialization order; keep it stable.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateNotebookRequest {
+    /// Per-connection scoped-review opt-in. Existing callers default to false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub scoped_channel_review_v1: bool,
     /// Runtime type: "python" or "deno".
     pub runtime: String,
     /// Working directory for project file detection (pyproject.toml, pixi.toml, environment.yml).
@@ -163,6 +178,7 @@ impl CreateNotebookRequest {
     /// package manager, auto environment mode.
     pub fn new(runtime: impl Into<String>) -> Self {
         Self {
+            scoped_channel_review_v1: false,
             runtime: runtime.into(),
             working_dir: None,
             notebook_id: None,
@@ -197,6 +213,10 @@ pub const PROTOCOL_VERSION: u8 = 4;
 /// Used by the `NotebookSync` handshake variant.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProtocolCapabilities {
+    /// Effective scoped-review support for this exact connection. Defaults off
+    /// until the owner-fenced installation and launch route is complete.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub scoped_channel_review_v1: bool,
     /// Protocol version string (currently always "v4").
     pub protocol: String,
     /// Numeric protocol version for explicit version checking.
@@ -248,6 +268,7 @@ impl ProtocolCapabilities {
             notebook_wire::frame_size_limits(notebook_wire::frame_types::PUT_BLOB);
 
         Self {
+            scoped_channel_review_v1: false,
             protocol: PROTOCOL_V4.to_string(),
             protocol_version: Some(PROTOCOL_VERSION.into()),
             daemon_version,
