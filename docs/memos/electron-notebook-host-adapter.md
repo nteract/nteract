@@ -88,3 +88,29 @@ prevents several isolated renderers from loading their required code or workers.
   packaged Electron CSP.
 - Confirm two peers can open the same notebook ID through one singleton daemon.
 - Add cancellation/lifecycle wiring when an Agentic panel or window closes.
+
+## Related-channel review compatibility
+
+Related-channel decisions use notebook protocol frames on the existing relay,
+not a privileged Electron host method. `createElectronHost` installs the same
+`approveRelatedChannels(reviewId)` / `declineRelatedChannels(reviewId)` adapter
+as the native and browser hosts. The renderer sends only the daemon-issued
+review ID, never a replacement channel list or an install authorization.
+
+The shared dialog distinguishes server-authored `scope: "metadata"` (permission
+to inspect additional channel metadata) from `scope: "install"` (review of the
+prepared package-source order). Missing or unrecognized scopes do not offer
+approval. Completing metadata inspection does not approve the final package
+sources; a new review ID requires another explicit decision. Stale and
+unsupported-daemon responses remain errors, with no fallback to workspace or
+project trust.
+
+The Electron adapter test covers these request/response semantics through a
+linked renderer/main MessagePort and a fixture relay. This is not validation of
+a downstream application's bundled assets, daemon, or permission policy. Before
+enabling channel expansion in an embedding, validate its actual bundle and
+supported daemon together: review display, metadata approve, final approve,
+cancel, changed-plan rejection, reconnect, and unsupported-client behavior.
+Existing project/workspace trust must not automatically approve discovered
+channels. Production expansion remains off until the daemon's prepared-install
+boundary and explicit client opt-in are wired and tested end to end.

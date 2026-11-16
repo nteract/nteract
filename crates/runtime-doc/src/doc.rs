@@ -348,10 +348,20 @@ pub struct RelatedChannelReview {
     pub review_id: String,
     pub owner_label: String,
     pub state: RelatedChannelReviewStatus,
+    /// The precise grant the user is reviewing; never infer it from an empty frontier.
+    pub scope: RelatedChannelReviewScope,
     pub declared_channels: Vec<String>,
     pub effective_channels: Vec<String>,
     pub uninspected_channels: Vec<String>,
     pub relations: Vec<RelatedChannelRelation>,
+}
+
+/// Metadata inspection is not permission to install packages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelatedChannelReviewScope {
+    Metadata,
+    Install,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -5174,6 +5184,7 @@ mod tests {
             review_id: "review-1".into(),
             owner_label: "environment.yml".into(),
             state: RelatedChannelReviewStatus::Pending,
+            scope: RelatedChannelReviewScope::Metadata,
             declared_channels: vec!["https://example.test/a/".into()],
             effective_channels: vec![
                 "https://example.test/b/".into(),
@@ -5188,6 +5199,12 @@ mod tests {
                 ignored_for_priority: false,
             }],
         };
+        let mut unscoped = serde_json::to_value(&review).unwrap();
+        unscoped.as_object_mut().unwrap().remove("scope");
+        assert!(serde_json::from_value::<RelatedChannelReview>(unscoped).is_err());
+        let mut unknown_scope = serde_json::to_value(&review).unwrap();
+        unknown_scope["scope"] = serde_json::json!("future_scope");
+        assert!(serde_json::from_value::<RelatedChannelReview>(unknown_scope).is_err());
         assert!(doc.set_related_channel_review(Some(&review)).unwrap());
         assert!(!doc.set_related_channel_review(Some(&review)).unwrap());
         doc.set_trust("trusted", false).unwrap();
@@ -5199,9 +5216,17 @@ mod tests {
         let mut restored = RuntimeStateDoc::new_empty();
         restored.doc = AutoCommit::load(&saved).unwrap();
         assert_eq!(restored.related_channel_review(), Some(review.clone()));
+        let install = RelatedChannelReview {
+            review_id: "install-review-2".into(),
+            scope: RelatedChannelReviewScope::Install,
+            uninspected_channels: vec![],
+            ..review
+        };
+        doc.set_related_channel_review(Some(&install)).unwrap();
+        assert_eq!(doc.related_channel_review(), Some(install.clone()));
         let declined = RelatedChannelReview {
             state: RelatedChannelReviewStatus::Declined,
-            ..review
+            ..install
         };
         doc.set_related_channel_review(Some(&declined)).unwrap();
         assert_eq!(doc.related_channel_review(), Some(declined));

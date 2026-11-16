@@ -19,7 +19,9 @@ export function RelatedChannelReviewDialog({
   canApprove = true,
 }: RelatedChannelReviewDialogProps) {
   const host = useNotebookHost();
-  const reviewId = loaded && canApprove ? (review?.review_id ?? null) : null;
+  const supportedScope = !review || review.scope === "metadata" || review.scope === "install";
+  const allowReview = loaded && canApprove && supportedScope;
+  const reviewId = allowReview ? (review?.review_id ?? null) : null;
   const [action, dispatch] = useReducer(transitionChannelReviewAction, { phase: "idle", reviewId });
 
   useEffect(() => {
@@ -27,12 +29,11 @@ export function RelatedChannelReviewDialog({
   }, [host]);
 
   useEffect(() => {
-    dispatch(loaded && canApprove ? { type: "review_changed", reviewId } : { type: "reset" });
-  }, [loaded, canApprove, reviewId, host]);
+    dispatch(allowReview ? { type: "review_changed", reviewId } : { type: "reset" });
+  }, [allowReview, reviewId, host]);
 
   useEffect(() => {
-    if (action.phase !== "submitting" || action.scope !== host.trust || !loaded || !canApprove)
-      return;
+    if (action.phase !== "submitting" || action.scope !== host.trust || !allowReview) return;
     const controller = new AbortController();
     const capturedId = action.reviewId;
     const request =
@@ -53,9 +54,10 @@ export function RelatedChannelReviewDialog({
       },
     );
     return () => controller.abort();
-  }, [action, loaded, canApprove, host]);
+  }, [action, allowReview, host]);
 
-  if (!loaded || !canApprove) return null;
+  if (!allowReview) return null;
+  const metadataOnly = review?.scope === "metadata";
   const isCurrent = action.reviewId === reviewId;
   const submitting = isCurrent && action.phase === "submitting";
   const completed = !review && action.phase === "approved";
@@ -74,10 +76,16 @@ export function RelatedChannelReviewDialog({
       onOpenChange={(open) => {
         if (!open) completed ? dispatch({ type: "reset" }) : submit("decline");
       }}
-      title={completed ? "Channels approved" : "Review additional channels"}
+      title={
+        completed
+          ? "Channel review completed"
+          : metadataOnly
+            ? "Inspect additional channels"
+            : "Approve package sources"
+      }
       description={
         completed
-          ? "Retry the action you started to continue with the approved channels."
+          ? "Retry the action you started. The daemon will check its current channel approvals before continuing."
           : `${review?.owner_label ?? "This environment"} uses repositories that declare additional package channels. Review their sources and priority order before continuing.`
       }
       icon={<GlobeIcon className="size-5" />}
@@ -95,7 +103,11 @@ export function RelatedChannelReviewDialog({
               Cancel
             </Button>
             <Button disabled={submitting || waitingForDiscovery} onClick={() => submit("approve")}>
-              {submitting || waitingForDiscovery ? "Checking channels…" : "Allow and continue"}
+              {submitting || waitingForDiscovery
+                ? "Checking channels…"
+                : metadataOnly
+                  ? "Allow metadata inspection"
+                  : "Approve package sources"}
             </Button>
           </>
         )
@@ -149,9 +161,10 @@ export function RelatedChannelReviewDialog({
             </ol>
           </section>
           <p className="text-muted-foreground">
-            Allowing these sources lets nteract read their metadata and use their packages. Further
-            sources will need another review. Your notebook and project channel lists stay
-            unchanged.
+            {metadataOnly
+              ? "Allowing inspection lets nteract read metadata from these sources. It does not approve package installation. You will review the completed channel list before packages are installed."
+              : "Approving these package sources applies only to the prepared environment shown here. If its channels or dependencies change, another review is required."}{" "}
+            Your notebook and project channel lists stay unchanged.
           </p>
           {error && (
             <p role="alert" className="text-destructive">
