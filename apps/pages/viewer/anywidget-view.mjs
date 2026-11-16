@@ -43,7 +43,8 @@ export function mount(
     view$,
     sources,
     sourcesAnswer$ = of("known"),
-    frameUrl = OUTPUT_FRAME_URL,
+    frameUrl = container.ownerDocument.querySelector('meta[name="pages-output-frame-url"]')
+      ?.content ?? OUTPUT_FRAME_URL,
     mountOutput = mountAnywidgetOutput,
     theme = themeStore,
   },

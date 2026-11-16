@@ -9,6 +9,9 @@ import { chromium, webkit, expect } from "@playwright/test";
 import "./build-output.mjs";
 const { default: worker } = await import("../output/worker.mjs");
 import { OUTPUT_FRAME_URL } from "../shared/anywidget-view.mjs";
+const configuredFrameUrl = process.env.PAGES_OUTPUT_LIVE
+  ? OUTPUT_FRAME_URL
+  : "https://selfhosted.widgets.example/frame/v2/";
 const out = new URL(
   process.env.PAGES_OUTPUT_ARTIFACT
     ? "../test-results/output-real/"
@@ -154,6 +157,11 @@ for (const [name, [bytes, media_type]] of Object.entries(entries)) {
   versions[name] = { asset_id, media_type, revision: "1" };
 }
 const fixture = `import { BehaviorSubject } from 'rxjs';
+import { Wordgard } from 'wordgard/editor';
+import { GardState, GardSelection } from 'wordgard/state';
+import { Leaf } from 'wordgard/doc';
+import { schema, Paragraph, PagesView } from './viewer/wordgard-model.mjs';
+import { wordgardViews } from './viewer/wordgard-views.mjs';
 import { mount } from './viewer/view-output.mjs';
 import { themeStore } from './viewer/theme.mjs';
 themeStore.setMode(${JSON.stringify(process.env.PAGES_OUTPUT_SERVE ? "system" : "light")});
@@ -166,7 +174,17 @@ const view$=new BehaviorSubject({status:'ready',view});
 let failNext=false;
 const sources={pageId:'${pageId}',request:(...args)=>{if(failNext){failNext=false;return Promise.resolve(new Response('not yet',{status:503}))}return fetch(...args)},versions:()=>changes,resolve:b=>versions[b.source_id]};
 const handle=mount(document.querySelector('main'),{view$,sources,sourcesAnswer$:null});
-window.fixture={counter(composed=false){
+let editor;
+window.fixture={editor(){
+  handle.destroy();
+  window.fixture.counter();
+  const node=PagesView.of({view_id:'audio'});
+  editor=new Wordgard({parent:document.querySelector('main'),state:GardState.create({
+    doc:schema.doc([node,Paragraph.create([Leaf.text('Outside the widget')])]),
+    config:[schema.elements.map(e=>GardState.schemaElement.of(e)),wordgardViews({eager:true, sources, views:{hold:()=>({view$,release(){}})}})]
+  })});
+  window.fixture.select=selected=>{editor.dispatch({selection:selected?GardSelection.node(0,node):GardSelection.cursor(2)});editor.flush()};
+},counter(composed=false){
   view$.next({status:'ready',view:{...view,
     spec:composed ? {_esm:'composed',state:{child:'anywidget:counter'},models:{counter:{_esm:'counter',_css:'counterStyle',state:{count:42}}}} : {_esm:'counter',_css:'counterStyle',state:{count:42}},
     data:{counter:{source_id:'counter'},counterStyle:{source_id:'counterStyle'},...(composed?{composed:{source_id:'composed'}}:{})}
@@ -200,10 +218,10 @@ const server = createServer((req, res) => {
   }
   res.setHeader(
     "Content-Security-Policy",
-    `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-src ${new URL(OUTPUT_FRAME_URL).origin}`,
+    `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-src ${new URL(configuredFrameUrl).origin}`,
   );
   res.end(
-    '<!doctype html><meta name="viewport" content="width=device-width"><title>Audio exploration</title><link rel="stylesheet" href="/styles.css"><label style="max-width:900px;margin:20px auto">Appearance <select id="appearance"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><main style="max-width:900px;margin:30px auto;font:16px system-ui"></main><script type="module" src="/app.js"></script>',
+    `<!doctype html><meta name="pages-output-frame-url" content="${configuredFrameUrl}"><meta name="viewport" content="width=device-width"><title>Audio exploration</title><link rel="stylesheet" href="/styles.css"><label style="max-width:900px;margin:20px auto">Appearance <select id="appearance"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><main style="max-width:900px;margin:30px auto;font:16px system-ui"></main><script type="module" src="/app.js"></script>`,
   );
 });
 await new Promise((resolve) =>
@@ -224,8 +242,8 @@ try {
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   if (!process.env.PAGES_OUTPUT_LIVE)
-    await page.route(OUTPUT_FRAME_URL, async (route) => {
-      const response = await worker.fetch(new Request(OUTPUT_FRAME_URL));
+    await page.route(configuredFrameUrl, async (route) => {
+      const response = await worker.fetch(new Request(configuredFrameUrl));
       await route.fulfill({
         status: response.status,
         headers: Object.fromEntries(response.headers),
@@ -318,10 +336,19 @@ try {
         })),
       )
       .toMatchObject({ overflowX: 0, overflowY: 0, scrollbarWidth: 0, inset: 0 });
-    const gap = await frame
-      .locator("body")
-      .evaluate((body) => innerHeight - body.getBoundingClientRect().height);
-    assert.ok(gap >= 0 && gap < 1, `Frame fits content without guessed padding: ${gap}`);
+    // ResizeObserver -> MessagePort -> parent style is asynchronous. Wait for
+    // that delivered measurement after changing the viewport, not just ready.
+    await expect
+      .poll(
+        async () => {
+          const gap = await frame
+            .locator("body")
+            .evaluate((body) => innerHeight - body.getBoundingClientRect().height);
+          return gap >= 0 && gap < 1;
+        },
+        { message: "Frame fits its measured content without guessed padding" },
+      )
+      .toBe(true);
   };
   for (const width of [1200, 390]) {
     await page.setViewportSize({ width, height: 844 });
@@ -376,6 +403,28 @@ try {
   await expect(page.getByText("intentional failure")).toBeVisible();
   await expect(page.locator("iframe")).toHaveCount(0);
   await page.evaluate(() => window.fixture.destroy());
+  // Selecting a Wordgard view used to wrap/reparent its iframe, which reloads
+  // the document and trips the navigation guard. The local model must survive.
+  await page.evaluate(() => window.fixture.editor());
+  await expect(frame.getByRole("button", { name: "count is 42" })).toBeVisible();
+  let loads = 0;
+  page.on("framenavigated", (f) => {
+    if (f !== page.mainFrame()) loads++;
+  });
+  for (const width of [1200, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    await frame.getByRole("button").click();
+    const count = width === 1200 ? "count is 43" : "count is 44";
+    for (const selected of [true, false]) {
+      await page.evaluate((selected) => window.fixture.select(selected), selected);
+      await expect(frame.getByRole("button")).toHaveText(count);
+      await expect(page.locator(".pages-anywidget-view")).toHaveAttribute(
+        "data-output-state",
+        "ready",
+      );
+    }
+  }
+  assert.equal(loads, 0, "Selection must not navigate/reload the existing frame");
   assert.deepEqual(errors, []);
   await writeFile(
     new URL("report.json", out),
@@ -383,6 +432,7 @@ try {
       {
         passed: [
           "opaque DOM/storage boundary",
+          "deployment-selected iframe endpoint read from the shell",
           "WAV DataView",
           "unchanged upstream anywidget counter + CSS; local state resets on remount",
           "child composition shares one local model across two views",
@@ -395,6 +445,7 @@ try {
           "automatic render and source-change remount",
           "retry after a transient input failure",
           "failure recovery",
+          "Wordgard node selection preserves iframe document and local model at wide/narrow widths",
         ],
         live: !!process.env.PAGES_OUTPUT_LIVE,
       },
