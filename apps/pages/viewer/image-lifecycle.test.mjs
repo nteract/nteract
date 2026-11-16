@@ -20,9 +20,12 @@ test("image transition table ignores stale events in every phase and falls back 
   for (const state of [IMAGE_INITIAL, preferred, fallback, ready, failed]) {
     for (const type of ["load", "error", "unknown"])
       assert.equal(imageTransition(state, { type, request: {} }), state);
-    assert.equal(imageTransition(state, { type: "detach" }), IMAGE_INITIAL);
-    assert.equal(imageTransition(state, source).phase, "preferred");
+    assert.equal(imageTransition(state, { ...source, theme: "light" }).phase, "preferred");
   }
+  // The same source again is the attempt already drawn, whatever its phase.
+  for (const state of [preferred, fallback, ready, failed])
+    assert.equal(imageTransition(state, source), state);
+  assert.equal(imageTransition(IMAGE_INITIAL, source).phase, "preferred");
   assert.equal(imageTransition(ready, { type: "error", request: ready.request }), ready);
   assert.equal(imageTransition(failed, { type: "load", request: failed.request }), failed);
   const same = imageTransition(IMAGE_INITIAL, { ...source, dark_src: source.src });
@@ -66,9 +69,45 @@ test("app theme overrides OS; fresh attempts reject old callbacks and offscreen 
   assert.equal(container.firstChild, third);
   third.onload();
   assert.equal(container.dataset.imageState, "ready");
+  assert.equal(lifecycle.image, third);
   lifecycle.disconnect();
-  third.onerror();
-  assert.equal(container.children.length, 0);
   assert.equal(listener, null);
+  dom.window.close();
+});
+
+// Wordgard disconnects and reconnects the widget when it draws or clears a
+// node selection around it. A new img would have no height until it decoded,
+// and the Page would jump.
+test("a reconnect keeps the drawn image; a theme change while disconnected redraws", () => {
+  const dom = new JSDOM("<span></span>");
+  const container = dom.window.document.querySelector("span");
+  let theme = "light",
+    listener;
+  const store = {
+    getSnapshot: () => ({ resolved: theme }),
+    subscribe: (fn) => {
+      listener = fn;
+      return () => {
+        listener = null;
+      };
+    },
+  };
+  const lifecycle = imageLifecycle(container, { ...source, alt: "Cat" }, { store });
+  lifecycle.connect();
+  const drawn = container.firstChild;
+  drawn.onload();
+  lifecycle.disconnect();
+  assert.equal(container.firstChild, drawn, "disconnecting leaves the img in place");
+  lifecycle.connect();
+  assert.equal(container.firstChild, drawn);
+  assert.equal(container.dataset.imageState, "ready");
+  assert.equal(lifecycle.image, drawn);
+  lifecycle.disconnect();
+  theme = "dark";
+  lifecycle.connect();
+  assert.notEqual(container.firstChild, drawn);
+  assert.equal(container.firstChild.src, source.dark_src);
+  assert.equal(lifecycle.image, null, "the new attempt hasn't loaded");
+  assert.equal(typeof listener, "function");
   dom.window.close();
 });

@@ -79,6 +79,7 @@ import {
 } from "./wordgard-binding.mjs";
 import {
   PagesDataframe,
+  PagesImage,
   PagesView,
   PagesLink,
   TaskList,
@@ -105,7 +106,7 @@ import {
 import { wordgardWidgets, wordgardCodeLanguages } from "./wordgard-widgets.mjs";
 import { wordgardDataframes } from "./wordgard-dataframes.mjs";
 import { storedBinding } from "./dataframe-binding.mjs";
-import { wordgardImages } from "./wordgard-images.mjs";
+import { COMMENT_ACCESS_EVENT, wordgardImages } from "./wordgard-images.mjs";
 import { pageNodes } from "./wordgard-page-config.mjs";
 import { selectionToolbarPosition } from "./selection-toolbar.mjs";
 import { linkDestination, openInNewTab, wantsNewTab } from "./link-destination.mjs";
@@ -260,6 +261,24 @@ export function WordgardEditor(props) {
     if (!selected) return false;
     latest.current.onComment?.(selected);
     return true;
+  }
+  // A chart's or image's own Comment control: select that node and open the
+  // composer on it. `type` is the node type the control's DOM must hold.
+  function embedComments(type) {
+    const allowed = () => !!(latest.current.commentable ?? latest.current.editable);
+    return {
+      allowed,
+      open(dom) {
+        const editor = view.current;
+        if (!editor || !allowed()) return;
+        const position = editor.posAtDOM(dom, 0);
+        const node = editor.state.doc.nodeAt(position);
+        if (node?.type !== type) return;
+        editor.dispatch({ selection: GardSelection.node(position, node) });
+        editor.focus();
+        comment();
+      },
+    };
   }
   // The phone bar's Comment: the selection, or else the caret's whole
   // paragraph. The desktop toolbar's Comment needs a selection.
@@ -454,19 +473,7 @@ export function WordgardEditor(props) {
         // reserves the height this browser last drew its chart at, for this
         // account and Page.
         wordgardViews({
-          comments: {
-            allowed: () => !!(latest.current.commentable ?? latest.current.editable),
-            open: (dom) => {
-              const editor = view.current;
-              if (!editor || !(latest.current.commentable ?? latest.current.editable)) return;
-              const position = editor.posAtDOM(dom, 0);
-              const node = editor.state.doc.nodeAt(position);
-              if (node?.type !== PagesView) return;
-              editor.dispatch({ selection: GardSelection.node(position, node) });
-              editor.focus();
-              comment();
-            },
-          },
+          comments: embedComments(PagesView),
           views: replica.views ?? null,
           sources: replica.pageSources ?? null,
           sourcesAnswer$:
@@ -478,7 +485,9 @@ export function WordgardEditor(props) {
             pageId: replica.doc.page_id,
           }),
         }),
-        wordgardImages(),
+        // A click selects an image while editing and expands it while
+        // reading; Expand and Comment sit in its corner.
+        wordgardImages({ expand: true, comments: embedComments(PagesImage) }),
         wordgardCodeNewlines,
         wordgardForeignMarks,
         wordgardListStarts,
@@ -1140,8 +1149,10 @@ export function WordgardEditor(props) {
     });
   }, [editable, generation]);
   useEffect(() => {
-    for (const button of view.current?.dom.querySelectorAll("[data-chart-comment]") ?? [])
-      button.dispatchEvent(new Event("pages-chart-comment-access"));
+    for (const button of view.current?.dom.querySelectorAll(
+      "[data-chart-comment], [data-image-comment]",
+    ) ?? [])
+      button.dispatchEvent(new Event(COMMENT_ACCESS_EVENT));
   }, [commentable, generation]);
   useEffect(() => {
     if (view.current && !view.current.composing)

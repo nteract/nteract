@@ -9,6 +9,8 @@
 //   content   the SVG's natural size, `{ width, height }`
 //   viewport  the stage's size, `{ width, height }`
 //   padding   the space kept around a fitted diagram, in px
+//   maxFit    the largest scale a fit may reach (MAX_FIT unless opened with
+//             another; a photo fits at no more than its natural size)
 //   fit       the scale that fits the diagram in the viewport
 //   view      `{ scale, x, y }`: the diagram's scale and its top-left corner
 //             in stage coordinates
@@ -16,7 +18,7 @@
 //   pointers  the pointers down, `[{ id, x, y }]`, at most two
 //
 // Events (coordinates are stage-relative px):
-//   { type: "open", content, viewport, padding }
+//   { type: "open", content, viewport, padding, maxFit? }
 //   { type: "close" }
 //   { type: "resize", viewport }
 //   { type: "pointerDown", id, x, y }
@@ -46,9 +48,9 @@ const positive = (value) => (Number.isFinite(value) && value > 0 ? value : 0);
 
 /**
  * The scale that fits `content` inside `viewport` less `padding` on each side,
- * capped at MAX_FIT. A diagram or viewport without a size fits at 1.
+ * capped at `maxFit`. A diagram or viewport without a size fits at 1.
  */
-export function fitScale(content, viewport, padding = 0) {
+export function fitScale(content, viewport, padding = 0, maxFit = MAX_FIT) {
   const width = positive(content?.width);
   const height = positive(content?.height);
   const room = {
@@ -56,7 +58,7 @@ export function fitScale(content, viewport, padding = 0) {
     height: positive(viewport?.height) - 2 * padding,
   };
   if (!width || !height || room.width <= 0 || room.height <= 0) return 1;
-  return Math.min(room.width / width, room.height / height, MAX_FIT);
+  return Math.min(room.width / width, room.height / height, maxFit);
 }
 
 /** The zoom range for a diagram that fits at `fit`. */
@@ -178,8 +180,9 @@ export function transition(state, event) {
       height: positive(event.viewport?.height),
     };
     const padding = positive(event.padding);
-    const fit = fitScale(content, viewport, padding);
-    const frame = { content, viewport, padding, fit };
+    const maxFit = positive(event.maxFit) || MAX_FIT;
+    const fit = fitScale(content, viewport, padding, maxFit);
+    const frame = { content, viewport, padding, maxFit, fit };
     return { name: "idle", ...frame, view: fittedView(frame), fitted: true, pointers: [] };
   }
   if (!isOpen(state)) return state;
@@ -193,7 +196,7 @@ export function transition(state, event) {
       };
       if (viewport.width === state.viewport.width && viewport.height === state.viewport.height)
         return state;
-      const fit = fitScale(state.content, viewport, state.padding);
+      const fit = fitScale(state.content, viewport, state.padding, state.maxFit);
       const next = { ...state, viewport, fit };
       return { ...next, view: state.fitted ? fittedView(next) : clampView(state.view, next) };
     }
