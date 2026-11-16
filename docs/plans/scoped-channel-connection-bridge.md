@@ -1,56 +1,68 @@
-# Scoped channel connection bridge (disabled)
+# Scoped channel review for manual inline Conda launch
 
-This bridge is intentionally deny-only. It does not enable channel expansion,
-redeem a review ID, prepare or install an environment, or launch a kernel.
+The local desktop relay explicitly opts into `scoped_channel_review_v1` on
+open, create and attach. Older library entrypoints default off. The daemon
+advertises effective support only to opted-in local owners; hosted connections
+remain unsupported. Capability negotiation is protocol literacy, not consent.
 
-## Connection ownership
+## Operation ownership
 
-The four notebook handshake routes accept `scoped_channel_review_v1`, defaulting
-to false when absent. Existing client entrypoints always send false. The daemon
-captures the original request with the server-created peer ID and authenticated
-local-owner/non-hosted facts, not in shared room or runtime documents.
+The existing room launch gate admits one manual operation. Its immutable
+`PreparedCondaInstall`, consent session and input fence belong to that operation,
+not to the shared RuntimeStateDoc. The runtime document projects the pending
+scope, exact source list and opaque ID for display.
 
-The actual peer loop owns the lifetime lease. Its request worker can check but
-cannot extend that lease. Loop exit, cancellation, and errors invalidate queued
-review requests. A new connection cannot inherit its predecessor's authority.
-All approval and decline requests still return an error, including those from
-an opted-in local owner. Direct dispatcher callers retain the existing refusal.
+The actual peer loop owns the connection lease. Approval/decline replies use a
+separate bounded queue so they can unblock the launch waiting in the ordinary
+queue without blocking socket ingress while waiting for document sync.
+They still pass scope admission, observed-head checks, connection identity,
+review ID and current-input validation. Each ID accepts one decision. Metadata
+permission can only advance discovery; installation requires a fresh final ID.
+A competing peer or successor connection cannot redeem the original ID.
 
-`ProtocolCapabilities::v4` always returns false. The native ready payload copies
-that effective response beside the existing relay generation. Native ready
-state clears its cached payload when the generation changes, rejects writes
-whose argument or payload generation is stale, and only returns a cache entry
-for the current gate. The server peer ID and native relay generation are distinct
-identities, not interchangeable counters.
+Discovery checks the owner fence before cached/network metadata reads and after
+asynchronous effects. Installation consumes the final grant into a new private
+prefix, with automatic channel discovery disabled. Dependency/trust changes,
+selection changes, notebook identity changes, cancellation and disconnect fence
+publication and kernel dispatch. Ordinary cell edits do not revoke consent.
+Shutdown wakes a waiting review without waiting for the launch queue to drain.
+The same input locks and launch generation fence the runtime-agent RPC and final
+launch publication. Validation waits for document contention rather than
+revoking consent. Atomic commits acquire the launch gate before the connection,
+selection and notebook identity locks. A rejected final commit retains the
+launch token through shutdown and owned-agent teardown, including a lost shutdown
+reply. Shutdown uses the control queue after capacity and causal validation. Its
+queue state invalidates older launch tickets and holds later tickets until the
+shutdown completes, including launches not yet admitted to the room gate.
 
-## Required next integration
+## Compatibility and retained prefixes
 
-Before any effective true response is allowed:
+The reviewed route intercepts manual `conda:inline` preparation before legacy
+cache, pool and lock reconstruction. If discovery finds no additional sources,
+it retains existing declared-only behavior without a second dialog. If initial
+discovery is unavailable offline, declared-only resolution remains available;
+failed discovery after metadata consent cannot proceed to installation.
 
-1. Add explicit caller opt-in entrypoints for adapted UI relays. Existing library,
-   CLI, agent, hosted and unsupported entrypoints must remain off.
-2. Own the immutable prepared install and consent session within the room's
-   local owner operation, bound to the live creating connection and review epoch.
-   Invalidate IDs on disconnect, cancellation, or relevant input/selection change.
-3. Route ID-only approvals to that exact session. Fence before every channel
-   contact and environment mutation. Metadata permission is not install consent.
-4. Intercept inline manual launch before legacy cache/pool/lock paths. Consume
-   the exact final grant into staging and fence publication and kernel launch.
-   Incomplete project, hot-sync, autolaunch and old-client paths stay disabled.
-5. Demonstrate actual reviewed install through owner-approved kernel launch,
-   including stale/replay, competing-peer and cancellation cases. Complete the
-   quarantined-prefix/process-tree ownership gates and real Kilo compatibility.
+Reviewed prefixes live under `reviewed-conda-envs`, outside legacy cache and
+pool sweepers. Publication retains their original paths because Conda embeds
+absolute prefixes. Installer/vendor effects may have descendants that outlive
+cancellation, so exposed prefixes are retained even after failure. They are not
+renamed, reused or automatically deleted. This deliberately trades disk space
+for safe ownership; automatic reclamation needs process-tree quiescence proof.
 
-The parent-process lock does not prove that vendor scripts or descendants have
-stopped writing. The earlier staging slice conservatively retains externally
-exposed prefixes; this bridge adds no recovery deletion or stronger claim.
+Hot-sync refuses to mutate these prefixes and asks for a restart and fresh
+review. Project, prewarm, captured-cache, automatic-launch, channel-qualified
+spec and direct-URL paths retain their existing no-expansion behavior. Hosted
+clients remain disabled. The native app opts in; other adapted hosts can use the
+explicit relay options, but private Electron applications have not been tested.
 
-## Regression boundaries
+## Verification boundaries
 
-Protocol tests cover omitted and explicit capability values. Connection tests
-cover legacy, non-owner, opted-in, disconnected, successor and mixed-peer cases.
-The real request-worker regression checks both denials and unchanged runtime
-projection, runtime-agent identity and environment path. It does not establish
-filesystem or network noninterference for a future enabled implementation.
-Native ready-state tests cover stale payloads, mismatched generations and cache
-invalidation. Host/dialog tests retain their default-off epoch checks.
+Connection/owner tests cover one-use IDs, wrong-peer and stale replies,
+disconnect, cancellation, dependency/selection/identity changes and ordinary
+cell edits, document-lock contention and ownership through rejected-launch
+cleanup. Real IPC tests cover separate metadata/install scopes, replay, decline
+without installation and shutdown from the reviewing connection. The opt-in `scoped_channel_live_install_launch_and_execute`
+test downloads a real Conda environment, launches a runtime agent and executes a
+synced cell. Native GUI interaction and Windows/macOS/Linux artifacts remain
+separate verification surfaces.

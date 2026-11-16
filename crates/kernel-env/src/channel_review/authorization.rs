@@ -9,16 +9,33 @@
 //! publish only `pending_review`, and validate its fence at the installation
 //! boundary. A token is single-use, not a durable or transferable approval.
 //!
-//! This is a foundation, not production enablement. The launch coordinator and
-//! runtime agent do not consume it yet. Before enabling a surface, its owner must
-//! negotiate scoped-review support, retain the exact prepared inputs, fence all
-//! dependency/settings/target changes, and serialize consumption with effects.
-//! Cache reuse, lock reconstruction, pool reuse, retries and hot-sync must all
-//! obey the same scope or stay on the existing no-expansion path. Publishing a
-//! review into a shared document does not transfer authority to runtime peers.
+//! Manual inline launch consumes this through the local connection coordinator.
+//! Other entrypoints keep expansion disabled until they own the same immutable
+//! inputs, one-use consent and effect fences. A shared review projection never
+//! transfers authority to another peer or to the runtime agent.
 
 use super::{ChannelReview, DiscoveryOutcome};
 use uuid::Uuid;
+
+/// Recheck the operation owner at an external effect boundary. Async validation
+/// can wait for owner locks without treating ordinary contention as revocation.
+pub trait ReviewValidator: Send + Sync {
+    fn validate(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>>;
+}
+
+impl<F> ReviewValidator for F
+where
+    F: Fn() -> anyhow::Result<()> + Send + Sync,
+{
+    fn validate(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
+        let result = self();
+        Box::pin(async move { result })
+    }
+}
 
 /// Identity of the operation whose dependencies and environment were reviewed.
 ///

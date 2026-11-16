@@ -94,7 +94,7 @@ where
 pub(crate) async fn solve_with_repodata_guarded<T, E>(
     query: RepodataQuery<'_>,
     solve: impl FnMut(&[RepoData]) -> std::result::Result<T, E>,
-    validate: &(dyn Fn() -> Result<()> + Send + Sync),
+    validate: &dyn crate::channel_review::authorization::ReviewValidator,
 ) -> std::result::Result<T, RepodataSolveError<E>>
 where
     E: fmt::Display,
@@ -106,7 +106,7 @@ where
         |cache_action| {
             let query = &query;
             async move {
-                validate()?;
+                validate.validate().await?;
                 query_network(query, cache_action, validate).await
             }
         },
@@ -252,7 +252,7 @@ async fn query_cached(query: &RepodataQuery<'_>) -> Option<Vec<RepoData>> {
 async fn query_network(
     query: &RepodataQuery<'_>,
     cache_action: CacheAction,
-    validate: &(dyn Fn() -> Result<()> + Send + Sync),
+    validate: &dyn crate::channel_review::authorization::ReviewValidator,
 ) -> Result<Vec<RepoData>> {
     const MAX_RETRIES: u32 = 3;
     const INITIAL_DELAY_MS: u64 = 1000;
@@ -298,7 +298,7 @@ async fn query_network(
             tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
         }
 
-        validate()?;
+        validate.validate().await?;
         match gateway
             .query(
                 query.channels.clone(),

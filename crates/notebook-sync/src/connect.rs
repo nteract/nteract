@@ -655,6 +655,14 @@ fn build_sync_task_state(
 // Relay connect functions — no initial sync, no local doc
 // =========================================================================
 
+/// Explicit protocol literacy for a relay; all capabilities default off.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RelayOptions {
+    /// The caller can display separate metadata and install reviews and bind
+    /// their actions to this relay epoch. This is not installation consent.
+    pub scoped_channel_review_v1: bool,
+}
+
 /// Open a notebook as a relay — transparent byte pipe, no local document.
 ///
 /// Performs the handshake only (preamble + OpenNotebook + receive info).
@@ -680,6 +688,25 @@ pub async fn connect_open_relay_with_operator(
     frame_tx: mpsc::UnboundedSender<Vec<u8>>,
     operator: Option<String>,
 ) -> Result<RelayOpenResult, SyncError> {
+    connect_open_relay_with_options(
+        socket_path,
+        path,
+        frame_tx,
+        operator,
+        RelayOptions::default(),
+    )
+    .await
+}
+
+/// Explicit capability opt-in for adapted local UI relays. Older callers keep
+/// the default-off entrypoint above; hosted relays never enable this workflow.
+pub async fn connect_open_relay_with_options(
+    socket_path: PathBuf,
+    path: PathBuf,
+    frame_tx: mpsc::UnboundedSender<Vec<u8>>,
+    operator: Option<String>,
+    options: RelayOptions,
+) -> Result<RelayOpenResult, SyncError> {
     let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
     let mut reader = tokio::io::BufReader::new(reader);
@@ -690,7 +717,7 @@ pub async fn connect_open_relay_with_operator(
 
     // Send open handshake
     let handshake = Handshake::OpenNotebook {
-        scoped_channel_review_v1: false,
+        scoped_channel_review_v1: options.scoped_channel_review_v1,
         path: path.to_string_lossy().to_string(),
         typed_bootstrap: Some(true),
         operator,
@@ -779,6 +806,17 @@ pub async fn connect_create_relay(
     spec: CreateNotebookSpec,
     frame_tx: mpsc::UnboundedSender<Vec<u8>>,
 ) -> Result<RelayCreateResult, SyncError> {
+    connect_create_relay_with_options(socket_path, spec, frame_tx, RelayOptions::default()).await
+}
+
+/// Explicit capability opt-in for adapted local UI relays. Older callers keep
+/// the default-off entrypoint above; hosted relays never enable this workflow.
+pub async fn connect_create_relay_with_options(
+    socket_path: PathBuf,
+    spec: CreateNotebookSpec,
+    frame_tx: mpsc::UnboundedSender<Vec<u8>>,
+    options: RelayOptions,
+) -> Result<RelayCreateResult, SyncError> {
     let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
     let mut reader = tokio::io::BufReader::new(reader);
@@ -788,7 +826,9 @@ pub async fn connect_create_relay(
     connection::send_preamble(&mut writer).await?;
 
     // Send create handshake
-    let handshake = Handshake::CreateNotebook(spec.into_request());
+    let mut request = spec.into_request();
+    request.scoped_channel_review_v1 = options.scoped_channel_review_v1;
+    let handshake = Handshake::CreateNotebook(request);
     connection::send_json_frame(&mut writer, &handshake)
         .await
         .map_err(|e| SyncError::Protocol(format!("Send handshake: {}", e)))?;
@@ -829,6 +869,25 @@ pub async fn connect_relay_with_operator(
     frame_tx: mpsc::UnboundedSender<Vec<u8>>,
     operator: Option<String>,
 ) -> Result<RelayConnectResult, SyncError> {
+    connect_relay_with_options(
+        socket_path,
+        notebook_id,
+        frame_tx,
+        operator,
+        RelayOptions::default(),
+    )
+    .await
+}
+
+/// Explicit capability opt-in for adapted local UI relays. Older callers keep
+/// the default-off entrypoint above; hosted relays never enable this workflow.
+pub async fn connect_relay_with_options(
+    socket_path: PathBuf,
+    notebook_id: String,
+    frame_tx: mpsc::UnboundedSender<Vec<u8>>,
+    operator: Option<String>,
+    options: RelayOptions,
+) -> Result<RelayConnectResult, SyncError> {
     let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
     let mut reader = tokio::io::BufReader::new(reader);
@@ -839,7 +898,7 @@ pub async fn connect_relay_with_operator(
 
     // Send notebook sync handshake
     let handshake = Handshake::NotebookSync {
-        scoped_channel_review_v1: false,
+        scoped_channel_review_v1: options.scoped_channel_review_v1,
         notebook_id: notebook_id.clone(),
         protocol: Some(PROTOCOL_V4.to_string()),
         typed_bootstrap: Some(true),

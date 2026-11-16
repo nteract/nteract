@@ -307,6 +307,12 @@ impl ProtocolCapabilities {
     }
 
     /// Attach authenticated identity metadata to this capability response.
+    /// Effective connection-local support, set only by an enabled runtime owner.
+    pub fn with_scoped_channel_review(mut self, enabled: bool) -> Self {
+        self.scoped_channel_review_v1 = enabled;
+        self
+    }
+
     pub fn with_identity(
         mut self,
         actor_label: impl Into<String>,

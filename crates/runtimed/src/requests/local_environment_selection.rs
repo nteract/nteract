@@ -43,6 +43,20 @@ impl LocalEnvironmentSelection {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Fence a reviewed launch against staged selection changes.
+    pub(crate) fn with_revision<T>(
+        &self,
+        revision: u64,
+        effect: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        anyhow::ensure!(
+            state.revision == revision && !state.applying,
+            "Environment selection changed during channel review"
+        );
+        effect()
+    }
+
     pub(crate) fn subscribe(&self) -> watch::Receiver<EnvironmentSelectionSnapshot> {
         self.changed.subscribe()
     }

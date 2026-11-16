@@ -1317,6 +1317,7 @@ pub(crate) enum KernelLaunchCompletion {
 pub(crate) enum KernelLaunchCommitRejection {
     Cancelled,
     AgentUnavailable,
+    InputsChanged,
 }
 
 pub(crate) async fn wait_for_kernel_launch_cancellation(
@@ -1494,9 +1495,20 @@ impl KernelLaunchAttempt {
     }
 
     pub(crate) fn succeed_with_agent(
-        mut self,
+        self,
         runtime_agent_id: &str,
         commit: impl FnOnce(),
+    ) -> Result<(), (Self, KernelLaunchCommitRejection)> {
+        self.succeed_with_agent_checked(runtime_agent_id, || {
+            commit();
+            Ok(())
+        })
+    }
+
+    pub(crate) fn succeed_with_agent_checked(
+        mut self,
+        runtime_agent_id: &str,
+        commit: impl FnOnce() -> Result<(), ()>,
     ) -> Result<(), (Self, KernelLaunchCommitRejection)> {
         let rejection = {
             let mut state = self.room.kernel_launch_gate.lock_state();
@@ -1504,9 +1516,10 @@ impl KernelLaunchAttempt {
                 Some(KernelLaunchCommitRejection::Cancelled)
             } else if state.connected_runtime_agent_id.as_deref() != Some(runtime_agent_id) {
                 Some(KernelLaunchCommitRejection::AgentUnavailable)
+            } else if commit().is_err() {
+                Some(KernelLaunchCommitRejection::InputsChanged)
             } else {
                 self.outcome = KernelLaunchOutcome::Succeeded;
-                commit();
                 state
                     .completed_outcomes
                     .insert(self.generation, KernelLaunchCompletion::Succeeded);
@@ -2970,5 +2983,22 @@ impl NotebookRoom {
             }
         }
         None
+    }
+}
+
+impl NotebookRoom {
+    /// Linearize a reviewed preparation/dispatch against shutdown and replacement.
+    pub(crate) fn commit_reviewed_launch<T>(
+        &self,
+        generation: u64,
+        effect: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let gate = self.kernel_launch_gate.lock_state();
+        anyhow::ensure!(
+            gate.in_flight_generation == Some(generation)
+                && !gate.cancelled_generations.contains(&generation),
+            "Reviewed kernel launch was cancelled"
+        );
+        effect()
     }
 }

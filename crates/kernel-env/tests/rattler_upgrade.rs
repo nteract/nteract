@@ -446,7 +446,7 @@ async fn channel_review_requires_consent_before_fetching_and_can_finish_offline(
     let result = prepared
         .stage(
             token,
-            &|_| anyhow::bail!("document changed"),
+            &|| anyhow::bail!("document changed"),
             Arc::new(Progress::default()),
         )
         .await;

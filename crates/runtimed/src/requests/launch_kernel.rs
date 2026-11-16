@@ -163,15 +163,17 @@ async fn existing_kernel_response(room: &NotebookRoom) -> Option<NotebookRespons
 
 #[allow(
     clippy::result_large_err,
+    clippy::too_many_arguments,
     reason = "Launch completion returns the existing notebook protocol response on failure"
 )]
-async fn complete_manual_launch(
+pub(super) async fn complete_manual_launch(
     room: &NotebookRoom,
     launch_attempt: &mut Option<KernelLaunchAttempt>,
     runtime_agent_id: &str,
     kernel_type: &str,
     env_source: &EnvSource,
     launched_config: &notebook_protocol::protocol::LaunchedEnvConfig,
+    review: Option<&super::reviewed_conda::ReviewGuard>,
     apply: Option<(
         &super::local_environment_selection::EnvironmentApply<'_>,
         Option<notebook_protocol::protocol::LocalCondaEnvironment>,
@@ -183,47 +185,89 @@ async fn complete_manual_launch(
         });
     };
     let env_source_label = env_source.as_str().to_string();
-    let commit_result = {
-        let (mut config, mut presence_state) = tokio::join!(
-            room.runtime_agent_launched_config.write(),
-            room.broadcasts.presence.write()
-        );
-        attempt.succeed_with_agent(runtime_agent_id, || {
-            *config = Some(launched_config.clone());
-            update_kernel_presence_locked(
-                &mut presence_state,
-                &room.broadcasts.presence_tx,
-                presence::KernelStatus::Idle,
-                &env_source_label,
+    let mut attempt = Some(attempt);
+    let mut apply = apply;
+    let commit_result = loop {
+        let result = {
+            let (mut config, mut presence_state) = tokio::join!(
+                room.runtime_agent_launched_config.write(),
+                room.broadcasts.presence.write()
             );
-            if let Err(e) = room.state.with_doc(|sd| {
-                sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
-                sd.set_kernel_info(kernel_type, kernel_type, &env_source_label)?;
-                let identity = launched_config.local_environment.as_ref();
-                sd.set_local_environment_identity(
-                    identity.map_or("", |e| e.id.as_str()),
-                    identity.map_or("", |e| e.name.as_str()),
-                    identity.and_then(|e| e.python_version.as_deref()),
-                )?;
-                sd.set_prewarmed_packages(&launched_config.prewarmed_packages)?;
-                sd.set_runtime_agent_id(runtime_agent_id)?;
-                Ok(())
-            }) {
-                warn!("[runtime-state] {}", e);
+            // Do not await another owner lock while holding these guards.
+            // Contention asks us to retry acquisition, never to revoke consent.
+            let doc = if review.is_some() {
+                room.doc.try_read().ok()
+            } else {
+                None
+            };
+            if review.is_some() && doc.is_none() {
+                None
+            } else {
+                let mut publish = || {
+                    *config = Some(launched_config.clone());
+                    update_kernel_presence_locked(
+                        &mut presence_state,
+                        &room.broadcasts.presence_tx,
+                        presence::KernelStatus::Idle,
+                        &env_source_label,
+                    );
+                    if let Err(e) = room.state.with_doc(|sd| {
+                        sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
+                        sd.set_kernel_info(kernel_type, kernel_type, &env_source_label)?;
+                        let identity = launched_config.local_environment.as_ref();
+                        sd.set_local_environment_identity(
+                            identity.map_or("", |e| e.id.as_str()),
+                            identity.map_or("", |e| e.name.as_str()),
+                            identity.and_then(|e| e.python_version.as_deref()),
+                        )?;
+                        sd.set_prewarmed_packages(&launched_config.prewarmed_packages)?;
+                        sd.set_runtime_agent_id(runtime_agent_id)?;
+                        Ok(())
+                    }) {
+                        warn!("[runtime-state] {}", e);
+                    }
+                    room.set_active_kernel_launch(
+                        runtime_agent_id.to_string(),
+                        kernel_type.to_string(),
+                        env_source.clone(),
+                    );
+                    *room
+                        .preparing_kernel_env_path
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = None;
+                    if let Some((lease, binding)) = apply.take() {
+                        lease.commit(binding);
+                    }
+                };
+                let Some(attempt) = attempt.take() else {
+                    return Err(NotebookResponse::Error {
+                        error: "Kernel launch ownership ended before publication".into(),
+                    });
+                };
+                Some(attempt.succeed_with_agent_checked(runtime_agent_id, || {
+                    match (review, doc.as_ref()) {
+                        (Some(review), Some(doc)) => review
+                            .with_document(doc, || {
+                                publish();
+                                Ok(())
+                            })
+                            .map_err(|_| ()),
+                        (None, _) => {
+                            publish();
+                            Ok(())
+                        }
+                        (Some(_), None) => Err(()),
+                    }
+                }))
             }
-            room.set_active_kernel_launch(
-                runtime_agent_id.to_string(),
-                kernel_type.to_string(),
-                env_source.clone(),
-            );
-            *room
-                .preparing_kernel_env_path
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = None;
-            if let Some((lease, binding)) = apply {
-                lease.commit(binding);
-            }
-        })
+        };
+        if let Some(result) = result {
+            break result;
+        }
+        // All publication locks were released. Wait for contention to clear.
+        {
+            let _doc = room.doc.read().await;
+        }
     };
 
     match commit_result {
@@ -231,14 +275,31 @@ async fn complete_manual_launch(
             check_and_broadcast_sync_state(room).await;
             Ok(())
         }
-        Err((cancelled_attempt, KernelLaunchCommitRejection::Cancelled)) => {
+        Err((
+            cancelled_attempt,
+            reason @ (KernelLaunchCommitRejection::Cancelled
+            | KernelLaunchCommitRejection::InputsChanged),
+        )) => {
             // Shutdown won the gate before success was linearized. Keep the
             // token until cleanup finishes so no successor can launch beside
             // the kernel or agent we are stopping.
             let _ = crate::requests::shutdown_kernel::handle(room).await;
+            if review.is_some() {
+                // A missing/failed shutdown acknowledgement is not proof that
+                // a revoked kernel stopped. Drop this generation's owned agent
+                // (and its process group/job) before admitting another launch.
+                cancelled_attempt
+                    .discard_cancelled_runtime_agent(runtime_agent_id)
+                    .await;
+            }
             cancelled_attempt.finish_cancelled();
             Err(NotebookResponse::Error {
-                error: "Kernel launch cancelled by ShutdownKernel".to_string(),
+                error: if reason == KernelLaunchCommitRejection::InputsChanged {
+                    "Channel review inputs changed before launch completed"
+                } else {
+                    "Kernel launch cancelled by ShutdownKernel"
+                }
+                .to_string(),
             })
         }
         Err((superseded_attempt, KernelLaunchCommitRejection::AgentUnavailable)) => {
@@ -260,6 +321,7 @@ async fn complete_manual_launch(
     }
 }
 
+#[cfg(test)]
 pub(crate) async fn handle(
     room: &Arc<NotebookRoom>,
     daemon: &Arc<Daemon>,
@@ -267,6 +329,26 @@ pub(crate) async fn handle(
     env_source: LaunchSpec,
     notebook_path: Option<String>,
 ) -> NotebookResponse {
+    handle_with_connection(room, daemon, kernel_type, env_source, notebook_path, None).await
+}
+
+pub(crate) async fn handle_with_connection(
+    room: &Arc<NotebookRoom>,
+    daemon: &Arc<Daemon>,
+    kernel_type: String,
+    env_source: LaunchSpec,
+    notebook_path: Option<String>,
+    channel_review: Option<
+        crate::notebook_sync_server::channel_review_connection::ChannelReviewLaunch,
+    >,
+) -> NotebookResponse {
+    if let Some(review) = channel_review.as_ref() {
+        if let Err(error) = review.wait_for_admission().await {
+            return NotebookResponse::Error {
+                error: error.to_string(),
+            };
+        }
+    }
     if let Err(rejection) = guarded::ensure_trusted(room).await {
         return rejection.into_response();
     }
@@ -274,6 +356,15 @@ pub(crate) async fn handle(
     let launch_attempt = loop {
         match room.try_begin_manual_launch() {
             ManualLaunchAdmission::Admitted(attempt) => {
+                if let Some(review) = channel_review.as_ref() {
+                    if let Err(error) = review.validate_admission() {
+                        attempt.release_without_cooldown();
+                        return NotebookResponse::Error {
+                            error: error.to_string(),
+                        };
+                    }
+                }
+
                 // The active kernel can finish between admission and this
                 // check. Owning the gate makes a progress-phase projection
                 // safe here: no different launch can be in flight.
@@ -343,7 +434,7 @@ pub(crate) async fn handle(
         },
         None => None,
     };
-    handle_admitted(
+    handle_admitted_with_connection(
         room,
         daemon,
         kernel_type,
@@ -352,6 +443,7 @@ pub(crate) async fn handle(
         launch_attempt,
         binding,
         None,
+        channel_review.map(|review| review.connection),
     )
     .await
 }
@@ -366,6 +458,34 @@ pub(crate) async fn handle_admitted(
     attempt: KernelLaunchAttempt,
     local_environment: Option<notebook_protocol::protocol::LocalCondaEnvironment>,
     apply: Option<super::local_environment_selection::EnvironmentApply<'_>>,
+) -> NotebookResponse {
+    handle_admitted_with_connection(
+        room,
+        daemon,
+        kernel_type,
+        env_source,
+        notebook_path,
+        attempt,
+        local_environment,
+        apply,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_admitted_with_connection(
+    room: &Arc<NotebookRoom>,
+    daemon: &Arc<Daemon>,
+    kernel_type: String,
+    env_source: LaunchSpec,
+    notebook_path: Option<String>,
+    attempt: KernelLaunchAttempt,
+    local_environment: Option<notebook_protocol::protocol::LocalCondaEnvironment>,
+    apply: Option<super::local_environment_selection::EnvironmentApply<'_>>,
+    channel_review: Option<
+        Arc<crate::notebook_sync_server::channel_review_connection::ChannelReviewConnection>,
+    >,
 ) -> NotebookResponse {
     let mut launch_attempt = Some(attempt);
     // Request workers can be cancelled at any await, including agent lookup.
@@ -406,6 +526,7 @@ pub(crate) async fn handle_admitted(
         &mut launch_attempt,
         local_environment,
         apply.as_ref(),
+        channel_review,
     )
     .await;
     if apply.is_some() && room.local_environment_selection.is_preparing() {
@@ -459,6 +580,9 @@ async fn handle_attempt(
     launch_attempt: &mut Option<KernelLaunchAttempt>,
     local_environment: Option<notebook_protocol::protocol::LocalCondaEnvironment>,
     apply: Option<&super::local_environment_selection::EnvironmentApply<'_>>,
+    channel_review: Option<
+        Arc<crate::notebook_sync_server::channel_review_connection::ChannelReviewConnection>,
+    >,
 ) -> NotebookResponse {
     // Fall back to the room's on-disk path when the caller doesn't
     // supply one. The frontend typically launches with
@@ -1125,11 +1249,60 @@ async fn handle_attempt(
     let feature_flags_for_inline = daemon.feature_flags().await;
     let bootstrap_dx = feature_flags_for_inline.bootstrap_dx;
 
+    let mut reviewed_guard: Option<Arc<super::reviewed_conda::ReviewGuard>> = None;
     let mut pep723_dependencies_for_launch = Vec::new();
-    let (pooled_env, inline_deps) = if matches!(
-        parsed_resolved,
-        EnvSource::Pep723(PackageManager::Uv)
-    ) {
+    let reviewed_environment = if let (
+        EnvSource::Inline(PackageManager::Conda),
+        Some(connection),
+        None,
+    ) = (&parsed_resolved, channel_review, apply.as_ref())
+    {
+        let result = match (metadata_snapshot.as_ref(), launch_attempt.as_ref()) {
+            (Some(snapshot), Some(attempt)) => {
+                let cancellation = attempt.cancellation_receiver();
+                tokio::select! {
+                    biased;
+                    _ = crate::notebook_sync_server::wait_for_kernel_launch_cancellation(cancellation) =>
+                        Err(anyhow::anyhow!("Channel review cancelled")),
+                    result = super::reviewed_conda::prepare(
+                        room, connection, attempt,
+                        snapshot, identity_revision, launch_progress_handler.clone(),
+                    ) => result,
+                }
+            }
+            _ => Err(anyhow::anyhow!("Missing reviewed launch inputs")),
+        };
+        match result {
+            Ok(Some((environment, guard))) => {
+                reviewed_guard = Some(guard);
+                Some(environment)
+            }
+            Ok(None) => None,
+            Err(error) => {
+                let details = format!("Conda channel review: {error}");
+                publish_environment_launch_error(
+                    room,
+                    parsed_resolved.as_str(),
+                    Some(KernelErrorReason::EnvironmentPrepareFailed),
+                    &details,
+                );
+                return NotebookResponse::Error { error: details };
+            }
+        }
+    } else {
+        None
+    };
+    let (pooled_env, inline_deps) = if let Some(environment) = reviewed_environment {
+        (
+            Some(crate::PooledEnv {
+                env_type: crate::EnvType::Conda,
+                venv_path: environment.env_path,
+                python_path: environment.python_path,
+                prewarmed_packages: vec![],
+            }),
+            metadata_snapshot.as_ref().and_then(get_inline_conda_deps),
+        )
+    } else if matches!(parsed_resolved, EnvSource::Pep723(PackageManager::Uv)) {
         // Extract PEP 723 deps from cell source
         let cells = room.doc.read().await.get_cells();
         let pep723_deps = match notebook_doc::pep723::find_pep723_in_cells(&cells) {
@@ -1917,7 +2090,7 @@ async fn handle_attempt(
     // connect timeout).
     if let Some(ref env) = pooled_env {
         let mut ep = room.runtime_agent_env_path.write().await;
-        *ep = Some(env.venv_path.clone());
+        *ep = reviewed_guard.is_none().then(|| env.venv_path.clone());
     }
 
     // Build LaunchedEnvConfig to track what config the kernel was launched with.
@@ -2022,6 +2195,13 @@ async fn handle_attempt(
             warn!("[runtime-state] {}", e);
         }
     }
+    if let Some(review) = reviewed_guard.as_ref() {
+        if let Err(error) = review.validate().await {
+            return NotebookResponse::Error {
+                error: error.to_string(),
+            };
+        }
+    }
     let redact_env_values_in_outputs = daemon.redact_env_values_in_outputs().await;
     let import_shell_environment = daemon.import_shell_environment().await;
     let shell_overlay = daemon.shell_env_overlay();
@@ -2057,7 +2237,11 @@ async fn handle_attempt(
                     env_vars: restart_env_vars.clone(),
                     redact_env_values_in_outputs,
                 };
-            let response = if let Some(lease) = apply {
+            let response = if let Some(review) = reviewed_guard.as_ref() {
+                crate::notebook_sync_server::send_runtime_agent_request_with_kernel_ports_on_delivery_async(room, build_request, |message, permit| async move {
+                        review.commit(|| { permit.send(message); Ok(()) }).await
+                    }).await
+            } else if let Some(lease) = apply {
                 crate::notebook_sync_server::send_runtime_agent_request_with_kernel_ports_on_delivery(room, build_request, |message, permit| {
                     let attempt = launch_attempt.as_mut().ok_or_else(|| anyhow::anyhow!("Kernel launch ownership ended before delivery"))?;
                     commit_apply_delivery(room, lease, attempt, &resolved_kernel_type, || { permit.send(message); })
@@ -2113,6 +2297,7 @@ async fn handle_attempt(
                         &resolved_kernel_type,
                         &es,
                         &launched_config,
+                        reviewed_guard.as_deref(),
                         apply.map(|lease| (lease, applied_selection.clone())),
                     )
                     .await
@@ -2366,7 +2551,11 @@ async fn handle_attempt(
                         env_vars: launch_env_vars.clone(),
                         redact_env_values_in_outputs,
                     };
-                let response = if let Some(lease) = apply {
+                let response = if let Some(review) = reviewed_guard.as_ref() {
+                    crate::notebook_sync_server::send_runtime_agent_request_with_kernel_ports_on_delivery_async(room, build_request, |message, permit| async move {
+                        review.commit(|| { permit.send(message); Ok(()) }).await
+                    }).await
+                } else if let Some(lease) = apply {
                     crate::notebook_sync_server::send_runtime_agent_request_with_kernel_ports_on_delivery(room, build_request, |message, permit| {
                         let attempt = launch_attempt.as_mut().ok_or_else(|| anyhow::anyhow!("Kernel launch ownership ended before delivery"))?;
                         commit_apply_delivery(room, lease, attempt, &resolved_kernel_type, || { permit.send(message); })
@@ -2405,6 +2594,7 @@ async fn handle_attempt(
                             &resolved_kernel_type,
                             &es,
                             &launched_config,
+                            reviewed_guard.as_deref(),
                             apply.map(|lease| (lease, applied_selection.clone())),
                         )
                         .await
@@ -2894,6 +3084,7 @@ mod tests {
             "python",
             &EnvSource::Prewarmed(PackageManager::Uv),
             &launched_config,
+            None,
             None,
         )
         .await

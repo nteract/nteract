@@ -75,6 +75,7 @@ pub(crate) mod launch_kernel;
 pub(crate) mod local_environment_selection;
 pub(crate) mod project_trust;
 pub(crate) mod reconcile_notebook_source;
+mod reviewed_conda;
 pub(crate) mod run_all_cells;
 pub(crate) mod save_notebook;
 pub(crate) mod send_comm;
@@ -393,11 +394,25 @@ fn handle_hosted_send_comm(
 }
 
 /// Handle a NotebookRequest and return a NotebookResponse.
+#[cfg(test)]
 pub(crate) async fn handle_notebook_request(
     room: &Arc<NotebookRoom>,
     request: NotebookRequest,
     daemon: Arc<Daemon>,
     submitter_actor_label: Option<&str>,
+) -> NotebookResponse {
+    handle_notebook_request_with_connection(room, request, daemon, submitter_actor_label, None)
+        .await
+}
+
+pub(crate) async fn handle_notebook_request_with_connection(
+    room: &Arc<NotebookRoom>,
+    request: NotebookRequest,
+    daemon: Arc<Daemon>,
+    submitter_actor_label: Option<&str>,
+    channel_review: Option<
+        crate::notebook_sync_server::channel_review_connection::ChannelReviewLaunch,
+    >,
 ) -> NotebookResponse {
     debug!(
         "[notebook-sync] Handling request: {}",
@@ -514,7 +529,17 @@ pub(crate) async fn handle_notebook_request(
             kernel_type,
             env_source,
             notebook_path,
-        } => launch_kernel::handle(room, &daemon, kernel_type, env_source, notebook_path).await,
+        } => {
+            launch_kernel::handle_with_connection(
+                room,
+                &daemon,
+                kernel_type,
+                env_source,
+                notebook_path,
+                channel_review,
+            )
+            .await
+        }
 
         NotebookRequest::ExecuteCell {
             cell_id,

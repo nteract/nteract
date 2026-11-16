@@ -507,9 +507,9 @@ async fn install_conda_env_guarded(
     env_path: &Path,
     deps: &CondaDependencies,
     handler: Arc<dyn ProgressHandler>,
-    validate: &(dyn Fn() -> Result<()> + Send + Sync),
+    validate: &dyn crate::channel_review::authorization::ReviewValidator,
 ) -> Result<()> {
-    validate()?;
+    validate.validate().await?;
     let cache_dir = env_path
         .parent()
         .unwrap_or_else(|| Path::new("/tmp"))
@@ -550,7 +550,7 @@ async fn install_conda_env_guarded(
     // and solve.
     // Reset per solve so SolveComplete times the solve, not the fetch.
     let mut solve_start = Instant::now();
-    validate()?;
+    validate.validate().await?;
     let solved = crate::repodata::solve_with_repodata_guarded(
         crate::repodata::RepodataQuery {
             channels,
@@ -624,7 +624,7 @@ async fn install_conda_env_guarded(
     // Clone packages before install (which consumes them) so we can write the lock file
     let packages_for_lock = required_packages.clone();
 
-    validate()?;
+    validate.validate().await?;
     match crate::rattler_installer()
         .with_download_client(download_client)
         .with_target_platform(install_platform)
@@ -658,7 +658,7 @@ async fn install_conda_env_guarded(
     );
 
     // Write lock file for offline re-creation
-    validate()?;
+    validate.validate().await?;
     let lock = crate::lock::LockFile::new(
         spec_strings_for_lock,
         channel_names,
@@ -1118,6 +1118,7 @@ pub async fn sync_dependencies_with_cache(
     download_client: reqwest_middleware::ClientWithMiddleware,
     handler: Arc<dyn ProgressHandler>,
 ) -> Result<()> {
+    reviewed::reject_unreviewed_sync(&env.env_path)?;
     if deps.dependencies.is_empty() {
         return Ok(());
     }

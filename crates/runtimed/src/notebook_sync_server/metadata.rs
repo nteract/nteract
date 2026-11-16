@@ -4939,7 +4939,7 @@ pub(crate) async fn finish_auto_launch_success(
             "[notebook-sync] Auto-launch via runtime agent succeeded: {} kernel with {} environment",
             kernel_type, env_source_label
         ),
-        Err((cancelled_attempt, KernelLaunchCommitRejection::Cancelled)) => {
+        Err((cancelled_attempt, KernelLaunchCommitRejection::Cancelled | KernelLaunchCommitRejection::InputsChanged)) => {
             // Shutdown won before success was linearized. Hold the token
             // until the just-started kernel is stopped so a successor cannot
             // race cleanup.

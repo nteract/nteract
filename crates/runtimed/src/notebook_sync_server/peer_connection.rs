@@ -460,6 +460,11 @@ where
             .transpose()
             .context("serialize comments notebook ref for notebook sync capabilities")?;
         let caps = connection::ProtocolCapabilities::v4(Some(crate::daemon_version().to_string()))
+            .with_scoped_channel_review(
+                ctx.scoped_channel_review_v1
+                    && ctx.connection_identity.scope() == nteract_identity::ConnectionScope::Owner
+                    && !room.is_hosted(),
+            )
             .with_identity(
                 ctx.connection_identity.actor_label().as_str(),
                 ctx.connection_identity.scope().as_str(),

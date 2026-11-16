@@ -1,8 +1,8 @@
 //! Isolated preparation for an explicitly reviewed Conda operation.
 //!
-//! No production caller enables this yet. An owner must keep the prepared
-//! inputs and consent session outside shared documents, revalidate current
-//! notebook/selection/cancellation state in `validate`, and atomically publish
+//! The manual inline launch coordinator keeps the prepared
+//! inputs and consent session outside shared documents, revalidates current
+//! notebook/selection/cancellation state in `validate`, and atomically publishes
 //! the completed prefix under its own operation lease. Preparation never
 //! reuses a cached/pool prefix or reconstructs a lock into an existing prefix.
 //! Conda embeds prefix paths, so publication retains the original unique path
@@ -23,6 +23,20 @@ use crate::channel_review::authorization::{
     AuthorizedChannelPlan, ChannelConsentSession, ReviewFence,
 };
 use crate::progress::ProgressHandler;
+
+/// Reviewed prefixes are intentionally outside legacy pool/cache cleanup.
+pub fn default_root() -> PathBuf {
+    runt_workspace::managed_cache_dir("reviewed-conda-envs")
+}
+
+/// Until hot-sync has its own one-use review, it must not mutate a prefix that
+/// was installed from operation-scoped sources. A restart creates a fresh plan.
+pub(super) fn reject_unreviewed_sync(path: &Path) -> Result<()> {
+    if path.starts_with(default_root()) {
+        bail!("This environment used reviewed related channels. Restart the kernel to review a fresh environment before changing dependencies");
+    }
+    Ok(())
+}
 
 /// Immutable inputs captured before discovery. Never accept this from a client.
 /// Not Clone/Serialize: one prepared operation owns one unique target.
@@ -45,13 +59,7 @@ impl PreparedCondaInstall {
         if !staging_root.is_absolute() {
             bail!("Reviewed Conda preparation requires an absolute staging root");
         }
-        let (specs, constraints) =
-            crate::python::solve_specs(&super::build_spec_strings(&dependencies))?;
-        if specs
-            .iter()
-            .chain(&constraints)
-            .any(|spec| spec.channel.is_some() || spec.url.is_some())
-        {
+        if !Self::supports_dependencies(&dependencies)? {
             bail!("Channel-qualified and direct-URL specs require a separate reviewed source plan");
         }
         let platform = crate::conda_solve_platform()?;
@@ -89,6 +97,17 @@ impl PreparedCondaInstall {
         })
     }
 
+    /// These specs select their own sources. Until their source plan is
+    /// reviewable, callers keep them on the legacy no-expansion route.
+    pub fn supports_dependencies(dependencies: &CondaDependencies) -> Result<bool> {
+        let (specs, constraints) =
+            crate::python::solve_specs(&super::build_spec_strings(dependencies))?;
+        Ok(!specs
+            .iter()
+            .chain(&constraints)
+            .any(|spec| spec.channel.is_some() || spec.url.is_some()))
+    }
+
     pub fn fence(&self) -> &ReviewFence {
         &self.fence
     }
@@ -105,6 +124,48 @@ impl PreparedCondaInstall {
         )
     }
 
+    /// Read only the metadata authorized by this session. All gateway reads,
+    /// including cached reads and network fallback, recheck the owner fence.
+    pub async fn discover(
+        &self,
+        request: &crate::channel_review::authorization::DiscoveryRequest,
+        validate: &dyn crate::channel_review::authorization::ReviewValidator,
+    ) -> Result<crate::channel_review::DiscoveryOutcome> {
+        use rattler_repodata_gateway::{
+            fetch::CacheAction, ChannelConfig as GatewayConfig, Gateway, SourceConfig,
+        };
+        validate.validate().await?;
+        let cache = rattler_cache::default_cache_dir()?;
+        let client = crate::channels::download_client()?;
+        let gateway = |action| {
+            Gateway::builder()
+                .with_cache_dir(cache.join(rattler_cache::REPODATA_CACHE_DIR))
+                .with_client(client.clone())
+                .with_channel_config(GatewayConfig {
+                    default: SourceConfig {
+                        cache_action: action,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+                .finish()
+        };
+        let config = ChannelConfig::default_with_root_dir(self.staging_root.clone());
+        let platform = crate::conda_solve_platform()?;
+        let channels =
+            crate::channels::parse_channels(&self.dependencies.channels, &config, platform)?;
+        crate::channel_review::discover_channel_review_guarded(
+            channels,
+            vec![platform, rattler_conda_types::Subdir::NoArch],
+            request.approved_metadata_channels().to_vec(),
+            &gateway(CacheAction::ForceCacheOnly),
+            Some(&gateway(CacheAction::CacheOrFetch)),
+            crate::channel_review::DiscoveryLimits::default(),
+            validate,
+        )
+        .await
+    }
+
     /// Consume final source authorization and build only in a new private prefix.
     /// `validate` checks owner state, not a runtime-document projection. A change
     /// during a long installer effect cannot affect any previously live prefix;
@@ -112,10 +173,10 @@ impl PreparedCondaInstall {
     pub async fn stage(
         self,
         authorization: AuthorizedChannelPlan,
-        validate: &(dyn Fn(&ReviewFence) -> Result<()> + Send + Sync),
+        validate: &dyn crate::channel_review::authorization::ReviewValidator,
         handler: Arc<dyn ProgressHandler>,
     ) -> Result<StagedCondaEnvironment> {
-        validate(&self.fence)?;
+        validate.validate().await?;
         if authorization.review().declared_channels != self.dependencies.channels {
             bail!("Reviewed Conda declared channels do not match prepared inputs");
         }
@@ -125,7 +186,7 @@ impl PreparedCondaInstall {
         let mut dependencies = self.dependencies;
         dependencies.channels = channels;
         let target = PathBuf::from(&self.fence.environment);
-        validate(&self.fence)?;
+        validate.validate().await?;
         let root = self.staging_root;
         let fence = self.fence;
         // Construct ownership in the same blocking operation as exclusive
@@ -160,17 +221,16 @@ impl PreparedCondaInstall {
             quarantine::write_scope(&record, quarantine::WriterScope::ExternalWriters)
         })
         .await?;
-        let check = || validate(&stage.fence);
         super::install_conda_env_guarded(
             &stage.environment.env_path,
             &dependencies,
             handler,
-            &check,
+            validate,
         )
         .await?;
         // Do not enable cleanup yet: launcher vendoring also schedules
         // filesystem writes which can outlive cancellation of its future.
-        validate(&stage.fence)?;
+        validate.validate().await?;
         if !stage.environment.python_path.is_file() {
             bail!("Reviewed Conda preparation did not produce Python");
         }
@@ -179,7 +239,7 @@ impl PreparedCondaInstall {
             .context("vendor launcher into reviewed Conda staging prefix")?;
         // Do not infer process-tree quiescence from awaited child completion.
         // Any unpublished prefix that entered this phase remains quarantined.
-        validate(&stage.fence)?;
+        validate.validate().await?;
         Ok(stage)
     }
 }
@@ -187,7 +247,7 @@ impl PreparedCondaInstall {
 /// An unpublished prefix. Only pre-installer process-local stages may be
 /// cleaned on drop/restart. Installer/vendor stages remain quarantined even on
 /// success: detached or descendant processes are not covered by a parent lock.
-/// Production enablement remains gated on a stronger process-tree lifecycle.
+/// Automatic cleanup remains gated on a stronger process-tree lifecycle.
 /// The owner must atomically validate and publish in `commit`, never extract a
 /// path and publish it later after releasing its operation lease.
 pub struct StagedCondaEnvironment {
