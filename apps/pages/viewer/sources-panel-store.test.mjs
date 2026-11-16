@@ -7,6 +7,7 @@ import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
 import { Store } from "./store.mjs";
 import {
   projectSourcesPanel,
+  sourceMatchesQuery,
   sourceMediaLabel,
   sourcesPanelStore,
   sourcePlacements,
@@ -86,6 +87,10 @@ test("attached tables appear without named sources and never become named-source
   assert.equal(attachment.asset_id, "a".repeat(64));
   assert.equal(attachment.media_type, "application/vnd.apache.parquet");
   assert.equal(attachment.uses.length, 2);
+  assert.equal(sourceMatchesQuery(attachment, "second PLACEMENT"), true);
+  assert.equal(sourceMatchesQuery(attachment, "Results"), true);
+  assert.equal(sourceMatchesQuery(attachment, "Parquet"), true);
+  assert.equal(sourceMatchesQuery(attachment, "not a table"), false);
   assert.equal(new Set(attachment.uses.map((use) => use.key)).size, 2);
   const mixed = projectSourcesPanel(sourceDoc(), placements, {}).sources;
   assert.equal(mixed.length, 2);
@@ -98,6 +103,7 @@ test("attached tables appear without named sources and never become named-source
   assert.equal(remaining.length, 1);
   assert.equal(remaining[0].name, "Second placement");
   assert.equal(remaining[0].uses.length, 1);
+  assert.equal(sourceMatchesQuery(remaining[0], "Results"), false);
   const empty = A.change(removed, (draft) => {
     delete draft.blocks[placements.placements[1].blockId];
   });

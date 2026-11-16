@@ -35,6 +35,13 @@ export function sourceMediaLabel(type) {
   );
 }
 
+export function sourceMatchesQuery(source, query) {
+  const titles = source.kind === "attachment" ? source.uses.map((use) => use.title).join(" ") : "";
+  return `${source.name} ${source.source_id} ${sourceMediaLabel(source.media_type)} ${titles}`
+    .toLocaleLowerCase()
+    .includes(query.toLocaleLowerCase());
+}
+
 /** Include every placement, including nested and offscreen nodes. Never use
  * the mounted DOM as the dependency inventory. Direct attachments remain
  * distinct from named sources, even when they currently share the same bytes. */

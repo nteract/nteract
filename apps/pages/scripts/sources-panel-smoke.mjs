@@ -503,11 +503,22 @@ try {
         },
       },
     },
+    {
+      op: "insert_node",
+      node: {
+        type: "dataframe",
+        attrs: {
+          title: "Alternate results",
+          asset_id: asset,
+          media_type: "application/vnd.apache.parquet",
+        },
+      },
+    },
   ]);
   await openSources();
-  await panel.getByRole("textbox", { name: "Find a source" }).fill("Attached results");
+  await panel.getByRole("textbox", { name: "Find a source" }).fill("Alternate results");
   const attachment = panel.getByRole("button", { name: /Attached results Parquet/ });
-  await expect(attachment).toContainText("Attached file · 1 connection");
+  await expect(attachment).toContainText("Attached file · 2 connections");
   await attachment.click();
   await expect(panel.getByRole("button", { name: "Revisions", exact: true })).toHaveCount(0);
   await expect(panel).not.toContainText("Follows latest");

@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import { COMMENTS_SHEET_QUERY } from "./comments-layout.mjs";
 import { sourceTime } from "./source-line.mjs";
-import { sourceMediaLabel, sourcesPanelStore } from "./sources-panel-store.mjs";
+import { sourceMatchesQuery, sourceMediaLabel, sourcesPanelStore } from "./sources-panel-store.mjs";
 import { dataframeFrame, dataframeLifecycle } from "./wordgard-dataframes.mjs";
 import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
@@ -293,13 +293,7 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
   const unavailable = source && source.availability !== "available";
   const incomplete = value.unresolvedViews.length > 0 || value.unreadableBlocks > 0;
   const searchable = value.sources.length > 1;
-  const results = value.sources.filter(
-    (item) =>
-      !searchable ||
-      `${item.name} ${item.source_id} ${sourceMediaLabel(item.media_type)}`
-        .toLocaleLowerCase()
-        .includes(query.toLocaleLowerCase()),
-  );
+  const results = value.sources.filter((item) => !searchable || sourceMatchesQuery(item, query));
   const index = results.findIndex((item) => item.source_id === selected);
   const position = index >= 0 ? { index: index + 1, total: results.length } : null;
   function back() {
