@@ -267,12 +267,16 @@ test("pinned official Microsoft terms require reviewed content hashes", (t) => {
 test("VS2026 runners use their own full terms and SDK family updates with exact evidence", (t) => {
   const root = mkdtempSync(join(tmpdir(), "release-vs2026-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  // Versions from PR4860 preflight logs; servicing from their versioned runner
-  // image documentation, not inferred from the SDK's unserviced library path.
-  for (const arch of ["x64", "arm64"]) {
-    const studio = join(root, arch, "VS");
-    const sdk = join(root, arch, "Windows Kits/10");
-    const tools = join(studio, "VC/Tools/MSVC/14.51.36231");
+  // Keep the original PR4860 runner and the GA windows-11-vs2026-arm
+  // producer from release run 43884874317 covered on both architectures.
+  const producers = [
+    { vsVersion: "18.11.3", toolset: "14.51.36231" },
+    { vsVersion: "18.12.0", toolset: "14.52.37025" },
+  ];
+  for (const { arch, vsVersion, toolset } of producers.flatMap((producer) => ["x64", "arm64"].map((arch) => ({ ...producer, arch })))) {
+    const studio = join(root, toolset, arch, "VS");
+    const sdk = join(root, toolset, arch, "Windows Kits/10");
+    const tools = join(studio, "VC/Tools/MSVC", toolset);
     const compiler = join(tools, `bin/Host${arch}/${arch}/cl.exe`);
     const vcLib = join(tools, "lib", arch);
     const ucrtLib = join(sdk, "Lib/10.0.26100.0/ucrt", arch);
@@ -285,9 +289,9 @@ test("VS2026 runners use their own full terms and SDK family updates with exact 
     const redist = join(licenseDir, "Redist.txt");
     writeFileSync(redist, "Fixture Microsoft Visual Studio Enterprise 2026 license Distributable Code list");
     writeFileSync(join(licenseDir, "ThirdPartyNotices.txt"), Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from("Fixture supplemental third-party notice", "utf16le")]));
-    const env = { VSINSTALLDIR: studio, VCToolsInstallDir: tools, VCToolsVersion: "14.51.36231", WindowsSdkDir: sdk, UCRTVersion: "10.0.26100.0", VSCMD_ARG_TGT_ARCH: arch, LIB: `${vcLib};${ucrtLib}` };
+    const env = { VSINSTALLDIR: studio, VCToolsInstallDir: tools, VCToolsVersion: toolset, WindowsSdkDir: sdk, UCRTVersion: "10.0.26100.0", VSCMD_ARG_TGT_ARCH: arch, LIB: `${vcLib};${ucrtLib}` };
     const options = { target: `${arch === "x64" ? "x86_64" : "aarch64"}-pc-windows-msvc` };
-    const installation = { installationPath: studio, installationVersion: "18.11.3", productId: "Microsoft.VisualStudio.Product.Enterprise", isPrerelease: false };
+    const installation = { installationPath: studio, installationVersion: vsVersion, productId: "Microsoft.VisualStudio.Product.Enterprise", isPrerelease: false };
     const product = { DisplayName: "Windows Software Development Kit - Windows 10.0.26100.9457", DisplayVersion: "10.1.26100.9457" };
     const run = (command) => command === "where.exe" ? compiler : JSON.stringify(command === "powershell.exe" ? [product] : [installation]);
     for (const edition of ["Enterprise", "Professional"]) {
@@ -324,13 +328,13 @@ test("VS2026 runners use their own full terms and SDK family updates with exact 
     installation.isPrerelease = false;
     installation.installationVersion = "19.0.12345.1";
     assert.throws(() => collectMsvcRuntime(options, env, run), /unrecognized Visual Studio/);
-    installation.installationVersion = "18.11.3";
+    installation.installationVersion = vsVersion;
     for (const edition of ["Community", "BuildTools"]) {
       installation.productId = `Microsoft.VisualStudio.Product.${edition}`;
       assert.throws(() => collectMsvcRuntime(options, env, run), /cannot locate Visual Studio/);
     }
     installation.productId = "Microsoft.VisualStudio.Product.Enterprise";
-    for (const mismatchedToolset of ["14.44.35207", "14.99.12345"]) {
+    for (const mismatchedToolset of ["14.44.35207", "14.53.12345", "14.99.12345"]) {
       const otherTools = join(studio, "VC/Tools/MSVC", mismatchedToolset);
       const otherCompiler = join(otherTools, "bin/cl.exe");
       mkdirSync(dirname(otherCompiler), { recursive: true });
