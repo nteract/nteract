@@ -1056,6 +1056,7 @@ mod tests {
                     review_id: "unapproved".into(),
                     owner_label: "notebook".into(),
                     state: crate::RelatedChannelReviewStatus::Pending,
+                    scope: crate::RelatedChannelReviewScope::Install,
                     declared_channels: vec![],
                     effective_channels: vec!["https://example.test/channel/".into()],
                     uninspected_channels: vec![],

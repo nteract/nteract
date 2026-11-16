@@ -352,7 +352,7 @@ async fn channel_review_requires_consent_before_fetching_and_can_finish_offline(
             .any(|path| path.starts_with("/related/") || path.starts_with("/transitive/")),
         "reviewing a URL must not contact it before consent"
     );
-    consent.discovered(&fence, request, first).unwrap();
+    consent.discovered(&fence, request, first.clone()).unwrap();
     assert!(consent.take_authorization(&fence).is_err());
     let review = consent.pending_review().unwrap().clone();
     assert_eq!(review.scope, ApprovalScope::Metadata);
@@ -380,7 +380,7 @@ async fn channel_review_requires_consent_before_fetching_and_can_finish_offline(
         .any(|path| path.starts_with("/transitive/")));
     // Approval enables metadata reads, not an installer. The complete graph
     // carries exactly the effective order the owner will later authorize.
-    consent.discovered(&fence, request, second).unwrap();
+    consent.discovered(&fence, request, second.clone()).unwrap();
     let review = consent.pending_review().unwrap().clone();
     consent.approve(&fence, &review.review_id).unwrap();
     assert!(consent.take_authorization(&fence).is_err());
@@ -413,6 +413,47 @@ async fn channel_review_requires_consent_before_fetching_and_can_finish_offline(
     let plan = consent.take_authorization(&fence).unwrap();
     assert_eq!(plan.into_channels(&fence).unwrap(), expected);
     assert!(consent.take_authorization(&fence).is_err());
+    // A real completed discovery is still insufficient if the owner changes
+    // before the first staged installer effect. No new HTTP or prefix writes.
+    let staging_root = cache.path().join("unpublished");
+    let prepared = kernel_env::conda::reviewed::PreparedCondaInstall::new(
+        "fixture-owner".into(),
+        1,
+        "document-heads",
+        kernel_env::CondaDependencies {
+            dependencies: vec!["numpy".into()],
+            channels: vec![declared.base_url.to_string()],
+            python: None,
+            env_id: None,
+        },
+        &staging_root,
+    )
+    .unwrap();
+    let prepared_fence = prepared.fence().clone();
+    let mut prepared_consent = prepared.consent_session(true);
+    for outcome in [first, second, final_review.clone()] {
+        let request = prepared_consent.begin_discovery(&prepared_fence).unwrap();
+        prepared_consent
+            .discovered(&prepared_fence, request, outcome)
+            .unwrap();
+        let id = prepared_consent.pending_review().unwrap().review_id.clone();
+        prepared_consent.approve(&prepared_fence, &id).unwrap();
+    }
+    let token = prepared_consent
+        .take_authorization(&prepared_fence)
+        .unwrap();
+    let before_stage = server.requests.lock().unwrap().len();
+    let result = prepared
+        .stage(
+            token,
+            &|_| anyhow::bail!("document changed"),
+            Arc::new(Progress::default()),
+        )
+        .await;
+    assert!(result.is_err());
+    assert!(!staging_root.exists());
+    assert_eq!(server.requests.lock().unwrap().len(), before_stage);
+
     let all_subdirs = vec![kernel_env::conda_solve_platform().unwrap(), Subdir::NoArch];
     let with_absent_subdir = discover_channel_review(
         vec![declared.clone()],

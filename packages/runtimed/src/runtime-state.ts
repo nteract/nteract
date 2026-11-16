@@ -185,6 +185,7 @@ export interface RelatedChannelRelation {
 }
 
 export interface RelatedChannelReview {
+  scope: "metadata" | "install";
   review_id: string;
   owner_label: string;
   state: "pending" | "declined";
