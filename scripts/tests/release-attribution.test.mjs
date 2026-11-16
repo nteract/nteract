@@ -96,6 +96,23 @@ test("native reviews fail for unknown sources, upgrades and missing required fil
   assert.throws(() => nativeMaterial({ ...pkg, name: "nix", version: "0.31.2" }), /Unreviewed native source/);
 });
 
+test("vendored libdbus preserves its own terms and exact source archive", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "release-dbus-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, "vendor/dbus"), { recursive: true });
+  writeFileSync(join(root, "vendor/dbus/COPYING"), "Bundled libdbus AFL-2.1 terms");
+  const pkg = { name: "libdbus-sys", version: "0.2.7", id: "dbus", manifest_path: join(root, "Cargo.toml"), source: "registry+https://github.com/rust-lang/crates.io-index" };
+  const report = { crates: [{ package: pkg, license: "MIT OR Apache-2.0" }], licenses: [{ id: "MIT", text: "Bindings MIT terms", used_by: [{ crate: pkg }] }] };
+  const result = collectRustReport(report, { root: "runtimed", target: "x86_64-unknown-linux-gnu" });
+  assert.equal(result.components[0].licenses[0].expression, "AFL-2.1 AND MIT");
+  assert.ok(result.materials.some((material) => material.text === "Bundled libdbus AFL-2.1 terms"));
+  const source = result.materials.find((material) => material.title.startsWith("AFL-2.1 source availability"));
+  assert.match(source.text, /https:\/\/static\.crates\.io\/crates\/libdbus-sys\/libdbus-sys-0\.2\.7\.crate/);
+  assert.match(source.text, /vendor\/dbus\//);
+  rmSync(join(root, "vendor/dbus/COPYING"));
+  assert.throws(() => collectRustReport(report, { root: "runtimed", target: "x86_64-unknown-linux-gnu" }), /ENOENT/);
+});
+
 test("MPL source notice uses exact registry archive and selected licenses", (t) => {
   const root = mkdtempSync(join(tmpdir(), "release-mpl-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
