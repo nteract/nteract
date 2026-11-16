@@ -138,7 +138,7 @@ Managed Conda/Pixi solves cannot use native `win-arm64` yet: conda-forge does no
 To drop the emulation:
 
 1. Wait until conda-forge (or the configured channels) ship `win-arm64` builds of `ipykernel`, `pyzmq`, and their runtime deps.
-2. Remove the `Platform::WinArm64 => Platform::Win64` arm in `conda_solve_platform_for`.
+2. Remove the `Subdir::WinArm64 => Subdir::Win64` arm in `conda_solve_platform_for`.
 3. Stop forcing the x86_64 archspec override for that host/solve pair.
 4. Prove a native ARM64 Conda/Pixi kernel launch (`ipykernel` import + ZMQ connect) on `windows-11-vs2026-arm`.
 

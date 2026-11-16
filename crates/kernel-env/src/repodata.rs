@@ -15,10 +15,10 @@ use anyhow::{anyhow, Result};
 #[cfg(feature = "runtime")]
 use log::info;
 #[cfg(feature = "runtime")]
-use rattler_conda_types::{Channel, MatchSpec, Platform};
+use rattler_conda_types::{Channel, MatchSpec, Subdir};
 #[cfg(feature = "runtime")]
 use rattler_repodata_gateway::{
-    fetch::CacheAction, ChannelConfig, Gateway, RepoData, SourceConfig,
+    fetch::CacheAction, ChannelConfig, ChannelRelationsMode, Gateway, RepoData, SourceConfig,
 };
 
 #[cfg(feature = "runtime")]
@@ -30,7 +30,7 @@ pub struct RepodataQuery<'a> {
     /// Conda channels to query.
     pub channels: Vec<Channel>,
     /// Target platforms, usually the solve platform plus `NoArch`.
-    pub platforms: Vec<Platform>,
+    pub platforms: Vec<Subdir>,
     /// Package specs to resolve; dependencies are fetched recursively.
     pub specs: Vec<MatchSpec>,
     /// Base rattler cache directory.
@@ -193,6 +193,9 @@ async fn query_cached(query: &RepodataQuery<'_>) -> Option<Vec<RepoData>> {
             query.platforms.clone(),
             query.specs.clone(),
         )
+        // Only query explicitly approved channels. CEP-42 discovery can add
+        // channels from repodata; enabling it needs nteract's trust policy.
+        .channel_relations(ChannelRelationsMode::Disabled)
         .recursive(true)
         .await
     {
@@ -204,7 +207,7 @@ async fn query_cached(query: &RepodataQuery<'_>) -> Option<Vec<RepoData>> {
             query
                 .handler
                 .on_progress(query.env_type, EnvProgressPhase::OfflineHit);
-            Some(repo_data)
+            Some(repo_data.repodata)
         }
         Err(e) => {
             info!(
@@ -261,11 +264,12 @@ async fn query_network(query: &RepodataQuery<'_>) -> Result<Vec<RepoData>> {
                 query.platforms.clone(),
                 query.specs.clone(),
             )
+            .channel_relations(ChannelRelationsMode::Disabled)
             .recursive(true)
             .await
         {
             Ok(data) => {
-                repo_data = Some(data);
+                repo_data = Some(data.repodata);
                 break;
             }
             Err(e) => {
