@@ -2014,9 +2014,9 @@ assets under the tag `pages-<build_id>`:
 
 | Asset | Contents |
 | --- | --- |
-| `pages-package-<build_id>.tar.gz` | `worker/`, `public/`, `build-receipt.json`, `wrangler.json`; regular files only |
+| `pages-package-<build_id>.tar.gz` | `worker/`, `public/`, `output/`, `build-receipt.json`, `wrangler.json`; regular files only |
 | `pages-package-<build_id>.tar.gz.sha256` | `sha256sum -c` line for the archive |
-| `pages-package-<build_id>.manifest.json` | build id, source commit, document formats, entry digests, archive digest, structural fields, binding names |
+| `pages-package-<build_id>.manifest.json` | build id, source commit, document formats, entry digests, archive digest, structural fields of both Workers, binding names |
 
 The archive's `wrangler.json` is `structuralConfig()` in
 [cloudflare-stage.mjs](scripts/cloudflare-stage.mjs), not a deployable file: it
@@ -2030,6 +2030,42 @@ profile-bound and absent from the package: `name`, `account_id`, `workers_dev`,
 `routes`, `d1_databases`, `r2_buckets`, and every other variable. A change to
 `worker-shape.mjs` or `structuralConfig()` changes what an operator must
 mirror in their own file.
+
+The archive also carries the [output Worker](#interactive-output-host), so
+one pin and one digest cover the Pages Worker and the frame shell it embeds.
+`output/` holds exactly two files:
+
+| File | Contents |
+| --- | --- |
+| `output/worker.js` | One ES module with no imports, the frame HTML inlined. `npm run build` bundles it from `output/worker.mjs` |
+| `output/wrangler.json` | `outputStructuralConfig()` in [cloudflare-stage.mjs](scripts/cloudflare-stage.mjs): `main`, `no_bundle`, `compatibility_date`. No name, route, account, `workers_dev`, binding or variable |
+
+The manifest lists both files in `entries` and their structural fields as
+`output_structural_fields`. The build receipt certifies `output/worker.js` in
+`output_files` and lists the frame paths that shell serves as
+`output_frame_paths`, today `["/frame/v2/"]`.
+
+To deploy the shell, the operator:
+
+1. Deploys `output/worker.js` with its own Wrangler file, as a separate Worker
+   on a separate origin (preferably a separate registrable domain) with no
+   credentials, bindings, secrets or variables.
+2. Compares that file with `output/wrangler.json` on every field in
+   `output_structural_fields`.
+3. Checks `GET /health` on that origin. It answers `pages-output-v2 <build_id>`,
+   the build id of the package it came from.
+4. Sets `PAGES_OUTPUT_FRAME_URL` on the Pages Worker to that origin plus a path
+   from `output_frame_paths`, for example
+   `https://widgets.example.net/frame/v2/`.
+
+The output Worker and the Pages Worker deploy separately, so for a short time a
+new viewer can meet an old shell, or the reverse. Deploy the shell first. A
+change that breaks the frame protocol adds a new versioned path and keeps
+serving the previous one for at least one release, so `output_frame_paths` can
+grow; the viewer moves to the new path only in a release whose shell serves it.
+
+A consumer whose archive check refuses unknown top-level entries must accept
+`output/` in the same change that pins the first release carrying it.
 
 ## Copying a Project to a new target
 
@@ -2259,6 +2295,19 @@ shells all use this configuration. These configured HTML responses are
 `no-store`; hashed application assets keep their normal caching. The build
 artifact does not need rebuilding for a different output host. Cloudflare
 profiles can set the variable in `vars`; other hosts pass it to the Worker
-environment. Deploy the compatible v2 output shell independently using
-`wrangler.output.toml` and its own domain. Changing this setting does not grant
-widgets credentials, Page write access, or microphone access.
+environment. Changing this setting does not grant widgets credentials, Page
+write access, or microphone access.
+
+The output shell is its own Worker, `output/worker.mjs`, on its own domain.
+`npm run build` bundles it into `dist/output/worker.js`, and the
+[release package](#deployment-neutral-release-package) ships that module as
+`output/worker.js`. `wrangler.output.toml` deploys the same module by hand
+to `pages.kilousercontent.com`; its build command is `npm run build`. Its
+`/health` answers `pages-output-v2 <build_id>`. Run unbundled, as in
+`scripts/output-smoke.mjs`, it answers `pages-output-v2` with no id.
+
+The shell serves the frame paths in `OUTPUT_FRAME_PATHS`
+(`shared/output-frame-paths.mjs`), and the viewer mounts one of them. A change
+that breaks the frame protocol adds a new versioned path, such as `/frame/v3/`,
+and keeps serving the previous one for at least one release. The shell deploys
+before the viewer that needs it.

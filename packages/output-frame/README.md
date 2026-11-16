@@ -91,6 +91,12 @@ The Pages adapter validates and resolves references, then compiles them into the
 named-byte envelope shown above. This library still has no source IDs, revision
 lookup or authorization logic; AFM code sees the same model values. The authoring
 v2 change does not change the iframe `/frame/v2/` endpoint or MessagePort protocol.
+
+The shell and the embedding app deploy separately, so for a short time a new host
+can meet an old shell, or the reverse. A change that breaks the frame protocol
+adds a new versioned path (`/frame/v3/`) and keeps serving the previous one for at
+least one release. The shell deploys before the host that needs it. Pages lists
+the paths its shell serves in `apps/pages/shared/output-frame-paths.mjs`.
 `preparePayload` requires exactly the referenced assets, checks module/CSS media
 types, and bounds assets to 5 MiB each / 32 MiB total. Pages also enforces spec-size
 and source authorization limits.

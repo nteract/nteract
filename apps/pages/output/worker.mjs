@@ -1,4 +1,17 @@
+// The credential-free output Worker: it serves the anywidget frame shell on
+// its own origin. npm run build bundles this module, with the frame HTML
+// inlined, into dist/output/worker.js: the module the release package ships
+// as output/worker.js and wrangler.output.toml deploys.
 import { FRAME_HTML } from "../.output-dist/frame-html.mjs";
+import { PAGES_BUILD } from "../shared/build-identity.mjs";
+import { OUTPUT_FRAME_PATHS } from "../shared/output-frame-paths.mjs";
+
+// The bundle names its build: scripts/build.mjs defines __PAGES_BUILD__ as the
+// build receipt's build_id, so a deployer can match the deployed shell to a
+// package. Unbundled (scripts/output-smoke.mjs, unit tests) PAGES_BUILD is
+// "dev" and /health reports the bare version, with no id.
+export const HEALTH_TEXT =
+  PAGES_BUILD === "dev" ? "pages-output-v2" : `pages-output-v2 ${PAGES_BUILD}`;
 
 export const FRAME_CSP = [
   "sandbox allow-scripts",
@@ -19,9 +32,10 @@ export const FRAME_CSP = [
 export default {
   fetch(request) {
     const path = new URL(request.url).pathname;
-    const valid = path === "/frame/v2/" || path === "/health";
+    const frame = OUTPUT_FRAME_PATHS.includes(path);
+    const valid = frame || path === "/health";
     const status = !["GET", "HEAD"].includes(request.method) ? 405 : !valid ? 404 : 200;
-    const html = status === 200 && path === "/frame/v2/";
+    const html = status === 200 && frame;
     return new Response(
       request.method === "HEAD"
         ? null
@@ -29,7 +43,7 @@ export default {
           ? "Not available"
           : html
             ? FRAME_HTML
-            : "pages-output-v2",
+            : HEALTH_TEXT,
       {
         status,
         headers: {

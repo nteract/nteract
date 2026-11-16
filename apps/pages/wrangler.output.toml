@@ -1,8 +1,13 @@
 name = "nteract-pages-outputs"
-main = "output/worker.mjs"
+# npm run build bundles output/worker.mjs into dist/output/worker.js, the same
+# module the release package ships as output/worker.js, carrying the build id
+# that /health reports. main, no_bundle and compatibility_date match
+# outputStructuralConfig() in scripts/cloudflare-stage.mjs.
+main = "dist/output/worker.js"
+no_bundle = true
 compatibility_date = "2026-11-15"
 workers_dev = false
 routes = [{ pattern = "pages.kilousercontent.com", custom_domain = true }]
 
 [build]
-command = "node scripts/build-output.mjs"
+command = "npm run build"
