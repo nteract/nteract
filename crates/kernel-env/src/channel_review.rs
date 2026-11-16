@@ -386,6 +386,31 @@ pub async fn discover_channel_review(
     network: Option<&Gateway>,
     limits: DiscoveryLimits,
 ) -> Result<DiscoveryOutcome> {
+    discover_channel_review_guarded(
+        channels,
+        platforms,
+        approved_metadata_channels,
+        cache,
+        network,
+        limits,
+        &|| Ok(()),
+    )
+    .await
+}
+
+/// As `discover_channel_review`, with an owner fence before each metadata read
+/// and network fallback, and after every asynchronous effect.
+#[allow(clippy::too_many_arguments)]
+pub async fn discover_channel_review_guarded(
+    channels: Vec<Channel>,
+    platforms: Vec<Subdir>,
+    approved_metadata_channels: Vec<String>,
+    cache: &Gateway,
+    network: Option<&Gateway>,
+    limits: DiscoveryLimits,
+    validate: &dyn crate::channel_review::authorization::ReviewValidator,
+) -> Result<DiscoveryOutcome> {
+    validate.validate().await?;
     let discovery = Discovery::start(channels, platforms, approved_metadata_channels, limits)?;
     if discovery.pending.is_empty() {
         return discovery.finish().map(DiscoveryOutcome::from_review);
@@ -405,13 +430,18 @@ pub async fn discover_channel_review(
             .ok_or_else(|| anyhow!("No pending channel metadata request"))?;
         let channel = &discovery.nodes[channel].channel;
         let platform = discovery.platforms[platform];
+        validate.validate().await?;
         let result = match cache.channel_relations(channel, platform).await {
             Ok(metadata) => Ok(metadata),
             Err(error) => match network {
-                Some(network) => network.channel_relations(channel, platform).await,
+                Some(network) => {
+                    validate.validate().await?;
+                    network.channel_relations(channel, platform).await
+                }
                 None => Err(error),
             },
         };
+        validate.validate().await?;
         state = transition(
             state,
             DiscoveryEvent::Metadata(

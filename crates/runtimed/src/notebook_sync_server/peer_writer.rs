@@ -11,7 +11,7 @@ use nteract_identity::ConnectionScope;
 
 use super::blob_upload::{maybe_handle_blob_upload_request, MultipartUploadState};
 use super::NotebookRoom;
-use crate::requests::{handle_notebook_request, request_label};
+use crate::requests::{handle_notebook_request_with_connection, request_label};
 
 pub(super) const PEER_OUTBOUND_QUEUE_CAPACITY: usize = 1024;
 const PEER_REQUEST_QUEUE_CAPACITY: usize = 64;
@@ -59,8 +59,22 @@ pub(super) struct PeerWriterTask {
 }
 
 pub(super) struct PeerRequestWorker {
+    review: Option<ReviewRequestWorker>,
     tx: mpsc::Sender<notebook_protocol::protocol::NotebookRequestEnvelope>,
     pub(super) handle: tokio::task::JoinHandle<anyhow::Result<()>>,
+}
+
+struct ReviewRequestWorker {
+    room: Arc<NotebookRoom>,
+    connection: Arc<super::channel_review_connection::ChannelReviewConnection>,
+    tx: mpsc::Sender<notebook_protocol::protocol::NotebookRequestEnvelope>,
+    handle: tokio::task::JoinHandle<anyhow::Result<()>>,
+}
+
+impl Drop for ReviewRequestWorker {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
 }
 
 #[derive(Debug)]
@@ -267,6 +281,43 @@ pub(super) fn spawn_peer_request_worker(
     let (tx, mut rx) = mpsc::channel::<notebook_protocol::protocol::NotebookRequestEnvelope>(
         PEER_REQUEST_QUEUE_CAPACITY,
     );
+    // A bounded second lane allows consent to unblock the launch waiting in
+    // the ordinary request lane. It may await document sync without blocking
+    // socket ingress, and is aborted with the owning peer worker.
+    let (review_tx, mut review_rx) =
+        mpsc::channel::<notebook_protocol::protocol::NotebookRequestEnvelope>(8);
+    let review_room = room.clone();
+    let review_connection = channel_review_connection.clone();
+    let review_writer = writer.clone();
+    let review_peer = peer_id.clone();
+    let review_handle = tokio::spawn(async move {
+        while let Some(envelope) = review_rx.recv().await {
+            let response =
+                match wait_for_required_heads(&review_room, &envelope.required_heads).await {
+                    Ok(()) => review_connection
+                        .handle_review_request(&review_peer, &envelope.request)
+                        .await
+                        .unwrap_or_else(|| NotebookResponse::Error {
+                            error: "Expected channel review request".into(),
+                        }),
+                    Err(error) => NotebookResponse::Error { error },
+                };
+            review_writer.send_json(
+                NotebookFrameType::Response,
+                &notebook_protocol::protocol::NotebookResponseEnvelope {
+                    id: envelope.id,
+                    response,
+                },
+            )?;
+        }
+        Ok(())
+    });
+    let review = Some(ReviewRequestWorker {
+        room: room.clone(),
+        connection: channel_review_connection.clone(),
+        tx: review_tx,
+        handle: review_handle,
+    });
     let handle = tokio::spawn(async move {
         while let Some(envelope) = rx.recv().await {
             let label = request_label(&envelope.request);
@@ -281,8 +332,9 @@ pub(super) fn spawn_peer_request_worker(
             let start = std::time::Instant::now();
             let response = match wait_for_required_heads(&room, &envelope.required_heads).await {
                 Ok(()) => {
-                    if let Some(response) =
-                        channel_review_connection.reject_review_request(&peer_id, &envelope.request)
+                    if let Some(response) = channel_review_connection
+                        .reject_review_request(&peer_id, &envelope.request)
+                        .await
                     {
                         response
                     } else if matches!(
@@ -323,11 +375,14 @@ pub(super) fn spawn_peer_request_worker(
                         )
                         .await
                     } else {
-                        handle_notebook_request(
+                        handle_notebook_request_with_connection(
                             &room,
                             envelope.request,
                             daemon.clone(),
                             Some(submitter_actor_label.as_str()),
+                            channel_review_connection
+                                .enabled()
+                                .then(|| channel_review_connection.clone()),
                         )
                         .await
                     }
@@ -370,7 +425,7 @@ pub(super) fn spawn_peer_request_worker(
         }
         Ok(())
     });
-    PeerRequestWorker { tx, handle }
+    PeerRequestWorker { tx, handle, review }
 }
 
 async fn wait_for_required_heads(
@@ -447,6 +502,33 @@ pub(super) fn enqueue_notebook_request(
             ),
         )?;
         return Ok(());
+    }
+
+    // Review replies must not wait behind the launch they are authorizing.
+    // Scope admission above still applies, and the live connection owns the ID.
+    if let Some(review) = &request_worker.review {
+        if matches!(
+            envelope.request,
+            NotebookRequest::ApproveRelatedChannels { .. }
+                | NotebookRequest::DeclineRelatedChannels { .. }
+        ) {
+            return match review.tx.try_send(envelope) {
+                Ok(()) => Ok(()),
+                Err(mpsc::error::TrySendError::Full(envelope)) => {
+                    queue_request_error(writer, envelope.id, "Channel review queue full")
+                }
+                Err(mpsc::error::TrySendError::Closed(envelope)) => {
+                    queue_request_error(writer, envelope.id, "Channel review worker stopped")?;
+                    anyhow::bail!("channel review worker stopped")
+                }
+            };
+        }
+        if review.connection.enabled()
+            && matches!(envelope.request, NotebookRequest::ShutdownKernel {})
+        {
+            // Wake a launch awaiting consent before its queued shutdown executes.
+            review.room.cancel_in_flight_launch();
+        }
     }
 
     debug!(
@@ -1027,7 +1109,11 @@ mod tests {
             let _ = started_tx.send(());
             std::future::pending::<anyhow::Result<()>>().await
         });
-        let worker = PeerRequestWorker { tx, handle };
+        let worker = PeerRequestWorker {
+            tx,
+            handle,
+            review: None,
+        };
 
         worker
             .enqueue(notebook_protocol::protocol::NotebookRequestEnvelope {
@@ -1065,6 +1151,7 @@ mod tests {
         let (request_tx, _request_rx) =
             mpsc::channel::<notebook_protocol::protocol::NotebookRequestEnvelope>(1);
         let request_worker = PeerRequestWorker {
+            review: None,
             tx: request_tx,
             handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
         };
@@ -1098,6 +1185,7 @@ mod tests {
             })
             .expect("queue should accept first request");
         let request_worker = PeerRequestWorker {
+            review: None,
             tx: request_tx,
             handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
         };
@@ -1139,6 +1227,7 @@ mod tests {
             mpsc::channel::<notebook_protocol::protocol::NotebookRequestEnvelope>(1);
         drop(request_rx);
         let request_worker = PeerRequestWorker {
+            review: None,
             tx: request_tx,
             handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
         };
@@ -1180,6 +1269,7 @@ mod tests {
         let (request_tx, mut request_rx) =
             mpsc::channel::<notebook_protocol::protocol::NotebookRequestEnvelope>(1);
         let request_worker = PeerRequestWorker {
+            review: None,
             tx: request_tx,
             handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
         };
@@ -1227,6 +1317,7 @@ mod tests {
         let (request_tx, mut request_rx) =
             mpsc::channel::<notebook_protocol::protocol::NotebookRequestEnvelope>(1);
         let request_worker = PeerRequestWorker {
+            review: None,
             tx: request_tx,
             handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
         };
@@ -1330,6 +1421,7 @@ mod tests {
             for request in &requests {
                 let (tx, mut request_rx) = mpsc::channel(1);
                 let worker = PeerRequestWorker {
+                    review: None,
                     tx,
                     handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
                 };
@@ -1364,6 +1456,7 @@ mod tests {
         let (request_tx, mut request_rx) =
             mpsc::channel::<notebook_protocol::protocol::NotebookRequestEnvelope>(1);
         let request_worker = PeerRequestWorker {
+            review: None,
             tx: request_tx,
             handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
         };

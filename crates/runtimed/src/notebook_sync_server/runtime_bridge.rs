@@ -115,7 +115,7 @@ where
 /// commit, so a failed or cancelled preflight cannot destroy the old kernel.
 pub(crate) async fn send_runtime_agent_request_with_kernel_ports_on_delivery<F, C>(
     room: &NotebookRoom,
-    mut build_request: F,
+    build_request: F,
     mut on_delivery: C,
 ) -> anyhow::Result<notebook_protocol::protocol::RuntimeAgentResponse>
 where
@@ -124,8 +124,29 @@ where
     ) -> notebook_protocol::protocol::RuntimeAgentRequest,
     C: FnMut(
         RuntimeAgentMessage,
-        tokio::sync::mpsc::Permit<'_, RuntimeAgentMessage>,
+        tokio::sync::mpsc::OwnedPermit<RuntimeAgentMessage>,
     ) -> anyhow::Result<()>,
+{
+    send_runtime_agent_request_with_kernel_ports_on_delivery_async(
+        room,
+        build_request,
+        |message, permit| std::future::ready(on_delivery(message, permit)),
+    )
+    .await
+}
+
+/// Asynchronous owner preflight, followed by atomic validation and delivery.
+pub(crate) async fn send_runtime_agent_request_with_kernel_ports_on_delivery_async<F, C, Fut>(
+    room: &NotebookRoom,
+    mut build_request: F,
+    mut on_delivery: C,
+) -> anyhow::Result<notebook_protocol::protocol::RuntimeAgentResponse>
+where
+    F: FnMut(
+        notebook_protocol::protocol::KernelPorts,
+    ) -> notebook_protocol::protocol::RuntimeAgentRequest,
+    C: FnMut(RuntimeAgentMessage, tokio::sync::mpsc::OwnedPermit<RuntimeAgentMessage>) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
 {
     for attempt in 1..=crate::kernel_ports::MAX_KERNEL_PORT_LAUNCH_ATTEMPTS {
         let port_reservation = crate::kernel_ports::reserve_kernel_ports().await?;
@@ -138,7 +159,7 @@ where
             .clone()
             .ok_or_else(|| anyhow::anyhow!("Runtime agent not connected"))?;
         let permit = tx
-            .reserve()
+            .reserve_owned()
             .await
             .map_err(|_| anyhow::anyhow!("Runtime agent disconnected"))?;
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
@@ -151,7 +172,8 @@ where
                 reply_tx,
             ),
             permit,
-        )?;
+        )
+        .await?;
         let response = recv_runtime_agent_query_response(reply_rx, timeout).await?;
 
         if let Some(delay) = kernel_launch_retry_delay(

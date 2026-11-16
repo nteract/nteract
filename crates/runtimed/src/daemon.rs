@@ -4090,6 +4090,11 @@ impl Daemon {
         let (reader, mut writer) = tokio::io::split(stream);
         let response = NotebookConnectionInfo {
             capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string()))
+                .with_scoped_channel_review(
+                    scoped_channel_review_v1
+                        && connection_identity.scope() == nteract_identity::ConnectionScope::Owner
+                        && !room.is_hosted(),
+                )
                 .with_identity(
                     connection_identity.actor_label().as_str(),
                     connection_identity.scope().as_str(),
@@ -4749,6 +4754,11 @@ impl Daemon {
         let (reader, mut writer) = tokio::io::split(stream);
         let response = NotebookConnectionInfo {
             capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string()))
+                .with_scoped_channel_review(
+                    scoped_channel_review_v1
+                        && connection_identity.scope() == nteract_identity::ConnectionScope::Owner
+                        && !room.is_hosted(),
+                )
                 .with_identity(
                     connection_identity.actor_label().as_str(),
                     connection_identity.scope().as_str(),
@@ -5042,6 +5052,11 @@ impl Daemon {
             .context("serialize comments notebook ref for create notebook response")?;
         let response = NotebookConnectionInfo {
             capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string()))
+                .with_scoped_channel_review(
+                    scoped_channel_review_v1
+                        && connection_identity.scope() == nteract_identity::ConnectionScope::Owner
+                        && !room.is_hosted(),
+                )
                 .with_identity(
                     connection_identity.actor_label().as_str(),
                     connection_identity.scope().as_str(),

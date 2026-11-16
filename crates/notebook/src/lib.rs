@@ -982,11 +982,14 @@ async fn initialize_notebook_sync_open(
 
     let caller_path = path.to_string_lossy().to_string();
     let operator = desktop_operator_label();
-    let result = notebook_sync::connect::connect_open_relay_with_operator(
+    let result = notebook_sync::connect::connect_open_relay_with_options(
         socket_path,
         path,
         frame_tx,
         Some(operator),
+        notebook_sync::connect::RelayOptions {
+            scoped_channel_review_v1: true,
+        },
     )
     .await
     .map_err(|e| format!("sync connect (open): {}", e))?;
@@ -1066,7 +1069,7 @@ async fn initialize_notebook_sync_create(
     // A bare operator label (no '/') rides the spec's actor_label field and
     // reaches the wire as the operator suffix unchanged.
     let operator = desktop_operator_label();
-    let result = notebook_sync::connect::connect_create_relay(
+    let result = notebook_sync::connect::connect_create_relay_with_options(
         socket_path,
         notebook_sync::connect::CreateNotebookSpec {
             working_dir,
@@ -1075,6 +1078,9 @@ async fn initialize_notebook_sync_create(
             ..notebook_sync::connect::CreateNotebookSpec::new(runtime.as_str())
         },
         frame_tx,
+        notebook_sync::connect::RelayOptions {
+            scoped_channel_review_v1: true,
+        },
     )
     .await
     .map_err(|e| format!("sync connect (create): {}", e))?;
@@ -1257,11 +1263,14 @@ async fn connect_attach_relay(
     frame_tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
     operator: String,
 ) -> Result<notebook_sync::connect::RelayConnectResult, notebook_sync::error::SyncError> {
-    notebook_sync::connect::connect_relay_with_operator(
+    notebook_sync::connect::connect_relay_with_options(
         socket_path,
         notebook_id,
         frame_tx,
         Some(operator),
+        notebook_sync::connect::RelayOptions {
+            scoped_channel_review_v1: true,
+        },
     )
     .await
 }
