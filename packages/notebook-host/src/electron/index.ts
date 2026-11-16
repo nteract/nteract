@@ -1,3 +1,4 @@
+import { subscribeReadyWithBackfill } from "../ready-backfill";
 import { createChannelReviewTrust } from "../channel-review-trust";
 import {
   createHttpBlobResolver,
@@ -81,21 +82,16 @@ export function createElectronHost(options: CreateElectronHostOptions): Notebook
 
   const daemonEvents: HostDaemonEvents = {
     onReadyLive: (cb) => onEvent("daemon.ready", cb),
-    onReady(cb) {
-      let cancelled = false;
-      const unlisten = onEvent("daemon.ready", (payload) => {
-        if (!cancelled) cb(payload);
-      });
-      void invoke("daemon.getReadyInfo", undefined)
-        .then((payload) => {
-          if (!cancelled && payload) cb(payload);
-        })
-        .catch(() => {});
-      return () => {
-        cancelled = true;
-        unlisten();
-      };
-    },
+    onReady: (cb) =>
+      subscribeReadyWithBackfill(
+        {
+          live: (listener) => onEvent("daemon.ready", listener),
+          disconnected: (listener) => onEvent("daemon.disconnected", listener),
+          unavailable: (listener) => onEvent("daemon.unavailable", listener),
+          cached: () => invoke("daemon.getReadyInfo", undefined),
+        },
+        cb,
+      ),
     onProgress: (cb) => onEvent("daemon.progress", cb),
     onDisconnected: (cb) => onEvent("daemon.disconnected", cb),
     onUnavailable: (cb) => onEvent("daemon.unavailable", cb),

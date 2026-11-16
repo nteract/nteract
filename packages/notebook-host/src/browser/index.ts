@@ -446,19 +446,21 @@ export async function createBrowserHost(
   const transport = new BrowserDevTransport(config, WebSocketImpl, (control) => {
     switch (control.type) {
       case "ready":
-        lastReady = control.payload;
+        lastReady = { ...control.payload, scoped_channel_review_v1: false };
         blobPort = control.blob_port ?? blobPort;
         blobResolver = blobPort === null ? null : createHttpBlobResolver(blobPort, fetchImpl);
         daemonInfo = control.daemon ?? daemonInfo;
-        emit(readySubscribers, control.payload);
+        emit(readySubscribers, lastReady);
         break;
       case "progress":
         emit(progressSubscribers, control.payload);
         break;
       case "disconnected":
+        lastReady = null;
         for (const cb of disconnectedSubscribers) cb();
         break;
       case "unavailable":
+        lastReady = null;
         emit(unavailableSubscribers, control.payload);
         break;
     }
@@ -525,8 +527,16 @@ export async function createBrowserHost(
       },
       onReady(cb) {
         readySubscribers.add(cb);
-        if (lastReady) queueMicrotask(() => cb(lastReady as DaemonReadyPayload));
-        return () => readySubscribers.delete(cb);
+        let active = true;
+        const cached = lastReady;
+        if (cached)
+          queueMicrotask(() => {
+            if (active && lastReady === cached) cb(cached);
+          });
+        return () => {
+          active = false;
+          readySubscribers.delete(cb);
+        };
       },
       onProgress(cb) {
         progressSubscribers.add(cb);

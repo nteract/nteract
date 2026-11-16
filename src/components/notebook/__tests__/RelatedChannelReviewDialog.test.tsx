@@ -35,6 +35,14 @@ beforeEach(() => {
 });
 
 describe("related channel review", () => {
+  it("closes immediately when connection capability is lost", () => {
+    const { rerender } = render(<RelatedChannelReviewDialog review={review} loaded canApprove />);
+    expect(screen.getByRole("button", { name: "Allow metadata inspection" })).toBeTruthy();
+    rerender(<RelatedChannelReviewDialog review={review} loaded canApprove={false} />);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(host.trust.approveRelatedChannels).not.toHaveBeenCalled();
+  });
+
   it("shows source identities and order only after authoritative state loads", () => {
     const { rerender } = render(<RelatedChannelReviewDialog review={review} loaded={false} />);
     expect(screen.queryByRole("dialog")).toBeNull();
