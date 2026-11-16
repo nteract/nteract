@@ -5,18 +5,22 @@ import { COMMENTS_FEATURE, COMMENT_AGENT_FEATURE, commentThreads } from "./comme
 import { commentDecision, requireCommentDecision } from "./comment-rules.mjs";
 import { documentFeatures, stampFeatures } from "./schema-features.mjs";
 import { storedFormUnsupported } from "./stored-form.mjs";
+import { markerType } from "./node-registry.mjs";
 import { readViewNode, VIEW_BLOCK } from "../shared/views.mjs";
 
-/** A single selected chart marker. Its existing text cursor is the anchor;
- * no view data or renderer coordinates are stored in the comments document. */
-export function selectedChart(doc, blockId, from, to) {
+/** What a comment on a single selected embed quotes: "Chart" for a view,
+ * "Image" for an image, null for anything else. The embed's existing text
+ * cursor is the anchor; no view data, image source or renderer coordinates are
+ * stored in the comments document. */
+export function selectedEmbedLabel(doc, blockId, from, to) {
   if (to !== from + 1 || doc?.blocks?.[blockId]?.richText?.[from] !== "\ufffc") return null;
   let offset = 0;
   for (const span of A.spans(doc, ["blocks", blockId, "richText"])) {
-    if (offset === from && span.type === "block")
-      return String(span.value.type) === VIEW_BLOCK
-        ? readViewNode({ view_id: String(span.value.attrs?.view_id ?? "") })
-        : null;
+    if (offset === from && span.type === "block") {
+      if (String(span.value.type) === VIEW_BLOCK)
+        return readViewNode({ view_id: String(span.value.attrs?.view_id ?? "") }) ? "Chart" : null;
+      return markerType(span.value) === "image" && span.value.isEmbed ? "Image" : null;
+    }
     offset += span.type === "text" ? span.value.length : 1;
     if (offset > from) break;
   }
@@ -48,9 +52,9 @@ export function selectionContext(doc, target) {
       status: "attached",
       start: { blockId: a.blockId, offsetUtf16: from },
       end: { blockId: b.blockId, offsetUtf16: to },
-      text: selectedChart(doc, a.blockId, from, to)
-        ? "Chart"
-        : block.richText.slice(from, to).replaceAll("\ufffc", "\n"),
+      text:
+        selectedEmbedLabel(doc, a.blockId, from, to) ??
+        block.richText.slice(from, to).replaceAll("\ufffc", "\n"),
     };
   } catch {
     return { status: "detached" };

@@ -2278,7 +2278,18 @@ Comments deliberately accept only baseline images.
 The Wordgard widget and boot preview share the resolved Pages appearance store
 and image lifecycle. Each source attempt creates a fresh image element; stale
 events are ignored, and dark-source failure falls back once to a distinct default
-source. Browser lazy loading owns the wait, with no offscreen timeout. Clipboard
+source. A source that resolves to the attempt already drawn keeps its element:
+Wordgard disconnects and reconnects the widget when it draws or clears a node
+selection, and a fresh element would have no height until it decoded. Browser
+lazy loading owns the wait, with no offscreen timeout.
+
+In the editor an image has **Comment on image** and **Expand image** in its
+corner while it is hovered, focused or selected. Expand opens the loaded image
+in the same full-screen viewer as diagrams and charts; it fits at no more than
+its natural size. While editing, a click selects the image and a double-click
+expands it; while reading, a click expands it. A comment on an image anchors to
+its embed marker the way a chart comment does, quotes `Image`, and detaches when
+the image is deleted. Clipboard
 serialization still emits one canonical image with inert preservation metadata.
 Project-transfer bundle v4 carries structured variant occurrences and both asset
 references, deduplicates uploads per destination Page, and applies variants using

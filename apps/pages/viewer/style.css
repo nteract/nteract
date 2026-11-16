@@ -1253,14 +1253,14 @@ dialog::backdrop {
   background: color-mix(in srgb, var(--warning) 28%, transparent);
   border-bottom: 2px solid var(--warning);
 }
-/* An atomic chart has no text for the passage fill. Outline its own frame
-   so the comment target stays visible while the composer has focus. */
-.comment-passage .wordgard-view-embed {
+/* An atomic chart or image has no text for the passage fill. Outline its own
+   frame so the comment target stays visible while the composer has focus. */
+.comment-passage :is(.wordgard-view-embed, .pages-image) {
   outline: 1px solid var(--comment-anchor-line);
   outline-offset: 4px;
 }
-.comment-draft-passage .wordgard-view-embed,
-.comment-passage-active .wordgard-view-embed {
+.comment-draft-passage :is(.wordgard-view-embed, .pages-image),
+.comment-passage-active :is(.wordgard-view-embed, .pages-image) {
   outline: 2px solid var(--warning);
   outline-offset: 4px;
 }
