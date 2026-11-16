@@ -5,7 +5,9 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import {
+  ROUTE_REGISTRY,
   routesFor,
+  strippableSlots,
   accountPaths,
   cardImagePaths,
   indexPaths,
@@ -21,9 +23,10 @@ import {
   whoamiPaths,
 } from "./deployment/routes.mjs";
 import { isIndexRoute, readPageRoute } from "../shared/routes.mjs";
-import { deploymentProfile } from "./deployment/profiles.mjs";
+import { DEPLOYMENT_TARGETS, deploymentProfile } from "./deployment/profiles.mjs";
 import {
   isolatedPublicationPlan,
+  knownTunnelConfigs,
   publishIsolated,
   runCommand,
   unitActive,
@@ -1796,18 +1799,27 @@ test("page10 migrates the same sealed preview predecessor from a legacy connecto
   assertNoGap(f);
 });
 
-test("preview-route migration refuses partial route additions and unrelated edits even with matching receipts", (t) => {
+test("preview-route migration adds either preview group alone", (t) => {
   for (const from of [
     (config) => config.replace(publishedPreviewPaths, ""),
     (config) => config.replace(publishedPreviewApiPaths, ""),
-    (config) => beforePublishedPreviews(config).replace("health|", "health|arbitrary|"),
   ]) {
     const f = fixture(t, { target: "page10" });
-    slotInstall(f, from);
-    assert.throws(f.execute, /installation differs/);
-    assert.equal(f.writes.length, 0);
-    assert.deepEqual(lifecycle(f), []);
+    const x = slotInstall(f, from);
+    assert.equal(f.execute().routesUpdated, true);
+    assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.plan.config);
+    assert.equal(installedReceipt(f), slotReceipt(x.plan.config, x.plan.unitSha256));
   }
+});
+
+test("preview-route migration refuses unrelated edits even with matching receipts", (t) => {
+  const f = fixture(t, { target: "page10" });
+  slotInstall(f, (config) =>
+    beforePublishedPreviews(config).replace("health|", "health|arbitrary|"),
+  );
+  assert.throws(f.execute, /installation differs/);
+  assert.equal(f.writes.length, 0);
+  assert.deepEqual(lifecycle(f), []);
 });
 // Before the account routes, which also predate link previews, card images
 // and Project assets: it migrates straight to plan.config.
@@ -1962,15 +1974,15 @@ test("Page slug routes admit bounded titles and refuse extra path segments", () 
   }
 });
 
-// A set with Page slugs and without the REST routes was never published: an
-// installation holding it refuses rather than being overwritten.
+// A set with Page slugs and without the REST routes was never published, but
+// it is one this tool generates, so it migrates like any other.
 for (const target of ["page10", "pages", "pages2", "page11"])
-  test(`${target} refuses an installation with Page slugs and without the REST routes`, (t) => {
+  test(`${target} migrates an installation with Page slugs and without the REST routes`, (t) => {
     const f = fixture(t, { target, sharedTunnel: !["pages2", "page11"].includes(target) });
-    slotInstall(f, (config) => config.replace(restPaths, ""));
-    assert.throws(f.execute, /installation differs/);
-    assert.equal(f.writes.length, 0);
-    assert.deepEqual(lifecycle(f), []);
+    const x = slotInstall(f, (config) => config.replace(restPaths, ""));
+    assert.equal(f.execute().routesUpdated, true);
+    assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.plan.config);
+    assert.equal(installedReceipt(f), slotReceipt(x.plan.config, x.plan.unitSha256));
   });
 
 for (const target of ["page10", "pages", "pages2", "page11"])
@@ -2070,30 +2082,47 @@ for (const target of PREVIEW_TARGETS) {
     }
   });
 
-  test(`${target} stops for inspection at a pending receipt from the account-route publish`, (t) => {
-    // That publish was interrupted after its pending receipt: this release
-    // doesn't resume it. Finish it with that release's stage first.
+  test(`${target} migrates from a pending receipt the account-route publish left`, (t) => {
+    // That publish was interrupted after its pending receipt, with its new
+    // config already on disk. This release migrates from that config, and a
+    // failed start restores the receipt as it was.
     const f = fixture(t, shared);
     const plan = isolatedPublicationPlan(inputFor(target));
     const sealed = beforePreviews(plan.config);
     const before = sealed.replace(accountPaths, "");
     f.write(plan.configPath, sealed);
     for (const slot of plan.slots) f.write(slot.unitPath, slot.unit);
-    f.write(
-      configDir(target) + "/tunnel-installation.json",
-      slotReceipt(sealed, plan.unitSha256, {
-        previous_config_sha256: digest(before),
-        previous_unit_sha256: plan.unitSha256,
-      }),
-    );
+    const pending = slotReceipt(sealed, plan.unitSha256, {
+      previous_config_sha256: digest(before),
+      previous_unit_sha256: plan.unitSha256,
+    });
+    f.write(configDir(target) + "/tunnel-installation.json", pending);
     f.write(
       recordPath(target),
       JSON.stringify({ schema: 1, phase: "serving", live: "a", config: digest(sealed) }),
     );
     f.activate(plan.slots[0].service);
-    assert.throws(f.execute, /installation differs/);
-    assert.equal(f.writes.length, 0);
-    assert.deepEqual(lifecycle(f), []);
+    f.failNextStart();
+    assert.throws(f.execute, /injected connector startup failure/);
+    assert.equal(installedReceipt(f), pending);
+    assert.equal(fs.readFileSync(f.local(plan.configPath), "utf8"), sealed);
+    assertNoGap(f);
+    assert.equal(f.execute().routesUpdated, true);
+    assert.equal(fs.readFileSync(f.local(plan.configPath), "utf8"), plan.config);
+    assert.equal(installedReceipt(f), slotReceipt(plan.config, plan.unitSha256));
+    // With the older release's previous config on disk instead, it migrates
+    // from that one.
+    const g = fixture(t, shared);
+    g.write(plan.configPath, before);
+    for (const slot of plan.slots) g.write(slot.unitPath, slot.unit);
+    g.write(configDir(target) + "/tunnel-installation.json", pending);
+    g.write(
+      recordPath(target),
+      JSON.stringify({ schema: 1, phase: "serving", live: "a", config: digest(before) }),
+    );
+    g.activate(plan.slots[0].service);
+    assert.equal(g.execute().routesUpdated, true);
+    assert.equal(installedReceipt(g), slotReceipt(plan.config, plan.unitSha256));
   });
 
   test(`${target} refuses misrouted preview, card image and Project asset paths before connector activation`, (t) => {
@@ -2167,4 +2196,310 @@ test("media-guide migration refuses unrelated config edits even with a matching 
   assert.throws(f.execute, /installation differs/);
   assert.equal(f.writes.length, 0);
   assert.deepEqual(lifecycle(f), []);
+});
+
+// The route registry (routes.mjs) and the installations publication derives
+// from it. Publication recognizes a config only if it regenerates it.
+
+// Every target's routes, by sha256. Update a hash only when the routes change
+// on purpose.
+const ROUTES_SHA256 = {
+  page10: "d66bcef8809207ba4f54db72c0ae31e73ba163efa850fe381e3c1c00ca878359",
+  pages: "6f24e1b42da8a405ed6682ff23076930f897f8aa079227f2971eab322e53b5a7",
+  pages2: "08ce2af861a2563a4d091f4b04b937096da6a113b065ea0a3544d5a9f67e3ef0",
+  page11: "e5882155195aea955d4e7950e36ab4da068398351a91b30b9657bd71fda47561",
+};
+// Each route group's path string, by sha256.
+const SLOT_SHA256 = {
+  themePaths: "10114183135a21a2e07cb9157fc1fcc2b7a8568e5be98e7607185b535276ca74",
+  chunkPaths: "1387c0a673175a9a4685fd52b471f176125b11931af853d88cb37d0f4a5d060b",
+  assetPaths: "3a7485ab6ba0e95b394d4565e1aef41a03daa7eeabf2a9597561a1f67214de6b",
+  siftPaths: "68a984a8ef64a919f97f9c2a5623c33adf533cd6a39ac5b0894d88827f209fb5",
+  rendererPaths: "3b31d8b815248a7e16df03943a4a667b15ea65faefe11b1f4322643284e48166",
+  connectPaths: "837a28c92cf0090120b15be90c9aa315e867cf2faa416272981cff22c8cb8270",
+  whoamiPaths: "4b183f7c96547772d245d5dcf53a8314059122bf5475ec562fd49ab0163d3076",
+  oauthPaths: "39a99c073a5dbe656548867204e5ac90d223b17b9d8fd9db53472abaa241e909",
+  mediaGuidePaths: "c4009a361ae5dd9a240f8fc1c5174a461d077eaac227f0212848d405520b786a",
+  pageSlugPaths: "84878039740d3ab35cb3452e94bfec890dfe1bac6394534e3cb5edca489a2e1d",
+  projectPaths: "e6116a064f1f1c567ffd3f8f261840ce2e1d933197562ac35e11d2b82bed9b42",
+  indexPaths: "9c601632f93c7c191537301ee45ff16c70a98955c7589905da70b8911dcbdcdb",
+  linkPreviewPaths: "a453f57327bbd5754a0983051de9df23bf33095c055a34d51e377a247bd49935",
+  publishedPreviewPaths: "d4a119519b0b65b9b17986bbb43c05ef32ecf32df70d89cccb7c1fb7563a10a5",
+  accessPaths: "90f99dd8cc2102c7e443b09533423a5305687f72321d7165fa8912cae43f246f",
+  publishedPreviewApiPaths: "608832b4dc9705ee8a5aaaa2a3a5b2cac7bdbf1658ee4777a05f9a1cc0ed0fb9",
+  imagePaths: "d6c871ac41ebb81f11e66de8db9b9d93cae291ab09edb3c96372e994faa097ca",
+  accountPaths: "feb73d30bcc375d5ce9aac23109794f8c9ddfabd264266ce5d616a9325bd1091",
+  cardImagePaths: "9dab97d302774e93c9ccf838728b0c8bdb6c10c690fe8a7b3c2901443acac2cf",
+  projectAssetPaths: "3cdd4432f3c56ec249c4730852e620faf67d952c691a67f1e9a9fc9ec60b7b0d",
+  restPaths: "e21835bed4ddd16f0ae7d4901fb579626ade73338e2433e2ad80d9cd60c86530",
+};
+// Groups present in every installation still recognized. Every other group
+// is strippable: publication migrates from an installation without it.
+const SETTLED_GROUPS = [
+  "themePaths",
+  "chunkPaths",
+  "assetPaths",
+  "rendererPaths",
+  "connectPaths",
+  "oauthPaths",
+  "projectPaths",
+  "indexPaths",
+  "accessPaths",
+  "imagePaths",
+];
+const STRIPPABLE_GROUPS = [
+  "siftPaths",
+  "whoamiPaths",
+  "mediaGuidePaths",
+  "pageSlugPaths",
+  "linkPreviewPaths",
+  "publishedPreviewPaths",
+  "publishedPreviewApiPaths",
+  "accountPaths",
+  "cardImagePaths",
+  "projectAssetPaths",
+  "restPaths",
+];
+const SLOTTED_TARGETS = ["page10", "pages", "pages2", "page11"];
+const hostOptions = (target) => ({
+  target,
+  sharedTunnel: !["pages2", "page11"].includes(target),
+});
+// This target's config without the strippable groups `omit`.
+const configWithout = (target, omit) =>
+  isolatedPublicationPlan(inputFor(target)).config.replace(
+    routesFor(target),
+    routesFor(target, { omit }),
+  );
+
+test("the route registry generates every target's routes byte for byte", () => {
+  assert.deepEqual(Object.keys(ROUTES_SHA256).sort(), [...DEPLOYMENT_TARGETS].sort());
+  for (const target of DEPLOYMENT_TARGETS)
+    assert.equal(digest(routesFor(target)), ROUTES_SHA256[target], target);
+});
+
+test("route group strings are pinned", () => {
+  const named = ROUTE_REGISTRY.filter((entry) => entry.name);
+  assert.deepEqual(
+    named.map((entry) => entry.name),
+    Object.keys(SLOT_SHA256),
+  );
+  for (const entry of named)
+    assert.equal(
+      digest(entry.paths),
+      SLOT_SHA256[entry.name],
+      `${entry.name} changed. A changed group string makes configs sealed with the old one ` +
+        "unrecognizable: keep the old string in the slot's `earlier` list, then update this hash.",
+    );
+});
+
+test("every optional route group is either strippable or explicitly settled", () => {
+  const named = ROUTE_REGISTRY.filter((entry) => entry.name);
+  for (const entry of named) {
+    assert.equal(typeof entry.settled, "boolean", entry.name);
+    assert.ok(Array.isArray(entry.earlier), entry.name);
+    assert.equal(typeof entry.enabled, "function", entry.name);
+  }
+  assert.deepEqual(
+    named.filter((entry) => entry.settled).map((entry) => entry.name),
+    SETTLED_GROUPS,
+    "settle a group only once every installation still in service has it",
+  );
+  assert.deepEqual(
+    named.filter((entry) => !entry.settled).map((entry) => entry.name),
+    STRIPPABLE_GROUPS,
+  );
+  for (const target of SLOTTED_TARGETS)
+    assert.deepEqual(
+      strippableSlots(target).map((entry) => entry.name),
+      STRIPPABLE_GROUPS,
+    );
+});
+
+test("routesFor omits only strippable groups and uses only earlier strings", () => {
+  assert.throws(() => routesFor("page10", { omit: ["themePaths"] }), /Not a strippable/);
+  assert.throws(() => routesFor("page10", { omit: ["nonsense"] }), /Not a strippable/);
+  assert.throws(() => routesFor("page10", { use: { restPaths: "pages|" } }), /Not an earlier/);
+  assert.equal(
+    routesFor("page10", { omit: ["restPaths"] }),
+    routesFor("page10").replace(restPaths, ""),
+  );
+});
+
+// Publication refuses more than 2^16 combinations, so this fails in CI first.
+test("publication knows every combination of each target's strippable groups", () => {
+  for (const target of SLOTTED_TARGETS) {
+    const plan = isolatedPublicationPlan(inputFor(target));
+    const known = knownTunnelConfigs(target, tunnelId);
+    assert.equal(known.size, 2 ** STRIPPABLE_GROUPS.length, target);
+    assert.equal(known.get(digest(plan.config)), plan.config);
+    const none = configWithout(target, STRIPPABLE_GROUPS);
+    assert.equal(known.get(digest(none)), none);
+  }
+});
+
+for (const target of SLOTTED_TARGETS)
+  test(`${target} migrates an installation missing any one strippable group`, (t) => {
+    for (const group of STRIPPABLE_GROUPS) {
+      const f = fixture(t, hostOptions(target));
+      const x = slotInstall(f, () => configWithout(target, [group]));
+      assert.notEqual(x.base, x.plan.config, group);
+      assert.equal(f.execute().routesUpdated, true, group);
+      assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.plan.config, group);
+      assert.equal(installedReceipt(f), slotReceipt(x.plan.config, x.plan.unitSha256), group);
+      assertNoGap(f);
+    }
+  });
+for (const target of SLOTTED_TARGETS)
+  test(`${target} migrates an installation missing several strippable groups`, (t) => {
+    for (const omit of [
+      STRIPPABLE_GROUPS,
+      STRIPPABLE_GROUPS.filter((_, index) => index % 2 === 0),
+      STRIPPABLE_GROUPS.filter((_, index) => index % 3 === 1),
+      ["pageSlugPaths", "cardImagePaths", "whoamiPaths"],
+    ])
+      for (const state of ["sealed", "pending-old", "pending-new"]) {
+        const f = fixture(t, hostOptions(target));
+        const x = slotInstall(f, () => configWithout(target, omit), { state });
+        assert.equal(f.execute().routesUpdated, true, omit.join() + " " + state);
+        assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.plan.config);
+        assert.equal(installedReceipt(f), slotReceipt(x.plan.config, x.plan.unitSha256));
+      }
+  });
+
+test("page10 migrates a legacy connector at an installation missing several groups", (t) => {
+  const f = fixture(t, { target: "page10" });
+  const plan = isolatedPublicationPlan(inputFor("page10"));
+  const previous = configWithout("page10", ["restPaths", "siftPaths", "accountPaths"]);
+  f.write(plan.configPath, previous);
+  f.write(plan.unitPath, plan.unit);
+  f.write(
+    configDir("page10") + "/tunnel-installation.json",
+    slotReceipt(previous, digest(plan.unit)),
+  );
+  f.activate(plan.service);
+  assert.equal(f.execute().routesUpdated, true);
+  assert.equal(installedReceipt(f), slotReceipt(plan.config, plan.unitSha256));
+  assertNoGap(f);
+});
+
+test("a config one character off every generated combination is refused, receipt forged or not", (t) => {
+  const plan = isolatedPublicationPlan(inputFor("page10"));
+  const subset = configWithout("page10", ["restPaths", "whoamiPaths"]);
+  for (const changed of [
+    subset.replace("health|", "healtH|"),
+    subset.replace("health|", "healthy|"),
+    subset.replace("health|", "healt|"),
+    subset + "#",
+    plan.config.replace("mcp|", "mcP|"),
+  ]) {
+    // The receipt forged to name the changed config.
+    const f = fixture(t, { target: "page10" });
+    slotInstall(f, () => changed);
+    assert.throws(f.execute, /installation differs/);
+    assert.equal(f.writes.length, 0);
+    assert.deepEqual(lifecycle(f), []);
+    // The receipt for the generated config, with the changed one on disk.
+    const g = fixture(t, { target: "page10" });
+    slotInstall(g, () => subset);
+    g.write(plan.configPath, changed);
+    assert.throws(g.execute, /Dedicated tunnel (installation differs|migration requires)/);
+    assert.equal(g.writes.length, 0);
+    assert.deepEqual(lifecycle(g), []);
+  }
+});
+
+test("a receipt not byte-identical to one publication writes is refused", (t) => {
+  const plan = isolatedPublicationPlan(inputFor("page10"));
+  const subset = configWithout("page10", ["restPaths"]);
+  const fields = {
+    schema: 1,
+    tunnel_id: tunnelId,
+    config_sha256: digest(subset),
+    unit_sha256: plan.unitSha256,
+  };
+  const pendingFields = {
+    schema: 1,
+    tunnel_id: tunnelId,
+    config_sha256: digest(plan.config),
+    unit_sha256: plan.unitSha256,
+    previous_config_sha256: digest(subset),
+    previous_unit_sha256: plan.unitSha256,
+  };
+  const line = (value) => JSON.stringify(value) + "\n";
+  for (const receipt of [
+    line({ ...fields, note: "x" }),
+    line({ tunnel_id: tunnelId, schema: 1, ...fields }),
+    line({
+      schema: 1,
+      tunnel_id: tunnelId,
+      unit_sha256: plan.unitSha256,
+      config_sha256: digest(subset),
+    }),
+    line({ ...fields, tunnel_id: "abcdef12-1234-4123-8123-123456789abc" }),
+    line({ ...fields, schema: 2 }),
+    line({ ...fields, unit_sha256: "f".repeat(64) }),
+    line({ ...fields, config_sha256: "0".repeat(64) }),
+    line({ ...fields, previous_unit_sha256: plan.unitSha256 }),
+    line({ ...pendingFields, previous_unit_sha256: "f".repeat(64) }),
+    line({ ...pendingFields, previous_config_sha256: "0".repeat(64) }),
+    line({
+      schema: 1,
+      tunnel_id: tunnelId,
+      config_sha256: digest(plan.config),
+      unit_sha256: plan.unitSha256,
+      previous_unit_sha256: plan.unitSha256,
+      previous_config_sha256: digest(subset),
+    }),
+    // Pending toward this plan, hash-valid, but in no form publication writes:
+    // legacy unit_sha256 with slot previous units, and slot units with no
+    // previous_unit_sha256.
+    line({ ...pendingFields, unit_sha256: digest(plan.unit) }),
+    line({
+      schema: 1,
+      tunnel_id: tunnelId,
+      config_sha256: digest(plan.config),
+      unit_sha256: plan.unitSha256,
+      previous_config_sha256: digest(subset),
+    }),
+    // The receipt for the installed files, never a migration.
+    line({
+      ...pendingFields,
+      previous_config_sha256: digest(plan.config),
+      previous_unit_sha256: plan.unitSha256,
+    }),
+    JSON.stringify(fields, null, 2) + "\n",
+    JSON.stringify(fields),
+    line([fields]),
+    "not json\n",
+  ]) {
+    const f = fixture(t, { target: "page10" });
+    slotInstall(f, () => subset);
+    f.write(configDir("page10") + "/tunnel-installation.json", receipt);
+    assert.throws(f.execute, /installation differs/, receipt);
+    assert.equal(f.writes.length, 0);
+    assert.deepEqual(lifecycle(f), []);
+  }
+});
+
+test("an interrupted migration from any generated combination rolls back to its exact bytes", (t) => {
+  for (const omit of [
+    ["restPaths"],
+    ["mediaGuidePaths", "publishedPreviewApiPaths"],
+    STRIPPABLE_GROUPS.filter((_, index) => index % 2 === 1),
+    STRIPPABLE_GROUPS,
+  ]) {
+    const f = fixture(t, { target: "page10" });
+    const x = slotInstall(f, () => configWithout("page10", omit), {
+      state: "pending-new",
+    });
+    assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.plan.config);
+    f.failNextStart();
+    assert.throws(f.execute, /injected connector startup failure/);
+    assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.base, omit.join());
+    assert.equal(installedReceipt(f), slotReceipt(x.base, x.plan.unitSha256));
+    assertNoGap(f);
+    assert.equal(f.execute().routesUpdated, true);
+    assert.equal(installedReceipt(f), slotReceipt(x.plan.config, x.plan.unitSha256));
+  }
 });
