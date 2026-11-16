@@ -222,11 +222,11 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
         onClose();
       }}
       onKeyDown={(event) => {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          event.stopPropagation();
-          onClose();
-        }
+        if (event.key !== "Escape" || event.defaultPrevented) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (selected) back();
+        else onClose();
       }}
       onClick={(event) => {
         if (mobile && event.target === dialog.current) onClose();

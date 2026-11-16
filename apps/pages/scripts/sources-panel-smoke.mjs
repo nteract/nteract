@@ -241,8 +241,25 @@ try {
       .evaluate((el, original) => el === original, preview),
     true,
   );
+  // Sift owns the first Escape while filtering. The pane owns the next two:
+  // detail -> list -> closed, matching Comments.
+  const grid = panel.locator(".source-preview .sift-root");
+  const histogram = grid.locator(".sift-th", { hasText: "CALLS" }).locator(".sift-th-summary");
+  const box = await histogram.boundingBox();
+  await page.mouse.move(box.x + 5, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 3 });
+  await page.mouse.up();
+  await expect(grid.locator(".sift-filter-pill")).toHaveCount(1);
+  await grid.locator(".sift-viewport").focus();
+  await page.keyboard.press("Escape");
+  await expect(grid.locator(".sift-filter-pill")).toHaveCount(0);
+  await expect(panel.locator(".source-inspector")).toBeVisible();
   await panel.getByRole("button", { name: "Narrow sources" }).click();
   await expect(panel.locator(".source-schema")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(panel.locator(".source-inspector")).toHaveCount(0);
+  await expect(panel.getByRole("button", { name: /Workspace usage Parquet/ })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(panel).toHaveCount(0);
   await expect(line).toBeFocused();
@@ -330,6 +347,9 @@ try {
   await expect(panel).toBeVisible();
   assert.equal(await panel.evaluate((el) => el.matches(":modal")), true);
   await page.screenshot({ path: `${output}/sources-panel-phone.png` });
+  await page.keyboard.press("Escape");
+  await expect(panel.locator(".source-inspector")).toHaveCount(0);
+  await expect(panel.getByRole("button", { name: /Workspace usage Parquet/ })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(toggle).toBeFocused();
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
