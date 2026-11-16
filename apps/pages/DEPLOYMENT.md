@@ -1112,8 +1112,8 @@ target, and refuses another target's installation receipts.
 The ingress is built from the route registry (`ROUTE_REGISTRY` in
 [routes.mjs](scripts/deployment/routes.mjs)): fixed paths and named route
 groups, each enabled by the target's profile. A group is strippable unless it
-is marked `settled`. On every publish, the publisher generates the config for
-each combination of the target's strippable groups (present or absent) and
+is marked `settled`. When the installed receipt is not this release's sealed
+receipt, the publisher generates the config for each combination of the target's strippable groups (present or absent) and
 recognizes the installed `tunnel-installation.json` only if every config hash
 it names is one of those, every unit hash is the legacy unit's or the slot
 units', and the receipt re-serializes byte for byte. It then migrates straight

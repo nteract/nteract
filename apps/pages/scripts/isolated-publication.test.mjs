@@ -2451,6 +2451,17 @@ test("a receipt not byte-identical to one publication writes is refused", (t) =>
       previous_unit_sha256: plan.unitSha256,
       previous_config_sha256: digest(subset),
     }),
+    // Pending toward this plan, hash-valid, but in no form publication writes:
+    // legacy unit_sha256 with slot previous units, and slot units with no
+    // previous_unit_sha256.
+    line({ ...pendingFields, unit_sha256: digest(plan.unit) }),
+    line({
+      schema: 1,
+      tunnel_id: tunnelId,
+      config_sha256: digest(plan.config),
+      unit_sha256: plan.unitSha256,
+      previous_config_sha256: digest(subset),
+    }),
     // The receipt for the installed files, never a migration.
     line({
       ...pendingFields,

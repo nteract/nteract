@@ -347,7 +347,15 @@ export function publishIsolated(
     const legacy = slotted && previousUnit === legacyUnit;
     if (installedConfig === plan.config) {
       // Interrupted on the way to this plan: roll back to the previous files.
-      if (previousConfig === plan.config && previousUnit === plan.unitSha256) throw differs();
+      // Only the two pending forms publication writes: this release's, and on
+      // a slotted target the one from before slots, on the legacy unit with no
+      // previous_unit_sha256.
+      const preSlot = slotted && previousUnitSha256 === undefined && unitSha256 === legacyUnit;
+      if (
+        (previousConfig === plan.config && previousUnit === plan.unitSha256) ||
+        (installed !== pendingFrom(previousConfig, previousUnit) && !preSlot)
+      )
+        throw differs();
       return {
         config: previousConfig,
         legacy,
