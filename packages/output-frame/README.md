@@ -135,6 +135,8 @@ that request with the locally built Worker response.
 The shell starts borderless, with no body inset. Its normal-flow content determines
 the iframe height, including margins and floats; it grows and shrinks as content
 changes. Heights are rounded up and bounded to 1–100,000 CSS pixels by the host.
+The iframe document does not scroll vertically: the parent Page owns that scroll.
+This also prevents scrollbar width from feeding back into responsive chart height.
 This high safety limit is not intended as a widget viewport. Avoid viewport-relative
 heights on the output root: the viewport itself follows the content height.
 

@@ -34,6 +34,11 @@ body {
   overflow-x: clip;
   overscroll-behavior-x: none;
 }
+html {
+  /* The host follows the body's natural height. A viewport scrollbar can
+     narrow responsive content and trap that measurement at a shorter height. */
+  overflow-y: clip;
+}
 body {
   display: flow-root;
   margin: 0;

@@ -84,7 +84,7 @@ const entries = {
   ],
   layout: [
     Buffer.from(`export default { render({el,signal}) {
-    el.innerHTML='<p style="margin:32px 0">Normal-flow margins</p><label>Selection<input type="range" min="0" max="10" value="5"></label><button>Toggle height</button><div id="tall" style="height:1600px;float:left;width:100%">Tall output</div><div class="output-scroll" role="region" aria-label="Wide results" tabindex="0" style="clear:both;max-height:100px"><div style="width:1800px;height:300px">Deliberately scrollable content</div></div><p style="margin:24px 0">Last line</p>';
+    el.innerHTML='<svg viewBox="0 0 600 100" style="display:block;width:100%;height:auto" role="img" aria-label="Responsive chart"><path d="M0,100 L600,0" stroke="currentColor"/></svg><p style="margin:32px 0">Normal-flow margins</p><label>Selection<input type="range" min="0" max="10" value="5"></label><button>Toggle height</button><div id="tall" style="height:1600px;float:left;width:100%">Tall output</div><div class="output-scroll" role="region" aria-label="Wide results" tabindex="0" style="clear:both;max-height:100px"><div style="width:1800px;height:300px">Deliberately scrollable content</div></div><p style="margin:24px 0">Last line</p>';
     el.querySelector('button').addEventListener('click',()=>{const t=el.querySelector('#tall');t.style.height=t.style.height==='1600px'?'40px':'1600px'},{signal});
   } }`),
     "text/javascript",
@@ -311,12 +311,13 @@ try {
       .poll(async () =>
         frame.locator("html").evaluate((html) => ({
           overflowX: html.scrollWidth - html.clientWidth,
+          scrollbarWidth: innerWidth - html.clientWidth,
           overflowY: html.scrollHeight - html.clientHeight,
           inset: document.body.getBoundingClientRect().left,
           heightDifference: Math.abs(innerHeight - document.body.getBoundingClientRect().height),
         })),
       )
-      .toMatchObject({ overflowX: 0, overflowY: 0, inset: 0 });
+      .toMatchObject({ overflowX: 0, overflowY: 0, scrollbarWidth: 0, inset: 0 });
     const gap = await frame
       .locator("body")
       .evaluate((body) => innerHeight - body.getBoundingClientRect().height);
