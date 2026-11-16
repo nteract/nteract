@@ -10,6 +10,7 @@ import {
   LogOut,
   Link,
   MessageSquare,
+  Database,
   Plug,
   RotateCcw,
   Type,
@@ -267,7 +268,8 @@ function App() {
   const [toolbar, setToolbar] = useState(null),
     [toolbarOpen, setToolbarOpen] = useState(false),
     [active, setActive] = useState(null),
-    [commentsOpen, setCommentsOpen] = useState(false),
+    [sidePanel, setSidePanel] = useState(null),
+    [sourceSelection, setSourceSelection] = useState(null),
     [target, setTarget] = useState(null),
     // The passage under the pointer, so the comments list can mark its row.
     [hoveredThread, setHoveredThread] = useState(null),
@@ -280,6 +282,12 @@ function App() {
     [titleFocusRequest, setTitleFocusRequest] = useState(null),
     [localRecoveries, setLocalRecoveries] = useState([]);
   const session = useStore(host.store, installedSession);
+  const commentsOpen = sidePanel === "comments";
+  const sourcesOpen = sidePanel === "sources";
+  const sourceOpener = useRef(null);
+  function setCommentsOpen(open) {
+    setSidePanel((current) => (open ? "comments" : current === "comments" ? null : current));
+  }
   const bootPreviewState = useStore(bootPreview.store);
   const editorUnavailable = useStore(editor.store, editorFailed);
   // The account's Projects, once list_projects answered for this account.
@@ -298,6 +306,7 @@ function App() {
   const {
     WordgardEditor,
     CommentsPanel,
+    SourcesPanel,
     CommentPopover,
     SaveStatus,
     PageControls,
@@ -417,7 +426,8 @@ function App() {
     setToolbarOpen(false);
     composer.reset();
     setTarget(null);
-    setCommentsOpen(false);
+    setSidePanel(null);
+    setSourceSelection(null);
     setFocusBlock(null);
     setTitleFocusRequest(null);
     setLocalRecoveries([]);
@@ -1447,6 +1457,51 @@ function App() {
     if (commentsOpen) closeComments();
     else setCommentsOpen(true);
   }
+  function openSources(id, trigger) {
+    sourceOpener.current = trigger;
+    setSourceSelection({ id });
+    setSidePanel("sources");
+  }
+  function pageActionsTrigger() {
+    return (
+      documentDisclosure.current?.querySelector("summary") ??
+      document.querySelector(".page-menu-button")
+    );
+  }
+  function closeSources() {
+    const trigger = sourceOpener.current;
+    const closingSession = host.current;
+    setSidePanel((current) => (current === "sources" ? null : current));
+    requestAnimationFrame(() => {
+      if (host.current !== closingSession || document.getElementById("page-sources")) return;
+      if (document.activeElement !== document.body && document.activeElement !== trigger) return;
+      (trigger?.isConnected ? trigger : pageActionsTrigger())?.focus({ preventScroll: true });
+    });
+  }
+  function revealSourceUse(use, { close = false } = {}) {
+    if (close) setSidePanel((current) => (current === "sources" ? null : current));
+    const current = session;
+    requestAnimationFrame(() => {
+      if (host.current !== current) return;
+      const block = article.current?.querySelector(`[data-block-id="${CSS.escape(use.blockId)}"]`);
+      const selector = use.kind === "view" ? ".wordgard-view-embed" : ".wordgard-dataframe-table";
+      const element = block?.querySelectorAll(selector)[use.ordinal] ?? block;
+      if (!element) return;
+      article.current
+        ?.querySelectorAll(".source-revealed")
+        .forEach((item) => item.classList.remove("source-revealed"));
+      element.classList.add("source-revealed");
+      if (!element.hasAttribute("tabindex")) element.tabIndex = -1;
+      element.focus({ preventScroll: true });
+      element.scrollIntoView({ block: "center", behavior: "instant" });
+    });
+  }
+  useEffect(() => {
+    if (!sourcesOpen)
+      article.current
+        ?.querySelectorAll(".source-revealed")
+        .forEach((item) => item.classList.remove("source-revealed"));
+  }, [sourcesOpen, session]);
   useEffect(() => {
     const element = article.current;
     if (!element || !commentsOpen) return;
@@ -1552,6 +1607,16 @@ function App() {
           run: () => {
             showFormatting(!toolbarOpen, !toolbarOpen);
             if (toolbarOpen) documentDisclosure.current?.querySelector("summary")?.focus();
+          },
+        },
+        {
+          key: "sources",
+          label: "Sources",
+          icon: Database,
+          run: () => {
+            const trigger = pageActionsTrigger();
+            if (documentDisclosure.current) documentDisclosure.current.open = false;
+            openSources(null, trigger);
           },
         },
         { key: "copy-link", label: "Copy link", icon: Link, run: () => copyLink() },
@@ -1829,9 +1894,7 @@ function App() {
             />
           )}
           {page ? (
-            <main
-              className={commentsOpen ? "workspace document with-comments" : "workspace document"}
-            >
+            <main className={sidePanel ? "workspace document with-comments" : "workspace document"}>
               <article ref={article}>
                 <h1 className="document-print-title sr-only">{page.title || "Untitled"}</h1>
                 {HeadingAnchors && (
@@ -1997,7 +2060,12 @@ function App() {
                         ?.focus();
                   }}
                 />
-                <SourcesLine key={session.pageId} session={session} />
+                <SourcesLine
+                  key={session.pageId}
+                  session={session}
+                  onOpen={openSources}
+                  open={sourcesOpen}
+                />
                 <PageBlocks
                   blocks={page.blocks}
                   renderBlock={(block) => (
@@ -2047,13 +2115,22 @@ function App() {
                   />
                 )}
               </article>
-              {marginRequested() && !commentsOpen && (
+              {marginRequested() && !sidePanel && (
                 <MarginThreads
                   key={`margin-${session.pageId}`}
                   article={article}
                   threads={threads}
                   activeId={target?.id ?? null}
                   onOpen={selectComment}
+                />
+              )}
+              {sourcesOpen && (
+                <SourcesPanel
+                  key={`sources-${session.pageId}`}
+                  session={session}
+                  selection={sourceSelection}
+                  onClose={closeSources}
+                  onReveal={revealSourceUse}
                 />
               )}
               <CommentsPanel

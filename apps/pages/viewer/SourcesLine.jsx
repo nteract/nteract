@@ -16,18 +16,28 @@ function SourceTime({ source }) {
 const SourceIcon = () => <Database size={13} strokeWidth={1.5} aria-hidden="true" />;
 
 /** Read-only metadata, outside the document's editable/commentable body. */
-export function SourcesLineView({ value }) {
+export function SourcesLineView({ value, onOpen, open = false }) {
   if (!value) return null;
+  const Name = onOpen ? "button" : "span";
+  const trigger = (id) =>
+    onOpen
+      ? {
+          type: "button",
+          "aria-expanded": open,
+          "aria-controls": "page-sources",
+          onClick: (event) => onOpen(id, event.currentTarget),
+        }
+      : {};
   return (
     <div className="sources-line" role="group" aria-label="Sources" data-source-count={value.count}>
       {value.entries.length > 0 && (
         <ul className="sources-line-entries">
           {value.entries.map((source) => (
             <li key={source.id} className="sources-line-entry">
-              <span className="sources-line-name" title={source.name}>
+              <Name className="sources-line-name" title={source.name} {...trigger(source.id)}>
                 <SourceIcon />
                 <span>{source.name}</span>
-              </span>
+              </Name>
               <span aria-hidden="true">·</span>
               <span className="sources-line-age">
                 {source.action} <SourceTime source={source} />
@@ -38,10 +48,10 @@ export function SourcesLineView({ value }) {
       )}
       {value.count >= 3 && (
         <div className="sources-line-summary">
-          <span className="sources-line-name">
+          <Name className="sources-line-name" {...trigger(null)}>
             <SourceIcon />
             <span>{value.count} sources</span>
-          </span>
+          </Name>
           <span>
             · newest <SourceTime source={value.newest} />
           </span>
@@ -54,7 +64,7 @@ export function SourcesLineView({ value }) {
   );
 }
 
-export function SourcesLine({ session }) {
+export function SourcesLine({ session, onOpen, open }) {
   const sources = session.pageSources;
   const readable = useMemo(
     () => ({ state$: sources.sources$, snapshot: () => sources.snapshot() }),
@@ -71,5 +81,5 @@ export function SourcesLine({ session }) {
     const subscription = sourceLineClock().subscribe(setNow);
     return () => subscription.unsubscribe();
   }, [populated]);
-  return <SourcesLineView value={sourceLine(snapshot, now)} />;
+  return <SourcesLineView value={sourceLine(snapshot, now)} onOpen={onOpen} open={open} />;
 }

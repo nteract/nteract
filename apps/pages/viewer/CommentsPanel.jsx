@@ -10,13 +10,12 @@ import {
   MessageSquare,
   RotateCcw,
   X,
-  Maximize2,
-  Minimize2,
 } from "lucide-react";
 import { resolveCommentDraft } from "./comment-draft.mjs";
 import { reloadGate } from "./build-freshness.mjs";
 import { draftComment, draftRecord, draftText, hasDraftText } from "./comment-composer.mjs";
 import { Store, useStore } from "./store.mjs";
+import { PaneBack, PaneClose, PaneExpand, PaneHeader, PaneNavigation } from "./PaneHeader.jsx";
 import { COMMENTS_SHEET_QUERY } from "./comments-layout.mjs";
 import { CommentRichText } from "./CommentRichText.jsx";
 import { AnchorChip, Avatar, Message, MessageRuns, useNow } from "./CommentThreadParts.jsx";
@@ -465,29 +464,20 @@ export function CommentsPanel({
         <>
           {showList && (
             <section className="comments-list-pane" aria-label="Comment threads">
-              <div className="comments-heading">
+              <PaneHeader className="comments-heading">
                 <h2 id="comments-title">
                   <MessageSquare size={17} aria-hidden="true" /> Comments
                 </h2>
                 {!mobile && (
-                  <button
-                    type="button"
-                    className="icon-button comments-expand"
-                    aria-label={expanded ? "Narrow comments" : "Expand comments"}
-                    title={expanded ? "Narrow comments" : "Expand comments"}
+                  <PaneExpand
+                    className="comments-expand"
+                    expanded={expanded}
+                    name="comments"
                     onClick={() => setExpanded(!expanded)}
-                  >
-                    {expanded ? (
-                      <Minimize2 size={16} aria-hidden="true" />
-                    ) : (
-                      <Maximize2 size={16} aria-hidden="true" />
-                    )}
-                  </button>
+                  />
                 )}
-                <button className="icon-button" aria-label="Close comments" onClick={onClose}>
-                  <X size={18} aria-hidden="true" />
-                </button>
-              </div>
+                <PaneClose label="Close comments" onClick={onClose} />
+              </PaneHeader>
               <div className="comments-filters">
                 <div className="comments-segmented" role="tablist" aria-label="Show threads">
                   {FILTERS.map((name) => (
@@ -636,62 +626,29 @@ export function CommentsPanel({
           )}
           {current && !reviewing ? (
             <section className="comments-thread-pane" aria-label="Thread">
-              <div className="comments-heading comments-thread-nav">
-                {reviewing ? (
-                  <button
-                    type="button"
-                    className="subtle-button comments-back"
-                    onClick={() => reviewCommand("exit")}
-                  >
-                    <ChevronLeft size={17} aria-hidden="true" /> Exit review
-                  </button>
-                ) : split ? (
+              <PaneHeader className="comments-heading comments-thread-nav">
+                {split ? (
                   <span className="comments-split-title">Thread</span>
                 ) : (
-                  <button type="button" className="subtle-button comments-back" onClick={back}>
-                    <ChevronLeft size={17} aria-hidden="true" /> All comments
-                  </button>
+                  <PaneBack className="comments-back" onClick={back}>
+                    All comments
+                  </PaneBack>
                 )}
-                {where && (
-                  <span className="comments-position">
-                    <b>{where.index}</b> of {where.total}
-                  </span>
-                )}
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label="Previous thread"
-                  disabled={!where || where.index === 1}
-                  onClick={() => step(-1)}
-                >
-                  <ChevronUp size={16} aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label="Next thread"
-                  disabled={!where || where.index === where.total}
-                  onClick={() => step(1)}
-                >
-                  <ChevronDown size={16} aria-hidden="true" />
-                </button>
-                {!split && !mobile && !reviewing && (
-                  <button
-                    type="button"
-                    className="icon-button comments-expand"
-                    aria-label="Expand comments"
-                    title="Expand comments"
+                <PaneNavigation
+                  className="comments-position"
+                  position={where}
+                  item="thread"
+                  onStep={step}
+                />
+                {!split && !mobile && (
+                  <PaneExpand
+                    className="comments-expand"
+                    name="comments"
                     onClick={() => setExpanded(true)}
-                  >
-                    <Maximize2 size={16} aria-hidden="true" />
-                  </button>
+                  />
                 )}
-                {!split && (
-                  <button className="icon-button" aria-label="Close comments" onClick={onClose}>
-                    <X size={18} aria-hidden="true" />
-                  </button>
-                )}
-              </div>
+                {!split && <PaneClose label="Close comments" onClick={onClose} />}
+              </PaneHeader>
               {problem && (
                 <p role="alert" className="error comments-thread-problem">
                   {problem}

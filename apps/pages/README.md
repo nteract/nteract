@@ -124,6 +124,18 @@ Drawing that many SVG marks still costs the page's own thread time.
 
 ## Run locally
 
+The **Sources** entry in the **…** menu and source names beneath a Page's title open
+the source inspector. It opens to the source list; each drilldown shows a
+preview, live metadata, retained revisions, and the
+placed tables and views that follow or pin each source, including anywidget
+inputs. Connections locate their placements in the document. The inspector
+shares the comments dock and becomes a sheet on phones. This first version
+is read-only. Parquet sources show a schema from footer metadata in a narrow
+pane and a Sift table preview when there is room. The preview stays visible
+when switching between Connections and Revisions. It does not
+replace, rebind, or remove sources. Search appears for multiple sources.
+Run `npm run e2e -- sources-panel` for its real-host browser check.
+
 Use Node 22.13 or newer, Git, npm, and `celld` 0.6.3 on `PATH`. From
 `apps/pages`:
 

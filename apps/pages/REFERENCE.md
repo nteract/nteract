@@ -1597,8 +1597,26 @@ say **refreshed**, even when the asset is unchanged. These are host source-set
 times, not asset upload times or dates inside the data. Dates are relative
 for seven days, then local calendar dates; each has its exact local timestamp
 on hover and in its accessible name. A minute clock updates the visible ages
-without changing content. Readers and editors see the same noninteractive
-line; it has no panel, refresh controls, or staleness warning.
+without changing content. Readers and editors can click a name or the summary
+to open the Sources inspector, also available from the **…** menu. It shares the
+right-hand dock with Comments and opens as a modal sheet on narrow screens.
+
+The inspector lists full source names and media types, source-set times and
+writer attribution, retained revision history, and connections from placed
+tables and views. Agent labels are marked as client-provided. Selecting a
+connection locates its placement in the Page. Following and pinned bindings
+are distinguished, including pins whose revisions are no longer retained.
+The inventory includes offscreen and repeated placements; it reads view
+replicas while open and releases that demand when closed. Unreadable content
+and unavailable views explicitly leave the connection inventory incomplete.
+Direct-asset tables aren't treated as source consumers. This first inspector
+shows column names, Arrow types and row count from the host's Parquet footer
+summary when the preview area is narrower than 520px. Wider areas show Sift
+using the Page's existing asset cache and source-following renderer. The
+preview stays mounted across Connections and Revisions. Schema reads are
+cancelled on source changes and fenced by immutable asset id. It does not create, replace or remove
+sources or execute code. Search appears when more than one source is listed.
+It inspects only the current Page's placed consumers.
 
 A Page's named sources live in a third Automerge document, `pages.sources`
 format 1 ([model/sources-doc.mjs](model/sources-doc.mjs)), owned by the same
@@ -1613,7 +1631,8 @@ the account `principal`, `displayName`, `driver`, and `agent` `{ name?,
 model? }` when the client asserted one. The asserted agent is part of the
 write's retry fingerprint, so a retry that changes it is `409
 nonce_conflict`. `current` and `producer` are each replaced as one map. A
-Page holds up to 64 sources. No stored node draws from a source yet.
+Page holds up to 64 sources. Placed dataframes bind to sources directly; views
+bind through their named data inputs.
 
 `history` is an Automerge list of the source's newest states, oldest first,
 each `{ revision, name, media_type, asset_id, at, by }`. The write that
