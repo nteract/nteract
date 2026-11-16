@@ -1016,7 +1016,7 @@ fn is_canonical_cli_on_path(command: &str) -> bool {
 // macOS Launch Services (File Associations)
 // ============================================================================
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "launch-services"))]
 pub mod launch_services {
     use core_foundation::base::TCFType;
     use core_foundation::string::{CFString, CFStringRef};

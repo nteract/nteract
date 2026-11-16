@@ -11,6 +11,6 @@ workspace = true
 
 [dependencies]
 dirs = { workspace = true }
-runt-workspace = { path = "../runt-workspace" }
+runt-workspace = { path = "../runt-workspace", default-features = false }
 serde_json.workspace = true
 sha2.workspace = true
