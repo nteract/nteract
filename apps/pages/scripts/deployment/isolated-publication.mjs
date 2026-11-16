@@ -16,6 +16,7 @@ import {
   accountPaths,
   cardImagePaths,
   linkPreviewPaths,
+  mediaGuidePaths,
   pageSlugPaths,
   projectAssetPaths,
   publishedPreviewApiPaths,
@@ -275,9 +276,10 @@ export function publishIsolated(
   // Published previews and their API/Slack endpoints arrived together after
   // slugs. Older sealed installations contain neither group. Derive earlier
   // histories from that route set, not from today's newly added endpoints.
+  const beforeMediaGuides = plan.config.replace(mediaGuidePaths, "");
   const beforePublishedPreviews = linkPreviews
-    ? plan.config.replace(publishedPreviewPaths, "").replace(publishedPreviewApiPaths, "")
-    : plan.config;
+    ? beforeMediaGuides.replace(publishedPreviewPaths, "").replace(publishedPreviewApiPaths, "")
+    : beforeMediaGuides;
   const beforeSlugs = beforePublishedPreviews.replace(pageSlugPaths, "");
   const beforeRest = beforeSlugs.replace(restPaths, "");
   const cardImages = profile.cardImages === true;
@@ -318,6 +320,10 @@ export function publishIsolated(
     predecessors.push(entry);
     return entry;
   };
+  // Media guides arrived after published previews. Admit only the exact
+  // previously sealed route set, preserving the unit and receipt checks.
+  predecessor(beforeMediaGuides, false);
+  if (slotted) predecessor(beforeMediaGuides, true);
   if (beforePublishedPreviews !== plan.config) {
     predecessor(beforePublishedPreviews, false);
     if (slotted) predecessor(beforePublishedPreviews, true);
