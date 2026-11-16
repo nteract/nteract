@@ -183,8 +183,10 @@ try {
   ]);
   await panel.getByRole("button", { name: /Workspace usage Parquet/ }).click();
   await expect(panel).toContainText("Used on this Page · 3", { timeout: 30000 });
-  await expect(panel.locator(".source-preview .sift-root")).toBeVisible();
-  await expect(panel.locator(".source-preview")).toContainText("Platform");
+  await expect(panel.getByRole("region", { name: "Table schema" })).toBeVisible();
+  await expect(panel.locator(".source-schema")).toContainText("3 rows · 2 columns");
+  await expect(panel.locator(".source-schema")).toContainText("team");
+  await expect(panel.locator(".source-preview .sift-root")).toHaveCount(0);
   await expect(panel.locator(".source-preview [data-source-revision]")).toHaveAttribute(
     "data-source-revision",
     "1",
@@ -216,9 +218,31 @@ try {
     "2",
     { timeout: 30000 },
   );
+  await panel.getByRole("button", { name: "Expand sources" }).click();
+  await expect(panel.locator(".source-preview .sift-root")).toBeVisible();
+  await expect(panel.locator(".source-preview")).toContainText("Platform");
+  const preview = await panel.locator(".source-table-preview").elementHandle();
+  const previewBox = await preview.boundingBox();
   await panel.getByRole("button", { name: "Revisions", exact: true }).click();
   await expect(panel).toContainText("Revision 1");
   await expect(panel).toContainText("A connection is pinned here");
+  await expect(panel.locator(".source-preview .sift-root")).toBeVisible();
+  assert.equal(
+    await panel
+      .locator(".source-table-preview")
+      .evaluate((el, original) => el === original, preview),
+    true,
+  );
+  assert.equal((await preview.boundingBox()).y, previewBox.y);
+  await panel.getByRole("button", { name: "Connections", exact: true }).click();
+  assert.equal(
+    await panel
+      .locator(".source-table-preview")
+      .evaluate((el, original) => el === original, preview),
+    true,
+  );
+  await panel.getByRole("button", { name: "Narrow sources" }).click();
+  await expect(panel.locator(".source-schema")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(panel).toHaveCount(0);
   await expect(line).toBeFocused();

@@ -1610,8 +1610,11 @@ The inventory includes offscreen and repeated placements; it reads view
 replicas while open and releases that demand when closed. Unreadable content
 and unavailable views explicitly leave the connection inventory incomplete.
 Direct-asset tables aren't treated as source consumers. This first inspector
-shows a Sift preview for the selected Parquet source, using the Page's existing
-asset cache and source-following renderer. It does not create, replace or remove
+shows column names, Arrow types and row count from the host's Parquet footer
+summary when the preview area is narrower than 520px. Wider areas show Sift
+using the Page's existing asset cache and source-following renderer. The
+preview stays mounted across Connections and Revisions. Schema reads are
+cancelled on source changes and fenced by immutable asset id. It does not create, replace or remove
 sources or execute code. Search appears when more than one source is listed.
 It inspects only the current Page's placed consumers.
 

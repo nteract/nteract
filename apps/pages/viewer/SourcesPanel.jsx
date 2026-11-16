@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Observable, distinctUntilChanged, map } from "rxjs";
+import { sourceSchemaStore } from "./source-schema-store.mjs";
 import { ArrowUpRight, ChevronRight, Database, History, Search } from "lucide-react";
 import { COMMENTS_SHEET_QUERY } from "./comments-layout.mjs";
 import { sourceTime } from "./source-line.mjs";
@@ -37,7 +39,7 @@ function Writer({ value }) {
 
 /** Reuse the document table renderer and its cancellable lifecycle. Only the
  * selected Parquet source is held; filters and sorting remain local to Sift. */
-function SourcePreview({ session, source }) {
+function SourceTable({ session, source }) {
   const container = useRef(null);
   useEffect(() => {
     const frame = dataframeFrame({ title: "Source preview", media_type: PARQUET_MEDIA_TYPE });
@@ -55,7 +57,85 @@ function SourcePreview({ session, source }) {
     lifecycle.connect();
     return () => lifecycle.disconnect();
   }, [session, source.source_id]);
-  return <div className="source-preview" ref={container} />;
+  return <div className="source-table-preview" ref={container} />;
+}
+
+function SourceSchema({ session, source }) {
+  const resource = useMemo(
+    () => sourceSchemaStore(session, source.source_id),
+    [session, source.source_id],
+  );
+  const value = useStore(resource.store);
+  useEffect(() => resource.start(), [resource]);
+  if (value.name !== "ready")
+    return (
+      <p className="source-schema-status" role="status">
+        {value.name === "loading"
+          ? "Loading schema…"
+          : value.message || "Schema isn't available for this source."}
+      </p>
+    );
+  const { summary } = value;
+  return (
+    <section
+      className="source-schema"
+      aria-label="Table schema"
+      data-source-revision={value.version.revision}
+    >
+      <h4>Schema</h4>
+      <p>
+        {summary.rows.toLocaleString()} rows · {summary.column_count.toLocaleString()} columns
+      </p>
+      <ul>
+        {summary.columns.map((column) => (
+          <li key={column.name}>
+            <strong>{column.name}</strong>
+            <code>{column.type}</code>
+          </li>
+        ))}
+      </ul>
+      {summary.columns_truncated && (
+        <p>
+          Showing {summary.columns.length} of {summary.column_count} columns.
+        </p>
+      )}
+    </section>
+  );
+}
+
+// Use the available pane width, including phone sheets and constrained expanded
+// docks, rather than assuming the Expand button always creates enough room.
+function SourcePreview({ session, source }) {
+  const container = useRef(null);
+  const [wide, setWide] = useState(null);
+  useEffect(() => {
+    const subscription = new Observable((subscriber) => {
+      const element = container.current;
+      subscriber.next(element.getBoundingClientRect().width);
+      const observer = new ResizeObserver((entries) =>
+        subscriber.next(entries[0].contentRect.width),
+      );
+      observer.observe(element);
+      return () => observer.disconnect();
+    })
+      .pipe(
+        map((width) => width >= 520),
+        distinctUntilChanged(),
+      )
+      .subscribe(setWide);
+    return () => subscription.unsubscribe();
+  }, []);
+  return (
+    <div className="source-preview" ref={container}>
+      {wide === null ? (
+        <p className="source-schema-status">Loading preview…</p>
+      ) : wide ? (
+        <SourceTable session={session} source={source} />
+      ) : (
+        <SourceSchema session={session} source={source} />
+      )}
+    </div>
+  );
 }
 
 /** Same dock/sheet geometry as comments; mounted only during inspection.
@@ -286,7 +366,7 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
                 </dl>
               </>
             )}
-            {!unavailable && source.media_type === PARQUET_MEDIA_TYPE && tab === "uses" && (
+            {!unavailable && source.media_type === PARQUET_MEDIA_TYPE && (
               <SourcePreview key={source.source_id} session={session} source={source} />
             )}
             <div className="source-sections" role="group" aria-label="Source sections">

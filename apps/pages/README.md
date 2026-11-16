@@ -130,7 +130,9 @@ preview, live metadata, retained revisions, and the
 placed tables and views that follow or pin each source, including anywidget
 inputs. Connections locate their placements in the document. The inspector
 shares the comments dock and becomes a sheet on phones. This first version
-is read-only, with a Sift preview for the selected Parquet source. It does not
+is read-only. Parquet sources show a schema from footer metadata in a narrow
+pane and a Sift table preview when there is room. The preview stays visible
+when switching between Connections and Revisions. It does not
 replace, rebind, or remove sources. Search appears for multiple sources.
 Run `npm run e2e -- sources-panel` for its real-host browser check.
 

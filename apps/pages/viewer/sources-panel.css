@@ -226,3 +226,42 @@
 .sources-empty {
   margin: 0.75rem 1rem;
 }
+
+.source-schema {
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 0.25rem 0 0.5rem;
+}
+.source-schema > p,
+.source-schema-status {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  line-height: 1.6;
+}
+.source-schema ul {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0 0;
+}
+.source-schema li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.65rem 0;
+  border-top: 1px solid var(--line);
+  font-size: 0.8rem;
+}
+.source-schema strong {
+  min-width: 0;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.source-schema code {
+  max-width: 55%;
+  flex-shrink: 0;
+  text-align: right;
+  color: var(--muted-foreground);
+  font-size: 0.7rem;
+  overflow-wrap: anywhere;
+}
