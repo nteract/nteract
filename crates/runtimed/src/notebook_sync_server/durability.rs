@@ -65,6 +65,11 @@ pub(crate) struct RoomDurabilityStatus {
     pub(crate) source_phase: RecoverySourcePhase,
     pub(crate) source_fingerprint: SourceFingerprint,
     pub(crate) has_peer_changes: bool,
+    /// The room restored journal heads from a previous session that no file
+    /// checkpoint has exported yet. Only these heads make a divergent
+    /// external revision a source conflict; heads authored in this session
+    /// merge with the external revision instead.
+    pub(crate) has_restored_unexported_heads: bool,
     pub(crate) degraded: Option<RoomDegradation>,
 }
 
@@ -249,6 +254,20 @@ struct DurabilityState {
     durable_snapshot: Arc<[u8]>,
     has_durable_record: bool,
     degraded: Option<RoomDegradation>,
+    /// Exported heads of a restored record whose durable heads were ahead of
+    /// them. Exported heads only advance by exporting the live document,
+    /// which descends from every restored head, so the restored heads stay
+    /// unexported exactly while the manifest still carries these heads.
+    restored_exported_heads: Option<Vec<[u8; 32]>>,
+}
+
+impl DurabilityState {
+    fn has_restored_unexported_heads(&self) -> bool {
+        self.restored_exported_heads
+            .as_ref()
+            .is_some_and(|restored| *restored == self.manifest.exported_heads)
+            && self.manifest.durable_heads != self.manifest.exported_heads
+    }
 }
 
 /// Single serialization point for all durable NotebookDoc history in a room.
@@ -327,11 +346,16 @@ impl RoomDurability {
         has_durable_record: bool,
         degraded: Option<RoomDegradation>,
     ) -> Self {
+        let restored_exported_heads = (has_durable_record
+            && journal.is_some()
+            && manifest.durable_heads != manifest.exported_heads)
+            .then(|| manifest.exported_heads.clone());
         let state = DurabilityState {
             manifest,
             durable_snapshot: durable_snapshot.into(),
             has_durable_record,
             degraded,
+            restored_exported_heads,
         };
         let status = status_from_state(&state);
         let (status_tx, _) = watch::channel(status);
@@ -1113,9 +1137,11 @@ impl RoomDurability {
     /// source generation and causal disk checkpoint.
     ///
     /// Callers hold the live NotebookDoc lock from authoring through this
-    /// synchronous append. The precondition is checked under the durability
-    /// lock, so peer changes prepared concurrently either land first and force
-    /// a conflict or land afterward and remain causally dirty.
+    /// synchronous append. Only heads restored from a previous session make a
+    /// divergent revision a conflict; that precondition is checked under the
+    /// durability lock. Unexported heads authored in this session merge with
+    /// the revision and keep the prior exported heads, so they stay causally
+    /// dirty and the next save writes the merged document.
     pub(crate) fn commit_external_source_revision(
         &self,
         changes: Vec<Change>,
@@ -1126,7 +1152,7 @@ impl RoomDurability {
         self.ensure_accepting_commits()?;
         let mut state = self.lock_state();
         if state.has_durable_record
-            && state.manifest.durable_heads != state.manifest.exported_heads
+            && state.has_restored_unexported_heads()
             && state.manifest.source_fingerprint != observed_source
         {
             return Err(RoomDurabilityError::SourceConflict {
@@ -1158,6 +1184,8 @@ impl RoomDurability {
             .ok_or(RoomDurabilityError::SequenceExhausted)?;
 
         let mut manifest = state.manifest.clone();
+        let had_unexported_heads = state.has_durable_record
+            && state.manifest.durable_heads != state.manifest.exported_heads;
         manifest.sequence = manifest
             .sequence
             .checked_add(1)
@@ -1167,7 +1195,12 @@ impl RoomDurability {
         manifest.source_fingerprint = observed_source;
         manifest.staged_change_count = u64::try_from(source_hashes.len()).unwrap_or(u64::MAX);
         manifest.durable_heads = durable_heads.clone();
-        manifest.exported_heads = durable_heads;
+        // A clean room now projects exactly the observed file. A room with
+        // unexported heads holds edits the file lacks, so its exported heads
+        // stay where the last file checkpoint left them.
+        if !had_unexported_heads {
+            manifest.exported_heads = durable_heads;
+        }
         manifest.canonical_path = Some(canonical_path);
         manifest.file_save_sequence = Some(save_sequence);
 
@@ -1299,6 +1332,7 @@ fn status_from_state(state: &DurabilityState) -> RoomDurabilityStatus {
         source_phase: state.manifest.source_phase,
         source_fingerprint: state.manifest.source_fingerprint,
         has_peer_changes: state.manifest.peer_change_count > 0,
+        has_restored_unexported_heads: state.has_restored_unexported_heads(),
         degraded: state.degraded.clone(),
     }
 }
@@ -2297,11 +2331,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn observed_source_commit_rechecks_unsaved_heads_after_async_preparation() {
-        let directory = tempfile::tempdir().unwrap();
-        let journal = RecoveryJournal::new(directory.path().join("room.recovery"));
-        let disk_source = source_fingerprint(b"original disk source");
+    /// Journal a source generation for `disk_source`, then a peer batch that
+    /// leaves the durable heads ahead of the exported ones.
+    fn durability_with_unexported_peer_heads(
+        journal: RecoveryJournal,
+        disk_source: SourceFingerprint,
+    ) -> (RoomDurability, Vec<[u8; 32]>) {
         let mut genesis = AutoCommit::new();
         let genesis_snapshot = genesis.save();
         let durability = RoomDurability::journaled(
@@ -2315,7 +2350,11 @@ mod tests {
 
         let mut source = AutoCommit::new();
         source.put(ROOT, "source", 1).unwrap();
-        let source_heads = source.get_heads();
+        let source_heads = source
+            .get_heads()
+            .iter()
+            .map(|head| head.0)
+            .collect::<Vec<_>>();
         let source_hashes = source
             .get_changes(&[])
             .iter()
@@ -2324,7 +2363,7 @@ mod tests {
         durability
             .commit_snapshot(
                 &source.save(),
-                source_heads.iter().map(|head| head.0).collect(),
+                source_heads.clone(),
                 DurableMutation::Source {
                     generation: 1,
                     fingerprint: disk_source,
@@ -2333,8 +2372,6 @@ mod tests {
             )
             .unwrap();
 
-        // Simulate a peer batch landing after the watcher preflight but before
-        // its prepared source changes acquire the document lock.
         let mut peer = AutoCommit::load(&durability.durable_snapshot()).unwrap();
         let before_peer = peer.get_heads();
         peer.put(ROOT, "peer", 2).unwrap();
@@ -2343,7 +2380,79 @@ mod tests {
                 peer.get_changes(&before_peer),
             ))
             .unwrap();
+        (durability, source_heads)
+    }
+
+    #[test]
+    fn external_revision_merges_over_in_session_heads_and_keeps_them_unexported() {
+        let directory = tempfile::tempdir().unwrap();
+        let journal = RecoveryJournal::new(directory.path().join("room.recovery"));
+        let disk_source = source_fingerprint(b"original disk source");
+        let (durability, source_heads) =
+            durability_with_unexported_peer_heads(journal, disk_source);
         let before_observed = durability.status();
+        assert_ne!(
+            before_observed.durable_heads,
+            before_observed.exported_heads
+        );
+        assert!(
+            !before_observed.has_restored_unexported_heads,
+            "heads authored in this session are not restored heads"
+        );
+
+        let mut observed = AutoCommit::load(&durability.durable_snapshot()).unwrap();
+        let before_disk = observed.get_heads();
+        observed.put(ROOT, "external", 3).unwrap();
+        let observed_fingerprint = source_fingerprint(b"new external source");
+        let status = match durability
+            .commit_external_source_revision(
+                observed.get_changes(&before_disk),
+                observed_fingerprint,
+                PathBuf::from("/tmp/notebook.ipynb"),
+                2,
+            )
+            .expect("in-session heads merge with the external revision")
+        {
+            DurableCommitOutcome::Committed(status)
+            | DurableCommitOutcome::AlreadyDurable(status) => status,
+        };
+
+        assert_eq!(status.source_fingerprint, observed_fingerprint);
+        assert_eq!(
+            status.journal_sequence,
+            before_observed.journal_sequence + 1
+        );
+        let merged = AutoCommit::load(&durability.durable_snapshot()).unwrap();
+        assert_eq!(
+            merged.get(ROOT, "peer").unwrap().unwrap().0.as_i64(),
+            Some(2)
+        );
+        assert_eq!(
+            merged.get(ROOT, "external").unwrap().unwrap().0.as_i64(),
+            Some(3)
+        );
+        // The file lacks the peer edit, so the merged heads stay unexported
+        // until the next save writes them.
+        assert_eq!(durability.manifest().exported_heads, source_heads);
+        assert_ne!(status.durable_heads, status.exported_heads);
+        assert!(!status.has_restored_unexported_heads);
+    }
+
+    #[test]
+    fn external_revision_conflicts_with_restored_unexported_heads_until_exported() {
+        let directory = tempfile::tempdir().unwrap();
+        let journal = RecoveryJournal::new(directory.path().join("room.recovery"));
+        let disk_source = source_fingerprint(b"original disk source");
+        let (durability, _) = durability_with_unexported_peer_heads(journal.clone(), disk_source);
+        drop(durability);
+
+        let recovered = match journal.load(disk_source).unwrap() {
+            RecoveryLoadOutcome::Match(recovered) => recovered,
+            other => panic!("expected matching recovery, got {other:?}"),
+        };
+        let durability = RoomDurability::recovered(journal, recovered);
+        let restored = durability.status();
+        assert!(restored.has_restored_unexported_heads);
 
         let mut observed = AutoCommit::load(&durability.durable_snapshot()).unwrap();
         let before_disk = observed.get_heads();
@@ -2357,7 +2466,6 @@ mod tests {
                 2,
             )
             .unwrap_err();
-
         assert!(matches!(
             error,
             RoomDurabilityError::SourceConflict {
@@ -2365,10 +2473,32 @@ mod tests {
                 observed_source,
             } if journal_source == disk_source && observed_source == observed_fingerprint
         ));
-        let after = durability.status();
-        assert_eq!(after.journal_sequence, before_observed.journal_sequence);
-        assert_eq!(after.durable_heads, before_observed.durable_heads);
-        assert_eq!(after.source_fingerprint, disk_source);
+        assert_eq!(durability.status(), restored);
+
+        // Exporting the restored heads resolves them: a later external
+        // revision merges like any in-session edit.
+        let saved_source = source_fingerprint(b"saved recovered source");
+        let restored_heads = durability.manifest().durable_heads;
+        durability
+            .commit_file_checkpoint(
+                PathBuf::from("/tmp/notebook.ipynb"),
+                saved_source,
+                restored_heads,
+                3,
+            )
+            .unwrap();
+        assert!(!durability.status().has_restored_unexported_heads);
+        let mut later = AutoCommit::load(&durability.durable_snapshot()).unwrap();
+        let before_later = later.get_heads();
+        later.put(ROOT, "external", 4).unwrap();
+        durability
+            .commit_external_source_revision(
+                later.get_changes(&before_later),
+                source_fingerprint(b"later external source"),
+                PathBuf::from("/tmp/notebook.ipynb"),
+                4,
+            )
+            .expect("exported restored heads no longer conflict");
     }
 
     #[test]
@@ -2442,28 +2572,27 @@ mod tests {
                 peer.get_changes(&before_peer),
             ))
             .unwrap();
-        let before_conflict = durability.status();
+        let before_merge = durability.status();
 
         let mut external = AutoCommit::load(&durability.durable_snapshot()).unwrap();
         let before_external = external.get_heads();
         external.put(ROOT, "source", 3).unwrap();
         let observed_source = source_fingerprint(b"revision three");
-        let error = durability
+        let status = match durability
             .commit_external_source_revision(
                 external.get_changes(&before_external),
                 observed_source,
                 path,
                 4,
             )
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            RoomDurabilityError::SourceConflict {
-                observed_source: conflict_source,
-                ..
-            } if conflict_source == observed_source
-        ));
-        assert_eq!(durability.status(), before_conflict);
+            .expect("an in-session peer edit merges with the next revision")
+        {
+            DurableCommitOutcome::Committed(status)
+            | DurableCommitOutcome::AlreadyDurable(status) => status,
+        };
+        assert_eq!(status.source_fingerprint, observed_source);
+        assert_eq!(status.exported_heads, before_merge.exported_heads);
+        assert_ne!(status.durable_heads, status.exported_heads);
     }
 
     #[test]

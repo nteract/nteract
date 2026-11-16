@@ -326,7 +326,11 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
     // the file watcher has not reconciled them into the doc yet — writing now
     // would silently discard that writer's content (#2285). `Retryable` keeps
     // the autosave debouncer armed: the watcher merges the external content
-    // and refreshes the baseline, and the next tick saves the merged state.
+    // over in-session edits and refreshes the baseline, and the next tick
+    // saves the merged state. Restored journal heads that were never exported
+    // are the one exception; the watcher degrades the room to
+    // `source_conflict` instead, and the availability check above blocks the
+    // save.
     // A missing file with a recorded baseline falls through and is recreated
     // (deletion is not a merge conflict). The read above and the write below
     // are not atomic, so a writer landing inside this call can still race us;
@@ -2241,10 +2245,12 @@ pub(crate) fn classify_watcher_observation(
     WatcherIngestDecision::Ingest
 }
 
-/// Preserve both disk and journal truth when an external file revision races
-/// unsaved causal heads. This transition is shared by the watcher and tests so
-/// the structured `source_conflict` state cannot drift from the detection
-/// predicate.
+/// Preserve both disk and journal truth when an external file revision
+/// diverges from journal heads restored from a previous session that no file
+/// checkpoint has exported. Unexported heads authored in this session are not
+/// a conflict: the watcher merges the revision over them. This transition is
+/// shared by the watcher and tests so the structured `source_conflict` state
+/// cannot drift from the detection predicate.
 pub(crate) async fn mark_external_source_conflict_if_needed(
     room: &NotebookRoom,
     notebook_path: &Path,
@@ -2254,7 +2260,7 @@ pub(crate) async fn mark_external_source_conflict_if_needed(
     let external_fingerprint = super::recovery::source_fingerprint(source_content);
     let manifest = room.durability.manifest();
     if !durable.has_durable_record
-        || durable.durable_heads == durable.exported_heads
+        || !durable.has_restored_unexported_heads
         || external_fingerprint == manifest.source_fingerprint
     {
         return false;
@@ -2326,11 +2332,11 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
         WatcherIngestDecision::Ingest => {}
     }
 
-    // A journal with heads newer than its causal file
-    // checkpoint represents unsaved collaborative
-    // truth. If disk changed to different bytes, keep
-    // both versions and require explicit reconciliation
-    // instead of merging or choosing a winner.
+    // Journal heads restored from a previous session and never exported are
+    // unsaved truth this session did not author. If disk changed to different
+    // bytes, keep both versions and require explicit reconciliation instead
+    // of merging or choosing a winner. In-session edits fall through and
+    // merge with the external revision below.
     if mark_external_source_conflict_if_needed(room, notebook_path, contents.as_bytes()).await {
         return;
     }

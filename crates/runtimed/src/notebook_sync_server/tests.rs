@@ -3503,22 +3503,49 @@ async fn source_conflict_blocks_in_place_save_but_allows_save_recovered_elsewher
 #[tokio::test]
 async fn external_watcher_conflict_publishes_structured_source_conflict() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let (room, notebook_path) = test_room_with_path(&tmp, "watcher-conflict.ipynb");
+    let docs_dir = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+    let notebook_path = tmp.path().join("watcher-conflict.ipynb");
+    write_numbered_notebook(&notebook_path, 1).await;
+    let id = Uuid::new_v4();
+    let blob_store = test_blob_store(&tmp);
+    let previous_session = NotebookRoom::new_fresh(
+        id,
+        Some(notebook_path.clone()),
+        &docs_dir,
+        Arc::clone(&blob_store),
+        false,
+    );
+    {
+        let mut doc = previous_session.doc.write().await;
+        doc.add_cell(0, "unsaved-peer-cell", "code").unwrap();
+    }
+    commit_test_room_source(&previous_session).await;
+    {
+        let mut doc = previous_session.doc.write().await;
+        doc.update_source("unsaved-peer-cell", "value = 42")
+            .unwrap();
+    }
+    commit_test_room_doc(&previous_session).await;
+    drop(previous_session);
+
+    // The next session restores the edit that no file checkpoint exported.
+    let room = NotebookRoom::new_fresh(
+        id,
+        Some(notebook_path.clone()),
+        &docs_dir,
+        blob_store,
+        false,
+    );
+    assert!(room.durability.status().has_restored_unexported_heads);
     let disk_revision = br#"{"nbformat":4,"nbformat_minor":5,"metadata":{},"cells":[]}"#;
     tokio::fs::write(&notebook_path, disk_revision)
         .await
         .unwrap();
-    {
-        let mut doc = room.doc.write().await;
-        doc.add_cell(0, "unsaved-peer-cell", "code").unwrap();
-        doc.update_source("unsaved-peer-cell", "value = 42")
-            .unwrap();
-    }
-    commit_test_room_doc(&room).await;
 
     assert!(
         mark_external_source_conflict_if_needed(&room, &notebook_path, disk_revision).await,
-        "dirty journal heads and a different disk fingerprint must conflict"
+        "restored unexported heads and a different disk fingerprint must conflict"
     );
     match room.lifecycle.source_state() {
         RoomSourceState::Failed(status) => {
@@ -3549,6 +3576,121 @@ async fn external_watcher_conflict_publishes_structured_source_conflict() {
         1,
         "conflict detection must retain the recovered journal state"
     );
+}
+
+fn two_cell_ipynb_bytes(first: &str, second: &str) -> Vec<u8> {
+    let cell = |id: &str, source: &str| {
+        serde_json::json!({
+            "id": id,
+            "cell_type": "code",
+            "source": source,
+            "execution_count": null,
+            "outputs": [],
+            "metadata": {}
+        })
+    };
+    serde_json::to_vec(&serde_json::json!({
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": {},
+        "cells": [cell("cell-1", first), cell("cell-2", second)]
+    }))
+    .unwrap()
+}
+
+/// A git checkout or other rename-write that lands right after an in-session
+/// edit, before autosave exports it, merges into the room. The edit survives,
+/// the room stays writable, and the next save writes both changes.
+#[tokio::test]
+async fn external_write_right_after_in_session_edit_merges_instead_of_conflicting() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "edit-then-git.ipynb");
+
+    // The room loaded and saved this file earlier in the session.
+    let loaded = two_cell_ipynb_bytes("x = 1", "y = 1");
+    tokio::fs::write(&notebook_path, &loaded).await.unwrap();
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source("cell-1", "x = 1").unwrap();
+        doc.add_cell(1, "cell-2", "code").unwrap();
+        doc.update_source("cell-2", "y = 1").unwrap();
+    }
+    commit_test_room_source(&room).await;
+    room.persistence.note_disk_content(&loaded);
+    *room.persistence.last_save_sources.write().await = HashMap::from([
+        ("cell-1".to_string(), "x = 1".to_string()),
+        ("cell-2".to_string(), "y = 1".to_string()),
+    ]);
+
+    // An in-session edit is journaled but not yet exported by autosave.
+    {
+        let mut doc = room.doc.write().await;
+        doc.update_source("cell-2", "y = 2").unwrap();
+    }
+    commit_test_room_doc(&room).await;
+    let status = room.durability.status();
+    assert_ne!(status.durable_heads, status.exported_heads);
+    assert!(!status.has_restored_unexported_heads);
+
+    // Git rewrites a different cell before autosave runs.
+    let external = two_cell_ipynb_bytes("x = 100", "y = 1");
+    tokio::fs::write(&notebook_path, &external).await.unwrap();
+    process_watcher_event(&room, &notebook_path).await;
+
+    assert!(
+        !matches!(room.lifecycle.availability(), RoomAvailability::Degraded(_)),
+        "an in-session edit must not turn an external write into a source conflict"
+    );
+    assert!(room
+        .state
+        .read(|state| state.read_state().file_checkpoint.source_issue)
+        .unwrap()
+        .is_none());
+    {
+        let doc = room.doc.read().await;
+        assert_eq!(doc.get_cell_source("cell-1"), Some("x = 100".to_string()));
+        assert_eq!(doc.get_cell_source("cell-2"), Some("y = 2".to_string()));
+    }
+    let merged = room.durability.status();
+    assert_eq!(
+        merged.source_fingerprint,
+        super::recovery::source_fingerprint(&external)
+    );
+    assert_ne!(
+        merged.durable_heads, merged.exported_heads,
+        "the merged edit is still unexported until the next save"
+    );
+
+    // Autosave is not paused: the next save writes the merged document.
+    let saved = super::persist::save_notebook_to_disk(&room, None)
+        .await
+        .expect("save after the merge must not be blocked");
+    assert!(matches!(saved, FileSaveOutcome::Saved { .. }));
+    let on_disk = tokio::fs::read(&notebook_path).await.unwrap();
+    let parsed = parse_notebook_jiter_for_notebook(&on_disk, room.id).unwrap();
+    let sources: HashMap<String, String> = parsed
+        .cells
+        .into_iter()
+        .map(|cell| (cell.id.clone(), cell.source.clone()))
+        .collect();
+    assert_eq!(sources.get("cell-1").map(String::as_str), Some("x = 100"));
+    assert_eq!(sources.get("cell-2").map(String::as_str), Some("y = 2"));
+    let exported = room.durability.status();
+    assert_eq!(exported.durable_heads, exported.exported_heads);
+
+    // A later idle external write still reloads.
+    let later = two_cell_ipynb_bytes("x = 100", "y = 3");
+    tokio::fs::write(&notebook_path, &later).await.unwrap();
+    process_watcher_event(&room, &notebook_path).await;
+    assert_eq!(
+        room.doc.read().await.get_cell_source("cell-2"),
+        Some("y = 3".to_string())
+    );
+    assert!(!matches!(
+        room.lifecycle.availability(),
+        RoomAvailability::Degraded(_)
+    ));
 }
 
 #[tokio::test]
