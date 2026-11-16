@@ -117,7 +117,7 @@ Pool warmer and capture step strip a base set so captured metadata records only 
 `conda::sync_dependencies` takes an `EnvOwnership`. Daemon-owned prefixes get
 the full base set, and the solve is the env's complete desired state. A
 user-managed `environment.yml` prefix (`prefix:` or an existing named env) gets
-only `ipykernel`. Every installed Conda package stays in the solve, so the
+only `ipykernel` and `pyarrow>=14`, each skipped when pip already owns it. Every installed Conda package stays in the solve, so the
 installer removes nothing. A requested package that pip installed is left to
 pip: its dist-info directory appears in no Conda record's file list. A named
 env the daemon created counts as user-managed from its next launch. Hot-sync

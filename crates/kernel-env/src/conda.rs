@@ -891,13 +891,16 @@ pub enum EnvOwnership {
     /// desired state.
     Daemon,
     /// Prepared by the user, such as an `environment.yml` `prefix:` or an
-    /// existing named env. Syncs add only `ipykernel`, keep every installed
-    /// Conda package, and leave packages that pip installed to pip.
+    /// existing named env. Syncs add only `ipykernel` and `pyarrow>=14`, keep
+    /// every installed Conda package, and leave packages that pip installed
+    /// to pip.
     User,
 }
 
-/// The kernel needs only `ipykernel`; the rest of the base set is optional.
-const USER_ENV_BASE_PACKAGES: &[&str] = &["ipykernel"];
+/// Base packages a user-managed env gets: the kernel and PyArrow, which
+/// dataframe outputs use. The widget packages and `nbformat` stay out of user
+/// envs. Each is skipped when pip already owns it.
+const USER_ENV_BASE_PACKAGES: &[&str] = &["ipykernel", "pyarrow>=14"];
 
 /// Normalize a distribution name the way PEP 503 does, so Conda and pip
 /// spellings compare equal (`tml_renderers` == `tml-renderers`).
@@ -1023,7 +1026,7 @@ fn sync_package_specs(
     // Requested deps come first, so a user's `ipykernel>=6.29` keeps its
     // constraint instead of being replaced by the bare base name.
     for base in USER_ENV_BASE_PACKAGES {
-        let name = normalize_dist_name(base);
+        let name = normalize_dist_name(&conda_spec_name(base));
         if !left_to_pip(&name) && named.insert(name) {
             packages.push((*base).to_string());
         }
@@ -1484,8 +1487,9 @@ mod tests {
     }
 
     #[test]
-    fn user_env_sync_adds_only_ipykernel_from_the_base_set() {
+    fn user_env_sync_adds_only_ipykernel_and_pyarrow_from_the_base_set() {
         let specs = user_env_specs(&["python=3.12", "numpy=2.5.4", "matplotlib=3.11.2"]);
+        // pip owns pyarrow in this env, so no Conda pyarrow is requested.
         for base in ["ipywidgets", "anywidget", "nbformat", "pip", "pyarrow>=14"] {
             assert!(!specs.iter().any(|s| s == base), "{base} in {specs:?}");
         }
@@ -1585,7 +1589,30 @@ mod tests {
     fn user_env_sync_leaves_a_pip_ipykernel_to_pip() {
         let pip_owned: HashSet<String> = ["ipykernel".to_string()].into_iter().collect();
         let specs = sync_package_specs(&[], EnvOwnership::User, &names(&["python"]), &pip_owned);
-        assert_eq!(specs, vec!["python".to_string()]);
+        assert_eq!(specs, vec!["python".to_string(), "pyarrow>=14".to_string()]);
+    }
+
+    #[test]
+    fn user_env_sync_adds_pyarrow_when_nothing_provides_it() {
+        let specs = sync_package_specs(
+            &["numpy".to_string()],
+            EnvOwnership::User,
+            &names(&["python", "numpy"]),
+            &HashSet::new(),
+        );
+        assert_eq!(specs, vec!["python", "numpy", "ipykernel", "pyarrow>=14"]);
+    }
+
+    #[test]
+    fn user_env_sync_keeps_a_requested_pyarrow_constraint() {
+        let specs = sync_package_specs(
+            &["pyarrow=26.0.1".to_string()],
+            EnvOwnership::User,
+            &names(&["python"]),
+            &HashSet::new(),
+        );
+        let pyarrow: Vec<_> = specs.iter().filter(|s| s.starts_with("pyarrow")).collect();
+        assert_eq!(pyarrow, vec!["pyarrow=26.0.1"]);
     }
 
     #[test]
