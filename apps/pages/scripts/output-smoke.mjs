@@ -62,6 +62,7 @@ const baseStyle = await readFile(
   new URL(import.meta.resolve("@nteract/output-frame/styles.css")),
   "utf8",
 );
+const editorStyle = await readFile(new URL("../viewer/wordgard.css", import.meta.url), "utf8");
 const entries = {
   counter: [
     await readFile(new URL("../test/fixtures/anywidget-counter/index.mjs", import.meta.url)),
@@ -184,7 +185,7 @@ window.fixture={editor(){
     config:[schema.elements.map(e=>GardState.schemaElement.of(e)),wordgardViews({eager:true, sources, views:{hold:()=>({view$,release(){}})}})]
   })});
   window.fixture.select=selected=>{editor.dispatch({selection:selected?GardSelection.node(0,node):GardSelection.cursor(2)});editor.flush()};
-},counter(composed=false){
+},unavailable(){view$.next({status:'ready',view:{...view,spec:{}}})},counter(composed=false){
   view$.next({status:'ready',view:{...view,
     spec:composed ? {module:{source_id:'composed'},state:{child:'anywidget:counter'},models:{counter:{module:{source_id:'counter'},stylesheet:{source_id:'counterstyle'},state:{count:42}}}} : {module:{source_id:'counter'},stylesheet:{source_id:'counterstyle'},state:{count:42}}
   }});
@@ -200,7 +201,7 @@ const result = await build({
 const server = createServer((req, res) => {
   if (req.url === "/styles.css") {
     res.setHeader("Content-Type", "text/css");
-    res.end(baseStyle + "\n" + tokens);
+    res.end(baseStyle + "\n" + tokens + "\n" + editorStyle);
     return;
   }
   if (req.url === "/app.js") {
@@ -424,6 +425,26 @@ try {
     }
   }
   assert.equal(loads, 0, "Selection must not navigate/reload the existing frame");
+  // A former chart's reserve must not pad a short widget or a terminal error.
+  const embed = page.locator(".wordgard-view-embed");
+  await embed.evaluate((el) => el.style.setProperty("--pages-view-reserve", "900px"));
+  await expect.poll(async () => (await embed.boundingBox()).height).toBeLessThan(300);
+  await page.evaluate(() => {
+    window.fixture.audio();
+    window.fixture.fail();
+  });
+  await expect(page.locator(".pages-anywidget-view")).toHaveAttribute(
+    "data-output-state",
+    "failed",
+  );
+  await expect.poll(async () => (await embed.boundingBox()).height).toBeLessThan(300);
+  await page.evaluate(() => window.fixture.unavailable());
+  await expect(page.locator(".pages-anywidget-view")).toHaveAttribute(
+    "data-output-state",
+    "unavailable",
+  );
+  await expect.poll(async () => (await embed.boundingBox()).height).toBeLessThan(300);
+
   assert.deepEqual(errors, []);
   await writeFile(
     new URL("report.json", out),

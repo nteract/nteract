@@ -1606,6 +1606,9 @@ writer attribution, retained revision history, and connections from placed
 tables and views. Agent labels are marked as client-provided. Selecting a
 connection locates its placement in the Page. Following and pinned bindings
 are distinguished, including pins whose revisions are no longer retained.
+Anywidget connections come from the shared direct-reference inventory: module,
+stylesheet and paired buffers, including child models. Each spec location is a
+separate connection even when several locations share one source transfer.
 The inventory includes offscreen and repeated placements; it reads view
 replicas while open and releases that demand when closed. Unreadable content
 and unavailable views explicitly leave the connection inventory incomplete.
@@ -1836,7 +1839,7 @@ root is:
 names exactly the datasets the spec reads, each bound to one of the Page's
 sources. Anywidget references live only in `spec`; its stored `data` is empty
 and omitted from API reads/writes. View summaries expose derived `dependencies`
-with `{source, role, location}` for those references. A data name matches `^[A-Za-z_][A-Za-z0-9_-]{0,63}$` and is never
+with `{source, role, location}` for those references. If a stored widget spec cannot be inspected, its summary retains the view metadata and revision with `dependencies_unavailable: true` instead of breaking the Page read. A data name matches `^[A-Za-z_][A-Za-z0-9_-]{0,63}$` and is never
 `constructor`, `prototype` or `__proto__`; a view binds at most 32. Every map
 keyed by a data name, view id or source id is built from entries or is a
 `Map`, so no key reaches a prototype. `{ source_id }` follows the source's current revision;

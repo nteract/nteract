@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import * as A from "@automerge/automerge";
 import { BehaviorSubject } from "rxjs";
 import { setSources, sourcesGenesis } from "../model/sources-doc.mjs";
+import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
 import { Store } from "./store.mjs";
 import {
   projectSourcesPanel,
@@ -95,6 +96,44 @@ test("view demand is shared by placements, follows updates and releases on remov
     },
   });
   assert.equal(inspector.store.snapshot().sources[0].uses.length, 3);
+  // The pane must carry spec through its held-view projection, and remain live
+  // when a stored definition is unreadable before a later valid revision.
+  const widget = {
+    title: "Widget",
+    media_type: ANYWIDGET_MEDIA_TYPE,
+    revision: "2",
+    spec: {
+      module: { source_id: "renderer" },
+      buffers: [{ source: { source_id: "usage" }, path: ["rows"] }],
+    },
+  };
+  state$.next({ status: "ready", view: widget });
+  assert.equal(
+    inspector.store.snapshot().sources.find((s) => s.source_id === "usage").uses.length,
+    3,
+  );
+  assert.equal(
+    inspector.store.snapshot().sources.find((s) => s.source_id === "renderer").uses[0].input,
+    "module",
+  );
+  state$.next({ status: "ready", view: { ...widget, spec: {} } });
+  assert.equal(inspector.store.snapshot().unresolvedViews.length, 2);
+  state$.next({
+    status: "ready",
+    view: {
+      ...widget,
+      revision: "3",
+      spec: {
+        ...widget.spec,
+        buffers: [{ source: { source_id: "usage", revision: "1" }, path: ["rows"] }],
+      },
+    },
+  });
+  assert.equal(inspector.store.snapshot().unresolvedViews.length, 0);
+  assert.equal(
+    inspector.store.snapshot().sources.find((s) => s.source_id === "usage").uses[1].revision,
+    "1",
+  );
   doc = A.change(doc, (draft) => {
     for (const p of sourcePlacements(doc).placements.filter((p) => p.kind === "view"))
       delete draft.blocks[p.blockId];
@@ -151,22 +190,39 @@ test("retains placement identity, named inputs and pins; incomplete views aren't
         status: "ready",
         view: {
           title: "Activity",
-          media_type: "application/vnd.nteract.anywidget.v1+json",
-          data: { rows: { source_id: "usage" }, code: { source_id: "renderer" } },
+          media_type: ANYWIDGET_MEDIA_TYPE,
+          spec: {
+            module: { source_id: "renderer" },
+            stylesheet: { source_id: "styles" },
+            buffers: [{ source: { source_id: "usage" }, path: ["rows"] }],
+            models: {
+              child: {
+                module: { source_id: "renderer", revision: "1" },
+                buffers: [{ source: { source_id: "usage", revision: "1" }, path: ["rows"] }],
+              },
+            },
+          },
         },
       },
     },
   );
   const usage = result.sources.find((s) => s.source_id === "usage");
-  assert.equal(usage.uses.length, 3);
+  assert.equal(usage.uses.length, 5);
   assert.equal(usage.uses[0].revision, "1");
-  assert.equal(new Set(usage.uses.map((u) => u.key)).size, 3);
+  assert.equal(new Set(usage.uses.map((u) => u.key)).size, 5);
+  assert.deepEqual(
+    usage.uses.slice(1).map((u) => u.revision),
+    [null, "1", null, "1"],
+  );
+  assert.equal(usage.uses[2].input, "models.child.buffers[0].source");
+  assert.equal(usage.uses[2].role, "buffer");
   assert.equal(usage.uses[1].type, "Anywidget");
   assert.equal(usage.history.length, 1);
   assert.equal(result.sources.find((s) => s.source_id === "renderer").availability, "missing");
   assert.equal(result.unresolvedViews.length, 1);
 });
 test("media labels cover non-tabular assets and preserve unknown types", () => {
+  assert.equal(sourceMediaLabel(ANYWIDGET_MEDIA_TYPE), "Anywidget");
   assert.equal(sourceMediaLabel("text/css"), "CSS");
   assert.equal(sourceMediaLabel("audio/wav"), "WAV audio");
   assert.equal(sourceMediaLabel("application/octet-stream"), "Binary");

@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium, expect } from "@playwright/test";
+import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
 import { purgeTrashedFixture } from "./purge-fixture.mjs";
 
 const origin = process.env.PAGES_ORIGIN ?? "http://localhost:9894";
@@ -298,19 +299,13 @@ try {
         op: "set_view",
         view_id: "widget",
         title: "Custom widget",
-        media_type: "application/vnd.nteract.anywidget.v1+json",
+        media_type: ANYWIDGET_MEDIA_TYPE,
         view_revision: null,
         spec: {
-          _esm: "code",
-          _css: "styles",
-          state: {},
-          buffers: ["bytes"],
-          buffer_paths: [["buffer"]],
-        },
-        data: {
-          code: { source_id: "renderer" },
-          styles: { source_id: "styles" },
-          bytes: { source_id: "bytes" },
+          module: { source_id: "renderer" },
+          stylesheet: { source_id: "styles" },
+          buffers: [{ source: { source_id: "bytes" }, path: ["buffer"] }],
+          models: { child: { module: { source_id: "renderer", revision: "1" } } },
         },
       },
       {
@@ -320,8 +315,42 @@ try {
       { op: "insert_node", node: { type: "view", attrs: { view_id: "widget" } } },
     ]);
     await openSources();
+    await panel.getByRole("button", { name: /Widget renderer JavaScript/ }).click();
+    await expect(panel).toContainText("Used on this Page · 2");
+    await expect(panel).toContainText("Anywidget · module");
+    await expect(panel).toContainText("Anywidget · models.child.module");
+    await expect(panel).toContainText("Pinned · revision 1");
+    await panel
+      .getByRole("button", { name: /Custom widget Anywidget · module Follows latest/ })
+      .click();
+    await expect(page.locator(".wordgard-view-embed.source-revealed")).toBeFocused();
+    await edit([
+      {
+        op: "set_source",
+        source_id: "renderer",
+        name: "Widget renderer",
+        asset_id: js,
+        source_revision: "1",
+      },
+    ]);
+    await panel.getByRole("button", { name: "Revisions", exact: true }).click();
+    await expect(panel).toContainText("Revision 2");
+    await expect(panel).toContainText("A connection is pinned here");
+    await panel.getByRole("button", { name: "Connections", exact: true }).click();
+    await page.screenshot({ path: `${output}/anywidget-sources-wide.png` });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(panel).toBeVisible();
+    await expect(panel).toContainText("Anywidget · models.child.module");
+    await page.screenshot({ path: `${output}/anywidget-sources-phone.png` });
+    await panel
+      .getByRole("button", { name: /Custom widget Anywidget · models.child.module/ })
+      .click();
+    await expect(panel).toHaveCount(0);
+    await expect(page.locator(".wordgard-view-embed.source-revealed")).toBeFocused();
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await openSources();
     await panel.getByRole("button", { name: /Widget styles CSS/ }).click();
-    await expect(panel).toContainText("Anywidget · styles", { timeout: 30000 });
+    await expect(panel).toContainText("Anywidget · stylesheet", { timeout: 30000 });
     const dockWidth = (await panel.boundingBox()).width;
     await panel.getByRole("button", { name: "Expand sources" }).click();
     assert.ok((await panel.boundingBox()).width > dockWidth);
@@ -335,7 +364,7 @@ try {
     await expect(panel.locator(".source-inspector")).toHaveCount(0);
     await expect(panel.getByRole("button", { name: /Widget styles CSS/ })).toBeFocused();
     await panel.getByRole("button", { name: /Binary sample Binary/ }).click();
-    await expect(panel).toContainText("Anywidget · bytes");
+    await expect(panel).toContainText("Anywidget · buffers[0].source");
   } else await openSources();
   await page.getByRole("button", { name: "Comments", exact: true }).click();
   await expect(panel).toHaveCount(0);
@@ -368,7 +397,7 @@ try {
     await expect(panel).toContainText("This source isn't available on this Page", {
       timeout: 30000,
     });
-    await expect(panel).toContainText("Anywidget · styles");
+    await expect(panel).toContainText("Anywidget · stylesheet");
     if (keep) {
       // Keep the demo readable: bind the widget to a new name after deletion.
       const cssReplacement = await upload(Buffer.from(".widget { color: teal; }"), "text/css");
@@ -384,19 +413,13 @@ try {
           op: "set_view",
           view_id: "widget",
           title: "Custom widget",
-          media_type: "application/vnd.nteract.anywidget.v1+json",
+          media_type: ANYWIDGET_MEDIA_TYPE,
           view_revision: "1",
           spec: {
-            _esm: "code",
-            _css: "styles",
-            state: {},
-            buffers: ["bytes"],
-            buffer_paths: [["buffer"]],
-          },
-          data: {
-            code: { source_id: "renderer" },
-            styles: { source_id: "theme" },
-            bytes: { source_id: "bytes" },
+            module: { source_id: "renderer" },
+            stylesheet: { source_id: "theme" },
+            buffers: [{ source: { source_id: "bytes" }, path: ["buffer"] }],
+            models: { child: { module: { source_id: "renderer", revision: "1" } } },
           },
         },
       ]);

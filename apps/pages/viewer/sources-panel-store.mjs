@@ -13,6 +13,8 @@ import { nativeRead, readChildren, readKind } from "../model/native-read.mjs";
 import * as A from "@automerge/automerge/slim";
 import { orderedBlockIds } from "../model/order.mjs";
 import { readSource } from "../model/sources-doc.mjs";
+import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
+import { viewDependencies } from "../shared/view-dependencies.mjs";
 import { sourcesAnswer } from "./page-source-store.mjs";
 import { Store } from "./store.mjs";
 
@@ -25,7 +27,7 @@ export function sourceMediaLabel(type) {
       "audio/wav": "WAV audio",
       "application/octet-stream": "Binary",
       "application/vnd.vegalite.v6+json": "Vega-Lite chart",
-      "application/vnd.nteract.anywidget.v1+json": "Anywidget",
+      [ANYWIDGET_MEDIA_TYPE]: "Anywidget",
     }[type] ??
     type ??
     "Unknown type"
@@ -113,11 +115,20 @@ export function projectSourcesPanel(doc, placements, views, answer = "known") {
       continue;
     }
     const view = state.view;
-    for (const [input, binding] of Object.entries(view.data)) {
-      add(binding, {
+    let dependencies;
+    try {
+      dependencies = viewDependencies(view);
+    } catch {
+      unresolvedViews.push({ ...placement, status: "unreadable" });
+      continue;
+    }
+    for (const { source, role, location } of dependencies) {
+      add(source, {
         ...placement,
-        key: `${placement.key}:${input}`,
-        input,
+        key: `${placement.key}:${location}`,
+        input: location.replace(/^(spec|data)\./, ""),
+        role,
+        location,
         title: view.title || placement.viewId,
         type: sourceMediaLabel(view.media_type),
       });
@@ -182,6 +193,7 @@ export function sourcesPanelStore(session) {
                                 view: {
                                   title: state.view.title,
                                   media_type: state.view.media_type,
+                                  spec: state.view.spec,
                                   data: state.view.data,
                                   revision: state.view.revision,
                                 },

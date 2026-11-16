@@ -93,21 +93,22 @@ export function viewSummary(doc, viewId) {
   const view = readView(doc, viewId);
   if (!view) return undefined;
   const { view_id, title, media_type, revision, data } = view;
-  return {
-    view_id,
-    title,
-    media_type,
-    revision,
-    ...(media_type === ANYWIDGET_MEDIA_TYPE
-      ? {
-          dependencies: viewDependencies(view).map(({ source, role, location }) => ({
-            source,
-            role,
-            location,
-          })),
-        }
-      : { data }),
-  };
+  const summary = { view_id, title, media_type, revision };
+  if (media_type !== ANYWIDGET_MEDIA_TYPE) return { ...summary, data };
+  try {
+    return {
+      ...summary,
+      dependencies: viewDependencies(view).map(({ source, role, location }) => ({
+        source,
+        role,
+        location,
+      })),
+    };
+  } catch {
+    // Retain the identity/revision needed to inspect and repair this view.
+    // An unreadable dependency inventory must not break the containing Page.
+    return { ...summary, dependencies_unavailable: true };
+  }
 }
 
 // A title a write may set holds no control characters; a stored title is

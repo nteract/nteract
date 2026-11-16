@@ -762,7 +762,7 @@
    arriving nor the chart drawing moves anything.
 
    The reserve lets go once the embed shows a chart Vega has finished (drawn
-   or in its error state), or a sentence that stays: a blocked view or one
+   or in its error state), a ready/failed/unavailable widget, or a sentence that stays: a blocked view or one
    not on this Page, data that couldn't load (view-draw.mjs "blocked" and
    "failed"), or a chart chunk that didn't load. */
 .wordgard-view-embed {
@@ -776,7 +776,10 @@
   :has(
     .pages-view-chart:not([hidden]) .pages-chart:not([data-chart-status="drawing"]),
     [data-view-state="blocked"],
-    [data-view-state="failed"]
+    [data-view-state="failed"],
+    [data-output-state="ready"],
+    [data-output-state="failed"],
+    [data-output-state="unavailable"]
   ),
   [data-embed-state="failed"]
 ) {
@@ -786,7 +789,10 @@
     :has(
       .pages-view-chart:not([hidden]) .pages-chart:not([data-chart-status="drawing"]),
       [data-view-state="blocked"],
-      [data-view-state="failed"]
+      [data-view-state="failed"],
+      [data-output-state="ready"],
+      [data-output-state="failed"],
+      [data-output-state="unavailable"]
     ),
     [data-embed-state="failed"]
   )
