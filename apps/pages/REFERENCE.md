@@ -1616,7 +1616,13 @@ Direct-asset tables aren't treated as source consumers. This first inspector
 shows column names, Arrow types and row count from the host's Parquet footer
 summary when the preview area is narrower than 520px. Wider areas show Sift
 using the Page's existing asset cache and source-following renderer. The
-preview stays mounted across Connections and Revisions. Schema reads are
+preview stays mounted across Connections and Revisions. JavaScript and CSS have
+read-only text previews (first 16,000 characters); WAV sources have an audio
+player; binary sources show their first 64 bytes in hexadecimal. These previews
+read authenticated assets with a 5 MiB bound and verify their digest. Code is
+never executed by the inspector. Changing sources or closing the inspector
+cancels pending reads and stops audio. The stable source identifier is labeled
+**Source ID**, separately from the editable display name. Schema reads are
 cancelled on source changes and fenced by immutable asset id. It does not create, replace or remove
 sources or execute code. Search appears when more than one source is listed.
 It inspects only the current Page's placed consumers.

@@ -18,6 +18,17 @@ const asset = () =>
     },
   });
 
+test("source audio previews allow blob media without allowing blob scripts", () => {
+  const directives = Object.fromEntries(
+    VIEWER_CSP.split(";").map((directive) => {
+      const [name, ...sources] = directive.trim().split(/\s+/);
+      return [name, sources];
+    }),
+  );
+  assert.deepEqual(directives["media-src"], ["'self'", "blob:"]);
+  assert.equal(directives["script-src"].includes("blob:"), false);
+});
+
 test("runtime iframe URLs refuse credentials, opaque URLs, same-origin endpoints and ambient parameters", () => {
   for (const value of [
     "/frame/",

@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { build } from "esbuild";
+import { browserMermaidPlugin } from "./browser-mermaid.mjs";
 import { browserSiftPlugin } from "./browser-sift.mjs";
 import { chromium, webkit, expect } from "@playwright/test";
 import "./build-output.mjs";
@@ -158,7 +159,8 @@ for (const [name, [bytes, media_type]] of Object.entries(entries)) {
   versions[name] = { asset_id, media_type, revision: "1" };
 }
 const fixture = `import { BehaviorSubject } from 'rxjs';
-import { Wordgard } from 'wordgard/editor';
+import { Wordgard, Decoration } from 'wordgard/editor';
+import { rangeHighlights } from './viewer/range-highlights.mjs';
 import { GardState, GardSelection } from 'wordgard/state';
 import { Leaf } from 'wordgard/doc';
 import { schema, Paragraph, PagesView } from './viewer/wordgard-model.mjs';
@@ -175,15 +177,18 @@ const view$=new BehaviorSubject({status:'ready',view});
 let failNext=false;
 const sources={pageId:'${pageId}',request:(...args)=>{if(failNext){failNext=false;return Promise.resolve(new Response('not yet',{status:503}))}return fetch(...args)},versions:()=>changes,resolve:b=>versions[b.source_id]};
 const handle=mount(document.querySelector('main'),{view$,sources,sourcesAnswer$:null});
-let editor;
+let editor; let highlight=null; const permissions=new GardState.Compartment();
 window.fixture={editor(){
   handle.destroy();
   window.fixture.counter();
   const node=PagesView.of({view_id:'audio'});
   editor=new Wordgard({parent:document.querySelector('main'),state:GardState.create({
     doc:schema.doc([node,Paragraph.create([Leaf.text('Outside the widget')])]),
-    config:[schema.elements.map(e=>GardState.schemaElement.of(e)),wordgardViews({eager:true, sources, views:{hold:()=>({view$,release(){}})}})]
+    config:[permissions.of([GardState.readOnly.of(false),Wordgard.editable.of(true)]),Decoration.Range.source.of(state=>Decoration.Range.set(highlight?rangeHighlights(state.doc,0,1,highlight):[])),schema.elements.map(e=>GardState.schemaElement.of(e)),wordgardViews({eager:true, sources, views:{hold:()=>({view$,release(){}})}})]
   })});
+  window.fixture.highlight=value=>{highlight=value;editor.dispatch({});editor.flush()};
+  window.fixture.focus=()=>editor.focus();
+  window.fixture.readonly=value=>{editor.dispatch({effects:permissions.reconfigure([GardState.readOnly.of(value),Wordgard.editable.of(!value)])});editor.flush()};
   window.fixture.select=selected=>{editor.dispatch({selection:selected?GardSelection.node(0,node):GardSelection.cursor(2)});editor.flush()};
 },unavailable(){view$.next({status:'ready',view:{...view,spec:{}}})},counter(composed=false){
   view$.next({status:'ready',view:{...view,
@@ -193,7 +198,7 @@ window.fixture={editor(){
 ${process.env.PAGES_OUTPUT_SERVE ? "window.fixture.example();" : ""}`;
 const result = await build({
   stdin: { contents: fixture, resolveDir: process.cwd(), sourcefile: "output-fixture.mjs" },
-  plugins: [browserSiftPlugin(process.cwd())],
+  plugins: [browserSiftPlugin(process.cwd()), browserMermaidPlugin(process.cwd())],
   bundle: true,
   format: "esm",
   write: false,
@@ -424,7 +429,37 @@ try {
       );
     }
   }
-  assert.equal(loads, 0, "Selection must not navigate/reload the existing frame");
+  // A peer selection disappears when that peer leaves the editor/window.
+  // The actual collaboration decorations must preserve the frame and model.
+  for (const attributes of [
+    { class: "peer-selection", title: "Collaborator", style: "--peer-color: teal" },
+    { class: "comment-passage", "data-comment-thread": "thread" },
+    null,
+  ]) {
+    await page.evaluate((value) => window.fixture.highlight(value), attributes);
+    await expect(frame.getByRole("button")).toHaveText("count is 44");
+    const wrapper = page.locator(".wordgard-view-node");
+    if (attributes)
+      for (const [name, value] of Object.entries(attributes))
+        if (name === "class") await expect(wrapper).toHaveClass(new RegExp(value));
+        else await expect(wrapper).toHaveAttribute(name, value);
+  }
+  await page.evaluate(() => {
+    window.fixture.select(true);
+    window.fixture.focus();
+  });
+  await page.locator("#appearance").focus();
+  await expect(frame.getByRole("button")).toHaveText("count is 44");
+  await page.evaluate(() => window.fixture.focus());
+  for (const readonly of [true, false]) {
+    await page.evaluate((value) => window.fixture.readonly(value), readonly);
+    await expect(frame.getByRole("button")).toHaveText("count is 44");
+  }
+  assert.equal(
+    loads,
+    0,
+    "Selection, collaboration highlights, blur and permissions must not reload the frame",
+  );
   // A former chart's reserve must not pad a short widget or a terminal error.
   const embed = page.locator(".wordgard-view-embed");
   await embed.evaluate((el) => el.style.setProperty("--pages-view-reserve", "900px"));
