@@ -10,6 +10,7 @@ import {
   cardImagePaths,
   indexPaths,
   linkPreviewPaths,
+  mediaGuidePaths,
   pageSlugPaths,
   projectAssetPaths,
   projectPaths,
@@ -303,8 +304,11 @@ const lifecycle = (f) =>
 const digest = (text) => createHash("sha256").update(text).digest("hex");
 // A live target's routes without Page slugs: the route set the release before
 // them sealed.
+const beforeMediaGuides = (config) => config.replace(mediaGuidePaths, "");
 const beforePublishedPreviews = (config) =>
-  config.replace(publishedPreviewPaths, "").replace(publishedPreviewApiPaths, "");
+  beforeMediaGuides(config)
+    .replace(publishedPreviewPaths, "")
+    .replace(publishedPreviewApiPaths, "");
 const beforeSlugs = (config) => beforePublishedPreviews(config).replace(pageSlugPaths, "");
 // Without link previews, card images and Project assets either: the route
 // set the release before those sealed.
@@ -2134,3 +2138,33 @@ for (const target of ["page10", "pages", "pages2", "page11"])
       f.calls.length = 0;
       assert.equal(f.execute().routesUpdated, false);
     });
+
+for (const state of ["sealed", "pending-old", "pending-new"])
+  test(`page10 publishes media guides from the previously deployed routes (${state})`, (t) => {
+    const f = fixture(t, { target: "page10" });
+    const x = slotInstall(f, beforeMediaGuides, { state });
+    assert.equal(f.execute().routesUpdated, true);
+    assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.plan.config);
+    assert.equal(installedReceipt(f), slotReceipt(x.plan.config, x.plan.unitSha256));
+    assertNoGap(f);
+    assert.equal(f.execute().routesUpdated, false);
+  });
+
+test("media-guide migration rolls back a failed connector and retries", (t) => {
+  const f = fixture(t, { target: "page10" });
+  const x = slotInstall(f, beforeMediaGuides);
+  f.failNextStart();
+  assert.throws(f.execute, /injected connector startup failure/);
+  assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.base);
+  assert.equal(installedReceipt(f), slotReceipt(x.base, x.plan.unitSha256));
+  assertNoGap(f);
+  assert.equal(f.execute().routesUpdated, true);
+});
+
+test("media-guide migration refuses unrelated config edits even with a matching receipt", (t) => {
+  const f = fixture(t, { target: "page10" });
+  slotInstall(f, (config) => beforeMediaGuides(config).replace("health|", "health|arbitrary|"));
+  assert.throws(f.execute, /installation differs/);
+  assert.equal(f.writes.length, 0);
+  assert.deepEqual(lifecycle(f), []);
+});
