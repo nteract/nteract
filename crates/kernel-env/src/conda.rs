@@ -1076,6 +1076,34 @@ pub async fn sync_dependencies(
         return Ok(());
     }
 
+    let rattler_cache_dir = default_cache_dir()
+        .map_err(|e| anyhow!("could not determine rattler cache directory: {}", e))?;
+    let download_client = crate::channels::download_client()?;
+    sync_dependencies_with_cache(
+        env,
+        deps,
+        ownership,
+        &rattler_cache_dir,
+        download_client,
+        handler,
+    )
+    .await
+}
+
+/// Like [`sync_dependencies`], using a caller-owned repodata cache and client.
+/// This supports isolated environments and tests without reading machine auth.
+pub async fn sync_dependencies_with_cache(
+    env: &CondaEnvironment,
+    deps: &CondaDependencies,
+    ownership: EnvOwnership,
+    rattler_cache_dir: &Path,
+    download_client: reqwest_middleware::ClientWithMiddleware,
+    handler: Arc<dyn ProgressHandler>,
+) -> Result<()> {
+    if deps.dependencies.is_empty() {
+        return Ok(());
+    }
+
     info!(
         "Syncing {} dependencies to {:?}",
         deps.dependencies.len(),
@@ -1119,11 +1147,6 @@ pub async fn sync_dependencies(
     let packages = sync_package_specs(&deps.dependencies, ownership, &installed_conda, &pip_owned);
     let specs = crate::python::parse_specs(&packages)?;
 
-    let rattler_cache_dir = default_cache_dir()
-        .map_err(|e| anyhow!("could not determine rattler cache directory: {}", e))?;
-
-    let download_client = crate::channels::download_client()?;
-
     let virtual_packages = crate::detect_solve_virtual_packages()?;
 
     // Collect package names that have explicit version constraints in specs.
@@ -1157,7 +1180,7 @@ pub async fn sync_dependencies(
             channels,
             platforms: vec![install_platform, Subdir::NoArch],
             specs: specs.clone(),
-            rattler_cache_dir: &rattler_cache_dir,
+            rattler_cache_dir,
             download_client: download_client.clone(),
             handler: handler.clone(),
             env_type: "conda",

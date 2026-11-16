@@ -295,6 +295,20 @@ async fn channel_review_requires_consent_before_fetching_and_can_finish_offline(
     };
     let offline = gateway(true);
     let network = gateway(false);
+    assert!(discover_channel_review(
+        vec![declared.clone()],
+        vec![Subdir::NoArch],
+        vec![],
+        &offline,
+        None,
+        DiscoveryLimits::default()
+    )
+    .await
+    .is_err());
+    assert!(
+        server.requests.lock().unwrap().is_empty(),
+        "offline cache miss must not contact the server"
+    );
     let first = discover_channel_review(
         vec![declared.clone()],
         vec![Subdir::NoArch],
@@ -305,7 +319,10 @@ async fn channel_review_requires_consent_before_fetching_and_can_finish_offline(
     )
     .await
     .unwrap();
-    assert_eq!(first.uninspected_channels, [related.clone()]);
+    assert_eq!(
+        first.review().uninspected_channels.as_slice(),
+        std::slice::from_ref(&related)
+    );
     assert!(
         !server
             .requests
@@ -325,7 +342,10 @@ async fn channel_review_requires_consent_before_fetching_and_can_finish_offline(
     )
     .await
     .unwrap();
-    assert_eq!(second.uninspected_channels, [transitive.clone()]);
+    assert_eq!(
+        second.review().uninspected_channels.as_slice(),
+        std::slice::from_ref(&transitive)
+    );
     assert!(!server
         .requests
         .lock()
@@ -345,13 +365,40 @@ async fn channel_review_requires_consent_before_fetching_and_can_finish_offline(
     )
     .await
     .unwrap();
-    assert!(final_review.uninspected_channels.is_empty());
+    assert!(final_review.review().uninspected_channels.is_empty());
     assert_eq!(
-        final_review.effective_channels,
+        final_review.review().effective_channels,
         [transitive, related, declared.base_url.to_string()]
     );
+    let all_subdirs = vec![kernel_env::conda_solve_platform().unwrap(), Subdir::NoArch];
+    let with_absent_subdir = discover_channel_review(
+        vec![declared.clone()],
+        all_subdirs.clone(),
+        approved.clone(),
+        &offline,
+        Some(&network),
+        DiscoveryLimits::default(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        with_absent_subdir,
+        kernel_env::channel_review::DiscoveryOutcome::Complete(_)
+    ));
     let before_offline = server.requests.lock().unwrap().len();
     server.task.abort();
+    // Rattler does not persist a 404 as a cache entry. An offline review
+    // cannot assume that an unrecorded subdir is absent rather than unread.
+    assert!(discover_channel_review(
+        vec![declared.clone()],
+        all_subdirs,
+        approved.clone(),
+        &gateway(true),
+        None,
+        DiscoveryLimits::default()
+    )
+    .await
+    .is_err());
     let cached = discover_channel_review(
         vec![declared],
         vec![Subdir::NoArch],
@@ -398,8 +445,9 @@ async fn missing_related_dependency_does_not_modify_existing_prefix() {
         let progress = Arc::new(Progress::default());
         let mut specs = kernel_env::conda_base_packages().iter().map(|value| spec(value)).collect::<Vec<_>>();
         specs.extend([spec("python"), spec("upgrade-fixture")]);
-        let repodata = kernel_env::repodata::query_repodata_offline_first(vec![declared.clone()], vec![Subdir::NoArch], specs.clone(), cache.path(), client.clone(), progress.clone(), "conda").await.unwrap();
-        let solved = resolvo::Solver.solve(SolverTask { specs: specs.clone(), ..SolverTask::from_iter(&repodata) }).unwrap().records;
+        let solved = kernel_env::repodata::solve_with_repodata(kernel_env::repodata::RepodataQuery {
+            channels: vec![declared.clone()], platforms: vec![Subdir::NoArch], specs: specs.clone(), rattler_cache_dir: cache.path(), download_client: client.clone(), handler: progress.clone(), env_type: "conda",
+        }, |repodata| resolvo::Solver.solve(SolverTask { specs: specs.clone(), ..SolverTask::from_iter(repodata) })).await.unwrap().records;
         let platform = kernel_env::conda_solve_platform().unwrap();
         kernel_env::rattler_installer().with_package_cache(PackageCache::new(cache.path().join("pkgs")))
             .with_download_client(client.clone()).with_target_platform(platform)
@@ -408,11 +456,11 @@ async fn missing_related_dependency_does_not_modify_existing_prefix() {
         before.sort_by(|a,b| a.repodata_record.package_record.name.cmp(&b.repodata_record.package_record.name));
         let contents = std::fs::read(prefix.path().join("share/upgrade-fixture.txt")).unwrap();
         progress.0.lock().unwrap().clear();
-        let error = kernel_env::conda::sync_dependencies(&kernel_env::CondaEnvironment {
+        let error = kernel_env::conda::sync_dependencies_with_cache(&kernel_env::CondaEnvironment {
             env_path: prefix.path().to_path_buf(), python_path: prefix.path().join("bin/python"),
         }, &kernel_env::CondaDependencies {
             dependencies: vec!["upgrade-fixture".into(), "related-only".into()], channels: vec![declared.base_url.to_string()], python: None, env_id: None,
-        }, progress.clone()).await.unwrap_err();
+        }, kernel_env::conda::EnvOwnership::Daemon, cache.path(), client.clone(), progress.clone()).await.unwrap_err();
         assert!(error.to_string().contains("related-only"), "{error:#}");
         assert!(!progress.0.lock().unwrap().iter().any(|phase| matches!(phase, EnvProgressPhase::Installing { .. } | EnvProgressPhase::InstallComplete { .. })));
         let mut after = PrefixRecord::collect_from_prefix::<PrefixRecord>(prefix.path()).unwrap();
@@ -421,10 +469,13 @@ async fn missing_related_dependency_does_not_modify_existing_prefix() {
         assert_eq!(contents, std::fs::read(prefix.path().join("share/upgrade-fixture.txt")).unwrap());
         assert!(!prefix.path().join("share/related-only.txt").exists());
         assert!(!server.requests.lock().unwrap().iter().any(|path| path.starts_with("/related/")));
-        // Positive control: the same request is solvable with the related
-        // channel explicitly selected, proving the failure is this boundary.
-        specs.push(spec("related-only"));
-        let repodata = kernel_env::repodata::query_repodata_offline_first(vec![related, declared], vec![Subdir::NoArch], specs.clone(), cache.path(), client, progress, "conda").await.unwrap();
-        assert!(resolvo::Solver.solve(SolverTask { specs, ..SolverTask::from_iter(&repodata) }).is_ok());
+        // Positive control uses the same sync path, with the related source
+        // explicitly selected. The package is then installed successfully.
+        kernel_env::conda::sync_dependencies_with_cache(&kernel_env::CondaEnvironment {
+            env_path: prefix.path().to_path_buf(), python_path: prefix.path().join("bin/python"),
+        }, &kernel_env::CondaDependencies {
+            dependencies: vec!["upgrade-fixture".into(), "related-only".into()], channels: vec![related.base_url.to_string(), declared.base_url.to_string()], python: None, env_id: None,
+        }, kernel_env::conda::EnvOwnership::Daemon, cache.path(), client, progress).await.unwrap();
+        assert!(prefix.path().join("share/related-only.txt").exists());
     }).await.expect("prefix preservation test timed out");
 }

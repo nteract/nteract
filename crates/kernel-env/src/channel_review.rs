@@ -67,6 +67,41 @@ impl ChannelReview {
     }
 }
 
+/// Metadata discovery has either stopped for consent or read the entire graph.
+/// Neither state grants installation authority; that remains the owner's job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiscoveryOutcome {
+    NeedsConsent(ChannelReview),
+    Complete(CompleteChannelReview),
+}
+
+/// Constructed only after every discovered channel's metadata has been read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompleteChannelReview(ChannelReview);
+
+impl CompleteChannelReview {
+    pub fn effective_channels(&self) -> &[String] {
+        &self.0.effective_channels
+    }
+}
+
+impl DiscoveryOutcome {
+    pub fn review(&self) -> &ChannelReview {
+        match self {
+            Self::NeedsConsent(review) => review,
+            Self::Complete(review) => &review.0,
+        }
+    }
+
+    fn from_review(review: ChannelReview) -> Self {
+        if review.uninspected_channels.is_empty() {
+            Self::Complete(CompleteChannelReview(review))
+        } else {
+            Self::NeedsConsent(review)
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Node {
     channel: Channel,
@@ -123,11 +158,7 @@ impl Discovery {
         }
         for channel in channels {
             let identity = channel.base_url.to_string();
-            if !channel.base_url.url().username().is_empty()
-                || channel.base_url.url().password().is_some()
-            {
-                bail!("Channel review requires credentials in the authentication store, not channel URLs");
-            }
+            validate_review_url(&channel.base_url)?;
             if !state.declared.contains(&identity) {
                 state.declared.push(identity);
                 state.add_node(channel, 0)?;
@@ -310,12 +341,35 @@ fn resolve_reference(declaring: &ChannelUrl, reference: &str) -> Result<ChannelU
             "Invalid relative channel relationship; expected a ../ path without query or fragment"
         );
     }
-    Ok(ChannelUrl::from(declaring.url().join(reference)?))
+    let target = ChannelUrl::from(declaring.url().join(reference)?);
+    validate_review_url(&target)?;
+    Ok(target)
+}
+
+fn validate_review_url(channel: &ChannelUrl) -> Result<()> {
+    let url = channel.url();
+    let path = url.path().to_ascii_lowercase();
+    let has_token = path
+        .split('/')
+        .any(|segment| segment == "t" || segment == "%74");
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || has_token
+        || path.contains("%2f")
+        || path.contains("%5c")
+    {
+        bail!("Channel review requires credentials in the authentication store, not channel URLs");
+    }
+    Ok(())
 }
 
 /// Discover relationships with a caller-configured cache-only gateway and an
 /// optional network fallback. Passing `None` enforces offline-only discovery:
 /// missing metadata is an error, never an empty (apparently complete) review.
+/// Upstream does not cache absent subdirs (HTTP 404); an offline-only review
+/// therefore requires cached metadata for every requested channel/subdir pair.
 ///
 /// Metadata from newly discovered channels is read only when their canonical
 /// URL is in `approved_metadata_channels`. Otherwise the review returns those
@@ -329,16 +383,16 @@ pub async fn discover_channel_review(
     cache: &Gateway,
     network: Option<&Gateway>,
     limits: DiscoveryLimits,
-) -> Result<ChannelReview> {
+) -> Result<DiscoveryOutcome> {
     let discovery = Discovery::start(channels, platforms, approved_metadata_channels, limits)?;
     if discovery.pending.is_empty() {
-        return discovery.finish();
+        return discovery.finish().map(DiscoveryOutcome::from_review);
     }
     let mut state = DiscoveryState::Fetching(discovery);
     loop {
         let DiscoveryState::Fetching(discovery) = &state else {
             return match state {
-                DiscoveryState::Complete(review) => Ok(review),
+                DiscoveryState::Complete(review) => Ok(DiscoveryOutcome::from_review(review)),
                 DiscoveryState::Failed(error) => Err(anyhow!(error)),
                 DiscoveryState::Fetching(_) => unreachable!(),
             };
@@ -536,6 +590,33 @@ mod tests {
                 DiscoveryState::Failed(_)
             ));
         }
+    }
+
+    #[test]
+    fn credential_urls_never_enter_reviews_or_errors() {
+        let config = ChannelConfig::default_with_root_dir(std::env::current_dir().unwrap());
+        for value in [
+            "https://user:SECRET@example.test/a",
+            "https://example.test/t/SECRET/a",
+            "https://example.test/%74/SECRET/a",
+            "https://example.test/a?token=SECRET",
+            "https://example.test/a#SECRET",
+        ] {
+            let channel = Channel::from_str(value, &config).unwrap();
+            let error = Discovery::start(
+                vec![channel],
+                vec![Subdir::NoArch],
+                vec![],
+                DiscoveryLimits::default(),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(!error.contains("SECRET"));
+        }
+        assert!(matches!(
+            metadata(machine(&["a"], &[]), Some("../t/SECRET/a"), None),
+            DiscoveryState::Failed(_)
+        ));
     }
 
     #[test]
