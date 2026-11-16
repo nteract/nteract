@@ -1,3 +1,4 @@
+import { createChannelReviewTrust } from "../channel-review-trust";
 /**
  * `createTauriHost()` — Tauri desktop app implementation of `NotebookHost`.
  *
@@ -191,6 +192,7 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
   };
 
   const trust: HostTrust = {
+    ...createChannelReviewTrust(transport),
     async approve(options) {
       const response = (await transport.sendRequest({
         type: "approve_trust",

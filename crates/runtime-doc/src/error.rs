@@ -14,6 +14,8 @@ pub enum RuntimeStateError {
     InvalidBokehSession(String),
     #[error("invalid project trust state: {0}")]
     InvalidProjectTrust(String),
+    #[error("invalid related-channel review: {0}")]
+    InvalidChannelReview(String),
     #[error("automerge: {0}")]
     Automerge(#[from] AutomergeError),
     #[error("automerge recovery: {0}")]

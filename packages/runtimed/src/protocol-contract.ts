@@ -38,6 +38,8 @@ export const NOTEBOOK_REQUEST_TYPES = [
   "clone_as_ephemeral",
   "sync_environment",
   "approve_trust",
+  "approve_related_channels",
+  "decline_related_channels",
   "approve_project_environment",
   "approve_project_trust",
   "decline_project_trust",

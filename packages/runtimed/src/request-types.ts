@@ -212,6 +212,8 @@ export type NotebookRequest =
       include_pep723?: boolean;
       reviewed_pep723_dependencies?: string[] | null;
     }
+  | { type: "approve_related_channels"; review_id: string }
+  | { type: "decline_related_channels"; review_id: string }
   | { type: "approve_project_environment"; project_file_path?: string | null }
   | { type: "approve_project_trust"; directory: string }
   | { type: "decline_project_trust"; directory: string; remember?: boolean }

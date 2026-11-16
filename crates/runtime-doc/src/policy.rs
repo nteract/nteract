@@ -1049,6 +1049,25 @@ mod tests {
     }
 
     #[test]
+    fn runtime_peer_policy_rejects_related_channel_review_changes() {
+        assert_runtime_peer_rejects_field(
+            |doc| {
+                doc.set_related_channel_review(Some(&crate::RelatedChannelReview {
+                    review_id: "unapproved".into(),
+                    owner_label: "notebook".into(),
+                    state: crate::RelatedChannelReviewStatus::Pending,
+                    declared_channels: vec![],
+                    effective_channels: vec!["https://example.test/channel/".into()],
+                    uninspected_channels: vec![],
+                    relations: vec![],
+                }))
+                .map(|_| ())
+            },
+            "trust",
+        );
+    }
+
+    #[test]
     fn runtime_peer_policy_rejects_project_trust_changes() {
         let mut before_doc = RuntimeStateDoc::new();
         before_doc

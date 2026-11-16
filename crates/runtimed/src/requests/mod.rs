@@ -159,6 +159,8 @@ pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
         NotebookRequest::CloneAsEphemeral { .. } => "CloneAsEphemeral",
         NotebookRequest::SyncEnvironment { .. } => "SyncEnvironment",
         NotebookRequest::ApproveTrust { .. } => "ApproveTrust",
+        NotebookRequest::ApproveRelatedChannels { .. } => "ApproveRelatedChannels",
+        NotebookRequest::DeclineRelatedChannels { .. } => "DeclineRelatedChannels",
         NotebookRequest::ApproveProjectEnvironment { .. } => "ApproveProjectEnvironment",
         NotebookRequest::ApproveProjectTrust { .. } => "ApproveProjectTrust",
         NotebookRequest::DeclineProjectTrust { .. } => "DeclineProjectTrust",
@@ -468,6 +470,8 @@ pub(crate) async fn handle_notebook_request(
             | NotebookRequest::GetHistory { .. }
             | NotebookRequest::ReconcileNotebookSource { .. }
             | NotebookRequest::ApplyBokehSessionPatch { .. }
+            | NotebookRequest::ApproveRelatedChannels { .. }
+            | NotebookRequest::DeclineRelatedChannels { .. }
             | NotebookRequest::ApproveProjectEnvironment { .. }
             | NotebookRequest::ApproveProjectTrust { .. }
             | NotebookRequest::DeclineProjectTrust { .. }
@@ -608,6 +612,11 @@ pub(crate) async fn handle_notebook_request(
         }
 
         NotebookRequest::SyncEnvironment { guard } => sync_environment::handle(room, guard).await,
+
+        NotebookRequest::ApproveRelatedChannels { .. }
+        | NotebookRequest::DeclineRelatedChannels { .. } => NotebookResponse::Error {
+            error: "Related channel approval is not enabled on this runtime".into(),
+        },
 
         NotebookRequest::ApproveTrust {
             observed_heads,

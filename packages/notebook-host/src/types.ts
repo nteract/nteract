@@ -195,6 +195,8 @@ export interface HostBlobs {
  * reviewed dependency identities to its local trusted package allowlist.
  */
 export interface HostTrust {
+  approveRelatedChannels(reviewId: string): Promise<void>;
+  declineRelatedChannels(reviewId: string): Promise<void>;
   approve(options?: {
     observedHeads?: string[];
     reviewedPep723Dependencies?: string[];

@@ -245,6 +245,8 @@ export {
   type RuntimeLifecycle,
   type RuntimeState,
   type TrustState,
+  type RelatedChannelReview,
+  type RelatedChannelRelation,
   type TrustStatus,
   type WorkstationAcceleratorReadiness,
   type WorkstationAcceleratorState,

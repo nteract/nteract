@@ -524,6 +524,8 @@ fn request_required_scope(
         | NotebookRequest::ReconcileNotebookSource { .. }
         | NotebookRequest::SyncEnvironment { .. }
         | NotebookRequest::ApproveTrust { .. }
+        | NotebookRequest::ApproveRelatedChannels { .. }
+        | NotebookRequest::DeclineRelatedChannels { .. }
         | NotebookRequest::ApproveProjectEnvironment { .. }
         | NotebookRequest::ApproveProjectTrust { .. }
         | NotebookRequest::DeclineProjectTrust { .. } => RequestRequiredScope::Owner,

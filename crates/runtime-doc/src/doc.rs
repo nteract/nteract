@@ -320,6 +320,9 @@ impl Default for EnvState {
 pub struct TrustRuntimeState {
     /// "trusted", "untrusted", "no_dependencies"
     pub status: String,
+    /// Daemon-owned review, separate from notebook dependency approval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub related_channel_review: Option<RelatedChannelReview>,
     /// Whether the frontend should show the trust approval dialog
     pub needs_approval: bool,
     /// Python dependencies extracted from PEP 723 cell source.
@@ -337,6 +340,41 @@ pub struct TrustRuntimeState {
     pub approved_pixi_pypi_dependencies: Vec<String>,
     /// Pixi channels already present in the local trusted package allowlist.
     pub approved_pixi_channels: Vec<String>,
+}
+
+/// A server-owned review of repository-declared channel relationships.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelatedChannelReview {
+    pub review_id: String,
+    pub owner_label: String,
+    pub state: RelatedChannelReviewStatus,
+    pub declared_channels: Vec<String>,
+    pub effective_channels: Vec<String>,
+    pub uninspected_channels: Vec<String>,
+    pub relations: Vec<RelatedChannelRelation>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelatedChannelReviewStatus {
+    Pending,
+    Declined,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelatedChannelRelationKind {
+    Base,
+    Overrides,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelatedChannelRelation {
+    pub declaring_channel: String,
+    pub subdir: String,
+    pub kind: RelatedChannelRelationKind,
+    pub target_channel: String,
+    pub ignored_for_priority: bool,
 }
 
 /// Snapshot of a single comm entry in the RuntimeStateDoc.
@@ -1261,6 +1299,29 @@ impl RuntimeStateDoc {
             needs_approval,
             ..TrustRuntimeState::default()
         })
+    }
+
+    /// Read the current channel review. Absent on older runtime documents.
+    pub fn related_channel_review(&self) -> Option<RelatedChannelReview> {
+        let trust = self.get_map("trust")?;
+        automunge::read_json_value(&self.doc, &trust, "related_channel_review")
+            .and_then(|value| serde_json::from_value(value).ok())
+    }
+
+    /// Write only the channel-review lifecycle. Ordinary package trust updates
+    /// deliberately preserve this separate owner-controlled state.
+    pub fn set_related_channel_review(
+        &mut self,
+        review: Option<&RelatedChannelReview>,
+    ) -> Result<bool, RuntimeStateError> {
+        if self.related_channel_review().as_ref() == review {
+            return Ok(false);
+        }
+        let trust = self.scaffold_map("trust")?;
+        let value = serde_json::to_value(review)
+            .map_err(|error| RuntimeStateError::InvalidChannelReview(error.to_string()))?;
+        automunge::update_json_at_key(&mut self.doc, &trust, "related_channel_review", &value)?;
+        Ok(true)
     }
 
     pub fn set_trust_state(&mut self, state: &TrustRuntimeState) -> Result<(), RuntimeStateError> {
@@ -3697,6 +3758,7 @@ impl RuntimeStateDoc {
             .as_ref()
             .map(|t| TrustRuntimeState {
                 status: self.read_str(t, "status"),
+                related_channel_review: self.related_channel_review(),
                 needs_approval: self.read_bool(t, "needs_approval"),
                 pep723_dependencies: self.read_str_list(t, "pep723_dependencies"),
                 approved_uv_dependencies: self.read_str_list(t, "approved_uv_dependencies"),
@@ -5105,6 +5167,49 @@ mod tests {
     }
 
     #[test]
+    fn related_channel_review_roundtrips_and_survives_package_trust_refresh() {
+        let mut doc = RuntimeStateDoc::new();
+        assert!(doc.related_channel_review().is_none());
+        let review = RelatedChannelReview {
+            review_id: "review-1".into(),
+            owner_label: "environment.yml".into(),
+            state: RelatedChannelReviewStatus::Pending,
+            declared_channels: vec!["https://example.test/a/".into()],
+            effective_channels: vec![
+                "https://example.test/b/".into(),
+                "https://example.test/a/".into(),
+            ],
+            uninspected_channels: vec!["https://example.test/b/".into()],
+            relations: vec![RelatedChannelRelation {
+                declaring_channel: "https://example.test/a/".into(),
+                subdir: "noarch".into(),
+                kind: RelatedChannelRelationKind::Base,
+                target_channel: "https://example.test/b/".into(),
+                ignored_for_priority: false,
+            }],
+        };
+        assert!(doc.set_related_channel_review(Some(&review)).unwrap());
+        assert!(!doc.set_related_channel_review(Some(&review)).unwrap());
+        doc.set_trust("trusted", false).unwrap();
+        assert_eq!(
+            doc.read_state().trust.related_channel_review.as_ref(),
+            Some(&review)
+        );
+        let saved = doc.doc.save();
+        let mut restored = RuntimeStateDoc::new_empty();
+        restored.doc = AutoCommit::load(&saved).unwrap();
+        assert_eq!(restored.related_channel_review(), Some(review.clone()));
+        let declined = RelatedChannelReview {
+            state: RelatedChannelReviewStatus::Declined,
+            ..review
+        };
+        doc.set_related_channel_review(Some(&declined)).unwrap();
+        assert_eq!(doc.related_channel_review(), Some(declined));
+        assert!(doc.set_related_channel_review(None).unwrap());
+        assert!(doc.read_state().trust.related_channel_review.is_none());
+    }
+
+    #[test]
     fn test_set_trust() {
         let mut doc = RuntimeStateDoc::new();
         doc.set_trust("untrusted", true).unwrap();
@@ -5122,6 +5227,7 @@ mod tests {
             approved_pixi_dependencies: vec!["polars".to_string()],
             approved_pixi_pypi_dependencies: vec!["plotly".to_string()],
             approved_pixi_channels: vec!["bioconda".to_string()],
+            related_channel_review: None,
         })
         .unwrap();
         let state = doc.read_state();

@@ -1,5 +1,7 @@
 "use client";
 
+import { RelatedChannelReviewExample } from "./related-channel-review-example";
+
 import {
   AlertTriangle,
   CircleDot,
@@ -180,6 +182,7 @@ function RuntimeDialogs({ scenario }: { scenario: ElementsNotebookScenario }) {
       <div className="rounded-lg border border-fd-border bg-fd-background p-4">
         <ShieldAlert className="mb-3 size-4 text-amber-500" aria-hidden="true" />
         <h3 className="text-sm font-semibold">Trust review</h3>
+        <RelatedChannelReviewExample />
         <p className="mt-2 min-h-[3rem] text-xs leading-5 text-fd-muted-foreground">
           Opens the current package trust dialog with approved and suspicious package fixtures.
         </p>
