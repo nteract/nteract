@@ -76,7 +76,8 @@ const image = Widget.define({
     };
     dom.addEventListener("click", (event) => {
       if (!plainClick(event) || !imageEventReachesEditor(event)) return;
-      if (!editor.editable && open(editor.contentDOM)) {
+      // A reader's content isn't focusable; focus returns to Expand instead.
+      if (!editor.editable && open(expandButton ?? editor.contentDOM)) {
         // The viewer has focus now. Wordgard's own click handling would take
         // it back to the Page behind the modal, where Escape can't reach it.
         event.preventDefault();

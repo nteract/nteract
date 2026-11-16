@@ -146,6 +146,11 @@ test("reading, a click on a loaded image expands it; before it loads, it selects
     const viewer = document.querySelector(".diagram-viewer");
     assert.ok(viewer);
     viewer.querySelector(".diagram-viewer-close").click();
+    assert.equal(
+      document.activeElement,
+      frame.querySelector(".wordgard-diagram-maximize"),
+      "focus returns to Expand, not to read-only content that can't take it",
+    );
   } finally {
     editor.dom.remove();
   }

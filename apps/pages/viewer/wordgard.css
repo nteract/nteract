@@ -376,7 +376,8 @@
   height: auto;
 }
 /* A Page image (wordgard-images.mjs): the img, with Comment and Expand in its
-   top-right corner while it is hovered, holds focus or is selected. The frame
+   top-right corner while it is hovered, holds focus, or is selected in the
+   focused editor (an unfocused block keeps its selection undrawn). The frame
    is inline-block so the corner is the image's, and its baseline stays the
    img's. */
 .wordgard-document .pages-image {
@@ -396,7 +397,7 @@
   transition: opacity 120ms ease-out;
 }
 .wordgard-document .pages-image:is(:hover, :focus-within) .pages-image-actions,
-.wordgard-document .wg-selected-node > .pages-image .pages-image-actions {
+.wordgard-editor:focus-within .wg-selected-node > .pages-image .pages-image-actions {
   opacity: 1;
   pointer-events: auto;
 }
