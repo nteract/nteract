@@ -411,7 +411,7 @@ pub(crate) async fn handle_notebook_request_with_connection(
     daemon: Arc<Daemon>,
     submitter_actor_label: Option<&str>,
     channel_review: Option<
-        Arc<crate::notebook_sync_server::channel_review_connection::ChannelReviewConnection>,
+        crate::notebook_sync_server::channel_review_connection::ChannelReviewLaunch,
     >,
 ) -> NotebookResponse {
     debug!(

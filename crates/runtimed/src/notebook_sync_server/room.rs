@@ -2632,6 +2632,7 @@ impl NotebookRoom {
     /// Cancel the currently admitted generation, if any. The owner retains
     /// the gate until it has stopped any subprocess or kernel it started, so
     /// a successor cannot race the cleanup.
+    #[cfg(test)]
     pub(crate) fn cancel_in_flight_launch(&self) -> Option<u64> {
         let mut state = self.kernel_launch_gate.lock_state();
         let generation = state.in_flight_generation?;

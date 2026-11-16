@@ -519,17 +519,45 @@ mod tests {
             identity_revision: 0,
             generation: attempt.generation(),
         };
-        room.expect_runtime_agent("agent");
-        assert!(room.mark_runtime_agent_connected("agent"));
+        let agent_id = format!("review-rejection-{}", uuid::Uuid::new_v4());
+        room.expect_runtime_agent(&agent_id);
+        assert!(room.mark_runtime_agent_connected(&agent_id));
+        *room.current_runtime_agent_id.write().await = Some(agent_id.clone());
+        #[cfg(unix)]
+        let agent_pid = {
+            use std::os::unix::fs::PermissionsExt;
+            let helper = temp.path().join("owned-agent");
+            std::fs::write(&helper, "#!/bin/sh\nexec sleep 600\n").unwrap();
+            std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let handle = crate::runtime_agent_handle::RuntimeAgentHandle::spawn(
+                room.id.to_string(),
+                agent_id.clone(),
+                temp.path().join("blobs"),
+                temp.path().join("unused.sock"),
+                Some(helper),
+            )
+            .await
+            .unwrap();
+            assert!(handle.is_alive());
+            let manifest: crate::runtime_agent_manifest::RuntimeAgentManifest =
+                serde_json::from_slice(
+                    &std::fs::read(crate::runtime_agent_manifest::manifest_path(&agent_id))
+                        .unwrap(),
+                )
+                .unwrap();
+            *room.runtime_agent_handle.lock().await = Some(handle);
+            manifest.pgid.unwrap()
+        };
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         *room.runtime_agent_request_tx.lock().await = Some(tx);
         room.project_trust_prompt.lock().unwrap().identity_revision = 1;
         let task_room = room.clone();
+        let task_agent_id = agent_id.clone();
         let completion = tokio::spawn(async move {
             super::super::launch_kernel::complete_manual_launch(
                 &task_room,
                 &mut Some(attempt),
-                "agent",
+                &task_agent_id,
                 "python",
                 &notebook_protocol::connection::EnvSource::Inline(
                     notebook_protocol::connection::PackageManager::Conda,
@@ -552,8 +580,26 @@ mod tests {
             "rejected launch must retain ownership while its shutdown RPC is pending"
         );
         assert!(room.runtime_agent_launched_config.read().await.is_none());
-        drop(shutdown); // Complete the RPC with a closed reply; cleanup must still release ownership.
+        drop(shutdown); // A lost acknowledgement must force agent teardown.
         assert!(completion.await.unwrap().is_err());
+        assert!(room.runtime_agent_request_tx.lock().await.is_none());
+        assert!(room.current_runtime_agent_id.read().await.is_none());
+        assert!(
+            !room.mark_runtime_agent_connected(&agent_id),
+            "revoked agent cannot reconnect after failed shutdown"
+        );
+        #[cfg(unix)]
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match nix::sys::signal::kill(nix::unistd::Pid::from_raw(agent_pid), None) {
+                    Err(nix::errno::Errno::ESRCH) => break,
+                    Ok(()) => tokio::task::yield_now().await,
+                    other => panic!("agent liveness check: {other:?}"),
+                }
+            }
+        })
+        .await
+        .expect("failed shutdown acknowledgement must terminate the owned agent process");
         let ManualLaunchAdmission::Admitted(successor) = room.try_begin_manual_launch() else {
             panic!("cleanup must release gate")
         };

@@ -30,7 +30,10 @@ The same input locks and launch generation fence the runtime-agent RPC and final
 launch publication. Validation waits for document contention rather than
 revoking consent. Atomic commits acquire the launch gate before the connection,
 selection and notebook identity locks. A rejected final commit retains the
-launch token until its kernel shutdown finishes, fencing successor launches.
+launch token through shutdown and owned-agent teardown, including a lost shutdown
+reply. Shutdown uses the control queue after capacity and causal validation. Its
+queue state invalidates older launch tickets and holds later tickets until the
+shutdown completes, including launches not yet admitted to the room gate.
 
 ## Compatibility and retained prefixes
 

@@ -10,6 +10,7 @@ use crate::protocol::NotebookResponse;
 async fn begin_shutdown_with_agent_policy(
     room: &NotebookRoom,
     invalidate_runtime_agent: bool,
+    on_shutdown: impl FnOnce(),
 ) -> Option<u64> {
     // Presence and RuntimeStateDoc become terminal at the same launch-gate
     // linearization point. Success takes these locks in the same order, so it
@@ -21,6 +22,7 @@ async fn begin_shutdown_with_agent_policy(
     {
         let mut presence_state = room.broadcasts.presence.write().await;
         let commit_presence = || {
+            on_shutdown();
             update_kernel_presence_locked(
                 &mut presence_state,
                 &room.broadcasts.presence_tx,
@@ -36,16 +38,19 @@ async fn begin_shutdown_with_agent_policy(
     }
 }
 
-pub(crate) async fn begin_shutdown(room: &NotebookRoom) -> Option<u64> {
-    begin_shutdown_with_agent_policy(room, false).await
-}
-
 pub(crate) async fn begin_teardown(room: &NotebookRoom) -> Option<u64> {
-    begin_shutdown_with_agent_policy(room, true).await
+    begin_shutdown_with_agent_policy(room, true, || {}).await
 }
 
 pub(crate) async fn handle(room: &NotebookRoom) -> NotebookResponse {
-    let cancelled_launch = begin_shutdown(room).await;
+    handle_with_control(room, || {}).await
+}
+
+pub(crate) async fn handle_with_control(
+    room: &NotebookRoom,
+    on_shutdown: impl FnOnce(),
+) -> NotebookResponse {
+    let cancelled_launch = begin_shutdown_with_agent_policy(room, false, on_shutdown).await;
 
     // Send shutdown RPC but keep the runtime agent alive — it stays
     // connected for potential RestartKernel. The kernel process dies

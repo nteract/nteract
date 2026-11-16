@@ -284,6 +284,14 @@ pub(super) async fn complete_manual_launch(
             // token until cleanup finishes so no successor can launch beside
             // the kernel or agent we are stopping.
             let _ = crate::requests::shutdown_kernel::handle(room).await;
+            if review.is_some() {
+                // A missing/failed shutdown acknowledgement is not proof that
+                // a revoked kernel stopped. Drop this generation's owned agent
+                // (and its process group/job) before admitting another launch.
+                cancelled_attempt
+                    .discard_cancelled_runtime_agent(runtime_agent_id)
+                    .await;
+            }
             cancelled_attempt.finish_cancelled();
             Err(NotebookResponse::Error {
                 error: if reason == KernelLaunchCommitRejection::InputsChanged {
@@ -331,9 +339,16 @@ pub(crate) async fn handle_with_connection(
     env_source: LaunchSpec,
     notebook_path: Option<String>,
     channel_review: Option<
-        Arc<crate::notebook_sync_server::channel_review_connection::ChannelReviewConnection>,
+        crate::notebook_sync_server::channel_review_connection::ChannelReviewLaunch,
     >,
 ) -> NotebookResponse {
+    if let Some(review) = channel_review.as_ref() {
+        if let Err(error) = review.wait_for_admission().await {
+            return NotebookResponse::Error {
+                error: error.to_string(),
+            };
+        }
+    }
     if let Err(rejection) = guarded::ensure_trusted(room).await {
         return rejection.into_response();
     }
@@ -341,6 +356,15 @@ pub(crate) async fn handle_with_connection(
     let launch_attempt = loop {
         match room.try_begin_manual_launch() {
             ManualLaunchAdmission::Admitted(attempt) => {
+                if let Some(review) = channel_review.as_ref() {
+                    if let Err(error) = review.validate_admission() {
+                        attempt.release_without_cooldown();
+                        return NotebookResponse::Error {
+                            error: error.to_string(),
+                        };
+                    }
+                }
+
                 // The active kernel can finish between admission and this
                 // check. Owning the gate makes a progress-phase projection
                 // safe here: no different launch can be in flight.
@@ -419,7 +443,7 @@ pub(crate) async fn handle_with_connection(
         launch_attempt,
         binding,
         None,
-        channel_review,
+        channel_review.map(|review| review.connection),
     )
     .await
 }

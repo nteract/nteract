@@ -3,7 +3,7 @@
 
 use crate::protocol::{NotebookRequest, NotebookResponse};
 use std::sync::{Arc, Mutex};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 
 type Validate = Arc<dyn kernel_env::channel_review::authorization::ReviewValidator>;
 
@@ -18,11 +18,100 @@ enum State {
     Closed,
 }
 
+/// Queue admission is suspended while shutdown is in flight. A shutdown
+/// invalidates tickets already queued; tickets created afterward wait for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LaunchQueueState {
+    Ready(u64),
+    Stopping(u64),
+}
+#[derive(Clone, Copy)]
+enum LaunchQueueEvent {
+    BeginShutdown,
+    FinishShutdown(u64),
+}
+fn launch_queue_transition(state: LaunchQueueState, event: LaunchQueueEvent) -> LaunchQueueState {
+    match (state, event) {
+        (
+            LaunchQueueState::Ready(revision) | LaunchQueueState::Stopping(revision),
+            LaunchQueueEvent::BeginShutdown,
+        ) => LaunchQueueState::Stopping(revision + 1),
+        (LaunchQueueState::Stopping(revision), LaunchQueueEvent::FinishShutdown(expected))
+            if revision == expected =>
+        {
+            LaunchQueueState::Ready(revision)
+        }
+        (state, LaunchQueueEvent::FinishShutdown(_)) => state,
+    }
+}
+impl LaunchQueueState {
+    fn revision(self) -> u64 {
+        match self {
+            Self::Ready(r) | Self::Stopping(r) => r,
+        }
+    }
+}
+
+pub(crate) struct ChannelReviewLaunch {
+    pub(crate) connection: Arc<ChannelReviewConnection>,
+    revision: u64,
+}
+impl std::fmt::Debug for ChannelReviewLaunch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChannelReviewLaunch")
+            .field("revision", &self.revision)
+            .finish_non_exhaustive()
+    }
+}
+impl ChannelReviewLaunch {
+    pub(crate) async fn wait_for_admission(&self) -> anyhow::Result<()> {
+        let mut state = self.connection.launch_queue.subscribe();
+        loop {
+            self.connection.with_live(|| Ok(()))?;
+            let current = *state.borrow_and_update();
+            anyhow::ensure!(
+                current.revision() == self.revision,
+                "Queued kernel launch cancelled by shutdown"
+            );
+            if matches!(current, LaunchQueueState::Ready(_)) {
+                return Ok(());
+            }
+            state
+                .changed()
+                .await
+                .map_err(|_| anyhow::anyhow!("Launch connection closed"))?;
+        }
+    }
+    pub(crate) fn validate_admission(&self) -> anyhow::Result<()> {
+        self.connection.with_live(|| {
+            anyhow::ensure!(
+                *self.connection.launch_queue.borrow() == LaunchQueueState::Ready(self.revision),
+                "Queued kernel launch cancelled by shutdown"
+            );
+            Ok(())
+        })
+    }
+}
+
+pub(super) struct ChannelShutdown {
+    connection: Arc<ChannelReviewConnection>,
+    revision: u64,
+}
+impl Drop for ChannelShutdown {
+    fn drop(&mut self) {
+        self.connection.launch_queue.send_modify(|state| {
+            *state =
+                launch_queue_transition(*state, LaunchQueueEvent::FinishShutdown(self.revision))
+        });
+    }
+}
+
 pub(crate) struct ChannelReviewConnection {
     peer_id: String,
     requested: bool,
     local_owner: bool,
     state: Mutex<State>,
+    launch_queue: watch::Sender<LaunchQueueState>,
 }
 
 pub(crate) struct ChannelReviewConnectionLease(Arc<ChannelReviewConnection>);
@@ -58,9 +147,29 @@ impl ChannelReviewConnection {
             requested,
             local_owner,
             state: Mutex::new(State::Live { pending: None }),
+            launch_queue: watch::channel(LaunchQueueState::Ready(0)).0,
         });
         let lease = ChannelReviewConnectionLease(connection.clone());
         (connection, lease)
+    }
+
+    pub(crate) fn queued_launch(self: &Arc<Self>) -> ChannelReviewLaunch {
+        ChannelReviewLaunch {
+            connection: self.clone(),
+            revision: self.launch_queue.borrow().revision(),
+        }
+    }
+
+    /// Called inside the room shutdown commit, under the launch gate. This
+    /// closes the race between queue invalidation and manual launch admission.
+    pub(super) fn begin_shutdown(self: &Arc<Self>) -> ChannelShutdown {
+        self.launch_queue.send_modify(|state| {
+            *state = launch_queue_transition(*state, LaunchQueueEvent::BeginShutdown)
+        });
+        ChannelShutdown {
+            connection: self.clone(),
+            revision: self.launch_queue.borrow().revision(),
+        }
     }
 
     pub(crate) fn enabled(&self) -> bool {
@@ -169,6 +278,9 @@ impl ChannelReviewConnection {
 impl Drop for ChannelReviewConnectionLease {
     fn drop(&mut self) {
         *self.0.state.lock().unwrap_or_else(|e| e.into_inner()) = State::Closed;
+        self.0.launch_queue.send_modify(|state| {
+            *state = launch_queue_transition(*state, LaunchQueueEvent::BeginShutdown)
+        });
     }
 }
 
@@ -319,5 +431,45 @@ mod tests {
         assert!(rejection(&connection, "peer", &approval("abandoned"))
             .await
             .contains("not available"));
+    }
+
+    #[test]
+    fn shutdown_queue_transitions_fence_stale_completions() {
+        use LaunchQueueEvent::*;
+        use LaunchQueueState::*;
+        for state in [Ready(3), Stopping(3)] {
+            assert_eq!(launch_queue_transition(state, BeginShutdown), Stopping(4));
+            assert_eq!(launch_queue_transition(state, FinishShutdown(2)), state);
+            assert_eq!(launch_queue_transition(state, FinishShutdown(4)), state);
+        }
+        assert_eq!(
+            launch_queue_transition(Ready(3), FinishShutdown(3)),
+            Ready(3)
+        );
+        assert_eq!(
+            launch_queue_transition(Stopping(3), FinishShutdown(3)),
+            Ready(3)
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_invalidates_queued_launch_and_holds_successor_until_completion() {
+        use std::future::Future;
+        let (connection, _lease) = ChannelReviewConnection::open("peer".into(), true, true);
+        let queued = connection.queued_launch();
+        let shutdown = connection.begin_shutdown();
+        assert!(queued.wait_for_admission().await.is_err());
+        assert!(queued.validate_admission().is_err());
+        let successor = connection.queued_launch();
+        let mut admission = std::pin::pin!(successor.wait_for_admission());
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(admission.as_mut().poll(&mut context).is_pending());
+        drop(shutdown);
+        admission.await.unwrap();
+        successor.validate_admission().unwrap();
+        assert!(
+            queued.validate_admission().is_err(),
+            "completed shutdown cannot revive old queued launches"
+        );
     }
 }
