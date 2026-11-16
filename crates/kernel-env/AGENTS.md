@@ -114,6 +114,21 @@ Pool warmer and capture step strip a base set so captured metadata records only 
 | `kernel_env::uv::UV_BASE_PACKAGES` | `[ipykernel, ipywidgets, anywidget, nbformat, pyarrow>=14, uv]` |
 | `kernel_env::conda::CONDA_BASE_PACKAGES` | `[ipykernel, ipywidgets, anywidget, pip, nbformat, pyarrow>=14]` |
 
+`conda::sync_dependencies` takes an `EnvOwnership`. Daemon-owned prefixes get
+the full base set, and the solve is the env's complete desired state. A
+user-managed `environment.yml` prefix (`prefix:` or an existing named env) gets
+only `ipykernel` and `pyarrow>=14`, each skipped when pip already owns it. Every installed Conda package stays in the solve, so the
+installer removes nothing. A requested package that pip installed is left to
+pip: its dist-info directory appears in no Conda record's file list. A named
+env the daemon created counts as user-managed from its next launch. Hot-sync
+applies the user rules to every `conda:env_yml` kernel, since its launched
+config does not record ownership.
+
+Conda and Pixi solves go through `repodata::solve_with_repodata`. It solves on
+cached repodata first. If that solve fails, it refetches once and solves again:
+a cache entry can be weeks old. If the refetch fails, it reports the cached
+solve's error.
+
 On Windows ARM64, UV install/strip/prewarm/inline lists drop `pyarrow>=14` (`uv_base_packages()` / `omit_default_pyarrow()`). Conda and Pixi keep PyArrow and solve managed/prewarmed/inline envs as emulated `win-64` via `conda_solve_platform()`. User-owned `pixi.toml` / `environment.yml` platforms are not rewritten.
 
 ### Windows ARM64 Conda/Pixi emulation

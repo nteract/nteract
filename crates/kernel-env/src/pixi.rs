@@ -259,42 +259,45 @@ async fn install_pixi_env(
     // HTTP client
     let download_client = crate::channels::download_client()?;
 
-    // Query repodata with offline-first strategy
-    let platforms = vec![install_platform, Platform::NoArch];
-
-    let repo_data = crate::repodata::query_repodata_offline_first(
-        channels,
-        platforms,
-        specs.clone(),
-        &rattler_cache_dir,
-        download_client.clone(),
-        handler.clone(),
-        "pixi",
-    )
-    .await?;
-
     // Virtual packages match the solve platform, not the host.
     let virtual_packages = crate::detect_solve_virtual_packages()?;
 
-    // Solve
-    handler.on_progress(
-        "pixi",
-        EnvProgressPhase::Solving {
-            spec_count: specs.len(),
+    // Fetch repodata (cache first, refreshed once if the cached solve fails)
+    // and solve.
+    // Reset per solve so SolveComplete times the solve, not the fetch.
+    let mut solve_start = Instant::now();
+    let solved = crate::repodata::solve_with_repodata(
+        crate::repodata::RepodataQuery {
+            channels,
+            platforms: vec![install_platform, Platform::NoArch],
+            specs: specs.clone(),
+            rattler_cache_dir: &rattler_cache_dir,
+            download_client: download_client.clone(),
+            handler: handler.clone(),
+            env_type: "pixi",
         },
-    );
+        |repo_data| {
+            solve_start = Instant::now();
+            handler.on_progress(
+                "pixi",
+                EnvProgressPhase::Solving {
+                    spec_count: specs.len(),
+                },
+            );
+            resolvo::Solver.solve(SolverTask {
+                virtual_packages: virtual_packages.clone(),
+                specs: specs.clone(),
+                constraints: constraints.clone(),
+                ..SolverTask::from_iter(repo_data)
+            })
+        },
+    )
+    .await;
 
-    let solve_start = Instant::now();
-    let solver_task = SolverTask {
-        virtual_packages,
-        specs,
-        constraints,
-        ..SolverTask::from_iter(&repo_data)
-    };
-
-    let solver_result = match resolvo::Solver.solve(solver_task) {
+    let solver_result = match solved {
         Ok(result) => result,
-        Err(e) => {
+        Err(crate::repodata::RepodataSolveError::Fetch(e)) => return Err(e),
+        Err(crate::repodata::RepodataSolveError::Solve(e)) => {
             let error_msg = format!("Failed to solve dependencies: {}", e);
             handler.on_progress(
                 "pixi",

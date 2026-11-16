@@ -912,33 +912,6 @@ async fn create_conda(env_dir: &Path, packages: &[String], channels: &[String]) 
     let platforms = vec![install_platform, Platform::NoArch];
     let progress_handler = std::sync::Arc::new(kernel_env::LogHandler);
 
-    // Fetch repodata
-    progress(
-        "resolving",
-        "fetching repodata from cache or configured channels",
-    );
-    let repo_data = match kernel_env::repodata::query_repodata_offline_first(
-        channels,
-        platforms,
-        specs.clone(),
-        &rattler_cache_dir,
-        download_client.clone(),
-        progress_handler,
-        "conda",
-    )
-    .await
-    {
-        Ok(data) => data,
-        Err(e) => {
-            emit_failure(
-                format!("Failed to fetch repodata: {e}"),
-                "setup_failed",
-                None,
-            );
-            return;
-        }
-    };
-
     // Virtual packages match the solve platform, not the host.
     let virtual_packages = match kernel_env::detect_solve_virtual_packages() {
         Ok(vps) => vps,
@@ -952,17 +925,44 @@ async fn create_conda(env_dir: &Path, packages: &[String], channels: &[String]) 
         }
     };
 
-    // Solve
-    progress("resolving", "solving dependencies");
-    let solver_task = SolverTask {
-        virtual_packages,
-        specs,
-        constraints,
-        ..SolverTask::from_iter(&repo_data)
-    };
-    let required_packages = match resolvo::Solver.solve(solver_task) {
+    // Fetch repodata (cache first, refreshed once if the cached solve fails)
+    // and solve.
+    progress(
+        "resolving",
+        "fetching repodata from cache or configured channels",
+    );
+    let solved = kernel_env::repodata::solve_with_repodata(
+        kernel_env::repodata::RepodataQuery {
+            channels,
+            platforms,
+            specs: specs.clone(),
+            rattler_cache_dir: &rattler_cache_dir,
+            download_client: download_client.clone(),
+            handler: progress_handler,
+            env_type: "conda",
+        },
+        |repo_data| {
+            progress("resolving", "solving dependencies");
+            resolvo::Solver.solve(SolverTask {
+                virtual_packages: virtual_packages.clone(),
+                specs: specs.clone(),
+                constraints: constraints.clone(),
+                ..SolverTask::from_iter(repo_data)
+            })
+        },
+    )
+    .await;
+    let required_packages = match solved {
         Ok(result) => result.records,
-        Err(e) => {
+        Err(kernel_env::repodata::RepodataSolveError::Fetch(e)) => {
+            emit_failure(
+                format!("Failed to fetch repodata: {e}"),
+                "setup_failed",
+                None,
+            );
+            return;
+        }
+        Err(kernel_env::repodata::RepodataSolveError::Solve(e)) => {
             emit_failure(
                 format!("Failed to solve dependencies: {e}"),
                 "invalid_package",

@@ -3050,6 +3050,7 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
             match kernel_env::conda::sync_dependencies(
                 &conda_env,
                 &conda_deps,
+                kernel_env::EnvOwnership::Daemon,
                 progress_handler.clone(),
             )
             .await
@@ -4316,6 +4317,11 @@ async fn auto_launch_kernel_attempt(
             if let Err(e) = kernel_env::conda::sync_dependencies(
                 &conda_env,
                 &conda_deps,
+                if is_daemon_owned_env {
+                    kernel_env::EnvOwnership::Daemon
+                } else {
+                    kernel_env::EnvOwnership::User
+                },
                 progress_handler.clone(),
             )
             .await

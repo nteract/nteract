@@ -2631,8 +2631,13 @@ async fn run_sync_environment(
                 python: None,
                 env_id: None,
             };
-            match kernel_env::conda::sync_dependencies(&conda_env, &conda_deps, handler.clone())
-                .await
+            match kernel_env::conda::sync_dependencies(
+                &conda_env,
+                &conda_deps,
+                hot_sync_conda_ownership(&es),
+                handler.clone(),
+            )
+            .await
             {
                 Ok(()) => {
                     if !is_current() {
@@ -3149,9 +3154,37 @@ fn set_json_path(root: &mut serde_json::Value, path: &[String], value: serde_jso
     }
 }
 
+/// Which [`kernel_env::EnvOwnership`] rules a Conda hot-sync uses.
+///
+/// The launched config does not record who built the prefix. User rules are
+/// safe for every `environment.yml` env: they keep installed packages and add
+/// only `ipykernel`.
+fn hot_sync_conda_ownership(env_source: &str) -> kernel_env::EnvOwnership {
+    match notebook_protocol::connection::EnvSource::parse(env_source) {
+        notebook_protocol::connection::EnvSource::EnvYml => kernel_env::EnvOwnership::User,
+        _ => kernel_env::EnvOwnership::Daemon,
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn conda_hot_sync_uses_user_rules_only_for_environment_yml() {
+        use kernel_env::EnvOwnership;
+        assert_eq!(
+            hot_sync_conda_ownership("conda:env_yml"),
+            EnvOwnership::User
+        );
+        for source in ["conda:inline", "conda:prewarmed", "conda:pep723", "unknown"] {
+            assert_eq!(
+                hot_sync_conda_ownership(source),
+                EnvOwnership::Daemon,
+                "{source}"
+            );
+        }
+    }
     use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
     use crate::output_prep::queue_command_channels;
     use crate::protocol::CompletionItem;
