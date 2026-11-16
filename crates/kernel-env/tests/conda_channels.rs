@@ -72,9 +72,14 @@ async fn conda_create_and_sync(channels: &[&str]) {
     } else {
         "six".into()
     });
-    conda::sync_dependencies(&env, &deps, Arc::new(LogHandler))
-        .await
-        .unwrap();
+    conda::sync_dependencies(
+        &env,
+        &deps,
+        conda::EnvOwnership::Daemon,
+        Arc::new(LogHandler),
+    )
+    .await
+    .unwrap();
     assert_python_312(&env.python_path, "six").await;
     let python_after = PrefixRecord::collect_from_prefix::<PrefixRecord>(&env.env_path)
         .unwrap()
@@ -104,6 +109,76 @@ async fn conda_forge_python_312_create_and_sync() {
 #[ignore = "requires Anaconda main-x credentials in the rattler/Pixi store"]
 async fn main_and_main_x_python_312_create_and_sync() {
     conda_create_and_sync(&["main", "main-x"]).await;
+}
+
+/// A user-managed environment.yml env: pip owns pyarrow, and the user added
+/// a Conda package that environment.yml doesn't list. A sync must not install
+/// a Conda pyarrow over pip's, and must not remove the extra package.
+#[tokio::test]
+#[ignore = "downloads and installs packages from Anaconda main"]
+async fn user_env_sync_keeps_pip_and_unlisted_conda_packages() {
+    let dir = tempfile::tempdir().unwrap();
+    let create = CondaDependencies {
+        dependencies: vec!["six".into()],
+        channels: vec!["defaults".into()],
+        python: Some("3.12.*".into()),
+        env_id: None,
+    };
+    let env = conda::prepare_environment_in(&create, dir.path(), Arc::new(LogHandler))
+        .await
+        .unwrap();
+    let conda_names = |prefix: &Path| -> Vec<String> {
+        PrefixRecord::collect_from_prefix::<PrefixRecord>(prefix)
+            .unwrap()
+            .into_iter()
+            .map(|r| {
+                r.repodata_record
+                    .package_record
+                    .name
+                    .as_normalized()
+                    .to_string()
+            })
+            .collect()
+    };
+    // Stand in for `pip install pyarrow`: a dist-info with no Conda record.
+    // prepare_environment_in installs the daemon base set, so drop Conda's
+    // pyarrow first to model a user env that never had it.
+    let before = conda_names(&env.env_path);
+    assert!(before.iter().any(|n| n == "six"));
+    let site = std::fs::read_dir(env.env_path.join("lib"))
+        .unwrap()
+        .flatten()
+        .find(|e| e.file_name().to_string_lossy().starts_with("python3"))
+        .unwrap()
+        .path()
+        .join("site-packages");
+    for record in std::fs::read_dir(env.env_path.join("conda-meta"))
+        .unwrap()
+        .flatten()
+    {
+        let name = record.file_name().to_string_lossy().into_owned();
+        if name.starts_with("pyarrow-") && name.ends_with(".json") {
+            std::fs::remove_file(record.path()).unwrap();
+        }
+    }
+    std::fs::create_dir_all(site.join("pyarrow-26.0.1.dist-info")).unwrap();
+
+    // environment.yml no longer lists six; it lists pyarrow via pip only.
+    let sync = CondaDependencies {
+        dependencies: vec!["python=3.12".into(), "pyarrow".into()],
+        ..create
+    };
+    conda::sync_dependencies(&env, &sync, conda::EnvOwnership::User, Arc::new(LogHandler))
+        .await
+        .unwrap();
+
+    let after = conda_names(&env.env_path);
+    assert!(
+        !after.iter().any(|n| n == "pyarrow"),
+        "Conda pyarrow installed over pip's: {after:?}"
+    );
+    assert!(after.iter().any(|n| n == "six"), "six removed: {after:?}");
+    assert!(after.iter().any(|n| n == "ipykernel"));
 }
 
 #[tokio::test]

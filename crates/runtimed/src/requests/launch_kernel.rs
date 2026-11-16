@@ -1602,6 +1602,11 @@ async fn handle_attempt(
                         if let Err(e) = kernel_env::conda::sync_dependencies(
                             &conda_env,
                             &conda_deps,
+                            if is_daemon_owned_env {
+                                kernel_env::EnvOwnership::Daemon
+                            } else {
+                                kernel_env::EnvOwnership::User
+                            },
                             launch_progress_handler.clone(),
                         )
                         .await

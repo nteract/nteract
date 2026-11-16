@@ -58,7 +58,9 @@ pub mod warmup;
 
 // Re-export key types
 #[cfg(feature = "runtime")]
-pub use conda::{conda_base_packages, CondaDependencies, CondaEnvironment, CONDA_BASE_PACKAGES};
+pub use conda::{
+    conda_base_packages, CondaDependencies, CondaEnvironment, EnvOwnership, CONDA_BASE_PACKAGES,
+};
 #[cfg(feature = "runtime")]
 pub use platform::{
     conda_solve_platform, conda_solve_platform_for, detect_solve_virtual_packages,

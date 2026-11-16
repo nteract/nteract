@@ -528,43 +528,46 @@ async fn install_conda_env(
     // HTTP client
     let download_client = crate::channels::download_client()?;
 
-    // Query repodata with offline-first strategy
-    let platforms = vec![install_platform, Platform::NoArch];
-
-    let repo_data = crate::repodata::query_repodata_offline_first(
-        channels,
-        platforms,
-        specs.clone(),
-        &rattler_cache_dir,
-        download_client.clone(),
-        handler.clone(),
-        "conda",
-    )
-    .await?;
-
     // Virtual packages match the solve platform, not the host. On Windows
     // ARM64 that means x86_64 archspec for the emulated win-64 solve.
     let virtual_packages = crate::detect_solve_virtual_packages()?;
 
-    // Solve
-    handler.on_progress(
-        "conda",
-        EnvProgressPhase::Solving {
-            spec_count: specs.len(),
+    // Fetch repodata (cache first, refreshed once if the cached solve fails)
+    // and solve.
+    // Reset per solve so SolveComplete times the solve, not the fetch.
+    let mut solve_start = Instant::now();
+    let solved = crate::repodata::solve_with_repodata(
+        crate::repodata::RepodataQuery {
+            channels,
+            platforms: vec![install_platform, Platform::NoArch],
+            specs: specs.clone(),
+            rattler_cache_dir: &rattler_cache_dir,
+            download_client: download_client.clone(),
+            handler: handler.clone(),
+            env_type: "conda",
         },
-    );
+        |repo_data| {
+            solve_start = Instant::now();
+            handler.on_progress(
+                "conda",
+                EnvProgressPhase::Solving {
+                    spec_count: specs.len(),
+                },
+            );
+            resolvo::Solver.solve(SolverTask {
+                virtual_packages: virtual_packages.clone(),
+                specs: specs.clone(),
+                constraints: constraints.clone(),
+                ..SolverTask::from_iter(repo_data)
+            })
+        },
+    )
+    .await;
 
-    let solve_start = Instant::now();
-    let solver_task = SolverTask {
-        virtual_packages,
-        specs,
-        constraints,
-        ..SolverTask::from_iter(&repo_data)
-    };
-
-    let solver_result = match resolvo::Solver.solve(solver_task) {
+    let solver_result = match solved {
         Ok(result) => result,
-        Err(e) => {
+        Err(crate::repodata::RepodataSolveError::Fetch(e)) => return Err(e),
+        Err(crate::repodata::RepodataSolveError::Solve(e)) => {
             let error_msg = format!("Failed to solve dependencies: {}", e);
             handler.on_progress(
                 "conda",
@@ -879,16 +882,186 @@ pub fn is_environment_warmed(env: &CondaEnvironment) -> bool {
     env.env_path.join(".warmed").exists()
 }
 
+/// Who owns a Conda prefix that [`sync_dependencies`] writes into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvOwnership {
+    /// Built and managed by the daemon: pool, inline and PEP 723 envs, and an
+    /// `environment.yml` env on the launch that creates it. Syncs add the full
+    /// [`CONDA_BASE_PACKAGES`] set, and the solve is the env's complete
+    /// desired state.
+    Daemon,
+    /// Prepared by the user, such as an `environment.yml` `prefix:` or an
+    /// existing named env. Syncs add only `ipykernel`, keep every installed
+    /// Conda package, and leave packages that pip installed to pip.
+    User,
+}
+
+/// The kernel needs only `ipykernel`; the rest of the base set is optional.
+const USER_ENV_BASE_PACKAGES: &[&str] = &["ipykernel"];
+
+/// Normalize a distribution name the way PEP 503 does, so Conda and pip
+/// spellings compare equal (`tml_renderers` == `tml-renderers`).
+fn normalize_dist_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut last_dash = false;
+    for c in name.chars() {
+        if matches!(c, '-' | '_' | '.') {
+            if !last_dash {
+                out.push('-');
+            }
+            last_dash = true;
+        } else {
+            out.extend(c.to_lowercase());
+            last_dash = false;
+        }
+    }
+    out
+}
+
+/// The `*.dist-info` directory names that Conda records list in their files.
+///
+/// Conda packages write dist-info too, sometimes under another name:
+/// `matplotlib-base` writes `matplotlib-*.dist-info`. A directory is
+/// Conda's when a record lists a file inside it.
+fn conda_owned_dist_info_dirs(records: &[PrefixRecord]) -> std::collections::HashSet<String> {
+    records
+        .iter()
+        .flat_map(|record| record.files.iter())
+        .filter_map(|file| {
+            file.components().find_map(|component| {
+                let name = component.as_os_str().to_string_lossy();
+                name.ends_with(".dist-info").then(|| name.into_owned())
+            })
+        })
+        .collect()
+}
+
+/// Normalized names of the distributions in a prefix's site-packages whose
+/// `*.dist-info` directory no Conda record owns: what pip installed.
+fn pip_owned_dist_names(
+    prefix: &Path,
+    conda_owned_dirs: &std::collections::HashSet<String>,
+) -> std::collections::HashSet<String> {
+    let mut site_dirs = vec![prefix.join("Lib").join("site-packages")];
+    if let Ok(entries) = std::fs::read_dir(prefix.join("lib")) {
+        site_dirs.extend(
+            entries
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().starts_with("python"))
+                .map(|e| e.path().join("site-packages")),
+        );
+    }
+
+    let mut names = std::collections::HashSet::new();
+    for dir in site_dirs {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            let file_name = file_name.to_string_lossy();
+            if conda_owned_dirs.contains(file_name.as_ref()) {
+                continue;
+            }
+            let Some(stem) = file_name.strip_suffix(".dist-info") else {
+                continue;
+            };
+            // `{name}-{version}.dist-info`; names never contain `-` here
+            // because installers escape it to `_`.
+            if let Some((name, _version)) = stem.split_once('-') {
+                names.insert(normalize_dist_name(name));
+            }
+        }
+    }
+    names
+}
+
+/// The package specs a sync solves for.
+///
+/// `installed_conda` holds the prefix's Conda record names as Conda spells
+/// them; specs must use that spelling. `pip_owned` holds names from
+/// [`pip_owned_dist_names`]. Names are compared normalized.
+fn sync_package_specs(
+    deps: &[String],
+    ownership: EnvOwnership,
+    installed_conda: &std::collections::BTreeSet<String>,
+    pip_owned: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    // Keep the exact interpreter, including its ABI and channel. A version-only
+    // pin can switch between regular and free-threaded builds. Requiring a
+    // selector metapackage instead breaks channels which don't publish it.
+    if ownership == EnvOwnership::Daemon {
+        let mut packages = conda_base_packages();
+        packages.push("python".into());
+        packages.extend(
+            deps.iter()
+                .filter(|dep| !is_conda_base_package(dep))
+                .cloned(),
+        );
+        return packages;
+    }
+
+    let conda_normalized: std::collections::HashSet<String> = installed_conda
+        .iter()
+        .map(|name| normalize_dist_name(name))
+        .collect();
+    // pip owns it and Conda does not: a Conda copy would overlay the pip install.
+    let left_to_pip = |name: &str| pip_owned.contains(name) && !conda_normalized.contains(name);
+
+    let mut packages = vec!["python".to_string()];
+    let mut named: std::collections::HashSet<String> =
+        std::iter::once("python".to_string()).collect();
+    for dep in deps {
+        let name = normalize_dist_name(&conda_spec_name(dep));
+        if left_to_pip(&name) {
+            continue;
+        }
+        named.insert(name);
+        packages.push(dep.clone());
+    }
+
+    // Requested deps come first, so a user's `ipykernel>=6.29` keeps its
+    // constraint instead of being replaced by the bare base name.
+    for base in USER_ENV_BASE_PACKAGES {
+        let name = normalize_dist_name(base);
+        if !left_to_pip(&name) && named.insert(name) {
+            packages.push((*base).to_string());
+        }
+    }
+
+    // The installer removes anything outside the solve. Keep every Conda
+    // package the user installed by naming it; locking keeps its version.
+    for name in installed_conda {
+        if named.insert(normalize_dist_name(name)) {
+            packages.push(name.clone());
+        }
+    }
+    packages
+}
+
+/// The bare package name of a Conda spec such as `numpy=2.5.4`,
+/// `conda-forge::numpy>=2`, or `numpy 2.5.4 py312_0`.
+fn conda_spec_name(spec: &str) -> String {
+    let spec = spec.rsplit_once("::").map_or(spec, |(_, s)| s).trim();
+    let end = spec
+        .find(['=', '<', '>', '!', '~', ' ', '[', ';'])
+        .unwrap_or(spec.len());
+    spec[..end].to_string()
+}
+
 /// Install additional dependencies into an existing environment.
 ///
 /// Solves and installs new packages into the existing prefix, considering
-/// already-installed packages as locked. Progress events (solve, download,
-/// link, install-complete, ready) flow through `handler` so the frontend
-/// banner and logs stay in sync with the real transaction — including the
-/// full package count when the solver pulls in transitive deps.
+/// already-installed packages as locked. `ownership` decides which base
+/// packages are added and whether installed packages outside the request are
+/// kept; see [`EnvOwnership`]. Progress events (solve, download, link,
+/// install-complete, ready) flow through `handler` so the frontend banner and
+/// logs stay in sync with the real transaction — including the full package
+/// count when the solver pulls in transitive deps.
 pub async fn sync_dependencies(
     env: &CondaEnvironment,
     deps: &CondaDependencies,
+    ownership: EnvOwnership,
     handler: Arc<dyn ProgressHandler>,
 ) -> Result<()> {
     if deps.dependencies.is_empty() {
@@ -918,35 +1091,30 @@ pub async fn sync_dependencies(
         .context("Cannot sync conda environment without its installed Python record")?;
     let python_record = &installed_python.repodata_record;
 
-    // Keep the exact interpreter, including its ABI and channel. A version-only
-    // pin can switch between regular and free-threaded builds. Requiring a
-    // selector metapackage instead breaks channels which don't publish it.
-    let mut packages = conda_base_packages();
-    packages.push("python".into());
-    for dep in &deps.dependencies {
-        if !is_conda_base_package(dep) {
-            packages.push(dep.clone());
-        }
-    }
+    let installed_conda: std::collections::BTreeSet<String> = installed_packages
+        .iter()
+        .map(|r| {
+            r.repodata_record
+                .package_record
+                .name
+                .as_normalized()
+                .to_string()
+        })
+        .collect();
+    let pip_owned = match ownership {
+        EnvOwnership::Daemon => std::collections::HashSet::new(),
+        EnvOwnership::User => pip_owned_dist_names(
+            &env.env_path,
+            &conda_owned_dist_info_dirs(&installed_packages),
+        ),
+    };
+    let packages = sync_package_specs(&deps.dependencies, ownership, &installed_conda, &pip_owned);
     let specs = crate::python::parse_specs(&packages)?;
 
     let rattler_cache_dir = default_cache_dir()
         .map_err(|e| anyhow!("could not determine rattler cache directory: {}", e))?;
 
     let download_client = crate::channels::download_client()?;
-
-    let platforms = vec![install_platform, Platform::NoArch];
-
-    let repo_data = crate::repodata::query_repodata_offline_first(
-        channels,
-        platforms,
-        specs.clone(),
-        &rattler_cache_dir,
-        download_client.clone(),
-        handler.clone(),
-        "conda",
-    )
-    .await?;
 
     let virtual_packages = crate::detect_solve_virtual_packages()?;
 
@@ -965,22 +1133,42 @@ pub async fn sync_dependencies(
         })
         .collect();
 
-    let solver_task = SolverTask {
-        virtual_packages,
-        specs,
-        pinned_packages: vec![python_record.clone()],
-        locked_packages: installed_packages
-            .iter()
-            .filter(|r| {
-                let name = r.repodata_record.package_record.name.as_normalized();
-                !constrained_names.contains(name)
-            })
-            .map(|r| r.repodata_record.clone())
-            .collect(),
-        ..SolverTask::from_iter(&repo_data)
-    };
+    let locked_packages: Vec<_> = installed_packages
+        .iter()
+        .filter(|r| {
+            let name = r.repodata_record.package_record.name.as_normalized();
+            !constrained_names.contains(name)
+        })
+        .map(|r| r.repodata_record.clone())
+        .collect();
 
-    let solver_result = resolvo::Solver.solve(solver_task)?;
+    // Fetch repodata (cache first, refreshed once if the cached solve fails)
+    // and solve.
+    let solver_result = crate::repodata::solve_with_repodata(
+        crate::repodata::RepodataQuery {
+            channels,
+            platforms: vec![install_platform, Platform::NoArch],
+            specs: specs.clone(),
+            rattler_cache_dir: &rattler_cache_dir,
+            download_client: download_client.clone(),
+            handler: handler.clone(),
+            env_type: "conda",
+        },
+        |repo_data| {
+            resolvo::Solver.solve(SolverTask {
+                virtual_packages: virtual_packages.clone(),
+                specs: specs.clone(),
+                pinned_packages: vec![python_record.clone()],
+                locked_packages: locked_packages.clone(),
+                ..SolverTask::from_iter(repo_data)
+            })
+        },
+    )
+    .await
+    .map_err(|e| match e {
+        crate::repodata::RepodataSolveError::Fetch(e) => e,
+        crate::repodata::RepodataSolveError::Solve(e) => anyhow!(e),
+    })?;
     let required_packages = solver_result.records;
 
     info!("Installing {} packages for sync", required_packages.len());
@@ -1277,6 +1465,187 @@ fn normalize_bare_versions(constraint: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{BTreeSet, HashSet};
+
+    fn names(items: &[&str]) -> BTreeSet<String> {
+        items.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    /// The environment.yml case behind the stale-repodata report: Conda
+    /// numpy/matplotlib, and pyarrow installed by pip.
+    fn user_env_specs(deps: &[&str]) -> Vec<String> {
+        let installed_conda = names(&["python", "numpy", "matplotlib", "ipykernel", "polars"]);
+        let pip_owned: HashSet<String> = ["pyarrow", "tinker", "torch", "numpy", "matplotlib"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let deps: Vec<String> = deps.iter().map(|s| (*s).to_string()).collect();
+        sync_package_specs(&deps, EnvOwnership::User, &installed_conda, &pip_owned)
+    }
+
+    #[test]
+    fn user_env_sync_adds_only_ipykernel_from_the_base_set() {
+        let specs = user_env_specs(&["python=3.12", "numpy=2.5.4", "matplotlib=3.11.2"]);
+        for base in ["ipywidgets", "anywidget", "nbformat", "pip", "pyarrow>=14"] {
+            assert!(!specs.iter().any(|s| s == base), "{base} in {specs:?}");
+        }
+        assert!(specs.iter().any(|s| s == "ipykernel"));
+        assert!(specs.iter().any(|s| s == "numpy=2.5.4"));
+    }
+
+    #[test]
+    fn user_env_sync_leaves_pip_installed_packages_to_pip() {
+        let specs = user_env_specs(&["pyarrow==26.0.1", "numpy=2.5.4"]);
+        assert!(!specs.iter().any(|s| s.starts_with("pyarrow")), "{specs:?}");
+        // numpy has a Conda record too, so Conda keeps managing it.
+        assert!(specs.iter().any(|s| s == "numpy=2.5.4"));
+    }
+
+    #[test]
+    fn user_env_sync_keeps_every_installed_conda_package() {
+        let specs = user_env_specs(&["numpy=2.5.4"]);
+        // polars is installed but not requested; the installer would remove it.
+        assert!(specs.iter().any(|s| s == "polars"), "{specs:?}");
+        // Requested names are not repeated without their constraint.
+        assert_eq!(specs.iter().filter(|s| s.starts_with("numpy")).count(), 1);
+    }
+
+    #[test]
+    fn user_env_sync_keeps_conda_spelling_for_installed_packages() {
+        let specs = sync_package_specs(
+            &[],
+            EnvOwnership::User,
+            &names(&["python", "ipython_pygments_lexers", "typing_extensions"]),
+            &HashSet::new(),
+        );
+        assert!(
+            specs.iter().any(|s| s == "ipython_pygments_lexers"),
+            "{specs:?}"
+        );
+        assert!(!specs.iter().any(|s| s == "ipython-pygments-lexers"));
+        // A dash/underscore variant of a requested name is still one package.
+        let specs = sync_package_specs(
+            &["typing-extensions>=4".to_string()],
+            EnvOwnership::User,
+            &names(&["python", "typing_extensions"]),
+            &HashSet::new(),
+        );
+        assert_eq!(specs.iter().filter(|s| s.starts_with("typing")).count(), 1);
+    }
+
+    #[test]
+    fn daemon_env_sync_keeps_the_full_base_set() {
+        let deps = vec!["numpy".to_string(), "pip".to_string()];
+        let specs = sync_package_specs(
+            &deps,
+            EnvOwnership::Daemon,
+            &names(&["python", "polars"]),
+            &HashSet::new(),
+        );
+        for base in CONDA_BASE_PACKAGES {
+            assert_eq!(specs.iter().filter(|s| s == base).count(), 1, "{base}");
+        }
+        assert!(specs.iter().any(|s| s == "numpy"));
+        // A daemon sync is the env's complete desired state.
+        assert!(!specs.iter().any(|s| s == "polars"));
+    }
+
+    #[test]
+    fn daemon_env_sync_passes_every_requested_spec_through() {
+        // Duplicate names and a python constraint reach the solver unchanged.
+        let deps: Vec<String> = ["numpy", "numpy>=2", "python=3.12"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let specs = sync_package_specs(
+            &deps,
+            EnvOwnership::Daemon,
+            &names(&["python"]),
+            &HashSet::new(),
+        );
+        let mut expected = conda_base_packages();
+        expected.push("python".into());
+        expected.extend(deps);
+        assert_eq!(specs, expected);
+    }
+
+    #[test]
+    fn user_env_sync_keeps_a_requested_ipykernel_constraint() {
+        let specs = user_env_specs(&["ipykernel>=6.29"]);
+        assert_eq!(
+            specs
+                .iter()
+                .filter(|s| s.starts_with("ipykernel"))
+                .collect::<Vec<_>>(),
+            vec!["ipykernel>=6.29"]
+        );
+    }
+
+    #[test]
+    fn user_env_sync_leaves_a_pip_ipykernel_to_pip() {
+        let pip_owned: HashSet<String> = ["ipykernel".to_string()].into_iter().collect();
+        let specs = sync_package_specs(&[], EnvOwnership::User, &names(&["python"]), &pip_owned);
+        assert_eq!(specs, vec!["python".to_string()]);
+    }
+
+    #[test]
+    fn conda_spec_names_strip_channels_and_constraints() {
+        for (spec, name) in [
+            ("numpy", "numpy"),
+            ("numpy=2.5.4", "numpy"),
+            ("numpy>=2,<3", "numpy"),
+            ("conda-forge::numpy>=2", "numpy"),
+            ("numpy 2.5.4 py312_0", "numpy"),
+            ("pyarrow>=14", "pyarrow"),
+        ] {
+            assert_eq!(conda_spec_name(spec), name);
+        }
+        assert_eq!(normalize_dist_name("tml_renderers"), "tml-renderers");
+        assert_eq!(normalize_dist_name("Tinker.Cookbook"), "tinker-cookbook");
+    }
+
+    #[test]
+    fn pip_owned_dist_names_reads_unix_and_windows_layouts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let unix = tmp.path().join("lib/python3.12/site-packages");
+        std::fs::create_dir_all(unix.join("pyarrow-26.0.1.dist-info")).unwrap();
+        std::fs::create_dir_all(unix.join("tml_renderers-0.4.1.dist-info")).unwrap();
+        std::fs::create_dir_all(unix.join("pyarrow")).unwrap();
+        let windows = tmp.path().join("Lib/site-packages");
+        std::fs::create_dir_all(windows.join("torch-2.15.0.dist-info")).unwrap();
+
+        let found = pip_owned_dist_names(tmp.path(), &HashSet::new());
+        let expected: HashSet<String> = ["pyarrow", "tml-renderers", "torch"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        assert_eq!(found, expected);
+    }
+
+    /// `matplotlib-base` writes `matplotlib-*.dist-info`. That directory is
+    /// Conda's, so a requested `matplotlib` stays in the solve.
+    #[test]
+    fn conda_owned_dist_info_under_another_name_is_not_pip_owned() {
+        let tmp = tempfile::tempdir().unwrap();
+        let site = tmp.path().join("lib/python3.12/site-packages");
+        std::fs::create_dir_all(site.join("matplotlib-3.11.2.dist-info")).unwrap();
+        std::fs::create_dir_all(site.join("pyarrow-26.0.1.dist-info")).unwrap();
+        let conda_owned: HashSet<String> = ["matplotlib-3.11.2.dist-info".to_string()]
+            .into_iter()
+            .collect();
+
+        let pip_owned = pip_owned_dist_names(tmp.path(), &conda_owned);
+        assert_eq!(pip_owned, ["pyarrow".to_string()].into_iter().collect());
+
+        let specs = sync_package_specs(
+            &["matplotlib>=3.10".to_string(), "pyarrow".to_string()],
+            EnvOwnership::User,
+            &names(&["python", "matplotlib-base"]),
+            &pip_owned,
+        );
+        assert!(specs.iter().any(|s| s == "matplotlib>=3.10"), "{specs:?}");
+        assert!(!specs.iter().any(|s| s == "pyarrow"), "{specs:?}");
+    }
 
     /// The pool warmer records its lock with `solve_spec_strings` over the
     /// base package set. A captured env with no user packages rebuilds
