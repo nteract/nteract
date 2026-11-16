@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { stageArtifacts } from "./stage-artifacts.mjs";
+import { outputWorkerFor, stageArtifacts } from "./stage-artifacts.mjs";
 import { sourceFingerprint } from "./source-fingerprint.mjs";
 import { AUTH_D1, USAGE_D1 } from "./deployment/profiles.mjs";
 import { workerShape } from "./worker-shape.mjs";
@@ -177,6 +177,30 @@ export function structuralConfig() {
     observability: { enabled: true },
     vars: { ...shape.vars },
   };
+}
+
+/** The output Worker's counterpart to structuralConfig: the fields its code
+ * fixes. The release package ships it as output/wrangler.json beside
+ * output/worker.js, a self-contained module that needs no bundling, no
+ * compatibility flag, no binding and no variable. A deployment's own Wrangler
+ * file supplies the name and the route of the separate output origin.
+ *
+ * wrangler.output.toml deploys the same module by hand; keep its
+ * compatibility_date equal to this one (release-package.test.mjs checks). */
+export function outputStructuralConfig() {
+  return { main: "worker.js", no_bundle: true, compatibility_date: "2026-11-15" };
+}
+
+/** Write the output Worker this build's receipt certifies, and its structural
+ * config, under `destination`/output. */
+export function stageOutputWorker(dist, destination) {
+  const { bytes } = outputWorkerFor(dist);
+  mkdirSync(path.join(destination, "output"));
+  writeFileSync(path.join(destination, "output/worker.js"), bytes);
+  writeFileSync(
+    path.join(destination, "output/wrangler.json"),
+    JSON.stringify(outputStructuralConfig(), null, 2) + "\n",
+  );
 }
 
 /** Binding names the Worker expects a deployment to supply, by kind. Their

@@ -172,6 +172,7 @@ mod tests {
 
         // NotebookSync (without protocol - should omit the field)
         let json = serde_json::to_string(&Handshake::NotebookSync {
+            scoped_channel_review_v1: false,
             notebook_id: "abc".into(),
             protocol: None,
             typed_bootstrap: None,
@@ -184,6 +185,7 @@ mod tests {
 
         // NotebookSync with v4 protocol
         let json = serde_json::to_string(&Handshake::NotebookSync {
+            scoped_channel_review_v1: false,
             notebook_id: "abc".into(),
             protocol: Some(PROTOCOL_V4.into()),
             typed_bootstrap: None,
@@ -199,6 +201,7 @@ mod tests {
 
         // NotebookSync with working_dir for untitled notebook
         let json = serde_json::to_string(&Handshake::NotebookSync {
+            scoped_channel_review_v1: false,
             notebook_id: "550e8400-e29b-41d4-a716-446655440000".into(),
             protocol: Some(PROTOCOL_V4.into()),
             typed_bootstrap: None,
@@ -214,6 +217,7 @@ mod tests {
 
         // NotebookSync with authenticated operator hint
         let json = serde_json::to_string(&Handshake::NotebookSync {
+            scoped_channel_review_v1: false,
             notebook_id: "abc".into(),
             protocol: Some(PROTOCOL_V4.into()),
             typed_bootstrap: None,
@@ -229,6 +233,7 @@ mod tests {
 
         // OpenNotebook
         let json = serde_json::to_string(&Handshake::OpenNotebook {
+            scoped_channel_review_v1: false,
             path: "/home/user/notebook.ipynb".into(),
             typed_bootstrap: None,
             operator: None,
@@ -248,6 +253,7 @@ mod tests {
 
         // CreateNotebook with working_dir
         let json = serde_json::to_string(&Handshake::CreateNotebook(CreateNotebookRequest {
+            scoped_channel_review_v1: false,
             working_dir: Some("/home/user/project".into()),
             ..CreateNotebookRequest::new("deno")
         }))
@@ -259,6 +265,7 @@ mod tests {
 
         // CreateNotebook with notebook_id hint (session restore)
         let json = serde_json::to_string(&Handshake::CreateNotebook(CreateNotebookRequest {
+            scoped_channel_review_v1: false,
             notebook_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
             ..CreateNotebookRequest::new("python")
         }))
@@ -269,6 +276,7 @@ mod tests {
         );
 
         let json = serde_json::to_string(&Handshake::CreateNotebook(CreateNotebookRequest {
+            scoped_channel_review_v1: false,
             working_dir: Some("/home/user/project".into()),
             environment_mode: Some(CreateNotebookEnvironmentMode::Notebook),
             ..CreateNotebookRequest::new("python")
@@ -300,6 +308,7 @@ mod tests {
         }
 
         let json = serde_json::to_string(&Handshake::OpenNotebook {
+            scoped_channel_review_v1: false,
             path: "/home/user/notebook.ipynb".into(),
             typed_bootstrap: Some(true),
             operator: None,
@@ -318,6 +327,7 @@ mod tests {
             daemon_version: Option<String>,
         ) -> ProtocolCapabilities {
             ProtocolCapabilities {
+                scoped_channel_review_v1: false,
                 protocol: PROTOCOL_V4.into(),
                 protocol_version,
                 daemon_version,
@@ -451,6 +461,7 @@ mod tests {
     #[test]
     fn create_notebook_local_environment_round_trips_and_stays_optional() {
         let json = serde_json::to_string(&Handshake::CreateNotebook(CreateNotebookRequest {
+            scoped_channel_review_v1: false,
             local_environment: Some(LocalEnvironmentBinding {
                 prefix: "/envs/kilo".into(),
             }),
@@ -1391,5 +1402,67 @@ mod tests {
         let _ = pump_task.await;
         writer_task.await.expect("writer task panicked");
         assert_eq!(received, NUM_FRAMES as u64);
+    }
+}
+
+#[cfg(test)]
+mod scoped_channel_negotiation_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn requested(handshake: Handshake) -> bool {
+        match handshake {
+            Handshake::NotebookSync {
+                scoped_channel_review_v1,
+                ..
+            }
+            | Handshake::OpenNotebook {
+                scoped_channel_review_v1,
+                ..
+            }
+            | Handshake::OpenHostedNotebook {
+                scoped_channel_review_v1,
+                ..
+            } => scoped_channel_review_v1,
+            Handshake::CreateNotebook(request) => request.scoped_channel_review_v1,
+            _ => panic!("not a notebook connection"),
+        }
+    }
+
+    #[test]
+    fn each_notebook_handshake_defaults_off_and_roundtrips_explicit_opt_in() {
+        for mut payload in [
+            json!({"channel":"notebook_sync", "notebook_id":"id"}),
+            json!({"channel":"open_notebook", "path":"notebook.ipynb"}),
+            json!({"channel":"open_hosted_notebook", "url":"https://example.test/n/id"}),
+            json!({"channel":"create_notebook", "runtime":"python"}),
+        ] {
+            let legacy: Handshake = serde_json::from_value(payload.clone()).unwrap();
+            assert!(!requested(legacy.clone()));
+            assert!(serde_json::to_value(legacy)
+                .unwrap()
+                .get("scoped_channel_review_v1")
+                .is_none());
+            payload["scoped_channel_review_v1"] = json!(true);
+            let opted: Handshake = serde_json::from_value(payload.clone()).unwrap();
+            assert!(requested(opted.clone()));
+            assert_eq!(
+                serde_json::to_value(opted).unwrap()["scoped_channel_review_v1"],
+                true
+            );
+            payload["scoped_channel_review_v1"] = json!("true");
+            assert!(serde_json::from_value::<Handshake>(payload).is_err());
+        }
+    }
+
+    #[test]
+    fn default_reply_and_existing_create_callers_never_advertise_support() {
+        let reply = ProtocolCapabilities::v4(None);
+        assert!(!reply.scoped_channel_review_v1);
+        let wire = serde_json::to_value(reply).unwrap();
+        assert!(wire.get("scoped_channel_review_v1").is_none());
+        let legacy_reply: ProtocolCapabilities = serde_json::from_value(wire).unwrap();
+        assert!(!legacy_reply.scoped_channel_review_v1);
+        assert!(!CreateNotebookRequest::new("python").scoped_channel_review_v1);
     }
 }

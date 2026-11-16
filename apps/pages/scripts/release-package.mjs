@@ -6,10 +6,12 @@
 //   pages-package-<build_id>.manifest.json   what the archive holds
 //
 // The archive holds the layout cloudflare-stage.mjs writes (worker/, public/,
-// build-receipt.json, wrangler.json) and nothing else, but its wrangler.json is
-// structuralConfig(): no Worker name, account, address, database, bucket or
-// deployment variable. A consumer keeps its own Wrangler file, deploys the
-// package's modules and assets with it, and compares the structural fields.
+// build-receipt.json, wrangler.json) plus the output Worker (output/worker.js
+// and output/wrangler.json), and nothing else. Its wrangler.json is
+// structuralConfig() and output/wrangler.json is outputStructuralConfig(): no
+// Worker name, account, address, database, bucket or deployment variable. A
+// consumer keeps its own Wrangler file for each Worker, deploys the package's
+// modules and assets with them, and compares the structural fields.
 //
 // This script only reads dist and writes the three files. It never publishes.
 import { createHash } from "node:crypto";
@@ -29,19 +31,27 @@ import { gzipSync } from "node:zlib";
 import {
   cleanBuildDist,
   expectedBindings,
+  outputStructuralConfig,
+  stageOutputWorker,
   stageWithConfig,
   structuralConfig,
 } from "./cloudflare-stage.mjs";
 
 export const PACKAGE_ENTRIES = Object.freeze([
   "build-receipt.json",
+  "output",
   "public",
   "worker",
   "wrangler.json",
 ]);
+// output/ holds exactly these two files.
+export const OUTPUT_ENTRIES = Object.freeze(["output/worker.js", "output/wrangler.json"]);
 // The top-level wrangler.json fields a consumer compares. `vars` is compared
 // key by key: the flow and metadata egress contract are structural.
 export const STRUCTURAL_FIELDS = Object.freeze(Object.keys(structuralConfig()));
+// The output/wrangler.json fields a consumer compares with its own output
+// Worker's Wrangler file.
+export const OUTPUT_STRUCTURAL_FIELDS = Object.freeze(Object.keys(outputStructuralConfig()));
 const BUILD_ID = /^[0-9a-f]{12}$/;
 const COMMIT = /^[0-9a-f]{40}$/;
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -67,7 +77,8 @@ export function packageFiles(directory) {
 }
 
 /** Why `files` is not a Pages package; empty when it is. The top level is
- * exactly PACKAGE_ENTRIES, and worker/ holds only flat modules. */
+ * exactly PACKAGE_ENTRIES, worker/ holds only flat modules, and output/ holds
+ * exactly OUTPUT_ENTRIES. */
 export function entryProblems(files) {
   const problems = [];
   const top = new Set(files.map((file) => file.split("/")[0]));
@@ -83,8 +94,15 @@ export function entryProblems(files) {
       problems.push(`${file} is not a clean relative path`);
     if (["build-receipt.json", "wrangler.json"].includes(parts[0]) && parts.length !== 1)
       problems.push(`${parts[0]} must be a file`);
+    if (parts[0] === "output" && !OUTPUT_ENTRIES.includes(file))
+      problems.push(
+        `${file} is not part of output, which holds only ${OUTPUT_ENTRIES.join(" and ")}`,
+      );
   }
   if (!files.includes("worker/index.js")) problems.push("The package has no worker/index.js");
+  if (top.has("output"))
+    for (const file of OUTPUT_ENTRIES)
+      if (!files.includes(file)) problems.push(`The package has no ${file}`);
   return problems;
 }
 
@@ -132,6 +150,7 @@ export function writeReleasePackage(dist, outDir) {
   try {
     const staged = path.join(scratch, "package");
     stageWithConfig(dist, staged, structuralConfig());
+    stageOutputWorker(dist, staged);
     const files = packageFiles(staged);
     const problems = entryProblems(files);
     if (problems.length) throw new Error(problems.join("\n"));
@@ -157,6 +176,7 @@ export function writeReleasePackage(dist, outDir) {
       })),
       structural_fields: [...STRUCTURAL_FIELDS],
       structural_vars: Object.keys(structuralConfig().vars),
+      output_structural_fields: [...OUTPUT_STRUCTURAL_FIELDS],
       bindings: expectedBindings(),
     };
     mkdirSync(outDir);

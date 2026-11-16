@@ -4,6 +4,7 @@ import { existsSync, lstatSync, readFileSync, readdirSync, writeFileSync } from 
 import path from "node:path";
 import { createRequire } from "node:module";
 import { RECORD_STORAGE_MODES, PLAIN_STORAGE_FORMATS } from "../shared/record-storage.mjs";
+import { OUTPUT_FRAME_PATHS } from "../shared/output-frame-paths.mjs";
 
 const excluded = new Set([
   ".output-dist",
@@ -179,7 +180,9 @@ export function sourceFingerprint(app, { root = repository(app), verifyInstalled
  * bytes still match. `releaseFiles` lists every file the release carries
  * except build-receipt.json (see stage-artifacts.mjs `releaseFilesOf`); the
  * receipt's `files` maps each to its sha256, so a staged bundle can be
- * checked file by file without the source tree. */
+ * checked file by file without the source tree. `outputFiles` lists the
+ * output Worker's files (stage-artifacts.mjs `OUTPUT_WORKER`), certified apart
+ * from `files` because only the release package carries them. */
 export function writeBuildReceipt(
   app,
   {
@@ -187,6 +190,7 @@ export function writeBuildReceipt(
     viewerChunks = [],
     viewerAssets = [],
     releaseFiles = [],
+    outputFiles = [],
     documentFormats,
   } = {},
 ) {
@@ -218,6 +222,10 @@ export function writeBuildReceipt(
     viewer_chunks: certify(viewerChunks),
     viewer_assets: certify(viewerAssets),
     files: certify(releaseFiles),
+    // The frame paths this build's output Worker serves, and its bundled
+    // module. The release package ships that module as output/worker.js.
+    output_frame_paths: [...OUTPUT_FRAME_PATHS],
+    output_files: certify(outputFiles),
     fingerprint,
   };
   writeFileSync(path.join(app, "dist/build-receipt.json"), JSON.stringify(receipt, null, 2) + "\n");

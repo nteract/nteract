@@ -1,6 +1,6 @@
-// The expanded diagram viewer: a full-viewport modal dialog showing a copy of
-// a rendered diagram's SVG, with pan and zoom. Read-only: the source stays in
-// the Page and nothing here writes to it.
+// The expanded viewer: a full-viewport modal dialog showing a copy of a
+// rendered diagram's SVG or of a Page image, with pan and zoom. Read-only: the
+// source stays in the Page and nothing here writes to it.
 //
 // diagram-viewer-machine.mjs holds the state. This module is its interpreter:
 // it turns DOM input into events and runs the effects the machine returns.
@@ -19,6 +19,7 @@ const DOUBLE_CLICK_ZOOM = 2;
 const padding = (stage) => (stage.clientWidth < 600 ? 12 : 32);
 let viewerCount = 0;
 let active = null;
+const nextViewerId = () => `diagram-viewer-${++viewerCount}`;
 
 const number = (value) => {
   const parsed = Number.parseFloat(value);
@@ -134,11 +135,56 @@ const focusable = (dialog) =>
  * viewer closes the first. Returns `{ close, dialog, state }`.
  */
 export function openDiagramViewer({ svg, label = "Diagram", opener = null }) {
-  active?.close();
-  const doc = svg.ownerDocument;
-  const win = doc.defaultView;
-  const id = `diagram-viewer-${++viewerCount}`;
+  const id = nextViewerId();
   const copy = cloneDiagram(svg, id);
+  return openViewer({ id, node: copy.svg, width: copy.width, height: copy.height, label, opener });
+}
+
+/**
+ * Open a loaded `image` (an img on the Page) in the expanded viewer, as
+ * openDiagramViewer does a diagram. The copy draws from the same source the
+ * Page chose (the dark variant in a dark theme). A photo fits at no more than
+ * its natural size; zooming past it is the reader's choice.
+ */
+export function openImageViewer({ image, label = "Image", opener = null }) {
+  const doc = image.ownerDocument;
+  const copy = doc.createElement("img");
+  copy.src = image.currentSrc || image.src;
+  copy.alt = image.alt;
+  copy.draggable = false;
+  copy.decoding = "async";
+  return openViewer({
+    id: nextViewerId(),
+    node: copy,
+    width: image.naturalWidth,
+    height: image.naturalHeight,
+    label,
+    opener,
+    maxFit: 1,
+    fitLabel: "Fit image to screen",
+    stageLabel: "Image view",
+  });
+}
+
+/**
+ * Show `node`, whose natural size is `width` × `height`, in the expanded
+ * viewer. The viewer sizes the node at each scale; anything that draws to its
+ * box (an SVG, an img) can be shown.
+ */
+function openViewer({
+  id,
+  node,
+  width,
+  height,
+  label,
+  opener,
+  maxFit,
+  fitLabel = "Fit diagram to screen",
+  stageLabel = "Diagram view",
+}) {
+  active?.close();
+  const doc = node.ownerDocument;
+  const win = doc.defaultView;
 
   const dialog = element(doc, "dialog", "diagram-viewer", {
     "aria-labelledby": `${id}-title`,
@@ -156,8 +202,8 @@ export function openDiagramViewer({ svg, label = "Diagram", opener = null }) {
   const fit = zoom.appendChild(
     element(doc, "button", "diagram-viewer-button diagram-viewer-fit", {
       type: "button",
-      "aria-label": "Fit diagram to screen",
-      title: "Fit diagram to screen",
+      "aria-label": fitLabel,
+      title: fitLabel,
     }),
   );
   fit.textContent = "Fit";
@@ -166,11 +212,11 @@ export function openDiagramViewer({ svg, label = "Diagram", opener = null }) {
     element(doc, "div", "diagram-viewer-stage", {
       tabindex: "0",
       role: "group",
-      "aria-label": "Diagram view",
+      "aria-label": stageLabel,
     }),
   );
   const content = stage.appendChild(element(doc, "div", "diagram-viewer-content"));
-  content.append(copy.svg);
+  content.append(node);
   const hint = dialog.appendChild(element(doc, "p", "sr-only", { id: `${id}-hint` }));
   hint.textContent =
     "Drag to pan. Scroll, pinch, or press plus and minus to zoom. Press 0 to fit. Escape closes.";
@@ -182,8 +228,8 @@ export function openDiagramViewer({ svg, label = "Diagram", opener = null }) {
   const render = () => {
     if (state.name === "closed") return;
     const { view } = state;
-    copy.svg.style.width = `${copy.width * view.scale}px`;
-    copy.svg.style.height = `${copy.height * view.scale}px`;
+    node.style.width = `${width * view.scale}px`;
+    node.style.height = `${height * view.scale}px`;
     content.style.transform = `translate(${view.x}px, ${view.y}px)`;
     scale.textContent = `${Math.round(view.scale * 100)}%`;
     const available = zoomAvailability(state);
@@ -357,9 +403,10 @@ export function openDiagramViewer({ svg, label = "Diagram", opener = null }) {
   effects.show();
   dispatch({
     type: "open",
-    content: { width: copy.width, height: copy.height },
+    content: { width, height },
     viewport: { width: stage.clientWidth, height: stage.clientHeight },
     padding: padding(stage),
+    ...(maxFit && { maxFit }),
   });
   if (win.ResizeObserver) {
     observer = new win.ResizeObserver(resized);

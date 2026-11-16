@@ -217,6 +217,7 @@ async fn notebook_sync_client_and_runtime_agent_share_a_keyed_document() {
     let (server_reader, server_writer) = tokio::io::split(server_io);
     let (client_reader, client_writer) = tokio::io::split(client_io);
     let ctx = PeerConnectionContext {
+        scoped_channel_review_v1: false,
         room: room.clone(),
         rooms: Arc::new(RoomRegistry::new()),
         notebook_id: room.id.to_string(),

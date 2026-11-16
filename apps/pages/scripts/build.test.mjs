@@ -145,8 +145,14 @@ for (const fails of [true, false])
           "model/document-types.mjs",
           readFileSync(new URL("../model/document-types.mjs", import.meta.url), "utf8"),
         );
+        // The output Worker's bundling is stubbed; its bytes land in dist.
+        write(
+          "scripts/build-output.mjs",
+          "export const bundleOutputWorker = async (app, define) => new TextEncoder().encode('fixture output worker ' + define.__PAGES_BUILD__);",
+        );
         for (const name of [
           "anywidget-view.mjs",
+          "output-frame-paths.mjs",
           "viewer-csp.mjs",
           "favicon.mjs",
           "product.mjs",
@@ -267,6 +273,14 @@ for (const fails of [true, false])
           assert.ok(options.releaseFiles.includes("index.js"));
           assert.ok(options.releaseFiles.includes("public/chunks/ABCDEFGH.js"));
           assert.ok(!options.releaseFiles.includes("build-receipt.json"));
+          // The output Worker is certified apart from the release files, with
+          // the same build id the Worker and viewer carry.
+          assert.deepEqual(options.outputFiles, ["output/worker.js"]);
+          assert.ok(!options.releaseFiles.includes("output/worker.js"));
+          assert.equal(
+            readFileSync(path.join(fixture, "dist/output/worker.js"), "utf8"),
+            'fixture output worker "source-B"',
+          );
           for (const file of options.releaseFiles.filter((name) => name.startsWith("public/")))
             assert.ok(existsSync(path.join(fixture, "dist", file)), file);
           return;

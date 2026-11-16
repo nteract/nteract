@@ -1,3 +1,4 @@
+import { observeScopedChannelReviewCapability } from "./channel-review-capability";
 /**
  * React context + hook for injecting the host platform.
  *
@@ -9,7 +10,7 @@
  * the dependency direction explicit.
  */
 
-import { createContext, type ReactNode, useContext } from "react";
+import { createContext, type ReactNode, useContext, useEffect, useState } from "react";
 import type { NotebookHost } from "./types";
 
 const NotebookHostContext = createContext<NotebookHost | null>(null);
@@ -29,4 +30,18 @@ export function useNotebookHost(): NotebookHost {
     throw new Error("useNotebookHost() must be called inside <NotebookHostProvider>");
   }
   return host;
+}
+
+/** Opt-in is for a reviewed UI implementation, not a daemon permission grant. */
+export function useScopedChannelReviewCapability(explicitUiOptIn = false): boolean {
+  const host = useNotebookHost();
+  const [snapshot, setSnapshot] = useState<{ host: NotebookHost; enabled: boolean } | null>(null);
+  useEffect(
+    () =>
+      observeScopedChannelReviewCapability(host.daemonEvents, explicitUiOptIn, (enabled) =>
+        setSnapshot({ host, enabled }),
+      ),
+    [host, explicitUiOptIn],
+  );
+  return explicitUiOptIn && snapshot?.host === host && snapshot.enabled;
 }

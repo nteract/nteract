@@ -141,14 +141,14 @@ jobs:
           # Only regular files, and only the entries a Pages package has.
           tar -tvzf "pages-package-$BUILD_ID.tar.gz" | grep -v '^-' && exit 1
           tar -tzf "pages-package-$BUILD_ID.tar.gz" | cut -d/ -f1 | sort -u | tr '\n' ' ' \
-            | grep -qx 'build-receipt.json public worker wrangler.json '
+            | grep -qx 'build-receipt.json output public worker wrangler.json '
           # Every member path: the exact package layout, no dot components, no
           # duplicates, the manifest's entry list.
           archive="pages-package-$BUILD_ID.tar.gz"
           manifest="pages-package-$BUILD_ID.manifest.json"
           members="$RUNNER_TEMP/members"
           tar -tzf "$archive" > "$members"
-          layout='^(build-receipt\.json|wrangler\.json|worker/[A-Za-z0-9_-][A-Za-z0-9._-]*|public/([A-Za-z0-9_-][A-Za-z0-9._-]*/)*[A-Za-z0-9_-][A-Za-z0-9._-]*)$'
+          layout='^(build-receipt\.json|wrangler\.json|output/worker\.js|output/wrangler\.json|worker/[A-Za-z0-9_-][A-Za-z0-9._-]*|public/([A-Za-z0-9_-][A-Za-z0-9._-]*/)*[A-Za-z0-9_-][A-Za-z0-9._-]*)$'
           if grep -vE "$layout" "$members"; then
             echo "::error::The archive has a member outside the package layout"
             exit 1
@@ -159,6 +159,8 @@ jobs:
           fi
           test -z "$(sort "$members" | uniq -d)"
           grep -qx 'worker/index.js' "$members"
+          grep -qx 'output/worker.js' "$members"
+          grep -qx 'output/wrangler.json' "$members"
           diff <(sort "$members") <(jq -r '.entries[].path' "$manifest" | sort)
           echo "digest=$digest"
       - name: Refuse a tag or release that exists

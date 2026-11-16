@@ -477,7 +477,7 @@ export function mount(container, { spec, datasets = {}, title = "", comments = n
     (header.hidden = !title && maximize.hidden && (!comment || comment.hidden));
   // Permission changes can arrive after a failed draw, when no further
   // render will refresh the header. Keep both pieces of visibility here.
-  comment?.addEventListener("pages-chart-comment-access", () => {
+  comment?.addEventListener("pages-comment-access", () => {
     comment.hidden = !comments.allowed();
     showHeader();
   });

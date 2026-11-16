@@ -91,6 +91,8 @@ export interface DaemonReadyPayload {
   connection_scope?: string;
   /** Optional daemon feature; absent on older daemons means unavailable. */
   local_environment_selection?: boolean;
+  /** Effective connection capability, never consent. Missing means unavailable. */
+  scoped_channel_review_v1?: boolean;
   /** Daemon-authoritative CommentsDoc identity for this room. */
   comments_doc_id?: string | null;
   /** Daemon-authoritative notebook reference stored inside the CommentsDoc. */

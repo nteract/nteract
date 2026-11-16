@@ -1106,8 +1106,24 @@ works locally, where celld runs without a tunnel, and fails only through the
 edge ([Gateway routes and the allowlist](#gateway-routes-and-the-allowlist)).
 Page10 serves this route set on its own hostname and listener. Pages serves
 the same set on `pages.runtimed.run` and `127.0.0.1:9481`. Each publisher
-migrates only from an installation its own target's earlier release sealed, and
-refuses another target's installation receipts.
+migrates only from an installation whose config it generates for its own
+target, and refuses another target's installation receipts.
+
+The ingress is built from the route registry (`ROUTE_REGISTRY` in
+[routes.mjs](scripts/deployment/routes.mjs)): fixed paths and named route
+groups, each enabled by the target's profile. A group is strippable unless it
+is marked `settled`. When the installed receipt is not this release's sealed
+receipt, the publisher generates the config for each combination of the target's strippable groups (present or absent) and
+recognizes the installed `tunnel-installation.json` only if every config hash
+it names is one of those, every unit hash is the legacy unit's or the slot
+units', and the receipt re-serializes byte for byte. It then migrates straight
+to the new config from the config on disk, and a failed start rolls back to
+exactly those bytes. A hand-edited config or receipt is refused. So a new route
+group needs no migration code: an installation without it is one of the
+generated combinations. Changing a group's path string does: keep the old one
+in the group's `earlier` list, or configs sealed with it stop matching. Mark a
+group `settled` once every installation still in service has it; the publisher
+refuses more than 2^16 combinations.
 
 Every target admits the viewer's content-hashed chunks, `/chunks/` followed by
 eight base32 characters and `.js`. `build-receipt.json` maps each chunk to the
@@ -1132,9 +1148,9 @@ since the build. The gate workflow's `release` job builds from a clean
 checkout, stages the bundle this way, and uploads it as the `pages-release`
 artifact.
 
-Page10 and Pages admit `sift-<hash>.wasm` through their own route group. Each publisher migrates only from its config without that
-group, so the first release with Sift tables hands off that target's connector
-once; later releases are no-ops.
+Page10 and Pages admit `sift-<hash>.wasm` through their own route group, so
+the first release with Sift tables hands off that target's connector once;
+later releases are no-ops.
 
 Every target admits Project links: `/project/<id>` and the older `/s/<id>`, where the
 ID is `prj_` or `sp_` followed by a lowercase v4 UUID, with an optional
@@ -1153,9 +1169,7 @@ Page10, Pages and Pages2 admit the account routes (`accountPaths` in
 that group, by the same handoff as any route change: the next publish rewrites
 `tunnel.yml` with the group added, starts the idle slot, waits for `/ready`,
 stops the old slot and seals the new receipt. Units and every other route stay
-byte-identical. Every older predecessor still migrates, straight to the new
-config. A pending receipt from an interrupted publish before this release is
-not recognized; the publisher stops and asks for inspection.
+byte-identical.
 
 Page10, Pages and Pages2 also admit link previews, card images and Project
 assets (`linkPreviewPaths`, `cardImagePaths` and `projectAssetPaths` in
@@ -1190,11 +1204,10 @@ IDs are lowercase v4 UUIDs, as in every other group. Until a target publishes
 these routes, the edge refuses them: hover cards on Page links show "Couldn't
 load a preview" and keep retrying, the library grid never shows a card image,
 and the owner's tab never uploads one. Each publisher migrates from the
-account-route config it sealed, by the same handoff as any route change; units
-and every other route stay byte-identical, and every older predecessor still
-migrates straight to the new config. A pending receipt from an interrupted
-account-route publish is not recognized: finish that publish from its own
-stage, then publish this one.
+config it sealed, by the same handoff as any route change; units and every
+other route stay byte-identical. A pending receipt an earlier publish left
+toward another generated config migrates from whichever of its two configs is
+on disk, and a failed start restores that receipt.
 
 The OIDC client must allow `https://<hostname>/oidc` as a redirect URI before
 sign-in works on a new target. For Pages, add
@@ -2001,9 +2014,9 @@ assets under the tag `pages-<build_id>`:
 
 | Asset | Contents |
 | --- | --- |
-| `pages-package-<build_id>.tar.gz` | `worker/`, `public/`, `build-receipt.json`, `wrangler.json`; regular files only |
+| `pages-package-<build_id>.tar.gz` | `worker/`, `public/`, `output/`, `build-receipt.json`, `wrangler.json`; regular files only |
 | `pages-package-<build_id>.tar.gz.sha256` | `sha256sum -c` line for the archive |
-| `pages-package-<build_id>.manifest.json` | build id, source commit, document formats, entry digests, archive digest, structural fields, binding names |
+| `pages-package-<build_id>.manifest.json` | build id, source commit, document formats, entry digests, archive digest, structural fields of both Workers, binding names |
 
 The archive's `wrangler.json` is `structuralConfig()` in
 [cloudflare-stage.mjs](scripts/cloudflare-stage.mjs), not a deployable file: it
@@ -2017,6 +2030,42 @@ profile-bound and absent from the package: `name`, `account_id`, `workers_dev`,
 `routes`, `d1_databases`, `r2_buckets`, and every other variable. A change to
 `worker-shape.mjs` or `structuralConfig()` changes what an operator must
 mirror in their own file.
+
+The archive also carries the [output Worker](#interactive-output-host), so
+one pin and one digest cover the Pages Worker and the frame shell it embeds.
+`output/` holds exactly two files:
+
+| File | Contents |
+| --- | --- |
+| `output/worker.js` | One ES module with no imports, the frame HTML inlined. `npm run build` bundles it from `output/worker.mjs` |
+| `output/wrangler.json` | `outputStructuralConfig()` in [cloudflare-stage.mjs](scripts/cloudflare-stage.mjs): `main`, `no_bundle`, `compatibility_date`. No name, route, account, `workers_dev`, binding or variable |
+
+The manifest lists both files in `entries` and their structural fields as
+`output_structural_fields`. The build receipt certifies `output/worker.js` in
+`output_files` and lists the frame paths that shell serves as
+`output_frame_paths`, today `["/frame/v2/"]`.
+
+To deploy the shell, the operator:
+
+1. Deploys `output/worker.js` with its own Wrangler file, as a separate Worker
+   on a separate origin (preferably a separate registrable domain) with no
+   credentials, bindings, secrets or variables.
+2. Compares that file with `output/wrangler.json` on every field in
+   `output_structural_fields`.
+3. Checks `GET /health` on that origin. It answers `pages-output-v2 <build_id>`,
+   the build id of the package it came from.
+4. Sets `PAGES_OUTPUT_FRAME_URL` on the Pages Worker to that origin plus a path
+   from `output_frame_paths`, for example
+   `https://widgets.example.net/frame/v2/`.
+
+The output Worker and the Pages Worker deploy separately, so for a short time a
+new viewer can meet an old shell, or the reverse. Deploy the shell first. A
+change that breaks the frame protocol adds a new versioned path and keeps
+serving the previous one for at least one release, so `output_frame_paths` can
+grow; the viewer moves to the new path only in a release whose shell serves it.
+
+A consumer whose archive check refuses unknown top-level entries must accept
+`output/` in the same change that pins the first release carrying it.
 
 ## Copying a Project to a new target
 
@@ -2246,6 +2295,19 @@ shells all use this configuration. These configured HTML responses are
 `no-store`; hashed application assets keep their normal caching. The build
 artifact does not need rebuilding for a different output host. Cloudflare
 profiles can set the variable in `vars`; other hosts pass it to the Worker
-environment. Deploy the compatible v2 output shell independently using
-`wrangler.output.toml` and its own domain. Changing this setting does not grant
-widgets credentials, Page write access, or microphone access.
+environment. Changing this setting does not grant widgets credentials, Page
+write access, or microphone access.
+
+The output shell is its own Worker, `output/worker.mjs`, on its own domain.
+`npm run build` bundles it into `dist/output/worker.js`, and the
+[release package](#deployment-neutral-release-package) ships that module as
+`output/worker.js`. `wrangler.output.toml` deploys the same module by hand
+to `pages.kilousercontent.com`; its build command is `npm run build`. Its
+`/health` answers `pages-output-v2 <build_id>`. Run unbundled, as in
+`scripts/output-smoke.mjs`, it answers `pages-output-v2` with no id.
+
+The shell serves the frame paths in `OUTPUT_FRAME_PATHS`
+(`shared/output-frame-paths.mjs`), and the viewer mounts one of them. A change
+that breaks the frame protocol adds a new versioned path, such as `/frame/v3/`,
+and keeps serving the previous one for at least one release. The shell deploys
+before the viewer that needs it.

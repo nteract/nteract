@@ -14,6 +14,7 @@ import * as A from "@automerge/automerge/slim";
 import { orderedBlockIds } from "../model/order.mjs";
 import { readSource } from "../model/sources-doc.mjs";
 import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
+import { parseAssetPath } from "../shared/dataset-assets.mjs";
 import { viewDependencies } from "../shared/view-dependencies.mjs";
 import { sourcesAnswer } from "./page-source-store.mjs";
 import { Store } from "./store.mjs";
@@ -34,9 +35,16 @@ export function sourceMediaLabel(type) {
   );
 }
 
+export function sourceMatchesQuery(source, query) {
+  const titles = source.kind === "attachment" ? source.uses.map((use) => use.title).join(" ") : "";
+  return `${source.name} ${source.source_id} ${sourceMediaLabel(source.media_type)} ${titles}`
+    .toLocaleLowerCase()
+    .includes(query.toLocaleLowerCase());
+}
+
 /** Include every placement, including nested and offscreen nodes. Never use
- * the mounted DOM as the dependency inventory. Direct-asset tables aren't
- * source consumers, even when their asset happens to match a named source. */
+ * the mounted DOM as the dependency inventory. Direct attachments remain
+ * distinct from named sources, even when they currently share the same bytes. */
 export function sourcePlacements(doc, cache = new WeakMap()) {
   const placements = [];
   let unreadableBlocks = 0;
@@ -68,7 +76,9 @@ export function sourcePlacements(doc, cache = new WeakMap()) {
             ordinal,
             kind,
             title: attrs.title,
-            ...(kind === "view" ? { viewId: attrs.view_id } : { binding: attrs.binding }),
+            ...(kind === "view"
+              ? { viewId: attrs.view_id }
+              : { binding: attrs.binding, src: attrs.src, media_type: attrs.media_type }),
           });
         }
         for (const child of readChildren(node)) visit(child);
@@ -106,6 +116,29 @@ export function projectSourcesPanel(doc, placements, views, answer = "known") {
   };
   for (const placement of placements.placements) {
     if (placement.kind === "dataframe") {
+      const asset = !placement.binding && parseAssetPath(placement.src);
+      if (asset) {
+        // This is a UI identity, never a source id sent to the host. Include the
+        // original path so a foreign Page's attachment cannot alias a local one.
+        const id = `asset:${placement.src}`;
+        if (!sources.has(id))
+          sources.set(id, {
+            source_id: id,
+            kind: "attachment",
+            asset_id: asset.assetId,
+            src: placement.src,
+            name: placement.title || "Attached table",
+            media_type: placement.media_type,
+            availability: "available",
+            uses: [],
+          });
+        sources.get(id).uses.push({
+          ...placement,
+          title: placement.title || "Table",
+          type: "Table",
+        });
+        continue;
+      }
       add(placement.binding, { ...placement, title: placement.title || "Table", type: "Table" });
       continue;
     }
