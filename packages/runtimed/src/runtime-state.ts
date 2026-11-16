@@ -382,10 +382,15 @@ export interface WorkstationAttachmentState {
   runtime_session_id?: string | null;
 }
 
-/** Why the file-backed source is not currently healthy. */
+/**
+ * What the file-backed source needs the user to know. `conflict` and
+ * `degraded` close mutation; `overwritten` is a notice that an external
+ * revision replaced unsaved edits, and the notebook stays interactive.
+ */
 export type FileSourceIssue =
   | { kind: "conflict"; reason: string }
-  | { kind: "degraded"; reason: string };
+  | { kind: "degraded"; reason: string }
+  | { kind: "overwritten"; reason: string };
 
 /**
  * Causal `.ipynb` checkpoint projected by the daemon.

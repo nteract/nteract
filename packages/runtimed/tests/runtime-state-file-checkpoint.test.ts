@@ -13,6 +13,8 @@ function issueLabel(issue: FileSourceIssue | null): string | null {
       return `conflict: ${issue.reason}`;
     case "degraded":
       return `degraded: ${issue.reason}`;
+    case "overwritten":
+      return `overwritten: ${issue.reason}`;
   }
 }
 

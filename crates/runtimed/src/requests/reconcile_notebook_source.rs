@@ -354,7 +354,10 @@ async fn archive_and_reload_source(
         .note_primary_save_baseline(
             save_sequence,
             applied.loaded_sources.clone(),
-            applied.loaded_metadata.clone(),
+            crate::notebook_sync_server::FileShapeBaseline {
+                order: applied.loaded_order.clone(),
+                metadata: applied.loaded_metadata.clone(),
+            },
             &applied.source_content,
         )
         .await;

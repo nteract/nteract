@@ -523,6 +523,7 @@ struct PreparedInitialImport {
     metadata: Option<NotebookMetadataSnapshot>,
     widget_comms: Vec<LoadedWidgetComm>,
     loaded_sources: HashMap<String, String>,
+    loaded_order: Vec<String>,
 }
 
 /// Fully validated and asset-resolved disk state for an explicit source
@@ -537,6 +538,7 @@ pub(crate) struct AppliedSourceReconciliation {
     pub(crate) fingerprint: super::recovery::SourceFingerprint,
     pub(crate) source_content: Vec<u8>,
     pub(crate) loaded_sources: HashMap<String, String>,
+    pub(crate) loaded_order: Vec<String>,
     pub(crate) loaded_metadata: Option<NotebookMetadataSnapshot>,
     pub(crate) heads: Vec<automerge::ChangeHash>,
     pub(crate) change_hashes: Vec<automerge::ChangeHash>,
@@ -570,9 +572,11 @@ async fn prepare_initial_import(
     let mut claimed_execution_ids = HashSet::new();
     let mut prepared_cells = Vec::with_capacity(parsed.cells.len());
     let mut loaded_sources = HashMap::with_capacity(parsed.cells.len());
+    let mut loaded_order = Vec::with_capacity(parsed.cells.len());
 
     for cell in parsed.cells {
         loaded_sources.insert(cell.id.clone(), cell.source.clone());
+        loaded_order.push(cell.id.clone());
         let mut output_refs = Vec::with_capacity(cell.outputs.len());
         for output in &cell.outputs {
             output_refs.push(output_value_to_manifest_ref(output, &room.blob_store).await);
@@ -628,6 +632,7 @@ async fn prepare_initial_import(
         metadata: parsed.metadata,
         widget_comms,
         loaded_sources,
+        loaded_order,
     })
 }
 
@@ -699,6 +704,7 @@ pub(crate) fn apply_prepared_source_reconciliation(
         fingerprint: prepared.prepared.fingerprint,
         source_content: prepared.prepared.source_content,
         loaded_sources: prepared.prepared.loaded_sources,
+        loaded_order: prepared.prepared.loaded_order,
         loaded_metadata: prepared.prepared.metadata,
         heads,
         change_hashes,
@@ -804,6 +810,7 @@ async fn stage_initial_import(
         source_content: prepared.source_content.into(),
         cell_count: prepared.cells.len(),
         loaded_sources: prepared.loaded_sources,
+        loaded_order: prepared.loaded_order,
         loaded_metadata: prepared.metadata.clone(),
         executions,
         widget_comms,
@@ -1189,7 +1196,10 @@ pub(crate) async fn finalize_recovered_source(
     apply_runtime_sidecars(room, &executions, &widget_comms)?;
     *room.persistence.last_save_sources.write().await = prepared.loaded_sources;
     room.persistence
-        .note_metadata_baseline(prepared.metadata.clone());
+        .note_shape_baseline(super::FileShapeBaseline {
+            order: prepared.loaded_order.clone(),
+            metadata: prepared.metadata.clone(),
+        });
     room.persistence.note_disk_content(&prepared.source_content);
 
     let projection = Arc::new(
@@ -1281,7 +1291,10 @@ pub(crate) async fn materialize_initial_load(
     if room.file_binding.path().await.as_deref() == Some(path) {
         *room.persistence.last_save_sources.write().await = artifact.loaded_sources.clone();
         room.persistence
-            .note_metadata_baseline(artifact.loaded_metadata.clone());
+            .note_shape_baseline(super::FileShapeBaseline {
+                order: artifact.loaded_order.clone(),
+                metadata: artifact.loaded_metadata.clone(),
+            });
         room.persistence
             .note_disk_content(artifact.source_content.as_ref());
     }
@@ -2103,10 +2116,17 @@ fn degrade_external_source_revision(
     warn!("[notebook-watch] {reason}");
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct AppliedIpynbChanges {
     pub(crate) cells_changed: bool,
     pub(crate) metadata_changed: bool,
+    /// Every external cell was added and every deleted cell removed. A
+    /// partial revision must not become the file baseline, or a cell it
+    /// failed to add would later read as deleted in this session.
+    pub(crate) complete: bool,
+    /// What disk replaced that this session had also changed, described for
+    /// people: cells, the cell order, and metadata fields.
+    pub(crate) overwritten: Vec<String>,
 }
 
 pub(crate) struct ExternalSourceRevision {
@@ -2117,9 +2137,34 @@ pub(crate) struct ExternalSourceRevision {
 }
 
 impl AppliedIpynbChanges {
-    pub(crate) fn changed(self) -> bool {
+    pub(crate) fn changed(&self) -> bool {
         self.cells_changed || self.metadata_changed
     }
+}
+
+/// Name an overwritten cell by its first non-blank line, which is what a
+/// person recognizes; cell ids are not shown in the notebook.
+fn describe_overwritten_cell(source: &str) -> String {
+    const LIMIT: usize = 40;
+    let Some(line) = source.lines().map(str::trim).find(|line| !line.is_empty()) else {
+        return "an empty cell".to_string();
+    };
+    let short: String = line.chars().take(LIMIT).collect();
+    if line.chars().count() > LIMIT {
+        format!("the cell starting \"{short}…\"")
+    } else {
+        format!("the cell \"{short}\"")
+    }
+}
+
+fn overwritten_items(cells: &[String], metadata_fields: &[String]) -> Vec<String> {
+    let mut items = cells.to_vec();
+    items.extend(
+        metadata_fields
+            .iter()
+            .map(|field| format!("the notebook metadata field {field}")),
+    );
+    items
 }
 
 /// Whether disk changed a cell's source relative to the last file baseline.
@@ -2131,84 +2176,241 @@ fn external_source_changed(saved: Option<&String>, current: &str, external: &str
     }
 }
 
-/// Take the disk value only where disk changed it relative to the baseline;
-/// otherwise keep the live value, which may carry in-session edits.
-fn disk_change_or_current<T: PartialEq + Clone>(disk: &T, baseline: &T, current: &T) -> T {
-    if disk != baseline {
+/// Three-way merge state for one metadata revision. Records every field
+/// where disk replaced a value this session had also changed.
+struct MetadataMerge {
+    overwritten: Vec<String>,
+}
+
+impl MetadataMerge {
+    /// Take the disk value only where disk changed it relative to the
+    /// baseline; otherwise keep the live value, which may carry in-session
+    /// edits. Disk wins where both sides changed the field.
+    fn field<T: PartialEq + Clone>(
+        &mut self,
+        name: &str,
+        disk: &T,
+        baseline: &T,
+        current: &T,
+    ) -> T {
+        if disk == baseline {
+            return current.clone();
+        }
+        if current != baseline && current != disk {
+            self.overwritten.push(name.to_string());
+        }
         disk.clone()
-    } else {
-        current.clone()
+    }
+
+    /// Merge an optional struct member by member when all three sides have
+    /// it; otherwise fall back to the whole-field rule.
+    fn optional<T: PartialEq + Clone>(
+        &mut self,
+        name: &str,
+        disk: &Option<T>,
+        baseline: &Option<T>,
+        current: &Option<T>,
+        merge: impl FnOnce(&mut Self, &T, &T, &T) -> T,
+    ) -> Option<T> {
+        match (disk, baseline, current) {
+            (Some(disk), Some(baseline), Some(current)) => {
+                Some(merge(self, disk, baseline, current))
+            }
+            _ => self.field(name, disk, baseline, current),
+        }
+    }
+
+    /// Per-entry merge of a list such as dependencies or channels. Entries
+    /// disk removed are dropped, entries disk added are appended in disk
+    /// order, and every other live entry is kept in its live order.
+    fn entries(&mut self, disk: &[String], baseline: &[String], current: &[String]) -> Vec<String> {
+        let mut merged: Vec<String> = current
+            .iter()
+            .filter(|entry| !baseline.contains(entry) || disk.contains(entry))
+            .cloned()
+            .collect();
+        for entry in disk {
+            if !baseline.contains(entry) && !merged.contains(entry) {
+                merged.push(entry.clone());
+            }
+        }
+        merged
+    }
+
+    fn map(
+        &mut self,
+        prefix: &str,
+        disk: &std::collections::BTreeMap<String, serde_json::Value>,
+        baseline: &std::collections::BTreeMap<String, serde_json::Value>,
+        current: &std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> std::collections::BTreeMap<String, serde_json::Value> {
+        let mut merged = current.clone();
+        let keys: std::collections::BTreeSet<&String> =
+            disk.keys().chain(baseline.keys()).collect();
+        for key in keys {
+            let name = format!("{prefix}{key}");
+            match self.field(&name, &disk.get(key), &baseline.get(key), &current.get(key)) {
+                Some(value) => {
+                    merged.insert(key.clone(), value.clone());
+                }
+                None => {
+                    merged.remove(key);
+                }
+            }
+        }
+        merged
     }
 }
 
-fn merge_metadata_map(
-    disk: &std::collections::BTreeMap<String, serde_json::Value>,
-    baseline: &std::collections::BTreeMap<String, serde_json::Value>,
-    current: &std::collections::BTreeMap<String, serde_json::Value>,
-) -> std::collections::BTreeMap<String, serde_json::Value> {
-    let mut merged = current.clone();
-    for key in disk.keys().chain(baseline.keys()) {
-        if disk.get(key) == baseline.get(key) {
-            continue;
-        }
-        match disk.get(key) {
-            Some(value) => {
-                merged.insert(key.clone(), value.clone());
-            }
-            None => {
-                merged.remove(key);
-            }
-        }
-    }
-    merged
-}
-
-/// Three-way merge of notebook metadata for a file-watcher revision. Fields
-/// disk changed since the baseline take the disk value; every other field
-/// keeps the live value. Without a baseline or live metadata, disk metadata
-/// applies as a whole.
+/// Three-way merge of notebook metadata for a file-watcher revision, plus
+/// the metadata fields where disk replaced an in-session change. Fields disk
+/// changed since the baseline take the disk value; every other field keeps
+/// the live value. Dependency and channel lists merge per entry. Without a
+/// baseline or live metadata, disk metadata applies as a whole.
 pub(crate) fn merge_external_metadata(
     disk: &NotebookMetadataSnapshot,
     baseline: Option<&NotebookMetadataSnapshot>,
     current: Option<&NotebookMetadataSnapshot>,
-) -> NotebookMetadataSnapshot {
+) -> (NotebookMetadataSnapshot, Vec<String>) {
     let (Some(baseline), Some(current)) = (baseline, current) else {
-        return disk.clone();
+        return (disk.clone(), Vec::new());
     };
-    NotebookMetadataSnapshot {
-        kernelspec: disk_change_or_current(
+    let mut merge = MetadataMerge {
+        overwritten: Vec::new(),
+    };
+    let (disk_runt, base_runt, cur_runt) = (&disk.runt, &baseline.runt, &current.runt);
+    let merged = NotebookMetadataSnapshot {
+        kernelspec: merge.field(
+            "kernelspec",
             &disk.kernelspec,
             &baseline.kernelspec,
             &current.kernelspec,
         ),
-        language_info: disk_change_or_current(
+        language_info: merge.field(
+            "language_info",
             &disk.language_info,
             &baseline.language_info,
             &current.language_info,
         ),
         runt: notebook_doc::metadata::RuntMetadata {
-            schema_version: disk_change_or_current(
-                &disk.runt.schema_version,
-                &baseline.runt.schema_version,
-                &current.runt.schema_version,
+            schema_version: merge.field(
+                "runt.schema_version",
+                &disk_runt.schema_version,
+                &base_runt.schema_version,
+                &cur_runt.schema_version,
             ),
-            env_id: disk_change_or_current(
-                &disk.runt.env_id,
-                &baseline.runt.env_id,
-                &current.runt.env_id,
+            env_id: merge.field(
+                "runt.env_id",
+                &disk_runt.env_id,
+                &base_runt.env_id,
+                &cur_runt.env_id,
             ),
-            uv: disk_change_or_current(&disk.runt.uv, &baseline.runt.uv, &current.runt.uv),
-            conda: disk_change_or_current(
-                &disk.runt.conda,
-                &baseline.runt.conda,
-                &current.runt.conda,
+            uv: merge.optional(
+                "runt.uv",
+                &disk_runt.uv,
+                &base_runt.uv,
+                &cur_runt.uv,
+                |merge, disk, base, cur| notebook_doc::metadata::UvInlineMetadata {
+                    dependencies: merge.entries(
+                        &disk.dependencies,
+                        &base.dependencies,
+                        &cur.dependencies,
+                    ),
+                    requires_python: merge.field(
+                        "runt.uv.requires-python",
+                        &disk.requires_python,
+                        &base.requires_python,
+                        &cur.requires_python,
+                    ),
+                    prerelease: merge.field(
+                        "runt.uv.prerelease",
+                        &disk.prerelease,
+                        &base.prerelease,
+                        &cur.prerelease,
+                    ),
+                },
             ),
-            pixi: disk_change_or_current(&disk.runt.pixi, &baseline.runt.pixi, &current.runt.pixi),
-            deno: disk_change_or_current(&disk.runt.deno, &baseline.runt.deno, &current.runt.deno),
-            extra: merge_metadata_map(&disk.runt.extra, &baseline.runt.extra, &current.runt.extra),
+            conda: merge.optional(
+                "runt.conda",
+                &disk_runt.conda,
+                &base_runt.conda,
+                &cur_runt.conda,
+                |merge, disk, base, cur| notebook_doc::metadata::CondaInlineMetadata {
+                    dependencies: merge.entries(
+                        &disk.dependencies,
+                        &base.dependencies,
+                        &cur.dependencies,
+                    ),
+                    channels: merge.entries(&disk.channels, &base.channels, &cur.channels),
+                    python: merge.field(
+                        "runt.conda.python",
+                        &disk.python,
+                        &base.python,
+                        &cur.python,
+                    ),
+                },
+            ),
+            pixi: merge.optional(
+                "runt.pixi",
+                &disk_runt.pixi,
+                &base_runt.pixi,
+                &cur_runt.pixi,
+                |merge, disk, base, cur| notebook_doc::metadata::PixiInlineMetadata {
+                    dependencies: merge.entries(
+                        &disk.dependencies,
+                        &base.dependencies,
+                        &cur.dependencies,
+                    ),
+                    pypi_dependencies: merge.entries(
+                        &disk.pypi_dependencies,
+                        &base.pypi_dependencies,
+                        &cur.pypi_dependencies,
+                    ),
+                    channels: merge.entries(&disk.channels, &base.channels, &cur.channels),
+                    python: merge.field(
+                        "runt.pixi.python",
+                        &disk.python,
+                        &base.python,
+                        &cur.python,
+                    ),
+                },
+            ),
+            deno: merge.optional(
+                "runt.deno",
+                &disk_runt.deno,
+                &base_runt.deno,
+                &cur_runt.deno,
+                |merge, disk, base, cur| notebook_doc::metadata::DenoMetadata {
+                    permissions: merge.entries(
+                        &disk.permissions,
+                        &base.permissions,
+                        &cur.permissions,
+                    ),
+                    import_map: merge.field(
+                        "runt.deno.import_map",
+                        &disk.import_map,
+                        &base.import_map,
+                        &cur.import_map,
+                    ),
+                    config: merge.field(
+                        "runt.deno.config",
+                        &disk.config,
+                        &base.config,
+                        &cur.config,
+                    ),
+                    flexible_npm_imports: merge.field(
+                        "runt.deno.flexible_npm_imports",
+                        &disk.flexible_npm_imports,
+                        &base.flexible_npm_imports,
+                        &cur.flexible_npm_imports,
+                    ),
+                },
+            ),
+            extra: merge.map("runt.", &disk_runt.extra, &base_runt.extra, &cur_runt.extra),
         },
-        extras: merge_metadata_map(&disk.extras, &baseline.extras, &current.extras),
-    }
+        extras: merge.map("", &disk.extras, &baseline.extras, &current.extras),
+    };
+    (merged, merge.overwritten)
 }
 
 /// Apply a file-watcher revision while causally binding every authored batch
@@ -2365,7 +2567,8 @@ pub(crate) async fn apply_ipynb_changes_inner(
     // across saved_sources `.await` (deadlock prevention).
     let saved_sources_snapshot = room.last_save_sources_snapshot().await;
     let have_save_snapshot = !saved_sources_snapshot.is_empty();
-    let metadata_baseline = room.persistence.metadata_baseline();
+    let shape_baseline = room.persistence.shape_baseline();
+    let metadata_baseline = shape_baseline.metadata.clone();
 
     // Build maps for comparison
     let current_map: HashMap<&str, &CellSnapshot> =
@@ -2388,7 +2591,27 @@ pub(crate) async fn apply_ipynb_changes_inner(
             .filter(|id| current_map.contains_key(*id))
             .copied()
             .collect();
-        common_current != common_external
+        // Disk reordered when the cells it shares with the baseline appear
+        // in a different order than the baseline lists them. Without an order
+        // baseline, any difference from the live order counts. A reorder made
+        // only in this session is kept.
+        let disk_reordered = shape_baseline.order.is_empty() || {
+            let baseline_ids: HashSet<&str> =
+                shape_baseline.order.iter().map(String::as_str).collect();
+            let baseline_common: Vec<&str> = shape_baseline
+                .order
+                .iter()
+                .map(String::as_str)
+                .filter(|id| external_map.contains_key(id))
+                .collect();
+            let disk_common: Vec<&str> = external_ids
+                .iter()
+                .filter(|id| baseline_ids.contains(*id))
+                .copied()
+                .collect();
+            baseline_common != disk_common
+        };
+        common_current != common_external && disk_reordered
     };
 
     // Detect wholesale file replacement: the current doc has cells, the
@@ -2425,6 +2648,46 @@ pub(crate) async fn apply_ipynb_changes_inner(
         })
         .map(|cell| cell.id.as_str())
         .collect();
+
+    // Disk wins where both sides changed the same cell. Name each loss so the
+    // watcher can tell the user; the replaced text stays in NotebookDoc
+    // history.
+    let mut cell_overwrites: Vec<String> = Vec::new();
+    for current in &current_cells {
+        let Some(saved) = saved_sources_snapshot.get(current.id.as_str()) else {
+            continue;
+        };
+        if current.source == *saved {
+            continue;
+        }
+        match external_map.get(current.id.as_str()) {
+            Some(external) if external.source != *saved && external.source != current.source => {
+                cell_overwrites.push(describe_overwritten_cell(&current.source));
+            }
+            Some(_) => {}
+            None => cell_overwrites.push(format!(
+                "{} (deleted on disk)",
+                describe_overwritten_cell(&current.source)
+            )),
+        }
+    }
+    if order_changed && !shape_baseline.order.is_empty() {
+        let disk_ids: HashSet<&str> = external_ids.iter().copied().collect();
+        let baseline_common: Vec<&str> = shape_baseline
+            .order
+            .iter()
+            .map(String::as_str)
+            .filter(|id| current_map.contains_key(id) && disk_ids.contains(id))
+            .collect();
+        let live_common: Vec<&str> = current_ids
+            .iter()
+            .filter(|id| disk_ids.contains(*id) && baseline_common.contains(*id))
+            .copied()
+            .collect();
+        if baseline_common != live_common {
+            cell_overwrites.push("the cell order".to_string());
+        }
+    }
 
     // Struct for collecting deferred state_doc writes so the doc write
     // guard is not held across state_doc `.await` (deadlock prevention).
@@ -2472,9 +2735,12 @@ pub(crate) async fn apply_ipynb_changes_inner(
                     // Delete current cells and re-add them in external order.
                     // Cells created in this session stay in place and are
                     // repositioned below.
+                    let mut structure_complete = true;
                     for cell in &current_cells {
-                        if !session_only_ids.contains(cell.id.as_str()) {
-                            let _ = doc.delete_cell(&cell.id);
+                        if !session_only_ids.contains(cell.id.as_str())
+                            && doc.delete_cell(&cell.id).is_err()
+                        {
+                            structure_complete = false;
                         }
                     }
 
@@ -2559,6 +2825,8 @@ pub(crate) async fn apply_ipynb_changes_inner(
                                 .get(ext_cell.id.as_str())
                                 .unwrap_or(&empty_attachments);
                             let _ = doc.set_cell_attachments(&ext_cell.id, ext_attachments);
+                        } else {
+                            structure_complete = false;
                         }
                     }
 
@@ -2580,13 +2848,17 @@ pub(crate) async fn apply_ipynb_changes_inner(
                         let _ = doc.move_cell(&cell.id, anchor);
                     }
 
-                    let merged_metadata = external_metadata.map(|disk| {
-                        merge_external_metadata(
-                            disk,
-                            metadata_baseline.as_ref(),
-                            doc.get_metadata_snapshot().as_ref(),
-                        )
-                    });
+                    let (merged_metadata, metadata_overwrites) = match external_metadata {
+                        Some(disk) => {
+                            let (merged, overwritten) = merge_external_metadata(
+                                disk,
+                                metadata_baseline.as_ref(),
+                                doc.get_metadata_snapshot().as_ref(),
+                            );
+                            (Some(merged), overwritten)
+                        }
+                        None => (None, Vec::new()),
+                    };
                     let metadata_changed = merged_metadata
                         .as_ref()
                         .is_some_and(|metadata| !doc.metadata_snapshot_matches(metadata));
@@ -2594,10 +2866,15 @@ pub(crate) async fn apply_ipynb_changes_inner(
                         doc.set_metadata_snapshot(metadata)?;
                     }
 
-                    Ok((deferred, metadata_changed))
+                    Ok((
+                        deferred,
+                        metadata_changed,
+                        metadata_overwrites,
+                        structure_complete,
+                    ))
                 },
             ) {
-                Ok((deferred, metadata_changed)) => {
+                Ok((deferred, metadata_changed, metadata_overwrites, structure_complete)) => {
                     let changed = doc.get_heads() != heads;
                     if (changed || source_revision.is_some())
                         && !commit_file_watcher_changes(
@@ -2615,6 +2892,11 @@ pub(crate) async fn apply_ipynb_changes_inner(
                             AppliedIpynbChanges {
                                 cells_changed: changed,
                                 metadata_changed,
+                                complete: structure_complete,
+                                overwritten: overwritten_items(
+                                    &cell_overwrites,
+                                    &metadata_overwrites,
+                                ),
                             },
                             deferred,
                         )
@@ -2751,11 +3033,14 @@ pub(crate) async fn apply_ipynb_changes_inner(
             "file-watcher-update-transaction",
             |doc| {
                 let mut changed = false;
+                let mut structure_complete = true;
 
                 for cell_id in cells_to_delete {
                     debug!("[notebook-watch] Deleting cell: {}", cell_id);
-                    if let Ok(true) = doc.delete_cell(&cell_id) {
-                        changed = true;
+                    match doc.delete_cell(&cell_id) {
+                        Ok(true) => changed = true,
+                        Ok(false) => {}
+                        Err(_) => structure_complete = false,
                     }
                 }
 
@@ -2900,6 +3185,8 @@ pub(crate) async fn apply_ipynb_changes_inner(
                                 .get(ext_cell.id.as_str())
                                 .unwrap_or(&empty_attachments);
                             let _ = doc.set_cell_attachments(&ext_cell.id, ext_attachments);
+                        } else {
+                            structure_complete = false;
                         }
                     }
                 }
@@ -2910,13 +3197,17 @@ pub(crate) async fn apply_ipynb_changes_inner(
                 }
 
                 let cells_changed = changed;
-                let merged_metadata = external_metadata.map(|disk| {
-                    merge_external_metadata(
-                        disk,
-                        metadata_baseline.as_ref(),
-                        doc.get_metadata_snapshot().as_ref(),
-                    )
-                });
+                let (merged_metadata, metadata_overwrites) = match external_metadata {
+                    Some(disk) => {
+                        let (merged, overwritten) = merge_external_metadata(
+                            disk,
+                            metadata_baseline.as_ref(),
+                            doc.get_metadata_snapshot().as_ref(),
+                        );
+                        (Some(merged), overwritten)
+                    }
+                    None => (None, Vec::new()),
+                };
                 let metadata_changed = merged_metadata
                     .as_ref()
                     .is_some_and(|metadata| !doc.metadata_snapshot_matches(metadata));
@@ -2924,10 +3215,16 @@ pub(crate) async fn apply_ipynb_changes_inner(
                     doc.set_metadata_snapshot(metadata)?;
                 }
 
-                Ok((cells_changed, metadata_changed, deferred_execs))
+                Ok((
+                    cells_changed,
+                    metadata_changed,
+                    deferred_execs,
+                    metadata_overwrites,
+                    structure_complete,
+                ))
             },
         ) {
-            Ok((cells_changed, metadata_changed, deferred)) => {
+            Ok((cells_changed, metadata_changed, deferred, metadata_overwrites, structure_complete)) => {
                 let changed = cells_changed || metadata_changed;
                 if (changed || source_revision.is_some())
                     && !commit_file_watcher_changes(
@@ -2945,6 +3242,8 @@ pub(crate) async fn apply_ipynb_changes_inner(
                         AppliedIpynbChanges {
                             cells_changed,
                             metadata_changed,
+                            complete: structure_complete,
+                            overwritten: overwritten_items(&cell_overwrites, &metadata_overwrites),
                         },
                         deferred,
                     )
@@ -3169,6 +3468,7 @@ mod reconciliation_tests {
                 metadata: Some(metadata),
                 widget_comms: Vec::new(),
                 loaded_sources: HashMap::from([("disk-cell".to_string(), "# Disk\n".to_string())]),
+                loaded_order: vec!["disk-cell".to_string()],
             },
         };
 

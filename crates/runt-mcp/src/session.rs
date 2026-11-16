@@ -496,15 +496,18 @@ impl NotebookSession {
         // projection as authoritative and close mutation immediately even if
         // the older session-control frame still says Interactive.
         if let Ok(runtime_state) = self.handle.get_runtime_state() {
-            if let Some(issue) = runtime_state.file_checkpoint.source_issue {
-                let (error_code, error_message) = match issue {
-                    runtime_doc::FileSourceIssue::Conflict { reason } => {
-                        ("source_conflict", reason)
-                    }
-                    runtime_doc::FileSourceIssue::Degraded { reason } => {
-                        ("source_degraded", reason)
-                    }
-                };
+            let failure = match runtime_state.file_checkpoint.source_issue {
+                Some(runtime_doc::FileSourceIssue::Conflict { reason }) => {
+                    Some(("source_conflict", reason))
+                }
+                Some(runtime_doc::FileSourceIssue::Degraded { reason }) => {
+                    Some(("source_degraded", reason))
+                }
+                // A notice that disk replaced unsaved edits; the room stays
+                // interactive.
+                Some(runtime_doc::FileSourceIssue::Overwritten { .. }) | None => None,
+            };
+            if let Some((error_code, error_message)) = failure {
                 source_state["phase"] = serde_json::json!(NotebookSourcePhase::Failed);
                 source_state["error_code"] = serde_json::json!(error_code);
                 source_state["error_message"] = serde_json::json!(error_message);

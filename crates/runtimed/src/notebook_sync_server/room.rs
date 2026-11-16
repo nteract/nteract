@@ -488,13 +488,9 @@ pub struct RoomPersistence {
     /// live CRDT) to distinguish our own autosave writes from genuine external
     /// changes (git pull, external editor).
     pub last_save_sources: RwLock<HashMap<String, String>>,
-    /// Notebook metadata as parsed from the same disk bytes as
-    /// `last_save_sources`. The file watcher applies only the metadata
-    /// fields that disk changed relative to this baseline, so an external
-    /// write that leaves metadata alone keeps in-session metadata edits.
-    /// `None` means no baseline was observed; the watcher then applies disk
-    /// metadata as a whole.
-    last_save_metadata: std::sync::Mutex<Option<notebook_doc::metadata::NotebookMetadataSnapshot>>,
+    /// Cell order and metadata parsed from the same disk bytes as
+    /// `last_save_sources`. See [`FileShapeBaseline`].
+    last_save_shape: std::sync::Mutex<FileShapeBaseline>,
     /// Highest committed save sequence allowed to update the primary-path
     /// watcher baselines. Post-`spawn_blocking` save continuations may resume
     /// out of order, so the sources and disk hash are advanced together under
@@ -537,6 +533,30 @@ pub struct PersistDebouncer {
     pub flush_request_tx: mpsc::UnboundedSender<FlushRequest>,
 }
 
+/// Cell order and notebook metadata parsed from the disk bytes that seeded
+/// `last_save_sources`. The file watcher takes disk order only when disk
+/// reordered cells relative to `order`, and applies only the metadata fields
+/// disk changed relative to `metadata`, so an external write keeps in-session
+/// reorders and metadata edits it did not touch. An empty order or `None`
+/// metadata means no baseline was observed; disk then wins as a whole.
+#[derive(Clone, Debug, Default)]
+pub struct FileShapeBaseline {
+    pub order: Vec<String>,
+    pub metadata: Option<notebook_doc::metadata::NotebookMetadataSnapshot>,
+}
+
+impl FileShapeBaseline {
+    pub fn new<'a>(
+        cell_ids: impl IntoIterator<Item = &'a str>,
+        metadata: Option<notebook_doc::metadata::NotebookMetadataSnapshot>,
+    ) -> Self {
+        Self {
+            order: cell_ids.into_iter().map(str::to_string).collect(),
+            metadata,
+        }
+    }
+}
+
 impl RoomPersistence {
     /// Build a persistence struct with no active debouncer (ephemeral rooms).
     pub fn ephemeral() -> Self {
@@ -544,7 +564,7 @@ impl RoomPersistence {
             file_checkpoint: Arc::new(super::file_checkpoint::FileCheckpointCoordinator::default()),
             debouncer: std::sync::Mutex::new(None),
             last_save_sources: RwLock::new(HashMap::new()),
-            last_save_metadata: std::sync::Mutex::new(None),
+            last_save_shape: std::sync::Mutex::new(FileShapeBaseline::default()),
             primary_save_baseline_sequence: AtomicU64::new(0),
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
             last_known_disk_hash: std::sync::Mutex::new(None),
@@ -564,7 +584,7 @@ impl RoomPersistence {
                 flush_request_tx,
             })),
             last_save_sources: RwLock::new(HashMap::new()),
-            last_save_metadata: std::sync::Mutex::new(None),
+            last_save_shape: std::sync::Mutex::new(FileShapeBaseline::default()),
             primary_save_baseline_sequence: AtomicU64::new(0),
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
             last_known_disk_hash: std::sync::Mutex::new(None),
@@ -592,7 +612,7 @@ impl RoomPersistence {
         &self,
         save_sequence: u64,
         sources: HashMap<String, String>,
-        metadata: Option<notebook_doc::metadata::NotebookMetadataSnapshot>,
+        shape: FileShapeBaseline,
         bytes: &[u8],
     ) -> bool {
         let mut saved = self.last_save_sources.write().await;
@@ -600,7 +620,7 @@ impl RoomPersistence {
             return false;
         }
         *saved = sources;
-        self.note_metadata_baseline(metadata);
+        self.note_shape_baseline(shape);
         self.note_disk_content(bytes);
         self.primary_save_baseline_sequence
             .store(save_sequence, Ordering::Release);
@@ -613,23 +633,20 @@ impl RoomPersistence {
         self.primary_save_baseline_sequence.load(Ordering::Acquire)
     }
 
-    /// Record the notebook metadata parsed from the disk bytes that also
-    /// seeded `last_save_sources`.
-    pub fn note_metadata_baseline(
-        &self,
-        metadata: Option<notebook_doc::metadata::NotebookMetadataSnapshot>,
-    ) {
-        if let Ok(mut baseline) = self.last_save_metadata.lock() {
-            *baseline = metadata;
+    /// Record the cell order and metadata parsed from the disk bytes that
+    /// also seeded `last_save_sources`.
+    pub fn note_shape_baseline(&self, shape: FileShapeBaseline) {
+        if let Ok(mut baseline) = self.last_save_shape.lock() {
+            *baseline = shape;
         }
     }
 
-    /// The metadata recorded by [`Self::note_metadata_baseline`], if any.
-    pub fn metadata_baseline(&self) -> Option<notebook_doc::metadata::NotebookMetadataSnapshot> {
-        self.last_save_metadata
+    /// The baseline recorded by [`Self::note_shape_baseline`].
+    pub fn shape_baseline(&self) -> FileShapeBaseline {
+        self.last_save_shape
             .lock()
-            .ok()
-            .and_then(|baseline| baseline.clone())
+            .map(|baseline| baseline.clone())
+            .unwrap_or_default()
     }
 
     /// The baseline recorded by [`Self::note_disk_content`], if any.

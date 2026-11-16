@@ -1847,7 +1847,17 @@ function AppContent() {
     });
   }, [documentDirty, host, titleBase]);
 
-  const sourceIssueNotice = fileSourceIssueNotice(runtimeState.file_checkpoint.source_issue);
+  const sourceIssue = runtimeState.file_checkpoint.source_issue;
+  // Dismissal is local UI state for one notice. A new reason shows again.
+  const [dismissedSourceIssueReason, setDismissedSourceIssueReason] = useState<string | null>(null);
+  const sourceIssueNotice = fileSourceIssueNotice(sourceIssue);
+  const visibleSourceIssueNotice =
+    sourceIssueNotice?.dismissible && sourceIssue?.reason === dismissedSourceIssueReason
+      ? null
+      : sourceIssueNotice;
+  const dismissSourceIssueNotice = useCallback(() => {
+    setDismissedSourceIssueReason(sourceIssue?.reason ?? null);
+  }, [sourceIssue]);
 
   // Cmd+F to open global find
   useEffect(() => {
@@ -2234,13 +2244,16 @@ function AppContent() {
           capabilities={shellCapabilities}
           stageLabel="Notebook editor"
           notices={
-            sourceIssueNotice ? (
+            visibleSourceIssueNotice ? (
               <NotebookNotice
                 tone="warning"
-                title={sourceIssueNotice.title}
+                title={visibleSourceIssueNotice.title}
+                onDismiss={
+                  visibleSourceIssueNotice.dismissible ? dismissSourceIssueNotice : undefined
+                }
                 data-testid="notebook-file-source-issue"
               >
-                {sourceIssueNotice.message}
+                {visibleSourceIssueNotice.message}
               </NotebookNotice>
             ) : null
           }

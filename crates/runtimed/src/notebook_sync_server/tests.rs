@@ -3744,7 +3744,15 @@ async fn watcher_room_loaded_from(
         .collect();
     assert!(
         room.persistence
-            .note_primary_save_baseline(0, sources, parsed.metadata.clone(), bytes)
+            .note_primary_save_baseline(
+                0,
+                sources,
+                FileShapeBaseline::new(
+                    parsed.cells.iter().map(|cell| cell.id.as_str()),
+                    parsed.metadata.clone(),
+                ),
+                bytes,
+            )
             .await
     );
     (room, notebook_path)
@@ -3784,6 +3792,277 @@ fn cell_pairs(cells: &[(&str, &str)]) -> Vec<(String, String)> {
         .iter()
         .map(|(id, source)| (id.to_string(), source.to_string()))
         .collect()
+}
+
+fn overwritten_notice_reason(room: &NotebookRoom) -> Option<String> {
+    match room
+        .state
+        .read(|state| state.read_state().file_checkpoint.source_issue)
+        .unwrap()
+    {
+        Some(runtime_doc::FileSourceIssue::Overwritten { reason }) => Some(reason),
+        Some(other) => panic!("expected an overwritten notice, got {other:?}"),
+        None => None,
+    }
+}
+
+fn uv_metadata(dependencies: &[&str]) -> serde_json::Value {
+    serde_json::json!({"runt": {"schema_version": "1", "uv": {"dependencies": dependencies}}})
+}
+
+/// Disk deleting a cell this session edited drops the cell, and the notice
+/// names it.
+#[tokio::test]
+async fn external_delete_of_edited_cell_is_reported() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let loaded = ordered_ipynb_bytes(&[("a", "a = 1"), ("b", "b = 1")], serde_json::json!({}));
+    let (room, notebook_path) =
+        watcher_room_loaded_from(&tmp, "delete-edited.ipynb", &loaded).await;
+    {
+        let mut doc = room.doc.write().await;
+        doc.update_source("b", "b = 'mine'").unwrap();
+    }
+    commit_test_room_doc(&room).await;
+
+    let external = ordered_ipynb_bytes(&[("a", "a = 1")], serde_json::json!({}));
+    write_and_ingest(&room, &notebook_path, &external).await;
+    assert_eq!(doc_cell_sources(&room).await, cell_pairs(&[("a", "a = 1")]));
+    let reason = overwritten_notice_reason(&room).expect("deleted edit must be surfaced");
+    assert!(
+        reason.contains("the cell \"b = 'mine'\" (deleted on disk)"),
+        "{reason}"
+    );
+}
+
+/// A wholesale replacement with disjoint cell ids replaces every baseline
+/// cell. Cells created in this session survive; unedited baseline cells are
+/// not reported as losses.
+#[tokio::test]
+async fn disjoint_external_ids_replace_baseline_cells_and_keep_session_cells() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let loaded = ordered_ipynb_bytes(&[("a", "a = 1"), ("b", "b = 1")], serde_json::json!({}));
+    let (room, notebook_path) = watcher_room_loaded_from(&tmp, "disjoint.ipynb", &loaded).await;
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell_after("n", "code", Some("b")).unwrap();
+        doc.update_source("n", "n = 1").unwrap();
+    }
+    commit_test_room_doc(&room).await;
+
+    let external = ordered_ipynb_bytes(&[("x", "x = 1"), ("y", "y = 1")], serde_json::json!({}));
+    write_and_ingest(&room, &notebook_path, &external).await;
+    assert_eq!(
+        doc_cell_sources(&room).await,
+        cell_pairs(&[("n", "n = 1"), ("x", "x = 1"), ("y", "y = 1")])
+    );
+    assert_eq!(overwritten_notice_reason(&room), None);
+}
+
+/// A reorder made only in this session survives an external write that
+/// changed content but not order.
+#[tokio::test]
+async fn session_reorder_survives_content_only_external_write() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let loaded = ordered_ipynb_bytes(
+        &[("a", "a = 1"), ("b", "b = 1"), ("c", "c = 1")],
+        serde_json::json!({}),
+    );
+    let (room, notebook_path) =
+        watcher_room_loaded_from(&tmp, "session-reorder.ipynb", &loaded).await;
+    {
+        let mut doc = room.doc.write().await;
+        doc.move_cell("c", None).unwrap();
+    }
+    commit_test_room_doc(&room).await;
+
+    let external = ordered_ipynb_bytes(
+        &[("a", "a = 2"), ("b", "b = 1"), ("c", "c = 1")],
+        serde_json::json!({}),
+    );
+    write_and_ingest(&room, &notebook_path, &external).await;
+    assert_eq!(
+        doc_cell_sources(&room).await,
+        cell_pairs(&[("c", "c = 1"), ("a", "a = 2"), ("b", "b = 1")])
+    );
+    assert_eq!(overwritten_notice_reason(&room), None);
+}
+
+/// When both sides reorder, disk order wins and the notice says so.
+#[tokio::test]
+async fn reorder_on_both_sides_takes_disk_order_and_is_reported() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let loaded = ordered_ipynb_bytes(
+        &[("a", "a = 1"), ("b", "b = 1"), ("c", "c = 1")],
+        serde_json::json!({}),
+    );
+    let (room, notebook_path) = watcher_room_loaded_from(&tmp, "both-reorder.ipynb", &loaded).await;
+    {
+        let mut doc = room.doc.write().await;
+        doc.move_cell("c", None).unwrap();
+    }
+    commit_test_room_doc(&room).await;
+
+    let external = ordered_ipynb_bytes(
+        &[("b", "b = 1"), ("a", "a = 1"), ("c", "c = 1")],
+        serde_json::json!({}),
+    );
+    write_and_ingest(&room, &notebook_path, &external).await;
+    assert_eq!(
+        doc_cell_sources(&room).await,
+        cell_pairs(&[("b", "b = 1"), ("a", "a = 1"), ("c", "c = 1")])
+    );
+    let reason = overwritten_notice_reason(&room).expect("order loss must be surfaced");
+    assert!(reason.contains("the cell order"), "{reason}");
+}
+
+/// Dependency lists merge per entry: a dependency added in this session and
+/// one added on disk both survive.
+#[tokio::test]
+async fn dependencies_added_on_both_sides_merge_per_entry() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let loaded = ordered_ipynb_bytes(&[("c1", "x = 1")], uv_metadata(&["numpy"]));
+    let (room, notebook_path) = watcher_room_loaded_from(&tmp, "deps.ipynb", &loaded).await;
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_uv_dependency("pandas").unwrap();
+    }
+    commit_test_room_doc(&room).await;
+
+    let external = ordered_ipynb_bytes(&[("c1", "x = 1")], uv_metadata(&["numpy", "polars"]));
+    write_and_ingest(&room, &notebook_path, &external).await;
+    assert_eq!(
+        room.doc.read().await.get_uv_dependencies(),
+        vec![
+            "numpy".to_string(),
+            "pandas".to_string(),
+            "polars".to_string()
+        ]
+    );
+    assert_eq!(overwritten_notice_reason(&room), None);
+}
+
+/// The metadata baseline a real save records matches what the watcher parses,
+/// so a cell-only external write after that save keeps in-session metadata.
+#[tokio::test]
+async fn metadata_baseline_from_a_real_save_keeps_in_session_metadata() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let loaded = ordered_ipynb_bytes(&[("c1", "x = 1")], uv_metadata(&["numpy"]));
+    let (room, notebook_path) = watcher_room_loaded_from(&tmp, "saved-meta.ipynb", &loaded).await;
+    {
+        let mut doc = room.doc.write().await;
+        doc.update_source("c1", "x = 2").unwrap();
+    }
+    commit_test_room_doc(&room).await;
+    let saved = super::persist::save_notebook_to_disk(&room, None)
+        .await
+        .unwrap();
+    assert!(matches!(saved, FileSaveOutcome::Saved { .. }));
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_uv_dependency("pandas").unwrap();
+    }
+    commit_test_room_doc(&room).await;
+    let on_disk = tokio::fs::read(&notebook_path).await.unwrap();
+    let mut notebook: serde_json::Value = serde_json::from_slice(&on_disk).unwrap();
+    notebook["cells"][0]["source"] = serde_json::json!("x = 3");
+    write_and_ingest(
+        &room,
+        &notebook_path,
+        &serde_json::to_vec(&notebook).unwrap(),
+    )
+    .await;
+
+    let doc = room.doc.read().await;
+    assert_eq!(doc.get_cell_source("c1"), Some("x = 3".to_string()));
+    assert_eq!(
+        doc.get_uv_dependencies(),
+        vec!["numpy".to_string(), "pandas".to_string()]
+    );
+    drop(doc);
+    assert_eq!(overwritten_notice_reason(&room), None);
+}
+
+/// A restored room whose heads a file checkpoint exported merges like any
+/// other room, with the baseline the recovery finalizer seeds from disk.
+#[tokio::test]
+async fn restored_room_with_exported_heads_merges_external_writes() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let docs_dir = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+    let notebook_path = tmp.path().join("restored-clean.ipynb");
+    let loaded = ordered_ipynb_bytes(&[("a", "a = 1"), ("b", "b = 1")], serde_json::json!({}));
+    tokio::fs::write(&notebook_path, &loaded).await.unwrap();
+    let id = Uuid::new_v4();
+    let blob_store = test_blob_store(&tmp);
+    let previous_session = NotebookRoom::new_fresh(
+        id,
+        Some(notebook_path.clone()),
+        &docs_dir,
+        Arc::clone(&blob_store),
+        false,
+    );
+    {
+        let parsed = parse_notebook_jiter_for_notebook(&loaded, id).unwrap();
+        let mut doc = previous_session.doc.write().await;
+        for (index, cell) in parsed.cells.iter().enumerate() {
+            doc.add_cell(index, &cell.id, &cell.cell_type).unwrap();
+            doc.update_source(&cell.id, &cell.source).unwrap();
+        }
+    }
+    commit_test_room_source(&previous_session).await;
+    drop(previous_session);
+
+    let room = NotebookRoom::new_fresh(
+        id,
+        Some(notebook_path.clone()),
+        &docs_dir,
+        blob_store,
+        false,
+    );
+    assert!(!room.durability.status().has_restored_unexported_heads);
+    super::load::finalize_recovered_source(&room, &notebook_path, 1, None)
+        .await
+        .expect("matching recovery finalizes and seeds the watcher baseline");
+    {
+        let mut doc = room.doc.write().await;
+        doc.update_source("b", "b = 'mine'").unwrap();
+    }
+    commit_test_room_doc(&room).await;
+
+    let external = ordered_ipynb_bytes(&[("a", "a = 2"), ("b", "b = 1")], serde_json::json!({}));
+    write_and_ingest(&room, &notebook_path, &external).await;
+    assert_eq!(
+        doc_cell_sources(&room).await,
+        cell_pairs(&[("a", "a = 2"), ("b", "b = 'mine'")])
+    );
+    assert_eq!(overwritten_notice_reason(&room), None);
+}
+
+/// A superseded autosave stays armed exactly while the room holds unexported
+/// heads.
+#[tokio::test]
+async fn superseded_save_stays_armed_only_with_unexported_heads() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let loaded = ordered_ipynb_bytes(&[("c1", "x = 1")], serde_json::json!({}));
+    let (room, _notebook_path) = watcher_room_loaded_from(&tmp, "superseded.ipynb", &loaded).await;
+    assert!(!super::persist::superseded_save_stays_armed(
+        &room.durability.status()
+    ));
+    {
+        let mut doc = room.doc.write().await;
+        doc.update_source("c1", "x = 2").unwrap();
+    }
+    commit_test_room_doc(&room).await;
+    assert!(super::persist::superseded_save_stays_armed(
+        &room.durability.status()
+    ));
+    super::persist::save_notebook_to_disk(&room, None)
+        .await
+        .unwrap();
+    assert!(!super::persist::superseded_save_stays_armed(
+        &room.durability.status()
+    ));
 }
 
 /// A cell added in this session is in neither file revision. The external
@@ -3862,6 +4141,28 @@ async fn same_cell_edited_on_both_sides_takes_disk_source() {
         doc_cell_sources(&room).await,
         cell_pairs(&[("c1", "x = 'theirs'"), ("c2", "y = 1")])
     );
+    let reason = overwritten_notice_reason(&room).expect("disk-wins loss must be surfaced");
+    assert!(
+        reason.starts_with("same-cell.ipynb changed on disk"),
+        "{reason}"
+    );
+    assert!(reason.contains("the cell \"x = 'mine'\""), "{reason}");
+    assert!(!reason.contains("y = 1"), "{reason}");
+
+    // Overwritten is a notice: the room stays interactive and saves run.
+    let availability = room.lifecycle.availability();
+    assert!(availability.status().capabilities.mutate);
+    super::persist::save_notebook_to_disk(&room, None)
+        .await
+        .expect("an overwritten notice must not block saves");
+
+    // A later revision that replaces nothing clears the notice.
+    let clean = ordered_ipynb_bytes(
+        &[("c1", "x = 'theirs'"), ("c2", "y = 2")],
+        serde_json::json!({}),
+    );
+    write_and_ingest(&room, &notebook_path, &clean).await;
+    assert_eq!(overwritten_notice_reason(&room), None);
 }
 
 /// An external reorder rebuilds the cell list. Cells created in this session
@@ -3955,29 +4256,68 @@ async fn external_write_keeps_in_session_metadata_edits() {
 fn metadata_merge_takes_only_disk_changed_fields() {
     let baseline = NotebookMetadataSnapshot::from_metadata_value(&serde_json::json!({
         "kernelspec": {"name": "python3", "display_name": "Python 3"},
+        "runt": {"schema_version": "1", "uv": {"dependencies": ["numpy"], "requires-python": ">=3.10"}},
         "keep": 1,
-        "drop": 1
+        "drop": 1,
+        "both": "base"
     }));
     let mut current = baseline.clone();
     current.add_uv_dependency("pandas");
+    current.runt.uv.as_mut().unwrap().requires_python = Some(">=3.11".to_string());
     current
         .extras
         .insert("mine".to_string(), serde_json::json!(true));
+    current
+        .extras
+        .insert("both".to_string(), serde_json::json!("mine"));
     let disk = NotebookMetadataSnapshot::from_metadata_value(&serde_json::json!({
         "kernelspec": {"name": "python3", "display_name": "Python 3"},
-        "keep": 2
+        "runt": {"schema_version": "1", "uv": {"dependencies": ["numpy", "polars"], "requires-python": ">=3.12"}},
+        "keep": 2,
+        "both": "theirs"
     }));
 
-    let merged = super::load::merge_external_metadata(&disk, Some(&baseline), Some(&current));
+    let (merged, overwritten) =
+        super::load::merge_external_metadata(&disk, Some(&baseline), Some(&current));
     assert_eq!(merged.kernelspec, current.kernelspec);
-    assert_eq!(merged.runt.uv, current.runt.uv);
+    let uv = merged.runt.uv.as_ref().unwrap();
+    assert_eq!(
+        uv.dependencies,
+        vec![
+            "numpy".to_string(),
+            "pandas".to_string(),
+            "polars".to_string()
+        ],
+        "dependency lists merge per entry"
+    );
+    assert_eq!(uv.requires_python.as_deref(), Some(">=3.12"));
     assert_eq!(merged.extras.get("keep"), Some(&serde_json::json!(2)));
     assert_eq!(merged.extras.get("drop"), None);
     assert_eq!(merged.extras.get("mine"), Some(&serde_json::json!(true)));
+    assert_eq!(
+        merged.extras.get("both"),
+        Some(&serde_json::json!("theirs"))
+    );
+    assert_eq!(
+        overwritten,
+        vec!["runt.uv.requires-python".to_string(), "both".to_string()],
+        "only fields both sides changed are reported"
+    );
+
+    // Disk removing an entry removes it even when this session added others.
+    let removed = NotebookMetadataSnapshot::from_metadata_value(&serde_json::json!({
+        "runt": {"schema_version": "1", "uv": {"dependencies": [], "requires-python": ">=3.10"}}
+    }));
+    let (merged, _) =
+        super::load::merge_external_metadata(&removed, Some(&baseline), Some(&current));
+    assert_eq!(
+        merged.runt.uv.unwrap().dependencies,
+        vec!["pandas".to_string()]
+    );
 
     assert_eq!(
         super::load::merge_external_metadata(&disk, None, Some(&current)),
-        disk,
+        (disk.clone(), Vec::new()),
         "without a baseline disk metadata applies whole"
     );
 }
@@ -14703,7 +15043,12 @@ async fn drive_primary_save_baseline_calls(calls: &[BaselineSaveCall], scenario:
             call.sequence, call.payload
         );
         let accepted = persistence
-            .note_primary_save_baseline(call.sequence, call.sources(), None, &call.bytes())
+            .note_primary_save_baseline(
+                call.sequence,
+                call.sources(),
+                FileShapeBaseline::default(),
+                &call.bytes(),
+            )
             .await;
         // The gate accepts monotonically: any call at or above the newest
         // accepted sequence rebinds the whole tuple; anything older is

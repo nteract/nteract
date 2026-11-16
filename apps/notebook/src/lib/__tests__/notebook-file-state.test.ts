@@ -124,6 +124,7 @@ describe("fileSourceIssueNotice", () => {
       title: "Notebook file needs reconciliation",
       message:
         "The live notebook and file on disk are both being preserved. Disk fingerprint changed.",
+      dismissible: false,
     });
     expect(
       fileSourceIssueNotice({ kind: "degraded", reason: "Journal flush failed." }),
@@ -131,6 +132,14 @@ describe("fileSourceIssueNotice", () => {
       title: "Notebook recovery needs attention",
       message:
         "The notebook remains open, but durable recovery is not confirmed. Journal flush failed.",
+      dismissible: false,
+    });
+    expect(
+      fileSourceIssueNotice({ kind: "overwritten", reason: "Cell 2 was replaced." }),
+    ).toEqual({
+      title: "Changes on disk replaced unsaved edits",
+      message: "Cell 2 was replaced.",
+      dismissible: true,
     });
   });
 });

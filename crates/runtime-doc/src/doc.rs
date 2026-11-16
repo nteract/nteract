@@ -103,7 +103,7 @@
 //!   project_trust/         Map (additive; absent in frozen schema v2 genesis)
 //!     exported_heads: List[Str] (NotebookDoc Automerge heads in hex)
 //!     save_sequence: Uint|null  (monotonic committed file replacement sequence)
-//!     source_issue_kind: Str    ("" | "conflict" | "degraded")
+//!     source_issue_kind: Str    ("" | "conflict" | "degraded" | "overwritten")
 //!     source_issue_reason: Str  (human-readable diagnostic; "" when clear)
 //!   runtime_state_doc_id: Str|null
 //!   last_saved: Str|null   (ISO timestamp of last save)
@@ -466,17 +466,22 @@ pub struct WorkstationAttachmentState {
     pub runtime_session_id: Option<String>,
 }
 
-/// Why the file-backed source cannot currently be treated as healthy.
+/// What the file-backed source needs the user to know.
 ///
 /// A conflict means both the journal-backed live document and an externally
 /// changed `.ipynb` must be preserved for explicit reconciliation. Degraded
 /// covers other durability failures where the room remains resident and must
-/// not claim a successful checkpoint.
+/// not claim a successful checkpoint. Both close mutation.
+///
+/// Overwritten is a notice, not a failure: an external revision merged into
+/// the room and replaced unsaved edits this session had made to the same
+/// cells or metadata fields. The room stays interactive and autosave runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FileSourceIssue {
     Conflict { reason: String },
     Degraded { reason: String },
+    Overwritten { reason: String },
 }
 
 impl FileSourceIssue {
@@ -484,12 +489,15 @@ impl FileSourceIssue {
         match self {
             Self::Conflict { .. } => "conflict",
             Self::Degraded { .. } => "degraded",
+            Self::Overwritten { .. } => "overwritten",
         }
     }
 
     fn reason(&self) -> &str {
         match self {
-            Self::Conflict { reason } | Self::Degraded { reason } => reason,
+            Self::Conflict { reason }
+            | Self::Degraded { reason }
+            | Self::Overwritten { reason } => reason,
         }
     }
 }
@@ -2849,6 +2857,9 @@ impl RuntimeStateDoc {
                 reason: self.read_str(&checkpoint, "source_issue_reason"),
             }),
             "degraded" => Some(FileSourceIssue::Degraded {
+                reason: self.read_str(&checkpoint, "source_issue_reason"),
+            }),
+            "overwritten" => Some(FileSourceIssue::Overwritten {
                 reason: self.read_str(&checkpoint, "source_issue_reason"),
             }),
             _ => None,

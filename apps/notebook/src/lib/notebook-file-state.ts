@@ -44,6 +44,8 @@ export function notebookDocumentIsDirty({
 export interface FileSourceIssueNotice {
   title: string;
   message: string;
+  /** The notice reports a finished merge rather than a blocked file. */
+  dismissible: boolean;
 }
 
 /** Calm, durable-state-derived notice copy for source recovery problems. */
@@ -56,11 +58,19 @@ export function fileSourceIssueNotice(
       return {
         title: "Notebook file needs reconciliation",
         message: `The live notebook and file on disk are both being preserved. ${issue.reason}`,
+        dismissible: false,
       };
     case "degraded":
       return {
         title: "Notebook recovery needs attention",
         message: `The notebook remains open, but durable recovery is not confirmed. ${issue.reason}`,
+        dismissible: false,
+      };
+    case "overwritten":
+      return {
+        title: "Changes on disk replaced unsaved edits",
+        message: issue.reason,
+        dismissible: true,
       };
   }
 }

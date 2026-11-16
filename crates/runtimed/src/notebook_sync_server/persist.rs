@@ -787,7 +787,7 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
             .note_primary_save_baseline(
                 checkpoint.save_sequence,
                 saved,
-                saved_metadata,
+                FileShapeBaseline::new(cells.iter().map(|cell| cell.id.as_str()), saved_metadata),
                 &content_bytes,
             )
             .await
@@ -868,13 +868,17 @@ pub(crate) async fn refresh_primary_baseline_from_checkpoint(
             return false;
         }
     };
+    let shape = FileShapeBaseline::new(
+        parsed.cells.iter().map(|cell| cell.id.as_str()),
+        parsed.metadata,
+    );
     let sources = parsed
         .cells
         .into_iter()
         .map(|cell| (cell.id, cell.source))
         .collect();
     room.persistence
-        .note_primary_save_baseline(save_sequence, sources, parsed.metadata, &bytes)
+        .note_primary_save_baseline(save_sequence, sources, shape, &bytes)
         .await
 }
 
@@ -2074,14 +2078,11 @@ pub(crate) fn spawn_autosave_debouncer_with_config(
                                     reason: notebook_protocol::protocol::SaveBlockedReason::Superseded { .. },
                                     ..
                                 }) => {
-                                    // A newer checkpoint already owns the file. There
-                                    // is no older completion to retry, but a watcher
-                                    // revision that superseded this save can leave
-                                    // in-session heads unexported. Stay armed until a
-                                    // save exports them.
-                                    let status = room.durability.status();
-                                    last_receive = (status.durable_heads != status.exported_heads)
-                                        .then(Instant::now);
+                                    // A newer checkpoint already owns the file.
+                                    last_receive = superseded_save_stays_armed(
+                                        &room.durability.status(),
+                                    )
+                                    .then(Instant::now);
                                     last_flush = Some(Instant::now());
                                 }
                                 Err(e) => {
@@ -2310,6 +2311,38 @@ pub(crate) async fn mark_external_source_conflict_if_needed(
     true
 }
 
+/// A superseded autosave has no older completion to retry. It stays armed
+/// only while the room holds heads no checkpoint exported, such as in-session
+/// edits that the superseding watcher revision merged over; otherwise those
+/// edits would wait for the next unrelated change to reach disk.
+pub(crate) fn superseded_save_stays_armed(
+    status: &super::durability::RoomDurabilityStatus,
+) -> bool {
+    status.durable_heads != status.exported_heads
+}
+
+/// User-facing notice for a watcher merge where disk replaced unsaved edits.
+/// Names the file, not its full path, and at most a few items.
+fn overwritten_notice(notebook_path: &Path, overwritten: &[String]) -> String {
+    const SHOWN: usize = 4;
+    let file = notebook_path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "The notebook file".to_string());
+    let mut items = overwritten
+        .iter()
+        .take(SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if overwritten.len() > SHOWN {
+        items.push_str(&format!(", and {} more", overwritten.len() - SHOWN));
+    }
+    format!(
+        "{file} changed on disk and replaced unsaved edits to {items}. The replaced edits remain in the notebook's edit history."
+    )
+}
+
 /// Handle one debounced watcher event for `notebook_path`: read the file,
 /// classify the observation against the room's skip baselines, and ingest
 /// genuine external truth. Extracted from the watcher loop so tests can
@@ -2444,12 +2477,12 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
         room.clear_load_failed();
     }
 
-    // Every journaled source revision becomes the autosave staleness
-    // baseline, including one merged over cells this session kept. A
-    // revision that did not journal (its prepared bytes went stale or the
-    // apply failed) keeps the prior baseline so a later save cannot silently
-    // overwrite unobserved disk truth.
-    if room.durability.manifest().source_fingerprint == observed_fingerprint {
+    // Every fully applied, journaled source revision becomes the autosave
+    // staleness baseline, including one merged over cells this session kept.
+    // A revision that did not journal (its prepared bytes went stale or the
+    // apply failed) or applied only partly keeps the prior baseline so a
+    // later save cannot silently overwrite unobserved disk truth.
+    if applied.complete && room.durability.manifest().source_fingerprint == observed_fingerprint {
         let sources = external_cells
             .iter()
             .map(|cell| (cell.id.clone(), cell.source.clone()))
@@ -2459,7 +2492,10 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
             .note_primary_save_baseline(
                 source_save_sequence,
                 sources,
-                external_metadata.clone(),
+                FileShapeBaseline::new(
+                    external_cells.iter().map(|cell| cell.id.as_str()),
+                    external_metadata.clone(),
+                ),
                 contents.as_bytes(),
             )
             .await;
@@ -2468,6 +2504,23 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
         let status = room.durability.status();
         if status.durable_heads != status.exported_heads {
             let _ = room.broadcasts.file_dirty_tx.send(());
+        }
+        // Disk won where both sides changed the same thing. Tell the user
+        // what was replaced; completing the revision cleared any older
+        // notice.
+        if !applied.overwritten.is_empty() {
+            let reason = overwritten_notice(notebook_path, &applied.overwritten);
+            warn!("[notebook-watch] {reason}");
+            if let Err(error) = room.state.with_doc(|state| {
+                state.set_file_source_issue(Some(&runtime_doc::FileSourceIssue::Overwritten {
+                    reason: reason.clone(),
+                }))
+            }) {
+                warn!(
+                    "[notebook-watch] Failed to publish overwritten-edits notice: {}",
+                    error
+                );
+            }
         }
     }
 
