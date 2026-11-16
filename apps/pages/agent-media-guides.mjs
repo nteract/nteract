@@ -102,7 +102,7 @@ A view has its own identity, title, configuration and source bindings. A documen
 
 ${VIEW_MEDIA_TYPES.map((type) => `- \`${type}\``).join("\n")}
 
-The spec field contains configuration for the selected type. The data field maps exactly the binding names read by spec to {source_id} or {source_id, revision}. See ${link(origin, "/llms/anywidget.txt", "Anywidget examples")} or ${link(origin, "/llms/vega-lite.txt", "Vega-Lite examples")} for complete set_view operations. Do not place source text or URLs where a binding name is expected.
+The spec field contains configuration for the selected type. For Vega-Lite, data maps the named datasets to {source_id} or {source_id, revision}. Anywidget instead carries direct source references in spec.module, spec.stylesheet and each spec.buffers entry; omit data. See ${link(origin, "/llms/anywidget.txt", "Anywidget examples")} or ${link(origin, "/llms/vega-lite.txt", "Vega-Lite examples")} for complete set_view operations. Do not place source text or URLs where a source reference is expected.
 
 ## Create, place, and inspect
 
@@ -112,7 +112,7 @@ The spec field contains configuration for the selected type. The data field maps
 ${edit("place-counter-001", [place("counter")])}
 Omitting after_node_id appends. null prepends; a node ID places it after that block. The author already knows the view_id. The calls are separate because each journaled batch currently writes one document: the view and body live in different documents.
 ${call("read_page", { page_id: "<page_id>", view_id: "counter" })}
-Read views:true to list views; read the Page outline to locate its view blocks. A single-view read includes spec and revision; pass that revision as view_revision on the next complete set_view. A Page supports up to ${MAX_VIEWS} views. Removing a block with delete_node removes the placement, not the reusable view or sources.
+Read views:true to list views (Vega-Lite includes data; anywidget includes dependencies with source, role and location); read the Page outline to locate its view blocks. A single-view read includes spec and revision; pass that revision as view_revision on the next complete set_view. A Page supports up to ${MAX_VIEWS} views. Removing a block with delete_node removes the placement, not the reusable view or sources.
 
 ## Updates and recovery
 
@@ -130,8 +130,7 @@ function anywidgetGuide(origin) {
     view_id: "counter",
     title: "Local counter",
     media_type: ANYWIDGET_MEDIA_TYPE,
-    spec: { _esm: "code", state: { count: 0 } },
-    data: { code: { source_id: "counter-module" } },
+    spec: { module: { source_id: "counter-module" }, state: { count: 0 } },
     view_revision: null,
   };
   const binary = {
@@ -140,16 +139,10 @@ function anywidgetGuide(origin) {
     title: "Recording",
     media_type: ANYWIDGET_MEDIA_TYPE,
     spec: {
-      _esm: "code",
-      _css: "style",
+      module: { source_id: "audio-module" },
+      stylesheet: { source_id: "audio-style" },
       state: { audio: {} },
-      buffers: ["wav"],
-      buffer_paths: [["audio", "bytes"]],
-    },
-    data: {
-      code: { source_id: "audio-module" },
-      style: { source_id: "audio-style" },
-      wav: { source_id: "recording" },
+      buffers: [{ source: { source_id: "recording" }, path: ["audio", "bytes"] }],
     },
     view_revision: null,
   };
@@ -208,9 +201,9 @@ export default {
 };
 \`\`\`
 
-An audio.css file containing \`audio { display: block; width: 100%; }\` is sufficient. code, style and wav are binding names, not source text or URLs. _esm and _css name JavaScript/CSS bindings; the host checks source existence, and the renderer checks their media types. buffers and buffer_paths are parallel arrays. Each path restores a DataView in state; intermediate objects and array slots must already exist. Object leaves may be absent. Paths cannot overlap. Bind exactly the names the spec reads.
+An audio.css file containing \`audio { display: block; width: 100%; }\` is sufficient. module and stylesheet directly reference JavaScript/CSS sources. The host checks source existence, retained revisions and the required media types when saving the view; the renderer checks again when a followed source changes. Each buffers entry pairs a source reference with its destination path, avoiding aliases and parallel arrays. The runtime restores a DataView at that path; intermediate objects and array slots must already exist. Object leaves may be absent. Paths cannot overlap. The outer data field is not accepted for anywidget views.
 
-For an unused dataset input, upload its bytes as application/octet-stream, bind them in data, and restore them at a path such as ["dataset"]. The module can read model.get("dataset") without using it to render. JSON bytes are not automatically parsed into an object.
+For an unused dataset input, upload bytes as application/octet-stream, register its source, and add {source:{source_id:"dataset"},path:["dataset"]} to buffers. The module can read model.get("dataset") without using it to render. JSON bytes are not automatically parsed into an object. Add revision:"1" to any source reference to select a retained version; omit it to follow updates. Child definitions use the same references and may share modules/styles/data. Identical references share one byte transfer; different pins remain independent.
 
 ## State, composition and lifecycle
 

@@ -9,13 +9,8 @@ import {
   switchMap,
 } from "rxjs";
 import { checkViewSpec } from "../shared/view-spec.mjs";
-import {
-  ESM_MEDIA_TYPE,
-  CSS_MEDIA_TYPE,
-  OUTPUT_MAX_TOTAL_BYTES,
-  OUTPUT_FRAME_URL,
-} from "../shared/anywidget-view.mjs";
-import { widgetDefinitions } from "@nteract/output-frame/schema";
+import { OUTPUT_MAX_TOTAL_BYTES, OUTPUT_FRAME_URL } from "../shared/anywidget-view.mjs";
+import { viewDependencies } from "../shared/view-dependencies.mjs";
 import { fetchOutputAsset } from "./output-assets.mjs";
 import { mountAnywidgetOutput, readHostContext } from "@nteract/output-frame";
 import { themeStore } from "./theme.mjs";
@@ -23,16 +18,14 @@ import { themeStore } from "./theme.mjs";
 export function anywidgetPlan(view, sources) {
   const checked = checkViewSpec(view.spec, view.data, view.media_type);
   if (!checked.ok) throw Error(checked.error);
-  const versions = Object.fromEntries(
-    checked.names.map((name) => [name, sources.resolve(view.data[name])]),
-  );
-  for (const [, definition] of widgetDefinitions(view.spec)) {
-    if (versions[definition._esm].media_type !== ESM_MEDIA_TYPE)
-      throw Error("The _esm source must be text/javascript.");
-    if (definition._css && versions[definition._css].media_type !== CSS_MEDIA_TYPE)
-      throw Error("The _css source must be text/css.");
+  const versions = {};
+  for (const { name, source, location, mediaType } of checked.dependencies) {
+    const version = sources.resolve(source);
+    if (mediaType && version.media_type !== mediaType)
+      throw Error(`${location} source "${source.source_id}" must be ${mediaType}.`);
+    versions[name] = version;
   }
-  return { view, versions, key: JSON.stringify([view, versions]) };
+  return { view, spec: checked.spec, versions, key: JSON.stringify([view, versions]) };
 }
 
 // One mount per resolved version set. A changed source cancels all loading
@@ -63,10 +56,13 @@ export function mount(
       if (projection.status !== "ready")
         return of({ error: projection.sentence ?? "Loading view…" });
       const view = projection.view;
-      return combineLatest([
-        sources.versions(Object.values(view.data).map((b) => b.source_id)),
-        sourcesAnswer$ ?? of("known"),
-      ]).pipe(
+      let ids;
+      try {
+        ids = [...new Set(viewDependencies(view).map(({ source }) => source.source_id))];
+      } catch (error) {
+        return of({ error: error.message });
+      }
+      return combineLatest([sources.versions(ids), sourcesAnswer$ ?? of("known")]).pipe(
         map(() => {
           try {
             return anywidgetPlan(view, sources);
@@ -128,7 +124,7 @@ export function mount(
                             output,
                             {
                               title: plan.view.title,
-                              spec: plan.view.spec,
+                              spec: plan.spec,
                               assets,
                             },
                             {

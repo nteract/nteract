@@ -5,6 +5,7 @@ import { MEDIA_GUIDES, mediaGuide } from "../agent-media-guides.mjs";
 import { validateSourceOperation } from "../model/sources-doc.mjs";
 import { validateViewOperation } from "../model/view-doc.mjs";
 import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
+import { compileAnywidgetSpec } from "../shared/anywidget-spec.mjs";
 import { widgetState } from "@nteract/output-frame/schema";
 import { tools } from "../mcp.mjs";
 
@@ -101,10 +102,11 @@ test("published tool examples pass current source and view validators", () => {
           validateViewOperation(op);
           views++;
           if (op.media_type === ANYWIDGET_MEDIA_TYPE) {
+            const compiled = compileAnywidgetSpec(op.spec);
             const assets = Object.fromEntries(
-              Object.keys(op.data).map((key) => [key, { bytes: new Uint8Array([1, 2, 3]) }]),
+              compiled.dependencies.map(({ name }) => [name, { bytes: new Uint8Array([1, 2, 3]) }]),
             );
-            const state = widgetState(op.spec, assets);
+            const state = widgetState(compiled.spec, assets);
             if (op.view_id === "audio") assert.ok(state.audio.bytes instanceof DataView);
             if (op.view_id === "counter") assert.equal(state.count, 0);
           }

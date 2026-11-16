@@ -56,7 +56,10 @@ export function projectView(viewId, doc) {
   const { title, media_type, spec, data, revision } = view;
   if (!VIEW_MEDIA_TYPES.includes(media_type))
     return unavailable("unreadable", `This build can't show ${media_type.slice(0, 80)}.`);
-  const bindings = Object.entries(data).map(([name, binding]) => [name, Object.freeze(binding)]);
+  const bindings =
+    data === undefined
+      ? undefined
+      : Object.entries(data).map(([name, binding]) => [name, Object.freeze(binding)]);
   return Object.freeze({
     status: "ready",
     view: Object.freeze({
@@ -64,7 +67,7 @@ export function projectView(viewId, doc) {
       title,
       media_type,
       spec,
-      data: Object.freeze(Object.fromEntries(bindings)),
+      ...(bindings && { data: Object.freeze(Object.fromEntries(bindings)) }),
       revision,
       // The spec as stored, for comparing two projections cheaply.
       specText: String(doc.spec),
@@ -103,6 +106,7 @@ export function sameProjection(a, b) {
   const y = b.view;
   return (
     x.view_id === y.view_id &&
+    x.media_type === y.media_type &&
     x.revision === y.revision &&
     x.title === y.title &&
     x.specText === y.specText &&

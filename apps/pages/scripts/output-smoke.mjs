@@ -67,7 +67,7 @@ const entries = {
     await readFile(new URL("../test/fixtures/anywidget-counter/index.mjs", import.meta.url)),
     "text/javascript",
   ],
-  counterStyle: [
+  counterstyle: [
     await readFile(new URL("../test/fixtures/anywidget-counter/style.css", import.meta.url)),
     "text/css",
   ],
@@ -169,7 +169,7 @@ const appearance=document.querySelector('#appearance');appearance.value=themeSto
 appearance.addEventListener('change',()=>themeStore.setMode(appearance.value));
 const versions=${JSON.stringify(versions)};
 const changes=new BehaviorSubject(0);
-const view={view_id:'audio',title:'Audio exploration',media_type:'application/vnd.nteract.anywidget.v1+json',spec:{_esm:'code',buffers:['recording'],buffer_paths:[['recording']]},data:{code:{source_id:'code'},recording:{source_id:'recording'}},revision:'1'};
+const view={view_id:'audio',title:'Audio exploration',media_type:'application/vnd.nteract.anywidget.v2+json',spec:{module:{source_id:'code'},buffers:[{source:{source_id:'recording'},path:['recording']}]},revision:'1'};
 const view$=new BehaviorSubject({status:'ready',view});
 let failNext=false;
 const sources={pageId:'${pageId}',request:(...args)=>{if(failNext){failNext=false;return Promise.resolve(new Response('not yet',{status:503}))}return fetch(...args)},versions:()=>changes,resolve:b=>versions[b.source_id]};
@@ -186,10 +186,9 @@ window.fixture={editor(){
   window.fixture.select=selected=>{editor.dispatch({selection:selected?GardSelection.node(0,node):GardSelection.cursor(2)});editor.flush()};
 },counter(composed=false){
   view$.next({status:'ready',view:{...view,
-    spec:composed ? {_esm:'composed',state:{child:'anywidget:counter'},models:{counter:{_esm:'counter',_css:'counterStyle',state:{count:42}}}} : {_esm:'counter',_css:'counterStyle',state:{count:42}},
-    data:{counter:{source_id:'counter'},counterStyle:{source_id:'counterStyle'},...(composed?{composed:{source_id:'composed'}}:{})}
+    spec:composed ? {module:{source_id:'composed'},state:{child:'anywidget:counter'},models:{counter:{module:{source_id:'counter'},stylesheet:{source_id:'counterstyle'},state:{count:42}}}} : {module:{source_id:'counter'},stylesheet:{source_id:'counterstyle'},state:{count:42}}
   }});
-},audio(){view$.next({status:'ready',view})},layout(){versions.code=versions.layout;changes.next(4)},transient(){failNext=true;versions.recording={...versions.recording,revision:'3'};changes.next(3)},example(){versions.code=versions.example;view$.next({status:'ready',view:{...view,spec:{_esm:'code',buffers:['recording','dmel'],buffer_paths:[['recording'],['dmel']],state:{description:${JSON.stringify(description)}}},data:{...view.data,dmel:{source_id:'dmel'}}}})},change(){versions.recording={...versions.recording,revision:'2'};changes.next(1)},fail(){versions.code=versions.broken;changes.next(2)},destroy:()=>handle.destroy()};
+},audio(){view$.next({status:'ready',view})},layout(){versions.code=versions.layout;changes.next(4)},transient(){failNext=true;versions.recording={...versions.recording,revision:'3'};changes.next(3)},example(){versions.code=versions.example;view$.next({status:'ready',view:{...view,spec:{module:{source_id:'code'},buffers:[{source:{source_id:'recording'},path:['recording']},{source:{source_id:'dmel'},path:['dmel']}],state:{description:${JSON.stringify(description)}}}}})},change(){versions.recording={...versions.recording,revision:'2'};changes.next(1)},fail(){versions.code=versions.broken;changes.next(2)},destroy:()=>handle.destroy()};
 ${process.env.PAGES_OUTPUT_SERVE ? "window.fixture.example();" : ""}`;
 const result = await build({
   stdin: { contents: fixture, resolveDir: process.cwd(), sourcefile: "output-fixture.mjs" },

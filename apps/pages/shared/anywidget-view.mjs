@@ -1,4 +1,4 @@
-export const ANYWIDGET_MEDIA_TYPE = "application/vnd.nteract.anywidget.v1+json";
+export const ANYWIDGET_MEDIA_TYPE = "application/vnd.nteract.anywidget.v2+json";
 export const ESM_MEDIA_TYPE = "text/javascript";
 export const CSS_MEDIA_TYPE = "text/css";
 export const BINARY_MEDIA_TYPE = "application/octet-stream";

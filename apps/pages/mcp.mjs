@@ -269,7 +269,7 @@ const editOperation = {
         "set_view",
       ),
       description:
-        "set_title: title. replace_block_markdown: node_id, markdown. insert_markdown: markdown, after_node_id. move_block: node_id, after_node_id. delete_block: node_id. insert_image: asset_id, alt; optional dark_asset_id, title, after_node_id. set_image: node_id and the fields to change. insert_node: node, after_node_id. delete_node: node_id. replace_match: node_id, match_text, replacement or replacement_markdown. format_match: node_id, match_text, add or remove; optional all. set_node: node_id, match_text, type or attrs; a dataframe takes node_id and attrs without match_text, preserving its identity. set_source: source_id, name, asset_id, source_revision. delete_source: source_id, source_revision; retires the ID. Source operations batch only with source operations. set_view: view_id, title, media_type, spec, data, view_revision; alone.",
+        "set_title: title. replace_block_markdown: node_id, markdown. insert_markdown: markdown, after_node_id. move_block: node_id, after_node_id. delete_block: node_id. insert_image: asset_id, alt; optional dark_asset_id, title, after_node_id. set_image: node_id and the fields to change. insert_node: node, after_node_id. delete_node: node_id. replace_match: node_id, match_text, replacement or replacement_markdown. format_match: node_id, match_text, add or remove; optional all. set_node: node_id, match_text, type or attrs; a dataframe takes node_id and attrs without match_text, preserving its identity. set_source: source_id, name, asset_id, source_revision. delete_source: source_id, source_revision; retires the ID. Source operations batch only with source operations. set_view: view_id, title, media_type, spec, view_revision; data for charts only; alone.",
     },
     node_id: {
       ...address,
@@ -314,11 +314,11 @@ const editOperation = {
     spec: {
       type: "object",
       description:
-        "Vega-Lite: named data. Anywidget: {_esm, _css?, state?, buffers?, buffer_paths?, models?}; bind asset names in data. AFM: https://anywidget.dev/en/afm/ . State is local; no backend.",
+        "Vega-Lite: named data. Anywidget: {module, stylesheet?, state?, buffers?:[{source,path}], models?}; module/stylesheet/source are {source_id, revision?}. Local state; no backend. See /llms/anywidget.txt.",
     },
     data: {
       type: "object",
-      description: "set_view: each name the spec reads → {source_id, revision?}.",
+      description: "Vega-Lite only: dataset name → {source_id, revision?}. Omit for anywidget.",
     },
     view_revision: {
       type: ["string", "null"],
