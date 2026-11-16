@@ -10,6 +10,7 @@ import {
   switchMap,
 } from "rxjs";
 import { nativeRead, readChildren, readKind } from "../model/native-read.mjs";
+import * as A from "@automerge/automerge/slim";
 import { orderedBlockIds } from "../model/order.mjs";
 import { readSource } from "../model/sources-doc.mjs";
 import { sourcesAnswer } from "./page-source-store.mjs";
@@ -24,7 +25,6 @@ export function sourceMediaLabel(type) {
       "audio/wav": "WAV audio",
       "application/octet-stream": "Binary",
       "application/vnd.vegalite.v6+json": "Vega-Lite chart",
-      "application/vnd.nteract.esm.v1+json": "Custom view",
       "application/vnd.nteract.anywidget.v1+json": "Anywidget",
     }[type] ??
     type ??
@@ -35,20 +35,35 @@ export function sourceMediaLabel(type) {
 /** Include every placement, including nested and offscreen nodes. Never use
  * the mounted DOM as the dependency inventory. Direct-asset tables aren't
  * source consumers, even when their asset happens to match a named source. */
-export function sourcePlacements(doc) {
+export function sourcePlacements(doc, cache = new WeakMap()) {
   const placements = [];
   let unreadableBlocks = 0;
   if (!doc) return { placements, unreadableBlocks };
   for (const blockId of orderedBlockIds(doc)) {
     try {
-      let ordinal = 0;
+      const block = doc.blocks[blockId];
+      const cached = cache.get(block);
+      if (cached) {
+        placements.push(...cached.placements);
+        unreadableBlocks += cached.unreadable ? 1 : 0;
+        continue;
+      }
+      const found = [];
+      const ordinals = { dataframe: 0, view: 0 };
+      let unreadable = false;
+      const read = nativeRead(block, doc.page_id);
       const visit = (node) => {
         const kind = readKind(node);
+        if (kind === "unknown") unreadable = true;
         if (kind === "dataframe" || kind === "view") {
           const attrs = node.param;
-          placements.push({
-            key: `${blockId}:${ordinal++}`,
+          const at = read.source.get(node);
+          const ordinal = ordinals[kind]++;
+          found.push({
+            key:
+              at == null ? `${blockId}:${kind}:${ordinal}` : A.getCursor(block, ["richText"], at),
             blockId,
+            ordinal,
             kind,
             title: attrs.title,
             ...(kind === "view" ? { viewId: attrs.view_id } : { binding: attrs.binding }),
@@ -56,7 +71,10 @@ export function sourcePlacements(doc) {
         }
         for (const child of readChildren(node)) visit(child);
       };
-      for (const node of nativeRead(doc.blocks[blockId], doc.page_id).nodes) visit(node);
+      for (const node of read.nodes) visit(node);
+      cache.set(block, { placements: found, unreadable });
+      placements.push(...found);
+      if (unreadable) unreadableBlocks++;
     } catch {
       unreadableBlocks++;
     }
@@ -70,16 +88,18 @@ export function projectSourcesPanel(doc, placements, views, answer = "known") {
   for (const id of Object.keys(doc?.sources ?? {})) {
     if (doc.sources[id]?.deleted) continue;
     try {
-      sources.set(id, { ...readSource(doc, id), uses: [], missing: false });
+      sources.set(id, { ...readSource(doc, id), uses: [], availability: "available" });
     } catch {
       unreadableSources++;
+      sources.set(id, { source_id: id, name: id, uses: [], availability: "unreadable" });
     }
   }
   const unresolvedViews = [];
   const add = (binding, use) => {
     if (!binding?.source_id) return;
     const id = binding.source_id;
-    if (!sources.has(id)) sources.set(id, { source_id: id, name: id, uses: [], missing: true });
+    if (!sources.has(id))
+      sources.set(id, { source_id: id, name: id, uses: [], availability: "missing" });
     sources.get(id).uses.push({ ...use, revision: binding.revision ?? null });
   };
   for (const placement of placements.placements) {
@@ -128,6 +148,7 @@ export function sourcesPanelStore(session) {
   return {
     store,
     start() {
+      const cache = new WeakMap();
       const stopDemand = session.sources.demand();
       const placements$ = new Observable((subscriber) => {
         const publish = () => subscriber.next(session.hidden ? undefined : session.doc);
@@ -136,7 +157,7 @@ export function sourcesPanelStore(session) {
         return stop;
       }).pipe(
         distinctUntilChanged(),
-        map(sourcePlacements),
+        map((doc) => sourcePlacements(doc, cache)),
         distinctUntilChanged(same),
         shareReplay({ bufferSize: 1, refCount: true }),
       );
@@ -153,7 +174,20 @@ export function sourcesPanelStore(session) {
                     new Observable((subscriber) => {
                       const held = session.views.hold(id);
                       const subscription = held.view$.subscribe((state) =>
-                        subscriber.next([id, state]),
+                        subscriber.next([
+                          id,
+                          state.status === "ready"
+                            ? {
+                                status: "ready",
+                                view: {
+                                  title: state.view.title,
+                                  media_type: state.view.media_type,
+                                  data: state.view.data,
+                                  revision: state.view.revision,
+                                },
+                              }
+                            : state,
+                        ]),
                       );
                       return () => {
                         subscription.unsubscribe();
@@ -174,7 +208,14 @@ export function sourcesPanelStore(session) {
       ])
         .pipe(
           map(([doc, placements, views, state, sync]) =>
-            projectSourcesPanel(doc, placements, views, sourcesAnswer(state, sync?.link)),
+            projectSourcesPanel(
+              doc,
+              placements,
+              views,
+              state.name === "unreadable" || state.name === "unserved"
+                ? state.name
+                : sourcesAnswer(state, sync?.link),
+            ),
           ),
           distinctUntilChanged(same),
         )

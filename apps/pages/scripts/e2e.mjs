@@ -36,6 +36,7 @@ const minute = 60_000;
 // with one entry: { name, harness: sharing("--mode"), timeout }.
 const sharing = (...flags) => ["scripts/local-sharing-e2e.mjs", ...flags];
 const SUITES = Object.freeze([
+  { name: "sources-panel", harness: sharing("--sources-panel"), timeout: 4 * minute },
   { name: "published-preview", script: "scripts/preview-smoke.mjs", timeout: 3 * minute },
   {
     name: "wordgard",

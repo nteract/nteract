@@ -124,6 +124,14 @@ Drawing that many SVG marks still costs the page's own thread time.
 
 ## Run locally
 
+The **Sources** toolbar button and source names beneath a Page's title open
+the source inspector. It shows live metadata, retained versions, and the
+placed tables and views that follow or pin each source, including anywidget
+inputs. Connections locate their placements in the document. The inspector
+shares the comments dock and becomes a sheet on phones. This first version
+is read-only; it does not replace, rebind, remove, or preview asset contents.
+Run `npm run e2e -- sources-panel` for its real-host browser check.
+
 Use Node 22.13 or newer, Git, npm, and `celld` 0.6.3 on `PATH`. From
 `apps/pages`:
 

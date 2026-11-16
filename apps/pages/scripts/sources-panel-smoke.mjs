@@ -1,0 +1,345 @@
+// Real local host, OIDC, source writes and view replicas. No live Page is used.
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { chromium, expect } from "@playwright/test";
+import { purgeTrashedFixture } from "./purge-fixture.mjs";
+
+const origin = process.env.PAGES_ORIGIN ?? "http://localhost:9894";
+assert.equal(new URL(origin).hostname, "localhost");
+const output = process.env.PAGES_SCREENSHOTS ?? "test-results/sources-panel";
+const keep = process.env.PAGES_PANEL_KEEP === "1";
+const keys = process.env.PAGES_E2E_KEY_FILE
+  ? JSON.parse(await readFile(process.env.PAGES_E2E_KEY_FILE, "utf8"))
+  : null;
+await mkdir(output, { recursive: true });
+const browser = await chromium.launch({ headless: true });
+const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+const page = await context.newPage();
+const errors = [];
+page.on("pageerror", (error) => errors.push(error.message));
+let pageId;
+const report = { cleaned: false, passed: false, errors, anywidget: !!keys };
+const nonce = () => crypto.randomUUID();
+async function tool(operation, args = {}) {
+  const response = await context.request.post(`${origin}/api/tools`, {
+    headers: { Origin: origin },
+    data: { operation, arguments: args },
+  });
+  const body = await response.json();
+  assert.equal(response.status(), 200, JSON.stringify(body));
+  return body;
+}
+async function edit(operations) {
+  // View writes own a separate document and must be alone in a request.
+  if (operations.length > 1) {
+    for (const operation of operations) await edit([operation]);
+    return;
+  }
+  const read = await tool("read_page", { page_id: pageId });
+  return tool("edit_page", {
+    page_id: pageId,
+    revision: read.revision,
+    nonce: nonce(),
+    operations,
+  });
+}
+async function upload(bytes, contentType) {
+  if (keys && contentType !== "application/vnd.apache.parquet") {
+    const cap = await context.request.post(`${origin}/api/tools`, {
+      headers: { Authorization: `Bearer ${keys.owner}` },
+      data: {
+        operation: "create_page_asset_upload",
+        arguments: { page_id: pageId, content_type: contentType, size: bytes.length },
+      },
+    });
+    assert.ok(cap.ok(), await cap.text());
+    const bound = await cap.json();
+    const uploaded = await context.request.post(bound.upload_url, {
+      headers: bound.headers,
+      data: bytes,
+    });
+    assert.ok(uploaded.ok(), await uploaded.text());
+    return (await uploaded.json()).asset_id;
+  }
+  const result = await context.request.post(`${origin}/api/pages/${pageId}/assets`, {
+    data: bytes,
+    headers: { "Content-Type": contentType, Origin: origin },
+  });
+  assert.ok(result.ok(), await result.text());
+  return (await result.json()).asset_id;
+}
+async function parquet() {
+  const require = createRequire(import.meta.url);
+  const duck = require("@duckdb/duckdb-wasm/dist/duckdb-node-blocking.cjs");
+  const dist = path.dirname(require.resolve("@duckdb/duckdb-wasm/dist/duckdb-eh.wasm"));
+  const db = await duck.createDuckDB(
+    {
+      mvp: { mainModule: `${dist}/duckdb-mvp.wasm`, mainWorker: "" },
+      eh: { mainModule: `${dist}/duckdb-eh.wasm`, mainWorker: "" },
+    },
+    new duck.VoidLogger(),
+    duck.NODE_RUNTIME,
+  );
+  await db.instantiate();
+  const connection = db.connect();
+  const dir = await mkdtemp(path.join(tmpdir(), "sources-panel-"));
+  try {
+    connection.query(
+      `COPY (SELECT * FROM (VALUES ('Platform', 8420), ('Research', 6180), ('Product', 3820)) t(team, calls)) TO '${dir}/usage.parquet' (FORMAT PARQUET)`,
+    );
+    return await readFile(`${dir}/usage.parquet`);
+  } finally {
+    connection.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+try {
+  const login = await context.request.get(origin + "/api/auth/login", { maxRedirects: 0 });
+  assert.equal(login.status(), 302);
+  await page.goto(login.headers().location);
+  await expect(page.getByRole("button", { name: /, switch page$/ })).toBeVisible({
+    timeout: 30000,
+  });
+  const made = await tool("create_page", {
+    title: "Sources panel — live demo",
+    markdown:
+      "# Workspace usage\n\nA local Page for trying the Sources inspector. Open a source below the title, or use Sources in the toolbar.\n\n## The data",
+    nonce: nonce(),
+  });
+  pageId = made.page_id;
+  await page.goto(`${origin}/p/${pageId}`);
+  const toggle = page.getByRole("button", { name: "Sources", exact: true });
+  const panel = page.getByRole("dialog", { name: "Sources", exact: true });
+  await expect(toggle).toBeVisible({ timeout: 30000 });
+  await toggle.click();
+  await expect(panel).toContainText("No sources yet", { timeout: 30000 });
+  const asset = await upload(await parquet(), "application/vnd.apache.parquet");
+  await edit([
+    {
+      op: "set_source",
+      source_id: "usage",
+      name: "Workspace usage",
+      asset_id: asset,
+      source_revision: null,
+    },
+  ]);
+  await expect(panel.getByRole("button", { name: /Workspace usage Parquet/ })).toBeVisible({
+    timeout: 90000,
+  });
+  await edit([
+    {
+      op: "insert_node",
+      node: {
+        type: "dataframe",
+        attrs: {
+          title: "Usage table",
+          binding: { source_id: "usage" },
+          media_type: "application/vnd.apache.parquet",
+        },
+      },
+    },
+    {
+      op: "insert_node",
+      node: {
+        type: "dataframe",
+        attrs: {
+          title: "Pinned baseline",
+          binding: { source_id: "usage", revision: "1" },
+          media_type: "application/vnd.apache.parquet",
+        },
+      },
+    },
+    {
+      op: "set_view",
+      view_id: "activity",
+      title: "Tool activity",
+      media_type: "application/vnd.vegalite.v6+json",
+      view_revision: null,
+      spec: {
+        data: { name: "rows" },
+        mark: "bar",
+        encoding: {
+          x: { field: "team", type: "nominal" },
+          y: { field: "calls", type: "quantitative" },
+        },
+      },
+      data: { rows: { source_id: "usage" } },
+    },
+    { op: "insert_node", node: { type: "view", attrs: { view_id: "activity" } } },
+  ]);
+  await expect(panel).toContainText("Used on this Page · 3", { timeout: 30000 });
+  await expect(panel).toContainText("Pinned · version 1");
+  await panel.getByRole("button", { name: /Tool activity Vega-Lite/ }).click();
+  await expect(page.locator(".wordgard-view-embed.source-revealed")).toBeVisible();
+  await expect(page.locator(".wordgard-view-embed.source-revealed")).toBeFocused();
+  await panel.getByRole("button", { name: "Close sources panel" }).click();
+  await expect(toggle).toBeFocused();
+  const line = page
+    .locator(".sources-line")
+    .getByRole("button", { name: "Workspace usage", exact: true });
+  await line.click();
+  await expect(panel).toContainText("Set by");
+  await page.screenshot({ path: `${output}/sources-panel-wide.png` });
+  await edit([
+    {
+      op: "set_source",
+      source_id: "usage",
+      name: "Workspace usage",
+      asset_id: asset,
+      source_revision: "1",
+    },
+  ]);
+  await expect(panel).toContainText("version 2", { timeout: 30000 });
+  await panel.getByRole("button", { name: "Versions", exact: true }).click();
+  await expect(panel).toContainText("Version 1");
+  await expect(panel).toContainText("A connection is pinned here");
+  await page.keyboard.press("Escape");
+  await expect(panel).toHaveCount(0);
+  await expect(line).toBeFocused();
+
+  // Asset types introduced with anywidget. No execution is needed to inspect.
+  if (keys) {
+    const js = await upload(
+      Buffer.from('export default { render({el}) { el.textContent = "Local widget"; } };'),
+      "text/javascript",
+    );
+    const css = await upload(Buffer.from(".widget { color: teal; }"), "text/css");
+    const binary = await upload(Buffer.from([1, 2, 3, 4]), "application/octet-stream");
+    await edit([
+      {
+        op: "set_source",
+        source_id: "renderer",
+        name: "Widget renderer",
+        asset_id: js,
+        source_revision: null,
+      },
+      {
+        op: "set_source",
+        source_id: "styles",
+        name: "Widget styles",
+        asset_id: css,
+        source_revision: null,
+      },
+      {
+        op: "set_source",
+        source_id: "bytes",
+        name: "Binary sample",
+        asset_id: binary,
+        source_revision: null,
+      },
+      {
+        op: "set_view",
+        view_id: "widget",
+        title: "Custom widget",
+        media_type: "application/vnd.nteract.anywidget.v1+json",
+        view_revision: null,
+        spec: {
+          _esm: "code",
+          _css: "styles",
+          state: {},
+          buffers: ["bytes"],
+          buffer_paths: [["buffer"]],
+        },
+        data: {
+          code: { source_id: "renderer" },
+          styles: { source_id: "styles" },
+          bytes: { source_id: "bytes" },
+        },
+      },
+      {
+        op: "insert_markdown",
+        markdown: "## Custom view\n\nThis view reads JavaScript, CSS and a binary asset.",
+      },
+      { op: "insert_node", node: { type: "view", attrs: { view_id: "widget" } } },
+    ]);
+    await toggle.click();
+    await panel.getByRole("button", { name: /Widget styles CSS/ }).click();
+    await expect(panel).toContainText("Anywidget · styles", { timeout: 30000 });
+    await panel.getByRole("button", { name: /Binary sample Binary/ }).click();
+    await expect(panel).toContainText("Anywidget · bytes");
+  } else await toggle.click();
+  await page.getByRole("button", { name: "Comments", exact: true }).click();
+  await expect(panel).toHaveCount(0);
+  await expect(page.locator("#page-comments")).toHaveAttribute("open", "");
+  await toggle.click();
+  await expect(page.locator("#page-comments")).not.toHaveAttribute("open", "");
+  await panel.getByRole("button", { name: /Workspace usage Parquet/ }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(panel).toBeVisible();
+  assert.equal(await panel.evaluate((el) => el.matches(":modal")), true);
+  await page.screenshot({ path: `${output}/sources-panel-phone.png` });
+  await page.keyboard.press("Escape");
+  await expect(toggle).toBeFocused();
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await toggle.click();
+  await panel.getByRole("button", { name: /Workspace usage Parquet/ }).click();
+  await panel.getByRole("button", { name: /Usage table Table Follows latest/ }).click();
+  await expect(panel).toHaveCount(0);
+  await expect(page.locator(".wordgard-dataframe-table.source-revealed")).toBeFocused();
+  await toggle.click();
+  await panel.getByRole("textbox", { name: "Find a source" }).fill("not a source");
+  await expect(panel).toContainText("No matching sources.");
+  await panel.getByRole("textbox", { name: "Find a source" }).fill("");
+  if (keys) {
+    await panel.getByRole("button", { name: /Widget styles CSS/ }).click();
+    await edit([{ op: "delete_source", source_id: "styles", source_revision: "1" }]);
+    await expect(panel).toContainText("This source isn't available on this Page", {
+      timeout: 30000,
+    });
+    await expect(panel).toContainText("Anywidget · styles");
+    if (keep) {
+      // Keep the demo readable: bind the widget to a new name after deletion.
+      const cssReplacement = await upload(Buffer.from(".widget { color: teal; }"), "text/css");
+      await edit([
+        {
+          op: "set_source",
+          source_id: "theme",
+          name: "Widget theme",
+          asset_id: cssReplacement,
+          source_revision: null,
+        },
+        {
+          op: "set_view",
+          view_id: "widget",
+          title: "Custom widget",
+          media_type: "application/vnd.nteract.anywidget.v1+json",
+          view_revision: "1",
+          spec: {
+            _esm: "code",
+            _css: "styles",
+            state: {},
+            buffers: ["bytes"],
+            buffer_paths: [["buffer"]],
+          },
+          data: {
+            code: { source_id: "renderer" },
+            styles: { source_id: "theme" },
+            bytes: { source_id: "bytes" },
+          },
+        },
+      ]);
+    }
+  }
+  assert.deepEqual(errors, []);
+  Object.assign(report, { pageId, url: `${origin}/p/${pageId}`, passed: true });
+  console.log(`Sources panel passed. ${origin}/p/${pageId}`);
+} catch (error) {
+  report.failure = String(error);
+  await writeFile(`${output}/failure.html`, await page.content()).catch(() => {});
+  await page.screenshot({ path: `${output}/failure.png` }).catch(() => {});
+  throw error;
+} finally {
+  try {
+    if (pageId && !keep) {
+      await tool("delete_page", { page_id: pageId, nonce: nonce() });
+      await purgeTrashedFixture(tool, pageId);
+    }
+    report.cleaned = !keep;
+  } finally {
+    await writeFile(`${output}/report.json`, JSON.stringify(report, null, 2));
+    await browser.close();
+  }
+}

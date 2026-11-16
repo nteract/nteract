@@ -25,6 +25,7 @@ const datasets = process.argv.includes("--datasets");
 const views = process.argv.includes("--views");
 const viewsLayout = process.argv.includes("--views-layout");
 const viewsStored = process.argv.includes("--views-stored");
+const sourcesPanel = process.argv.includes("--sources-panel");
 const mcpImages = process.argv.includes("--mcp-images");
 const taskLists = process.argv.includes("--task-lists");
 const admission = process.argv.includes("--admission");
@@ -47,6 +48,7 @@ if (
     views,
     viewsLayout,
     viewsStored,
+    sourcesPanel,
     mcpImages,
     taskLists,
     admission,
@@ -64,7 +66,7 @@ if (
   ].filter(Boolean).length > 1
 )
   throw new Error(
-    "Choose one qualification: --domain-view, --images, --datasets, --views, --views-layout, --views-stored, --mcp-images, --task-lists, --admission, --build-update, --trash, --unopened, --projects, --revocation, --cold-open, --commenter, --content-activity, --cards, --card-images or --listing-bench",
+    "Choose one qualification: --sources-panel, --domain-view, --images, --datasets, --views, --views-layout, --views-stored, --mcp-images, --task-lists, --admission, --build-update, --trash, --unopened, --projects, --revocation, --cold-open, --commenter, --content-activity, --cards, --card-images or --listing-bench",
   );
 const children = new Set();
 let canceled = false;
@@ -369,47 +371,49 @@ try {
   await run(
     process.execPath,
     [
-      cards
-        ? "scripts/cards-smoke.mjs"
-        : cardImages
-          ? "scripts/card-images-smoke.mjs"
-          : contentActivity
-            ? "scripts/content-activity-smoke.mjs"
-            : revocation
-              ? "scripts/revocation-smoke.mjs"
-              : coldOpen
-                ? "scripts/cold-open-benchmark.mjs"
-                : commenter
-                  ? "scripts/commenter-smoke.mjs"
-                  : projects
-                    ? "scripts/projects-smoke.mjs"
-                    : trash
-                      ? "scripts/trash-smoke.mjs"
-                      : unopened
-                        ? "scripts/unopened-page-smoke.mjs"
-                        : admission
-                          ? "scripts/admission-smoke.mjs"
-                          : taskLists
-                            ? "scripts/task-lists-smoke.mjs"
-                            : mcpImages
-                              ? "scripts/mcp-image-import-smoke.mjs"
-                              : images
-                                ? "scripts/images-smoke.mjs"
-                                : datasets
-                                  ? "scripts/datasets-smoke.mjs"
-                                  : views
-                                    ? "scripts/views-smoke.mjs"
-                                    : viewsLayout
-                                      ? "scripts/views-layout-smoke.mjs"
-                                      : viewsStored
-                                        ? "scripts/views-stored-smoke.mjs"
-                                        : domainView
-                                          ? "scripts/domain-sharing-smoke.mjs"
-                                          : buildUpdate
-                                            ? "scripts/build-update-smoke.mjs"
-                                            : listingBench
-                                              ? "scripts/listing-benchmark.mjs"
-                                              : "scripts/sharing-smoke.mjs",
+      sourcesPanel
+        ? "scripts/sources-panel-smoke.mjs"
+        : cards
+          ? "scripts/cards-smoke.mjs"
+          : cardImages
+            ? "scripts/card-images-smoke.mjs"
+            : contentActivity
+              ? "scripts/content-activity-smoke.mjs"
+              : revocation
+                ? "scripts/revocation-smoke.mjs"
+                : coldOpen
+                  ? "scripts/cold-open-benchmark.mjs"
+                  : commenter
+                    ? "scripts/commenter-smoke.mjs"
+                    : projects
+                      ? "scripts/projects-smoke.mjs"
+                      : trash
+                        ? "scripts/trash-smoke.mjs"
+                        : unopened
+                          ? "scripts/unopened-page-smoke.mjs"
+                          : admission
+                            ? "scripts/admission-smoke.mjs"
+                            : taskLists
+                              ? "scripts/task-lists-smoke.mjs"
+                              : mcpImages
+                                ? "scripts/mcp-image-import-smoke.mjs"
+                                : images
+                                  ? "scripts/images-smoke.mjs"
+                                  : datasets
+                                    ? "scripts/datasets-smoke.mjs"
+                                    : views
+                                      ? "scripts/views-smoke.mjs"
+                                      : viewsLayout
+                                        ? "scripts/views-layout-smoke.mjs"
+                                        : viewsStored
+                                          ? "scripts/views-stored-smoke.mjs"
+                                          : domainView
+                                            ? "scripts/domain-sharing-smoke.mjs"
+                                            : buildUpdate
+                                              ? "scripts/build-update-smoke.mjs"
+                                              : listingBench
+                                                ? "scripts/listing-benchmark.mjs"
+                                                : "scripts/sharing-smoke.mjs",
     ],
     {
       env: {
