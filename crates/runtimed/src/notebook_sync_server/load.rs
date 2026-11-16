@@ -537,6 +537,7 @@ pub(crate) struct AppliedSourceReconciliation {
     pub(crate) fingerprint: super::recovery::SourceFingerprint,
     pub(crate) source_content: Vec<u8>,
     pub(crate) loaded_sources: HashMap<String, String>,
+    pub(crate) loaded_metadata: Option<NotebookMetadataSnapshot>,
     pub(crate) heads: Vec<automerge::ChangeHash>,
     pub(crate) change_hashes: Vec<automerge::ChangeHash>,
     pub(crate) snapshot: Vec<u8>,
@@ -698,6 +699,7 @@ pub(crate) fn apply_prepared_source_reconciliation(
         fingerprint: prepared.prepared.fingerprint,
         source_content: prepared.prepared.source_content,
         loaded_sources: prepared.prepared.loaded_sources,
+        loaded_metadata: prepared.prepared.metadata,
         heads,
         change_hashes,
         snapshot,
@@ -802,6 +804,7 @@ async fn stage_initial_import(
         source_content: prepared.source_content.into(),
         cell_count: prepared.cells.len(),
         loaded_sources: prepared.loaded_sources,
+        loaded_metadata: prepared.metadata.clone(),
         executions,
         widget_comms,
     });
@@ -1185,6 +1188,8 @@ pub(crate) async fn finalize_recovered_source(
     let (executions, widget_comms) = prepared_runtime_sidecars(&prepared);
     apply_runtime_sidecars(room, &executions, &widget_comms)?;
     *room.persistence.last_save_sources.write().await = prepared.loaded_sources;
+    room.persistence
+        .note_metadata_baseline(prepared.metadata.clone());
     room.persistence.note_disk_content(&prepared.source_content);
 
     let projection = Arc::new(
@@ -1275,6 +1280,8 @@ pub(crate) async fn materialize_initial_load(
     apply_staged_runtime_sidecars(room, &artifact)?;
     if room.file_binding.path().await.as_deref() == Some(path) {
         *room.persistence.last_save_sources.write().await = artifact.loaded_sources.clone();
+        room.persistence
+            .note_metadata_baseline(artifact.loaded_metadata.clone());
         room.persistence
             .note_disk_content(artifact.source_content.as_ref());
     }
@@ -2115,6 +2122,95 @@ impl AppliedIpynbChanges {
     }
 }
 
+/// Whether disk changed a cell's source relative to the last file baseline.
+/// Without a baseline, any difference from the live cell counts.
+fn external_source_changed(saved: Option<&String>, current: &str, external: &str) -> bool {
+    match saved {
+        Some(saved) => external != saved.as_str(),
+        None => current != external,
+    }
+}
+
+/// Take the disk value only where disk changed it relative to the baseline;
+/// otherwise keep the live value, which may carry in-session edits.
+fn disk_change_or_current<T: PartialEq + Clone>(disk: &T, baseline: &T, current: &T) -> T {
+    if disk != baseline {
+        disk.clone()
+    } else {
+        current.clone()
+    }
+}
+
+fn merge_metadata_map(
+    disk: &std::collections::BTreeMap<String, serde_json::Value>,
+    baseline: &std::collections::BTreeMap<String, serde_json::Value>,
+    current: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    let mut merged = current.clone();
+    for key in disk.keys().chain(baseline.keys()) {
+        if disk.get(key) == baseline.get(key) {
+            continue;
+        }
+        match disk.get(key) {
+            Some(value) => {
+                merged.insert(key.clone(), value.clone());
+            }
+            None => {
+                merged.remove(key);
+            }
+        }
+    }
+    merged
+}
+
+/// Three-way merge of notebook metadata for a file-watcher revision. Fields
+/// disk changed since the baseline take the disk value; every other field
+/// keeps the live value. Without a baseline or live metadata, disk metadata
+/// applies as a whole.
+pub(crate) fn merge_external_metadata(
+    disk: &NotebookMetadataSnapshot,
+    baseline: Option<&NotebookMetadataSnapshot>,
+    current: Option<&NotebookMetadataSnapshot>,
+) -> NotebookMetadataSnapshot {
+    let (Some(baseline), Some(current)) = (baseline, current) else {
+        return disk.clone();
+    };
+    NotebookMetadataSnapshot {
+        kernelspec: disk_change_or_current(
+            &disk.kernelspec,
+            &baseline.kernelspec,
+            &current.kernelspec,
+        ),
+        language_info: disk_change_or_current(
+            &disk.language_info,
+            &baseline.language_info,
+            &current.language_info,
+        ),
+        runt: notebook_doc::metadata::RuntMetadata {
+            schema_version: disk_change_or_current(
+                &disk.runt.schema_version,
+                &baseline.runt.schema_version,
+                &current.runt.schema_version,
+            ),
+            env_id: disk_change_or_current(
+                &disk.runt.env_id,
+                &baseline.runt.env_id,
+                &current.runt.env_id,
+            ),
+            uv: disk_change_or_current(&disk.runt.uv, &baseline.runt.uv, &current.runt.uv),
+            conda: disk_change_or_current(
+                &disk.runt.conda,
+                &baseline.runt.conda,
+                &current.runt.conda,
+            ),
+            pixi: disk_change_or_current(&disk.runt.pixi, &baseline.runt.pixi, &current.runt.pixi),
+            deno: disk_change_or_current(&disk.runt.deno, &baseline.runt.deno, &current.runt.deno),
+            extra: merge_metadata_map(&disk.runt.extra, &baseline.runt.extra, &current.runt.extra),
+        },
+        extras: merge_metadata_map(&disk.extras, &baseline.extras, &current.extras),
+    }
+}
+
 /// Apply a file-watcher revision while causally binding every authored batch
 /// to the exact source fingerprint it came from.
 pub(crate) async fn apply_ipynb_changes_from_source(
@@ -2140,11 +2236,19 @@ pub(crate) async fn apply_ipynb_changes_from_source(
 
 /// Apply external .ipynb changes to the Automerge doc.
 ///
-/// Compares cells by ID and:
-/// - Adds new cells
-/// - Removes deleted cells
+/// This is a three-way merge against the last file baseline
+/// (`last_save_sources` and the metadata baseline). Compares cells by ID and:
+/// - Adds new cells, except cells deleted in this session that disk did not
+///   change
+/// - Removes cells disk deleted
 /// - Updates source, execution_count, and outputs for modified cells
 /// - Handles cell reordering by rebuilding the cell list
+/// - Keeps cells created in this session since the baseline, and the live
+///   source and metadata of anything disk did not change
+///
+/// Where disk and this session both changed the same cell source or metadata
+/// field, or disk deleted a cell edited in this session, disk wins. The
+/// overwritten values stay in the NotebookDoc history.
 ///
 /// When a kernel is running, outputs and execution counts are preserved
 /// to avoid losing in-progress execution results.
@@ -2257,6 +2361,12 @@ pub(crate) async fn apply_ipynb_changes_inner(
         }
     }
 
+    // Snapshot baselines before the doc write lock to avoid holding doc
+    // across saved_sources `.await` (deadlock prevention).
+    let saved_sources_snapshot = room.last_save_sources_snapshot().await;
+    let have_save_snapshot = !saved_sources_snapshot.is_empty();
+    let metadata_baseline = room.persistence.metadata_baseline();
+
     // Build maps for comparison
     let current_map: HashMap<&str, &CellSnapshot> =
         current_cells.iter().map(|c| (c.id.as_str(), c)).collect();
@@ -2290,6 +2400,31 @@ pub(crate) async fn apply_ipynb_changes_inner(
     let no_common_cells = !current_ids.is_empty()
         && !external_ids.is_empty()
         && !current_ids.iter().any(|id| external_map.contains_key(id));
+
+    // Cells created in this session after the baseline are in neither file
+    // revision. Without a baseline they cannot be told apart from cells the
+    // file dropped, so only a baseline keeps them.
+    let session_only_ids: HashSet<&str> = if have_save_snapshot {
+        current_ids
+            .iter()
+            .filter(|id| {
+                !external_map.contains_key(*id) && !saved_sources_snapshot.contains_key(**id)
+            })
+            .copied()
+            .collect()
+    } else {
+        HashSet::new()
+    };
+    // Cells deleted in this session that disk still holds unchanged stay
+    // deleted. A cell disk also changed comes back with the disk source.
+    let session_deleted_ids: HashSet<&str> = external_cells
+        .iter()
+        .filter(|cell| {
+            !current_map.contains_key(cell.id.as_str())
+                && saved_sources_snapshot.get(cell.id.as_str()) == Some(&cell.source)
+        })
+        .map(|cell| cell.id.as_str())
+        .collect();
 
     // Struct for collecting deferred state_doc writes so the doc write
     // guard is not held across state_doc `.await` (deadlock prevention).
@@ -2334,19 +2469,40 @@ pub(crate) async fn apply_ipynb_changes_inner(
                 Some("runtimed:filesystem"),
                 "file-watcher-order-transaction",
                 |doc| {
-                    // Delete all current cells and re-add in external order.
+                    // Delete current cells and re-add them in external order.
+                    // Cells created in this session stay in place and are
+                    // repositioned below.
                     for cell in &current_cells {
-                        let _ = doc.delete_cell(&cell.id);
+                        if !session_only_ids.contains(cell.id.as_str()) {
+                            let _ = doc.delete_cell(&cell.id);
+                        }
                     }
 
                     let mut deferred: Vec<DeferredExecution> = Vec::new();
+                    let mut previous_external: Option<&str> = None;
 
-                    for (index, ext_cell) in external_cells.iter().enumerate() {
+                    for ext_cell in external_cells
+                        .iter()
+                        .filter(|cell| !session_deleted_ids.contains(cell.id.as_str()))
+                    {
                         if doc
-                            .add_cell(index, &ext_cell.id, &ext_cell.cell_type)
+                            .add_cell_after(&ext_cell.id, &ext_cell.cell_type, previous_external)
                             .is_ok()
                         {
-                            let _ = doc.update_source(&ext_cell.id, &ext_cell.source);
+                            previous_external = Some(ext_cell.id.as_str());
+                            let source = current_map
+                                .get(ext_cell.id.as_str())
+                                .filter(|current| {
+                                    !external_source_changed(
+                                        saved_sources_snapshot.get(ext_cell.id.as_str()),
+                                        &current.source,
+                                        &ext_cell.source,
+                                    )
+                                })
+                                .map_or(ext_cell.source.as_str(), |current| {
+                                    current.source.as_str()
+                                });
+                            let _ = doc.update_source(&ext_cell.id, source);
 
                             // For existing cells with running kernel: preserve current execution_id
                             // (outputs live in RuntimeStateDoc, keyed by execution_id)
@@ -2406,9 +2562,35 @@ pub(crate) async fn apply_ipynb_changes_inner(
                         }
                     }
 
-                    let metadata_changed = external_metadata
+                    // Keep each session-created cell after its nearest
+                    // surviving predecessor from the live order.
+                    for (position, cell) in current_cells.iter().enumerate() {
+                        if !session_only_ids.contains(cell.id.as_str()) {
+                            continue;
+                        }
+                        let anchor = current_cells[..position]
+                            .iter()
+                            .rev()
+                            .map(|previous| previous.id.as_str())
+                            .find(|id| {
+                                session_only_ids.contains(id)
+                                    || (external_map.contains_key(id)
+                                        && !session_deleted_ids.contains(id))
+                            });
+                        let _ = doc.move_cell(&cell.id, anchor);
+                    }
+
+                    let merged_metadata = external_metadata.map(|disk| {
+                        merge_external_metadata(
+                            disk,
+                            metadata_baseline.as_ref(),
+                            doc.get_metadata_snapshot().as_ref(),
+                        )
+                    });
+                    let metadata_changed = merged_metadata
+                        .as_ref()
                         .is_some_and(|metadata| !doc.metadata_snapshot_matches(metadata));
-                    if let Some(metadata) = external_metadata.filter(|_| metadata_changed) {
+                    if let Some(metadata) = merged_metadata.as_ref().filter(|_| metadata_changed) {
                         doc.set_metadata_snapshot(metadata)?;
                     }
 
@@ -2492,11 +2674,6 @@ pub(crate) async fn apply_ipynb_changes_inner(
 
         return applied;
     }
-
-    // Snapshot saved_sources before the doc write lock to avoid holding
-    // doc across saved_sources `.await` (deadlock prevention).
-    let saved_sources_snapshot = room.last_save_sources_snapshot().await;
-    let have_save_snapshot = !saved_sources_snapshot.is_empty();
 
     // Find cells to delete — only cells that existed in our last save
     // but are no longer on disk (genuine external deletion). Cells that
@@ -2601,11 +2778,11 @@ pub(crate) async fn apply_ipynb_changes_inner(
                         // CRDT. If disk matches our last save, the change is from our
                         // own autosave and should be ignored (the CRDT may have
                         // progressed with new typing since then).
-                        let saved_source = saved_sources_snapshot.get(ext_cell.id.as_str());
-                        let is_external_change = match saved_source {
-                            Some(saved) => ext_cell.source != *saved,
-                            None => current_cell.source != ext_cell.source,
-                        };
+                        let is_external_change = external_source_changed(
+                            saved_sources_snapshot.get(ext_cell.id.as_str()),
+                            &current_cell.source,
+                            &ext_cell.source,
+                        );
 
                         if is_external_change {
                             debug!("[notebook-watch] Updating source for cell: {}", ext_cell.id);
@@ -2683,6 +2860,11 @@ pub(crate) async fn apply_ipynb_changes_inner(
                                 changed = true;
                             }
                         }
+                    } else if session_deleted_ids.contains(ext_cell.id.as_str()) {
+                        debug!(
+                            "[notebook-watch] Keeping session deletion of unchanged cell: {}",
+                            ext_cell.id
+                        );
                     } else {
                         // New cell - add it
                         // New cells don't have any in-progress state, so always use external values
@@ -2728,9 +2910,17 @@ pub(crate) async fn apply_ipynb_changes_inner(
                 }
 
                 let cells_changed = changed;
-                let metadata_changed = external_metadata
+                let merged_metadata = external_metadata.map(|disk| {
+                    merge_external_metadata(
+                        disk,
+                        metadata_baseline.as_ref(),
+                        doc.get_metadata_snapshot().as_ref(),
+                    )
+                });
+                let metadata_changed = merged_metadata
+                    .as_ref()
                     .is_some_and(|metadata| !doc.metadata_snapshot_matches(metadata));
-                if let Some(metadata) = external_metadata.filter(|_| metadata_changed) {
+                if let Some(metadata) = merged_metadata.as_ref().filter(|_| metadata_changed) {
                     doc.set_metadata_snapshot(metadata)?;
                 }
 

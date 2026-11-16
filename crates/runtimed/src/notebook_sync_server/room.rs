@@ -488,6 +488,13 @@ pub struct RoomPersistence {
     /// live CRDT) to distinguish our own autosave writes from genuine external
     /// changes (git pull, external editor).
     pub last_save_sources: RwLock<HashMap<String, String>>,
+    /// Notebook metadata as parsed from the same disk bytes as
+    /// `last_save_sources`. The file watcher applies only the metadata
+    /// fields that disk changed relative to this baseline, so an external
+    /// write that leaves metadata alone keeps in-session metadata edits.
+    /// `None` means no baseline was observed; the watcher then applies disk
+    /// metadata as a whole.
+    last_save_metadata: std::sync::Mutex<Option<notebook_doc::metadata::NotebookMetadataSnapshot>>,
     /// Highest committed save sequence allowed to update the primary-path
     /// watcher baselines. Post-`spawn_blocking` save continuations may resume
     /// out of order, so the sources and disk hash are advanced together under
@@ -537,6 +544,7 @@ impl RoomPersistence {
             file_checkpoint: Arc::new(super::file_checkpoint::FileCheckpointCoordinator::default()),
             debouncer: std::sync::Mutex::new(None),
             last_save_sources: RwLock::new(HashMap::new()),
+            last_save_metadata: std::sync::Mutex::new(None),
             primary_save_baseline_sequence: AtomicU64::new(0),
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
             last_known_disk_hash: std::sync::Mutex::new(None),
@@ -556,6 +564,7 @@ impl RoomPersistence {
                 flush_request_tx,
             })),
             last_save_sources: RwLock::new(HashMap::new()),
+            last_save_metadata: std::sync::Mutex::new(None),
             primary_save_baseline_sequence: AtomicU64::new(0),
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
             last_known_disk_hash: std::sync::Mutex::new(None),
@@ -583,6 +592,7 @@ impl RoomPersistence {
         &self,
         save_sequence: u64,
         sources: HashMap<String, String>,
+        metadata: Option<notebook_doc::metadata::NotebookMetadataSnapshot>,
         bytes: &[u8],
     ) -> bool {
         let mut saved = self.last_save_sources.write().await;
@@ -590,6 +600,7 @@ impl RoomPersistence {
             return false;
         }
         *saved = sources;
+        self.note_metadata_baseline(metadata);
         self.note_disk_content(bytes);
         self.primary_save_baseline_sequence
             .store(save_sequence, Ordering::Release);
@@ -600,6 +611,25 @@ impl RoomPersistence {
     #[cfg(test)]
     pub fn primary_save_baseline_sequence_for_test(&self) -> u64 {
         self.primary_save_baseline_sequence.load(Ordering::Acquire)
+    }
+
+    /// Record the notebook metadata parsed from the disk bytes that also
+    /// seeded `last_save_sources`.
+    pub fn note_metadata_baseline(
+        &self,
+        metadata: Option<notebook_doc::metadata::NotebookMetadataSnapshot>,
+    ) {
+        if let Ok(mut baseline) = self.last_save_metadata.lock() {
+            *baseline = metadata;
+        }
+    }
+
+    /// The metadata recorded by [`Self::note_metadata_baseline`], if any.
+    pub fn metadata_baseline(&self) -> Option<notebook_doc::metadata::NotebookMetadataSnapshot> {
+        self.last_save_metadata
+            .lock()
+            .ok()
+            .and_then(|baseline| baseline.clone())
     }
 
     /// The baseline recorded by [`Self::note_disk_content`], if any.

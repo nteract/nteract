@@ -3693,6 +3693,295 @@ async fn external_write_right_after_in_session_edit_merges_instead_of_conflictin
     ));
 }
 
+fn ordered_ipynb_bytes(cells: &[(&str, &str)], metadata: serde_json::Value) -> Vec<u8> {
+    let cells: Vec<serde_json::Value> = cells
+        .iter()
+        .map(|(id, source)| {
+            serde_json::json!({
+                "id": id,
+                "cell_type": "code",
+                "source": source,
+                "execution_count": null,
+                "outputs": [],
+                "metadata": {}
+            })
+        })
+        .collect();
+    serde_json::to_vec(&serde_json::json!({
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": metadata,
+        "cells": cells
+    }))
+    .unwrap()
+}
+
+/// A room that loaded `bytes` from disk: the doc, journal, and every file
+/// watcher baseline match the file.
+async fn watcher_room_loaded_from(
+    tmp: &tempfile::TempDir,
+    notebook_filename: &str,
+    bytes: &[u8],
+) -> (NotebookRoom, PathBuf) {
+    let (room, notebook_path) = test_room_with_path(tmp, notebook_filename);
+    tokio::fs::write(&notebook_path, bytes).await.unwrap();
+    let parsed = parse_notebook_jiter_for_notebook(bytes, room.id).unwrap();
+    {
+        let mut doc = room.doc.write().await;
+        for (index, cell) in parsed.cells.iter().enumerate() {
+            doc.add_cell(index, &cell.id, &cell.cell_type).unwrap();
+            doc.update_source(&cell.id, &cell.source).unwrap();
+        }
+        if let Some(metadata) = parsed.metadata.as_ref() {
+            doc.set_metadata_snapshot(metadata).unwrap();
+        }
+    }
+    commit_test_room_source(&room).await;
+    let sources = parsed
+        .cells
+        .iter()
+        .map(|cell| (cell.id.clone(), cell.source.clone()))
+        .collect();
+    assert!(
+        room.persistence
+            .note_primary_save_baseline(0, sources, parsed.metadata.clone(), bytes)
+            .await
+    );
+    (room, notebook_path)
+}
+
+async fn write_and_ingest(room: &NotebookRoom, notebook_path: &Path, bytes: &[u8]) {
+    tokio::fs::write(notebook_path, bytes).await.unwrap();
+    process_watcher_event(room, notebook_path).await;
+    assert!(
+        !matches!(room.lifecycle.availability(), RoomAvailability::Degraded(_)),
+        "an in-session edit must not turn an external write into a source conflict"
+    );
+}
+
+async fn disk_cell_sources(room: &NotebookRoom, notebook_path: &Path) -> Vec<(String, String)> {
+    let bytes = tokio::fs::read(notebook_path).await.unwrap();
+    parse_notebook_jiter_for_notebook(&bytes, room.id)
+        .unwrap()
+        .cells
+        .into_iter()
+        .map(|cell| (cell.id, cell.source))
+        .collect()
+}
+
+async fn doc_cell_sources(room: &NotebookRoom) -> Vec<(String, String)> {
+    room.doc
+        .read()
+        .await
+        .get_cells()
+        .into_iter()
+        .map(|cell| (cell.id, cell.source))
+        .collect()
+}
+
+fn cell_pairs(cells: &[(&str, &str)]) -> Vec<(String, String)> {
+    cells
+        .iter()
+        .map(|(id, source)| (id.to_string(), source.to_string()))
+        .collect()
+}
+
+/// A cell added in this session is in neither file revision. The external
+/// revision still becomes the save baseline, so the next save is not
+/// deferred forever as "changed externally".
+#[tokio::test]
+async fn external_write_after_session_added_cell_keeps_saves_unblocked() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let loaded = ordered_ipynb_bytes(&[("c1", "x = 1")], serde_json::json!({}));
+    let (room, notebook_path) = watcher_room_loaded_from(&tmp, "added-cell.ipynb", &loaded).await;
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(1, "mine", "code").unwrap();
+        doc.update_source("mine", "z = 1").unwrap();
+    }
+    commit_test_room_doc(&room).await;
+
+    let external = ordered_ipynb_bytes(&[("c1", "x = 2")], serde_json::json!({}));
+    write_and_ingest(&room, &notebook_path, &external).await;
+    let expected = cell_pairs(&[("c1", "x = 2"), ("mine", "z = 1")]);
+    assert_eq!(doc_cell_sources(&room).await, expected);
+
+    let saved = super::persist::save_notebook_to_disk(&room, None)
+        .await
+        .expect("the merged revision is the save baseline");
+    assert!(matches!(saved, FileSaveOutcome::Saved { .. }));
+    assert_eq!(disk_cell_sources(&room, &notebook_path).await, expected);
+}
+
+/// `git switch B` then `git switch A` before a save lands. The switch back
+/// must not be skipped as already-known content, or the next save writes
+/// branch B's cell onto branch A's file.
+#[tokio::test]
+async fn branch_switch_back_before_save_does_not_clobber_disk() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let branch_a = ordered_ipynb_bytes(&[("c1", "x = 'branch A'")], serde_json::json!({}));
+    let branch_b = ordered_ipynb_bytes(&[("c1", "x = 'branch B'")], serde_json::json!({}));
+    let (room, notebook_path) = watcher_room_loaded_from(&tmp, "a-b-a.ipynb", &branch_a).await;
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(1, "mine", "code").unwrap();
+        doc.update_source("mine", "z = 1").unwrap();
+    }
+    commit_test_room_doc(&room).await;
+
+    write_and_ingest(&room, &notebook_path, &branch_b).await;
+    write_and_ingest(&room, &notebook_path, &branch_a).await;
+    let expected = cell_pairs(&[("c1", "x = 'branch A'"), ("mine", "z = 1")]);
+    assert_eq!(doc_cell_sources(&room).await, expected);
+
+    super::persist::save_notebook_to_disk(&room, None)
+        .await
+        .unwrap();
+    assert_eq!(disk_cell_sources(&room, &notebook_path).await, expected);
+}
+
+/// Disk wins where both sides changed the same cell source. The session's
+/// text survives only in NotebookDoc history.
+#[tokio::test]
+async fn same_cell_edited_on_both_sides_takes_disk_source() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let loaded = ordered_ipynb_bytes(&[("c1", "x = 1"), ("c2", "y = 1")], serde_json::json!({}));
+    let (room, notebook_path) = watcher_room_loaded_from(&tmp, "same-cell.ipynb", &loaded).await;
+    {
+        let mut doc = room.doc.write().await;
+        doc.update_source("c1", "x = 'mine'").unwrap();
+    }
+    commit_test_room_doc(&room).await;
+
+    let external = ordered_ipynb_bytes(
+        &[("c1", "x = 'theirs'"), ("c2", "y = 1")],
+        serde_json::json!({}),
+    );
+    write_and_ingest(&room, &notebook_path, &external).await;
+    assert_eq!(
+        doc_cell_sources(&room).await,
+        cell_pairs(&[("c1", "x = 'theirs'"), ("c2", "y = 1")])
+    );
+}
+
+/// An external reorder rebuilds the cell list. Cells created in this session
+/// keep their place after their live predecessor, and cells disk did not
+/// change keep their live source.
+#[tokio::test]
+async fn external_reorder_keeps_session_cells_and_unchanged_live_sources() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let loaded = ordered_ipynb_bytes(
+        &[("a", "a = 1"), ("b", "b = 1"), ("c", "c = 1")],
+        serde_json::json!({}),
+    );
+    let (room, notebook_path) = watcher_room_loaded_from(&tmp, "reorder.ipynb", &loaded).await;
+    {
+        let mut doc = room.doc.write().await;
+        doc.update_source("b", "b = 'mine'").unwrap();
+        doc.add_cell_after("n", "code", Some("a")).unwrap();
+        doc.update_source("n", "n = 1").unwrap();
+    }
+    commit_test_room_doc(&room).await;
+
+    let external = ordered_ipynb_bytes(
+        &[("c", "c = 2"), ("a", "a = 1"), ("b", "b = 1")],
+        serde_json::json!({}),
+    );
+    write_and_ingest(&room, &notebook_path, &external).await;
+    assert_eq!(
+        doc_cell_sources(&room).await,
+        cell_pairs(&[
+            ("c", "c = 2"),
+            ("a", "a = 1"),
+            ("n", "n = 1"),
+            ("b", "b = 'mine'"),
+        ])
+    );
+}
+
+/// A cell deleted in this session stays deleted when disk still holds it
+/// unchanged.
+#[tokio::test]
+async fn session_deleted_cell_stays_deleted_when_disk_left_it_unchanged() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let loaded = ordered_ipynb_bytes(&[("a", "a = 1"), ("b", "b = 1")], serde_json::json!({}));
+    let (room, notebook_path) =
+        watcher_room_loaded_from(&tmp, "session-delete.ipynb", &loaded).await;
+    {
+        let mut doc = room.doc.write().await;
+        doc.delete_cell("b").unwrap();
+    }
+    commit_test_room_doc(&room).await;
+
+    let external = ordered_ipynb_bytes(&[("a", "a = 2"), ("b", "b = 1")], serde_json::json!({}));
+    write_and_ingest(&room, &notebook_path, &external).await;
+    assert_eq!(doc_cell_sources(&room).await, cell_pairs(&[("a", "a = 2")]));
+}
+
+/// Metadata merges field by field against the baseline: an external write
+/// keeps an in-session dependency it did not touch and still applies the
+/// metadata it did change.
+#[tokio::test]
+async fn external_write_keeps_in_session_metadata_edits() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let loaded = ordered_ipynb_bytes(&[("c1", "x = 1")], serde_json::json!({}));
+    let (room, notebook_path) = watcher_room_loaded_from(&tmp, "metadata.ipynb", &loaded).await;
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_uv_dependency("pandas").unwrap();
+    }
+    commit_test_room_doc(&room).await;
+
+    let cell_only = ordered_ipynb_bytes(&[("c1", "x = 2")], serde_json::json!({}));
+    write_and_ingest(&room, &notebook_path, &cell_only).await;
+    assert_eq!(
+        room.doc.read().await.get_uv_dependencies(),
+        vec!["pandas".to_string()]
+    );
+
+    let tagged = ordered_ipynb_bytes(&[("c1", "x = 2")], serde_json::json!({"tags": ["demo"]}));
+    write_and_ingest(&room, &notebook_path, &tagged).await;
+    let doc = room.doc.read().await;
+    assert_eq!(doc.get_cell_source("c1"), Some("x = 2".to_string()));
+    assert_eq!(doc.get_uv_dependencies(), vec!["pandas".to_string()]);
+    assert_eq!(
+        doc.get_metadata_snapshot()
+            .and_then(|metadata| metadata.extras.get("tags").cloned()),
+        Some(serde_json::json!(["demo"]))
+    );
+}
+
+#[test]
+fn metadata_merge_takes_only_disk_changed_fields() {
+    let baseline = NotebookMetadataSnapshot::from_metadata_value(&serde_json::json!({
+        "kernelspec": {"name": "python3", "display_name": "Python 3"},
+        "keep": 1,
+        "drop": 1
+    }));
+    let mut current = baseline.clone();
+    current.add_uv_dependency("pandas");
+    current
+        .extras
+        .insert("mine".to_string(), serde_json::json!(true));
+    let disk = NotebookMetadataSnapshot::from_metadata_value(&serde_json::json!({
+        "kernelspec": {"name": "python3", "display_name": "Python 3"},
+        "keep": 2
+    }));
+
+    let merged = super::load::merge_external_metadata(&disk, Some(&baseline), Some(&current));
+    assert_eq!(merged.kernelspec, current.kernelspec);
+    assert_eq!(merged.runt.uv, current.runt.uv);
+    assert_eq!(merged.extras.get("keep"), Some(&serde_json::json!(2)));
+    assert_eq!(merged.extras.get("drop"), None);
+    assert_eq!(merged.extras.get("mine"), Some(&serde_json::json!(true)));
+
+    assert_eq!(
+        super::load::merge_external_metadata(&disk, None, Some(&current)),
+        disk,
+        "without a baseline disk metadata applies whole"
+    );
+}
+
 #[tokio::test]
 async fn test_save_notebook_to_disk_preserves_unknown_metadata() {
     use std::io::Write;
@@ -14414,7 +14703,7 @@ async fn drive_primary_save_baseline_calls(calls: &[BaselineSaveCall], scenario:
             call.sequence, call.payload
         );
         let accepted = persistence
-            .note_primary_save_baseline(call.sequence, call.sources(), &call.bytes())
+            .note_primary_save_baseline(call.sequence, call.sources(), None, &call.bytes())
             .await;
         // The gate accepts monotonically: any call at or above the newest
         // accepted sequence rebinds the whole tuple; anything older is

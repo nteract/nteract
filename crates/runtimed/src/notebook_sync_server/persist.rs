@@ -514,6 +514,10 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
         }
     }
 
+    // The watcher's metadata baseline must have the shape it parses from
+    // disk, so derive it from the exact metadata value written below.
+    let saved_metadata = Some(NotebookMetadataSnapshot::from_metadata_value(&metadata));
+
     // We always write cell IDs, so nbformat_minor is at least 5.
     let existing_minor = existing_raw
         .as_ref()
@@ -780,7 +784,12 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
         }
         if !room
             .persistence
-            .note_primary_save_baseline(checkpoint.save_sequence, saved, &content_bytes)
+            .note_primary_save_baseline(
+                checkpoint.save_sequence,
+                saved,
+                saved_metadata,
+                &content_bytes,
+            )
             .await
         {
             debug!(
@@ -865,7 +874,7 @@ pub(crate) async fn refresh_primary_baseline_from_checkpoint(
         .map(|cell| (cell.id, cell.source))
         .collect();
     room.persistence
-        .note_primary_save_baseline(save_sequence, sources, &bytes)
+        .note_primary_save_baseline(save_sequence, sources, parsed.metadata, &bytes)
         .await
 }
 
@@ -2066,8 +2075,13 @@ pub(crate) fn spawn_autosave_debouncer_with_config(
                                     ..
                                 }) => {
                                     // A newer checkpoint already owns the file. There
-                                    // is no older completion to retry.
-                                    last_receive = None;
+                                    // is no older completion to retry, but a watcher
+                                    // revision that superseded this save can leave
+                                    // in-session heads unexported. Stay armed until a
+                                    // save exports them.
+                                    let status = room.durability.status();
+                                    last_receive = (status.durable_heads != status.exported_heads)
+                                        .then(Instant::now);
                                     last_flush = Some(Instant::now());
                                 }
                                 Err(e) => {
@@ -2426,22 +2440,35 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
     // Failed generation and persistence guard remain
     // authoritative.
     let cells_reconciled = room.doc.read().await.cell_count() == external_cells.len();
-
     if cells_reconciled {
         room.clear_load_failed();
-        // Only a fully reconciled and journaled source
-        // revision becomes the autosave staleness
-        // baseline. Failed or partial application keeps
-        // the prior baseline so a later save cannot
-        // silently overwrite unobserved disk truth.
+    }
+
+    // Every journaled source revision becomes the autosave staleness
+    // baseline, including one merged over cells this session kept. A
+    // revision that did not journal (its prepared bytes went stale or the
+    // apply failed) keeps the prior baseline so a later save cannot silently
+    // overwrite unobserved disk truth.
+    if room.durability.manifest().source_fingerprint == observed_fingerprint {
         let sources = external_cells
             .iter()
             .map(|cell| (cell.id.clone(), cell.source.clone()))
             .collect();
         let _ = room
             .persistence
-            .note_primary_save_baseline(source_save_sequence, sources, contents.as_bytes())
+            .note_primary_save_baseline(
+                source_save_sequence,
+                sources,
+                external_metadata.clone(),
+                contents.as_bytes(),
+            )
             .await;
+        // The file lacks in-session edits the revision merged over. Re-arm
+        // autosave even when the revision itself changed nothing visible.
+        let status = room.durability.status();
+        if status.durable_heads != status.exported_heads {
+            let _ = room.broadcasts.file_dirty_tx.send(());
+        }
     }
 
     if cells_changed || metadata_changed {
