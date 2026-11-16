@@ -35,6 +35,7 @@ struct ChannelServer {
     url: String,
     requests: Arc<Mutex<Vec<String>>>,
     task: tokio::task::JoinHandle<()>,
+    files: Arc<Mutex<HashMap<String, Vec<u8>>>>,
 }
 
 impl Drop for ChannelServer {
@@ -49,6 +50,8 @@ impl ChannelServer {
         let url = format!("http://{}", listener.local_addr().unwrap());
         let requests = Arc::new(Mutex::new(Vec::new()));
         let seen = requests.clone();
+        let files = Arc::new(Mutex::new(files));
+        let serve_files = files.clone();
         let task = tokio::spawn(async move {
             loop {
                 let (mut stream, _) = listener.accept().await.unwrap();
@@ -67,13 +70,17 @@ impl ChannelServer {
                 let method = parts.next().unwrap();
                 let path = parts.next().unwrap();
                 seen.lock().unwrap().push(path.to_string());
-                let (status, body) = files.get(path).map_or(("404 Not Found", &[][..]), |body| {
-                    ("200 OK", body.as_slice())
-                });
+                let (status, body) = serve_files
+                    .lock()
+                    .unwrap()
+                    .get(path)
+                    .map_or(("404 Not Found", Vec::new()), |body| {
+                        ("200 OK", body.clone())
+                    });
                 let header = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nCache-Control: public, max-age=3600\r\nConnection: close\r\n\r\n", body.len());
                 stream.write_all(header.as_bytes()).await.unwrap();
                 if method != "HEAD" {
-                    stream.write_all(body).await.unwrap();
+                    stream.write_all(&body).await.unwrap();
                 }
             }
         });
@@ -81,6 +88,7 @@ impl ChannelServer {
             url,
             requests,
             task,
+            files,
         }
     }
 }
@@ -478,4 +486,111 @@ async fn missing_related_dependency_does_not_modify_existing_prefix() {
         }, kernel_env::conda::EnvOwnership::Daemon, cache.path(), client, progress).await.unwrap();
         assert!(prefix.path().join("share/related-only.txt").exists());
     }).await.expect("prefix preservation test timed out");
+}
+
+#[tokio::test]
+async fn failed_cached_solve_refreshes_http_fresh_repodata() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let index = |version: &str| {
+            let (record, _) = package(version);
+            serde_json::to_vec(&json!({"info": {"subdir": "noarch"},
+                "packages": {format!("upgrade-fixture-{version}-0.tar.bz2"): record},
+                "packages.conda": {}, "repodata_version": 1}))
+            .unwrap()
+        };
+        let path = "/channel/noarch/repodata.json";
+        let server = ChannelServer::start(HashMap::from([(path.into(), index("1.0"))])).await;
+        let cache = tempfile::tempdir().unwrap();
+        let config = ChannelConfig::default_with_root_dir(cache.path().to_path_buf());
+        let channels = vec![Channel::from_str(format!("{}/channel", server.url), &config).unwrap()];
+        let client = reqwest_middleware::ClientBuilder::new(reqwest_rattler::Client::new()).build();
+        let progress = Arc::new(Progress::default());
+        let solve = |wanted: &'static str| {
+            let specs = vec![spec(wanted)];
+            let query = kernel_env::repodata::RepodataQuery {
+                channels: channels.clone(),
+                platforms: vec![Subdir::NoArch],
+                specs: specs.clone(),
+                rattler_cache_dir: cache.path(),
+                download_client: client.clone(),
+                handler: progress.clone(),
+                env_type: "conda",
+            };
+            async move {
+                kernel_env::repodata::solve_with_repodata(query, |records| {
+                    resolvo::Solver.solve(SolverTask {
+                        specs: specs.clone(),
+                        ..SolverTask::from_iter(records)
+                    })
+                })
+                .await
+            }
+        };
+        assert_eq!(
+            solve("upgrade-fixture=1.0").await.unwrap().records[0]
+                .package_record
+                .version
+                .to_string(),
+            "1.0"
+        );
+        let requests = || {
+            server
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|p| p.as_str() == path)
+                .count()
+        };
+        let before = requests();
+        assert!(before > 0);
+        // The server advertises max-age=3600. Change its index while the cached
+        // response is still HTTP-fresh, with no sleeps or cache-file edits.
+        server
+            .files
+            .lock()
+            .unwrap()
+            .insert(path.into(), index("2.0"));
+        solve("upgrade-fixture=1.0").await.unwrap();
+        assert_eq!(
+            requests(),
+            before,
+            "a satisfiable cache must stay offline-first"
+        );
+        progress.0.lock().unwrap().clear();
+        assert_eq!(
+            solve("upgrade-fixture=2.0").await.unwrap().records[0]
+                .package_record
+                .version
+                .to_string(),
+            "2.0"
+        );
+        assert!(progress
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|p| matches!(p, EnvProgressPhase::OfflineHit)));
+        assert_eq!(
+            requests(),
+            before + 1,
+            "failed cached solve must fetch the real index once"
+        );
+        // A failed forced refresh must not destroy the last usable index.
+        server.task.abort();
+        let error = solve("upgrade-fixture=3.0").await.unwrap_err();
+        assert!(matches!(
+            error,
+            kernel_env::repodata::RepodataSolveError::Solve(_)
+        ));
+        assert_eq!(
+            solve("upgrade-fixture=2.0").await.unwrap().records[0]
+                .package_record
+                .version
+                .to_string(),
+            "2.0"
+        );
+    })
+    .await
+    .expect("local cache refresh test timed out");
 }

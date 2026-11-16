@@ -2,10 +2,10 @@
 //!
 //! [`solve_with_repodata`] serves Conda and Pixi environments. It solves
 //! against the local repodata cache (`ForceCacheOnly`) first. When that cache
-//! is missing, or when the solve on cached repodata fails, it fetches from the
-//! network (`CacheOrFetch`) and solves once more. A cache entry can be weeks
-//! old, so a failed cached solve is not evidence that a package is missing
-//! upstream.
+//! is missing, it uses `CacheOrFetch`. If the cached solve fails, it forces a
+//! network refresh (`NoCache`) and solves once more, even when the index is
+//! still HTTP-fresh. A failed cached solve is not evidence that a package is
+//! missing upstream.
 
 #[cfg(feature = "runtime")]
 use std::{fmt, future::Future, path::Path, sync::Arc, time::Instant};
@@ -88,7 +88,7 @@ where
     let mut solve = solve;
     let result = solve_preferring_cache(
         query_cached(&query),
-        || query_network(&query),
+        |cache_action| query_network(&query, cache_action),
         env_type,
         |data: &Vec<RepoData>| solve(data),
     )
@@ -111,7 +111,7 @@ where
 #[cfg(feature = "runtime")]
 async fn solve_preferring_cache<D, T, E, NF>(
     cached: impl Future<Output = Option<D>>,
-    network: impl FnOnce() -> NF,
+    network: impl FnOnce(CacheAction) -> NF,
     env_type: &str,
     mut solve: impl FnMut(&D) -> std::result::Result<T, E>,
 ) -> std::result::Result<T, RepodataSolveError<E>>
@@ -133,7 +133,13 @@ where
         None => None,
     };
 
-    let fresh = match network().await {
+    // HTTP freshness does not imply the cached index can satisfy new specs.
+    let cache_action = if cached_error.is_some() {
+        CacheAction::NoCache
+    } else {
+        CacheAction::CacheOrFetch
+    };
+    let fresh = match network(cache_action).await {
         Ok(data) => data,
         Err(fetch_error) => {
             return Err(match cached_error {
@@ -222,13 +228,25 @@ async fn query_cached(query: &RepodataQuery<'_>) -> Option<Vec<RepoData>> {
 /// Repodata from the network gateway, retrying transient errors. The caller
 /// decides whether a fetch error reaches the progress banner.
 #[cfg(feature = "runtime")]
-async fn query_network(query: &RepodataQuery<'_>) -> Result<Vec<RepoData>> {
+async fn query_network(
+    query: &RepodataQuery<'_>,
+    cache_action: CacheAction,
+) -> Result<Vec<RepoData>> {
     const MAX_RETRIES: u32 = 3;
     const INITIAL_DELAY_MS: u64 = 1000;
 
     let env_type = query.env_type;
     let handler = &query.handler;
-    let gateway = gateway(query, None);
+    let gateway = gateway(
+        query,
+        Some(ChannelConfig {
+            default: SourceConfig {
+                cache_action,
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+    );
 
     handler.on_progress(
         env_type,
@@ -344,9 +362,15 @@ mod tests {
         wanted: u32,
     ) -> (std::result::Result<u32, RepodataSolveError<String>>, usize) {
         let fetches = AtomicUsize::new(0);
+        let expected_action = if cached.is_some() {
+            CacheAction::NoCache
+        } else {
+            CacheAction::CacheOrFetch
+        };
         let result = solve_preferring_cache(
             async { cached },
-            || {
+            |cache_action| {
+                assert_eq!(cache_action, expected_action);
                 fetches.fetch_add(1, Ordering::SeqCst);
                 async { network }
             },
