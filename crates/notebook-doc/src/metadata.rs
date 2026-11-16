@@ -74,7 +74,7 @@ where
 }
 
 /// UV inline dependency metadata (`metadata.runt.uv`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct UvInlineMetadata {
     /// PEP 508 dependency specifiers (e.g. `["pandas>=2.0", "numpy"]`).
     #[serde(default)]
@@ -95,7 +95,7 @@ pub struct UvInlineMetadata {
 }
 
 /// Conda inline dependency metadata (`metadata.runt.conda`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct CondaInlineMetadata {
     /// Conda package names (e.g. `["numpy", "scipy"]`).
     #[serde(default)]
@@ -115,7 +115,7 @@ pub struct CondaInlineMetadata {
 /// Supports both conda and PyPI dependencies, matching pixi's unified model.
 /// Note: `pixi exec -w` currently only supports conda matchspecs; pypi deps
 /// are stored for future use and for display in the dependency panel.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct PixiInlineMetadata {
     /// Conda package matchspecs (e.g. `["numpy", "scipy>=1.0"]`).
     #[serde(default)]
@@ -135,7 +135,7 @@ pub struct PixiInlineMetadata {
 }
 
 /// Deno runtime configuration (`metadata.runt.deno`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct DenoMetadata {
     /// Deno permission flags (e.g. `["--allow-read", "--allow-write"]`).
     #[serde(default)]

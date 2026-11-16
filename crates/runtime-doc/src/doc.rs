@@ -476,6 +476,8 @@ pub struct WorkstationAttachmentState {
 /// Overwritten is a notice, not a failure: an external revision merged into
 /// the room and replaced unsaved edits this session had made to the same
 /// cells or metadata fields. The room stays interactive and autosave runs.
+/// Its reason lists every edit replaced since the last source reconciliation,
+/// so later clean revisions keep it. Clients may let the user dismiss it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FileSourceIssue {

@@ -4156,13 +4156,36 @@ async fn same_cell_edited_on_both_sides_takes_disk_source() {
         .await
         .expect("an overwritten notice must not block saves");
 
-    // A later revision that replaces nothing clears the notice.
+    // Git often writes a file more than once in a row (rebase, stash pop,
+    // a switch and back). A later revision that replaces nothing keeps the
+    // notice.
     let clean = ordered_ipynb_bytes(
         &[("c1", "x = 'theirs'"), ("c2", "y = 2")],
         serde_json::json!({}),
     );
     write_and_ingest(&room, &notebook_path, &clean).await;
-    assert_eq!(overwritten_notice_reason(&room), None);
+    assert_eq!(overwritten_notice_reason(&room), Some(reason.clone()));
+
+    // A later revision that replaces another edit adds to the notice.
+    {
+        let mut doc = room.doc.write().await;
+        doc.update_source("c2", "y = 'mine'").unwrap();
+    }
+    commit_test_room_doc(&room).await;
+    let again = ordered_ipynb_bytes(
+        &[("c1", "x = 'theirs'"), ("c2", "y = 'theirs'")],
+        serde_json::json!({}),
+    );
+    write_and_ingest(&room, &notebook_path, &again).await;
+    let accumulated = overwritten_notice_reason(&room).expect("notice must persist");
+    assert!(
+        accumulated.contains("the cell \"x = 'mine'\""),
+        "{accumulated}"
+    );
+    assert!(
+        accumulated.contains("the cell \"y = 'mine'\""),
+        "{accumulated}"
+    );
 }
 
 /// An external reorder rebuilds the cell list. Cells created in this session
@@ -4217,6 +4240,34 @@ async fn session_deleted_cell_stays_deleted_when_disk_left_it_unchanged() {
     let external = ordered_ipynb_bytes(&[("a", "a = 2"), ("b", "b = 1")], serde_json::json!({}));
     write_and_ingest(&room, &notebook_path, &external).await;
     assert_eq!(doc_cell_sources(&room).await, cell_pairs(&[("a", "a = 2")]));
+    assert_eq!(overwritten_notice_reason(&room), None);
+}
+
+/// A cell deleted in this session that disk changed comes back with the disk
+/// source, and the notice names it.
+#[tokio::test]
+async fn session_deleted_cell_changed_on_disk_returns_and_is_reported() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let loaded = ordered_ipynb_bytes(&[("a", "a = 1"), ("b", "b = 1")], serde_json::json!({}));
+    let (room, notebook_path) =
+        watcher_room_loaded_from(&tmp, "session-delete-changed.ipynb", &loaded).await;
+    {
+        let mut doc = room.doc.write().await;
+        doc.delete_cell("b").unwrap();
+    }
+    commit_test_room_doc(&room).await;
+
+    let external = ordered_ipynb_bytes(&[("a", "a = 1"), ("b", "b = 2")], serde_json::json!({}));
+    write_and_ingest(&room, &notebook_path, &external).await;
+    assert_eq!(
+        doc_cell_sources(&room).await,
+        cell_pairs(&[("a", "a = 1"), ("b", "b = 2")])
+    );
+    let reason = overwritten_notice_reason(&room).expect("undone delete must be surfaced");
+    assert!(
+        reason.contains("the cell \"b = 2\" (deleted in this session, changed on disk)"),
+        "{reason}"
+    );
 }
 
 /// Metadata merges field by field against the baseline: an external write
@@ -4320,6 +4371,88 @@ fn metadata_merge_takes_only_disk_changed_fields() {
         (disk.clone(), Vec::new()),
         "without a baseline disk metadata applies whole"
     );
+}
+
+/// Dependencies merge per package name, normalized per PEP 503. Where both
+/// sides changed the same package differently, disk wins and the package is
+/// named.
+#[test]
+fn dependency_merge_keys_on_package_name() {
+    let snapshot =
+        |deps: &[&str]| NotebookMetadataSnapshot::from_metadata_value(&uv_metadata(deps));
+    let merge = |disk: &[&str], baseline: &[&str], current: &[&str]| {
+        let (merged, overwritten) = super::load::merge_external_metadata(
+            &snapshot(disk),
+            Some(&snapshot(baseline)),
+            Some(&snapshot(current)),
+        );
+        (merged.runt.uv.unwrap().dependencies, overwritten)
+    };
+    let strings = |deps: &[&str]| deps.iter().map(|dep| dep.to_string()).collect::<Vec<_>>();
+
+    assert_eq!(
+        merge(&["pandas>=3"], &["pandas>=1"], &["pandas>=2"]),
+        (
+            strings(&["pandas>=3"]),
+            vec!["runt.uv.dependencies (pandas)".to_string()]
+        ),
+        "a specifier both sides changed takes disk's and is reported"
+    );
+    assert_eq!(
+        merge(&["pandas>=2"], &[], &["pandas"]),
+        (
+            strings(&["pandas>=2"]),
+            vec!["runt.uv.dependencies (pandas)".to_string()]
+        ),
+        "the same package added on both sides keeps one entry"
+    );
+    assert_eq!(
+        merge(&["pandas>=2"], &["pandas"], &["pandas"]),
+        (strings(&["pandas>=2"]), Vec::new()),
+        "a specifier only disk changed applies silently"
+    );
+    assert_eq!(
+        merge(&["numpy"], &["numpy"], &["NumPy>=2", "Foo_Bar"]),
+        (strings(&["NumPy>=2", "Foo_Bar"]), Vec::new()),
+        "live changes disk left alone stay"
+    );
+    assert_eq!(
+        merge(&["foo.bar>=2", "numpy"], &["numpy"], &["foo-bar", "numpy"]),
+        (
+            strings(&["foo.bar>=2", "numpy"]),
+            vec!["runt.uv.dependencies (foo-bar)".to_string()]
+        ),
+        "names compare after PEP 503 normalization"
+    );
+    assert_eq!(
+        merge(&["numpy"], &["numpy", "pandas>=1"], &["numpy", "pandas>=2"]),
+        (
+            strings(&["numpy"]),
+            vec!["runt.uv.dependencies (pandas)".to_string()]
+        ),
+        "disk removing a package this session changed is reported"
+    );
+}
+
+/// A dependency section neither file revision had merges per entry against
+/// an empty baseline when both sides add one.
+#[test]
+fn dependency_section_added_on_both_sides_merges_per_entry() {
+    let baseline = NotebookMetadataSnapshot::from_metadata_value(
+        &serde_json::json!({"runt": {"schema_version": "1"}}),
+    );
+    assert!(baseline.runt.uv.is_none());
+    let mut current = baseline.clone();
+    current.add_uv_dependency("pandas");
+    let disk = NotebookMetadataSnapshot::from_metadata_value(&uv_metadata(&["polars"]));
+
+    let (merged, overwritten) =
+        super::load::merge_external_metadata(&disk, Some(&baseline), Some(&current));
+    assert_eq!(
+        merged.runt.uv.unwrap().dependencies,
+        vec!["pandas".to_string(), "polars".to_string()]
+    );
+    assert_eq!(overwritten, Vec::<String>::new());
 }
 
 #[tokio::test]

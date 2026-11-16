@@ -491,6 +491,11 @@ pub struct RoomPersistence {
     /// Cell order and metadata parsed from the same disk bytes as
     /// `last_save_sources`. See [`FileShapeBaseline`].
     last_save_shape: std::sync::Mutex<FileShapeBaseline>,
+    /// In-session edits that external revisions replaced, in the order they
+    /// were first replaced. The overwritten notice lists all of them, so a
+    /// follow-up write a moment later (rebase, stash pop, branch switch) does
+    /// not hide an earlier loss. Source reconciliation clears it.
+    overwritten_edits: std::sync::Mutex<Vec<String>>,
     /// Highest committed save sequence allowed to update the primary-path
     /// watcher baselines. Post-`spawn_blocking` save continuations may resume
     /// out of order, so the sources and disk hash are advanced together under
@@ -565,6 +570,7 @@ impl RoomPersistence {
             debouncer: std::sync::Mutex::new(None),
             last_save_sources: RwLock::new(HashMap::new()),
             last_save_shape: std::sync::Mutex::new(FileShapeBaseline::default()),
+            overwritten_edits: std::sync::Mutex::new(Vec::new()),
             primary_save_baseline_sequence: AtomicU64::new(0),
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
             last_known_disk_hash: std::sync::Mutex::new(None),
@@ -585,6 +591,7 @@ impl RoomPersistence {
             })),
             last_save_sources: RwLock::new(HashMap::new()),
             last_save_shape: std::sync::Mutex::new(FileShapeBaseline::default()),
+            overwritten_edits: std::sync::Mutex::new(Vec::new()),
             primary_save_baseline_sequence: AtomicU64::new(0),
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
             last_known_disk_hash: std::sync::Mutex::new(None),
@@ -647,6 +654,34 @@ impl RoomPersistence {
             .lock()
             .map(|baseline| baseline.clone())
             .unwrap_or_default()
+    }
+
+    /// Add edits an external revision replaced and return every replaced
+    /// edit recorded since the last reconciliation.
+    pub fn record_overwritten_edits(&self, items: &[String]) -> Vec<String> {
+        let Ok(mut edits) = self.overwritten_edits.lock() else {
+            return items.to_vec();
+        };
+        for item in items {
+            if !edits.contains(item) {
+                edits.push(item.clone());
+            }
+        }
+        edits.clone()
+    }
+
+    /// Every replaced edit recorded since the last reconciliation.
+    pub fn overwritten_edits(&self) -> Vec<String> {
+        self.overwritten_edits
+            .lock()
+            .map(|edits| edits.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn clear_overwritten_edits(&self) {
+        if let Ok(mut edits) = self.overwritten_edits.lock() {
+            edits.clear();
+        }
     }
 
     /// The baseline recorded by [`Self::note_disk_content`], if any.

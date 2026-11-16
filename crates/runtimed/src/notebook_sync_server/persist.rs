@@ -2321,6 +2321,17 @@ pub(crate) fn superseded_save_stays_armed(
     status.durable_heads != status.exported_heads
 }
 
+/// The overwritten notice for every edit external revisions replaced since
+/// the last reconciliation, or `None` when nothing was replaced.
+pub(crate) fn overwritten_source_issue(
+    notebook_path: &Path,
+    overwritten: &[String],
+) -> Option<runtime_doc::FileSourceIssue> {
+    (!overwritten.is_empty()).then(|| runtime_doc::FileSourceIssue::Overwritten {
+        reason: overwritten_notice(notebook_path, overwritten),
+    })
+}
+
 /// User-facing notice for a watcher merge where disk replaced unsaved edits.
 /// Names the file, not its full path, and at most a few items.
 fn overwritten_notice(notebook_path: &Path, overwritten: &[String]) -> String {
@@ -2505,17 +2516,24 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
         if status.durable_heads != status.exported_heads {
             let _ = room.broadcasts.file_dirty_tx.send(());
         }
-        // Disk won where both sides changed the same thing. Tell the user
-        // what was replaced; completing the revision cleared any older
-        // notice.
+        // Disk won where both sides changed the same thing. The notice lists
+        // this revision's replaced edits along with earlier ones, and the log
+        // carries only counts, not cell source.
         if !applied.overwritten.is_empty() {
-            let reason = overwritten_notice(notebook_path, &applied.overwritten);
-            warn!("[notebook-watch] {reason}");
-            if let Err(error) = room.state.with_doc(|state| {
-                state.set_file_source_issue(Some(&runtime_doc::FileSourceIssue::Overwritten {
-                    reason: reason.clone(),
-                }))
-            }) {
+            let overwritten = room
+                .persistence
+                .record_overwritten_edits(&applied.overwritten);
+            warn!(
+                "[notebook-watch] External revision replaced {} in-session edit(s) in room {} ({} since last reconcile)",
+                applied.overwritten.len(),
+                room.id,
+                overwritten.len(),
+            );
+            let issue = overwritten_source_issue(notebook_path, &overwritten);
+            if let Err(error) = room
+                .state
+                .with_doc(|state| state.set_file_source_issue(issue.as_ref()))
+            {
                 warn!(
                     "[notebook-watch] Failed to publish overwritten-edits notice: {}",
                     error

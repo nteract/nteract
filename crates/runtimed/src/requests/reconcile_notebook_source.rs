@@ -463,6 +463,7 @@ async fn finish_reconciliation(
     // RuntimeStateDoc remains read-only while this projection is updated. The
     // lifecycle transition to Interactive is deliberately last so no mutator
     // can observe a cleared capability gate with a stale conflict marker.
+    room.persistence.clear_overwritten_edits();
     if let Err(error) = room.state.with_doc(|state| {
         state.set_file_checkpoint(&exported_heads, save_sequence)?;
         state.set_file_source_issue(None)

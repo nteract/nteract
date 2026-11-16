@@ -2038,9 +2038,15 @@ async fn complete_external_source_revision(
     };
     let status = room.durability.status();
     let exported_heads = status.exported_heads.clone();
+    // A completed revision clears conflict and degraded state. Edits an
+    // earlier revision replaced stay listed until reconciliation.
+    let issue = super::persist::overwritten_source_issue(
+        &revision.canonical_path,
+        &room.persistence.overwritten_edits(),
+    );
     let sidecar = room.state.with_doc(|state| {
         state.set_file_checkpoint(&exported_heads, revision.save_sequence)?;
-        state.set_file_source_issue(None)
+        state.set_file_source_issue(issue.as_ref())
     });
     if let Err(error) = sidecar {
         let reason = format!(
@@ -2176,6 +2182,36 @@ fn external_source_changed(saved: Option<&String>, current: &str, external: &str
     }
 }
 
+/// Merge key for a dependency specifier: its package name, normalized per
+/// PEP 503 so `Foo_Bar>=1` and `foo-bar` are the same package. A specifier
+/// with no parseable name keys on its trimmed text.
+fn dependency_key(spec: &str) -> String {
+    let name = notebook_doc::metadata::extract_package_name(spec);
+    if name.trim().is_empty() {
+        return spec.trim().to_string();
+    }
+    let mut normalized = String::with_capacity(name.len());
+    let mut in_separator = false;
+    for c in name.trim().chars() {
+        if matches!(c, '-' | '_' | '.') {
+            if !in_separator {
+                normalized.push('-');
+            }
+            in_separator = true;
+        } else {
+            normalized.push(c);
+            in_separator = false;
+        }
+    }
+    normalized
+}
+
+/// Merge key for list entries compared as whole values, such as channels
+/// and permissions.
+fn whole_entry_key(entry: &str) -> String {
+    entry.trim().to_string()
+}
+
 /// Three-way merge state for one metadata revision. Records every field
 /// where disk replaced a value this session had also changed.
 struct MetadataMerge {
@@ -2202,9 +2238,11 @@ impl MetadataMerge {
         disk.clone()
     }
 
-    /// Merge an optional struct member by member when all three sides have
-    /// it; otherwise fall back to the whole-field rule.
-    fn optional<T: PartialEq + Clone>(
+    /// Merge an optional struct member by member. A side with no struct
+    /// counts as the default struct when the other two have one, so a
+    /// section first added on both sides still merges its lists per entry.
+    /// Otherwise the whole-field rule applies.
+    fn optional<T: PartialEq + Clone + Default>(
         &mut self,
         name: &str,
         disk: &Option<T>,
@@ -2216,21 +2254,57 @@ impl MetadataMerge {
             (Some(disk), Some(baseline), Some(current)) => {
                 Some(merge(self, disk, baseline, current))
             }
+            (Some(disk), None, Some(current)) => Some(merge(self, disk, &T::default(), current)),
             _ => self.field(name, disk, baseline, current),
         }
     }
 
-    /// Per-entry merge of a list such as dependencies or channels. Entries
-    /// disk removed are dropped, entries disk added are appended in disk
-    /// order, and every other live entry is kept in its live order.
-    fn entries(&mut self, disk: &[String], baseline: &[String], current: &[String]) -> Vec<String> {
-        let mut merged: Vec<String> = current
+    /// Per-entry merge of a list such as dependencies or channels, keyed by
+    /// `key`. Each key takes the three-way field rule: disk's entry where
+    /// disk changed it since the baseline (an addition, removal or new
+    /// specifier), otherwise the live entry. Where both sides changed the
+    /// same key differently, disk wins and the key is recorded. Live entries
+    /// keep their live order; entries only disk has follow in disk order.
+    fn entries(
+        &mut self,
+        name: &str,
+        disk: &[String],
+        baseline: &[String],
+        current: &[String],
+        key: fn(&str) -> String,
+    ) -> Vec<String> {
+        fn keyed<'a>(
+            entries: &'a [String],
+            key: fn(&str) -> String,
+        ) -> std::collections::HashMap<String, &'a String> {
+            let mut map = std::collections::HashMap::new();
+            for entry in entries {
+                map.entry(key(entry)).or_insert(entry);
+            }
+            map
+        }
+        let (disk_by_key, baseline_by_key) = (keyed(disk, key), keyed(baseline, key));
+        let mut seen = std::collections::HashSet::new();
+        let mut merged = Vec::new();
+        let ordered = current
             .iter()
-            .filter(|entry| !baseline.contains(entry) || disk.contains(entry))
-            .cloned()
-            .collect();
-        for entry in disk {
-            if !baseline.contains(entry) && !merged.contains(entry) {
+            .map(|entry| (key(entry), Some(entry)))
+            .chain(disk.iter().map(|entry| (key(entry), None)));
+        for (entry_key, live) in ordered {
+            if !seen.insert(entry_key.clone()) {
+                continue;
+            }
+            let base = baseline_by_key.get(&entry_key).copied();
+            let disk_entry = disk_by_key.get(&entry_key).copied();
+            let resolved = if disk_entry == base {
+                live
+            } else {
+                if live != base && live != disk_entry {
+                    self.overwritten.push(format!("{name} ({entry_key})"));
+                }
+                disk_entry
+            };
+            if let Some(entry) = resolved {
                 merged.push(entry.clone());
             }
         }
@@ -2265,8 +2339,9 @@ impl MetadataMerge {
 /// Three-way merge of notebook metadata for a file-watcher revision, plus
 /// the metadata fields where disk replaced an in-session change. Fields disk
 /// changed since the baseline take the disk value; every other field keeps
-/// the live value. Dependency and channel lists merge per entry. Without a
-/// baseline or live metadata, disk metadata applies as a whole.
+/// the live value. Dependency lists merge per package name and channel and
+/// permission lists per entry. Without a baseline or live metadata, disk
+/// metadata applies as a whole.
 pub(crate) fn merge_external_metadata(
     disk: &NotebookMetadataSnapshot,
     baseline: Option<&NotebookMetadataSnapshot>,
@@ -2312,9 +2387,11 @@ pub(crate) fn merge_external_metadata(
                 &cur_runt.uv,
                 |merge, disk, base, cur| notebook_doc::metadata::UvInlineMetadata {
                     dependencies: merge.entries(
+                        "runt.uv.dependencies",
                         &disk.dependencies,
                         &base.dependencies,
                         &cur.dependencies,
+                        dependency_key,
                     ),
                     requires_python: merge.field(
                         "runt.uv.requires-python",
@@ -2337,11 +2414,19 @@ pub(crate) fn merge_external_metadata(
                 &cur_runt.conda,
                 |merge, disk, base, cur| notebook_doc::metadata::CondaInlineMetadata {
                     dependencies: merge.entries(
+                        "runt.conda.dependencies",
                         &disk.dependencies,
                         &base.dependencies,
                         &cur.dependencies,
+                        dependency_key,
                     ),
-                    channels: merge.entries(&disk.channels, &base.channels, &cur.channels),
+                    channels: merge.entries(
+                        "runt.conda.channels",
+                        &disk.channels,
+                        &base.channels,
+                        &cur.channels,
+                        whole_entry_key,
+                    ),
                     python: merge.field(
                         "runt.conda.python",
                         &disk.python,
@@ -2357,16 +2442,26 @@ pub(crate) fn merge_external_metadata(
                 &cur_runt.pixi,
                 |merge, disk, base, cur| notebook_doc::metadata::PixiInlineMetadata {
                     dependencies: merge.entries(
+                        "runt.pixi.dependencies",
                         &disk.dependencies,
                         &base.dependencies,
                         &cur.dependencies,
+                        dependency_key,
                     ),
                     pypi_dependencies: merge.entries(
+                        "runt.pixi.pypi-dependencies",
                         &disk.pypi_dependencies,
                         &base.pypi_dependencies,
                         &cur.pypi_dependencies,
+                        dependency_key,
                     ),
-                    channels: merge.entries(&disk.channels, &base.channels, &cur.channels),
+                    channels: merge.entries(
+                        "runt.pixi.channels",
+                        &disk.channels,
+                        &base.channels,
+                        &cur.channels,
+                        whole_entry_key,
+                    ),
                     python: merge.field(
                         "runt.pixi.python",
                         &disk.python,
@@ -2382,9 +2477,11 @@ pub(crate) fn merge_external_metadata(
                 &cur_runt.deno,
                 |merge, disk, base, cur| notebook_doc::metadata::DenoMetadata {
                     permissions: merge.entries(
+                        "runt.deno.permissions",
                         &disk.permissions,
                         &base.permissions,
                         &cur.permissions,
+                        whole_entry_key,
                     ),
                     import_map: merge.field(
                         "runt.deno.import_map",
@@ -2669,6 +2766,20 @@ pub(crate) async fn apply_ipynb_changes_inner(
                 "{} (deleted on disk)",
                 describe_overwritten_cell(&current.source)
             )),
+        }
+    }
+    for external in external_cells {
+        let id = external.id.as_str();
+        if current_map.contains_key(id) {
+            continue;
+        }
+        if let Some(saved) = saved_sources_snapshot.get(id) {
+            if external.source != *saved {
+                cell_overwrites.push(format!(
+                    "{} (deleted in this session, changed on disk)",
+                    describe_overwritten_cell(&external.source)
+                ));
+            }
         }
     }
     if order_changed && !shape_baseline.order.is_empty() {
