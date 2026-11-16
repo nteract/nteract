@@ -16,6 +16,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use rattler_conda_types::ChannelConfig;
 use sha2::{Digest, Sha256};
 
+pub mod quarantine;
+
 use super::{CondaDependencies, CondaEnvironment};
 use crate::channel_review::authorization::{
     AuthorizedChannelPlan, ChannelConsentSession, ReviewFence,
@@ -69,7 +71,8 @@ impl PreparedCondaInstall {
             document_revision,
             platform.to_string(),
         ))?);
-        let target = staging_root.join(format!("reviewed-{}", uuid::Uuid::new_v4()));
+        let target = quarantine::owner_directory(staging_root)
+            .join(format!("prefix-{}", uuid::Uuid::new_v4()));
         let fence = ReviewFence {
             owner,
             dependency_revision: hex::encode(hasher.finalize()),
@@ -130,9 +133,11 @@ impl PreparedCondaInstall {
         // the task's result still retains ownership of the unpublished prefix.
         // Interrupted installations quarantine rather than racing their writers.
         let mut stage = tokio::task::spawn_blocking(move || -> Result<StagedCondaEnvironment> {
-            std::fs::create_dir_all(root)?;
+            quarantine::ensure_owner(&root)?;
             // Never claim, delete or overwrite an existing target.
             std::fs::create_dir(&target)?;
+            let record = quarantine::record_for(&target)?;
+            quarantine::write_scope(&record, quarantine::WriterScope::ProcessLocal)?;
             Ok(StagedCondaEnvironment {
                 environment: CondaEnvironment {
                     python_path: target.join(if cfg!(windows) {
@@ -144,10 +149,17 @@ impl PreparedCondaInstall {
                 },
                 fence,
                 retained: false,
-                cleanup_safe: false,
+                cleanup_safe: true,
+                record: Some(record),
             })
         })
         .await??;
+        // Persist before any installer/subprocess-capable effect. A parent
+        // lease cannot prove descendants died, even after successful vendoring.
+        persist_external_scope(&mut stage, |record| {
+            quarantine::write_scope(&record, quarantine::WriterScope::ExternalWriters)
+        })
+        .await?;
         let check = || validate(&stage.fence);
         super::install_conda_env_guarded(
             &stage.environment.env_path,
@@ -165,19 +177,17 @@ impl PreparedCondaInstall {
         crate::launcher::vendor_into_venv(&stage.environment.python_path)
             .await
             .context("vendor launcher into reviewed Conda staging prefix")?;
-        // Every prefix-writing operation has now completed successfully.
-        // Errors or cancellation before this point quarantine the prefix.
-        stage.cleanup_safe = true;
+        // Do not infer process-tree quiescence from awaited child completion.
+        // Any unpublished prefix that entered this phase remains quarantined.
         validate(&stage.fence)?;
         Ok(stage)
     }
 }
 
-/// An unpublished prefix. Successfully completed prefixes can be cleaned on
-/// drop. Failed/interrupted installs are quarantined: Rattler may still have
-/// detached writers, so deleting their path would race those writers. A future
-/// recovery owner must collect these only after the originating process exits.
-/// Production enablement remains gated on that recovery lifecycle.
+/// An unpublished prefix. Only pre-installer process-local stages may be
+/// cleaned on drop/restart. Installer/vendor stages remain quarantined even on
+/// success: detached or descendant processes are not covered by a parent lock.
+/// Production enablement remains gated on a stronger process-tree lifecycle.
 /// The owner must atomically validate and publish in `commit`, never extract a
 /// path and publish it later after releasing its operation lease.
 pub struct StagedCondaEnvironment {
@@ -185,13 +195,33 @@ pub struct StagedCondaEnvironment {
     fence: ReviewFence,
     retained: bool,
     cleanup_safe: bool,
+    record: Option<PathBuf>,
+}
+
+async fn persist_external_scope(
+    stage: &mut StagedCondaEnvironment,
+    write: impl FnOnce(PathBuf) -> Result<()> + Send + 'static,
+) -> Result<()> {
+    let record = stage.record.clone().context("missing quarantine record")?;
+    // The durable transition can outlive cancellation. Never delete the prefix
+    // while its blocking writer is queued or running, even if the write fails.
+    stage.cleanup_safe = false;
+    tokio::task::spawn_blocking(move || write(record)).await??;
+    Ok(())
 }
 
 impl StagedCondaEnvironment {
+    /// Durable retain-before-publication performs synchronous filesystem I/O.
+    /// Invoke from an owner-controlled blocking context, not a Tokio worker.
     pub fn commit<T>(
         mut self,
         publish: impl FnOnce(&ReviewFence, &CondaEnvironment) -> Result<T>,
     ) -> Result<T> {
+        if let Some(record) = &self.record {
+            // Mark before publishing: a crash can leak an unneeded prefix, but
+            // recovery must never delete one already visible to a kernel.
+            quarantine::write_scope(record, quarantine::WriterScope::Retained)?;
+        }
         let result = publish(&self.fence, &self.environment)?;
         self.retained = true;
         Ok(result)
@@ -208,16 +238,21 @@ impl Drop for StagedCondaEnvironment {
             return;
         }
         let path = self.environment.env_path.clone();
+        let record = self.record.clone();
         // Cleanup must not block the Tokio worker and must outlive cancellation
         // of the request future. No shared/cache/live prefix is ever owned here.
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn_blocking(move || {
                 if let Err(error) = std::fs::remove_dir_all(&path) {
                     log::warn!("Could not remove discarded reviewed Conda prefix: {error}");
+                } else if let Some(record) = record {
+                    let _ = std::fs::remove_file(record);
                 }
             });
         } else if let Err(error) = std::fs::remove_dir_all(&path) {
             log::warn!("Could not remove discarded reviewed Conda prefix: {error}");
+        } else if let Some(record) = record {
+            let _ = std::fs::remove_file(record);
         }
     }
 }
@@ -373,7 +408,41 @@ mod tests {
             },
             retained: false,
             cleanup_safe: true,
+            record: None,
         }
+    }
+
+    #[tokio::test]
+    async fn cancelled_scope_transition_retains_its_prefix_until_writer_finishes() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("stage");
+        let record = temporary.path().join("scope.state");
+        let mut stage = staged(&path);
+        stage.record = Some(record.clone());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            persist_external_scope(&mut stage, move |record| {
+                let _ = started_tx.send(());
+                wait.recv().unwrap();
+                quarantine::write_scope(&record, quarantine::WriterScope::ExternalWriters)?;
+                let _ = done_tx.send(());
+                Ok(())
+            })
+            .await
+        });
+        started_rx.await.unwrap();
+        task.abort();
+        let _ = task.await;
+        assert!(path.exists());
+        release.send(()).unwrap();
+        done_rx.await.unwrap();
+        assert!(path.exists());
+        assert_eq!(
+            std::fs::read_to_string(record).unwrap(),
+            "external-writers-v1"
+        );
     }
 
     #[test]
@@ -405,7 +474,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelled_completed_preparation_cleans_its_unpublished_prefix() {
+    async fn cancelled_process_local_stage_cleans_its_unpublished_prefix() {
         let temporary = tempfile::tempdir().unwrap();
         let path = temporary.path().join("stage");
         let stage = staged(&path);
