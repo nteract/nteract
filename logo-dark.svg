@@ -6,13 +6,13 @@
   <clipPath id="notebook-clip">
     <use href="#notebook-silhouette"/>
   </clipPath>
-  <filter id="notebook-glow" x="49" y="-34" width="989.417" height="993" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
-    <feGaussianBlur stdDeviation="12"/>
+  <filter id="notebook-glow" x="25" y="-58" width="1037.417" height="1041" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+    <feGaussianBlur stdDeviation="16"/>
   </filter>
 </defs>
 <g transform="translate(-31.7085 49.5)">
 <!-- Keep the soft halo behind the artwork so the symbols stay sharp. -->
-<use href="#notebook-silhouette" stroke="#E8EEE9" stroke-width="24" stroke-opacity="0.55" filter="url(#notebook-glow)"/>
+<use href="#notebook-silhouette" stroke="#E8EEE9" stroke-width="48" stroke-opacity="0.85" filter="url(#notebook-glow)"/>
 <g clip-path="url(#notebook-clip)">
   <!-- Opaque color fields keep their contrast on different host surfaces. -->
   <path d="M105 22H441.251V469H105Z" fill="#009966"/>
