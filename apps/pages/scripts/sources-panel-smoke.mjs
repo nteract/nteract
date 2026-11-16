@@ -106,16 +106,27 @@ try {
   const made = await tool("create_page", {
     title: "Sources panel — live demo",
     markdown:
-      "# Workspace usage\n\nA local Page for trying the Sources inspector. Open a source below the title, or use Sources in the toolbar.\n\n## The data",
+      "# Workspace usage\n\nA local Page for trying the Sources inspector. Open a source below the title, or use Sources in the … menu.\n\n## The data",
     nonce: nonce(),
   });
   pageId = made.page_id;
   await page.goto(`${origin}/p/${pageId}`);
-  const toggle = page.getByRole("button", { name: "Sources", exact: true });
+  const toggle = page.locator(
+    'summary[aria-label="Document actions"], button[aria-label="More page actions"]',
+  );
+  const openSources = async () => {
+    await toggle.click();
+    await page
+      .getByRole("button", { name: "Sources", exact: true })
+      .or(page.getByRole("menuitem", { name: "Sources", exact: true }))
+      .click();
+  };
   const panel = page.getByRole("dialog", { name: "Sources", exact: true });
   await expect(toggle).toBeVisible({ timeout: 30000 });
-  await toggle.click();
+  await openSources();
   await expect(panel).toContainText("No sources yet", { timeout: 30000 });
+  await expect(panel.getByRole("textbox", { name: "Find a source" })).toHaveCount(0);
+  await expect(panel.locator(".sources-intro")).toHaveCount(0);
   const asset = await upload(await parquet(), "application/vnd.apache.parquet");
   await edit([
     {
@@ -170,8 +181,16 @@ try {
     },
     { op: "insert_node", node: { type: "view", attrs: { view_id: "activity" } } },
   ]);
+  await panel.getByRole("button", { name: /Workspace usage Parquet/ }).click();
   await expect(panel).toContainText("Used on this Page · 3", { timeout: 30000 });
-  await expect(panel).toContainText("Pinned · version 1");
+  await expect(panel.locator(".source-preview .sift-root")).toBeVisible();
+  await expect(panel.locator(".source-preview")).toContainText("Platform");
+  await expect(panel.locator(".source-preview [data-source-revision]")).toHaveAttribute(
+    "data-source-revision",
+    "1",
+  );
+  await expect(panel.getByRole("textbox", { name: "Find a source" })).toHaveCount(0);
+  await expect(panel).toContainText("Pinned · revision 1");
   await panel.getByRole("button", { name: /Tool activity Vega-Lite/ }).click();
   await expect(page.locator(".wordgard-view-embed.source-revealed")).toBeVisible();
   await expect(page.locator(".wordgard-view-embed.source-revealed")).toBeFocused();
@@ -192,9 +211,13 @@ try {
       source_revision: "1",
     },
   ]);
-  await expect(panel).toContainText("version 2", { timeout: 30000 });
-  await panel.getByRole("button", { name: "Versions", exact: true }).click();
-  await expect(panel).toContainText("Version 1");
+  await expect(panel.locator(".source-preview [data-source-revision] ")).toHaveAttribute(
+    "data-source-revision",
+    "2",
+    { timeout: 30000 },
+  );
+  await panel.getByRole("button", { name: "Revisions", exact: true }).click();
+  await expect(panel).toContainText("Revision 1");
   await expect(panel).toContainText("A connection is pinned here");
   await page.keyboard.press("Escape");
   await expect(panel).toHaveCount(0);
@@ -255,16 +278,28 @@ try {
       },
       { op: "insert_node", node: { type: "view", attrs: { view_id: "widget" } } },
     ]);
-    await toggle.click();
+    await openSources();
     await panel.getByRole("button", { name: /Widget styles CSS/ }).click();
     await expect(panel).toContainText("Anywidget · styles", { timeout: 30000 });
+    const dockWidth = (await panel.boundingBox()).width;
+    await panel.getByRole("button", { name: "Expand sources" }).click();
+    assert.ok((await panel.boundingBox()).width > dockWidth);
+    await panel.getByRole("button", { name: "Narrow sources" }).click();
+    await panel.getByRole("button", { name: "Next source" }).click();
+    await expect(panel.locator(".source-inspector h3")).toHaveText("Workspace usage");
+    await panel.getByRole("button", { name: "Previous source" }).click();
+    await expect(panel.locator(".source-inspector h3")).toHaveText("Widget styles");
+    await expect(panel.getByRole("button", { name: "Previous source" })).toBeFocused();
+    await panel.getByRole("button", { name: "All sources" }).click();
+    await expect(panel.locator(".source-inspector")).toHaveCount(0);
+    await expect(panel.getByRole("button", { name: /Widget styles CSS/ })).toBeFocused();
     await panel.getByRole("button", { name: /Binary sample Binary/ }).click();
     await expect(panel).toContainText("Anywidget · bytes");
-  } else await toggle.click();
+  } else await openSources();
   await page.getByRole("button", { name: "Comments", exact: true }).click();
   await expect(panel).toHaveCount(0);
   await expect(page.locator("#page-comments")).toHaveAttribute("open", "");
-  await toggle.click();
+  await openSources();
   await expect(page.locator("#page-comments")).not.toHaveAttribute("open", "");
   await panel.getByRole("button", { name: /Workspace usage Parquet/ }).click();
   await page.setViewportSize({ width: 390, height: 844 });
@@ -274,16 +309,16 @@ try {
   await page.keyboard.press("Escape");
   await expect(toggle).toBeFocused();
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
-  await toggle.click();
+  await openSources();
   await panel.getByRole("button", { name: /Workspace usage Parquet/ }).click();
   await panel.getByRole("button", { name: /Usage table Table Follows latest/ }).click();
   await expect(panel).toHaveCount(0);
   await expect(page.locator(".wordgard-dataframe-table.source-revealed")).toBeFocused();
-  await toggle.click();
-  await panel.getByRole("textbox", { name: "Find a source" }).fill("not a source");
-  await expect(panel).toContainText("No matching sources.");
-  await panel.getByRole("textbox", { name: "Find a source" }).fill("");
+  await openSources();
   if (keys) {
+    await panel.getByRole("textbox", { name: "Find a source" }).fill("not a source");
+    await expect(panel).toContainText("No matching sources.");
+    await panel.getByRole("textbox", { name: "Find a source" }).fill("");
     await panel.getByRole("button", { name: /Widget styles CSS/ }).click();
     await edit([{ op: "delete_source", source_id: "styles", source_revision: "1" }]);
     await expect(panel).toContainText("This source isn't available on this Page", {

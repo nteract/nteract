@@ -285,7 +285,6 @@ function App() {
   const commentsOpen = sidePanel === "comments";
   const sourcesOpen = sidePanel === "sources";
   const sourceOpener = useRef(null);
-  const sourcesButton = useRef(null);
   function setCommentsOpen(open) {
     setSidePanel((current) => (open ? "comments" : current === "comments" ? null : current));
   }
@@ -1463,18 +1462,20 @@ function App() {
     setSourceSelection({ id });
     setSidePanel("sources");
   }
+  function pageActionsTrigger() {
+    return (
+      documentDisclosure.current?.querySelector("summary") ??
+      document.querySelector(".page-menu-button")
+    );
+  }
   function closeSources() {
     const trigger = sourceOpener.current;
     const closingSession = host.current;
     setSidePanel((current) => (current === "sources" ? null : current));
     requestAnimationFrame(() => {
-      if (
-        host.current !== closingSession ||
-        sourcesButton.current?.getAttribute("aria-expanded") !== "false"
-      )
-        return;
+      if (host.current !== closingSession || document.getElementById("page-sources")) return;
       if (document.activeElement !== document.body && document.activeElement !== trigger) return;
-      (trigger?.isConnected ? trigger : sourcesButton.current)?.focus({ preventScroll: true });
+      (trigger?.isConnected ? trigger : pageActionsTrigger())?.focus({ preventScroll: true });
     });
   }
   function revealSourceUse(use, { close = false } = {}) {
@@ -1608,6 +1609,16 @@ function App() {
             if (toolbarOpen) documentDisclosure.current?.querySelector("summary")?.focus();
           },
         },
+        {
+          key: "sources",
+          label: "Sources",
+          icon: Database,
+          run: () => {
+            const trigger = pageActionsTrigger();
+            if (documentDisclosure.current) documentDisclosure.current.open = false;
+            openSources(null, trigger);
+          },
+        },
         { key: "copy-link", label: "Copy link", icon: Link, run: () => copyLink() },
         {
           key: "save-recovery",
@@ -1725,19 +1736,6 @@ function App() {
                   activityDisclosure={activityDisclosure}
                   actionsDisclosure={documentDisclosure}
                 >
-                  <button
-                    ref={sourcesButton}
-                    className="subtle-button sources-toggle"
-                    aria-label="Sources"
-                    aria-expanded={sourcesOpen}
-                    aria-controls="page-sources"
-                    onClick={(event) =>
-                      sourcesOpen ? closeSources() : openSources(null, event.currentTarget)
-                    }
-                  >
-                    <Database size={18} aria-hidden="true" />
-                    <span>Sources</span>
-                  </button>
                   <button
                     ref={commentsButton}
                     className="subtle-button comments-toggle"

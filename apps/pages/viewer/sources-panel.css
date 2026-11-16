@@ -6,14 +6,9 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   min-height: 0;
-  padding: 0 1rem 1.25rem;
+  padding: 0.75rem 0 1.25rem;
 }
-.sources-intro {
-  color: var(--muted-foreground);
-  font-size: 0.8rem;
-  line-height: 1.6;
-  margin: 1rem 0;
-}
+
 .sources-search {
   display: flex;
   align-items: center;
@@ -33,10 +28,8 @@
 }
 .sources-inventory {
   display: grid;
-  gap: 0.2rem;
-  padding: 0.7rem 0;
-  max-height: 240px;
-  overflow-y: auto;
+  gap: 0;
+  padding: 0.5rem 0;
 }
 .source-row,
 .source-use {
@@ -79,14 +72,12 @@
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
-.source-row[aria-pressed="true"],
 .source-row:hover,
 .source-use:hover {
   background: var(--accent-soft);
 }
 .source-inspector {
-  border-top: 1px solid var(--line);
-  padding-top: 1.1rem;
+  padding: 0 1rem;
 }
 .source-inspector h3 {
   font-size: 1.2rem;
@@ -213,4 +204,25 @@
   .sources-panel {
     display: none !important;
   }
+}
+
+.source-preview {
+  margin: 1rem 0;
+  min-width: 0;
+}
+.source-preview .wordgard-dataframe-canvas {
+  height: 240px;
+}
+
+.sources-search {
+  margin: 0 1rem;
+}
+.sources-inventory .source-row {
+  padding: 0.85rem 1rem;
+  border-radius: 0;
+}
+
+.sources-panel-body > .sources-notice,
+.sources-empty {
+  margin: 0.75rem 1rem;
 }

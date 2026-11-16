@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUpRight, Database, History, Search, X } from "lucide-react";
+import { ArrowUpRight, ChevronRight, Database, History, Search } from "lucide-react";
 import { COMMENTS_SHEET_QUERY } from "./comments-layout.mjs";
 import { sourceTime } from "./source-line.mjs";
 import { sourceMediaLabel, sourcesPanelStore } from "./sources-panel-store.mjs";
+import { dataframeFrame, dataframeLifecycle } from "./wordgard-dataframes.mjs";
+import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 import { useStore } from "./store.mjs";
+import { PaneBack, PaneClose, PaneExpand, PaneHeader, PaneNavigation } from "./PaneHeader.jsx";
 import "./sources-panel.css";
 
 const sourceNotices = {
@@ -32,6 +35,29 @@ function Writer({ value }) {
   );
 }
 
+/** Reuse the document table renderer and its cancellable lifecycle. Only the
+ * selected Parquet source is held; filters and sorting remain local to Sift. */
+function SourcePreview({ session, source }) {
+  const container = useRef(null);
+  useEffect(() => {
+    const frame = dataframeFrame({ title: "Source preview", media_type: PARQUET_MEDIA_TYPE });
+    frame.header.remove();
+    container.current.replaceChildren(frame.dom);
+    const lifecycle = dataframeLifecycle({
+      ...frame,
+      attrs: {
+        pageId: session.pageId,
+        binding: { source_id: source.source_id },
+        sources: session.pageSources,
+      },
+      park: 0,
+    });
+    lifecycle.connect();
+    return () => lifecycle.disconnect();
+  }, [session, source.source_id]);
+  return <div className="source-preview" ref={container} />;
+}
+
 /** Same dock/sheet geometry as comments; mounted only during inspection.
  * This component owns selection and search, never a second document copy. */
 export function SourcesPanel({ session, selection, onClose, onReveal }) {
@@ -41,7 +67,25 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
   const [selected, setSelected] = useState(selection?.id ?? null);
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState("uses");
+  const [expanded, setExpanded] = useState(false);
   const dialog = useRef(null);
+  const inventory = useRef(null);
+  const backButton = useRef(null);
+  const previousSelection = useRef(selected);
+  useEffect(() => {
+    if (
+      selected &&
+      !dialog.current?.querySelector(".pane-header")?.contains(document.activeElement)
+    )
+      backButton.current?.focus({ preventScroll: true });
+    else if (previousSelection.current) {
+      const row = inventory.current?.querySelector(
+        `[data-source-id="${CSS.escape(previousSelection.current)}"]`,
+      );
+      (row ?? inventory.current?.querySelector("button"))?.focus({ preventScroll: true });
+    }
+    previousSelection.current = selected;
+  }, [selected]);
   const [mobile, setMobile] = useState(() => matchMedia(COMMENTS_SHEET_QUERY).matches);
   useEffect(() => {
     setSelected(selection?.id ?? null);
@@ -66,16 +110,23 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
     return () => element.close();
   }, [mobile]);
 
-  const source =
-    value.sources.find((item) => item.source_id === selected) ??
-    (selected ? null : value.sources[0]);
+  const source = value.sources.find((item) => item.source_id === selected);
   const unavailable = source && source.availability !== "available";
   const incomplete = value.unresolvedViews.length > 0 || value.unreadableBlocks > 0;
-  const results = value.sources.filter((item) =>
-    `${item.name} ${item.source_id} ${sourceMediaLabel(item.media_type)}`
-      .toLocaleLowerCase()
-      .includes(query.toLocaleLowerCase()),
+  const searchable = value.sources.length > 1;
+  const results = value.sources.filter(
+    (item) =>
+      !searchable ||
+      `${item.name} ${item.source_id} ${sourceMediaLabel(item.media_type)}`
+        .toLocaleLowerCase()
+        .includes(query.toLocaleLowerCase()),
   );
+  const index = results.findIndex((item) => item.source_id === selected);
+  const position = index >= 0 ? { index: index + 1, total: results.length } : null;
+  function back() {
+    setSelected(null);
+    setTab("uses");
+  }
   function choose(id) {
     setSelected(id);
     setTab("uses");
@@ -84,8 +135,8 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
     <dialog
       ref={dialog}
       id="page-sources"
-      className={`comments sources-panel${mobile ? " comments-sheet" : ""}`}
-      aria-labelledby="sources-title"
+      className={`comments sources-panel${mobile ? " comments-sheet" : expanded ? " comments-expanded" : ""}`}
+      aria-label="Sources"
       onCancel={(event) => {
         event.preventDefault();
         onClose();
@@ -101,16 +152,32 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
         if (mobile && event.target === dialog.current) onClose();
       }}
     >
-      <header className="comments-heading">
-        <h2 id="sources-title">
-          <Database size={17} aria-hidden="true" /> Sources
-        </h2>
-        <button className="icon-button" aria-label="Close sources panel" onClick={onClose}>
-          <X size={18} />
-        </button>
-      </header>
+      <PaneHeader>
+        {selected ? (
+          <PaneBack buttonRef={backButton} onClick={back}>
+            All sources
+          </PaneBack>
+        ) : (
+          <h2>
+            <Database size={17} aria-hidden="true" /> Sources
+          </h2>
+        )}
+        {selected && (
+          <PaneNavigation
+            position={position}
+            item="source"
+            onStep={(by) => {
+              const next = results[index + by];
+              if (next) choose(next.source_id);
+            }}
+          />
+        )}
+        {!mobile && (
+          <PaneExpand expanded={expanded} name="sources" onClick={() => setExpanded(!expanded)} />
+        )}
+        <PaneClose label="Close sources panel" onClick={onClose} />
+      </PaneHeader>
       <div className="sources-panel-body">
-        <p className="sources-intro">The files behind this Page, and what reads them.</p>
         {value.answer !== "known" && (
           <p role="status" className="sources-notice">
             {sourceNotices[value.answer]}
@@ -119,52 +186,56 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
         {value.unreadableSources > 0 && (
           <p className="sources-notice">Some source details couldn't be read.</p>
         )}
-        {value.sources.length > 0 ? (
-          <>
-            <label className="sources-search">
-              <Search size={15} aria-hidden="true" />
-              <input
-                aria-label="Find a source"
-                placeholder="Find a source…"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-              />
-            </label>
-            <nav className="sources-inventory" aria-label="Page sources">
-              {results.map((item) => (
-                <button
-                  key={item.source_id}
-                  className="source-row"
-                  aria-pressed={source?.source_id === item.source_id}
-                  onClick={() => choose(item.source_id)}
-                >
-                  <Database size={16} aria-hidden="true" />
-                  <span>
-                    <strong>{item.name}</strong>
-                    <small>
-                      {item.availability === "unreadable"
-                        ? "Unreadable source"
-                        : item.availability === "missing"
-                          ? "Unavailable source"
-                          : sourceMediaLabel(item.media_type)}{" "}
-                      · {item.uses.length} {item.uses.length === 1 ? "connection" : "connections"}
-                      {incomplete ? " found" : ""}
-                    </small>
-                  </span>
-                </button>
-              ))}
-              {results.length === 0 && <p className="muted">No matching sources.</p>}
-            </nav>
-          </>
-        ) : (
-          value.answer === "known" && (
-            <div className="sources-empty">
-              <Database size={28} aria-hidden="true" />
-              <h3>No sources yet</h3>
-              <p>Named sources added to this Page will appear here.</p>
-            </div>
-          )
-        )}
+        {!selected &&
+          (value.sources.length > 0 ? (
+            <>
+              {searchable && (
+                <label className="sources-search">
+                  <Search size={15} aria-hidden="true" />
+                  <input
+                    aria-label="Find a source"
+                    placeholder="Find a source…"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                  />
+                </label>
+              )}
+              <nav ref={inventory} className="sources-inventory" aria-label="Page sources">
+                {results.map((item) => (
+                  <button
+                    key={item.source_id}
+                    className="source-row"
+                    data-source-id={item.source_id}
+                    onClick={() => choose(item.source_id)}
+                  >
+                    <Database size={16} aria-hidden="true" />
+                    <span>
+                      <strong>{item.name}</strong>
+                      <small>
+                        {item.availability === "unreadable"
+                          ? "Unreadable source"
+                          : item.availability === "missing"
+                            ? "Unavailable source"
+                            : sourceMediaLabel(item.media_type)}{" "}
+                        · {item.uses.length} {item.uses.length === 1 ? "connection" : "connections"}
+                        {incomplete ? " found" : ""}
+                      </small>
+                    </span>
+                    <ChevronRight size={15} aria-hidden="true" />
+                  </button>
+                ))}
+                {results.length === 0 && <p className="muted">No matching sources.</p>}
+              </nav>
+            </>
+          ) : (
+            value.answer === "known" && (
+              <div className="sources-empty">
+                <Database size={28} aria-hidden="true" />
+                <h3>No sources yet</h3>
+                <p>Named sources added to this Page will appear here.</p>
+              </div>
+            )
+          ))}
         {incomplete && (
           <p className="sources-notice" role="status">
             Connections are incomplete.{" "}
@@ -176,9 +247,7 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
           </p>
         )}
         {selected && !source && value.answer === "known" && (
-          <p className="sources-notice">
-            This source is no longer available on this Page. Choose another source above.
-          </p>
+          <p className="sources-notice">This source is no longer available on this Page.</p>
         )}
         {source && (
           <section className="source-inspector" aria-label="Source details">
@@ -195,9 +264,13 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
             ) : (
               <>
                 <p className="source-type" title={source.media_type}>
-                  {sourceMediaLabel(source.media_type)} · version {source.source_revision}
+                  {sourceMediaLabel(source.media_type)}
                 </p>
                 <dl className="source-facts">
+                  <div>
+                    <dt>Revision</dt>
+                    <dd>{source.source_revision}</dd>
+                  </div>
                   <div>
                     <dt>{source.source_revision === "1" ? "Added" : "Refreshed"}</dt>
                     <dd>
@@ -213,13 +286,16 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
                 </dl>
               </>
             )}
+            {!unavailable && source.media_type === PARQUET_MEDIA_TYPE && tab === "uses" && (
+              <SourcePreview key={source.source_id} session={session} source={source} />
+            )}
             <div className="source-sections" role="group" aria-label="Source sections">
               <button aria-pressed={tab === "uses"} onClick={() => setTab("uses")}>
                 Connections
               </button>
               {!unavailable && (
                 <button aria-pressed={tab === "history"} onClick={() => setTab("history")}>
-                  <History size={14} aria-hidden="true" /> Versions
+                  <History size={14} aria-hidden="true" /> Revisions
                 </button>
               )}
             </div>
@@ -248,7 +324,7 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
                         {use.input ? ` · ${use.input}` : ""}
                       </small>
                       <small>
-                        {use.revision ? `Pinned · version ${use.revision}` : "Follows latest"}
+                        {use.revision ? `Pinned · revision ${use.revision}` : "Follows latest"}
                         {use.revision &&
                         !unavailable &&
                         !source.history.some((version) => version.revision === use.revision)
@@ -262,15 +338,15 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
               </>
             ) : (
               <>
-                <h4>Retained versions</h4>
+                <h4>Retained revisions</h4>
                 {source.history_truncated && (
-                  <p className="muted">Older versions are no longer retained.</p>
+                  <p className="muted">Older revisions are no longer retained.</p>
                 )}
                 <ol className="source-history">
                   {[...source.history].reverse().map((version) => (
                     <li key={version.revision}>
                       <strong>
-                        Version {version.revision}
+                        Revision {version.revision}
                         {version.revision === source.source_revision ? " · current" : ""}
                       </strong>
                       <small>

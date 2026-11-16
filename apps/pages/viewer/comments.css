@@ -601,44 +601,6 @@ button.anchor-chip:hover {
 .comments.comments-expanded[open] {
   width: min(760px, calc(100vw - 32px));
 }
-.comments .comments-heading {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  min-height: 50px;
-  padding: 0 8px 0 15px;
-  border-bottom: 1px solid var(--line);
-  flex: none;
-}
-.comments .comments-heading h2 {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0 auto 0 0;
-  font-size: 0.9rem;
-  font-weight: 650;
-}
-.comments-thread-nav .comments-back {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  margin: 0 auto 0 -8px;
-  font-weight: 500;
-}
-.comments-split-title {
-  margin-right: auto;
-  font-weight: 600;
-}
-.comments-position {
-  margin-right: 4px;
-  font-size: 0.75rem;
-  color: var(--muted-foreground);
-  font-variant-numeric: tabular-nums;
-}
-.comments-position b {
-  color: var(--foreground);
-  font-weight: 500;
-}
 .comments-filters {
   display: flex;
   align-items: center;

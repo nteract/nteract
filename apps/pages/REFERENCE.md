@@ -1598,11 +1598,11 @@ times, not asset upload times or dates inside the data. Dates are relative
 for seven days, then local calendar dates; each has its exact local timestamp
 on hover and in its accessible name. A minute clock updates the visible ages
 without changing content. Readers and editors can click a name or the summary
-to open the Sources inspector, also available from the toolbar. It shares the
+to open the Sources inspector, also available from the **…** menu. It shares the
 right-hand dock with Comments and opens as a modal sheet on narrow screens.
 
 The inspector lists full source names and media types, source-set times and
-writer attribution, retained version history, and connections from placed
+writer attribution, retained revision history, and connections from placed
 tables and views. Agent labels are marked as client-provided. Selecting a
 connection locates its placement in the Page. Following and pinned bindings
 are distinguished, including pins whose revisions are no longer retained.
@@ -1610,8 +1610,10 @@ The inventory includes offscreen and repeated placements; it reads view
 replicas while open and releases that demand when closed. Unreadable content
 and unavailable views explicitly leave the connection inventory incomplete.
 Direct-asset tables aren't treated as source consumers. This first inspector
-does not create, replace or remove sources, download assets, or execute their
-contents. It inspects only the current Page's placed consumers.
+shows a Sift preview for the selected Parquet source, using the Page's existing
+asset cache and source-following renderer. It does not create, replace or remove
+sources or execute code. Search appears when more than one source is listed.
+It inspects only the current Page's placed consumers.
 
 A Page's named sources live in a third Automerge document, `pages.sources`
 format 1 ([model/sources-doc.mjs](model/sources-doc.mjs)), owned by the same
