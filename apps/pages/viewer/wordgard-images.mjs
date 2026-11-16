@@ -42,7 +42,9 @@ const image = Widget.define({
     const doc = editor.dom.ownerDocument;
     const dom = doc.createElement("span");
     dom.className = "pages-image";
-    const slot = dom.appendChild(doc.createElement("span"));
+    const box = dom.appendChild(doc.createElement("span"));
+    box.className = "pages-image-box";
+    const slot = box.appendChild(doc.createElement("span"));
     slot.className = "pages-image-slot";
     const actions = expand || comments ? doc.createElement("span") : null;
     const expandButton = expand ? maximizeButton("Expand image", doc) : null;
@@ -114,7 +116,7 @@ const image = Widget.define({
       expandButton.addEventListener("pointerdown", (event) => event.preventDefault());
       expandButton.addEventListener("click", () => open(expandButton));
     }
-    dom.append(actions);
+    box.append(actions);
     return dom;
   },
   connect(_value, dom) {
