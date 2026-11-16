@@ -1255,12 +1255,12 @@ dialog::backdrop {
 }
 /* An atomic chart or image has no text for the passage fill. Outline its own
    frame so the comment target stays visible while the composer has focus. */
-.comment-passage :is(.wordgard-view-embed, .pages-image) {
+.comment-passage :is(.wordgard-view-embed, .pages-image-box) {
   outline: 1px solid var(--comment-anchor-line);
   outline-offset: 4px;
 }
-.comment-draft-passage :is(.wordgard-view-embed, .pages-image),
-.comment-passage-active :is(.wordgard-view-embed, .pages-image) {
+.comment-draft-passage :is(.wordgard-view-embed, .pages-image-box),
+.comment-passage-active :is(.wordgard-view-embed, .pages-image-box) {
   outline: 2px solid var(--warning);
   outline-offset: 4px;
 }

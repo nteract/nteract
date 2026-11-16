@@ -377,10 +377,11 @@
 }
 /* A Page image (wordgard-images.mjs): the img, with Comment and Expand in its
    top-right corner while it is hovered, holds focus, or is selected in the
-   focused editor (an unfocused block keeps its selection undrawn). The frame
-   is inline-block so the corner is the image's, and its baseline stays the
-   img's. */
-.wordgard-document .pages-image {
+   focused editor (an unfocused block keeps its selection undrawn). The
+   widget's own element stays inline: Wordgard measures it for vertical caret
+   motion, and an inline-block there stops ArrowDown leaving the last line. The
+   box inside it is inline-block so the corner is the image's. */
+.wordgard-document .pages-image-box {
   position: relative;
   display: inline-block;
   max-width: 100%;
@@ -401,6 +402,8 @@
   opacity: 1;
   pointer-events: auto;
 }
+/* An image that hasn't drawn is a line of text: no controls over it. */
+.wordgard-document .pages-image:not([data-image-state="ready"]) .pages-image-actions,
 .wordgard-document .pages-image-actions:not(:has(> :not([hidden]))) {
   display: none;
 }
