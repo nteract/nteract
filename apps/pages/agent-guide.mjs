@@ -1,3 +1,4 @@
+import { mediaGuide, mediaGuideIndex } from "./agent-media-guides.mjs";
 import { identityProvider } from "./identity-provider.mjs";
 import { OAUTH_REFRESH_REUSE_SECONDS } from "./shared/oauth-grant.mjs";
 import {
@@ -60,6 +61,12 @@ invitation by email here. Invite the address the person's ${provider.label} acco
   return `# ${PRODUCT_NAME}
 
 ${part.opening}
+
+## Media authoring guides
+
+Read only the guide needed for your task. These describe this deployment's supported API, with complete examples:
+
+${mediaGuideIndex(origin)}
 
 ## Quick start
 
@@ -775,8 +782,8 @@ ${part.datasetReaderParagraph}
 
 ### Named sources
 
-A Page can name its datasets. A source is a source_id you choose, a name you
-can change, and the dataset asset it names now. Point a source at a new upload
+A Page can name its datasets and widget inputs. A source is a source_id you choose, a name you
+can change, and the asset it names now. Point a source at a new upload
 to refresh it; its source_id stays. Nothing on the Page shows a source yet.
 
 Set one with an edit_page batch of set_source operations, and nothing else in
@@ -791,7 +798,7 @@ letter; a few names are reserved, and their refusal lists them. name is 1 to
 200 characters with no control characters such as a newline. source_revision is null to create the source, or the source_revision
 you last read to change it; anything else is stale_source with the current
 one. Pages counts revisions per source: "1", then one more per write. The
-asset is a dataset uploaded to this Page, and Pages records its media type.
+asset is uploaded to this Page, and Pages records its media type.
 A Page holds up to 64 sources. The batch still names the Page revision you
 read, but a Page edit since then doesn't refuse it. The receipt names
 sources_revision (s…), and result.edits lists each source_id with its new
@@ -799,7 +806,7 @@ source_revision. Resend the same nonce to retry.
 
 read_page with sources:true lists every source: source_id, name,
 source_revision, asset_id and media_type. source_id:"<source_id>" reads one
-with summary, what its dataset holds, read from the Parquet footer without
+with summary for Parquet datasets, read from the footer without
 downloading it: {rows, row_groups, created_by, column_count, columns}, each
 column {name, type, nullable, null_count, min, max, bounds_exact}. type is
 the Arrow type the file reads as. min and max bound the whole file, or are
@@ -807,7 +814,7 @@ null when its statistics don't; dates are YYYY-MM-DD, timestamps ISO 8601
 in UTC, and an infinite bound "Infinity" or "-Infinity". bounds_exact is
 false when the writer cut a text bound short. columns stops early, with
 columns_truncated true, after 200 columns, 32 KiB, or what max_bytes
-leaves; column_count counts them all. summary is null when the footer can't
+leaves; column_count counts them all. summary is null for other asset types or when the footer can't
 be read. It also has producer: kind, at (when it was set) and by (who set it: principal,
 displayName, driver, and agent {name, model} when the writing client asserted
 one). Its history lists the source's newest 50 revisions, oldest first, each
@@ -1629,13 +1636,19 @@ not a JSON editing endpoint.
 export function agentGuideResponse(request, env) {
   if (!["GET", "HEAD"].includes(request.method))
     return new Response(null, { status: 405, headers: { Allow: "GET, HEAD" } });
-  const body = agentGuide(env);
+  const path = new URL(request.url).pathname;
+  const body = path === "/llms.txt" ? agentGuide(env) : mediaGuide(path, pagesPublicOrigin(env));
+  if (body === null)
+    return new Response(request.method === "HEAD" ? null : "Unknown guide. Start at /llms.txt.\n", {
+      status: 404,
+      headers: { "Content-Type": "text/plain; charset=utf-8", "X-Content-Type-Options": "nosniff" },
+    });
   return new Response(request.method === "HEAD" ? null : body, {
     headers: {
       "Content-Type": "text/plain; charset=utf-8",
       "Cache-Control": "public, max-age=300",
       "X-Content-Type-Options": "nosniff",
-      Link: '</llms.txt>; rel="self"; type="text/plain"',
+      Link: `<${path}>; rel="self"; type="text/plain"${path === "/llms.txt" ? "" : ', </llms.txt>; rel="index"; type="text/plain"'}`,
     },
   });
 }

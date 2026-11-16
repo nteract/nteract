@@ -3154,7 +3154,15 @@ and `PUT|DELETE /api/pages/<page_id>/tags/<tag>` ([Page tags](#page-tags)). MCP 
 token or Anaconda API key in `Authorization: Bearer ...`; `X-Pages-Driver` is an
 optional client label and `X-Pages-Agent` an optional session label. OAuth
 scopes and current Page permissions apply on every call. The public `/llms.txt`
-is the tool usage and authentication reference.
+is the tool usage and authentication reference. Its media-authoring index links to
+`/llms/assets-and-sources.txt`, `/llms/views.txt`, `/llms/anywidget.txt`, and
+`/llms/vega-lite.txt`. These focused guides contain deployment-supported examples,
+not proposed schemas. They are served from `agent-media-guides.mjs` before session
+lookup, as public plain text with GET/HEAD support; unknown `/llms/` paths return
+404 instead of the editor shell. Links use the configured public origin, not
+request headers. MCP server instructions and the upload/edit tool descriptions
+advertise the relevant guides. The guide tests validate the source/view examples
+against the current admission validators and follow the documentation links.
 
 `/mcp` serves two protocol eras on the one endpoint, both statelessly
 ([mcp.mjs](mcp.mjs), on `@modelcontextprotocol/server`):

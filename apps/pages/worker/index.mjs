@@ -1449,7 +1449,8 @@ const gateway = {
       }
       if (url.pathname === "/connect") return connectAgentResponse(request, env);
       if (url.pathname === "/api/slack/events") return await handleSlackPreview(request, env);
-      if (url.pathname === "/llms.txt") return agentGuideResponse(request, env);
+      if (url.pathname === "/llms.txt" || url.pathname.startsWith("/llms/"))
+        return agentGuideResponse(request, env);
       if (url.pathname === "/health")
         return json({ ok: true, prototype: "pages-celld-native", ...buildAdvertisement() });
       try {
