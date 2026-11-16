@@ -91,10 +91,14 @@ fn spec(value: &str) -> MatchSpec {
 
 /// A real relocatable conda package with one ordinary file eligible for hardlinking.
 fn package(version: &str) -> (serde_json::Value, Vec<u8>) {
+    named_package("upgrade-fixture", version)
+}
+
+fn named_package(name: &str, version: &str) -> (serde_json::Value, Vec<u8>) {
     let payload = format!("fixture version {version}\n");
-    let index = json!({"name": "upgrade-fixture", "version": version, "build": "0",
+    let index = json!({"name": name, "version": version, "build": "0",
         "build_number": 0, "subdir": "noarch", "depends": []});
-    let paths = json!({"paths_version": 1, "paths": [{"_path": "share/upgrade-fixture.txt",
+    let paths = json!({"paths_version": 1, "paths": [{"_path": format!("share/{name}.txt"),
         "path_type": "hardlink", "sha256": hex::encode(Sha256::digest(payload.as_bytes())),
         "size_in_bytes": payload.len()}]});
     let mut archive = tar::Builder::new(bzip2::write::BzEncoder::new(
@@ -104,7 +108,7 @@ fn package(version: &str) -> (serde_json::Value, Vec<u8>) {
     for (path, contents) in [
         ("info/index.json", index.to_string()),
         ("info/paths.json", paths.to_string()),
-        ("share/upgrade-fixture.txt", payload),
+        (format!("share/{name}.txt").as_str(), payload),
     ] {
         let mut header = tar::Header::new_gnu();
         header.set_size(contents.len() as u64);
@@ -237,4 +241,190 @@ async fn legacy_lock_records_remain_readable() {
         LockFile::read_from(dir.path()).await.unwrap().packages,
         lock.packages
     );
+}
+
+#[tokio::test]
+async fn channel_review_requires_consent_before_fetching_and_can_finish_offline() {
+    use kernel_env::channel_review::{discover_channel_review, DiscoveryLimits};
+    use rattler_repodata_gateway::{
+        fetch::CacheAction, ChannelConfig as GatewayConfig, Gateway, SourceConfig,
+    };
+
+    let mut files = HashMap::new();
+    for (channel, relations) in [
+        ("declared", json!({"base": "../related"})),
+        ("related", json!({"base": "../transitive"})),
+        ("transitive", json!({})),
+    ] {
+        files.insert(
+            format!("/{channel}/noarch/repodata.json"),
+            serde_json::to_vec(&json!({
+                "info": {"subdir": "noarch", "channel_relations": relations},
+                "packages": {}, "packages.conda": {}, "repodata_version": 1
+            }))
+            .unwrap(),
+        );
+    }
+    let server = ChannelServer::start(files).await;
+    let cache = tempfile::tempdir().unwrap();
+    let config = ChannelConfig::default_with_root_dir(cache.path().to_path_buf());
+    let declared = Channel::from_str(format!("{}/declared", server.url), &config).unwrap();
+    let related = Channel::from_str(format!("{}/related", server.url), &config)
+        .unwrap()
+        .base_url
+        .to_string();
+    let transitive = Channel::from_str(format!("{}/transitive", server.url), &config)
+        .unwrap()
+        .base_url
+        .to_string();
+    let gateway = |offline| {
+        Gateway::builder()
+            .with_cache_dir(cache.path())
+            .with_channel_config(GatewayConfig {
+                default: SourceConfig {
+                    cache_action: if offline {
+                        CacheAction::ForceCacheOnly
+                    } else {
+                        CacheAction::CacheOrFetch
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .finish()
+    };
+    let offline = gateway(true);
+    let network = gateway(false);
+    let first = discover_channel_review(
+        vec![declared.clone()],
+        vec![Subdir::NoArch],
+        vec![],
+        &offline,
+        Some(&network),
+        DiscoveryLimits::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(first.uninspected_channels, [related.clone()]);
+    assert!(
+        !server
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|path| path.starts_with("/related/") || path.starts_with("/transitive/")),
+        "reviewing a URL must not contact it before consent"
+    );
+    let second = discover_channel_review(
+        vec![declared.clone()],
+        vec![Subdir::NoArch],
+        vec![related.clone()],
+        &offline,
+        Some(&network),
+        DiscoveryLimits::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(second.uninspected_channels, [transitive.clone()]);
+    assert!(!server
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|path| path.starts_with("/transitive/")));
+    // Approval enables metadata reads, not an installer. The complete graph
+    // carries exactly the effective order the owner will later authorize.
+    let approved = vec![related.clone(), transitive.clone()];
+    let final_review = discover_channel_review(
+        vec![declared.clone()],
+        vec![Subdir::NoArch],
+        approved.clone(),
+        &offline,
+        Some(&network),
+        DiscoveryLimits::default(),
+    )
+    .await
+    .unwrap();
+    assert!(final_review.uninspected_channels.is_empty());
+    assert_eq!(
+        final_review.effective_channels,
+        [transitive, related, declared.base_url.to_string()]
+    );
+    let before_offline = server.requests.lock().unwrap().len();
+    server.task.abort();
+    let cached = discover_channel_review(
+        vec![declared],
+        vec![Subdir::NoArch],
+        approved,
+        &gateway(true),
+        None,
+        DiscoveryLimits::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(cached, final_review);
+    assert_eq!(server.requests.lock().unwrap().len(), before_offline);
+}
+
+#[tokio::test]
+async fn missing_related_dependency_does_not_modify_existing_prefix() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let mut files = HashMap::new();
+        let mut records = serde_json::Map::new();
+        for name in ["python", "ipykernel", "ipywidgets", "anywidget", "pip", "nbformat", "pyarrow", "upgrade-fixture"] {
+            let version = if name == "python" { "3.12.0" } else { "20.0" };
+            let (record, archive) = named_package(name, version);
+            let filename = format!("{name}-{version}-0.tar.bz2");
+            records.insert(filename.clone(), record);
+            files.insert(format!("/declared/noarch/{filename}"), archive);
+        }
+        files.insert("/declared/noarch/repodata.json".into(), serde_json::to_vec(&json!({
+            "info": {"subdir": "noarch", "channel_relations": {"base": "../related"}},
+            "packages": records, "packages.conda": {}, "repodata_version": 1
+        })).unwrap());
+        let (related_record, related_archive) = named_package("related-only", "1.0");
+        files.insert("/related/noarch/related-only-1.0-0.tar.bz2".into(), related_archive);
+        files.insert("/related/noarch/repodata.json".into(), serde_json::to_vec(&json!({
+            "info": {"subdir": "noarch"}, "packages": {"related-only-1.0-0.tar.bz2": related_record},
+            "packages.conda": {}, "repodata_version": 1
+        })).unwrap());
+        let server = ChannelServer::start(files).await;
+        let cache = tempfile::tempdir().unwrap();
+        let prefix = tempfile::tempdir().unwrap();
+        let config = ChannelConfig::default_with_root_dir(cache.path().to_path_buf());
+        let declared = Channel::from_str(format!("{}/declared", server.url), &config).unwrap();
+        let related = Channel::from_str(format!("{}/related", server.url), &config).unwrap();
+        let client = reqwest_middleware::ClientBuilder::new(reqwest_rattler::Client::new()).build();
+        let progress = Arc::new(Progress::default());
+        let mut specs = kernel_env::conda_base_packages().iter().map(|value| spec(value)).collect::<Vec<_>>();
+        specs.extend([spec("python"), spec("upgrade-fixture")]);
+        let repodata = kernel_env::repodata::query_repodata_offline_first(vec![declared.clone()], vec![Subdir::NoArch], specs.clone(), cache.path(), client.clone(), progress.clone(), "conda").await.unwrap();
+        let solved = resolvo::Solver.solve(SolverTask { specs: specs.clone(), ..SolverTask::from_iter(&repodata) }).unwrap().records;
+        let platform = kernel_env::conda_solve_platform().unwrap();
+        kernel_env::rattler_installer().with_package_cache(PackageCache::new(cache.path().join("pkgs")))
+            .with_download_client(client.clone()).with_target_platform(platform)
+            .install(prefix.path(), solved).await.unwrap();
+        let mut before = PrefixRecord::collect_from_prefix::<PrefixRecord>(prefix.path()).unwrap();
+        before.sort_by(|a,b| a.repodata_record.package_record.name.cmp(&b.repodata_record.package_record.name));
+        let contents = std::fs::read(prefix.path().join("share/upgrade-fixture.txt")).unwrap();
+        progress.0.lock().unwrap().clear();
+        let error = kernel_env::conda::sync_dependencies(&kernel_env::CondaEnvironment {
+            env_path: prefix.path().to_path_buf(), python_path: prefix.path().join("bin/python"),
+        }, &kernel_env::CondaDependencies {
+            dependencies: vec!["upgrade-fixture".into(), "related-only".into()], channels: vec![declared.base_url.to_string()], python: None, env_id: None,
+        }, progress.clone()).await.unwrap_err();
+        assert!(error.to_string().contains("related-only"), "{error:#}");
+        assert!(!progress.0.lock().unwrap().iter().any(|phase| matches!(phase, EnvProgressPhase::Installing { .. } | EnvProgressPhase::InstallComplete { .. })));
+        let mut after = PrefixRecord::collect_from_prefix::<PrefixRecord>(prefix.path()).unwrap();
+        after.sort_by(|a,b| a.repodata_record.package_record.name.cmp(&b.repodata_record.package_record.name));
+        assert_eq!(before, after);
+        assert_eq!(contents, std::fs::read(prefix.path().join("share/upgrade-fixture.txt")).unwrap());
+        assert!(!prefix.path().join("share/related-only.txt").exists());
+        assert!(!server.requests.lock().unwrap().iter().any(|path| path.starts_with("/related/")));
+        // Positive control: the same request is solvable with the related
+        // channel explicitly selected, proving the failure is this boundary.
+        specs.push(spec("related-only"));
+        let repodata = kernel_env::repodata::query_repodata_offline_first(vec![related, declared], vec![Subdir::NoArch], specs.clone(), cache.path(), client, progress, "conda").await.unwrap();
+        assert!(resolvo::Solver.solve(SolverTask { specs, ..SolverTask::from_iter(&repodata) }).is_ok());
+    }).await.expect("prefix preservation test timed out");
 }
