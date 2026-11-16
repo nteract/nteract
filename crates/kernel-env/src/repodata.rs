@@ -84,11 +84,32 @@ pub async fn solve_with_repodata<T, E>(
 where
     E: fmt::Display,
 {
+    solve_with_repodata_guarded(query, solve, &|| Ok(())).await
+}
+
+/// Revalidate immediately before entering a network query, including the
+/// refresh after a cached solve fails. Reviewed preparation supplies its
+/// owner fence here; ordinary callers keep their existing behavior.
+#[cfg(feature = "runtime")]
+pub(crate) async fn solve_with_repodata_guarded<T, E>(
+    query: RepodataQuery<'_>,
+    solve: impl FnMut(&[RepoData]) -> std::result::Result<T, E>,
+    validate: &(dyn Fn() -> Result<()> + Send + Sync),
+) -> std::result::Result<T, RepodataSolveError<E>>
+where
+    E: fmt::Display,
+{
     let env_type = query.env_type;
     let mut solve = solve;
     let result = solve_preferring_cache(
         query_cached(&query),
-        |cache_action| query_network(&query, cache_action),
+        |cache_action| {
+            let query = &query;
+            async move {
+                validate()?;
+                query_network(query, cache_action, validate).await
+            }
+        },
         env_type,
         |data: &Vec<RepoData>| solve(data),
     )
@@ -231,6 +252,7 @@ async fn query_cached(query: &RepodataQuery<'_>) -> Option<Vec<RepoData>> {
 async fn query_network(
     query: &RepodataQuery<'_>,
     cache_action: CacheAction,
+    validate: &(dyn Fn() -> Result<()> + Send + Sync),
 ) -> Result<Vec<RepoData>> {
     const MAX_RETRIES: u32 = 3;
     const INITIAL_DELAY_MS: u64 = 1000;
@@ -276,6 +298,7 @@ async fn query_network(
             tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
         }
 
+        validate()?;
         match gateway
             .query(
                 query.channels.clone(),
@@ -344,6 +367,47 @@ async fn query_network(
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn changed_review_fence_refuses_network_contact() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let config = rattler_conda_types::ChannelConfig::default_with_root_dir(cache.path().into());
+        let channel = Channel::from_str(
+            format!("http://{}/main", listener.local_addr().unwrap()),
+            &config,
+        )
+        .unwrap();
+        let query = RepodataQuery {
+            channels: vec![channel],
+            platforms: vec![Subdir::NoArch],
+            specs: vec![MatchSpec::from_str(
+                "python",
+                rattler_conda_types::ParseMatchSpecOptions::strict(),
+            )
+            .unwrap()],
+            rattler_cache_dir: cache.path(),
+            download_client: crate::channels::download_client().unwrap(),
+            handler: Arc::new(crate::progress::LogHandler),
+            env_type: "conda",
+        };
+        let checks = AtomicUsize::new(0);
+        let guard = || {
+            checks.fetch_add(1, Ordering::SeqCst);
+            anyhow::bail!("review no longer current")
+        };
+        let result = query_network(&query, CacheAction::NoCache, &guard).await;
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("review no longer current"));
+        assert_eq!(checks.load(Ordering::SeqCst), 1);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), listener.accept())
+                .await
+                .is_err()
+        );
+    }
 
     /// A fake index: the versions of one package a source knows about.
     fn solve_for(wanted: u32) -> impl FnMut(&Vec<u32>) -> std::result::Result<u32, String> {

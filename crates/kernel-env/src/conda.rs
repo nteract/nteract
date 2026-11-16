@@ -25,6 +25,8 @@ use crate::{
     CommandOutputExt,
 };
 
+pub mod reviewed;
+
 /// Conda dependency specification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CondaDependencies {
@@ -496,6 +498,18 @@ async fn install_conda_env(
     deps: &CondaDependencies,
     handler: Arc<dyn ProgressHandler>,
 ) -> Result<()> {
+    install_conda_env_guarded(env_path, deps, handler, &|| Ok(())).await
+}
+
+/// An owner revalidates a reviewed operation at each external effect boundary.
+/// Legacy callers use the unchanged no-expansion path above.
+async fn install_conda_env_guarded(
+    env_path: &Path,
+    deps: &CondaDependencies,
+    handler: Arc<dyn ProgressHandler>,
+    validate: &(dyn Fn() -> Result<()> + Send + Sync),
+) -> Result<()> {
+    validate()?;
     let cache_dir = env_path
         .parent()
         .unwrap_or_else(|| Path::new("/tmp"))
@@ -536,7 +550,8 @@ async fn install_conda_env(
     // and solve.
     // Reset per solve so SolveComplete times the solve, not the fetch.
     let mut solve_start = Instant::now();
-    let solved = crate::repodata::solve_with_repodata(
+    validate()?;
+    let solved = crate::repodata::solve_with_repodata_guarded(
         crate::repodata::RepodataQuery {
             channels,
             platforms: vec![install_platform, Subdir::NoArch],
@@ -561,6 +576,7 @@ async fn install_conda_env(
                 ..SolverTask::from_iter(repo_data)
             })
         },
+        validate,
     )
     .await;
 
@@ -608,6 +624,7 @@ async fn install_conda_env(
     // Clone packages before install (which consumes them) so we can write the lock file
     let packages_for_lock = required_packages.clone();
 
+    validate()?;
     match crate::rattler_installer()
         .with_download_client(download_client)
         .with_target_platform(install_platform)
@@ -641,6 +658,7 @@ async fn install_conda_env(
     );
 
     // Write lock file for offline re-creation
+    validate()?;
     let lock = crate::lock::LockFile::new(
         spec_strings_for_lock,
         channel_names,

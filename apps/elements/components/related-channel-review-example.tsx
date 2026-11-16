@@ -11,6 +11,7 @@ const fixture: RelatedChannelReview = {
   review_id: "fixture-review",
   owner_label: "analysis/environment.yml",
   state: "pending",
+  scope: "metadata",
   declared_channels: ["https://conda.example.org/research/"],
   effective_channels: [
     "https://conda.example.org/foundation/",
@@ -35,7 +36,12 @@ export function RelatedChannelReviewExample() {
     host.trust.approveRelatedChannels = async () =>
       setReview((current) =>
         current?.uninspected_channels.length
-          ? { ...current, review_id: "fixture-final-review", uninspected_channels: [] }
+          ? {
+              ...current,
+              review_id: "fixture-final-review",
+              scope: "install",
+              uninspected_channels: [],
+            }
           : null,
       );
     host.trust.declineRelatedChannels = async () =>

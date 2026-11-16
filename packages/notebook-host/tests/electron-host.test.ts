@@ -269,6 +269,63 @@ describe("Electron notebook host", () => {
     await server.close();
   });
 
+  it("keeps channel review decisions on the notebook relay, including unsupported-daemon errors", async () => {
+    const ports = linkedPorts();
+    const nativeRelay = fakeRelay();
+    const invoke = vi.fn(async () => undefined);
+    const server = serveElectronNotebookHost({
+      port: ports.main,
+      relay: nativeRelay.relay,
+      handler: { invoke } as unknown as ElectronNotebookHostHandler,
+    });
+    const host = createElectronHost({
+      port: ports.renderer,
+      bootstrap: {
+        protocolVersion: ELECTRON_HOST_PROTOCOL_VERSION,
+        outputDocumentUrl: "app://nteract/output-frame.html",
+      },
+    });
+    const requests: Array<{ id: string; action: string; review_id: string }> = [];
+    nativeRelay.onSend((frame) => {
+      if (frame[0] !== 0x01) return;
+      const request = JSON.parse(new TextDecoder().decode(frame.slice(1)));
+      requests.push(request);
+      const result =
+        request.review_id === "unsupported-review"
+          ? { result: "error", error: "Related-channel approval is not supported" }
+          : request.review_id === "stale-review"
+            ? { result: "guard_rejected", reason: "Review changed" }
+            : { result: "ok" };
+      const response = new TextEncoder().encode(JSON.stringify({ id: request.id, ...result }));
+      const responseFrame = new Uint8Array(response.length + 1);
+      responseFrame[0] = 0x02;
+      responseFrame.set(response, 1);
+      nativeRelay.emitFrame(responseFrame);
+    });
+    await host.relay.notifySyncReady();
+    invoke.mockClear();
+
+    await host.trust.approveRelatedChannels("review-a");
+    await host.trust.declineRelatedChannels("review-b");
+    await expect(host.trust.approveRelatedChannels("stale-review")).rejects.toThrow(
+      "Review changed",
+    );
+    await expect(host.trust.approveRelatedChannels("unsupported-review")).rejects.toThrow(
+      "Related-channel approval is not supported",
+    );
+
+    expect(requests.map(({ id: _id, ...request }) => request)).toEqual([
+      { action: "approve_related_channels", review_id: "review-a" },
+      { action: "decline_related_channels", review_id: "review-b" },
+      { action: "approve_related_channels", review_id: "stale-review" },
+      { action: "approve_related_channels", review_id: "unsupported-review" },
+    ]);
+    // An old daemon's refusal must not fall back to a privileged host method.
+    expect(invoke).not.toHaveBeenCalled();
+    host.transport.disconnect();
+    await server.close();
+  });
+
   it("routes save dialogs through the host and save-as through the existing relay", async () => {
     const ports = linkedPorts();
     const nativeRelay = fakeRelay();
