@@ -66,47 +66,92 @@ export const projectAssetPaths = `projects/(prj|sp)_${uuid}/assets(/[0-9a-f]{64}
 // it. Inside the api/( group.
 export const restPaths = `pages/${uuid}/tags/[A-Za-z0-9._:%/-]{1,192}|pages|`;
 
-export function routesFor(target) {
+const always = () => true;
+const fixed = (paths) => Object.freeze({ paths });
+// An optional route group: its path string, and whether a target's profile
+// admits it. A group is strippable unless it is marked `settled`.
+//
+// Tunnel publication (isolated-publication.mjs) recognizes an installed
+// config only by regenerating it: every combination of this target's
+// strippable groups, each present or absent. So a new group is strippable by
+// default and needs no migration code. Mark a group `settled` once every
+// installation still in service has it; a settled group is always present.
+//
+// `earlier` holds older path strings for the same slot. A group's string can't
+// change without one: configs sealed with the old string would stop matching.
+const slot = (name, paths, enabled, { settled = false, earlier = [] } = {}) =>
+  Object.freeze({ name, paths, enabled, settled, earlier: Object.freeze(earlier) });
+
+// Every route the tunnel admits, in the order the ingress regex lists them.
+// Sharing targets expose only the public setup page, its script, and the
+// authenticated access API.
+export const ROUTE_REGISTRY = Object.freeze([
+  fixed("index[.]html|app[.](js|css)|"),
+  slot("themePaths", "theme[.]js|", (profile) => Boolean(profile.theme), { settled: true }),
+  slot("chunkPaths", chunkPaths, (profile) => Boolean(profile.viewerChunks), { settled: true }),
+  slot("assetPaths", assetPaths, (profile) => Boolean(profile.viewerAssets), { settled: true }),
+  slot("siftPaths", siftPaths, (profile) => Boolean(profile.siftTables)),
+  slot("rendererPaths", "mermaid[.]js|", (profile) => Boolean(profile.tunnelService), {
+    settled: true,
+  }),
+  slot("connectPaths", "connect|connect[.]js|", (profile) => profile.sharing === true, {
+    settled: true,
+  }),
+  slot("whoamiPaths", whoamiPaths, (profile) => profile.whoami === true),
+  slot("oauthPaths", oauthPaths, (profile) => profile.oauth === true, { settled: true }),
+  fixed(
+    "(automerge|subduction)[.]wasm|health|mcp|llms[.]txt|p/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/?|",
+  ),
+  slot("mediaGuidePaths", mediaGuidePaths, always),
+  slot("pageSlugPaths", pageSlugPaths, always),
+  slot("projectPaths", projectPaths, (profile) => Boolean(profile.projectLinks), {
+    settled: true,
+  }),
+  slot("indexPaths", indexPaths, (profile) => Boolean(profile.indexRoutes), { settled: true }),
+  slot("linkPreviewPaths", linkPreviewPaths, (profile) => profile.linkPreviews === true),
+  slot("publishedPreviewPaths", publishedPreviewPaths, (profile) => profile.linkPreviews === true),
+  fixed("api/("),
+  slot("accessPaths", "access|", (profile) => profile.sharing === true, { settled: true }),
+  slot(
+    "publishedPreviewApiPaths",
+    publishedPreviewApiPaths,
+    (profile) => profile.linkPreviews === true,
+  ),
+  slot("imagePaths", imagePaths, (profile) => profile.oauth === true, { settled: true }),
+  slot("accountPaths", accountPaths, (profile) => profile.accountRoutes === true),
+  slot("cardImagePaths", cardImagePaths, (profile) => profile.cardImages === true),
+  slot("projectAssetPaths", projectAssetPaths, (profile) => profile.projectAssets === true),
+  slot("restPaths", restPaths, always),
+  fixed("tools|connect|sync|saved|pages/register|auth/(login|logout|session))|oidc"),
+]);
+
+/** The strippable groups `target` admits, in registry order. */
+export function strippableSlots(target) {
+  const profile = deploymentProfile(target);
+  return ROUTE_REGISTRY.filter((entry) => entry.name && !entry.settled && entry.enabled(profile));
+}
+
+/**
+ * The ingress rules for `target`. `omit` names strippable groups to leave out;
+ * `use` maps a strippable group to one of its `earlier` path strings. Without
+ * either, these are the routes this release publishes.
+ */
+export function routesFor(target, { omit = [], use = {} } = {}) {
   const profile = deploymentProfile(target);
   const { hostname, listen } = profile.deployment;
-  const renderer = profile.tunnelService ? "mermaid[.]js|" : "";
-  const theme = profile.theme ? "theme[.]js|" : "";
-  const chunks = profile.viewerChunks ? chunkPaths : "";
-  const assets = profile.viewerAssets ? assetPaths : "";
-  const sift = profile.siftTables ? siftPaths : "";
-  const projects = profile.projectLinks ? projectPaths : "";
-  const index = profile.indexRoutes ? indexPaths : "";
-  // Sharing targets expose only the public setup page, its script, and the authenticated access API.
-  const sharing = profile.sharing === true;
-  const authenticatedAssets = profile.oauth === true;
-  const connect = sharing ? "connect|connect[.]js|" : "";
-  const access = sharing ? "access|" : "";
-  const paths =
-    "index[.]html|app[.](js|css)|" +
-    theme +
-    chunks +
-    assets +
-    sift +
-    renderer +
-    connect +
-    (profile.whoami === true ? whoamiPaths : "") +
-    (authenticatedAssets ? oauthPaths : "") +
-    "(automerge|subduction)[.]wasm|health|mcp|llms[.]txt|p/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/?|" +
-    mediaGuidePaths +
-    pageSlugPaths +
-    projects +
-    index +
-    (profile.linkPreviews === true ? linkPreviewPaths : "") +
-    (profile.linkPreviews === true ? publishedPreviewPaths : "") +
-    "api/(" +
-    access +
-    (profile.linkPreviews === true ? publishedPreviewApiPaths : "") +
-    (authenticatedAssets ? imagePaths : "") +
-    (profile.accountRoutes === true ? accountPaths : "") +
-    (profile.cardImages === true ? cardImagePaths : "") +
-    (profile.projectAssets === true ? projectAssetPaths : "") +
-    restPaths +
-    "tools|connect|sync|saved|pages/register|auth/(login|logout|session))|oidc";
+  const strippable = new Set(strippableSlots(target).map((entry) => entry.name));
+  for (const name of [...omit, ...Object.keys(use)])
+    if (!strippable.has(name)) throw new Error("Not a strippable route group here: " + name);
+  let paths = "";
+  for (const entry of ROUTE_REGISTRY) {
+    if (!entry.name) paths += entry.paths;
+    else if (!entry.enabled(profile) || omit.includes(entry.name)) continue;
+    else if (Object.hasOwn(use, entry.name)) {
+      if (!entry.earlier.includes(use[entry.name]))
+        throw new Error("Not an earlier path string of " + entry.name);
+      paths += use[entry.name];
+    } else paths += entry.paths;
+  }
   return `  - hostname: ${hostname}
     path: ^/(${paths})?$
     service: http://${listen}

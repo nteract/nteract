@@ -193,6 +193,29 @@ test("a chart selection anchors its exact marker through insertions and detaches
   assert.throws(() => resolveCommentDraft(doc, draft), /removed or replaced/);
 });
 
+test("an image selection anchors its embed, quotes Image, and detaches when the image goes", () => {
+  let doc = fixture(
+    "See ![A cat](https://example.com/cat.png) and ![A dog](https://example.com/dog.png)",
+  );
+  const h = harness(doc);
+  const source = doc.blocks.first.richText;
+  const at = source.lastIndexOf("\ufffc");
+  const { map } = current(doc);
+  h.editor.state.selection = { anchor: map.amToWg[at], head: map.amToWg[at + 1] };
+  const selection = wordgardCommentSelection(h.replica, "first", h.editor, map);
+  assert.deepEqual(selection, { text: "\ufffc", occurrence: 3, label: "Image" });
+  const draft = captureCommentDraft(doc, "first", selection);
+  doc = A.change(doc, (d) => A.splice(d, textPath("first"), 0, 0, "Look: "));
+  const input = resolveCommentDraft(doc, draft);
+  doc = A.change(doc, (d) => applyComment(d, { ...input, body: "Is this the right dog?" }));
+  const [thread] = projectComments(doc);
+  assert.equal(thread.selectionContext.text, "Image");
+  assert.equal(thread.selectionContext.start.offsetUtf16, at + "Look: ".length);
+  assert.equal(wordgardCommentRanges(doc, "first", current(doc).map, [thread]).length, 1);
+  doc = A.change(doc, (d) => A.splice(d, textPath("first"), at + "Look: ".length, 1, ""));
+  assert.equal(projectComments(doc)[0].selectionContext.status, "detached");
+});
+
 test("presence holds a causal cursor while newer heads are pending, then follows the arriving text", () => {
   const h = harness(fixture("Hello world"));
   const source = h.replica.doc.blocks.first.richText;

@@ -497,11 +497,11 @@ test("comment access changes refresh the header of an untitled failed chart", ()
     const header = element.querySelector(".pages-chart-header");
     assert.equal(header.hidden, true);
     allowed = true;
-    button.dispatchEvent(new window.Event("pages-chart-comment-access"));
+    button.dispatchEvent(new window.Event("pages-comment-access"));
     assert.equal(button.hidden, false);
     assert.equal(header.hidden, false);
     allowed = false;
-    button.dispatchEvent(new window.Event("pages-chart-comment-access"));
+    button.dispatchEvent(new window.Event("pages-comment-access"));
     assert.equal(button.hidden, true);
     assert.equal(header.hidden, true);
     chart.destroy();

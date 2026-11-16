@@ -156,6 +156,16 @@ test("a fit is the largest scale that shows the whole diagram, capped for small 
   assert.deepEqual(scaleLimits(MAX_FIT), { min: 1, max: MAX_SCALE });
 });
 
+test("a viewer opened with maxFit 1 fits a small photo at its natural size, through resizes", () => {
+  const small = { content: { width: 100, height: 50 }, viewport: { width: 1200, height: 800 } };
+  const state = step(initialViewer, { type: "open", ...small, padding: 0, maxFit: 1 });
+  assert.equal(state.fit, 1);
+  assert.equal(state.view.scale, 1);
+  const resized = step(state, { type: "resize", viewport: { width: 1600, height: 900 } });
+  assert.equal(resized.fit, 1);
+  assert.equal(step(initialViewer, { type: "open", ...small, padding: 0 }).fit, MAX_FIT);
+});
+
 test("opening fits and centers the diagram, and shows, focuses and renders", () => {
   const state = open(WIDE, 0);
   assert.equal(state.fit, 0.5);

@@ -12,22 +12,18 @@ import {
   settleConnector,
 } from "./connector-slots.mjs";
 import { deploymentProfile, stageTarget, verifyDeployment } from "./profiles.mjs";
-import {
-  accountPaths,
-  cardImagePaths,
-  linkPreviewPaths,
-  mediaGuidePaths,
-  pageSlugPaths,
-  projectAssetPaths,
-  publishedPreviewApiPaths,
-  publishedPreviewPaths,
-  restPaths,
-  routesFor,
-  siftPaths,
-  whoamiPaths,
-} from "./routes.mjs";
+import { routesFor, strippableSlots } from "./routes.mjs";
 
 const accountId = "1cfb529b94b3d6cde3aaf49d1d6ed5e6";
+// Publication recognizes an installed config by regenerating every
+// combination of the target's strippable route groups. Past this many, mark
+// long-established groups `settled` in routes.mjs.
+const MAX_KNOWN_CONFIGS = 2 ** 16;
+const tunnelConfig = (tunnelId, credentialsPath, routes) => `tunnel: ${tunnelId}
+credentials-file: ${credentialsPath}
+ingress:
+${routes}  - service: http_status:404
+`;
 function publicationPaths(target) {
   const profile = deploymentProfile(target);
   if (!profile.tunnelService) throw new Error("A dedicated tunnel target is required");
@@ -42,6 +38,38 @@ function publicationPaths(target) {
   };
 }
 const hash = (text) => createHash("sha256").update(text).digest("hex");
+
+// Every config this tool generates for `target`, by sha256: each strippable
+// route group present with its current string, present with one of its
+// `earlier` strings, or absent.
+export function knownTunnelConfigs(target, tunnelId) {
+  const { credentialsPath } = publicationPaths(target);
+  const groups = strippableSlots(target);
+  const choices = groups.map((entry) => [null, entry.paths, ...entry.earlier]);
+  const count = choices.reduce((total, options) => total * options.length, 1);
+  if (count > MAX_KNOWN_CONFIGS)
+    throw new Error(
+      "Too many tunnel route combinations (" +
+        count +
+        "); mark long-established route groups settled in routes.mjs",
+    );
+  const known = new Map();
+  for (let index = 0; index < count; index++) {
+    const omit = [],
+      use = {};
+    let rest = index;
+    groups.forEach((entry, position) => {
+      const options = choices[position];
+      const pick = options[rest % options.length];
+      rest = Math.floor(rest / options.length);
+      if (pick === null) omit.push(entry.name);
+      else if (pick !== entry.paths) use[entry.name] = pick;
+    });
+    const config = tunnelConfig(tunnelId, credentialsPath, routesFor(target, { omit, use }));
+    known.set(hash(config), config);
+  }
+  return known;
+}
 // A ready slot keeps overlapping the live one this long before the live one
 // stops, so the edge has picked up the new connections first.
 const CONNECTOR_SETTLE_MS = 5_000;
@@ -87,11 +115,7 @@ export function isolatedPublicationPlan({
     if (!existingId || existingId === tunnelId)
       throw new Error("Isolated targets must use a different tunnel from frozen connectors");
   }
-  const config = `tunnel: ${tunnelId}
-credentials-file: ${credentialsPath}
-ingress:
-${routesFor(target)}  - service: http_status:404
-`;
+  const config = tunnelConfig(tunnelId, credentialsPath, routesFor(target));
   // Type=notify: cloudflared reports ready once its first edge connection
   // registers, so `systemctl start` returns after that. A slot also serves
   // /ready on its own metrics listener and stops within a bounded grace period.
@@ -252,152 +276,105 @@ export function publishIsolated(
     throw new Error("Unexpected local Pages health response");
   const installation = directory + "/tunnel-installation.json";
   const slotted = plan.slots !== null;
-  const receiptFor = (config, unitSha256 = plan.unitSha256, extra = {}) =>
+  const receiptWith = (configSha256, unitSha256, extra = {}) =>
     JSON.stringify({
       schema: 1,
       tunnel_id: plan.tunnelId,
-      config_sha256: hash(config),
+      config_sha256: configSha256,
       unit_sha256: unitSha256,
       ...extra,
     }) + "\n";
+  const receiptFor = (config, unitSha256 = plan.unitSha256, extra = {}) =>
+    receiptWith(hash(config), unitSha256, extra);
   const receipt = receiptFor(plan.config);
-  // The route sets earlier releases sealed, newest first. Each strips one
-  // group from this one, so every history keeps its exact bytes and migrates
-  // straight to plan.config:
-  // - beforeSlugs: without the Page slug routes (pageSlugPaths), what a
-  //   target that published between the REST routes and the slugs sealed;
-  // - beforeRest: without the REST routes (restPaths) either, what the last
-  //   package release sealed. A set with the slugs and without REST was never
-  //   published, so it is no predecessor.
-  // The route set before link previews, card images and Project assets
-  // (linkPreviewPaths, cardImagePaths, projectAssetPaths) strips those from
-  // beforeRest. A target without those flags keeps beforeRest.
-  const linkPreviews = profile.linkPreviews === true;
-  // Published previews and their API/Slack endpoints arrived together after
-  // slugs. Older sealed installations contain neither group. Derive earlier
-  // histories from that route set, not from today's newly added endpoints.
-  const beforeMediaGuides = plan.config.replace(mediaGuidePaths, "");
-  const beforePublishedPreviews = linkPreviews
-    ? beforeMediaGuides.replace(publishedPreviewPaths, "").replace(publishedPreviewApiPaths, "")
-    : beforeMediaGuides;
-  const beforeSlugs = beforePublishedPreviews.replace(pageSlugPaths, "");
-  const beforeRest = beforeSlugs.replace(restPaths, "");
-  const cardImages = profile.cardImages === true;
-  const projectAssets = profile.projectAssets === true;
-  const sealedRoutes = [
-    [linkPreviews, linkPreviewPaths],
-    [cardImages, cardImagePaths],
-    [projectAssets, projectAssetPaths],
-  ].reduce(
-    (config, [enabled, group]) => (enabled ? config.replace(group, "") : config),
-    beforeRest,
-  );
-  // The route set before the account routes (accountPaths). Every history
-  // below is stated against it, so those predecessors keep their exact bytes,
-  // and each one migrates straight to plan.config.
-  const accountRoutes = profile.accountRoutes === true;
-  const base = accountRoutes ? sealedRoutes.replace(accountPaths, "") : sealedRoutes;
-  // Only the exact known predecessor for this target may migrate. Other targets
-  // and arbitrary local edits still require inspection instead of adoption.
-  const previousConfig =
-    target === "page10" || target === "pages" ? base.replace(whoamiPaths, "") : null;
-  // Each predecessor is an exact (config, units) pair this run may migrate
-  // from. A slotted target also migrates from its legacy single unit, with or
-  // without a route change. Its pending receipt names the units to roll back to.
-  const predecessors = [];
-  const predecessor = (config, legacy) => {
-    const unitSha256 = legacy ? hash(plan.unit) : plan.unitSha256;
-    if (config === plan.config && unitSha256 === plan.unitSha256) return;
-    const entry = {
-      config,
-      legacy,
-      sealed: receiptFor(config, unitSha256),
-      pending: receiptFor(plan.config, plan.unitSha256, {
-        previous_config_sha256: hash(config),
-        ...(slotted ? { previous_unit_sha256: unitSha256 } : {}),
-      }),
-    };
-    predecessors.push(entry);
-    return entry;
-  };
-  // Media guides arrived after published previews. Admit only the exact
-  // previously sealed route set, preserving the unit and receipt checks.
-  predecessor(beforeMediaGuides, false);
-  if (slotted) predecessor(beforeMediaGuides, true);
-  if (beforePublishedPreviews !== plan.config) {
-    predecessor(beforePublishedPreviews, false);
-    if (slotted) predecessor(beforePublishedPreviews, true);
-  }
-  if (previousConfig !== null) predecessor(previousConfig, false);
-  if (slotted) {
-    if (previousConfig !== null) {
-      predecessor(previousConfig, true);
-      // The pending receipt a release before slots leaves when interrupted
-      // between its config rename and its connector restart.
-      predecessors.push({
-        ...predecessors.at(-1),
-        pending: receiptFor(plan.config, hash(plan.unit), {
-          previous_config_sha256: hash(previousConfig),
-        }),
-      });
-    }
-    predecessor(plan.config, true);
-  }
-  // A target that served /whoami from its first release (pages2) has no
-  // earlier route set, so none of these histories apply to it.
-  if (profile.whoami === true && previousConfig !== null) {
-    // The prior release also handed unchanged Sift routes from legacy to slots.
-    // That pending receipt can only accompany the exact Sift config.
-    predecessors.push({
-      ...predecessor(previousConfig, true),
-      sealed: receiptFor(previousConfig, plan.unitSha256, {
-        previous_config_sha256: hash(previousConfig),
-        previous_unit_sha256: hash(plan.unit),
-      }),
+  // The pending receipt toward plan.config from an installation of `config`
+  // on the units `unitSha256` names. It names what to roll back to.
+  const pendingFrom = (config, unitSha256) =>
+    receiptFor(plan.config, plan.unitSha256, {
+      previous_config_sha256: hash(config),
+      ...(slotted ? { previous_unit_sha256: unitSha256 } : {}),
     });
-    const beforeSift = previousConfig.replace(siftPaths, "");
-    for (const legacy of [false, true]) {
-      // An interrupted Sift rollout can leave either exact config on disk.
-      // Recognize only its historical receipt and unit layout, not arbitrary
-      // hashes supplied by the installed receipt.
-      const unit = legacy ? hash(plan.unit) : plan.unitSha256;
-      const historical = [
-        receiptFor(previousConfig, plan.unitSha256, {
-          previous_config_sha256: hash(beforeSift),
-          previous_unit_sha256: unit,
-        }),
-        ...(legacy
-          ? [receiptFor(previousConfig, unit, { previous_config_sha256: hash(beforeSift) })]
-          : []),
-      ];
-      for (const config of [beforeSift, previousConfig]) {
-        const entry = predecessor(config, legacy);
-        for (const sealed of historical) predecessors.push({ ...entry, sealed });
-      }
+  // Reads an installed receipt and returns the migration it leaves: the exact
+  // config and units to migrate from (and roll back to), and the sealed and
+  // pending receipts for that step. The receipt must be one publication
+  // writes, byte for byte, and every hash it names one this tool generates for
+  // this target. Anything else is an installation to inspect, not to adopt.
+  function recognizeInstallation(installed) {
+    const differs = () =>
+      new Error("Dedicated tunnel installation differs; inspect before retrying");
+    let parsed;
+    try {
+      parsed = JSON.parse(installed);
+    } catch {
+      throw differs();
     }
-  }
-  if (accountRoutes) {
-    // The installation the last release sealed: the same route set without
-    // the account routes, on slot units. A target still on its legacy unit at
-    // that route set migrates too. Nothing else changes: units and every
-    // other route stay byte-identical.
-    predecessor(base, false);
-    if (slotted) predecessor(base, true);
-  }
-  // The installations the last two releases sealed, on slot units. A target
-  // still on its legacy unit at either route set migrates too. Units and
-  // every other route stay byte-identical.
-  for (const config of [beforeSlugs, beforeRest]) {
-    predecessor(config, false);
-    if (slotted) predecessor(config, true);
-  }
-  if (sealedRoutes !== beforeRest) {
-    // The installation the release before it sealed: the account route set,
-    // without link previews, card images and Project assets, on slot units.
-    // A target still on its legacy unit at that route set migrates too.
-    // Units and every other route stay byte-identical.
-    predecessor(sealedRoutes, false);
-    if (slotted) predecessor(sealedRoutes, true);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw differs();
+    const {
+      config_sha256: configSha256,
+      unit_sha256: unitSha256,
+      previous_config_sha256: previousConfigSha256,
+      previous_unit_sha256: previousUnitSha256,
+    } = parsed;
+    // A sealed receipt, or a pending one naming the previous config and, on a
+    // slotted target, the previous units.
+    const pending = previousConfigSha256 !== undefined;
+    if (
+      (previousUnitSha256 !== undefined && (!pending || !slotted)) ||
+      installed !==
+        receiptWith(configSha256, unitSha256, {
+          ...(pending ? { previous_config_sha256: previousConfigSha256 } : {}),
+          ...(previousUnitSha256 !== undefined ? { previous_unit_sha256: previousUnitSha256 } : {}),
+        })
+    )
+      throw differs();
+    const known = knownTunnelConfigs(target, plan.tunnelId);
+    const legacyUnit = hash(plan.unit);
+    const knownUnit = (unit) => unit === legacyUnit || unit === plan.unitSha256;
+    const installedConfig = known.get(configSha256);
+    if (installedConfig === undefined || !knownUnit(unitSha256)) throw differs();
+    if (!pending)
+      return {
+        config: installedConfig,
+        legacy: slotted && unitSha256 === legacyUnit,
+        sealed: installed,
+        pending: pendingFrom(installedConfig, unitSha256),
+      };
+    // A pending receipt from before slots has no previous_unit_sha256: its
+    // units are the ones unit_sha256 names.
+    const previousUnit = previousUnitSha256 ?? unitSha256;
+    const previousConfig = known.get(previousConfigSha256);
+    if (previousConfig === undefined || !knownUnit(previousUnit)) throw differs();
+    const legacy = slotted && previousUnit === legacyUnit;
+    if (installedConfig === plan.config) {
+      // Interrupted on the way to this plan: roll back to the previous files.
+      // Only the two pending forms publication writes: this release's, and on
+      // a slotted target the one from before slots, on the legacy unit with no
+      // previous_unit_sha256.
+      const preSlot = slotted && previousUnitSha256 === undefined && unitSha256 === legacyUnit;
+      if (
+        (previousConfig === plan.config && previousUnit === plan.unitSha256) ||
+        (installed !== pendingFrom(previousConfig, previousUnit) && !preSlot)
+      )
+        throw differs();
+      return {
+        config: previousConfig,
+        legacy,
+        sealed: receiptFor(previousConfig, previousUnit),
+        pending: installed,
+      };
+    }
+    // Interrupted on the way to another config. Its config file must be exactly
+    // one of the two the receipt names: migrate from that one, and roll back
+    // to this receipt.
+    const current = read(configPath);
+    if (current !== installedConfig && current !== previousConfig)
+      throw new Error("Dedicated tunnel migration requires exact previous files");
+    return {
+      config: current,
+      legacy,
+      sealed: installed,
+      pending: pendingFrom(current, previousUnit),
+    };
   }
   const exactly = (file, contents) => filesystem.existsSync(file) && read(file) === contents;
   const slotUnitsInstalled = () => plan.slots.every((slot) => exactly(slot.unitPath, slot.unit));
@@ -421,13 +398,8 @@ export function publishIsolated(
   if (!fresh) {
     installed = read(installation);
     if (installed !== receipt) {
-      const matches = predecessors.filter(
-        ({ sealed, pending }) => installed === sealed || installed === pending,
-      );
-      current = matches.length ? read(configPath) : null;
-      migration = matches.find(({ config }) => config === current) ?? matches[0] ?? null;
-      if (!migration)
-        throw new Error("Dedicated tunnel installation differs; inspect before retrying");
+      migration = recognizeInstallation(installed);
+      current = read(configPath);
       if (
         !unitsInstalled(migration.legacy) ||
         (current !== migration.config &&
@@ -506,6 +478,10 @@ export function publishIsolated(
     const projects = profile.projectLinks === true;
     const index = profile.indexRoutes === true;
     const sift = profile.siftTables === true;
+    const linkPreviews = profile.linkPreviews === true;
+    const cardImages = profile.cardImages === true;
+    const projectAssets = profile.projectAssets === true;
+    const accountRoutes = profile.accountRoutes === true;
     const uuid = "08c583e5-d29e-4f1e-b06b-333965254e94";
     const assets = "/api/pages/" + uuid + "/assets";
     const cardImage = "/api/pages/" + uuid + "/card-image";

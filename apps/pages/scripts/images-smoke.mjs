@@ -411,11 +411,41 @@ try {
   for (const page of [owner, editor, viewer]) await expectImages(page, 1);
   complete("File picker upload tolerates concurrent editing; image undo/redo reaches both peers");
 
+  // Selecting an image and clicking away keep its drawn img. A new img has no
+  // height until it decodes, so replacing it would make the Page jump.
+  await content(owner).evaluate((root) => {
+    window.__removedImages = 0;
+    new MutationObserver((records) => {
+      for (const record of records)
+        for (const node of record.removedNodes)
+          if (node.nodeName === "IMG") window.__removedImages++;
+    }).observe(root, { childList: true, subtree: true });
+  });
+  // Sample the image's paragraph height every frame through the click.
+  await images(owner).first().scrollIntoViewIfNeeded();
+  await images(owner)
+    .first()
+    .evaluate((img) => {
+      const block = img.closest("p");
+      const heights = (window.__imageBlockHeights = []);
+      const sample = () => {
+        heights.push(block.getBoundingClientRect().height);
+        if (heights.length < 30) requestAnimationFrame(sample);
+      };
+      sample();
+    });
   await images(owner).first().click();
   await expect(
     images(owner).first().locator("xpath=ancestor::*[contains(@class, 'wg-selected-node')]"),
   ).toHaveCount(1);
   await expect(owner.getByRole("toolbar", { name: "Image actions" })).toBeVisible();
+  await expect.poll(() => owner.evaluate(() => window.__imageBlockHeights.length)).toBe(30);
+  const blockHeights = await owner.evaluate(() => window.__imageBlockHeights);
+  assert.equal(
+    Math.min(...blockHeights),
+    Math.max(...blockHeights),
+    `selecting the image changed its paragraph's height: ${blockHeights.join(", ")}`,
+  );
   await expect(owner.getByRole("button", { name: "Bold", exact: true })).toHaveCount(0);
   await expect(owner.getByRole("combobox", { name: "Text style" })).toHaveCount(0);
   // Mark and heading keys on a selected image leave the document alone.
@@ -446,7 +476,56 @@ try {
     .click({ position: { x: 20, y: 12 } });
   await expect(owner.getByRole("toolbar", { name: "Text formatting" })).toBeVisible();
   await expect(owner.getByRole("button", { name: "Bold", exact: true })).toBeVisible();
+  assert.equal(
+    await owner.evaluate(() => window.__removedImages),
+    0,
+    "selecting or deselecting an image replaced its img",
+  );
   complete("Image clicks hide font controls across peer edits; clicking text restores formatting");
+
+  // Expand opens a copy of the image in the viewer; Escape returns to the Page.
+  await images(owner).first().hover();
+  const expandImage = content(owner).getByRole("button", { name: "Expand image", exact: true });
+  await expect(expandImage.first()).toBeVisible();
+  await expandImage.first().click();
+  const imageViewer = owner.locator("dialog.diagram-viewer");
+  await expect(imageViewer.locator(".diagram-viewer-content > img")).toBeVisible();
+  assert.equal(
+    await imageViewer.locator(".diagram-viewer-content > img").evaluate((img) => img.src),
+    await images(owner)
+      .first()
+      .evaluate((img) => img.currentSrc),
+  );
+  await owner.screenshot({ path: `${output}/image-expanded.png` });
+  await owner.keyboard.press("Escape");
+  await expect(imageViewer).toHaveCount(0);
+  // While editing, a double-click expands too, and Escape still reaches the viewer.
+  await images(owner).first().dblclick();
+  await expect(imageViewer.locator(".diagram-viewer-content > img")).toBeVisible();
+  await owner.keyboard.press("Escape");
+  await expect(imageViewer).toHaveCount(0);
+  // Comment on image opens the composer on that image; the thread quotes it.
+  await images(owner).first().hover();
+  await content(owner)
+    .getByRole("button", { name: "Comment on image", exact: true })
+    .first()
+    .click();
+  const composer = owner.locator("#comment-popover");
+  await expect(composer).toBeVisible();
+  await expect(owner.locator("[data-comment-draft] .pages-image")).toHaveCount(1);
+  await composer
+    .getByRole("textbox", { name: "Comment on selection", exact: true })
+    .fill("Can we crop this tighter?");
+  await owner.screenshot({ path: `${output}/image-comment.png` });
+  await composer.getByRole("button", { name: "Comment", exact: true }).click();
+  await expect(composer).toHaveCount(0);
+  await expect
+    .poll(async () => {
+      const read = (await tool(owner, "read_page", { page_id: pageId, comments: "all" })).body;
+      return read.comments?.filter((thread) => thread.selectionContext?.text === "Image").length;
+    })
+    .toBe(1);
+  complete("Expand opens the image in the viewer; Comment on image anchors a thread on it");
 
   await atEnd(editor);
   await imageEvent(editor, "paste", fixtures[1], "pasted-screenshot.png");
@@ -548,6 +627,11 @@ try {
   await imageEvent(viewer, "paste", fixtures[0], "readonly.png");
   await expectImages(viewer, 3);
   assert.equal(readonlyUploads, 0);
+  // A reader's click on an image expands it.
+  await images(viewer).first().click();
+  await expect(viewer.locator("dialog.diagram-viewer .diagram-viewer-content > img")).toBeVisible();
+  await viewer.keyboard.press("Escape");
+  await expect(viewer.locator("dialog.diagram-viewer")).toHaveCount(0);
   await owner.screenshot({ path: `${output}/images-wide.png`, fullPage: true });
   await owner.setViewportSize({ width: 390, height: 844 });
   await images(owner).first().scrollIntoViewIfNeeded();

@@ -4,9 +4,14 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { stageCloudflareFiles, cloudflareConfig, structuralConfig } from "./cloudflare-stage.mjs";
+import {
+  stageCloudflareFiles,
+  cloudflareConfig,
+  outputStructuralConfig,
+  structuralConfig,
+} from "./cloudflare-stage.mjs";
 import { workerShape } from "./worker-shape.mjs";
-import { releaseArtifacts, releaseFilesOf } from "./stage-artifacts.mjs";
+import { OUTPUT_WORKER, releaseArtifacts, releaseFilesOf } from "./stage-artifacts.mjs";
 import { VIEWER_ASSETS, hashedAssetPath } from "./viewer-chunks.mjs";
 
 test("Cloudflare staging separates native modules from browser assets and excludes local secrets/state", (t) => {
@@ -268,4 +273,20 @@ test("existing Cloudflare profiles get public metadata fetching with its routing
   // the assertion just because both runtimes share the Worker shape.
   assert.equal(workerShape().vars.PAGES_OAUTH_METADATA_EGRESS, undefined);
   assert.equal(workerShape().compatibility_flags, undefined);
+});
+
+test("the output Worker's structural config names no deployment and matches the hand deploy file", () => {
+  const config = outputStructuralConfig();
+  assert.deepEqual(Object.keys(config), ["main", "no_bundle", "compatibility_date"]);
+  assert.equal(config.main, "worker.js");
+  assert.equal(config.no_bundle, true);
+  // wrangler.output.toml deploys the same bundled module by hand, so it must
+  // agree on every structural field; main is the module's path in a build.
+  const toml = readFileSync(new URL("../wrangler.output.toml", import.meta.url), "utf8");
+  const value = (key) => toml.match(new RegExp(`^${key} = (.+)$`, "m"))?.[1];
+  assert.equal(value("main"), JSON.stringify(`dist/${OUTPUT_WORKER}`));
+  assert.equal(OUTPUT_WORKER, `output/${config.main}`);
+  assert.equal(value("no_bundle"), String(config.no_bundle));
+  assert.equal(value("compatibility_date"), JSON.stringify(config.compatibility_date));
+  assert.equal(value("compatibility_flags"), undefined);
 });

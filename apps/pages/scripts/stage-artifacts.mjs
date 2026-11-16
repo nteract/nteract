@@ -119,6 +119,39 @@ export function releaseFilesFor(
   return files;
 }
 
+/** The output Worker module in a build (scripts/build.mjs). Only the release
+ * package carries it, so the receipt certifies it in `output_files`, apart
+ * from `files`, and stageArtifacts leaves it out. */
+export const OUTPUT_WORKER = "output/worker.js";
+// A frame path: absolute, lowercase segments, ending in a slash.
+const FRAME_PATH = /^(?:\/[a-z0-9][a-z0-9-]*)+\/$/;
+
+/** The output Worker this build's receipt certifies, as its bytes, and the
+ * frame paths it serves. The receipt must certify exactly OUTPUT_WORKER, and
+ * the file must still hold the certified bytes. */
+export function outputWorkerFor(dist) {
+  const receipt = receiptOf(dist);
+  const files = receipt.output_files;
+  if (!certifiedMap(files, (file) => file === OUTPUT_WORKER) || Object.keys(files).length !== 1)
+    throw new Error(`The build receipt must certify ${OUTPUT_WORKER} in output_files`);
+  const paths = receipt.output_frame_paths;
+  if (
+    !Array.isArray(paths) ||
+    !paths.length ||
+    !paths.every((value) => typeof value === "string" && FRAME_PATH.test(value)) ||
+    new Set(paths).size !== paths.length
+  )
+    throw new Error("The build receipt must list the output Worker's frame paths");
+  const file = path.join(dist, OUTPUT_WORKER);
+  const statOf = (name) => (existsSync(name) ? lstatSync(name) : undefined);
+  if (!statOf(path.join(dist, "output"))?.isDirectory() || !statOf(file)?.isFile())
+    throw new Error("Artifact must be a regular file: " + OUTPUT_WORKER);
+  const bytes = readFileSync(file);
+  if (sha256(bytes) !== files[OUTPUT_WORKER])
+    throw new Error(`Release file changed since the build: ${OUTPUT_WORKER}`);
+  return { bytes, framePaths: [...paths] };
+}
+
 export function stageArtifacts(dist, destination) {
   if (existsSync(destination)) throw new Error("Release destination must be new");
   if (!lstatSync(dist).isDirectory() || !lstatSync(path.join(dist, "public")).isDirectory())

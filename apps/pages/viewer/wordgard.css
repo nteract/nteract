@@ -375,6 +375,51 @@
   max-width: 100%;
   height: auto;
 }
+/* A Page image (wordgard-images.mjs): the img, with Comment and Expand in its
+   top-right corner while it is hovered, holds focus, or is selected in the
+   focused editor (an unfocused block keeps its selection undrawn). The
+   widget's own element stays inline: Wordgard measures it for vertical caret
+   motion, and an inline-block there stops ArrowDown leaving the last line. The
+   box inside it is inline-block so the corner is the image's. */
+.wordgard-document .pages-image-box {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+.wordgard-document .pages-image-actions {
+  top: 6px;
+  right: 6px;
+  padding: 2px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--background) 88%, transparent);
+  box-shadow: 0 1px 3px #0003;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease-out;
+}
+.wordgard-document .pages-image:is(:hover, :focus-within) .pages-image-actions,
+.wordgard-editor:focus-within .wg-selected-node > .pages-image .pages-image-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* An image that hasn't drawn is a line of text: no controls over it. */
+.wordgard-document .pages-image:not([data-image-state="ready"]) .pages-image-actions,
+.wordgard-document .pages-image-actions:not(:has(> :not([hidden]))) {
+  display: none;
+}
+/* Reading, a click on a loaded image expands it. */
+.wordgard-document
+  wg-content:not([contenteditable="true"])
+  .pages-image[data-image-state="ready"]
+  .pages-image-slot
+  > img {
+  cursor: zoom-in;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wordgard-document .pages-image-actions {
+    transition: none;
+  }
+}
 .image-selection-label {
   padding: 0 8px;
   color: var(--muted-foreground);
@@ -940,8 +985,8 @@
     sans-serif;
   white-space: normal;
 }
-/* The expanded diagram viewer (diagram-viewer.mjs): a modal dialog over the
-   whole viewport, a bar of controls, and a stage the diagram pans and zooms in.
+/* The expanded viewer (diagram-viewer.mjs): a modal dialog over the whole
+   viewport, a bar of controls, and a stage a diagram or image pans and zooms in.
    The bar clears a phone's notch and rounded corners through the safe-area
    insets. */
 .diagram-viewer {
@@ -1065,7 +1110,7 @@
   transform-origin: 0 0;
   line-height: 0;
 }
-.diagram-viewer-content > svg {
+.diagram-viewer-content > :is(svg, img) {
   display: block;
   max-width: none;
   pointer-events: none;

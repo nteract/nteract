@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { JSDOM } from "jsdom";
-import { cloneDiagram, isolateIds, openDiagramViewer, svgSize } from "./diagram-viewer.mjs";
+import {
+  cloneDiagram,
+  isolateIds,
+  openDiagramViewer,
+  openImageViewer,
+  svgSize,
+} from "./diagram-viewer.mjs";
 
 // jsdom has no layout or modal dialogs: the viewer falls back to an open
 // attribute and a zero-sized stage. Pan, zoom and fit geometry are covered by
@@ -162,4 +168,33 @@ test("opening a second viewer closes the first", () =>
     assert.equal(first.state.name, "closed");
     assert.equal(doc.querySelectorAll(".diagram-viewer").length, 1);
     second.close();
+  }));
+
+test("an image opens as a copy at its natural size, labelled for images", () =>
+  withDocument((doc) => {
+    const opener = doc.getElementById("opener");
+    const image = doc.createElement("img");
+    image.src = "https://example.com/cat.png";
+    image.alt = "A cat";
+    Object.defineProperty(image, "naturalWidth", { value: 640 });
+    Object.defineProperty(image, "naturalHeight", { value: 480 });
+    doc.getElementById("canvas").append(image);
+    const viewer = openImageViewer({ image, label: "A cat", opener });
+    const copy = viewer.dialog.querySelector(".diagram-viewer-content > img");
+    assert.notEqual(copy, image, "the Page's img stays on the Page");
+    assert.equal(copy.src, image.src);
+    assert.equal(copy.alt, "A cat");
+    assert.deepEqual(viewer.state.content, { width: 640, height: 480 });
+    assert.equal(viewer.state.maxFit, 1);
+    assert.equal(
+      viewer.dialog.querySelector(".diagram-viewer-fit").getAttribute("aria-label"),
+      "Fit image to screen",
+    );
+    assert.equal(
+      viewer.dialog.querySelector(".diagram-viewer-stage").getAttribute("aria-label"),
+      "Image view",
+    );
+    viewer.dialog.querySelector(".diagram-viewer-close").click();
+    assert.equal(viewer.state.name, "closed");
+    assert.equal(doc.activeElement, opener);
   }));

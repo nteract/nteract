@@ -413,6 +413,21 @@ try {
       "Closing preview stops and releases audio",
     );
   } else await openSources();
+  if (keys) {
+    for (const [id, icon] of [
+      ["usage", "table-2"],
+      ["renderer", "file-code"],
+      ["styles", "paintbrush"],
+      ["bytes", "file-digit"],
+      ["audio", "file-headphone"],
+    ]) {
+      await expect(panel.locator(`[data-source-id="${id}"] .lucide-${icon}`)).toBeVisible();
+    }
+    await page.screenshot({ path: `${output}/source-type-icons-wide.png` });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: `${output}/source-type-icons-phone.png` });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+  }
   await page.getByRole("button", { name: "Comments", exact: true }).click();
   await expect(panel).toHaveCount(0);
   await expect(page.locator("#page-comments")).toHaveAttribute("open", "");
@@ -472,6 +487,52 @@ try {
       ]);
     }
   }
+  // A direct attachment with the same bytes as a named source is a separate
+  // fixed input. It must be discoverable without inventing revision history.
+  await panel.getByRole("button", { name: "Close sources panel" }).click();
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await edit([
+    {
+      op: "insert_node",
+      node: {
+        type: "dataframe",
+        attrs: {
+          title: "Attached results",
+          asset_id: asset,
+          media_type: "application/vnd.apache.parquet",
+        },
+      },
+    },
+    {
+      op: "insert_node",
+      node: {
+        type: "dataframe",
+        attrs: {
+          title: "Alternate results",
+          asset_id: asset,
+          media_type: "application/vnd.apache.parquet",
+        },
+      },
+    },
+  ]);
+  await openSources();
+  await panel.getByRole("textbox", { name: "Find a source" }).fill("Alternate results");
+  const attachment = panel.getByRole("button", { name: /Attached results Parquet/ });
+  await expect(attachment).toContainText("Attached file · 2 connections");
+  await attachment.click();
+  await expect(panel.getByRole("button", { name: "Revisions", exact: true })).toHaveCount(0);
+  await expect(panel).not.toContainText("Follows latest");
+  await panel.getByRole("button", { name: "Expand sources" }).click();
+  await expect(panel.locator(".source-preview .sift-root")).toBeVisible();
+  await expect(panel.locator(".source-preview")).toContainText("Platform");
+  await page.screenshot({ path: `${output}/attached-table-wide.png` });
+  await panel.getByRole("button", { name: "Narrow sources" }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(panel).toContainText("Open a connection below");
+  await page.screenshot({ path: `${output}/attached-table-phone.png` });
+  await panel.getByRole("button", { name: /Attached results Table Attached file/ }).click();
+  await expect(panel).toHaveCount(0);
+  await expect(page.locator(".wordgard-dataframe-table.source-revealed")).toBeFocused();
   assert.deepEqual(errors, []);
   Object.assign(report, { pageId, url: `${origin}/p/${pageId}`, passed: true });
   console.log(`Sources panel passed. ${origin}/p/${pageId}`);

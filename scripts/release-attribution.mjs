@@ -308,10 +308,11 @@ export function collectMsvcRuntime({ target }, env = process.env, run = execFile
   const vsProduct = new RegExp(`Visual Studio[^]*?(?:${edition === "BuildTools" ? "Enterprise|Professional|Community" : edition})[^]*?${year}`, "i");
   // Reviewed toolset families, not runner patch releases. The 2026 terms
   // explicitly cover revisions/updates unless different terms accompany them.
+  // Reviewed GA VS2026 families: 14.51 and 14.52 (18.12.0 ARM64 runner).
   let vsFallback;
   if (["Enterprise", "Professional"].includes(edition)) {
     if (year === "2022" && /^17\.14\./.test(installation.installationVersion) && /^14\.44\./.test(version)) vsFallback = "vs2022";
-    if (year === "2026" && /^18\.\d+\.\d+(?:\.\d+)?$/.test(installation.installationVersion) && /^14\.51\./.test(version)) vsFallback = "vs2026";
+    if (year === "2026" && /^18\.\d+\.\d+(?:\.\d+)?$/.test(installation.installationVersion) && /^14\.(?:51|52)\./.test(version)) vsFallback = "vs2026";
   }
    const vsTerms = terms(`Visual Studio ${year} ${installation.productId}`, env.NTERACT_MSVC_LICENSE_FILE, [join(studio, "License.txt"), join(studio, "Common7/IDE/License.txt"), ...vsLicenseFiles], vsProduct, vsFallback);
   let sdkFallback;
