@@ -1106,8 +1106,24 @@ works locally, where celld runs without a tunnel, and fails only through the
 edge ([Gateway routes and the allowlist](#gateway-routes-and-the-allowlist)).
 Page10 serves this route set on its own hostname and listener. Pages serves
 the same set on `pages.runtimed.run` and `127.0.0.1:9481`. Each publisher
-migrates only from an installation its own target's earlier release sealed, and
-refuses another target's installation receipts.
+migrates only from an installation whose config it generates for its own
+target, and refuses another target's installation receipts.
+
+The ingress is built from the route registry (`ROUTE_REGISTRY` in
+[routes.mjs](scripts/deployment/routes.mjs)): fixed paths and named route
+groups, each enabled by the target's profile. A group is strippable unless it
+is marked `settled`. On every publish, the publisher generates the config for
+each combination of the target's strippable groups (present or absent) and
+recognizes the installed `tunnel-installation.json` only if every config hash
+it names is one of those, every unit hash is the legacy unit's or the slot
+units', and the receipt re-serializes byte for byte. It then migrates straight
+to the new config from the config on disk, and a failed start rolls back to
+exactly those bytes. A hand-edited config or receipt is refused. So a new route
+group needs no migration code: an installation without it is one of the
+generated combinations. Changing a group's path string does: keep the old one
+in the group's `earlier` list, or configs sealed with it stop matching. Mark a
+group `settled` once every installation still in service has it; the publisher
+refuses more than 2^16 combinations.
 
 Every target admits the viewer's content-hashed chunks, `/chunks/` followed by
 eight base32 characters and `.js`. `build-receipt.json` maps each chunk to the
@@ -1132,9 +1148,9 @@ since the build. The gate workflow's `release` job builds from a clean
 checkout, stages the bundle this way, and uploads it as the `pages-release`
 artifact.
 
-Page10 and Pages admit `sift-<hash>.wasm` through their own route group. Each publisher migrates only from its config without that
-group, so the first release with Sift tables hands off that target's connector
-once; later releases are no-ops.
+Page10 and Pages admit `sift-<hash>.wasm` through their own route group, so
+the first release with Sift tables hands off that target's connector once;
+later releases are no-ops.
 
 Every target admits Project links: `/project/<id>` and the older `/s/<id>`, where the
 ID is `prj_` or `sp_` followed by a lowercase v4 UUID, with an optional
@@ -1153,9 +1169,7 @@ Page10, Pages and Pages2 admit the account routes (`accountPaths` in
 that group, by the same handoff as any route change: the next publish rewrites
 `tunnel.yml` with the group added, starts the idle slot, waits for `/ready`,
 stops the old slot and seals the new receipt. Units and every other route stay
-byte-identical. Every older predecessor still migrates, straight to the new
-config. A pending receipt from an interrupted publish before this release is
-not recognized; the publisher stops and asks for inspection.
+byte-identical.
 
 Page10, Pages and Pages2 also admit link previews, card images and Project
 assets (`linkPreviewPaths`, `cardImagePaths` and `projectAssetPaths` in
@@ -1190,11 +1204,10 @@ IDs are lowercase v4 UUIDs, as in every other group. Until a target publishes
 these routes, the edge refuses them: hover cards on Page links show "Couldn't
 load a preview" and keep retrying, the library grid never shows a card image,
 and the owner's tab never uploads one. Each publisher migrates from the
-account-route config it sealed, by the same handoff as any route change; units
-and every other route stay byte-identical, and every older predecessor still
-migrates straight to the new config. A pending receipt from an interrupted
-account-route publish is not recognized: finish that publish from its own
-stage, then publish this one.
+config it sealed, by the same handoff as any route change; units and every
+other route stay byte-identical. A pending receipt an earlier publish left
+toward another generated config migrates from whichever of its two configs is
+on disk, and a failed start restores that receipt.
 
 The OIDC client must allow `https://<hostname>/oidc` as a redirect URI before
 sign-in works on a new target. For Pages, add
