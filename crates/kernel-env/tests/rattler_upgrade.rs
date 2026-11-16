@@ -253,7 +253,10 @@ async fn legacy_lock_records_remain_readable() {
 
 #[tokio::test]
 async fn channel_review_requires_consent_before_fetching_and_can_finish_offline() {
-    use kernel_env::channel_review::{discover_channel_review, DiscoveryLimits};
+    use kernel_env::channel_review::{
+        authorization::{ApprovalScope, ChannelConsentSession, ReviewFence},
+        discover_channel_review, DiscoveryLimits,
+    };
     use rattler_repodata_gateway::{
         fetch::CacheAction, ChannelConfig as GatewayConfig, Gateway, SourceConfig,
     };
@@ -317,10 +320,19 @@ async fn channel_review_requires_consent_before_fetching_and_can_finish_offline(
         server.requests.lock().unwrap().is_empty(),
         "offline cache miss must not contact the server"
     );
+    let fence = ReviewFence {
+        owner: "fixture-owner".into(),
+        dependency_revision: "fixture-revision".into(),
+        environment: "fixture-prefix".into(),
+        generation: 1,
+    };
+    let mut consent =
+        ChannelConsentSession::new(fence.clone(), vec![declared.base_url.to_string()], true);
+    let request = consent.begin_discovery(&fence).unwrap();
     let first = discover_channel_review(
         vec![declared.clone()],
         vec![Subdir::NoArch],
-        vec![],
+        request.approved_metadata_channels().to_vec(),
         &offline,
         Some(&network),
         DiscoveryLimits::default(),
@@ -340,10 +352,16 @@ async fn channel_review_requires_consent_before_fetching_and_can_finish_offline(
             .any(|path| path.starts_with("/related/") || path.starts_with("/transitive/")),
         "reviewing a URL must not contact it before consent"
     );
+    consent.discovered(&fence, request, first).unwrap();
+    assert!(consent.take_authorization(&fence).is_err());
+    let review = consent.pending_review().unwrap().clone();
+    assert_eq!(review.scope, ApprovalScope::Metadata);
+    consent.approve(&fence, &review.review_id).unwrap();
+    let request = consent.begin_discovery(&fence).unwrap();
     let second = discover_channel_review(
         vec![declared.clone()],
         vec![Subdir::NoArch],
-        vec![related.clone()],
+        request.approved_metadata_channels().to_vec(),
         &offline,
         Some(&network),
         DiscoveryLimits::default(),
@@ -362,7 +380,13 @@ async fn channel_review_requires_consent_before_fetching_and_can_finish_offline(
         .any(|path| path.starts_with("/transitive/")));
     // Approval enables metadata reads, not an installer. The complete graph
     // carries exactly the effective order the owner will later authorize.
-    let approved = vec![related.clone(), transitive.clone()];
+    consent.discovered(&fence, request, second).unwrap();
+    let review = consent.pending_review().unwrap().clone();
+    consent.approve(&fence, &review.review_id).unwrap();
+    assert!(consent.take_authorization(&fence).is_err());
+    let request = consent.begin_discovery(&fence).unwrap();
+    let approved = request.approved_metadata_channels().to_vec();
+    assert_eq!(approved, vec![related.clone(), transitive.clone()]);
     let final_review = discover_channel_review(
         vec![declared.clone()],
         vec![Subdir::NoArch],
@@ -378,6 +402,17 @@ async fn channel_review_requires_consent_before_fetching_and_can_finish_offline(
         final_review.review().effective_channels,
         [transitive, related, declared.base_url.to_string()]
     );
+    let expected = final_review.review().effective_channels.clone();
+    consent
+        .discovered(&fence, request, final_review.clone())
+        .unwrap();
+    let review = consent.pending_review().unwrap().clone();
+    assert_eq!(review.scope, ApprovalScope::Install);
+    assert!(consent.take_authorization(&fence).is_err());
+    consent.approve(&fence, &review.review_id).unwrap();
+    let plan = consent.take_authorization(&fence).unwrap();
+    assert_eq!(plan.into_channels(&fence).unwrap(), expected);
+    assert!(consent.take_authorization(&fence).is_err());
     let all_subdirs = vec![kernel_env::conda_solve_platform().unwrap(), Subdir::NoArch];
     let with_absent_subdir = discover_channel_review(
         vec![declared.clone()],

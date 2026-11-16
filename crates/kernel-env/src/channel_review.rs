@@ -5,6 +5,8 @@
 //! fence it to its dependency revision, and pass that exact list to a solver
 //! with automatic channel discovery disabled.
 
+pub mod authorization;
+
 use std::collections::{BTreeSet, VecDeque};
 
 use anyhow::{anyhow, bail, Result};
