@@ -6,6 +6,11 @@ description = "Workspace and dev mode utilities for Runt"
 repository.workspace = true
 license.workspace = true
 
+[features]
+default = ["launch-services"]
+# macOS file associations are unnecessary for build tools such as xtask.
+launch-services = ["dep:core-foundation"]
+
 [dependencies]
 dirs = { workspace = true }
 hex = { workspace = true }
@@ -14,7 +19,7 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-core-foundation = "0.10"
+core-foundation = { version = "0.10", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
