@@ -7112,6 +7112,202 @@ async fn test_format_notebook_cells_skips_unknown_runtime() {
 }
 
 #[tokio::test]
+async fn kernelspec_formatter_preserves_foreign_source_on_execute_and_save() {
+    let daemon_tmp = tempfile::TempDir::new().unwrap();
+    let daemon = crate::daemon::Daemon::new_for_test(test_daemon_config(&daemon_tmp)).unwrap();
+    // Valid Python too: choosing Ruff for this R assignment silently changes its meaning.
+    assert_eq!(
+        format_source("a<-1", "python").await.as_deref(),
+        Some("a < -1")
+    );
+    for language in ["R", "Julia", "Python"] {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, path) = test_room_with_path(&tmp, "language.ipynb");
+        let room = Arc::new(room);
+        let mut metadata = build_new_notebook_metadata(
+            "python",
+            "captured",
+            crate::settings_doc::PythonEnvType::Uv,
+            None,
+            &[],
+        );
+        let spec = metadata.kernelspec.as_mut().unwrap();
+        spec.name = "python-named-wrapper".into();
+        spec.language = Some(language.into());
+        assert!(metadata.runt.uv.is_some());
+        assert_eq!(metadata.language_info.as_ref().unwrap().name, "python");
+        {
+            let mut doc = room.doc.write().await;
+            doc.set_metadata_snapshot(&metadata).unwrap();
+            doc.add_cell(0, "cell", "code").unwrap();
+            doc.update_source("cell", "a<-1").unwrap();
+        }
+        commit_test_room_doc(&room).await;
+        // No live kernel on save: imported kernelspec.language is authoritative.
+        let response = crate::requests::save_notebook::handle(&room, &daemon, true, None).await;
+        assert!(
+            matches!(response, NotebookResponse::NotebookSaved { .. }),
+            "{response:?}"
+        );
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let expected = if language == "Python" {
+            "a < -1"
+        } else {
+            "a<-1"
+        };
+        assert_eq!(
+            notebook_text_mime(saved["cells"][0].get("source")).as_deref(),
+            Some(expected)
+        );
+
+        // The runtime projection drives execution even when saved intent disagrees.
+        metadata.kernelspec.as_mut().unwrap().language =
+            Some(if language == "Python" { "R" } else { "python" }.into());
+        {
+            let mut doc = room.doc.write().await;
+            doc.set_metadata_snapshot(&metadata).unwrap();
+            doc.update_source("cell", "a<-1").unwrap();
+        }
+        commit_test_room_doc(&room).await;
+        room.state
+            .with_doc(|sd| {
+                sd.set_kernel_info("actual", language, "kernelspec")?;
+                sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+            })
+            .unwrap();
+        room.local_environment_selection
+            .set(
+                Some(notebook_protocol::protocol::LocalCondaEnvironment {
+                    id: "staged".into(),
+                    name: "Staged Python".into(),
+                    prefix: "/staged".into(),
+                    python_path: "/staged/python".into(),
+                    python_version: None,
+                }),
+                0,
+            )
+            .unwrap();
+        {
+            let doc = room.doc.read().await;
+            assert_eq!(
+                room_formatter(&room, &doc),
+                if language == "Python" {
+                    Some("python")
+                } else {
+                    None
+                }
+            );
+        }
+        let (tx, _rx) = mpsc::channel(1);
+        *room.runtime_agent_request_tx.lock().await = Some(tx);
+        let response = crate::requests::execute_cell::handle_with_submitter(
+            &room,
+            "cell".into(),
+            None,
+            false,
+            None,
+        )
+        .await;
+        assert!(
+            matches!(response, NotebookResponse::CellQueued { .. }),
+            "{response:?}"
+        );
+        if language == "Python" {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    if room.doc.read().await.get_cell("cell").unwrap().source == expected {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("Ruff formats for the applied Python kernel");
+        }
+        assert_eq!(
+            room.doc.read().await.get_cell("cell").unwrap().source,
+            expected
+        );
+    }
+}
+
+#[tokio::test]
+async fn kernelspec_formatter_discards_pending_python_after_language_switch() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "switch.ipynb");
+    let mut metadata = build_new_notebook_metadata(
+        "python",
+        "captured",
+        crate::settings_doc::PythonEnvType::Uv,
+        None,
+        &[],
+    );
+    metadata.language_info.as_mut().unwrap().version = Some("3.12".into());
+    metadata
+        .language_info
+        .as_mut()
+        .unwrap()
+        .extras
+        .insert("pygments_lexer".into(), "python3".into());
+    let heads = {
+        let mut doc = room.doc.write().await;
+        doc.set_metadata_snapshot(&metadata).unwrap();
+        doc.add_cell(0, "cell", "code").unwrap();
+        doc.update_source("cell", "a<-1").unwrap();
+        doc.get_heads()
+    };
+    commit_test_room_doc(&room).await;
+    let result = format_source("a<-1", "python").await.unwrap();
+    room.state
+        .with_doc(|sd| {
+            sd.set_kernel_info("ark", "R", "kernelspec")?;
+            sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+        })
+        .unwrap();
+    let pending = [("cell".to_owned(), result)];
+    // No NotebookDoc changes yet: a heads-only fence would accept this result.
+    assert_eq!(
+        apply_formatted_sources(&room, "python", &heads, &pending)
+            .await
+            .unwrap(),
+        0
+    );
+    room.state
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Shutdown))
+        .unwrap();
+    {
+        let mut doc = room.doc.write().await;
+        crate::kernelspec::persist(
+            &room,
+            &mut doc,
+            Some(&notebook_protocol::protocol::InstalledKernelspec {
+                name: "ark".into(),
+                display_name: "Ark".into(),
+                language: "R".into(),
+            }),
+            "R",
+        )
+        .unwrap();
+        let updated = doc.get_metadata_snapshot().unwrap();
+        let info = updated.language_info.unwrap();
+        assert_eq!(info.name, "R");
+        assert!(info.version.is_none() && info.extras.is_empty());
+        assert_eq!(updated.runt.uv, metadata.runt.uv);
+    }
+    assert_eq!(
+        apply_formatted_sources(&room, "python", &heads, &pending)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        room.doc.read().await.get_cell("cell").unwrap().source,
+        "a<-1"
+    );
+}
+
+#[tokio::test]
 async fn test_save_notebook_skips_format_when_disable_auto_format_enabled() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, notebook_path) = test_room_with_path(&tmp, "disable-format.ipynb");
