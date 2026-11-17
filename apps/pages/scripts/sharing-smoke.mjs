@@ -249,7 +249,7 @@ try {
   await leaveUnedited(viewer);
   await leaveUnedited(owner);
   {
-    // An owner edit in a tab that dies before its receipt lands. Only that
+    // An owner edit in a tab that ends before its receipt lands. Only that
     // tab holds the Page, so no other session acknowledges the edit first.
     await owner.goto(`${origin}/`);
     const { tab, receipts } = await heldTab(owner);
@@ -259,13 +259,23 @@ try {
     const before = receipts();
     await content(tab).focus();
     await tab.keyboard.press("ControlOrMeta+End");
-    await tab.keyboard.insertText(" Typed before a crash.");
+    await tab.keyboard.insertText(" Typed before the tab ended.");
     await expect.poll(receipts).toBeGreaterThan(before);
+    // The mark is stored at edit time, before the receipt goes out.
     await expect.poll(() => storedPending(tab)).toEqual([true]);
-    const cdp = await tab.context().newCDPSession(tab);
-    const crashed = tab.waitForEvent("crash");
-    void cdp.send("Page.crash").catch(() => {});
-    await crashed;
+    // End the tab with its receipt still out: crash the renderer, as
+    // Playwright's own Chromium tests do. Where no crash event arrives,
+    // close the tab without its unload handlers.
+    const crashed = tab
+      .waitForEvent("crash", { timeout: 10000 })
+      .then(() => true)
+      .catch(() => false);
+    void tab.goto("chrome://crash").catch(() => {});
+    report.tabEnded = (await crashed) ? "crashed" : "closed";
+    if (report.tabEnded === "closed") await tab.close({ runBeforeUnload: false });
+    // The held route belongs to that tab alone; drop it so nothing it held
+    // outlives the tab.
+    await tab.unrouteAll({ behavior: "ignoreErrors" }).catch(() => {});
     const next = await owner.context().newPage();
     next.on("pageerror", (error) => report.errors.push(error.message));
     await next.goto(`${origin}/`);
@@ -274,7 +284,7 @@ try {
     await expect(libraryRows(next)).toHaveCount(1, { timeout: 30000 });
     // Reopened, the edit reaches the host and the copy is clean again.
     await next.goto(`${origin}/p/${pageId}`);
-    await expect(content(next)).toContainText("Typed before a crash.");
+    await expect(content(next)).toContainText("Typed before the tab ended.");
     await expect(next.getByRole("status").filter({ hasText: /^Saved$/ })).toBeVisible({
       timeout: 30000,
     });
@@ -282,11 +292,11 @@ try {
     await next.close();
     await tab.close().catch(() => {});
     await owner.goto(`${origin}/p/${pageId}`);
-    await expect(content(owner)).toContainText("Typed before a crash.");
-    await expect(content(viewer)).toContainText("Typed before a crash.");
+    await expect(content(owner)).toContainText("Typed before the tab ended.");
+    await expect(content(viewer)).toContainText("Typed before the tab ended.");
   }
   report.completed.push(
-    "Unedited copies never pending; an edit in a crashed tab stays pending until reopened",
+    "Unedited copies never pending; an edit stays marked pending past a tab that ends before its receipt, until reopened",
   );
   const denied = {
     action: "set_role",
