@@ -474,7 +474,10 @@ test("the chart comment button calls its host only while comment access is allow
     await drawn(element);
     const button = element.querySelector('[aria-label="Comment on chart"]');
     assert.equal(button.hidden, false);
-    assert.equal(button.nextElementSibling.getAttribute("aria-label"), "Maximize chart");
+    assert.equal(
+      button.parentElement.nextElementSibling.getAttribute("aria-label"),
+      "Maximize chart",
+    );
     button.click();
     assert.equal(opened, 1);
     allowed = false;
@@ -504,6 +507,55 @@ test("comment access changes refresh the header of an untitled failed chart", ()
     button.dispatchEvent(new window.Event("pages-comment-access"));
     assert.equal(button.hidden, true);
     assert.equal(header.hidden, true);
+    chart.destroy();
+  }));
+
+test("adding a chart comment stays separate from opening counted threads", () =>
+  withWindow(async (window) => {
+    const { element } = container(window);
+    let count = 0,
+      added = 0,
+      shown = 0,
+      allowed = true;
+    const chart = mount(element, {
+      spec: stacked,
+      datasets: { calls },
+      comments: {
+        allowed: () => allowed,
+        count: () => count,
+        open: () => added++,
+        show: () => shown++,
+      },
+    });
+    await drawn(element);
+    const plot = element.querySelector(".pages-chart-canvas svg");
+    const add = element.querySelector("[data-chart-comment]");
+    const counter = element.querySelector("[data-chart-threads]");
+    for (count of [0, 1, 2, 1, 0]) {
+      add.dispatchEvent(new window.Event("pages-comment-access"));
+      assert.equal(add.getAttribute("aria-label"), "Comment on chart");
+      add.click();
+      assert.equal(counter.hidden, count === 0);
+      if (count) {
+        assert.equal(counter.textContent, String(count));
+        assert.equal(
+          counter.getAttribute("aria-label"),
+          `Show ${count} open comment ${count === 1 ? "thread" : "threads"} on chart`,
+        );
+        counter.click();
+      }
+      assert.equal(element.querySelector(".pages-chart-canvas svg"), plot);
+    }
+    assert.equal(added, 5, "adding remains available with existing threads");
+    assert.equal(shown, 3);
+    allowed = false;
+    add.dispatchEvent(new window.Event("pages-comment-access"));
+    assert.equal(add.hidden, true);
+    assert.equal(counter.hidden, true);
+    add.click();
+    counter.click();
+    assert.equal(added, 5);
+    assert.equal(shown, 3);
     chart.destroy();
   }));
 

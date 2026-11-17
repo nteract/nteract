@@ -38,6 +38,23 @@ const observe = (Observer, target, options) =>
  * block when the passage is not rendered. */
 function anchorFor(container, blockId) {
   const marks = container?.querySelectorAll("[data-comment-draft]") ?? [];
+  // An atomic chart spans the entire plot. Its add-comment control is the
+  // useful visual anchor, including when a saved draft is reopened.
+  for (const mark of marks) {
+    if (marks.length !== 1 || !mark.matches(".wordgard-view-node")) continue;
+    const control = mark.querySelector("[data-chart-comment]");
+    if (control && !control.hidden) {
+      const rect = control.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0)
+        return {
+          left: rect.left,
+          right: rect.right,
+          top: rect.top,
+          bottom: rect.bottom,
+          align: "end",
+        };
+    }
+  }
   const passage = passageRect([...marks].flatMap((mark) => [...mark.getClientRects()]));
   if (passage) return passage;
   return (
@@ -114,6 +131,7 @@ function PopoverSurface({ composer, session, containerRef, state, current, body 
         (anchor &&
           commentPopoverPosition({
             anchor,
+            align: anchor.align,
             width: box.width,
             height: box.height,
             viewport: visibleViewport(),

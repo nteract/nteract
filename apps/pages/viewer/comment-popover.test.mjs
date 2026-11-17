@@ -22,6 +22,15 @@ test("it flips above when the space below is too short", () => {
   });
 });
 
+test("a chart control opens downward with the composer's right edge aligned to the button", () => {
+  assert.deepEqual(place({ left: 1040, top: 200, right: 1072, bottom: 232 }, { align: "end" }), {
+    left: 692,
+    top: 240,
+    placement: "below",
+  });
+  assert.equal(place({ left: 30, top: 200, right: 62, bottom: 232 }, { align: "end" }).left, 12);
+});
+
 test("when neither side fits it takes the roomier side and stays inside the viewport", () => {
   const tall = { height: 700 };
   const nearTop = place({ left: 300, top: 120, right: 420, bottom: 140 }, tall);

@@ -29,7 +29,15 @@ export function passageRect(rects) {
  * room. Either way it is clamped inside the viewport, so a passage scrolled
  * out of view leaves the popover pinned to the nearest edge.
  */
-export function commentPopoverPosition({ anchor, width, height, viewport, margin = 12, gap = 8 }) {
+export function commentPopoverPosition({
+  anchor,
+  width,
+  height,
+  viewport,
+  margin = 12,
+  gap = 8,
+  align = "start",
+}) {
   const { left, top, right, bottom } = viewport ?? {};
   if (
     !anchor ||
@@ -47,7 +55,11 @@ export function commentPopoverPosition({ anchor, width, height, viewport, margin
   const clamp = (value, low, high) => Math.max(low, Math.min(value, high));
   return {
     left: Math.round(
-      clamp(anchor.left, left + margin, Math.max(left + margin, right - margin - width)),
+      clamp(
+        align === "end" ? anchor.right - width : anchor.left,
+        left + margin,
+        Math.max(left + margin, right - margin - width),
+      ),
     ),
     top: Math.round(
       clamp(

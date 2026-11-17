@@ -124,7 +124,12 @@ export function viewLifecycle({
               sources,
               sourcesAnswer$,
               ...(comments && {
-                comments: { allowed: comments.allowed, open: () => comments.open(frame.dom) },
+                comments: {
+                  allowed: comments.allowed,
+                  count: () => comments.count?.(frame.dom) ?? 0,
+                  show: () => comments.show?.(frame.dom),
+                  open: () => comments.open(frame.dom),
+                },
               }),
             });
           } catch (error) {

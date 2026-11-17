@@ -955,6 +955,46 @@
 .wordgard-diagram-actions .wordgard-diagram-action[hidden] {
   display: none;
 }
+.chart-discussion {
+  display: flex;
+  align-items: center;
+  border-radius: 999px;
+  background: var(--background);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.chart-discussion[hidden] {
+  display: none;
+}
+.wordgard-diagram-actions .chart-discussion > .wordgard-diagram-action {
+  min-width: 30px;
+  width: auto;
+  padding-inline: 6px 8px;
+  justify-content: flex-start;
+  border: 0;
+  border-radius: 0 999px 999px 0;
+  color: var(--muted-foreground);
+}
+.wordgard-diagram-actions .chart-discussion > .chart-comment-count {
+  padding-inline: 10px 6px;
+  justify-content: flex-end;
+  border-radius: 999px 0 0 999px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.chart-discussion:has([data-chart-threads][hidden]) {
+  box-shadow: none;
+}
+.wordgard-diagram-actions
+  .chart-discussion:has([data-chart-threads][hidden])
+  > [data-chart-comment] {
+  min-width: 32px;
+  padding-inline: 8px;
+  justify-content: center;
+  border-radius: 999px;
+}
+.chart-discussion > .wordgard-diagram-action:focus-visible {
+  outline-offset: -2px;
+}
 .wordgard-diagram-action svg {
   width: 16px;
   height: 16px;
@@ -963,6 +1003,10 @@
 .wordgard-diagram-actions .wordgard-diagram-action:hover:not(:disabled) {
   background: var(--accent);
   color: var(--accent-foreground);
+}
+.wordgard-diagram-actions .chart-discussion > .wordgard-diagram-action:is(:hover, :focus-visible) {
+  background: var(--accent);
+  color: var(--foreground);
 }
 .wordgard-diagram-action:focus-visible {
   outline: 2px solid var(--ring);
@@ -1133,6 +1177,12 @@
     width: 44px;
     height: 44px;
     min-height: 44px;
+  }
+  .wordgard-diagram-actions .chart-discussion > .wordgard-diagram-action,
+  .wordgard-diagram-actions
+    .chart-discussion:has([data-chart-threads][hidden])
+    > [data-chart-comment] {
+    min-width: 44px;
   }
   .diagram-viewer-bar {
     gap: 4px;
