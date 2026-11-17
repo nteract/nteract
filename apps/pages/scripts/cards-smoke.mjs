@@ -5,6 +5,12 @@
 // placeholder icon. A Page shared with alice shows its card for her, and the
 // owner removing her makes page_cards answer null on her very next call.
 //
+// The library device cache (viewer/library-device-cache.mjs): with every
+// tool call held, a reload paints the rows and their previews from the
+// device; releasing them moves no card and keeps layout shift under 0.1, at
+// a wide and a narrow width. A second account signed in on the same browser
+// never draws the first one's rows, and signing out empties the cache.
+//
 // The first content change after a quiet minute flushes at once, so no edit
 // here waits for a window to end.
 import assert from "node:assert/strict";
@@ -156,6 +162,72 @@ const card = (page, title) =>
     .locator(".index-card-link")
     .filter({ has: page.locator(`.index-card-title[title="${title}"]`) });
 
+/** The library device cache's keys and records in `page`'s browser
+ * (viewer/library-device-cache.mjs). */
+const deviceRecords = (page) =>
+  page.evaluate(async () => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("pages-library-cache");
+      request.onupgradeneeded = () => {
+        if (!request.result.objectStoreNames.contains("bytes"))
+          request.result.createObjectStore("bytes");
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    try {
+      if (!db.objectStoreNames.contains("bytes")) return {};
+      const store = db.transaction("bytes").objectStore("bytes");
+      const keys = await new Promise((resolve) => {
+        const request = store.getAllKeys();
+        request.onsuccess = () => resolve(request.result);
+      });
+      const values = await new Promise((resolve) => {
+        const request = store.getAll();
+        request.onsuccess = () => resolve(request.result);
+      });
+      return Object.fromEntries(
+        keys.map((key, index) => [key, JSON.parse(new TextDecoder().decode(values[index]))]),
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+/** Before any script runs: total layout shift, and every library title the
+ * page has drawn, kept across this document's life. */
+const LAYOUT_PROBE = () => {
+  const probe = (window.__libraryProbe = { cls: 0, titles: new Set() });
+  new PerformanceObserver((list) => {
+    for (const entry of list.getEntries()) if (!entry.hadRecentInput) probe.cls += entry.value;
+  }).observe({ type: "layout-shift", buffered: true });
+  const collect = () => {
+    for (const title of document.querySelectorAll(".index-card-title, .index-row-link"))
+      if (title.textContent.trim()) probe.titles.add(title.textContent.trim());
+  };
+  new MutationObserver(collect).observe(document, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+  });
+};
+const probe = (page) =>
+  page.evaluate(() => ({
+    cls: window.__libraryProbe.cls,
+    titles: [...window.__libraryProbe.titles],
+  }));
+/** Each card's box, by title. */
+const cardBoxes = (page) =>
+  page.evaluate(() =>
+    Object.fromEntries(
+      [...document.querySelectorAll(".index-card")].map((element) => {
+        const box = element.getBoundingClientRect();
+        const title = element.querySelector(".index-card-title")?.getAttribute("title") ?? "";
+        return [title, [Math.round(box.x), Math.round(box.y)]];
+      }),
+    ),
+  );
+
 let owner, alice, phone;
 try {
   owner = await signIn("dev@localhost");
@@ -251,6 +323,106 @@ try {
   });
   await shoot(phone, "cards-phone.png");
   complete("Cards render on a phone-sized screen");
+
+  // The library paints from this browser's device cache before the server
+  // answers, and the answer moves nothing. The phone holds a populated cache
+  // from the grid above; wait until its cards are kept too.
+  for (const [label, page] of [
+    ["wide", owner],
+    ["narrow", phone],
+  ]) {
+    await page.goto(`${origin}/?grid=1`);
+    for (const spec of created)
+      await expect(card(page, spec.title).locator(".page-card-preview")).toBeVisible({
+        timeout: 30000,
+      });
+    const principal = (await api(page, "/api/auth/session")).body.identity.principal;
+    await expect
+      .poll(
+        async () =>
+          Object.keys(
+            Object.values(await deviceRecords(page)).find(
+              (record) => record.principal === principal,
+            )?.cards ?? {},
+          ).length,
+        { timeout: 30000 },
+      )
+      .toBe(created.length);
+    await page.addInitScript(LAYOUT_PROBE);
+    // Hold every tool call: nothing the server lists reaches the page.
+    const held = [];
+    let answered = 0;
+    page.on("response", (response) => {
+      if (response.url().endsWith("/api/tools")) answered++;
+    });
+    let released = false;
+    await page.route("**/api/tools", (route) => (released ? route.continue() : held.push(route)));
+    await page.reload();
+    for (const spec of created) {
+      await expect(card(page, spec.title).locator(".page-card-preview")).toBeVisible({
+        timeout: 30000,
+      });
+      await expect(
+        card(page, spec.title).locator(".page-card-preview").locator(spec.expect.selector).first(),
+      ).toContainText(spec.expect.selector === "h1" ? "Goals for the release" : spec.expect.text);
+    }
+    assert.ok(held.length > 0, "the library asked the server");
+    assert.equal(answered, 0, "rows and previews painted before any tools response");
+    const before = await cardBoxes(page);
+    await shoot(page, `cards-device-${label}.png`);
+    // The held calls go on now, and later ones pass straight through.
+    released = true;
+    for (const route of held.splice(0)) await route.continue();
+    await expect.poll(() => answered, { timeout: 30000 }).toBeGreaterThan(0);
+    // Let the listing, the cards and their images land.
+    await page.waitForTimeout(2500);
+    assert.deepEqual(await cardBoxes(page), before, "no card moved when the server answered");
+    const { cls } = await probe(page);
+    assert.ok(cls < 0.1, `layout shift ${cls} stays under 0.1 (${label})`);
+    report[`device_paint_cls_${label}`] = cls;
+  }
+  complete("A reload paints rows and previews from the device, and the answer moves nothing");
+
+  // Another account in the same browser profile never sees the first one's
+  // rows. Signing in as alice replaces the cookie without a sign-out, so the
+  // owner's record stays on the device: only its key keeps it from her. She has no Pages yet.
+  {
+    const ownerPrincipal = (await api(owner, "/api/auth/session")).body.identity.principal;
+    const ownerTitles = created.map((spec) => spec.title);
+    const switched = await owner.context().request.get(`${origin}/api/auth/login`, {
+      maxRedirects: 0,
+    });
+    const authorize = new URL(switched.headers().location);
+    authorize.searchParams.set("login_hint", "alice@localhost");
+    await owner.goto(authorize.href, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await expect(owner.locator(".library-view")).toBeVisible({ timeout: 60000 });
+    const landed = (await probe(owner)).titles;
+    await owner.goto(`${origin}/?grid=1`);
+    await expect(owner.locator(".library-empty")).toBeVisible({ timeout: 30000 });
+    const session = (await api(owner, "/api/auth/session")).body.identity.principal;
+    assert.notEqual(session, ownerPrincipal);
+    const seen = [...landed, ...(await probe(owner)).titles];
+    assert.deepEqual(
+      seen.filter((title) => ownerTitles.includes(title)),
+      [],
+      "nothing of the first account's rows was ever drawn",
+    );
+    const records = await deviceRecords(owner);
+    assert.ok(
+      Object.values(records).some((record) => record.principal === ownerPrincipal),
+      "the first account's record is still on the device, unread",
+    );
+    assert.ok(!Object.values(records).some((record) => record.principal === session));
+    // Sign out through the app: every record goes.
+    await owner.locator("summary[aria-label=Account]").click();
+    await owner.getByRole("button", { name: "Sign out" }).click();
+    await owner.waitForURL(`${origin}/`, { timeout: 30000 });
+    await expect
+      .poll(async () => Object.keys(await deviceRecords(owner)), { timeout: 10000 })
+      .toEqual([]);
+  }
+  complete("A second account never sees the first one's rows, and sign-out empties the cache");
+  owner = await signIn("dev@localhost");
 
   // Share Launch plan with alice. She opens it once, which records it in her
   // library, then sees its card in her grid.
