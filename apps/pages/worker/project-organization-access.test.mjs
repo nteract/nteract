@@ -5,6 +5,7 @@ import { KILO_MEMBERSHIP_SECONDS } from "./kilo-config.mjs";
 import { resetMembershipCache } from "./kilo-membership.mjs";
 import { PROJECT_ACCESS_LEASE_MS } from "./project-access.mjs";
 import { OPENED_PROJECT_HINTS } from "./project-opened.mjs";
+import { PROJECT_READ_TTL_MS } from "./project-read-memo.mjs";
 import { world } from "./projects-fixture.mjs";
 
 const now = Math.floor(Date.now() / 1000) * 1000;
@@ -286,12 +287,17 @@ test("the Project leaves the member's list when the grant clears, the lease ends
   const w = await world(t, { kilo: { owner: [acme], member: [acme] } });
   const { project_id } = await w.createProject("Guild");
   const child = (await w.createPage({ title: "Child", project_id })).body;
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   let revision = 0;
   const open = async () => {
     assert.equal((await w.call("member", "get_project", { project_id })).status, 200);
     assert.deepEqual(await listed(w, "member"), [project_id]);
   };
   const gone = async (label) => {
+    // No message reaches the member's Catalog when an organization grant or
+    // lease ends, so its remembered answer can list the Project until it
+    // expires (project-read-memo.mjs).
+    t.mock.timers.tick(PROJECT_READ_TTL_MS);
     assert.deepEqual(await listed(w, "member"), [], label);
     assert.equal((await w.call("member", "get_project", { project_id })).status, 404, label);
     assert.equal(

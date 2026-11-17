@@ -4150,7 +4150,21 @@ the last child checked, even on a short page, so the caller can learn only that
 the parent has more than 100 children.
 `list_projects` takes candidates from `pages_catalog_spaces` and confirms each
 against the owner's `space/<id>` Catalog entry; cursors are sealed to the
-listing's filters. `read_page` breadcrumbs are computed in the gateway with one
+listing's filters. An account with member or opened hints instead reads every
+candidate Project's host with the caller's credentials. The Catalog keeps each
+successful answer in memory for 30 seconds, keyed by Project and by the
+credential's access basis (write permission and organization and email-domain
+evidence), and counts a reuse as `cat_space_memo`
+([project-read-memo.mjs](worker/project-read-memo.mjs)). A refusal, server
+error or thrown read is never kept. A Project's answers are dropped when this
+Catalog gets a discovery message adding or removing its hint, and when it
+handles `create_project`, `update_project`, `delete_project`, `get_project` or
+`manage_project_access` for it. So a member removed some other way, or a
+Project renamed by its owner, can keep its old list entry for up to 30 seconds;
+opening it is still checked by the Project. Invited Projects are read on every
+listing, since that read may claim the invitation. `list_projects` stays in the
+Catalog's queue: with the account index on, it writes the index's sync marks to
+the Catalog. `read_page` breadcrumbs are computed in the gateway with one
 call to the owner's Catalog, a host-only `/internal/location` route that answers
 ancestor IDs and the root's Project and nothing else. Each ancestor and the
 Project then answer with the caller's credentials, so the trail stops at the

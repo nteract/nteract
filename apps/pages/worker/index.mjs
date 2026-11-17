@@ -414,6 +414,7 @@ import { opensIndex } from "./account-index-machine.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
 import { CARDS_LANE, CARDS_LANE_HEADER, catalogLane } from "./catalog-lanes.mjs";
 import { locationScanMemo } from "./catalog-scan-memo.mjs";
+import { accessBasis, projectReads } from "./project-read-memo.mjs";
 import { boundedMap } from "./bounded-map.mjs";
 import { legibleEnv, overloadRetryAfterMs, withRepeatSafety } from "./host-busy.mjs";
 import { readTool } from "./tool-reads.mjs";
@@ -520,6 +521,26 @@ const spaceOperations = [
   "update_space",
   "delete_project",
 ];
+/** Catalog operations that change a Project or who reads it: get_space can
+ * claim an invitation. Each drops the Project's remembered list_projects
+ * answers (project-read-memo.mjs). */
+const PROJECT_CHANGES = new Set([
+  "get_space",
+  "manage_project_access",
+  "create_space",
+  "update_space",
+  "delete_project",
+]);
+/** The Project a create_space answer names, or undefined. Reads a copy. */
+async function createdProjectId(response) {
+  if (!(response instanceof Response) || !response.ok) return undefined;
+  try {
+    const body = await response.clone().json();
+    return body?.space_id;
+  } catch {
+    return undefined;
+  }
+}
 /** The Page limit this Catalog's own gateway last resolved (rememberPageLimit). */
 const PAGE_LIMIT_KEY = "host/page-limit";
 /** Catalog-owned Page lifecycle operations and the Page route each one uses. */
@@ -1991,6 +2012,9 @@ export class Catalog {
     /** The location scan, kept until a write changes a key it covers
      * (catalog-scan-memo.mjs). Every write reaches it through `storage`. */
     this.scans = locationScanMemo();
+    /** Project host answers for list_projects, kept for 30 seconds
+     * (project-read-memo.mjs). */
+    this.projectReads = projectReads();
   }
   /** Storage that keeps the `page/` and `trash/` key counts (catalog.mjs)
    * and reports every write to the scan memo. */
@@ -2103,6 +2127,20 @@ export class Catalog {
     } catch (error) {
       return errorResponse(error, "catalog-location");
     }
+  }
+  /** One of PROJECT_CHANGES, run as its own route runs it. */
+  async changeProject(request, identity, operation, args, limit) {
+    if (operation === "get_space") return await this.getSpace(request, args);
+    if (operation === "manage_project_access") {
+      requireSpaceIdArgument(args.space_id);
+      return this.env.PROJECTS.getByName(args.space_id).fetch(
+        forwarded(request, "/internal/space/access", args),
+      );
+    }
+    requireWrite(identity);
+    if (operation === "create_space") return await this.createSpace(request, identity, args, limit);
+    if (operation === "update_space") return await this.updateSpace(request, identity, args);
+    return await this.deleteSpace(request, identity, args);
   }
   async countEntries(prefix) {
     return countCapacity(this.storage, prefix, { current: (pageId) => this.pageLifecycle(pageId) });
@@ -2231,6 +2269,10 @@ export class Catalog {
           throw new HttpError(403, "Host only");
         const value = await readJson(request);
         requireSpaceIdArgument(value.space_id);
+        // A hint added or removed may change who reads the Project, so its
+        // remembered answers go. An opened-hint refresh, which the Project
+        // host sends on every organization-grant read, changes nothing.
+        if (value.opened !== true || value.remove === true) this.projectReads.evict(value.space_id);
         // An opened hint (project-opened.mjs) is written with storage
         // operations only: this route runs outside the queue, inside the
         // Project host's read, so it never awaits another host. A body that
@@ -2375,19 +2417,21 @@ export class Catalog {
       }
       if (body.operation === "page_cards") return await this.pageCards(request, identity, args);
       if (body.operation === "list_spaces") return await this.listSpaces(request, identity, args);
-      if (body.operation === "get_space") return await this.getSpace(request, args);
-      if (["get_project_access", "manage_project_access"].includes(body.operation)) {
+      if (body.operation === "get_project_access") {
         requireSpaceIdArgument(args.space_id);
         return this.env.PROJECTS.getByName(args.space_id).fetch(
           forwarded(request, "/internal/space/access", args),
         );
       }
+      if (PROJECT_CHANGES.has(body.operation)) {
+        // A change to a Project, or a read that can claim an invitation to
+        // it, drops its remembered list_projects answers before and after.
+        this.projectReads.evict(args.space_id);
+        const response = await this.changeProject(request, identity, body.operation, args, limit);
+        this.projectReads.evict(args.space_id ?? (await createdProjectId(response)));
+        return response;
+      }
       requireWrite(identity);
-      if (body.operation === "create_space")
-        return await this.createSpace(request, identity, args, limit);
-      if (body.operation === "update_space") return await this.updateSpace(request, identity, args);
-      if (body.operation === "delete_project")
-        return await this.deleteSpace(request, identity, args);
       if (body.operation === "move_page") return await this.movePage(identity, args);
       const lifecycle = lifecycleRoutes[body.operation];
       if (!["create_page", "register_page"].includes(body.operation) && !lifecycle)
@@ -4224,6 +4268,8 @@ export class Catalog {
     for (const spaceId of await timing.measure("invites", () =>
       invitedProjects(this.env, identity),
     )) {
+      // A read here may claim the invitation on the Project's side, so it
+      // runs on every listing and is never answered from memory.
       // An invitation is an untrusted candidate, not an existing membership.
       // Capacity conflicts or unavailable candidate hosts must not prevent
       // this account from listing unrelated Projects. The next listing retries.
@@ -4248,12 +4294,26 @@ export class Catalog {
         ...opened,
       ])
         if (!candidates.has(candidate.space_id)) candidates.set(candidate.space_id, candidate);
+      // Each candidate's answer is remembered for 30 seconds
+      // (project-read-memo.mjs); a reuse counts as `space_memo`. Only a 200
+      // answer is kept.
+      const basis = accessBasis(identity);
       const spaces = [];
       for (const candidate of candidates.values()) {
         if (candidate.pending || candidate.deletion) continue;
+        const kept = this.projectReads.lookup(candidate.space_id, basis, Date.now());
+        if (kept) {
+          timing.count("space_memo");
+          spaces.push(kept);
+          continue;
+        }
+        const generation = this.projectReads.begin(candidate.space_id);
         const response = await readSpace(candidate.space_id);
-        if (response.ok) spaces.push(await response.json());
-        else if (![403, 404, 409].includes(response.status))
+        if (response.ok) {
+          const space = await response.json();
+          this.projectReads.answered(candidate.space_id, generation, basis, space, Date.now());
+          spaces.push(space);
+        } else if (![403, 404, 409].includes(response.status))
           throw new HttpError(503, "Project access is temporarily unavailable");
       }
       const context = {
