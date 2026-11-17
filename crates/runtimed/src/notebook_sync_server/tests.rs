@@ -18060,6 +18060,185 @@ async fn watcher_retries_an_unapplied_revision_without_a_new_file_event() {
     let _ = shutdown.send(());
 }
 
+#[tokio::test(start_paused = true)]
+async fn sibling_file_events_do_not_postpone_a_watcher_retry() {
+    use notify_debouncer_mini::{DebouncedEvent, DebouncedEventKind};
+    let notebook = PathBuf::from("/notebooks/busy.ipynb");
+    let sibling = PathBuf::from("/notebooks/scratch.txt");
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+    let handled = Arc::new(std::sync::Mutex::new(Vec::<tokio::time::Instant>::new()));
+    let watcher = {
+        let handled = Arc::clone(&handled);
+        let notebook = notebook.clone();
+        tokio::spawn(async move {
+            run_watcher_loop(&notebook, &mut rx, &mut shutdown_rx, || {
+                let handled = Arc::clone(&handled);
+                async move {
+                    let mut handled = handled.lock().unwrap();
+                    handled.push(tokio::time::Instant::now());
+                    if handled.len() < 3 {
+                        WatcherOutcome::RetryLater
+                    } else {
+                        WatcherOutcome::Done
+                    }
+                }
+            })
+            .await;
+        })
+    };
+
+    tx.send(Ok(vec![DebouncedEvent::new(
+        notebook.clone(),
+        DebouncedEventKind::Any,
+    )]))
+    .await
+    .unwrap();
+    // Another file in the directory changes every 100 ms, faster than any
+    // backoff step.
+    for _ in 0..40 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tx.send(Ok(vec![DebouncedEvent::new(
+            sibling.clone(),
+            DebouncedEventKind::Any,
+        )]))
+        .await
+        .unwrap();
+    }
+
+    let handled = handled.lock().unwrap().clone();
+    assert_eq!(
+        handled.len(),
+        3,
+        "the event, then two retries on their own schedule"
+    );
+    let first_retry = handled[1] - handled[0];
+    let second_retry = handled[2] - handled[1];
+    assert!(
+        first_retry >= std::time::Duration::from_millis(500)
+            && first_retry < std::time::Duration::from_millis(510),
+        "first retry after {first_retry:?}"
+    );
+    assert!(
+        second_retry >= std::time::Duration::from_millis(1000)
+            && second_retry < std::time::Duration::from_millis(1010),
+        "second retry after {second_retry:?}"
+    );
+    let _ = shutdown_tx.send(());
+    watcher.await.unwrap();
+}
+
+/// Send `peer`'s changes since `since` to the room as one sync frame, the
+/// way a connected frontend's edits arrive.
+async fn send_peer_changes(
+    room: &NotebookRoom,
+    identity: &RoomConnectionIdentity,
+    server_state: &mut sync::State,
+    peer: &mut notebook_doc::NotebookDoc,
+    since: &[automerge::ChangeHash],
+) {
+    let changes = peer.doc_mut().get_changes(since);
+    assert!(!changes.is_empty(), "the peer must have authored changes");
+    let payload = sync::Message {
+        heads: peer.get_heads(),
+        need: Vec::new(),
+        have: Vec::new(),
+        changes: changes
+            .iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect::<Vec<_>>()
+            .into(),
+        flags: None,
+        version: sync::MessageVersion::V1,
+    }
+    .encode();
+    let (effects, _) =
+        super::peer_notebook_sync::apply_notebook_doc_frame(room, server_state, identity, &payload)
+            .await
+            .unwrap();
+    super::peer_notebook_sync::finish_notebook_doc_frame(room, effects).await;
+}
+
+#[tokio::test]
+async fn deliberate_edit_after_a_late_keystroke_is_kept() {
+    // The frontend's `)` was typed before the reload and syncs after it.
+    // Its next edit, to a cell git also rewrote, is made on the file's text
+    // and builds on the late `)`. Only the late `)` goes back.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path) =
+        saved_room(&tmp, "deliberate.ipynb", &[("a", "x = 1"), ("b", "z = 0")]).await;
+    edit_in_session(&room, |doc| {
+        doc.update_source("a", "x = 1\nprint(x")
+            .map(|_| ())
+            .unwrap()
+    })
+    .await;
+    let identity = RoomConnectionIdentity::local_with_scope(
+        Some("desktop:typist".to_string()),
+        nteract_identity::ConnectionScope::Editor,
+    )
+    .await
+    .unwrap();
+    let mut peer = room
+        .doc
+        .write()
+        .await
+        .fork_with_actor(identity.actor_label().as_str());
+    let before_reload = peer.get_heads();
+    peer.update_source("a", "x = 1\nprint(x)").unwrap();
+
+    external_write(
+        &room,
+        &path,
+        &rewrite_ipynb(&[("a", "y = 2"), ("b", "z = 5")], serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(displaced_edits(&room).len(), 1);
+
+    let mut server_state = sync::State::new();
+    send_peer_changes(
+        &room,
+        &identity,
+        &mut server_state,
+        &mut peer,
+        &before_reload,
+    )
+    .await;
+    assert_eq!(
+        live_cells(&room).await,
+        owned_cells(&[("a", "y = 2"), ("b", "z = 5")]),
+        "the late `)` goes back as soon as it is admitted"
+    );
+    let entries = displaced_edits(&room);
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[1].cell_ids, vec!["a".to_string()]);
+    assert!(
+        snapshot_cells(&entries[1])[0].1.contains(')'),
+        "premise: the late `)` merged into the file's text"
+    );
+
+    // The frontend receives the reload and the put-back, then edits b.
+    let caught_up = {
+        let mut doc = room.doc.write().await;
+        peer.doc_mut().merge(doc.doc_mut()).unwrap();
+        peer.get_heads()
+    };
+    peer.update_source("b", "z = 5  # mine").unwrap();
+    send_peer_changes(&room, &identity, &mut server_state, &mut peer, &caught_up).await;
+
+    save_notebook_to_disk(&room, None).await.unwrap();
+
+    assert_eq!(
+        live_cells(&room).await,
+        owned_cells(&[("a", "y = 2"), ("b", "z = 5  # mine")])
+    );
+    assert_eq!(saved_source(&path, 0), "y = 2");
+    assert_eq!(saved_source(&path, 1), "z = 5  # mine");
+    let entries = displaced_edits(&room);
+    assert_eq!(entries.len(), 2, "no entry for the deliberate edit");
+    assert_eq!(entries[1].cell_ids, vec!["a".to_string()]);
+}
+
 #[tokio::test]
 async fn durable_entries_share_the_cap_and_dismiss_all_clears_them() {
     let tmp = tempfile::TempDir::new().unwrap();

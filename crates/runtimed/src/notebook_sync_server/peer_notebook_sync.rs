@@ -6,7 +6,7 @@ use notebook_protocol::connection::NotebookFrameType;
 use super::peer_writer::PeerWriter;
 use super::{
     check_and_broadcast_sync_state, check_and_update_trust_state, process_markdown_assets,
-    NotebookRoom, RoomConnectionIdentity,
+    put_back_late_concurrent_edits, NotebookRoom, RoomConnectionIdentity,
 };
 use notebook_doc::diff::diff_metadata_touched;
 
@@ -204,6 +204,21 @@ pub(super) async fn finish_notebook_doc_frame(
     };
 
     room.persistence.enqueue_persist_bytes(persist_bytes);
+
+    // A frame can carry an edit typed against the notebook from before an
+    // external revision. Put the rewritten cells it changed back now, while
+    // it is the only such change, so edits the peer makes after this one
+    // build on a resolved change and stay. Saves run the same check, and own
+    // retries once a put-back has failed.
+    let put_back_failing = room
+        .persistence
+        .external_revision_guard()
+        .is_some_and(|guard| guard.failing);
+    if !put_back_failing {
+        if let Err(error) = put_back_late_concurrent_edits(room).await {
+            warn!("[notebook-sync] Could not put back late concurrent edits: {error}");
+        }
+    }
 
     if effects.metadata_changed {
         check_and_broadcast_sync_state(room).await;
