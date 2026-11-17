@@ -8,6 +8,14 @@ export type CommentsNotebookRef =
   | { kind: "local_room"; room_id: string };
 
 export interface CreateRelayOptions {
+  /**
+   * Explicit opt-in for a local interactive UI implementing separate metadata
+   * and install reviews with epoch-bound ID-only decisions. Defaults false.
+   * Not consent or authority. Inspect info.scopedChannelReviewV1, which reports
+   * the daemon verdict; never infer support from this option or a package version.
+   * Do not enable for headless, hosted or collaborator sessions.
+   */
+  scopedChannelReviewV1?: boolean;
   runtime?: RuntimeKind;
   workingDir?: string;
   socketPath?: string;
@@ -39,6 +47,14 @@ export interface LocalEnvironmentStatus {
 }
 
 export interface OpenRelayOptions {
+  /**
+   * Explicit opt-in for a local interactive UI implementing separate metadata
+   * and install reviews with epoch-bound ID-only decisions. Defaults false.
+   * Not consent or authority. Inspect info.scopedChannelReviewV1, which reports
+   * the daemon verdict; never infer support from this option or a package version.
+   * Do not enable for headless, hosted or collaborator sessions.
+   */
+  scopedChannelReviewV1?: boolean;
   socketPath?: string;
   peerLabel?: string;
   description?: string;
@@ -75,6 +91,8 @@ export interface RelayInfo {
   connectionScope?: string;
   /** Optional daemon feature support; absent older bindings must fail closed. */
   localEnvironmentSelection?: boolean;
+  /** Effective per-connection handshake verdict. Missing means false. */
+  scopedChannelReviewV1?: boolean;
   /** Absent when no `localEnvironment` was requested or the daemon predates it. */
   localEnvironment?: LocalEnvironmentStatus;
   commentsDocId?: string;

@@ -520,3 +520,29 @@ environment with `ipykernel` and may download Python packages. The suite starts
 and stops its own daemon and disables background environment pools.
 CI runs this Python execution and recovery coverage in a separate step with both
 flags enabled.
+
+### Explicit scoped channel reviews in local interactive relays
+
+`createRelay`, `openRelayPath`, and `connectRelay` accept optional
+`scopedChannelReviewV1: true` only for an embedding UI that implements separate
+metadata-inspection and installation reviews. Omitted/false preserves legacy
+behavior. Headless notebook sessions and hosted/collaborator workflows must not
+opt in. The option declares protocol literacy, not consent or owner authority;
+the daemon independently authorizes each operation.
+
+Read `relay.info.scopedChannelReviewV1 === true` from the notebook handshake.
+Missing/false means unavailable, including older native bindings/daemons. Never
+infer support from the option, version, cached runtime document or pool query.
+Map this verdict to the current host-ready payload's `scoped_channel_review_v1`,
+with the relay's current monotonic `relay_generation` and authoritative scope.
+Invalidate it immediately on close/disconnect; do not reuse a previous relay's
+verdict or review IDs after reconnect.
+
+The relay remains a typed-frame byte pipe. Approval requests use the normal
+request frame (0x01) with `action: "approve_related_channels"` or
+`"decline_related_channels"` and the opaque `review_id` only, not client channel
+strings. The frontend's `type` discriminator is mapped to wire `action` by its
+transport. Review state is delivered through the runtime document, not a new
+Node-specific approval broadcast. Error responses must not trigger a privileged
+host-command fallback. This API does not opt any existing caller in or enable a
+private downstream application's UI by itself.

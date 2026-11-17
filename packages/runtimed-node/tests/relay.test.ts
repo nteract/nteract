@@ -156,6 +156,43 @@ describe("@runtimed/node relay wrapper", () => {
     });
   });
 
+  it.each([undefined, false, true])(
+    "preserves effective scoped review verdict %s without guessing",
+    (verdict) => {
+      const info = normalizeRelayInfo({ notebookId: "notebook-1", scopedChannelReviewV1: verdict });
+      expect(info.scopedChannelReviewV1).toBe(verdict);
+    },
+  );
+
+  it("forwards ID-only review decisions and preserves response bytes without privileged fallback", async () => {
+    const fake = fakeNative();
+    const relay = new RelaySession(fake.native);
+    for (const action of ["approve_related_channels", "decline_related_channels"]) {
+      const request = Buffer.concat([
+        Buffer.from([0x01]),
+        Buffer.from(JSON.stringify({ id: "request-1", action, review_id: "review-1" })),
+      ]);
+      await relay.send(request);
+      expect(fake.native.send).toHaveBeenLastCalledWith(request);
+      const response = Buffer.concat([
+        Buffer.from([0x02]),
+        Buffer.from(
+          JSON.stringify({
+            id: "request-1",
+            result: "error",
+            error: "stale or unsupported review",
+          }),
+        ),
+      ]);
+      const listener = vi.fn();
+      const stop = relay.onFrame(listener);
+      fake.emitFrame(response);
+      expect(listener).toHaveBeenCalledWith(response);
+      stop();
+    }
+    expect(fake.native.send).toHaveBeenCalledTimes(2);
+  });
+
   it("rejects values that are not binary frames", () => {
     expect(() => toBuffer("not-a-frame" as never)).toThrow(
       /Buffer, ArrayBuffer view, or ArrayBuffer/,
