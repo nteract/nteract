@@ -17,6 +17,27 @@ export function borrowedEnvironmentKind(
   return null;
 }
 
+/**
+ * Label for a running environment the daemon did not name. Describes the kind
+ * of environment, never the wire `env_source` value.
+ */
+export function runningEnvironmentFallbackName(envSource: string | null | undefined): string {
+  switch (envSource) {
+    case "kernelspec":
+      return "Jupyter kernel";
+    case "conda:existing:local":
+      return "Conda environment";
+    case "deno":
+      return "Deno";
+    case "uv:pyproject":
+    case "pixi:toml":
+    case "conda:env_yml":
+      return "Project environment";
+  }
+  if (envSource && /^(uv|conda|pixi):/.test(envSource)) return "Managed Python environment";
+  return "Automatic environment";
+}
+
 export interface RunningEnvironmentFacts {
   lifecycle: string;
   envSource: string | null | undefined;
@@ -45,9 +66,7 @@ export function projectRunningEnvironment(
   const installedKernel = borrowedEnvironmentKind(facts.envSource) === "kernelspec";
   return {
     id: facts.environmentId || null,
-    name:
-      facts.environmentName ||
-      (installedKernel ? "Jupyter kernel" : facts.envSource || "Automatic environment"),
+    name: facts.environmentName || runningEnvironmentFallbackName(facts.envSource),
     pythonVersion: facts.pythonVersion || null,
     // Language identifies an installed kernel; managed environments show Python facts.
     language: installedKernel ? facts.language || null : null,

@@ -2356,6 +2356,8 @@ function AppContent() {
                       key={connectionGeneration}
                       {...localEnvironment.state}
                       available={localEnvironmentSelectionEnabled}
+                      // The daemon rejects a Conda target for a Deno notebook.
+                      condaAvailable={runtime !== "deno"}
                       running={projectRunningEnvironment({
                         lifecycle: runtimeState.kernel.lifecycle.lifecycle,
                         envSource,

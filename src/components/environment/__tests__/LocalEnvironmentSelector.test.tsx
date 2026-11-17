@@ -386,6 +386,49 @@ describe("LocalEnvironmentSelector", () => {
       );
     });
 
+    it("offers only Automatic and installed kernels when Conda is unavailable", async () => {
+      const user = userEvent.setup();
+      const options = props({
+        condaAvailable: false,
+        kernelspecCatalog: ready,
+        onLoadKernelspecs: vi.fn(),
+        inventory: { environments: [rankings], truncated: false, warnings: [] },
+        selection: { revision: 1, selected: null, applied: null, applying: false },
+        running: { id: null, name: "Deno", pythonVersion: null },
+      });
+      render(<LocalEnvironmentSelector {...options} />);
+      await user.click(screen.getByRole("button", { name: "Change" }));
+      expect(options.onLoadInventory).not.toHaveBeenCalled();
+      expect(options.onLoadKernelspecs).toHaveBeenCalledTimes(1);
+      expect(screen.queryByText("Conda environments")).toBeNull();
+      expect(screen.queryByRole("list", { name: "Available Conda environments" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Enter prefix..." })).toBeNull();
+      expect(screen.queryByRole("button", { name: /rankings/ })).toBeNull();
+      await user.click(screen.getByRole("button", { name: "Refresh" }));
+      expect(options.onLoadInventory).not.toHaveBeenCalled();
+      expect(options.onLoadKernelspecs).toHaveBeenCalledTimes(2);
+      await user.click(screen.getByRole("button", { name: /Julia 1\.11/ }));
+      await user.click(screen.getByRole("button", { name: "Automatic" }));
+      expect(vi.mocked(options.onSelect).mock.calls).toEqual([
+        [{ kind: "kernelspec", name: "julia-1.11" }],
+        [{ kind: "automatic" }],
+      ]);
+    });
+
+    it("leaves only Automatic when neither Conda nor installed kernels are available", async () => {
+      const options = props({
+        condaAvailable: false,
+        selection: { revision: 1, selected: null, applied: null, applying: false },
+        running: { id: null, name: "Deno", pythonVersion: null },
+      });
+      render(<LocalEnvironmentSelector {...options} />);
+      await userEvent.click(screen.getByRole("button", { name: "Change" }));
+      expect(screen.getByRole("button", { name: "Automatic" })).toBeEnabled();
+      expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Enter prefix..." })).toBeNull();
+      expect(options.onLoadInventory).not.toHaveBeenCalled();
+    });
+
     it("reads snapshots from a daemon that sends no kernelspec fields", () => {
       render(
         <LocalEnvironmentSelector

@@ -13,6 +13,11 @@ export interface LocalEnvironmentSelectorProps {
   available: boolean;
   selection: EnvironmentSelectionSnapshot | null;
   inventory: CondaEnvironmentInventory | null;
+  /**
+   * Whether this notebook can use a Conda environment. `false` hides the Conda
+   * choices and sends no Conda discovery request. Defaults to `true`.
+   */
+  condaAvailable?: boolean;
   /** Installed Jupyter kernels. Omitted or `unsupported` hides them and sends nothing. */
   kernelspecCatalog?: KernelspecCatalogState;
   loadingSelection: boolean;
@@ -64,6 +69,7 @@ export function LocalEnvironmentSelector({
   available,
   selection,
   inventory,
+  condaAvailable = true,
   kernelspecCatalog,
   loadingSelection,
   loadingInventory,
@@ -136,7 +142,7 @@ export function LocalEnvironmentSelector({
               const opening = !changing;
               setChanging(opening);
               if (opening) {
-                onLoadInventory(false);
+                if (condaAvailable) onLoadInventory(false);
                 if (kernelspecs) onLoadKernelspecs?.();
               }
             }}
@@ -176,85 +182,95 @@ export function LocalEnvironmentSelector({
                 >
                   Automatic
                 </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  disabled={disabled || loadingInventory || kernelspecsLoading}
-                  onClick={() => {
-                    onLoadInventory(true);
-                    if (kernelspecs) onLoadKernelspecs?.();
-                  }}
-                >
-                  Refresh
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  disabled={disabled}
-                  onClick={() => setEnteringPrefix(!enteringPrefix)}
-                >
-                  Enter prefix...
-                </Button>
-              </div>
-              <div className="space-y-2">
-                {kernelspecs && (
-                  <h4 className="text-xs font-medium text-muted-foreground">Conda environments</h4>
+                {(condaAvailable || kernelspecs) && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={disabled || loadingInventory || kernelspecsLoading}
+                    onClick={() => {
+                      if (condaAvailable) onLoadInventory(true);
+                      if (kernelspecs) onLoadKernelspecs?.();
+                    }}
+                  >
+                    Refresh
+                  </Button>
                 )}
-                {loadingInventory && <Skeleton className="h-10 w-full" />}
-                {inventory && !loadingInventory && (
-                  <>
-                    {inventory.environments.length === 0 && (
-                      <p className="text-muted-foreground">
-                        No Conda environments found. Enter an absolute prefix instead.
-                      </p>
-                    )}
-                    <ul aria-label="Available Conda environments" className="space-y-1">
-                      {inventory.environments.map((environment) => (
-                        <li key={environment.id}>
-                          <button
-                            type="button"
-                            disabled={disabled}
-                            aria-current={next?.id === environment.id ? "true" : undefined}
-                            className={CHOICE_CLASS_NAME}
-                            onClick={() => onSelect({ kind: "conda", prefix: environment.prefix })}
-                          >
-                            <span className="block truncate text-sm font-medium leading-snug">
-                              {environment.name}
-                            </span>
-                            {environment.python_version && (
-                              <span className="mt-0.5 block text-xs text-muted-foreground">
-                                Python {environment.python_version}
+                {condaAvailable && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={disabled}
+                    onClick={() => setEnteringPrefix(!enteringPrefix)}
+                  >
+                    Enter prefix...
+                  </Button>
+                )}
+              </div>
+              {condaAvailable && (
+                <div className="space-y-2">
+                  {kernelspecs && (
+                    <h4 className="text-xs font-medium text-muted-foreground">
+                      Conda environments
+                    </h4>
+                  )}
+                  {loadingInventory && <Skeleton className="h-10 w-full" />}
+                  {inventory && !loadingInventory && (
+                    <>
+                      {inventory.environments.length === 0 && (
+                        <p className="text-muted-foreground">
+                          No Conda environments found. Enter an absolute prefix instead.
+                        </p>
+                      )}
+                      <ul aria-label="Available Conda environments" className="space-y-1">
+                        {inventory.environments.map((environment) => (
+                          <li key={environment.id}>
+                            <button
+                              type="button"
+                              disabled={disabled}
+                              aria-current={next?.id === environment.id ? "true" : undefined}
+                              className={CHOICE_CLASS_NAME}
+                              onClick={() =>
+                                onSelect({ kind: "conda", prefix: environment.prefix })
+                              }
+                            >
+                              <span className="block truncate text-sm font-medium leading-snug">
+                                {environment.name}
                               </span>
-                            )}
-                            <span className="mt-1 block break-all font-mono text-xs leading-relaxed text-muted-foreground">
-                              {environment.prefix}
-                            </span>
-                            <ChoiceMarks
-                              next={next?.id === environment.id}
-                              running={running?.id === environment.id}
-                            />
-                          </button>
-                        </li>
+                              {environment.python_version && (
+                                <span className="mt-0.5 block text-xs text-muted-foreground">
+                                  Python {environment.python_version}
+                                </span>
+                              )}
+                              <span className="mt-1 block break-all font-mono text-xs leading-relaxed text-muted-foreground">
+                                {environment.prefix}
+                              </span>
+                              <ChoiceMarks
+                                next={next?.id === environment.id}
+                                running={running?.id === environment.id}
+                              />
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                      {inventory.truncated && (
+                        <p className="text-sm leading-relaxed text-muted-foreground">
+                          Not all environments are listed. Enter a prefix if yours is missing.
+                        </p>
+                      )}
+                      {inventory.warnings.map((warning, index) => (
+                        <p
+                          key={index}
+                          className="break-words text-sm leading-relaxed text-muted-foreground"
+                        >
+                          {warning}
+                        </p>
                       ))}
-                    </ul>
-                    {inventory.truncated && (
-                      <p className="text-sm leading-relaxed text-muted-foreground">
-                        Not all environments are listed. Enter a prefix if yours is missing.
-                      </p>
-                    )}
-                    {inventory.warnings.map((warning, index) => (
-                      <p
-                        key={index}
-                        className="break-words text-sm leading-relaxed text-muted-foreground"
-                      >
-                        {warning}
-                      </p>
-                    ))}
-                  </>
-                )}
-              </div>
+                    </>
+                  )}
+                </div>
+              )}
               {kernelspecs && (
                 <div className="space-y-2">
                   <h4 className="text-xs font-medium text-muted-foreground">Jupyter kernels</h4>
@@ -316,7 +332,7 @@ export function LocalEnvironmentSelector({
                   )}
                 </div>
               )}
-              {enteringPrefix && (
+              {condaAvailable && enteringPrefix && (
                 <form
                   className="space-y-3 rounded-md border border-border bg-muted/30 p-3"
                   onSubmit={(event) => {
