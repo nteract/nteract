@@ -482,13 +482,23 @@ async function readCopySource(request) {
  * here looks at `sourceId`'s storage before that. The bytes go through
  * persistPageAsset, so a copy meets every check and limit an upload does, and
  * a dataset already on `pageId` is the answer without a second write.
+ *
+ * Refusals carry the codes edit_page's `asset_from` reports
+ * (dataset-copies.mjs): `dataset_not_found`, `not_a_dataset` and
+ * `dataset_too_large`.
  */
-async function copyDatasetAsset(bucket, { pageId, assetId, sourceId }) {
+export async function copyDatasetAsset(bucket, { pageId, assetId, sourceId }) {
   const source = await bucket.head(imageAssetKey(sourceId, assetId));
   if (!source)
     throw new HttpError(404, "Dataset not found in the source Page", "dataset_not_found");
-  if (!isDataset(source))
-    throw new HttpError(415, "This asset is an image, not a dataset. Only datasets copy.");
+  if (source.httpMetadata?.contentType !== PARQUET_MEDIA_TYPE)
+    throw new HttpError(
+      415,
+      isDataset(source)
+        ? "This asset is not a Parquet dataset. Only Parquet datasets copy."
+        : "This asset is an image, not a dataset. Only datasets copy.",
+      "not_a_dataset",
+    );
   const stored = await bucket.head(imageAssetKey(pageId, assetId));
   if (stored) {
     if (!isDataset(stored)) throw new Error("A stored asset's type disagrees with its id");
@@ -496,7 +506,7 @@ async function copyDatasetAsset(bucket, { pageId, assetId, sourceId }) {
     return { asset: { ...dataset, url: asset_url }, duplicate: true };
   }
   if (!Number.isSafeInteger(source.size) || source.size > DATASET_MAX_BYTES)
-    throw new HttpError(413, "Datasets must be 5 MiB or smaller");
+    throw new HttpError(413, "Datasets must be 5 MiB or smaller", "dataset_too_large");
   const object = await bucket.get(imageAssetKey(sourceId, assetId));
   if (!object)
     throw new HttpError(404, "Dataset not found in the source Page", "dataset_not_found");

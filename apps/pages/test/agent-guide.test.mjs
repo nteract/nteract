@@ -11,6 +11,7 @@ import { HOST_REFUSAL_CODES } from "../worker/host-busy.mjs";
 import { STATUS_FALLBACK_CODES } from "../worker/project-api.mjs";
 import { READ_ERROR_CODES } from "../worker/tool-reads.mjs";
 import { CHANGE_ERROR_CODES } from "../worker/tool-changes.mjs";
+import { COPY_ERROR_CODES } from "../worker/dataset-copies.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
 import { identityProvider } from "../identity-provider.mjs";
 import {
@@ -85,6 +86,7 @@ test("GET llms.txt is readable without authentication and explains the supported
     ...STATUS_FALLBACK_CODES,
     ...READ_ERROR_CODES,
     ...CHANGE_ERROR_CODES,
+    ...COPY_ERROR_CODES,
     ...codeLiterals("../worker/tool-reads.mjs"),
     ...codeLiterals("../worker/tool-changes.mjs"),
   ]))

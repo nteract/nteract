@@ -2384,6 +2384,35 @@ answer. A dataset already on the destination is `200` with no second write;
 a new copy is `201`. Upload capabilities can't copy. Images don't copy: an
 image pasted from another Page keeps its `src` there.
 
+Agents copy through `edit_page` instead
+([dataset-copies.mjs](worker/dataset-copies.mjs)). `set_source`, a
+dataframe `insert_node` and `set_node` with `attrs.asset_id` take an optional
+`asset_from`: the id of the Page or Project (`prj_…`) the dataset is on. The
+gateway takes `asset_from` off each operation and forwards the batch with the
+hinted asset ids beside its arguments, so the host validates, fingerprints
+and journals the operations exactly as without it, and nothing about the
+source is stored. For a new intent the host checks the revision, then each
+named asset on its own Page as it always does. An asset already there applies
+as today and the source is never asked: an unneeded, unreadable or
+nonexistent `asset_from` changes nothing. A hinted asset that's missing makes
+the host answer `409` with `x-pages-asset-copy: required` and the missing ids,
+before any journal entry. The gateway then refuses an image (`not_a_dataset`)
+or more than 8 copies (`too_many_copies`), asks each source for read access as
+a read of its asset would (a Project: the Project's reader check, its content
+document, then that document's host), and only then copies with
+`copyDatasetAsset`, 2 at a time, outside the host's queue. Every refusal from
+a source below 500 is `source_not_readable`, whether it exists or not. The
+gateway forwards the batch again without hints; the host checks access,
+revision and every asset again. A recorded receipt replays before any of
+this, so a retry with the same nonce never asks the source. If the second
+forward is refused (a stale revision, a stale source), the copied object stays
+on the Page unreferenced, as an interrupted upload's does. A copy's refusals
+are `dataset_not_found` (404), `not_a_dataset` (415), `dataset_too_large`
+(413), `too_many_copies` (400) and `source_not_readable` (403); a malformed
+`asset_from`, or one on an operation that names no dataset, is
+`invalid_arguments`. The destination may be Project content (`project_id`);
+its own Project id as `asset_from` names the destination itself.
+
 For agents, importing bytes and inserting content are separate operations:
 
 1. Get the bytes into the Page's asset store, by one of three paths:

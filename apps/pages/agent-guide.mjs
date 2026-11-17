@@ -269,7 +269,14 @@ ${part.authErrorItems}
   presence below.
 - image_not_found (404): the asset isn't stored on this Page.
 - dataset_not_found (404): insert_node or set_source named an asset_id that
-  isn't stored on this Page.
+  isn't stored on this Page, or on the Page or Project its asset_from names.
+- source_not_readable (403): asset_from names a Page or Project you can't
+  read, or none at all. The answer is the same either way.
+- not_a_dataset (415): asset_from copies Parquet datasets only. Upload an
+  image or another file to this Page instead.
+- dataset_too_large (413): the dataset asset_from names is over 5 MiB.
+- too_many_copies (400): one batch copies up to 8 datasets with asset_from.
+  Send the rest in another batch.
 - invalid_source (400): a set_source field is malformed, or the batch would
   pass the Page's 64 sources, or read_page's source_id is malformed.
   Fix the request.
@@ -824,6 +831,29 @@ comment does; readers see it as a client claim, not verified identity. Give
 both for both. Alone, they skip the Page's content; beside other selectors,
 such as include_content:false, they add to them. A Page with no sources lists
 none. Once a Page has sources, every read names sources_revision.
+
+### Datasets from another Page or Project
+
+A dataset on one Page can feed tables and charts on another without its
+file. Add asset_from to set_source, a dataframe insert_node, or set_node
+with attrs.asset_id: the id of the Page or Project (prj_…) the dataset is
+on. Pages copies it to the edited Page under the same asset_id, then
+applies the operation.
+
+1. read_page on Page A with source_id:"<source_id>" for its asset_id.
+2. Create or pick Page B.
+3. edit_page on B: {"op": "set_source", "source_id": "daily", "name":
+   "Daily usage", "asset_id": "<asset_id>", "asset_from": "<Page A's id>",
+   "source_revision": null}.
+
+A Project shares datasets the same way. Upload to the Project once
+(create_page_asset_upload with project_id) and name it with set_source on
+project_id. read_page with project_id and sources:true lists them. Then any
+Page you can edit takes one with asset_from set to the Project's id.
+
+You need edit access to the edited Page and read access to the source. A
+dataset already on the edited Page applies without asking the source. Only
+Parquet copies, up to 5 MiB each and 8 a batch. The Page keeps its own copy.
 
 ### Charts
 
