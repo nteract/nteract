@@ -1,14 +1,19 @@
 import * as A from "@automerge/automerge";
 import { parseGrantGeneration } from "../shared/grant-generation.mjs";
 import {
+  BehaviorSubject,
   asapScheduler,
   asyncScheduler,
+  distinctUntilChanged,
   filter,
   firstValueFrom,
   fromEventPattern,
+  map,
   merge,
   observeOn,
+  of,
   race,
+  switchMap,
   take,
   timer,
 } from "rxjs";
@@ -58,6 +63,7 @@ import { REJECT, isLive, pauseOf, retirementOf, viewerSessionMachine } from "./s
 import {
   OUTAGE_ATTEMPTS,
   OUTAGE_MS,
+  PARK_AFTER_MS,
   backoffStep,
   reconnectDelay,
   viewerReconnectMachine,
@@ -450,7 +456,8 @@ export class PageSession {
    * repeated admission refusals. `retryTimer` is pending exactly while it is
    * `waiting`; `handshakeTimer` and `handshake` (the socket whose handshake
    * is pending, with the function that abandons it) exactly while it is
-   * `handshaking`. */
+   * `handshaking`. `parked` holds no socket: the tab stayed hidden for
+   * PARK_AFTER_MS with every edit acknowledged (watchPageLifecycle). */
   reconnect$ = new Store(viewerReconnectMachine.initial);
   // Opening the comments document (comments-open-machine.mjs).
   commentsOpen$ = new Store(commentsOpenMachine.initial);
@@ -715,7 +722,12 @@ export class PageSession {
   }
   /** Retries scheduled since the last stable connection or resume. */
   get retryAttempts() {
-    return this.reconnect$.snapshot().attempts;
+    return this.reconnect$.snapshot().attempts ?? 0;
+  }
+  /** The tab was hidden long enough that the session closed its socket on
+   * purpose; showing it reconnects. */
+  get parked() {
+    return this.reconnect$.snapshot().name === "parked";
   }
   /** An IndexedDB record holds every edit this replica accepted, so
    * reopening the Page imports it. An access reload wrote its own. */
@@ -1157,7 +1169,18 @@ export class PageSession {
     }
   }
   emit() {
+    this.#reportSynced();
     this.notify(this.listeners);
+  }
+  /** Tell the reconnect machine when the parking decision's fact changes:
+   * a session waiting to park has every edit acknowledged, or a parked one
+   * took a change the host doesn't have. A local edit and a receipt both
+   * emit, so this sees each change. Cheap unless parking is in play. */
+  #reportSynced() {
+    const state = this.reconnect$.snapshot();
+    if (state.name === "parked") {
+      if (!this.#saved()) this.reconnect({ type: "unsynced" });
+    } else if (state.park && this.#saved()) this.reconnect({ type: "synced" });
   }
   /** Re-derive the schema gate from the replica. Runs before observers see a
    * change, so an editor never applies a local edit over content it can't
@@ -1420,6 +1443,18 @@ export class PageSession {
         case "reportOutage":
           // A specific failure the person can act on stays in front.
           if (!this.connectionProblem) this.showConnectionProblem(SERVER_UNREACHABLE);
+          break;
+        case "park":
+          // The same close leaving the Page uses: each socket leaves the set
+          // before it closes, so socketDisconnected ignores it and nothing
+          // reconnects or reports. The status keeps its receipt ("Saved"),
+          // which is still true. Catch-up starts over on the next socket.
+          void this.disconnectSockets();
+          this.catchUp.disconnected();
+          break;
+        case "unpark":
+          // Not resume: parking moved no backoff, so there is none to clear.
+          void this.attemptConnection();
           break;
       }
     }
@@ -2060,10 +2095,16 @@ export class PageSession {
    * listeners. Tests pass their own window and document. */
   watchPageLifecycle({ page = globalThis, document = globalThis.document } = {}) {
     this.unwatchPageLifecycle();
+    const hidden = () => document?.visibilityState === "hidden";
+    const hidden$ = new BehaviorSubject(hidden());
     const flush = () => this.outbound.flush();
     const hide = () => this.outbound.hide();
     const show = () => this.outbound.show();
-    const visibility = () => (document?.visibilityState === "hidden" ? hide() : show());
+    const visibility = () => {
+      if (hidden()) hide();
+      else show();
+      hidden$.next(hidden());
+    };
     const listeners = [
       [page, "blur", flush],
       [page, "beforeunload", flush],
@@ -2073,12 +2114,32 @@ export class PageSession {
     ];
     for (const [target, type, listener] of listeners) target?.addEventListener?.(type, listener);
     this.lifecycleListeners = listeners;
-    if (document?.visibilityState === "hidden") hide();
+    if (hidden()) hide();
+    // Parking (reconnect-machine.mjs): a tab hidden for PARK_AFTER_MS
+    // without a break closes its socket once every edit is acknowledged, so
+    // the Page's Durable Object can sleep. Showing the tab cancels the
+    // countdown, or reconnects a parked session.
+    this.parkCountdown = hidden$
+      .pipe(
+        distinctUntilChanged(),
+        switchMap((isHidden) =>
+          isHidden ? timer(PARK_AFTER_MS, this.scheduler).pipe(map(() => "hidden")) : of("visible"),
+        ),
+      )
+      .subscribe((reason) =>
+        this.reconnect(
+          reason === "hidden"
+            ? { type: "hiddenTimeout", synced: this.#saved() }
+            : { type: "visible" },
+        ),
+      );
   }
   unwatchPageLifecycle() {
     for (const [target, type, listener] of this.lifecycleListeners ?? [])
       target?.removeEventListener?.(type, listener);
     this.lifecycleListeners = undefined;
+    this.parkCountdown?.unsubscribe();
+    this.parkCountdown = undefined;
   }
   async initializeLocal(
     key = replicaKey(this.access, this.credentialCanWrite),
@@ -2424,6 +2485,8 @@ export class PageSession {
    * after the WebSocket opens. HTTP authentication admits it; the host checks
    * access on every frame. */
   async openPlainConnection() {
+    // The tab parked during discovery: open no socket until it shows.
+    if (this.parked) return;
     const address = pageSyncAddress(
       this.pageId,
       location.href,
@@ -2550,7 +2613,8 @@ export class PageSession {
    * stalled handshake is abandoned first, and the new attempt waits for that
    * connect() to settle so it gets its own socket rather than the stuck one. */
   async retryConnection(options) {
-    this.reconnect({ type: "resume" });
+    // A parked tab reconnects when it shows, not on `online` or a renewal.
+    if (this.reconnect({ type: "resume" }).rejected) return;
     if (this.connecting) await this.connecting.catch(() => {});
     return this.attemptConnection(options);
   }
@@ -2561,6 +2625,8 @@ export class PageSession {
     } catch (error) {
       if (!this.alive || this.accessReloadRequired || this.accessDenied) return;
       if (error.code === "PAGE_ACCESS_CHANGED") return;
+      // The tab parked while this attempt ran; showing it tries again.
+      if (this.parked) return;
       // Resume or halt ended this attempt; what follows was decided there.
       if (error.code === "HANDSHAKE_ABANDONED") return;
       if (error.admission?.code === "page_deleted") {
