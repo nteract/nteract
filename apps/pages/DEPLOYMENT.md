@@ -1360,6 +1360,13 @@ A deployment signs people and agents in with Anaconda, unless
 ([worker/kilo-handoff.mjs](worker/kilo-handoff.mjs)) and also selects Kilo as
 the identity provider ([identity-provider.mjs](identity-provider.mjs)).
 
+With either provider, each isolate remembers a browser session it read from
+D1 for at most 10 seconds, and never past the session's expiry
+([session-memo.mjs](worker/session-memo.mjs)). Signing out forgets it in the
+isolate that handles the sign-out. After sign-out or sign out everywhere,
+another isolate may accept the session for up to 10 seconds. The bound is a
+constant, not a setting.
+
 A Kilo deployment needs two more settings, and refuses to sign anyone in
 without them:
 
@@ -1792,6 +1799,25 @@ arrival to its ack for frames that stored changes (`latency_ms_sum`,
 `latency_ms_max`, `wait_ms_sum` and `latency_ms_buckets` by inclusive upper
 bound), every 256 rounds and at close.
 See the [pinned runtime telemetry contract](https://github.com/denoland/celld/blob/8702f6d186c77698dbfb30cf29e3b1922a88f008/docs/telemetry.md).
+
+### Server-Timing
+
+Answers to `POST /api/tools` and to card image reads
+(`GET /api/pages/<page_id>/card-image[/<file>]`) carry a `Server-Timing`
+header with each phase's duration in milliseconds, for a caller that
+authenticated. The browser shows it in the Network panel and in
+`PerformanceResourceTiming.serverTiming`. Metrics named `cat_*` were measured
+inside the account's Catalog and returned to the gateway in an internal header
+the gateway removes. A phase that ran more than once has `desc="n=<runs>"`, its
+busy wall time as `dur`, and its slowest run as `<name>_max`. The header carries
+fixed metric names, durations and counts only: no ID, principal, title, path,
+hash or error text. It is never sent on `/mcp`, public routes or a refusal
+before authentication, and no `Timing-Allow-Origin` is sent.
+[worker/server-timing.mjs](worker/server-timing.mjs) defines the recorder and
+explains why a phase of pure CPU work reads as zero on Workers.
+
+Set the plain variable `PAGES_SERVER_TIMING=off` to stop sending it. It is a
+deployment setting, not a structural field of the release package.
 
 ## Session key rotation
 

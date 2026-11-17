@@ -45,68 +45,108 @@ const card = (state) => {
  * States: idle (not asked), requested (in a batch), shown (a card with
  * content), empty (no card, or one with nothing to show; also what a refused
  * or unknown Page answers), failed (the request failed or answered for
- * another account).
+ * another account), stale (a card this browser kept from an earlier visit,
+ * library-device-cache.mjs, not asked yet on this one), revalidating (a kept
+ * card in a batch: it stays drawn until the answer replaces it).
  *
  * Events: `visible` (the card neared the viewport), `ahead` (a batch with
- * room took this idle card, the next in the grid), `left` (a card that
- * asked left the viewport before its request went out), `answered` (a
- * card), `missing` (null), `failed`.
+ * room took this idle or stale card, the next in the grid), `left` (a card
+ * that asked left the viewport before its request went out), `answered` (a
+ * card), `missing` (null), `failed`, `recalled` (a kept card for this key).
+ *
+ * A kept card is only drawn while it is asked for again: `missing` drops
+ * it (the Page has no card for this account now), and `failed` keeps it
+ * drawn as stale, so it asks again when it scrolls back into view.
  *
  * Effects: `fetch`, which the loader batches. `ahead` has none: the batch
  * that took the card already carries it.
  */
+const ASKED = "only a card that asked is in a batch";
+const WAITS = "only a card that asked waits to go out";
 export const pageCardMachine = defineMachine({
   name: "page-card",
-  states: ["idle", "requested", "shown", "empty", "failed"],
-  events: ["visible", "ahead", "left", "answered", "missing", "failed"],
+  states: ["idle", "requested", "shown", "empty", "failed", "stale", "revalidating"],
+  events: ["visible", "ahead", "left", "answered", "missing", "failed", "recalled"],
   initial: { name: "idle" },
   unreachable: [
-    ["idle", "left", "only a requested card waits to go out"],
-    ["shown", "left", "only a requested card waits to go out"],
-    ["empty", "left", "only a requested card waits to go out"],
-    ["failed", "left", "only a requested card waits to go out"],
-    ["idle", "answered", "only a requested card is in a batch"],
-    ["idle", "missing", "only a requested card is in a batch"],
-    ["idle", "failed", "only a requested card is in a batch"],
+    ["idle", "left", WAITS],
+    ["shown", "left", WAITS],
+    ["empty", "left", WAITS],
+    ["failed", "left", WAITS],
+    ["stale", "left", WAITS],
+    ["idle", "answered", ASKED],
+    ["idle", "missing", ASKED],
+    ["idle", "failed", ASKED],
+    ["stale", "answered", ASKED],
+    ["stale", "missing", ASKED],
+    ["stale", "failed", ASKED],
   ],
-  cases: { "requested/answered": ["content", "blank"] },
+  cases: {
+    "requested/answered": ["content", "blank"],
+    "revalidating/answered": ["content", "blank"],
+  },
   validate: {
-    states: { shown: card },
+    states: { shown: card, stale: card, revalidating: card },
     events: {
       answered: (event) => {
         if (!event.card || typeof event.card !== "object") throw Error("answered needs a card");
       },
+      recalled: (event) => card(event),
     },
     effects: { fetch: () => {} },
   },
   transition(state, event) {
+    const asked = state.name === "requested" || state.name === "revalidating";
     switch (event.type) {
       case "visible":
         // A failed card asks again when it scrolls back into view.
         if (state.name === "idle" || state.name === "failed")
           return { state: { name: "requested" }, effects: [{ type: "fetch" }] };
+        if (state.name === "stale")
+          return {
+            state: { name: "revalidating", card: state.card },
+            effects: [{ type: "fetch" }],
+          };
         return reject(state, `already ${state.name}`);
       case "ahead":
         // Only a card that never asked: a failed one waits until it's seen.
         if (state.name === "idle") return { state: { name: "requested" }, effects: [] };
+        if (state.name === "stale")
+          return { state: { name: "revalidating", card: state.card }, effects: [] };
         return reject(state, `already ${state.name}`);
       case "left":
-        // requested only (see unreachable): it asks again when it's seen.
-        return { state: { name: "idle" }, effects: [] };
+        // An asked card only (see unreachable): it asks again when it's seen.
+        if (state.name === "revalidating")
+          return { state: { name: "stale", card: state.card }, effects: [] };
+        if (state.name === "requested") return { state: { name: "idle" }, effects: [] };
+        return reject(state, "not waiting to go out");
       case "answered":
-        if (state.name !== "requested") return reject(state, "not waiting for a card");
+        if (!asked) return reject(state, "not waiting for a card");
         return Array.isArray(event.card.blocks) && event.card.blocks.length > 0
           ? { state: { name: "shown", card: event.card }, effects: [] }
           : { state: { name: "empty" }, effects: [] };
       case "missing":
-        if (state.name !== "requested") return reject(state, "not waiting for a card");
+        if (!asked) return reject(state, "not waiting for a card");
         return { state: { name: "empty" }, effects: [] };
       case "failed":
-        if (state.name !== "requested") return reject(state, "not waiting for a card");
+        if (!asked) return reject(state, "not waiting for a card");
+        if (state.name === "revalidating")
+          return { state: { name: "stale", card: state.card }, effects: [] };
         return { state: { name: "failed" }, effects: [] };
+      case "recalled":
+        // Only before this visit asked: anything the server said wins.
+        if (state.name === "idle")
+          return { state: { name: "stale", card: event.card }, effects: [] };
+        return reject(state, `already ${state.name}`);
     }
   },
 });
+
+/** The card a state draws, or null. */
+export const drawnCard = (state) =>
+  state.name === "shown" || state.name === "stale" || state.name === "revalidating"
+    ? state.card
+    : null;
 
 export const IDLE_CARD = pageCardMachine.initial;
 
@@ -119,6 +159,7 @@ const limits = (state) => {
   if (!Number.isInteger(state.batch) || state.batch < 1) throw Error("batch must be positive");
   if (!Number.isInteger(state.slots) || state.slots < 1) throw Error("slots must be positive");
   if (state.busy > state.slots) throw Error("busy can't pass slots");
+  if (typeof state.opened !== "boolean") throw Error("opened is a boolean");
 };
 
 /** Send requests while a slot is free: full batches only, or with `all`,
@@ -128,7 +169,7 @@ function sendWaiting(state, effects, all) {
   while (next.busy < next.slots && (all ? next.waiting > 0 : next.waiting >= next.batch)) {
     const take = Math.min(next.waiting, next.batch);
     effects.push({ type: "send", take });
-    next = { ...next, waiting: next.waiting - take, busy: next.busy + 1 };
+    next = { ...next, waiting: next.waiting - take, busy: next.busy + 1, opened: true };
   }
   return next;
 }
@@ -144,20 +185,25 @@ function quietWhenEmpty(state, effects) {
  * When a grid's waiting cards go out.
  *
  * States carry `waiting` (cards that asked and haven't gone out), `busy`
- * (requests running), and the limits `batch` (cards per request) and `slots`
- * (requests at once).
+ * (requests running), the limits `batch` (cards per request) and `slots`
+ * (requests at once), and `opened`, whether this grid has sent a request.
  * - quiet: nothing waits.
  * - gathering: cards wait and the window, started by the first of them, is
  *   running. A full batch goes out at once if a slot is free.
  * - due: the window ended with every slot busy; the next free slot sends.
  *
+ * The first window of a grid that hasn't sent anything is `eager`: it ends
+ * as soon as the cards that came into view together have asked (the
+ * loader's next task), not after the gather time. The rows in view on the
+ * first paint go out at once; later scrolling keeps the gather.
+ *
  * Events: `wanted` (a card asked), `dropped` (a waiting card left the
  * viewport), `elapsed` (the window ended), `settled` (a request ended,
  * answered or not).
  *
- * Effects: `arm` and `disarm` the window, and `send` a request that takes
- * `take` waiting cards. Which cards, and the top-up toward a full batch,
- * are the loader's choice when it sends.
+ * Effects: `arm` (with `eager`) and `disarm` the window, and `send` a
+ * request that takes `take` waiting cards. Which cards, and the top-up
+ * toward a full batch, are the loader's choice when it sends.
  */
 export const pageCardBatchMachine = defineMachine({
   name: "page-card-batches",
@@ -169,8 +215,10 @@ export const pageCardBatchMachine = defineMachine({
     busy: 0,
     batch: PAGE_CARDS_BATCH,
     slots: PAGE_CARDS_CONCURRENCY,
+    opened: false,
   },
   cases: {
+    "quiet/wanted": ["eager", "gather"],
     "gathering/wanted": ["gather", "full"],
     "gathering/dropped": ["gather", "drained"],
     "due/dropped": ["due", "drained"],
@@ -195,7 +243,9 @@ export const pageCardBatchMachine = defineMachine({
       },
     },
     effects: {
-      arm: () => {},
+      arm: (effect) => {
+        if (typeof effect.eager !== "boolean") throw Error("arm says whether it is eager");
+      },
       disarm: () => {},
       send: (effect) => {
         if (!Number.isInteger(effect.take) || effect.take < 1) throw Error("send takes a card");
@@ -208,7 +258,7 @@ export const pageCardBatchMachine = defineMachine({
       case "wanted": {
         const waiting = { ...state, waiting: state.waiting + 1 };
         if (state.name === "quiet") {
-          effects.push({ type: "arm" });
+          effects.push({ type: "arm", eager: !state.opened });
           waiting.name = "gathering";
         }
         // A due card goes out with the next free slot; a gathering one with
@@ -279,9 +329,11 @@ export class PageCards {
     batchSize = PAGE_CARDS_BATCH,
     concurrency = PAGE_CARDS_CONCURRENCY,
     scheduler,
+    onCards = () => {},
   }) {
     this.tool = tool;
     this.principal = principal;
+    this.onCards = onCards;
     this.createObserver = observer;
     this.gatherMs = gatherMs;
     this.batchSize = batchSize;
@@ -305,7 +357,11 @@ export class PageCards {
       slots: this.concurrency,
     };
     const subscription = this.#window
-      .pipe(switchMap((armed) => (armed ? timer(this.gatherMs, this.scheduler) : EMPTY)))
+      .pipe(
+        switchMap((armed) =>
+          armed ? timer(armed.eager ? 0 : this.gatherMs, this.scheduler) : EMPTY,
+        ),
+      )
       .subscribe(() => this.#dispatch({ type: "elapsed" }));
     // Cards that asked before this connection go out under it, one `wanted`
     // each. A send shrinks the waiting set as this runs, so count it first.
@@ -327,6 +383,23 @@ export class PageCards {
     return this.store.snapshot().get(key) ?? IDLE_CARD;
   }
 
+  /** Cards this browser kept for the grid's rows (library-device-cache.mjs),
+   * `[{ id, at, card }]`: each draws at once for the row with that Page ID
+   * and content time, and is asked for again when it comes into view. A
+   * card this visit has already asked for keeps what it has. A grid that
+   * doesn't know its account draws none. */
+  recall(entries) {
+    if (!this.principal || !entries?.length) return;
+    this.#steps(
+      entries
+        .filter((entry) => typeof entry?.id === "string" && entry.card?.blocks)
+        .map(({ id, at, card }) => [
+          cardKeyOf({ id, contentUpdatedAt: at }),
+          { type: "recalled", card },
+        ]),
+    );
+  }
+
   /** The grid's rows in the order it shows them, for topping up batches. */
   arrange(rows) {
     this.#order = rows;
@@ -341,7 +414,7 @@ export class PageCards {
     this.#views.set(key, at);
     const { effects } = this.#steps([[key, { type: "visible" }]])[0];
     if (!effects.some((effect) => effect.type === "fetch")) return;
-    this.#waiting.set(key, { key, id: row.id });
+    this.#waiting.set(key, { key, id: row.id, at: row.contentUpdatedAt ?? null });
     this.#dispatch({ type: "wanted" });
   }
 
@@ -391,7 +464,7 @@ export class PageCards {
     const result = pageCardBatchMachine.step(this.#batches, event);
     this.#batches = result.state;
     for (const effect of result.effects) {
-      if (effect.type === "arm") this.#window.next(true);
+      if (effect.type === "arm") this.#window.next({ eager: effect.eager });
       else if (effect.type === "disarm") this.#window.next(false);
       else if (effect.type === "send") this.#send(effect.take);
     }
@@ -432,9 +505,10 @@ export class PageCards {
     for (let index = last + 1; index < this.#order.length && ahead.length < room; index++) {
       const row = this.#order[index];
       const key = cardKeyOf(row);
-      if (row.local || seen.has(key) || this.state(key).name !== "idle") continue;
+      const name = this.state(key).name;
+      if (row.local || row.held || seen.has(key) || (name !== "idle" && name !== "stale")) continue;
       seen.add(key);
-      ahead.push({ key, id: row.id });
+      ahead.push({ key, id: row.id, at: row.contentUpdatedAt ?? null });
     }
     this.#steps(ahead.map(({ key }) => [key, { type: "ahead" }]));
     return [...picked, ...ahead];
@@ -476,5 +550,14 @@ export class PageCards {
         return [key, { type: "missing" }];
       }),
     );
+    // What this account was just shown, for the device cache: each card, or
+    // null for one that has none now.
+    if (cards)
+      this.onCards(
+        batch.map(({ id, at = null }) => {
+          const found = cards[id];
+          return { id, at, card: found && typeof found === "object" ? found : null };
+        }),
+      );
   }
 }

@@ -1,4 +1,3 @@
-import { readServerAppSession } from "@cloud/oidc-session-store.ts";
 import { pagesPublicOrigin } from "../agent-guide.mjs";
 import { readAccessToken } from "./oauth-store.mjs";
 import { oauthDriverName } from "./oauth-clients.mjs";
@@ -12,6 +11,8 @@ import { REVISION_PATTERN } from "./revisions.mjs";
 import { kiloIdentity } from "./kilo-config.mjs";
 import { kiloToken, kiloTokenAccount } from "./kilo-token.mjs";
 import { organizationLeases, recordKiloMembership } from "./kilo-membership.mjs";
+import { rememberedServerAppSession } from "./session-memo.mjs";
+import { timingFor } from "./server-timing.mjs";
 
 export class HttpError extends Error {
   constructor(status, message, code) {
@@ -244,7 +245,19 @@ export async function withDomainAccess(identity, env) {
   });
 }
 
+/** The caller's identity from its credential. On a request the gateway
+ * times (server-timing.mjs) this is `auth`: checking the credential is
+ * `auth_session` and reading its audience leases is `auth_account`. */
 export async function authenticate(request, env) {
+  return timingFor(request).measure("auth", () => authenticateRequest(request, env));
+}
+
+/** withDomainAccess for `authenticate`, timed as `auth_account`. */
+const accountAccess = (request, identity, env) =>
+  timingFor(request).measure("auth_account", () => withDomainAccess(identity, env));
+
+async function authenticateRequest(request, env) {
+  const timing = timingFor(request);
   requireSameOrigin(request, env);
   const driver = driverLabel(request);
   const agent = agentLabel(request);
@@ -271,9 +284,9 @@ export async function authenticate(request, env) {
           new HttpError(403, "This credential is limited to Pages MCP"),
           "credential_scope",
         );
-      const grant = await readAccessToken(env, token, {
-        resource: pagesPublicOrigin(env) + "/mcp",
-      });
+      const grant = await timing.measure("auth_session", () =>
+        readAccessToken(env, token, { resource: pagesPublicOrigin(env) + "/mcp" }),
+      );
       if (!grant) throw new HttpError(401, "Reconnect your Pages client", "oauth_invalid_token");
       const scopes = new Set(grant.scope.split(" "));
       if (
@@ -287,7 +300,8 @@ export async function authenticate(request, env) {
         );
       if (!scopes.has("pages:read"))
         throw new HttpError(403, "Pages read permission is required", "oauth_insufficient_scope");
-      return withDomainAccess(
+      return accountAccess(
+        request,
         {
           principal: grant.identity.principal,
           displayName: grant.identity.displayName || grant.identity.principal,
@@ -327,10 +341,14 @@ export async function authenticate(request, env) {
           new HttpError(403, "This credential is limited to Pages agent tools"),
           "credential_scope",
         );
-      const account = await kiloTokenAccount(kilo, token);
-      const { principal, metadata } = kiloIdentity(kilo.config, account);
-      await recordExchange(env, principal, account);
-      return withDomainAccess(
+      const { account, principal, metadata } = await timing.measure("auth_session", async () => {
+        const account = await kiloTokenAccount(kilo, token);
+        const { principal, metadata } = kiloIdentity(kilo.config, account);
+        await recordExchange(env, principal, account);
+        return { account, principal, metadata };
+      });
+      return accountAccess(
+        request,
         {
           principal,
           displayName: metadata.displayName || principal,
@@ -357,7 +375,9 @@ export async function authenticate(request, env) {
     if (!identityProvider(env).apiKey) throw apiKeysUnsupported(env);
     let identity;
     try {
-      identity = await verifyApiKey(request, env, { token, authorization });
+      identity = await timing.measure("auth_session", () =>
+        verifyApiKey(request, env, { token, authorization }),
+      );
     } catch (error) {
       // A provider outage is not a credential verdict.
       const status = error?.status ?? (error?.name === "AuthError" ? 401 : 500);
@@ -381,7 +401,8 @@ export async function authenticate(request, env) {
         credential: "api-key",
         scope: identity.scope,
       });
-    return withDomainAccess(
+    return accountAccess(
+      request,
       {
         principal: identity.principal,
         displayName: identity.metadata.displayName || identity.principal,
@@ -413,7 +434,9 @@ export async function authenticate(request, env) {
       new HttpError(401, "Sign in to Pages", "auth_required"),
       "credential_missing",
     );
-  const session = await readServerAppSession(env, request, Math.floor(Date.now() / 1000));
+  const session = await timing.measure("auth_session", () =>
+    rememberedServerAppSession(env, request),
+  );
   // An expired, revoked or unrelated cookie: sign in again. The Origin check
   // already ran for this request.
   if (!session)
@@ -421,7 +444,8 @@ export async function authenticate(request, env) {
       new HttpError(401, "Sign in to Pages", "auth_required"),
       "credential_expired",
     );
-  return withDomainAccess(
+  return accountAccess(
+    request,
     {
       principal: session.principal,
       displayName: session.displayName || session.principal,

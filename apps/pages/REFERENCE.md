@@ -1261,6 +1261,18 @@ browser session, and the viewer offers the dialog only then. If the list
 answers 404 anyway, as an ingress without these routes does, the dialog says
 they aren't available here, shows no error, and the menu stops offering them.
 
+Each isolate remembers a browser session it read from D1 for up to 10 seconds,
+and never past the session's own expiry
+([session-memo.mjs](worker/session-memo.mjs)), because every host a request
+crosses authenticates it again. The memo is keyed by the session id the
+store derives from the cookie, so an unknown or malformed cookie is never
+answered from it. Signing out, signing out everywhere and a
+`GET /api/auth/session` renewal forget the session in the isolate that handles
+them. Another isolate may accept it for up to 10 seconds after sign-out or
+sign out everywhere, and an open sync socket, which re-authenticates every
+15 seconds, may stay open up to 25 seconds after. OAuth access tokens, API
+keys and Kilo tokens are not remembered this way.
+
 An hourly cron (`35 * * * *` UTC, [shared/schedule.mjs](shared/schedule.mjs))
 sweeps the auth database (worker/auth-maintenance.mjs). It deletes expired
 sign-in transactions and server sessions, expired OAuth consents, codes, tokens
@@ -4030,7 +4042,9 @@ itself, and a card is a drawing aid shaped for the grid, not a reading surface
 worth a stable contract.
 
 In grid mode each card asks for its card when it comes within 400px of the
-viewport ([page-cards.mjs](viewer/page-cards.mjs)). A card that asks waits at
+viewport ([page-cards.mjs](viewer/page-cards.mjs)). The grid's first request
+goes out as soon as the cards in view on the first paint have asked, with no
+gather window. After that, a card that asks waits at
 most 200 ms for others to share its request, counted from the first card
 waiting, and 24 waiting cards go out at once, so a steady scroll keeps loading
 while it runs: with a 150 ms round trip, every card shows within 350 ms of
@@ -4043,9 +4057,40 @@ down a 100-card grid sends 5 requests, not one per row. Each card follows a smal
 machine, `idle → requested → shown | empty | failed`, keyed by Page ID and the
 row's `content_updated_at`, so a Page edited since the grid asked asks again; a
 failed card asks again when it scrolls back in. One answer is one store update.
-The machines live as long as the mounted grid, with no cross-visit cache; a grid
-that doesn't know its account asks for nothing, and an answer naming another
-account is ignored. [PageCardPreview.jsx](viewer/PageCardPreview.jsx) draws the
+The machines live as long as the mounted grid. A card the library device cache
+kept (below) starts `stale`: it draws at once, asks again when it comes into
+view (`revalidating`, still drawn), and the answer replaces it; `null` drops
+it, and a failed request keeps it drawn. A grid that doesn't know its account
+asks for nothing and draws no kept card, and an answer naming another account
+is ignored.
+
+The library's default view (All, Last activity, no search, no Project) also
+paints from this browser's device cache
+([library-device-cache.mjs](viewer/library-device-cache.mjs)): IndexedDB
+`pages-library-cache`, one record per account under `library/v1/<principal>`,
+holding the first page `list_pages` last returned to that account here (at
+most 50 rows) and the `page_cards` answers for those rows (each at most
+12 KiB, with the image routes, so the browser's HTTP cache serves the image
+bytes). It is a rebuildable device cache, never normative; the local Page
+catalog is a separate database it never reads. An owned row keeps its title,
+times and Project; a row shared with the account keeps only its place (Page
+ID and times), drawn as an empty, inert slot until the server lists it, so a
+revoked share's title never outlives the 5-minute in-tab rule. Once the
+session names the account, the library sends `list_pages` and reads the
+record together; rows from the record paint if they land first
+([listing-machine.mjs](viewer/listing-machine.mjs) `revalidating`), and the
+answer replaces them in place, keyed by Page ID: a row no longer listed
+disappears, a stale title or time updates. A read that fails, stalls or lands
+late changes nothing. A failed first page over device rows keeps the
+account's own rows with Try again (`kept`). The record is written only under
+the account that answered and the cache revision its request began under,
+patched by Trash and renames, and removed for every account on sign-out,
+Sign out everywhere and an account change. A record paints for 14 days after
+`saved_at`, the time the server last listed its rows to that account here;
+only a fresh first page sets it, so card answers, Trash and renames never
+extend it. A record past the limit, or with a `saved_at` that is missing, not
+a number, or more than 5 minutes ahead of the clock, reads as nothing and the
+read removes it. The version is in the key: a new format reads nothing old. [PageCardPreview.jsx](viewer/PageCardPreview.jsx) draws the
 card through PagePreview's allowlist in its inert mode (no links, controls or
 images), laid out at a reading width and scaled with `transform: scale()`,
 `aria-hidden` with pointer events off: the card's link carries the title.
@@ -4075,7 +4120,8 @@ during it runs it once more when it settles, at most twice in a row, so a
 server that keeps refusing, or keeps answering for someone else, can't loop
 the tab. The cache overlays a rename this tab saw, forgets a Page
 moved to Trash or hidden by its host, drops the views of the account's own
-Pages after a create, move or restore, and is never persisted. Each patch
+Pages after a create, move or restore, and lives in memory only (the device
+cache above is a separate, narrower copy of the default view). Each patch
 moves the cache's revision, and a reply whose request began under an older
 one isn't written back, so a listing in flight across a create can't restore
 what it dropped. The Browse picker

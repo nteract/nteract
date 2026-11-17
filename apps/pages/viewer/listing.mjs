@@ -6,6 +6,11 @@
 // rows remembered from earlier in this tab), so a superseded request can't
 // overwrite a newer one.
 //
+// The library's default view also paints from the device cache
+// (library-device-cache.mjs) when its record lands before the first page;
+// the machine's `read` and `recall` effects run that, keyed like a request,
+// so a late, superseded or abandoned read never reaches the store.
+//
 // A listing does nothing while disconnected: React connects it on mount and
 // disconnects it on unmount. Disconnecting abandons every request in flight,
 // so a reply that lands after the screen is gone, or after the account
@@ -56,8 +61,11 @@ export class Listing {
   #idOf;
   #cache;
   #onShown;
+  #onRecalled;
   #newKey;
   #results = new Map();
+  /** Device records read for a request, by key, until `recall` paints them. */
+  #recalled = new Map();
   #searches = new Subject();
   #debounce;
   #scheduler;
@@ -79,12 +87,17 @@ export class Listing {
    *   each first page shown is written back with the principal that answered
    *   it and the cache revision its request began under, so a patch made
    *   while it was in flight wins.
+   *   When the cache scope has a `device` and `deviceView(params)` holds, a
+   *   load with nothing in memory also reads the device record (`recall`):
+   *   its rows paint if they land before the first page does.
    * - onShown({ items, principal, quota, append }): a page the machine
    *   accepted, as it reaches the screen. A superseded or abandoned reply
    *   never gets here.
+   * - onRecalled({ rows, cards }): the device record whose rows just
+   *   painted, for the grid's cards. Same rule: only a painted record.
    */
   constructor(
-    { fetch, report = () => {}, idOf, cache = null, onShown = () => {} },
+    { fetch, report = () => {}, idOf, cache = null, onShown = () => {}, onRecalled = () => {} },
     {
       newKey = () => crypto.randomUUID(),
       debounce = SEARCH_DEBOUNCE_MS,
@@ -96,6 +109,7 @@ export class Listing {
     this.#idOf = idOf;
     this.#cache = cache;
     this.#onShown = onShown;
+    this.#onRecalled = onRecalled;
     this.#newKey = newKey;
     this.#debounce = debounce;
     this.#scheduler = scheduler;
@@ -117,6 +131,7 @@ export class Listing {
       this.#connection++;
       this.#connected = false;
       this.#results.clear();
+      this.#recalled.clear();
     };
   }
   snapshot() {
@@ -128,11 +143,17 @@ export class Listing {
   }
   /** List `params` from its first page now, superseding any request in
    * flight. Params follow libraryRequest, so the request, the address and
-   * Back agree. Rows this tab showed for `params` before paint first. */
+   * Back agree. Rows this tab showed for `params` before paint first;
+   * otherwise, for the view the device keeps, rows from the device paint if
+   * they land before the first page. */
   load(params = DEFAULT_PARAMS) {
     if (!this.#connected) return false;
     const next = libraryRequest(params);
-    const type = this.#cache?.read(next)?.length ? "restore" : "load";
+    const type = this.#cache?.read(next)?.length
+      ? "restore"
+      : this.#cache?.device && this.#cache.deviceView?.(next)
+        ? "recall"
+        : "load";
     return this.#dispatch({ type, key: this.#newKey(), params: next });
   }
   /** List `query`, with the other params unchanged, once typing pauses
@@ -161,6 +182,15 @@ export class Listing {
         this.store.update((current) => ({ ...current, items }));
         return;
       }
+      case "read":
+        return this.#readDevice(effect.key);
+      case "recall": {
+        const record = this.#recalled.get(effect.key);
+        this.#recalled.delete(effect.key);
+        this.store.update((current) => ({ ...current, items: record?.rows ?? [] }));
+        if (record) this.#onRecalled(record);
+        return;
+      }
       case "show": {
         const answer = this.#results.get(effect.key) ?? EMPTY_ANSWER;
         this.#results.delete(effect.key);
@@ -184,6 +214,24 @@ export class Listing {
         return this.#report(effect.message);
     }
     throw new Error(`unknown effect ${effect.type}`);
+  }
+  /** Read the device record for the request under `key`. A read that fails,
+   * finds nothing, or lands after a disconnect sends nothing; one that lands
+   * after the first page is refused by the machine. */
+  #readDevice(key) {
+    const connection = this.#connection;
+    const device = this.#cache?.device;
+    if (!device) return;
+    Promise.resolve()
+      .then(() => device.read())
+      .then(
+        (record) => {
+          if (connection !== this.#connection || !record?.rows?.length) return;
+          this.#recalled.set(key, record);
+          if (!this.#dispatch({ type: "device", key })) this.#recalled.delete(key);
+        },
+        () => {},
+      );
   }
   #request({ key, params, cursor }) {
     const connection = this.#connection;
@@ -279,12 +327,16 @@ export const activityAt = (page) => page?.content_updated_at || page?.updated_at
 /** A library row uses only the Project placement disclosed by the host.
  * Direct-only shares omit placement; Project members can retain it.
  * `local` marks a copy only this browser lists
- * (deviceRows): `pending` when it has never reached the server. */
+ * (deviceRows): `pending` when it has never reached the server. `held`
+ * marks a shared row's place from the device cache: no title, no link and
+ * no card until the server lists it again (library-device-cache.mjs). */
 export function pageRow(page, projectTitles = new Map(), { local = false } = {}) {
   const projectId = page.project_id ?? null;
+  const held = page.held === true;
   return {
     id: page.page_id,
-    title: page.title || "Untitled",
+    title: held ? "" : page.title || "Untitled",
+    held,
     // A link carries the title's slug, and opening it in place pushes the
     // same address (onOpen's `slug`).
     href: pageLinkPath(page),
@@ -313,6 +365,13 @@ export function pageRow(page, projectTitles = new Map(), { local = false } = {})
  * it (matchingPages, the Browse picker's rule). A copy the server rows
  * already hold shows once, as the server's row. Copies of shared Pages look
  * the same as owned ones locally, so the offline fallback shows on All only.
+ *
+ * The ordering rule, from the first paint on: the server's order (its live
+ * answer, or the device's copy of its last one) is the order. A pending copy
+ * the server order holds shows once, in the server's place; one it doesn't
+ * hold shows above it, most recently changed first. Because the device copy
+ * paints first, a pending Page the server already lists never starts above
+ * the grid and then jumps into it.
  * A Project's content document (`contents`, its document IDs) is never a
  * Page: the server never lists it, so its local copy would otherwise look
  * like a draft forever. `contents` comes from list_projects, so a copy can
@@ -350,12 +409,15 @@ export function listingView({ state, items }) {
     loading: busy && items.length === 0,
     // A new search runs while the previous rows still show.
     searching: busy && items.length > 0,
-    // Rows remembered from earlier in this tab show while their first page
-    // is fetched again. Nothing says so: they are the rows the account saw.
-    refreshing: state.name === "refreshing",
-    failed: state.name === "failed",
+    // Rows remembered from earlier in this tab, or kept on this device, show
+    // while their first page is fetched again. Nothing says so: they are the
+    // rows the account saw.
+    refreshing: state.name === "refreshing" || state.name === "revalidating",
+    failed: state.name === "failed" || state.name === "kept",
+    // The first page failed over device rows: the account's own rows stay.
+    kept: state.name === "kept",
     // The server's code for a failed first page, or null.
-    failureCode: state.name === "failed" ? state.code : null,
+    failureCode: state.name === "failed" || state.name === "kept" ? state.code : null,
     empty: state.name === "ready" && items.length === 0,
     canLoadMore: state.name === "ready" && state.cursor !== null,
     loadingMore: state.name === "more",

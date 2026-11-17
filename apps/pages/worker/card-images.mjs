@@ -39,6 +39,7 @@ import { validPageId } from "./registration.mjs";
 import { setResponseHeaders } from "./response-headers.mjs";
 import { inspectImage, readImageBody } from "./image-assets.mjs";
 import { CARD_IMAGE_MAX_BYTES } from "../shared/card-images.mjs";
+import { timingFor } from "./server-timing.mjs";
 
 export { CARD_IMAGE_MAX_BYTES };
 /** The largest side an upload may have. Captures are 1280×960. */
@@ -359,7 +360,7 @@ export async function handleCardImage(
       revision = (await access.json()).revision;
       if (!Number.isSafeInteger(revision) || revision < 1)
         throw new Error("The Page host answered no card image revision");
-    } else if (!(await authorizeRead(identity))) {
+    } else if (!(await timingFor(request).measure("allowed", () => authorizeRead(identity)))) {
       throw new HttpError(404, "Card image not found");
     }
     const bucket = env.PAGES_ASSETS;
@@ -386,12 +387,17 @@ export async function handleCardImage(
       );
     }
     if (pointer) {
-      const view = cardImageView(pageId, await readCardImagePointer(bucket, pageId));
+      const view = cardImageView(
+        pageId,
+        await timingFor(request).measure("r2", () => readCardImagePointer(bucket, pageId)),
+      );
       return cardImageHeaders(Response.json({ card_hash: view?.card_hash ?? null }));
     }
     const [, imageHash, imageTheme, ext] = parsed;
     const key = cardImageKey(pageId, imageHash, imageTheme, ext);
-    const object = await (request.method === "HEAD" ? bucket.head(key) : bucket.get(key));
+    const object = await timingFor(request).measure("r2", () =>
+      request.method === "HEAD" ? bucket.head(key) : bucket.get(key),
+    );
     if (!object) throw new HttpError(404, "Card image not found");
     const contentType = object.httpMetadata?.contentType;
     if (contentType !== MEDIA_TYPES[ext] || object.customMetadata?.page_id !== pageId)

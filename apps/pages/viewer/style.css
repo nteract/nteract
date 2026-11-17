@@ -2416,6 +2416,16 @@ details.account-actions > div a:hover {
 .index-card-link:focus-visible {
   outline-offset: 2px;
 }
+/* A shared row's place from the device cache: the shape only, until the
+   server lists it (Library.jsx HeldRow, GridCard). */
+.index-card-held .index-card-link,
+.index-row-held {
+  opacity: 0.5;
+  pointer-events: none;
+}
+.index-card-held .index-card-link:hover {
+  border-color: var(--border);
+}
 .index-card-header {
   display: flex;
   align-items: flex-start;

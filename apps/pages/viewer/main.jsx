@@ -194,12 +194,14 @@ const pageRefs = new PageRefs();
 provideChitRefs(pageRefs);
 /** Forget the rows and Projects remembered for the account: it signed out or
  * another one signed in. The Browse picker closes and drops its walk; nothing
- * here starts a request. */
-function forgetAccountData() {
-  listingCache.clear();
+ * here starts a request. With `device`, the library's device cache goes too
+ * (every account's); resolves once that removal settles. */
+function forgetAccountData({ device = true } = {}) {
+  const cleared = device ? listingCache.clearDevice() : (listingCache.clear(), Promise.resolve());
   projectList.reset();
   picker.forget();
   pageRefs.clear(null);
+  return cleared;
 }
 /** The same, for a tool call the server refused as signed out, before the
  * session check says who is signed in. The Browse picker drops its rows but
@@ -933,7 +935,9 @@ function App() {
           setUnopened(null);
           catalogRevision.current++;
           // Rows and Projects remembered for one account never show another.
-          forgetAccountData();
+          // The tab's first answer isn't a change of account: the device
+          // cache stays, keyed by principal, for the account it names.
+          void forgetAccountData({ device: authentication.current !== null });
           setLocalPages([]);
           setQuota(null);
           setOpening(false);
@@ -1412,9 +1416,11 @@ function App() {
   }
   /** The host has ended this browser's session: forget the account here. */
   async function leaveSignedOut() {
-    forgetAccountData();
+    // The device cache's removal lands before the page goes (bounded).
+    const cleared = forgetAccountData();
     let failed;
     await host.close(host.current, { onError: (error) => (failed = error) });
+    await cleared;
     if (failed) throw failed;
     location.href = "/";
   }
