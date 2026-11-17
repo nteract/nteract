@@ -2689,6 +2689,65 @@ pub(crate) async fn process_watcher_event(
     WatcherOutcome::Done
 }
 
+/// Drive the watcher: handle every debounced event for `notebook_path`, and
+/// re-handle a revision that could not apply yet (its replaced edits could
+/// not be saved, or the document kept moving) on a backoff timer until it
+/// applies or a new event for the file supersedes it.
+///
+/// The retry is a fixed deadline. Events for other files in the directory
+/// wake the loop but leave the deadline alone, so a busy directory cannot
+/// postpone the retry.
+pub(crate) async fn run_watcher_loop<F, Fut>(
+    notebook_path: &Path,
+    rx: &mut tokio::sync::mpsc::Receiver<DebounceEventResult>,
+    shutdown_rx: &mut oneshot::Receiver<()>,
+    mut handle: F,
+) where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = WatcherOutcome>,
+{
+    // (deadline, backoff that produced it)
+    let mut retry: Option<(tokio::time::Instant, std::time::Duration)> = None;
+    loop {
+        let retry_at = retry.map(|(at, _)| at);
+        tokio::select! {
+            _ = tokio::time::sleep_until(retry_at.unwrap_or_else(tokio::time::Instant::now)), if retry_at.is_some() => {
+                let backoff = retry.map_or(WATCHER_RETRY_MIN, |(_, backoff)| backoff);
+                retry = match handle().await {
+                    WatcherOutcome::RetryLater => {
+                        let next = (backoff * 2).min(WATCHER_RETRY_MAX);
+                        Some((tokio::time::Instant::now() + next, next))
+                    }
+                    WatcherOutcome::Done => None,
+                };
+            }
+            Some(result) = rx.recv() => {
+                match result {
+                    Ok(events) => {
+                        if !events.iter().any(|e| e.path == notebook_path) {
+                            continue;
+                        }
+                        retry = match handle().await {
+                            WatcherOutcome::RetryLater => Some((
+                                tokio::time::Instant::now() + WATCHER_RETRY_MIN,
+                                WATCHER_RETRY_MIN,
+                            )),
+                            WatcherOutcome::Done => None,
+                        };
+                    }
+                    Err(errs) => {
+                        warn!("[notebook-watch] Watch error for {:?}: {:?}", notebook_path, errs);
+                    }
+                }
+            }
+            _ = &mut *shutdown_rx => {
+                info!("[notebook-watch] Shutting down watcher for {:?}", notebook_path);
+                break;
+            }
+        }
+    }
+}
+
 pub(crate) fn spawn_notebook_file_watcher(
     notebook_path: PathBuf,
     room: Arc<NotebookRoom>,
@@ -2747,45 +2806,10 @@ pub(crate) fn spawn_notebook_file_watcher(
             notebook_path
         );
 
-        // A revision that could not apply yet (its replaced edits could not
-        // be saved, or the document kept moving) is retried with backoff
-        // until it applies or a new file event supersedes it.
-        let mut retry_delay: Option<std::time::Duration> = None;
-        loop {
-            let retry_sleep = tokio::time::sleep(retry_delay.unwrap_or(WATCHER_RETRY_MAX));
-            tokio::select! {
-                _ = retry_sleep, if retry_delay.is_some() => {
-                    let outcome = process_watcher_event(&room, &notebook_path).await;
-                    retry_delay = match (outcome, retry_delay) {
-                        (WatcherOutcome::RetryLater, Some(delay)) => Some((delay * 2).min(WATCHER_RETRY_MAX)),
-                        (WatcherOutcome::RetryLater, None) => Some(WATCHER_RETRY_MIN),
-                        (WatcherOutcome::Done, _) => None,
-                    };
-                }
-                Some(result) = rx.recv() => {
-                    match result {
-                        Ok(events) => {
-                            // Check if any event is for our notebook file
-                            let relevant = events.iter().any(|e| e.path == notebook_path);
-                            if !relevant {
-                                continue;
-                            }
-                            retry_delay = match process_watcher_event(&room, &notebook_path).await {
-                                WatcherOutcome::RetryLater => Some(WATCHER_RETRY_MIN),
-                                WatcherOutcome::Done => None,
-                            };
-                        }
-                        Err(errs) => {
-                            warn!("[notebook-watch] Watch error for {:?}: {:?}", notebook_path, errs);
-                        }
-                    }
-                }
-                _ = &mut shutdown_rx => {
-                    info!("[notebook-watch] Shutting down watcher for {:?}", notebook_path);
-                    break;
-                }
-            }
-        }
+        run_watcher_loop(&notebook_path, &mut rx, &mut shutdown_rx, || {
+            process_watcher_event(&room, &notebook_path)
+        })
+        .await;
     });
 
     shutdown_tx

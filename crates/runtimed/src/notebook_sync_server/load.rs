@@ -3362,14 +3362,16 @@ enum PutBack {
 /// A peer can author an edit against the notebook from before an external
 /// revision and sync it after the revision applied. Automerge then merges it
 /// into the file's text: a pending `)` typed after `print(x` lands as
-/// `y = 2)`, and keystrokes typed onto that merged text build on it. Before
-/// an in-place save, every rewritten cell such edits changed is snapshotted
-/// with the rest of the live notebook, recorded like any other displaced
-/// edit, and set back to the file's version plus clean later edits. Late
-/// edits to cells no revision rewrote stay.
+/// `y = 2)`, and keystrokes typed onto that merged text build on it. Every
+/// rewritten cell such edits changed is snapshotted with the rest of the
+/// live notebook, recorded like any other displaced edit, and set back to
+/// the file's version plus clean later edits. Late edits to cells no
+/// revision rewrote stay.
 ///
-/// Runs before every in-place save for [`EXTERNAL_REVISION_GUARD_WINDOW`]
-/// after the latest revision, and until a failed put-back succeeds. `Err`
+/// Runs when peer sync admits changes and before every in-place save, for
+/// [`EXTERNAL_REVISION_GUARD_WINDOW`] after the latest revision and until a
+/// failed put-back succeeds. Running at admission resolves a late change
+/// before the peer's next edits build on it, so those edits stay. `Err`
 /// means the save must wait.
 pub(crate) async fn put_back_late_concurrent_edits(room: &NotebookRoom) -> Result<(), String> {
     for _ in 0..MAX_SNAPSHOT_ATTEMPTS {
