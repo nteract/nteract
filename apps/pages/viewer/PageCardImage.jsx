@@ -4,7 +4,7 @@
 // lazily loaded image that isn't shown isn't fetched. The JSON card stays
 // underneath, so an image that fails to load leaves it showing.
 //
-// The grid's first row (first-screen-cards.mjs) holds the library's largest
+// The grid's first row (Library.jsx FIRST_SCREEN_CARDS) holds the library's largest
 // paint, so its cards' shown image loads eagerly at high priority
 // (`priority`). The hidden theme's image always stays lazy, so it is never
 // fetched while hidden.

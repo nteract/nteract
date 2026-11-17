@@ -83,7 +83,6 @@ import {
 } from "./library-folds.mjs";
 import { listingCache } from "./listing-cache.mjs";
 import { useStore } from "./store.mjs";
-import { FIRST_SCREEN_CARDS } from "./first-screen-cards.mjs";
 import { readDisplayMode, writeDisplayMode } from "./display-mode.mjs";
 import { timeCell } from "./relative-time.mjs";
 import { Clock } from "./clock.mjs";
@@ -776,6 +775,16 @@ function HeldRow({ source }) {
 
 /** Grid mode: each card is one link to its Page, so it carries no Project
  * label (a link inside a link). */
+// The grid cards whose images load eagerly at high priority. The grid is at
+// most 1200px wide with 200px columns and 1rem gaps (style.css, .index-grid),
+// so its widest layout has 5 columns: this is its first row. The largest
+// paint is the first card image to finish, and
+// scripts/library-lcp-benchmark.mjs on Fast 4G over HTTP/2 measured the same
+// LCP with 5, 10 or 20 eager images (2.40, 2.38 and 2.39 s, 24 captured cards
+// at 1440x900). With nothing to gain from more, the first row keeps the
+// fewest images ahead of everything else on the link. Measure before raising.
+export const FIRST_SCREEN_CARDS = 5;
+
 function PageGrid({ sections, folded, onToggle, busy, onOpen, onOpenProject, onWarm, cards }) {
   // The order batches top up in (page-cards.mjs): the cards as shown, which
   // leaves out a folded group's.
@@ -786,8 +795,8 @@ function PageGrid({ sections, folded, onToggle, busy, onOpen, onOpenProject, onW
       ),
     [cards, sections, folded],
   );
-  // The first-screen cards (first-screen-cards.mjs), whose images load first.
-  // A held slot has no image, so it takes no place among them.
+  // The first-screen cards, whose images load first. A held slot has no
+  // image, so it takes no place among them.
   const first = useMemo(
     () =>
       new Set(

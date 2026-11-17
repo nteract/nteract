@@ -2954,21 +2954,21 @@ The viewer is `app.js`, which renders the shell (header, account, sign-in and
 the Page list), plus content-hashed files under `/chunks/`. The editor chunk
 waits for the WASM runtimes; the
 [editor-load machine](viewer/editor-load-machine.mjs) tracks its import, and
-the [editor-start machine](viewer/editor-start-machine.mjs) decides when to
-ask for it ahead of an open. A route that opens a document (a Page, Project
-content) starts it at boot, and `theme.js` preloads Automerge's WASM in
-`<head>` on those routes only. The listing routes, `/`, `/pages` and
-`/projects`, render from the shell and its static chunks alone. They start the
-editor once their first rows have painted, the grid's first-screen card
-images have loaded or failed (at most 3 seconds after the rows), and the
-browser is idle (at most 2 seconds more), with the WASM preload at
-`fetchpriority="low"` so it doesn't take the link from the images. A pointer
-or keyboard focus entering a row, New Page or the Page switcher starts it at
-once, at normal priority. Starting the import also preloads the WASM, so the
-two download together. Opening a Page or creating one starts it in any case
-and ends the wait. `scripts/viewer-chunks.mjs` records a ceiling on the size of `app.js`
-and its static chunks, and the build fails past it or if that graph reaches
-the editor or a WASM runtime. A
+`editorBoot` in [wasm-preload.mjs](viewer/wasm-preload.mjs) says whether it
+starts at boot and at what priority. A route that opens a document (a Page,
+Project content) starts it at boot. Home (`/`) starts it at boot too, since a
+Page usually opens next, but `theme.js` preloads Automerge's WASM there at
+`fetchpriority="low"`, so the library's card images keep the link. On those
+routes `theme.js` adds the WASM preload in `<head>`, beside `app.js`. The
+index routes, `/projects` and `/pages`, only list, so they render from the
+shell and its static chunks alone and load neither the editor nor the WASM.
+They start the editor import when a Page opens or a new Page is created, or a
+little earlier when a pointer goes down on a Page row; starting the import
+preloads the WASM, so the two download together. The grid's first row of card
+images (five) loads eagerly at high priority, and a hidden theme's image
+never loads. `scripts/viewer-chunks.mjs` records a ceiling on the size of
+`app.js` and its static chunks, and the build fails past it or if that graph
+reaches the editor or a WASM runtime. A
 release serves only its own chunks, so a tab still running an earlier `app.js`
 can find its editor chunk gone: the path then answers with the app's HTML and
 the import fails. The tab asks `/health` for the build and the banner offers

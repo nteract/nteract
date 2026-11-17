@@ -1,5 +1,6 @@
-// Where the Automerge WASM preload goes: theme.js adds it on routes that open
-// a document, and nowhere else; the editor loader adds it when it starts.
+// When the editor starts at boot and at what priority (editorBoot), and where
+// the Automerge WASM preload goes: theme.js adds it where the editor starts at
+// boot; the editor loader adds it when it starts anywhere else.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -7,7 +8,7 @@ import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 import { BROWSER_WASM_URLS, wasmUrlDefine } from "../scripts/browser-wasm.mjs";
 import { readPageRoute } from "../shared/routes.mjs";
-import { AUTOMERGE_WASM_URL, opensDocument, preloadWasm } from "./wasm-preload.mjs";
+import { AUTOMERGE_WASM_URL, editorBoot, preloadWasm } from "./wasm-preload.mjs";
 
 const pageId = "1a160b47-6df1-4983-81eb-489ca5a26812";
 const projectId = "prj_2b160b47-6df1-4983-81eb-489ca5a26812";
@@ -28,17 +29,23 @@ test("unbundled code preloads the source name the build hashes", () => {
   });
 });
 
-test("Pages and Project content open a document; listings and other paths don't", () => {
-  for (const path of [
-    `/p/${pageId}`,
-    `/p/${pageId}/roadmap`,
-    `/?page=${pageId}`,
-    `/project/${projectId}`,
-  ])
-    assert.equal(opensDocument(readPageRoute(path)), true, path);
-  for (const path of ["/", "/?show=shared", "/pages", "/projects", "/connect", "/oauth/authorize"])
-    assert.equal(opensDocument(readPageRoute(path)), false, path);
-  assert.equal(opensDocument(null), false);
+const DOCUMENTS = [
+  `/p/${pageId}`,
+  `/p/${pageId}/roadmap`,
+  `/?page=${pageId}`,
+  `/project/${projectId}`,
+];
+const HOMES = ["/", "/?show=shared&group=project"];
+const WAITING = ["/pages", "/projects", "/connect", "/oauth/authorize"];
+
+test("a document starts the editor at boot, Home at low priority, and nothing else", () => {
+  for (const path of DOCUMENTS)
+    assert.deepEqual(editorBoot(readPageRoute(path)), { start: true, priority: null }, path);
+  for (const path of HOMES)
+    assert.deepEqual(editorBoot(readPageRoute(path)), { start: true, priority: "low" }, path);
+  for (const path of WAITING)
+    assert.deepEqual(editorBoot(readPageRoute(path)), { start: false, priority: null }, path);
+  assert.deepEqual(editorBoot(null), { start: false, priority: null });
 });
 
 test("the preload is the CORS fetch the editor chunk reuses, added once", () => {
@@ -58,7 +65,7 @@ test("the preload is the CORS fetch the editor chunk reuses, added once", () => 
   window.close();
 });
 
-test("a listing's idle start preloads the WASM at low fetch priority", () => {
+test("a low-priority preload says so", () => {
   const { window } = new JSDOM("<!doctype html><head></head><body></body>");
   assert.equal(preloadWasm(window.document, { url: HASHED, priority: "low" }), true);
   assert.deepEqual(preloads(window.document), [
@@ -94,16 +101,19 @@ function headAfterTheme(path) {
   return found;
 }
 
-test("theme.js preloads the WASM in <head> on a route that opens a document", () => {
-  for (const path of [`/p/${pageId}/roadmap`, `/?page=${pageId}`, `/project/${projectId}`])
-    assert.deepEqual(
-      headAfterTheme(path),
-      [{ href: HASHED, as: "fetch", crossorigin: "anonymous", priority: null }],
-      path,
-    );
+test("theme.js preloads the WASM in <head> where the editor starts at boot", () => {
+  for (const [paths, priority] of [
+    [DOCUMENTS, null],
+    [HOMES, "low"],
+  ])
+    for (const path of paths)
+      assert.deepEqual(
+        headAfterTheme(path),
+        [{ href: HASHED, as: "fetch", crossorigin: "anonymous", priority }],
+        path,
+      );
 });
 
-test("theme.js leaves the WASM to the editor start on listings and the Worker's pages", () => {
-  for (const path of ["/", "/?show=shared&group=project", "/pages", "/projects", "/connect"])
-    assert.deepEqual(headAfterTheme(path), [], path);
+test("theme.js leaves the WASM to the first open on the index routes and the Worker's pages", () => {
+  for (const path of WAITING) assert.deepEqual(headAfterTheme(path), [], path);
 });

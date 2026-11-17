@@ -1,7 +1,7 @@
-// The preload for Automerge's WASM, which the editor chunk awaits before a
-// Page opens (scripts/browser-wasm.mjs). The shell doesn't name it: theme.js
-// adds it in <head> on a route that opens a document, and the editor loader
-// adds it when it starts the import anywhere else, so the download overlaps
+// When the Page editor starts, and the preload for Automerge's WASM, which
+// the editor chunk awaits before a Page opens (scripts/browser-wasm.mjs).
+// The shell doesn't name the WASM: theme.js adds the preload in <head>, beside
+// app.js, on a route whose editor starts at boot, so the download overlaps
 // the editor chunk's instead of following it.
 //
 // The preload must match the chunk's fetch(url): same URL, and crossorigin,
@@ -16,14 +16,27 @@ export const AUTOMERGE_WASM_URL =
     ? __PAGES_AUTOMERGE_WASM_URL__
     : "/automerge.wasm";
 
-/** Route kinds (shared/routes.mjs) whose first screen is a document. */
-const DOCUMENT_ROUTES = Object.freeze(["page", "project"]);
-export const opensDocument = (route) => DOCUMENT_ROUTES.includes(route?.kind);
+/**
+ * Whether the editor starts at boot on `route` (shared/routes.mjs), and the
+ * fetch priority of its downloads.
+ *
+ * - A Page or Project content opens a document, which waits on the editor:
+ *   it starts at boot at the default priority (null).
+ * - Home (/) lists, but a Page usually opens next: the editor starts at boot
+ *   at low priority, so the first screen's card images keep the link.
+ * - Anything else waits until a Page opens: the index routes (/pages,
+ *   /projects), which only list, and a missing route, which also covers the
+ *   Worker's own pages that load theme.js (/connect, OAuth).
+ */
+export function editorBoot(route) {
+  if (route?.kind === "page" || route?.kind === "project") return { start: true, priority: null };
+  if (route?.kind === "home") return { start: true, priority: "low" };
+  return { start: false, priority: null };
+}
 
 /** Add the WASM preload to `page`'s head unless it has one. Returns whether
- * it added one. `priority: "low"` marks it `fetchpriority="low"`, for a
- * listing that starts the editor ahead of need; the chunk's fetch(url) still
- * reuses it, since priority isn't part of the match. */
+ * it added one. `priority` sets `fetchpriority`; the chunk's fetch(url) still
+ * reuses the preload, since priority isn't part of the match. */
 export function preloadWasm(page, { url = AUTOMERGE_WASM_URL, priority = null } = {}) {
   const head = page?.head;
   if (!head) return false;

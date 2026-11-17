@@ -26,12 +26,19 @@
 // grid at 1440x900, throttled to Chrome DevTools' "Fast 4G" preset (9 Mbit/s
 // down, 1.5 up, 165 ms latency, each at DevTools' 90%) through CDP. Static
 // assets pass through an edge-like brotli proxy (edge-proxy.mjs).
-// HTTP/2 matters here: request priorities decide how one connection's
-// bandwidth is shared, where HTTP/1.1 queues behind six connections.
+// HTTP/2 matters here: one connection carries every request, where HTTP/1.1
+// queues behind six. The throttle shapes each response in the browser, after
+// the proxy has sent it at loopback speed, so it shows when requests start
+// and how many share the link, but not how an edge's HTTP/2 prioritization
+// would split it: `fetchpriority` moves little here.
 //
 // Per load: LCP (buffered PerformanceObserver) and its element, when the
 // first card image finished, when the first screen's shown card images had
 // all finished, and when the editor chunk and the WASM started and finished.
+// A second load per variant and round clicks the first card the moment a
+// card image is reported as LCP, and records how long the Page's editor
+// content takes to show after that click: a person who opens a Page as soon
+// as the library draws.
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -64,6 +71,9 @@ const FAST_4G = {
   uploadThroughput: (1.5 * 1000 * 1000 * 0.9) / 8,
 };
 const VIEWPORT = { width: 1440, height: 900 };
+// Every fixture Page's body says this, so the editor that shows it holds the
+// opened Page.
+const BODY_TEXT = "met on Tuesday";
 const report = { completed: [], errors: [], images: [], runs: [], cleaned: false };
 const complete = (name) => {
   report.completed.push(name);
@@ -230,30 +240,90 @@ try {
         });
     }).observe({ type: "largest-contentful-paint", buffered: true });
   };
+  // The click load: once armed, the first card image reported as LCP clicks
+  // its card, and the editor showing the Page's body ends the measure.
+  const CLICK = (text) => {
+    window.__clickAt = null;
+    window.__editorReady = null;
+    window.__armClick = () =>
+      new PerformanceObserver((list, observer) => {
+        const entry = list
+          .getEntries()
+          .find((candidate) => candidate.element?.matches("img.page-card-image"));
+        const link = entry?.element.closest(".index-card-link");
+        if (!link) return;
+        observer.disconnect();
+        window.__clickAt = performance.now();
+        link.click();
+        new MutationObserver((_, watch) => {
+          const shown = [...document.querySelectorAll("wg-content")].some((content) =>
+            content.textContent.includes(text),
+          );
+          if (!shown) return;
+          window.__editorReady = performance.now();
+          watch.disconnect();
+        }).observe(document, { childList: true, subtree: true, characterData: true });
+      }).observe({ type: "largest-contentful-paint", buffered: true });
+  };
+  // A new signed-in context on the throttled grid; `click` arms the click.
+  const openGrid = async (click) => {
+    // The Pages session cookie is for localhost, whatever the port and scheme.
+    const context = await browser.newContext({
+      storageState,
+      viewport: VIEWPORT,
+      ignoreHTTPSErrors: true,
+    });
+    await context.addInitScript(INSTRUMENT);
+    await context.addInitScript(CLICK, BODY_TEXT);
+    const page = await context.newPage();
+    page.on("pageerror", (error) => report.errors.push(error.message));
+    const cdp = await context.newCDPSession(page);
+    await cdp.send("Network.enable");
+    // The priority Chrome gave each request, by path, after any change.
+    const priorities = new Map();
+    const byId = new Map();
+    cdp.on("Network.requestWillBeSent", ({ requestId, request }) => {
+      const pathname = new URL(request.url).pathname;
+      byId.set(requestId, pathname);
+      priorities.set(pathname, request.initialPriority);
+    });
+    cdp.on("Network.resourceChangedPriority", ({ requestId, newPriority }) => {
+      if (byId.has(requestId)) priorities.set(byId.get(requestId), newPriority);
+    });
+    if (REPEAT) {
+      // A visit before, unthrottled: its HTTP cache, and the rows and cards
+      // the device keeps, are what the measured load starts from.
+      await page.goto(`${proxy.origin}/?grid=1`, { waitUntil: "load", timeout: 120000 });
+      await expect(page.locator("img.page-card-image").first()).toBeVisible({ timeout: 120000 });
+      await page.waitForTimeout(5000);
+    }
+    await cdp.send("Network.emulateNetworkConditions", FAST_4G);
+    await page.goto(`${proxy.origin}/?grid=1`, { waitUntil: "commit", timeout: 120000 });
+    // The init scripts ran; arm before the first paint can report.
+    if (click) await page.evaluate(() => window.__armClick());
+    return { context, page, priorities };
+  };
   for (let run = 1; run <= RUNS; run++)
     for (const variant of variants) {
       current = VARIANTS.length ? variant : null;
       const { editorChunk, wasm } = variant;
-      // The Pages session cookie is for localhost, whatever the port and scheme.
-      const context = await browser.newContext({
-        storageState,
-        viewport: VIEWPORT,
-        ignoreHTTPSErrors: true,
-      });
-      await context.addInitScript(INSTRUMENT);
-      const page = await context.newPage();
-      page.on("pageerror", (error) => report.errors.push(error.message));
-      const cdp = await context.newCDPSession(page);
-      await cdp.send("Network.enable");
-      if (REPEAT) {
-        // A visit before, unthrottled: its HTTP cache, and the rows and cards
-        // the device keeps, are what the measured load starts from.
-        await page.goto(`${proxy.origin}/?grid=1`, { waitUntil: "load", timeout: 120000 });
-        await expect(page.locator("img.page-card-image").first()).toBeVisible({ timeout: 120000 });
-        await page.waitForTimeout(5000);
+      {
+        const { context, page } = await openGrid(true);
+        await expect
+          .poll(() => page.evaluate(() => window.__editorReady), {
+            timeout: 120000,
+            intervals: [250],
+          })
+          .not.toBeNull();
+        const click = await page.evaluate(() => ({
+          clickAt: window.__clickAt,
+          editorReady: window.__editorReady - window.__clickAt,
+        }));
+        (variant.clicks ??= []).push(click);
+        console.log(`[Library LCP] ${variant.name} click ${run}: ${JSON.stringify(click)}`);
+        await context.close();
       }
-      await cdp.send("Network.emulateNetworkConditions", FAST_4G);
-      await page.goto(`${proxy.origin}/?grid=1`, { waitUntil: "commit", timeout: 120000 });
+      const { context, page, priorities } = await openGrid(false);
       await expect(page.locator("img.page-card-image").first()).toBeVisible({ timeout: 120000 });
       // Let the editor and WASM finish, or give up after a minute.
       await expect
@@ -326,6 +396,12 @@ try {
         { editorChunk, wasm },
       );
       sample.variant = variant.name;
+      // Chrome's network priority for the editor chunk and the WASM; in a
+      // repeat visit the HTTP cache may answer without a request.
+      sample.networkPriority = {
+        editor: priorities.get(editorChunk) ?? null,
+        wasm: priorities.get(wasm) ?? null,
+      };
       report.runs.push(sample);
       console.log(`[Library LCP] ${variant.name} run ${run}: ${JSON.stringify(sample)}`);
       if (run === 1)
@@ -339,7 +415,9 @@ try {
     const sorted = values.filter((value) => typeof value === "number").sort((a, b) => a - b);
     return sorted.length ? Math.round(sorted[Math.floor(sorted.length / 2)]) : null;
   };
-  const medians = (runs) => ({
+  const medians = (runs, clicks) => ({
+    clickAt: median(clicks.map((click) => click.clickAt)),
+    editorReadyAfterClick: median(clicks.map((click) => click.editorReady)),
     firstCard: median(runs.map((run) => run.firstCard)),
     lcp: median(runs.map((run) => run.lcp)),
     firstImageEnd: median(runs.map((run) => run.firstImageEnd)),
@@ -350,14 +428,22 @@ try {
     wasmEnd: median(runs.map((run) => run.wasm?.end)),
     wasmRequests: Math.max(...runs.map((run) => run.wasm?.count ?? 0)),
     wasmPriorities: [...new Set(runs.map((run) => run.wasmPriority))],
+    networkPriorities: [...new Set(runs.map((run) => JSON.stringify(run.networkPriority)))],
     protocols: [...new Set(runs.map((run) => run.protocol))],
     lcpElements: [...new Set(runs.map((run) => run.lcpElement))],
     lcps: runs.map((run) => Math.round(run.lcp)),
     banners: runs.filter((run) => run.banner).length,
   });
   report.medians = Object.fromEntries(
-    variants.map(({ name }) => [name, medians(report.runs.filter((run) => run.variant === name))]),
+    variants.map(({ name, clicks }) => [
+      name,
+      medians(
+        report.runs.filter((run) => run.variant === name),
+        clicks,
+      ),
+    ]),
   );
+  report.clicks = Object.fromEntries(variants.map(({ name, clicks }) => [name, clicks]));
   console.log(JSON.stringify(report.medians, null, 2));
   complete(`Measured ${RUNS} throttled loads of the grid for each of ${variants.length} viewers`);
 } catch (error) {

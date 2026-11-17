@@ -1,16 +1,15 @@
-// When the library and a Page load the editor, on a real local host. The
-// library at / draws its rows from app.js and its static chunks alone: the
-// editor chunk and Automerge's WASM are requested only after the first row is
-// in the document, within the idle wait (viewer/editor-start.mjs), at once
-// when a pointer enters a row, and a click on a row before either still opens
-// the Page. A direct Page load preloads the WASM from theme.js in <head>,
-// downloaded once. Each load is a fresh browser context, so nothing comes
-// from the HTTP cache. Records request start times in report.json.
+// When the library and a Page load the editor, on a real local host
+// (viewer/wasm-preload.mjs editorBoot). Home (/) starts the editor at boot,
+// with theme.js preloading Automerge's WASM at fetchpriority="low" beside
+// app.js. /pages lists from the shell alone: neither the editor chunk nor the
+// WASM loads until a Page opens, and a click on a row opens it. A direct Page
+// load preloads the WASM from theme.js at the default priority. Each WASM
+// downloads once. Each load is a fresh browser context, so nothing comes from
+// the HTTP cache. Records request start times in report.json.
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { chromium, expect } from "@playwright/test";
-import { IDLE_TIMEOUT_MS } from "../viewer/editor-start.mjs";
 
 const origin = process.env.PAGES_ORIGIN || "http://localhost:9894";
 assert.equal(new URL(origin).hostname, "localhost");
@@ -40,26 +39,9 @@ async function signIn(email) {
   return page;
 }
 
-/** A signed-in tab with an empty HTTP cache. `holdIdle` keeps the idle
- * start from running, so only intent or an open can start the editor. */
-async function fresh(storageState, viewport, { holdIdle = false } = {}) {
+/** A signed-in tab with an empty HTTP cache. */
+async function fresh(storageState, viewport) {
   const context = await browser.newContext({ storageState, viewport });
-  await context.addInitScript(
-    ({ rows, holdIdle }) => {
-      // When the first row joins the document, on the resource timeline.
-      window.__firstRow = null;
-      new MutationObserver((_, observer) => {
-        if (!document.querySelector(rows)) return;
-        window.__firstRow = performance.now();
-        observer.disconnect();
-      }).observe(document, { childList: true, subtree: true });
-      if (holdIdle) {
-        window.requestIdleCallback = () => 0;
-        window.cancelIdleCallback = () => {};
-      }
-    },
-    { rows: ROWS, holdIdle },
-  );
   const page = await context.newPage();
   page.on("pageerror", (error) => report.errors.push(error.message));
   return page;
@@ -86,6 +68,15 @@ const firstStart = async (page, pathname, timeout = 10_000) => {
     .toBeGreaterThan(0);
   return Math.min(...found.map((entry) => entry.startTime));
 };
+/** app.js's resource entry. */
+const appEntry = (page) =>
+  page.evaluate(
+    () =>
+      performance
+        .getEntriesByType("resource")
+        .find((entry) => /\/app-[A-Z2-7]{8}\.js$/.test(entry.name))
+        ?.toJSON() ?? null,
+  );
 const round = (value) => Math.round(value * 10) / 10;
 const preloadPriority = (page) =>
   page.evaluate(
@@ -115,8 +106,8 @@ try {
     pages.push(created.body.page_id);
   }
   const storageState = await owner.context().storageState();
-  // The editor chunk is app.js's one dynamic import; the WASM is the URL
-  // app.js preloads when the editor starts.
+  // The editor chunk is app.js's one dynamic import; the WASM is the hashed
+  // URL app.js names.
   const { editorChunk, wasm } = await owner.evaluate(async () => {
     const html = await (await fetch("/")).text();
     const app = html.match(/src="(\/app-[A-Z2-7]{8}\.js)"/)[1];
@@ -137,72 +128,40 @@ try {
     const page = await fresh(storageState, viewport);
     await page.goto(`${origin}/`, { waitUntil: "domcontentloaded" });
     await expect(page.locator(ROWS).first()).toBeVisible({ timeout: 30000 });
-    const firstRow = await page.evaluate(() => window.__firstRow);
-    assert.ok(firstRow !== null);
-    const editorStart = await firstStart(page, editorChunk, IDLE_TIMEOUT_MS + 5000);
-    const wasmStart = await firstStart(page, wasm, IDLE_TIMEOUT_MS + 5000);
-    assert.ok(
-      editorStart >= firstRow,
-      `${name}: editor at ${editorStart}, first row at ${firstRow}`,
-    );
-    assert.ok(wasmStart >= firstRow, `${name}: WASM at ${wasmStart}, first row at ${firstRow}`);
-    // The idle wait, plus room for a loaded test machine.
-    assert.ok(editorStart - firstRow <= IDLE_TIMEOUT_MS + 1000, `${name}: editor waited too long`);
-    assert.ok(wasmStart - firstRow <= IDLE_TIMEOUT_MS + 1000, `${name}: WASM waited too long`);
-    assert.equal((await entries(page, wasm)).length, 1, "the WASM downloads once");
-    // Ahead of need, the WASM yields to the library's own requests, and the
-    // chunk's fetch still reuses the low-priority preload.
-    assert.equal(await preloadPriority(page), "low");
+    const editorStart = await firstStart(page, editorChunk);
+    await firstStart(page, wasm);
+    const found = await entries(page, wasm);
+    assert.equal(found.length, 1, "the WASM downloads once: the editor reuses the preload");
+    assert.equal(found[0].initiatorType, "link", "theme.js preloaded it");
+    assert.equal(await preloadPriority(page), "low", "Home asks for the WASM at low priority");
+    const app = await appEntry(page);
+    assert.ok(found[0].startTime <= app.responseEnd, "the WASM starts before app.js finishes");
     report.timings[`home_${name}`] = {
-      first_row: round(firstRow),
+      app_response_end: round(app.responseEnd),
       editor_chunk_start: round(editorStart),
-      wasm_start: round(wasmStart),
+      wasm_start: round(found[0].startTime),
     };
     await page.screenshot({ path: path.join(output, `home-${name}.png`) });
     await page.context().close();
   }
-  complete(
-    "/ draws its first rows before it asks for the editor or the WASM, then starts both when idle",
-  );
+  complete("/ starts the editor at boot, with the WASM preloaded at low priority beside app.js");
 
   {
-    const page = await fresh(storageState, WIDE, { holdIdle: true });
-    await page.goto(`${origin}/`, { waitUntil: "domcontentloaded" });
+    const page = await fresh(storageState, NARROW);
+    await page.goto(`${origin}/pages`, { waitUntil: "domcontentloaded" });
     const row = page.locator(".index-row-link").first();
     await expect(row).toBeVisible({ timeout: 30000 });
-    await page.waitForTimeout(500);
-    assert.deepEqual(await entries(page, editorChunk), [], "no editor before intent");
-    assert.deepEqual(await entries(page, wasm), [], "no WASM before intent");
-    const hovered = await page.evaluate(() => performance.now());
-    await row.hover();
-    const editorStart = await firstStart(page, editorChunk);
-    const wasmStart = await firstStart(page, wasm);
-    assert.equal(await preloadPriority(page), null, "intent keeps the default priority");
-    assert.ok(editorStart >= hovered && editorStart - hovered < 1000, `editor at ${editorStart}`);
-    assert.ok(wasmStart >= hovered && wasmStart - hovered < 1000, `WASM at ${wasmStart}`);
-    report.timings.home_hover = {
-      hovered: round(hovered),
-      editor_chunk_start: round(editorStart),
-      wasm_start: round(wasmStart),
-    };
-    await page.context().close();
-  }
-  complete("Hovering a row asks for the editor and the WASM at once");
-
-  {
-    const page = await fresh(storageState, NARROW, { holdIdle: true });
-    await page.goto(`${origin}/`, { waitUntil: "domcontentloaded" });
-    const row = page.locator(".index-row-link").first();
-    await expect(row).toBeVisible({ timeout: 30000 });
-    assert.deepEqual(await entries(page, editorChunk), []);
-    // A click with no pointer or focus before it: no intent, no idle start.
-    await row.evaluate((link) => link.click());
+    await page.waitForTimeout(1000);
+    assert.deepEqual(await entries(page, editorChunk), [], "no editor before an open");
+    assert.deepEqual(await entries(page, wasm), [], "no WASM before an open");
+    await row.click();
     await expect(page).toHaveURL(/\/p\//, { timeout: 30000 });
     await expect(page.locator("wg-content").first()).toBeVisible({ timeout: 30000 });
     assert.ok((await entries(page, editorChunk)).length > 0);
+    assert.equal((await entries(page, wasm)).length, 1, "the open downloads the WASM once");
     await page.context().close();
   }
-  complete("A click on a row before the idle start or any intent opens the Page");
+  complete("/pages loads neither the editor nor the WASM until a row opens a Page");
 
   for (const [name, viewport] of [
     ["wide", WIDE],
@@ -216,13 +175,8 @@ try {
     const found = await entries(page, wasm);
     assert.equal(found.length, 1, "the WASM downloads once: the editor reuses the preload");
     assert.equal(found[0].initiatorType, "link", "theme.js preloaded it");
-    const app = await page.evaluate(
-      () =>
-        performance
-          .getEntriesByType("resource")
-          .find((entry) => /\/app-[A-Z2-7]{8}\.js$/.test(entry.name))
-          ?.toJSON() ?? null,
-    );
+    assert.equal(await preloadPriority(page), null, "a Page keeps the default priority");
+    const app = await appEntry(page);
     const theme = await page.evaluate(
       () =>
         performance

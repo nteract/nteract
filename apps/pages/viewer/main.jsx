@@ -91,8 +91,7 @@ import { UnopenedPage } from "./UnopenedPage.jsx";
 import { formatRefused, sessionFormatStopped, trashArguments } from "./unopened-page.mjs";
 import { reloadGate } from "./build-freshness.mjs";
 import { EditorLoader } from "./editor-loader.mjs";
-import { EditorStart } from "./editor-start.mjs";
-import { preloadWasm } from "./wasm-preload.mjs";
+import { editorBoot, preloadWasm } from "./wasm-preload.mjs";
 import { SessionHost } from "./session-host.mjs";
 import { useStore } from "./store.mjs";
 import { SourcesLine } from "./SourcesLine.jsx";
@@ -112,11 +111,14 @@ glideSettings();
 marginRequested();
 if (gridRequested()) writeDisplayMode(globalThis.window, "grid");
 
-// The editor, and the WASM runtime it waits for, load once per tab. A Page
-// session exists only once it has loaded, so code that holds a session reads
+// The editor, and the WASM runtime it waits for, load beside the shell from
+// boot on a Page, Project content and Home (/), Home at low priority; on the
+// index routes (/pages, /projects) the first Page open or creation starts it
+// (wasm-preload.mjs editorBoot, which theme.js reads too). A Page session
+// exists only once it has loaded, so code that holds a session reads
 // `editor.module` directly. A failed import, or a Mermaid renderer that fails
 // to load later, asks the server for its build. Starting the import also
-// preloads the WASM, so both download together.
+// preloads the WASM where theme.js didn't, so both download together.
 const editor = new EditorLoader({
   load: () => {
     preloadWasm(document);
@@ -127,21 +129,7 @@ const editor = new EditorLoader({
   },
   checkBuild: () => buildMonitor.check(),
 });
-// When to start it ahead of an open (editor-start-machine.mjs): at boot on a
-// route that opens a document; on a listing (/, /pages, /projects) once its
-// first rows paint, their card images settle and the browser is idle, with
-// the WASM at low priority, or at once on intent. Opening a Page starts the
-// loader itself, which ends the wait and removes the watchers.
-const editorStart = new EditorStart({
-  start: ({ priority }) => {
-    preloadWasm(document, { priority });
-    editor.start();
-  },
-});
-editor.store.state$.subscribe(({ name }) => {
-  if (name !== "idle") editorStart.opened();
-});
-editorStart.boot(readPageRoute(location.href).kind);
+if (editorBoot(readPageRoute(location.href)).start) editor.start();
 // The routed Page's read-only preview from the head script's discovery
 // (boot-preview.mjs). Read at boot, before a session can take that request.
 // The shell reports the session, navigation, failed opens and the live Page
@@ -158,7 +146,7 @@ const headingScroll = new HeadingScroll();
 headingScroll.start();
 headingScroll.requestFromAddress();
 // A pointer going down on a Page row is a strong hint a Page opens next.
-const warmEditor = () => editorStart.intent();
+const warmEditor = () => editor.start();
 // What the App does with an answer for another account than the tab's
 // (another window signed in): the library's list_pages, the Browse picker's
 // walk and list_projects all report here, and the session's recovery
