@@ -553,16 +553,13 @@ impl KernelConnection for JupyterKernel {
         let env = config.pooled_env;
         let direct_python_path = config.direct_python_path;
         let launched_config = config.launched_config;
-        let installed = match &launched_config.installed_kernelspec {
-            Some(info) if env_source == "kernelspec" && shared.kernel_actor_principal.is_none() => {
-                let spec = crate::kernelspec::resolve(info.name.clone()).await?;
-                anyhow::ensure!(
-                    spec.info(&info.name) == *info,
-                    "Installed kernelspec changed before launch; refresh selection"
-                );
+        let installed = match (&launched_config.installed_kernelspec, config.kernelspec) {
+            (Some(_), Some(spec))
+                if env_source == "kernelspec" && shared.kernel_actor_principal.is_none() =>
+            {
                 Some(spec)
             }
-            None if env_source != "kernelspec" => None,
+            (None, None) if env_source != "kernelspec" => None,
             _ => anyhow::bail!("Missing or unsupported local kernelspec binding"),
         };
         let bootstrap_dx = launched_config.feature_flags.bootstrap_dx;
@@ -605,7 +602,7 @@ impl KernelConnection for JupyterKernel {
         // Build kernel command based on kernel type
         let mut cmd = match (&installed, kernel_type.as_str()) {
             (Some(spec), _) => {
-                let mut cmd = spec.command(&connection_file_path)?;
+                let mut cmd = crate::kernelspec::command(spec, &connection_file_path);
                 cmd.stdout(Stdio::null()).stderr(Stdio::piped());
                 cmd
             }
@@ -1060,13 +1057,12 @@ impl KernelConnection for JupyterKernel {
             }
         }
         if let Some(spec) = &installed {
-            spec.apply_env(&mut cmd);
+            cmd.envs(&spec.env);
         }
         #[cfg(windows)]
-        let interrupt_event = if installed
-            .as_ref()
-            .is_some_and(|s| s.interrupt_mode == crate::kernelspec::InterruptMode::Signal)
-        {
+        let interrupt_event = if installed.as_ref().is_some_and(|s| {
+            s.interrupt_mode == notebook_protocol::protocol::KernelspecInterrupt::Signal
+        }) {
             use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
             use windows_sys::Win32::{
                 Security::SECURITY_ATTRIBUTES, System::Threading::CreateEventW,
@@ -1269,6 +1265,20 @@ impl KernelConnection for JupyterKernel {
                 let mut process = cmd.spawn()?;
                 #[cfg(not(windows))]
                 drop(listeners);
+                #[cfg(windows)]
+                if let Some(event) = &interrupt_event {
+                    use std::os::windows::io::AsRawHandle;
+                    use windows_sys::Win32::Foundation::{
+                        SetHandleInformation, HANDLE_FLAG_INHERIT,
+                    };
+                    // CreateProcess has inherited the event. Later children must not inherit it.
+                    if unsafe {
+                        SetHandleInformation(event.as_raw_handle() as isize, HANDLE_FLAG_INHERIT, 0)
+                    } == 0
+                    {
+                        return Err(std::io::Error::last_os_error().into());
+                    }
+                }
 
                 let stderr_buffer: Arc<StdMutex<VecDeque<String>>> =
                     Arc::new(StdMutex::new(VecDeque::with_capacity(STDERR_BUFFER_LINES)));
@@ -1451,7 +1461,9 @@ impl KernelConnection for JupyterKernel {
         let (signal, mut signal_rx) = mpsc::channel::<tokio::sync::oneshot::Sender<Result<()>>>(1);
         let signal = installed
             .as_ref()
-            .filter(|s| s.interrupt_mode == crate::kernelspec::InterruptMode::Signal)
+            .filter(|s| {
+                s.interrupt_mode == notebook_protocol::protocol::KernelspecInterrupt::Signal
+            })
             .map(|_| signal);
         let process_watcher_task = spawn_supervised(
             "process-watcher",
@@ -1461,7 +1473,7 @@ impl KernelConnection for JupyterKernel {
                         status=process.wait()=>break status,
                         Some(reply)=signal_rx.recv()=>{
                             #[cfg(unix)]
-                            let result=process.id().ok_or_else(||anyhow::anyhow!("Kernel exited")).and_then(|pid|nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32),nix::sys::signal::Signal::SIGINT).map_err(Into::into));
+                            let result=process.id().ok_or_else(||anyhow::anyhow!("Kernel exited")).and_then(|pid|nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pid as i32),nix::sys::signal::Signal::SIGINT).map_err(Into::into));
                             #[cfg(windows)]
                             let result=interrupt_event.as_ref().ok_or_else(||anyhow::anyhow!("Kernel has no interrupt event")).and_then(|event|{
                                 use std::os::windows::io::AsRawHandle;

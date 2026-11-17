@@ -281,6 +281,11 @@ pub(crate) async fn list_installed_packages(room: &NotebookRoom) -> NotebookResp
             "Start a local Conda environment before viewing installed packages".into(),
         );
     };
+    if launch_config.installed_kernelspec.is_some() {
+        return rejected(
+            "Package inventory is externally managed for installed Jupyter kernels".into(),
+        );
+    }
     let Some(environment_identity) = launch_config.local_environment.as_ref() else {
         return rejected(
             "Installed package inventory is available only for a borrowed Conda environment".into(),
