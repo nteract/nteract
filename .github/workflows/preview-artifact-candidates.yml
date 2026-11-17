@@ -1,0 +1,143 @@
+name: Preview artifact candidates
+
+# Manual, non-publishing evidence collection. This does not authorize a consumer
+# to trust or execute an artifact. Never add secrets or write permissions here.
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Same-repository PR to build
+        required: true
+        type: number
+      expected_sha:
+        description: Independently reviewed full PR head SHA (fails if head moved)
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - .github/workflows/preview-artifact-candidates.yml
+      - scripts/ci/package-preview-candidate.py
+      - scripts/tests/test_preview_candidate.py
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest scripts/tests/test_preview_candidate.py scripts/tests/test_package_notebook_ui.py -v
+
+  candidate:
+    if: github.event_name == 'workflow_dispatch'
+    needs: tests
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - name: Validate requested source without executing PR code
+        id: source
+        uses: actions/github-script@v9
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        with:
+          script: |
+            const number = process.env.PR_NUMBER;
+            const sha = process.env.EXPECTED_SHA;
+            if (!/^[1-9][0-9]*$/.test(number) || !/^[a-f0-9]{40}$/.test(sha)) {
+              throw new Error('Expected a positive PR number and full lowercase SHA');
+            }
+            // Public metadata lookup: do not pass a credential into source builds.
+            const response = await fetch(`https://api.github.com/repos/nteract/nteract/pulls/${number}`);
+            if (!response.ok) throw new Error(`PR lookup failed: ${response.status}`);
+            const pr = await response.json();
+            if (context.repo.owner !== 'nteract' || context.repo.repo !== 'nteract' ||
+                pr.state !== 'open' || pr.head.repo?.full_name !== 'nteract/nteract' || pr.head.sha !== sha) {
+              throw new Error('Expected open same-repository PR at the exact reviewed SHA');
+            }
+            core.setOutput('sha', sha);
+            core.setOutput('build_id', `0.0.0-pr.${number}.sha.${sha}.run.${context.runId}.attempt.${process.env.GITHUB_RUN_ATTEMPT}`);
+      - name: Check out exact candidate source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+          lfs: true
+          persist-credentials: false
+      - name: Check out candidate packaging tools
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .preview-tools
+          persist-credentials: false
+      - uses: dsherret/rust-toolchain-file@v1
+      - uses: ./.github/actions/build-runtime-artifacts
+      - uses: ./.github/actions/install-cargo-about
+      - name: Build same-source preview outputs (no publish, signing or version edits)
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          BUILD_ID: ${{ steps.source.outputs.build_id }}
+          NTERACT_BUILD_GIT_HASH: ${{ steps.source.outputs.sha }}
+          RUNT_BUILD_CHANNEL: nightly
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          pnpm build
+          cargo build --locked --release --target aarch64-apple-darwin -p runtimed
+          target/aarch64-apple-darwin/release/runtimed --version
+          node scripts/release-attribution.mjs --kind notebook-ui --target wasm32-unknown-unknown \
+            --output "$RUNNER_TEMP/preview-attribution" --version "$BUILD_ID" --commit "$SOURCE_SHA"
+          python3 scripts/package-notebook-ui.py --dist apps/notebook/dist \
+            --attribution "$RUNNER_TEMP/preview-attribution" --output "$RUNNER_TEMP/notebook-ui.tar.gz" \
+            --channel nightly --version "$BUILD_ID" --commit "$SOURCE_SHA" \
+            --source-date-epoch "$(git show -s --format=%ct HEAD)"
+          pnpm --dir packages/runtimed-node build
+          pnpm --dir packages/runtimed-node assemble:platform -- --expected-target darwin-arm64
+          mkdir -p "$RUNNER_TEMP/preview-packs/native" "$RUNNER_TEMP/preview-packs/wrapper"
+          pnpm --dir packages/runtimed-node/npm/darwin-arm64 pack --pack-destination "$RUNNER_TEMP/preview-packs/native"
+          pnpm --dir packages/runtimed-node pack --pack-destination "$RUNNER_TEMP/preview-packs/wrapper"
+          test -z "$(git status --porcelain --untracked-files=no)"
+      - name: Smoke exact packed Node artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/preview-node-smoke" --ignore-scripts --no-audit --no-fund \
+            "$RUNNER_TEMP/preview-packs/native/"*.tgz "$RUNNER_TEMP/preview-packs/wrapper/"*.tgz
+          node <<'JS'
+          const assert = require('node:assert/strict');
+          const path = require('node:path');
+          assert.equal(process.platform, 'darwin');
+          assert.equal(process.arch, 'arm64');
+          const root = path.join(process.env.RUNNER_TEMP, 'preview-node-smoke/node_modules');
+          const api = require(path.join(root, '@runtimed/node'));
+          assert.equal(typeof api.defaultSocketPath(), 'string');
+          const native = path.join(root, '@runtimed/node-darwin-arm64/runtimed-node.darwin-arm64.node');
+          assert.ok(require.cache[require.resolve(native)], 'must load this packed native binding');
+          JS
+      - name: Collect candidate evidence
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          BUILD_ID: ${{ steps.source.outputs.build_id }}
+        run: |
+          set -euo pipefail
+          wrapper=("$RUNNER_TEMP/preview-packs/wrapper/"*.tgz)
+          native=("$RUNNER_TEMP/preview-packs/native/"*.tgz)
+          test "${#wrapper[@]}" -eq 1 && test "${#native[@]}" -eq 1
+          python3 .preview-tools/scripts/ci/package-preview-candidate.py \
+            --commit "$SOURCE_SHA" --build-id "$BUILD_ID" \
+            --run-url "https://github.com/nteract/nteract/actions/runs/$GITHUB_RUN_ID" \
+            --daemon target/aarch64-apple-darwin/release/runtimed \
+            --ui "$RUNNER_TEMP/notebook-ui.tar.gz" --wrapper "${wrapper[0]}" --native "${native[0]}" \
+            --output "$RUNNER_TEMP/preview-candidate"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: preview-candidate-${{ steps.source.outputs.build_id }}
+          path: ${{ runner.temp }}/preview-candidate/
+          if-no-files-found: error
+          retention-days: 14
