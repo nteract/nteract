@@ -107,7 +107,7 @@ try {
   const made = await tool("create_page", {
     title: "Sources panel — live demo",
     markdown:
-      "# Workspace usage\n\nA local Page for trying the Sources inspector. Open a source below the title, or use Sources in the … menu.\n\n## The data",
+      '# Workspace usage\n\nA local Page for trying the Sources inspector. Open a source below the title, or use Sources in the … menu.\n\n```javascript\nexport const label = "Workspace usage";\n```\n\n## The data',
     nonce: nonce(),
   });
   pageId = made.page_id;
@@ -337,10 +337,36 @@ try {
       },
       { op: "insert_node", node: { type: "view", attrs: { view_id: "widget" } } },
     ]);
+    await expect(page.locator(".sources-line")).toHaveAttribute("data-source-count", "3");
+    await expect(page.locator(".sources-line")).not.toContainText("Widget renderer");
+    await expect(page.locator(".sources-line")).not.toContainText("Widget styles");
     await openSources();
-    await panel.getByRole("button", { name: /Widget renderer JavaScript/ }).click();
+    const rendererRow = panel.getByRole("button", { name: /Widget renderer JavaScript/ });
+    await expect(rendererRow.locator("svg.lucide-file-code")).toHaveCount(1);
+    await expect(
+      panel.getByRole("button", { name: /Widget styles CSS/ }).locator("svg.lucide-paintbrush"),
+    ).toHaveCount(1);
+    await rendererRow.click();
     await expect(panel).toContainText("Used on this Page · 2");
     await expect(panel.getByLabel("Source code", { exact: true })).toContainText("export default");
+    const keyword = panel.locator(".source-file-preview .wg-t-keyword").first();
+    const documentKeyword = page.locator(".wordgard-document pre .wg-t-keyword").first();
+    await expect(keyword).toHaveText("export");
+    await expect(documentKeyword).toHaveText("export");
+    assert.equal(await keyword.evaluate((el) => getComputedStyle(el).color), "rgb(215, 58, 73)");
+    assert.equal(
+      await documentKeyword.evaluate((el) => getComputedStyle(el).color),
+      "rgb(215, 58, 73)",
+    );
+    await page.screenshot({ path: `${output}/source-code-light.png` });
+    await page.evaluate(() => document.documentElement.classList.add("dark"));
+    assert.equal(await keyword.evaluate((el) => getComputedStyle(el).color), "rgb(255, 123, 114)");
+    assert.equal(
+      await documentKeyword.evaluate((el) => getComputedStyle(el).color),
+      "rgb(255, 123, 114)",
+    );
+    await page.screenshot({ path: `${output}/source-code-dark.png` });
+    await page.evaluate(() => document.documentElement.classList.remove("dark"));
     await expect(panel).toContainText("Source ID: renderer");
     await expect(panel).toContainText("Anywidget · module");
     await expect(panel).toContainText("Anywidget · models.child.module");
@@ -382,6 +408,7 @@ try {
     await expect(panel.getByLabel("Source code", { exact: true })).toHaveText(
       ".widget { color: teal; }",
     );
+    await expect(panel.locator(".source-file-preview .wg-t-prop")).toHaveText("color");
     await expect(panel).toContainText("Anywidget · stylesheet", { timeout: 30000 });
     const dockWidth = (await panel.boundingBox()).width;
     await panel.getByRole("button", { name: "Expand sources" }).click();
