@@ -60,7 +60,8 @@ export function RelatedChannelReviewDialog({
   const metadataOnly = review?.scope === "metadata";
   const isCurrent = action.reviewId === reviewId;
   const submitting = isCurrent && action.phase === "submitting";
-  const completed = !review && action.phase === "approved";
+  // Removing one review may mean discovery or setup is still running. It is
+  // not proof of installation consent, completion, or a reason to retry.
   const pending = review?.state === "pending" && !(isCurrent && action.phase === "declined");
   const waitingForDiscovery = isCurrent && action.phase === "approved";
   const error = isCurrent && action.phase === "error" ? action.message : null;
@@ -72,48 +73,34 @@ export function RelatedChannelReviewDialog({
 
   return (
     <RuntimeDecisionDialog
-      open={Boolean(pending || completed)}
+      open={Boolean(pending)}
       onOpenChange={(open) => {
-        if (!open) completed ? dispatch({ type: "reset" }) : submit("decline");
+        if (!open) submit("decline");
       }}
-      title={
-        completed
-          ? "Channel review completed"
-          : metadataOnly
-            ? "Inspect additional channels"
-            : "Approve package sources"
-      }
-      description={
-        completed
-          ? "Retry the action you started. The daemon will check its current channel approvals before continuing."
-          : `${review?.owner_label ?? "This environment"} uses repositories that declare additional package channels. Review their sources and priority order before continuing.`
-      }
+      title={metadataOnly ? "Inspect additional channels" : "Approve package sources"}
+      description={`${review?.owner_label ?? "This environment"} uses repositories that declare additional package channels. Review their sources and priority order before continuing.`}
       icon={<GlobeIcon className="size-5" />}
       testId="related-channel-review-dialog"
       footer={
-        completed ? (
-          <Button onClick={() => dispatch({ type: "reset" })}>Close</Button>
-        ) : (
-          <>
-            <Button
-              variant="outline"
-              disabled={submitting || waitingForDiscovery}
-              onClick={() => submit("decline")}
-            >
-              Cancel
-            </Button>
-            <Button disabled={submitting || waitingForDiscovery} onClick={() => submit("approve")}>
-              {submitting || waitingForDiscovery
-                ? "Checking channels…"
-                : metadataOnly
-                  ? "Allow metadata inspection"
-                  : "Approve package sources"}
-            </Button>
-          </>
-        )
+        <>
+          <Button
+            variant="outline"
+            disabled={submitting || waitingForDiscovery}
+            onClick={() => submit("decline")}
+          >
+            Cancel
+          </Button>
+          <Button disabled={submitting || waitingForDiscovery} onClick={() => submit("approve")}>
+            {submitting || waitingForDiscovery
+              ? "Checking channels…"
+              : metadataOnly
+                ? "Allow metadata inspection"
+                : "Approve package sources"}
+          </Button>
+        </>
       }
     >
-      {!completed && review && (
+      {review && (
         <div className="max-h-[55vh] space-y-4 overflow-y-auto text-sm">
           {review.uninspected_channels.length > 0 && (
             <section aria-label="Additional channels">
