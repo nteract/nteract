@@ -64,6 +64,11 @@ const SUITES = Object.freeze([
     timeout: 3 * minute,
   },
   {
+    name: "hidden-tab",
+    script: "scripts/hidden-tab-smoke.mjs",
+    timeout: 3 * minute,
+  },
+  {
     name: "comments-review",
     script: "scripts/comments-review-smoke.mjs",
     timeout: 3 * minute,
