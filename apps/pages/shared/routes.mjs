@@ -377,10 +377,25 @@ export function writeRoute(
   history[replace ? "replaceState" : "pushState"](next, "", path);
 }
 
+/**
+ * Whether a local copy (viewer/local-catalog.mjs listLocalPages) lists while
+ * the server's list doesn't hold it: it has edits the host hasn't confirmed,
+ * and it isn't known to be someone else's Page. The server's list is the
+ * only evidence that this account can still open a shared Page, so a shared
+ * copy lists where the server lists it. A draft that never reached the server
+ * (`registered: false`) and a copy whose ownership is unknown (`owned`
+ * absent) list as their pending edits say.
+ */
+export const unlistedCopyShows = (page) =>
+  !!page.pending && (page.registered === false || page.owned !== false);
+
+/** The picker's Pages: the server's, then the local copies that list beside
+ * them (unlistedCopyShows), or every local copy when the server's list
+ * failed (`remote` null). */
 export function mergePageListings(remote, local) {
   const pages = new Map((remote ?? []).map((page) => [page.page_id, page]));
   for (const page of local) {
-    if ((remote === null || page.pending) && !pages.has(page.page_id))
+    if ((remote === null || unlistedCopyShows(page)) && !pages.has(page.page_id))
       pages.set(page.page_id, page);
   }
   return [...pages.values()];

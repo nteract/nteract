@@ -489,6 +489,53 @@ test("drafts on this device show on All and Your items until the server lists th
   assert.equal(pageRow({ ...local[2], page_id: pageId }, new Map(), { local: true }).local, "copy");
 });
 
+test("a pending copy of a shared Page shows only where the server lists it, unless the listing failed", () => {
+  const local = [
+    // Opened once, left before its first receipt: pending, and someone else's.
+    { page_id: "shared", title: "Launch plan", pending: true, registered: true, owned: false },
+    { page_id: "owned", title: "Mine", pending: true, registered: true, owned: true },
+    // Written before ownership was recorded, or under a refused grant only.
+    { page_id: "unknown", title: "Old copy", pending: true, registered: true },
+    { page_id: "draft", title: "Draft", pending: true, registered: false, owned: true },
+    { page_id: "synced", title: "Synced", pending: false, registered: true, owned: false },
+  ];
+  const all = { query: "", access: null, projectId: null };
+  const ids = (rows) => rows.map((page) => page.page_id);
+  // The server's answer doesn't hold the shared Page: no row, no title.
+  assert.deepEqual(ids(deviceRows(local, [], all)), ["owned", "unknown", "draft"]);
+  assert.deepEqual(ids(deviceRows(local, [], { ...all, access: "owned" })), [
+    "owned",
+    "unknown",
+    "draft",
+  ]);
+  assert.deepEqual(ids(deviceRows(local, [], { ...all, query: "launch" })), []);
+  // A first page of other rows says nothing about an owned Page further on.
+  const firstPage = Array.from({ length: 50 }, (_, index) => ({ page_id: `server-${index}` }));
+  assert.deepEqual(ids(deviceRows(local, firstPage, all)), ["owned", "unknown", "draft"]);
+  // Where the server lists the shared Page, it shows once, as the server's row.
+  assert.deepEqual(ids(deviceRows(local, [{ page_id: "shared" }], all)), [
+    "owned",
+    "unknown",
+    "draft",
+  ]);
+  // A draft that never reached the server shows whatever it records.
+  assert.deepEqual(ids(deviceRows([{ ...local[3], owned: false }], [], all)), ["draft"]);
+  // Offline, local copies show as they always have.
+  assert.deepEqual(ids(deviceRows(local, [], all, { failed: true })), [
+    "shared",
+    "owned",
+    "unknown",
+    "draft",
+    "synced",
+  ]);
+  assert.deepEqual(ids(deviceRows(local, [], { ...all, access: "owned" }, { failed: true })), [
+    "shared",
+    "owned",
+    "unknown",
+    "draft",
+  ]);
+});
+
 test("Last activity is the content time when the Page reported one, else the catalog time", () => {
   // A content edit doesn't move updated_at; list_pages orders by
   // content_updated_at || updated_at, and the row shows the same time.

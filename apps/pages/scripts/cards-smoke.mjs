@@ -5,6 +5,11 @@
 // placeholder icon. A Page shared with alice shows its card for her, and the
 // owner removing her makes page_cards answer null on her very next call.
 //
+// Her local copy of that Page is left pending, as leaving it before its first
+// durability receipt lands leaves it. After the removal, a reload whose local
+// catalog read lands before the server's list never draws its title, while an
+// unregistered draft on the same device still shows.
+//
 // The first content change after a quiet minute flushes at once, so no edit
 // here waits for a window to end.
 import assert from "node:assert/strict";
@@ -156,6 +161,59 @@ const card = (page, title) =>
     .locator(".index-card-link")
     .filter({ has: page.locator(`.index-card-title[title="${title}"]`) });
 
+/** Run `action` ("get", "put" or "delete") on one entry of the local Page
+ * catalog (viewer/local-catalog.mjs) in `page`'s browser. Entries are JSON;
+ * "get" drops the Automerge snapshots. */
+const localCatalog = (page, action, key, value) =>
+  page.evaluate(
+    async ({ action, key, value }) => {
+      const db = await new Promise((resolve, reject) => {
+        const request = indexedDB.open("pages-local-catalog-v1");
+        request.onupgradeneeded = () => {
+          if (!request.result.objectStoreNames.contains("bytes"))
+            request.result.createObjectStore("bytes");
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      try {
+        const store = db.transaction("bytes", "readwrite").objectStore("bytes");
+        const request =
+          action === "put"
+            ? store.put(new TextEncoder().encode(JSON.stringify(value)), key)
+            : action === "delete"
+              ? store.delete(key)
+              : store.get(key);
+        const result = await new Promise((resolve, reject) => {
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        if (action !== "get" || !result) return null;
+        const {
+          snapshot: _,
+          comments_snapshot: __,
+          ...entry
+        } = JSON.parse(new TextDecoder().decode(result));
+        return entry;
+      } finally {
+        db.close();
+      }
+    },
+    { action, key, value },
+  );
+const catalogKey = (principal, pageId) => `account/${encodeURIComponent(principal)}/${pageId}`;
+
+/** Before any script runs: every library title the page draws, kept across
+ * this document's life. */
+const TITLE_PROBE = () => {
+  const titles = (window.__libraryTitles = new Set());
+  new MutationObserver(() => {
+    for (const title of document.querySelectorAll(".index-card-title, .index-row-link"))
+      if (title.textContent.trim()) titles.add(title.textContent.trim());
+  }).observe(document, { childList: true, subtree: true, characterData: true });
+};
+const drawnTitles = (page) => page.evaluate(() => [...window.__libraryTitles]);
+
 let owner, alice, phone;
 try {
   owner = await signIn("dev@localhost");
@@ -266,10 +324,19 @@ try {
     assert.equal(result.status, 200, JSON.stringify(result.body));
   };
   await access({ action: "invite", email: "alice@localhost", role: "viewer" });
+  // The host holds her durability receipt. The session marks her copy
+  // pending before it asks for one and clears the mark when it lands, so
+  // leaving now keeps a pending copy, with no edit of hers in it.
+  const receipts = [];
+  await alice.route("**/api/saved?*", (route) => receipts.push(route));
   await alice.goto(`${origin}/p/${shared}`);
   await expect(alice.locator("wg-content").first()).toContainText("Goals for the release", {
     timeout: 30000,
   });
+  const aliceCopy = catalogKey(alicePrincipal, shared);
+  await expect
+    .poll(async () => (await localCatalog(alice, "get", aliceCopy))?.pending, { timeout: 30000 })
+    .toBe(true);
   const forAlice = await tool(alice, "page_cards", { page_ids: ids });
   assert.equal(forAlice.body.principal, alicePrincipal);
   assert.ok(forAlice.body.cards[shared], "the member reads the shared card");
@@ -280,12 +347,61 @@ try {
     { timeout: 30000 },
   );
   await shoot(alice, "cards-member.png");
+  await alice.unroute("**/api/saved?*");
+  for (const route of receipts.splice(0)) await route.abort().catch(() => {});
+  const leftCopy = await localCatalog(alice, "get", aliceCopy);
+  assert.equal(leftCopy?.pending, true, "her copy stays pending");
+  assert.equal(leftCopy.registered, true);
+  assert.equal(leftCopy.access?.role, "viewer");
   complete("A shared Page's card shows in the member's grid; the owner's other cards don't");
 
   await access({ action: "set_role", principal: alicePrincipal, role: null });
   const revoked = await tool(alice, "page_cards", { page_ids: [shared] });
   assert.equal(revoked.status, 200, JSON.stringify(revoked.body));
   assert.deepEqual(revoked.body.cards, { [shared]: null });
+  // Her pending copy still sits in the local catalog, beside a draft that has
+  // never reached the server. Every tool call waits until the library has
+  // drawn the draft, so the local catalog read lands before the server's list.
+  const draftId = crypto.randomUUID();
+  const draftKey = catalogKey(alicePrincipal, draftId);
+  const now = new Date().toISOString();
+  await localCatalog(alice, "put", draftKey, {
+    principal: alicePrincipal,
+    page_id: draftId,
+    title: "Device draft",
+    created_at: now,
+    updated_at: now,
+    registered: false,
+    pending: true,
+    access: { role: "owner", revision: 0, generation: 0, canRead: true },
+  });
+  await alice.addInitScript(TITLE_PROBE);
+  const heldTools = [];
+  let toolsHeld = true;
+  await alice.route("**/api/tools", (route) =>
+    toolsHeld ? heldTools.push(route) : route.continue(),
+  );
+  await alice.reload();
+  await expect(card(alice, "Device draft")).toBeVisible({ timeout: 30000 });
+  assert.ok(heldTools.length > 0, "the library asked the server");
+  const listed = alice.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/tools") &&
+      response.request().postData()?.includes('"list_pages"'),
+  );
+  toolsHeld = false;
+  for (const route of heldTools.splice(0)) await route.continue();
+  await listed;
+  await expect(card(alice, "Device draft")).toBeVisible();
+  await expect(card(alice, "Launch plan")).toHaveCount(0);
+  assert.ok(
+    !(await drawnTitles(alice)).includes("Launch plan"),
+    "the revoked Page's title was never drawn",
+  );
+  await alice.unroute("**/api/tools");
+  await localCatalog(alice, "delete", draftKey);
+  complete("A revoked shared Page's pending copy never lists; a device draft still does");
+
   // Her library lists nothing now: the listing's own check drops the row.
   await alice.reload();
   await expect(alice.locator(".library-empty")).toBeVisible({ timeout: 30000 });

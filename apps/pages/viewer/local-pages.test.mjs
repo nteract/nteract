@@ -9,6 +9,8 @@ import {
   readLocalPage,
   writeLocalPage,
 } from "./local-pages.mjs";
+import { encoder, key, store } from "./local-catalog.mjs";
+import { deviceRows } from "./listing.mjs";
 
 function fixture() {
   const identity = { principal: crypto.randomUUID() };
@@ -202,4 +204,83 @@ test("a writer whose earlier snapshot is the stored one replaces it without a me
   );
   assert.equal(written.snapshot, next);
   assert.equal((await readLocalPage(identity, page.page_id)).snapshot, next);
+});
+
+const ALL = { query: "", access: null, projectId: null };
+const grant = (role, revision = 3) => ({ role, revision, generation: 1, canRead: role !== "none" });
+const listed = async (identity) =>
+  Object.fromEntries((await listLocalPages(identity)).map((page) => [page.page_id, page]));
+
+test("a revoked shared Page's pending copy stays out of the library once the server stops listing it", async () => {
+  // Alice opened a Page shared with her and left before its first receipt
+  // landed: the copy is pending, with no edit of hers in it.
+  const { identity, page } = fixture();
+  await writeLocalPage(identity, { ...page, title: "Launch plan", access: grant("viewer") });
+  const local = await listLocalPages(identity);
+  assert.equal(local[0].owned, false);
+  assert.deepEqual(deviceRows(local, [], ALL), [], "the server's list no longer holds it");
+  assert.deepEqual(deviceRows(local, [], { ...ALL, access: "owned" }), []);
+  // Offline, every copy still shows on All, as before.
+  assert.deepEqual(
+    deviceRows(local, [], ALL, { failed: true }).map((row) => row.page_id),
+    [page.page_id],
+  );
+});
+
+test("a checkpoint records whether this account owns the Page, from the last grant that named a role", async () => {
+  const identity = { principal: crypto.randomUUID() };
+  const write = async (role, extra = {}) => {
+    const { page } = fixture();
+    const next = { ...page, principal: identity.principal, access: grant(role), ...extra };
+    await writeLocalPage(identity, next);
+    return next;
+  };
+  const owner = await write("owner");
+  const editor = await write("editor");
+  const commenter = await write("commenter");
+  const none = await write("none");
+  const ungranted = await write("owner", { access: undefined });
+  let pages = await listed(identity);
+  assert.equal(pages[owner.page_id].owned, true);
+  assert.equal(pages[editor.page_id].owned, false);
+  assert.equal(pages[commenter.page_id].owned, false);
+  assert.equal("owned" in pages[none.page_id], false, "a refused grant says nothing");
+  assert.equal("owned" in pages[ungranted.page_id], false);
+  // A later refusal (a paused or trashed open writes role none) keeps what
+  // the last named role said, for the owner and for a member alike.
+  for (const page of [owner, editor])
+    await writeLocalPage(identity, { ...page, access: grant("none", 4), pending: true });
+  pages = await listed(identity);
+  assert.equal(pages[owner.page_id].owned, true);
+  assert.equal(pages[editor.page_id].owned, false);
+  // A host-verified open that replaces the copy names the role again.
+  await writeLocalPage(identity, { ...editor, access: grant("owner", 5) }, { replace: true });
+  assert.equal((await listed(identity))[editor.page_id].owned, true);
+});
+
+test("an entry written before ownership was recorded answers from its stored grant, or not at all", async () => {
+  const { identity, page } = fixture();
+  const raw = async (entry) =>
+    store.save(key(identity, entry.page_id), encoder.encode(JSON.stringify(entry)));
+  const viewer = { ...page, access: grant("viewer") };
+  const owner = { ...page, page_id: crypto.randomUUID(), access: grant("owner") };
+  const refused = { ...page, page_id: crypto.randomUUID(), access: grant("none") };
+  const bare = { ...page, page_id: crypto.randomUUID() };
+  for (const entry of [viewer, owner, refused, bare]) await raw(entry);
+  const pages = await listed(identity);
+  assert.equal(pages[viewer.page_id].owned, false);
+  assert.equal(pages[owner.page_id].owned, true);
+  // Unknown: these list as every pending copy did, until the Page is opened
+  // again and its checkpoint names a role.
+  assert.equal("owned" in pages[refused.page_id], false);
+  assert.equal("owned" in pages[bare.page_id], false);
+  assert.deepEqual(
+    deviceRows(Object.values(pages), [], ALL)
+      .map((row) => row.page_id)
+      .sort(),
+    [owner.page_id, refused.page_id, bare.page_id].sort(),
+  );
+  // The next write records it.
+  await writeLocalPage(identity, { ...refused, access: grant("editor", 4) });
+  assert.equal((await listed(identity))[refused.page_id].owned, false);
 });
