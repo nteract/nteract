@@ -29,6 +29,9 @@ type CloseCallback = ThreadsafeFunction<(), (), (), napi::Status, false, false, 
 #[napi(object)]
 #[derive(Default)]
 pub struct CreateRelayOptions {
+    /// Explicit protocol literacy for a local interactive review UI. Defaults off.
+    /// Not consent or authority; the daemon independently requires a local owner.
+    pub scoped_channel_review_v1: Option<bool>,
     /// Runtime type. Defaults to `"python"`.
     pub runtime: Option<String>,
     /// Kernel working directory.
@@ -56,6 +59,9 @@ pub struct CreateRelayOptions {
 #[napi(object)]
 #[derive(Default)]
 pub struct OpenRelayOptions {
+    /// Explicit protocol literacy for a local interactive review UI. Defaults off.
+    /// Not consent or authority; the daemon independently requires a local owner.
+    pub scoped_channel_review_v1: Option<bool>,
     /// Override the daemon endpoint.
     pub socket_path: Option<String>,
     /// Actor/operator label advertised during the handshake.
@@ -102,6 +108,8 @@ pub struct RelayInfo {
     pub actor_label: Option<String>,
     pub connection_scope: Option<String>,
     pub local_environment_selection: Option<bool>,
+    /// Effective handshake capability only; never inferred from the request.
+    pub scoped_channel_review_v1: Option<bool>,
     /// Daemon verdict on `createRelay({ localEnvironment })`. Absent when none
     /// was requested or the daemon predates the option.
     pub local_environment: Option<LocalEnvironmentStatus>,
@@ -223,6 +231,12 @@ impl NativeRelaySession {
     }
 }
 
+fn review_relay_options(requested: Option<bool>) -> notebook_sync::connect::RelayOptions {
+    notebook_sync::connect::RelayOptions {
+        scoped_channel_review_v1: requested.unwrap_or(false),
+    }
+}
+
 /// Create a notebook room and return its native typed-frame relay.
 #[napi]
 pub async fn create_relay(options: Option<CreateRelayOptions>) -> Result<NativeRelaySession> {
@@ -230,7 +244,7 @@ pub async fn create_relay(options: Option<CreateRelayOptions>) -> Result<NativeR
     let runtime = opts.runtime.unwrap_or_else(|| "python".to_string());
     let socket_path = resolve_socket_path(opts.socket_path);
     let (frame_tx, frame_rx) = mpsc::unbounded_channel();
-    let result = notebook_sync::connect::connect_create_relay(
+    let result = notebook_sync::connect::connect_create_relay_with_options(
         socket_path.clone(),
         notebook_sync::connect::CreateNotebookSpec {
             working_dir: opts.working_dir.map(PathBuf::from),
@@ -244,6 +258,7 @@ pub async fn create_relay(options: Option<CreateRelayOptions>) -> Result<NativeR
             ..notebook_sync::connect::CreateNotebookSpec::new(runtime.as_str())
         },
         frame_tx,
+        review_relay_options(opts.scoped_channel_review_v1),
     )
     .await
     .map_err(to_napi_err)?;
@@ -267,11 +282,12 @@ pub async fn open_relay_path(
     let opts = options.unwrap_or_default();
     let socket_path = resolve_socket_path(opts.socket_path);
     let (frame_tx, frame_rx) = mpsc::unbounded_channel();
-    let result = notebook_sync::connect::connect_open_relay_with_operator(
+    let result = notebook_sync::connect::connect_open_relay_with_options(
         socket_path.clone(),
         PathBuf::from(path),
         frame_tx,
         operator(opts.peer_label, opts.description),
+        review_relay_options(opts.scoped_channel_review_v1),
     )
     .await
     .map_err(to_napi_err)?;
@@ -292,11 +308,12 @@ pub async fn connect_relay(
     let opts = options.unwrap_or_default();
     let socket_path = resolve_socket_path(opts.socket_path);
     let (frame_tx, frame_rx) = mpsc::unbounded_channel();
-    let result = notebook_sync::connect::connect_relay_with_operator(
+    let result = notebook_sync::connect::connect_relay_with_options(
         socket_path.clone(),
         notebook_id.clone(),
         frame_tx,
         operator(opts.peer_label, opts.description),
+        review_relay_options(opts.scoped_channel_review_v1),
     )
     .await
     .map_err(to_napi_err)?;
@@ -423,6 +440,7 @@ fn relay_info_from_capabilities(
         actor_label: capabilities.actor_label,
         connection_scope: capabilities.connection_scope,
         local_environment_selection: Some(capabilities.local_environment_selection),
+        scoped_channel_review_v1: Some(capabilities.scoped_channel_review_v1),
         local_environment: capabilities.local_environment.map(Into::into),
         comments_doc_id: capabilities.comments_doc_id,
         keyed_doc_kinds: capabilities.keyed_doc_kinds,
@@ -501,6 +519,36 @@ mod tests {
             Some("embedded notebook".into())
         );
         assert_eq!(operator(None, None), None);
+    }
+
+    #[test]
+    fn scoped_review_requires_explicit_opt_in() {
+        assert!(
+            !review_relay_options(CreateRelayOptions::default().scoped_channel_review_v1)
+                .scoped_channel_review_v1
+        );
+        assert!(
+            !review_relay_options(OpenRelayOptions::default().scoped_channel_review_v1)
+                .scoped_channel_review_v1
+        );
+        assert!(!review_relay_options(Some(false)).scoped_channel_review_v1);
+        assert!(review_relay_options(Some(true)).scoped_channel_review_v1);
+    }
+
+    #[test]
+    fn scoped_review_info_uses_only_effective_handshake_capability() {
+        for supported in [false, true] {
+            let mut capabilities = ProtocolCapabilities::v4(None);
+            capabilities.scoped_channel_review_v1 = supported;
+            let info = relay_info_from_capabilities(
+                "notebook-1".into(),
+                capabilities,
+                None,
+                PathBuf::from("/tmp/runtimed.sock"),
+                None,
+            );
+            assert_eq!(info.scoped_channel_review_v1, Some(supported));
+        }
     }
 
     #[test]
