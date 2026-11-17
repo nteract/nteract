@@ -3960,8 +3960,16 @@ and the page keeps its scrollbar's room. The Last activity column
 shows the same time, and screen readers hear "Last active 2 days ago, …".
 Drafts this browser hasn't synced show first, as "On this device", on All and
 Your items when there is no Project filter. The server can't search them, so a
-search keeps the drafts whose title holds it. When the listing fails, local
-copies show there too. A `project` that `list_pages` refuses with
+search keeps the drafts whose title holds it. A local copy of a Page someone
+else owns shows only where the server lists it, even with unconfirmed edits:
+once the account loses access the server stops listing it, so its title stays
+out of the library and the Page picker. Each local checkpoint records
+`owned` from the last grant that named a role (`owner`, or a member role); a
+refusal (`none`) keeps it. An entry without it answers from the grant it
+stored, and one with neither lists like the account's own until the Page is
+opened again. A draft that never reached the server, and an owned copy past
+the server's first page, still show. When the listing fails, local copies show
+there too, whoever owns them. A `project` that `list_pages` refuses with
 `project_not_found` reads "Unknown Project", with a button that clears the
 filter; the account's Projects alone can't say so, since a Project created a
 moment ago may not be in them yet. Load more follows

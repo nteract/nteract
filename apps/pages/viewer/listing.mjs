@@ -29,6 +29,7 @@ import {
   pageLinkPath,
   pageTitleSlug,
   projectPath,
+  unlistedCopyShows,
 } from "../shared/routes.mjs";
 
 /** Rows per list_pages request in the library. */
@@ -358,13 +359,20 @@ export function pageRow(page, projectTitles = new Map(), { local = false } = {})
 
 /**
  * The local catalog's Pages (local-catalog.mjs) the library shows above the
- * server's rows: drafts that haven't reached the server, and, when the
+ * server's rows: copies with edits the host hasn't confirmed, and, when the
  * listing failed (offline), every copy this browser holds. They show on All
  * and Your items with no Project filter, since they carry no Project. The
  * server's search can't see them, so a search keeps those whose title holds
  * it (matchingPages, the Browse picker's rule). A copy the server rows
- * already hold shows once, as the server's row. Copies of shared Pages look
- * the same as owned ones locally, so the offline fallback shows on All only.
+ * already hold shows once, as the server's row.
+ *
+ * A pending copy of a Page someone else owns (`owned: false`) shows only as
+ * the server's row (or the device's held row for it): once the account
+ * loses access the server stops listing it, and nothing else here can tell
+ * (unlistedCopyShows). A copy of the account's own Page, or of unknown
+ * ownership, still shows above, since the server's first page says nothing
+ * about the Pages after it. Offline, ownership narrows nothing: every copy
+ * shows on All, and pending copies show on Your items too.
  *
  * The ordering rule, from the first paint on: the server's order (its live
  * answer, or the device's copy of its last one) is the order. A pending copy
@@ -372,6 +380,7 @@ export function pageRow(page, projectTitles = new Map(), { local = false } = {})
  * hold shows above it, most recently changed first. Because the device copy
  * paints first, a pending Page the server already lists never starts above
  * the grid and then jumps into it.
+ *
  * A Project's content document (`contents`, its document IDs) is never a
  * Page: the server never lists it, so its local copy would otherwise look
  * like a draft forever. `contents` comes from list_projects, so a copy can
@@ -381,7 +390,9 @@ export function deviceRows(local, items, view, { failed = false, contents = new 
   if (view.projectId || view.access === "shared") return [];
   const listed = new Set([...items.map((page) => page.page_id), ...contents]);
   const kept = (local ?? []).filter(
-    (page) => !listed.has(page.page_id) && (page.pending || (failed && view.access === null)),
+    (page) =>
+      !listed.has(page.page_id) &&
+      (failed ? page.pending || view.access === null : unlistedCopyShows(page)),
   );
   return view.query ? matchingPages(kept, view.query) : kept;
 }

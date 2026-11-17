@@ -8,6 +8,7 @@ import {
   key,
   store,
   withGrantRevision,
+  withOwnership,
 } from "./local-catalog.mjs";
 export { listLocalPages, retireLocalPage } from "./local-catalog.mjs";
 const accessChanged = () =>
@@ -56,19 +57,22 @@ export async function prepareLocalPageReload(identity, page, access, replicaKey)
         if (previous.snapshot) archiveSnapshot(records, identity, previous, ++sequence);
         if (page.snapshot && page.snapshot !== previous.snapshot)
           archiveSnapshot(records, identity, page, ++sequence);
-        const next = withGrantRevision(
-          {
-            ...previous,
-            recovery_sequence: sequence,
-            access,
-            replicaKey,
-            resetReplica: true,
-            pending: false,
-            canWrite: false,
-            snapshot: undefined,
-          },
+        const next = withOwnership(
+          withGrantRevision(
+            {
+              ...previous,
+              recovery_sequence: sequence,
+              access,
+              replicaKey,
+              resetReplica: true,
+              pending: false,
+              canWrite: false,
+              snapshot: undefined,
+            },
+            previous,
+            { access },
+          ),
           previous,
-          { access },
         );
         records.put(encoder.encode(JSON.stringify(next)), key(identity, page.page_id));
         done(next);
@@ -147,9 +151,12 @@ export async function writeLocalPage(
             // writer is a tab that hasn't seen the refusal yet: keep its
             // copy beside the others, then report the refusal.
             if (regrant) {
-              const next = withGrantRevision(
-                { ...page, recovery_sequence: previous.recovery_sequence ?? 0 },
-                page,
+              const next = withOwnership(
+                withGrantRevision(
+                  { ...page, recovery_sequence: previous.recovery_sequence ?? 0 },
+                  page,
+                ),
+                previous,
               );
               delete next.registrationSupersedes;
               records.put(encoder.encode(JSON.stringify(next)), key(identity, page.page_id));
@@ -168,9 +175,12 @@ export async function writeLocalPage(
             return;
           }
           if (replace) {
-            const next = withGrantRevision(
-              { ...page, recovery_sequence: previous.recovery_sequence ?? 0 },
-              page,
+            const next = withOwnership(
+              withGrantRevision(
+                { ...page, recovery_sequence: previous.recovery_sequence ?? 0 },
+                page,
+              ),
+              previous,
             );
             delete next.registrationSupersedes;
             records.put(encoder.encode(JSON.stringify(next)), key(identity, page.page_id));
@@ -265,7 +275,7 @@ export async function writeLocalPage(
         }
         // Which host grant the checkpoint belongs to: the highest readable
         // access revision its writers held. A refused writer never raises it.
-        next = withGrantRevision(next, stored, page);
+        next = withOwnership(withGrantRevision(next, stored, page), stored);
         // The compare-and-swap authority is only for this checkpoint write;
         // stale tabs must explicitly reconcile before replacing another token.
         delete next.registrationSupersedes;

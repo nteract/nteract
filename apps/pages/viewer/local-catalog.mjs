@@ -32,15 +32,41 @@ export async function listLocalPages(identity, { pendingOnly = false } = {}) {
         !page.access?.trashed &&
         (!pendingOnly || page.pending),
     )
-    .map(({ page_id, title, created_at, updated_at, pending, registered }) => ({
-      page_id,
-      title,
-      created_at,
-      updated_at,
-      pending,
-      registered,
-    }))
+    .map(({ page_id, title, created_at, updated_at, pending, registered, owned, access }) => {
+      // An entry written before `owned` existed answers from its stored grant.
+      const own = typeof owned === "boolean" ? owned : ownershipOf(access);
+      return {
+        page_id,
+        title,
+        created_at,
+        updated_at,
+        pending,
+        registered,
+        ...(own !== undefined && { owned: own }),
+      };
+    })
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+}
+/** Roles a Page host grants to an account that isn't the Page's owner. */
+const MEMBER_ROLES = new Set(["editor", "commenter", "viewer"]);
+/** What a grant says about whether this account owns the Page: true for
+ * `owner`, false for a member role, and undefined for `none` or no grant. A
+ * refused or paused grant (`none`) says nothing about whose Page it is. */
+export const ownershipOf = (access) =>
+  access?.role === "owner" ? true : MEMBER_ROLES.has(access?.role) ? false : undefined;
+/** `next` with `owned`: whether this account owns the Page, as the latest
+ * grant that named a role said. A write whose grant is `none` keeps what the
+ * stored entry recorded. With no such grant anywhere, `owned` is absent and
+ * the copy lists as any local copy does (listing.mjs deviceRows). */
+export function withOwnership(next, stored) {
+  const owned = [
+    ownershipOf(next.access),
+    stored?.owned,
+    next.owned,
+    ownershipOf(stored?.access),
+  ].find((value) => typeof value === "boolean");
+  const { owned: _, ...rest } = next;
+  return owned === undefined ? rest : { ...rest, owned };
 }
 /** The grant of this account's stored checkpoint, `{ grant, revision }`
  * (its replica key and grant revision), or undefined. */
