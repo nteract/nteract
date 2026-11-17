@@ -280,10 +280,10 @@ test("a remote change costs work in the blocks it touched, never a whole-documen
     );
   for (const [i, change] of perChange.entries()) {
     const label = `change ${i}`;
-    // The local checkpoint stores the new snapshot. The stored one is the
-    // snapshot this session wrote before, which the new one holds, so the
-    // merge check loads neither.
-    assert.equal(change.saves, 1, `${label}: one checkpoint save`);
+    // A remote change leaves nothing unacknowledged here, so its receipt
+    // writes no checkpoint before it asks (and this offline one gets no
+    // acknowledgement to write).
+    assert.equal(change.saves, 0, `${label}: no checkpoint save`);
     assert.equal(change.loads, 0, `${label}: whole-document loads`);
     // A plain-text edit is carried into the binding's projection without a
     // whole-block read. The heading anchors and the comment outline each read

@@ -226,6 +226,8 @@ try {
           collapsed: selection.isCollapsed,
         };
       });
+    // The editor handles Home asynchronously, so wait for the caret to move.
+    await expect.poll(async () => (await caret()).position).toBe(0);
     const before = await caret();
     assert.equal(before.inBody, true, "the caret starts in the body");
     const scroll = await b.evaluate(() => window.scrollY);

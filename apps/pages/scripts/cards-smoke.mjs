@@ -485,9 +485,8 @@ try {
     assert.equal(result.status, 200, JSON.stringify(result.body));
   };
   await access({ action: "invite", email: "alice@localhost", role: "viewer" });
-  // The host holds her durability receipt. The session marks her copy
-  // pending before it asks for one and clears the mark when it lands, so
-  // leaving now keeps a pending copy, with no edit of hers in it.
+  // The host holds her durability receipt. She edits nothing, so her copy
+  // is never pending, even while the receipt is out.
   const receipts = [];
   await alice.route("**/api/saved?*", (route) => receipts.push(route));
   await alice.goto(`${origin}/p/${shared}`);
@@ -497,7 +496,8 @@ try {
   const aliceCopy = catalogKey(alicePrincipal, shared);
   await expect
     .poll(async () => (await localCatalog(alice, "get", aliceCopy))?.pending, { timeout: 30000 })
-    .toBe(true);
+    .toBe(false);
+  await expect.poll(() => receipts.length).toBeGreaterThan(0);
   const forAlice = await tool(alice, "page_cards", { page_ids: ids });
   assert.equal(forAlice.body.principal, alicePrincipal);
   assert.ok(forAlice.body.cards[shared], "the member reads the shared card");
@@ -510,10 +510,20 @@ try {
   await shoot(alice, "cards-member.png");
   await alice.unroute("**/api/saved?*");
   for (const route of receipts.splice(0)) await route.abort().catch(() => {});
-  const leftCopy = await localCatalog(alice, "get", aliceCopy);
-  assert.equal(leftCopy?.pending, true, "her copy stays pending");
+  // The grid closed her Page; its last checkpoint lands once the drain ends.
+  let leftCopy = await localCatalog(alice, "get", aliceCopy);
+  for (let settled = false; !settled; ) {
+    await alice.waitForTimeout(500);
+    const next = await localCatalog(alice, "get", aliceCopy);
+    settled = next?.updated_at === leftCopy?.updated_at;
+    leftCopy = next;
+  }
+  assert.equal(leftCopy?.pending, false, "a copy she never edited is not pending");
   assert.equal(leftCopy.registered, true);
   assert.equal(leftCopy.access?.role, "viewer");
+  // A copy that does hold unacknowledged edits, say from an earlier editor
+  // grant: the library reads only the entry, so its snapshot can stay out.
+  await localCatalog(alice, "put", aliceCopy, { ...leftCopy, pending: true });
   complete("A shared Page's card shows in the member's grid; the owner's other cards don't");
 
   await access({ action: "set_role", principal: alicePrincipal, role: null });

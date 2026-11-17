@@ -415,6 +415,9 @@ export class PageSession {
   // The current status is a stalled receipt that Retry can move.
   statusRetry = false;
   problem = "";
+  // Why the last write to this browser's store failed; empty once one
+  // succeeds. It shows as `problem` in front of any sync problem.
+  localProblem = "";
   // Why the last connection attempt failed, when the person should see it.
   // It shows as `problem` unless a local save failure is in front of it.
   connectionProblem = "";
@@ -760,7 +763,7 @@ export class PageSession {
         // Recovery stays local, even when the host no longer permits publication.
         void this.persistLocal({
           access: this.access,
-          pending: this.recoveryPending,
+          pending: this.#pendingFlag(),
         }).catch((error) => {
           // Another tab saw the host's refusal; this copy is archived too.
           if (error.code === "LOCAL_PAGE_REVOKED") return void this.revoke();
@@ -811,6 +814,20 @@ export class PageSession {
       now: this.now,
       buildFeatures: this.buildFeatures,
     });
+  }
+  /** The `pending` flag a checkpoint write records, for every write but a
+   * receipt's. The flag says this replica holds edits the host hasn't
+   * acknowledged, the sync-status machine's `pending`: a local edit to
+   * either document sets it, an acknowledgement clears it, and a remote
+   * change never sets it. Once the host acknowledged the current heads the
+   * flag is false. Otherwise the stored flag stands, so an earlier
+   * session's unacknowledged comment keeps it until a receipt covers it.
+   * `unconfirmed` adds the Page edits read from the document, for a close
+   * that runs before start() seeded the machine. */
+  #pendingFlag(unconfirmed = false) {
+    const sync = this.sync$.snapshot();
+    if (sync.name === "saved") return false;
+    return sync.pending || unconfirmed || !!this.localPage?.pending;
   }
   #saved() {
     if (this.hidden) return true;
@@ -902,18 +919,20 @@ export class PageSession {
         // can be unacknowledged, and they can't author again. Decide from
         // the document and the recorded acknowledgements, never from the
         // sync machine: a close can run before start() classified the
-        // replica, for example when an open fails partway.
+        // replica, for example when an open fails partway. The same fact
+        // keeps the pending flag for such a close.
         let edits,
-          retire = false;
+          unconfirmed = true;
         try {
           edits = this.handle ? this.localEditsWithActor() : undefined;
-          retire = !!edits && !hasUnconfirmedLocalEdits(this.doc, edits);
+          unconfirmed = !edits || hasUnconfirmedLocalEdits(this.doc, edits);
         } catch {
-          // Keeping every actor is always safe.
+          // Keeping every actor, and the pending flag, is always safe.
         }
+        const retire = !!edits && !unconfirmed;
         await this.persistLocal(
           {
-            pending: this.statusId !== "saved",
+            pending: this.#pendingFlag(unconfirmed),
             ...(retire && { localEdits: retireReplica(edits, this.replicaId) }),
           },
           { allowClosed: true },
@@ -3443,10 +3462,24 @@ export class PageSession {
       // Every store the flush waited for has asked to be sent. The host can
       // only acknowledge heads it has, so start their rounds now.
       this.outbound.flush();
-      await this.persistLocal({ pending: true });
+      // A replica holding edits the host hasn't acknowledged checkpoints
+      // them as pending before it asks: a tab killed before the receipt
+      // lands lists its copy as unsaved on the next load. A replica with
+      // none writes nothing until the acknowledgement. It still reads the
+      // stored entry, so another tab's deletion, revocation or grant change
+      // stops it here as the write would.
+      if (this.sync$.snapshot().pending) {
+        await this.persistLocal({ pending: true });
+        if (!isCurrent()) return;
+        if (this.problem === this.localProblem) this.problem = "";
+        this.localProblem = "";
+      } else if (this.localPage && !this.hidden) {
+        const standing = await this.#storedStanding({ grant: this.replicaKey });
+        if (standing === "deleted") return void (await this.markDeleted());
+        if (standing === "revoked") return void (await this.revoke());
+        if (standing === "replaced") return void (await this.localAccessChanged());
+      }
       if (!isCurrent()) return;
-      if (this.problem === this.localProblem) this.problem = "";
-      this.localProblem = "";
     } catch (error) {
       if (error.code === "LOCAL_PAGE_DELETED") {
         await this.markDeleted();
@@ -3549,15 +3582,23 @@ export class PageSession {
         }),
       });
       if (!isCurrent()) return;
+      if (this.problem === this.localProblem) this.problem = "";
+      this.localProblem = "";
       this.showReceiptState();
     } catch (error) {
       if (isCurrent()) {
+        // A marker another tab wrote while the receipt was out meets this
+        // write; it stops the session as the write before the request would.
         if (error.code === "LOCAL_PAGE_DELETED") {
           await this.markDeleted();
           return;
         }
         if (error.code === "LOCAL_PAGE_REVOKED") {
           await this.revoke();
+          return;
+        }
+        if (error.code === "LOCAL_PAGE_ACCESS_CHANGED") {
+          await this.localAccessChanged();
           return;
         }
         // The receipt route answers a missing Page as page_access_denied;

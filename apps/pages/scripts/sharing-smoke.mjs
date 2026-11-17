@@ -87,6 +87,62 @@ async function agentEdit(name, before, after, allowed = true) {
   );
 }
 const content = (page) => page.locator("wg-content");
+/** Every `pending` flag this browser's local catalog (viewer/local-catalog.mjs)
+ * stores for the Page, read in `page`. */
+const storedPending = (page) =>
+  page.evaluate(async (pageId) => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("pages-local-catalog-v1");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    try {
+      if (!db.objectStoreNames.contains("bytes")) return [];
+      const all = (method) =>
+        new Promise((resolve, reject) => {
+          const request = db.transaction("bytes").objectStore("bytes")[method]();
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+      const [keys, values] = await Promise.all([all("getAllKeys"), all("getAll")]);
+      return keys
+        .map((key, i) => [key, JSON.parse(new TextDecoder().decode(values[i]))])
+        .filter(([key, record]) => key.startsWith("account/") && record.page_id === pageId)
+        .map(([, record]) => !!record.pending);
+    } finally {
+      db.close();
+    }
+  }, pageId);
+/** The library's rows (list or grid) that open the Page. */
+const libraryRows = (page) =>
+  page.locator(`.library-view :is(a.index-row-link, a.index-card-link)[href*="${pageId}"]`);
+/** A new tab in `person`'s browser whose durability receipts never answer.
+ * `receipts()` counts the ones it sent. */
+async function heldTab(person) {
+  const tab = await person.context().newPage();
+  tab.on("pageerror", (error) => report.errors.push(error.message));
+  let sent = 0;
+  await tab.route("**/api/saved?*", (route) => {
+    if (!route.request().url().includes("probe=frontier")) sent++;
+  });
+  return { tab, receipts: () => sent };
+}
+/** Open the Page in a tab with its receipts held, then leave it for the
+ * library while a receipt is outstanding. Nothing was edited, so the copy
+ * is never pending and the library shows the Page once, as the server's row. */
+async function leaveUnedited(person) {
+  const { tab, receipts } = await heldTab(person);
+  await tab.goto(`${origin}/p/${pageId}`);
+  await expect(content(tab)).toContainText("shared garden");
+  await expect.poll(receipts).toBeGreaterThan(0);
+  assert.deepEqual(await storedPending(tab), [false]);
+  await tab.goto(`${origin}/`);
+  await expect(tab.locator(".library-view")).toBeVisible({ timeout: 30000 });
+  await expect(libraryRows(tab)).toHaveCount(1, { timeout: 30000 });
+  await expect(tab.getByText("On this device")).toHaveCount(0);
+  assert.deepEqual(await storedPending(tab), [false]);
+  await tab.close();
+}
 try {
   const people = [];
   for (const email of ["dev@localhost", "alice@localhost", "bob@localhost"]) {
@@ -188,6 +244,59 @@ try {
   await expect(content(viewer)).not.toHaveAttribute("contenteditable", "true");
   report.completed.push(
     "Distinct OIDC accounts; private defaults; owner invite UI; viewer/editor admission",
+  );
+  // The owner's and the viewer's open tabs stay open beside these.
+  await leaveUnedited(viewer);
+  await leaveUnedited(owner);
+  {
+    // An owner edit in a tab that ends before its receipt lands. Only that
+    // tab holds the Page, so no other session acknowledges the edit first.
+    await owner.goto(`${origin}/`);
+    const { tab, receipts } = await heldTab(owner);
+    await tab.goto(`${origin}/p/${pageId}`);
+    await expect(content(tab)).toContainText("shared garden");
+    await expect.poll(receipts).toBeGreaterThan(0);
+    const before = receipts();
+    await content(tab).focus();
+    await tab.keyboard.press("ControlOrMeta+End");
+    await tab.keyboard.insertText(" Typed before the tab ended.");
+    await expect.poll(receipts).toBeGreaterThan(before);
+    // The mark is stored at edit time, before the receipt goes out.
+    await expect.poll(() => storedPending(tab)).toEqual([true]);
+    // End the tab with its receipt still out: crash the renderer, as
+    // Playwright's own Chromium tests do. Where no crash event arrives,
+    // close the tab without its unload handlers.
+    const crashed = tab
+      .waitForEvent("crash", { timeout: 10000 })
+      .then(() => true)
+      .catch(() => false);
+    void tab.goto("chrome://crash").catch(() => {});
+    report.tabEnded = (await crashed) ? "crashed" : "closed";
+    if (report.tabEnded === "closed") await tab.close({ runBeforeUnload: false });
+    // The held route belongs to that tab alone; drop it so nothing it held
+    // outlives the tab.
+    await tab.unrouteAll({ behavior: "ignoreErrors" }).catch(() => {});
+    const next = await owner.context().newPage();
+    next.on("pageerror", (error) => report.errors.push(error.message));
+    await next.goto(`${origin}/`);
+    await expect(next.locator(".library-view")).toBeVisible({ timeout: 30000 });
+    assert.deepEqual(await storedPending(next), [true]);
+    await expect(libraryRows(next)).toHaveCount(1, { timeout: 30000 });
+    // Reopened, the edit reaches the host and the copy is clean again.
+    await next.goto(`${origin}/p/${pageId}`);
+    await expect(content(next)).toContainText("Typed before the tab ended.");
+    await expect(next.getByRole("status").filter({ hasText: /^Saved$/ })).toBeVisible({
+      timeout: 30000,
+    });
+    await expect.poll(() => storedPending(next)).toEqual([false]);
+    await next.close();
+    await tab.close().catch(() => {});
+    await owner.goto(`${origin}/p/${pageId}`);
+    await expect(content(owner)).toContainText("Typed before the tab ended.");
+    await expect(content(viewer)).toContainText("Typed before the tab ended.");
+  }
+  report.completed.push(
+    "Unedited copies never pending; an edit stays marked pending past a tab that ends before its receipt, until reopened",
   );
   const denied = {
     action: "set_role",

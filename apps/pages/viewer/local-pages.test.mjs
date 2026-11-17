@@ -206,6 +206,36 @@ test("a writer whose earlier snapshot is the stored one replaces it without a me
   assert.equal((await readLocalPage(identity, page.page_id)).snapshot, next);
 });
 
+test("a clean checkpoint clears pending only when its writer knew every other replica's actor", async () => {
+  const { identity, page } = fixture();
+  const entry = (n) => ({ actor: n.repeat(32), replica: n.repeat(32) });
+  const edits = (...actors) => ({ actors, ackedHeads: [], unattributed: false });
+  // The right tab recorded its actor and marked its edit pending.
+  await writeLocalPage(
+    identity,
+    { ...page, localEdits: edits(entry("b")) },
+    { replica: "b".repeat(32) },
+  );
+  // The left tab never saw it: its clean write keeps the flag.
+  const unaware = await writeLocalPage(
+    identity,
+    { ...page, pending: false, localEdits: edits(entry("a")) },
+    { replica: "a".repeat(32) },
+  );
+  assert.equal(unaware.pending, true);
+  // A write that knew the right tab's actor decides it.
+  const aware = await writeLocalPage(
+    identity,
+    { ...page, pending: false, localEdits: edits(entry("a"), entry("b")) },
+    { replica: "a".repeat(32) },
+  );
+  assert.equal(aware.pending, false);
+  // A record without localEdits gives the fence nothing to read.
+  await writeLocalPage(identity, { ...page, pending: true });
+  const legacy = await writeLocalPage(identity, { ...page, pending: false, localEdits: undefined });
+  assert.equal(legacy.pending, false);
+});
+
 const ALL = { query: "", access: null, projectId: null };
 const grant = (role, revision = 3) => ({ role, revision, generation: 1, canRead: role !== "none" });
 const listed = async (identity) =>
@@ -283,4 +313,26 @@ test("an entry written before ownership was recorded answers from its stored gra
   // The next write records it.
   await writeLocalPage(identity, { ...refused, access: grant("editor", 4) });
   assert.equal((await listed(identity))[refused.page_id].owned, false);
+});
+
+test("a clean write the pending fence keeps pending still records owned", async () => {
+  const { identity, page } = fixture();
+  const entry = (n) => ({ actor: n.repeat(32), replica: n.repeat(32) });
+  const edits = (...actors) => ({ actors, ackedHeads: [], unattributed: false });
+  await writeLocalPage(
+    identity,
+    { ...page, access: grant("editor"), localEdits: edits(entry("b")) },
+    { replica: "b".repeat(32) },
+  );
+  // The writer never saw the other tab's actor, and its grant now says owner.
+  const kept = await writeLocalPage(
+    identity,
+    { ...page, pending: false, access: grant("owner", 4), localEdits: edits(entry("a")) },
+    { replica: "a".repeat(32) },
+  );
+  assert.equal(kept.pending, true);
+  assert.equal(kept.owned, true);
+  const stored = await readLocalPage(identity, page.page_id);
+  assert.equal(stored.pending, true);
+  assert.equal(stored.owned, true);
 });

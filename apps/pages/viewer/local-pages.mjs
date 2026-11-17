@@ -1,6 +1,6 @@
 import * as A from "@automerge/automerge";
 import { compareGrantGenerations, parseGrantGeneration } from "../shared/grant-generation.mjs";
-import { mergeLocalEdits } from "./local-edits.mjs";
+import { mergeLocalEdits, readLocalEdits } from "./local-edits.mjs";
 import {
   archiveSnapshot,
   decoder,
@@ -23,6 +23,17 @@ const accessRevoked = () =>
     Error("You no longer have access to this Page; its local copy is in the recovery archive"),
     { code: "LOCAL_PAGE_REVOKED", status: 403 },
   );
+
+/** Whether the stored record names an actor of a replica other than
+ * `replica` that the incoming write's localEdits don't. A record without
+ * readable localEdits on either side gives no answer: false. */
+function unseenReplica(stored, page, replica) {
+  const previous = readLocalEdits(stored.localEdits);
+  const next = readLocalEdits(page.localEdits);
+  if (!previous || !next) return false;
+  const seen = new Set(next.actors.map((entry) => entry.actor));
+  return previous.actors.some((entry) => entry.replica !== replica && !seen.has(entry.actor));
+}
 
 // Retire the previous key's cache without importing its potentially unaccepted
 // edits into a new signer. Retired snapshots remain separate recovery records.
@@ -272,6 +283,12 @@ export async function writeLocalPage(
             replica,
           });
           if (localEdits) next = { ...next, localEdits };
+          // A writer clears the pending flag only for edits it knew of. One
+          // that never saw another replica's actor can't vouch that its
+          // edits were acknowledged; that replica's own writes, or a later
+          // write by this one, decide it.
+          if (previous.pending && !next.pending && unseenReplica(previous, page, replica))
+            next = { ...next, pending: true };
         }
         // Which host grant the checkpoint belongs to: the highest readable
         // access revision its writers held. A refused writer never raises it.
