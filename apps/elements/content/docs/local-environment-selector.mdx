@@ -23,6 +23,10 @@ sample data. Press Change to open the choices.
   reports it and does not choose a replacement.
 - A daemon that does not list installed kernels shows the Conda choices only,
   and no kernel request is sent.
+- A Deno notebook offers Automatic and installed kernels. Conda environments
+  do not apply to it, so they are not listed or requested.
+- A running environment the daemon did not name gets a plain label, such as
+  Managed Python environment, Project environment, or Deno.
 - Hosted connections do not offer local selection.
 
 Installed kernels are borrowed: nteract runs them as they are and does not

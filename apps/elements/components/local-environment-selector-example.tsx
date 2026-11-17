@@ -47,7 +47,8 @@ const kernels: KernelspecCatalogState = {
   inventory: { kernelspecs: [julia, ir, longName], warnings: [], truncated: false },
 };
 
-const automaticRunning = { id: null, name: "uv:prewarmed", pythonVersion: "3.13" };
+const automaticRunning = { id: null, name: "Managed Python environment", pythonVersion: "3.13" };
+const denoRunning = { id: null, name: "Deno", pythonVersion: null };
 const juliaRunning = {
   id: "kernelspec:julia-1.11",
   name: "Julia 1.11",
@@ -57,7 +58,7 @@ const juliaRunning = {
 
 type Fixture = Pick<
   LocalEnvironmentSelectorProps,
-  "available" | "selection" | "kernelspecCatalog" | "running" | "error"
+  "available" | "selection" | "kernelspecCatalog" | "running" | "error" | "condaAvailable"
 > & { label: string; note: string };
 
 function snapshot(
@@ -156,6 +157,16 @@ const fixtures: Record<string, Fixture> = {
     running: automaticRunning,
     error: null,
   },
+  deno: {
+    label: "Deno notebook",
+    note: "Conda environments do not apply to a Deno notebook. Automatic and installed kernels remain.",
+    available: true,
+    condaAvailable: false,
+    selection: snapshot(),
+    kernelspecCatalog: kernels,
+    running: denoRunning,
+    error: null,
+  },
   old: {
     label: "Older daemon",
     note: "The daemon does not list installed kernels. Conda selection is unchanged.",
@@ -215,6 +226,7 @@ export function LocalEnvironmentSelectorExample() {
         <LocalEnvironmentSelector
           key={fixtureId}
           available={fixture.available}
+          condaAvailable={fixture.condaAvailable}
           selection={fixture.selection}
           kernelspecCatalog={fixture.kernelspecCatalog}
           running={fixture.running}

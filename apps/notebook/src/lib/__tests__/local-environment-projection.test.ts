@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   borrowedEnvironmentKind,
   projectRunningEnvironment,
+  runningEnvironmentFallbackName,
   type RunningEnvironmentFacts,
 } from "../local-environment-projection";
 
@@ -26,7 +27,42 @@ describe("borrowedEnvironmentKind", () => {
   });
 });
 
+describe("runningEnvironmentFallbackName", () => {
+  it("describes the kind of environment and never echoes the wire source", () => {
+    const cases: Array<[string | null | undefined, string]> = [
+      ["uv:prewarmed", "Managed Python environment"],
+      ["uv:inline", "Managed Python environment"],
+      ["uv:pep723", "Managed Python environment"],
+      ["conda:prewarmed", "Managed Python environment"],
+      ["conda:inline", "Managed Python environment"],
+      ["pixi:prewarmed", "Managed Python environment"],
+      ["uv:pyproject", "Project environment"],
+      ["pixi:toml", "Project environment"],
+      ["conda:env_yml", "Project environment"],
+      ["conda:existing:local", "Conda environment"],
+      ["kernelspec", "Jupyter kernel"],
+      ["deno", "Deno"],
+      ["something:new", "Automatic environment"],
+      ["", "Automatic environment"],
+      [null, "Automatic environment"],
+      [undefined, "Automatic environment"],
+    ];
+    for (const [source, label] of cases) {
+      expect(runningEnvironmentFallbackName(source)).toBe(label);
+      if (source) expect(runningEnvironmentFallbackName(source)).not.toContain(":");
+    }
+  });
+});
+
 describe("projectRunningEnvironment", () => {
+  it("prefers the daemon's environment name over any fallback label", () => {
+    expect(
+      projectRunningEnvironment(
+        facts({ envSource: "uv:pyproject", environmentId: undefined, environmentName: "forecast" }),
+      ),
+    ).toMatchObject({ name: "forecast" });
+  });
+
   it("names a running installed kernel by display name and language", () => {
     expect(projectRunningEnvironment(facts())).toEqual({
       id: "kernelspec:julia-1.11",
@@ -62,7 +98,12 @@ describe("projectRunningEnvironment", () => {
           language: "python",
         }),
       ),
-    ).toEqual({ id: null, name: "uv:prewarmed", pythonVersion: null, language: null });
+    ).toEqual({
+      id: null,
+      name: "Managed Python environment",
+      pythonVersion: null,
+      language: null,
+    });
   });
 
   it("falls back without inventing an identity when the daemon sent no name", () => {
