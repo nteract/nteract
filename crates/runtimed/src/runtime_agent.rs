@@ -757,7 +757,7 @@ where
 
     // -- 4. Main event loop -------------------------------------------------
 
-    loop {
+    'session: loop {
         if session.kernel.is_none() {
             for (_, task) in session.extension_tasks.drain() {
                 task.abort();
@@ -939,13 +939,19 @@ where
                                     let is_command = envelope.request.is_command();
                                     let id = envelope.id.clone();
 
-                                    let (response, new_cmd_rx) = handle_runtime_agent_request(
+                                    let (response, new_cmd_rx) = tokio::select! {
+                                        Some(reason)=shutdown_rx.recv(), if is_launch_or_restart=>{
+                                            info!("[runtime-agent] Cancelling pending kernel launch: {reason}");
+                                            break 'session;
+                                        }
+                                        result=handle_runtime_agent_request(
                                         envelope.request,
                                         &ctx,
                                         &mut session.kernel,
                                         &mut session.kernel_state,
                                         &mut session.seen_execution_ids,
-                                    ).await;
+                                    )=>result,
+                                    };
 
                                     session.install_kernel_channels(new_cmd_rx);
                                     if should_clear_pending_initial_launch_after_rpc(

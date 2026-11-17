@@ -1216,6 +1216,165 @@ async fn imported_missing_kernelspec_reports_error_without_managed_fallback() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
+async fn kernelspec_guard_is_not_a_waitable_child_of_kernel() {
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt;
+    let mut kernel = tokio::process::Command::new(env!("CARGO_BIN_EXE_runtimed"))
+        .args([
+            "__kernelspec_exec",
+            "/bin/sh",
+            "-c",
+            "sleep .01 & wait; echo done",
+        ])
+        .process_group(0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let ownership = kernel.stdin.take().unwrap();
+    // A bare wait must finish naturally, not because closing the lease killed the group.
+    assert!(tokio::time::timeout(Duration::from_secs(5), kernel.wait())
+        .await
+        .expect("wrapper blocked on its guard")
+        .unwrap()
+        .success());
+    let mut output = String::new();
+    kernel
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut output)
+        .await
+        .unwrap();
+    assert_eq!(output, "done\n");
+    drop(ownership);
+}
+
+#[tokio::test]
+#[ignore = "requires a disposable lumen ipykernel on JUPYTER_PATH and KERNELSPEC_SMOKE_PYTHON"]
+#[cfg(unix)]
+async fn stalled_kernelspec_last_peer_teardown_exits_agent_and_child() {
+    stalled_kernelspec_teardown(false).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable KERNELSPEC_SMOKE_PYTHON and JUPYTER_PATH"]
+#[cfg(unix)]
+async fn stalled_kernelspec_forced_agent_reap_closes_external_group() {
+    stalled_kernelspec_teardown(true).await;
+}
+
+#[cfg(unix)]
+async fn stalled_kernelspec_teardown(force: bool) {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+    let python = std::env::var("KERNELSPEC_SMOKE_PYTHON").unwrap();
+    let prefix = std::path::Path::new(&python)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    assert_eq!(prefix.file_name().unwrap(), "kernelspec-smoke");
+    let spec = tempfile::Builder::new()
+        .prefix("stall-")
+        .tempdir_in(prefix.join("share/jupyter/kernels"))
+        .unwrap();
+    let name = spec
+        .path()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_ascii_lowercase();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let definition = |argv: serde_json::Value| {
+        std::fs::write(spec.path().join("kernel.json"),serde_json::json!({"argv":argv,"display_name":"Cancellation fixture","language":"python"}).to_string()).unwrap()
+    };
+    // This child reports readiness but never opens a Jupyter socket. EOF is a
+    // process-bound observation independent of any daemon lifecycle projection.
+    definition(serde_json::json!([python,"-c","import os,socket,sys,time; s=socket.create_connection(('127.0.0.1',int(sys.argv[1]))); s.sendall(f'{os.getppid()}\\n'.encode()); time.sleep(90)",listener.local_addr().unwrap().port().to_string(),"{connection_file}"]));
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("stall.ipynb");
+    std::fs::write(&path,serde_json::json!({"nbformat":4,"nbformat_minor":5,"cells":[],"metadata":{"kernelspec":{"name":name,"display_name":"Cancellation fixture","language":"python"}}}).to_string()).unwrap();
+    let mut config = test_config(&temp);
+    config.room_eviction_delay_ms = Some(0);
+    let socket = config.socket_path.clone();
+    let daemon = Daemon::new_for_test(config).unwrap();
+    let inspect = daemon.clone();
+    let task = tokio::spawn(async move { daemon.run().await.unwrap() });
+    assert!(wait_for_daemon(&PoolClient::new(socket.clone())).await);
+    let peer = connect::connect_open(socket.clone(), path.clone(), "stall-owner")
+        .await
+        .unwrap();
+    let id = uuid::Uuid::parse_str(&peer.info.notebook_id).unwrap();
+    let (stream, _) = tokio::time::timeout(Duration::from_secs(12), listener.accept())
+        .await
+        .expect("installed child spawned")
+        .unwrap();
+    let mut stream = BufReader::new(stream);
+    let mut pid = String::new();
+    stream.read_line(&mut pid).await.unwrap();
+    let agent = nix::unistd::Pid::from_raw(pid.trim().parse().unwrap());
+    if force {
+        // Same signal and target as the Unix manifest reaper. Stop only this
+        // fixture's live agent group; never sweep other manifests on the machine.
+        assert_eq!(nix::unistd::getpgid(Some(agent)).unwrap(), agent);
+        nix::sys::signal::killpg(agent, nix::sys::signal::Signal::SIGKILL).unwrap();
+    }
+    drop(peer);
+    tokio::time::timeout(Duration::from_secs(15), async {
+        assert_eq!(stream.read(&mut [0]).await.unwrap(), 0);
+        loop {
+            let room = inspect.test_get_room(id).await.unwrap();
+            if nix::sys::signal::kill(agent, None) == Err(nix::errno::Errno::ESRCH)
+                && room
+                    .connections
+                    .last_kernel_torn_down_at
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    != 0
+            {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("cancelled handshake must release child socket and reap actual runtime agent");
+    definition(serde_json::json!([
+        python,
+        "-m",
+        "ipykernel_launcher",
+        "-f",
+        "{connection_file}"
+    ]));
+    let reopened = connect::connect_open(socket.clone(), path, "after-cancel")
+        .await
+        .unwrap();
+    assert_session_ready(&reopened.handle, "after-cancel").await;
+    let launch = reopened
+        .handle
+        .send_request(NotebookRequest::LaunchKernel {
+            kernel_type: "auto".into(),
+            env_source: notebook_protocol::connection::LaunchSpec::Auto,
+            notebook_path: None,
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(&launch,NotebookResponse::KernelAlreadyRunning{launched_config,..}|NotebookResponse::KernelLaunched{launched_config,..} if launched_config.installed_kernelspec.as_ref().is_some_and(|s|s.name==name)),
+        "{launch:?}"
+    );
+    reopened
+        .handle
+        .send_request(NotebookRequest::ShutdownKernel {})
+        .await
+        .unwrap();
+    drop(reopened);
+    stop_claiming_daemon(&socket, task).await;
+}
+
+#[tokio::test]
 #[ignore = "requires a disposable lumen ipykernel on JUPYTER_PATH and KERNELSPEC_SMOKE_PYTHON"]
 #[cfg(unix)]
 async fn installed_wrapper_shutdown_closes_descendants_socket() {

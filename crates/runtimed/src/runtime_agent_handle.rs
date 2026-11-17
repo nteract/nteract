@@ -2,8 +2,9 @@
 //!
 //! `RuntimeAgentHandle` spawns a `runtimed runtime-agent` child process in its
 //! own ownership group. The ownership record is persisted as a per-agent
-//! manifest for orphan reaping. The handle monitors the child lifecycle and
-//! tears down the ownership group on drop.
+//! manifest for orphan reaping. On Unix, dropping the handle asks the watcher
+//! to terminate the agent. Agent death closes the ownership pipes for installed
+//! kernels, whose guards terminate their separate groups.
 
 #[cfg(windows)]
 use std::os::windows::io::RawHandle;
@@ -19,17 +20,17 @@ use crate::task_supervisor::spawn_supervised;
 
 /// Handle to a running runtime agent subprocess.
 ///
-/// The runtime agent connects back to the daemon socket as a peer. On drop,
-/// tears down the agent's ownership group (agent + kernel).
+/// The runtime agent connects back to the daemon socket as a peer. Managed Unix
+/// children share its group; Windows children belong to its job object.
 pub struct RuntimeAgentHandle {
     alive: Arc<AtomicBool>,
     /// Runtime agent ID used as the durable manifest key.
     runtime_agent_id: String,
     /// Notebook ID for logging/context.
     notebook_id: String,
-    /// Process group ID (== agent PID on Unix, since we use process_group(0)).
+    /// Closing this sender asks the watcher, which owns the child, to stop it.
     #[cfg(unix)]
-    pgid: Option<i32>,
+    _shutdown: tokio::sync::oneshot::Sender<()>,
     /// Windows Job Object with KILL_ON_JOB_CLOSE for this runtime agent.
     #[cfg(windows)]
     job: Option<crate::runtime_agent_manifest::WindowsJob>,
@@ -76,6 +77,9 @@ impl RuntimeAgentHandle {
 
         #[cfg(unix)]
         cmd.process_group(0);
+        #[cfg(unix)]
+        let mut child_exits =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child())?;
 
         let mut child = cmd.spawn()?;
 
@@ -140,6 +144,8 @@ impl RuntimeAgentHandle {
         );
 
         let alive = Arc::new(AtomicBool::new(true));
+        #[cfg(unix)]
+        let (shutdown, mut cancelled) = tokio::sync::oneshot::channel::<()>();
 
         // Monitor child process exit
         let alive_clone = alive.clone();
@@ -148,6 +154,70 @@ impl RuntimeAgentHandle {
         spawn_supervised(
             "runtime-agent-watcher",
             async move {
+                #[cfg(unix)]
+                {
+                    use nix::{
+                        sys::signal::{killpg, Signal},
+                        unistd::Pid,
+                    };
+                    let group = Pid::from_raw(pgid.expect("manifest requires a child PID"));
+                    // Observe exit without reaping: even after natural exit, the leader
+                    // pins this group's identity until its managed descendants are killed.
+                    let exit = async {
+                        loop {
+                            {
+                                let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
+                                if unsafe {
+                                    libc::waitid(
+                                        libc::P_PID,
+                                        group.as_raw() as libc::id_t,
+                                        &mut info,
+                                        libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                                    )
+                                } < 0
+                                {
+                                    let e = std::io::Error::last_os_error();
+                                    if e.kind() == std::io::ErrorKind::Interrupted {
+                                        continue;
+                                    }
+                                    return Err(e);
+                                }
+                                if unsafe { info.si_pid() } != 0 {
+                                    return Ok(());
+                                }
+                            }
+                            child_exits.recv().await;
+                        }
+                    };
+                    tokio::pin!(exit);
+                    let observed = tokio::select! {
+                        r=&mut exit=>r,
+                        _=&mut cancelled=>{
+                            // The launch/handshake polls this signal even while RPC processing is busy.
+                            let _=nix::sys::signal::kill(group,Signal::SIGTERM);
+                            tokio::time::timeout(std::time::Duration::from_secs(8),exit).await.unwrap_or(Ok(()))
+                        }
+                    };
+                    match observed {
+                        Ok(()) => {
+                            let decision = crate::runtime_agent_manifest::unix_cleanup_decision(
+                                &runtime_agent_id_clone,
+                                group.as_raw(),
+                                killpg(group, Signal::SIGKILL),
+                            );
+                            if decision
+                                != crate::runtime_agent_manifest::CleanupDecision::RetainForRetry
+                            {
+                                crate::runtime_agent_manifest::remove_manifest(
+                                    &runtime_agent_id_clone,
+                                );
+                            }
+                        }
+                        Err(e) => warn!(
+                            "Cannot establish ownership of agent {runtime_agent_id_clone}: {e}"
+                        ),
+                    }
+                }
                 match child.wait().await {
                     Ok(status) => {
                         info!(
@@ -174,7 +244,7 @@ impl RuntimeAgentHandle {
             runtime_agent_id,
             notebook_id,
             #[cfg(unix)]
-            pgid,
+            _shutdown: shutdown,
             #[cfg(windows)]
             job: Some(job),
         })
@@ -188,39 +258,9 @@ impl RuntimeAgentHandle {
 
 impl Drop for RuntimeAgentHandle {
     fn drop(&mut self) {
-        #[cfg(not(unix))]
-        let remove_manifest = true;
-
-        // SIGKILL the entire process group (agent + kernel)
-        #[cfg(unix)]
-        let remove_manifest = {
-            let mut remove_manifest = true;
-            if let Some(pgid) = self.pgid.take() {
-                use crate::runtime_agent_manifest::CleanupDecision;
-                use nix::sys::signal::{killpg, Signal};
-                use nix::unistd::Pid;
-
-                let decision = if pgid > 0 {
-                    crate::runtime_agent_manifest::unix_cleanup_decision(
-                        &self.runtime_agent_id,
-                        pgid,
-                        killpg(Pid::from_raw(pgid), Signal::SIGKILL),
-                    )
-                } else {
-                    CleanupDecision::RetainForRetry
-                };
-                remove_manifest =
-                    matches!(decision, CleanupDecision::Reaped | CleanupDecision::Missing);
-            }
-            remove_manifest
-        };
-
         #[cfg(windows)]
         {
             self.job.take();
-        }
-
-        if remove_manifest {
             crate::runtime_agent_manifest::remove_manifest(&self.runtime_agent_id);
         }
 

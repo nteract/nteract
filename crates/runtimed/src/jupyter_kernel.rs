@@ -156,6 +156,9 @@ fn kernel_process_exited_error(
 /// Only this owner waits on the child. An unreaped leader pins its process-group ID.
 struct KernelChild {
     child: tokio::process::Child,
+    // Agent death closes this writer even when SIGKILL bypasses Drop.
+    #[cfg(unix)]
+    _ownership: Option<tokio::process::ChildStdin>,
     #[cfg(unix)]
     group: Option<nix::unistd::Pid>,
 }
@@ -164,15 +167,18 @@ impl KernelChild {
     fn spawn(cmd: &mut tokio::process::Command, installed: bool) -> std::io::Result<Self> {
         #[cfg(unix)]
         if installed {
-            cmd.process_group(0);
+            cmd.process_group(0).stdin(Stdio::piped());
         }
-        let child = cmd.spawn()?;
+        #[allow(unused_mut)]
+        let mut child = cmd.spawn()?;
         #[cfg(unix)]
         let group =
             installed.then(|| nix::unistd::Pid::from_raw(child.id().expect("just spawned") as i32));
         #[cfg(not(unix))]
         let _ = installed;
         Ok(Self {
+            #[cfg(unix)]
+            _ownership: child.stdin.take(),
             child,
             #[cfg(unix)]
             group,
@@ -693,6 +699,15 @@ impl KernelConnection for JupyterKernel {
         let mut cmd = match (&installed, kernel_type.as_str()) {
             (Some(spec), _) => {
                 let mut cmd = crate::kernelspec::command(spec, &connection_file_path);
+                #[cfg(unix)]
+                {
+                    let mut owned = tokio::process::Command::new(std::env::current_exe()?);
+                    owned
+                        .arg("__kernelspec_exec")
+                        .arg(cmd.as_std().get_program())
+                        .args(cmd.as_std().get_args());
+                    cmd = owned;
+                }
                 cmd.stdout(Stdio::null()).stderr(Stdio::piped());
                 cmd
             }

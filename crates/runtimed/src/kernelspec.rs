@@ -336,6 +336,7 @@ pub(crate) fn persist(
     language: &str,
 ) -> Result<()> {
     let mut snap = doc.get_metadata_snapshot().unwrap_or_default();
+    let previous = snap.kernelspec.clone();
     if let Some(spec) = target {
         snap.kernelspec = Some(notebook_doc::metadata::KernelspecSnapshot {
             name: spec.name.clone(),
@@ -362,6 +363,17 @@ pub(crate) fn persist(
         });
     } else {
         return Ok(());
+    }
+    if let (Some(previous), Some(next)) = (previous, snap.kernelspec.as_mut()) {
+        if previous.name.eq_ignore_ascii_case(&next.name)
+            && previous
+                .language
+                .as_deref()
+                .zip(next.language.as_deref())
+                .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b))
+        {
+            next.extras = previous.extras;
+        }
     }
     // A spec describes a language, not the version or MIME/lexer details of a running kernel.
     if let Some(language) = snap.kernelspec.as_ref().and_then(|s| s.language.as_ref()) {
