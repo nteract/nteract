@@ -1,0 +1,33 @@
+---
+title: Local environment selector
+description: Automatic, Conda, and installed Jupyter kernel choices in one Environment area.
+---
+
+import { LocalEnvironmentSelectorExample } from "@/components/local-environment-selector-example";
+
+The Environment area at the top of the desktop Packages rail has one selector.
+Automatic comes first, then Conda environments, then Jupyter kernels installed
+on the computer. The fixture renders the shared `LocalEnvironmentSelector` with
+sample data. Press Change to open the choices.
+
+<LocalEnvironmentSelectorExample />
+
+## States
+
+- **Running** is the kernel that is running now. **Next** is the staged choice.
+  They differ until Apply and restart completes.
+- While a kernel starts, nothing is reported as running.
+- An installed kernel shows its language. Python version and package records
+  are shown only for environments that report them.
+- A staged kernel that is no longer installed stays selected. The selector
+  reports it and does not choose a replacement.
+- A daemon that does not list installed kernels shows the Conda choices only,
+  and no kernel request is sent.
+- Hosted connections do not offer local selection.
+
+Installed kernels are borrowed: nteract runs them as they are and does not
+install or change their packages. The Packages rail states this in place of the
+package controls while such a kernel runs.
+
+The fixture actions update sample text only. The daemon owns discovery,
+validation, the staged selection, and the kernel launch.

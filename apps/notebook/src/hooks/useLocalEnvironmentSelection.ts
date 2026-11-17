@@ -11,11 +11,14 @@ const environmentSelectionBroadcasts$ = new Observable<unknown>((subscriber) =>
 export function useLocalEnvironmentSelection({
   client,
   enabled,
+  installedKernelspecs = false,
   connectionGeneration,
   connectionStatus$,
 }: {
   client: NotebookClient;
   enabled: boolean;
+  /** Ready-payload capability for this attachment; absent means unsupported. */
+  installedKernelspecs?: boolean;
   connectionGeneration: number;
   connectionStatus$: Observable<ConnectionStatus>;
 }) {
@@ -28,14 +31,18 @@ export function useLocalEnvironmentSelection({
     const subscription = connectionStatus$.subscribe((status) => {
       if (status !== "online") attachmentValid = false;
       if (enabled && attachmentValid && status === "online")
-        store.activate({ client, broadcasts$: environmentSelectionBroadcasts$ });
+        store.activate({
+          client,
+          broadcasts$: environmentSelectionBroadcasts$,
+          installedKernelspecs,
+        });
       else store.dispose();
     });
     return () => {
       subscription.unsubscribe();
       store.dispose();
     };
-  }, [client, connectionGeneration, connectionStatus$, enabled, store]);
+  }, [client, connectionGeneration, connectionStatus$, enabled, installedKernelspecs, store]);
 
   return { state, store };
 }

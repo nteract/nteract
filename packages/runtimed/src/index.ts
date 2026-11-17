@@ -65,11 +65,17 @@ export { ObservableStore, select } from "./observable-store";
 export { NotebookMetadataStore, type NotebookMetadataHandle } from "./notebook-metadata-store";
 export {
   EnvironmentSelectionStore,
+  INITIAL_KERNELSPEC_CATALOG,
+  transitionKernelspecCatalog,
   type EnvironmentSelectionState,
+  type KernelspecCatalogEvent,
+  type KernelspecCatalogState,
 } from "./environment-selection-store";
 export type {
   InstalledCondaPackage,
   InstalledCondaPackageInventory,
+  InstalledKernelspec,
+  KernelspecInventory,
 } from "@runtimed/contract/requests";
 
 // Polling + fetch-on-input primitives (injected scheduler/fetch, abort-wired)

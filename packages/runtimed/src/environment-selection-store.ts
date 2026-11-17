@@ -5,13 +5,65 @@ import type {
   CondaEnvironmentInventory,
   EnvironmentSelectionSnapshot,
   InstalledCondaPackageInventory,
+  KernelspecInventory,
   LocalEnvironmentTarget,
   NotebookResponse,
 } from "@runtimed/contract/requests";
 
+/**
+ * Installed Jupyter kernelspec catalog lifecycle for one store.
+ *
+ * `seq` names the newest request or invalidation. It only grows, across
+ * attachments too, so a reply is accepted only while the state is `loading`
+ * with the same `seq`. `unsupported` is the fail-closed state for a daemon
+ * that did not advertise the capability: no request leaves it.
+ */
+export type KernelspecCatalogState =
+  | { status: "unsupported"; seq: number }
+  | { status: "idle"; seq: number }
+  | { status: "loading"; seq: number; inventory: KernelspecInventory | null }
+  | { status: "ready"; seq: number; inventory: KernelspecInventory }
+  | { status: "failed"; seq: number; inventory: KernelspecInventory | null; error: string };
+
+export type KernelspecCatalogEvent =
+  | { type: "attached"; supported: boolean }
+  | { type: "detached" }
+  | { type: "requested" }
+  | { type: "resolved"; seq: number; inventory: KernelspecInventory }
+  | { type: "rejected"; seq: number; error: string };
+
+export const INITIAL_KERNELSPEC_CATALOG: KernelspecCatalogState = { status: "unsupported", seq: 0 };
+
+function catalogInventory(state: KernelspecCatalogState): KernelspecInventory | null {
+  return "inventory" in state ? state.inventory : null;
+}
+
+/** Pure transition; the store runs the request after `requested` yields `loading`. */
+export function transitionKernelspecCatalog(
+  state: KernelspecCatalogState,
+  event: KernelspecCatalogEvent,
+): KernelspecCatalogState {
+  switch (event.type) {
+    case "attached":
+      return { status: event.supported ? "idle" : "unsupported", seq: state.seq + 1 };
+    case "detached":
+      return { status: "unsupported", seq: state.seq + 1 };
+    case "requested":
+      if (state.status === "unsupported") return state;
+      return { status: "loading", seq: state.seq + 1, inventory: catalogInventory(state) };
+    case "resolved":
+      if (state.status !== "loading" || state.seq !== event.seq) return state;
+      return { status: "ready", seq: state.seq, inventory: event.inventory };
+    case "rejected":
+      if (state.status !== "loading" || state.seq !== event.seq) return state;
+      return { status: "failed", seq: state.seq, inventory: state.inventory, error: event.error };
+  }
+}
+
 export interface EnvironmentSelectionState {
   selection: EnvironmentSelectionSnapshot | null;
   inventory: CondaEnvironmentInventory | null;
+  kernelspecCatalog: KernelspecCatalogState;
   installedPackages: InstalledCondaPackageInventory | null;
   loadingSelection: boolean;
   loadingInventory: boolean;
@@ -21,10 +73,13 @@ export interface EnvironmentSelectionState {
   error: string | null;
 }
 
-function initialState(): EnvironmentSelectionState {
+function initialState(
+  kernelspecCatalog: KernelspecCatalogState = INITIAL_KERNELSPEC_CATALOG,
+): EnvironmentSelectionState {
   return {
     selection: null,
     inventory: null,
+    kernelspecCatalog,
     installedPackages: null,
     loadingSelection: false,
     loadingInventory: false,
@@ -67,14 +122,21 @@ export class EnvironmentSelectionStore extends ObservableStore<EnvironmentSelect
   activate({
     client,
     broadcasts$,
+    installedKernelspecs = false,
   }: {
     client: NotebookClient;
     broadcasts$: Observable<unknown>;
+    /** Daemon capability from the ready payload. Absent means unsupported. */
+    installedKernelspecs?: boolean;
   }): void {
     this.dispose();
     this.client = client;
     this.setState({
       ...this.snapshot,
+      kernelspecCatalog: transitionKernelspecCatalog(this.snapshot.kernelspecCatalog, {
+        type: "attached",
+        supported: installedKernelspecs,
+      }),
       installedPackages: null,
       installedPackagesError: null,
       loadingInstalledPackages: false,
@@ -116,7 +178,44 @@ export class EnvironmentSelectionStore extends ObservableStore<EnvironmentSelect
     this.subscription?.unsubscribe();
     this.subscription = null;
     this.client = null;
-    this.resetState(initialState());
+    this.resetState(
+      initialState(
+        transitionKernelspecCatalog(this.snapshot.kernelspecCatalog, { type: "detached" }),
+      ),
+    );
+  }
+
+  private dispatchKernelspecCatalog(event: KernelspecCatalogEvent): KernelspecCatalogState {
+    const current = this.snapshot.kernelspecCatalog;
+    const next = transitionKernelspecCatalog(current, event);
+    if (next !== current) this.setState({ ...this.snapshot, kernelspecCatalog: next });
+    return next;
+  }
+
+  /**
+   * List installed Jupyter kernelspecs on explicit UI action. A daemon that did
+   * not advertise the capability gets no request.
+   */
+  async loadKernelspecs(): Promise<void> {
+    const client = this.client;
+    if (!client) return;
+    const loading = this.dispatchKernelspecCatalog({ type: "requested" });
+    if (loading.status !== "loading") return;
+    const seq = loading.seq;
+    try {
+      const response = await client.listInstalledKernelspecs();
+      this.dispatchKernelspecCatalog(
+        response.result === "installed_kernelspecs"
+          ? { type: "resolved", seq, inventory: response.inventory }
+          : { type: "rejected", seq, error: responseError(response) },
+      );
+    } catch (error) {
+      this.dispatchKernelspecCatalog({
+        type: "rejected",
+        seq,
+        error: String(error instanceof Error ? error.message : error),
+      });
+    }
   }
 
   private acceptSelection(selection: EnvironmentSelectionSnapshot): void {
