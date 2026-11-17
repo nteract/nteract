@@ -1164,6 +1164,53 @@ async fn imported_missing_kernelspec_reports_error_without_managed_fallback() {
     })
     .await
     .expect("open publishes missing name without launching managed Python");
+    let response = peer
+        .handle
+        .send_request(NotebookRequest::GetEnvironmentSelection {})
+        .await
+        .unwrap();
+    let NotebookResponse::EnvironmentSelection { selection } = response else {
+        panic!("{response:?}")
+    };
+    assert_eq!(selection.selected_kernelspec.as_ref().unwrap().name, name);
+    assert!(selection.applied_kernelspec.is_none());
+    let heads = peer.handle.confirm_notebook_sync().await.unwrap();
+    let response = peer
+        .handle
+        .send_request_after_heads(
+            NotebookRequest::ApplyEnvironmentSelection {
+                expected_revision: selection.revision,
+                observed_heads: heads.clone(),
+            },
+            heads,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        response,
+        NotebookResponse::EnvironmentSelectionRejected { .. }
+    ));
+    let response = peer
+        .handle
+        .send_request(NotebookRequest::GetEnvironmentSelection {})
+        .await
+        .unwrap();
+    let NotebookResponse::EnvironmentSelection { selection } = response else {
+        panic!("{response:?}")
+    };
+    assert_eq!(selection.selected_kernelspec.as_ref().unwrap().name, name);
+    assert!(selection.applied_kernelspec.is_none());
+    let response = peer
+        .handle
+        .send_request(NotebookRequest::SetEnvironmentSelection {
+            target: notebook_protocol::protocol::LocalEnvironmentTarget::Automatic,
+            expected_revision: selection.revision,
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(response, NotebookResponse::EnvironmentSelection { selection } if selection.selected_kernelspec.is_none())
+    );
     drop(peer);
     stop_claiming_daemon(&socket, task).await;
 }

@@ -514,7 +514,7 @@ pub(crate) async fn handle_notebook_request(
         NotebookRequest::ListInstalledCondaPackages { refresh: _ } => {
             local_environment_selection::list_installed_packages(room).await
         }
-        NotebookRequest::GetEnvironmentSelection {} => local_environment_selection::get(room),
+        NotebookRequest::GetEnvironmentSelection {} => local_environment_selection::get(room).await,
         NotebookRequest::SetEnvironmentSelection {
             target,
             expected_revision,
