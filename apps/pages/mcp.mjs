@@ -292,6 +292,10 @@ const editOperation = {
       description:
         "Image ops and set_source: asset uploaded to this Page (create_page_asset_upload).",
     },
+    asset_from: {
+      type: "string",
+      description: "Only when asset_id is on another Page or Project: that Page's or Project's id.",
+    },
     source_id: {
       type: "string",
       pattern: SOURCE_ID_PATTERN,

@@ -96,7 +96,14 @@ test("published tool examples pass current source and view validators", () => {
         assert.ok(Object.hasOwn(args, key), `${operation}.${key}`);
       for (const op of args.operations ?? []) {
         if (op.op === "set_source") {
-          validateSourceOperation({ ...op, asset_id: "a".repeat(64) });
+          // The gateway takes asset_from off the operation (dataset-copies.mjs);
+          // the host validates the rest.
+          const { asset_from, ...hostOp } = op;
+          if (asset_from !== undefined)
+            assert.ok(
+              Object.hasOwn(tool.inputSchema.properties.operations.items.properties, "asset_from"),
+            );
+          validateSourceOperation({ ...hostOp, asset_id: "a".repeat(64) });
           sources++;
         } else if (op.op === "set_view") {
           validateViewOperation(op);

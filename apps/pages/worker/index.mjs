@@ -328,6 +328,16 @@ import {
   requireStoredDatasetAsset,
   requireStoredImageAsset,
 } from "./image-assets.mjs";
+import {
+  COPY_REQUIRED_HEADER,
+  DatasetCopyRequired,
+  checkHintedAssets,
+  copyHintedDatasets,
+  copyRefusal,
+  copyRequiredResponse,
+  sourceNotReadable,
+  takeAssetHints,
+} from "./dataset-copies.mjs";
 // The host check for each stored asset kind a node can name
 // (INSERT_OPERATIONS in model/node-registry.mjs).
 const ASSET_CHECKS = Object.freeze({
@@ -1005,6 +1015,37 @@ function authorizeImage(request, env, pageId, write) {
   return env.PAGES.getByName(pageId).fetch(internal);
 }
 
+/**
+ * The read check of edit_page's `asset_from` source (dataset-copies.mjs):
+ * the one a read of the source's asset URL asks. A Page source asks that
+ * Page's host. A Project source asks what /api/projects/<id>/assets/<sha>
+ * asks: the Project's reader check, its content document, then that
+ * document's host. Resolves to the Page id whose asset store holds the
+ * source's datasets. Every refusal below 500 is the same
+ * `source_not_readable`, whether the source is missing or closed to the
+ * caller; nothing here reads asset storage.
+ */
+async function authorizeAssetSource(request, env, source, signal) {
+  const unreadable = (status) => {
+    if (status < 500) throw sourceNotReadable();
+    throw new HttpError(503, "The source is temporarily unavailable");
+  };
+  let pageId = source.page_id;
+  if (source.project_id) {
+    try {
+      await requireProjectReader(request, env, source.project_id);
+      pageId = (await resolveProjectContent(env, { project_id: source.project_id }, signal))
+        .page_id;
+    } catch (error) {
+      unreadable(error?.status ?? 500);
+    }
+  }
+  const access = await authorizeImage(request, env, pageId, false);
+  if (!access.ok) unreadable(access.status);
+  await access.body?.cancel();
+  return pageId;
+}
+
 /** authorizeImage for an upload capability (asset-uploads.mjs). The host
  * request carries only the capability: no cookie, bearer credential or label
  * of the caller's. The Page host verifies it with its own key and decides
@@ -1240,17 +1281,44 @@ async function invoke(request, env, operation, args = {}, seen, call) {
       }
       // Transient and storage failures use this request's repeat safety,
       // as a timeout does.
-      const response = await withRepeatSafety(
-        await untilAborted(
-          env.PAGES.getByName(args.page_id).fetch(
-            forwarded(request, "/internal/tool", { operation, arguments: args }),
-            { signal },
+      const forward = async (extra) =>
+        withRepeatSafety(
+          await untilAborted(
+            env.PAGES.getByName(args.page_id).fetch(
+              forwarded(request, "/internal/tool", { operation, arguments: args, ...extra }),
+              { signal },
+            ),
+            signal,
           ),
+          safe,
           signal,
-        ),
-        safe,
-        signal,
-      );
+        );
+      let response;
+      if (operation === "edit_page") {
+        let hints;
+        ({ args, hints } = takeAssetHints(args));
+        response = await forward(hints.size ? { asset_hints: [...hints.keys()] } : {});
+        if (response.status === 409 && response.headers.get(COPY_REQUIRED_HEADER) === "required") {
+          const { asset_ids } = await readResponseJson(response, signal);
+          try {
+            await untilAborted(
+              copyHintedDatasets({
+                assetIds: Array.isArray(asset_ids) ? asset_ids : [],
+                hints,
+                destination: { page_id: args.page_id, project_id: projectId ?? undefined },
+                bucket: env.PAGES_ASSETS,
+                authorizeSource: (source) => authorizeAssetSource(request, env, source, signal),
+              }),
+              signal,
+            );
+          } catch (error) {
+            return copyRefusal(error);
+          }
+          // Every asset is on this Page now, or the edit is refused as it
+          // would be without asset_from. Edit access is checked again.
+          response = await forward({});
+        }
+      } else response = await forward({});
       if (!response.ok || (operation !== "read_page" && !projectId))
         return bufferedResponse(response, signal);
       const body = await readResponseJson(response, signal);
@@ -7088,13 +7156,16 @@ export class Page {
                 } catch (error) {
                   throw new HttpError(400, error.message, "invalid_edit_selector");
                 }
-                // Each names an asset stored on this Page, of its kind.
-                for (const { asset, assetId, mediaType } of assets)
-                  await ASSET_CHECKS[asset](this.env.PAGES_ASSETS, {
+                // Each names an asset stored on this Page, of its kind. One
+                // the gateway holds an asset_from for, and this Page lacks,
+                // asks the gateway to copy it (dataset-copies.mjs).
+                await checkHintedAssets(assets, body.asset_hints, ({ asset, assetId, mediaType }) =>
+                  ASSET_CHECKS[asset](this.env.PAGES_ASSETS, {
                     pageId: this.metadata.pageId,
                     assetId,
                     ...(mediaType && { mediaType }),
-                  });
+                  }),
+                );
                 // A new table binding must resolve now. Existing consumers remain
                 // readable after deletion or history eviction.
                 for (const op of inserts) {
@@ -7185,6 +7256,9 @@ export class Page {
       }
       throw new HttpError(404, "Not found");
     } catch (error) {
+      // Before anything was journaled: the gateway copies, then sends the
+      // batch again.
+      if (error instanceof DatasetCopyRequired) return copyRequiredResponse(error);
       if (!admissionRoute) return errorResponse(await this.agentRefusal(error), "page");
       if ((error.status ?? 500) >= 500) logFailure(error, "page");
       return admissionErrorResponse(error, { stage: "page", identity });
@@ -7482,14 +7556,20 @@ export class Page {
           } catch (error) {
             throw sourceRefusal(error);
           }
-          for (const assetId of assetIds) {
-            const dataset = await requireStoredDatasetAsset(this.env.PAGES_ASSETS, {
-              pageId: this.metadata.pageId,
-              assetId,
-              mediaType: null, // Sources may bind any admitted non-image asset.
-            });
-            mediaTypes.set(assetId, dataset.mime_type);
-          }
+          // As for a Page edit, a missing asset with an asset_from asks the
+          // gateway to copy it.
+          await checkHintedAssets(
+            assetIds.map((assetId) => ({ assetId })),
+            body.asset_hints,
+            async ({ assetId }) => {
+              const dataset = await requireStoredDatasetAsset(this.env.PAGES_ASSETS, {
+                pageId: this.metadata.pageId,
+                assetId,
+                mediaType: null, // Sources may bind any admitted non-image asset.
+              });
+              mediaTypes.set(assetId, dataset.mime_type);
+            },
+          );
           // Access can change while the asset records are read.
           this.policy.account(await authenticate(request, this.env), true);
           await this.sourcesEvent({ type: "create", recorded: recordNamesSources(this.metadata) });
