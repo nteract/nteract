@@ -11,9 +11,19 @@ import {
   readPageCards,
 } from "./page-cards.mjs";
 import { cardBucket } from "./card-bucket-fixture.mjs";
+import { storeCardImage } from "./card-images.mjs";
+import worker from "./index.mjs";
 import { boundedMap } from "./bounded-map.mjs";
 import { tools } from "../mcp.mjs";
 import { world } from "./projects-fixture.mjs";
+
+/** A 3x2 WebP (the card-images.test.mjs fixture). */
+const WEBP = new Uint8Array(
+  Buffer.from(
+    "UklGRjgAAABXRUJQVlA4ICwAAADwAQCdASoDAAIAAUAmJaACdLoB+AAEyAAA/q4X/yU1/jblq/+QXq3zbGgAAA==",
+    "base64",
+  ),
+);
 
 async function cardsWorld(t) {
   const w = await world(t);
@@ -242,12 +252,12 @@ test("readPageCards reads only allowed IDs, at once, and a bad object or a late 
       most = Math.max(most, ++running);
       try {
         await new Promise((resolve) => setTimeout(resolve, 5));
-        if (key.includes(ids[1])) return "{not json";
+        if (key.includes(ids[1])) return { text: "{not json", metadata: {} };
         if (key.includes(ids[2])) {
           await late;
           assert.equal(signal.aborted, true, "the deadline aborts the read");
         }
-        return JSON.stringify({ v: 1, card_hash: "h", blocks: [] });
+        return { text: JSON.stringify({ v: 1, card_hash: "h", blocks: [] }), metadata: {} };
       } finally {
         running--;
       }
@@ -265,6 +275,43 @@ test("readPageCards reads only allowed IDs, at once, and a bad object or a late 
   assert.deepEqual([cards[ids[1]], cards[ids[2]], cards[ids[3]]], [null, null, null]);
   assert.equal(errors.length, 1, "only the bad object is an error");
   assert.ok(pageCardReadBounds.deadlineMs <= 1500);
+});
+
+test("twenty cards cost twenty R2 reads, pictures included", async (t) => {
+  const { w, assets, create, cards } = await cardsWorld(t);
+  const ids = [];
+  for (let n = 0; n < 20; n++) ids.push(await create(`Plan ${n}`, `Body ${n}`));
+  // Half of them have a picture of their current first screen.
+  for (const pageId of ids.slice(0, 10)) {
+    const hash = assets.card(cardKey(pageId)).card_hash;
+    for (const theme of ["light", "dark"])
+      await storeCardImage(assets, { pageId, hash, theme, bytes: WEBP, revision: 1 });
+  }
+  assets.reads.length = 0;
+  assets.heads.length = 0;
+  const answer = await cards("owner", ids);
+  assert.equal(answer.status, 200, JSON.stringify(answer.body));
+  assert.equal(ids.filter((id) => answer.body.cards[id]?.image).length, 10);
+  assert.equal(ids.filter((id) => answer.body.cards[id]?.title).length, 20);
+  assert.deepEqual(
+    assets.reads,
+    ids.map((id) => cardKey(id)),
+  );
+  assert.deepEqual(assets.heads, [], "no pointer reads");
+  // The deployed gateway records each read as one `r2` run.
+  const timed = await worker.fetch(
+    new Request("https://pages.invalid/api/tools", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${w.auth.apiKey()}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ operation: "page_cards", arguments: { page_ids: ids } }),
+    }),
+    w.env,
+  );
+  assert.equal(timed.status, 200, await timed.clone().text());
+  assert.match(timed.headers.get("server-timing"), /(^|, )r2;dur=[\d.]+;desc="n=20", r2_max;/);
 });
 
 test("slow card reads never hold the account's Catalog queue", async (t) => {
