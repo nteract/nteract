@@ -8228,6 +8228,7 @@ async fn test_notebook_sync_path_handshake_reuses_existing_room() {
 #[test]
 fn test_compute_env_sync_diff_in_sync() {
     let launched = LaunchedEnvConfig {
+        installed_kernelspec: None,
         uv_deps: Some(vec!["numpy".to_string(), "pandas".to_string()]),
         conda_deps: None,
         conda_channels: None,
@@ -8255,6 +8256,7 @@ fn test_compute_env_sync_diff_in_sync() {
 #[test]
 fn test_compute_env_sync_diff_added() {
     let launched = LaunchedEnvConfig {
+        installed_kernelspec: None,
         uv_deps: Some(vec!["numpy".to_string()]),
         conda_deps: None,
         conda_channels: None,
@@ -8282,6 +8284,7 @@ fn test_compute_env_sync_diff_added() {
 #[test]
 fn test_compute_env_sync_diff_removed() {
     let launched = LaunchedEnvConfig {
+        installed_kernelspec: None,
         uv_deps: Some(vec!["numpy".to_string(), "pandas".to_string()]),
         conda_deps: None,
         conda_channels: None,
@@ -8308,6 +8311,7 @@ fn test_compute_env_sync_diff_removed() {
 #[test]
 fn test_compute_env_sync_diff_added_and_removed() {
     let launched = LaunchedEnvConfig {
+        installed_kernelspec: None,
         uv_deps: Some(vec!["numpy".to_string(), "old-pkg".to_string()]),
         conda_deps: None,
         conda_channels: None,
@@ -8334,6 +8338,7 @@ fn test_compute_env_sync_diff_added_and_removed() {
 #[test]
 fn test_compute_env_sync_diff_conda_channels_changed() {
     let launched = LaunchedEnvConfig {
+        installed_kernelspec: None,
         uv_deps: None,
         conda_deps: Some(vec!["scipy".to_string()]),
         conda_channels: Some(vec!["conda-forge".to_string()]),

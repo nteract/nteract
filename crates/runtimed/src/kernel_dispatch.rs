@@ -43,7 +43,7 @@ impl KernelConnection for Kernel {
         config: KernelLaunchConfig,
         shared: KernelSharedRefs,
     ) -> Result<(Self, QueueCommandReceivers)> {
-        if config.kernel_type == "test" {
+        if config.kernel_type == "test" && config.launched_config.installed_kernelspec.is_none() {
             let (k, rx) = TestKernel::launch(config, shared).await?;
             Ok((Kernel::Test(Box::new(k)), rx))
         } else {

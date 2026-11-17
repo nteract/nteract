@@ -324,6 +324,7 @@ mod tests {
                 put_blob: None,
                 notebook_sync_receipt: false,
                 local_environment_selection: false,
+                installed_kernelspecs: false,
                 actor_label: None,
                 connection_scope: None,
                 comments_doc_id: None,

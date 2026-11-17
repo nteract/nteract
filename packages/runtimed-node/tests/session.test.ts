@@ -22,6 +22,7 @@ const { Session } = require("../src/session.cjs") as {
     declineProjectTrust: (directory: string, remember?: boolean) => Promise<void>;
     localEnvironment: unknown;
     getEnvironmentSelection: () => Promise<unknown>;
+    listInstalledKernelspecs: () => Promise<unknown>;
     setEnvironmentSelection: (target: unknown, expectedRevision: number) => Promise<unknown>;
     applyEnvironmentSelection: (
       expectedRevision: number,
@@ -367,6 +368,11 @@ describe("@runtimed/node Session wrapper", () => {
     const native = {
       notebookId: "nb-1",
       getEnvironmentSelection: vi.fn(async () => selection),
+      listInstalledKernelspecs: vi.fn(async () => ({
+        kernelspecs: [],
+        warnings: [],
+        truncated: false,
+      })),
       setEnvironmentSelection: vi.fn(async () => selection),
       applyEnvironmentSelection: vi.fn(async () => selection),
       close: vi.fn(async () => {}),
@@ -375,6 +381,11 @@ describe("@runtimed/node Session wrapper", () => {
     const target = { kind: "conda", prefix: "/envs/kilo" };
 
     await expect(session.getEnvironmentSelection()).resolves.toBe(selection);
+    await expect(session.listInstalledKernelspecs()).resolves.toEqual({
+      kernelspecs: [],
+      warnings: [],
+      truncated: false,
+    });
     await expect(session.setEnvironmentSelection(target, 1)).resolves.toBe(selection);
     await expect(session.applyEnvironmentSelection(2)).resolves.toBe(selection);
 

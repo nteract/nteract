@@ -508,6 +508,7 @@ fn request_required_scope(
     match request {
         NotebookRequest::LaunchKernel { .. }
         | NotebookRequest::ListCondaEnvironments { .. }
+        | NotebookRequest::ListInstalledKernelspecs {}
         | NotebookRequest::ListInstalledCondaPackages { .. }
         | NotebookRequest::GetEnvironmentSelection {}
         | NotebookRequest::SetEnvironmentSelection { .. }

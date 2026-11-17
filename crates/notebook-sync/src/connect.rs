@@ -312,6 +312,7 @@ pub async fn connect_with_options(
         .map(|(handle, broadcast_rx)| ConnectResult {
             handle: handle
                 .with_notebook_sync_receipt_capability(caps.notebook_sync_receipt)
+                .with_installed_kernelspecs(caps.installed_kernelspecs)
                 .with_keyed_doc_kinds(caps.keyed_doc_kinds.clone()),
             broadcast_rx,
             initial_metadata,
@@ -368,6 +369,7 @@ pub async fn connect_open(
         .map(|(handle, broadcast_rx)| OpenResult {
             handle: handle
                 .with_notebook_sync_receipt_capability(info.capabilities.notebook_sync_receipt)
+                .with_installed_kernelspecs(info.capabilities.installed_kernelspecs)
                 .with_keyed_doc_kinds(info.capabilities.keyed_doc_kinds.clone()),
             broadcast_rx,
             info,
@@ -427,6 +429,7 @@ pub async fn connect_open_hosted(
         .map(|(handle, broadcast_rx)| OpenResult {
             handle: handle
                 .with_notebook_sync_receipt_capability(info.capabilities.notebook_sync_receipt)
+                .with_installed_kernelspecs(info.capabilities.installed_kernelspecs)
                 .with_keyed_doc_kinds(info.capabilities.keyed_doc_kinds.clone()),
             broadcast_rx,
             info,
@@ -483,6 +486,7 @@ pub async fn connect_create(
         .map(|(handle, broadcast_rx)| CreateResult {
             handle: handle
                 .with_notebook_sync_receipt_capability(info.capabilities.notebook_sync_receipt)
+                .with_installed_kernelspecs(info.capabilities.installed_kernelspecs)
                 .with_keyed_doc_kinds(info.capabilities.keyed_doc_kinds.clone()),
             broadcast_rx,
             info,

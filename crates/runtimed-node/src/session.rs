@@ -147,6 +147,7 @@ pub enum EnvironmentSelectionTargetKind {
     Automatic,
     /// Borrow an existing Conda prefix.
     Conda,
+    Kernelspec,
 }
 
 /// Target for `Session.setEnvironmentSelection()`. `prefix` is required for
@@ -156,6 +157,7 @@ pub enum EnvironmentSelectionTargetKind {
 pub struct EnvironmentSelectionTarget {
     pub kind: EnvironmentSelectionTargetKind,
     pub prefix: Option<String>,
+    pub name: Option<String>,
 }
 
 impl TryFrom<EnvironmentSelectionTarget> for notebook_protocol::protocol::LocalEnvironmentTarget {
@@ -164,6 +166,11 @@ impl TryFrom<EnvironmentSelectionTarget> for notebook_protocol::protocol::LocalE
     fn try_from(value: EnvironmentSelectionTarget) -> Result<Self> {
         match value.kind {
             EnvironmentSelectionTargetKind::Automatic => Ok(Self::Automatic),
+            EnvironmentSelectionTargetKind::Kernelspec => Ok(Self::Kernelspec {
+                name: value
+                    .name
+                    .ok_or_else(|| Error::from_reason("A kernelspec target requires a name"))?,
+            }),
             EnvironmentSelectionTargetKind::Conda => value
                 .prefix
                 .map(|prefix| Self::Conda {
@@ -201,6 +208,8 @@ impl From<notebook_protocol::protocol::LocalCondaEnvironment> for LocalCondaEnvi
 #[napi(object)]
 #[derive(Clone, Debug)]
 pub struct EnvironmentSelection {
+    pub selected_kernelspec: Option<InstalledKernelspec>,
+    pub applied_kernelspec: Option<InstalledKernelspec>,
     /// Pass back as `expectedRevision` to set or apply.
     pub revision: i64,
     /// Staged target. Null means Automatic.
@@ -214,6 +223,8 @@ impl From<notebook_protocol::protocol::EnvironmentSelectionSnapshot> for Environ
     fn from(value: notebook_protocol::protocol::EnvironmentSelectionSnapshot) -> Self {
         Self {
             revision: i64::try_from(value.revision).unwrap_or(i64::MAX),
+            selected_kernelspec: value.selected_kernelspec.map(Into::into),
+            applied_kernelspec: value.applied_kernelspec.map(Into::into),
             selected: value.selected.map(Into::into),
             applied: value.applied.map(Into::into),
             applying: value.applying,
@@ -231,6 +242,29 @@ fn environment_selection_response(response: NotebookResponse) -> Result<Environm
             "Unexpected response: {other:?}"
         ))),
     }
+}
+
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct InstalledKernelspec {
+    pub name: String,
+    pub display_name: String,
+    pub language: String,
+}
+impl From<notebook_protocol::protocol::InstalledKernelspec> for InstalledKernelspec {
+    fn from(s: notebook_protocol::protocol::InstalledKernelspec) -> Self {
+        Self {
+            name: s.name,
+            display_name: s.display_name,
+            language: s.language,
+        }
+    }
+}
+#[napi(object)]
+pub struct KernelspecInventory {
+    pub kernelspecs: Vec<InstalledKernelspec>,
+    pub truncated: bool,
+    pub warnings: Vec<String>,
 }
 
 fn expected_revision(revision: i64) -> Result<u64> {
@@ -1305,6 +1339,34 @@ impl Session {
         .await
     }
 
+    #[napi]
+    pub async fn list_installed_kernelspecs(&self) -> Result<KernelspecInventory> {
+        let handle = session_handle(&self.state).await?;
+        if !handle.supports_installed_kernelspecs() {
+            return Err(Error::from_reason(
+                "Daemon does not support installed kernelspecs",
+            ));
+        }
+        match handle
+            .send_request(NotebookRequest::ListInstalledKernelspecs {})
+            .await
+            .map_err(to_napi_err)?
+        {
+            NotebookResponse::InstalledKernelspecs { inventory } => Ok(KernelspecInventory {
+                kernelspecs: inventory.kernelspecs.into_iter().map(Into::into).collect(),
+                warnings: inventory.warnings,
+                truncated: inventory.truncated,
+            }),
+            NotebookResponse::Error { error }
+            | NotebookResponse::EnvironmentSelectionRejected { error } => {
+                Err(Error::from_reason(error))
+            }
+            other => Err(Error::from_reason(format!(
+                "Unexpected response: {other:?}"
+            ))),
+        }
+    }
+
     /// Read the staged and applied local environment selection.
     #[napi]
     pub async fn get_environment_selection(&self) -> Result<EnvironmentSelection> {
@@ -1328,6 +1390,15 @@ impl Session {
         let target = target.try_into()?;
         let expected_revision = self::expected_revision(expected_revision)?;
         let handle = session_handle(&self.state).await?;
+        if matches!(
+            &target,
+            notebook_protocol::protocol::LocalEnvironmentTarget::Kernelspec { .. }
+        ) && !handle.supports_installed_kernelspecs()
+        {
+            return Err(Error::from_reason(
+                "Daemon does not support installed kernelspecs",
+            ));
+        }
         environment_selection_response(
             handle
                 .send_request(NotebookRequest::SetEnvironmentSelection {
