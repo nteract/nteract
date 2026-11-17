@@ -1462,6 +1462,7 @@ test("create under a parent records its location only in the owner's Catalog", a
   const w = await world(t);
   const project = await w.createProject("Docs");
   const top = (await w.createPage({ title: "Guide", project_id: project.project_id })).body;
+  const catalog = w.catalog();
   const calls = spy(w);
   const childKey = w.key();
   const child = await w.createPage({
@@ -1505,7 +1506,9 @@ test("create under a parent records its location only in the owner's Catalog", a
   // Only the root records the Project: a root without it is Your items.
   const root = await storage.get(`page/${top.page_id}`);
   const { space_id: _space, ...withoutProject } = root;
-  await storage.put(`page/${top.page_id}`, withoutProject);
+  // Through the Catalog's own storage, as its writes go: it drops the
+  // Catalog's remembered location scan.
+  await catalog.storage.put(`page/${top.page_id}`, withoutProject);
   const moved = await w.call("owner", "read_page", {
     page_id: grandchild.page_id,
     include_content: false,

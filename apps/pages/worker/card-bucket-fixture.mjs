@@ -3,11 +3,16 @@
 // and `onlyIf` conditions (`etagMatches`, `etagDoesNotMatch: "*"`) that make
 // `put()` answer null instead of writing. Binary values (card images) keep
 // their bytes, `httpMetadata` and size, and `list()` pages by prefix.
+// `reads` and `heads` record each `get()` and `head()` key: together they are
+// the bucket's Class B operations.
 export function cardBucket() {
   let next = 0;
   return {
     objects: new Map(),
     reads: [],
+    heads: [],
+    /** Called with the key before a head answers; tests use it to hold one. */
+    beforeHead: null,
     puts: 0,
     refused: 0,
     fail: false,
@@ -55,6 +60,8 @@ export function cardBucket() {
       };
     },
     async head(key) {
+      this.heads.push(key);
+      await this.beforeHead?.(key);
       const object = this.objects.get(key);
       return object
         ? {
@@ -81,10 +88,21 @@ export function cardBucket() {
       const object = this.objects.get(key);
       return object ? JSON.parse(object.text) : undefined;
     },
-    /** Store a card as a host would, outside any writer. */
-    async seed(key, card) {
+    /** The rest of the bucket's reads: every `get()` and `head()` so far. */
+    get classB() {
+      return this.reads.length + this.heads.length;
+    },
+    /** Store a card as a host would, outside any writer, with no card
+     * image record. `legacy` stores it as builds before the record moved
+     * into `card.json` did: no `image_revision`, so readers fall back to
+     * the `card/latest` pointer. */
+    async seed(key, card, { legacy = false } = {}) {
       return this.put(key, JSON.stringify(card), {
-        customMetadata: { card_hash: card.card_hash, content_updated_at: "" },
+        customMetadata: {
+          card_hash: card.card_hash,
+          content_updated_at: "",
+          ...(!legacy && { image_hash: "", image_revision: "0", light: "", dark: "" }),
+        },
       });
     },
   };

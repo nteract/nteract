@@ -85,6 +85,12 @@ Multiple set_source operations may share one batch; source operations cannot mix
 ${call("read_page", { page_id: "<page_id>", source_id: "counter-module" })}
 To update, upload new bytes, then send set_source with the same source_id, the new asset_id, and the source_revision just read. Keep the intended name too. A stale_source refusal means reread and reconcile; never bypass the revision check. An exact retry uses the same nonce and payload. A changed request uses a new nonce.
 
+## Datasets from another Page or Project
+
+To chart a Parquet dataset that is on another Page or a Project, don't download it. Read its asset_id from that Page's or Project's source, then add asset_from with that Page's or Project's id to the set_source on your Page:
+${edit("reuse-daily-001", [{ ...source("daily", "Daily usage"), asset_id: "<asset_id read from the other source>", asset_from: "<other Page's or Project's id>" }])}
+Pages copies the dataset to your Page under the same asset_id first. You need read access to the other Page or Project. Only Parquet copies.
+
 ## Following and pinning
 
 A binding {"source_id":"counter-module"} follows current bytes. Adding "revision":"1" selects that retained source version. History holds the newest ${SOURCE_HISTORY_LIMIT} states: a pin is not a permanent archive. For a dataframe that must name immutable data directly, use its asset_id form.

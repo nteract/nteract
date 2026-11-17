@@ -226,8 +226,7 @@ try {
           collapsed: selection.isCollapsed,
         };
       });
-    // Home lands once the editor has handled it; a checkpoint written after
-    // the receipt can hold the main thread that long.
+    // The editor handles Home asynchronously, so wait for the caret to move.
     await expect.poll(async () => (await caret()).position).toBe(0);
     const before = await caret();
     assert.equal(before.inBody, true, "the caret starts in the body");

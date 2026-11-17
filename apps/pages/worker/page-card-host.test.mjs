@@ -70,10 +70,15 @@ test("a flush writes the card when its first screen changed", async (t) => {
   assert.deepEqual(card.blocks[0].content[0], ["h2", {}, "Launch"]);
   assert.equal(card.content_updated_at, f.page.contentActivity.value);
   assert.deepEqual(await f.storage.get(PAGE_CARD_KEY), { card_hash: card.card_hash });
-  // The object carries what the writer's ordering check reads back.
+  // The object carries what the writer's ordering check reads back, and an
+  // empty card image record (card-images.mjs).
   assert.deepEqual(assets.objects.get(cardKey(pageId)).customMetadata, {
     card_hash: card.card_hash,
     content_updated_at: card.content_updated_at,
+    image_hash: "",
+    image_revision: "0",
+    light: "",
+    dark: "",
   });
 });
 
@@ -146,8 +151,12 @@ test("the host's card puts are conditional on the etag it saw, and retry once wh
   assert.equal(first.status, 200, JSON.stringify(first.body));
   await settle(f);
   assert.equal(assets.puts, 1);
-  // Another writer replaces the object after this host's write.
-  await assets.seed(cardKey(pageId), { v: 1, card_hash: "3".repeat(64), blocks: [] });
+  // Another writer replaces the object between this host's read and put.
+  assets.beforePut = async (key) => {
+    if (key !== cardKey(pageId)) return;
+    assets.beforePut = null;
+    await assets.seed(cardKey(pageId), { v: 1, card_hash: "3".repeat(64), blocks: [] });
+  };
   assets.puts = 0;
   // This edit's own flush waits out the minute; the report below stands in.
   f.page.unwatchContent();
@@ -160,7 +169,7 @@ test("the host's card puts are conditional on the etag it saw, and retry once wh
   await f.page.contentActivity.report(new Date().toISOString());
   await settle(f);
   assert.equal(assets.refused, 1, "the put on the old etag is refused");
-  assert.equal(assets.puts, 2, "then read again and put once more");
+  assert.equal(assets.puts, 3, "the other writer's, then read again and put once more");
   assert.deepEqual(stored(assets).blocks[0].content[0], ["h1", {}, "Second"]);
   assert.deepEqual(await f.storage.get(PAGE_CARD_KEY), { card_hash: stored(assets).card_hash });
 });
@@ -184,9 +193,14 @@ test("a refused put that finds a later content time in the object puts nothing m
     // Two minutes ahead: within the clock-skew limit, so a newer card.
     content_updated_at: new Date(Date.now() + 2 * 60_000).toISOString(),
   };
-  await assets.put(cardKey(pageId), JSON.stringify(later), {
-    customMetadata: { card_hash: later.card_hash, content_updated_at: later.content_updated_at },
-  });
+  // It lands between this host's read and put.
+  assets.beforePut = async (key) => {
+    if (key !== cardKey(pageId)) return;
+    assets.beforePut = null;
+    await assets.put(cardKey(pageId), JSON.stringify(later), {
+      customMetadata: { card_hash: later.card_hash, content_updated_at: later.content_updated_at },
+    });
+  };
   assets.puts = 0;
   f.page.unwatchContent();
   const second = await f.tool("owner", "edit_page", {
@@ -198,7 +212,7 @@ test("a refused put that finds a later content time in the object puts nothing m
   await f.page.contentActivity.report(new Date().toISOString());
   await settle(f);
   assert.equal(assets.refused, 1);
-  assert.equal(assets.puts, 1, "no retry over the later card");
+  assert.equal(assets.puts, 2, "the newer host's and this host's refused one: no retry");
   assert.deepEqual(stored(assets), later);
 });
 

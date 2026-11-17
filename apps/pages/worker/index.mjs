@@ -129,7 +129,7 @@ import { openingTitleWarning } from "../model/title-warning.mjs";
 import { listStartWarning } from "../model/list-start-warning.mjs";
 import { blockAddress, nodeAddresses } from "../model/addresses.mjs";
 import { pagePreview } from "../model/page-preview.mjs";
-import { cardKey, pageCard } from "../model/page-card.mjs";
+import { pageCard } from "../model/page-card.mjs";
 import {
   authenticate,
   accountIdentity,
@@ -257,10 +257,10 @@ import {
   CardImageGuard,
   authorizeCardImageUpload,
   cardImageRefusal,
-  deleteCardImages,
+  cardObjectReaders,
+  cardObjectStore,
+  deleteCardObjects,
   handleCardImage,
-  cardImageView,
-  readCardImagePointer,
 } from "./card-images.mjs";
 import {
   NO_TIMING,
@@ -328,6 +328,16 @@ import {
   requireStoredDatasetAsset,
   requireStoredImageAsset,
 } from "./image-assets.mjs";
+import {
+  COPY_REQUIRED_HEADER,
+  DatasetCopyRequired,
+  checkHintedAssets,
+  copyHintedDatasets,
+  copyRefusal,
+  copyRequiredResponse,
+  sourceNotReadable,
+  takeAssetHints,
+} from "./dataset-copies.mjs";
 // The host check for each stored asset kind a node can name
 // (INSERT_OPERATIONS in model/node-registry.mjs).
 const ASSET_CHECKS = Object.freeze({
@@ -413,6 +423,9 @@ import {
 import { serialQueue, serialQueueBounds } from "./serial-queue.mjs";
 import { opensIndex } from "./account-index-machine.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
+import { CARDS_LANE, CARDS_LANE_HEADER, catalogLane } from "./catalog-lanes.mjs";
+import { locationScanMemo } from "./catalog-scan-memo.mjs";
+import { accessBasis, projectReads } from "./project-read-memo.mjs";
 import { boundedMap } from "./bounded-map.mjs";
 import { legibleEnv, overloadRetryAfterMs, withRepeatSafety } from "./host-busy.mjs";
 import { readTool } from "./tool-reads.mjs";
@@ -519,6 +532,26 @@ const spaceOperations = [
   "update_space",
   "delete_project",
 ];
+/** Catalog operations that change a Project or who reads it: get_space can
+ * claim an invitation. Each drops the Project's remembered list_projects
+ * answers (project-read-memo.mjs). */
+const PROJECT_CHANGES = new Set([
+  "get_space",
+  "manage_project_access",
+  "create_space",
+  "update_space",
+  "delete_project",
+]);
+/** The Project a create_space answer names, or undefined. Reads a copy. */
+async function createdProjectId(response) {
+  if (!(response instanceof Response) || !response.ok) return undefined;
+  try {
+    const body = await response.clone().json();
+    return body?.space_id;
+  } catch {
+    return undefined;
+  }
+}
 /** The Page limit this Catalog's own gateway last resolved (rememberPageLimit). */
 const PAGE_LIMIT_KEY = "host/page-limit";
 /** Catalog-owned Page lifecycle operations and the Page route each one uses. */
@@ -904,6 +937,10 @@ function bodyAgent(body) {
   return normalizeAgentAssertions(meta.agent);
 }
 
+/** A gateway or Catalog request to a host route. It carries only the
+ * caller's headers named below, plus headers this code sets: a client can't
+ * add an internal header (such as catalog-lanes.mjs CARDS_LANE_HEADER) to a
+ * host request by sending it. */
 function forwarded(request, path, body) {
   const url = new URL(request.url);
   url.pathname = path;
@@ -1003,6 +1040,37 @@ function authorizeImage(request, env, pageId, write) {
   if (!internal.headers.has("origin"))
     internal.headers.set("origin", new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin);
   return env.PAGES.getByName(pageId).fetch(internal);
+}
+
+/**
+ * The read check of edit_page's `asset_from` source (dataset-copies.mjs):
+ * the one a read of the source's asset URL asks. A Page source asks that
+ * Page's host. A Project source asks what /api/projects/<id>/assets/<sha>
+ * asks: the Project's reader check, its content document, then that
+ * document's host. Resolves to the Page id whose asset store holds the
+ * source's datasets. Every refusal below 500 is the same
+ * `source_not_readable`, whether the source is missing or closed to the
+ * caller; nothing here reads asset storage.
+ */
+async function authorizeAssetSource(request, env, source, signal) {
+  const unreadable = (status) => {
+    if (status < 500) throw sourceNotReadable();
+    throw new HttpError(503, "The source is temporarily unavailable");
+  };
+  let pageId = source.page_id;
+  if (source.project_id) {
+    try {
+      await requireProjectReader(request, env, source.project_id);
+      pageId = (await resolveProjectContent(env, { project_id: source.project_id }, signal))
+        .page_id;
+    } catch (error) {
+      unreadable(error?.status ?? 500);
+    }
+  }
+  const access = await authorizeImage(request, env, pageId, false);
+  if (!access.ok) unreadable(access.status);
+  await access.body?.cancel();
+  return pageId;
 }
 
 /** authorizeImage for an upload capability (asset-uploads.mjs). The host
@@ -1240,17 +1308,44 @@ async function invoke(request, env, operation, args = {}, seen, call) {
       }
       // Transient and storage failures use this request's repeat safety,
       // as a timeout does.
-      const response = await withRepeatSafety(
-        await untilAborted(
-          env.PAGES.getByName(args.page_id).fetch(
-            forwarded(request, "/internal/tool", { operation, arguments: args }),
-            { signal },
+      const forward = async (extra) =>
+        withRepeatSafety(
+          await untilAborted(
+            env.PAGES.getByName(args.page_id).fetch(
+              forwarded(request, "/internal/tool", { operation, arguments: args, ...extra }),
+              { signal },
+            ),
+            signal,
           ),
+          safe,
           signal,
-        ),
-        safe,
-        signal,
-      );
+        );
+      let response;
+      if (operation === "edit_page") {
+        let hints;
+        ({ args, hints } = takeAssetHints(args));
+        response = await forward(hints.size ? { asset_hints: [...hints.keys()] } : {});
+        if (response.status === 409 && response.headers.get(COPY_REQUIRED_HEADER) === "required") {
+          const { asset_ids } = await readResponseJson(response, signal);
+          try {
+            await untilAborted(
+              copyHintedDatasets({
+                assetIds: Array.isArray(asset_ids) ? asset_ids : [],
+                hints,
+                destination: { page_id: args.page_id, project_id: projectId ?? undefined },
+                bucket: env.PAGES_ASSETS,
+                authorizeSource: (source) => authorizeAssetSource(request, env, source, signal),
+              }),
+              signal,
+            );
+          } catch (error) {
+            return copyRefusal(error);
+          }
+          // Every asset is on this Page now, or the edit is refused as it
+          // would be without asset_from. Edit access is checked again.
+          response = await forward({});
+        }
+      } else response = await forward({});
       if (!response.ok || (operation !== "read_page" && !projectId))
         return bufferedResponse(response, signal);
       const body = await readResponseJson(response, signal);
@@ -1282,6 +1377,10 @@ async function allowedCards(request, env, identity, ids) {
     }),
     timing,
   );
+  // The access step reads and never writes the Catalog, so it runs outside
+  // the Catalog's queue (catalog-lanes.mjs). `forwarded` drops every caller
+  // header outside its allowlist, so only this line can set the lane.
+  internal.headers.set(CARDS_LANE_HEADER, CARDS_LANE);
   // An <img> fetch sends no Origin; this request is the gateway's own.
   if (!internal.headers.has("origin"))
     internal.headers.set("origin", new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin);
@@ -1303,9 +1402,9 @@ async function allowedCards(request, env, identity, ids) {
 
 /**
  * page_cards (page-cards.mjs). The caller's Catalog answers which IDs it
- * allows, from inside its serial queue; the card objects are read here,
- * after that queue has moved on, so a slow bucket never holds the account's
- * listings or writes. Only the allowed IDs reach the bucket.
+ * allows, outside its serial queue; the card objects are read here, so a
+ * slow bucket never holds the account's listings or writes. Only the allowed
+ * IDs reach the bucket.
  */
 async function pageCards(request, env, identity, args) {
   const ids = parsePageCardIds(args.page_ids);
@@ -1313,16 +1412,11 @@ async function pageCards(request, env, identity, args) {
   if (decided.refused) return decided.refused;
   const allowed = Array.isArray(decided.body?.allowed) ? decided.body.allowed : [];
   const bucket = env.PAGES_ASSETS;
-  // Every R2 read, a card object or an image pointer, is one `r2` run.
+  // Every R2 read is one `r2` run: a card object, and a legacy card's image
+  // pointer.
   const timing = timingFor(request);
   const cards = await readPageCards(ids, bucket ? allowed : [], {
-    readObject: (key) =>
-      timing.measure("r2", async () => {
-        const object = await bucket.get(key);
-        return object ? await object.text() : null;
-      }),
-    readImage: async (id) =>
-      cardImageView(id, await timing.measure("r2", () => readCardImagePointer(bucket, id))),
+    ...(bucket && cardObjectReaders(bucket, (read) => timing.measure("r2", read))),
     onError: (error) => logFailure(error, "page-cards"),
   });
   return json({ cards, principal: decided.body.principal ?? identity.principal });
@@ -1983,30 +2077,45 @@ export class Catalog {
     this.ctx = ctx;
     this.env = env;
     this.queue = serialQueue(ctx, "catalog-queue");
+    /** The location scan, kept until a write changes a key it covers
+     * (catalog-scan-memo.mjs). Every write reaches it through `storage`. */
+    this.scans = locationScanMemo();
+    /** Project host answers for list_projects, kept for 30 seconds
+     * (project-read-memo.mjs). */
+    this.projectReads = projectReads();
   }
-  /** Storage that keeps the `page/` and `trash/` key counts (catalog.mjs). */
+  /** Storage that keeps the `page/` and `trash/` key counts (catalog.mjs)
+   * and reports every write to the scan memo. */
   get storage() {
-    return (this.counted ??= countedStorage(this.ctx.storage, { ctx: this.ctx }));
+    return (this.counted ??= countedStorage(this.ctx.storage, {
+      ctx: this.ctx,
+      onWrite: (keys) => this.scans.writing(keys),
+    }));
   }
   fetch(request) {
-    // Location reads write nothing, so they never wait behind the queue. A
-    // Catalog listing a shared parent asks the owner's Catalog from inside
-    // its own queue; two Catalogs doing that to each other must not wait on
-    // each other.
-    if (new URL(request.url).pathname === "/internal/location") return this.location(request);
-    if (new URL(request.url).pathname === "/internal/project-discovery") return this.run(request);
+    // catalog-lanes.mjs says which requests skip the serial queue and why.
+    const lane = catalogLane(request);
+    if (lane === "location") return this.location(request);
+    if (lane === "discovery") return this.run(request);
     // A gateway forward that asks for phase timings gets them back in an
-    // internal header (server-timing.mjs); `queue` is the wait for this
-    // Catalog's serial queue.
+    // internal header (server-timing.mjs). `queue` is the wait for this
+    // Catalog's serial queue; a `cards` request never waits there and
+    // records no `queue` phase.
     const timing = request.headers.has(TIMING_REQUEST_HEADER) ? createTiming() : NO_TIMING;
     attachTiming(request, timing);
-    const endQueue = timing.start("queue");
+    let started;
+    if (lane === "cards") started = this.run(request, { lane });
+    else {
+      const endQueue = timing.start("queue");
+      started = this.queue(() => {
+        endQueue();
+        return this.run(request);
+      });
+    }
     // A request whose `run` returns `AfterQueue` finishes after the queue has
-    // released it, and holds itself open until then (request-hold.mjs).
-    const answer = this.queue(() => {
-      endQueue();
-      return this.run(request);
-    })
+    // released it, and holds itself open until then (request-hold.mjs). Both
+    // lanes hold the request open until its answer settles.
+    const answer = started
       .then((result) => (result instanceof AfterQueue ? result.finish() : result))
       .then((response) => withPhaseTimings(response, timing));
     holdUntilSettled(this.ctx, answer);
@@ -2043,7 +2152,7 @@ export class Catalog {
           owner_name: typeof entry.owner_name === "string" ? entry.owner_name : null,
         });
       }
-      const { entries, contents } = await locationScan(this.storage);
+      const { entries, contents } = (await this.scans.read(this.storage)).scan;
       if (query?.project_content !== undefined) {
         if (request.headers.has("authorization") || request.headers.has("cookie"))
           throw spaceNotFound();
@@ -2086,6 +2195,20 @@ export class Catalog {
     } catch (error) {
       return errorResponse(error, "catalog-location");
     }
+  }
+  /** One of PROJECT_CHANGES, run as its own route runs it. */
+  async changeProject(request, identity, operation, args, limit) {
+    if (operation === "get_space") return await this.getSpace(request, args);
+    if (operation === "manage_project_access") {
+      requireSpaceIdArgument(args.space_id);
+      return this.env.PROJECTS.getByName(args.space_id).fetch(
+        forwarded(request, "/internal/space/access", args),
+      );
+    }
+    requireWrite(identity);
+    if (operation === "create_space") return await this.createSpace(request, identity, args, limit);
+    if (operation === "update_space") return await this.updateSpace(request, identity, args);
+    return await this.deleteSpace(request, identity, args);
   }
   async countEntries(prefix) {
     return countCapacity(this.storage, prefix, { current: (pageId) => this.pageLifecycle(pageId) });
@@ -2204,7 +2327,9 @@ export class Catalog {
   async locationShape() {
     return migrateLocationShape(this.storage);
   }
-  async run(request) {
+  /** One Catalog request. `lane` is `cards` for a request that runs outside
+   * the serial queue (catalog-lanes.mjs); it may only name `page_cards`. */
+  async run(request, { lane = "queued" } = {}) {
     try {
       const pathname = new URL(request.url).pathname;
       if (pathname === "/internal/project-discovery") {
@@ -2212,6 +2337,10 @@ export class Catalog {
           throw new HttpError(403, "Host only");
         const value = await readJson(request);
         requireSpaceIdArgument(value.space_id);
+        // A hint added or removed may change who reads the Project, so its
+        // remembered answers go. An opened-hint refresh, which the Project
+        // host sends on every organization-grant read, changes nothing.
+        if (value.opened !== true || value.remove === true) this.projectReads.evict(value.space_id);
         // An opened hint (project-opened.mjs) is written with storage
         // operations only: this route runs outside the queue, inside the
         // Project host's read, so it never awaits another host. A body that
@@ -2330,6 +2459,10 @@ export class Catalog {
       if (this.ctx.id.name && this.ctx.id.name !== identity.principal)
         throw new HttpError(403, "Account access denied");
       const body = await readJson(request);
+      // Only page_cards writes nothing to this Catalog, so only it may run
+      // outside the queue.
+      if (lane === "cards" && body.operation !== "page_cards")
+        throw new HttpError(400, "Only page_cards runs in the cards lane");
       if (new URL(request.url).pathname === "/internal/title") {
         if (
           !validPageId(body.page_id) ||
@@ -2352,19 +2485,21 @@ export class Catalog {
       }
       if (body.operation === "page_cards") return await this.pageCards(request, identity, args);
       if (body.operation === "list_spaces") return await this.listSpaces(request, identity, args);
-      if (body.operation === "get_space") return await this.getSpace(request, args);
-      if (["get_project_access", "manage_project_access"].includes(body.operation)) {
+      if (body.operation === "get_project_access") {
         requireSpaceIdArgument(args.space_id);
         return this.env.PROJECTS.getByName(args.space_id).fetch(
           forwarded(request, "/internal/space/access", args),
         );
       }
+      if (PROJECT_CHANGES.has(body.operation)) {
+        // A change to a Project, or a read that can claim an invitation to
+        // it, drops its remembered list_projects answers before and after.
+        this.projectReads.evict(args.space_id);
+        const response = await this.changeProject(request, identity, body.operation, args, limit);
+        this.projectReads.evict(args.space_id ?? (await createdProjectId(response)));
+        return response;
+      }
       requireWrite(identity);
-      if (body.operation === "create_space")
-        return await this.createSpace(request, identity, args, limit);
-      if (body.operation === "update_space") return await this.updateSpace(request, identity, args);
-      if (body.operation === "delete_project")
-        return await this.deleteSpace(request, identity, args);
       if (body.operation === "move_page") return await this.movePage(identity, args);
       const lifecycle = lifecycleRoutes[body.operation];
       if (!["create_page", "register_page"].includes(body.operation) && !lifecycle)
@@ -4201,6 +4336,8 @@ export class Catalog {
     for (const spaceId of await timing.measure("invites", () =>
       invitedProjects(this.env, identity),
     )) {
+      // A read here may claim the invitation on the Project's side, so it
+      // runs on every listing and is never answered from memory.
       // An invitation is an untrusted candidate, not an existing membership.
       // Capacity conflicts or unavailable candidate hosts must not prevent
       // this account from listing unrelated Projects. The next listing retries.
@@ -4225,12 +4362,26 @@ export class Catalog {
         ...opened,
       ])
         if (!candidates.has(candidate.space_id)) candidates.set(candidate.space_id, candidate);
+      // Each candidate's answer is remembered for 30 seconds
+      // (project-read-memo.mjs); a reuse counts as `space_memo`. Only a 200
+      // answer is kept.
+      const basis = accessBasis(identity);
       const spaces = [];
       for (const candidate of candidates.values()) {
         if (candidate.pending || candidate.deletion) continue;
+        const kept = this.projectReads.lookup(candidate.space_id, basis, Date.now());
+        if (kept) {
+          timing.count("space_memo");
+          spaces.push(kept);
+          continue;
+        }
+        const generation = this.projectReads.begin(candidate.space_id);
         const response = await readSpace(candidate.space_id);
-        if (response.ok) spaces.push(await response.json());
-        else if (![403, 404, 409].includes(response.status))
+        if (response.ok) {
+          const space = await response.json();
+          this.projectReads.answered(candidate.space_id, generation, basis, space, Date.now());
+          spaces.push(space);
+        } else if (![403, 404, 409].includes(response.status))
           throw new HttpError(503, "Project access is temporarily unavailable");
       }
       const context = {
@@ -4374,9 +4525,9 @@ export class Catalog {
 
   /** The access step of page_cards (page-cards.mjs): which of up to
    * PAGE_CARDS_MAX IDs the caller may read, each checked as list_pages
-   * checks its row. Answers IDs only; the gateway reads the objects outside
-   * this queue. Read-only: a refused shared entry is pruned by the next
-   * listing that meets it. */
+   * checks its row. Answers IDs only; the gateway reads the objects. It runs
+   * outside the serial queue (catalog-lanes.mjs), so it must stay read-only:
+   * a refused shared entry is pruned by the next listing that meets it. */
   async pageCards(request, identity, args) {
     const ids = parsePageCardIds(args.page_ids);
     const allowed = await timingFor(request).measure("cards", () =>
@@ -4467,12 +4618,20 @@ export class Catalog {
       if (space.pending || space.deletion) throw spaceNotFound();
     }
     // This account's entries record where each owned Page is, and its
-    // Project is derived from them. A listing builds the map once. The same
-    // scan counts every key, which checks the stored counts: a build that
-    // wrote keys without them leaves them wrong until this repairs them.
+    // Project is derived from them. A listing reads the map once, from the
+    // scan memo when no write has changed an entry since the last scan
+    // (counted as `scan_memo`). The scan counts every key, which checks the
+    // stored counts: a build that wrote keys without them leaves them wrong
+    // until this repairs them. A kept scan is checked once; until a write
+    // drops it, nothing can change either count.
     const endScan = timing.start("scan");
-    const { entries: locations, counts } = await locationScan(storage);
-    if (await storage.verifyCounts(counts)) logCountRepair(counts);
+    const scanned = await this.scans.read(storage);
+    if (scanned.hit) timing.count("scan_memo");
+    const { entries: locations, counts } = scanned.scan;
+    if (!scanned.verified) {
+      if (await storage.verifyCounts(counts)) logCountRepair(counts);
+      this.scans.verified(scanned.token);
+    }
     endScan();
     const quota = { limit, count: counts["page/"], trash_count: counts["trash/"] };
     // Child IDs of a shared parent, from its owner's Catalog.
@@ -5532,38 +5691,20 @@ export class Page {
           contentUpdatedAt: this.contentActivity?.value ?? null,
         });
       },
+      // card.json, shared with card image uploads (card-images.mjs).
       store: {
-        head: async () => {
-          const object = await withTimeout(
-            bucket.head(cardKey(this.metadata.pageId)),
+        head: () =>
+          withTimeout(
+            cardObjectStore(bucket, this.metadata.pageId).head(),
             PAGE_CARD_STORE_TIMEOUT_MS,
             "Page card read timed out",
-          );
-          return object
-            ? {
-                etag: object.etag,
-                card_hash: object.customMetadata?.card_hash ?? null,
-                content_updated_at: object.customMetadata?.content_updated_at ?? null,
-              }
-            : null;
-        },
-        put: async (bundle, { etag }) => {
-          const object = await withTimeout(
-            bucket.put(cardKey(this.metadata.pageId), JSON.stringify(bundle), {
-              httpMetadata: { contentType: "application/json" },
-              customMetadata: {
-                card_hash: bundle.card_hash,
-                content_updated_at: bundle.content_updated_at ?? "",
-              },
-              // The ordering fence (page-card-writer.mjs); head() reads both
-              // fields back.
-              onlyIf: etag ? { etagMatches: etag } : { etagDoesNotMatch: "*" },
-            }),
+          ),
+        put: (bundle, options) =>
+          withTimeout(
+            cardObjectStore(bucket, this.metadata.pageId).put(bundle, options),
             PAGE_CARD_STORE_TIMEOUT_MS,
             "Page card write timed out",
-          );
-          return object ? { etag: object.etag } : null;
-        },
+          ),
         delete: () => this.deleteCard(),
       },
       hold: (work) => holdUntilSettled(this.ctx, work),
@@ -5590,10 +5731,7 @@ export class Page {
     if (!this.env.PAGES_ASSETS || !validPageId(pageId)) return;
     try {
       await withTimeout(
-        Promise.all([
-          this.env.PAGES_ASSETS.delete(cardKey(pageId)),
-          deleteCardImages(this.env.PAGES_ASSETS, pageId),
-        ]),
+        deleteCardObjects(this.env.PAGES_ASSETS, pageId),
         PAGE_CARD_DELETE_TIMEOUT_MS,
         "Page card delete timed out",
       );
@@ -7088,13 +7226,16 @@ export class Page {
                 } catch (error) {
                   throw new HttpError(400, error.message, "invalid_edit_selector");
                 }
-                // Each names an asset stored on this Page, of its kind.
-                for (const { asset, assetId, mediaType } of assets)
-                  await ASSET_CHECKS[asset](this.env.PAGES_ASSETS, {
+                // Each names an asset stored on this Page, of its kind. One
+                // the gateway holds an asset_from for, and this Page lacks,
+                // asks the gateway to copy it (dataset-copies.mjs).
+                await checkHintedAssets(assets, body.asset_hints, ({ asset, assetId, mediaType }) =>
+                  ASSET_CHECKS[asset](this.env.PAGES_ASSETS, {
                     pageId: this.metadata.pageId,
                     assetId,
                     ...(mediaType && { mediaType }),
-                  });
+                  }),
+                );
                 // A new table binding must resolve now. Existing consumers remain
                 // readable after deletion or history eviction.
                 for (const op of inserts) {
@@ -7185,6 +7326,9 @@ export class Page {
       }
       throw new HttpError(404, "Not found");
     } catch (error) {
+      // Before anything was journaled: the gateway copies, then sends the
+      // batch again.
+      if (error instanceof DatasetCopyRequired) return copyRequiredResponse(error);
       if (!admissionRoute) return errorResponse(await this.agentRefusal(error), "page");
       if ((error.status ?? 500) >= 500) logFailure(error, "page");
       return admissionErrorResponse(error, { stage: "page", identity });
@@ -7482,14 +7626,20 @@ export class Page {
           } catch (error) {
             throw sourceRefusal(error);
           }
-          for (const assetId of assetIds) {
-            const dataset = await requireStoredDatasetAsset(this.env.PAGES_ASSETS, {
-              pageId: this.metadata.pageId,
-              assetId,
-              mediaType: null, // Sources may bind any admitted non-image asset.
-            });
-            mediaTypes.set(assetId, dataset.mime_type);
-          }
+          // As for a Page edit, a missing asset with an asset_from asks the
+          // gateway to copy it.
+          await checkHintedAssets(
+            assetIds.map((assetId) => ({ assetId })),
+            body.asset_hints,
+            async ({ assetId }) => {
+              const dataset = await requireStoredDatasetAsset(this.env.PAGES_ASSETS, {
+                pageId: this.metadata.pageId,
+                assetId,
+                mediaType: null, // Sources may bind any admitted non-image asset.
+              });
+              mediaTypes.set(assetId, dataset.mime_type);
+            },
+          );
           // Access can change while the asset records are read.
           this.policy.account(await authenticate(request, this.env), true);
           await this.sourcesEvent({ type: "create", recorded: recordNamesSources(this.metadata) });

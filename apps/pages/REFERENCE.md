@@ -2398,6 +2398,35 @@ answer. A dataset already on the destination is `200` with no second write;
 a new copy is `201`. Upload capabilities can't copy. Images don't copy: an
 image pasted from another Page keeps its `src` there.
 
+Agents copy through `edit_page` instead
+([dataset-copies.mjs](worker/dataset-copies.mjs)). `set_source`, a
+dataframe `insert_node` and `set_node` with `attrs.asset_id` take an optional
+`asset_from`: the id of the Page or Project (`prj_…`) the dataset is on. The
+gateway takes `asset_from` off each operation and forwards the batch with the
+hinted asset ids beside its arguments, so the host validates, fingerprints
+and journals the operations exactly as without it, and nothing about the
+source is stored. For a new intent the host checks the revision, then each
+named asset on its own Page as it always does. An asset already there applies
+as today and the source is never asked: an unneeded, unreadable or
+nonexistent `asset_from` changes nothing. A hinted asset that's missing makes
+the host answer `409` with `x-pages-asset-copy: required` and the missing ids,
+before any journal entry. The gateway then refuses an image (`not_a_dataset`)
+or more than 8 copies (`too_many_copies`), asks each source for read access as
+a read of its asset would (a Project: the Project's reader check, its content
+document, then that document's host), and only then copies with
+`copyDatasetAsset`, 2 at a time, outside the host's queue. Every refusal from
+a source below 500 is `source_not_readable`, whether it exists or not. The
+gateway forwards the batch again without hints; the host checks access,
+revision and every asset again. A recorded receipt replays before any of
+this, so a retry with the same nonce never asks the source. If the second
+forward is refused (a stale revision, a stale source), the copied object stays
+on the Page unreferenced, as an interrupted upload's does. A copy's refusals
+are `dataset_not_found` (404), `not_a_dataset` (415), `dataset_too_large`
+(413), `too_many_copies` (400) and `source_not_readable` (403); a malformed
+`asset_from`, or one on an operation that names no dataset, is
+`invalid_arguments`. The destination may be Project content (`project_id`);
+its own Project id as `asset_from` names the destination itself.
+
 For agents, importing bytes and inserting content are separate operations:
 
 1. Get the bytes into the Page's asset store, by one of three paths:
@@ -2951,7 +2980,9 @@ a check reads only the stored count. At the limit, or before the counts exist,
 it counts every entry, releasing stale reservations, and rebuilds them. Every
 `list_pages` reads every owned entry for location anyway and rewrites counts
 that disagree, logging `catalog.count_repaired`; a rollback build that writes
-entries without counts leaves that to repair.
+entries without counts leaves that to repair. That read is the location scan,
+which the Catalog keeps in memory (below); a listing checks the counts against
+each kept scan once, since nothing can change either until a write drops it.
 
 At the limit, creating or restoring returns `409 page_quota_exceeded` and moving
 to Trash returns `409 trash_capacity`, each with `limit` and `count`.
@@ -3974,8 +4005,16 @@ and the page keeps its scrollbar's room. The Last activity column
 shows the same time, and screen readers hear "Last active 2 days ago, …".
 Drafts this browser hasn't synced show first, as "On this device", on All and
 Your items when there is no Project filter. The server can't search them, so a
-search keeps the drafts whose title holds it. When the listing fails, local
-copies show there too. A `project` that `list_pages` refuses with
+search keeps the drafts whose title holds it. A local copy of a Page someone
+else owns shows only where the server lists it, even with unconfirmed edits:
+once the account loses access the server stops listing it, so its title stays
+out of the library and the Page picker. Each local checkpoint records
+`owned` from the last grant that named a role (`owner`, or a member role); a
+refusal (`none`) keeps it. An entry without it answers from the grant it
+stored, and one with neither lists like the account's own until the Page is
+opened again. A draft that never reached the server, and an owned copy past
+the server's first page, still show. When the listing fails, local copies show
+there too, whoever owns them. A `project` that `list_pages` refuses with
 `project_not_found` reads "Unknown Project", with a button that clears the
 filter; the account's Projects alone can't say so, since a Project created a
 moment ago may not be in them yet. Load more follows
@@ -4018,19 +4057,22 @@ retried by the next flush; it never fails the flush or the edit. A Page that
 hasn't changed since cards shipped has none until its next edit, and the grid
 keeps its icon.
 
-Writes from different hosts of one Page are ordered by the object's etag. Each
-put carries `onlyIf` with the etag the host last saw (none yet: only while no
-object exists), and the object's `customMetadata` holds its `card_hash` and
-`content_updated_at`. A host's first write after boot reads them (`head()`) and
-compares the built card with the object, not `host/card`, so a stale card left
-by an older host is rewritten. A retiring host's put that lands late carries
-an etag the next host's write replaced, and the bucket refuses it. A refused
-put reads the object again and retries once, unless the host stopped during
-that read or the object's `content_updated_at` is later than the built card's:
-then a newer host wrote it, and this host puts nothing, logs
-`page_card.superseded`, and reads the object again on its next write. A first
-write skips its put the same way. An object time more than 5 minutes
-(`CONTENT_ACTIVITY_MAX_SKEW_MS`) ahead of the host's clock counts as missing,
+Writes to the object are ordered by its etag. Its `customMetadata` holds the
+card's `card_hash` and `content_updated_at`, and the card image record that
+uploads write ([Card images](#card-images)). Every put first reads the
+metadata (`head()`) and carries `onlyIf` with the etag it read (none: only
+while no object exists). It compares the built card with the object, not
+`host/card`, so a stale card left by an older host is rewritten, and it copies
+the image record unchanged. Only a flush whose card matches the hash the host
+last wrote or read skips the read, since it puts nothing. A retiring host's put
+that lands late carries an etag a newer write replaced, and the bucket refuses
+it. A refused put reads the object again and retries once, unless the host
+stopped during that read or the object's `content_updated_at` is later than
+the built card's: then a newer host wrote it, and this host puts nothing, logs
+`page_card.superseded`, and reads the object again on its next write. A write
+whose first read finds a later card skips its put the same way. An object time
+more than 5 minutes (`CONTENT_ACTIVITY_MAX_SKEW_MS`) ahead of the host's clock
+counts as missing,
 as content activity drops it, so a card from a node whose clock ran fast never
 blocks the writes after it. Equal times with different hashes still put, and
 the later put wins: that is the same content built by two builder versions.
@@ -4045,8 +4087,8 @@ put can land after the next host's first write skipped an unchanged card: it
 holds a card the Page had moments before, until the next change to its first
 screen.
 
-A purge or tombstone deletes the object and `host/card` with the content time,
-waiting at most 2 seconds on the bucket; a missed delete leaves an object
+A purge or tombstone deletes the object, its card images and `host/card` with
+the content time, waiting at most 2 seconds on the bucket; a missed delete leaves an object
 `page_cards` never serves, since a deleted Page admits no one. A write still
 running then deletes the object again when it ends, whether its put landed or
 timed out. A host that retires without a deletion (an abandoned boot, a storage
@@ -4057,14 +4099,28 @@ card at once rather than after the next edit.
 
 `page_cards` (`/api/tools` only) takes up to 24 `page_ids`
 ([page-cards.mjs](worker/page-cards.mjs)). The caller's Catalog decides access
-inside its serial queue with `list_pages`' rules: an owned ID needs a settled
-`page/<id>` entry (so a trashed Page has none), and a shared ID needs a
-`shared/<id>` entry and a fresh `verifyShared` by its Page host, the metadata
-check that doesn't boot the document, finding the Page active. D1 is never
-read. The Catalog answers only the allowed IDs, and the gateway reads their
-objects after the queue has moved on, all at once under one 1.2-second
-deadline, so a slow bucket never holds the account's listings, creates or
-reports. Only allowed IDs reach the bucket, and no object URL leaves the Worker.
+with `list_pages`' rules: an owned ID needs a settled `page/<id>` entry (so a
+trashed Page has none), and a shared ID needs a `shared/<id>` entry and a fresh
+`verifyShared` by its Page host, the metadata check that doesn't boot the
+document, finding the Page active. D1 is never read. That step reads and never
+writes the Catalog, so it runs outside the Catalog's serial queue: the gateway
+marks its own forward with an internal lane header, which `forwarded()` never
+copies from a client, and the Catalog refuses any other operation in that lane
+([catalog-lanes.mjs](worker/catalog-lanes.mjs)). It records no `cat_queue`
+phase. A library's card and card-image requests therefore never wait behind its
+listings or each other in the queue. A queued write may be partway through
+while the step reads. That can't show a card to anyone who must not see it: a
+`page/` entry in this Catalog is always a Page this account owns, and only this
+account's own credential reaches its Catalog, so a partway state at most shows
+or hides the owner's own card for one call. A pending creation or reservation
+slot never counts. A shared ID is allowed only by its Page host's answer, which
+no Catalog state replaces. The Catalog answers only the allowed IDs, and the gateway reads
+their objects all at once under one 1.2-second deadline, so a slow bucket never
+holds the account's listings, creates or reports. Each card is one `get`: the
+object's body is the card and its metadata holds the image record, so 20 cards
+cost 20 reads. A legacy object, written before the record moved into it, also
+reads the image pointer ([Card images](#card-images)). Only allowed IDs reach
+the bucket, and no object URL leaves the Worker.
 Every other ID, unknown, refused, unchecked in time, read too late or without a
 card, answers `null`, so a caller can't tell "no access" from "no card". The
 answer names its `principal`. It isn't an MCP tool: an agent can read the Page
@@ -4225,12 +4281,40 @@ the last child checked, even on a short page, so the caller can learn only that
 the parent has more than 100 children.
 `list_projects` takes candidates from `pages_catalog_spaces` and confirms each
 against the owner's `space/<id>` Catalog entry; cursors are sealed to the
-listing's filters. `read_page` breadcrumbs are computed in the gateway with one
+listing's filters. An account with member or opened hints instead reads every
+candidate Project's host with the caller's credentials. The Catalog keeps each
+successful answer in memory for 30 seconds, keyed by Project and by the
+credential's access basis (write permission and organization and email-domain
+evidence), and counts a reuse as `cat_space_memo`
+([project-read-memo.mjs](worker/project-read-memo.mjs)). A refusal, server
+error or thrown read is never kept. A Project's answers are dropped when this
+Catalog gets a discovery message adding or removing its hint, and when it
+handles `create_project`, `update_project`, `delete_project`, `get_project` or
+`manage_project_access` for it. So a member removed some other way, or a
+Project renamed by its owner, can keep its old list entry for up to 30 seconds;
+opening it is still checked by the Project. Invited Projects are read on every
+listing, since that read may claim the invitation. `list_projects` stays in the
+Catalog's queue: with the account index on, it writes the index's sync marks to
+the Catalog. `read_page` breadcrumbs are computed in the gateway with one
 call to the owner's Catalog, a host-only `/internal/location` route that answers
 ancestor IDs and the root's Project and nothing else. Each ancestor and the
 Project then answer with the caller's credentials, so the trail stops at the
 first Page the caller cannot open and `project_id` appears only when the
 Project is readable.
+
+Every listing and every `/internal/location` read needs the owner's location
+scan: all of its `page/` and `trash/` entries
+([catalog-location.mjs](worker/catalog-location.mjs)). The location route runs
+outside the Catalog's serial queue, and a Page check by someone other than the
+owner asks for it once or twice per request. The Catalog is the only writer of
+its storage, and every write goes through its counted storage, which reports it
+before it is issued and again when it settles, success or not. A transaction or
+`deleteAll` reports every key. So the Catalog keeps the last scan in memory
+until a write under `page/` or `trash/` drops it
+([catalog-scan-memo.mjs](worker/catalog-scan-memo.mjs)). A scan that overlapped
+such a write answers its own caller and isn't kept, and no request waits on
+another's scan. Callers get their own maps over frozen entries. A listing that
+reuses a kept scan reports `cat_scan_memo`, a count without a duration.
 
 `move_page` reparents or reorders an owned Page in one Catalog write
 ([move-page.mjs](worker/move-page.mjs)): the moved entry's `parent_id` and
@@ -4426,23 +4510,41 @@ Page host's own policy ([card-images.mjs](worker/card-images.mjs)). The bytes
 must be a static WebP, PNG or JPEG of at most 300 KB, never SVG. `hash` must be
 the `card_hash` of the host's loaded document, and each theme uploads at most
 once a minute. The host numbers each admitted upload from its durable storage.
-The images live at `pages/<id>/card/<hash>-<theme>.<ext>`. An etag-fenced
-`card/latest` pointer names the current hash and the highest revision it has
-seen. A swap to another hash with a lower revision is refused as stale, so an
-upload for an older first screen that lands late can't replace a newer one.
-The pointer references at most one image per theme, not a bound on stored bytes.
+The images live at `pages/<id>/card/<hash>-<theme>.<ext>`. The image record
+lives in `card.json`'s `customMetadata`, beside the card writer's fields:
+`image_hash`, `image_revision` and each theme's extension (`light`, `dark`).
+It names the current hash and the highest revision it has seen. An upload
+reads `card.json`, body and metadata, and puts the same body and card fields
+with the new record, fenced on the etag it read; a refused put reads again, up
+to three times. The card writer copies the record the same way, so a card
+write racing an upload keeps both. An upload for a Page with no `card.json`
+creates it with the body `null`, which reads as no card. A swap to another hash
+with a lower revision is refused as stale, so an upload for an older first
+screen that lands late can't replace a newer one.
+The record references at most one image per theme, not a bound on stored bytes.
 A stale upload retains its image key because a newer accepted upload may already
 reuse that hash/theme key. Rejected uploads and failed writes or deletes can leave
 orphaned bytes. Successful swaps still attempt to delete old images; that separate,
 unfenced cleanup can race with newer uploads reusing those keys.
-`page_cards` adds `image: { card_hash, light, dark }` only when the pointer's
-hash is the stored JSON card's and both themes exist. The image route decides
+`page_cards` adds `image: { card_hash, light, dark }` only when the record's
+hash is the stored JSON card's and both themes exist.
+
+Builds before the record moved into `card.json` kept it in an empty
+`card/latest` pointer object. A `card.json` without `image_revision` is that
+legacy shape. `page_cards`, `/p/<id>/card.json` and the stored-hash route then
+also read the pointer, so a picture stored that way still shows. The next card
+write or upload of the Page copies the pointer's record into `card.json`; an
+upload starts from its hash, revision and themes. Nothing writes the pointer,
+and nothing reads it once `card.json` holds a record. A Page never edited or
+captured again keeps the legacy shape and its second read. The image route decides
 access as `page_cards` does, on every request: the caller's own Catalog entry
 for an owned Page, or its shared entry plus the Page host's record-only check.
 A grid of image cards boots no Page document, and a revoked grant fails on
 the next fetch. Its responses are `private, immutable`
-and carry `nosniff`. Purge and tombstone delete `card.json`, the image pointer and
-its referenced images, plus orphans found in at most four prefix-listing pages.
+and carry `nosniff`. Purge and tombstone delete `card.json`, the legacy pointer
+and the images either record names, plus orphans found in at most four
+prefix-listing pages.
+An upload whose recheck finds the Page purged deletes the same set.
 That bounded cleanup may leave orphaned bytes beyond the listing limit.
 The server can't check that the pixels match the content. That is the trust of
 any image the owner inserts into the Page, and only the Page's readers see it.

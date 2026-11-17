@@ -308,6 +308,62 @@ test("a source must name a dataset stored on this Page", async (t) => {
   }
 });
 
+test("a missing dataset with an asset_from hint asks the gateway to copy, before any journal entry", async (t) => {
+  const h = await sourcesHost(t);
+  const held = new Set();
+  h.assets.head = async (key) => (held.has(key.slice(-64)) ? parquetHead(key.slice(-64)) : null);
+  const read = await h.tool(h.host, "read_page", { include_content: false });
+  // Each attempt is the gateway's forward: the batch without asset_from, its
+  // hints beside the arguments.
+  const send = async (nonce, hints) => {
+    const response = await h.host.fetch(
+      new Request("https://pages.invalid/internal/tool", {
+        method: "POST",
+        headers: { authorization: `Bearer ${h.auth.apiKey()}`, "x-pages-driver": "ChatGPT" },
+        body: JSON.stringify({
+          operation: "edit_page",
+          arguments: {
+            page_id: pageId,
+            revision: read.body.revision,
+            nonce,
+            operations: [
+              { op: "set_source", ...usage() },
+              { op: "set_source", ...usage({ source_id: "other", asset_id: second }) },
+            ],
+          },
+          ...(hints && { asset_hints: hints }),
+        }),
+      }),
+    );
+    return { status: response.status, headers: response.headers, body: await response.json() };
+  };
+  held.add(second);
+  const asked = await send("copy-0001", [first, second]);
+  assert.equal(asked.status, 409);
+  assert.equal(asked.headers.get("x-pages-asset-copy"), "required");
+  // Only the missing one; the one already here is never copied.
+  assert.deepEqual(asked.body, { asset_ids: [first] });
+  assert.equal(h.host.sourcesView(), undefined);
+  assert.deepEqual(await h.sourcesStored(), []);
+  // Without a hint, a missing dataset is refused as it always was.
+  const plain = await send("copy-0002");
+  assert.equal(plain.status, 404);
+  assert.equal(plain.body.code, "dataset_not_found");
+  // After the copy, the same nonce applies; a later retry replays the
+  // receipt even with the dataset gone again and its hint resent.
+  held.add(first);
+  const applied = await send("copy-0001");
+  assert.equal(applied.status, 200, JSON.stringify(applied.body));
+  held.clear();
+  const replay = await send("copy-0001", [first, second]);
+  assert.equal(replay.status, 200, JSON.stringify(replay.body));
+  assert.deepEqual(replay.body, applied.body);
+  // The stored source names the asset and nothing else of the request.
+  const listed = await h.tool(h.host, "read_page", { source_id: "usage" });
+  assert.equal(listed.body.source.asset_id, first);
+  assert.equal(JSON.stringify(listed.body).includes("asset_from"), false);
+});
+
 test("a Page holds up to 64 sources", async (t) => {
   const h = await sourcesHost(t);
   const full = Array.from({ length: 64 }, (_, i) => usage({ source_id: `s${i}` }));

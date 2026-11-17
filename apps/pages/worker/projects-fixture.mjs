@@ -325,6 +325,8 @@ export async function world(
   return {
     settle,
     auth,
+    /** The bearer token each role sends, for a test's own requests. */
+    token: (who) => tokens[who],
     organizations,
     owner,
     member,

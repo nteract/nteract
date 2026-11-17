@@ -73,7 +73,7 @@ import { catalogIndexTimeouts, withTimeout } from "./catalog-index.mjs";
 import { validPageId } from "./registration.mjs";
 import { validSpaceId } from "./spaces.mjs";
 import { readPageCards } from "./page-cards.mjs";
-import { cardImageView, readCardImagePointer } from "./card-images.mjs";
+import { cardObjectReaders } from "./card-images.mjs";
 
 /** The Page host's route for this check. Host-internal; never forwarded. */
 export const LINK_PREVIEW_PATH = "/internal/link-preview";
@@ -282,11 +282,7 @@ async function storedCard(env, pageId, logFailure) {
   const bucket = env.PAGES_ASSETS;
   if (!bucket) return null;
   const cards = await readPageCards([pageId], [pageId], {
-    readObject: async (key) => {
-      const object = await bucket.get(key);
-      return object ? await object.text() : null;
-    },
-    readImage: async (id) => cardImageView(id, await readCardImagePointer(bucket, id)),
+    ...cardObjectReaders(bucket),
     onError: (error) => logFailure(error, "link-preview-card"),
   });
   return cards[pageId] ?? null;

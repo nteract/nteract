@@ -1,10 +1,13 @@
 // `page_cards`: the cards (model/page-card.mjs) of up to 24 Pages, for the
-// library grid. It runs in two steps, so object reads never hold the
-// account's Catalog queue:
+// library grid. It runs in two steps, and neither waits in the account's
+// Catalog queue:
 //
-// 1. The caller's Catalog decides access, inside its serial queue, with
-//    list_pages' rules (`allowedPageCards`), and answers only the IDs it
-//    allows. That route is internal: the gateway never forwards it.
+// 1. The caller's Catalog decides access with list_pages' rules
+//    (`allowedPageCards`) and answers only the IDs it allows. That route is
+//    internal: the gateway never forwards it. It reads and never writes the
+//    Catalog, so it runs outside the Catalog's serial queue
+//    (catalog-lanes.mjs). A queued write may be partway through while it
+//    reads; an owned entry counts only once it is settled, below.
 // 2. The gateway reads those IDs' card objects, outside every queue, all at
 //    once under one deadline (`readPageCards`). Only the Catalog's allowed
 //    IDs reach the bucket.
@@ -32,7 +35,9 @@
 // A card whose Page has card images (card-images.mjs) for the same
 // `card_hash` also carries `image: { card_hash, light, dark }`, the
 // access-checked image routes. A missing, partial or older image leaves the
-// JSON card as it is.
+// JSON card as it is. The image record is in the card object's own
+// metadata, so a card costs one read; only a legacy card object, written
+// before the record moved there, also reads the legacy pointer.
 import { HttpError } from "./auth.mjs";
 import { cardKey, readStoredCard } from "../model/page-card.mjs";
 
@@ -87,14 +92,16 @@ export async function allowedPageCards(ids, { storage, verifyShared, map, checks
  * `{ [id]: card | null }` for every ID in `ids`, reading only those in
  * `allowed`. Runs in the gateway.
  *
- * - `readObject(key, signal)` returns the stored object's text, or null.
- *   Every read starts at once and shares one `deadlineMs`. A read still
- *   running then, or one that fails, answers null. The signal aborts at the
- *   deadline for a reader that honors it; R2's `get()` takes no signal, so
- *   the gateway's reads run on and their late answers are dropped.
- * - `readImage(id, signal)` returns the Page's card image view
- *   (card-images.mjs cardImageView), or null. It runs beside `readObject`
- *   under the same deadline; a failure only drops the image.
+ * - `readObject(key, signal)` returns the stored object as
+ *   `{ text, metadata }` (its `customMetadata`), or null. Every read starts
+ *   at once and shares one `deadlineMs`. A read still running then, or one
+ *   that fails, answers null. The signal aborts at the deadline for a reader
+ *   that honors it; R2's `get()` takes no signal, so the gateway's reads run
+ *   on and their late answers are dropped.
+ * - `readImage(id, metadata, signal)` returns the Page's card image view
+ *   (card-images.mjs cardImageView) from the card object's metadata, or
+ *   null. It runs after `readObject`, only for a stored card, under the same
+ *   deadline; a failure only drops the image.
  */
 export async function readPageCards(
   ids,
@@ -116,17 +123,16 @@ export async function readPageCards(
         if (!readable.has(id)) return null;
         const read = (async () => {
           try {
-            const [text, image] = await Promise.all([
-              readObject(cardKey(id), controller.signal),
-              readImage
-                ? readImage(id, controller.signal).catch((error) => {
-                    if (!controller.signal.aborted) onError(error);
-                    return null;
-                  })
-                : null,
-            ]);
-            const card = text === null ? null : readStoredCard(JSON.parse(text));
-            return card && image?.card_hash === card.card_hash ? { ...card, image } : card;
+            const object = await readObject(cardKey(id), controller.signal);
+            const card = object ? readStoredCard(JSON.parse(object.text)) : null;
+            if (!card || !readImage) return card;
+            const image = await readImage(id, object.metadata ?? {}, controller.signal).catch(
+              (error) => {
+                if (!controller.signal.aborted) onError(error);
+                return null;
+              },
+            );
+            return image?.card_hash === card.card_hash ? { ...card, image } : card;
           } catch (error) {
             if (!controller.signal.aborted) onError(error);
             return null;

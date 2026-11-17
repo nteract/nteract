@@ -571,6 +571,14 @@ test("local pending pages survive catalog refresh without resurrecting removed r
     ];
   assert.deepEqual(mergePageListings(remote, local), [remote[0], local[1]]);
   assert.deepEqual(mergePageListings(null, local), local);
+  // A pending copy of someone else's Page lists only where the server does.
+  const shared = { page_id: "shared", pending: true, registered: true, owned: false };
+  assert.deepEqual(mergePageListings(remote, [...local, shared]), [remote[0], local[1]]);
+  assert.deepEqual(mergePageListings([...remote, { page_id: "shared" }], [shared]), [
+    remote[0],
+    { page_id: "shared" },
+  ]);
+  assert.deepEqual(mergePageListings(null, [shared]), [shared]);
 });
 const prj = "prj_2b160b47-6df1-4983-81eb-489ca5a26812";
 test("the library keeps its view in the address at / and /pages, defaults left out", () => {

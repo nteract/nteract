@@ -4,6 +4,10 @@
 // the asset's upload time nor the date of the rows in that asset.
 import { asyncScheduler, map, timer } from "rxjs";
 import { toDate } from "./relative-time.mjs";
+import { ANYWIDGET_MEDIA_TYPE, CSS_MEDIA_TYPE, ESM_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
+
+// Rendering code stays inspectable in the pane, but isn't a data refresh.
+const renderingTypes = new Set([ANYWIDGET_MEDIA_TYPE, CSS_MEDIA_TYPE, ESM_MEDIA_TYPE]);
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -52,17 +56,20 @@ export function sourceTime(value, now, { locale, timeZone } = {}) {
 }
 
 /** The bounded line model. Zero sources produces no placeholder. Named
- * entries keep alphabetical order on refresh; dates summarize all sources,
+ * entries keep alphabetical order on refresh; dates summarize data sources,
  * including unused ones and those that have only been added once. */
 export function sourceLine(sources, now, options = {}) {
-  const ordered = Object.values(sources).sort(
-    (a, b) =>
-      a.name.localeCompare(b.name, options.locale) || a.source_id.localeCompare(b.source_id),
-  );
+  const ordered = Object.values(sources)
+    .filter((source) => !renderingTypes.has(source.media_type))
+    .sort(
+      (a, b) =>
+        a.name.localeCompare(b.name, options.locale) || a.source_id.localeCompare(b.source_id),
+    );
   if (!ordered.length) return null;
   const describe = (source) => ({
     id: source.source_id,
     name: source.name,
+    mediaType: source.media_type,
     action: source.revision === "1" ? "added" : "refreshed",
     time: sourceTime(source.set_at, now, options),
   });
