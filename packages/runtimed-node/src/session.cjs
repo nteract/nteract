@@ -230,6 +230,10 @@ class Session {
     return this._native.getEnvironmentSelection();
   }
 
+  listInstalledKernelspecs() {
+    return this._native.listInstalledKernelspecs();
+  }
+
   setEnvironmentSelection(target, expectedRevision) {
     return this._native.setEnvironmentSelection(target, expectedRevision);
   }

@@ -125,6 +125,10 @@
       "name": "set_bokeh_property"
     },
     {
+      "description": "List, inspect, stage, or apply installed Jupyter kernels. Apply replaces the running kernel.",
+      "name": "installed_kernelspec"
+    },
+    {
       "description": "Interrupt execution.",
       "name": "interrupt_kernel"
     },

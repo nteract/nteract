@@ -68,6 +68,21 @@ pub struct InstalledCondaPackageInventory {
 pub enum LocalEnvironmentTarget {
     Automatic,
     Conda { prefix: PathBuf },
+    Kernelspec { name: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InstalledKernelspec {
+    pub name: String,
+    pub display_name: String,
+    pub language: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct KernelspecInventory {
+    pub kernelspecs: Vec<InstalledKernelspec>,
+    pub warnings: Vec<String>,
+    pub truncated: bool,
 }
 
 /// Owner-scoped, daemon-session intent, separate from actual kernel facts.
@@ -76,6 +91,10 @@ pub struct EnvironmentSelectionSnapshot {
     pub revision: u64,
     pub selected: Option<LocalCondaEnvironment>,
     pub applied: Option<LocalCondaEnvironment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_kernelspec: Option<InstalledKernelspec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_kernelspec: Option<InstalledKernelspec>,
     pub applying: bool,
 }
 
@@ -144,6 +163,8 @@ pub struct LaunchedEnvConfig {
     /// Borrowed local environment: execution only, never capture or package sync.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_environment: Option<LocalEnvironmentIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_kernelspec: Option<InstalledKernelspec>,
 
     /// Unique identifier for this kernel launch session.
     /// Used to detect if kernel was swapped during async operations (e.g., hot-sync).
@@ -699,6 +720,7 @@ fn default_comm_channel() -> String {
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum NotebookRequest {
     /// Bounded passive Conda discovery. Only local Owner connections may list.
+    ListInstalledKernelspecs {},
     ListCondaEnvironments {
         refresh: bool,
     },
@@ -956,6 +978,9 @@ pub enum NotebookRequest {
 pub enum NotebookResponse {
     CondaEnvironments {
         inventory: CondaEnvironmentInventory,
+    },
+    InstalledKernelspecs {
+        inventory: KernelspecInventory,
     },
     InstalledCondaPackages {
         inventory: InstalledCondaPackageInventory,
@@ -1830,6 +1855,10 @@ mod tests {
     #[test]
     fn wire_action_names_match_ts_discriminators() {
         let cases: Vec<(&str, serde_json::Value)> = vec![
+            (
+                "list_installed_kernelspecs",
+                serde_json::json!({"action":"list_installed_kernelspecs"}),
+            ),
             (
                 "list_conda_environments",
                 serde_json::json!({"action": "list_conda_environments", "refresh": false}),

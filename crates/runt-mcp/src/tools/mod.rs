@@ -249,6 +249,7 @@ pub fn all_tools() -> Vec<Tool> {
         )
         .annotate(ToolAnnotations::new().destructive(true).open_world(true)),
         // -- Kernel --
+        Tool::new("installed_kernelspec", "List, inspect, stage, or apply installed Jupyter kernels. Apply replaces the running kernel.", schema_for::<kernel::InstalledKernelspecParams>()).annotate(ToolAnnotations::new().destructive(true).open_world(false)),
         Tool::new(
             "interrupt_kernel",
             "Interrupt execution.",
@@ -430,6 +431,7 @@ pub async fn dispatch(
         "set_bokeh_property" => bokeh::set_bokeh_property(server, request).await,
         // Kernel
         "interrupt_kernel" => kernel::interrupt_kernel(server, request).await,
+        "installed_kernelspec" => kernel::installed_kernelspec(server, request).await,
         "restart_kernel" => kernel::restart_kernel(server, request).await,
         // Dependencies
         "manage_dependencies" => deps::manage_dependencies(server, request).await,

@@ -100,6 +100,7 @@ pub struct DocHandle {
 
     /// Advertised by this connection's daemon during bootstrap.
     notebook_sync_receipt: bool,
+    installed_kernelspecs: bool,
 
     /// Keyed document kinds the room routes (`ProtocolCapabilities::keyed_doc_kinds`).
     keyed_doc_kinds: Arc<[String]>,
@@ -157,6 +158,7 @@ impl DocHandle {
             status_rx,
             notebook_id,
             notebook_sync_receipt: false,
+            installed_kernelspecs: false,
             keyed_doc_kinds: Arc::from([]),
         }
     }
@@ -164,6 +166,15 @@ impl DocHandle {
     pub(crate) fn with_notebook_sync_receipt_capability(mut self, supported: bool) -> Self {
         self.notebook_sync_receipt = supported;
         self
+    }
+
+    pub(crate) fn with_installed_kernelspecs(mut self, supported: bool) -> Self {
+        self.installed_kernelspecs = supported;
+        self
+    }
+
+    pub fn supports_installed_kernelspecs(&self) -> bool {
+        self.installed_kernelspecs
     }
 
     /// Set the keyed document kinds this connection may sync, from the

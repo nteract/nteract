@@ -1128,6 +1128,110 @@ fn write_untrusted_selection_notebook(path: &Path) {
 }
 
 #[tokio::test]
+#[ignore = "requires a disposable lumen ipykernel on JUPYTER_PATH and KERNELSPEC_SMOKE_PYTHON"]
+async fn installed_kernelspec_native_smoke() {
+    use notebook_protocol::protocol::LocalEnvironmentTarget;
+    let expected = std::env::var("KERNELSPEC_SMOKE_PYTHON").expect("disposable interpreter");
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("named.ipynb");
+    let code=format!("import os, sys, pathlib\nassert sys.executable == {expected:?}, sys.executable\npathlib.Path('executed').write_text('lumen')");
+    write_test_ipynb(&path, &[("check", "code", &code, vec![])]);
+    let mut notebook: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    notebook["metadata"]["kernelspec"]["name"] = "lumen".into();
+    std::fs::write(&path, notebook.to_string()).unwrap();
+    let config = test_config(&temp);
+    let socket = config.socket_path.clone();
+    let daemon = Daemon::new_for_test(config).unwrap();
+    let task = tokio::spawn(async move { daemon.run().await.unwrap() });
+    assert!(wait_for_daemon(&PoolClient::new(socket.clone())).await);
+    let peer = connect::connect_open(socket.clone(), path, "named-smoke")
+        .await
+        .unwrap();
+    assert_session_ready(&peer.handle, "named-smoke").await;
+    let resp = peer
+        .handle
+        .send_request(NotebookRequest::LaunchKernel {
+            kernel_type: "auto".into(),
+            env_source: notebook_protocol::connection::LaunchSpec::Auto,
+            notebook_path: None,
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(&resp,NotebookResponse::KernelLaunched{launched_config,..}|NotebookResponse::KernelAlreadyRunning{launched_config,..} if launched_config.installed_kernelspec.as_ref().is_some_and(|s|s.name=="lumen")),
+        "{resp:?}"
+    );
+    let response = peer
+        .handle
+        .send_request(NotebookRequest::GetEnvironmentSelection {})
+        .await
+        .unwrap();
+    let NotebookResponse::EnvironmentSelection { selection } = response else {
+        panic!("{response:?}")
+    };
+    let response = peer
+        .handle
+        .send_request(NotebookRequest::SetEnvironmentSelection {
+            target: LocalEnvironmentTarget::Kernelspec {
+                name: "lumen".into(),
+            },
+            expected_revision: selection.revision,
+        })
+        .await
+        .unwrap();
+    let NotebookResponse::EnvironmentSelection { selection } = response else {
+        panic!("{response:?}")
+    };
+    let heads = peer.handle.confirm_notebook_sync().await.unwrap();
+    let resp = peer
+        .handle
+        .send_request_after_heads(
+            NotebookRequest::ApplyEnvironmentSelection {
+                expected_revision: selection.revision,
+                observed_heads: heads.clone(),
+            },
+            heads,
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(&resp,NotebookResponse::EnvironmentSelection{selection} if selection.applied_kernelspec.is_some()),
+        "{resp:?}"
+    );
+    let resp = peer
+        .handle
+        .send_request(NotebookRequest::SyncEnvironment { guard: None })
+        .await
+        .unwrap();
+    assert!(
+        matches!(&resp,NotebookResponse::SyncEnvironmentFailed{needs_restart:false,error} if error.contains("externally")),
+        "{resp:?}"
+    );
+    let resp = peer
+        .handle
+        .send_request(NotebookRequest::ExecuteCell {
+            cell_id: "check".into(),
+            execution_id: None,
+        })
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while !temp.path().join("executed").is_file() {
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("No cell side effect in notebook cwd; response {resp:?}"));
+    peer.handle
+        .send_request(NotebookRequest::ShutdownKernel {})
+        .await
+        .unwrap();
+    drop(peer);
+    stop_claiming_daemon(&socket, task).await;
+}
+
+#[tokio::test]
 async fn test_local_environment_selection_owner_fanout_and_session_reset() {
     use notebook_protocol::protocol::LocalEnvironmentTarget;
     let temp = TempDir::new().unwrap();
@@ -1342,6 +1446,7 @@ async fn test_local_environment_selection_viewer_requests_are_denied_over_wire()
     );
     for request in [
         NotebookRequest::ListCondaEnvironments { refresh: false },
+        NotebookRequest::ListInstalledKernelspecs {},
         NotebookRequest::GetEnvironmentSelection {},
         NotebookRequest::SetEnvironmentSelection {
             target: LocalEnvironmentTarget::Automatic,

@@ -103,7 +103,13 @@ fn commit_apply_delivery(
         })?;
     }
     if let Some(metadata) = doc.get_metadata_snapshot() {
-        if metadata.detect_runtime().unwrap_or_else(|| "python".into()) != expected_runtime {
+        if room
+            .local_environment_selection
+            .snapshot()
+            .selected_kernelspec
+            .is_none()
+            && metadata.detect_runtime().unwrap_or_else(|| "python".into()) != expected_runtime
+        {
             anyhow::bail!("Notebook runtime changed during environment preflight");
         }
         let trust =
@@ -183,8 +189,16 @@ async fn complete_manual_launch(
         });
     };
     let env_source_label = env_source.as_str().to_string();
+    let mut persistence = Ok(());
     let commit_result = {
-        let (mut config, mut presence_state) = tokio::join!(
+        let (mut doc, mut config, mut presence_state) = tokio::join!(
+            async {
+                if apply.is_some() {
+                    Some(room.doc.write().await)
+                } else {
+                    None
+                }
+            },
             room.runtime_agent_launched_config.write(),
             room.broadcasts.presence.write()
         );
@@ -198,7 +212,11 @@ async fn complete_manual_launch(
             );
             if let Err(e) = room.state.with_doc(|sd| {
                 sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
-                sd.set_kernel_info(kernel_type, kernel_type, &env_source_label)?;
+                let name = launched_config
+                    .installed_kernelspec
+                    .as_ref()
+                    .map_or(kernel_type, |s| s.name.as_str());
+                sd.set_kernel_info(name, kernel_type, &env_source_label)?;
                 let identity = launched_config.local_environment.as_ref();
                 sd.set_local_environment_identity(
                     identity.map_or("", |e| e.id.as_str()),
@@ -221,7 +239,25 @@ async fn complete_manual_launch(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = None;
             if let Some((lease, binding)) = apply {
+                if let Some(doc) = doc.as_deref_mut() {
+                    persistence = match lease.observed_heads().map(|heads| {
+                        guarded::validate_dependencies_unchanged_since_observed(doc, &heads)
+                    }) {
+                        Some(Err(_)) => Err(anyhow::anyhow!(
+                            "Kernel started but notebook metadata changed; selection not saved"
+                        )),
+                        _ => crate::kernelspec::persist(
+                            room,
+                            doc,
+                            launched_config.installed_kernelspec.as_ref(),
+                            kernel_type,
+                        ),
+                    };
+                }
                 lease.commit(binding);
+            } else {
+                room.local_environment_selection
+                    .record_launch(launched_config.installed_kernelspec.as_ref());
             }
         })
     };
@@ -229,7 +265,9 @@ async fn complete_manual_launch(
     match commit_result {
         Ok(()) => {
             check_and_broadcast_sync_state(room).await;
-            Ok(())
+            persistence.map_err(|e| NotebookResponse::Error {
+                error: format!("{e:#}"),
+            })
         }
         Err((cancelled_attempt, KernelLaunchCommitRejection::Cancelled)) => {
             // Shutdown won the gate before success was linearized. Keep the
@@ -519,8 +557,73 @@ async fn handle_attempt(
     // Resolve metadata snapshot from Automerge doc (preferred) or disk
     let mut metadata_snapshot = resolve_metadata_snapshot(room, notebook_path.as_deref()).await;
 
+    let selection = room.local_environment_selection.snapshot();
+    let mode = *room.identity.environment_mode.read().await;
+    let installed_name = if apply.is_some() {
+        selection.selected_kernelspec.map(|s| s.name)
+    } else if local_environment.is_none()
+        && matches!(
+            env_source,
+            LaunchSpec::Auto | LaunchSpec::Concrete(EnvSource::Kernelspec)
+        )
+    {
+        selection.applied_kernelspec.map(|s| s.name).or_else(|| {
+            if matches!(
+                room.bound_environment.snapshot(),
+                super::bound_environment::BoundEnvironmentState::Bound(_)
+            ) {
+                None
+            } else {
+                crate::kernelspec::imported(metadata_snapshot.as_ref(), mode)
+            }
+        })
+    } else {
+        None
+    };
+    let installed = if let Some(name) = installed_name {
+        if room.is_hosted() {
+            return NotebookResponse::EnvironmentSelectionRejected {
+                error: "Installed kernelspecs require a local notebook".into(),
+            };
+        }
+        if let Err(rejection) = guarded::ensure_trusted(room).await {
+            return rejection.into_response();
+        }
+        match crate::kernelspec::resolve(name.clone())
+            .await
+            .and_then(|spec| {
+                spec.command(std::path::Path::new("connection.json"))?;
+                Ok(spec.info(&name))
+            }) {
+            Ok(spec) => Some(spec),
+            Err(e) => {
+                let error = format!("{e:#}");
+                if apply.is_none() {
+                    reset_starting_state_with_outcome(
+                        room,
+                        None,
+                        ResetOutcome::Error {
+                            reason: None,
+                            details: &error,
+                        },
+                    )
+                    .await;
+                }
+                return NotebookResponse::EnvironmentSelectionRejected { error };
+            }
+        }
+    } else if env_source == LaunchSpec::Concrete(EnvSource::Kernelspec) {
+        return NotebookResponse::EnvironmentSelectionRejected {
+            error: "No installed kernelspec selected".into(),
+        };
+    } else {
+        None
+    };
+
     // Auto-detect kernel type if "auto" or empty
-    let resolved_kernel_type = if kernel_type == "auto" || kernel_type.is_empty() {
+    let resolved_kernel_type = if let Some(spec) = installed.as_ref() {
+        spec.language.clone()
+    } else if kernel_type == "auto" || kernel_type.is_empty() {
         metadata_snapshot
             .as_ref()
             .and_then(|s| s.detect_runtime())
@@ -557,7 +660,9 @@ async fn handle_attempt(
     // Set when auto selection lands on the prewarmed fallback, the only slot
     // a host-bound environment may fill.
     let mut bound_environment_eligible = false;
-    let resolved_env_source = if resolved_kernel_type == "deno" {
+    let resolved_env_source = if installed.is_some() {
+        EnvSource::Kernelspec
+    } else if resolved_kernel_type == "deno" {
         match &launch_spec {
             LaunchSpec::Auto | LaunchSpec::AutoScoped(_) => {
                 info!("[notebook-sync] Deno kernel detected, using 'deno' env_source");
@@ -1004,7 +1109,7 @@ async fn handle_attempt(
     } else {
         // Python kernels require pooled environment
         match resolved_env_source.as_str() {
-            "conda:existing:local" => None,
+            "conda:existing:local" | "kernelspec" => None,
             "uv:prewarmed" | "conda:prewarmed" => {
                 // Route through the capture-aware acquirer so:
                 //  - Reopen path: if metadata has env_id + captured
@@ -1976,6 +2081,19 @@ async fn handle_attempt(
         launched_config.venv_path = Some(environment.prefix.clone());
         launched_config.python_path = Some(environment.python_path.clone());
         // Borrowed prefixes must never enter the daemon-owned cleanup slot.
+        *room.runtime_agent_env_path.write().await = None;
+    }
+    if let Some(spec) = installed {
+        launched_config = notebook_protocol::protocol::LaunchedEnvConfig {
+            launch_id: launched_config.launch_id,
+            local_environment: Some(notebook_protocol::protocol::LocalEnvironmentIdentity {
+                id: format!("kernelspec:{}", spec.name),
+                name: spec.display_name.clone(),
+                python_version: None,
+            }),
+            installed_kernelspec: Some(spec),
+            ..Default::default()
+        };
         *room.runtime_agent_env_path.write().await = None;
     }
 

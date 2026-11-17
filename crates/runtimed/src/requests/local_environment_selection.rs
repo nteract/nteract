@@ -52,9 +52,19 @@ impl LocalEnvironmentSelection {
         selected: Option<LocalCondaEnvironment>,
         expected_revision: u64,
     ) -> Result<EnvironmentSelectionSnapshot, String> {
+        self.stage(selected, None, expected_revision)
+    }
+
+    fn stage(
+        &self,
+        selected: Option<LocalCondaEnvironment>,
+        kernelspec: Option<notebook_protocol::protocol::InstalledKernelspec>,
+        expected_revision: u64,
+    ) -> Result<EnvironmentSelectionSnapshot, String> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         Self::validate(&state, expected_revision)?;
         state.selected = selected;
+        state.selected_kernelspec = kernelspec;
         self.publish(&mut state);
         Ok(state.clone())
     }
@@ -84,6 +94,25 @@ impl LocalEnvironmentSelection {
             selection: self,
             revision: state.revision,
         })
+    }
+
+    /// Automatic launch can resolve imported portable intent without a picker apply.
+    pub(crate) fn record_launch(
+        &self,
+        spec: Option<&notebook_protocol::protocol::InstalledKernelspec>,
+    ) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.applying || state.applied_kernelspec.as_ref() == spec {
+            return;
+        }
+        if spec.is_some() {
+            state.applied = None;
+        }
+        if state.revision == 0 {
+            state.selected_kernelspec = spec.cloned();
+        }
+        state.applied_kernelspec = spec.cloned();
+        self.publish(&mut state);
     }
 
     pub(crate) fn begin_sync(&self) -> Result<Arc<()>, String> {
@@ -161,6 +190,8 @@ impl LocalEnvironmentSelection {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.selected = None;
         state.applied = None;
+        state.selected_kernelspec = None;
+        state.applied_kernelspec = None;
         state.applying = false;
         self.publish(&mut state);
     }
@@ -205,6 +236,7 @@ impl EnvironmentApply<'_> {
             .unwrap_or_else(|e| e.into_inner());
         if state.revision == self.revision && state.applying {
             state.applied = applied;
+            state.applied_kernelspec = state.selected_kernelspec.clone();
             state.applying = false;
             self.selection.publish(&mut state);
         }
@@ -309,6 +341,19 @@ pub(crate) async fn set(
         return rejected(error);
     }
     let selected = match target {
+        LocalEnvironmentTarget::Kernelspec { name } => {
+            let spec = match crate::kernelspec::resolve(name.clone()).await {
+                Ok(s) => s.info(&name),
+                Err(e) => return rejected(format!("{e:#}")),
+            };
+            return match room
+                .local_environment_selection
+                .stage(None, Some(spec), expected_revision)
+            {
+                Ok(selection) => NotebookResponse::EnvironmentSelection { selection },
+                Err(e) => rejected(e),
+            };
+        }
         LocalEnvironmentTarget::Automatic => None,
         LocalEnvironmentTarget::Conda { prefix } => {
             match daemon.local_conda_environments.resolve_prefix(prefix).await {
@@ -362,6 +407,7 @@ pub(crate) async fn apply(
             Ok(environment) => Some(environment),
             Err(error) => return rejected(error),
         },
+        None if snapshot.selected_kernelspec.is_some() => None,
         None => {
             let path = match room.file_binding.path().await {
                 Some(path) => Some(path),
@@ -585,5 +631,29 @@ mod tests {
         assert!(snapshot.selected.is_none());
         assert!(snapshot.applied.is_none());
         assert!(!snapshot.applying);
+    }
+
+    #[test]
+    fn kernelspec_stage_and_apply_share_conda_revision() {
+        let selection = LocalEnvironmentSelection::default();
+        let target = notebook_protocol::protocol::InstalledKernelspec {
+            name: "ir".into(),
+            display_name: "R".into(),
+            language: "R".into(),
+        };
+        selection.stage(None, Some(target.clone()), 0).unwrap();
+        let lease = selection.begin_apply(1).unwrap();
+        assert!(selection.set(None, 2).is_err());
+        lease.commit(None);
+        let staged = selection.set(Some(environment("other")), 3).unwrap();
+        assert!(staged.selected_kernelspec.is_none());
+        assert_eq!(staged.applied_kernelspec, Some(target));
+        drop(selection.begin_apply(4).unwrap());
+        assert!(selection.snapshot().applied_kernelspec.is_some());
+        selection
+            .begin_apply(6)
+            .unwrap()
+            .commit(Some(environment("other")));
+        assert!(selection.snapshot().applied_kernelspec.is_none());
     }
 }

@@ -3329,6 +3329,45 @@ async fn auto_launch_kernel_attempt(
         }
     }
 
+    let selection = room.local_environment_selection.snapshot();
+    let mode = *room.identity.environment_mode.read().await;
+    if selection.applied_kernelspec.is_some()
+        || (selection.applied.is_none()
+            && !matches!(
+                room.bound_environment.snapshot(),
+                crate::requests::bound_environment::BoundEnvironmentState::Bound(_)
+            )
+            && crate::kernelspec::imported(metadata_snapshot.as_ref(), mode).is_some())
+    {
+        if crate::requests::guarded::ensure_trusted(room)
+            .await
+            .is_err()
+        {
+            reset_auto_launch_error_with_trust_check(
+                room,
+                None,
+                None,
+                "Trust changed before the installed kernelspec could launch",
+            )
+            .await;
+            return None;
+        }
+        if room.connections.active_peers.load(Ordering::Relaxed) == 0 {
+            return release_attempt_and_readmit_if_peer_waiting(room, attempt).await;
+        }
+        let _ = crate::requests::launch_kernel::handle_admitted(
+            room,
+            &daemon,
+            "auto".into(),
+            notebook_protocol::connection::LaunchSpec::Auto,
+            None,
+            attempt,
+            None,
+            None,
+        )
+        .await;
+        return None;
+    }
     let applied = if room
         .doc
         .read()

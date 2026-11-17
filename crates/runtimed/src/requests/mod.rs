@@ -138,6 +138,7 @@ pub(crate) fn trim_runtime_executions_for_doc(
 pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
     match req {
         NotebookRequest::ListCondaEnvironments { .. } => "ListCondaEnvironments",
+        NotebookRequest::ListInstalledKernelspecs {} => "ListInstalledKernelspecs",
         NotebookRequest::ListInstalledCondaPackages { .. } => "ListInstalledCondaPackages",
         NotebookRequest::GetEnvironmentSelection {} => "GetEnvironmentSelection",
         NotebookRequest::SetEnvironmentSelection { .. } => "SetEnvironmentSelection",
@@ -461,6 +462,7 @@ pub(crate) async fn handle_notebook_request(
             }
             NotebookRequest::LaunchKernel { .. }
             | NotebookRequest::ListCondaEnvironments { .. }
+            | NotebookRequest::ListInstalledKernelspecs {}
             | NotebookRequest::ListInstalledCondaPackages { .. }
             | NotebookRequest::GetEnvironmentSelection {}
             | NotebookRequest::SetEnvironmentSelection { .. }
@@ -495,6 +497,19 @@ pub(crate) async fn handle_notebook_request(
     match request {
         NotebookRequest::ListCondaEnvironments { refresh } => {
             local_environment_selection::list(room, &daemon, refresh).await
+        }
+        NotebookRequest::ListInstalledKernelspecs {} => {
+            if room.is_hosted() {
+                return NotebookResponse::EnvironmentSelectionRejected {
+                    error: "Installed kernelspecs require a local notebook".into(),
+                };
+            }
+            match crate::kernelspec::inventory().await {
+                Ok(inventory) => NotebookResponse::InstalledKernelspecs { inventory },
+                Err(e) => NotebookResponse::EnvironmentSelectionRejected {
+                    error: e.to_string(),
+                },
+            }
         }
         NotebookRequest::ListInstalledCondaPackages { refresh: _ } => {
             local_environment_selection::list_installed_packages(room).await

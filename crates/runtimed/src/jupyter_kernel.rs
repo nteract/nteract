@@ -50,7 +50,7 @@ use crate::EnvType;
 use notebook_protocol::protocol::{CommRequestMessage, KernelPorts, LaunchedEnvConfig};
 
 const REDACT_ENV_VALUES_IN_OUTPUTS_ENV: &str = "NTERACT_REDACT_ENV_VALUES_IN_OUTPUTS";
-const KERNEL_ENV_SECRET_BLOCKLIST: &[&str] = &[
+pub(crate) const KERNEL_ENV_SECRET_BLOCKLIST: &[&str] = &[
     "RUNT_CLOUD_TOKEN",
     "RUNT_CLOUD_REFRESH_TOKEN",
     "NTERACT_API_KEY",
@@ -423,12 +423,21 @@ async fn resolve_output_widget_replay_state(
 /// creates its own ZMQ control connection.
 #[derive(Clone)]
 pub struct InterruptHandle {
+    signal: Option<mpsc::Sender<tokio::sync::oneshot::Sender<Result<()>>>>,
     connection_info: ConnectionInfo,
     session_id: String,
 }
 
 impl InterruptHandle {
     pub async fn interrupt(&self) -> Result<()> {
+        if let Some(signal) = &self.signal {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            signal
+                .send(tx)
+                .await
+                .map_err(|_| anyhow::anyhow!("Kernel exited"))?;
+            return rx.await?;
+        }
         let mut control = jupyter_zmq_client::create_client_control_connection(
             &self.connection_info,
             &self.session_id,
@@ -467,6 +476,7 @@ impl InterruptHandle {
 /// methods directly, but must be kept alive for the struct's lifetime.
 #[allow(dead_code)]
 pub struct JupyterKernel {
+    signal: Option<mpsc::Sender<tokio::sync::oneshot::Sender<Result<()>>>>,
     /// Kernel type (e.g., "python", "deno").
     kernel_type: String,
     /// Environment source (e.g., "uv:inline", "conda:prewarmed").
@@ -543,6 +553,18 @@ impl KernelConnection for JupyterKernel {
         let env = config.pooled_env;
         let direct_python_path = config.direct_python_path;
         let launched_config = config.launched_config;
+        let installed = match &launched_config.installed_kernelspec {
+            Some(info) if env_source == "kernelspec" && shared.kernel_actor_principal.is_none() => {
+                let spec = crate::kernelspec::resolve(info.name.clone()).await?;
+                anyhow::ensure!(
+                    spec.info(&info.name) == *info,
+                    "Installed kernelspec changed before launch; refresh selection"
+                );
+                Some(spec)
+            }
+            None if env_source != "kernelspec" => None,
+            _ => anyhow::bail!("Missing or unsupported local kernelspec binding"),
+        };
         let bootstrap_dx = launched_config.feature_flags.bootstrap_dx;
         let env_path = env.as_ref().map(|e| e.venv_path.clone());
         let launch_started = std::time::Instant::now();
@@ -554,10 +576,10 @@ impl KernelConnection for JupyterKernel {
         // ── Build process command ────────────────────────────────────────
 
         // Determine kernel name for connection info
-        let kernelspec_name = match kernel_type.as_str() {
-            "python" => "python3",
-            "deno" => "deno",
-            _ => &kernel_type,
+        let kernelspec_name = match (&launched_config.installed_kernelspec, kernel_type.as_str()) {
+            (Some(spec), _) => spec.name.as_str(),
+            (None, "python") => "python3",
+            (None, other) => other,
         };
 
         // Per-launch IP and stable connection-file path. Ports are
@@ -581,8 +603,13 @@ impl KernelConnection for JupyterKernel {
         let cwd = crate::uv_project::notebook_working_dir(notebook_path.as_deref());
 
         // Build kernel command based on kernel type
-        let mut cmd = match kernel_type.as_str() {
-            "python" => {
+        let mut cmd = match (&installed, kernel_type.as_str()) {
+            (Some(spec), _) => {
+                let mut cmd = spec.command(&connection_file_path)?;
+                cmd.stdout(Stdio::null()).stderr(Stdio::piped());
+                cmd
+            }
+            (None, "python") => {
                 let kernel_entry = crate::launcher_cache::kernel_entry_script().await?;
                 match env_source.as_str() {
                     "uv:inline" => {
@@ -968,7 +995,7 @@ impl KernelConnection for JupyterKernel {
                     }
                 }
             }
-            "deno" => {
+            (None, "deno") => {
                 let deno_path = kernel_launch::tools::get_deno_path().await?;
                 info!("[jupyter-kernel] Starting Deno kernel with {:?}", deno_path);
                 let mut cmd = tokio::process::Command::new(&deno_path);
@@ -1032,6 +1059,37 @@ impl KernelConnection for JupyterKernel {
                 }
             }
         }
+        if let Some(spec) = &installed {
+            spec.apply_env(&mut cmd);
+        }
+        #[cfg(windows)]
+        let interrupt_event = if installed
+            .as_ref()
+            .is_some_and(|s| s.interrupt_mode == crate::kernelspec::InterruptMode::Signal)
+        {
+            use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+            use windows_sys::Win32::{
+                Security::SECURITY_ATTRIBUTES, System::Threading::CreateEventW,
+            };
+            let attrs = SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: std::ptr::null_mut(),
+                bInheritHandle: 1,
+            };
+            // Jupyter kernels on Windows wait on the inherited auto-reset event.
+            let raw = unsafe { CreateEventW(&attrs, 0, 0, std::ptr::null()) };
+            if raw == 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            let event = unsafe { OwnedHandle::from_raw_handle(raw as _) };
+            cmd.env(
+                "JPY_INTERRUPT_EVENT",
+                (event.as_raw_handle() as usize).to_string(),
+            );
+            Some(event)
+        } else {
+            None
+        };
         scrub_secret_kernel_env(&mut cmd);
         cmd.env(
             REDACT_ENV_VALUES_IN_OUTPUTS_ENV,
@@ -1063,7 +1121,7 @@ impl KernelConnection for JupyterKernel {
         );
 
         #[cfg(unix)]
-        let use_ipc = kernel_type != "deno";
+        let use_ipc = kernel_type != "deno" && installed.is_none();
 
         #[cfg(unix)]
         let ipc_prefix = if use_ipc {
@@ -1390,10 +1448,29 @@ impl KernelConnection for JupyterKernel {
         let process_cmd_tx = lifecycle_cmd_tx.clone();
         let panic_cmd_tx = lifecycle_cmd_tx.clone();
         let (died_tx, died_rx) = tokio::sync::oneshot::channel::<String>();
+        let (signal, mut signal_rx) = mpsc::channel::<tokio::sync::oneshot::Sender<Result<()>>>(1);
+        let signal = installed
+            .as_ref()
+            .filter(|s| s.interrupt_mode == crate::kernelspec::InterruptMode::Signal)
+            .map(|_| signal);
         let process_watcher_task = spawn_supervised(
             "process-watcher",
             async move {
-                let status = process.wait().await;
+                let status = loop {
+                    tokio::select! {
+                        status=process.wait()=>break status,
+                        Some(reply)=signal_rx.recv()=>{
+                            #[cfg(unix)]
+                            let result=process.id().ok_or_else(||anyhow::anyhow!("Kernel exited")).and_then(|pid|nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32),nix::sys::signal::Signal::SIGINT).map_err(Into::into));
+                            #[cfg(windows)]
+                            let result=interrupt_event.as_ref().ok_or_else(||anyhow::anyhow!("Kernel has no interrupt event")).and_then(|event|{
+                                use std::os::windows::io::AsRawHandle;
+                                if unsafe{windows_sys::Win32::System::Threading::SetEvent(event.as_raw_handle() as isize)}==0{Err(std::io::Error::last_os_error().into())}else{Ok(())}
+                            });
+                            let _=reply.send(result);
+                        }
+                    }
+                };
                 let msg = match status {
                     Ok(exit_status) => {
                         warn!("[jupyter-kernel] Kernel process exited: {}", exit_status);
@@ -3107,6 +3184,7 @@ impl KernelConnection for JupyterKernel {
             kernel_type,
             env_source,
             launched_config,
+            signal,
             env_path,
             session_id,
             kernel_id: kernel_id.clone(),
@@ -3190,6 +3268,13 @@ impl KernelConnection for JupyterKernel {
     // ── Interrupt ────────────────────────────────────────────────────────
 
     async fn interrupt(&mut self) -> Result<()> {
+        if self.signal.is_some() {
+            return self
+                .interrupt_handle()
+                .ok_or_else(|| anyhow::anyhow!("No kernel running"))?
+                .interrupt()
+                .await;
+        }
         let connection_info = self
             .connection_info
             .as_ref()
@@ -3538,6 +3623,7 @@ impl JupyterKernel {
     /// Get an InterruptHandle for concurrent interrupt without &mut self.
     pub fn interrupt_handle(&self) -> Option<InterruptHandle> {
         self.connection_info.as_ref().map(|ci| InterruptHandle {
+            signal: self.signal.clone(),
             connection_info: ci.clone(),
             session_id: self.session_id.clone(),
         })

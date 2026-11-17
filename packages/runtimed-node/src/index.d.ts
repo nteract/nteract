@@ -133,7 +133,20 @@ export interface CreateNotebookOptions {
 
 export type EnvironmentSelectionTarget =
   | { kind: "automatic"; prefix?: undefined }
-  | { kind: "conda"; prefix: string };
+  | { kind: "conda"; prefix: string }
+  | { kind: "kernelspec"; name: string };
+
+export interface InstalledKernelspec {
+  name: string;
+  displayName: string;
+  language: string;
+}
+
+export interface KernelspecInventory {
+  kernelspecs: InstalledKernelspec[];
+  warnings: string[];
+  truncated: boolean;
+}
 
 export interface LocalCondaEnvironmentInfo {
   id: string;
@@ -145,6 +158,8 @@ export interface LocalCondaEnvironmentInfo {
 
 /** Daemon-session environment intent, separate from the running kernel. */
 export interface EnvironmentSelection {
+  selectedKernelspec?: InstalledKernelspec;
+  appliedKernelspec?: InstalledKernelspec;
   /** Pass back as `expectedRevision` to set or apply. */
   revision: number;
   /** Staged target. Absent means Automatic. */
@@ -473,6 +488,7 @@ export class Session {
    */
   syncEnvironmentResult(): Promise<EnvironmentSyncResult>;
   getEnvironmentSelection(): Promise<EnvironmentSelection>;
+  listInstalledKernelspecs(): Promise<KernelspecInventory>;
   /** Stage a target without touching the running kernel. */
   setEnvironmentSelection(
     target: EnvironmentSelectionTarget,
