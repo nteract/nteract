@@ -2273,10 +2273,10 @@ impl MetadataMerge {
         current: &[String],
         key: fn(&str) -> String,
     ) -> Vec<String> {
-        fn keyed<'a>(
-            entries: &'a [String],
+        fn keyed(
+            entries: &[String],
             key: fn(&str) -> String,
-        ) -> std::collections::HashMap<String, &'a String> {
+        ) -> std::collections::HashMap<String, &String> {
             let mut map = std::collections::HashMap::new();
             for entry in entries {
                 map.entry(key(entry)).or_insert(entry);
