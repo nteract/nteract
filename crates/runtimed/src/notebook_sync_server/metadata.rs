@@ -5736,38 +5736,66 @@ pub(crate) fn formatter_actor(runtime: &str) -> String {
     format!("runtimed:{tool}")
 }
 
-/// Detect the runtime from room metadata, returning "python", "deno", or None.
-pub(crate) async fn detect_room_runtime(room: &NotebookRoom) -> Option<String> {
-    let doc = room.doc.read().await;
-    doc.get_metadata_snapshot()
-        .and_then(|snapshot| snapshot.detect_runtime())
+/// Formatting is language-specific. Launch inference can use package metadata; an
+/// explicit but unsupported source language must never take that fallback.
+pub(crate) fn room_formatter(room: &NotebookRoom, doc: &NotebookDoc) -> Option<&'static str> {
+    room.state
+        .read(|sd| formatter_for_kernel(&sd.read_state().kernel, doc))
+        .ok()
+        .flatten()
+}
+
+fn formatter_for_kernel(
+    kernel: &runtime_doc::KernelState,
+    doc: &NotebookDoc,
+) -> Option<&'static str> {
+    fn for_language(language: &str) -> Option<&'static str> {
+        match language.trim().to_ascii_lowercase().as_str() {
+            "python" => Some("python"),
+            "typescript" | "javascript" | "deno" => Some("deno"),
+            _ => None,
+        }
+    }
+    if matches!(kernel.lifecycle, RuntimeLifecycle::Running(_)) {
+        return for_language(&kernel.language);
+    }
+    if kernel.lifecycle.is_starting_or_running() {
+        return None;
+    }
+    let metadata = doc.get_metadata_snapshot()?;
+    if let Some(spec) = &metadata.kernelspec {
+        if let Some(language) = &spec.language {
+            return for_language(language);
+        }
+        if crate::kernelspec::imported(Some(&metadata), Default::default()).is_some() {
+            return None;
+        }
+    }
+    if let Some(info) = &metadata.language_info {
+        return for_language(&info.name);
+    }
+    metadata.detect_runtime().as_deref().and_then(for_language)
 }
 
 /// Format all code cells in a notebook using ruff (Python) or deno fmt (Deno).
 ///
-/// Reads the runtime type from the notebook metadata and formats accordingly.
 /// Updates the Automerge doc with formatted sources and broadcasts changes.
 /// Formatting errors are logged but don't fail the operation (best-effort).
 pub(crate) async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, String> {
-    let runtime = match detect_room_runtime(room).await {
-        Some(rt) => rt,
-        None => {
-            info!("[format] Skipping format: unknown kernelspec (no formatter available)");
-            return Ok(0);
-        }
-    };
-
     // Capture the code cells and heads before formatting so the eventual
     // writes are applied as an isolated transaction at this baseline.
-    let (cells, baseline_heads) = {
+    let (runtime, cells, baseline_heads) = {
         let mut doc = room.doc.write().await;
+        let Some(runtime) = room_formatter(room, &doc) else {
+            return Ok(0);
+        };
         let cells: Vec<(String, String)> = doc
             .get_cells()
             .into_iter()
             .filter(|cell| cell.cell_type == "code" && !cell.source.trim().is_empty())
             .map(|cell| (cell.id, cell.source))
             .collect();
-        (cells, doc.get_heads())
+        (runtime, cells, doc.get_heads())
     };
 
     if cells.is_empty() {
@@ -5776,33 +5804,56 @@ pub(crate) async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, 
 
     let mut formatted_updates: Vec<(String, String)> = Vec::new();
     for (cell_id, source) in cells {
-        if let Some(fmt) = format_source(&source, &runtime).await {
+        if let Some(fmt) = format_source(&source, runtime).await {
             formatted_updates.push((cell_id, fmt));
         }
     }
 
+    apply_formatted_sources(room, runtime, &baseline_heads, &formatted_updates).await
+}
+
+pub(crate) async fn apply_formatted_sources(
+    room: &NotebookRoom,
+    runtime: &str,
+    baseline_heads: &[automerge::ChangeHash],
+    formatted_updates: &[(String, String)],
+) -> Result<usize, String> {
     let mut formatted_count = 0;
     if !formatted_updates.is_empty() {
         let mut doc = room.doc.write().await;
         let rollback_actor = doc.get_actor_id();
         let rollback_snapshot = doc.save();
         let durable_baseline_heads = doc.get_heads();
-        match doc.transact_at_heads_recovering(
-            &baseline_heads,
-            Some(&formatter_actor(&runtime)),
-            "save-format-transaction",
-            |doc| {
-                let mut applied = 0;
-                let mut changed = false;
-                for (cell_id, fmt) in &formatted_updates {
-                    if let Ok(cell_changed) = doc.update_source(cell_id, fmt) {
-                        applied += 1;
-                        changed |= cell_changed;
-                    }
+        // Hold both owners through the source transaction. Document heads alone
+        // do not fence a language switch in RuntimeStateDoc.
+        let transaction = room
+            .state
+            .read(|sd| {
+                if formatter_for_kernel(&sd.read_state().kernel, &doc) != Some(runtime) {
+                    return None;
                 }
-                Ok((applied, changed))
-            },
-        ) {
+                Some(doc.transact_at_heads_recovering(
+                    baseline_heads,
+                    Some(&formatter_actor(runtime)),
+                    "format-transaction",
+                    |doc| {
+                        let mut applied = 0;
+                        let mut changed = false;
+                        for (cell_id, fmt) in formatted_updates {
+                            if let Ok(cell_changed) = doc.update_source(cell_id, fmt) {
+                                applied += 1;
+                                changed |= cell_changed;
+                            }
+                        }
+                        Ok((applied, changed))
+                    },
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let Some(transaction) = transaction else {
+            return Ok(0);
+        };
+        match transaction {
             Ok((applied, changed)) => {
                 if changed {
                     super::durability::commit_daemon_notebook_mutation(
@@ -5811,7 +5862,7 @@ pub(crate) async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, 
                         &durable_baseline_heads,
                         &rollback_snapshot,
                         &rollback_actor,
-                        "save-time formatting",
+                        "cell formatting",
                     )?;
                     let _ = room.broadcasts.changed_tx.send(());
                 }

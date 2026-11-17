@@ -363,6 +363,20 @@ pub(crate) fn persist(
     } else {
         return Ok(());
     }
+    // A spec describes a language, not the version or MIME/lexer details of a running kernel.
+    if let Some(language) = snap.kernelspec.as_ref().and_then(|s| s.language.as_ref()) {
+        if target.is_some()
+            || !snap
+                .language_info
+                .as_ref()
+                .is_some_and(|info| info.name.eq_ignore_ascii_case(language))
+        {
+            snap.language_info = Some(notebook_doc::metadata::LanguageInfoSnapshot {
+                name: language.clone(),
+                ..Default::default()
+            });
+        }
+    }
     let actor = doc.get_actor_id();
     let rollback = doc.save();
     let heads = doc.get_heads();
