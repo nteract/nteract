@@ -749,22 +749,36 @@ describe("useNotebookActionPolicy", () => {
     expect(options.runAllCells).not.toHaveBeenCalled();
   });
 
-  it("retains a run when the first launch discovers project trust is required", async () => {
+  // Current daemons reply guard_rejected for a parked project launch; older
+  // daemons reply error. Both keep the run for the project trust dialog.
+  it.each([
+    { result: "guard_rejected", reason: "Project folder needs approval" },
+    { result: "error", error: "Project folder needs approval" },
+  ] satisfies NotebookResponse[])("retains a run when the first launch replies $result for project trust", async (parked) => {
     const options = createPolicyOptions({
       launchKernel: vi.fn()
-        .mockResolvedValueOnce({ result: "error", error: "Project folder needs approval" })
+        .mockResolvedValueOnce(parked)
         .mockResolvedValueOnce(response("kernel_launched")),
     });
     const { result } = renderHook(() => useNotebookActionPolicy(options));
     await act(async () => { await result.current.handleExecuteCell("cell-1"); });
+    expect(result.current.pendingTrustAction).toMatchObject({ kind: "execute_cell" });
     await act(async () => { await result.current.handleProjectTrustApprove("/work/proj"); });
     expect(options.executeCellGuarded).toHaveBeenCalledExactlyOnceWith("cell-1", { observed_heads: ["head-1"] });
     expect(options.executeCell).not.toHaveBeenCalled();
+    // A guard_rejected notice belongs to the recovered run and is retired.
+    expect(result.current.trustActionNotice).toBeNull();
   });
 
-  describe("launch notices after notebook and project trust review", () => {
-    const projectTrustMessage =
-      "The project folder is not trusted on this machine. Trust it or use the notebook environment to launch.";
+  const projectTrustMessage =
+    "The project folder is not trusted on this machine. Trust it or use the notebook environment to launch.";
+
+  // Current daemons reply guard_rejected for a parked project launch; older
+  // daemons reply error with the same text. The notice lifecycle is the same.
+  describe.each([
+    { daemon: "guard_rejected", projectTrustReply: { result: "guard_rejected", reason: projectTrustMessage } },
+    { daemon: "legacy error", projectTrustReply: { result: "error", error: projectTrustMessage } },
+  ] satisfies { daemon: string; projectTrustReply: NotebookResponse }[])("launch notices after notebook and project trust review ($daemon)", ({ projectTrustReply }) => {
 
     async function renderBlockedLaunch(kind: "cell" | "all" = "cell", approveOnly = false) {
       const options = createPolicyOptions({
@@ -772,7 +786,7 @@ describe("useNotebookActionPolicy", () => {
           .mockResolvedValueOnce({ status: "untrusted" })
           .mockResolvedValue({ status: "trusted" }),
         launchKernel: vi.fn()
-          .mockResolvedValueOnce({ result: "error", error: projectTrustMessage })
+          .mockResolvedValueOnce(projectTrustReply)
           .mockResolvedValue(response("kernel_launched")),
       });
       const hook = renderHook(() => useNotebookActionPolicy(options));
@@ -831,7 +845,7 @@ describe("useNotebookActionPolicy", () => {
           .mockResolvedValueOnce({ status: "untrusted" })
           .mockResolvedValue({ status: "trusted" }),
         launchKernel: vi.fn()
-          .mockResolvedValueOnce({ result: "error", error: projectTrustMessage })
+          .mockResolvedValueOnce(projectTrustReply)
           .mockResolvedValue(response("kernel_launched")),
       });
       const { result, rerender } = renderHook(() => useNotebookActionPolicy(options));

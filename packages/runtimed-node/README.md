@@ -356,7 +356,12 @@ sessions.
 - `Session.restartKernelResult({ timeoutMs? })` runs the same restart and
   returns `{ outcome, error?, launchedEnvSource?, status }`. `outcome` is
   `running`, `trust_required`, `launch_rejected`, `failed`, `stopped`, or
-  `timed_out`. `status` reports an observed Running kernel after a stopped state only for `running`;
+  `timed_out`. `trust_required` means the daemon refused the launch until an
+  approval: notebook dependencies (`approveTrust()`) or the project folder
+  (`approveProjectTrust()` or `declineProjectTrust()`). Older daemons report an
+  untrusted project folder as `launch_rejected`. A refused launch returns on
+  the daemon's reply, so `status` may not yet show `AwaitingProjectTrust`.
+  `status` reports an observed Running kernel after a stopped state only for `running`;
   confirmation matches the accepted environment source and local environment ID when supplied. The
   protocol has no launch generation, so a concurrent restart by another peer
   of the same environment cannot be distinguished from this call's launch.

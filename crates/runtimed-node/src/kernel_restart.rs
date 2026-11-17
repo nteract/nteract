@@ -68,9 +68,11 @@ pub(crate) enum LaunchReply {
         env_source: String,
         environment_id: Option<String>,
     },
-    /// `GuardRejected`: notebook dependencies are not trusted.
+    /// `GuardRejected`: an approval is required before launch, either for
+    /// notebook dependencies or for the project folder.
     TrustRejected { reason: String },
-    /// `Error` or `EnvironmentSelectionRejected`.
+    /// `Error` or `EnvironmentSelectionRejected`. Daemons that predate the
+    /// typed project trust refusal reply `Error` for it; that stays here.
     Rejected { error: String },
 }
 
@@ -467,17 +469,69 @@ mod tests {
                 reason: "untrusted".into()
             })
         );
+        // A generic `Error` stays a launch rejection, whatever its text says.
         let phase =
             run(fenced
                 .into_iter()
                 .chain([RestartEvent::LaunchReplied(LaunchReply::Rejected {
-                    error: "project folder not trusted".into(),
+                    error: "The project folder is not trusted on this machine.".into(),
                 })]));
         assert_eq!(
             phase,
             RestartPhase::Done(RestartVerdict::LaunchRejected {
-                error: "project folder not trusted".into()
+                error: "The project folder is not trusted on this machine.".into()
             })
+        );
+    }
+
+    fn project_trust_rejected() -> RestartEvent {
+        RestartEvent::LaunchReplied(LaunchReply::TrustRejected {
+            reason: "The project folder is not trusted on this machine.".into(),
+        })
+    }
+
+    fn project_trust_required() -> RestartPhase {
+        RestartPhase::Done(RestartVerdict::TrustRequired {
+            reason: "The project folder is not trusted on this machine.".into(),
+        })
+    }
+
+    #[test]
+    fn project_trust_park_observed_before_reply_is_trust_required() {
+        // The daemon parks the room, then replies. The park reaches this
+        // replica first; the reply alone decides the verdict.
+        let phase = run([
+            RestartEvent::ShutdownAcknowledged,
+            RestartEvent::Observed(obs(RuntimeLifecycle::Shutdown, "uv:prewarmed")),
+            RestartEvent::Observed(obs(RuntimeLifecycle::Resolving, "uv:prewarmed")),
+            RestartEvent::Observed(obs(RuntimeLifecycle::AwaitingProjectTrust, "")),
+        ]);
+        assert!(
+            matches!(phase, RestartPhase::Launching { .. }),
+            "a park observation must not end the launch phase: {phase:?}"
+        );
+        assert_eq!(
+            step(phase, project_trust_rejected()),
+            project_trust_required()
+        );
+    }
+
+    #[test]
+    fn project_trust_reply_before_park_observed_is_trust_required() {
+        // The reply frame beats the RuntimeStateDoc sync frame. The verdict is
+        // terminal at once; a later park observation does not change it.
+        let phase = run([
+            RestartEvent::ShutdownAcknowledged,
+            RestartEvent::Observed(obs(RuntimeLifecycle::Shutdown, "uv:prewarmed")),
+            project_trust_rejected(),
+        ]);
+        assert_eq!(phase, project_trust_required());
+        assert_eq!(
+            step(
+                phase,
+                RestartEvent::Observed(obs(RuntimeLifecycle::AwaitingProjectTrust, ""))
+            ),
+            project_trust_required()
         );
     }
 
