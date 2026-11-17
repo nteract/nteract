@@ -21,6 +21,7 @@ import { logAuthEvent, sessionRowPrincipal } from "./auth-events.mjs";
 import { HttpError, json, logFailure, requireSameOrigin } from "./auth.mjs";
 import { oauthClientName } from "./oauth-clients.mjs";
 import { listGrantsFor, revokeGrantFor, revokeGrantsFor } from "./oauth-store.mjs";
+import { forgetPrincipalSessions } from "./session-memo.mjs";
 
 const LOGOUT_ALL = "/api/auth/logout-all";
 const GRANTS = "/api/auth/grants";
@@ -67,6 +68,7 @@ async function signOutEverywhere(request, env) {
   // again. The sessions go next, this one included.
   let agents = await revokeGrantsFor(env, principal);
   const sessions = await revokeServerSessionsFor(env, principal, origin);
+  forgetPrincipalSessions(env, principal);
   // A browser signed in elsewhere could approve an agent between those two
   // steps; a second pass revokes that grant. The sign-out stands if it fails.
   try {

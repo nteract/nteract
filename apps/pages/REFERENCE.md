@@ -1261,6 +1261,18 @@ browser session, and the viewer offers the dialog only then. If the list
 answers 404 anyway, as an ingress without these routes does, the dialog says
 they aren't available here, shows no error, and the menu stops offering them.
 
+Each isolate remembers a browser session it read from D1 for up to 10 seconds,
+and never past the session's own expiry
+([session-memo.mjs](worker/session-memo.mjs)), because every host a request
+crosses authenticates it again. The memo is keyed by the session id the
+store derives from the cookie, so an unknown or malformed cookie is never
+answered from it. Signing out, signing out everywhere and a
+`GET /api/auth/session` renewal forget the session in the isolate that handles
+them. Another isolate may accept it for up to 10 seconds after sign-out or
+sign out everywhere, and an open sync socket, which re-authenticates every
+15 seconds, may stay open up to 25 seconds after. OAuth access tokens, API
+keys and Kilo tokens are not remembered this way.
+
 An hourly cron (`35 * * * *` UTC, [shared/schedule.mjs](shared/schedule.mjs))
 sweeps the auth database (worker/auth-maintenance.mjs). It deletes expired
 sign-in transactions and server sessions, expired OAuth consents, codes, tokens

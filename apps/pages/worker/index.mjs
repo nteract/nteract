@@ -103,6 +103,7 @@ import { connectAgentResponse } from "../connect-agent.mjs";
 import { handleOAuth, mcpAuthChallenge } from "./oauth.mjs";
 import { oauthGrantActive } from "./oauth-store.mjs";
 import { handleAccountAuth } from "./account-auth.mjs";
+import { forgetServerAppSession } from "./session-memo.mjs";
 import {
   ASSET_AUTHORIZE_PATH,
   ASSET_UPLOAD_OPERATION,
@@ -1558,6 +1559,7 @@ const gateway = {
           () => null,
         );
         const signedOut = await deleteServerOidcSession(request, env);
+        await forgetServerAppSession(env, request);
         if (signedIn)
           await logAuthEvent({
             action: "sign_out",
@@ -1575,6 +1577,9 @@ const gateway = {
             onAuthEvent: recordOidcEvent,
             provider: kiloSessionProvider(env, request),
           });
+          // A renewal may have changed or ended the session; the expiry
+          // below comes from the row as it is now.
+          await forgetServerAppSession(env, request);
           if (!refreshed.ok) return refreshed;
         }
         let identity = null;
