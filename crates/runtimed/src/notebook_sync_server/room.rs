@@ -2776,6 +2776,22 @@ impl NotebookRoom {
         true
     }
 
+    /// Fence a peer write against runtime-agent replacement. The closure is
+    /// synchronous so ownership cannot change between admission and mutation.
+    pub(crate) fn with_runtime_agent_owner<T>(
+        &self,
+        runtime_agent_id: &str,
+        write: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let state = self.kernel_launch_gate.lock_state();
+        anyhow::ensure!(
+            state.expected_runtime_agent_id.as_deref() == Some(runtime_agent_id)
+                && state.connected_runtime_agent_id.as_deref() == Some(runtime_agent_id),
+            "Runtime agent no longer owns this notebook"
+        );
+        write()
+    }
+
     pub(crate) fn invalidate_runtime_agent_connection(&self) {
         let mut state = self.kernel_launch_gate.lock_state();
         state.expected_runtime_agent_id = None;
