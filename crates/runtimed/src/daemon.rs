@@ -8489,6 +8489,17 @@ mod tests {
             doc.set_metadata_snapshot(&metadata).unwrap();
         }
         let observed_heads = room.doc.write().await.get_heads_hex();
+        let NotebookResponse::EnvironmentSelection { selection } =
+            crate::requests::local_environment_selection::get(&room).await
+        else {
+            panic!("expected local selection")
+        };
+        let staged = room
+            .local_environment_selection
+            .set(None, selection.revision)
+            .unwrap();
+        assert!(staged.selected_kernelspec.is_none());
+        let expected_revision = staged.revision;
         let cache = kernel_env::uv::default_cache_dir_uv();
         std::fs::create_dir_all(&cache).unwrap();
         let pool_dir = TempDir::new_in(&cache).unwrap();
@@ -8521,7 +8532,7 @@ mod tests {
                 crate::requests::local_environment_selection::apply(
                     &room,
                     &daemon,
-                    0,
+                    expected_revision,
                     observed_heads,
                 )
                 .await
