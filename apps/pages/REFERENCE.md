@@ -2966,7 +2966,9 @@ a check reads only the stored count. At the limit, or before the counts exist,
 it counts every entry, releasing stale reservations, and rebuilds them. Every
 `list_pages` reads every owned entry for location anyway and rewrites counts
 that disagree, logging `catalog.count_repaired`; a rollback build that writes
-entries without counts leaves that to repair.
+entries without counts leaves that to repair. That read is the location scan,
+which the Catalog keeps in memory (below); a listing checks the counts against
+each kept scan once, since nothing can change either until a write drops it.
 
 At the limit, creating or restoring returns `409 page_quota_exceeded` and moving
 to Trash returns `409 trash_capacity`, each with `limit` and `count`.
@@ -4083,18 +4085,28 @@ card at once rather than after the next edit.
 
 `page_cards` (`/api/tools` only) takes up to 24 `page_ids`
 ([page-cards.mjs](worker/page-cards.mjs)). The caller's Catalog decides access
-inside its serial queue with `list_pages`' rules: an owned ID needs a settled
-`page/<id>` entry (so a trashed Page has none), and a shared ID needs a
-`shared/<id>` entry and a fresh `verifyShared` by its Page host, the metadata
-check that doesn't boot the document, finding the Page active. D1 is never
-read. The Catalog answers only the allowed IDs, and the gateway reads their
-objects after the queue has moved on, all at once under one 1.2-second
-deadline, so a slow bucket never holds the account's listings, creates or
-reports. Each card is one `get`: the object's body is the card and its
-metadata holds the image record, so 20 cards cost 20 reads. A legacy object,
-written before the record moved into it, also reads the image pointer
-([Card images](#card-images)). Only allowed IDs reach the bucket, and no
-object URL leaves the Worker.
+with `list_pages`' rules: an owned ID needs a settled `page/<id>` entry (so a
+trashed Page has none), and a shared ID needs a `shared/<id>` entry and a fresh
+`verifyShared` by its Page host, the metadata check that doesn't boot the
+document, finding the Page active. D1 is never read. That step reads and never
+writes the Catalog, so it runs outside the Catalog's serial queue: the gateway
+marks its own forward with an internal lane header, which `forwarded()` never
+copies from a client, and the Catalog refuses any other operation in that lane
+([catalog-lanes.mjs](worker/catalog-lanes.mjs)). It records no `cat_queue`
+phase. A library's card and card-image requests therefore never wait behind its
+listings or each other in the queue. A queued write may be partway through
+while the step reads. That can't show a card to anyone who must not see it: a
+`page/` entry in this Catalog is always a Page this account owns, and only this
+account's own credential reaches its Catalog, so a partway state at most shows
+or hides the owner's own card for one call. A pending creation or reservation
+slot never counts. A shared ID is allowed only by its Page host's answer, which
+no Catalog state replaces. The Catalog answers only the allowed IDs, and the gateway reads
+their objects all at once under one 1.2-second deadline, so a slow bucket never
+holds the account's listings, creates or reports. Each card is one `get`: the
+object's body is the card and its metadata holds the image record, so 20 cards
+cost 20 reads. A legacy object, written before the record moved into it, also
+reads the image pointer ([Card images](#card-images)). Only allowed IDs reach
+the bucket, and no object URL leaves the Worker.
 Every other ID, unknown, refused, unchecked in time, read too late or without a
 card, answers `null`, so a caller can't tell "no access" from "no card". The
 answer names its `principal`. It isn't an MCP tool: an agent can read the Page
@@ -4255,12 +4267,40 @@ the last child checked, even on a short page, so the caller can learn only that
 the parent has more than 100 children.
 `list_projects` takes candidates from `pages_catalog_spaces` and confirms each
 against the owner's `space/<id>` Catalog entry; cursors are sealed to the
-listing's filters. `read_page` breadcrumbs are computed in the gateway with one
+listing's filters. An account with member or opened hints instead reads every
+candidate Project's host with the caller's credentials. The Catalog keeps each
+successful answer in memory for 30 seconds, keyed by Project and by the
+credential's access basis (write permission and organization and email-domain
+evidence), and counts a reuse as `cat_space_memo`
+([project-read-memo.mjs](worker/project-read-memo.mjs)). A refusal, server
+error or thrown read is never kept. A Project's answers are dropped when this
+Catalog gets a discovery message adding or removing its hint, and when it
+handles `create_project`, `update_project`, `delete_project`, `get_project` or
+`manage_project_access` for it. So a member removed some other way, or a
+Project renamed by its owner, can keep its old list entry for up to 30 seconds;
+opening it is still checked by the Project. Invited Projects are read on every
+listing, since that read may claim the invitation. `list_projects` stays in the
+Catalog's queue: with the account index on, it writes the index's sync marks to
+the Catalog. `read_page` breadcrumbs are computed in the gateway with one
 call to the owner's Catalog, a host-only `/internal/location` route that answers
 ancestor IDs and the root's Project and nothing else. Each ancestor and the
 Project then answer with the caller's credentials, so the trail stops at the
 first Page the caller cannot open and `project_id` appears only when the
 Project is readable.
+
+Every listing and every `/internal/location` read needs the owner's location
+scan: all of its `page/` and `trash/` entries
+([catalog-location.mjs](worker/catalog-location.mjs)). The location route runs
+outside the Catalog's serial queue, and a Page check by someone other than the
+owner asks for it once or twice per request. The Catalog is the only writer of
+its storage, and every write goes through its counted storage, which reports it
+before it is issued and again when it settles, success or not. A transaction or
+`deleteAll` reports every key. So the Catalog keeps the last scan in memory
+until a write under `page/` or `trash/` drops it
+([catalog-scan-memo.mjs](worker/catalog-scan-memo.mjs)). A scan that overlapped
+such a write answers its own caller and isn't kept, and no request waits on
+another's scan. Callers get their own maps over frozen entries. A listing that
+reuses a kept scan reports `cat_scan_memo`, a count without a duration.
 
 `move_page` reparents or reorders an owned Page in one Catalog write
 ([move-page.mjs](worker/move-page.mjs)): the moved entry's `parent_id` and

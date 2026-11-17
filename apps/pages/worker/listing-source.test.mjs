@@ -128,7 +128,9 @@ test("a Home walk stays on its source when a write lands, across shared rows the
   assertComplete("ready", await f.walk(member, { limit: 100 }), [...owned, ...shared]);
   // The member creates a Page; for the walks below, its D1 row never landed.
   await storage.put(DIRTY, "created");
-  await storage.put(`page/${id(400)}`, {
+  // Through the Catalog's own storage, as its writes go: it drops the
+  // Catalog's remembered location scan.
+  await f.catalog(member).storage.put(`page/${id(400)}`, {
     page_id: id(400),
     title: "New",
     created_at: at(1439),

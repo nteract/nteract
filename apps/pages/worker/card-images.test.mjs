@@ -618,6 +618,53 @@ test("a purge that lands between the host's check and the write deletes what the
   );
 });
 
+test("card image reads authorize through page_cards outside the Catalog queue: allowed, denied, unavailable", async (t) => {
+  const { w, tokens, hashOf, create, upload } = await imagesWorld(t);
+  const pageId = await create();
+  const hash = await hashOf(pageId);
+  await upload("owner", pageId, { theme: "light", kind: "webp" });
+  await upload("owner", pageId, { theme: "dark", kind: "webp" });
+  await setRole(w, pageId, w.member, "viewer");
+  // Not `send`: it settles held jobs, and the held queues below never settle.
+  const send = (who, method, path) =>
+    worker.fetch(
+      new Request(`https://pages.invalid${path}`, {
+        method,
+        headers: { authorization: `Bearer ${tokens[who]}` },
+      }),
+      w.env,
+    );
+  await discover(w, w.member, pageId);
+  const path = `/api/pages/${pageId}/card-image/${hash}-light.webp`;
+  // Every account's queue is held: none of these reads may wait on it.
+  const releases = [w.owner, w.member, "user:anaconda-fixture:stranger-user"].map((principal) => {
+    let release;
+    const held = new Promise((resolve) => (release = resolve));
+    w.catalog(principal).queue(() => held);
+    return release;
+  });
+  t.after(() => releases.forEach((release) => release()));
+  const read = async (who) => {
+    let timer;
+    const response = await Promise.race([
+      send(who, "GET", path),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(Error(`${who}'s image read waited on a queue`)), 2000);
+      }),
+    ]).finally(() => clearTimeout(timer));
+    await response.body?.cancel();
+    return response.status;
+  };
+  assert.equal(await read("owner"), 200, "allowed");
+  assert.equal(await read("member"), 200, "allowed through the shared check");
+  assert.ok([403, 404].includes(await read("stranger")), "denied");
+  // The Page host doesn't answer the member's shared check: unavailable is
+  // never allowed.
+  w.faults.set(pageId, "before");
+  assert.equal(await read("member"), 404, "unavailable");
+  assert.equal(await read("member"), 200, "the next check answers");
+});
+
 /** Store a card and its images as builds before the record moved into
  * card.json did: a legacy card object and a `card/latest` pointer. */
 async function seedLegacy(assets, pageId, card, { revision = 1 } = {}) {
