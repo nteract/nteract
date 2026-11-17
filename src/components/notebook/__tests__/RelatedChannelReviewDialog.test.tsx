@@ -150,7 +150,7 @@ describe("related channel review", () => {
     expect(screen.getByRole("button", { name: "Allow metadata inspection" })).toBeEnabled();
   });
 
-  it("keeps the result when the runtime clears its review before the response", async () => {
+  it("does not claim completion when the runtime clears its review before the response", async () => {
     let resolve!: () => void;
     host.trust.approveRelatedChannels.mockImplementation(
       () =>
@@ -163,8 +163,42 @@ describe("related channel review", () => {
     await waitFor(() => expect(host.trust.approveRelatedChannels).toHaveBeenCalledTimes(1));
     rerender(<RelatedChannelReviewDialog review={null} loaded />);
     await act(async () => resolve());
-    expect(screen.getByRole("dialog")).toHaveTextContent("Retry the action you started");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByText(/Channel review completed|Retry the action/)).toBeNull();
     expect(host.trust.approveRelatedChannels).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires final approval after the empty metadata-discovery transition", async () => {
+    host.trust.approveRelatedChannels.mockResolvedValue(undefined);
+    const { rerender } = render(<RelatedChannelReviewDialog review={review} loaded />);
+    fireEvent.click(screen.getByRole("button", { name: "Allow metadata inspection" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Checking channels…" })).toBeDisabled(),
+    );
+    rerender(<RelatedChannelReviewDialog review={null} loaded />);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByText(/Channel review completed|Retry the action/)).toBeNull();
+    rerender(
+      <RelatedChannelReviewDialog
+        review={{
+          ...review,
+          review_id: "install-review",
+          scope: "install",
+          uninspected_channels: [],
+        }}
+        loaded
+      />,
+    );
+    const approveInstall = screen.getByRole("button", { name: "Approve package sources" });
+    expect(approveInstall).toBeEnabled();
+    expect(host.trust.approveRelatedChannels).toHaveBeenCalledTimes(1);
+    fireEvent.click(approveInstall);
+    await waitFor(() =>
+      expect(host.trust.approveRelatedChannels).toHaveBeenLastCalledWith("install-review"),
+    );
+    rerender(<RelatedChannelReviewDialog review={null} loaded />);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByText(/Channel review completed|Retry the action/)).toBeNull();
   });
 
   it("declines without approving or reopening the same pending review", async () => {
