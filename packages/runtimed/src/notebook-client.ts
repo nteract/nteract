@@ -536,11 +536,12 @@ export class NotebookClient {
   }
 
   /**
-   * Forget the room's displaced-edit entries. Their snapshot files stay on
-   * disk.
+   * Forget displaced-edit entries. Pass the ids that were shown so an entry
+   * that arrived since stays; omit them to forget every entry. Snapshot files
+   * stay on disk.
    */
-  async dismissDisplacedEdits(): Promise<void> {
-    const response = await this.sendRequest({ type: "dismiss_displaced_edits" });
+  async dismissDisplacedEdits(ids?: string[]): Promise<void> {
+    const response = await this.sendRequest({ type: "dismiss_displaced_edits", ids: ids ?? null });
     switch (response.result) {
       case "ok":
         return;

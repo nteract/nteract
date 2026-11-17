@@ -156,7 +156,7 @@ pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
         NotebookRequest::Complete { .. } => "Complete",
         NotebookRequest::SaveNotebook { .. } => "SaveNotebook",
         NotebookRequest::ReconcileNotebookSource { .. } => "ReconcileNotebookSource",
-        NotebookRequest::DismissDisplacedEdits {} => "DismissDisplacedEdits",
+        NotebookRequest::DismissDisplacedEdits { .. } => "DismissDisplacedEdits",
         NotebookRequest::CloneAsEphemeral { .. } => "CloneAsEphemeral",
         NotebookRequest::SyncEnvironment { .. } => "SyncEnvironment",
         NotebookRequest::ApproveTrust { .. } => "ApproveTrust",
@@ -608,9 +608,9 @@ pub(crate) async fn handle_notebook_request(
             reconcile_notebook_source::handle(room, &daemon, operation).await
         }
 
-        NotebookRequest::DismissDisplacedEdits {} => {
-            match room.state.with_doc(|state| state.clear_displaced_edits()) {
-                Ok(_) => NotebookResponse::Ok {},
+        NotebookRequest::DismissDisplacedEdits { ids } => {
+            match crate::notebook_sync_server::dismiss_displaced_edits(room, ids).await {
+                Ok(()) => NotebookResponse::Ok {},
                 Err(error) => NotebookResponse::Error {
                     error: format!("could not dismiss displaced edits: {error}"),
                 },

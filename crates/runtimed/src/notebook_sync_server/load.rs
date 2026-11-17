@@ -2096,6 +2096,52 @@ fn degrade_external_source_revision(
     warn!("[notebook-watch] {reason}");
 }
 
+/// Faults a test can inject into the next external revision applied to a
+/// room.
+#[cfg(test)]
+pub(crate) enum ExternalRevisionFault {
+    /// Edit the live document after the file is prepared, just before the
+    /// apply takes the document lock.
+    EditBeforeLock(Box<dyn FnOnce(&mut NotebookDoc) + Send>),
+    /// Fail the document transaction.
+    Transaction,
+    /// Fail the RuntimeStateDoc sidecar step after the journal commit.
+    AfterCommit,
+}
+
+#[cfg(test)]
+static EXTERNAL_REVISION_FAULTS: std::sync::OnceLock<
+    std::sync::Mutex<HashMap<uuid::Uuid, ExternalRevisionFault>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+pub(crate) fn inject_external_revision_fault_for_test(
+    room_id: uuid::Uuid,
+    fault: ExternalRevisionFault,
+) {
+    EXTERNAL_REVISION_FAULTS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(room_id, fault);
+}
+
+#[cfg(test)]
+fn take_external_revision_fault(
+    room_id: uuid::Uuid,
+    matches: impl Fn(&ExternalRevisionFault) -> bool,
+) -> Option<ExternalRevisionFault> {
+    let mut faults = EXTERNAL_REVISION_FAULTS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if faults.get(&room_id).is_some_and(matches) {
+        faults.remove(&room_id)
+    } else {
+        None
+    }
+}
+
 /// Restore the pre-revision document after a transaction that could not
 /// reproduce the file exactly.
 fn reject_unreproducible_revision(
@@ -2119,13 +2165,21 @@ pub(crate) struct AppliedIpynbChanges {
     /// cell ids on disk). The live document was rolled back and nothing was
     /// committed.
     pub(crate) rejected: bool,
+    /// The replaced session content could not be saved first, so the
+    /// revision was not applied.
+    pub(crate) snapshot_failed: Option<String>,
+    /// The revision's changes committed to the journal: the live document
+    /// now equals the file, even if a later step failed.
+    pub(crate) committed: bool,
+    /// Committed, and the revision became the room's ready source
+    /// generation. Only then may it become the autosave staleness baseline.
+    pub(crate) reconciled: bool,
     /// Session content this revision replaced. Present only when the session
     /// held edits since its last file checkpoint that the file does not have.
     pub(crate) displaced: Option<DisplacedCapture>,
-    /// The live document matched the revision when it committed, and the
-    /// revision became the room's ready source generation. Only then may the
-    /// revision become the autosave staleness baseline.
-    pub(crate) reconciled: bool,
+    /// The durable snapshot entry for `displaced`, written before the commit.
+    /// Present only for a committed watcher revision; the caller publishes it.
+    pub(crate) displaced_entry: Option<runtime_doc::DisplacedEdits>,
 }
 
 /// The live notebook as it was just before an external revision replaced
@@ -2159,6 +2213,30 @@ fn cell_shape(cells: &[CellSnapshot]) -> Vec<(&str, &str, &str)> {
         .collect()
 }
 
+/// Everything about one cell that a reload replaces, apart from outputs.
+#[derive(PartialEq)]
+struct CellContent<'a> {
+    cell_type: &'a str,
+    source: &'a str,
+    metadata: &'a serde_json::Value,
+    attachments: &'a AttachmentRefs,
+}
+
+impl<'a> CellContent<'a> {
+    fn of(cell: &'a CellSnapshot) -> Self {
+        Self::with_attachments(cell, &cell.attachments)
+    }
+
+    fn with_attachments(cell: &'a CellSnapshot, attachments: &'a AttachmentRefs) -> Self {
+        Self {
+            cell_type: cell.cell_type.as_str(),
+            source: cell.source.as_str(),
+            metadata: &cell.metadata,
+            attachments,
+        }
+    }
+}
+
 fn ids_in_common_order<'a>(cells: &'a [CellSnapshot], other: &HashSet<&str>) -> Vec<&'a str> {
     cells
         .iter()
@@ -2178,32 +2256,81 @@ pub(crate) fn live_matches_external(
         && external_metadata.is_none_or(|metadata| doc.metadata_snapshot_matches(metadata))
 }
 
+/// What an external revision would put in the live document.
+pub(crate) struct DisplacementInputs<'a> {
+    /// Heads of the content the file last held from this room.
+    pub(crate) exported_heads: &'a [[u8; 32]],
+    pub(crate) external_cells: &'a [CellSnapshot],
+    pub(crate) external_metadata: Option<&'a NotebookMetadataSnapshot>,
+    /// The file's attachments per cell, as blob refs.
+    pub(crate) external_attachments: &'a HashMap<String, AttachmentRefs>,
+    /// The file's outputs per cell as manifest refs, when they replace live
+    /// outputs (no kernel running). `None` keeps live outputs.
+    pub(crate) external_outputs: Option<&'a HashMap<String, Vec<serde_json::Value>>>,
+    /// Live outputs per cell as manifest refs.
+    pub(crate) live_outputs: &'a HashMap<String, Vec<serde_json::Value>>,
+}
+
 /// Decide, under the NotebookDoc lock, whether making the live notebook match
 /// an external revision discards edits the session made since its last file
 /// checkpoint.
 ///
 /// The baseline is the document at `exported_heads`: the content the file
-/// last held from this room. Only session changes relative to that baseline
-/// count, and only where the live value differs from the file. Edits the file
-/// already has (identical edits on both sides), execution pointers and
-/// outputs never count. Cell metadata is not compared. When the exported
-/// heads are unknown to the document, every live difference from the file
-/// counts.
+/// last held from this room. A cell counts when the session changed it
+/// relative to that baseline (type, source, cell metadata, attachments,
+/// presence) and the live version differs from the file's. Outputs count when
+/// the session re-ran the cell and the file's outputs replace different live
+/// ones. Notebook metadata and cell order count the same way. Edits the file
+/// already has (identical edits on both sides) never count. When the
+/// exported heads are unknown to the document, every live difference from
+/// the file counts.
 pub(crate) fn capture_displaced_edits(
     doc: &mut NotebookDoc,
-    exported_heads: &[[u8; 32]],
-    external_cells: &[CellSnapshot],
-    external_metadata: Option<&NotebookMetadataSnapshot>,
+    inputs: &DisplacementInputs<'_>,
 ) -> Option<DisplacedCapture> {
+    let no_attachments = AttachmentRefs::new();
+    let no_outputs: Vec<serde_json::Value> = Vec::new();
+    let external_cells = inputs.external_cells;
     let live_cells = doc.get_cells();
     let live_metadata = doc.get_metadata_snapshot();
-    let metadata_differs =
-        external_metadata.is_some_and(|metadata| !doc.metadata_snapshot_matches(metadata));
-    if cell_shape(&live_cells) == cell_shape(external_cells) && !metadata_differs {
+    let metadata_differs = inputs
+        .external_metadata
+        .is_some_and(|metadata| !doc.metadata_snapshot_matches(metadata));
+
+    let live_by_id: HashMap<&str, CellContent<'_>> = live_cells
+        .iter()
+        .map(|c| (c.id.as_str(), CellContent::of(c)))
+        .collect();
+    let disk_by_id: HashMap<&str, CellContent<'_>> = external_cells
+        .iter()
+        .map(|c| {
+            let attachments = inputs
+                .external_attachments
+                .get(c.id.as_str())
+                .unwrap_or(&no_attachments);
+            (c.id.as_str(), CellContent::with_attachments(c, attachments))
+        })
+        .collect();
+    let outputs_differ = |id: &str| {
+        inputs.external_outputs.is_some_and(|external| {
+            inputs.live_outputs.get(id).unwrap_or(&no_outputs)
+                != external.get(id).unwrap_or(&no_outputs)
+        })
+    };
+    let live_ids: HashSet<&str> = live_by_id.keys().copied().collect();
+    let disk_ids: HashSet<&str> = disk_by_id.keys().copied().collect();
+    let order_differs = ids_in_common_order(&live_cells, &disk_ids)
+        != ids_in_common_order(external_cells, &live_ids);
+    let content_differs = live_ids != disk_ids
+        || live_ids
+            .iter()
+            .any(|id| live_by_id.get(id) != disk_by_id.get(id) || outputs_differ(id));
+    if !content_differs && !metadata_differs && !order_differs {
         return None;
     }
 
-    let heads: Vec<automerge::ChangeHash> = exported_heads
+    let heads: Vec<automerge::ChangeHash> = inputs
+        .exported_heads
         .iter()
         .map(|head| automerge::ChangeHash(*head))
         .collect();
@@ -2215,61 +2342,64 @@ pub(crate) fn capture_displaced_edits(
         return None;
     }
 
-    let live_by_id: HashMap<&str, (&str, &str)> = live_cells
-        .iter()
-        .map(|c| (c.id.as_str(), (c.cell_type.as_str(), c.source.as_str())))
-        .collect();
-    let disk_by_id: HashMap<&str, (&str, &str)> = external_cells
-        .iter()
-        .map(|c| (c.id.as_str(), (c.cell_type.as_str(), c.source.as_str())))
-        .collect();
-    let live_ids: HashSet<&str> = live_by_id.keys().copied().collect();
-    let disk_ids: HashSet<&str> = disk_by_id.keys().copied().collect();
-
+    // (id, content changed, re-ran) for every cell the session touched.
     let baseline_cells;
-    let (session_cell_ids, session_metadata, session_order): (Vec<&str>, bool, bool) =
+    let (session_cells, session_metadata, session_order): (Vec<(&str, bool, bool)>, bool, bool) =
         if baseline_known {
-            baseline_cells = doc.get_cells_at_heads(&heads);
+            baseline_cells = doc.get_cells_at_heads_with_content(&heads);
             let baseline_metadata = doc.get_metadata_snapshot_at_heads(&heads);
-            let base_by_id: HashMap<&str, (&str, &str)> = baseline_cells
+            let base_by_id: HashMap<&str, CellContent<'_>> = baseline_cells
                 .iter()
-                .map(|c| (c.id.as_str(), (c.cell_type.as_str(), c.source.as_str())))
+                .map(|c| (c.id.as_str(), CellContent::of(c)))
                 .collect();
             let base_ids: HashSet<&str> = base_by_id.keys().copied().collect();
-            let mut changed: Vec<&str> = live_cells
-                .iter()
-                .map(|c| c.id.as_str())
-                .filter(|id| base_by_id.get(id) != live_by_id.get(id))
-                .collect();
+            let mut changed: Vec<(&str, bool, bool)> = Vec::new();
+            for cell in &live_cells {
+                let id = cell.id.as_str();
+                let reran = doc.get_execution_id(id) != doc.get_execution_id_at_heads(id, &heads);
+                let content = base_by_id.get(id) != live_by_id.get(id);
+                if content || reran {
+                    changed.push((id, content, reran));
+                }
+            }
             changed.extend(
                 baseline_cells
                     .iter()
                     .map(|c| c.id.as_str())
-                    .filter(|id| !live_by_id.contains_key(id)),
+                    .filter(|id| !live_by_id.contains_key(id))
+                    .map(|id| (id, true, false)),
             );
             let order = ids_in_common_order(&live_cells, &base_ids)
                 != ids_in_common_order(&baseline_cells, &live_ids);
             (changed, live_metadata != baseline_metadata, order)
         } else {
-            let mut all: Vec<&str> = live_cells.iter().map(|c| c.id.as_str()).collect();
+            let mut all: Vec<(&str, bool, bool)> = live_cells
+                .iter()
+                .map(|c| (c.id.as_str(), true, true))
+                .collect();
             all.extend(
                 external_cells
                     .iter()
                     .map(|c| c.id.as_str())
-                    .filter(|id| !live_by_id.contains_key(id)),
+                    .filter(|id| !live_by_id.contains_key(id))
+                    .map(|id| (id, true, false)),
             );
             (all, true, true)
         };
 
-    let cell_ids: Vec<String> = session_cell_ids
+    let cell_ids: Vec<String> = session_cells
         .into_iter()
-        .filter(|id| live_by_id.get(id) != disk_by_id.get(id))
-        .map(str::to_string)
+        .filter(|(id, content_changed, reran)| {
+            (*content_changed && live_by_id.get(id) != disk_by_id.get(id))
+                || (*reran
+                    && live_by_id.contains_key(id)
+                    && disk_by_id.contains_key(id)
+                    && outputs_differ(id))
+        })
+        .map(|(id, _, _)| id.to_string())
         .collect();
     let metadata_changed = session_metadata && metadata_differs;
-    let order_changed = session_order
-        && ids_in_common_order(&live_cells, &disk_ids)
-            != ids_in_common_order(external_cells, &live_ids);
+    let order_changed = session_order && order_differs;
     if cell_ids.is_empty() && !metadata_changed && !order_changed {
         return None;
     }
@@ -2297,6 +2427,7 @@ pub(crate) struct ExternalSourceRevision {
 }
 
 impl AppliedIpynbChanges {
+    #[cfg(test)]
     pub(crate) fn changed(&self) -> bool {
         self.cells_changed || self.metadata_changed
     }
@@ -2360,11 +2491,6 @@ pub(crate) async fn apply_ipynb_changes_inner(
     external_metadata: Option<&NotebookMetadataSnapshot>,
     source_revision: Option<&ExternalSourceRevision>,
 ) -> AppliedIpynbChanges {
-    let current_cells = {
-        let doc = room.doc.read().await;
-        doc.get_cells()
-    };
-
     // Pre-convert external outputs through the blob store so they're stored as
     // manifest hashes rather than raw JSON. This also ensures comparisons against
     // the doc's existing manifest hashes work correctly.
@@ -2452,17 +2578,37 @@ pub(crate) async fn apply_ipynb_changes_inner(
         }
     }
 
-    // Build maps for comparison
-    let current_map: HashMap<&str, &CellSnapshot> =
-        current_cells.iter().map(|c| (c.id.as_str(), c)).collect();
     let external_map: HashMap<&str, &CellSnapshot> =
         external_cells.iter().map(|c| (c.id.as_str(), c)).collect();
-
-    // Check if cell order changed
-    let current_ids: Vec<&str> = current_cells.iter().map(|c| c.id.as_str()).collect();
     let external_ids: Vec<&str> = external_cells.iter().map(|c| c.id.as_str()).collect();
+
+    // RuntimeStateDoc writes collected inside the document transaction and
+    // applied after the NotebookDoc lock is released.
+    struct DeferredExecution<'a> {
+        synthetic_eid: String,
+        outputs: &'a [serde_json::Value],
+        execution_count: Option<i64>,
+    }
+
+    #[cfg(test)]
+    if let Some(ExternalRevisionFault::EditBeforeLock(edit)) =
+        take_external_revision_fault(room.id, |fault| {
+            matches!(fault, ExternalRevisionFault::EditBeforeLock(_))
+        })
+    {
+        edit(&mut *room.doc.write().await);
+    }
+
+    // Everything that depends on the live document is read under the same
+    // write lock the transaction runs under, so a concurrent edit cannot make
+    // the diff stale. RuntimeStateDoc reads are synchronous and nothing that
+    // holds the RuntimeStateDoc lock waits on the NotebookDoc lock.
+    let mut doc = room.doc.write().await;
+    let current_cells = doc.get_cells();
+    let current_map: HashMap<&str, &CellSnapshot> =
+        current_cells.iter().map(|c| (c.id.as_str(), c)).collect();
+    let current_ids: Vec<&str> = current_cells.iter().map(|c| c.id.as_str()).collect();
     let order_changed = {
-        // Filter to only IDs that exist in both, then compare order
         let common_current: Vec<&str> = current_ids
             .iter()
             .filter(|id| external_map.contains_key(*id))
@@ -2475,30 +2621,99 @@ pub(crate) async fn apply_ipynb_changes_inner(
             .collect();
         common_current != common_external
     };
-
-    // Detect wholesale file replacement: the current doc has cells, the
-    // external file has cells, but they share zero cell IDs. This happens
-    // when an external process (e.g. an AI agent) writes a completely new
-    // notebook to the same path. Route through the rebuild path so the cell
-    // list is replaced atomically instead of trying to infer an incremental
-    // edit script across unrelated IDs.
+    // Wholesale file replacement: both sides have cells but share no ids.
+    // Route through the rebuild path so the cell list is replaced atomically
+    // instead of inferring an incremental edit script across unrelated ids.
     let no_common_cells = !current_ids.is_empty()
         && !external_ids.is_empty()
         && !current_ids.iter().any(|id| external_map.contains_key(id));
+    let current_execution_ids: HashMap<String, String> = current_cells
+        .iter()
+        .filter_map(|cell| {
+            doc.get_execution_id(&cell.id)
+                .map(|execution_id| (cell.id.clone(), execution_id))
+        })
+        .collect();
+    let current_execution_state: HashMap<String, (Vec<serde_json::Value>, Option<i64>)> =
+        if has_running_kernel {
+            HashMap::new()
+        } else {
+            room.state
+                .read(|sd| {
+                    current_execution_ids
+                        .iter()
+                        .map(|(cell_id, eid)| {
+                            let ec = sd.get_execution(eid).and_then(|e| e.execution_count);
+                            (cell_id.clone(), (sd.get_outputs(eid), ec))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+    let live_outputs: HashMap<String, Vec<serde_json::Value>> = current_execution_state
+        .iter()
+        .map(|(cell_id, (outputs, _))| (cell_id.clone(), outputs.clone()))
+        .collect();
 
-    // Struct for collecting deferred state_doc writes so the doc write
-    // guard is not held across state_doc `.await` (deadlock prevention).
-    struct DeferredExecution<'a> {
-        synthetic_eid: String,
-        outputs: &'a [serde_json::Value],
-        execution_count: Option<i64>,
+    let heads = doc.get_heads();
+    let pre_heads_hex = doc.get_heads_hex();
+    let exported_heads = room.durability.manifest().exported_heads;
+    let displaced = capture_displaced_edits(
+        &mut doc,
+        &DisplacementInputs {
+            exported_heads: &exported_heads,
+            external_cells,
+            external_metadata,
+            external_attachments: &converted_attachments,
+            external_outputs: (!has_running_kernel).then_some(&converted_outputs),
+            live_outputs: &live_outputs,
+        },
+    );
+    // A watcher revision saves what it replaces before it commits. Any
+    // failure here leaves the document and the file untouched.
+    let mut displaced_entry = None;
+    if let (Some(capture), Some(revision)) = (displaced.as_ref(), source_revision) {
+        match super::persist::prepare_displaced_snapshot(
+            room,
+            &revision.canonical_path,
+            capture,
+            pre_heads_hex,
+        )
+        .await
+        {
+            Ok(entry) => displaced_entry = Some(entry),
+            Err(error) => {
+                return AppliedIpynbChanges {
+                    snapshot_failed: Some(error),
+                    ..AppliedIpynbChanges::default()
+                };
+            }
+        }
     }
+    // Cells whose content this revision replaces. Edits concurrent with the
+    // revision that land in these cells later are put back to the file's
+    // version before the next save.
+    let rewritten: HashSet<String> = current_cells
+        .iter()
+        .filter(|cell| {
+            external_map
+                .get(cell.id.as_str())
+                .is_none_or(|ext| CellContent::of(cell) != CellContent::of(ext))
+        })
+        .map(|cell| cell.id.clone())
+        .collect();
 
-    // If order changed or the file was wholesale-replaced, rebuild the
-    // cell list as a document-owned transaction on the current live document;
-    // using a transaction avoids minting a parallel fork actor while keeping
-    // actor restoration and panic recovery document-owned.
-    if order_changed || no_common_cells {
+    let rollback_actor = doc.get_actor_id();
+    let rollback_snapshot = doc.save();
+    #[cfg(test)]
+    let transaction_fault = take_external_revision_fault(room.id, |fault| {
+        matches!(fault, ExternalRevisionFault::Transaction)
+    })
+    .is_some();
+    #[cfg(not(test))]
+    let transaction_fault = false;
+    let rebuild = order_changed || no_common_cells;
+    if rebuild {
         debug!(
             "[notebook-watch] {} — rebuilding cell list",
             if no_common_cells {
@@ -2507,477 +2722,298 @@ pub(crate) async fn apply_ipynb_changes_inner(
                 "Cell order changed"
             }
         );
-
-        // Scope the doc write guard so it drops before state_doc and
-        // saved_sources `.await`s (deadlock prevention).
-        let (applied, deferred_executions) = {
-            let mut doc = room.doc.write().await;
-            let displaced = capture_displaced_edits(
-                &mut doc,
-                &room.durability.manifest().exported_heads,
-                external_cells,
-                external_metadata,
-            );
-            let rollback_actor = doc.get_actor_id();
-            let rollback_snapshot = doc.save();
-            let current_execution_ids: HashMap<String, String> = current_cells
-                .iter()
-                .filter_map(|cell| {
-                    doc.get_execution_id(&cell.id)
-                        .map(|execution_id| (cell.id.clone(), execution_id))
-                })
-                .collect();
-            let heads = doc.get_heads();
-
-            match doc.transact_at_heads_recovering(
-                &heads,
-                Some("runtimed:filesystem"),
-                "file-watcher-order-transaction",
-                |doc| {
-                    // Delete all current cells and re-add in external order.
-                    for cell in &current_cells {
-                        let _ = doc.delete_cell(&cell.id);
-                    }
-
-                    let mut deferred: Vec<DeferredExecution> = Vec::new();
-
-                    for (index, ext_cell) in external_cells.iter().enumerate() {
-                        if doc
-                            .add_cell(index, &ext_cell.id, &ext_cell.cell_type)
-                            .is_ok()
-                        {
-                            let _ = doc.update_source(&ext_cell.id, &ext_cell.source);
-                            if ext_cell.metadata.as_object().is_some_and(|m| !m.is_empty()) {
-                                let _ = doc.set_cell_metadata(&ext_cell.id, &ext_cell.metadata);
-                            }
-
-                            // For existing cells with running kernel: preserve current execution_id
-                            // (outputs live in RuntimeStateDoc, keyed by execution_id)
-                            // For new cells: defer state_doc writes until after doc lock is released
-                            if has_running_kernel {
-                                if current_map.contains_key(ext_cell.id.as_str()) {
-                                    // Existing cell - preserve in-progress state (execution_id stays)
-                                    // execution_count is in RuntimeStateDoc via execution_id
-                                    if let Some(eid) = current_execution_ids.get(&ext_cell.id) {
-                                        let _ =
-                                            doc.set_execution_id(&ext_cell.id, Some(eid.as_str()));
-                                    }
-                                } else {
-                                    // New cell - collect for deferred state_doc write
-                                    let ext_outputs = converted_outputs
-                                        .get(ext_cell.id.as_str())
-                                        .map(|v| v.as_slice())
-                                        .unwrap_or(&[]);
-                                    let parsed_ec: Option<i64> =
-                                        ext_cell.execution_count.parse().ok();
-                                    if !ext_outputs.is_empty() || parsed_ec.is_some() {
-                                        let synthetic_eid = uuid::Uuid::new_v4().to_string();
-                                        let _ = doc
-                                            .set_execution_id(&ext_cell.id, Some(&synthetic_eid));
-                                        deferred.push(DeferredExecution {
-                                            synthetic_eid,
-                                            outputs: ext_outputs,
-                                            execution_count: parsed_ec,
-                                        });
-                                    }
-                                }
-                            } else {
-                                let ext_outputs = converted_outputs
-                                    .get(ext_cell.id.as_str())
-                                    .map(|v| v.as_slice())
-                                    .unwrap_or(&[]);
-                                let parsed_ec: Option<i64> = ext_cell.execution_count.parse().ok();
-                                if !ext_outputs.is_empty() || parsed_ec.is_some() {
-                                    let synthetic_eid = uuid::Uuid::new_v4().to_string();
-                                    let _ =
-                                        doc.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
-                                    deferred.push(DeferredExecution {
-                                        synthetic_eid,
-                                        outputs: ext_outputs,
-                                        execution_count: parsed_ec,
-                                    });
-                                }
-                            }
-                            let ext_assets = converted_assets
-                                .get(ext_cell.id.as_str())
-                                .unwrap_or(&empty_assets);
-                            let _ = doc.set_cell_resolved_assets(&ext_cell.id, ext_assets);
-                            let ext_attachments = converted_attachments
-                                .get(ext_cell.id.as_str())
-                                .unwrap_or(&empty_attachments);
-                            let _ = doc.set_cell_attachments(&ext_cell.id, ext_attachments);
-                        }
-                    }
-
-                    let metadata_changed = external_metadata
-                        .is_some_and(|metadata| !doc.metadata_snapshot_matches(metadata));
-                    if let Some(metadata) = external_metadata.filter(|_| metadata_changed) {
-                        doc.set_metadata_snapshot(metadata)?;
-                    }
-                    let verified = live_matches_external(doc, external_cells, external_metadata);
-
-                    Ok((deferred, metadata_changed, verified))
-                },
-            ) {
-                Ok((_, _, false)) => {
-                    reject_unreproducible_revision(&mut doc, &rollback_snapshot, &rollback_actor);
-                    (
-                        AppliedIpynbChanges {
-                            rejected: true,
-                            ..AppliedIpynbChanges::default()
-                        },
-                        Vec::new(),
-                    )
-                }
-                Ok((deferred, metadata_changed, true)) => {
-                    let changed = doc.get_heads() != heads;
-                    if (changed || source_revision.is_some())
-                        && !commit_file_watcher_changes(
-                            room,
-                            &mut doc,
-                            &heads,
-                            &rollback_snapshot,
-                            &rollback_actor,
-                            source_revision,
-                        )
-                    {
-                        (AppliedIpynbChanges::default(), Vec::new())
-                    } else {
-                        (
-                            AppliedIpynbChanges {
-                                cells_changed: changed,
-                                metadata_changed,
-                                rejected: false,
-                                reconciled: false,
-                                displaced,
-                            },
-                            deferred,
-                        )
-                    }
-                }
-                Err(e) => {
-                    warn!("[file-watcher] order transaction failed: {}", e);
-                    // Do not create RuntimeStateDoc executions for cells that
-                    // failed to commit to the notebook doc.
-                    (AppliedIpynbChanges::default(), Vec::new())
-                }
-            }
-        }; // doc guard dropped here
-
-        if !applied.changed() {
-            return applied;
-        }
-
-        // Apply deferred state_doc writes
-        if !deferred_executions.is_empty() {
-            let sidecars = room.state.with_doc(|sd| {
-                for de in &deferred_executions {
-                    sd.create_execution(&de.synthetic_eid)?;
-                    if !de.outputs.is_empty() {
-                        sd.set_outputs(&de.synthetic_eid, de.outputs)?;
-                    }
-                    if let Some(ec) = de.execution_count {
-                        sd.set_execution_count(&de.synthetic_eid, ec)?;
-                    }
-                    sd.set_execution_done(&de.synthetic_eid, true)?;
-                }
-                Ok(())
-            });
-            if let Err(error) = sidecars {
-                degrade_external_source_revision(
-                    room,
-                    super::durability::DegradationKind::SourceState,
-                    format!("external source runtime sidecars failed: {error}"),
-                );
-                return AppliedIpynbChanges::default();
-            }
-        }
-
-        if !complete_external_source_revision(room, source_revision).await {
-            return AppliedIpynbChanges::default();
-        }
-
-        // Update saved_sources baseline so subsequent external edits are
-        // detected correctly (same as the non-order-change path).
-        {
-            let mut saved = room.persistence.last_save_sources.write().await;
-            saved.clear();
-            for ext_cell in external_cells {
-                saved.insert(ext_cell.id.clone(), ext_cell.source.clone());
-            }
-        }
-
-        return AppliedIpynbChanges {
-            reconciled: true,
-            ..applied
-        };
     }
 
-    // The file wins: every live cell the file lacks goes, including cells
-    // created in this session. `capture_displaced_edits` reports the ones the
-    // session authored.
-    let cells_to_delete: Vec<String> = current_cells
-        .iter()
-        .filter(|c| !external_map.contains_key(c.id.as_str()))
-        .map(|c| c.id.clone())
-        .collect();
-
-    // Snapshot current execution state from state_doc before acquiring
-    // the doc write lock, so we don't hold state_doc and doc simultaneously
-    // (deadlock prevention).
-    let current_execution_state: HashMap<String, (Vec<serde_json::Value>, Option<i64>)> =
-        if !has_running_kernel {
-            // Need doc read to get execution IDs, then state_doc read for outputs.
-            // Do both reads in scoped blocks.
-            let eid_map: HashMap<String, String> = {
-                let doc = room.doc.read().await;
-                let mut map = HashMap::new();
-                for ext_cell in external_cells.iter() {
-                    if current_map.contains_key(ext_cell.id.as_str()) {
-                        if let Some(eid) = doc.get_execution_id(&ext_cell.id) {
-                            map.insert(ext_cell.id.clone(), eid);
-                        }
-                    }
-                }
-                map
-            };
-            room.state
-                .read(|sd| {
-                    let mut state_map = HashMap::new();
-                    for (cell_id, eid) in &eid_map {
-                        let outputs = sd.get_outputs(eid);
-                        let ec = sd.get_execution(eid).and_then(|e| e.execution_count);
-                        state_map.insert(cell_id.clone(), (outputs, ec));
-                    }
-                    state_map
-                })
-                .unwrap_or_default()
-        } else {
-            HashMap::new()
-        };
-
-    // Scope the doc write guard so it drops before state_doc and
-    // saved_sources `.await`s (deadlock prevention: no lock held
-    // across `.await`).
-    let (applied, deferred_execs) = {
-        let mut doc = room.doc.write().await;
-        let displaced = capture_displaced_edits(
-            &mut doc,
-            &room.durability.manifest().exported_heads,
-            external_cells,
-            external_metadata,
-        );
-        let rollback_actor = doc.get_actor_id();
-        let rollback_snapshot = doc.save();
-        let heads = doc.get_heads();
-        match doc.transact_at_heads_recovering(
+    let transaction = if rebuild {
+        // Delete every current cell and re-add the file's in order, as one
+        // document-owned transaction on the live document.
+        doc.transact_at_heads_recovering(
             &heads,
             Some("runtimed:filesystem"),
-            "file-watcher-update-transaction",
+            "file-watcher-order-transaction",
             |doc| {
-                let mut changed = false;
-
-                for cell_id in cells_to_delete {
-                    debug!("[notebook-watch] Deleting cell: {}", cell_id);
-                    if let Ok(true) = doc.delete_cell(&cell_id) {
-                        changed = true;
-                    }
+                if transaction_fault {
+                    return Err(automerge::AutomergeError::InvalidObjId(
+                        "injected test fault".into(),
+                    ));
                 }
-
-                let mut deferred_execs: Vec<DeferredExecution> = Vec::new();
-                // Track cells whose execution_id should be cleared (no new outputs)
-                let mut clear_execution_ids: Vec<String> = Vec::new();
-
-                // Process external cells in order (add new or update existing)
+                for cell in &current_cells {
+                    let _ = doc.delete_cell(&cell.id);
+                }
+                let mut deferred: Vec<DeferredExecution> = Vec::new();
                 for (index, ext_cell) in external_cells.iter().enumerate() {
-                    if let Some(current_cell) = current_map.get(ext_cell.id.as_str()) {
-                        if current_cell.source != ext_cell.source {
-                            debug!("[notebook-watch] Updating source for cell: {}", ext_cell.id);
-                            if doc.update_source(&ext_cell.id, &ext_cell.source).is_ok() {
-                                changed = true;
-                            }
-                        }
-                        if current_cell.cell_type != ext_cell.cell_type {
-                            debug!(
-                                "[notebook-watch] Cell type changed for {}: {} -> {}",
-                                ext_cell.id, current_cell.cell_type, ext_cell.cell_type
-                            );
-                            if let Ok(true) = doc.set_cell_type(&ext_cell.id, &ext_cell.cell_type)
-                            {
-                                changed = true;
-                            }
-                        }
-                        if current_cell.metadata != ext_cell.metadata {
-                            if let Ok(true) = doc.set_cell_metadata(&ext_cell.id, &ext_cell.metadata)
-                            {
-                                changed = true;
-                            }
-                        }
-
-                        // Preserve outputs and execution_count if kernel is running
-                        if !has_running_kernel {
-                            let ext_outputs = converted_outputs
-                                .get(ext_cell.id.as_str())
-                                .map(|v| v.as_slice())
-                                .unwrap_or(&[]);
-                            let parsed_ec: Option<i64> = ext_cell.execution_count.parse().ok();
-
-                            // Compare external outputs and execution_count against
-                            // pre-snapshotted RuntimeStateDoc state
-                            let current_eid = doc.get_execution_id(&ext_cell.id);
-                            let (current_outputs, current_ec) = current_execution_state
-                                .get(ext_cell.id.as_str())
-                                .cloned()
-                                .unwrap_or((Vec::new(), None));
-
-                            let outputs_changed = current_outputs.as_slice() != ext_outputs;
-                            let ec_changed = current_ec != parsed_ec;
-
-                            if outputs_changed || ec_changed {
-                                if !ext_outputs.is_empty() || parsed_ec.is_some() {
-                                    debug!(
-                                        "[notebook-watch] Updating outputs/execution_count for cell: {}",
-                                        ext_cell.id
-                                    );
-                                    let synthetic_eid = uuid::Uuid::new_v4().to_string();
-                                    let _ =
-                                        doc.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
-                                    deferred_execs.push(DeferredExecution {
-                                        synthetic_eid,
-                                        outputs: ext_outputs,
-                                        execution_count: parsed_ec,
-                                    });
-                                    changed = true;
-                                } else if current_eid.is_some() {
-                                    clear_execution_ids.push(ext_cell.id.clone());
-                                    changed = true;
-                                }
-                            }
-                        }
-
-                        let ext_assets = converted_assets
-                            .get(ext_cell.id.as_str())
-                            .unwrap_or(&empty_assets);
-                        if current_cell.resolved_assets != *ext_assets {
-                            if let Ok(true) = doc.set_cell_resolved_assets(&ext_cell.id, ext_assets)
-                            {
-                                changed = true;
-                            }
-                        }
-                        let ext_attachments = converted_attachments
-                            .get(ext_cell.id.as_str())
-                            .unwrap_or(&empty_attachments);
-                        if current_cell.attachments != *ext_attachments {
-                            if let Ok(true) = doc.set_cell_attachments(&ext_cell.id, ext_attachments)
-                            {
-                                changed = true;
-                            }
+                    if doc
+                        .add_cell(index, &ext_cell.id, &ext_cell.cell_type)
+                        .is_err()
+                    {
+                        continue;
+                    }
+                    let _ = doc.update_source(&ext_cell.id, &ext_cell.source);
+                    if ext_cell.metadata.as_object().is_some_and(|m| !m.is_empty()) {
+                        let _ = doc.set_cell_metadata(&ext_cell.id, &ext_cell.metadata);
+                    }
+                    // A running kernel keeps an existing cell's execution
+                    // pointer; outputs live in RuntimeStateDoc by execution.
+                    let keep_live_execution =
+                        has_running_kernel && current_map.contains_key(ext_cell.id.as_str());
+                    if keep_live_execution {
+                        if let Some(eid) = current_execution_ids.get(&ext_cell.id) {
+                            let _ = doc.set_execution_id(&ext_cell.id, Some(eid.as_str()));
                         }
                     } else {
-                        // New cell - add it
-                        // New cells don't have any in-progress state, so always use external values
-                        debug!(
-                            "[notebook-watch] Adding new cell at index {}: {}",
-                            index, ext_cell.id
-                        );
-                        if doc
-                            .add_cell(index, &ext_cell.id, &ext_cell.cell_type)
-                            .is_ok()
-                        {
-                            changed = true;
-                            let _ = doc.update_source(&ext_cell.id, &ext_cell.source);
-                            if ext_cell.metadata.as_object().is_some_and(|m| !m.is_empty()) {
-                                let _ = doc.set_cell_metadata(&ext_cell.id, &ext_cell.metadata);
-                            }
-                            let ext_outputs = converted_outputs
-                                .get(ext_cell.id.as_str())
-                                .map(|v| v.as_slice())
-                                .unwrap_or(&[]);
-                            let parsed_ec: Option<i64> = ext_cell.execution_count.parse().ok();
-                            if !ext_outputs.is_empty() || parsed_ec.is_some() {
-                                let synthetic_eid = uuid::Uuid::new_v4().to_string();
-                                let _ = doc.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
-                                deferred_execs.push(DeferredExecution {
-                                    synthetic_eid,
-                                    outputs: ext_outputs,
-                                    execution_count: parsed_ec,
-                                });
-                            }
-                            let ext_assets = converted_assets
-                                .get(ext_cell.id.as_str())
-                                .unwrap_or(&empty_assets);
-                            let _ = doc.set_cell_resolved_assets(&ext_cell.id, ext_assets);
-                            let ext_attachments = converted_attachments
-                                .get(ext_cell.id.as_str())
-                                .unwrap_or(&empty_attachments);
-                            let _ = doc.set_cell_attachments(&ext_cell.id, ext_attachments);
+                        let ext_outputs = converted_outputs
+                            .get(ext_cell.id.as_str())
+                            .map(|v| v.as_slice())
+                            .unwrap_or(&[]);
+                        let parsed_ec: Option<i64> = ext_cell.execution_count.parse().ok();
+                        if !ext_outputs.is_empty() || parsed_ec.is_some() {
+                            let synthetic_eid = uuid::Uuid::new_v4().to_string();
+                            let _ = doc.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
+                            deferred.push(DeferredExecution {
+                                synthetic_eid,
+                                outputs: ext_outputs,
+                                execution_count: parsed_ec,
+                            });
                         }
                     }
+                    let ext_assets = converted_assets
+                        .get(ext_cell.id.as_str())
+                        .unwrap_or(&empty_assets);
+                    let _ = doc.set_cell_resolved_assets(&ext_cell.id, ext_assets);
+                    let ext_attachments = converted_attachments
+                        .get(ext_cell.id.as_str())
+                        .unwrap_or(&empty_attachments);
+                    let _ = doc.set_cell_attachments(&ext_cell.id, ext_attachments);
                 }
 
-                // Apply clear_execution_ids before integrating the transaction.
-                for cell_id in &clear_execution_ids {
-                    let _ = doc.set_execution_id(cell_id, None);
-                }
-
-                let cells_changed = changed;
                 let metadata_changed = external_metadata
                     .is_some_and(|metadata| !doc.metadata_snapshot_matches(metadata));
                 if let Some(metadata) = external_metadata.filter(|_| metadata_changed) {
                     doc.set_metadata_snapshot(metadata)?;
                 }
                 let verified = live_matches_external(doc, external_cells, external_metadata);
-
-                Ok((cells_changed, metadata_changed, deferred_execs, verified))
+                Ok((None, metadata_changed, deferred, verified))
             },
-        ) {
-            Ok((_, _, _, false)) => {
-                reject_unreproducible_revision(&mut doc, &rollback_snapshot, &rollback_actor);
-                (
-                    AppliedIpynbChanges {
-                        rejected: true,
-                        ..AppliedIpynbChanges::default()
-                    },
-                    Vec::new(),
-                )
-            }
-            Ok((cells_changed, metadata_changed, deferred, true)) => {
-                let changed = cells_changed || metadata_changed;
-                if (changed || source_revision.is_some())
-                    && !commit_file_watcher_changes(
-                        room,
-                        &mut doc,
-                        &heads,
-                        &rollback_snapshot,
-                        &rollback_actor,
-                        source_revision,
-                    )
-                {
-                    (AppliedIpynbChanges::default(), Vec::new())
-                } else {
-                    (
-                        AppliedIpynbChanges {
-                            cells_changed,
-                            metadata_changed,
-                            rejected: false,
-                            reconciled: false,
-                            displaced,
-                        },
-                        deferred,
-                    )
+        )
+    } else {
+        doc.transact_at_heads_recovering(
+            &heads,
+            Some("runtimed:filesystem"),
+            "file-watcher-update-transaction",
+            |doc| {
+                if transaction_fault {
+                    return Err(automerge::AutomergeError::InvalidObjId(
+                        "injected test fault".into(),
+                    ));
                 }
-            }
-            Err(e) => {
-                warn!("[file-watcher] update transaction failed: {}", e);
-                (AppliedIpynbChanges::default(), Vec::new())
-            }
-        }
-    }; // doc guard dropped here
+                let mut changed = false;
+                // The file wins: every live cell the file lacks goes,
+                // including cells created in this session.
+                for cell in &current_cells {
+                    if !external_map.contains_key(cell.id.as_str()) {
+                        debug!("[notebook-watch] Deleting cell: {}", cell.id);
+                        if let Ok(true) = doc.delete_cell(&cell.id) {
+                            changed = true;
+                        }
+                    }
+                }
 
-    // Apply deferred state_doc writes
-    if !deferred_execs.is_empty() {
+                let mut deferred: Vec<DeferredExecution> = Vec::new();
+                let mut clear_execution_ids: Vec<&str> = Vec::new();
+                for (index, ext_cell) in external_cells.iter().enumerate() {
+                    let Some(current_cell) = current_map.get(ext_cell.id.as_str()) else {
+                        debug!(
+                            "[notebook-watch] Adding new cell at index {}: {}",
+                            index, ext_cell.id
+                        );
+                        if doc
+                            .add_cell(index, &ext_cell.id, &ext_cell.cell_type)
+                            .is_err()
+                        {
+                            continue;
+                        }
+                        changed = true;
+                        let _ = doc.update_source(&ext_cell.id, &ext_cell.source);
+                        if ext_cell.metadata.as_object().is_some_and(|m| !m.is_empty()) {
+                            let _ = doc.set_cell_metadata(&ext_cell.id, &ext_cell.metadata);
+                        }
+                        let ext_outputs = converted_outputs
+                            .get(ext_cell.id.as_str())
+                            .map(|v| v.as_slice())
+                            .unwrap_or(&[]);
+                        let parsed_ec: Option<i64> = ext_cell.execution_count.parse().ok();
+                        if !ext_outputs.is_empty() || parsed_ec.is_some() {
+                            let synthetic_eid = uuid::Uuid::new_v4().to_string();
+                            let _ = doc.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
+                            deferred.push(DeferredExecution {
+                                synthetic_eid,
+                                outputs: ext_outputs,
+                                execution_count: parsed_ec,
+                            });
+                        }
+                        let ext_assets = converted_assets
+                            .get(ext_cell.id.as_str())
+                            .unwrap_or(&empty_assets);
+                        let _ = doc.set_cell_resolved_assets(&ext_cell.id, ext_assets);
+                        let ext_attachments = converted_attachments
+                            .get(ext_cell.id.as_str())
+                            .unwrap_or(&empty_attachments);
+                        let _ = doc.set_cell_attachments(&ext_cell.id, ext_attachments);
+                        continue;
+                    };
+
+                    if current_cell.source != ext_cell.source {
+                        debug!("[notebook-watch] Updating source for cell: {}", ext_cell.id);
+                        if doc.update_source(&ext_cell.id, &ext_cell.source).is_ok() {
+                            changed = true;
+                        }
+                    }
+                    if current_cell.cell_type != ext_cell.cell_type {
+                        if let Ok(true) = doc.set_cell_type(&ext_cell.id, &ext_cell.cell_type) {
+                            changed = true;
+                        }
+                    }
+                    if current_cell.metadata != ext_cell.metadata {
+                        if let Ok(true) = doc.set_cell_metadata(&ext_cell.id, &ext_cell.metadata) {
+                            changed = true;
+                        }
+                    }
+
+                    // Outputs and execution_count follow the file unless a
+                    // kernel is running.
+                    if !has_running_kernel {
+                        let ext_outputs = converted_outputs
+                            .get(ext_cell.id.as_str())
+                            .map(|v| v.as_slice())
+                            .unwrap_or(&[]);
+                        let parsed_ec: Option<i64> = ext_cell.execution_count.parse().ok();
+                        let (current_outputs, current_ec) = current_execution_state
+                            .get(ext_cell.id.as_str())
+                            .cloned()
+                            .unwrap_or((Vec::new(), None));
+                        if current_outputs.as_slice() != ext_outputs || current_ec != parsed_ec {
+                            if !ext_outputs.is_empty() || parsed_ec.is_some() {
+                                let synthetic_eid = uuid::Uuid::new_v4().to_string();
+                                let _ = doc.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
+                                deferred.push(DeferredExecution {
+                                    synthetic_eid,
+                                    outputs: ext_outputs,
+                                    execution_count: parsed_ec,
+                                });
+                                changed = true;
+                            } else if current_execution_ids.contains_key(&ext_cell.id) {
+                                clear_execution_ids.push(&ext_cell.id);
+                                changed = true;
+                            }
+                        }
+                    }
+
+                    let ext_assets = converted_assets
+                        .get(ext_cell.id.as_str())
+                        .unwrap_or(&empty_assets);
+                    if current_cell.resolved_assets != *ext_assets {
+                        if let Ok(true) = doc.set_cell_resolved_assets(&ext_cell.id, ext_assets) {
+                            changed = true;
+                        }
+                    }
+                    let ext_attachments = converted_attachments
+                        .get(ext_cell.id.as_str())
+                        .unwrap_or(&empty_attachments);
+                    if current_cell.attachments != *ext_attachments {
+                        if let Ok(true) = doc.set_cell_attachments(&ext_cell.id, ext_attachments) {
+                            changed = true;
+                        }
+                    }
+                }
+                for cell_id in clear_execution_ids {
+                    let _ = doc.set_execution_id(cell_id, None);
+                }
+
+                let metadata_changed = external_metadata
+                    .is_some_and(|metadata| !doc.metadata_snapshot_matches(metadata));
+                if let Some(metadata) = external_metadata.filter(|_| metadata_changed) {
+                    doc.set_metadata_snapshot(metadata)?;
+                }
+                let verified = live_matches_external(doc, external_cells, external_metadata);
+                Ok((Some(changed), metadata_changed, deferred, verified))
+            },
+        )
+    };
+
+    let (cells_changed, metadata_changed, deferred) = match transaction {
+        Ok((cells_changed, metadata_changed, deferred, true)) => {
+            let cells_changed = cells_changed.unwrap_or_else(|| doc.get_heads() != heads);
+            if (cells_changed || metadata_changed || source_revision.is_some())
+                && !commit_file_watcher_changes(
+                    room,
+                    &mut doc,
+                    &heads,
+                    &rollback_snapshot,
+                    &rollback_actor,
+                    source_revision,
+                )
+            {
+                drop(doc);
+                withdraw_displaced_entry(room, displaced_entry.as_ref()).await;
+                return AppliedIpynbChanges::default();
+            }
+            (cells_changed, metadata_changed, deferred)
+        }
+        Ok(_) => {
+            reject_unreproducible_revision(&mut doc, &rollback_snapshot, &rollback_actor);
+            drop(doc);
+            withdraw_displaced_entry(room, displaced_entry.as_ref()).await;
+            return AppliedIpynbChanges {
+                rejected: true,
+                ..AppliedIpynbChanges::default()
+            };
+        }
+        Err(error) => {
+            warn!("[file-watcher] external revision transaction failed: {error}");
+            drop(doc);
+            withdraw_displaced_entry(room, displaced_entry.as_ref()).await;
+            return AppliedIpynbChanges::default();
+        }
+    };
+    let revision_heads = doc.get_heads();
+    drop(doc);
+
+    // Committed: the live document equals the file from here on, so the
+    // displaced content is reported even if a later step fails.
+    let mut applied = AppliedIpynbChanges {
+        cells_changed,
+        metadata_changed,
+        committed: true,
+        displaced,
+        displaced_entry,
+        ..AppliedIpynbChanges::default()
+    };
+    if let Some(revision) = source_revision {
+        room.persistence
+            .set_external_revision_guard(ExternalRevisionGuard {
+                notebook_path: revision.canonical_path.clone(),
+                pre_heads: heads,
+                revision_heads,
+                rewritten,
+                applied_at: std::time::Instant::now(),
+            });
+    }
+
+    #[cfg(test)]
+    let sidecar_fault = take_external_revision_fault(room.id, |fault| {
+        matches!(fault, ExternalRevisionFault::AfterCommit)
+    })
+    .is_some();
+    #[cfg(not(test))]
+    let sidecar_fault = false;
+    if !deferred.is_empty() || sidecar_fault {
         let sidecars = room.state.with_doc(|sd| {
-            for de in &deferred_execs {
+            if sidecar_fault {
+                return Err(runtime_doc::RuntimeStateError::InvalidDisplacedEdits(
+                    "injected test fault".to_string(),
+                ));
+            }
+            for de in &deferred {
                 sd.create_execution(&de.synthetic_eid)?;
                 if !de.outputs.is_empty() {
                     sd.set_outputs(&de.synthetic_eid, de.outputs)?;
@@ -2995,30 +3031,292 @@ pub(crate) async fn apply_ipynb_changes_inner(
                 super::durability::DegradationKind::SourceState,
                 format!("external source runtime sidecars failed: {error}"),
             );
-            return AppliedIpynbChanges::default();
+            return applied;
         }
     }
 
     if !complete_external_source_revision(room, source_revision).await {
-        return AppliedIpynbChanges::default();
+        return applied;
     }
 
-    // Update saved_sources after applying external changes. The baseline must
-    // match the current external file so later edits are detected and cells
-    // added externally can be deleted if they disappear from disk.
+    // Without a source revision there is no caller to record the save
+    // baseline, so the external cells become it here.
     if applied.cells_changed && source_revision.is_none() {
         let mut saved = room.persistence.last_save_sources.write().await;
+        saved.clear();
         for ext_cell in external_cells {
             saved.insert(ext_cell.id.clone(), ext_cell.source.clone());
         }
-        // Remove entries for cells we just deleted
-        saved.retain(|id, _| external_map.contains_key(id.as_str()));
     }
 
-    AppliedIpynbChanges {
-        reconciled: !applied.rejected,
-        ..applied
+    applied.reconciled = true;
+    applied
+}
+
+async fn withdraw_displaced_entry(
+    room: &NotebookRoom,
+    entry: Option<&runtime_doc::DisplacedEdits>,
+) {
+    if let Some(entry) = entry {
+        super::persist::abandon_displaced_snapshot(room, entry).await;
     }
+}
+
+/// How long after an external revision a save still checks for peer edits
+/// made against the notebook from before it.
+pub(crate) const EXTERNAL_REVISION_GUARD_WINDOW: std::time::Duration =
+    std::time::Duration::from_secs(60);
+
+/// What the last external revision replaced, kept so late concurrent edits
+/// can be told apart from edits made after the reload.
+#[derive(Clone, Debug)]
+pub(crate) struct ExternalRevisionGuard {
+    pub(crate) notebook_path: PathBuf,
+    /// Document heads just before the revision.
+    pub(crate) pre_heads: Vec<automerge::ChangeHash>,
+    /// Document heads just after the revision committed.
+    pub(crate) revision_heads: Vec<automerge::ChangeHash>,
+    /// Cells whose content the revision replaced or removed.
+    pub(crate) rewritten: HashSet<String>,
+    pub(crate) applied_at: std::time::Instant,
+}
+
+/// Heads of `base` plus `changes`: every hash no change in `changes` depends on.
+fn heads_of(
+    base: &[automerge::ChangeHash],
+    changes: &HashSet<automerge::ChangeHash>,
+    deps: &HashMap<automerge::ChangeHash, Vec<automerge::ChangeHash>>,
+) -> Vec<automerge::ChangeHash> {
+    let depended: HashSet<automerge::ChangeHash> = changes
+        .iter()
+        .flat_map(|hash| deps.get(hash).into_iter().flatten().copied())
+        .collect();
+    let mut heads: Vec<automerge::ChangeHash> = base
+        .iter()
+        .chain(changes.iter())
+        .filter(|hash| !depended.contains(hash))
+        .copied()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    heads.sort();
+    heads
+}
+
+/// Put back the file's version of rewritten cells that a late concurrent
+/// edit changed, after saving the session's version.
+///
+/// A peer can author an edit against the notebook from before an external
+/// revision and sync it after the revision applied. Automerge then merges it
+/// into the file's text: a pending `)` typed after `print(x` lands as
+/// `y = 2)`. Changes made after the reload descend from the revision's heads
+/// and are kept. Changes that do not are concurrent with it; where they touch
+/// a cell the revision rewrote, the session's version (pre-revision heads
+/// plus those changes) is snapshotted and recorded like any other displaced
+/// edit, and the cell goes back to the file's version plus later edits.
+///
+/// Runs before every in-place save for [`EXTERNAL_REVISION_GUARD_WINDOW`]
+/// after a revision. `Err` means the snapshot could not be written and the
+/// save must wait.
+pub(crate) async fn put_back_late_concurrent_edits(room: &NotebookRoom) -> Result<(), String> {
+    let Some(guard) = room.persistence.external_revision_guard() else {
+        return Ok(());
+    };
+    if guard.applied_at.elapsed() > EXTERNAL_REVISION_GUARD_WINDOW {
+        room.persistence
+            .clear_external_revision_guard(guard.applied_at);
+        return Ok(());
+    }
+
+    let mut doc = room.doc.write().await;
+    let since = doc.doc_mut().get_changes(&guard.revision_heads);
+    if since.is_empty() {
+        return Ok(());
+    }
+    let deps: HashMap<automerge::ChangeHash, Vec<automerge::ChangeHash>> = since
+        .iter()
+        .map(|change| (change.hash(), change.deps().to_vec()))
+        .collect();
+
+    // Topological order within `since`: dependencies first.
+    let mut order: Vec<automerge::ChangeHash> = Vec::with_capacity(deps.len());
+    {
+        let mut pending: HashMap<automerge::ChangeHash, usize> = deps
+            .iter()
+            .map(|(hash, ds)| (*hash, ds.iter().filter(|d| deps.contains_key(d)).count()))
+            .collect();
+        let mut dependents: HashMap<automerge::ChangeHash, Vec<automerge::ChangeHash>> =
+            HashMap::new();
+        for (hash, ds) in &deps {
+            for dep in ds.iter().filter(|d| deps.contains_key(d)) {
+                dependents.entry(*dep).or_default().push(*hash);
+            }
+        }
+        let mut ready: Vec<automerge::ChangeHash> = pending
+            .iter()
+            .filter(|(_, count)| **count == 0)
+            .map(|(hash, _)| *hash)
+            .collect();
+        while let Some(hash) = ready.pop() {
+            order.push(hash);
+            for dependent in dependents.get(&hash).into_iter().flatten() {
+                if let Some(count) = pending.get_mut(dependent) {
+                    *count -= 1;
+                    if *count == 0 {
+                        ready.push(*dependent);
+                    }
+                }
+            }
+        }
+    }
+
+    // Which revision heads each change reaches through its dependencies.
+    let revision: HashSet<automerge::ChangeHash> = guard.revision_heads.iter().copied().collect();
+    let mut reaches: HashMap<automerge::ChangeHash, HashSet<automerge::ChangeHash>> =
+        HashMap::new();
+    for hash in &order {
+        let mut reached = HashSet::new();
+        for dep in &deps[hash] {
+            if revision.contains(dep) {
+                reached.insert(*dep);
+            } else if let Some(inner) = reaches.get(dep) {
+                reached.extend(inner.iter().copied());
+            }
+        }
+        reaches.insert(*hash, reached);
+    }
+    // After the reload: descendants of every revision head, and what they
+    // build on. Everything else in `since` is concurrent with the revision.
+    let mut after: HashSet<automerge::ChangeHash> = order
+        .iter()
+        .filter(|hash| reaches[*hash] == revision)
+        .copied()
+        .collect();
+    for hash in order.iter().rev() {
+        if after.contains(hash) {
+            for dep in deps[hash].iter().filter(|d| deps.contains_key(d)) {
+                after.insert(*dep);
+            }
+        }
+    }
+    let concurrent: HashSet<automerge::ChangeHash> = order
+        .iter()
+        .filter(|hash| !after.contains(hash))
+        .copied()
+        .collect();
+    if concurrent.is_empty() {
+        return Ok(());
+    }
+    let mut session_changes = concurrent.clone();
+    for hash in order.iter().rev() {
+        if session_changes.contains(hash) {
+            for dep in deps[hash].iter().filter(|d| deps.contains_key(d)) {
+                session_changes.insert(*dep);
+            }
+        }
+    }
+    let session_heads = heads_of(&guard.pre_heads, &session_changes, &deps);
+    let file_heads = heads_of(&guard.revision_heads, &after, &deps);
+
+    let before_cells = doc.get_cells_at_heads_with_content(&guard.pre_heads);
+    let session_cells = doc.get_cells_at_heads_with_content(&session_heads);
+    let before_by_id: HashMap<&str, CellContent<'_>> = before_cells
+        .iter()
+        .map(|c| (c.id.as_str(), CellContent::of(c)))
+        .collect();
+    let session_by_id: HashMap<&str, CellContent<'_>> = session_cells
+        .iter()
+        .map(|c| (c.id.as_str(), CellContent::of(c)))
+        .collect();
+    let mut cell_ids: Vec<String> = session_cells
+        .iter()
+        .map(|c| c.id.as_str())
+        .chain(before_cells.iter().map(|c| c.id.as_str()))
+        .filter(|id| guard.rewritten.contains(*id))
+        .filter(|id| before_by_id.get(id) != session_by_id.get(id))
+        .map(str::to_string)
+        .collect();
+    let mut seen = HashSet::new();
+    cell_ids.retain(|id| seen.insert(id.clone()));
+    if cell_ids.is_empty() {
+        return Ok(());
+    }
+
+    let capture = DisplacedCapture {
+        execution_ids: session_cells
+            .iter()
+            .map(|cell| {
+                (
+                    cell.id.clone(),
+                    doc.get_execution_id_at_heads(&cell.id, &session_heads),
+                )
+            })
+            .collect(),
+        metadata: doc.get_metadata_snapshot_at_heads(&session_heads),
+        cells: session_cells.clone(),
+        cell_ids: cell_ids.clone(),
+        metadata_changed: false,
+        order_changed: false,
+    };
+    let session_heads_hex = session_heads.iter().map(|hash| hash.to_string()).collect();
+    let entry = super::persist::prepare_displaced_snapshot(
+        room,
+        &guard.notebook_path,
+        &capture,
+        session_heads_hex,
+    )
+    .await?;
+
+    let file_cells = doc.get_cells_at_heads_with_content(&file_heads);
+    let file_by_id: HashMap<&str, &CellSnapshot> =
+        file_cells.iter().map(|c| (c.id.as_str(), c)).collect();
+    let live_cells = doc.get_cells();
+    let heads = doc.get_heads();
+    let rollback_actor = doc.get_actor_id();
+    let rollback_snapshot = doc.save();
+    let put_back = doc.transact_at_heads_recovering(
+        &heads,
+        Some("runtimed:filesystem"),
+        "file-watcher-late-edit-transaction",
+        |doc| {
+            for live in live_cells.iter().filter(|c| cell_ids.contains(&c.id)) {
+                match file_by_id.get(live.id.as_str()) {
+                    Some(file) => {
+                        if live.source != file.source {
+                            doc.update_source(&live.id, &file.source)?;
+                        }
+                        if live.cell_type != file.cell_type {
+                            doc.set_cell_type(&live.id, &file.cell_type)?;
+                        }
+                        if live.metadata != file.metadata {
+                            doc.set_cell_metadata(&live.id, &file.metadata)?;
+                        }
+                    }
+                    None => {
+                        doc.delete_cell(&live.id)?;
+                    }
+                }
+            }
+            Ok(())
+        },
+    );
+    let committed = put_back.is_ok()
+        && commit_file_watcher_changes(
+            room,
+            &mut doc,
+            &heads,
+            &rollback_snapshot,
+            &rollback_actor,
+            None,
+        );
+    drop(doc);
+    if !committed {
+        super::persist::abandon_displaced_snapshot(room, &entry).await;
+        return Err("could not put back the file's version of late-edited cells".to_string());
+    }
+    super::persist::publish_displaced_edits(room, &guard.notebook_path, entry);
+    let _ = room.broadcasts.changed_tx.send(());
+    Ok(())
 }
 
 #[cfg(test)]

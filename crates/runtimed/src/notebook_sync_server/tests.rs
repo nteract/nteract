@@ -17060,7 +17060,7 @@ async fn displaced_edits_survive_later_external_writes_until_dismissed() {
     );
 
     room.state
-        .with_doc(|state| state.clear_displaced_edits())
+        .with_doc(|state| state.dismiss_displaced_edits(None))
         .unwrap();
     assert!(displaced_edits(&room).is_empty());
     assert!(
@@ -17477,4 +17477,382 @@ async fn restored_source_conflict_resolves_on_the_next_external_write() {
         owned_cells(&[("recovered", "value = 42")])
     );
     assert_room_healthy(&room).await;
+}
+
+// ── Review fixes for external rewrites ──
+
+fn durable_entries(room: &NotebookRoom) -> Vec<runtime_doc::DisplacedEdits> {
+    super::persist::read_displaced_entries(&displaced_edits_dir(room))
+}
+
+#[tokio::test]
+async fn late_concurrent_keystroke_goes_back_to_the_file_version_before_saving() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path) = saved_room(&tmp, "late.ipynb", &[("a", "x = 1"), ("b", "z = 0")]).await;
+    edit_in_session(&room, |doc| {
+        doc.update_source("a", "x = 1\nprint(x")
+            .map(|_| ())
+            .unwrap()
+    })
+    .await;
+    // The frontend types `)` against the heads it has before the reload
+    // reaches it, then also edits a cell the file left alone.
+    let mut peer = room.doc.write().await.fork();
+    peer.update_source("a", "x = 1\nprint(x)").unwrap();
+    peer.update_source("b", "z = 1").unwrap();
+
+    external_write(
+        &room,
+        &path,
+        &rewrite_ipynb(&[("a", "y = 2"), ("b", "z = 0")], serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(displaced_edits(&room).len(), 1);
+
+    edit_in_session(&room, |doc| {
+        doc.doc_mut().merge(peer.doc_mut()).unwrap();
+    })
+    .await;
+    let merged = live_cells(&room).await;
+    assert!(
+        merged[0].1.contains(')'),
+        "premise: the late `)` merges into the file's text, got {merged:?}"
+    );
+
+    save_notebook_to_disk(&room, None).await.unwrap();
+
+    assert_eq!(
+        live_cells(&room).await,
+        owned_cells(&[("a", "y = 2"), ("b", "z = 1")]),
+        "the rewritten cell goes back to the file; the untouched cell keeps the late edit"
+    );
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let saved_a: String = match &saved["cells"][0]["source"] {
+        serde_json::Value::Array(lines) => lines.iter().map(|l| l.as_str().unwrap()).collect(),
+        other => other.as_str().unwrap().to_string(),
+    };
+    assert_eq!(saved_a, "y = 2");
+    let entries = displaced_edits(&room);
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[1].cell_ids, vec!["a".to_string()]);
+    assert_eq!(
+        snapshot_cells(&entries[1]),
+        owned_cells(&[("a", "x = 1\nprint(x)"), ("b", "z = 1")]),
+        "the snapshot is the session's version without the reload"
+    );
+
+    // Edits made after the reload descend from it and are kept.
+    edit_in_session(&room, |doc| {
+        doc.update_source("a", "y = 2  # mine").map(|_| ()).unwrap()
+    })
+    .await;
+    save_notebook_to_disk(&room, None).await.unwrap();
+    assert_eq!(live_cells(&room).await[0].1, "y = 2  # mine");
+    assert_eq!(displaced_edits(&room).len(), 2);
+}
+
+#[tokio::test]
+async fn displaced_edits_survive_room_reopen() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("reopen.ipynb");
+    tokio::fs::write(
+        &path,
+        rewrite_ipynb(&[("a", "x = 1")], serde_json::json!({})),
+    )
+    .await
+    .unwrap();
+    let docs_dir = tmp.path().join("docs");
+    let blob_store = test_blob_store(&tmp);
+    let uuid = Uuid::new_v4();
+    let room = NotebookRoom::new_fresh(
+        uuid,
+        Some(path.clone()),
+        &docs_dir,
+        blob_store.clone(),
+        false,
+    );
+    let capture = DisplacedCapture {
+        cells: Vec::new(),
+        metadata: None,
+        execution_ids: HashMap::new(),
+        cell_ids: vec!["a".to_string()],
+        metadata_changed: false,
+        order_changed: false,
+    };
+    let entry =
+        super::persist::prepare_displaced_snapshot(&room, &path, &capture, vec!["aa".into()])
+            .await
+            .unwrap();
+    super::persist::publish_displaced_edits(&room, &path, entry.clone());
+    drop(room);
+
+    let reopened = NotebookRoom::new_fresh(uuid, Some(path), &docs_dir, blob_store, false);
+    assert_eq!(displaced_edits(&reopened), vec![entry]);
+}
+
+#[tokio::test]
+async fn snapshot_failure_leaves_the_notebook_and_file_untouched_until_it_can_save() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path) = saved_room(&tmp, "nosnap.ipynb", &[("a", "x = 1")]).await;
+    edit_in_session(&room, |doc| {
+        doc.update_source("a", "x = 2").map(|_| ()).unwrap()
+    })
+    .await;
+    let known_before = room.persistence.known_disk_hash();
+    // A plain file where the snapshot directory belongs.
+    std::fs::write(displaced_edits_dir(&room), b"not a directory").unwrap();
+
+    let disk = rewrite_ipynb(&[("a", "x = 3")], serde_json::json!({}));
+    external_write(&room, &path, &disk).await;
+
+    assert_eq!(
+        live_cells(&room).await,
+        owned_cells(&[("a", "x = 2")]),
+        "nothing applied"
+    );
+    assert!(displaced_edits(&room).is_empty());
+    assert_eq!(room.persistence.known_disk_hash(), known_before);
+    assert!(matches!(
+        room.state
+            .read(|state| state.file_checkpoint().source_issue)
+            .unwrap(),
+        Some(runtime_doc::FileSourceIssue::Degraded { .. })
+    ));
+
+    // Once the snapshot can be written, the next event applies and the entry
+    // is durable before anything else happens.
+    std::fs::remove_file(displaced_edits_dir(&room)).unwrap();
+    process_watcher_event(&room, &path).await;
+    assert_eq!(live_cells(&room).await, owned_cells(&[("a", "x = 3")]));
+    let entries = displaced_edits(&room);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(durable_entries(&room), entries);
+    assert!(!entries[0].heads.is_empty());
+    assert_eq!(snapshot_cells(&entries[0]), owned_cells(&[("a", "x = 2")]));
+    assert_room_healthy(&room).await;
+}
+
+#[tokio::test]
+async fn cell_metadata_and_output_edits_are_displaced() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path) = saved_room(
+        &tmp,
+        "meta.ipynb",
+        &[("a", "x = 1"), ("b", "y = 1"), ("c", "print(1)")],
+    )
+    .await;
+    edit_in_session(&room, |doc| {
+        doc.set_cell_metadata("a", &serde_json::json!({"tags": ["parameters"]}))
+            .unwrap();
+        doc.set_execution_id("c", Some("unsaved-run")).unwrap();
+    })
+    .await;
+    room.state
+        .with_doc(|sd| {
+            sd.create_execution("unsaved-run")?;
+            sd.set_outputs(
+                "unsaved-run",
+                &[serde_json::json!({"output_id": "o1", "output_type": "stream", "name": "stdout", "text": "1\n"})],
+            )?;
+            sd.set_execution_done("unsaved-run", true)
+        })
+        .unwrap();
+
+    external_write(
+        &room,
+        &path,
+        &rewrite_ipynb(
+            &[("a", "x = 1"), ("b", "y = 2"), ("c", "print(1)")],
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+
+    let live = room.doc.read().await.get_cells();
+    assert_eq!(
+        live[0].metadata,
+        serde_json::json!({}),
+        "the file's cell metadata wins"
+    );
+    let entries = displaced_edits(&room);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].cell_ids, vec!["a".to_string(), "c".to_string()]);
+    let snapshot: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&entries[0].snapshot_path).unwrap()).unwrap();
+    assert_eq!(
+        snapshot["cells"][0]["metadata"]["tags"],
+        serde_json::json!(["parameters"])
+    );
+    assert_eq!(
+        snapshot["cells"][2]["outputs"].as_array().map(Vec::len),
+        Some(1)
+    );
+}
+
+#[tokio::test]
+async fn failure_after_commit_still_reports_displaced_edits_and_keeps_the_baseline() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path) = saved_room(&tmp, "aftercommit.ipynb", &[("a", "x = 1")]).await;
+    edit_in_session(&room, |doc| {
+        doc.update_source("a", "x = 2").map(|_| ()).unwrap()
+    })
+    .await;
+    let known_before = room.persistence.known_disk_hash();
+    super::load::inject_external_revision_fault_for_test(
+        room.id,
+        super::load::ExternalRevisionFault::AfterCommit,
+    );
+
+    external_write(
+        &room,
+        &path,
+        &rewrite_ipynb(&[("a", "x = 3")], serde_json::json!({})),
+    )
+    .await;
+
+    assert_eq!(
+        live_cells(&room).await,
+        owned_cells(&[("a", "x = 3")]),
+        "the commit stands"
+    );
+    let entries = displaced_edits(&room);
+    assert_eq!(entries.len(), 1, "the replaced edit is still reported");
+    assert_eq!(snapshot_cells(&entries[0]), owned_cells(&[("a", "x = 2")]));
+    assert_eq!(
+        room.persistence.known_disk_hash(),
+        known_before,
+        "an unfinished revision is not the save baseline"
+    );
+}
+
+#[tokio::test]
+async fn failed_transaction_is_not_reconciled_and_withdraws_its_snapshot() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path) = saved_room(&tmp, "txfail.ipynb", &[("a", "x = 1")]).await;
+    edit_in_session(&room, |doc| {
+        doc.update_source("a", "x = 2").map(|_| ()).unwrap()
+    })
+    .await;
+    let known_before = room.persistence.known_disk_hash();
+    super::load::inject_external_revision_fault_for_test(
+        room.id,
+        super::load::ExternalRevisionFault::Transaction,
+    );
+
+    external_write(
+        &room,
+        &path,
+        &rewrite_ipynb(&[("a", "x = 3")], serde_json::json!({})),
+    )
+    .await;
+
+    assert_eq!(live_cells(&room).await, owned_cells(&[("a", "x = 2")]));
+    assert_eq!(
+        room.persistence.known_disk_hash(),
+        known_before,
+        "autosave must keep refusing to overwrite the unapplied file"
+    );
+    assert!(displaced_edits(&room).is_empty());
+    assert!(
+        durable_entries(&room).is_empty(),
+        "the prepared entry is withdrawn"
+    );
+    let leftover = std::fs::read_dir(displaced_edits_dir(&room))
+        .map(|dir| {
+            dir.filter_map(Result::ok)
+                .filter(|e| e.path().extension().is_some_and(|x| x == "ipynb"))
+                .count()
+        })
+        .unwrap_or(0);
+    assert_eq!(leftover, 0, "the prepared snapshot is removed");
+}
+
+#[tokio::test]
+async fn edit_landing_while_the_file_is_prepared_does_not_reject_the_revision() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path) = saved_room(&tmp, "race.ipynb", &[("a", "x = 1")]).await;
+    super::load::inject_external_revision_fault_for_test(
+        room.id,
+        super::load::ExternalRevisionFault::EditBeforeLock(Box::new(|doc| {
+            doc.add_cell(1, "typed", "code").unwrap();
+            doc.update_source("typed", "z = 9").unwrap();
+        })),
+    );
+
+    external_write(
+        &room,
+        &path,
+        &rewrite_ipynb(&[("a", "x = 2")], serde_json::json!({})),
+    )
+    .await;
+
+    assert_eq!(live_cells(&room).await, owned_cells(&[("a", "x = 2")]));
+    let entries = displaced_edits(&room);
+    assert_eq!(
+        entries.len(),
+        1,
+        "the racing edit is displaced, not a rejection"
+    );
+    assert_eq!(entries[0].cell_ids, vec!["typed".to_string()]);
+    assert_room_healthy(&room).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn snapshot_takes_the_notebook_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path) = saved_room(&tmp, "private.ipynb", &[("a", "x = 1")]).await;
+    edit_in_session(&room, |doc| {
+        doc.update_source("a", "secret = 2").map(|_| ()).unwrap()
+    })
+    .await;
+    let disk = rewrite_ipynb(&[("a", "x = 3")], serde_json::json!({}));
+    write_file_atomic_sync(&path, &disk).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    process_watcher_event(&room, &path).await;
+
+    let entries = displaced_edits(&room);
+    let mode = std::fs::metadata(&entries[0].snapshot_path)
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+}
+
+#[tokio::test]
+async fn dismissing_by_id_keeps_entries_that_arrived_later() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path) = saved_room(&tmp, "dismiss.ipynb", &[("a", "x = 1")]).await;
+    edit_in_session(&room, |doc| {
+        doc.update_source("a", "x = 2").map(|_| ()).unwrap()
+    })
+    .await;
+    external_write(
+        &room,
+        &path,
+        &rewrite_ipynb(&[("a", "x = 3")], serde_json::json!({})),
+    )
+    .await;
+    let shown: Vec<String> = displaced_edits(&room).into_iter().map(|e| e.id).collect();
+
+    edit_in_session(&room, |doc| {
+        doc.update_source("a", "x = 4").map(|_| ()).unwrap()
+    })
+    .await;
+    external_write(
+        &room,
+        &path,
+        &rewrite_ipynb(&[("a", "x = 5")], serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(displaced_edits(&room).len(), 2);
+
+    super::persist::dismiss_displaced_edits(&room, Some(shown.clone()))
+        .await
+        .unwrap();
+    let remaining = displaced_edits(&room);
+    assert_eq!(remaining.len(), 1);
+    assert!(!shown.contains(&remaining[0].id));
+    assert_eq!(durable_entries(&room), remaining);
 }

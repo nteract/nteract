@@ -1853,11 +1853,13 @@ function AppContent() {
 
   const sourceIssueNotice = fileSourceIssueNotice(runtimeState.file_checkpoint.source_issue);
   const displacedNotice = displacedEditsNotice(runtimeState.file_checkpoint.displaced_edits);
+  const displacedNoticeIds = displacedNotice?.ids.join("\n") ?? "";
   const dismissDisplacedEdits = useCallback(() => {
-    notebookClient.dismissDisplacedEdits().catch((error: unknown) => {
+    const ids = displacedNoticeIds === "" ? [] : displacedNoticeIds.split("\n");
+    notebookClient.dismissDisplacedEdits(ids).catch((error: unknown) => {
       logger.warn("[App] Failed to dismiss displaced edits:", error);
     });
-  }, [notebookClient]);
+  }, [notebookClient, displacedNoticeIds]);
 
   // Cmd+F to open global find
   useEffect(() => {

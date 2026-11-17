@@ -117,11 +117,13 @@ describe("notebookDocumentIsDirty", () => {
 });
 
 describe("displacedEditsNotice", () => {
-  const entry = (snapshot_path: string) => ({
+  const entry = (id: string, snapshot_path: string, cell_ids: string[], metadata = false) => ({
+    id,
     snapshot_path,
+    heads: ["aa"],
     displaced_at: "2026-11-16T00:00:00Z",
-    cell_ids: ["a"],
-    metadata: false,
+    cell_ids,
+    metadata,
   });
 
   it("is absent without entries, including from older daemons", () => {
@@ -129,18 +131,22 @@ describe("displacedEditsNotice", () => {
     expect(displacedEditsNotice([])).toBeNull();
   });
 
-  it("names every snapshot path", () => {
-    expect(displacedEditsNotice([entry("/s/one.ipynb")])).toEqual({
+  it("names what was replaced, every snapshot path, and the ids it shows", () => {
+    expect(displacedEditsNotice([entry("e1", "/s/one.ipynb", ["a"])])).toEqual({
       title: "The file changed on disk and replaced unsaved edits",
-      message: "The notebook now matches the file. The previous version is saved at /s/one.ipynb.",
+      message:
+        "The notebook now matches the file. Replaced: cell a. The previous version is saved at /s/one.ipynb.",
       snapshotPaths: ["/s/one.ipynb"],
+      ids: ["e1"],
     });
-    expect(displacedEditsNotice([entry("/s/one.ipynb"), entry("")])?.message).toBe(
-      "The notebook now matches the file (2 times). The previous version is saved at /s/one.ipynb.",
+    const two = displacedEditsNotice([
+      entry("e1", "/s/one.ipynb", ["a", "b"]),
+      entry("e2", "/s/two.ipynb", ["b"], true),
+    ]);
+    expect(two?.message).toBe(
+      "The notebook now matches the file (2 times). Replaced: cells a, b; notebook metadata. Previous versions are saved at /s/one.ipynb, /s/two.ipynb.",
     );
-    expect(displacedEditsNotice([entry("")])?.message).toBe(
-      "The notebook now matches the file. The previous version could not be saved; see the daemon log.",
-    );
+    expect(two?.ids).toEqual(["e1", "e2"]);
   });
 });
 

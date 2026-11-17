@@ -829,10 +829,14 @@ pub enum NotebookRequest {
         operation: SourceReconciliation,
     },
 
-    /// Forget the room's displaced-edit entries
-    /// (`file_checkpoint.displaced_edits` in RuntimeStateDoc). Their snapshot
-    /// files stay on disk. Responds `Ok {}`.
-    DismissDisplacedEdits {},
+    /// Forget displaced-edit entries (`file_checkpoint.displaced_edits` in
+    /// RuntimeStateDoc): the named ids, or every entry when `ids` is absent.
+    /// Clients pass the ids they showed so an entry that arrived since stays.
+    /// Snapshot files stay on disk. Responds `Ok {}`.
+    DismissDisplacedEdits {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ids: Option<Vec<String>>,
+    },
 
     /// Fork the current notebook into a new ephemeral (in-memory only) room.
     ///
@@ -1972,7 +1976,7 @@ mod tests {
             ),
             (
                 "dismiss_displaced_edits",
-                serde_json::json!({ "action": "dismiss_displaced_edits" }),
+                serde_json::json!({ "action": "dismiss_displaced_edits", "ids": ["a1"] }),
             ),
             (
                 "clone_as_ephemeral",

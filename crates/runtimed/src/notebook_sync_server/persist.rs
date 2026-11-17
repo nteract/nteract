@@ -349,6 +349,14 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
         }
     }
 
+    // Late peer edits made against the notebook from before an external
+    // revision must not reach the file merged into the file's text.
+    if is_primary_path && matches!(intent, FileSaveIntent::Ordinary) {
+        put_back_late_concurrent_edits(room)
+            .await
+            .map_err(SaveError::Retryable)?;
+    }
+
     if is_primary_path {
         // An evicted room already flushed its final save and handed (or is
         // handing) the path to other daemon processes: the autosave owner
@@ -402,6 +410,7 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
         metadata_snapshot.as_ref(),
         &cell_execution_ids,
         nbformat_minor,
+        true,
     )
     .await?;
 
@@ -671,12 +680,17 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
 /// `cell_execution_ids` maps each cell to its NotebookDoc execution pointer;
 /// outputs come from RuntimeStateDoc at call time. Pure apart from blob and
 /// runtime-state reads: no file is written and no baseline moves.
+///
+/// `output_hooks` runs the room's save-time output hooks (live Bokeh state).
+/// Those may wait on a runtime agent, so callers holding the NotebookDoc lock
+/// pass `false`; nothing else here touches the NotebookDoc.
 pub(crate) async fn render_notebook_ipynb(
     room: &NotebookRoom,
     cells: &[notebook_doc::CellSnapshot],
     metadata_snapshot: Option<&notebook_doc::metadata::NotebookMetadataSnapshot>,
     cell_execution_ids: &HashMap<String, Option<String>>,
     nbformat_minor: i32,
+    output_hooks: bool,
 ) -> Result<(Vec<u8>, usize), SaveError> {
     let previous_visible_execution_ids: HashMap<String, String> = cells
         .iter()
@@ -770,7 +784,11 @@ pub(crate) async fn render_notebook_ipynb(
         let mut resolved = Vec::with_capacity(outputs.len());
         for output in outputs {
             let output_value = resolve_cell_output(output, &room.blob_store).await;
-            let output_value = room.output_hooks.materialize_for_save(output_value).await;
+            let output_value = if output_hooks {
+                room.output_hooks.materialize_for_save(output_value).await
+            } else {
+                output_value
+            };
             resolved.push(output_value);
         }
         resolved_outputs_by_cell.insert(cell.id.clone(), resolved);
@@ -2267,86 +2285,179 @@ pub(crate) fn classify_watcher_observation(
 
 /// Where displaced-edit snapshots for this room live: next to its persisted
 /// document and recovery journal, outside the notebook's own directory so
-/// they never show up in the user's working tree.
+/// they never show up in the user's working tree. `entries.json` there is the
+/// durable copy of the room's displaced-edit list.
 pub(crate) fn displaced_edits_dir(room: &NotebookRoom) -> PathBuf {
     room.identity.persist_path.with_extension("displaced")
 }
 
-/// Write the pre-reload notebook to a snapshot file and publish a
-/// displaced-edits entry that stays until a client dismisses it.
+/// Serializes read-modify-write of every room's `entries.json`.
+static DISPLACED_ENTRIES_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub(crate) fn read_displaced_entries(dir: &Path) -> Vec<runtime_doc::DisplacedEdits> {
+    match std::fs::read(dir.join("entries.json")) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+            warn!(
+                "[notebook-watch] Ignoring unreadable {}: {error}",
+                dir.join("entries.json").display()
+            );
+            Vec::new()
+        }),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Apply `update` to the room's durable displaced-edit list.
+fn update_displaced_entries(
+    dir: &Path,
+    update: impl FnOnce(&mut Vec<runtime_doc::DisplacedEdits>),
+) -> std::io::Result<()> {
+    let _guard = DISPLACED_ENTRIES_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut entries = read_displaced_entries(dir);
+    update(&mut entries);
+    std::fs::create_dir_all(dir)?;
+    let bytes = serde_json::to_vec_pretty(&entries).map_err(std::io::Error::other)?;
+    write_file_atomic_sync(&dir.join("entries.json"), &bytes)
+}
+
+/// Write the pre-reload notebook to a snapshot file and add its entry to the
+/// durable list, before the external revision commits.
 ///
-/// A snapshot that cannot be rendered or written still publishes the entry,
-/// with an empty path, so the replacement is never silent.
-pub(crate) async fn record_displaced_edits(
+/// Called with the NotebookDoc write lock held, so the snapshot is exactly
+/// what the revision replaces. A crash after this returns leaves a snapshot
+/// and an entry that the room restores when it reopens. An `Err` means
+/// nothing durable was written and the revision must not apply.
+pub(crate) async fn prepare_displaced_snapshot(
     room: &NotebookRoom,
     notebook_path: &Path,
     displaced: &DisplacedCapture,
-) {
+    heads: Vec<String>,
+) -> Result<runtime_doc::DisplacedEdits, String> {
     let now = chrono::Utc::now();
     let stem = notebook_path
         .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_else(|| "notebook".to_string());
-    let suffix = uuid::Uuid::new_v4().simple().to_string();
-    let snapshot = displaced_edits_dir(room).join(format!(
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    let dir = displaced_edits_dir(room);
+    let snapshot = dir.join(format!(
         "{stem}-{}-{}.ipynb",
         now.format("%Y%m%dT%H%M%S%.3fZ"),
-        &suffix[..8]
+        &id[..8]
     ));
-    let written = match render_notebook_ipynb(
+    let (bytes, _) = render_notebook_ipynb(
         room,
         &displaced.cells,
         displaced.metadata.as_ref(),
         &displaced.execution_ids,
         5,
+        false,
     )
     .await
-    {
-        Ok((bytes, _)) => {
-            let target = snapshot.clone();
-            tokio::task::spawn_blocking(move || {
-                if let Some(parent) = target.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                write_file_atomic_sync(&target, &bytes)
-            })
-            .await
-            .map_err(std::io::Error::other)
-            .and_then(|result| result)
-            .map_err(|error| error.to_string())
-        }
-        Err(error) => Err(error.to_string()),
-    };
-    let snapshot_path = match written {
-        Ok(()) => snapshot.to_string_lossy().into_owned(),
-        Err(error) => {
-            warn!(
-                "[notebook-watch] Could not write displaced-edits snapshot {}: {error}",
-                snapshot.display()
-            );
-            String::new()
-        }
-    };
-    warn!(
-        "[notebook-watch] {} changed on disk and replaced in-session edits (cells {:?}, metadata {}, order {}); previous version at {}",
-        notebook_path.display(),
-        displaced.cell_ids,
-        displaced.metadata_changed,
-        displaced.order_changed,
-        if snapshot_path.is_empty() { "<not written>" } else { snapshot_path.as_str() },
-    );
+    .map_err(|error| format!("could not render the replaced notebook: {error}"))?;
     let entry = runtime_doc::DisplacedEdits {
-        snapshot_path,
+        id,
+        snapshot_path: snapshot.to_string_lossy().into_owned(),
+        heads,
         displaced_at: now.to_rfc3339(),
         cell_ids: displaced.cell_ids.clone(),
         metadata: displaced.metadata_changed,
     };
+    let durable_entry = entry.clone();
+    let source_permissions = std::fs::metadata(notebook_path)
+        .ok()
+        .map(|metadata| metadata.permissions());
+    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        std::fs::create_dir_all(&dir)?;
+        write_file_atomic_sync(&snapshot, &bytes)?;
+        // The snapshot holds the notebook's content, so it gets the
+        // notebook's permissions rather than the daemon's umask.
+        if let Some(permissions) = source_permissions {
+            let _ = std::fs::set_permissions(&snapshot, permissions);
+        }
+        update_displaced_entries(&dir, |entries| entries.push(durable_entry))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| {
+        format!(
+            "could not save the replaced notebook to {}: {error}",
+            displaced_edits_dir(room).display()
+        )
+    })?;
+    Ok(entry)
+}
+
+/// Undo [`prepare_displaced_snapshot`] for a revision that did not commit.
+pub(crate) async fn abandon_displaced_snapshot(
+    room: &NotebookRoom,
+    entry: &runtime_doc::DisplacedEdits,
+) {
+    let dir = displaced_edits_dir(room);
+    let id = entry.id.clone();
+    let snapshot = PathBuf::from(&entry.snapshot_path);
+    let result = tokio::task::spawn_blocking(move || {
+        let _ = std::fs::remove_file(&snapshot);
+        update_displaced_entries(&dir, |entries| entries.retain(|entry| entry.id != id))
+    })
+    .await;
+    if !matches!(result, Ok(Ok(()))) {
+        warn!(
+            "[notebook-watch] Could not withdraw unused displaced-edits entry {}",
+            entry.id
+        );
+    }
+}
+
+/// Show a committed displacement to clients.
+pub(crate) fn publish_displaced_edits(
+    room: &NotebookRoom,
+    notebook_path: &Path,
+    entry: runtime_doc::DisplacedEdits,
+) {
+    warn!(
+        "[notebook-watch] {} changed on disk and replaced in-session edits (cells {:?}, metadata {}); previous version at {}",
+        notebook_path.display(),
+        entry.cell_ids,
+        entry.metadata,
+        entry.snapshot_path,
+    );
     if let Err(error) = room
         .state
         .with_doc(|state| state.push_displaced_edits(entry))
     {
         warn!("[notebook-watch] Failed to publish displaced edits: {error}");
     }
+}
+
+/// Forget displaced-edit entries by id (every entry when `ids` is `None`),
+/// in RuntimeStateDoc and on disk. Snapshot files stay.
+pub(crate) async fn dismiss_displaced_edits(
+    room: &NotebookRoom,
+    ids: Option<Vec<String>>,
+) -> Result<(), String> {
+    let shown: Vec<String> = room
+        .state
+        .read(|state| state.file_checkpoint().displaced_edits)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|entry| entry.id)
+        .collect();
+    let dismissed = ids.unwrap_or(shown);
+    room.state
+        .with_doc(|state| state.dismiss_displaced_edits(Some(&dismissed)))
+        .map_err(|error| error.to_string())?;
+    let dir = displaced_edits_dir(room);
+    tokio::task::spawn_blocking(move || {
+        update_displaced_entries(&dir, |entries| {
+            entries.retain(|entry| !dismissed.contains(&entry.id))
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
 }
 
 /// Handle one debounced watcher event for `notebook_path`: read the file,
@@ -2434,11 +2545,14 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
 
     // The file wins. Apply the complete cell+metadata revision under one
     // NotebookDoc lock and one journal marker; the live notebook then equals
-    // the file. A concurrent edit can land between the apply's pre-lock reads
-    // and its transaction, so a revision that fails to reproduce gets one
-    // more attempt before it is reported.
+    // the file. Session content it replaces is saved first. If that save
+    // fails the revision does not apply; it is retried a few times and then
+    // reported.
     let mut applied = AppliedIpynbChanges::default();
-    for _attempt in 0..2 {
+    for attempt in 0..3 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
         applied = apply_ipynb_changes_from_source(
             room,
             &external_cells,
@@ -2449,24 +2563,33 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
             source_revision.clone(),
         )
         .await;
-        if !applied.rejected {
+        if applied.snapshot_failed.is_none() {
             break;
         }
     }
-    if let Some(displaced) = applied.displaced.as_ref() {
-        record_displaced_edits(room, notebook_path, displaced).await;
+    if let Some(entry) = applied.displaced_entry.take() {
+        publish_displaced_edits(room, notebook_path, entry);
     }
-    if applied.rejected {
-        let reason = format!(
+    let unapplied_reason = if let Some(error) = applied.snapshot_failed.as_ref() {
+        Some(format!(
+            "{} changed on disk, but the edits it would replace could not be saved first ({error}). The open notebook was kept and will not be saved over the file until the file changes again.",
+            notebook_path.display()
+        ))
+    } else if applied.rejected {
+        Some(format!(
             "{} changed on disk, but the notebook could not reproduce it (duplicate or invalid cell ids?). The open notebook was kept and will not be saved over the file until the file changes again.",
             notebook_path.display()
-        );
+        ))
+    } else {
+        None
+    };
+    if let Some(reason) = unapplied_reason {
         if let Err(error) = room.state.with_doc(|state| {
             state.set_file_source_issue(Some(&runtime_doc::FileSourceIssue::Degraded {
                 reason: reason.clone(),
             }))
         }) {
-            warn!("[notebook-watch] Failed to publish rejected revision: {error}");
+            warn!("[notebook-watch] Failed to publish unapplied revision: {error}");
         }
         warn!("[notebook-watch] {reason}");
         return;

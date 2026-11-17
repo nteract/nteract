@@ -396,8 +396,12 @@ export type FileSourceIssue =
  * one entry. Entries stay until a client dismisses them.
  */
 export interface DisplacedEdits {
-  /** Self-contained `.ipynb` of the notebook just before the reload. Empty when it could not be written. */
+  /** Stable id for dismissing this entry. */
+  id: string;
+  /** Self-contained `.ipynb` of the notebook just before the reload. */
   snapshot_path: string;
+  /** NotebookDoc heads (hex) the snapshot was rendered from. */
+  heads: string[];
   /** RFC 3339 time the external revision was applied. */
   displaced_at: string;
   /** Cells the session changed whose version differs from the file's. */

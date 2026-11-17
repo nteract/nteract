@@ -514,6 +514,9 @@ pub struct RoomPersistence {
     /// truth; the persistence guard uses this flag to keep those partial bytes
     /// from overwriting the source `.ipynb`.
     load_failed: AtomicBool,
+    /// The last external revision, while saves still check for late peer
+    /// edits made against the notebook from before it.
+    external_revision_guard: std::sync::Mutex<Option<super::load::ExternalRevisionGuard>>,
 }
 
 /// The debounced `.automerge` persist channels. See `spawn_persist_debouncer`.
@@ -540,6 +543,7 @@ impl RoomPersistence {
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
             last_known_disk_hash: std::sync::Mutex::new(None),
             load_failed: AtomicBool::new(false),
+            external_revision_guard: std::sync::Mutex::new(None),
         }
     }
 
@@ -559,6 +563,33 @@ impl RoomPersistence {
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
             last_known_disk_hash: std::sync::Mutex::new(None),
             load_failed: AtomicBool::new(false),
+            external_revision_guard: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Remember the latest external revision for late-edit checks.
+    pub(crate) fn set_external_revision_guard(&self, guard: super::load::ExternalRevisionGuard) {
+        *self
+            .external_revision_guard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(guard);
+    }
+
+    pub(crate) fn external_revision_guard(&self) -> Option<super::load::ExternalRevisionGuard> {
+        self.external_revision_guard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Drop the guard unless a newer revision replaced it.
+    pub(crate) fn clear_external_revision_guard(&self, applied_at: std::time::Instant) {
+        let mut guard = self
+            .external_revision_guard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.as_ref().is_some_and(|g| g.applied_at == applied_at) {
+            *guard = None;
         }
     }
 
@@ -2490,6 +2521,13 @@ impl NotebookRoom {
                     }
                 }
             }
+        }
+        // Displaced-edit notices outlive the room: reload them from the
+        // durable list next to the persisted document.
+        let displaced =
+            super::persist::read_displaced_entries(&persist_path.with_extension("displaced"));
+        if !displaced.is_empty() {
+            state.with_doc(|runtime| runtime.set_displaced_edits(displaced))?;
         }
         let initial_load = RoomInitialLoad::new(Arc::clone(&lifecycle));
         let extensions = crate::extensions::room_extensions(&blob_store, &state);

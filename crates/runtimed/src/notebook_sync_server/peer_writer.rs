@@ -530,7 +530,7 @@ fn request_required_scope(
         | NotebookRequest::ApproveProjectTrust { .. }
         | NotebookRequest::DeclineProjectTrust { .. } => RequestRequiredScope::Owner,
         NotebookRequest::SendComm { .. }
-        | NotebookRequest::DismissDisplacedEdits {}
+        | NotebookRequest::DismissDisplacedEdits { .. }
         | NotebookRequest::ApplyBokehSessionPatch { .. }
         | NotebookRequest::GetBokehSessionData { .. }
         | NotebookRequest::CloneAsEphemeral { .. }

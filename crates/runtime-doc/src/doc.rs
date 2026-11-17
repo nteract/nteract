@@ -502,12 +502,19 @@ impl FileSourceIssue {
 /// written to `snapshot_path` first and one of these entries is recorded.
 /// Entries stay until a client dismisses them; later external revisions and
 /// saves never clear them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DisplacedEdits {
+    /// Stable id for dismissing this entry.
+    #[serde(default)]
+    pub id: String,
     /// Self-contained `.ipynb` holding the notebook as it was just before
-    /// the reload. Empty when the snapshot could not be written.
+    /// the reload.
     #[serde(default)]
     pub snapshot_path: String,
+    /// NotebookDoc heads (hex) the snapshot was rendered from. The replaced
+    /// content stays readable at these heads in the document history.
+    #[serde(default)]
+    pub heads: Vec<String>,
     /// RFC 3339 time the external revision was applied.
     #[serde(default)]
     pub displaced_at: String,
@@ -2908,13 +2915,41 @@ impl RuntimeStateDoc {
         self.put_displaced_edits(&entries)
     }
 
-    /// Forget every displaced-edit entry. Snapshot files are left on disk.
-    pub fn clear_displaced_edits(&mut self) -> Result<bool, RuntimeStateError> {
-        if self.file_checkpoint().displaced_edits.is_empty() {
-            return Ok(false);
+    /// Forget displaced-edit entries: the named ids, or every entry when
+    /// `ids` is `None`. Returns the entries that remain. Snapshot files are
+    /// left on disk.
+    pub fn dismiss_displaced_edits(
+        &mut self,
+        ids: Option<&[String]>,
+    ) -> Result<Vec<DisplacedEdits>, RuntimeStateError> {
+        let entries = self.file_checkpoint().displaced_edits;
+        let remaining: Vec<DisplacedEdits> = match ids {
+            None => Vec::new(),
+            Some(ids) => entries
+                .iter()
+                .filter(|entry| !ids.contains(&entry.id))
+                .cloned()
+                .collect(),
+        };
+        if remaining.len() != entries.len() {
+            self.put_displaced_edits(&remaining)?;
         }
-        self.put_displaced_edits(&[])?;
-        Ok(true)
+        Ok(remaining)
+    }
+
+    /// Replace the displaced-edit list, keeping the newest
+    /// [`MAX_DISPLACED_EDITS`]. Used when a room reopens.
+    pub fn set_displaced_edits(
+        &mut self,
+        mut entries: Vec<DisplacedEdits>,
+    ) -> Result<(), RuntimeStateError> {
+        if entries.len() > MAX_DISPLACED_EDITS {
+            entries.drain(..entries.len() - MAX_DISPLACED_EDITS);
+        }
+        if self.file_checkpoint().displaced_edits == entries {
+            return Ok(());
+        }
+        self.put_displaced_edits(&entries)
     }
 
     fn put_displaced_edits(&mut self, entries: &[DisplacedEdits]) -> Result<(), RuntimeStateError> {
@@ -5004,7 +5039,9 @@ mod tests {
     fn displaced_edits_survive_checkpoint_and_source_issue_changes() {
         let mut doc = RuntimeStateDoc::new();
         let entry = |n: usize| DisplacedEdits {
+            id: format!("entry-{n}"),
             snapshot_path: format!("/tmp/displaced-{n}.ipynb"),
+            heads: vec![format!("{n:02x}")],
             displaced_at: "2026-11-16T00:00:00Z".to_string(),
             cell_ids: vec![format!("cell-{n}")],
             metadata: n.is_multiple_of(2),
@@ -5025,9 +5062,15 @@ mod tests {
         assert_eq!(entries.len(), MAX_DISPLACED_EDITS);
         assert_eq!(entries.last(), Some(&entry(MAX_DISPLACED_EDITS + 4)));
 
-        assert!(doc.clear_displaced_edits().unwrap());
+        // Dismissing by id leaves entries the client never saw.
+        let newest = entries.last().unwrap().id.clone();
+        let remaining = doc
+            .dismiss_displaced_edits(Some(std::slice::from_ref(&newest)))
+            .unwrap();
+        assert_eq!(remaining.len(), MAX_DISPLACED_EDITS - 1);
+        assert!(remaining.iter().all(|entry| entry.id != newest));
+        assert!(doc.dismiss_displaced_edits(None).unwrap().is_empty());
         assert!(doc.file_checkpoint().displaced_edits.is_empty());
-        assert!(!doc.clear_displaced_edits().unwrap());
     }
 
     #[test]
