@@ -501,7 +501,9 @@ pub struct RestartKernelOptions {
 /// Result of `Session.restartKernelResult()`.
 ///
 /// `outcome` is one of `"running"`, `"trust_required"`, `"launch_rejected"`,
-/// `"failed"`, `"stopped"`, or `"timed_out"`.
+/// `"failed"`, `"stopped"`, or `"timed_out"`. `"trust_required"` comes only
+/// from the daemon's typed `GuardRejected` launch reply: notebook dependencies
+/// or the project folder need approval.
 #[napi(object)]
 pub struct KernelRestartResult {
     pub outcome: String,
@@ -510,6 +512,8 @@ pub struct KernelRestartResult {
     pub launched_env_source: Option<String>,
     /// This client's RuntimeStateDoc view when the restart finished. It is
     /// an observed matching running kernel only when `outcome` is `"running"`.
+    /// A rejection returns as soon as the reply arrives, so this view may not
+    /// yet show the daemon's matching state, such as `AwaitingProjectTrust`.
     /// No launch generation exists; a peer restart of the same environment
     /// cannot be distinguished from this call's launch.
     pub status: RuntimeStatus,
@@ -2539,6 +2543,7 @@ fn launch_reply_for_restart(response: NotebookResponse) -> Result<LaunchReply> {
             env_source: env_source.as_str().to_string(),
             environment_id: launched_config.local_environment.map(|env| env.id),
         }),
+        // The reply type alone decides trust. Error text is never parsed.
         NotebookResponse::GuardRejected { reason } => Ok(LaunchReply::TrustRejected { reason }),
         NotebookResponse::Error { error }
         | NotebookResponse::EnvironmentSelectionRejected { error } => {
@@ -3499,6 +3504,87 @@ mod tests {
         assert_eq!(result.outcome, "running");
         assert_eq!(result.error, None);
         assert_eq!(result.status.lifecycle, "Running");
+    }
+
+    /// Runs the restart transitions the driver feeds for a project trust
+    /// refusal, in both arrival orders, and returns the public result.
+    fn project_trust_restart_result(
+        park_observed_first: bool,
+        response: NotebookResponse,
+    ) -> KernelRestartResult {
+        let mut stopped = runtime_doc::RuntimeState::default();
+        stopped.kernel.lifecycle = runtime_doc::RuntimeLifecycle::Shutdown;
+        stopped.kernel.env_source = "uv:prewarmed".into();
+        let mut parked = runtime_doc::RuntimeState::default();
+        parked.kernel.lifecycle = runtime_doc::RuntimeLifecycle::AwaitingProjectTrust;
+        parked.project_trust.status = "untrusted".into();
+        parked.project_trust.needs_approval = true;
+        parked.project_trust.kind = "environment_yml".into();
+
+        let mut phase = step(RestartPhase::initial(), RestartEvent::ShutdownAcknowledged);
+        phase = step(
+            phase,
+            RestartEvent::Observed(KernelObservation::from(&stopped.kernel)),
+        );
+        assert!(matches!(phase, RestartPhase::Launching { .. }), "{phase:?}");
+        let mut last_state = stopped;
+        if park_observed_first {
+            last_state = parked;
+            phase = step(
+                phase,
+                RestartEvent::Observed(KernelObservation::from(&last_state.kernel)),
+            );
+        }
+        phase = step(
+            phase,
+            RestartEvent::LaunchReplied(launch_reply_for_restart(response).unwrap()),
+        );
+        let RestartPhase::Done(verdict) = phase else {
+            panic!("a launch refusal must be terminal, got {phase:?}");
+        };
+        restart_result(verdict, last_state, Duration::from_secs(1))
+    }
+
+    #[test]
+    fn project_trust_guard_rejection_is_trust_required_in_either_order() {
+        let reason = "The project folder is not trusted on this machine. \
+                      Trust it or use the notebook environment to launch.";
+        for park_observed_first in [true, false] {
+            let result = project_trust_restart_result(
+                park_observed_first,
+                NotebookResponse::GuardRejected {
+                    reason: reason.into(),
+                },
+            );
+            assert_eq!(result.outcome, "trust_required", "{park_observed_first}");
+            assert_eq!(result.error.as_deref(), Some(reason));
+            assert_eq!(result.launched_env_source, None);
+            // The result returns on the reply. Its status is whatever the
+            // replica held then; it is not awaited or used for the verdict.
+            if park_observed_first {
+                assert_eq!(result.status.lifecycle, "AwaitingProjectTrust");
+                assert!(result.status.project_trust.needs_approval);
+            } else {
+                assert_eq!(result.status.lifecycle, "Shutdown");
+                assert!(!result.status.project_trust.needs_approval);
+            }
+            assert_eq!(result.status.env_source, "");
+        }
+    }
+
+    #[test]
+    fn generic_launch_error_stays_launch_rejected_even_with_trust_text() {
+        // Daemons that predate the typed refusal reply `Error` for a parked
+        // project. Without a typed reply this is a generic launch failure.
+        for park_observed_first in [true, false] {
+            let result = project_trust_restart_result(
+                park_observed_first,
+                NotebookResponse::Error {
+                    error: "The project folder is not trusted on this machine.".into(),
+                },
+            );
+            assert_eq!(result.outcome, "launch_rejected", "{park_observed_first}");
+        }
     }
 
     #[test]

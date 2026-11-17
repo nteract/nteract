@@ -2405,8 +2405,10 @@ async fn test_launch_kernel_environment_mode_controls_project_priority() {
     // Auto keeps project-first priority, and the project folder is not
     // trusted, so the launch parks before conda sees the file.
     let (auto, auto_handle) = launch_with_mode(CreateNotebookEnvironmentMode::Auto, "auto").await;
+    // The parked launch is a typed approval refusal, not a generic error, so
+    // clients report trust as required without reading RuntimeStateDoc.
     assert!(
-        matches!(auto, NotebookResponse::Error { ref error } if error.contains("not trusted")),
+        matches!(auto, NotebookResponse::GuardRejected { ref reason } if reason.contains("project folder is not trusted")),
         "auto should stop at the untrusted project folder, got {auto:?}"
     );
     let parked = wait_for_runtime_state(&auto_handle, |s| {
@@ -2437,7 +2439,7 @@ async fn test_launch_kernel_environment_mode_controls_project_priority() {
     let (project, _project_handle) =
         launch_with_mode(CreateNotebookEnvironmentMode::Project, "project").await;
     assert!(
-        matches!(project, NotebookResponse::Error { ref error } if error.contains("not trusted")),
+        matches!(project, NotebookResponse::GuardRejected { ref reason } if reason.contains("project folder is not trusted")),
         "project mode should stop at the untrusted project folder, got {project:?}"
     );
 

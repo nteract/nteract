@@ -394,8 +394,12 @@ export type KernelRestartOutcome =
  *
  * - `running`: this client's RuntimeStateDoc showed the old kernel stop, then a kernel
  *   Running with `launchedEnvSource` and the accepted local environment id, when supplied.
- * - `trust_required`: the daemon refused the launch until dependencies are approved.
- * - `launch_rejected`: the daemon refused or failed the launch (`error` explains).
+ * - `trust_required`: the daemon refused the launch until an approval is given: notebook
+ *   dependencies, or the project folder whose project file would drive the environment.
+ *   `error` holds the daemon's reason. Approve with `approveTrust()`, `approveProjectTrust()`,
+ *   or `declineProjectTrust()` to use the notebook environment, then restart again.
+ * - `launch_rejected`: the daemon refused or failed the launch (`error` explains). Older
+ *   daemons report an untrusted project folder here as a generic error.
  * - `failed` / `stopped`: the daemon accepted the launch, then the kernel errored or stopped.
  * - `timed_out`: a client wait expired. The kernel may still come up; `status` is not authoritative.
  *
@@ -408,7 +412,11 @@ export interface KernelRestartResult {
   error?: string;
   /** envSource the daemon reported for the accepted launch. */
   launchedEnvSource?: string;
-  /** This client's runtime view when the call finished. Observed Running after stop with matching launch source/identity only for `"running"`. */
+  /**
+   * This client's runtime view when the call finished. Observed Running after stop with matching
+   * launch source/identity only for `"running"`. A refused launch returns on the daemon's reply,
+   * so this view may not yet show the matching state, such as `AwaitingProjectTrust`.
+   */
   status: RuntimeStatus;
 }
 

@@ -1035,7 +1035,9 @@ pub enum NotebookResponse {
     NoKernel {},
 
     /// A guarded action was not queued because current notebook state no
-    /// longer matches the state the user approved.
+    /// longer matches the state the user approved, or an approval is still
+    /// required. `LaunchKernel` returns it when notebook dependencies are not
+    /// trusted or when the room is parked awaiting project folder trust.
     GuardRejected {
         reason: String,
     },

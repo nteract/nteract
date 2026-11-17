@@ -970,9 +970,12 @@ async fn handle_attempt(
             );
             return NotebookResponse::Error { error };
         }
+        // The gate already parked the room in `AwaitingProjectTrust` with the
+        // project trust prompt. The reply is the typed approval refusal, so
+        // clients classify it without reading RuntimeStateDoc or the text.
         crate::project_trust::RoomProjectGate::Parked => {
-            return NotebookResponse::Error {
-                error: "The project folder is not trusted on this machine. \
+            return NotebookResponse::GuardRejected {
+                reason: "The project folder is not trusted on this machine. \
                             Trust it or use the notebook environment to launch."
                     .to_string(),
             };
