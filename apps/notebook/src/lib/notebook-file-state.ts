@@ -1,4 +1,4 @@
-import type { FileCheckpointState, FileSourceIssue } from "runtimed";
+import type { DisplacedEdits, FileCheckpointState, FileSourceIssue } from "runtimed";
 
 export interface NotebookCausalHeadsReader {
   has_changes_not_contained_by_heads(heads: string[]): boolean | undefined;
@@ -44,6 +44,44 @@ export function notebookDocumentIsDirty({
 export interface FileSourceIssueNotice {
   title: string;
   message: string;
+}
+
+export interface DisplacedEditsNotice {
+  title: string;
+  message: string;
+  snapshotPaths: string[];
+  /** Entry ids this notice shows; dismiss exactly these. */
+  ids: string[];
+}
+
+/**
+ * Notice copy for in-session edits that a rewrite of the file on disk
+ * replaced. Stays until dismissed; later rewrites never clear it.
+ */
+export function displacedEditsNotice(
+  entries: DisplacedEdits[] | undefined,
+): DisplacedEditsNotice | null {
+  if (!entries || entries.length === 0) return null;
+  const snapshotPaths = entries.map((entry) => entry.snapshot_path).filter((path) => path !== "");
+  const times = entries.length === 1 ? "" : ` (${entries.length} times)`;
+  const cellIds = [...new Set(entries.flatMap((entry) => entry.cell_ids))];
+  const replaced = [
+    cellIds.length === 0 ? null : `${cellIds.length === 1 ? "cell" : "cells"} ${cellIds.join(", ")}`,
+    entries.some((entry) => entry.metadata) ? "notebook metadata" : null,
+  ].filter((part) => part !== null);
+  const what = replaced.length === 0 ? "" : ` Replaced: ${replaced.join("; ")}.`;
+  const where =
+    snapshotPaths.length === 0
+      ? "The previous version could not be saved; see the daemon log."
+      : snapshotPaths.length === 1
+        ? `The previous version is saved at ${snapshotPaths[0]}.`
+        : `Previous versions are saved at ${snapshotPaths.join(", ")}.`;
+  return {
+    title: "The file changed on disk and replaced unsaved edits",
+    message: `The notebook now matches the file${times}.${what} ${where}`,
+    snapshotPaths,
+    ids: entries.map((entry) => entry.id),
+  };
 }
 
 /** Calm, durable-state-derived notice copy for source recovery problems. */

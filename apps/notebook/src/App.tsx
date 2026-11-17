@@ -162,7 +162,11 @@ import { useObservable } from "./lib/use-observable";
 import { logger } from "./lib/logger";
 import { BokehSessionDocHandle } from "./lib/runtimed-wasm";
 import { hostedNotebookWindowTitle } from "./lib/hosted-notebook-url";
-import { fileSourceIssueNotice, notebookDocumentIsDirty } from "./lib/notebook-file-state";
+import {
+  displacedEditsNotice,
+  fileSourceIssueNotice,
+  notebookDocumentIsDirty,
+} from "./lib/notebook-file-state";
 import {
   attachExecutionPerformanceId,
   installExecutionPerformanceApi,
@@ -1848,6 +1852,14 @@ function AppContent() {
   }, [documentDirty, host, titleBase]);
 
   const sourceIssueNotice = fileSourceIssueNotice(runtimeState.file_checkpoint.source_issue);
+  const displacedNotice = displacedEditsNotice(runtimeState.file_checkpoint.displaced_edits);
+  const displacedNoticeIds = displacedNotice?.ids.join("\n") ?? "";
+  const dismissDisplacedEdits = useCallback(() => {
+    const ids = displacedNoticeIds === "" ? [] : displacedNoticeIds.split("\n");
+    notebookClient.dismissDisplacedEdits(ids).catch((error: unknown) => {
+      logger.warn("[App] Failed to dismiss displaced edits:", error);
+    });
+  }, [notebookClient, displacedNoticeIds]);
 
   // Cmd+F to open global find
   useEffect(() => {
@@ -2234,14 +2246,28 @@ function AppContent() {
           capabilities={shellCapabilities}
           stageLabel="Notebook editor"
           notices={
-            sourceIssueNotice ? (
-              <NotebookNotice
-                tone="warning"
-                title={sourceIssueNotice.title}
-                data-testid="notebook-file-source-issue"
-              >
-                {sourceIssueNotice.message}
-              </NotebookNotice>
+            sourceIssueNotice || displacedNotice ? (
+              <>
+                {sourceIssueNotice ? (
+                  <NotebookNotice
+                    tone="warning"
+                    title={sourceIssueNotice.title}
+                    data-testid="notebook-file-source-issue"
+                  >
+                    {sourceIssueNotice.message}
+                  </NotebookNotice>
+                ) : null}
+                {displacedNotice ? (
+                  <NotebookNotice
+                    tone="warning"
+                    title={displacedNotice.title}
+                    onDismiss={dismissDisplacedEdits}
+                    data-testid="notebook-displaced-edits"
+                  >
+                    {displacedNotice.message}
+                  </NotebookNotice>
+                ) : null}
+              </>
             ) : null
           }
           toolbarPlacement="stage-content"

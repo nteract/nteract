@@ -35,6 +35,7 @@ export const NOTEBOOK_REQUEST_TYPES = [
   "complete",
   "save_notebook",
   "reconcile_notebook_source",
+  "dismiss_displaced_edits",
   "clone_as_ephemeral",
   "sync_environment",
   "approve_trust",

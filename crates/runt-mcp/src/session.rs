@@ -496,6 +496,14 @@ impl NotebookSession {
         // projection as authoritative and close mutation immediately even if
         // the older session-control frame still says Interactive.
         if let Ok(runtime_state) = self.handle.get_runtime_state() {
+            // A rewrite of the file on disk replaced in-session edits. The
+            // notebook stays writable; agents get the snapshot paths so they
+            // can read back what was replaced. Entries stay until a client
+            // dismisses them.
+            if !runtime_state.file_checkpoint.displaced_edits.is_empty() {
+                source_state["displaced_edits"] =
+                    serde_json::json!(runtime_state.file_checkpoint.displaced_edits);
+            }
             if let Some(issue) = runtime_state.file_checkpoint.source_issue {
                 let (error_code, error_message) = match issue {
                     runtime_doc::FileSourceIssue::Conflict { reason } => {

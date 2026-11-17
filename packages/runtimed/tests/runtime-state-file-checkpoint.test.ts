@@ -17,11 +17,12 @@ function issueLabel(issue: FileSourceIssue | null): string | null {
 }
 
 describe("RuntimeState file checkpoint", () => {
-  it("defaults to no checkpoint and no source issue", () => {
+  it("defaults to no checkpoint, no source issue and no displaced edits", () => {
     expect(DEFAULT_RUNTIME_STATE.file_checkpoint).toEqual({
       exported_heads: [],
       save_sequence: null,
       source_issue: null,
+      displaced_edits: [],
     });
   });
 

@@ -388,6 +388,29 @@ export type FileSourceIssue =
   | { kind: "degraded"; reason: string };
 
 /**
+ * In-session edits an external rewrite of the `.ipynb` replaced.
+ *
+ * The daemon always makes the open notebook match a rewritten file (git
+ * switch, pull, `nbconvert --inplace`). When the session held edits the file
+ * never had, it saves the pre-reload notebook to `snapshot_path` and records
+ * one entry. Entries stay until a client dismisses them.
+ */
+export interface DisplacedEdits {
+  /** Stable id for dismissing this entry. */
+  id: string;
+  /** Self-contained `.ipynb` of the notebook just before the reload. */
+  snapshot_path: string;
+  /** NotebookDoc heads (hex) the snapshot was rendered from. */
+  heads: string[];
+  /** RFC 3339 time the external revision was applied. */
+  displaced_at: string;
+  /** Cells the session changed whose version differs from the file's. */
+  cell_ids: string[];
+  /** The session changed notebook metadata (for example dependencies) and the file's differs. */
+  metadata: boolean;
+}
+
+/**
  * Causal `.ipynb` checkpoint projected by the daemon.
  *
  * Empty heads plus a null sequence means no file checkpoint has committed.
@@ -398,6 +421,8 @@ export interface FileCheckpointState {
   exported_heads: string[];
   save_sequence: number | null;
   source_issue: FileSourceIssue | null;
+  /** Older daemons omit this. */
+  displaced_edits?: DisplacedEdits[];
 }
 
 /**
@@ -559,6 +584,7 @@ export const DEFAULT_RUNTIME_STATE: RuntimeState = {
     exported_heads: [],
     save_sequence: null,
     source_issue: null,
+    displaced_edits: [],
   },
   project_trust: DEFAULT_PROJECT_TRUST_STATE,
   path: null,

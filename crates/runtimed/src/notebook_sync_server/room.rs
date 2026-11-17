@@ -484,9 +484,8 @@ pub struct RoomPersistence {
     debouncer: std::sync::Mutex<Option<PersistDebouncer>>,
     /// Cell sources as they were written to disk at last save.
     ///
-    /// The file watcher compares disk content against this snapshot (not the
-    /// live CRDT) to distinguish our own autosave writes from genuine external
-    /// changes (git pull, external editor).
+    /// Advanced together with the disk-content hash. The file watcher tells
+    /// its own writes from external ones by that hash, not by these sources.
     pub last_save_sources: RwLock<HashMap<String, String>>,
     /// Highest committed save sequence allowed to update the primary-path
     /// watcher baselines. Post-`spawn_blocking` save continuations may resume
@@ -504,9 +503,9 @@ pub struct RoomPersistence {
     /// read. `save_notebook_to_disk` refuses a primary-path save when the
     /// on-disk bytes no longer match this baseline — another writer (a second
     /// daemon, `git pull`) changed the file and the watcher has not reconciled
-    /// it into the doc yet. The refusal is `Retryable`: the watcher merges the
-    /// external content and refreshes this baseline, and the autosave
-    /// debouncer's next tick writes the merged state. `None` means "no disk
+    /// it into the doc yet. The refusal is `Retryable`: the watcher applies
+    /// the external content and refreshes this baseline, and the autosave
+    /// debouncer's next tick writes only edits made after it. `None` means "no disk
     /// content observed yet" (untitled rooms, Save As targets) and disables
     /// the check.
     last_known_disk_hash: std::sync::Mutex<Option<[u8; 32]>>,
@@ -515,6 +514,9 @@ pub struct RoomPersistence {
     /// truth; the persistence guard uses this flag to keep those partial bytes
     /// from overwriting the source `.ipynb`.
     load_failed: AtomicBool,
+    /// The last external revision, while saves still check for late peer
+    /// edits made against the notebook from before it.
+    external_revision_guard: std::sync::Mutex<Option<super::load::ExternalRevisionGuard>>,
 }
 
 /// The debounced `.automerge` persist channels. See `spawn_persist_debouncer`.
@@ -541,6 +543,7 @@ impl RoomPersistence {
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
             last_known_disk_hash: std::sync::Mutex::new(None),
             load_failed: AtomicBool::new(false),
+            external_revision_guard: std::sync::Mutex::new(None),
         }
     }
 
@@ -560,6 +563,66 @@ impl RoomPersistence {
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
             last_known_disk_hash: std::sync::Mutex::new(None),
             load_failed: AtomicBool::new(false),
+            external_revision_guard: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Start guarding a new external revision. Cells rewritten by revisions
+    /// still inside the guard window stay guarded.
+    pub(crate) fn record_external_revision(
+        &self,
+        notebook_path: PathBuf,
+        revision_heads: Vec<automerge::ChangeHash>,
+        mut rewritten: std::collections::HashSet<String>,
+    ) {
+        let mut guard = self
+            .external_revision_guard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // A new revision replaces whatever late edits an older one was
+        // still waiting to put back, and records them itself.
+        if let Some(previous) = guard.as_ref().filter(|previous| !previous.expired()) {
+            rewritten.extend(previous.rewritten.iter().cloned());
+        }
+        *guard = Some(super::load::ExternalRevisionGuard {
+            notebook_path,
+            revision_heads,
+            rewritten,
+            resolved: std::collections::HashSet::new(),
+            applied_at: std::time::Instant::now(),
+            failing: false,
+        });
+    }
+
+    pub(crate) fn external_revision_guard(&self) -> Option<super::load::ExternalRevisionGuard> {
+        self.external_revision_guard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub(crate) fn update_external_revision_guard(
+        &self,
+        update: impl FnOnce(&mut super::load::ExternalRevisionGuard),
+    ) {
+        if let Some(guard) = self
+            .external_revision_guard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_mut()
+        {
+            update(guard);
+        }
+    }
+
+    /// Drop the guard unless a newer revision replaced it.
+    pub(crate) fn clear_external_revision_guard(&self, applied_at: std::time::Instant) {
+        let mut guard = self
+            .external_revision_guard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.as_ref().is_some_and(|g| g.applied_at == applied_at) {
+            *guard = None;
         }
     }
 
@@ -2492,6 +2555,13 @@ impl NotebookRoom {
                 }
             }
         }
+        // Displaced-edit notices outlive the room: reload them from the
+        // durable list next to the persisted document.
+        let displaced =
+            super::persist::read_displaced_entries(&persist_path.with_extension("displaced"));
+        if !displaced.is_empty() {
+            state.with_doc(|runtime| runtime.set_displaced_edits(displaced))?;
+        }
         let initial_load = RoomInitialLoad::new(Arc::clone(&lifecycle));
         let extensions = crate::extensions::room_extensions(&blob_store, &state);
 
@@ -2862,13 +2932,6 @@ impl NotebookRoom {
         // Check runtime agent handle
         let ra = self.runtime_agent_handle.lock().await;
         ra.as_ref().is_some_and(|a| a.is_alive())
-    }
-
-    /// Snapshot of cell sources as they were at last save. Empty before
-    /// the first save, which is the correct baseline for "no disk write
-    /// has happened yet."
-    pub async fn last_save_sources_snapshot(&self) -> HashMap<String, String> {
-        self.persistence.last_save_sources.read().await.clone()
     }
 
     /// True if a streaming load is currently in progress.

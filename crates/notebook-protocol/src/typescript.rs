@@ -32,6 +32,7 @@ pub const NOTEBOOK_REQUEST_TYPES: &[&str] = &[
     "complete",
     "save_notebook",
     "reconcile_notebook_source",
+    "dismiss_displaced_edits",
     "clone_as_ephemeral",
     "sync_environment",
     "approve_trust",
@@ -391,6 +392,7 @@ export type NotebookRequest =
       path?: string | null;
     }}
   | {{ type: "reconcile_notebook_source"; operation: SourceReconciliation }}
+  | {{ type: "dismiss_displaced_edits"; ids?: string[] | null }}
   | {{ type: "clone_as_ephemeral"; source_notebook_id: string }}
   | {{ type: "sync_environment"; guard?: DependencyGuard | null }}
   | {{

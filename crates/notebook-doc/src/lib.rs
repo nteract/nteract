@@ -1689,6 +1689,39 @@ impl NotebookDoc {
         cells
     }
 
+    /// Get cells at a historical head set with their metadata and
+    /// attachments, for comparing or rendering a past notebook.
+    ///
+    /// Resolved markdown assets are left empty.
+    pub fn get_cells_at_heads_with_content(
+        &self,
+        heads: &[automerge::ChangeHash],
+    ) -> Vec<CellSnapshot> {
+        let Some(cells_id) = self.cells_map_id_at(heads) else {
+            return vec![];
+        };
+        let mut cells: Vec<CellSnapshot> = self
+            .doc
+            .keys_at(&cells_id, heads)
+            .filter_map(|key| {
+                let cell_obj = self.cell_obj_id_at(&cells_id, &key, heads)?;
+                let mut cell = self.read_cell_at(&cell_obj, heads)?;
+                cell.metadata = read_cell_metadata_at(&self.doc, &cell_obj, heads);
+                if let Some((automerge::Value::Object(ObjType::Map), attachments_id)) = self
+                    .doc
+                    .get_at(&cell_obj, "attachments", heads)
+                    .ok()
+                    .flatten()
+                {
+                    cell.attachments = read_attachment_refs_at(&self.doc, &attachments_id, heads);
+                }
+                Some(cell)
+            })
+            .collect();
+        cells.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
+        cells
+    }
+
     /// Get a single cell by ID (O(1) lookup).
     pub fn get_cell(&self, cell_id: &str) -> Option<CellSnapshot> {
         let cell_obj = self.cell_obj_for(cell_id)?;
@@ -3039,6 +3072,68 @@ fn read_attachment_refs(doc: &AutoCommit, attachments_id: &ObjId) -> CellAttachm
             (!bundle.is_empty()).then(|| (item.key.to_string(), bundle))
         })
         .collect()
+}
+
+fn read_attachment_refs_at(
+    doc: &AutoCommit,
+    attachments_id: &ObjId,
+    heads: &[automerge::ChangeHash],
+) -> CellAttachments {
+    doc.keys_at(attachments_id, heads)
+        .filter_map(|name| {
+            let Some((automerge::Value::Object(ObjType::Map), bundle_id)) = doc
+                .get_at(attachments_id, name.as_str(), heads)
+                .ok()
+                .flatten()
+            else {
+                return None;
+            };
+            let bundle: AttachmentMediaBundle = doc
+                .keys_at(&bundle_id, heads)
+                .filter_map(|media_type| {
+                    let Some((automerge::Value::Object(ObjType::Map), media_id)) = doc
+                        .get_at(&bundle_id, media_type.as_str(), heads)
+                        .ok()
+                        .flatten()
+                    else {
+                        return None;
+                    };
+                    let blob_hash = read_str_at(doc, &media_id, "blob_hash", heads)?;
+                    let encoding = read_str_at(doc, &media_id, "encoding", heads)
+                        .map(|value| AttachmentEncoding::from_schema_str(&value))
+                        .unwrap_or(AttachmentEncoding::Base64);
+                    Some((
+                        media_type,
+                        AttachmentRef {
+                            blob_hash,
+                            encoding,
+                        },
+                    ))
+                })
+                .collect();
+            (!bundle.is_empty()).then_some((name, bundle))
+        })
+        .collect()
+}
+
+fn read_cell_metadata_at(
+    doc: &AutoCommit,
+    cell_obj: &ObjId,
+    heads: &[automerge::ChangeHash],
+) -> serde_json::Value {
+    match doc.get_at(cell_obj, "metadata", heads).ok().flatten() {
+        Some((automerge::Value::Object(ObjType::Map), _)) => {
+            read_json_value_at(doc, cell_obj, "metadata", heads)
+                .unwrap_or_else(|| serde_json::json!({}))
+        }
+        Some((automerge::Value::Scalar(s), _)) => match s.as_ref() {
+            automerge::ScalarValue::Str(s) => {
+                serde_json::from_str(s).unwrap_or_else(|_| serde_json::json!({}))
+            }
+            _ => serde_json::json!({}),
+        },
+        _ => serde_json::json!({}),
+    }
 }
 
 fn read_str_at<O: AsRef<automerge::ObjId>, P: Into<automerge::Prop>>(
