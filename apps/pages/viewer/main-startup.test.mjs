@@ -23,6 +23,19 @@ const dom = new JSDOM('<!doctype html><body><div id="root"></div></body>', {
   pretendToBeVisual: true,
   virtualConsole,
 });
+// The editor's idle start (editor-start.mjs) waits for runIdle().
+const idleCallbacks = new Map();
+let nextIdle = 1;
+dom.window.requestIdleCallback = (callback) => {
+  idleCallbacks.set(nextIdle, callback);
+  return nextIdle++;
+};
+dom.window.cancelIdleCallback = (id) => idleCallbacks.delete(id);
+const runIdle = () => {
+  const callbacks = [...idleCallbacks.values()];
+  idleCallbacks.clear();
+  for (const callback of callbacks) callback();
+};
 // jsdom has <dialog> without its modal methods; the Browse picker uses them.
 {
   const proto = dom.window.HTMLDialogElement.prototype;
@@ -97,6 +110,8 @@ const bundle = await build({
         build.onLoad({ filter: /.*/, namespace: "stub" }, () => ({
           contents:
             "globalThis.__editorImports = (globalThis.__editorImports ?? 0) + 1;\n" +
+            // Which boot's shell imported it: earlier boots stay mounted.
+            "(globalThis.__editorImportsFrom ??= []).push(import.meta.url);\n" +
             'if (globalThis.__editorFails) throw new TypeError("Failed to fetch dynamically imported module");\n' +
             "export function onRendererUnavailable() {}\n" +
             // A test that opens a Page supplies __openPage; others fail the open.
@@ -169,9 +184,8 @@ async function boot(session, tools = {}, { connect, head, paths = {} } = {}) {
   };
   head?.();
   // A fresh module instance per boot: main.jsx renders at import.
-  await act(
-    () => import(`data:text/javascript;base64,${source}#${requests.length}${Math.random()}`),
-  );
+  const url = `data:text/javascript;base64,${source}#${requests.length}${Math.random()}`;
+  await act(() => import(url));
   for (
     let i = 0;
     i < 20 && document.querySelector('[role="status"]')?.textContent === "Connecting…";
@@ -180,6 +194,9 @@ async function boot(session, tools = {}, { connect, head, paths = {} } = {}) {
     await act(() => new Promise((resolve) => setTimeout(resolve, 10)));
   return {
     requests,
+    /** How many times this boot's shell imported the editor. */
+    editorImports: () =>
+      (globalThis.__editorImportsFrom ?? []).filter((from) => from === url).length,
     banners: () =>
       [...document.querySelectorAll(".error[role=alert]")].map((node) => node.textContent),
   };
@@ -266,13 +283,23 @@ test("/pages and /projects render from the shell without importing the editor", 
   assert.equal(location.pathname, "/projects", "the trailing slash is dropped");
 });
 
-test("Home is the Pages library and starts the editor import at boot", async () => {
+test("Home is the Pages library and starts the editor once its rows paint and the tab is idle", async () => {
   history.replaceState(null, "", "/");
-  const before = globalThis.__editorImports ?? 0;
-  await boot(signedIn, catalog);
+  const app = await boot(signedIn, {
+    ...catalog,
+    list_pages: {
+      pages: [{ page_id: "1a160b47-6df1-4983-81eb-489ca5a26812", title: "Roadmap" }],
+      next_cursor: null,
+      principal: "one",
+    },
+  });
   await settle();
   assert.equal(document.querySelector("main h1")?.textContent, "Pages");
-  assert.equal(globalThis.__editorImports, before + 1);
+  assert.ok(document.querySelector(".index-row-link"), "the first row painted");
+  assert.equal(app.editorImports(), 0, "nothing loads the editor before the tab is idle");
+  await act(() => runIdle());
+  await settle();
+  assert.equal(app.editorImports(), 1);
   const nav = [...document.querySelectorAll(".index-nav a")].map((link) => link.textContent);
   assert.deepEqual(nav, ["Pages", "Projects"]);
   assert.equal(document.querySelector(".index-nav [aria-current=page]")?.textContent, "Pages");
@@ -281,6 +308,34 @@ test("Home is the Pages library and starts the editor import at boot", async () 
     document.querySelector('[aria-label="List view"]').getAttribute("aria-pressed"),
     "true",
   );
+});
+
+test("hovering a library row starts the editor at once", async () => {
+  history.replaceState(null, "", "/pages");
+  const app = await boot(signedIn, {
+    ...catalog,
+    list_pages: {
+      pages: [{ page_id: "1a160b47-6df1-4983-81eb-489ca5a26812", title: "Roadmap" }],
+      next_cursor: null,
+      principal: "one",
+    },
+  });
+  await settle();
+  assert.equal(app.editorImports(), 0);
+  await act(() =>
+    document
+      .querySelector(".index-row-link")
+      .dispatchEvent(new window.Event("pointerover", { bubbles: true })),
+  );
+  await settle();
+  assert.equal(app.editorImports(), 1);
+});
+
+test("a Page route starts the editor at boot", async (t) => {
+  history.replaceState(null, "", "/p/1a160b47-6df1-4983-81eb-489ca5a26812");
+  const app = await boot(signedIn, catalog);
+  t.after(() => history.replaceState(null, "", "/"));
+  assert.equal(app.editorImports(), 1);
 });
 
 test("?grid=1 opens the library on the grid; a no-query reload keeps the stored choice", async () => {

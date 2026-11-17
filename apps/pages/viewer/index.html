@@ -11,12 +11,9 @@
     <link rel="stylesheet" href="/app.css" />
     <!-- scripts/build.mjs adds a modulepreload after app.css for each chunk
          app.js imports, and replaces each source name on this page (theme.js,
-         app.css, automerge.wasm, app.js) with its content-hashed file.
-         The editor chunk awaits Automerge's runtime before a Page opens. This
-         preload must match the fetch in scripts/browser-wasm.mjs: same URL,
-         and crossorigin so the preload is a CORS same-origin-credentials fetch
-         like fetch(url). -->
-    <link rel="preload" href="/automerge.wasm" as="fetch" crossorigin />
+         app.css, app.js) with its content-hashed file. This one shell serves
+         every route, so it names no WASM: theme.js preloads Automerge's on a
+         route that opens a document (viewer/wasm-preload.mjs). -->
     <link rel="describedby" type="text/plain" href="/llms.txt" />
   </head>
   <body>

@@ -718,6 +718,13 @@ function PageList({
   );
 }
 
+// The grid is at most 1200px wide with 200px columns and 1rem gaps
+// (style.css, .index-grid), so its widest layout has 5 columns. Its first
+// row starts about 340px down and a row is about 220px, so four rows fill a
+// 1080px-tall first screen. Those cards' images load eagerly at high
+// priority; the rest load lazily.
+export const FIRST_SCREEN_CARDS = 20;
+
 /** Grid mode: each card is one link to its Page, so it carries no Project
  * label (a link inside a link). */
 function PageGrid({ sections, folded, onToggle, busy, onOpen, onOpenProject, onWarm, cards }) {
@@ -730,6 +737,17 @@ function PageGrid({ sections, folded, onToggle, busy, onOpen, onOpenProject, onW
       ),
     [cards, sections, folded],
   );
+  // The cards that fill the first screen, whose images load first.
+  const first = useMemo(
+    () =>
+      new Set(
+        sections
+          .flatMap((section) => (folded.includes(section.key) ? [] : section.rows))
+          .slice(0, FIRST_SCREEN_CARDS)
+          .map((row) => row.id),
+      ),
+    [sections, folded],
+  );
   return (
     <div className="library-results" aria-busy={busy}>
       <Sections
@@ -741,7 +759,14 @@ function PageGrid({ sections, folded, onToggle, busy, onOpen, onOpenProject, onW
         {(section, name, list) => (
           <ul className="index-grid" aria-label={name} id={list.id} hidden={list.folded}>
             {(list.folded ? EMPTY : section.rows).map((row) => (
-              <GridCard key={row.id} row={row} cards={cards} onOpen={onOpen} onWarm={onWarm} />
+              <GridCard
+                key={row.id}
+                row={row}
+                cards={cards}
+                onOpen={onOpen}
+                onWarm={onWarm}
+                priority={first.has(row.id)}
+              />
             ))}
           </ul>
         )}
@@ -752,7 +777,7 @@ function PageGrid({ sections, folded, onToggle, busy, onOpen, onOpenProject, onW
 
 /** One grid card. A row the server listed asks for its card once it nears
  * the viewport; a row only this browser holds has none to ask for. */
-function GridCard({ row, cards, onOpen, onWarm }) {
+function GridCard({ row, cards, onOpen, onWarm, priority }) {
   const element = useRef(null);
   const key = cardKeyOf(row);
   const listed = !row.local;
@@ -776,7 +801,7 @@ function GridCard({ row, cards, onOpen, onWarm }) {
             {row.title}
           </span>
         </span>
-        <PageCardPreview card={state.name === "shown" ? state.card : null} />
+        <PageCardPreview card={state.name === "shown" ? state.card : null} priority={priority} />
       </a>
     </li>
   );

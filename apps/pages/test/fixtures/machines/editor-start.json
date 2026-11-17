@@ -1,0 +1,137 @@
+{
+  "machine": "editor-start",
+  "description": "When the viewer asks for the Page editor ahead of an open. A route that opens a document starts it at boot; a listing route holds it until its first rows paint and the browser is idle, or until a pointer or focus shows intent to open a Page. Runs against viewer/editor-start-machine.mjs in viewer/editor-start.test.mjs.",
+  "states": ["booting", "holding", "painted", "started"],
+  "events": ["boot", "painted", "idle", "intent"],
+  "unreachable": [
+    ["booting", "painted", "The row watcher attaches at boot"],
+    ["booting", "idle", "The idle callback is requested only after the rows paint"],
+    ["booting", "intent", "The intent listeners attach at boot"],
+    ["holding", "idle", "The idle callback is requested only after the rows paint"]
+  ],
+  "cases": { "booting/boot": ["listing", "document"] },
+  "rows": [
+    {
+      "label": "a listing route holds the editor and watches for rows and intent",
+      "note": "/, /pages and /projects.",
+      "case": "listing",
+      "state": { "name": "booting" },
+      "event": { "type": "boot", "route": "home" },
+      "expect": { "state": { "name": "holding" }, "effects": [{ "type": "watch" }] }
+    },
+    {
+      "label": "a route that opens a document starts the editor at boot",
+      "note": "/p/<id>, Project content, legacy ?page= links and unknown paths.",
+      "case": "document",
+      "state": { "name": "booting" },
+      "event": { "type": "boot", "route": "page" },
+      "expect": { "state": { "name": "started" }, "effects": [{ "type": "start" }] }
+    },
+    {
+      "label": "a holding route reads its route once",
+      "state": { "name": "holding" },
+      "event": { "type": "boot", "route": "page" },
+      "expect": {
+        "state": { "name": "holding" },
+        "effects": [],
+        "rejected": "The route was already read"
+      }
+    },
+    {
+      "label": "the first rows painted: wait for the browser to be idle",
+      "state": { "name": "holding" },
+      "event": { "type": "painted" },
+      "expect": { "state": { "name": "painted" }, "effects": [{ "type": "idle" }] }
+    },
+    {
+      "label": "intent before the rows paint starts the editor at once",
+      "note": "A pointer or focus on New Page or the Page switcher while the list loads.",
+      "state": { "name": "holding" },
+      "event": { "type": "intent" },
+      "expect": {
+        "state": { "name": "started" },
+        "effects": [{ "type": "start" }, { "type": "stop" }]
+      }
+    },
+    {
+      "label": "a painted route reads its route once",
+      "state": { "name": "painted" },
+      "event": { "type": "boot", "route": "home" },
+      "expect": {
+        "state": { "name": "painted" },
+        "effects": [],
+        "rejected": "The route was already read"
+      }
+    },
+    {
+      "label": "rows that paint again ask for no second idle callback",
+      "state": { "name": "painted" },
+      "event": { "type": "painted" },
+      "expect": {
+        "state": { "name": "painted" },
+        "effects": [],
+        "rejected": "The first rows already painted"
+      }
+    },
+    {
+      "label": "the browser is idle after the rows painted: start the editor",
+      "state": { "name": "painted" },
+      "event": { "type": "idle" },
+      "expect": {
+        "state": { "name": "started" },
+        "effects": [{ "type": "start" }, { "type": "stop" }]
+      }
+    },
+    {
+      "label": "intent before the idle callback starts the editor at once",
+      "note": "A pointer entering a row: the stop cancels the pending idle callback.",
+      "state": { "name": "painted" },
+      "event": { "type": "intent" },
+      "expect": {
+        "state": { "name": "started" },
+        "effects": [{ "type": "start" }, { "type": "stop" }]
+      }
+    },
+    {
+      "label": "a started editor reads no route",
+      "state": { "name": "started" },
+      "event": { "type": "boot", "route": "home" },
+      "expect": {
+        "state": { "name": "started" },
+        "effects": [],
+        "rejected": "The route was already read"
+      }
+    },
+    {
+      "label": "rows painting after the start change nothing",
+      "note": "A Page route that later shows the library.",
+      "state": { "name": "started" },
+      "event": { "type": "painted" },
+      "expect": {
+        "state": { "name": "started" },
+        "effects": [],
+        "rejected": "The editor was already asked for"
+      }
+    },
+    {
+      "label": "a late idle callback asks for nothing",
+      "state": { "name": "started" },
+      "event": { "type": "idle" },
+      "expect": {
+        "state": { "name": "started" },
+        "effects": [],
+        "rejected": "The editor was already asked for"
+      }
+    },
+    {
+      "label": "intent after the start asks for nothing",
+      "state": { "name": "started" },
+      "event": { "type": "intent" },
+      "expect": {
+        "state": { "name": "started" },
+        "effects": [],
+        "rejected": "The editor was already asked for"
+      }
+    }
+  ]
+}

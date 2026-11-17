@@ -3,14 +3,17 @@ import { AUTH_D1, USAGE_D1 } from "./deployment/profiles.mjs";
 import { workerShape } from "./worker-shape.mjs";
 import { workerWasmPlugin } from "./worker-modules.mjs";
 import { mermaidSource } from "./browser-mermaid.mjs";
+import { wasmUrlDefine } from "./browser-wasm.mjs";
 import { siftWasmPath } from "./browser-sift.mjs";
 import { formatsByType } from "../model/document-types.mjs";
 import { sourceFingerprint, writeBuildReceipt } from "./source-fingerprint.mjs";
 import { OUTPUT_WORKER, releaseFilesOf } from "./stage-artifacts.mjs";
 import { bundleOutputWorker } from "./build-output.mjs";
 import {
+  CRITICAL_PATH_CEILING,
   VIEWER_ASSETS,
   VIEWER_CSP,
+  criticalPath,
   chartWorkerChunk,
   hashedAssetPath,
   headersFile,
@@ -31,6 +34,7 @@ import { copyFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promi
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { gzipSync } from "node:zlib";
 
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -58,6 +62,11 @@ async function writeAsset(name, bytes) {
 }
 const firstOutput = ({ outputFiles }) => outputFiles[0].contents;
 
+// Hashed before theme.js, which preloads it on routes that open a document.
+await writeAsset(
+  "automerge.wasm",
+  await readFile(require.resolve("@automerge/automerge/automerge.wasm")),
+);
 await writeAsset(
   "theme.js",
   firstOutput(
@@ -70,6 +79,7 @@ await writeAsset(
       minify: true,
       outfile: path.join(dist, "public/theme.js"),
       write: false,
+      define: wasmUrlDefine({ automerge: publicUrl(assets["automerge.wasm"]) }),
     }),
   ),
 );
@@ -89,10 +99,6 @@ await writeAsset(
       define: { "process.env.NODE_ENV": '"production"' },
     }),
   ),
-);
-await writeAsset(
-  "automerge.wasm",
-  await readFile(require.resolve("@automerge/automerge/automerge.wasm")),
 );
 // Sift's WASM loads only when a Page shows a Parquet dataframe (viewer/sift-table.jsx).
 await writeAsset("sift.wasm", await readFile(siftWasmPath(app)));
@@ -139,6 +145,17 @@ console.log(
   `Viewer: app.js ${kib("public/app.js")}, editor ${kib(chart.editor)}, chart ${chart.chunk} ${kib(chart.chunk)}, ` +
     `chart Worker ${chartWorker} ${(chartWorkerBytes.byteLength / 1024).toFixed(1)} KiB`,
 );
+// The home route's critical path, within its recorded ceiling.
+{
+  const critical = criticalPath(viewer.metafile);
+  let gzipped = 0;
+  for (const file of critical.files)
+    gzipped += gzipSync(await readFile(path.join(dist, file)), { level: 9 }).byteLength;
+  console.log(
+    `Viewer critical path: ${critical.files.length} files, ${(critical.bytes / 1024).toFixed(1)} KiB ` +
+      `(${(gzipped / 1024).toFixed(1)} KiB gzip), ceiling ${(CRITICAL_PATH_CEILING / 1024).toFixed(1)} KiB`,
+  );
+}
 // esbuild also writes CSS for the lazily loaded chunk. app.css already holds
 // those rules, in the order the shell imports them, so nothing loads it.
 const appStyles = await readFile(path.join(dist, "public/app.css"), "utf8");

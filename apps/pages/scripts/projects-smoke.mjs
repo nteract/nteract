@@ -643,14 +643,20 @@ try {
   complete("Switching to an empty tab and back moves no control, and the results stay put");
 
   // /pages and /projects on a phone. They list from the shell: the only
-  // chunks a fresh load fetches are the ones index.html preloads for app.js,
-  // never the editor chunk, which waits until a Page opens.
+  // chunks a fresh load fetches are the ones index.html preloads for app.js.
+  // A listing starts the editor once the browser is idle after its rows
+  // paint (viewer/editor-start.mjs; home-boot-smoke.mjs covers that), so this
+  // tab holds the idle callback: here the editor chunk waits for a Page open.
   const phoneContext = await browser.newContext({
     viewport: { width: 390, height: 844 },
     deviceScaleFactor: 3,
     isMobile: true,
     hasTouch: true,
     storageState: await context.storageState(),
+  });
+  await phoneContext.addInitScript(() => {
+    window.requestIdleCallback = () => 0;
+    window.cancelIdleCallback = () => {};
   });
   const phone = await phoneContext.newPage();
   phones.set("phone", phone);

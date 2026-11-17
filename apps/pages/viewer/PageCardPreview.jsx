@@ -18,9 +18,10 @@ import { previewNodes } from "./PagePreview.jsx";
 import { PageCardImage, cardImageOf } from "./PageCardImage.jsx";
 
 /**
- * @param {{ card?: { blocks: Array<{ id: string, content: unknown[] }> } | null }} props
+ * @param {{ card?: { blocks: Array<{ id: string, content: unknown[] }> } | null, priority?: boolean }} props
+ * `priority`: the card is among the first in the grid (PageCardImage.jsx).
  */
-export function PageCardPreview({ card = null }) {
+export function PageCardPreview({ card = null, priority = false }) {
   if (!card?.blocks?.length) {
     return (
       <div className="index-card-preview" aria-hidden="true">
@@ -40,7 +41,7 @@ export function PageCardPreview({ card = null }) {
           ))}
         </div>
       </div>
-      {image && <PageCardImage image={image} />}
+      {image && <PageCardImage image={image} priority={priority} />}
     </div>
   );
 }

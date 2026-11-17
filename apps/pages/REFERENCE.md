@@ -2939,13 +2939,21 @@ pinned, so it stays in view while the Page scrolls. It names the app, not
 "Pages", which is also what people call their documents.
 
 The viewer is `app.js`, which renders the shell (header, account, sign-in and
-the Page list), plus content-hashed files under `/chunks/`. `app.js` imports the
-editor chunk at boot, and that chunk waits for the WASM runtimes; the
-[editor-load machine](viewer/editor-load-machine.mjs) tracks the import. The
-index routes, `/projects` and `/pages`, only list, so they render from the
-shell and its static chunks alone. They start the editor import when a Page
-opens or a new Page is created, or a little earlier when a pointer goes down on
-a Page row. A
+the Page list), plus content-hashed files under `/chunks/`. The editor chunk
+waits for the WASM runtimes; the
+[editor-load machine](viewer/editor-load-machine.mjs) tracks its import, and
+the [editor-start machine](viewer/editor-start-machine.mjs) decides when to
+ask for it ahead of an open. A route that opens a document (a Page, Project
+content) starts it at boot, and `theme.js` preloads Automerge's WASM in
+`<head>` on those routes only. The listing routes, `/`, `/pages` and
+`/projects`, render from the shell and its static chunks alone, and start the
+editor once their first rows have painted and the browser is idle (at most 2
+seconds later), or at once when a pointer or keyboard focus enters a row,
+New Page or the Page switcher. Starting the import also preloads the WASM, so
+the two download together. Opening a Page or creating one starts it in any
+case. `scripts/viewer-chunks.mjs` records a ceiling on the size of `app.js`
+and its static chunks, and the build fails past it or if that graph reaches
+the editor or a WASM runtime. A
 release serves only its own chunks, so a tab still running an earlier `app.js`
 can find its editor chunk gone: the path then answers with the app's HTML and
 the import fails. The tab asks `/health` for the build and the banner offers
@@ -2954,8 +2962,8 @@ table chunk only when a dataframe shows; a failed import asks `/health` the
 same way.
 
 Every file `index.html` names carries a content hash too: `app-<hash>.js`,
-`app-<hash>.css`, `theme-<hash>.js` and `automerge-<hash>.wasm`, plus
-`mermaid-<hash>.js` from the editor chunk and
+`app-<hash>.css` and `theme-<hash>.js`, plus `automerge-<hash>.wasm` from
+`theme.js` and `app.js`, `mermaid-<hash>.js` from the editor chunk and
 `sift-<hash>.wasm` from the Sift table chunk. The
 hash is the first 40 bits of the file's sha256 in base32. `_headers` serves
 each hashed file `public, max-age=31536000, immutable` by its exact path, so

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { LISTING_ROUTES } from "./editor-start-machine.mjs";
 import {
   copyLinkPath,
   isPageSlug,
@@ -595,7 +596,16 @@ test("the library keeps its view in the address at / and /pages, defaults left o
   }
   assert.equal(libraryPath("/", { access: "shared" }), "/?show=shared");
   assert.equal(libraryPath("/", { group: "date" }), "/?group=date");
-  assert.equal(isIndexRoute(readPageRoute("/?show=shared")), false, "Home starts the editor");
+  assert.equal(
+    isIndexRoute(readPageRoute("/?show=shared")),
+    false,
+    "Home is the library, not an index",
+  );
+  // Like the index routes, Home lists: it holds the editor until its rows
+  // paint (editor-start-machine.mjs).
+  for (const path of ["/?show=shared", "/pages", "/projects"])
+    assert.ok(LISTING_ROUTES.includes(readPageRoute(path).kind), path);
+  assert.equal(LISTING_ROUTES.includes(readPageRoute(`/?page=${id}`).kind), false);
   assert.equal(isLibraryRoute(readPageRoute("/projects")), false);
   assert.equal(readPageRoute(`/?page=${id}&show=shared`).kind, "page", "legacy links still open");
 });

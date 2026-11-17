@@ -91,6 +91,8 @@ import { UnopenedPage } from "./UnopenedPage.jsx";
 import { formatRefused, sessionFormatStopped, trashArguments } from "./unopened-page.mjs";
 import { reloadGate } from "./build-freshness.mjs";
 import { EditorLoader } from "./editor-loader.mjs";
+import { EditorStart } from "./editor-start.mjs";
+import { preloadWasm } from "./wasm-preload.mjs";
 import { SessionHost } from "./session-host.mjs";
 import { useStore } from "./store.mjs";
 import { SourcesLine } from "./SourcesLine.jsx";
@@ -110,23 +112,27 @@ glideSettings();
 marginRequested();
 if (gridRequested()) writeDisplayMode(globalThis.window, "grid");
 
-// The editor, and the WASM runtimes it waits for, load beside the shell
-// from boot, except on the index routes (/projects, /pages), which only list;
-// there the first Page open or creation starts it. Home (/) shows the same
-// library as /pages but starts the editor at boot, since a Page usually opens
-// next. A Page session exists only
-// once it has loaded, so code that holds a session reads `editor.module`
-// directly. A failed import, or a Mermaid renderer that fails to load later,
-// asks the server for its build.
+// The editor, and the WASM runtime it waits for, load once per tab. A Page
+// session exists only once it has loaded, so code that holds a session reads
+// `editor.module` directly. A failed import, or a Mermaid renderer that fails
+// to load later, asks the server for its build. Starting the import also
+// preloads the WASM, so both download together.
 const editor = new EditorLoader({
-  load: () =>
-    import("./page-editor.mjs").then((module) => {
+  load: () => {
+    preloadWasm(document);
+    return import("./page-editor.mjs").then((module) => {
       module.onRendererUnavailable(() => void buildMonitor.check());
       return module;
-    }),
+    });
+  },
   checkBuild: () => buildMonitor.check(),
 });
-if (!isIndexRoute(readPageRoute(location.href))) editor.start();
+// When to start it ahead of an open (editor-start-machine.mjs): at boot on a
+// route that opens a document; on a listing (/, /pages, /projects) once its
+// first rows paint and the browser is idle, or on intent. Opening a Page
+// starts it regardless.
+const editorStart = new EditorStart({ start: () => editor.start() });
+editorStart.boot(readPageRoute(location.href).kind);
 // The routed Page's read-only preview from the head script's discovery
 // (boot-preview.mjs). Read at boot, before a session can take that request.
 // The shell reports the session, navigation, failed opens and the live Page
@@ -143,7 +149,7 @@ const headingScroll = new HeadingScroll();
 headingScroll.start();
 headingScroll.requestFromAddress();
 // A pointer going down on a Page row is a strong hint a Page opens next.
-const warmEditor = () => editor.start();
+const warmEditor = () => editorStart.intent();
 // What the App does with an answer for another account than the tab's
 // (another window signed in): the library's list_pages, the Browse picker's
 // walk and list_projects all report here, and the session's recovery

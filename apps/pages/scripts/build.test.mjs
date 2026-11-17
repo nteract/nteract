@@ -22,9 +22,11 @@ import { USAGE_D1 } from "./deployment/profiles.mjs";
 import { AUTH_CRON, USAGE_CRON } from "../shared/schedule.mjs";
 import { browserMermaidPlugin, mermaidSource } from "./browser-mermaid.mjs";
 import {
+  CRITICAL_PATH_CEILING,
   IMMUTABLE,
   VIEWER_ASSETS,
   VIEWER_CHUNK,
+  criticalPath,
   digestHash,
   hashedAssetPath,
   headersFile,
@@ -360,7 +362,7 @@ test("the blocking theme asset applies preferences without loading the editor", 
     Object.keys(result.metafile.inputs)
       .map((file) => path.basename(file))
       .sort(),
-    ["early-session.mjs", "routes.mjs", "theme-bootstrap.mjs", "theme.mjs"],
+    ["early-session.mjs", "routes.mjs", "theme-bootstrap.mjs", "theme.mjs", "wasm-preload.mjs"],
   );
   const classes = new Set();
   const root = {
@@ -490,6 +492,12 @@ test("app.js renders the shell without a static path to the WASM runtimes", asyn
     [{ path: editor, kind: "dynamic-import" }],
   );
   assert.ok(chunks.every((file) => VIEWER_CHUNK.test(file)));
+  // The home route's critical path is app.js and its static chunks, within
+  // the recorded ceiling, without the editor.
+  const critical = criticalPath(result.metafile);
+  assert.deepEqual(critical.files.sort(), ["public/app.js", ...preloads].sort());
+  assert.equal(critical.files.includes(editor), false);
+  assert.ok(critical.bytes <= CRITICAL_PATH_CEILING);
   // CSS from the editor chunk is already in app.css, in the shell's import order.
   const css = (file) => result.outputFiles.find((output) => output.path === path.join(dist, file));
   for (const file of styles) assert.ok(stylesCovered(css(file).text, css("public/app.css").text));
@@ -543,6 +551,42 @@ test("the viewer split check refuses a shell that waits for WASM or an unexpecte
   );
 });
 
+test("the critical path check refuses the editor, a WASM runtime, or growth past the ceiling", () => {
+  const output = (inputs, imports = [], bytes = 100) => ({ inputs, imports, bytes });
+  const statically = (file) => ({ path: file, kind: "import-statement" });
+  const lazy = { path: "public/chunks/EDITOR23.js", kind: "dynamic-import" };
+  const metafile = (shared) => ({
+    inputs: {},
+    outputs: {
+      "public/app.js": output({ "../viewer/main.jsx": {} }, [
+        statically("public/chunks/SHARED23.js"),
+        lazy,
+      ]),
+      "public/chunks/SHARED23.js": output(shared, [], 250),
+      "public/chunks/EDITOR23.js": output({ "../viewer/page-editor.mjs": {} }, [], 10_000),
+    },
+  });
+  const plain = metafile({ "../viewer/store.mjs": {} });
+  assert.deepEqual(criticalPath(plain, 350), {
+    files: ["public/app.js", "public/chunks/SHARED23.js"],
+    bytes: 350,
+  });
+  assert.throws(
+    () => criticalPath(plain, 349),
+    /critical path .* is 350 bytes, past its ceiling of 349.*raise CRITICAL_PATH_CEILING .* on purpose/,
+  );
+  assert.throws(
+    () => criticalPath(metafile({ "../viewer/page-editor.mjs": {} }), 1e9),
+    /must load page-editor[.]mjs lazily/,
+  );
+  for (const runtime of ["wasm-ready:pages-wasm-ready", "../node_modules/x/runtime.wasm"])
+    assert.throws(
+      () => criticalPath(metafile({ [runtime]: {} }), 1e9),
+      /must not reach a WASM runtime statically/,
+      runtime,
+    );
+});
+
 test("index.html preloads exactly the chunks app.js imports", () => {
   const source = readFileSync(path.join(app, "viewer/index.html"), "utf8");
   const html = withModulePreloads(source, ["public/chunks/SHARED23.js"]);
@@ -550,7 +594,8 @@ test("index.html preloads exactly the chunks app.js imports", () => {
   const preload = '<link rel="modulepreload" href="/chunks/SHARED23.js" />';
   assert.equal(html.split(preload).length, 2);
   assert.ok(html.indexOf(stylesheet) < html.indexOf(preload));
-  assert.ok(html.indexOf(preload) < html.indexOf('<link rel="preload" href="/automerge.wasm"'));
+  assert.ok(html.indexOf(preload) < html.indexOf("</head>"));
+  assert.equal(html.includes('rel="preload"'), false, "the shell preloads no WASM");
   assert.equal(withModulePreloads(source, []), source);
   assert.throws(() => withModulePreloads(html, []), /must not list chunk preloads/);
   assert.throws(() => withModulePreloads(source, ["public/app.js"]), /Unexpected viewer preload/);
@@ -598,12 +643,14 @@ test("index.html names every shell asset by its hashed file", () => {
   for (const [name, attribute] of [
     ["theme.js", "src"],
     ["app.css", "href"],
-    ["automerge.wasm", "href"],
     ["app.js", "src"],
   ]) {
     assert.equal(html.split(`${attribute}="${url(name)}"`).length, 2, name);
     assert.equal(html.includes(`"/${name}"`), false, name);
   }
+  // theme.js preloads the WASM on routes that open a document; the shell
+  // serves every route.
+  assert.equal(html.includes(".wasm"), false);
   // Mermaid loads from the editor chunk, never from index.html.
   assert.equal(html.includes("mermaid"), false);
   assert.ok(html.includes('<link rel="modulepreload" href="/chunks/SHARED23.js" />'));
