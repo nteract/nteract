@@ -7233,6 +7233,53 @@ async fn kernelspec_formatter_preserves_foreign_source_on_execute_and_save() {
 }
 
 #[tokio::test]
+async fn kernelspec_persist_preserves_same_identity_extras() {
+    use notebook_protocol::protocol::InstalledKernelspec;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "extras.ipynb");
+    let mut doc = room.doc.write().await;
+    let mut meta = build_new_notebook_metadata(
+        "python",
+        "captured",
+        crate::settings_doc::PythonEnvType::Uv,
+        None,
+        &[],
+    );
+    let ks = meta.kernelspec.as_mut().unwrap();
+    ks.extras
+        .insert("metadata".into(), serde_json::json!({"debugger":true}));
+    ks.extras.insert("interrupt_mode".into(), "message".into());
+    let extras = ks.extras.clone();
+    doc.set_metadata_snapshot(&meta).unwrap();
+    let heads = doc.get_heads();
+    crate::kernelspec::persist(&room, &mut doc, None, "python").unwrap();
+    assert_eq!(doc.get_heads(), heads);
+    let mut target = InstalledKernelspec {
+        name: "python3".into(),
+        display_name: "Installed Python".into(),
+        language: "Python".into(),
+    };
+    crate::kernelspec::persist(&room, &mut doc, Some(&target), "Python").unwrap();
+    let saved = doc.get_metadata_snapshot().unwrap();
+    assert_eq!(saved.kernelspec.unwrap().extras, extras);
+    assert_eq!(saved.runt.extra["installed_kernelspec"], "python3");
+    crate::kernelspec::persist(&room, &mut doc, None, "python").unwrap();
+    let saved = doc.get_metadata_snapshot().unwrap();
+    assert_eq!(saved.kernelspec.unwrap().extras, extras);
+    assert!(!saved.runt.extra.contains_key("installed_kernelspec"));
+    target.name = "ark".into();
+    target.language = "R".into();
+    crate::kernelspec::persist(&room, &mut doc, Some(&target), "R").unwrap();
+    let saved = doc.get_metadata_snapshot().unwrap();
+    assert!(saved.kernelspec.unwrap().extras.is_empty());
+    assert_eq!(saved.language_info.unwrap().name, "R");
+    crate::kernelspec::persist(&room, &mut doc, None, "python").unwrap();
+    let saved = doc.get_metadata_snapshot().unwrap();
+    assert_eq!(saved.kernelspec.unwrap().name, "python3");
+    assert!(!saved.runt.extra.contains_key("installed_kernelspec"));
+}
+
+#[tokio::test]
 async fn kernelspec_formatter_discards_pending_python_after_language_switch() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, _) = test_room_with_path(&tmp, "switch.ipynb");
