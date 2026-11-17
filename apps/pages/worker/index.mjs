@@ -129,7 +129,7 @@ import { openingTitleWarning } from "../model/title-warning.mjs";
 import { listStartWarning } from "../model/list-start-warning.mjs";
 import { blockAddress, nodeAddresses } from "../model/addresses.mjs";
 import { pagePreview } from "../model/page-preview.mjs";
-import { cardKey, pageCard } from "../model/page-card.mjs";
+import { pageCard } from "../model/page-card.mjs";
 import {
   authenticate,
   accountIdentity,
@@ -257,10 +257,10 @@ import {
   CardImageGuard,
   authorizeCardImageUpload,
   cardImageRefusal,
-  deleteCardImages,
+  cardObjectReaders,
+  cardObjectStore,
+  deleteCardObjects,
   handleCardImage,
-  cardImageView,
-  readCardImagePointer,
 } from "./card-images.mjs";
 import {
   NO_TIMING,
@@ -1313,16 +1313,11 @@ async function pageCards(request, env, identity, args) {
   if (decided.refused) return decided.refused;
   const allowed = Array.isArray(decided.body?.allowed) ? decided.body.allowed : [];
   const bucket = env.PAGES_ASSETS;
-  // Every R2 read, a card object or an image pointer, is one `r2` run.
+  // Every R2 read is one `r2` run: a card object, and a legacy card's image
+  // pointer.
   const timing = timingFor(request);
   const cards = await readPageCards(ids, bucket ? allowed : [], {
-    readObject: (key) =>
-      timing.measure("r2", async () => {
-        const object = await bucket.get(key);
-        return object ? await object.text() : null;
-      }),
-    readImage: async (id) =>
-      cardImageView(id, await timing.measure("r2", () => readCardImagePointer(bucket, id))),
+    ...(bucket && cardObjectReaders(bucket, (read) => timing.measure("r2", read))),
     onError: (error) => logFailure(error, "page-cards"),
   });
   return json({ cards, principal: decided.body.principal ?? identity.principal });
@@ -5532,38 +5527,20 @@ export class Page {
           contentUpdatedAt: this.contentActivity?.value ?? null,
         });
       },
+      // card.json, shared with card image uploads (card-images.mjs).
       store: {
-        head: async () => {
-          const object = await withTimeout(
-            bucket.head(cardKey(this.metadata.pageId)),
+        head: () =>
+          withTimeout(
+            cardObjectStore(bucket, this.metadata.pageId).head(),
             PAGE_CARD_STORE_TIMEOUT_MS,
             "Page card read timed out",
-          );
-          return object
-            ? {
-                etag: object.etag,
-                card_hash: object.customMetadata?.card_hash ?? null,
-                content_updated_at: object.customMetadata?.content_updated_at ?? null,
-              }
-            : null;
-        },
-        put: async (bundle, { etag }) => {
-          const object = await withTimeout(
-            bucket.put(cardKey(this.metadata.pageId), JSON.stringify(bundle), {
-              httpMetadata: { contentType: "application/json" },
-              customMetadata: {
-                card_hash: bundle.card_hash,
-                content_updated_at: bundle.content_updated_at ?? "",
-              },
-              // The ordering fence (page-card-writer.mjs); head() reads both
-              // fields back.
-              onlyIf: etag ? { etagMatches: etag } : { etagDoesNotMatch: "*" },
-            }),
+          ),
+        put: (bundle, options) =>
+          withTimeout(
+            cardObjectStore(bucket, this.metadata.pageId).put(bundle, options),
             PAGE_CARD_STORE_TIMEOUT_MS,
             "Page card write timed out",
-          );
-          return object ? { etag: object.etag } : null;
-        },
+          ),
         delete: () => this.deleteCard(),
       },
       hold: (work) => holdUntilSettled(this.ctx, work),
@@ -5590,10 +5567,7 @@ export class Page {
     if (!this.env.PAGES_ASSETS || !validPageId(pageId)) return;
     try {
       await withTimeout(
-        Promise.all([
-          this.env.PAGES_ASSETS.delete(cardKey(pageId)),
-          deleteCardImages(this.env.PAGES_ASSETS, pageId),
-        ]),
+        deleteCardObjects(this.env.PAGES_ASSETS, pageId),
         PAGE_CARD_DELETE_TIMEOUT_MS,
         "Page card delete timed out",
       );

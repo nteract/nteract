@@ -4004,19 +4004,22 @@ retried by the next flush; it never fails the flush or the edit. A Page that
 hasn't changed since cards shipped has none until its next edit, and the grid
 keeps its icon.
 
-Writes from different hosts of one Page are ordered by the object's etag. Each
-put carries `onlyIf` with the etag the host last saw (none yet: only while no
-object exists), and the object's `customMetadata` holds its `card_hash` and
-`content_updated_at`. A host's first write after boot reads them (`head()`) and
-compares the built card with the object, not `host/card`, so a stale card left
-by an older host is rewritten. A retiring host's put that lands late carries
-an etag the next host's write replaced, and the bucket refuses it. A refused
-put reads the object again and retries once, unless the host stopped during
-that read or the object's `content_updated_at` is later than the built card's:
-then a newer host wrote it, and this host puts nothing, logs
-`page_card.superseded`, and reads the object again on its next write. A first
-write skips its put the same way. An object time more than 5 minutes
-(`CONTENT_ACTIVITY_MAX_SKEW_MS`) ahead of the host's clock counts as missing,
+Writes to the object are ordered by its etag. Its `customMetadata` holds the
+card's `card_hash` and `content_updated_at`, and the card image record that
+uploads write ([Card images](#card-images)). Every put first reads the
+metadata (`head()`) and carries `onlyIf` with the etag it read (none: only
+while no object exists). It compares the built card with the object, not
+`host/card`, so a stale card left by an older host is rewritten, and it copies
+the image record unchanged. Only a flush whose card matches the hash the host
+last wrote or read skips the read, since it puts nothing. A retiring host's put
+that lands late carries an etag a newer write replaced, and the bucket refuses
+it. A refused put reads the object again and retries once, unless the host
+stopped during that read or the object's `content_updated_at` is later than
+the built card's: then a newer host wrote it, and this host puts nothing, logs
+`page_card.superseded`, and reads the object again on its next write. A write
+whose first read finds a later card skips its put the same way. An object time
+more than 5 minutes (`CONTENT_ACTIVITY_MAX_SKEW_MS`) ahead of the host's clock
+counts as missing,
 as content activity drops it, so a card from a node whose clock ran fast never
 blocks the writes after it. Equal times with different hashes still put, and
 the later put wins: that is the same content built by two builder versions.
@@ -4031,8 +4034,8 @@ put can land after the next host's first write skipped an unchanged card: it
 holds a card the Page had moments before, until the next change to its first
 screen.
 
-A purge or tombstone deletes the object and `host/card` with the content time,
-waiting at most 2 seconds on the bucket; a missed delete leaves an object
+A purge or tombstone deletes the object, its card images and `host/card` with
+the content time, waiting at most 2 seconds on the bucket; a missed delete leaves an object
 `page_cards` never serves, since a deleted Page admits no one. A write still
 running then deletes the object again when it ends, whether its put landed or
 timed out. A host that retires without a deletion (an abandoned boot, a storage
@@ -4050,7 +4053,11 @@ check that doesn't boot the document, finding the Page active. D1 is never
 read. The Catalog answers only the allowed IDs, and the gateway reads their
 objects after the queue has moved on, all at once under one 1.2-second
 deadline, so a slow bucket never holds the account's listings, creates or
-reports. Only allowed IDs reach the bucket, and no object URL leaves the Worker.
+reports. Each card is one `get`: the object's body is the card and its
+metadata holds the image record, so 20 cards cost 20 reads. A legacy object,
+written before the record moved into it, also reads the image pointer
+([Card images](#card-images)). Only allowed IDs reach the bucket, and no
+object URL leaves the Worker.
 Every other ID, unknown, refused, unchecked in time, read too late or without a
 card, answers `null`, so a caller can't tell "no access" from "no card". The
 answer names its `principal`. It isn't an MCP tool: an agent can read the Page
@@ -4412,23 +4419,41 @@ Page host's own policy ([card-images.mjs](worker/card-images.mjs)). The bytes
 must be a static WebP, PNG or JPEG of at most 300 KB, never SVG. `hash` must be
 the `card_hash` of the host's loaded document, and each theme uploads at most
 once a minute. The host numbers each admitted upload from its durable storage.
-The images live at `pages/<id>/card/<hash>-<theme>.<ext>`. An etag-fenced
-`card/latest` pointer names the current hash and the highest revision it has
-seen. A swap to another hash with a lower revision is refused as stale, so an
-upload for an older first screen that lands late can't replace a newer one.
-The pointer references at most one image per theme, not a bound on stored bytes.
+The images live at `pages/<id>/card/<hash>-<theme>.<ext>`. The image record
+lives in `card.json`'s `customMetadata`, beside the card writer's fields:
+`image_hash`, `image_revision` and each theme's extension (`light`, `dark`).
+It names the current hash and the highest revision it has seen. An upload
+reads `card.json`, body and metadata, and puts the same body and card fields
+with the new record, fenced on the etag it read; a refused put reads again, up
+to three times. The card writer copies the record the same way, so a card
+write racing an upload keeps both. An upload for a Page with no `card.json`
+creates it with the body `null`, which reads as no card. A swap to another hash
+with a lower revision is refused as stale, so an upload for an older first
+screen that lands late can't replace a newer one.
+The record references at most one image per theme, not a bound on stored bytes.
 A stale upload retains its image key because a newer accepted upload may already
 reuse that hash/theme key. Rejected uploads and failed writes or deletes can leave
 orphaned bytes. Successful swaps still attempt to delete old images; that separate,
 unfenced cleanup can race with newer uploads reusing those keys.
-`page_cards` adds `image: { card_hash, light, dark }` only when the pointer's
-hash is the stored JSON card's and both themes exist. The image route decides
+`page_cards` adds `image: { card_hash, light, dark }` only when the record's
+hash is the stored JSON card's and both themes exist.
+
+Builds before the record moved into `card.json` kept it in an empty
+`card/latest` pointer object. A `card.json` without `image_revision` is that
+legacy shape. `page_cards`, `/p/<id>/card.json` and the stored-hash route then
+also read the pointer, so a picture stored that way still shows. The next card
+write or upload of the Page copies the pointer's record into `card.json`; an
+upload starts from its hash, revision and themes. Nothing writes the pointer,
+and nothing reads it once `card.json` holds a record. A Page never edited or
+captured again keeps the legacy shape and its second read. The image route decides
 access as `page_cards` does, on every request: the caller's own Catalog entry
 for an owned Page, or its shared entry plus the Page host's record-only check.
 A grid of image cards boots no Page document, and a revoked grant fails on
 the next fetch. Its responses are `private, immutable`
-and carry `nosniff`. Purge and tombstone delete `card.json`, the image pointer and
-its referenced images, plus orphans found in at most four prefix-listing pages.
+and carry `nosniff`. Purge and tombstone delete `card.json`, the legacy pointer
+and the images either record names, plus orphans found in at most four
+prefix-listing pages.
+An upload whose recheck finds the Page purged deletes the same set.
 That bounded cleanup may leave orphaned bytes beyond the listing limit.
 The server can't check that the pixels match the content. That is the trust of
 any image the owner inserts into the Page, and only the Page's readers see it.

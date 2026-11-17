@@ -3,6 +3,14 @@ import { test } from "node:test";
 import { runTable } from "../shared/machine-test.mjs";
 import { PAGE_CARD_KEY, PageCardWriter, pageCardWriterMachine } from "./page-card-writer.mjs";
 import { cardBucket } from "./card-bucket-fixture.mjs";
+import { cardKey } from "../model/page-card.mjs";
+import {
+  cardImageMetadata,
+  cardImagePointerKey,
+  cardImageRecordOf,
+  cardObjectStore,
+  storeCardImage,
+} from "./card-images.mjs";
 
 const H1 = "1".repeat(64);
 const H2 = "2".repeat(64);
@@ -133,32 +141,12 @@ test("the page-card-writer machine covers every state and event", async () => {
   assert.equal(result.unreachable, 6);
 });
 
-/** The card's object store over a bucket, as the Page host adapts it. */
-const KEY = "pages/p/card.json";
+/** The card's object store over a bucket, as the Page host adapts it
+ * (card-images.mjs cardObjectStore, without its deadlines). */
+const PAGE = "p";
+const KEY = cardKey(PAGE);
 function storeOver(bucket) {
-  return {
-    head: async () => {
-      const object = await bucket.head(KEY);
-      return object
-        ? {
-            etag: object.etag,
-            card_hash: object.customMetadata.card_hash ?? null,
-            content_updated_at: object.customMetadata.content_updated_at ?? null,
-          }
-        : null;
-    },
-    put: async (bundle, { etag }) => {
-      const object = await bucket.put(KEY, JSON.stringify(bundle), {
-        customMetadata: {
-          card_hash: bundle.card_hash,
-          content_updated_at: bundle.content_updated_at ?? "",
-        },
-        onlyIf: etag ? { etagMatches: etag } : { etagDoesNotMatch: "*" },
-      });
-      return object ? { etag: object.etag } : null;
-    },
-    delete: () => bucket.delete(KEY),
-  };
+  return { ...cardObjectStore(bucket, PAGE), delete: () => bucket.delete(KEY) };
 }
 
 /** A writer over in-memory storage and bucket, with its holds collected. */
@@ -193,10 +181,12 @@ function harness({ cards, bucket = cardBucket(), now } = {}) {
     await settle();
   };
   const puts = [];
-  const put = bucket.put.bind(bucket);
-  bucket.put = async (key, value, options) => {
-    puts.push(JSON.parse(value).card_hash);
-    return put(key, value, options);
+  // The card hashes this writer tried to put, refused ones included.
+  const store = writer.store;
+  const put = store.put;
+  store.put = async (bundle, options) => {
+    puts.push(bundle.card_hash);
+    return put(bundle, options);
   };
   return {
     writer,
@@ -429,9 +419,11 @@ test("a host's first write rewrites a stale object even when host/card matches",
   await h.flush();
   assert.deepEqual(h.puts, [H2]);
   assert.deepEqual(h.object(), card(H2));
-  // Later writes trust host/card and the etag they hold: no read, no put.
+  // A later write of the same card trusts host/card: no read, no put.
+  h.bucket.heads.length = 0;
   await h.flush();
   assert.deepEqual(h.puts, [H2]);
+  assert.deepEqual(h.bucket.heads, []);
 });
 
 test("a host's first write adopts a matching object without a put", async () => {
@@ -444,12 +436,21 @@ test("a host's first write adopts a matching object without a put", async () => 
   assert.deepEqual(h.values.get(PAGE_CARD_KEY), { card_hash: H1 }, "host/card catches up");
 });
 
+/** Run `write` once, between the writer's next read and its put. */
+function betweenReadAndPut(h, write) {
+  h.bucket.beforePut = async (key) => {
+    if (key !== KEY) return;
+    h.bucket.beforePut = null;
+    await write();
+  };
+}
+
 test("a put refused by its condition reads the etag again and retries once", async () => {
   const h = harness({ cards: [card(H1), card(H2)] });
   await h.writer.restore();
   await h.flush();
-  // Someone else writes between this host's writes.
-  await h.bucket.seed(KEY, card("3".repeat(64)));
+  // Someone else writes between this host's read and put.
+  betweenReadAndPut(h, () => h.bucket.seed(KEY, card("3".repeat(64))));
   h.puts.length = 0;
   await h.flush();
   assert.equal(h.puts.length, 2, "refused, then written");
@@ -515,18 +516,18 @@ test("a stop during the refused put's second read puts nothing", async () => {
   const h = harness({ cards: [card(H1, T1), card("4".repeat(64), T3)] });
   await h.writer.restore();
   await h.flush();
-  // A newer host wrote between this host's writes, without a later time.
-  await h.bucket.seed(KEY, card(H2));
+  // A newer host writes between this host's read and put, without a later
+  // time; the host stops during the read after the refusal.
+  betweenReadAndPut(h, () => h.bucket.seed(KEY, card(H2)));
   const head = h.bucket.head.bind(h.bucket);
   let reads = 0;
   h.bucket.head = async (key) => {
-    reads++;
-    h.writer.stop();
+    if (key === KEY && ++reads === 2) h.writer.stop();
     return head(key);
   };
   h.puts.length = 0;
   await h.flush();
-  assert.equal(reads, 1);
+  assert.equal(reads, 2);
   assert.deepEqual(h.puts, ["4".repeat(64)], "the refused put, and no retry");
   assert.deepEqual(h.object(), card(H2));
   assert.equal(h.writer.state.name, "stopped");
@@ -559,13 +560,108 @@ test("a refused put retries over an object time past the clock-skew limit", asyn
   const h = harness({ cards: [card(H1, T1), card("4".repeat(64), T2)], now: () => now });
   await h.writer.restore();
   await h.flush();
-  // A node whose clock ran 10 minutes fast wrote between this host's writes.
-  await h.bucket.put(KEY, JSON.stringify(card(H2, ahead)), {
-    customMetadata: { card_hash: H2, content_updated_at: ahead },
-  });
+  // A node whose clock ran 10 minutes fast writes between this host's read
+  // and put.
+  betweenReadAndPut(h, () =>
+    h.bucket.put(KEY, JSON.stringify(card(H2, ahead)), {
+      customMetadata: { card_hash: H2, content_updated_at: ahead },
+    }),
+  );
   h.puts.length = 0;
   await h.flush();
   assert.equal(h.puts.length, 2, "refused, then written");
   assert.deepEqual(h.object(), card("4".repeat(64), T2));
   assert.equal(h.skips.length, 0);
+});
+
+// The card object is shared with card image uploads (card-images.mjs): the
+// writer copies their record, and they copy its card.
+
+/** A 3x2 WebP (the card-images.test.mjs fixture). */
+const WEBP = new Uint8Array(
+  Buffer.from(
+    "UklGRjgAAABXRUJQVlA4ICwAAADwAQCdASoDAAIAAUAmJaACdLoB+AAEyAAA/q4X/yU1/jblq/+QXq3zbGgAAA==",
+    "base64",
+  ),
+);
+/** Both themes of an owner's capture of first screen `hash`. */
+async function capture(bucket, hash, revision = 1) {
+  for (const theme of ["light", "dark"])
+    await storeCardImage(bucket, { pageId: PAGE, hash, theme, bytes: WEBP, revision });
+}
+/** What page_cards would answer: the card's hash and the hash of the image
+ * it shows (null: none). */
+function answer(h) {
+  const record = cardImageRecordOf(h.bucket.objects.get(KEY)?.customMetadata);
+  const hash = h.object()?.card_hash ?? null;
+  const complete = record?.themes.light && record?.themes.dark;
+  return { card: hash, image: complete && record.card_hash === hash ? hash : null };
+}
+
+test("a card write copies the image record: an upload for its hash shows with it", async () => {
+  const h = harness({ cards: [card(H1), card(H2)] });
+  await h.writer.restore();
+  await h.flush();
+  // The owner's tab captures H2 before the host's next flush writes it.
+  await capture(h.bucket, H2);
+  assert.deepEqual(answer(h), { card: H1, image: null }, "an image for another hash never shows");
+  await h.flush();
+  assert.deepEqual(answer(h), { card: H2, image: H2 });
+  assert.equal(h.bucket.refused, 0, "the read before the put saw the upload");
+});
+
+test("a card write racing an upload ends consistent, in either order", async () => {
+  // The upload lands between the card write's read and put: the put is
+  // refused, reads again and copies the record.
+  const first = harness({ cards: [card(H1), card(H2)] });
+  await first.writer.restore();
+  await first.flush();
+  betweenReadAndPut(first, () => capture(first.bucket, H2));
+  await first.flush();
+  assert.equal(first.bucket.refused, 1);
+  assert.deepEqual(first.puts, [H1, H2, H2]);
+  assert.deepEqual(answer(first), { card: H2, image: H2 });
+
+  // The card write lands between the upload's read and put: the upload's
+  // put is refused, reads again and keeps the new card.
+  const second = harness({ cards: [card(H1), card(H2)] });
+  await second.writer.restore();
+  await second.flush();
+  betweenReadAndPut(second, () => second.flush());
+  await capture(second.bucket, H2);
+  assert.equal(second.bucket.refused, 1);
+  assert.deepEqual(answer(second), { card: H2, image: H2 });
+
+  // An upload for the first screen the card write just replaced is stored
+  // but never shown on the newer card.
+  const stale = harness({ cards: [card(H1), card(H2)] });
+  await stale.writer.restore();
+  await stale.flush();
+  betweenReadAndPut(stale, () => stale.flush());
+  await capture(stale.bucket, H1);
+  assert.equal(stale.bucket.refused, 1);
+  assert.equal(stale.object().card_hash, H2, "the card write was kept");
+  assert.deepEqual(answer(stale), { card: H2, image: null });
+});
+
+test("a card write over a legacy object copies the legacy pointer's record", async () => {
+  const h = harness({ cards: [card(H2), card("3".repeat(64))] });
+  await h.bucket.seed(KEY, card(H1), { legacy: true });
+  await h.bucket.put(cardImagePointerKey(PAGE), "", {
+    customMetadata: { card_hash: H2, revision: "4", light: "webp", dark: "png" },
+  });
+  await h.writer.restore();
+  await h.flush();
+  const metadata = h.bucket.objects.get(KEY).customMetadata;
+  assert.deepEqual(metadata, {
+    card_hash: H2,
+    content_updated_at: "",
+    ...cardImageMetadata({ card_hash: H2, revision: 4, themes: { light: "webp", dark: "png" } }),
+  });
+  assert.deepEqual(answer(h), { card: H2, image: H2 }, "the picture survives the rewrite");
+  // The record now lives in card.json: the next write never reads the pointer.
+  h.bucket.heads.length = 0;
+  await h.flush();
+  assert.deepEqual(h.bucket.heads, [KEY]);
+  assert.equal(cardImageRecordOf(h.bucket.objects.get(KEY).customMetadata).card_hash, H2);
 });
