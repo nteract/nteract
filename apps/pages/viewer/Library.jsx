@@ -25,7 +25,13 @@
 //
 // A first page this tab showed before paints from memory (listing-cache.mjs)
 // while the Listing asks for it again, so a return visit within the cache's
-// age limit never starts blank. What a shown page says besides its rows (the
+// age limit never starts blank. On a fresh load, the default view paints
+// from this browser's device cache (library-device-cache.mjs) once the
+// account is known, cards included, and the server's answer replaces it in
+// place: rows are keyed by Page ID, so a row still listed keeps its element.
+// A device row opens through the host like any other. The library has no
+// row action that changes anything (Copy link only copies), so nothing on
+// a device row waits for the live session. What a shown page says besides its rows (the
 // account's quota, the principal that answered) goes to onAnswer.
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
@@ -81,7 +87,7 @@ import { readDisplayMode, writeDisplayMode } from "./display-mode.mjs";
 import { timeCell } from "./relative-time.mjs";
 import { Clock } from "./clock.mjs";
 import { PageCardPreview } from "./PageCardPreview.jsx";
-import { IDLE_CARD, PageCards, cardKeyOf } from "./page-cards.mjs";
+import { IDLE_CARD, PageCards, cardKeyOf, drawnCard } from "./page-cards.mjs";
 import { ChoiceMenu } from "./ChoiceMenu.jsx";
 import { IndexNav, ListingFooter, follow, useConnected } from "./IndexViews.jsx";
 
@@ -151,6 +157,10 @@ export function Library({
   // The owner's latest callbacks, for the listing's subscription and replies.
   const latest = useRef(null);
   latest.current = { onViewChange, onAnswer, onError };
+  // One cache scope per mount: the account this library lists for.
+  const scope = useMemo(() => cache?.scope(principal) ?? null, []);
+  // The grid's card loader, set once it exists, for cards the device kept.
+  const cardsRef = useRef(null);
   const listing = useConnected(() => {
     const created = new Listing({
       fetch: pagesRequest(tool),
@@ -160,9 +170,10 @@ export function Library({
         if (created.snapshot().state.code !== PROJECT_NOT_FOUND) latest.current.onError(message);
       },
       idOf: (page) => page.page_id,
-      cache: cache?.scope(principal) ?? null,
+      cache: scope,
       onShown: ({ quota, principal: answeredBy }) =>
         latest.current.onAnswer?.({ quota, principal: answeredBy }),
+      onRecalled: (record) => cardsRef.current?.recall(record.cards),
     });
     return created;
   });
@@ -219,7 +230,17 @@ export function Library({
   const [display, setDisplay] = useState(() => readDisplayMode(browser()));
   // Card previews for grid mode, one loader per mount. List mode never asks,
   // and neither does a grid that doesn't know its account.
-  const cards = useConnected(() => new PageCards({ tool, principal }));
+  // Cards the device kept draw at once and are asked for again; each answer
+  // is kept for the next visit.
+  const cards = useConnected(
+    () =>
+      new PageCards({
+        tool,
+        principal,
+        onCards: (entries) => scope?.device?.cards(entries),
+      }),
+  );
+  cardsRef.current = cards;
   const chooseDisplay = useCallback((mode) => {
     const shown = writeDisplayMode(browser(), mode);
     if (shown) setDisplay(shown);
@@ -239,7 +260,17 @@ export function Library({
 
   const params = view.params;
   const titles = useMemo(() => projectTitles(projects), [projects]);
-  const items = view.failed ? EMPTY : snapshot.items;
+  // A failed first page lists nothing, except over device rows: the
+  // account's own stay, held shared slots go (listing-machine.mjs `kept`).
+  const items = useMemo(
+    () =>
+      view.kept
+        ? snapshot.items.filter((page) => !page.held)
+        : view.failed
+          ? EMPTY
+          : snapshot.items,
+    [view.kept, view.failed, snapshot.items],
+  );
   const contents = useMemo(
     () => new Set((projects ?? []).map((project) => project.document_id).filter(Boolean)),
     [projects],
@@ -439,7 +470,10 @@ export function Library({
             </button>
           </p>
         )}
-        {view.loading && (
+        {/* Only over an empty body: above rows (pending copies on this
+            device) it would push them down when the first page lands. The
+            bar along the control row still runs. */}
+        {view.loading && rows.length === 0 && (
           <p role="status" className="muted index-status library-state">
             Loading…
           </p>
@@ -677,44 +711,65 @@ function PageList({
             id={list.id}
             hidden={list.folded}
           >
-            {(list.folded ? EMPTY : section.rows).map((row) => (
-              <li className="index-row index-page-row" key={row.id}>
-                <div className="index-cell-name">
-                  <FileText className="index-row-icon" size={19} aria-hidden="true" />
-                  <a
-                    className="index-row-link"
-                    href={row.href}
-                    onPointerDown={onWarm}
-                    onClick={follow(() => onOpen(row.id, { slug: row.slug }))}
-                  >
-                    {row.title}
-                  </a>
-                </div>
-                {source && (
-                  <div className="index-cell-source">
-                    <Source row={row} grouping={grouping} onOpenProject={onOpenProject} />
+            {(list.folded ? EMPTY : section.rows).map((row) =>
+              row.held ? (
+                <HeldRow key={row.id} source={source} />
+              ) : (
+                <li className="index-row index-page-row" key={row.id}>
+                  <div className="index-cell-name">
+                    <FileText className="index-row-icon" size={19} aria-hidden="true" />
+                    <a
+                      className="index-row-link"
+                      href={row.href}
+                      onPointerDown={onWarm}
+                      onClick={follow(() => onOpen(row.id, { slug: row.slug }))}
+                    >
+                      {row.title}
+                    </a>
                   </div>
-                )}
-                <div className="index-cell-updated">
-                  <ActivityTime value={row.activityAt} now={now} />
-                </div>
-                <div className="index-cell-actions">
-                  <button
-                    type="button"
-                    className="icon-button index-row-action"
-                    aria-label={`Copy link to ${row.title}`}
-                    title="Copy link"
-                    onClick={() => onCopyLink(row.id, row.href)}
-                  >
-                    <Copy size={16} aria-hidden="true" />
-                  </button>
-                </div>
-              </li>
-            ))}
+                  {source && (
+                    <div className="index-cell-source">
+                      <Source row={row} grouping={grouping} onOpenProject={onOpenProject} />
+                    </div>
+                  )}
+                  <div className="index-cell-updated">
+                    <ActivityTime value={row.activityAt} now={now} />
+                  </div>
+                  <div className="index-cell-actions">
+                    <button
+                      type="button"
+                      className="icon-button index-row-action"
+                      aria-label={`Copy link to ${row.title}`}
+                      title="Copy link"
+                      onClick={() => onCopyLink(row.id, row.href)}
+                    >
+                      <Copy size={16} aria-hidden="true" />
+                    </button>
+                  </div>
+                </li>
+              ),
+            )}
           </ul>
         )}
       </Sections>
     </div>
+  );
+}
+
+/** A shared row's place from the device cache (pageRow `held`): the shape
+ * of a row with nothing in it, hidden from assistive tech, until the server
+ * lists the row again or drops it. It names nothing and opens nothing. */
+function HeldRow({ source }) {
+  return (
+    <li className="index-row index-page-row index-row-held" aria-hidden="true">
+      <div className="index-cell-name">
+        <FileText className="index-row-icon" size={19} aria-hidden="true" />
+        <span className="index-row-link">{" "}</span>
+      </div>
+      {source && <div className="index-cell-source" />}
+      <div className="index-cell-updated" />
+      <div className="index-cell-actions" />
+    </li>
   );
 }
 
@@ -755,13 +810,26 @@ function PageGrid({ sections, folded, onToggle, busy, onOpen, onOpenProject, onW
 function GridCard({ row, cards, onOpen, onWarm }) {
   const element = useRef(null);
   const key = cardKeyOf(row);
-  const listed = !row.local;
+  const listed = !row.local && !row.held;
   useEffect(
     () => (listed ? cards.observe(element.current, row) : undefined),
     // `row` is read when the key changes; its other fields don't change the ask.
     [cards, key, listed],
   );
   const state = useStore(cards.store, (current) => current.get(key) ?? IDLE_CARD);
+  // A held shared slot: the card's shape, no title, link or preview.
+  if (row.held)
+    return (
+      <li className="index-card index-card-held" ref={element} aria-hidden="true">
+        <div className="index-card-link">
+          <span className="index-card-header">
+            <FileText className="index-card-icon" size={16} aria-hidden="true" />
+            <span className="index-card-title">{" "}</span>
+          </span>
+          <PageCardPreview card={null} />
+        </div>
+      </li>
+    );
   return (
     <li className="index-card" ref={element}>
       <a
@@ -776,7 +844,7 @@ function GridCard({ row, cards, onOpen, onWarm }) {
             {row.title}
           </span>
         </span>
-        <PageCardPreview card={state.name === "shown" ? state.card : null} />
+        <PageCardPreview card={drawnCard(state)} />
       </a>
     </li>
   );

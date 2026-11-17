@@ -1,18 +1,22 @@
 {
   "machine": "listing",
-  "description": "One paged list_pages or list_projects listing behind the Pages library (/ and /pages) and /projects. `params` is the normalized request ({ query, access, sort, projectId }); the machine never looks inside it. The rows live beside it in viewer/listing.mjs; `restore` lists params whose first page this tab showed before (viewer/listing-cache.mjs), painting those rows while the first page loads again. viewer/listing.test.mjs runs each row through the pure machine.",
+  "description": "One paged list_pages or list_projects listing behind the Pages library (/ and /pages) and /projects. `params` is the normalized request ({ query, access, sort, projectId }); the machine never looks inside it. The rows live beside it in viewer/listing.mjs; `restore` lists params whose first page this tab showed before (viewer/listing-cache.mjs), painting those rows while the first page loads again; `recall` lists the default view while the device cache (viewer/library-device-cache.mjs) is read, and `device` paints what it found if the first page hasn't landed. viewer/listing.test.mjs runs each row through the pure machine.",
   "states": [
     "idle",
     "loading",
     "refreshing",
+    "revalidating",
     "ready",
     "more",
     "failed",
+    "kept",
     "stalled"
   ],
   "events": [
     "load",
     "restore",
+    "recall",
+    "device",
     "more",
     "loaded",
     "failed"
@@ -27,9 +31,18 @@
       "idle",
       "failed",
       "Nothing is requested before the first load"
+    ],
+    [
+      "idle",
+      "device",
+      "A device read starts only with recall, which leaves idle"
     ]
   ],
   "cases": {
+    "loading/device": [
+      "current",
+      "stale"
+    ],
     "loading/loaded": [
       "current",
       "stale"
@@ -43,6 +56,14 @@
       "stale"
     ],
     "refreshing/failed": [
+      "current",
+      "stale"
+    ],
+    "revalidating/loaded": [
+      "current",
+      "stale"
+    ],
+    "revalidating/failed": [
       "current",
       "stale"
     ],
@@ -1878,6 +1899,1254 @@
         },
         "effects": [],
         "rejected": "A newer request superseded this one"
+      }
+    },
+    {
+      "label": "recall from idle lists the default view and reads the device",
+      "state": {
+        "name": "idle"
+      },
+      "event": {
+        "type": "recall",
+        "key": "k2",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k2",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [
+          {
+            "type": "fetch",
+            "key": "k2",
+            "params": {
+              "query": "",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
+            "cursor": null
+          },
+          {
+            "type": "read",
+            "key": "k2"
+          }
+        ]
+      }
+    },
+    {
+      "label": "recall from loading lists the default view and reads the device",
+      "state": {
+        "name": "loading",
+        "key": "k1",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "event": {
+        "type": "recall",
+        "key": "k2",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k2",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [
+          {
+            "type": "fetch",
+            "key": "k2",
+            "params": {
+              "query": "",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
+            "cursor": null
+          },
+          {
+            "type": "read",
+            "key": "k2"
+          }
+        ]
+      }
+    },
+    {
+      "label": "recall from refreshing lists the default view and reads the device",
+      "state": {
+        "name": "refreshing",
+        "key": "k1",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "event": {
+        "type": "recall",
+        "key": "k2",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k2",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [
+          {
+            "type": "fetch",
+            "key": "k2",
+            "params": {
+              "query": "",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
+            "cursor": null
+          },
+          {
+            "type": "read",
+            "key": "k2"
+          }
+        ]
+      }
+    },
+    {
+      "label": "recall from revalidating lists the default view and reads the device",
+      "state": {
+        "name": "revalidating",
+        "key": "k1",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "event": {
+        "type": "recall",
+        "key": "k2",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k2",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [
+          {
+            "type": "fetch",
+            "key": "k2",
+            "params": {
+              "query": "",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
+            "cursor": null
+          },
+          {
+            "type": "read",
+            "key": "k2"
+          }
+        ]
+      }
+    },
+    {
+      "label": "recall from ready lists the default view and reads the device",
+      "state": {
+        "name": "ready",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
+        "cursor": "c1"
+      },
+      "event": {
+        "type": "recall",
+        "key": "k2",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k2",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [
+          {
+            "type": "fetch",
+            "key": "k2",
+            "params": {
+              "query": "",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
+            "cursor": null
+          },
+          {
+            "type": "read",
+            "key": "k2"
+          }
+        ]
+      }
+    },
+    {
+      "label": "recall from more lists the default view and reads the device",
+      "state": {
+        "name": "more",
+        "key": "k1",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
+        "cursor": "c1"
+      },
+      "event": {
+        "type": "recall",
+        "key": "k2",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k2",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [
+          {
+            "type": "fetch",
+            "key": "k2",
+            "params": {
+              "query": "",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
+            "cursor": null
+          },
+          {
+            "type": "read",
+            "key": "k2"
+          }
+        ]
+      }
+    },
+    {
+      "label": "recall from failed lists the default view and reads the device",
+      "state": {
+        "name": "failed",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
+        "message": "Offline",
+        "code": null
+      },
+      "event": {
+        "type": "recall",
+        "key": "k2",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k2",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [
+          {
+            "type": "fetch",
+            "key": "k2",
+            "params": {
+              "query": "",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
+            "cursor": null
+          },
+          {
+            "type": "read",
+            "key": "k2"
+          }
+        ]
+      }
+    },
+    {
+      "label": "recall from kept lists the default view and reads the device",
+      "state": {
+        "name": "kept",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
+        "message": "Offline",
+        "code": null
+      },
+      "event": {
+        "type": "recall",
+        "key": "k2",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k2",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [
+          {
+            "type": "fetch",
+            "key": "k2",
+            "params": {
+              "query": "",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
+            "cursor": null
+          },
+          {
+            "type": "read",
+            "key": "k2"
+          }
+        ]
+      }
+    },
+    {
+      "label": "recall from stalled lists the default view and reads the device",
+      "state": {
+        "name": "stalled",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
+        "cursor": "c1",
+        "message": "Offline"
+      },
+      "event": {
+        "type": "recall",
+        "key": "k2",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k2",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [
+          {
+            "type": "fetch",
+            "key": "k2",
+            "params": {
+              "query": "",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
+            "cursor": null
+          },
+          {
+            "type": "read",
+            "key": "k2"
+          }
+        ]
+      }
+    },
+    {
+      "label": "the device answering before the server paints its rows",
+      "case": "current",
+      "state": {
+        "name": "loading",
+        "key": "k1",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "event": {
+        "type": "device",
+        "key": "k1"
+      },
+      "expect": {
+        "state": {
+          "name": "revalidating",
+          "key": "k1",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [
+          {
+            "type": "recall",
+            "key": "k1"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a device read for a superseded request paints nothing",
+      "case": "stale",
+      "state": {
+        "name": "loading",
+        "key": "k2",
+        "params": {
+          "query": "plan",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "event": {
+        "type": "device",
+        "key": "k1"
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k2",
+          "params": {
+            "query": "plan",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [],
+        "rejected": "A newer request superseded this one"
+      }
+    },
+    {
+      "label": "a device read lands after a return visit painted from memory",
+      "note": "Only a superseded recall's read can arrive here.",
+      "state": {
+        "name": "refreshing",
+        "key": "k2",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "event": {
+        "type": "device",
+        "key": "k1"
+      },
+      "expect": {
+        "state": {
+          "name": "refreshing",
+          "key": "k2",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [],
+        "rejected": "A newer request superseded this one"
+      }
+    },
+    {
+      "label": "a second device answer for the same request paints nothing",
+      "state": {
+        "name": "revalidating",
+        "key": "k1",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "event": {
+        "type": "device",
+        "key": "k1"
+      },
+      "expect": {
+        "state": {
+          "name": "revalidating",
+          "key": "k1",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [],
+        "rejected": "Rows already paint for this request"
+      }
+    },
+    {
+      "label": "a device read landing after the server's answer (ready) paints nothing",
+      "state": {
+        "name": "ready",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
+        "cursor": "c1"
+      },
+      "event": {
+        "type": "device",
+        "key": "k1"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
+          "cursor": "c1"
+        },
+        "effects": [],
+        "rejected": "The first page already settled"
+      }
+    },
+    {
+      "label": "a device read landing after the server's answer (more) paints nothing",
+      "state": {
+        "name": "more",
+        "key": "k1",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
+        "cursor": "c1"
+      },
+      "event": {
+        "type": "device",
+        "key": "k1"
+      },
+      "expect": {
+        "state": {
+          "name": "more",
+          "key": "k1",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
+          "cursor": "c1"
+        },
+        "effects": [],
+        "rejected": "The first page already settled"
+      }
+    },
+    {
+      "label": "a device read landing after the server's answer (failed) paints nothing",
+      "state": {
+        "name": "failed",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
+        "message": "Offline",
+        "code": null
+      },
+      "event": {
+        "type": "device",
+        "key": "k1"
+      },
+      "expect": {
+        "state": {
+          "name": "failed",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
+          "message": "Offline",
+          "code": null
+        },
+        "effects": [],
+        "rejected": "The first page already settled"
+      }
+    },
+    {
+      "label": "a device read landing after the server's answer (kept) paints nothing",
+      "state": {
+        "name": "kept",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
+        "message": "Offline",
+        "code": null
+      },
+      "event": {
+        "type": "device",
+        "key": "k1"
+      },
+      "expect": {
+        "state": {
+          "name": "kept",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
+          "message": "Offline",
+          "code": null
+        },
+        "effects": [],
+        "rejected": "The first page already settled"
+      }
+    },
+    {
+      "label": "a device read landing after the server's answer (stalled) paints nothing",
+      "state": {
+        "name": "stalled",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
+        "cursor": "c1",
+        "message": "Offline"
+      },
+      "event": {
+        "type": "device",
+        "key": "k1"
+      },
+      "expect": {
+        "state": {
+          "name": "stalled",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
+          "cursor": "c1",
+          "message": "Offline"
+        },
+        "effects": [],
+        "rejected": "The first page already settled"
+      }
+    },
+    {
+      "label": "a search typed over device rows supersedes their request",
+      "state": {
+        "name": "revalidating",
+        "key": "k1",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "event": {
+        "type": "load",
+        "key": "k2",
+        "params": {
+          "query": "plan",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k2",
+          "params": {
+            "query": "plan",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [
+          {
+            "type": "fetch",
+            "key": "k2",
+            "params": {
+              "query": "plan",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
+            "cursor": null
+          }
+        ]
+      }
+    },
+    {
+      "label": "a view this tab showed restores over device rows",
+      "state": {
+        "name": "revalidating",
+        "key": "k1",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "event": {
+        "type": "restore",
+        "key": "k2",
+        "params": {
+          "query": "plan",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "refreshing",
+          "key": "k2",
+          "params": {
+            "query": "plan",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [
+          {
+            "type": "paint",
+            "params": {
+              "query": "plan",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            }
+          },
+          {
+            "type": "fetch",
+            "key": "k2",
+            "params": {
+              "query": "plan",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
+            "cursor": null
+          }
+        ]
+      }
+    },
+    {
+      "label": "Load more waits for the server's first page under device rows",
+      "state": {
+        "name": "revalidating",
+        "key": "k1",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "event": {
+        "type": "more",
+        "key": "k2"
+      },
+      "expect": {
+        "state": {
+          "name": "revalidating",
+          "key": "k1",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [],
+        "rejected": "The first page is still loading"
+      }
+    },
+    {
+      "label": "the server's first page replaces the device rows",
+      "case": "current",
+      "state": {
+        "name": "revalidating",
+        "key": "k1",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "event": {
+        "type": "loaded",
+        "key": "k1",
+        "cursor": "c2"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
+          "cursor": "c2"
+        },
+        "effects": [
+          {
+            "type": "show",
+            "key": "k1",
+            "append": false
+          }
+        ]
+      }
+    },
+    {
+      "label": "a superseded answer under device rows is ignored",
+      "case": "stale",
+      "state": {
+        "name": "revalidating",
+        "key": "k1",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "event": {
+        "type": "loaded",
+        "key": "k0",
+        "cursor": null
+      },
+      "expect": {
+        "state": {
+          "name": "revalidating",
+          "key": "k1",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [],
+        "rejected": "A newer request superseded this one"
+      }
+    },
+    {
+      "label": "a failed first page keeps the device rows",
+      "case": "current",
+      "state": {
+        "name": "revalidating",
+        "key": "k1",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "event": {
+        "type": "failed",
+        "key": "k1",
+        "message": "Offline",
+        "code": null
+      },
+      "expect": {
+        "state": {
+          "name": "kept",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
+          "message": "Offline",
+          "code": null
+        },
+        "effects": [
+          {
+            "type": "report",
+            "message": "Offline"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a superseded failure under device rows is ignored",
+      "case": "stale",
+      "state": {
+        "name": "revalidating",
+        "key": "k1",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "event": {
+        "type": "failed",
+        "key": "k0",
+        "message": "Offline",
+        "code": null
+      },
+      "expect": {
+        "state": {
+          "name": "revalidating",
+          "key": "k1",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [],
+        "rejected": "A newer request superseded this one"
+      }
+    },
+    {
+      "label": "Try again over kept device rows lists again",
+      "state": {
+        "name": "kept",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
+        "message": "Offline",
+        "code": null
+      },
+      "event": {
+        "type": "load",
+        "key": "k2",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "loading",
+          "key": "k2",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [
+          {
+            "type": "fetch",
+            "key": "k2",
+            "params": {
+              "query": "",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
+            "cursor": null
+          }
+        ]
+      }
+    },
+    {
+      "label": "a view this tab showed restores over kept device rows",
+      "state": {
+        "name": "kept",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
+        "message": "Offline",
+        "code": null
+      },
+      "event": {
+        "type": "restore",
+        "key": "k2",
+        "params": {
+          "query": "plan",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        }
+      },
+      "expect": {
+        "state": {
+          "name": "refreshing",
+          "key": "k2",
+          "params": {
+            "query": "plan",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          }
+        },
+        "effects": [
+          {
+            "type": "paint",
+            "params": {
+              "query": "plan",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            }
+          },
+          {
+            "type": "fetch",
+            "key": "k2",
+            "params": {
+              "query": "plan",
+              "access": null,
+              "sort": "activity",
+              "projectId": null
+            },
+            "cursor": null
+          }
+        ]
+      }
+    },
+    {
+      "label": "kept device rows have no next page",
+      "state": {
+        "name": "kept",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
+        "message": "Offline",
+        "code": null
+      },
+      "event": {
+        "type": "more",
+        "key": "k2"
+      },
+      "expect": {
+        "state": {
+          "name": "kept",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
+          "message": "Offline",
+          "code": null
+        },
+        "effects": [],
+        "rejected": "The first page failed; load it again"
+      }
+    },
+    {
+      "label": "an answer after the failure that kept device rows is ignored",
+      "state": {
+        "name": "kept",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
+        "message": "Offline",
+        "code": null
+      },
+      "event": {
+        "type": "loaded",
+        "key": "k1",
+        "cursor": null
+      },
+      "expect": {
+        "state": {
+          "name": "kept",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
+          "message": "Offline",
+          "code": null
+        },
+        "effects": [],
+        "rejected": "No request is in flight"
+      }
+    },
+    {
+      "label": "a failure after the one that kept device rows is ignored",
+      "state": {
+        "name": "kept",
+        "params": {
+          "query": "",
+          "access": null,
+          "sort": "activity",
+          "projectId": null
+        },
+        "message": "Offline",
+        "code": null
+      },
+      "event": {
+        "type": "failed",
+        "key": "k1",
+        "message": "Offline",
+        "code": null
+      },
+      "expect": {
+        "state": {
+          "name": "kept",
+          "params": {
+            "query": "",
+            "access": null,
+            "sort": "activity",
+            "projectId": null
+          },
+          "message": "Offline",
+          "code": null
+        },
+        "effects": [],
+        "rejected": "No request is in flight"
       }
     }
   ]
