@@ -261,6 +261,16 @@ import {
   cardImageView,
   readCardImagePointer,
 } from "./card-images.mjs";
+import {
+  NO_TIMING,
+  PHASE_TIMING_HEADER,
+  TIMING_REQUEST_HEADER,
+  attachTiming,
+  createTiming,
+  serverTimingEnabled,
+  timingFor,
+  withServerTiming,
+} from "./server-timing.mjs";
 import { TagError, normalizeTag } from "./page-tags.mjs";
 import { listArguments, tagFromSegment } from "./rest-api.mjs";
 import {
@@ -1039,10 +1049,49 @@ const QUOTA_OPERATIONS = new Set([
 ]);
 /** The resolved Page limit for a Catalog forward (page-quota.mjs). It sits
  * beside `arguments`, never inside them, so a caller can't set it, and
- * /internal/catalog is reachable only through the host. */
-async function quotaFields(env, identity, operation) {
+ * /internal/catalog is reachable only through the host. Timed as `quota`. */
+async function quotaFields(env, identity, operation, timing = NO_TIMING) {
   if (!QUOTA_OPERATIONS.has(operation)) return {};
-  return { page_limit: (await resolvePageQuota(env, identity)).limit };
+  return {
+    page_limit: (await timing.measure("quota", () => resolvePageQuota(env, identity))).limit,
+  };
+}
+
+/** Ask the Catalog to time its phases on `internal`, a gateway forward, when
+ * this request is timed. */
+function askCatalogPhases(internal, timing) {
+  if (timing !== NO_TIMING) internal.headers.set(TIMING_REQUEST_HEADER, "1");
+  return internal;
+}
+
+/** The Catalog's side of askCatalogPhases: `response` with this request's
+ * phases in PHASE_TIMING_HEADER. Only a gateway forward asks, and the
+ * gateway removes the header. A response whose headers refuse writes (one
+ * passed through from another host) goes back without them. */
+function withPhaseTimings(response, timing) {
+  const value = timing.header();
+  if (value && response instanceof Response)
+    try {
+      response.headers.set(PHASE_TIMING_HEADER, value);
+    } catch {
+      // Immutable headers: these phases go unreported.
+    }
+  return response;
+}
+
+/** `response`, a Catalog answer, without its phase timings, which join
+ * `timing` as `cat_` metrics. The header never leaves the gateway. */
+function takeCatalogPhases(response, timing) {
+  const phases = response.headers.get(PHASE_TIMING_HEADER);
+  if (phases === null) return response;
+  timing.merge(phases, { prefix: "cat_" });
+  const headers = new Headers(response.headers);
+  headers.delete(PHASE_TIMING_HEADER);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
 const READ_OPERATIONS = [
@@ -1124,29 +1173,37 @@ async function invoke(request, env, operation, args = {}, seen, call) {
       ...spaceOperations,
     ].includes(operation)
   ) {
+    const timing = timingFor(request);
     const body = {
       operation,
       arguments: args,
-      ...(await quotaFields(env, identity, operation)),
+      ...(await quotaFields(env, identity, operation, timing)),
     };
     const safe = safeToRepeat(operation, args);
-    return withinToolDeadline(
-      async (signal) =>
-        bufferedResponse(
-          await withRepeatSafety(
-            await untilAborted(
-              env.CATALOGS.getByName(identity.principal).fetch(
-                forwarded(request, "/internal/catalog", body),
-                { signal },
+    // `catalog` is the call as the gateway sees it: the Catalog's queue wait
+    // and its work, which its own `cat_` phases break down.
+    return timing.measure("catalog", () =>
+      withinToolDeadline(
+        async (signal) =>
+          takeCatalogPhases(
+            await bufferedResponse(
+              await withRepeatSafety(
+                await untilAborted(
+                  env.CATALOGS.getByName(identity.principal).fetch(
+                    askCatalogPhases(forwarded(request, "/internal/catalog", body), timing),
+                    { signal },
+                  ),
+                  signal,
+                ),
+                safe,
+                signal,
               ),
               signal,
             ),
-            safe,
-            signal,
+            timing,
           ),
-          signal,
-        ),
-      { safe },
+        { safe },
+      ),
     );
   }
   const projectId = PROJECT_CONTENT_OPERATIONS.has(operation) ? contentSelector(args) : null;
@@ -1216,22 +1273,31 @@ async function invoke(request, env, operation, args = {}, seen, call) {
  * allowedPageCards): `{ body: { allowed, principal } }`, or `{ refused }`
  * with the Catalog's own refusal. No Page document loads. */
 async function allowedCards(request, env, identity, ids) {
-  const internal = forwarded(request, "/internal/catalog", {
-    operation: "page_cards",
-    arguments: { page_ids: ids },
-  });
+  const timing = timingFor(request);
+  const internal = askCatalogPhases(
+    forwarded(request, "/internal/catalog", {
+      operation: "page_cards",
+      arguments: { page_ids: ids },
+    }),
+    timing,
+  );
   // An <img> fetch sends no Origin; this request is the gateway's own.
   if (!internal.headers.has("origin"))
     internal.headers.set("origin", new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin);
-  return withinToolDeadline(async (signal) => {
-    const response = await untilAborted(
-      env.CATALOGS.getByName(identity.principal).fetch(internal, { signal }),
-      signal,
-    );
-    // A refusal passes through as the Catalog wrote it, JSON or not.
-    if (response.status !== 200) return { refused: await bufferedResponse(response, signal) };
-    return { body: await readResponseJson(response, signal) };
-  });
+  return timing.measure("catalog", () =>
+    withinToolDeadline(async (signal) => {
+      const response = takeCatalogPhases(
+        await untilAborted(
+          env.CATALOGS.getByName(identity.principal).fetch(internal, { signal }),
+          signal,
+        ),
+        timing,
+      );
+      // A refusal passes through as the Catalog wrote it, JSON or not.
+      if (response.status !== 200) return { refused: await bufferedResponse(response, signal) };
+      return { body: await readResponseJson(response, signal) };
+    }),
+  );
 }
 
 /**
@@ -1246,12 +1312,16 @@ async function pageCards(request, env, identity, args) {
   if (decided.refused) return decided.refused;
   const allowed = Array.isArray(decided.body?.allowed) ? decided.body.allowed : [];
   const bucket = env.PAGES_ASSETS;
+  // Every R2 read, a card object or an image pointer, is one `r2` run.
+  const timing = timingFor(request);
   const cards = await readPageCards(ids, bucket ? allowed : [], {
-    readObject: async (key) => {
-      const object = await bucket.get(key);
-      return object ? await object.text() : null;
-    },
-    readImage: async (id) => cardImageView(id, await readCardImagePointer(bucket, id)),
+    readObject: (key) =>
+      timing.measure("r2", async () => {
+        const object = await bucket.get(key);
+        return object ? await object.text() : null;
+      }),
+    readImage: async (id) =>
+      cardImageView(id, await timing.measure("r2", () => readCardImagePointer(bucket, id))),
     onError: (error) => logFailure(error, "page-cards"),
   });
   return json({ cards, principal: decided.body.principal ?? identity.principal });
@@ -1644,12 +1714,15 @@ const gateway = {
         return response;
       }
       if (url.pathname === "/api/tools" && request.method === "POST") {
+        // Phase timings go only on an answer to a caller who authenticated.
+        const timing = serverTimingEnabled(env) ? createTiming() : NO_TIMING;
+        const endTotal = timing.start("total");
         let response;
         let usage = toolUsage(request, "http-tools", undefined, undefined, "tool", env);
         try {
           const body = await readJson(request);
           usage = toolUsage(request, "http-tools", body?.operation, body?.arguments, "tool", env);
-          const invocationRequest = withMcpAgent(request, bodyAgent(body));
+          const invocationRequest = attachTiming(withMcpAgent(request, bodyAgent(body)), timing);
           response = await invokeProjectApi(
             (internal, internalArgs) =>
               invoke(invocationRequest, env, internal, internalArgs, usage.seen, {
@@ -1664,7 +1737,9 @@ const gateway = {
         } catch (error) {
           response = errorResponse(error, "gateway");
         }
-        return await withRefusalCode(await usage.finish(response));
+        const answer = await withRefusalCode(await usage.finish(response));
+        endTotal();
+        return usage.seen.identity ? withServerTiming(answer, timing) : answer;
       }
       if (url.pathname === "/api/pages") {
         // list_pages, with its query string as its arguments.
@@ -1772,17 +1847,27 @@ const gateway = {
       );
       if (cardImageRoute) {
         const [, pageId, file] = cardImageRoute;
-        return await handleCardImage(request, env, {
+        // Reads are timed; an upload is not. Only a caller who authenticated
+        // reaches authorizeRead, so only its answer carries the timings.
+        const timing =
+          request.method !== "PUT" && serverTimingEnabled(env) ? createTiming() : NO_TIMING;
+        attachTiming(request, timing);
+        const endTotal = timing.start("total");
+        let authenticated = false;
+        const answer = await handleCardImage(request, env, {
           pageId,
           file,
           authorizeUpload: (args) => authorizeCardImage(request, env, pageId, args),
           // A card image is read where its card is: page_cards' decision.
           authorizeRead: async (identity) => {
+            authenticated = true;
             const decided = await allowedCards(request, env, identity, [pageId]);
             return !decided.refused && decided.body?.allowed?.includes(pageId) === true;
           },
           recheckUpload: () => authorizeImage(request, env, pageId, false),
         });
+        endTotal();
+        return authenticated ? withServerTiming(answer, timing) : answer;
       }
       if (url.pathname === "/api/link-preview") {
         await authenticate(request, env);
@@ -1905,11 +1990,20 @@ export class Catalog {
     // each other.
     if (new URL(request.url).pathname === "/internal/location") return this.location(request);
     if (new URL(request.url).pathname === "/internal/project-discovery") return this.run(request);
+    // A gateway forward that asks for phase timings gets them back in an
+    // internal header (server-timing.mjs); `queue` is the wait for this
+    // Catalog's serial queue.
+    const timing = request.headers.has(TIMING_REQUEST_HEADER) ? createTiming() : NO_TIMING;
+    attachTiming(request, timing);
+    const endQueue = timing.start("queue");
     // A request whose `run` returns `AfterQueue` finishes after the queue has
     // released it, and holds itself open until then (request-hold.mjs).
-    const answer = this.queue(() => this.run(request)).then((result) =>
-      result instanceof AfterQueue ? result.finish() : result,
-    );
+    const answer = this.queue(() => {
+      endQueue();
+      return this.run(request);
+    })
+      .then((result) => (result instanceof AfterQueue ? result.finish() : result))
+      .then((response) => withPhaseTimings(response, timing));
     holdUntilSettled(this.ctx, answer);
     return answer;
   }
@@ -4091,21 +4185,31 @@ export class Catalog {
       throw new HttpError(400, "limit must be an integer from 1 to 100", "invalid_list_arguments");
     if (args.cursor !== undefined && args.cursor !== null && typeof args.cursor !== "string")
       throw new HttpError(400, "Invalid cursor; restart from the first page", "invalid_cursor");
-    for (const spaceId of await invitedProjects(this.env, identity)) {
+    const timing = timingFor(request);
+    // One Project host read, timed as a `space_read` run.
+    const readSpace = (spaceId) =>
+      timing.measure("space_read", () =>
+        this.env.PROJECTS.getByName(spaceId).fetch(
+          forwarded(request, "/internal/space/read", { space_id: spaceId }),
+        ),
+      );
+    for (const spaceId of await timing.measure("invites", () =>
+      invitedProjects(this.env, identity),
+    )) {
       // An invitation is an untrusted candidate, not an existing membership.
       // Capacity conflicts or unavailable candidate hosts must not prevent
       // this account from listing unrelated Projects. The next listing retries.
       try {
-        const response = await this.env.PROJECTS.getByName(spaceId).fetch(
-          forwarded(request, "/internal/space/read", { space_id: spaceId }),
-        );
+        const response = await readSpace(spaceId);
         await response.body?.cancel();
       } catch {
         // Nothing from a failed candidate, including its title, is disclosed.
       }
     }
+    const endDiscovery = timing.start("discovery");
     const discovered = await storage.list({ prefix: "project-discovery/" });
     const opened = await openedProjects(storage);
+    endDiscovery();
     if (discovered.size || opened.length) {
       // Owned Projects, member hints and opened hints, one candidate per
       // Project, so a Project with more than one is read once.
@@ -4119,9 +4223,7 @@ export class Catalog {
       const spaces = [];
       for (const candidate of candidates.values()) {
         if (candidate.pending || candidate.deletion) continue;
-        const response = await this.env.PROJECTS.getByName(candidate.space_id).fetch(
-          forwarded(request, "/internal/space/read", { space_id: candidate.space_id }),
-        );
+        const response = await readSpace(candidate.space_id);
         if (response.ok) spaces.push(await response.json());
         else if (![403, 404, 409].includes(response.status))
           throw new HttpError(503, "Project access is temporarily unavailable");
@@ -4179,11 +4281,12 @@ export class Catalog {
     const epoch = catalogIndexEpoch(this.env);
     if (epoch) {
       try {
-        const db = await withTimeout(
-          catalogIndexDatabase(this.env, this.ctx),
-          catalogIndexTimeouts.read,
+        const db = await timing.measure("d1_open", () =>
+          withTimeout(catalogIndexDatabase(this.env, this.ctx), catalogIndexTimeouts.read),
         );
-        await reconcileSpaceIndex({ db, storage, principal: identity.principal, epoch });
+        await timing.measure("reconcile", () =>
+          reconcileSpaceIndex({ db, storage, principal: identity.principal, epoch }),
+        );
         source = spaceIndexSource(db, { principal: identity.principal });
       } catch (error) {
         logFailure(error, "catalog-index");
@@ -4222,13 +4325,15 @@ export class Catalog {
     let found;
     if (source) {
       try {
-        found = await scan(source);
+        found = await timing.measure("candidates", () => scan(source));
       } catch (error) {
         if (!(error instanceof CatalogIndexUnavailable)) throw error;
         logFailure(error, "catalog-index");
       }
     }
-    found ??= await scan(await spaceCatalogSource(storage));
+    found ??= await timing.measure("candidates", async () =>
+      scan(await spaceCatalogSource(storage)),
+    );
     const more = found.length > limit;
     return json({
       spaces: found.slice(0, limit).map(({ space }) => space),
@@ -4269,19 +4374,29 @@ export class Catalog {
    * listing that meets it. */
   async pageCards(request, identity, args) {
     const ids = parsePageCardIds(args.page_ids);
-    const allowed = await allowedPageCards(ids, {
-      storage: this.storage,
-      verifyShared: (pageId) => this.verifyShared(request, pageId),
-      map: boundedMap,
-      checks: sharedCheckBounds.concurrency,
-    });
+    const allowed = await timingFor(request).measure("cards", () =>
+      allowedPageCards(ids, {
+        storage: this.storage,
+        verifyShared: (pageId) => this.verifyShared(request, pageId),
+        map: boundedMap,
+        checks: sharedCheckBounds.concurrency,
+      }),
+    );
     return json({ allowed, principal: identity.principal });
   }
 
   /** Ask the Page host, with the caller's own credentials, for one shared
    * title. A host that does not answer within the deadline counts as
-   * unavailable, never as denied. */
+   * unavailable, never as denied. Each check is one `verify` run. */
   async verifyShared(request, pageId) {
+    const end = timingFor(request).start("verify");
+    try {
+      return await this.checkShared(request, pageId);
+    } finally {
+      end();
+    }
+  }
+  async checkShared(request, pageId) {
     try {
       const response = await withTimeout(
         this.env.PAGES.getByName(pageId).fetch(forwarded(request, "/internal/catalog", {})),
@@ -4300,13 +4415,15 @@ export class Catalog {
 
   /** Child IDs of a Page another account owns, from that account's
    * Catalog. Only its owner's Catalog records what sits under it. */
-  async childIdsFromOwner(owner, parentId) {
+  async childIdsFromOwner(owner, parentId, timing = NO_TIMING) {
     try {
       if (typeof owner !== "string") throw Error("Shared Page check named no owner");
-      const response = await withTimeout(
-        this.env.CATALOGS.getByName(owner).fetch(locationRequest({ children_of: parentId })),
-        catalogIndexTimeouts.verify,
-        "Owner location read timed out",
+      const response = await timing.measure("location", () =>
+        withTimeout(
+          this.env.CATALOGS.getByName(owner).fetch(locationRequest({ children_of: parentId })),
+          catalogIndexTimeouts.verify,
+          "Owner location read timed out",
+        ),
       );
       if (!response.ok) throw Error(`Owner location read failed: ${response.status}`);
       const { children } = await response.json();
@@ -4331,9 +4448,10 @@ export class Catalog {
    * source's title snapshot, not the verified title shown.
    */
   async listPages(request, identity, args, limit) {
+    const timing = timingFor(request);
     const options = parseListArguments(args);
     const storage = this.storage;
-    const tagDb = options.tags ? await this.tagDatabase() : null;
+    const tagDb = options.tags ? await timing.measure("tag_db", () => this.tagDatabase()) : null;
     const keep = this.tagKeep(options, tagDb);
     if (options.inTrash) await pruneTombstonedTrash(storage);
     if (options.spaceId) {
@@ -4347,8 +4465,10 @@ export class Catalog {
     // Project is derived from them. A listing builds the map once. The same
     // scan counts every key, which checks the stored counts: a build that
     // wrote keys without them leaves them wrong until this repairs them.
+    const endScan = timing.start("scan");
     const { entries: locations, counts } = await locationScan(storage);
     if (await storage.verifyCounts(counts)) logCountRepair(counts);
+    endScan();
     const quota = { limit, count: counts["page/"], trash_count: counts["trash/"] };
     // Child IDs of a shared parent, from its owner's Catalog.
     let sharedChildren;
@@ -4368,7 +4488,7 @@ export class Catalog {
         sharedChildren =
           options.access === "owned"
             ? []
-            : await this.childIdsFromOwner(shared.page.owner, options.parentId);
+            : await this.childIdsFromOwner(shared.page.owner, options.parentId, timing);
       }
     }
     // A Project's top level (`project_id` with `parent_id: null`) is its
@@ -4428,14 +4548,18 @@ export class Catalog {
     // so a listing filtered by Project or parent reads the entries.
     if (epoch && !filtered && opens) {
       try {
-        db = await withTimeout(catalogIndexDatabase(this.env, this.ctx), catalogIndexTimeouts.read);
-        const ready = await reconcileAccountIndex({
-          db,
-          storage,
-          principal: identity.principal,
-          epoch,
-          verify: (pageId) => this.verifyShared(request, pageId),
-        });
+        db = await timing.measure("d1_open", () =>
+          withTimeout(catalogIndexDatabase(this.env, this.ctx), catalogIndexTimeouts.read),
+        );
+        const ready = await timing.measure("reconcile", () =>
+          reconcileAccountIndex({
+            db,
+            storage,
+            principal: identity.principal,
+            epoch,
+            verify: (pageId) => this.verifyShared(request, pageId),
+          }),
+        );
         // While D1 may miss a Catalog write, a walk over it would end
         // early with no cursor; the Catalog entries serve while the pass
         // and the Page marks settle. A walk continues on the source that
@@ -4461,7 +4585,9 @@ export class Catalog {
     let result;
     if (source) {
       try {
-        result = await this.scanCandidates(request, identity, source, options, scope, after, db);
+        result = await timing.measure("candidates", () =>
+          this.scanCandidates(request, identity, source, options, scope, after, db),
+        );
         result.source = "index";
       } catch (error) {
         if (!(error instanceof CatalogIndexUnavailable)) throw error;
@@ -4484,33 +4610,36 @@ export class Catalog {
       );
     }
     result ??= {
-      ...(await this.scanCandidates(
-        request,
-        identity,
-        // Children of a shared parent are the IDs its owner's Catalog
-        // returned, whether or not this account has discovered them.
-        sharedChildren
-          ? childIdSource(sharedChildren, options.sort)
-          : await catalogSource(storage, {
-              inTrash: options.inTrash,
-              needle: options.needle,
-              sort: options.sort,
-              keep,
-              owned: options.access === "shared" ? () => false : (entry) => located(entry.page_id),
-              // Shared Pages are never in a Project here, and never under a
-              // parent this account owns.
-              shared:
-                options.access !== "owned" && !options.spaceId && options.parentId === undefined,
-            }),
-        options,
-        scope,
-        after,
-        null,
+      ...(await timing.measure("candidates", async () =>
+        this.scanCandidates(
+          request,
+          identity,
+          // Children of a shared parent are the IDs its owner's Catalog
+          // returned, whether or not this account has discovered them.
+          sharedChildren
+            ? childIdSource(sharedChildren, options.sort)
+            : await catalogSource(storage, {
+                inTrash: options.inTrash,
+                needle: options.needle,
+                sort: options.sort,
+                keep,
+                owned:
+                  options.access === "shared" ? () => false : (entry) => located(entry.page_id),
+                // Shared Pages are never in a Project here, and never under a
+                // parent this account owns.
+                shared:
+                  options.access !== "owned" && !options.spaceId && options.parentId === undefined,
+              }),
+          options,
+          scope,
+          after,
+          null,
+        ),
       )),
       source: "catalog",
     };
     if (options.tags || options.includeTags)
-      await this.attachTags(result.pages, tagDb, !!options.tags);
+      await timing.measure("tags", () => this.attachTags(result.pages, tagDb, !!options.tags));
     const response = json({
       pages: result.pages,
       limit: options.limit,
@@ -4585,13 +4714,18 @@ export class Catalog {
   async listSharedProjectPages(request, identity, options) {
     const tagDb = options.tags ? await this.tagDatabase() : null;
     const keep = this.tagKeep(options, tagDb);
-    const response = await this.env.PROJECTS.getByName(options.spaceId).fetch(
-      forwarded(request, "/internal/space/read", { space_id: options.spaceId }),
+    const timing = timingFor(request);
+    const response = await timing.measure("space_read", () =>
+      this.env.PROJECTS.getByName(options.spaceId).fetch(
+        forwarded(request, "/internal/space/read", { space_id: options.spaceId }),
+      ),
     );
     if (!response.ok) throw spaceNotFound();
     const project = await response.json();
-    const locations = await this.env.CATALOGS.getByName(project.owner).fetch(
-      locationRequest({ project_pages: options.spaceId }),
+    const locations = await timing.measure("location", () =>
+      this.env.CATALOGS.getByName(project.owner).fetch(
+        locationRequest({ project_pages: options.spaceId }),
+      ),
     );
     if (!locations.ok) throw new HttpError(503, "Project Pages are temporarily unavailable");
     const entries = (await locations.json()).pages;
