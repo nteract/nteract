@@ -369,3 +369,23 @@ test(
     assert.equal(await restoreDiscovery(t, { interrupt: true }), true);
   },
 );
+
+// The browser counts this answer as the Page being in Trash
+// (viewer/trash.mjs inTrash), so a second Move to Trash clears its copy.
+test("the owner moving a Page already in Trash gets the receipt the first move did", async (t) => {
+  const s = await suite(t);
+  const h = await host(s);
+  await walk(h, 0);
+  const { f } = h;
+  const trash = (nonce) =>
+    f.catalogCall("owner", "delete_page", { page_id: pageId, expected_principal: f.owner, nonce });
+  const first = await trash("first-trash");
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.equal(first.body.state, "trashed");
+  assert.equal(first.body.trashed, true);
+  await settle(h);
+  const again = await trash("second-trash");
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.deepEqual(again.body, first.body);
+  assert.deepEqual(readState(h), { name: "trashed", revision: 1 });
+});

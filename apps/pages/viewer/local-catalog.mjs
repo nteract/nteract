@@ -114,6 +114,47 @@ export function withGrantRevision(next, ...sources) {
   const { grant_revision: _, ...rest } = next;
   return revisions.length ? { ...rest, grant_revision: Math.max(...revisions) } : rest;
 }
+/**
+ * Record that the Page host moved this account's Page to Trash: the stored
+ * entry's access gains `trashed: true`, so the library stops listing it
+ * (listLocalPages) and Trash lists it instead. Everything else stays,
+ * snapshot, `pending` and `localEdits` included, so the copy is there to
+ * restore. A host-verified checkpoint written after a restore carries the
+ * untrashed grant and lists the copy again (writeLocalPage).
+ *
+ * Call it only on the host's answer that the Page is in this account's
+ * Trash, after this tab's sessions of the Page have closed, so their final
+ * checkpoint lands first. `grant` and `revision` are the grant the caller
+ * held (entryStanding). Nothing is written for a missing entry, another
+ * account's entry, a deletion or access marker, or a newer grant's entry.
+ * Resolves with the stored entry, or null when nothing was written.
+ */
+export async function markLocalPageTrashed(identity, pageId, { grant, revision } = {}) {
+  if (!identity?.principal) return null;
+  return store.run("readwrite", (records, done, fail) => {
+    const request = records.get(key(identity, pageId));
+    request.onsuccess = () => {
+      try {
+        const previous = request.result ? JSON.parse(decoder.decode(request.result)) : null;
+        if (
+          !previous ||
+          previous.principal !== identity.principal ||
+          previous.page_id !== pageId ||
+          entryStanding(previous, { grant, revision }) !== "current"
+        ) {
+          done(null);
+          return;
+        }
+        const next = { ...previous, access: { ...previous.access, trashed: true } };
+        records.put(encoder.encode(JSON.stringify(next)), key(identity, pageId));
+        done(next);
+      } catch (error) {
+        fail(error);
+      }
+    };
+    return request;
+  });
+}
 const recoveryKey = (identity, pageId) =>
   `recovery/${encodeURIComponent(identity.principal)}/${pageId}/${crypto.randomUUID()}`;
 /** Add one recovery record for `page` inside a readwrite transaction.
