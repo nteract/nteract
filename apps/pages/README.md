@@ -82,8 +82,11 @@ refused, because each review of the interactive surface found another way
 through it.
 
 People with comment access can use **Comment on chart**, beside Maximize, to
-open the normal Pages composer. The thread anchors to that chart node's
-Automerge marker using the existing selection cursors. It stays with the chart
+open the normal Pages composer below that button. One pill groups a count on
+the left and a plain comment icon on the right. The count opens an existing
+discussion, while the icon always starts a new thread.
+Resolving a thread updates the count; comments leave the chart untinted. The thread anchors to
+that chart node's Automerge marker using the existing selection cursors. It stays with the chart
 when its source refreshes and becomes detached if that node is deleted. This
 is a comment on the whole chart, not a saved point, interval or data revision.
 The action is supplied by Pages; chart specs cannot define it or enable Vega

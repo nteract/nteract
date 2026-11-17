@@ -506,10 +506,14 @@ export function createWordgardCollaboration({
     return ends.length ? Math.min(...ends) - at : null;
   }
 
-  function commentAtPosition(position) {
-    const matching = commentRanges()
+  function commentsAtPosition(position) {
+    return commentRanges()
       .filter((range) => range.state === "open" && range.from <= position && position < range.to)
       .sort((a, b) => a.to - a.from - (b.to - b.from));
+  }
+
+  function commentAtPosition(position) {
+    const matching = commentsAtPosition(position);
     return matching.find((range) => range.id === activeId())?.id ?? matching[0]?.id ?? null;
   }
 
@@ -537,6 +541,7 @@ export function createWordgardCollaboration({
     observeChange,
     revealThread,
     commentAtPosition,
+    commentsAtPosition,
     destroy() {
       visiblePeers.clear();
       beats.clear();

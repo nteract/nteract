@@ -1273,6 +1273,17 @@ dialog::backdrop {
     background: color-mix(in srgb, var(--warning) 48%, transparent);
   }
 }
+/* Charts carry their discussions in the existing comment control. Keep the
+   plot readable while composing, reading, and after posting a comment. The
+   anchor attributes stay in place for the composer and passage navigation. */
+.wordgard-view-node:is(.comment-passage, .comment-draft-passage) {
+  background: transparent;
+  border-bottom: 0;
+  animation: none;
+}
+:is(.comment-passage, .comment-draft-passage) .wordgard-view-embed {
+  outline: none;
+}
 /* A node from a newer build: a notice in place of the node. */
 .unknown-node {
   display: block;

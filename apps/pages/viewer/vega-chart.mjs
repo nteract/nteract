@@ -455,11 +455,41 @@ export function mount(container, { spec, datasets = {}, title = "", comments = n
   actions.className = "wordgard-diagram-actions";
   actions.setAttribute("role", "group");
   actions.setAttribute("aria-label", "Chart actions");
+  const discussion = comments && actions.appendChild(doc.createElement("div"));
+  if (discussion) {
+    discussion.className = "chart-discussion";
+    discussion.setAttribute("role", "group");
+    discussion.setAttribute("aria-label", "Chart comments");
+  }
+  const counter = discussion && discussion.appendChild(doc.createElement("button"));
   const comment =
-    comments && actions.appendChild(diagramButton("Comment on chart", "comment", "", doc));
+    discussion && discussion.appendChild(diagramButton("Comment on chart", "discussion", "", doc));
+  if (counter) {
+    counter.type = "button";
+    counter.className = "icon-button wordgard-diagram-action chart-comment-count";
+    counter.dataset.chartThreads = "";
+    counter.addEventListener("pointerdown", (event) => event.preventDefault());
+    counter.addEventListener("click", () => {
+      if (comments.allowed()) comments.show?.();
+    });
+  }
+  let lastCommentCount = null;
+  const refreshComment = () => {
+    if (!comment) return;
+    comment.hidden = !comments.allowed();
+    discussion.hidden = comment.hidden;
+    const count = comments.count?.() ?? 0;
+    counter.hidden = comment.hidden || count === 0;
+    if (count === lastCommentCount) return;
+    lastCommentCount = count;
+    const label = `Show ${count} open comment ${count === 1 ? "thread" : "threads"} on chart`;
+    counter.setAttribute("aria-label", label);
+    counter.title = label;
+    counter.textContent = String(count);
+  };
   if (comment) {
     comment.dataset.chartComment = "";
-    comment.hidden = !comments.allowed();
+    refreshComment();
     comment.addEventListener("pointerdown", (event) => event.preventDefault());
     comment.addEventListener("click", () => {
       if (comments.allowed()) comments.open();
@@ -478,7 +508,7 @@ export function mount(container, { spec, datasets = {}, title = "", comments = n
   // Permission changes can arrive after a failed draw, when no further
   // render will refresh the header. Keep both pieces of visibility here.
   comment?.addEventListener("pages-comment-access", () => {
-    comment.hidden = !comments.allowed();
+    refreshComment();
     showHeader();
   });
   showHeader();

@@ -262,12 +262,23 @@ export function WordgardEditor(props) {
     latest.current.onComment?.(selected);
     return true;
   }
-  // A chart's or image's own Comment control: select that node and open the
-  // composer on it. `type` is the node type the control's DOM must hold.
+  // Add Comment always starts a new thread; the separate chart count opens
+  // an existing discussion. Both use the same node's native comment anchors.
   function embedComments(type) {
     const allowed = () => !!(latest.current.commentable ?? latest.current.editable);
     return {
       allowed,
+      count(dom) {
+        const editor = view.current;
+        if (!editor || type !== PagesView) return 0;
+        return collaboration.current?.commentsAtPosition(editor.posAtDOM(dom, 0)).length ?? 0;
+      },
+      show(dom) {
+        const editor = view.current;
+        if (!editor || !allowed()) return;
+        const thread = collaboration.current?.commentAtPosition(editor.posAtDOM(dom, 0));
+        if (thread) latest.current.onRevealComment?.(thread, "passage");
+      },
       open(dom) {
         const editor = view.current;
         if (!editor || !allowed()) return;
@@ -1019,6 +1030,8 @@ export function WordgardEditor(props) {
       );
       positionToolbar.current();
       measureCarets();
+      for (const button of editor.dom.querySelectorAll("[data-chart-comment]"))
+        button.dispatchEvent(new Event(COMMENT_ACCESS_EVENT));
     };
     const timer = setInterval(repaint, 1000);
     // Keep remote carets out of Wordgard's document DOM: point widgets can be
@@ -1153,7 +1166,7 @@ export function WordgardEditor(props) {
       "[data-chart-comment], [data-image-comment]",
     ) ?? [])
       button.dispatchEvent(new Event(COMMENT_ACCESS_EVENT));
-  }, [commentable, generation]);
+  }, [commentable, threads, generation]);
   useEffect(() => {
     if (view.current && !view.current.composing)
       view.current.dispatch({ annotations: remoteAnnotations() });

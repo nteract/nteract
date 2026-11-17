@@ -454,6 +454,17 @@ try {
       .click();
     const composer = reader.locator("#comment-popover");
     await expect(composer).toBeVisible();
+    await expect(composer).toHaveAttribute("data-placement", "below");
+    await expect
+      .poll(async () => {
+        const button = await embed(reader, "follows").locator("[data-chart-comment]").boundingBox();
+        const box = await composer.boundingBox();
+        return (
+          Math.abs(box.y - (button.y + button.height + 8)) < 2 &&
+          Math.abs(box.x + box.width - button.x - button.width) < 2
+        );
+      })
+      .toBe(true);
     await expect(reader.locator("[data-comment-draft] .wordgard-view-embed")).toHaveAttribute(
       "data-view-id",
       "follows",
@@ -464,6 +475,33 @@ try {
     await reader.screenshot({ path: `${output}/chart-comment-desktop.png` });
     await composer.getByRole("button", { name: "Comment", exact: true }).click();
     await expect(composer).toHaveCount(0);
+    const countedComment = () =>
+      embed(reader, "follows").getByRole("button", {
+        name: "Show 1 open comment thread on chart",
+        exact: true,
+      });
+    await expect(countedComment()).toHaveText("1");
+    await embed(reader, "follows").locator("[data-chart-comment]").hover();
+    assert.equal(
+      await embed(reader, "follows")
+        .locator("[data-chart-comment]")
+        .evaluate(
+          (button) =>
+            getComputedStyle(button).backgroundColor !==
+            getComputedStyle(button.parentElement).backgroundColor,
+        ),
+      true,
+      "the hovered segment is distinct from the shared pill",
+    );
+    await reader.screenshot({ path: `${output}/chart-pill-add-hover.png` });
+    await countedComment().hover();
+    await reader.screenshot({ path: `${output}/chart-pill-count-hover.png` });
+    await expect(embed(reader, "pinned").locator("[data-chart-comment]")).toHaveText("");
+    await expect(embed(reader, "follows")).toHaveCSS("outline-style", "none");
+    await expect(embed(reader, "follows").locator("..")).toHaveCSS(
+      "background-color",
+      "rgba(0, 0, 0, 0)",
+    );
     await expect
       .poll(async () => {
         const read = (await tool(owner, "read_page", { page_id: pageA, comments: "all" })).body;
@@ -476,7 +514,15 @@ try {
       "data-view-id",
       "follows",
     );
+    await expect(countedComment()).toHaveText("1");
+    await countedComment().click();
+    await expect(reader.locator(".comments[open]")).toContainText(
+      "Could we emphasize the measured points?",
+    );
+    await expect(composer).toHaveCount(0);
+    await reader.screenshot({ path: `${output}/chart-comment-counter-desktop.png` });
     await reader.setViewportSize({ width: 390, height: 844 });
+    await reader.getByRole("button", { name: "Close comments", exact: true }).click();
     await embed(reader, "pinned")
       .getByRole("button", { name: "Comment on chart", exact: true })
       .click();
@@ -505,25 +551,42 @@ try {
       await guest.goto(`${origin}/p/${pageA}`);
       await expectDrawn(embed(guest, "follows"), ["east", "west", "north"]);
       const button = embed(guest, "follows").getByRole("button", {
-        name: "Comment on chart",
+        name: "Show 1 open comment thread on chart",
         exact: true,
       });
       if (role === "viewer") await expect(button).toBeHidden();
       else {
         await button.click();
-        await expect(guest.locator("#comment-popover")).toBeVisible();
-        await expect(guest.locator("[data-comment-draft] .wordgard-view-embed")).toHaveAttribute(
-          "data-view-id",
-          "follows",
+        await expect(guest.locator(".comments[open]")).toContainText(
+          "Could we emphasize the measured points?",
         );
-        await guest
-          .locator("#comment-popover")
-          .getByRole("button", { name: "Cancel", exact: true })
-          .click();
       }
       await guest.context().close();
     }
     complete("chart comment button is available to commenters and hidden from viewers");
+    // The add action must remain available after a chart already has a thread.
+    await embed(reader, "follows")
+      .getByRole("button", { name: "Comment on chart", exact: true })
+      .click();
+    await expect(composer).toBeVisible();
+    await expect(composer).toHaveAttribute("data-placement", "below");
+    await composer
+      .getByRole("textbox", { name: "Comment on selection", exact: true })
+      .fill("Separate question: should this use a weekly total?");
+    await reader.screenshot({ path: `${output}/chart-second-comment-desktop.png` });
+    await composer.getByRole("button", { name: "Comment", exact: true }).click();
+    await expect(embed(reader, "follows").locator("[data-chart-threads]")).toHaveText("2");
+    await reader.reload();
+    await expectDrawn(embed(reader, "follows"), ["east", "west", "north"]);
+    await expect(embed(reader, "follows").locator("[data-chart-threads]")).toHaveText("2");
+    const read = (await tool(owner, "read_page", { page_id: pageA, comments: "all" })).body;
+    assert.equal(
+      read.comments.filter((thread) => thread.selectionContext?.text === "Chart").length,
+      2,
+    );
+    complete(
+      "a chart can start a second independent thread; the composer opens below its add button",
+    );
   }
 
   // The chart Worker this Page runs is the built chunk, served through the
