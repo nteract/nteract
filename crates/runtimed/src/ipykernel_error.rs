@@ -55,9 +55,11 @@ pub(crate) fn classify_ipykernel_diagnostic(
             python_path,
             message,
         } => (
-            KernelErrorReason::DependencyCacheMissingIpykernel,
+            // An unsuccessful interpreter probe establishes no package absence.
+            // Use the generic setup-failure banner with Retry, not cache repair.
+            KernelErrorReason::EnvironmentPrepareFailed,
             format!(
-                "Could not inspect ipykernel in the prepared {env_source} environment.\npython: {}\nprobe error: {}",
+                "Could not inspect ipykernel in the prepared {env_source} environment. This does not mean ipykernel is missing.\nRetry starting the kernel. If the probe keeps failing, check the interpreter and probe error below before changing installed packages.\npython: {}\nprobe error: {}",
                 python_path.display(),
                 message
             ),
@@ -84,6 +86,30 @@ mod tests {
         assert!(details.contains("conda:inline"));
         assert!(details.contains("/tmp/env/bin/python"));
         assert!(details.contains("ModuleNotFoundError"));
+    }
+
+    #[test]
+    fn interpreter_probe_failures_do_not_claim_ipykernel_is_missing() {
+        for message in [
+            "interpreter probe timed out after 10s",
+            "Permission denied (os error 13)",
+            "interpreter exited with status exit status: 1",
+            "parse probe output: expected value at line 1 column 1",
+        ] {
+            let diagnostic = IpykernelDiagnostic::InterpreterProbeFailed {
+                python_path: PathBuf::from("/tmp/env/bin/python"),
+                message: message.to_string(),
+            };
+
+            let (reason, details) = classify_ipykernel_diagnostic(&diagnostic, "conda:inline");
+
+            assert_eq!(reason, KernelErrorReason::EnvironmentPrepareFailed);
+            assert!(details.contains("conda:inline"));
+            assert!(details.contains("/tmp/env/bin/python"));
+            assert!(details.contains(message));
+            assert!(details.contains("Retry"));
+            assert!(details.contains("does not mean ipykernel is missing"));
+        }
     }
 
     #[test]
