@@ -36,8 +36,10 @@ def classify(path: str) -> str:
     filename = "/".join(parts[2:])
     if not re.fullmatch(r"[A-Za-z0-9_.+/-]+", filename) or ".." in filename:
         return "invalid"
-    if filename in METADATA or (
-        filename.startswith("shards/") and filename.endswith(".msgpack.zst")
+    if (
+        filename in METADATA
+        or re.fullmatch(r"[0-9a-f]{64}\.msgpack\.zst", filename)
+        or (filename.startswith("shards/") and filename.endswith(".msgpack.zst"))
     ):
         return "metadata"
     if filename.endswith((".conda", ".tar.bz2")) and filename not in {".conda", ".tar.bz2"}:

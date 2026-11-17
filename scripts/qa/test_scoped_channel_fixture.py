@@ -40,6 +40,13 @@ class FixtureTests(unittest.TestCase):
         self.assertEqual(classify("/related/noarch/shards/abc.msgpack.zst"), "metadata")
         self.assertEqual(classify("/related/noarch/python-1-0.tar.bz2"), "package")
 
+    def test_root_level_content_addressed_shard_is_metadata(self):
+        path = "/related/osx-arm64/" + "a" * 64 + ".msgpack.zst"
+        self.assertEqual(classify(path), "metadata")
+        self.assertEqual(response(path, True)[0], 302)
+        self.assertEqual(response(path, False)[0], 404)
+        self.assertEqual(classify("/related/osx-arm64/not-a-hash.msgpack.zst"), "invalid")
+
     def test_empty_ledger_cannot_pass_a_gate(self):
         with self.assertRaises(ValueError):
             checkpoint([], "metadata")
