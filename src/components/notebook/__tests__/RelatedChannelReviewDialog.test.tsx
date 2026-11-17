@@ -15,6 +15,7 @@ const review: RelatedChannelReview = {
   review_id: "review-a",
   owner_label: "environment.yml",
   state: "pending",
+  scope: "metadata",
   declared_channels: ["https://example.test/selected/"],
   effective_channels: ["https://example.test/base/", "https://example.test/selected/"],
   uninspected_channels: ["https://example.test/base/"],
@@ -69,8 +70,13 @@ describe("related channel review", () => {
   });
 
   it("requires approval of a complete graph's priority order", () => {
-    render(<RelatedChannelReviewDialog review={{ ...review, uninspected_channels: [] }} loaded />);
-    expect(screen.getByRole("button", { name: "Allow and continue" })).toBeEnabled();
+    render(
+      <RelatedChannelReviewDialog
+        review={{ ...review, scope: "install", uninspected_channels: [] }}
+        loaded
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Approve package sources" })).toBeEnabled();
     expect(screen.getByRole("region", { name: "Channel relationships" })).toHaveTextContent(
       "https://example.test/base/",
     );
@@ -82,10 +88,36 @@ describe("related channel review", () => {
       new Error("Environment changed; review it again"),
     );
     render(<RelatedChannelReviewDialog review={review} loaded />);
-    fireEvent.click(screen.getByRole("button", { name: "Allow and continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Allow metadata inspection" }));
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Environment changed"));
     expect(host.trust.approveRelatedChannels).toHaveBeenCalledExactlyOnceWith("review-a");
     expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("requires a separate decision when metadata discovery produces an install review", async () => {
+    host.trust.approveRelatedChannels.mockResolvedValue(undefined);
+    const { rerender } = render(<RelatedChannelReviewDialog review={review} loaded />);
+    fireEvent.click(screen.getByRole("button", { name: "Allow metadata inspection" }));
+    await waitFor(() =>
+      expect(host.trust.approveRelatedChannels).toHaveBeenCalledExactlyOnceWith("review-a"),
+    );
+    rerender(
+      <RelatedChannelReviewDialog
+        review={{
+          ...review,
+          review_id: "install-review",
+          scope: "install",
+          uninspected_channels: [],
+        }}
+        loaded
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Approve package sources" })).toBeEnabled();
+    expect(host.trust.approveRelatedChannels).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Approve package sources" }));
+    await waitFor(() =>
+      expect(host.trust.approveRelatedChannels).toHaveBeenLastCalledWith("install-review"),
+    );
   });
 
   it("does not let a late approval close a newer review", async () => {
@@ -97,7 +129,7 @@ describe("related channel review", () => {
         }),
     );
     const { rerender } = render(<RelatedChannelReviewDialog review={review} loaded />);
-    fireEvent.click(screen.getByRole("button", { name: "Allow and continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Allow metadata inspection" }));
     await waitFor(() => expect(host.trust.approveRelatedChannels).toHaveBeenCalledTimes(1));
     rerender(
       <RelatedChannelReviewDialog
@@ -107,7 +139,7 @@ describe("related channel review", () => {
     );
     await act(async () => resolve());
     expect(screen.getByRole("dialog")).toHaveTextContent("Updated environment");
-    expect(screen.getByRole("button", { name: "Allow and continue" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Allow metadata inspection" })).toBeEnabled();
   });
 
   it("keeps the result when the runtime clears its review before the response", async () => {
@@ -119,7 +151,7 @@ describe("related channel review", () => {
         }),
     );
     const { rerender } = render(<RelatedChannelReviewDialog review={review} loaded />);
-    fireEvent.click(screen.getByRole("button", { name: "Allow and continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Allow metadata inspection" }));
     await waitFor(() => expect(host.trust.approveRelatedChannels).toHaveBeenCalledTimes(1));
     rerender(<RelatedChannelReviewDialog review={null} loaded />);
     await act(async () => resolve());
@@ -136,6 +168,24 @@ describe("related channel review", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(host.trust.declineRelatedChannels).toHaveBeenCalledExactlyOnceWith("review-a");
     expect(host.trust.approveRelatedChannels).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, "future-scope"])("does not approve an unrecognized scope: %s", (scope) => {
+    render(
+      <RelatedChannelReviewDialog
+        review={{ ...review, scope } as unknown as RelatedChannelReview}
+        loaded
+      />,
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(host.trust.approveRelatedChannels).not.toHaveBeenCalled();
+  });
+
+  it("does not infer installation permission from an empty metadata frontier", () => {
+    render(<RelatedChannelReviewDialog review={{ ...review, uninspected_channels: [] }} loaded />);
+    expect(screen.getByRole("button", { name: "Allow metadata inspection" })).toBeInTheDocument();
+    expect(screen.getByText(/It does not approve package installation/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve package sources" })).toBeNull();
   });
 
   it("never exposes approval to a cloud client without execution authority", () => {
