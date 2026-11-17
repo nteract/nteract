@@ -96,6 +96,20 @@ impl LocalEnvironmentSelection {
         })
     }
 
+    /// Preserve imported intent before discovery or launch can fail. A later
+    /// explicit choice owns the revision and must never be replaced by inference.
+    pub(crate) fn adopt_imported_kernelspec(
+        &self,
+        spec: notebook_protocol::protocol::InstalledKernelspec,
+    ) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.revision != 0 || state.applying {
+            return;
+        }
+        state.selected_kernelspec = Some(spec);
+        self.publish(&mut state);
+    }
+
     /// Automatic launch can resolve imported portable intent without a picker apply.
     pub(crate) fn record_launch(
         &self,
@@ -321,10 +335,40 @@ pub(crate) async fn list_installed_packages(room: &NotebookRoom) -> NotebookResp
     }
 }
 
-pub(crate) fn get(room: &NotebookRoom) -> NotebookResponse {
+async fn initialize_imported_intent(room: &NotebookRoom) {
+    if room.local_environment_selection.snapshot().revision != 0
+        || matches!(
+            room.bound_environment.snapshot(),
+            super::bound_environment::BoundEnvironmentState::Bound(_)
+        )
+    {
+        return;
+    }
+    let mode = *room.identity.environment_mode.read().await;
+    let metadata = {
+        let doc = room.doc.read().await;
+        doc.get_metadata_snapshot()
+    };
+    if let Some(name) = crate::kernelspec::imported(metadata.as_ref(), mode) {
+        if let Some(intent) = metadata.and_then(|metadata| metadata.kernelspec) {
+            room.local_environment_selection.adopt_imported_kernelspec(
+                notebook_protocol::protocol::InstalledKernelspec {
+                    name: name.to_ascii_lowercase(),
+                    display_name: intent.display_name,
+                    language: intent.language.unwrap_or_default(),
+                },
+            );
+        }
+    }
+}
+
+pub(crate) async fn get(room: &NotebookRoom) -> NotebookResponse {
     if room.is_hosted() {
         return rejected("Local environments are unavailable for hosted notebooks".into());
     }
+    // Discovery and execution may be blocked by trust or disabled autolaunch.
+    // Reading the selection must still expose the notebook's named intent.
+    initialize_imported_intent(room).await;
     NotebookResponse::EnvironmentSelection {
         selection: room.local_environment_selection.snapshot(),
     }
@@ -387,6 +431,7 @@ pub(crate) async fn apply(
     if room.is_hosted() {
         return rejected("Local environments are unavailable for hosted notebooks".into());
     }
+    initialize_imported_intent(room).await;
     if let Err(rejection) = super::guarded::ensure_trusted(room).await {
         return rejection.into_response();
     }
@@ -474,7 +519,7 @@ pub(crate) async fn apply(
     )
     .await;
     if matches!(response, NotebookResponse::KernelLaunched { .. }) {
-        get(room)
+        get(room).await
     } else {
         response
     }
@@ -660,5 +705,73 @@ mod tests {
             .unwrap()
             .commit(Some(environment("other")));
         assert!(selection.snapshot().applied_kernelspec.is_none());
+    }
+
+    #[test]
+    fn imported_intent_is_not_applied_and_cannot_replace_an_explicit_choice() {
+        let selection = LocalEnvironmentSelection::default();
+        let spec = notebook_protocol::protocol::InstalledKernelspec {
+            name: "missing-julia".into(),
+            display_name: "Julia".into(),
+            language: "julia".into(),
+        };
+        selection.adopt_imported_kernelspec(spec.clone());
+        let imported = selection.snapshot();
+        assert_eq!(imported.selected_kernelspec, Some(spec.clone()));
+        assert!(imported.applied_kernelspec.is_none());
+        assert!(!imported.applying);
+        let automatic = selection.set(None, imported.revision).unwrap();
+        selection.adopt_imported_kernelspec(spec);
+        assert_eq!(selection.snapshot(), automatic);
+        assert!(automatic.selected_kernelspec.is_none());
+    }
+
+    #[tokio::test]
+    async fn initial_selection_exposes_imported_intent_without_launch_or_discovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let room = NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            temp.path(),
+            Arc::new(crate::blob_store::BlobStore::new(temp.path().join("blobs"))),
+            false,
+        );
+        {
+            let mut metadata = notebook_doc::metadata::NotebookMetadataSnapshot::default();
+            metadata.kernelspec = Some(notebook_doc::metadata::KernelspecSnapshot {
+                name: "uninstalled-julia".into(),
+                display_name: "Julia".into(),
+                language: Some("julia".into()),
+                ..Default::default()
+            });
+            metadata.add_uv_dependency("numpy");
+            room.doc
+                .write()
+                .await
+                .set_metadata_snapshot(&metadata)
+                .unwrap();
+        }
+        *room.identity.environment_mode.write().await =
+            notebook_protocol::connection::CreateNotebookEnvironmentMode::Project;
+        assert!(
+            matches!(get(&room).await, NotebookResponse::EnvironmentSelection { selection } if selection.selected_kernelspec.is_none())
+        );
+        *room.identity.environment_mode.write().await =
+            notebook_protocol::connection::CreateNotebookEnvironmentMode::Auto;
+        let NotebookResponse::EnvironmentSelection { selection } = get(&room).await else {
+            panic!("expected local selection")
+        };
+        assert_eq!(
+            selection.selected_kernelspec.as_ref().unwrap().name,
+            "uninstalled-julia"
+        );
+        assert!(selection.applied_kernelspec.is_none());
+        assert!(!selection.applying);
+        room.local_environment_selection
+            .set(None, selection.revision)
+            .unwrap();
+        assert!(
+            matches!(get(&room).await, NotebookResponse::EnvironmentSelection { selection } if selection.selected_kernelspec.is_none())
+        );
     }
 }

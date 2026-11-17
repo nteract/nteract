@@ -591,6 +591,21 @@ async fn handle_attempt(
                 error: "Installed kernelspecs require a local notebook".into(),
             };
         }
+        if apply.is_none() {
+            if let Some(intent) = metadata_snapshot
+                .as_ref()
+                .and_then(|metadata| metadata.kernelspec.as_ref())
+                .filter(|intent| intent.name.eq_ignore_ascii_case(&name))
+            {
+                room.local_environment_selection.adopt_imported_kernelspec(
+                    notebook_protocol::protocol::InstalledKernelspec {
+                        name: name.to_ascii_lowercase(),
+                        display_name: intent.display_name.clone(),
+                        language: intent.language.clone().unwrap_or_default(),
+                    },
+                );
+            }
+        }
         if let Err(rejection) = guarded::ensure_trusted(room).await {
             return rejection.into_response();
         }
