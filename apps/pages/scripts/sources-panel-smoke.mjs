@@ -24,6 +24,9 @@ page.on("pageerror", (error) => errors.push(error.message));
 let pageId;
 const report = { cleaned: false, passed: false, errors, anywidget: !!keys };
 const nonce = () => crypto.randomUUID();
+// The preview's drawn table. `.sift-root` alone also matches Sift's loading
+// placeholder, which can still be in the document when the table first draws.
+const DRAWN_TABLE = ".source-preview .sift-table-container";
 async function tool(operation, args = {}) {
   const response = await context.request.post(`${origin}/api/tools`, {
     headers: { Origin: origin },
@@ -220,14 +223,14 @@ try {
     { timeout: 30000 },
   );
   await panel.getByRole("button", { name: "Expand sources" }).click();
-  await expect(panel.locator(".source-preview .sift-root")).toBeVisible();
+  await expect(panel.locator(DRAWN_TABLE)).toBeVisible();
   await expect(panel.locator(".source-preview")).toContainText("Platform");
   const preview = await panel.locator(".source-table-preview").elementHandle();
   const previewBox = await preview.boundingBox();
   await panel.getByRole("button", { name: "Revisions", exact: true }).click();
   await expect(panel).toContainText("Revision 1");
   await expect(panel).toContainText("A connection is pinned here");
-  await expect(panel.locator(".source-preview .sift-root")).toBeVisible();
+  await expect(panel.locator(DRAWN_TABLE)).toBeVisible();
   assert.equal(
     await panel
       .locator(".source-table-preview")
@@ -244,7 +247,7 @@ try {
   );
   // Sift owns the first Escape while filtering. The pane owns the next two:
   // detail -> list -> closed, matching Comments.
-  const grid = panel.locator(".source-preview .sift-root");
+  const grid = panel.locator(DRAWN_TABLE);
   const histogram = grid.locator(".sift-th", { hasText: "CALLS" }).locator(".sift-th-summary");
   const box = await histogram.boundingBox();
   await page.mouse.move(box.x + 5, box.y + box.height / 2);
@@ -550,7 +553,7 @@ try {
   await expect(panel.getByRole("button", { name: "Revisions", exact: true })).toHaveCount(0);
   await expect(panel).not.toContainText("Follows latest");
   await panel.getByRole("button", { name: "Expand sources" }).click();
-  await expect(panel.locator(".source-preview .sift-root")).toBeVisible();
+  await expect(panel.locator(DRAWN_TABLE)).toBeVisible();
   await expect(panel.locator(".source-preview")).toContainText("Platform");
   await page.screenshot({ path: `${output}/attached-table-wide.png` });
   await panel.getByRole("button", { name: "Narrow sources" }).click();
