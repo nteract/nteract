@@ -5187,7 +5187,7 @@ export class Page {
     const projectAccess =
       identity.principal === metadata?.owner
         ? null
-        : await resolveProjectAccess(this.env, metadata).catch(() => null);
+        : await this.projectAccessFor(identity, metadata);
     const effective = { ...metadata, projectAccess };
     const hidden = this.hiddenRefusal(identity, false, metadata);
     if (hidden) throw hidden;
@@ -5348,6 +5348,11 @@ export class Page {
       const metadata = this.metadata;
       const observed = this.projectAccessState ?? PROJECT_ACCESS_EMPTY;
       const snapshot = await resolveProjectAccess(this.env, metadata).catch(() => null);
+      this.resolvedProjectAccess.set(identity, {
+        owner: metadata?.owner,
+        pageId: metadata?.pageId,
+        snapshot,
+      });
       if (metadata?.owner === this.metadata?.owner && metadata?.pageId === this.metadata?.pageId)
         this.projectAccessState = projectAccessStep(
           this.projectAccessState ?? PROJECT_ACCESS_EMPTY,
@@ -5363,6 +5368,26 @@ export class Page {
 
   get projectAccess() {
     return this.projectAccessState?.snapshot ?? null;
+  }
+
+  /** The Project access `identify` resolved for each identity it returned,
+   * keyed by that identity: `{ owner, pageId, snapshot }`, the raw answer of
+   * resolveProjectAccess for that owner and Page (null when it failed),
+   * before projectAccessStep weighs it. Only the request that holds the
+   * identity can look it up, and the entry goes with the identity. */
+  get resolvedProjectAccess() {
+    return (this.projectAccessResolutions ??= new WeakMap());
+  }
+
+  /** The Project access for `identity` on `metadata`: what `identify`
+   * resolved for it in this request when that was for the same owner and
+   * Page (resolveProjectAccess reads nothing else of the record), otherwise
+   * a new resolution. A failed resolution is null either way. */
+  async projectAccessFor(identity, metadata) {
+    const resolved = this.resolvedProjectAccess.get(identity);
+    if (resolved && resolved.owner === metadata?.owner && resolved.pageId === metadata?.pageId)
+      return resolved.snapshot;
+    return resolveProjectAccess(this.env, metadata).catch(() => null);
   }
 
   /** Load the serving document. A trashed record whose document cannot be
