@@ -3,28 +3,50 @@
 // card; CSS (card-image.css) shows the one for the current theme, and a
 // lazily loaded image that isn't shown isn't fetched. The JSON card stays
 // underneath, so an image that fails to load leaves it showing.
-import { useState } from "react";
+//
+// The grid's first row (Library.jsx FIRST_SCREEN_CARDS) holds the library's largest
+// paint, so its cards' shown image loads eagerly at high priority
+// (`priority`). The hidden theme's image always stays lazy, so it is never
+// fetched while hidden.
+import { useState, useSyncExternalStore } from "react";
+import { themeStore } from "./theme.mjs";
 
 const THEMES = ["light", "dark"];
+// The card's 4:3 box (style.css, .index-card-preview), which the capture
+// draws at (card-shell.mjs CARD_WIDTH × CARD_HEIGHT). The attributes give
+// the ratio before CSS applies; CSS sets the drawn size.
+export const CARD_IMAGE_WIDTH = 640;
+export const CARD_IMAGE_HEIGHT = 480;
 
-/** @param {{ image: { card_hash: string, light: string, dark: string } }} props */
-export function PageCardImage({ image }) {
+/** @param {{ image: { card_hash: string, light: string, dark: string }, priority?: boolean }} props */
+export function PageCardImage({ image, priority = false }) {
   // The hash whose images failed: a newer card tries again.
   const [failed, setFailed] = useState(null);
+  const { resolved } = useSyncExternalStore(
+    themeStore.subscribe,
+    themeStore.getSnapshot,
+    themeStore.getSnapshot,
+  );
   if (failed === image.card_hash) return null;
-  return THEMES.map((theme) => (
-    <img
-      key={theme}
-      className="page-card-image"
-      data-theme={theme}
-      src={image[theme]}
-      alt=""
-      loading="lazy"
-      decoding="async"
-      draggable={false}
-      onError={() => setFailed(image.card_hash)}
-    />
-  ));
+  return THEMES.map((theme) => {
+    const eager = priority && theme === resolved;
+    return (
+      <img
+        key={theme}
+        className="page-card-image"
+        data-theme={theme}
+        src={image[theme]}
+        alt=""
+        width={CARD_IMAGE_WIDTH}
+        height={CARD_IMAGE_HEIGHT}
+        loading={eager ? "eager" : "lazy"}
+        fetchPriority={eager ? "high" : undefined}
+        decoding="async"
+        draggable={false}
+        onError={() => setFailed(image.card_hash)}
+      />
+    );
+  });
 }
 
 /** The card's image references, when they are this build's routes. */

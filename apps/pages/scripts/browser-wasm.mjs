@@ -1,13 +1,19 @@
 // Automerge's WASM must be initialized before its consumers run. One shared
 // module initializes it, so bundling keeps a single top-level await. Only the
 // editor chunk reaches this module; app.js renders without it.
-// viewer/index.html preloads this URL so the download overlaps app.js. The
-// browser reuses a preload only when URL and request mode match, so this
-// module issues the request itself as a plain same-origin fetch(url) call.
-// This is the source name. scripts/build.mjs passes the content-hashed URL
-// to the plugin and writes the same URL into index.html's preload.
+// viewer/wasm-preload.mjs preloads this URL so the download overlaps the
+// editor chunk's. The browser reuses a preload only when URL and request mode
+// match, so this module issues the request itself as a plain same-origin
+// fetch(url) call. This is the source name. scripts/build.mjs passes the
+// content-hashed URL to the plugin and, through wasmUrlDefine, to the
+// preload in theme.js and app.js.
 export const BROWSER_WASM_URLS = Object.freeze({
   automerge: "/automerge.wasm",
+});
+
+/** The esbuild define naming the WASM URL viewer/wasm-preload.mjs preloads. */
+export const wasmUrlDefine = (urls = BROWSER_WASM_URLS) => ({
+  __PAGES_AUTOMERGE_WASM_URL__: JSON.stringify(urls.automerge),
 });
 
 export function browserWasmPlugin(app, urls = BROWSER_WASM_URLS) {

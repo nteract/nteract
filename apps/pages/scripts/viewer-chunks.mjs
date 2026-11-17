@@ -12,7 +12,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { browserMermaidPlugin } from "./browser-mermaid.mjs";
 import { SIFT_WASM_URL, browserSiftPlugin } from "./browser-sift.mjs";
-import { BROWSER_WASM_URLS, browserWasmPlugin } from "./browser-wasm.mjs";
+import { BROWSER_WASM_URLS, browserWasmPlugin, wasmUrlDefine } from "./browser-wasm.mjs";
 import { FAVICON_HREF } from "../shared/favicon.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
 
@@ -88,6 +88,7 @@ export const publicUrl = (file) => {
  * `urls` maps the WASM, Mermaid and Sift source names to the URLs to load. */
 export function viewerBuildOptions(app, dist, define = {}, urls = {}) {
   const require = createRequire(path.join(app, "package.json"));
+  const wasm = { automerge: urls["automerge.wasm"] ?? BROWSER_WASM_URLS.automerge };
   return {
     entryPoints: { app: path.join(app, "viewer/main.jsx") },
     // Shared UI source lives outside this npm workspace. Resolve one React
@@ -110,13 +111,11 @@ export function viewerBuildOptions(app, dist, define = {}, urls = {}) {
     // Metafile paths are relative to dist, e.g. public/chunks/ABCDEFGH.js.
     absWorkingDir: dist,
     metafile: true,
-    define: { "process.env.NODE_ENV": '"production"', ...define },
+    define: { "process.env.NODE_ENV": '"production"', ...wasmUrlDefine(wasm), ...define },
     plugins: [
       browserMermaidPlugin(app, urls["mermaid.js"]),
       browserSiftPlugin(app, urls["sift.wasm"] ?? SIFT_WASM_URL),
-      browserWasmPlugin(app, {
-        automerge: urls["automerge.wasm"] ?? BROWSER_WASM_URLS.automerge,
-      }),
+      browserWasmPlugin(app, wasm),
     ],
   };
 }
@@ -172,6 +171,44 @@ export function viewerSplit(metafile) {
     preloads: shell.filter((output) => output !== VIEWER_ENTRY).sort(),
     styles: styles.sort(),
   };
+}
+
+const EDITOR_ENTRY_INPUT = "../viewer/page-editor.mjs";
+/**
+ * The ceiling on the home route's critical path: app.js plus every chunk it
+ * imports statically, in raw (uncompressed) bytes. The library at / can't
+ * draw until all of it has downloaded and run. A deliberate number, not a
+ * measurement: when it was last set the path was 1,171,669 bytes (1,144.2
+ * KiB) raw, with the library's device cache in it, and the ceiling about 3%
+ * above that. Its largest piece was the Wordgard editor chunk that
+ * MarginThreads.jsx pulls in. Raise it in a change that says why.
+ */
+export const CRITICAL_PATH_CEILING = 1_207_000;
+
+/**
+ * The home route's critical path, checked: the files (app.js and its static
+ * chunks) and their raw size. Throws when the path holds the Page editor's
+ * entry or a WASM runtime, which load only when the editor starts
+ * (viewer/editor-loader.mjs), or when it grows past `ceiling`.
+ */
+export function criticalPath(metafile, ceiling = CRITICAL_PATH_CEILING) {
+  const files = staticOutputs(metafile);
+  for (const file of files)
+    for (const input of Object.keys(metafile.outputs[file].inputs)) {
+      if (input === EDITOR_ENTRY_INPUT)
+        throw new Error(`app.js must load page-editor.mjs lazily; ${file} holds it statically`);
+      if (WASM_RUNTIME_INPUT.test(input) || input.endsWith(".wasm"))
+        throw new Error(`app.js must not reach a WASM runtime statically; ${file} holds ${input}`);
+    }
+  const bytes = files.reduce((sum, file) => sum + metafile.outputs[file].bytes, 0);
+  if (bytes > ceiling)
+    throw new Error(
+      `The home route's critical path (app.js and the chunks it imports statically) is ` +
+        `${bytes} bytes, past its ceiling of ${ceiling}. Move the new code behind the editor ` +
+        `start (a dynamic import), or raise CRITICAL_PATH_CEILING in scripts/viewer-chunks.mjs ` +
+        `on purpose and say why in the change.`,
+    );
+  return { files, bytes };
 }
 
 const CHART_INPUT = "../viewer/view-chart.mjs";
@@ -230,11 +267,12 @@ export function withModulePreloads(html, preloads) {
   return html.replace(STYLESHEET, STYLESHEET + links);
 }
 
-// The attributes in viewer/index.html that name a shell asset.
+// The attributes in viewer/index.html that name a shell asset. The WASM isn't
+// one: theme.js preloads it only where the editor starts at boot
+// (viewer/wasm-preload.mjs).
 const HTML_REFERENCES = Object.freeze({
   "theme.js": 'src="/theme.js"',
   "app.css": 'href="/app.css"',
-  "automerge.wasm": 'href="/automerge.wasm"',
   "app.js": 'src="/app.js"',
 });
 

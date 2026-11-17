@@ -91,6 +91,7 @@ import { UnopenedPage } from "./UnopenedPage.jsx";
 import { formatRefused, sessionFormatStopped, trashArguments } from "./unopened-page.mjs";
 import { reloadGate } from "./build-freshness.mjs";
 import { EditorLoader } from "./editor-loader.mjs";
+import { editorBoot, preloadWasm } from "./wasm-preload.mjs";
 import { SessionHost } from "./session-host.mjs";
 import { useStore } from "./store.mjs";
 import { SourcesLine } from "./SourcesLine.jsx";
@@ -110,23 +111,25 @@ glideSettings();
 marginRequested();
 if (gridRequested()) writeDisplayMode(globalThis.window, "grid");
 
-// The editor, and the WASM runtimes it waits for, load beside the shell
-// from boot, except on the index routes (/projects, /pages), which only list;
-// there the first Page open or creation starts it. Home (/) shows the same
-// library as /pages but starts the editor at boot, since a Page usually opens
-// next. A Page session exists only
-// once it has loaded, so code that holds a session reads `editor.module`
-// directly. A failed import, or a Mermaid renderer that fails to load later,
-// asks the server for its build.
+// The editor, and the WASM runtime it waits for, load beside the shell from
+// boot on a Page, Project content and Home (/), Home at low priority; on the
+// index routes (/pages, /projects) the first Page open or creation starts it
+// (wasm-preload.mjs editorBoot, which theme.js reads too). A Page session
+// exists only once it has loaded, so code that holds a session reads
+// `editor.module` directly. A failed import, or a Mermaid renderer that fails
+// to load later, asks the server for its build. Starting the import also
+// preloads the WASM where theme.js didn't, so both download together.
 const editor = new EditorLoader({
-  load: () =>
-    import("./page-editor.mjs").then((module) => {
+  load: () => {
+    preloadWasm(document);
+    return import("./page-editor.mjs").then((module) => {
       module.onRendererUnavailable(() => void buildMonitor.check());
       return module;
-    }),
+    });
+  },
   checkBuild: () => buildMonitor.check(),
 });
-if (!isIndexRoute(readPageRoute(location.href))) editor.start();
+if (editorBoot(readPageRoute(location.href)).start) editor.start();
 // The routed Page's read-only preview from the head script's discovery
 // (boot-preview.mjs). Read at boot, before a session can take that request.
 // The shell reports the session, navigation, failed opens and the live Page

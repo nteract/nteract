@@ -3009,13 +3009,24 @@ pinned, so it stays in view while the Page scrolls. It names the app, not
 "Pages", which is also what people call their documents.
 
 The viewer is `app.js`, which renders the shell (header, account, sign-in and
-the Page list), plus content-hashed files under `/chunks/`. `app.js` imports the
-editor chunk at boot, and that chunk waits for the WASM runtimes; the
-[editor-load machine](viewer/editor-load-machine.mjs) tracks the import. The
+the Page list), plus content-hashed files under `/chunks/`. The editor chunk
+waits for the WASM runtimes; the
+[editor-load machine](viewer/editor-load-machine.mjs) tracks its import, and
+`editorBoot` in [wasm-preload.mjs](viewer/wasm-preload.mjs) says whether it
+starts at boot and at what priority. A route that opens a document (a Page,
+Project content) starts it at boot. Home (`/`) starts it at boot too, since a
+Page usually opens next, but `theme.js` preloads Automerge's WASM there at
+`fetchpriority="low"`, so the library's card images keep the link. On those
+routes `theme.js` adds the WASM preload in `<head>`, beside `app.js`. The
 index routes, `/projects` and `/pages`, only list, so they render from the
-shell and its static chunks alone. They start the editor import when a Page
-opens or a new Page is created, or a little earlier when a pointer goes down on
-a Page row. A
+shell and its static chunks alone and load neither the editor nor the WASM.
+They start the editor import when a Page opens or a new Page is created, or a
+little earlier when a pointer goes down on a Page row; starting the import
+preloads the WASM, so the two download together. The grid's first row of card
+images (five) loads eagerly at high priority, and a hidden theme's image
+never loads. `scripts/viewer-chunks.mjs` records a ceiling on the size of
+`app.js` and its static chunks, and the build fails past it or if that graph
+reaches the editor or a WASM runtime. A
 release serves only its own chunks, so a tab still running an earlier `app.js`
 can find its editor chunk gone: the path then answers with the app's HTML and
 the import fails. The tab asks `/health` for the build and the banner offers
@@ -3024,8 +3035,8 @@ table chunk only when a dataframe shows; a failed import asks `/health` the
 same way.
 
 Every file `index.html` names carries a content hash too: `app-<hash>.js`,
-`app-<hash>.css`, `theme-<hash>.js` and `automerge-<hash>.wasm`, plus
-`mermaid-<hash>.js` from the editor chunk and
+`app-<hash>.css` and `theme-<hash>.js`, plus `automerge-<hash>.wasm` from
+`theme.js` and `app.js`, `mermaid-<hash>.js` from the editor chunk and
 `sift-<hash>.wasm` from the Sift table chunk. The
 hash is the first 40 bits of the file's sha256 in base32. `_headers` serves
 each hashed file `public, max-age=31536000, immutable` by its exact path, so

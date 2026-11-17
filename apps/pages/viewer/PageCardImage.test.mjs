@@ -71,3 +71,54 @@ test("a card without images, or with references that aren't the image route, dra
     assert.equal(html.includes("<img"), false, JSON.stringify(value.image));
   }
 });
+
+const images = (html) =>
+  [...html.matchAll(/<img [^>]*>/g)].map(([tag]) => ({
+    theme: tag.match(/data-theme="(\w+)"/)[1],
+    loading: tag.match(/loading="(\w+)"/)?.[1],
+    priority: tag.match(/fetchPriority="(\w+)"/i)?.[1] ?? null,
+    decoding: tag.match(/decoding="(\w+)"/)?.[1],
+    width: tag.match(/width="(\d+)"/)?.[1],
+    height: tag.match(/height="(\d+)"/)?.[1],
+  }));
+
+test("a first-screen card loads its shown theme's image eagerly at high priority", () => {
+  // No window here: the theme resolves to light.
+  const html = renderToStaticMarkup(
+    createElement(PageCardPreview, { card: { ...card, image }, priority: true }),
+  );
+  assert.deepEqual(images(html), [
+    {
+      theme: "light",
+      loading: "eager",
+      priority: "high",
+      decoding: "async",
+      width: "640",
+      height: "480",
+    },
+    // The hidden theme's image stays lazy, so it is never fetched while hidden.
+    {
+      theme: "dark",
+      loading: "lazy",
+      priority: null,
+      decoding: "async",
+      width: "640",
+      height: "480",
+    },
+  ]);
+});
+
+test("every other card loads both images lazily, with the 4:3 ratio before CSS applies", () => {
+  for (const { loading, priority, decoding, width, height } of images(render({ ...card, image }))) {
+    assert.equal(loading, "lazy");
+    assert.equal(priority, null);
+    assert.equal(decoding, "async");
+    assert.equal(Number(width) * 3, Number(height) * 4);
+  }
+});
+
+test("the intrinsic size is the size cards are captured at", async () => {
+  const { CARD_HEIGHT, CARD_WIDTH } = await import("./card-shell.mjs");
+  const { CARD_IMAGE_HEIGHT, CARD_IMAGE_WIDTH } = await import("./PageCardImage.jsx");
+  assert.deepEqual([CARD_IMAGE_WIDTH, CARD_IMAGE_HEIGHT], [CARD_WIDTH, CARD_HEIGHT]);
+});

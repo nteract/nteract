@@ -775,6 +775,16 @@ function HeldRow({ source }) {
 
 /** Grid mode: each card is one link to its Page, so it carries no Project
  * label (a link inside a link). */
+// The grid cards whose images load eagerly at high priority. The grid is at
+// most 1200px wide with 200px columns and 1rem gaps (style.css, .index-grid),
+// so its widest layout has 5 columns: this is its first row. The largest
+// paint is the first card image to finish, and
+// scripts/library-lcp-benchmark.mjs on Fast 4G over HTTP/2 measured the same
+// LCP with 5, 10 or 20 eager images (2.40, 2.38 and 2.39 s, 24 captured cards
+// at 1440x900). With nothing to gain from more, the first row keeps the
+// fewest images ahead of everything else on the link. Measure before raising.
+export const FIRST_SCREEN_CARDS = 5;
+
 function PageGrid({ sections, folded, onToggle, busy, onOpen, onOpenProject, onWarm, cards }) {
   // The order batches top up in (page-cards.mjs): the cards as shown, which
   // leaves out a folded group's.
@@ -784,6 +794,19 @@ function PageGrid({ sections, folded, onToggle, busy, onOpen, onOpenProject, onW
         sections.flatMap((section) => (folded.includes(section.key) ? [] : section.rows)),
       ),
     [cards, sections, folded],
+  );
+  // The first-screen cards, whose images load first. A held slot has no
+  // image, so it takes no place among them.
+  const first = useMemo(
+    () =>
+      new Set(
+        sections
+          .flatMap((section) => (folded.includes(section.key) ? [] : section.rows))
+          .filter((row) => !row.held)
+          .slice(0, FIRST_SCREEN_CARDS)
+          .map((row) => row.id),
+      ),
+    [sections, folded],
   );
   return (
     <div className="library-results" aria-busy={busy}>
@@ -796,7 +819,14 @@ function PageGrid({ sections, folded, onToggle, busy, onOpen, onOpenProject, onW
         {(section, name, list) => (
           <ul className="index-grid" aria-label={name} id={list.id} hidden={list.folded}>
             {(list.folded ? EMPTY : section.rows).map((row) => (
-              <GridCard key={row.id} row={row} cards={cards} onOpen={onOpen} onWarm={onWarm} />
+              <GridCard
+                key={row.id}
+                row={row}
+                cards={cards}
+                onOpen={onOpen}
+                onWarm={onWarm}
+                priority={first.has(row.id)}
+              />
             ))}
           </ul>
         )}
@@ -807,7 +837,7 @@ function PageGrid({ sections, folded, onToggle, busy, onOpen, onOpenProject, onW
 
 /** One grid card. A row the server listed asks for its card once it nears
  * the viewport; a row only this browser holds has none to ask for. */
-function GridCard({ row, cards, onOpen, onWarm }) {
+function GridCard({ row, cards, onOpen, onWarm, priority }) {
   const element = useRef(null);
   const key = cardKeyOf(row);
   const listed = !row.local && !row.held;
@@ -844,7 +874,7 @@ function GridCard({ row, cards, onOpen, onWarm }) {
             {row.title}
           </span>
         </span>
-        <PageCardPreview card={drawnCard(state)} />
+        <PageCardPreview card={drawnCard(state)} priority={priority} />
       </a>
     </li>
   );

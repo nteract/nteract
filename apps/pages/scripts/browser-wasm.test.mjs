@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { setImmediate } from "node:timers/promises";
-import { BROWSER_WASM_URLS, browserWasmPlugin } from "./browser-wasm.mjs";
+import { BROWSER_WASM_URLS, browserWasmPlugin, wasmUrlDefine } from "./browser-wasm.mjs";
 
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -84,47 +84,35 @@ test("the startup shell keeps agent guidance out of the JavaScript loading surfa
   assert.doesNotMatch(visible, /Connecting an agent|API-key clients|Opening the editor/);
 });
 
-test("the startup shell preloads the runtime as the request the bundle reuses", async () => {
+test("the startup shell names no WASM: one shell serves every route", async () => {
   const html = await readFile(path.join(app, "viewer/index.html"), "utf8");
   const head = html.slice(0, html.indexOf("</head>"));
-  const preloads = [...head.matchAll(/<link rel="preload"([^>]*)>/g)].map(([, attributes]) => {
-    const crossorigin = attributes.match(/\scrossorigin(?:="([^"]*)")?/);
-    return {
-      href: attributes.match(/href="([^"]*)"/)?.[1],
-      as: attributes.match(/as="([^"]*)"/)?.[1],
-      // fetch(url) is a CORS request with same-origin credentials. A preload
-      // matches it only as crossorigin="anonymous" (or a bare crossorigin).
-      // Without the attribute the preload is a no-cors request, and the
-      // bundle's fetch downloads the file a second time.
-      crossorigin: crossorigin ? crossorigin[1] || "anonymous" : null,
-    };
-  });
-  assert.deepEqual(
-    preloads,
-    Object.values(BROWSER_WASM_URLS).map((href) => ({
-      href,
-      as: "fetch",
-      crossorigin: "anonymous",
-    })),
-  );
+  assert.doesNotMatch(head, /rel="preload"/);
+  assert.doesNotMatch(head, /\.wasm/);
 });
 
-test("the built shell preloads the hashed runtime the editor chunk fetches", async () => {
-  const { VIEWER_ASSETS, hashedAssetPath, publicUrl, withHashedAssets } =
+test("theme.js preloads the hashed runtime the editor chunk fetches", async () => {
+  const { VIEWER_ASSETS, hashedAssetPath, publicUrl, viewerBuildOptions } =
     await import("./viewer-chunks.mjs");
   const assets = Object.fromEntries(
     VIEWER_ASSETS.map((name) => [name, hashedAssetPath(name, `bytes of ${name}`)]),
   );
   const urls = { automerge: publicUrl(assets["automerge.wasm"]) };
-  const html = withHashedAssets(
-    await readFile(path.join(app, "viewer/index.html"), "utf8"),
-    assets,
-  );
-  const head = html.slice(0, html.indexOf("</head>"));
-  const preloads = [...head.matchAll(/<link rel="preload" href="([^"]*)" as="fetch" crossorigin/g)];
-  assert.deepEqual(
-    preloads.map(([, href]) => href),
-    Object.values(urls),
+  // theme.js and app.js both reach the preload through this define.
+  const theme = await build({
+    entryPoints: [path.join(app, "viewer/wasm-preload.mjs")],
+    bundle: true,
+    write: false,
+    format: "esm",
+    platform: "browser",
+    logLevel: "silent",
+    define: wasmUrlDefine(urls),
+  });
+  assert.ok(theme.outputFiles[0].text.includes(JSON.stringify(urls.automerge)));
+  assert.equal(
+    viewerBuildOptions(app, path.join(app, "dist"), {}, { "automerge.wasm": urls.automerge }).define
+      .__PAGES_AUTOMERGE_WASM_URL__,
+    JSON.stringify(urls.automerge),
   );
   const output = await build({
     stdin: {
