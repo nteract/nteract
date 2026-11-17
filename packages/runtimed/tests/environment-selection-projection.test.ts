@@ -4,7 +4,7 @@ import {
   projectRunningEnvironment,
   runningEnvironmentFallbackName,
   type RunningEnvironmentFacts,
-} from "../local-environment-projection";
+} from "../src/environment-selection-projection";
 
 function facts(overrides: Partial<RunningEnvironmentFacts> = {}): RunningEnvironmentFacts {
   return {
@@ -22,7 +22,15 @@ describe("borrowedEnvironmentKind", () => {
   it("treats existing Conda and installed kernelspecs as borrowed, everything else as managed", () => {
     expect(borrowedEnvironmentKind("conda:existing:local")).toBe("conda");
     expect(borrowedEnvironmentKind("kernelspec")).toBe("kernelspec");
-    for (const managed of ["uv:prewarmed", "conda:inline", "pixi:toml", "deno", "", null, undefined])
+    for (const managed of [
+      "uv:prewarmed",
+      "conda:inline",
+      "pixi:toml",
+      "deno",
+      "",
+      null,
+      undefined,
+    ])
       expect(borrowedEnvironmentKind(managed)).toBeNull();
   });
 });
@@ -108,9 +116,7 @@ describe("projectRunningEnvironment", () => {
 
   it("falls back without inventing an identity when the daemon sent no name", () => {
     expect(
-      projectRunningEnvironment(
-        facts({ environmentId: "", environmentName: "", language: "" }),
-      ),
+      projectRunningEnvironment(facts({ environmentId: "", environmentName: "", language: "" })),
     ).toEqual({ id: null, name: "Jupyter kernel", pythonVersion: null, language: null });
     expect(
       projectRunningEnvironment(
