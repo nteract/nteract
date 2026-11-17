@@ -1,4 +1,3 @@
-import { readServerAppSession } from "@cloud/oidc-session-store.ts";
 import { pagesPublicOrigin } from "../agent-guide.mjs";
 import { readAccessToken } from "./oauth-store.mjs";
 import { oauthDriverName } from "./oauth-clients.mjs";
@@ -12,6 +11,7 @@ import { REVISION_PATTERN } from "./revisions.mjs";
 import { kiloIdentity } from "./kilo-config.mjs";
 import { kiloToken, kiloTokenAccount } from "./kilo-token.mjs";
 import { organizationLeases, recordKiloMembership } from "./kilo-membership.mjs";
+import { rememberedServerAppSession } from "./session-memo.mjs";
 import { timingFor } from "./server-timing.mjs";
 
 export class HttpError extends Error {
@@ -435,7 +435,7 @@ async function authenticateRequest(request, env) {
       "credential_missing",
     );
   const session = await timing.measure("auth_session", () =>
-    readServerAppSession(env, request, Math.floor(Date.now() / 1000)),
+    rememberedServerAppSession(env, request),
   );
   // An expired, revoked or unrelated cookie: sign in again. The Origin check
   // already ran for this request.

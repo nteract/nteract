@@ -1360,6 +1360,13 @@ A deployment signs people and agents in with Anaconda, unless
 ([worker/kilo-handoff.mjs](worker/kilo-handoff.mjs)) and also selects Kilo as
 the identity provider ([identity-provider.mjs](identity-provider.mjs)).
 
+With either provider, each isolate remembers a browser session it read from
+D1 for at most 10 seconds, and never past the session's expiry
+([session-memo.mjs](worker/session-memo.mjs)). Signing out forgets it in the
+isolate that handles the sign-out. After sign-out or sign out everywhere,
+another isolate may accept the session for up to 10 seconds. The bound is a
+constant, not a setting.
+
 A Kilo deployment needs two more settings, and refuses to sign anyone in
 without them:
 
