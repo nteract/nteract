@@ -4062,8 +4062,12 @@ late changes nothing. A failed first page over device rows keeps the
 account's own rows with Try again (`kept`). The record is written only under
 the account that answered and the cache revision its request began under,
 patched by Trash and renames, and removed for every account on sign-out,
-Sign out everywhere and an account change. The version is in the key: a new
-format reads nothing old. [PageCardPreview.jsx](viewer/PageCardPreview.jsx) draws the
+Sign out everywhere and an account change. A record paints for 14 days after
+`saved_at`, the time the server last listed its rows to that account here;
+only a fresh first page sets it, so card answers, Trash and renames never
+extend it. A record past the limit, or with a `saved_at` that is missing, not
+a number, or more than 5 minutes ahead of the clock, reads as nothing and the
+read removes it. The version is in the key: a new format reads nothing old. [PageCardPreview.jsx](viewer/PageCardPreview.jsx) draws the
 card through PagePreview's allowlist in its inert mode (no links, controls or
 images), laid out at a reading width and scaled with `transform: scale()`,
 `aria-hidden` with pointer events off: the card's link carries the title.

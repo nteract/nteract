@@ -34,6 +34,17 @@
 // version is in the key: a format change reads nothing from old records and
 // `clear` removes them; nothing migrates.
 //
+// How long a record lives. A record paints for DEVICE_RECORD_MAX_AGE_MS
+// (14 days) after `saved_at`, the time the server last listed its rows to
+// this account here. Only `write` (a fresh first page) sets it: a card
+// answer, a Trash patch or a rename leaves it, so nothing but the server
+// listing the rows again extends their life. A record past the limit, or
+// with a `saved_at` that is missing, not a finite number, or more than
+// DEVICE_CLOCK_SKEW_MS ahead of the clock, reads as nothing, and `read`
+// removes it. So an account that stops using a browser leaves nothing
+// painted there for more than two weeks, and a return after months starts
+// from the server.
+//
 // Failure. Every operation resolves; none throws. A read that fails, stalls
 // or finds nothing leaves the library as it is without the cache (the
 // listing machine ignores a read that lands after the server's answer).
@@ -52,6 +63,11 @@ export const DEVICE_TITLE_MAX = 300;
 /** The largest card a record keeps, as UTF-8 JSON. Stored cards are at most
  * 8 KiB of blocks (CARD_BLOCKS_MAX_BYTES); this leaves room for the rest. */
 export const DEVICE_CARD_MAX_BYTES = 12 * 1024;
+/** How long after the server last listed its rows a record still paints. */
+export const DEVICE_RECORD_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+/** How far ahead of this clock a record's `saved_at` may be (another tab's
+ * clock, a small correction) before it reads as nothing. */
+export const DEVICE_CLOCK_SKEW_MS = 5 * 60 * 1000;
 /** How long `clear` waits for IndexedDB before it lets a sign-out go on. */
 export const DEVICE_CLEAR_DEADLINE_MS = 1_000;
 
@@ -109,12 +125,20 @@ export function storedCard(card) {
   return JSON.parse(json);
 }
 
-/** A record's rows and cards for `principal`, or null when it isn't one this
- * build reads for them. Cards come back as `[{ id, at, card }]`, for owned
- * rows only. */
-export function readRecord(value, principal) {
+/** Whether `record` is within its age limit at `now` (ms since the epoch). */
+export function recordFresh(record, now = Date.now()) {
+  const saved = record?.saved_at;
+  if (typeof saved !== "number" || !Number.isFinite(saved)) return false;
+  return saved <= now + DEVICE_CLOCK_SKEW_MS && now - saved <= DEVICE_RECORD_MAX_AGE_MS;
+}
+
+/** A record's rows and cards for `principal` at `now`, or null when it isn't
+ * one this build reads for them, or it is past its age limit. Cards come
+ * back as `[{ id, at, card }]`, for owned rows only. */
+export function readRecord(value, principal, now = Date.now()) {
   if (!value || typeof value !== "object") return null;
   if (value.v !== LIBRARY_DEVICE_VERSION || value.principal !== principal) return null;
+  if (!recordFresh(value, now)) return null;
   if (!Array.isArray(value.rows)) return null;
   const rows = storedRows(
     value.rows.map((row) => (row?.held ? { ...row, shared: true } : { ...row, shared: false })),
@@ -201,19 +225,28 @@ const encode = (record) => encoder.encode(JSON.stringify(record));
 export class LibraryDeviceCache {
   #store;
   #clearDeadline;
+  #now;
+  /** `now()` is the wall clock in ms since the epoch: `saved_at` has to mean
+   * the same thing across reloads. Tests pass their own. */
   constructor({
     store = new LocalStore({ database: LIBRARY_DEVICE_DATABASE }),
     clearDeadlineMs = DEVICE_CLEAR_DEADLINE_MS,
+    now = Date.now,
   } = {}) {
     this.#store = store;
     this.#clearDeadline = clearDeadlineMs;
+    this.#now = now;
   }
 
-  /** `principal`'s rows and cards (readRecord), or null. Never rejects. */
+  /** `principal`'s rows and cards (readRecord), or null. A record past its
+   * age limit reads as nothing and is removed. Never rejects. */
   async read(principal) {
     if (!principal) return null;
     try {
-      return readRecord(decode(await this.#store.load(deviceKey(principal))), principal);
+      const value = decode(await this.#store.load(deviceKey(principal)));
+      if (value?.principal === principal && !recordFresh(value, this.#now()))
+        void this.remove(principal);
+      return readRecord(value, principal, this.#now());
     } catch {
       return null;
     }
@@ -243,14 +276,20 @@ export class LibraryDeviceCache {
   write(principal, items) {
     if (!principal) return Promise.resolve(false);
     if (!Array.isArray(items) || items.length === 0) return this.remove(principal);
-    return this.#update(principal, (previous) => nextRecord(principal, items, previous));
+    return this.#update(principal, (previous) =>
+      nextRecord(principal, items, previous, this.#now()),
+    );
   }
 
   /** Keep `page_cards` answers (`[{ id, at, card }]`) for rows the record
-   * holds; a null card drops what it kept. */
+   * holds; a null card drops what it kept. It leaves `saved_at`: a card
+   * answer never extends the life of rows the server hasn't listed again,
+   * and a record past its limit takes no cards. */
   writeCards(principal, entries) {
     if (!principal || !entries?.length) return Promise.resolve(false);
-    return this.#update(principal, (record) => (record ? withCards(record, entries) : null));
+    return this.#update(principal, (record) =>
+      record && recordFresh(record, this.#now()) ? withCards(record, entries) : null,
+    );
   }
 
   /** Remove `principal`'s record. */

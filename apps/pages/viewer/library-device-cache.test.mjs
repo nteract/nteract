@@ -8,6 +8,8 @@ import { VirtualTimeScheduler } from "rxjs";
 import { LocalStore } from "./local-store.mjs";
 import {
   DEVICE_CARD_MAX_BYTES,
+  DEVICE_CLOCK_SKEW_MS,
+  DEVICE_RECORD_MAX_AGE_MS,
   DEVICE_ROWS_MAX,
   DEVICE_TITLE_MAX,
   LIBRARY_DEVICE_VERSION,
@@ -134,12 +136,78 @@ test("a card is kept for the content time it was asked for, and an edit drops it
 });
 
 test("a record in another version or for another account reads as nothing", () => {
-  const record = { v: LIBRARY_DEVICE_VERSION, principal: "alice", rows: [owned(1)], cards: {} };
+  const record = {
+    v: LIBRARY_DEVICE_VERSION,
+    principal: "alice",
+    saved_at: Date.now(),
+    rows: [owned(1)],
+    cards: {},
+  };
   assert.equal(readRecord(record, "alice").rows.length, 1);
   assert.equal(readRecord({ ...record, v: LIBRARY_DEVICE_VERSION + 1 }, "alice"), null);
   assert.equal(readRecord(record, "bob"), null);
   assert.equal(readRecord({ ...record, rows: "no" }, "alice"), null);
   assert.equal(readRecord(null, "alice"), null);
+});
+
+test("a record paints for 14 days after the server last listed its rows, then goes", async () => {
+  let now = Date.UTC(2026, 10, 1);
+  const store = new LocalStore({ database: `library-device-test-${++databases}` });
+  const device = new LibraryDeviceCache({ store, now: () => now });
+  await device.write("alice", [owned(1)]);
+  const saved = now;
+  now += DEVICE_RECORD_MAX_AGE_MS;
+  assert.equal((await device.read("alice")).rows.length, 1, "a record at the limit reads");
+  // Cards, Trash and renames don't extend its life.
+  await device.writeCards("alice", [{ id: id(1), at: owned(1).content_updated_at, card: CARD }]);
+  await device.retitle(id(1), "Renamed");
+  await device.forget(id(9));
+  const stored = JSON.parse(new TextDecoder().decode(await store.load(deviceKey("alice"))));
+  assert.equal(stored.saved_at, saved, "writeCards and patches leave saved_at");
+  assert.equal(stored.rows[0].title, "Renamed");
+  now += 1;
+  assert.equal(await device.read("alice"), null, "14 days and 1 ms reads nothing");
+  await settle();
+  assert.deepEqual(await device.keys(), [], "and the read removed it");
+  // A fresh first page starts a new life.
+  await device.write("alice", [owned(1)]);
+  assert.equal((await device.read("alice")).rows.length, 1);
+});
+
+test("a record whose saved_at is missing, malformed or in the future reads nothing", async () => {
+  const now = Date.UTC(2026, 10, 1);
+  const base = { v: LIBRARY_DEVICE_VERSION, principal: "alice", rows: [owned(1)], cards: {} };
+  assert.equal(readRecord({ ...base, saved_at: now }, "alice", now).rows.length, 1);
+  for (const saved_at of [undefined, null, "2026-11-01", Number.NaN, Infinity])
+    assert.equal(readRecord({ ...base, saved_at }, "alice", now), null, String(saved_at));
+  assert.equal(
+    readRecord({ ...base, saved_at: now + DEVICE_CLOCK_SKEW_MS }, "alice", now).rows.length,
+    1,
+    "a small skew is tolerated",
+  );
+  assert.equal(
+    readRecord({ ...base, saved_at: now + DEVICE_CLOCK_SKEW_MS + 1 }, "alice", now),
+    null,
+  );
+  // Stored that way, the read removes it.
+  const store = new LocalStore({ database: `library-device-test-${++databases}` });
+  const device = new LibraryDeviceCache({ store, now: () => now });
+  await store.save(
+    deviceKey("alice"),
+    new TextEncoder().encode(JSON.stringify({ ...base, saved_at: now + 60 * 60_000 })),
+  );
+  assert.equal(await device.read("alice"), null);
+  await settle();
+  assert.deepEqual(await device.keys(), []);
+  // A record past its limit takes no cards.
+  await store.save(
+    deviceKey("bob"),
+    new TextEncoder().encode(JSON.stringify({ ...base, principal: "bob" })),
+  );
+  assert.equal(
+    await device.writeCards("bob", [{ id: id(1), at: owned(1).content_updated_at, card: CARD }]),
+    false,
+  );
 });
 
 test("Trash, a rename and an empty page patch every account's record", async () => {
