@@ -1376,8 +1376,35 @@ report a bounded category, log it once, and close with `request_rejected` or
 
 Cloudflare closes a socket that carries no data for about two minutes (its
 125 s proxy read timeout), so an idle background tab reconnects on that
-cadence. A tab reconnecting after its old socket died takes that socket's
+cadence until it parks. A tab reconnecting after its old socket died takes that socket's
 place ([Plain Automerge sync](#plain-automerge-sync)).
+
+A Page tab hidden for five minutes in a row (`PARK_AFTER_MS`, a constant)
+parks: it closes its sync socket and stops reconnecting, so the Page's
+Durable Object stops renewing the socket's lease every 15 s and ticking usage
+every second. Showing the tab before then cancels the countdown. A parked tab
+reconnects as soon as `visibilitychange` (or `pageshow`) reports it visible,
+with no backoff, no Offline or Reconnecting status and no banner; the status
+keeps saying Saved while it reconnects, catch-up brings in edits made
+elsewhere, and the editor keeps its selection and scroll position. If the
+session expired meanwhile, that reconnect's session check shows the usual
+sign-in notice. Presence for the tab ends while it is parked.
+
+Parking never drops work. It waits until the host has acknowledged every head
+of the Page and comments documents (the same test the close drain uses,
+`recoveryPending`), so a hidden tab with an outstanding edit or receipt keeps
+its socket and parks the moment the receipt lands. A local change while
+parked, such as an image whose upload finishes in the background, reconnects
+at once and parks again once acknowledged. Uploads go over HTTP and don't need
+the socket. The close is the one leaving a Page uses: the socket leaves the
+session before it closes, so nothing counts it as a failure, and the host
+runs its ordinary close: the usage session's last flush, the socket's lease
+and renewal timers cleared, the sender's presence and profile removed for the
+other tabs, and the `sync.close` usage line. Parking is the `parked` state of
+[reconnect-machine.mjs](viewer/reconnect-machine.mjs); its `online` and
+renewal-driven resumes are ignored until the tab shows. Listing routes hold no
+socket, and a tab hidden before its Page first opened starts the countdown
+once it opens.
 
 A Page holds at most 24 sockets, 4 per account, and 20 across members other than
 the owner. A socket over a quota still completes the upgrade, then closes at once

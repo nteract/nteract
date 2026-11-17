@@ -1,12 +1,13 @@
 {
   "machine": "viewer-reconnect",
-  "description": "Automatic reconnects for one viewer PageSession: a 10 s deadline on each socket's authenticated handshake, exponential backoff with a 60 s cap for transient failures, a stop on a refused signing key, a host's Retry-After as the least wait (capped at 60 s), a pause after six admission refusals in a row, and an outage report from the seventh transient failure in a row while retries continue. Runs against viewer/reconnect-machine.mjs in viewer/reconnect-machine.test.mjs.",
+  "description": "Automatic reconnects for one viewer PageSession: a 10 s deadline on each socket's authenticated handshake, exponential backoff with a 60 s cap for transient failures, a stop on a refused signing key, a host's Retry-After as the least wait (capped at 60 s), a pause after six admission refusals in a row, and an outage report from the seventh transient failure in a row while retries continue. A tab hidden for five minutes parks (closes its socket on purpose, with no retry and no backoff) once the host has every edit, and reconnects when it shows or takes a local change. Runs against viewer/reconnect-machine.mjs in viewer/reconnect-machine.test.mjs.",
   "states": [
     "ready",
     "handshaking",
     "waiting",
     "refused",
-    "paused"
+    "paused",
+    "parked"
   ],
   "events": [
     "handshake",
@@ -19,7 +20,11 @@
     "leaseExpired",
     "timer",
     "resume",
-    "halt"
+    "halt",
+    "hiddenTimeout",
+    "synced",
+    "unsynced",
+    "visible"
   ],
   "unreachable": [],
   "cases": {
@@ -40,6 +45,61 @@
     "handshaking/handshakeTimeout": [
       "transient",
       "outage"
+    ],
+    "ready/hiddenTimeout": [
+      "synced",
+      "unsynced",
+      "parking"
+    ],
+    "ready/synced": [
+      "parking",
+      "not-parking"
+    ],
+    "ready/visible": [
+      "parking",
+      "not-parking"
+    ],
+    "handshaking/hiddenTimeout": [
+      "synced",
+      "unsynced",
+      "parking"
+    ],
+    "handshaking/synced": [
+      "parking",
+      "not-parking"
+    ],
+    "handshaking/visible": [
+      "parking",
+      "not-parking"
+    ],
+    "waiting/hiddenTimeout": [
+      "synced",
+      "unsynced",
+      "parking"
+    ],
+    "waiting/synced": [
+      "parking",
+      "not-parking"
+    ],
+    "waiting/visible": [
+      "parking",
+      "not-parking"
+    ],
+    "refused/hiddenTimeout": [
+      "hidden",
+      "parking"
+    ],
+    "refused/visible": [
+      "parking",
+      "not-parking"
+    ],
+    "paused/hiddenTimeout": [
+      "hidden",
+      "parking"
+    ],
+    "paused/visible": [
+      "parking",
+      "not-parking"
     ]
   },
   "rows": [
@@ -1569,6 +1629,1141 @@
         },
         "effects": [],
         "rejected": "No handshake is in progress"
+      }
+    },
+    {
+      "label": "ready: hidden five minutes with every edit acknowledged parks at once",
+      "case": "synced",
+      "state": {
+        "name": "ready",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "hiddenTimeout",
+        "synced": true
+      },
+      "expect": {
+        "state": {
+          "name": "parked"
+        },
+        "effects": [
+          {
+            "type": "park"
+          }
+        ]
+      }
+    },
+    {
+      "label": "ready: hidden five minutes with unacknowledged edits stays connected and waits",
+      "case": "unsynced",
+      "state": {
+        "name": "ready",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "hiddenTimeout",
+        "synced": false
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 2,
+          "refusals": 1,
+          "park": true
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "ready: a second countdown can't fire while one waits",
+      "case": "parking",
+      "state": {
+        "name": "ready",
+        "attempts": 2,
+        "refusals": 1,
+        "park": true
+      },
+      "event": {
+        "type": "hiddenTimeout",
+        "synced": true
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 2,
+          "refusals": 1,
+          "park": true
+        },
+        "effects": [],
+        "rejected": "The hidden tab already waits to park"
+      }
+    },
+    {
+      "label": "ready: the edits reached the host, so the waiting tab parks",
+      "case": "parking",
+      "state": {
+        "name": "ready",
+        "attempts": 2,
+        "refusals": 1,
+        "park": true
+      },
+      "event": {
+        "type": "synced"
+      },
+      "expect": {
+        "state": {
+          "name": "parked"
+        },
+        "effects": [
+          {
+            "type": "park"
+          }
+        ]
+      }
+    },
+    {
+      "label": "ready: synced matters only to a tab waiting to park",
+      "case": "not-parking",
+      "state": {
+        "name": "ready",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "synced"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 2,
+          "refusals": 1
+        },
+        "effects": [],
+        "rejected": "The tab isn't waiting to park"
+      }
+    },
+    {
+      "label": "ready: unsynced matters only to a parked session",
+      "state": {
+        "name": "ready",
+        "attempts": 2,
+        "refusals": 1,
+        "park": true
+      },
+      "event": {
+        "type": "unsynced"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 2,
+          "refusals": 1,
+          "park": true
+        },
+        "effects": [],
+        "rejected": "The session isn't parked"
+      }
+    },
+    {
+      "label": "ready: shown again before the edits landed, it stops waiting to park",
+      "case": "parking",
+      "state": {
+        "name": "ready",
+        "attempts": 2,
+        "refusals": 1,
+        "park": true
+      },
+      "event": {
+        "type": "visible"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 2,
+          "refusals": 1
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "ready: shown with no countdown pending changes nothing",
+      "case": "not-parking",
+      "state": {
+        "name": "ready",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "visible"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 2,
+          "refusals": 1
+        },
+        "effects": [],
+        "rejected": "The tab isn't waiting to park"
+      }
+    },
+    {
+      "label": "handshaking: hidden five minutes with every edit acknowledged parks at once",
+      "case": "synced",
+      "state": {
+        "name": "handshaking",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "hiddenTimeout",
+        "synced": true
+      },
+      "expect": {
+        "state": {
+          "name": "parked"
+        },
+        "effects": [
+          {
+            "type": "disarmHandshake"
+          },
+          {
+            "type": "abandonHandshake",
+            "reason": "park"
+          },
+          {
+            "type": "park"
+          }
+        ]
+      }
+    },
+    {
+      "label": "handshaking: hidden five minutes with unacknowledged edits stays connected and waits",
+      "case": "unsynced",
+      "state": {
+        "name": "handshaking",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "hiddenTimeout",
+        "synced": false
+      },
+      "expect": {
+        "state": {
+          "name": "handshaking",
+          "attempts": 2,
+          "refusals": 1,
+          "park": true
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "handshaking: a second countdown can't fire while one waits",
+      "case": "parking",
+      "state": {
+        "name": "handshaking",
+        "attempts": 2,
+        "refusals": 1,
+        "park": true
+      },
+      "event": {
+        "type": "hiddenTimeout",
+        "synced": true
+      },
+      "expect": {
+        "state": {
+          "name": "handshaking",
+          "attempts": 2,
+          "refusals": 1,
+          "park": true
+        },
+        "effects": [],
+        "rejected": "The hidden tab already waits to park"
+      }
+    },
+    {
+      "label": "handshaking: the edits reached the host, so the waiting tab parks",
+      "case": "parking",
+      "state": {
+        "name": "handshaking",
+        "attempts": 2,
+        "refusals": 1,
+        "park": true
+      },
+      "event": {
+        "type": "synced"
+      },
+      "expect": {
+        "state": {
+          "name": "parked"
+        },
+        "effects": [
+          {
+            "type": "disarmHandshake"
+          },
+          {
+            "type": "abandonHandshake",
+            "reason": "park"
+          },
+          {
+            "type": "park"
+          }
+        ]
+      }
+    },
+    {
+      "label": "handshaking: synced matters only to a tab waiting to park",
+      "case": "not-parking",
+      "state": {
+        "name": "handshaking",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "synced"
+      },
+      "expect": {
+        "state": {
+          "name": "handshaking",
+          "attempts": 2,
+          "refusals": 1
+        },
+        "effects": [],
+        "rejected": "The tab isn't waiting to park"
+      }
+    },
+    {
+      "label": "handshaking: unsynced matters only to a parked session",
+      "state": {
+        "name": "handshaking",
+        "attempts": 2,
+        "refusals": 1,
+        "park": true
+      },
+      "event": {
+        "type": "unsynced"
+      },
+      "expect": {
+        "state": {
+          "name": "handshaking",
+          "attempts": 2,
+          "refusals": 1,
+          "park": true
+        },
+        "effects": [],
+        "rejected": "The session isn't parked"
+      }
+    },
+    {
+      "label": "handshaking: shown again before the edits landed, it stops waiting to park",
+      "case": "parking",
+      "state": {
+        "name": "handshaking",
+        "attempts": 2,
+        "refusals": 1,
+        "park": true
+      },
+      "event": {
+        "type": "visible"
+      },
+      "expect": {
+        "state": {
+          "name": "handshaking",
+          "attempts": 2,
+          "refusals": 1
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "handshaking: shown with no countdown pending changes nothing",
+      "case": "not-parking",
+      "state": {
+        "name": "handshaking",
+        "attempts": 2,
+        "refusals": 1
+      },
+      "event": {
+        "type": "visible"
+      },
+      "expect": {
+        "state": {
+          "name": "handshaking",
+          "attempts": 2,
+          "refusals": 1
+        },
+        "effects": [],
+        "rejected": "The tab isn't waiting to park"
+      }
+    },
+    {
+      "label": "waiting: hidden five minutes with every edit acknowledged parks at once",
+      "case": "synced",
+      "state": {
+        "name": "waiting",
+        "attempts": 3,
+        "refusals": 1
+      },
+      "event": {
+        "type": "hiddenTimeout",
+        "synced": true
+      },
+      "expect": {
+        "state": {
+          "name": "parked"
+        },
+        "effects": [
+          {
+            "type": "cancel"
+          },
+          {
+            "type": "park"
+          }
+        ]
+      }
+    },
+    {
+      "label": "waiting: hidden five minutes with unacknowledged edits stays connected and waits",
+      "case": "unsynced",
+      "state": {
+        "name": "waiting",
+        "attempts": 3,
+        "refusals": 1
+      },
+      "event": {
+        "type": "hiddenTimeout",
+        "synced": false
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 3,
+          "refusals": 1,
+          "park": true
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "waiting: a second countdown can't fire while one waits",
+      "case": "parking",
+      "state": {
+        "name": "waiting",
+        "attempts": 3,
+        "refusals": 1,
+        "park": true
+      },
+      "event": {
+        "type": "hiddenTimeout",
+        "synced": true
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 3,
+          "refusals": 1,
+          "park": true
+        },
+        "effects": [],
+        "rejected": "The hidden tab already waits to park"
+      }
+    },
+    {
+      "label": "waiting: the edits reached the host, so the waiting tab parks",
+      "case": "parking",
+      "state": {
+        "name": "waiting",
+        "attempts": 3,
+        "refusals": 1,
+        "park": true
+      },
+      "event": {
+        "type": "synced"
+      },
+      "expect": {
+        "state": {
+          "name": "parked"
+        },
+        "effects": [
+          {
+            "type": "cancel"
+          },
+          {
+            "type": "park"
+          }
+        ]
+      }
+    },
+    {
+      "label": "waiting: synced matters only to a tab waiting to park",
+      "case": "not-parking",
+      "state": {
+        "name": "waiting",
+        "attempts": 3,
+        "refusals": 1
+      },
+      "event": {
+        "type": "synced"
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 3,
+          "refusals": 1
+        },
+        "effects": [],
+        "rejected": "The tab isn't waiting to park"
+      }
+    },
+    {
+      "label": "waiting: unsynced matters only to a parked session",
+      "state": {
+        "name": "waiting",
+        "attempts": 3,
+        "refusals": 1,
+        "park": true
+      },
+      "event": {
+        "type": "unsynced"
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 3,
+          "refusals": 1,
+          "park": true
+        },
+        "effects": [],
+        "rejected": "The session isn't parked"
+      }
+    },
+    {
+      "label": "waiting: shown again before the edits landed, it stops waiting to park",
+      "case": "parking",
+      "state": {
+        "name": "waiting",
+        "attempts": 3,
+        "refusals": 1,
+        "park": true
+      },
+      "event": {
+        "type": "visible"
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 3,
+          "refusals": 1
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "waiting: shown with no countdown pending changes nothing",
+      "case": "not-parking",
+      "state": {
+        "name": "waiting",
+        "attempts": 3,
+        "refusals": 1
+      },
+      "event": {
+        "type": "visible"
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 3,
+          "refusals": 1
+        },
+        "effects": [],
+        "rejected": "The tab isn't waiting to park"
+      }
+    },
+    {
+      "label": "refused: no socket to close, so the flag waits for a resume",
+      "case": "hidden",
+      "state": {
+        "name": "refused",
+        "attempts": 3,
+        "refusals": 2
+      },
+      "event": {
+        "type": "hiddenTimeout",
+        "synced": true
+      },
+      "expect": {
+        "state": {
+          "name": "refused",
+          "attempts": 3,
+          "refusals": 2,
+          "park": true
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "refused: a second countdown can't fire while one waits",
+      "case": "parking",
+      "state": {
+        "name": "refused",
+        "attempts": 3,
+        "refusals": 2,
+        "park": true
+      },
+      "event": {
+        "type": "hiddenTimeout",
+        "synced": false
+      },
+      "expect": {
+        "state": {
+          "name": "refused",
+          "attempts": 3,
+          "refusals": 2,
+          "park": true
+        },
+        "effects": [],
+        "rejected": "The hidden tab already waits to park"
+      }
+    },
+    {
+      "label": "refused: holds no socket to park",
+      "state": {
+        "name": "refused",
+        "attempts": 3,
+        "refusals": 2,
+        "park": true
+      },
+      "event": {
+        "type": "synced"
+      },
+      "expect": {
+        "state": {
+          "name": "refused",
+          "attempts": 3,
+          "refusals": 2,
+          "park": true
+        },
+        "effects": [],
+        "rejected": "No socket to park"
+      }
+    },
+    {
+      "label": "refused: unsynced matters only to a parked session",
+      "state": {
+        "name": "refused",
+        "attempts": 3,
+        "refusals": 2
+      },
+      "event": {
+        "type": "unsynced"
+      },
+      "expect": {
+        "state": {
+          "name": "refused",
+          "attempts": 3,
+          "refusals": 2
+        },
+        "effects": [],
+        "rejected": "The session isn't parked"
+      }
+    },
+    {
+      "label": "refused: shown again clears the flag",
+      "case": "parking",
+      "state": {
+        "name": "refused",
+        "attempts": 3,
+        "refusals": 2,
+        "park": true
+      },
+      "event": {
+        "type": "visible"
+      },
+      "expect": {
+        "state": {
+          "name": "refused",
+          "attempts": 3,
+          "refusals": 2
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "refused: shown with no flag changes nothing",
+      "case": "not-parking",
+      "state": {
+        "name": "refused",
+        "attempts": 3,
+        "refusals": 2
+      },
+      "event": {
+        "type": "visible"
+      },
+      "expect": {
+        "state": {
+          "name": "refused",
+          "attempts": 3,
+          "refusals": 2
+        },
+        "effects": [],
+        "rejected": "The tab isn't waiting to park"
+      }
+    },
+    {
+      "label": "paused: no socket to close, so the flag waits for a resume",
+      "case": "hidden",
+      "state": {
+        "name": "paused",
+        "attempts": 5,
+        "refusals": 6
+      },
+      "event": {
+        "type": "hiddenTimeout",
+        "synced": true
+      },
+      "expect": {
+        "state": {
+          "name": "paused",
+          "attempts": 5,
+          "refusals": 6,
+          "park": true
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "paused: a second countdown can't fire while one waits",
+      "case": "parking",
+      "state": {
+        "name": "paused",
+        "attempts": 5,
+        "refusals": 6,
+        "park": true
+      },
+      "event": {
+        "type": "hiddenTimeout",
+        "synced": false
+      },
+      "expect": {
+        "state": {
+          "name": "paused",
+          "attempts": 5,
+          "refusals": 6,
+          "park": true
+        },
+        "effects": [],
+        "rejected": "The hidden tab already waits to park"
+      }
+    },
+    {
+      "label": "paused: holds no socket to park",
+      "state": {
+        "name": "paused",
+        "attempts": 5,
+        "refusals": 6,
+        "park": true
+      },
+      "event": {
+        "type": "synced"
+      },
+      "expect": {
+        "state": {
+          "name": "paused",
+          "attempts": 5,
+          "refusals": 6,
+          "park": true
+        },
+        "effects": [],
+        "rejected": "No socket to park"
+      }
+    },
+    {
+      "label": "paused: unsynced matters only to a parked session",
+      "state": {
+        "name": "paused",
+        "attempts": 5,
+        "refusals": 6
+      },
+      "event": {
+        "type": "unsynced"
+      },
+      "expect": {
+        "state": {
+          "name": "paused",
+          "attempts": 5,
+          "refusals": 6
+        },
+        "effects": [],
+        "rejected": "The session isn't parked"
+      }
+    },
+    {
+      "label": "paused: shown again clears the flag",
+      "case": "parking",
+      "state": {
+        "name": "paused",
+        "attempts": 5,
+        "refusals": 6,
+        "park": true
+      },
+      "event": {
+        "type": "visible"
+      },
+      "expect": {
+        "state": {
+          "name": "paused",
+          "attempts": 5,
+          "refusals": 6
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "paused: shown with no flag changes nothing",
+      "case": "not-parking",
+      "state": {
+        "name": "paused",
+        "attempts": 5,
+        "refusals": 6
+      },
+      "event": {
+        "type": "visible"
+      },
+      "expect": {
+        "state": {
+          "name": "paused",
+          "attempts": 5,
+          "refusals": 6
+        },
+        "effects": [],
+        "rejected": "The tab isn't waiting to park"
+      }
+    },
+    {
+      "label": "a hidden tab waiting to park keeps the flag through a transient failure",
+      "case": "transient",
+      "state": {
+        "name": "ready",
+        "attempts": 0,
+        "refusals": 0,
+        "park": true
+      },
+      "event": {
+        "type": "failed",
+        "refused": false
+      },
+      "expect": {
+        "state": {
+          "name": "waiting",
+          "attempts": 1,
+          "refusals": 0,
+          "park": true
+        },
+        "effects": [
+          {
+            "type": "schedule",
+            "step": 500
+          }
+        ]
+      }
+    },
+    {
+      "label": "a resume keeps the flag, so a hidden tab connected by it parks once synced",
+      "state": {
+        "name": "refused",
+        "attempts": 3,
+        "refusals": 2,
+        "park": true
+      },
+      "event": {
+        "type": "resume"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 0,
+          "refusals": 0,
+          "park": true
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a stable socket keeps the flag",
+      "state": {
+        "name": "ready",
+        "attempts": 2,
+        "refusals": 1,
+        "park": true
+      },
+      "event": {
+        "type": "stable"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 0,
+          "refusals": 0,
+          "park": true
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "shown again: reconnect at once with fresh counters",
+      "state": {
+        "name": "parked"
+      },
+      "event": {
+        "type": "visible"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 0,
+          "refusals": 0
+        },
+        "effects": [
+          {
+            "type": "unpark"
+          }
+        ]
+      }
+    },
+    {
+      "label": "a local change while parked reconnects and parks again once acknowledged",
+      "state": {
+        "name": "parked"
+      },
+      "event": {
+        "type": "unsynced"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 0,
+          "refusals": 0,
+          "park": true
+        },
+        "effects": [
+          {
+            "type": "unpark"
+          }
+        ]
+      }
+    },
+    {
+      "label": "already parked",
+      "state": {
+        "name": "parked"
+      },
+      "event": {
+        "type": "synced"
+      },
+      "expect": {
+        "state": {
+          "name": "parked"
+        },
+        "effects": [],
+        "rejected": "The hidden tab is parked until it shows"
+      }
+    },
+    {
+      "label": "the countdown already fired",
+      "state": {
+        "name": "parked"
+      },
+      "event": {
+        "type": "hiddenTimeout",
+        "synced": true
+      },
+      "expect": {
+        "state": {
+          "name": "parked"
+        },
+        "effects": [],
+        "rejected": "The hidden tab is parked until it shows"
+      }
+    },
+    {
+      "label": "online or a renewal doesn't reconnect a parked tab",
+      "state": {
+        "name": "parked"
+      },
+      "event": {
+        "type": "resume"
+      },
+      "expect": {
+        "state": {
+          "name": "parked"
+        },
+        "effects": [],
+        "rejected": "The hidden tab is parked until it shows"
+      }
+    },
+    {
+      "label": "the phase stopping sync forgets the park, so showing the tab reconnects nothing",
+      "state": {
+        "name": "parked"
+      },
+      "event": {
+        "type": "halt"
+      },
+      "expect": {
+        "state": {
+          "name": "ready",
+          "attempts": 0,
+          "refusals": 0
+        },
+        "effects": []
+      }
+    },
+    {
+      "label": "a discovery that started before parking fails without a retry",
+      "state": {
+        "name": "parked"
+      },
+      "event": {
+        "type": "failed",
+        "refused": false
+      },
+      "expect": {
+        "state": {
+          "name": "parked"
+        },
+        "effects": [],
+        "rejected": "The hidden tab is parked until it shows"
+      }
+    },
+    {
+      "label": "a late key refusal finds no socket",
+      "state": {
+        "name": "parked"
+      },
+      "event": {
+        "type": "keyRefused"
+      },
+      "expect": {
+        "state": {
+          "name": "parked"
+        },
+        "effects": [],
+        "rejected": "The hidden tab is parked until it shows"
+      }
+    },
+    {
+      "label": "a late lease finds no socket",
+      "state": {
+        "name": "parked"
+      },
+      "event": {
+        "type": "leaseExpired"
+      },
+      "expect": {
+        "state": {
+          "name": "parked"
+        },
+        "effects": [],
+        "rejected": "The hidden tab is parked until it shows"
+      }
+    },
+    {
+      "label": "a parked session opens no socket (handshake)",
+      "state": {
+        "name": "parked"
+      },
+      "event": {
+        "type": "handshake"
+      },
+      "expect": {
+        "state": {
+          "name": "parked"
+        },
+        "effects": [],
+        "rejected": "No handshake is in progress"
+      }
+    },
+    {
+      "label": "a parked session opens no socket (admitted)",
+      "state": {
+        "name": "parked"
+      },
+      "event": {
+        "type": "admitted"
+      },
+      "expect": {
+        "state": {
+          "name": "parked"
+        },
+        "effects": [],
+        "rejected": "No handshake is in progress"
+      }
+    },
+    {
+      "label": "a parked session opens no socket (handshakeEnded)",
+      "state": {
+        "name": "parked"
+      },
+      "event": {
+        "type": "handshakeEnded"
+      },
+      "expect": {
+        "state": {
+          "name": "parked"
+        },
+        "effects": [],
+        "rejected": "No handshake is in progress"
+      }
+    },
+    {
+      "label": "a parked session opens no socket (handshakeTimeout)",
+      "state": {
+        "name": "parked"
+      },
+      "event": {
+        "type": "handshakeTimeout"
+      },
+      "expect": {
+        "state": {
+          "name": "parked"
+        },
+        "effects": [],
+        "rejected": "No handshake is in progress"
+      }
+    },
+    {
+      "label": "a parked session has no stable socket",
+      "state": {
+        "name": "parked"
+      },
+      "event": {
+        "type": "stable"
+      },
+      "expect": {
+        "state": {
+          "name": "parked"
+        },
+        "effects": [],
+        "rejected": "No socket stayed admitted"
+      }
+    },
+    {
+      "label": "a parked session has no retry timer",
+      "state": {
+        "name": "parked"
+      },
+      "event": {
+        "type": "timer"
+      },
+      "expect": {
+        "state": {
+          "name": "parked"
+        },
+        "effects": [],
+        "rejected": "No reconnect is scheduled"
       }
     }
   ]

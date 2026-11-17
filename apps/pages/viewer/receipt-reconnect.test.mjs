@@ -10,6 +10,7 @@ import {
   MAX_STEP_MS,
   OUTAGE_ATTEMPTS,
   OUTAGE_MS,
+  PARK_AFTER_MS,
   REFUSAL_LIMIT,
   backoffStep,
 } from "./reconnect-machine.mjs";
@@ -2139,4 +2140,182 @@ test("a quiet save that goes offline shows Offline, then stays quiet when it lan
   await drain();
   assert.equal(f.session.status, "Saved");
   assert.ok(!f.keys.includes("saving"), f.keys.join(", "));
+});
+
+// Parking a hidden tab (reconnect-machine.mjs `parked`). The countdown runs
+// on virtual time; the session's other timers stay on mocked setTimeout.
+async function parkFixture(t) {
+  const scheduler = new VirtualTimeScheduler();
+  const f = fixture(t, { scheduler });
+  const tab = Object.assign(new EventTarget(), { visibilityState: "visible" });
+  await f.start();
+  f.session.watchPageLifecycle({ page: new EventTarget(), document: tab });
+  let elapsed = 0;
+  const show = (state) => {
+    tab.visibilityState = state;
+    tab.dispatchEvent(new Event("visibilitychange"));
+  };
+  const acknowledge = async (pending = f.requests.at(-1)) => {
+    pending.resolve(Response.json({ durableHeads: pending.heads }));
+    await drain();
+  };
+  return {
+    ...f,
+    scheduler,
+    acknowledge,
+    hide: () => show("hidden"),
+    show: () => show("visible"),
+    /** Run the countdown's virtual clock `ms` further. */
+    wait(ms) {
+      elapsed += ms;
+      // A no-op at the target moves the clock there even if nothing fires.
+      scheduler.schedule(() => {}, elapsed - scheduler.now());
+      scheduler.maxFrames = elapsed;
+      scheduler.flush();
+    },
+    open: () => f.sockets.filter((socket) => f.session.sockets.has(socket)).length,
+  };
+}
+
+test("a tab hidden five minutes with every edit acknowledged parks, and showing it reconnects", async (t) => {
+  const f = await parkFixture(t);
+  await f.acknowledge();
+  assert.equal(f.session.status, "Saved");
+  f.hide();
+  f.wait(PARK_AFTER_MS - 1);
+  assert.equal(f.open(), 1, "under five minutes the socket stays");
+  assert.equal(f.session.reconnect$.snapshot().name, "ready");
+  f.wait(1);
+  assert.equal(f.session.parked, true);
+  assert.equal(f.sockets[0].closed, 1, "the socket closed");
+  assert.equal(f.session.sockets.size, 0);
+  // A deliberate close: no retry, no backoff, no status change, no banner.
+  assert.equal(f.session.retryTimer, undefined);
+  assert.equal(f.session.retryAttempts, 0);
+  assert.equal(f.session.status, "Saved");
+  assert.equal(f.session.problem, "");
+  await f.advance(30 * 60_000);
+  f.wait(30 * 60_000);
+  await f.session.retryConnection();
+  assert.equal(f.sockets.length, 1, "neither time nor online reconnects a parked tab");
+  assert.equal(f.session.parked, true);
+
+  f.show();
+  await f.advance(300);
+  assert.equal(f.sockets.length, 2, "showing the tab opens a new socket at once");
+  assert.equal(f.open(), 1);
+  assert.equal(f.session.reconnect$.snapshot().name, "ready");
+  assert.equal(f.session.retryAttempts, 0);
+  assert.notEqual(f.session.status, "Offline");
+  assert.notEqual(f.session.status, "Reconnecting");
+  assert.equal(f.session.problem, "");
+});
+
+test("showing the tab before five minutes cancels the countdown", async (t) => {
+  const f = await parkFixture(t);
+  await f.acknowledge();
+  f.hide();
+  f.wait(4 * 60_000);
+  f.show();
+  f.hide();
+  f.wait(4 * 60_000);
+  assert.equal(f.session.parked, false, "eight minutes hidden, but never five in a row");
+  assert.equal(f.open(), 1);
+  f.wait(60_000);
+  assert.equal(f.session.parked, true);
+  assert.equal(f.open(), 0);
+});
+
+test("a hidden tab with an unacknowledged edit stays connected until the host has it", async (t) => {
+  const f = await parkFixture(t);
+  // The first receipt is still outstanding: the host hasn't acknowledged
+  // this replica's heads.
+  f.hide();
+  f.wait(PARK_AFTER_MS);
+  assert.equal(f.session.parked, false);
+  assert.deepEqual(f.session.reconnect$.snapshot(), {
+    name: "ready",
+    attempts: 0,
+    refusals: 0,
+    park: true,
+  });
+  assert.equal(f.open(), 1, "the socket stays while an edit is unacknowledged");
+  f.wait(30 * 60_000);
+  assert.equal(f.open(), 1, "it waits as long as the edit does");
+  await f.acknowledge();
+  assert.equal(f.session.status, "Saved");
+  assert.equal(f.session.parked, true, "acknowledged, it parks at once");
+  assert.equal(f.open(), 0);
+});
+
+test("showing a tab that waits to park keeps it connected", async (t) => {
+  const f = await parkFixture(t);
+  f.hide();
+  f.wait(PARK_AFTER_MS);
+  f.show();
+  assert.equal(f.session.reconnect$.snapshot().park, undefined);
+  await f.acknowledge();
+  assert.equal(f.session.parked, false);
+  assert.equal(f.open(), 1);
+});
+
+test("a local change while parked reconnects, then parks again once acknowledged", async (t) => {
+  const f = await parkFixture(t);
+  await f.acknowledge();
+  f.hide();
+  f.wait(PARK_AFTER_MS);
+  assert.equal(f.session.parked, true);
+  const receipts = f.requests.length;
+  f.mutate("Inserted after an upload finished");
+  f.session.emit();
+  assert.deepEqual(f.session.reconnect$.snapshot(), {
+    name: "ready",
+    attempts: 0,
+    refusals: 0,
+    park: true,
+  });
+  await f.advance(300);
+  assert.equal(f.sockets.length, 2, "the change needs the host, so the tab connects");
+  assert.equal(f.open(), 1);
+  f.session.queueSaved({ edit: true });
+  await f.advance(300);
+  assert.ok(f.requests.length > receipts, "a receipt asks for the new heads");
+  await f.acknowledge();
+  assert.equal(f.session.parked, true, "still hidden, it parks again");
+  assert.equal(f.open(), 0);
+});
+
+test("a tab whose session expired while parked takes the sign-in path when shown", async (t) => {
+  const f = await parkFixture(t);
+  await f.acknowledge();
+  f.hide();
+  f.wait(PARK_AFTER_MS);
+  assert.equal(f.session.parked, true);
+  f.session.refreshSession = async () => ({ identity: null });
+  f.show();
+  await f.advance(300);
+  assert.equal(f.session.authRequired, true);
+  assert.equal(f.session.status, "Sign in to sync");
+  assert.equal(f.sockets.length, 1, "no socket without a session");
+  assert.equal(f.session.parked, false);
+});
+
+test("a tab that parks mid-handshake abandons it without a retry", async (t) => {
+  const f = await parkFixture(t);
+  await f.acknowledge();
+  const opened = deferred();
+  f.hooks.setup = () => opened.promise;
+  void f.session.retryConnection();
+  await f.advance(0);
+  assert.equal(f.session.reconnect$.snapshot().name, "handshaking");
+  f.hide();
+  f.wait(PARK_AFTER_MS);
+  assert.equal(f.session.parked, true);
+  assert.equal(f.session.handshakeTimer, undefined);
+  assert.equal(f.open(), 0);
+  opened.resolve();
+  await f.advance(60_000);
+  assert.equal(f.session.parked, true, "the abandoned attempt schedules nothing");
+  assert.equal(f.session.retryTimer, undefined);
+  assert.equal(f.session.problem, "");
 });
