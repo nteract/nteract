@@ -1375,6 +1375,11 @@ function App() {
       const closing = closeTrashedSessions(host, [deleting, activeDeletion], {
         onError: showError,
       });
+      // A return to the library mustn't paint it from memory.
+      listingCache.forget(deleting.pageId);
+      setNotice("Moved to Trash");
+      // The local catalog changes after the sessions close, so their final
+      // checkpoint lands first; the refresh below lists the result.
       await closing;
       const grant = { grant: deleting.replicaKey, revision: deleting.access?.revision };
       // A draft the host never registered has no Trash entry, so move it to
@@ -1388,9 +1393,6 @@ function App() {
       // host (a Page whose format the host doesn't open never syncs).
       else if (inTrash(trashed))
         await markLocalPageTrashed(deleting.identity, deleting.pageId, grant).catch(showError);
-      // A return to the library mustn't paint it from memory.
-      listingCache.forget(deleting.pageId);
-      setNotice("Moved to Trash");
       await refresh();
     } catch (error) {
       showError(error);

@@ -242,6 +242,9 @@ try {
   await owner.setViewportSize({ width: 1280, height: 900 });
   await stopped(owner).getByRole("button", { name: "Move to Trash" }).click();
   await expect(owner.getByText("Moved to Trash")).toBeVisible({ timeout: 30000 });
+  // The library this tab painted earlier held the Page; it never paints it
+  // from memory again once the notice shows.
+  assert.equal(await libraryRows(owner, pageId).count(), 0);
   assert.equal(new URL(owner.url()).pathname, "/");
   assert.equal(await listed(owner, pageId), false);
   assert.equal(await listed(owner, pageId, { in_trash: true }), true);
