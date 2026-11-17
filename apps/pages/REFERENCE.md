@@ -586,8 +586,8 @@ retention (DEPLOYMENT.md, Telemetry).
 
 | Table | Meaning | Retention |
 | --- | --- | --- |
-| `pages_usage_events` | Raw projected events | Delete days strictly before UTC today minus 90 days |
-| `pages_usage_daily` | Day x principal x surface x driver x action; `count`, `distinct_pages` | Same 90-day boundary |
+| `pages_usage_events` | Raw projected events | Delete days strictly before UTC today minus 14 days |
+| `pages_usage_daily` | Day x principal x surface x driver x action; `count`, `distinct_pages` | Delete days strictly before UTC today minus 90 days |
 | `pages_usage_weekly` | Monday UTC week; active people, readers, writers, agent people/actions, collaborative Pages; no principals or Page ids | Indefinite |
 
 An admitted browser session qualifies after 30 seconds total, even while idle
@@ -605,13 +605,27 @@ actions count active people, so an agent-only week is active. A collaborative
 Page has successful activity from two distinct principals during the week,
 including qualified visits, writes, comments and agent tool calls.
 
-The cron rebuilds completed days and weekly unions from available raw events,
-then purges in one fenced transaction. Reruns and missed days are safe. Weekly
-totals freeze when their source week crosses the purge boundary; current-week
-totals are provisional through `through_day`. Missed cron runs delay rollup and
-purge, not event collection, until the next successful cron. Retention describes
+The cron rebuilds completed days and weekly unions from the raw events at or
+after the purge floor, purges old daily rows and raises the floor to the 14-day
+cutoff, all in one fenced transaction. It then deletes raw rows below the floor
+in statements of at most 5,000 rows, for up to a minute per run; rows it leaves
+are out of every rollup and go on the next run. Reruns and missed days are safe.
+A day's row in `pages_usage_daily` freezes once the day is below the floor.
+Weekly totals freeze when their Monday crosses the floor, after the cron has
+rebuilt the whole week, and keep the `through_day` of that last rebuild;
+current-week totals are provisional through `through_day`. Inserts refuse a day
+below the 14-day cutoff or the floor. Missed cron runs delay rollup and purge,
+not event collection, until the next successful cron. Retention describes
 queryable rows, not deletion from celld's historical storage epochs or backups.
 
+Every number the store reports is computable within these windows. Daily rows
+and the documented per-principal query sum daily rows. A weekly union needs
+raw events for its own week only, which the floor keeps until its last
+rebuild. A distinct count over a longer span, such as people active in the last
+28 days, can't be summed from daily rows and isn't reported.
+
+The first usage write of each binding in an isolate sets up the schema; later
+batches skip it. A failed setup runs again on the next batch.
 Writes are best-effort: 512 queued/in-flight rows per binding per isolate,
 batches of 64, a 25 ms write-behind window, and a five-second request hold.
 No request or document save waits for usage I/O. Failures/overflow log a generic

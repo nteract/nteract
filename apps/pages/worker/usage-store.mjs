@@ -1,4 +1,5 @@
 import { asyncScheduler, timer } from "rxjs";
+import { isolateSetup } from "./isolate-setup.mjs";
 import { validPageId } from "./registration.mjs";
 
 const DAY = 86_400_000;
@@ -115,13 +116,23 @@ export async function migrateUsageStore(db) {
   await db.batch(USAGE_SCHEMA.map((sql) => db.prepare(sql)));
 }
 
-/** One dispatch, including idempotent schema setup. Ambiguous writes are not retried.
- * The durable purge floor also fences a delayed batch started before collection. */
+/** UTC days of raw events kept. The insert fence and the purge floor use it. */
+export const USAGE_RAW_DAYS = 14;
+/** UTC days of `pages_usage_daily` rows kept. */
+export const USAGE_DAILY_DAYS = 90;
+
+// Once per binding per isolate. A failed setup leaves the key idle, so the
+// next batch runs the schema again.
+const usageSchema = isolateSetup((db) => migrateUsageStore(db));
+
+/** Schema setup runs before the first batch of each binding in this isolate,
+ * then one dispatch per batch. Ambiguous writes are not retried. The durable
+ * purge floor also fences a delayed batch started before collection. */
 export async function writeUsageBatch(db, records, now = Date.now()) {
-  const cutoff = isoDay(now - 90 * DAY);
-  await db.batch([
-    ...USAGE_SCHEMA.map((sql) => db.prepare(sql)),
-    ...records.map((row) =>
+  await usageSchema(db);
+  const cutoff = isoDay(now - USAGE_RAW_DAYS * DAY);
+  await db.batch(
+    records.map((row) =>
       db
         .prepare(`INSERT INTO pages_usage_events
       (day, ts, principal, driver, surface, action, page_id, outcome)
@@ -142,7 +153,7 @@ export async function writeUsageBatch(db, records, now = Date.now()) {
           new Date(now).toISOString(),
         ),
     ),
-  ]);
+  );
 }
 
 /** Pure bounded queue lifecycle. A stalled permit is abandoned after a grace
@@ -332,28 +343,47 @@ export function flushUsage(env, ctx) {
   }
 }
 
+/** Rows one purge statement deletes, so no single statement scans a large
+ * share of the table. */
+const PURGE_CHUNK_ROWS = 5_000;
+/** Wall-clock budget for the purge statements of one run. Rows left below the
+ * floor are already out of every rollup and go on the next run. */
+const PURGE_BUDGET_MS = 60_000;
+
 /** Cron catches up every available completed day before collecting identities.
- * All replacements, the monotonic day fence, and purge share one D1 transaction.
- * Weekly unions are frozen once any day in their source interval was purged. */
-export async function runUsageMaintenance(env, now = Date.now()) {
+ * Rollup replacements, daily-row retention, the monotonic day fence and the
+ * raw purge floor share one D1 transaction. Rollups read only raw days at or
+ * after the floor; days before it are frozen in `pages_usage_daily`, and a
+ * weekly union freezes once its Monday is before the floor. Raw rows below the
+ * floor are then deleted in bounded statements that read the durable floor,
+ * so they are safe to run late, twice, or after a newer job. */
+export async function runUsageMaintenance(
+  env,
+  now = Date.now(),
+  { chunkRows = PURGE_CHUNK_ROWS, budgetMs = PURGE_BUDGET_MS, clock = Date.now } = {},
+) {
   const db = env?.PAGES_USAGE;
   if (!db) return;
   await migrateUsageStore(db);
   const today = isoDay(now);
   const yesterday = isoDay(now - DAY);
-  const cutoff = isoDay(now - 90 * DAY);
+  const rawCutoff = isoDay(now - USAGE_RAW_DAYS * DAY);
+  const dailyCutoff = isoDay(now - USAGE_DAILY_DAYS * DAY);
   const guard = "(SELECT day FROM pages_usage_maintenance WHERE id = 1) <= ?";
+  const floor = "(SELECT purged_before FROM pages_usage_maintenance WHERE id = 1)";
   // Monday as an ISO date, independent of SQLite's locale and the host timezone.
   const week = "date(day, '-' || ((CAST(strftime('%w', day) AS INTEGER) + 6) % 7) || ' days')";
   await db.batch([
-    db.prepare(`DELETE FROM pages_usage_daily WHERE day < ? AND ${guard}`).bind(today, today),
+    db
+      .prepare(`DELETE FROM pages_usage_daily WHERE day < ? AND day >= ${floor} AND ${guard}`)
+      .bind(today, today),
     db
       .prepare(`INSERT INTO pages_usage_daily
       (day, principal, surface, driver, action, count, distinct_pages)
       SELECT day, principal, surface, driver, action,
         CASE WHEN action IN (${visits}) THEN COUNT(DISTINCT page_id) ELSE COUNT(*) END,
         COUNT(DISTINCT page_id)
-      FROM pages_usage_events WHERE day < ? AND ${guard}
+      FROM pages_usage_events WHERE day < ? AND day >= ${floor} AND ${guard}
         AND action NOT IN ('sync.open', 'sync.close', 'mcp.initialize')
       GROUP BY day, principal, surface, driver, action`)
       .bind(today, today),
@@ -362,10 +392,9 @@ export async function runUsageMaintenance(env, now = Date.now()) {
       (week, through_day, active_people, readers, writers, agent_people, agent_actions, collaborative_pages)
       WITH events AS (
         SELECT *, ${week} AS week FROM pages_usage_events
-        WHERE day < ? AND action IN (${visits}, 'tool.call')
+        WHERE day < ? AND day >= ${floor} AND action IN (${visits}, 'tool.call')
       ), eligible AS (
-        SELECT * FROM events WHERE week >=
-          (SELECT purged_before FROM pages_usage_maintenance WHERE id = 1)
+        SELECT * FROM events WHERE week >= ${floor}
       ), collaborators AS (
         SELECT week, page_id FROM eligible WHERE outcome = 'ok' AND page_id IS NOT NULL
         GROUP BY week, page_id HAVING COUNT(DISTINCT principal) >= 2
@@ -383,12 +412,18 @@ export async function runUsageMaintenance(env, now = Date.now()) {
         writers = excluded.writers, agent_people = excluded.agent_people,
         agent_actions = excluded.agent_actions, collaborative_pages = excluded.collaborative_pages`)
       .bind(today, yesterday, today),
-    db.prepare(`DELETE FROM pages_usage_events WHERE day < ? AND ${guard}`).bind(cutoff, today),
-    db.prepare(`DELETE FROM pages_usage_daily WHERE day < ? AND ${guard}`).bind(cutoff, today),
+    db.prepare(`DELETE FROM pages_usage_daily WHERE day < ? AND ${guard}`).bind(dailyCutoff, today),
     db
       .prepare(
         `UPDATE pages_usage_maintenance SET day = ?, purged_before = MAX(purged_before, ?) WHERE id = 1 AND day <= ?`,
       )
-      .bind(today, cutoff, today),
+      .bind(today, rawCutoff, today),
   ]);
+  const purge = db.prepare(`DELETE FROM pages_usage_events WHERE id IN (
+    SELECT id FROM pages_usage_events WHERE day < ${floor} LIMIT ?)`);
+  const deadline = clock() + budgetMs;
+  for (;;) {
+    const result = await purge.bind(chunkRows).run();
+    if ((result?.meta?.changes ?? 0) < chunkRows || clock() >= deadline) break;
+  }
 }

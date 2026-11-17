@@ -472,26 +472,82 @@ test("daily visits union 281 reconnects; weekly readers/writers/agents and colla
   assert.equal(db.rows("SELECT active_people FROM pages_usage_weekly")[0].active_people, 4);
 });
 
-test("UTC retention is strict before day minus 90; weekly totals survive partial-week purges and downtime", async (t) => {
+test("schema setup runs once per binding per isolate, again after a failed setup, and a fresh database takes its first batch", async (t) => {
+  const db = sqliteD1(t).open();
+  const prepare = db.prepare.bind(db);
+  let schemaRuns = 0;
+  t.mock.method(db, "prepare", (sql) => {
+    if (sql.startsWith("CREATE TABLE IF NOT EXISTS pages_usage_events")) schemaRuns++;
+    return prepare(sql);
+  });
+  db.mode = "fail";
+  await assert.rejects(insert(db, [event()]));
+  assert.equal(schemaRuns, 1);
+  db.mode = "ok";
+  for (let n = 0; n < 5; n++) await insert(db, [event({ principal: `user:p${n}` })]);
+  assert.equal(schemaRuns, 2);
+  assert.equal(db.rows("SELECT COUNT(*) AS n FROM pages_usage_events")[0].n, 5);
+  // A second binding is its own key.
+  const second = sqliteD1(t).open();
+  await insert(second, [event()]);
+  assert.equal(second.rows("SELECT COUNT(*) AS n FROM pages_usage_events")[0].n, 1);
+});
+
+test("raw purge runs in bounded statements below the durable floor; rollups ignore rows left there", async (t) => {
   const db = sqliteD1(t).open();
   const now = Date.parse("2026-11-04T00:00:00.000Z");
-  const cutoff = new Date(now - 90 * DAY).toISOString().slice(0, 10);
-  const older = new Date(now - 91 * DAY).toISOString().slice(0, 10);
+  const old = new Date(now - 20 * DAY).toISOString().slice(0, 10);
+  const recent = new Date(now - 3 * DAY).toISOString().slice(0, 10);
+  const rows = Array.from({ length: 12 }, (_, n) =>
+    event({ timestamp: `${old}T12:00:00.000Z`, principal: `user:p${n}` }),
+  );
+  await insert(db, rows, now - 19 * DAY);
+  await insert(db, [event({ timestamp: `${recent}T12:00:00.000Z` })], now);
+  const count = () => db.rows("SELECT COUNT(*) AS n FROM pages_usage_events")[0].n;
+  // A zero budget stops after one statement.
+  await runUsageMaintenance({ PAGES_USAGE: db }, now, { chunkRows: 5, budgetMs: 0 });
+  assert.equal(count(), 13 - 5);
+  const daily = db.rows("SELECT * FROM pages_usage_daily ORDER BY day, principal");
+  const weekly = db.rows("SELECT * FROM pages_usage_weekly ORDER BY week");
+  assert.equal(daily.filter((row) => row.day === old).length, 12);
+  // Rows still below the floor are out of every rollup.
+  await runUsageMaintenance({ PAGES_USAGE: db }, now, { chunkRows: 5, budgetMs: 0 });
+  assert.deepEqual(db.rows("SELECT * FROM pages_usage_daily ORDER BY day, principal"), daily);
+  assert.deepEqual(db.rows("SELECT * FROM pages_usage_weekly ORDER BY week"), weekly);
+  await runUsageMaintenance({ PAGES_USAGE: db }, now, { chunkRows: 5 });
+  assert.deepEqual(db.rows("SELECT day FROM pages_usage_events"), [{ day: recent }]);
+  assert.deepEqual(db.rows("SELECT * FROM pages_usage_daily ORDER BY day, principal"), daily);
+});
+
+test("UTC retention: raw events before day minus 14, daily rows before day minus 90; weekly totals survive partial-week purges and downtime", async (t) => {
+  const db = sqliteD1(t).open();
+  const now = Date.parse("2026-11-04T00:00:00.000Z");
+  const cutoff = new Date(now - 14 * DAY).toISOString().slice(0, 10);
+  const older = new Date(now - 15 * DAY).toISOString().slice(0, 10);
   await insert(
     db,
     [
       event({ timestamp: `${older}T23:59:59.999Z` }),
       event({ timestamp: `${cutoff}T00:00:00.000Z`, principal: "user:two" }),
     ],
-    now - 89 * DAY,
+    now - 13 * DAY,
   );
   await runUsageMaintenance({ PAGES_USAGE: db }, now - 1);
   assert.equal(db.rows("SELECT * FROM pages_usage_events").length, 2);
   await runUsageMaintenance({ PAGES_USAGE: db }, now);
   assert.deepEqual(db.rows("SELECT day FROM pages_usage_events"), [{ day: cutoff }]);
-  assert.deepEqual(db.rows("SELECT day FROM pages_usage_daily"), [{ day: cutoff }]);
+  assert.deepEqual(db.rows("SELECT day FROM pages_usage_daily ORDER BY day"), [
+    { day: older },
+    { day: cutoff },
+  ]);
   assert.equal(db.rows("SELECT active_people FROM pages_usage_weekly")[0].active_people, 2);
   const weekly = db.rows("SELECT * FROM pages_usage_weekly");
+  // Daily rows keep 90 days: the day before the raw cutoff goes on day 90.
+  await runUsageMaintenance({ PAGES_USAGE: db }, now + 75 * DAY);
+  assert.equal(db.rows("SELECT * FROM pages_usage_daily").length, 2);
+  await runUsageMaintenance({ PAGES_USAGE: db }, now + 76 * DAY);
+  assert.deepEqual(db.rows("SELECT day FROM pages_usage_daily"), [{ day: cutoff }]);
+  assert.deepEqual(db.rows("SELECT * FROM pages_usage_weekly"), weekly);
   await runUsageMaintenance({ PAGES_USAGE: db }, now + 200 * DAY);
   assert.deepEqual(db.rows("SELECT * FROM pages_usage_events"), []);
   assert.deepEqual(db.rows("SELECT * FROM pages_usage_daily"), []);

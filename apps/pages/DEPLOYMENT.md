@@ -1735,6 +1735,17 @@ counted, and the next line carries the count as `dropped`.
 [scripts/usage-report.sql](scripts/usage-report.sql) summarizes them with
 duckdb straight from the log Parquet.
 
+The `PAGES_USAGE` D1 database keeps its own copy, described in
+[Usage history](REFERENCE.md#usage-history). It keeps raw events for 14 days,
+daily totals for 90 days and weekly totals indefinitely. D1 caps a database at
+10 GB, and the raw table is the part that grows with use. A deployment whose
+store kept raw events for 90 days loses its raw events 15 to 90 days old on the
+first daily run of a build with the 14-day window, on every deployment. That is
+intended: the daily and weekly totals for those days are rebuilt from the raw
+events in the same run, before the floor rises, and stay. The run raises the
+floor in one transaction and then deletes the old rows in bounded statements
+over one or more runs.
+
 Auth events are `pages.auth.v1` JSON log lines from
 [worker/auth-events.mjs](worker/auth-events.mjs), on the same channel and with
 the same 30-day retention. They are the record of who signed in or connected
