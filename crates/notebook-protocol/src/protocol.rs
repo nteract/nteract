@@ -1242,6 +1242,30 @@ pub struct KernelPorts {
     pub iopub: u16,
 }
 
+/// Private launch inputs. Never part of a notebook response or document.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct KernelspecLaunch {
+    pub executable: PathBuf,
+    pub args: Vec<String>,
+    pub resource_dir: PathBuf,
+    pub env: std::collections::BTreeMap<String, String>,
+    pub interrupt_mode: KernelspecInterrupt,
+}
+
+impl std::fmt::Debug for KernelspecLaunch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KernelspecLaunch").finish_non_exhaustive()
+    }
+}
+
+#[derive(Default, Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum KernelspecInterrupt {
+    #[default]
+    Signal,
+    Message,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 #[allow(clippy::large_enum_variant)]
@@ -1254,6 +1278,8 @@ pub enum RuntimeAgentRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         notebook_path: Option<String>,
         launched_config: LaunchedEnvConfig,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kernelspec: Option<KernelspecLaunch>,
         kernel_ports: KernelPorts,
         /// Environment variables to set for the kernel process.
         #[serde(default)]
@@ -1279,6 +1305,8 @@ pub enum RuntimeAgentRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         notebook_path: Option<String>,
         launched_config: LaunchedEnvConfig,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kernelspec: Option<KernelspecLaunch>,
         kernel_ports: KernelPorts,
         #[serde(default)]
         env_vars: std::collections::HashMap<String, String>,
@@ -2198,6 +2226,7 @@ mod tests {
             notebook_path: None,
             launched_config: Default::default(),
             kernel_ports: ports,
+            kernelspec: None,
             env_vars: Default::default(),
             redact_env_values_in_outputs: true,
         };
@@ -2238,6 +2267,7 @@ mod tests {
             notebook_path: None,
             launched_config: Default::default(),
             kernel_ports: ports,
+            kernelspec: None,
             env_vars: Default::default(),
             redact_env_values_in_outputs: true,
         };
@@ -2301,6 +2331,7 @@ mod tests {
                 iopub: 9004,
             },
             env_vars: Default::default(),
+            kernelspec: None,
             redact_env_values_in_outputs: true,
         }
         .is_command());
@@ -2317,6 +2348,7 @@ mod tests {
                 iopub: 9009,
             },
             env_vars: Default::default(),
+            kernelspec: None,
             redact_env_values_in_outputs: true,
         }
         .is_command());

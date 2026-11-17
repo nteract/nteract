@@ -7,16 +7,11 @@ use std::{
 };
 
 use anyhow::{bail, ensure, Context, Result};
-use notebook_protocol::protocol::{InstalledKernelspec, KernelspecInventory};
+use notebook_protocol::protocol::{
+    InstalledKernelspec, KernelspecInterrupt as InterruptMode, KernelspecInventory,
+    KernelspecLaunch,
+};
 use serde::Deserialize;
-
-#[derive(Default, Deserialize, PartialEq, Eq, Debug)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum InterruptMode {
-    #[default]
-    Signal,
-    Message,
-}
 
 #[derive(Deserialize)]
 pub(crate) struct Definition {
@@ -54,13 +49,11 @@ pub(crate) fn imported(
         .extra
         .get("installed_kernelspec")
         .and_then(|v| v.as_str())
-        == Some(&spec.name);
+        .is_some_and(|name| name.eq_ignore_ascii_case(&spec.name));
     if !explicit
-        && (matches!(
-            spec.name.as_str(),
-            "" | "python" | "python3" | "deno" | "test"
-        ) || (snap.runt.env_id.is_none()
-            && (snap.runt.uv.is_some() || snap.runt.conda.is_some() || snap.runt.pixi.is_some())))
+        && ["", "python", "python3", "deno"]
+            .iter()
+            .any(|s| spec.name.eq_ignore_ascii_case(s))
     {
         return None;
     }
@@ -153,20 +146,30 @@ impl Definition {
             language: self.language.clone(),
         }
     }
-    pub fn command(&self, connection: &Path) -> Result<tokio::process::Command> {
-        let expand = |s: &String| {
-            s.replace("{resource_dir}", &self.resource_dir.to_string_lossy())
-                .replace("{connection_file}", &connection.to_string_lossy())
-        };
-        let program = PathBuf::from(expand(&self.argv[0]));
+    pub fn prepare(
+        self,
+        overlay: &std::collections::HashMap<String, String>,
+    ) -> Result<KernelspecLaunch> {
+        ensure!(
+            !self.argv[0].contains("{connection_file}"),
+            "connection file cannot be a kernelspec executable"
+        );
+        let program = PathBuf::from(
+            self.argv[0].replace("{resource_dir}", &self.resource_dir.to_string_lossy()),
+        );
+        let env: BTreeMap<_, _> = self
+            .env
+            .into_iter()
+            .map(|(k, v)| (k, expand_env(&v, overlay)))
+            .collect();
         // Never resolve a bare program relative to the notebook directory.
         let path = if program.is_absolute() {
             Some(program.clone())
         } else if program.components().count() == 1 {
-            let path = self
-                .env
+            let path = env
                 .get("PATH")
-                .map(|s| std::ffi::OsString::from(expand_env(s)))
+                .or_else(|| overlay.get("PATH"))
+                .map(std::ffi::OsString::from)
                 .or_else(|| env::var_os("PATH"))
                 .unwrap_or_default();
             env::split_paths(&path)
@@ -186,14 +189,25 @@ impl Definition {
         let executable = path
             .filter(|p| executable(p))
             .with_context(|| format!("Kernelspec executable unavailable: {}", program.display()))?;
-        let mut cmd = tokio::process::Command::new(executable);
-        cmd.args(self.argv.iter().skip(1).map(expand));
-        Ok(cmd)
+        Ok(KernelspecLaunch {
+            executable,
+            args: self.argv.into_iter().skip(1).collect(),
+            resource_dir: self.resource_dir,
+            env,
+            interrupt_mode: self.interrupt_mode,
+        })
     }
+}
 
-    pub fn apply_env(&self, cmd: &mut tokio::process::Command) {
-        cmd.envs(self.env.iter().map(|(k, v)| (k, expand_env(v))));
-    }
+pub fn command(spec: &KernelspecLaunch, connection: &Path) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(&spec.executable);
+    cmd.args(spec.args.iter().map(|s| {
+        s.replace("{resource_dir}", &spec.resource_dir.to_string_lossy())
+            .replace("{connection_file}", &connection.to_string_lossy())
+    }));
+    #[cfg(unix)]
+    cmd.process_group(0);
+    cmd
 }
 
 fn executable(path: &Path) -> bool {
@@ -211,7 +225,7 @@ fn executable(path: &Path) -> bool {
 }
 
 /// Jupyter substitutes inherited variables once; values are never evaluated by a shell.
-fn expand_env(value: &str) -> String {
+fn expand_env(value: &str, overlay: &std::collections::HashMap<String, String>) -> String {
     let mut result = String::new();
     let mut rest = value;
     while let Some((prefix, after)) = rest.split_once('$') {
@@ -236,7 +250,10 @@ fn expand_env(value: &str) -> String {
             let allowed = !crate::jupyter_kernel::KERNEL_ENV_SECRET_BLOCKLIST
                 .iter()
                 .any(|s| s.eq_ignore_ascii_case(key));
-            if let Some(v) = allowed.then(|| env::var(key).ok()).flatten() {
+            if let Some(v) = allowed
+                .then(|| overlay.get(key).cloned().or_else(|| env::var(key).ok()))
+                .flatten()
+            {
                 result.push_str(&v);
             } else {
                 result.push('$');
@@ -409,9 +426,8 @@ mod tests {
         let spec = scan(&roots, Some("julia-1.11")).1.unwrap().unwrap();
         assert_eq!(spec.env["MARK"], "a b");
         assert_eq!(spec.interrupt_mode, InterruptMode::Signal);
-        let cmd = spec
-            .command(Path::new("space dir/connection.json"))
-            .unwrap();
+        let prepared = spec.prepare(&Default::default()).unwrap();
+        let cmd = command(&prepared, Path::new("space dir/connection.json"));
         let args: Vec<_> = cmd.as_std().get_args().collect();
         assert_eq!(args[0], "--project=@.");
         assert_eq!(args[1], roots[0].join("Julia-1.11/kernel file.jl"));
@@ -424,7 +440,7 @@ mod tests {
         let spec = scan(&roots, Some("julia-1.11")).1.unwrap().unwrap();
         assert_eq!(spec.interrupt_mode, InterruptMode::Message);
         assert!(spec
-            .command(Path::new("file"))
+            .prepare(&Default::default())
             .unwrap_err()
             .to_string()
             .contains("missing-ark"));
@@ -448,16 +464,53 @@ mod tests {
             ..Default::default()
         });
         snap.runt.env_id = Some("captured".into());
+        snap.runt.uv = Some(notebook_doc::metadata::UvInlineMetadata {
+            dependencies: vec!["numpy".into()],
+            requires_python: None,
+            prerelease: None,
+        });
         assert_eq!(imported(Some(&snap), Mode::Auto).as_deref(), Some("lumen"));
+        snap.runt.env_id = None;
+        assert_eq!(imported(Some(&snap), Mode::Auto).as_deref(), Some("lumen"));
+        snap.kernelspec.as_mut().unwrap().name = "test".into();
+        assert_eq!(imported(Some(&snap), Mode::Auto).as_deref(), Some("test"));
         assert_eq!(imported(Some(&snap), Mode::Project), None);
         snap.kernelspec.as_mut().unwrap().name = "python3".into();
         assert_eq!(imported(Some(&snap), Mode::Auto), None);
         snap.runt
             .extra
-            .insert("installed_kernelspec".into(), "python3".into());
+            .insert("installed_kernelspec".into(), "PYTHON3".into());
         assert_eq!(
             imported(Some(&snap), Mode::Auto).as_deref(),
             Some("python3")
         );
+    }
+
+    #[test]
+    fn descriptor_freezes_program_arguments_interrupt_and_expanded_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("kernel.json");
+        let exe = env::current_exe().unwrap();
+        let json = serde_json::json!({"argv":[exe.file_name().unwrap().to_str().unwrap(),"{resource_dir}/startup file","{connection_file}"],"language":"R","display_name":"ark","env":{"PATH":"${TOOL_BIN}","MARK":"$USER_MARK $$ ${UNKNOWN_KSPEC_VAR}"},"interrupt_mode":"message"});
+        fs::write(&file, json.to_string()).unwrap();
+        let overlay = std::collections::HashMap::from([
+            (
+                "TOOL_BIN".into(),
+                exe.parent().unwrap().display().to_string(),
+            ),
+            ("USER_MARK".into(), "one value".into()),
+        ]);
+        let prepared = Definition::load(dir.path().into())
+            .unwrap()
+            .prepare(&overlay)
+            .unwrap();
+        fs::write(file, "{}").unwrap();
+        let transferred: KernelspecLaunch =
+            serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
+        assert_eq!(transferred.interrupt_mode, InterruptMode::Message);
+        assert_eq!(transferred.env["MARK"], "one value $ ${UNKNOWN_KSPEC_VAR}");
+        let cmd = command(&transferred, Path::new("new connection"));
+        assert_eq!(cmd.as_std().get_program(), exe);
+        assert_eq!(cmd.as_std().get_args().last().unwrap(), "new connection");
     }
 }

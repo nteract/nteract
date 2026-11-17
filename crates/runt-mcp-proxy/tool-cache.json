@@ -1347,6 +1347,25 @@
               "additionalProperties": false,
               "properties": {
                 "action": {
+                  "const": "stage_automatic",
+                  "type": "string"
+                },
+                "expected_revision": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "action",
+                "expected_revision"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "action": {
                   "const": "stage",
                   "type": "string"
                 },

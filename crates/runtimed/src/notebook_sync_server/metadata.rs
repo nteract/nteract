@@ -4844,6 +4844,7 @@ async fn auto_launch_kernel_attempt(
                         kernel_ports,
                         env_vars: launch_env_vars.clone(),
                         redact_env_values_in_outputs,
+                        kernelspec: None,
                     },
                 )
                 .await

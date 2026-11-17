@@ -580,7 +580,12 @@ async fn handle_attempt(
     } else {
         None
     };
-    let installed = if let Some(name) = installed_name {
+    let inherited = if daemon.import_shell_environment().await {
+        overlay_env_vars(&daemon.shell_env_overlay())
+    } else {
+        Default::default()
+    };
+    let (installed, kernelspec) = if let Some(name) = installed_name {
         if room.is_hosted() {
             return NotebookResponse::EnvironmentSelectionRejected {
                 error: "Installed kernelspecs require a local notebook".into(),
@@ -591,11 +596,9 @@ async fn handle_attempt(
         }
         match crate::kernelspec::resolve(name.clone())
             .await
-            .and_then(|spec| {
-                spec.command(std::path::Path::new("connection.json"))?;
-                Ok(spec.info(&name))
-            }) {
-            Ok(spec) => Some(spec),
+            .and_then(|spec| Ok((Some(spec.info(&name)), Some(spec.prepare(&inherited)?))))
+        {
+            Ok(spec) => spec,
             Err(e) => {
                 let error = format!("{e:#}");
                 if apply.is_none() {
@@ -617,7 +620,7 @@ async fn handle_attempt(
             error: "No installed kernelspec selected".into(),
         };
     } else {
-        None
+        (None, None)
     };
 
     // Auto-detect kernel type if "auto" or empty
@@ -2141,8 +2144,6 @@ async fn handle_attempt(
         }
     }
     let redact_env_values_in_outputs = daemon.redact_env_values_in_outputs().await;
-    let import_shell_environment = daemon.import_shell_environment().await;
-    let shell_overlay = daemon.shell_env_overlay();
 
     // If runtime agent is already connected, restart kernel in-place
     // (handles the shutdown → launch sequence without subprocess respawn).
@@ -2155,12 +2156,7 @@ async fn handle_attempt(
             info!("[notebook-sync] Agent connected — sending RestartKernel");
             // Precedence: overlay (lowest) → uv → pixi (highest), so daemon-required
             // vars always win over imported shell values.
-            let mut restart_env_vars: std::collections::HashMap<String, String> =
-                if import_shell_environment {
-                    overlay_env_vars(&shell_overlay)
-                } else {
-                    std::collections::HashMap::new()
-                };
+            let mut restart_env_vars: std::collections::HashMap<String, String> = inherited.clone();
             restart_env_vars.extend(crate::uv_project::uv_offline_env_vars(uv_pyproject_offline));
             restart_env_vars.extend(crate::pixi_project::pixi_frozen_env_vars(pixi_toml_frozen));
             let build_request =
@@ -2173,6 +2169,7 @@ async fn handle_attempt(
                     launched_config: launched_config.clone(),
                     kernel_ports,
                     env_vars: restart_env_vars.clone(),
+                    kernelspec: kernelspec.clone(),
                     redact_env_values_in_outputs,
                 };
             let response = if let Some(lease) = apply {
@@ -2463,12 +2460,7 @@ async fn handle_attempt(
 
                 // Send LaunchKernel RPC. Same precedence as the restart path
                 // above: overlay (lowest) → uv → pixi (highest).
-                let mut launch_env_vars: std::collections::HashMap<String, String> =
-                    if import_shell_environment {
-                        overlay_env_vars(&shell_overlay)
-                    } else {
-                        std::collections::HashMap::new()
-                    };
+                let mut launch_env_vars: std::collections::HashMap<String, String> = inherited;
                 launch_env_vars
                     .extend(crate::uv_project::uv_offline_env_vars(uv_pyproject_offline));
                 launch_env_vars.extend(crate::pixi_project::pixi_frozen_env_vars(pixi_toml_frozen));
@@ -2482,6 +2474,7 @@ async fn handle_attempt(
                         launched_config: launched_config.clone(),
                         kernel_ports,
                         env_vars: launch_env_vars.clone(),
+                        kernelspec: kernelspec.clone(),
                         redact_env_values_in_outputs,
                     };
                 let response = if let Some(lease) = apply {

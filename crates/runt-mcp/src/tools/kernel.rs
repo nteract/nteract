@@ -19,6 +19,9 @@ pub struct InstalledKernelspecParams {
 enum KernelspecOperation {
     List,
     Get,
+    StageAutomatic {
+        expected_revision: u64,
+    },
     Stage {
         name: String,
         expected_revision: u64,
@@ -45,6 +48,13 @@ pub async fn installed_kernelspec(
     let (req, heads) = match params.operation {
         List => (NotebookRequest::ListInstalledKernelspecs {}, vec![]),
         Get => (NotebookRequest::GetEnvironmentSelection {}, vec![]),
+        StageAutomatic { expected_revision } => (
+            NotebookRequest::SetEnvironmentSelection {
+                target: notebook_protocol::protocol::LocalEnvironmentTarget::Automatic,
+                expected_revision,
+            },
+            vec![],
+        ),
         Stage {
             name,
             expected_revision,
@@ -422,6 +432,27 @@ pub(super) mod restart_fixture;
 mod tests {
     use super::*;
     use restart_fixture::{request, result_json, RestartFixture};
+
+    #[test]
+    fn schema_includes_revision_fenced_return_to_automatic() {
+        let schema =
+            serde_json::to_value(schemars::schema_for!(InstalledKernelspecParams)).unwrap();
+        assert!(schema.to_string().contains("stage_automatic"));
+        let parse = |operation| {
+            serde_json::from_value::<InstalledKernelspecParams>(
+                serde_json::json!({"operation":operation}),
+            )
+        };
+        assert!(matches!(
+            parse(serde_json::json!({"action":"stage_automatic","expected_revision":7}))
+                .unwrap()
+                .operation,
+            KernelspecOperation::StageAutomatic {
+                expected_revision: 7
+            }
+        ));
+        assert!(parse(serde_json::json!({"action":"stage_automatic"})).is_err());
+    }
 
     #[tokio::test]
     async fn restart_reports_environment_selection_rejection() {
