@@ -105,6 +105,7 @@
 //!     save_sequence: Uint|null  (monotonic committed file replacement sequence)
 //!     source_issue_kind: Str    ("" | "conflict" | "degraded")
 //!     source_issue_reason: Str  (human-readable diagnostic; "" when clear)
+//!     displaced_edits: List[Map] (additive; see `DisplacedEdits`)
 //!   runtime_state_doc_id: Str|null
 //!   last_saved: Str|null   (ISO timestamp of last save)
 //! ```
@@ -494,6 +495,35 @@ impl FileSourceIssue {
     }
 }
 
+/// In-session edits that an external file revision replaced.
+///
+/// The file watcher always makes the live notebook match a rewritten file.
+/// When the session held edits the file never had, the pre-reload notebook is
+/// written to `snapshot_path` first and one of these entries is recorded.
+/// Entries stay until a client dismisses them; later external revisions and
+/// saves never clear them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplacedEdits {
+    /// Self-contained `.ipynb` holding the notebook as it was just before
+    /// the reload. Empty when the snapshot could not be written.
+    #[serde(default)]
+    pub snapshot_path: String,
+    /// RFC 3339 time the external revision was applied.
+    #[serde(default)]
+    pub displaced_at: String,
+    /// Cells whose id, type or source differed between the session and the
+    /// file, including cells only one side had.
+    #[serde(default)]
+    pub cell_ids: Vec<String>,
+    /// Notebook metadata differed between the session and the file.
+    #[serde(default)]
+    pub metadata: bool,
+}
+
+/// Displaced-edit entries kept per notebook. Older entries drop first; their
+/// snapshot files stay on disk.
+pub const MAX_DISPLACED_EDITS: usize = 20;
+
 /// Causal file state projected to RuntimeStateDoc readers.
 ///
 /// This map is additive and intentionally absent from the frozen v2 genesis.
@@ -507,6 +537,8 @@ pub struct FileCheckpointState {
     pub save_sequence: Option<u64>,
     #[serde(default)]
     pub source_issue: Option<FileSourceIssue>,
+    #[serde(default)]
+    pub displaced_edits: Vec<DisplacedEdits>,
 }
 
 /// Project-directory trust projected to RuntimeStateDoc readers.
@@ -2853,11 +2885,44 @@ impl RuntimeStateDoc {
             }),
             _ => None,
         };
+        let displaced_edits = automunge::read_json_value(&self.doc, &checkpoint, "displaced_edits")
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default();
         FileCheckpointState {
             exported_heads: self.read_str_list(&checkpoint, "exported_heads"),
             save_sequence: self.read_opt_u64(&checkpoint, "save_sequence"),
             source_issue,
+            displaced_edits,
         }
+    }
+
+    /// Record in-session edits an external revision replaced.
+    ///
+    /// Keeps the newest [`MAX_DISPLACED_EDITS`] entries.
+    pub fn push_displaced_edits(&mut self, entry: DisplacedEdits) -> Result<(), RuntimeStateError> {
+        let mut entries = self.file_checkpoint().displaced_edits;
+        entries.push(entry);
+        if entries.len() > MAX_DISPLACED_EDITS {
+            entries.drain(..entries.len() - MAX_DISPLACED_EDITS);
+        }
+        self.put_displaced_edits(&entries)
+    }
+
+    /// Forget every displaced-edit entry. Snapshot files are left on disk.
+    pub fn clear_displaced_edits(&mut self) -> Result<bool, RuntimeStateError> {
+        if self.file_checkpoint().displaced_edits.is_empty() {
+            return Ok(false);
+        }
+        self.put_displaced_edits(&[])?;
+        Ok(true)
+    }
+
+    fn put_displaced_edits(&mut self, entries: &[DisplacedEdits]) -> Result<(), RuntimeStateError> {
+        let value = serde_json::to_value(entries)
+            .map_err(|e| RuntimeStateError::InvalidDisplacedEdits(e.to_string()))?;
+        let checkpoint = self.get_or_create_root_map("file_checkpoint")?;
+        automunge::update_json_at_key(&mut self.doc, &checkpoint, "displaced_edits", &value)?;
+        Ok(())
     }
 
     /// Publish a committed `.ipynb` checkpoint at exact NotebookDoc heads.
@@ -4936,6 +5001,36 @@ mod tests {
     }
 
     #[test]
+    fn displaced_edits_survive_checkpoint_and_source_issue_changes() {
+        let mut doc = RuntimeStateDoc::new();
+        let entry = |n: usize| DisplacedEdits {
+            snapshot_path: format!("/tmp/displaced-{n}.ipynb"),
+            displaced_at: "2026-11-16T00:00:00Z".to_string(),
+            cell_ids: vec![format!("cell-{n}")],
+            metadata: n.is_multiple_of(2),
+        };
+        doc.push_displaced_edits(entry(0)).unwrap();
+        doc.set_file_checkpoint(&["aa".to_string()], 3).unwrap();
+        doc.set_file_source_issue(None).unwrap();
+        doc.push_displaced_edits(entry(1)).unwrap();
+        assert_eq!(
+            doc.read_state().file_checkpoint.displaced_edits,
+            vec![entry(0), entry(1)]
+        );
+
+        for n in 2..(MAX_DISPLACED_EDITS + 5) {
+            doc.push_displaced_edits(entry(n)).unwrap();
+        }
+        let entries = doc.file_checkpoint().displaced_edits;
+        assert_eq!(entries.len(), MAX_DISPLACED_EDITS);
+        assert_eq!(entries.last(), Some(&entry(MAX_DISPLACED_EDITS + 4)));
+
+        assert!(doc.clear_displaced_edits().unwrap());
+        assert!(doc.file_checkpoint().displaced_edits.is_empty());
+        assert!(!doc.clear_displaced_edits().unwrap());
+    }
+
+    #[test]
     fn file_checkpoint_and_source_issue_round_trip_independently() {
         let mut doc = RuntimeStateDoc::new();
         let exported_heads = vec!["aa11".to_string(), "bb22".to_string()];
@@ -4947,6 +5042,7 @@ mod tests {
                 exported_heads: exported_heads.clone(),
                 save_sequence: Some(7),
                 source_issue: None,
+                displaced_edits: Vec::new(),
             }
         );
 
@@ -4970,6 +5066,7 @@ mod tests {
                 exported_heads: Vec::new(),
                 save_sequence: None,
                 source_issue: Some(degraded),
+                displaced_edits: Vec::new(),
             }
         );
 
@@ -4995,6 +5092,7 @@ mod tests {
                 exported_heads: vec!["new-head".to_string()],
                 save_sequence: Some(9),
                 source_issue: None,
+                displaced_edits: Vec::new(),
             }
         );
     }
@@ -5019,6 +5117,7 @@ mod tests {
                     "kind": "conflict",
                     "reason": "source and journal diverged",
                 },
+                "displaced_edits": [],
             }))
         );
     }

@@ -514,7 +514,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::pin::Pin;
     use std::sync::Arc;
     use std::task::{Context, Poll};
@@ -528,7 +527,7 @@ mod tests {
     use super::*;
     use crate::blob_store::BlobStore;
     use crate::notebook_sync_server::{
-        apply_ipynb_changes_inner, save_notebook_to_disk, RoomInitialLoad, RoomInitialLoadStart,
+        save_notebook_to_disk, RoomInitialLoad, RoomInitialLoadStart,
     };
 
     #[derive(Default)]
@@ -1718,32 +1717,9 @@ mod tests {
                 .expect("live edit should update source");
         }
 
-        let external_cells = vec![notebook_doc::CellSnapshot {
-            id: "loaded-cell".to_string(),
-            cell_type: "code".to_string(),
-            position: "80".to_string(),
-            source: "x = 1".to_string(),
-            execution_count: "7".to_string(),
-            metadata: serde_json::json!({}),
-            resolved_assets: HashMap::new(),
-            attachments: HashMap::new(),
-        }];
-
-        let changed = apply_ipynb_changes_inner(
-            &room,
-            &external_cells,
-            &HashMap::new(),
-            &HashMap::new(),
-            true,
-            None, // external_metadata
-            None, // source_revision: exercise the no-source-revision path
-        )
-        .await
-        .changed();
-        assert!(
-            !changed,
-            "unchanged disk contents should not roll back an immediate live edit"
-        );
+        // The file still holds the bytes the load read. The watcher must
+        // recognize them as already ingested and leave the live edit alone.
+        crate::notebook_sync_server::persist::process_watcher_event(&room, &load_path).await;
 
         let cells = room.doc.read().await.get_cells();
         assert_eq!(cells[0].source, "print('edited')");

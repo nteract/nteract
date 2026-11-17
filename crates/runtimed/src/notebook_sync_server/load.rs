@@ -2096,12 +2096,199 @@ fn degrade_external_source_revision(
     warn!("[notebook-watch] {reason}");
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Restore the pre-revision document after a transaction that could not
+/// reproduce the file exactly.
+fn reject_unreproducible_revision(
+    doc: &mut NotebookDoc,
+    rollback_snapshot: &[u8],
+    rollback_actor: &str,
+) {
+    match NotebookDoc::load_with_actor(rollback_snapshot, rollback_actor) {
+        Ok(restored) => *doc = restored,
+        Err(error) => warn!(
+            "[notebook-watch] Could not restore the document after rejecting a revision: {error}"
+        ),
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct AppliedIpynbChanges {
     pub(crate) cells_changed: bool,
     pub(crate) metadata_changed: bool,
+    /// The revision could not be reproduced exactly (for example, duplicate
+    /// cell ids on disk). The live document was rolled back and nothing was
+    /// committed.
+    pub(crate) rejected: bool,
+    /// Session content this revision replaced. Present only when the session
+    /// held edits since its last file checkpoint that the file does not have.
+    pub(crate) displaced: Option<DisplacedCapture>,
+    /// The live document matched the revision when it committed, and the
+    /// revision became the room's ready source generation. Only then may the
+    /// revision become the autosave staleness baseline.
+    pub(crate) reconciled: bool,
 }
 
+/// The live notebook as it was just before an external revision replaced
+/// in-session edits.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DisplacedCapture {
+    pub(crate) cells: Vec<CellSnapshot>,
+    pub(crate) metadata: Option<NotebookMetadataSnapshot>,
+    pub(crate) execution_ids: HashMap<String, Option<String>>,
+    /// Cells the session added, deleted or changed whose live version differs
+    /// from the file's.
+    pub(crate) cell_ids: Vec<String>,
+    /// The session changed notebook metadata and the file's differs.
+    pub(crate) metadata_changed: bool,
+    /// The session reordered cells and the file's order differs.
+    pub(crate) order_changed: bool,
+}
+
+/// Cell identity, type and source in notebook order: what a reload must
+/// reproduce exactly.
+fn cell_shape(cells: &[CellSnapshot]) -> Vec<(&str, &str, &str)> {
+    cells
+        .iter()
+        .map(|cell| {
+            (
+                cell.id.as_str(),
+                cell.cell_type.as_str(),
+                cell.source.as_str(),
+            )
+        })
+        .collect()
+}
+
+fn ids_in_common_order<'a>(cells: &'a [CellSnapshot], other: &HashSet<&str>) -> Vec<&'a str> {
+    cells
+        .iter()
+        .map(|cell| cell.id.as_str())
+        .filter(|id| other.contains(id))
+        .collect()
+}
+
+/// True when the live document is exactly the external revision's cells
+/// (id, order, type, source) and, when the file carries any, its metadata.
+pub(crate) fn live_matches_external(
+    doc: &NotebookDoc,
+    external_cells: &[CellSnapshot],
+    external_metadata: Option<&NotebookMetadataSnapshot>,
+) -> bool {
+    cell_shape(&doc.get_cells()) == cell_shape(external_cells)
+        && external_metadata.is_none_or(|metadata| doc.metadata_snapshot_matches(metadata))
+}
+
+/// Decide, under the NotebookDoc lock, whether making the live notebook match
+/// an external revision discards edits the session made since its last file
+/// checkpoint.
+///
+/// The baseline is the document at `exported_heads`: the content the file
+/// last held from this room. Only session changes relative to that baseline
+/// count, and only where the live value differs from the file. Edits the file
+/// already has (identical edits on both sides), execution pointers and
+/// outputs never count. Cell metadata is not compared. When the exported
+/// heads are unknown to the document, every live difference from the file
+/// counts.
+pub(crate) fn capture_displaced_edits(
+    doc: &mut NotebookDoc,
+    exported_heads: &[[u8; 32]],
+    external_cells: &[CellSnapshot],
+    external_metadata: Option<&NotebookMetadataSnapshot>,
+) -> Option<DisplacedCapture> {
+    let live_cells = doc.get_cells();
+    let live_metadata = doc.get_metadata_snapshot();
+    let metadata_differs =
+        external_metadata.is_some_and(|metadata| !doc.metadata_snapshot_matches(metadata));
+    if cell_shape(&live_cells) == cell_shape(external_cells) && !metadata_differs {
+        return None;
+    }
+
+    let heads: Vec<automerge::ChangeHash> = exported_heads
+        .iter()
+        .map(|head| automerge::ChangeHash(*head))
+        .collect();
+    let baseline_known = !heads.is_empty()
+        && heads
+            .iter()
+            .all(|head| doc.doc_mut().get_change_by_hash(head).is_some());
+    if baseline_known && doc.get_heads() == heads {
+        return None;
+    }
+
+    let live_by_id: HashMap<&str, (&str, &str)> = live_cells
+        .iter()
+        .map(|c| (c.id.as_str(), (c.cell_type.as_str(), c.source.as_str())))
+        .collect();
+    let disk_by_id: HashMap<&str, (&str, &str)> = external_cells
+        .iter()
+        .map(|c| (c.id.as_str(), (c.cell_type.as_str(), c.source.as_str())))
+        .collect();
+    let live_ids: HashSet<&str> = live_by_id.keys().copied().collect();
+    let disk_ids: HashSet<&str> = disk_by_id.keys().copied().collect();
+
+    let baseline_cells;
+    let (session_cell_ids, session_metadata, session_order): (Vec<&str>, bool, bool) =
+        if baseline_known {
+            baseline_cells = doc.get_cells_at_heads(&heads);
+            let baseline_metadata = doc.get_metadata_snapshot_at_heads(&heads);
+            let base_by_id: HashMap<&str, (&str, &str)> = baseline_cells
+                .iter()
+                .map(|c| (c.id.as_str(), (c.cell_type.as_str(), c.source.as_str())))
+                .collect();
+            let base_ids: HashSet<&str> = base_by_id.keys().copied().collect();
+            let mut changed: Vec<&str> = live_cells
+                .iter()
+                .map(|c| c.id.as_str())
+                .filter(|id| base_by_id.get(id) != live_by_id.get(id))
+                .collect();
+            changed.extend(
+                baseline_cells
+                    .iter()
+                    .map(|c| c.id.as_str())
+                    .filter(|id| !live_by_id.contains_key(id)),
+            );
+            let order = ids_in_common_order(&live_cells, &base_ids)
+                != ids_in_common_order(&baseline_cells, &live_ids);
+            (changed, live_metadata != baseline_metadata, order)
+        } else {
+            let mut all: Vec<&str> = live_cells.iter().map(|c| c.id.as_str()).collect();
+            all.extend(
+                external_cells
+                    .iter()
+                    .map(|c| c.id.as_str())
+                    .filter(|id| !live_by_id.contains_key(id)),
+            );
+            (all, true, true)
+        };
+
+    let cell_ids: Vec<String> = session_cell_ids
+        .into_iter()
+        .filter(|id| live_by_id.get(id) != disk_by_id.get(id))
+        .map(str::to_string)
+        .collect();
+    let metadata_changed = session_metadata && metadata_differs;
+    let order_changed = session_order
+        && ids_in_common_order(&live_cells, &disk_ids)
+            != ids_in_common_order(external_cells, &live_ids);
+    if cell_ids.is_empty() && !metadata_changed && !order_changed {
+        return None;
+    }
+
+    let execution_ids = live_cells
+        .iter()
+        .map(|cell| (cell.id.clone(), doc.get_execution_id(&cell.id)))
+        .collect();
+    Some(DisplacedCapture {
+        cells: live_cells,
+        metadata: live_metadata,
+        execution_ids,
+        cell_ids,
+        metadata_changed,
+        order_changed,
+    })
+}
+
+#[derive(Clone)]
 pub(crate) struct ExternalSourceRevision {
     pub(crate) fingerprint: super::recovery::SourceFingerprint,
     pub(crate) canonical_path: PathBuf,
@@ -2110,7 +2297,7 @@ pub(crate) struct ExternalSourceRevision {
 }
 
 impl AppliedIpynbChanges {
-    pub(crate) fn changed(self) -> bool {
+    pub(crate) fn changed(&self) -> bool {
         self.cells_changed || self.metadata_changed
     }
 }
@@ -2138,16 +2325,24 @@ pub(crate) async fn apply_ipynb_changes_from_source(
     .await
 }
 
-/// Apply external .ipynb changes to the Automerge doc.
+/// Make the live Automerge doc match an external .ipynb revision.
 ///
-/// Compares cells by ID and:
-/// - Adds new cells
-/// - Removes deleted cells
-/// - Updates source, execution_count, and outputs for modified cells
+/// The file wins: afterwards the live cells (id, order, type, source, cell
+/// metadata) and notebook metadata equal the file's. Compares cells by ID
+/// and:
+/// - Adds cells the file has and the doc lacks
+/// - Removes cells the doc has and the file lacks, including cells created in
+///   this session
+/// - Updates source, type, metadata, execution_count, and outputs
 /// - Handles cell reordering by rebuilding the cell list
 ///
 /// When a kernel is running, outputs and execution counts are preserved
 /// to avoid losing in-progress execution results.
+///
+/// Session edits the revision replaces are reported in
+/// [`AppliedIpynbChanges::displaced`]; recording them is the caller's job.
+/// A revision the doc cannot reproduce exactly is rolled back and reported
+/// as `rejected`.
 ///
 /// A `None` source revision applies the changes without binding them to a
 /// source fingerprint; production file-watcher ingest goes through
@@ -2300,10 +2495,9 @@ pub(crate) async fn apply_ipynb_changes_inner(
     }
 
     // If order changed or the file was wholesale-replaced, rebuild the
-    // cell list as a document-owned transaction. The baseline is the current
-    // live document because the file watcher compares disk content against
-    // `last_save_sources`; using a transaction avoids minting a parallel fork
-    // actor while keeping actor restoration and panic recovery document-owned.
+    // cell list as a document-owned transaction on the current live document;
+    // using a transaction avoids minting a parallel fork actor while keeping
+    // actor restoration and panic recovery document-owned.
     if order_changed || no_common_cells {
         debug!(
             "[notebook-watch] {} — rebuilding cell list",
@@ -2318,6 +2512,12 @@ pub(crate) async fn apply_ipynb_changes_inner(
         // saved_sources `.await`s (deadlock prevention).
         let (applied, deferred_executions) = {
             let mut doc = room.doc.write().await;
+            let displaced = capture_displaced_edits(
+                &mut doc,
+                &room.durability.manifest().exported_heads,
+                external_cells,
+                external_metadata,
+            );
             let rollback_actor = doc.get_actor_id();
             let rollback_snapshot = doc.save();
             let current_execution_ids: HashMap<String, String> = current_cells
@@ -2347,6 +2547,9 @@ pub(crate) async fn apply_ipynb_changes_inner(
                             .is_ok()
                         {
                             let _ = doc.update_source(&ext_cell.id, &ext_cell.source);
+                            if ext_cell.metadata.as_object().is_some_and(|m| !m.is_empty()) {
+                                let _ = doc.set_cell_metadata(&ext_cell.id, &ext_cell.metadata);
+                            }
 
                             // For existing cells with running kernel: preserve current execution_id
                             // (outputs live in RuntimeStateDoc, keyed by execution_id)
@@ -2411,11 +2614,22 @@ pub(crate) async fn apply_ipynb_changes_inner(
                     if let Some(metadata) = external_metadata.filter(|_| metadata_changed) {
                         doc.set_metadata_snapshot(metadata)?;
                     }
+                    let verified = live_matches_external(doc, external_cells, external_metadata);
 
-                    Ok((deferred, metadata_changed))
+                    Ok((deferred, metadata_changed, verified))
                 },
             ) {
-                Ok((deferred, metadata_changed)) => {
+                Ok((_, _, false)) => {
+                    reject_unreproducible_revision(&mut doc, &rollback_snapshot, &rollback_actor);
+                    (
+                        AppliedIpynbChanges {
+                            rejected: true,
+                            ..AppliedIpynbChanges::default()
+                        },
+                        Vec::new(),
+                    )
+                }
+                Ok((deferred, metadata_changed, true)) => {
                     let changed = doc.get_heads() != heads;
                     if (changed || source_revision.is_some())
                         && !commit_file_watcher_changes(
@@ -2433,6 +2647,9 @@ pub(crate) async fn apply_ipynb_changes_inner(
                             AppliedIpynbChanges {
                                 cells_changed: changed,
                                 metadata_changed,
+                                rejected: false,
+                                reconciled: false,
+                                displaced,
                             },
                             deferred,
                         )
@@ -2490,41 +2707,20 @@ pub(crate) async fn apply_ipynb_changes_inner(
             }
         }
 
-        return applied;
+        return AppliedIpynbChanges {
+            reconciled: true,
+            ..applied
+        };
     }
 
-    // Snapshot saved_sources before the doc write lock to avoid holding
-    // doc across saved_sources `.await` (deadlock prevention).
-    let saved_sources_snapshot = room.last_save_sources_snapshot().await;
-    let have_save_snapshot = !saved_sources_snapshot.is_empty();
-
-    // Find cells to delete — only cells that existed in our last save
-    // but are no longer on disk (genuine external deletion). Cells that
-    // are in the CRDT but NOT in last_save_sources were created after
-    // the save and should be preserved (the user or agent just added them).
-    //
-    // If we've never saved (last_save_sources is empty), we have no
-    // baseline to distinguish "externally deleted" from "just created in
-    // CRDT but not yet saved." Skip deletions entirely — it's safer to
-    // keep extra cells than to silently drop cells a client just created.
-    let cells_to_delete: Vec<String> = if !have_save_snapshot {
-        if !current_cells.is_empty() {
-            debug!(
-                "[notebook-watch] No save snapshot — skipping deletion of {} CRDT cells not on disk",
-                current_cells.iter().filter(|c| !external_map.contains_key(c.id.as_str())).count()
-            );
-        }
-        Vec::new()
-    } else {
-        current_cells
-            .iter()
-            .filter(|c| {
-                !external_map.contains_key(c.id.as_str())
-                    && saved_sources_snapshot.contains_key(c.id.as_str())
-            })
-            .map(|c| c.id.clone())
-            .collect()
-    };
+    // The file wins: every live cell the file lacks goes, including cells
+    // created in this session. `capture_displaced_edits` reports the ones the
+    // session authored.
+    let cells_to_delete: Vec<String> = current_cells
+        .iter()
+        .filter(|c| !external_map.contains_key(c.id.as_str()))
+        .map(|c| c.id.clone())
+        .collect();
 
     // Snapshot current execution state from state_doc before acquiring
     // the doc write lock, so we don't hold state_doc and doc simultaneously
@@ -2565,6 +2761,12 @@ pub(crate) async fn apply_ipynb_changes_inner(
     // across `.await`).
     let (applied, deferred_execs) = {
         let mut doc = room.doc.write().await;
+        let displaced = capture_displaced_edits(
+            &mut doc,
+            &room.durability.manifest().exported_heads,
+            external_cells,
+            external_metadata,
+        );
         let rollback_actor = doc.get_actor_id();
         let rollback_snapshot = doc.save();
         let heads = doc.get_heads();
@@ -2582,13 +2784,6 @@ pub(crate) async fn apply_ipynb_changes_inner(
                     }
                 }
 
-                // Source comparison uses last_save_sources (what we wrote to disk)
-                // instead of the live CRDT (which may have progressed with new user
-                // typing since the save). This prevents the file watcher from
-                // treating our own autosave as an "external change" and overwriting
-                // the user's recent edits. Only genuine external changes (git pull,
-                // external editor) — where the disk content differs from what we
-                // last saved — trigger a source update.
                 let mut deferred_execs: Vec<DeferredExecution> = Vec::new();
                 // Track cells whose execution_id should be cleared (no new outputs)
                 let mut clear_execution_ids: Vec<String> = Vec::new();
@@ -2596,32 +2791,27 @@ pub(crate) async fn apply_ipynb_changes_inner(
                 // Process external cells in order (add new or update existing)
                 for (index, ext_cell) in external_cells.iter().enumerate() {
                     if let Some(current_cell) = current_map.get(ext_cell.id.as_str()) {
-                        // Cell exists — check if source genuinely changed externally.
-                        // Compare disk content against what we last saved, NOT the live
-                        // CRDT. If disk matches our last save, the change is from our
-                        // own autosave and should be ignored (the CRDT may have
-                        // progressed with new typing since then).
-                        let saved_source = saved_sources_snapshot.get(ext_cell.id.as_str());
-                        let is_external_change = match saved_source {
-                            Some(saved) => ext_cell.source != *saved,
-                            None => current_cell.source != ext_cell.source,
-                        };
-
-                        if is_external_change {
+                        if current_cell.source != ext_cell.source {
                             debug!("[notebook-watch] Updating source for cell: {}", ext_cell.id);
                             if doc.update_source(&ext_cell.id, &ext_cell.source).is_ok() {
                                 changed = true;
                             }
                         }
-
-                        // Update cell type if changed
                         if current_cell.cell_type != ext_cell.cell_type {
                             debug!(
                                 "[notebook-watch] Cell type changed for {}: {} -> {}",
                                 ext_cell.id, current_cell.cell_type, ext_cell.cell_type
                             );
-                            // Cell type changes require recreating the cell, so the
-                            // watcher leaves the existing cell structure intact.
+                            if let Ok(true) = doc.set_cell_type(&ext_cell.id, &ext_cell.cell_type)
+                            {
+                                changed = true;
+                            }
+                        }
+                        if current_cell.metadata != ext_cell.metadata {
+                            if let Ok(true) = doc.set_cell_metadata(&ext_cell.id, &ext_cell.metadata)
+                            {
+                                changed = true;
+                            }
                         }
 
                         // Preserve outputs and execution_count if kernel is running
@@ -2696,6 +2886,9 @@ pub(crate) async fn apply_ipynb_changes_inner(
                         {
                             changed = true;
                             let _ = doc.update_source(&ext_cell.id, &ext_cell.source);
+                            if ext_cell.metadata.as_object().is_some_and(|m| !m.is_empty()) {
+                                let _ = doc.set_cell_metadata(&ext_cell.id, &ext_cell.metadata);
+                            }
                             let ext_outputs = converted_outputs
                                 .get(ext_cell.id.as_str())
                                 .map(|v| v.as_slice())
@@ -2733,11 +2926,22 @@ pub(crate) async fn apply_ipynb_changes_inner(
                 if let Some(metadata) = external_metadata.filter(|_| metadata_changed) {
                     doc.set_metadata_snapshot(metadata)?;
                 }
+                let verified = live_matches_external(doc, external_cells, external_metadata);
 
-                Ok((cells_changed, metadata_changed, deferred_execs))
+                Ok((cells_changed, metadata_changed, deferred_execs, verified))
             },
         ) {
-            Ok((cells_changed, metadata_changed, deferred)) => {
+            Ok((_, _, _, false)) => {
+                reject_unreproducible_revision(&mut doc, &rollback_snapshot, &rollback_actor);
+                (
+                    AppliedIpynbChanges {
+                        rejected: true,
+                        ..AppliedIpynbChanges::default()
+                    },
+                    Vec::new(),
+                )
+            }
+            Ok((cells_changed, metadata_changed, deferred, true)) => {
                 let changed = cells_changed || metadata_changed;
                 if (changed || source_revision.is_some())
                     && !commit_file_watcher_changes(
@@ -2755,6 +2959,9 @@ pub(crate) async fn apply_ipynb_changes_inner(
                         AppliedIpynbChanges {
                             cells_changed,
                             metadata_changed,
+                            rejected: false,
+                            reconciled: false,
+                            displaced,
                         },
                         deferred,
                     )
@@ -2808,7 +3015,10 @@ pub(crate) async fn apply_ipynb_changes_inner(
         saved.retain(|id, _| external_map.contains_key(id.as_str()));
     }
 
-    applied
+    AppliedIpynbChanges {
+        reconciled: !applied.rejected,
+        ..applied
+    }
 }
 
 #[cfg(test)]

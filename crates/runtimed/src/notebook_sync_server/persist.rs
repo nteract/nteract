@@ -325,8 +325,9 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
     // same path, `git pull`, an external editor) owns the bytes on disk and
     // the file watcher has not reconciled them into the doc yet — writing now
     // would silently discard that writer's content (#2285). `Retryable` keeps
-    // the autosave debouncer armed: the watcher merges the external content
-    // and refreshes the baseline, and the next tick saves the merged state.
+    // the autosave debouncer armed: the watcher applies the external content
+    // and refreshes the baseline, and the next tick saves only edits made
+    // after it.
     // A missing file with a recorded baseline falls through and is recreated
     // (deletion is not a merge conflict). The read above and the write below
     // are not atomic, so a writer landing inside this call can still race us;
@@ -386,130 +387,6 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
         (cells, metadata_snapshot, eids, heads)
     };
 
-    let previous_visible_execution_ids: HashMap<String, String> = cells
-        .iter()
-        .filter_map(|cell| {
-            room.persistence
-                .previous_visible_execution(&cell.id)
-                .map(|execution_id| (cell.id.clone(), execution_id))
-        })
-        .collect();
-
-    // Read outputs and execution_count from RuntimeStateDoc keyed by execution_id.
-    //
-    // NotebookDoc owns the cell -> execution pointer, while RuntimeStateDoc v2
-    // stores executions without durable cell identity. Saves use the current
-    // cell pointer directly except for the re-execution window where that
-    // pointer already targets a queued/running execution with no outputs yet;
-    // in that case daemon-local persistence hints preserve the previous
-    // visible outputs on disk. Cleared cells (`execution_id = None`) still
-    // write empty outputs.
-    let (cell_outputs, cell_execution_counts): (
-        HashMap<String, Vec<serde_json::Value>>,
-        HashMap<String, Option<i64>>,
-    ) = room
-        .state
-        .read(|sd| {
-            let snapshot = sd.read_state();
-            let mut outputs_map = HashMap::new();
-            let mut ec_map = HashMap::new();
-            for (cell_id, eid) in &cell_execution_ids {
-                let Some(eid) = eid.as_ref() else { continue };
-                let Some(exec) = snapshot.executions.get(eid) else {
-                    continue;
-                };
-                let mut outputs = sd.get_outputs(eid);
-                let mut execution_count = exec.execution_count;
-                if outputs.is_empty() && matches!(exec.status.as_str(), "queued" | "running") {
-                    if let Some(previous_execution_id) = previous_visible_execution_ids.get(cell_id)
-                    {
-                        if let Some(previous_exec) = snapshot.executions.get(previous_execution_id)
-                        {
-                            let previous_outputs = sd.get_outputs(previous_execution_id);
-                            if !previous_outputs.is_empty()
-                                || previous_exec.execution_count.is_some()
-                            {
-                                outputs = previous_outputs;
-                                execution_count = previous_exec.execution_count;
-                            }
-                        }
-                    }
-                }
-                if !outputs.is_empty() {
-                    outputs_map.insert(cell_id.clone(), outputs);
-                }
-                ec_map.insert(cell_id.clone(), execution_count);
-            }
-            (outputs_map, ec_map)
-        })
-        .unwrap_or_default();
-
-    let mut nbformat_attachments = HashMap::new();
-    for cell in &cells {
-        if cell.attachments.is_empty() {
-            continue;
-        }
-        let attachments = attachment_refs_to_nbformat_value(&cell.attachments, &room.blob_store)
-            .await
-            .map_err(|e| match e {
-                AttachmentResolveError::MissingBlob(_)
-                | AttachmentResolveError::BlobReadFailed(_)
-                | AttachmentResolveError::InvalidPayload(_) => SaveError::Unrecoverable(format!(
-                    "Failed to resolve attachments for cell {}: {e}",
-                    cell.id
-                )),
-            })?;
-        nbformat_attachments.insert(cell.id.clone(), attachments);
-    }
-
-    // Resolve outputs from the blob store. `resolve_cell_output` returns
-    // Jupyter-shape JSON (daemon-runtime shape: includes `output_id`, etc.).
-    // The nbformat conversion layer strips runtime-only fields before
-    // handing values to the typed v4 deserializer.
-    let mut resolved_outputs_by_cell: HashMap<String, Vec<serde_json::Value>> =
-        HashMap::with_capacity(cells.len());
-    for cell in &cells {
-        if cell.cell_type != "code" {
-            continue;
-        }
-        let Some(outputs) = cell_outputs.get(&cell.id) else {
-            continue;
-        };
-        let mut resolved = Vec::with_capacity(outputs.len());
-        for output in outputs {
-            let output_value = resolve_cell_output(output, &room.blob_store).await;
-            let output_value = room.output_hooks.materialize_for_save(output_value).await;
-            resolved.push(output_value);
-        }
-        resolved_outputs_by_cell.insert(cell.id.clone(), resolved);
-    }
-
-    // Metadata comes entirely from the doc. No disk rescue; the
-    // snapshot carries unknown keys as extras.
-    let mut metadata = metadata_snapshot
-        .as_ref()
-        .map(|s| serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({})))
-        .unwrap_or_else(|| serde_json::json!({}));
-    let mut comms = room.state.read(|sd| sd.get_comms()).unwrap_or_default();
-    let comm_states = room.comms.read(|cd| cd.get_comms()).unwrap_or_default();
-    for (comm_id, comm_state) in comm_states {
-        if let Some(entry) = comms.get_mut(&comm_id) {
-            entry.state = comm_state;
-        }
-    }
-    match widget_state_metadata_from_comms(&comms, &room.blob_store).await {
-        Ok(Some(widget_state)) => {
-            insert_widget_state_metadata(&mut metadata, widget_state);
-        }
-        Ok(None) => {}
-        Err(err) => {
-            warn!(
-                "[notebook-sync] Failed to materialize widget state metadata; \
-                 preserving existing notebook metadata: {err}"
-            );
-        }
-    }
-
     // We always write cell IDs, so nbformat_minor is at least 5.
     let existing_minor = existing_raw
         .as_ref()
@@ -519,21 +396,14 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
         .and_then(|v| v.as_u64())
         .unwrap_or(5) as i32;
     let nbformat_minor = std::cmp::max(existing_minor, 5);
-
-    // Build a typed v4::Notebook. The conversion layer enforces nbformat
-    // schema invariants (cell id validity, output typing, metadata shape) —
-    // structural bugs become compile/deserialize errors instead of silent
-    // on-disk drift.
-    let v4_notebook = build_v4_notebook(
+    let (content_bytes, cell_count) = render_notebook_ipynb(
+        room,
         &cells,
-        &resolved_outputs_by_cell,
-        &cell_execution_counts,
-        &nbformat_attachments,
-        &metadata,
+        metadata_snapshot.as_ref(),
+        &cell_execution_ids,
         nbformat_minor,
     )
-    .map_err(|e| SaveError::Unrecoverable(format!("Failed to build v4 notebook: {e}")))?;
-    let cell_count = v4_notebook.cells.len();
+    .await?;
 
     // Failed-source guard (in-place saves). Initial materialization publishes
     // batches progressively and deliberately does not erase them on failure:
@@ -604,23 +474,6 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
         }
     }
 
-    // Collect raw-cell attachments (markdown attachments are already on the
-    // typed v4::Cell::Markdown variant; raw cells lose theirs in typed
-    // conversion and get re-injected during serialize).
-    let raw_attachments: HashMap<String, serde_json::Value> = cells
-        .iter()
-        .filter(|c| c.cell_type == "raw")
-        .filter_map(|c| {
-            nbformat_attachments
-                .get(&c.id)
-                .map(|att| (c.id.clone(), att.clone()))
-        })
-        .collect();
-
-    let content_with_newline = serialize_v4_notebook(&v4_notebook, &raw_attachments)
-        .map_err(|e| SaveError::Retryable(format!("Failed to serialize notebook: {e}")))?;
-
-    let content_bytes = content_with_newline.into_bytes();
     let checkpoint_heads: Vec<[u8; 32]> = exported_heads.iter().map(|head| head.0).collect();
     let mut checkpoint_target = super::file_checkpoint::FileCheckpointTarget::for_content(
         notebook_path.clone(),
@@ -810,6 +663,177 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
         exported_heads,
         save_sequence: checkpoint.save_sequence,
     })
+}
+
+/// Render cells and notebook metadata to `.ipynb` bytes, resolving outputs,
+/// attachments and widget state the same way a save does.
+///
+/// `cell_execution_ids` maps each cell to its NotebookDoc execution pointer;
+/// outputs come from RuntimeStateDoc at call time. Pure apart from blob and
+/// runtime-state reads: no file is written and no baseline moves.
+pub(crate) async fn render_notebook_ipynb(
+    room: &NotebookRoom,
+    cells: &[notebook_doc::CellSnapshot],
+    metadata_snapshot: Option<&notebook_doc::metadata::NotebookMetadataSnapshot>,
+    cell_execution_ids: &HashMap<String, Option<String>>,
+    nbformat_minor: i32,
+) -> Result<(Vec<u8>, usize), SaveError> {
+    let previous_visible_execution_ids: HashMap<String, String> = cells
+        .iter()
+        .filter_map(|cell| {
+            room.persistence
+                .previous_visible_execution(&cell.id)
+                .map(|execution_id| (cell.id.clone(), execution_id))
+        })
+        .collect();
+
+    // Read outputs and execution_count from RuntimeStateDoc keyed by execution_id.
+    //
+    // NotebookDoc owns the cell -> execution pointer, while RuntimeStateDoc v2
+    // stores executions without durable cell identity. Saves use the current
+    // cell pointer directly except for the re-execution window where that
+    // pointer already targets a queued/running execution with no outputs yet;
+    // in that case daemon-local persistence hints preserve the previous
+    // visible outputs on disk. Cleared cells (`execution_id = None`) still
+    // write empty outputs.
+    let (cell_outputs, cell_execution_counts): (
+        HashMap<String, Vec<serde_json::Value>>,
+        HashMap<String, Option<i64>>,
+    ) = room
+        .state
+        .read(|sd| {
+            let snapshot = sd.read_state();
+            let mut outputs_map = HashMap::new();
+            let mut ec_map = HashMap::new();
+            for (cell_id, eid) in cell_execution_ids {
+                let Some(eid) = eid.as_ref() else { continue };
+                let Some(exec) = snapshot.executions.get(eid) else {
+                    continue;
+                };
+                let mut outputs = sd.get_outputs(eid);
+                let mut execution_count = exec.execution_count;
+                if outputs.is_empty() && matches!(exec.status.as_str(), "queued" | "running") {
+                    if let Some(previous_execution_id) = previous_visible_execution_ids.get(cell_id)
+                    {
+                        if let Some(previous_exec) = snapshot.executions.get(previous_execution_id)
+                        {
+                            let previous_outputs = sd.get_outputs(previous_execution_id);
+                            if !previous_outputs.is_empty()
+                                || previous_exec.execution_count.is_some()
+                            {
+                                outputs = previous_outputs;
+                                execution_count = previous_exec.execution_count;
+                            }
+                        }
+                    }
+                }
+                if !outputs.is_empty() {
+                    outputs_map.insert(cell_id.clone(), outputs);
+                }
+                ec_map.insert(cell_id.clone(), execution_count);
+            }
+            (outputs_map, ec_map)
+        })
+        .unwrap_or_default();
+
+    let mut nbformat_attachments = HashMap::new();
+    for cell in cells {
+        if cell.attachments.is_empty() {
+            continue;
+        }
+        let attachments = attachment_refs_to_nbformat_value(&cell.attachments, &room.blob_store)
+            .await
+            .map_err(|e| match e {
+                AttachmentResolveError::MissingBlob(_)
+                | AttachmentResolveError::BlobReadFailed(_)
+                | AttachmentResolveError::InvalidPayload(_) => SaveError::Unrecoverable(format!(
+                    "Failed to resolve attachments for cell {}: {e}",
+                    cell.id
+                )),
+            })?;
+        nbformat_attachments.insert(cell.id.clone(), attachments);
+    }
+
+    // Resolve outputs from the blob store. `resolve_cell_output` returns
+    // Jupyter-shape JSON (daemon-runtime shape: includes `output_id`, etc.).
+    // The nbformat conversion layer strips runtime-only fields before
+    // handing values to the typed v4 deserializer.
+    let mut resolved_outputs_by_cell: HashMap<String, Vec<serde_json::Value>> =
+        HashMap::with_capacity(cells.len());
+    for cell in cells {
+        if cell.cell_type != "code" {
+            continue;
+        }
+        let Some(outputs) = cell_outputs.get(&cell.id) else {
+            continue;
+        };
+        let mut resolved = Vec::with_capacity(outputs.len());
+        for output in outputs {
+            let output_value = resolve_cell_output(output, &room.blob_store).await;
+            let output_value = room.output_hooks.materialize_for_save(output_value).await;
+            resolved.push(output_value);
+        }
+        resolved_outputs_by_cell.insert(cell.id.clone(), resolved);
+    }
+
+    // Metadata comes entirely from the doc. No disk rescue; the
+    // snapshot carries unknown keys as extras.
+    let mut metadata = metadata_snapshot
+        .map(|s| serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({})))
+        .unwrap_or_else(|| serde_json::json!({}));
+    let mut comms = room.state.read(|sd| sd.get_comms()).unwrap_or_default();
+    let comm_states = room.comms.read(|cd| cd.get_comms()).unwrap_or_default();
+    for (comm_id, comm_state) in comm_states {
+        if let Some(entry) = comms.get_mut(&comm_id) {
+            entry.state = comm_state;
+        }
+    }
+    match widget_state_metadata_from_comms(&comms, &room.blob_store).await {
+        Ok(Some(widget_state)) => {
+            insert_widget_state_metadata(&mut metadata, widget_state);
+        }
+        Ok(None) => {}
+        Err(err) => {
+            warn!(
+                "[notebook-sync] Failed to materialize widget state metadata; \
+                 preserving existing notebook metadata: {err}"
+            );
+        }
+    }
+
+    // Build a typed v4::Notebook. The conversion layer enforces nbformat
+    // schema invariants (cell id validity, output typing, metadata shape) —
+    // structural bugs become compile/deserialize errors instead of silent
+    // on-disk drift.
+    let v4_notebook = build_v4_notebook(
+        cells,
+        &resolved_outputs_by_cell,
+        &cell_execution_counts,
+        &nbformat_attachments,
+        &metadata,
+        nbformat_minor,
+    )
+    .map_err(|e| SaveError::Unrecoverable(format!("Failed to build v4 notebook: {e}")))?;
+    let cell_count = v4_notebook.cells.len();
+
+    // Collect raw-cell attachments (markdown attachments are already on the
+    // typed v4::Cell::Markdown variant; raw cells lose theirs in typed
+    // conversion and get re-injected during serialize).
+    let raw_attachments: HashMap<String, serde_json::Value> = cells
+        .iter()
+        .filter(|c| c.cell_type == "raw")
+        .filter_map(|c| {
+            nbformat_attachments
+                .get(&c.id)
+                .map(|att| (c.id.clone(), att.clone()))
+        })
+        .collect();
+
+    let content_with_newline = serialize_v4_notebook(&v4_notebook, &raw_attachments)
+        .map_err(|e| SaveError::Retryable(format!("Failed to serialize notebook: {e}")))?;
+
+    let content_bytes = content_with_newline.into_bytes();
+    Ok((content_bytes, cell_count))
 }
 
 /// Rebuild the exact primary-path watcher baseline from a committed file
@@ -2241,53 +2265,88 @@ pub(crate) fn classify_watcher_observation(
     WatcherIngestDecision::Ingest
 }
 
-/// Preserve both disk and journal truth when an external file revision races
-/// unsaved causal heads. This transition is shared by the watcher and tests so
-/// the structured `source_conflict` state cannot drift from the detection
-/// predicate.
-pub(crate) async fn mark_external_source_conflict_if_needed(
+/// Where displaced-edit snapshots for this room live: next to its persisted
+/// document and recovery journal, outside the notebook's own directory so
+/// they never show up in the user's working tree.
+pub(crate) fn displaced_edits_dir(room: &NotebookRoom) -> PathBuf {
+    room.identity.persist_path.with_extension("displaced")
+}
+
+/// Write the pre-reload notebook to a snapshot file and publish a
+/// displaced-edits entry that stays until a client dismisses it.
+///
+/// A snapshot that cannot be rendered or written still publishes the entry,
+/// with an empty path, so the replacement is never silent.
+pub(crate) async fn record_displaced_edits(
     room: &NotebookRoom,
     notebook_path: &Path,
-    source_content: &[u8],
-) -> bool {
-    let durable = room.durability.status();
-    let external_fingerprint = super::recovery::source_fingerprint(source_content);
-    let manifest = room.durability.manifest();
-    if !durable.has_durable_record
-        || durable.durable_heads == durable.exported_heads
-        || external_fingerprint == manifest.source_fingerprint
+    displaced: &DisplacedCapture,
+) {
+    let now = chrono::Utc::now();
+    let stem = notebook_path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "notebook".to_string());
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let snapshot = displaced_edits_dir(room).join(format!(
+        "{stem}-{}-{}.ipynb",
+        now.format("%Y%m%dT%H%M%S%.3fZ"),
+        &suffix[..8]
+    ));
+    let written = match render_notebook_ipynb(
+        room,
+        &displaced.cells,
+        displaced.metadata.as_ref(),
+        &displaced.execution_ids,
+        5,
+    )
+    .await
     {
-        return false;
-    }
-
-    let reason = format!(
-        "source_conflict: {} changed on disk while journal heads were not exported; both versions were preserved",
-        notebook_path.display()
-    );
-    // Both versions are preserved and the journal stays healthy, so this
-    // degradation must not pin the room resident through shutdown or reaping.
-    room.durability.mark_degraded(
-        super::durability::DegradationKind::SourceState,
-        reason.clone(),
-    );
-    let document_heads = {
-        let mut doc = room.doc.write().await;
-        doc.get_heads_hex()
+        Ok((bytes, _)) => {
+            let target = snapshot.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                write_file_atomic_sync(&target, &bytes)
+            })
+            .await
+            .map_err(std::io::Error::other)
+            .and_then(|result| result)
+            .map_err(|error| error.to_string())
+        }
+        Err(error) => Err(error.to_string()),
     };
-    room.lifecycle
-        .mark_source_conflict(reason.clone(), document_heads);
-    if let Err(error) = room.state.with_doc(|state| {
-        state.set_file_source_issue(Some(&runtime_doc::FileSourceIssue::Conflict {
-            reason: reason.clone(),
-        }))
-    }) {
-        warn!(
-            "[notebook-watch] Failed to publish source conflict state: {}",
-            error
-        );
+    let snapshot_path = match written {
+        Ok(()) => snapshot.to_string_lossy().into_owned(),
+        Err(error) => {
+            warn!(
+                "[notebook-watch] Could not write displaced-edits snapshot {}: {error}",
+                snapshot.display()
+            );
+            String::new()
+        }
+    };
+    warn!(
+        "[notebook-watch] {} changed on disk and replaced in-session edits (cells {:?}, metadata {}, order {}); previous version at {}",
+        notebook_path.display(),
+        displaced.cell_ids,
+        displaced.metadata_changed,
+        displaced.order_changed,
+        if snapshot_path.is_empty() { "<not written>" } else { snapshot_path.as_str() },
+    );
+    let entry = runtime_doc::DisplacedEdits {
+        snapshot_path,
+        displaced_at: now.to_rfc3339(),
+        cell_ids: displaced.cell_ids.clone(),
+        metadata: displaced.metadata_changed,
+    };
+    if let Err(error) = room
+        .state
+        .with_doc(|state| state.push_displaced_edits(entry))
+    {
+        warn!("[notebook-watch] Failed to publish displaced edits: {error}");
     }
-    warn!("[notebook-watch] {reason}");
-    true
 }
 
 /// Handle one debounced watcher event for `notebook_path`: read the file,
@@ -2324,15 +2383,6 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
             return;
         }
         WatcherIngestDecision::Ingest => {}
-    }
-
-    // A journal with heads newer than its causal file
-    // checkpoint represents unsaved collaborative
-    // truth. If disk changed to different bytes, keep
-    // both versions and require explicit reconciliation
-    // instead of merging or choosing a winner.
-    if mark_external_source_conflict_if_needed(room, notebook_path, contents.as_bytes()).await {
-        return;
     }
 
     // Parse the .ipynb with the shared notebook parser. `Err` covers a
@@ -2382,18 +2432,45 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
     };
 
-    // Apply the complete cell+metadata revision under
-    // one NotebookDoc lock and one journal marker.
-    let applied = apply_ipynb_changes_from_source(
-        room,
-        &external_cells,
-        &external_outputs,
-        &external_attachments,
-        external_metadata.as_ref(),
-        has_kernel,
-        source_revision,
-    )
-    .await;
+    // The file wins. Apply the complete cell+metadata revision under one
+    // NotebookDoc lock and one journal marker; the live notebook then equals
+    // the file. A concurrent edit can land between the apply's pre-lock reads
+    // and its transaction, so a revision that fails to reproduce gets one
+    // more attempt before it is reported.
+    let mut applied = AppliedIpynbChanges::default();
+    for _attempt in 0..2 {
+        applied = apply_ipynb_changes_from_source(
+            room,
+            &external_cells,
+            &external_outputs,
+            &external_attachments,
+            external_metadata.as_ref(),
+            has_kernel,
+            source_revision.clone(),
+        )
+        .await;
+        if !applied.rejected {
+            break;
+        }
+    }
+    if let Some(displaced) = applied.displaced.as_ref() {
+        record_displaced_edits(room, notebook_path, displaced).await;
+    }
+    if applied.rejected {
+        let reason = format!(
+            "{} changed on disk, but the notebook could not reproduce it (duplicate or invalid cell ids?). The open notebook was kept and will not be saved over the file until the file changes again.",
+            notebook_path.display()
+        );
+        if let Err(error) = room.state.with_doc(|state| {
+            state.set_file_source_issue(Some(&runtime_doc::FileSourceIssue::Degraded {
+                reason: reason.clone(),
+            }))
+        }) {
+            warn!("[notebook-watch] Failed to publish rejected revision: {error}");
+        }
+        warn!("[notebook-watch] {reason}");
+        return;
+    }
     let cells_changed = applied.cells_changed;
     let metadata_changed = applied.metadata_changed;
 
@@ -2415,13 +2492,11 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
         return;
     }
 
-    // Recovery is published only after cells and metadata
-    // both reconcile successfully below. Until then the
-    // Failed generation and persistence guard remain
-    // authoritative.
-    let cells_reconciled = room.doc.read().await.cell_count() == external_cells.len();
-
-    if cells_reconciled {
+    // Recovery is published only after the apply verified, under the
+    // document lock, that the live notebook equals the file and the revision
+    // committed. A partial or failed application keeps the Failed generation
+    // and persistence guard authoritative.
+    if applied.reconciled {
         room.clear_load_failed();
         // Only a fully reconciled and journaled source
         // revision becomes the autosave staleness

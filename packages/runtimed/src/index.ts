@@ -225,6 +225,7 @@ export {
   type EnvProgressPhase,
   type ExecutionState,
   type ExecutionTransition,
+  type DisplacedEdits,
   type FileCheckpointState,
   type FileSourceIssue,
   KERNEL_ERROR_REASON,

@@ -1113,9 +1113,10 @@ impl RoomDurability {
     /// source generation and causal disk checkpoint.
     ///
     /// Callers hold the live NotebookDoc lock from authoring through this
-    /// synchronous append. The precondition is checked under the durability
-    /// lock, so peer changes prepared concurrently either land first and force
-    /// a conflict or land afterward and remain causally dirty.
+    /// synchronous append, and their changes make the document equal the
+    /// file. The resulting heads are therefore exported even when earlier
+    /// heads were not: the file wins over unexported session edits, and the
+    /// caller records what it replaced.
     pub(crate) fn commit_external_source_revision(
         &self,
         changes: Vec<Change>,
@@ -1125,15 +1126,6 @@ impl RoomDurability {
     ) -> Result<DurableCommitOutcome, RoomDurabilityError> {
         self.ensure_accepting_commits()?;
         let mut state = self.lock_state();
-        if state.has_durable_record
-            && state.manifest.durable_heads != state.manifest.exported_heads
-            && state.manifest.source_fingerprint != observed_source
-        {
-            return Err(RoomDurabilityError::SourceConflict {
-                journal_source: state.manifest.source_fingerprint,
-                observed_source,
-            });
-        }
 
         let mut durable = AutoCommit::load(&state.durable_snapshot)
             .map_err(|error| RoomDurabilityError::InvalidSnapshot(error.to_string()))?;
@@ -2298,7 +2290,7 @@ mod tests {
     }
 
     #[test]
-    fn observed_source_commit_rechecks_unsaved_heads_after_async_preparation() {
+    fn external_revision_exports_its_heads_over_unexported_peer_heads() {
         let directory = tempfile::tempdir().unwrap();
         let journal = RecoveryJournal::new(directory.path().join("room.recovery"));
         let disk_source = source_fingerprint(b"original disk source");
@@ -2349,26 +2341,25 @@ mod tests {
         let before_disk = observed.get_heads();
         observed.put(ROOT, "external", 3).unwrap();
         let observed_fingerprint = source_fingerprint(b"new external source");
-        let error = durability
+        // The caller's changes make the document equal the file, so the
+        // revision commits and its heads become the exported heads even
+        // though the peer batch was never exported. The caller records what
+        // the revision replaced.
+        let status = match durability
             .commit_external_source_revision(
                 observed.get_changes(&before_disk),
                 observed_fingerprint,
                 PathBuf::from("/tmp/notebook.ipynb"),
                 2,
             )
-            .unwrap_err();
-
-        assert!(matches!(
-            error,
-            RoomDurabilityError::SourceConflict {
-                journal_source,
-                observed_source,
-            } if journal_source == disk_source && observed_source == observed_fingerprint
-        ));
-        let after = durability.status();
-        assert_eq!(after.journal_sequence, before_observed.journal_sequence);
-        assert_eq!(after.durable_heads, before_observed.durable_heads);
-        assert_eq!(after.source_fingerprint, disk_source);
+            .unwrap()
+        {
+            DurableCommitOutcome::Committed(status) => status,
+            other => panic!("external revision should commit, got {other:?}"),
+        };
+        assert!(status.journal_sequence > before_observed.journal_sequence);
+        assert_eq!(status.durable_heads, status.exported_heads);
+        assert_eq!(status.source_fingerprint, observed_fingerprint);
     }
 
     #[test]
@@ -2442,28 +2433,30 @@ mod tests {
                 peer.get_changes(&before_peer),
             ))
             .unwrap();
-        let before_conflict = durability.status();
+        assert_ne!(
+            durability.status().durable_heads,
+            durability.status().exported_heads
+        );
 
+        // A third revision over unexported peer heads still commits.
         let mut external = AutoCommit::load(&durability.durable_snapshot()).unwrap();
         let before_external = external.get_heads();
         external.put(ROOT, "source", 3).unwrap();
         let observed_source = source_fingerprint(b"revision three");
-        let error = durability
+        let status = match durability
             .commit_external_source_revision(
                 external.get_changes(&before_external),
                 observed_source,
                 path,
                 4,
             )
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            RoomDurabilityError::SourceConflict {
-                observed_source: conflict_source,
-                ..
-            } if conflict_source == observed_source
-        ));
-        assert_eq!(durability.status(), before_conflict);
+            .unwrap()
+        {
+            DurableCommitOutcome::Committed(status) => status,
+            other => panic!("external revision should commit, got {other:?}"),
+        };
+        assert_eq!(status.durable_heads, status.exported_heads);
+        assert_eq!(status.source_fingerprint, observed_source);
     }
 
     #[test]

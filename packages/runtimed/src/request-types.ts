@@ -204,6 +204,7 @@ export type NotebookRequest =
       path?: string | null;
     }
   | { type: "reconcile_notebook_source"; operation: SourceReconciliation }
+  | { type: "dismiss_displaced_edits" }
   | { type: "clone_as_ephemeral"; source_notebook_id: string }
   | { type: "sync_environment"; guard?: DependencyGuard | null }
   | {

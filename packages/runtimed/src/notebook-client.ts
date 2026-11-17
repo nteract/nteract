@@ -536,6 +536,22 @@ export class NotebookClient {
   }
 
   /**
+   * Forget the room's displaced-edit entries. Their snapshot files stay on
+   * disk.
+   */
+  async dismissDisplacedEdits(): Promise<void> {
+    const response = await this.sendRequest({ type: "dismiss_displaced_edits" });
+    switch (response.result) {
+      case "ok":
+        return;
+      case "error":
+        throw new Error(`Daemon could not dismiss displaced edits: ${response.error}`);
+      default:
+        throw new Error(`Unexpected dismiss_displaced_edits response: ${JSON.stringify(response)}`);
+    }
+  }
+
+  /**
    * Clone an existing room into a new in-memory notebook.
    *
    * The daemon owns the fork. Host shells decide what to do with the

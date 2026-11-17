@@ -484,9 +484,8 @@ pub struct RoomPersistence {
     debouncer: std::sync::Mutex<Option<PersistDebouncer>>,
     /// Cell sources as they were written to disk at last save.
     ///
-    /// The file watcher compares disk content against this snapshot (not the
-    /// live CRDT) to distinguish our own autosave writes from genuine external
-    /// changes (git pull, external editor).
+    /// Advanced together with the disk-content hash. The file watcher tells
+    /// its own writes from external ones by that hash, not by these sources.
     pub last_save_sources: RwLock<HashMap<String, String>>,
     /// Highest committed save sequence allowed to update the primary-path
     /// watcher baselines. Post-`spawn_blocking` save continuations may resume
@@ -504,9 +503,9 @@ pub struct RoomPersistence {
     /// read. `save_notebook_to_disk` refuses a primary-path save when the
     /// on-disk bytes no longer match this baseline — another writer (a second
     /// daemon, `git pull`) changed the file and the watcher has not reconciled
-    /// it into the doc yet. The refusal is `Retryable`: the watcher merges the
-    /// external content and refreshes this baseline, and the autosave
-    /// debouncer's next tick writes the merged state. `None` means "no disk
+    /// it into the doc yet. The refusal is `Retryable`: the watcher applies
+    /// the external content and refreshes this baseline, and the autosave
+    /// debouncer's next tick writes only edits made after it. `None` means "no disk
     /// content observed yet" (untitled rooms, Save As targets) and disables
     /// the check.
     last_known_disk_hash: std::sync::Mutex<Option<[u8; 32]>>,
@@ -2862,13 +2861,6 @@ impl NotebookRoom {
         // Check runtime agent handle
         let ra = self.runtime_agent_handle.lock().await;
         ra.as_ref().is_some_and(|a| a.is_alive())
-    }
-
-    /// Snapshot of cell sources as they were at last save. Empty before
-    /// the first save, which is the correct baseline for "no disk write
-    /// has happened yet."
-    pub async fn last_save_sources_snapshot(&self) -> HashMap<String, String> {
-        self.persistence.last_save_sources.read().await.clone()
     }
 
     /// True if a streaming load is currently in progress.

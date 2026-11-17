@@ -829,6 +829,11 @@ pub enum NotebookRequest {
         operation: SourceReconciliation,
     },
 
+    /// Forget the room's displaced-edit entries
+    /// (`file_checkpoint.displaced_edits` in RuntimeStateDoc). Their snapshot
+    /// files stay on disk. Responds `Ok {}`.
+    DismissDisplacedEdits {},
+
     /// Fork the current notebook into a new ephemeral (in-memory only) room.
     ///
     /// Creates a new UUID, copies cells + metadata from the source room,
@@ -1964,6 +1969,10 @@ mod tests {
                         "path": "/tmp/recovered.ipynb",
                     },
                 }),
+            ),
+            (
+                "dismiss_displaced_edits",
+                serde_json::json!({ "action": "dismiss_displaced_edits" }),
             ),
             (
                 "clone_as_ephemeral",

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import type { FileCheckpointState } from "runtimed";
 import {
+  displacedEditsNotice,
   fileSourceIssueNotice,
   notebookDocumentIsDirty,
   type NotebookCausalHeadsReader,
@@ -112,6 +113,34 @@ describe("notebookDocumentIsDirty", () => {
         },
       }),
     ).toBe(true);
+  });
+});
+
+describe("displacedEditsNotice", () => {
+  const entry = (snapshot_path: string) => ({
+    snapshot_path,
+    displaced_at: "2026-11-16T00:00:00Z",
+    cell_ids: ["a"],
+    metadata: false,
+  });
+
+  it("is absent without entries, including from older daemons", () => {
+    expect(displacedEditsNotice(undefined)).toBeNull();
+    expect(displacedEditsNotice([])).toBeNull();
+  });
+
+  it("names every snapshot path", () => {
+    expect(displacedEditsNotice([entry("/s/one.ipynb")])).toEqual({
+      title: "The file changed on disk and replaced unsaved edits",
+      message: "The notebook now matches the file. The previous version is saved at /s/one.ipynb.",
+      snapshotPaths: ["/s/one.ipynb"],
+    });
+    expect(displacedEditsNotice([entry("/s/one.ipynb"), entry("")])?.message).toBe(
+      "The notebook now matches the file (2 times). The previous version is saved at /s/one.ipynb.",
+    );
+    expect(displacedEditsNotice([entry("")])?.message).toBe(
+      "The notebook now matches the file. The previous version could not be saved; see the daemon log.",
+    );
   });
 });
 

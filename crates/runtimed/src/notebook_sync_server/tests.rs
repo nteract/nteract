@@ -3501,57 +3501,6 @@ async fn source_conflict_blocks_in_place_save_but_allows_save_recovered_elsewher
 }
 
 #[tokio::test]
-async fn external_watcher_conflict_publishes_structured_source_conflict() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let (room, notebook_path) = test_room_with_path(&tmp, "watcher-conflict.ipynb");
-    let disk_revision = br#"{"nbformat":4,"nbformat_minor":5,"metadata":{},"cells":[]}"#;
-    tokio::fs::write(&notebook_path, disk_revision)
-        .await
-        .unwrap();
-    {
-        let mut doc = room.doc.write().await;
-        doc.add_cell(0, "unsaved-peer-cell", "code").unwrap();
-        doc.update_source("unsaved-peer-cell", "value = 42")
-            .unwrap();
-    }
-    commit_test_room_doc(&room).await;
-
-    assert!(
-        mark_external_source_conflict_if_needed(&room, &notebook_path, disk_revision).await,
-        "dirty journal heads and a different disk fingerprint must conflict"
-    );
-    match room.lifecycle.source_state() {
-        RoomSourceState::Failed(status) => {
-            let error = status.error.expect("structured source error");
-            assert_eq!(error.code, "source_conflict");
-            assert!(error.message.contains("both versions were preserved"));
-            assert_eq!(status.retry, RoomSourceRetry::ExplicitReconciliation);
-        }
-        state => panic!("watcher conflict must fail the source axis, got {state:?}"),
-    }
-    let availability = room.lifecycle.availability();
-    assert!(matches!(availability, RoomAvailability::Degraded(_)));
-    assert!(!availability.status().capabilities.mutate);
-    assert!(!availability.status().capabilities.execute);
-    assert!(matches!(
-        room.state
-            .read(|state| state.read_state().file_checkpoint.source_issue)
-            .unwrap(),
-        Some(runtime_doc::FileSourceIssue::Conflict { .. })
-    ));
-    assert_eq!(
-        tokio::fs::read(&notebook_path).await.unwrap(),
-        disk_revision,
-        "conflict detection must not rewrite the external source"
-    );
-    assert_eq!(
-        room.doc.read().await.cell_count(),
-        1,
-        "conflict detection must retain the recovered journal state"
-    );
-}
-
-#[tokio::test]
 async fn test_save_notebook_to_disk_preserves_unknown_metadata() {
     use std::io::Write;
     let tmp = tempfile::TempDir::new().unwrap();
@@ -5549,35 +5498,23 @@ async fn test_apply_ipynb_changes_wholesale_replacement() {
 }
 
 #[tokio::test]
-async fn test_apply_ipynb_changes_partial_overlap_preserves_unsaved() {
-    // When there IS overlap between current and external cells, the
-    // incremental path should preserve user-added cells not in
-    // last_save_sources.
+async fn test_apply_ipynb_changes_partial_overlap_takes_the_file() {
+    // The file wins on overlap too: cells it lacks go, including one the
+    // session just added. Without a file checkpoint every dropped live cell
+    // is reported as displaced.
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, _) = test_room_with_path(&tmp, "test.ipynb");
 
-    // Add cells and populate last_save_sources to simulate a save
     {
         let mut doc = room.doc.write().await;
         doc.add_cell(0, "keep", "code").unwrap();
         doc.update_source("keep", "x = 1").unwrap();
         doc.add_cell(1, "remove", "code").unwrap();
         doc.update_source("remove", "y = 2").unwrap();
-    }
-    {
-        let mut saved = room.persistence.last_save_sources.write().await;
-        saved.insert("keep".to_string(), "x = 1".to_string());
-        saved.insert("remove".to_string(), "y = 2".to_string());
-    }
-
-    // Add a cell NOT in last_save_sources (user just added it)
-    {
-        let mut doc = room.doc.write().await;
         doc.add_cell(2, "user-added", "code").unwrap();
         doc.update_source("user-added", "z = 3").unwrap();
     }
 
-    // External file has "keep" (overlap) but not "remove" or "user-added"
     let external_cells = vec![CellSnapshot {
         id: "keep".to_string(),
         cell_type: "code".to_string(),
@@ -5589,7 +5526,7 @@ async fn test_apply_ipynb_changes_partial_overlap_preserves_unsaved() {
         attachments: std::collections::HashMap::new(),
     }];
 
-    let changed = apply_ipynb_changes_inner(
+    let applied = apply_ipynb_changes_inner(
         &room,
         &external_cells,
         &HashMap::new(),
@@ -5598,42 +5535,40 @@ async fn test_apply_ipynb_changes_partial_overlap_preserves_unsaved() {
         None, // external_metadata
         None, // source_revision: exercise the no-source-revision path
     )
-    .await
-    .changed();
-    assert!(changed);
+    .await;
+    assert!(applied.changed());
+    assert!(applied.reconciled);
 
-    let cells = {
-        let doc = room.doc.read().await;
-        doc.get_cells()
-    };
-    let ids: Vec<&str> = cells.iter().map(|c| c.id.as_str()).collect();
-    assert!(
-        ids.contains(&"keep"),
-        "Overlapping cell should remain: {:?}",
-        ids
+    let ids: Vec<String> = room
+        .doc
+        .read()
+        .await
+        .get_cells()
+        .into_iter()
+        .map(|c| c.id)
+        .collect();
+    assert_eq!(ids, vec!["keep".to_string()]);
+    let displaced = applied.displaced.expect("dropped cells are reported");
+    assert_eq!(
+        displaced.cell_ids,
+        vec!["remove".to_string(), "user-added".to_string()]
     );
-    assert!(
-        !ids.contains(&"remove"),
-        "Saved cell removed externally should be deleted: {:?}",
-        ids
-    );
-    assert!(
-        ids.contains(&"user-added"),
-        "User-added cell not in save snapshot should be preserved: {:?}",
-        ids
+    assert_eq!(
+        displaced.cells.len(),
+        3,
+        "the capture is the pre-reload notebook"
     );
 }
 
 #[tokio::test]
-async fn test_apply_ipynb_changes_no_save_snapshot_preserves_crdt_cells() {
-    // Regression test for Run 38 cell-loss: when last_save_sources is
-    // empty (initial autosave with 0 cells), the file watcher must NOT
-    // delete CRDT cells that aren't on disk. Without a save baseline we
-    // can't distinguish "externally deleted" from "just created in CRDT."
+async fn test_watcher_skips_own_empty_save_and_keeps_crdt_cells() {
+    // Regression test for Run 38 cell-loss: the daemon's own autosave of an
+    // empty notebook must never reach the apply, or the file would win
+    // over cells a client just created. The disk-content baseline the save
+    // records is what stops it.
     let tmp = tempfile::TempDir::new().unwrap();
-    let (room, _) = test_room_with_path(&tmp, "test.ipynb");
+    let (room, notebook_path) = test_room_with_path(&tmp, "test.ipynb");
 
-    // Add cells to the CRDT (simulates MCP client creating cells)
     {
         let mut doc = room.doc.write().await;
         doc.add_cell(0, "cell-a", "code").unwrap();
@@ -5641,58 +5576,26 @@ async fn test_apply_ipynb_changes_no_save_snapshot_preserves_crdt_cells() {
         doc.add_cell(1, "cell-b", "code").unwrap();
         doc.update_source("cell-b", "y = 2").unwrap();
     }
+    commit_test_room_doc(&room).await;
 
-    // Do NOT populate last_save_sources — simulates the case where
-    // the only save was with 0 cells (empty HashMap is the default).
-    assert!(room.persistence.last_save_sources.read().await.is_empty());
+    let empty_save = br#"{"nbformat":4,"nbformat_minor":5,"metadata":{},"cells":[]}"#;
+    tokio::fs::write(&notebook_path, empty_save).await.unwrap();
+    room.persistence.note_disk_content(empty_save);
 
-    // External file has 0 cells (the autosave wrote an empty notebook)
-    let external_cells: Vec<CellSnapshot> = vec![];
+    process_watcher_event(&room, &notebook_path).await;
 
-    let changed = apply_ipynb_changes_inner(
-        &room,
-        &external_cells,
-        &HashMap::new(),
-        &HashMap::new(),
-        false,
-        None, // external_metadata
-        None, // source_revision: exercise the no-source-revision path
-    )
-    .await
-    .changed();
-    // No changes should be applied — cells preserved
-    assert!(
-        !changed,
-        "Should not delete cells when no save snapshot exists"
-    );
-
-    let cells = {
-        let doc = room.doc.read().await;
-        doc.get_cells()
-    };
-    let ids: Vec<&str> = cells.iter().map(|c| c.id.as_str()).collect();
-    assert!(
-        ids.contains(&"cell-a"),
-        "CRDT cell should be preserved when no save snapshot: {:?}",
-        ids
-    );
-    assert!(
-        ids.contains(&"cell-b"),
-        "CRDT cell should be preserved when no save snapshot: {:?}",
-        ids
-    );
+    let ids: Vec<String> = room
+        .doc
+        .read()
+        .await
+        .get_cells()
+        .into_iter()
+        .map(|c| c.id)
+        .collect();
+    assert_eq!(ids, vec!["cell-a".to_string(), "cell-b".to_string()]);
+    assert!(displaced_edits(&room).is_empty());
 }
 
-/// Applying identical external content twice is a no-op the second time:
-/// no reported change AND no new Automerge changes (issue #4015). A
-/// spurious metadata_changed fires changed_tx (resetting the autosave
-/// debounce), commits a journal marker, and wakes the persist debouncer.
-///
-/// Exercises both suspect shapes:
-/// - a file whose metadata is empty while the doc carries internal keys
-///   (`runtime` scalar, `runt.env_id`) the .ipynb omits — the untitled
-///   autosave scenario from the issue's watcher log
-/// - a file with kernelspec, language_info, and an unknown top-level key
 #[tokio::test]
 async fn test_apply_ipynb_changes_identical_metadata_is_idempotent() {
     let empty_metadata_fixture = br#"{
@@ -16956,4 +16859,622 @@ async fn decline_with_remember_persists() {
         found.decision,
         crate::trusted_packages::DirectoryDecision::NotebookEnv
     );
+}
+
+// ── External rewrites: the file wins, displaced edits are snapshotted ──
+
+fn rewrite_ipynb(cells: &[(&str, &str)], metadata: serde_json::Value) -> Vec<u8> {
+    let cells: Vec<serde_json::Value> = cells
+        .iter()
+        .map(|(id, source)| {
+            serde_json::json!({
+                "id": id,
+                "cell_type": "code",
+                "source": source,
+                "execution_count": null,
+                "outputs": [],
+                "metadata": {}
+            })
+        })
+        .collect();
+    serde_json::to_vec(&serde_json::json!({
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": metadata,
+        "cells": cells,
+    }))
+    .unwrap()
+}
+
+/// A room whose bound file this daemon saved: exported heads, the save
+/// baseline and the manifest fingerprint all describe `cells`.
+async fn saved_room(
+    tmp: &tempfile::TempDir,
+    name: &str,
+    cells: &[(&str, &str)],
+) -> (NotebookRoom, PathBuf) {
+    let (room, path) = test_room_with_path(tmp, name);
+    {
+        let mut doc = room.doc.write().await;
+        for (index, (id, source)) in cells.iter().enumerate() {
+            doc.add_cell(index, id, "code").unwrap();
+            doc.update_source(id, source).unwrap();
+        }
+    }
+    commit_test_room_doc(&room).await;
+    save_notebook_to_disk(&room, None).await.unwrap();
+    let status = room.durability.status();
+    assert_eq!(status.durable_heads, status.exported_heads);
+    (room, path)
+}
+
+/// An unsaved in-session edit: journaled, not yet exported to the file.
+async fn edit_in_session(room: &NotebookRoom, edit: impl FnOnce(&mut notebook_doc::NotebookDoc)) {
+    {
+        let mut doc = room.doc.write().await;
+        edit(&mut doc);
+    }
+    commit_test_room_doc(room).await;
+}
+
+async fn external_write(room: &NotebookRoom, path: &Path, bytes: &[u8]) {
+    write_file_atomic_sync(path, bytes).unwrap();
+    process_watcher_event(room, path).await;
+}
+
+async fn live_cells(room: &NotebookRoom) -> Vec<(String, String)> {
+    room.doc
+        .read()
+        .await
+        .get_cells()
+        .into_iter()
+        .map(|cell| (cell.id, cell.source))
+        .collect()
+}
+
+fn owned_cells(cells: &[(&str, &str)]) -> Vec<(String, String)> {
+    cells
+        .iter()
+        .map(|(id, source)| (id.to_string(), source.to_string()))
+        .collect()
+}
+
+fn displaced_edits(room: &NotebookRoom) -> Vec<runtime_doc::DisplacedEdits> {
+    room.state
+        .read(|state| state.file_checkpoint().displaced_edits)
+        .unwrap()
+}
+
+fn snapshot_cells(entry: &runtime_doc::DisplacedEdits) -> Vec<(String, String)> {
+    let bytes = std::fs::read(&entry.snapshot_path).expect("snapshot file");
+    let notebook: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    notebook["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|cell| {
+            let source = match &cell["source"] {
+                serde_json::Value::Array(lines) => lines
+                    .iter()
+                    .map(|line| line.as_str().unwrap())
+                    .collect::<String>(),
+                other => other.as_str().unwrap().to_string(),
+            };
+            (cell["id"].as_str().unwrap().to_string(), source)
+        })
+        .collect()
+}
+
+/// Writable, saving, and not waiting on any reconciliation.
+async fn assert_room_healthy(room: &NotebookRoom) {
+    assert!(
+        !matches!(room.lifecycle.availability(), RoomAvailability::Degraded(_)),
+        "room must stay writable, got {:?}",
+        room.lifecycle.availability()
+    );
+    assert_eq!(
+        room.state
+            .read(|state| state.file_checkpoint().source_issue)
+            .unwrap(),
+        None
+    );
+    let save = save_notebook_to_disk(room, None).await;
+    assert!(save.is_ok(), "autosave must keep working, got {save:?}");
+}
+
+#[tokio::test]
+async fn external_write_after_unsaved_edit_takes_disk_and_snapshots_the_edit() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path) = saved_room(&tmp, "edit.ipynb", &[("a", "a = 1"), ("b", "b = 1")]).await;
+    edit_in_session(&room, |doc| {
+        doc.update_source("a", "a = 2  # unsaved").unwrap();
+    })
+    .await;
+
+    let disk = rewrite_ipynb(&[("a", "a = 1"), ("b", "b = 2")], serde_json::json!({}));
+    external_write(&room, &path, &disk).await;
+
+    assert_eq!(
+        live_cells(&room).await,
+        owned_cells(&[("a", "a = 1"), ("b", "b = 2")])
+    );
+    let status = room.durability.status();
+    assert_eq!(
+        status.durable_heads, status.exported_heads,
+        "the reload leaves nothing for autosave to write back"
+    );
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        disk,
+        "the watcher must not touch the file"
+    );
+
+    let entries = displaced_edits(&room);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].cell_ids, vec!["a".to_string()]);
+    assert!(!entries[0].metadata);
+    assert!(Path::new(&entries[0].snapshot_path).starts_with(displaced_edits_dir(&room)));
+    assert_eq!(
+        snapshot_cells(&entries[0]),
+        owned_cells(&[("a", "a = 2  # unsaved"), ("b", "b = 1")])
+    );
+    assert_room_healthy(&room).await;
+}
+
+#[tokio::test]
+async fn displaced_edits_survive_later_external_writes_until_dismissed() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path) = saved_room(&tmp, "switch.ipynb", &[("a", "branch A")]).await;
+    let branch_a = std::fs::read(&path).unwrap();
+    let branch_b = rewrite_ipynb(&[("a", "branch B")], serde_json::json!({}));
+    edit_in_session(&room, |doc| {
+        doc.update_source("a", "branch A plus typing").unwrap();
+    })
+    .await;
+
+    // git switch B, git switch A, git switch B: one displacement, three writes.
+    external_write(&room, &path, &branch_b).await;
+    external_write(&room, &path, &branch_a).await;
+    external_write(&room, &path, &branch_b).await;
+    assert_eq!(live_cells(&room).await, owned_cells(&[("a", "branch B")]));
+    let entries = displaced_edits(&room);
+    assert_eq!(entries.len(), 1, "later writes displace nothing new");
+    assert_eq!(
+        snapshot_cells(&entries[0]),
+        owned_cells(&[("a", "branch A plus typing")])
+    );
+
+    // A save between writes does not clear it either, and a second
+    // displacement appends.
+    assert_room_healthy(&room).await;
+    edit_in_session(&room, |doc| {
+        doc.update_source("a", "more typing").unwrap();
+    })
+    .await;
+    external_write(&room, &path, &branch_a).await;
+    let entries = displaced_edits(&room);
+    assert_eq!(entries.len(), 2);
+    assert_eq!(
+        snapshot_cells(&entries[1]),
+        owned_cells(&[("a", "more typing")])
+    );
+
+    room.state
+        .with_doc(|state| state.clear_displaced_edits())
+        .unwrap();
+    assert!(displaced_edits(&room).is_empty());
+    assert!(
+        Path::new(&entries[0].snapshot_path).exists(),
+        "dismiss keeps snapshots"
+    );
+}
+
+#[tokio::test]
+async fn same_cell_changed_on_both_sides_takes_disk() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path) = saved_room(&tmp, "both.ipynb", &[("a", "x = 1")]).await;
+    edit_in_session(&room, |doc| {
+        doc.update_source("a", "x = 2").map(|_| ()).unwrap()
+    })
+    .await;
+
+    external_write(
+        &room,
+        &path,
+        &rewrite_ipynb(&[("a", "x = 3")], serde_json::json!({})),
+    )
+    .await;
+
+    assert_eq!(live_cells(&room).await, owned_cells(&[("a", "x = 3")]));
+    let entries = displaced_edits(&room);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].cell_ids, vec!["a".to_string()]);
+    assert_eq!(snapshot_cells(&entries[0]), owned_cells(&[("a", "x = 2")]));
+    assert_room_healthy(&room).await;
+}
+
+#[tokio::test]
+async fn identical_edit_on_both_sides_displaces_nothing() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path) = saved_room(&tmp, "same.ipynb", &[("a", "x = 1"), ("b", "y = 1")]).await;
+    edit_in_session(&room, |doc| {
+        doc.update_source("a", "x = 2").map(|_| ()).unwrap()
+    })
+    .await;
+
+    // The file has the same edit, plus a change of its own.
+    let disk = rewrite_ipynb(&[("a", "x = 2"), ("b", "y = 2")], serde_json::json!({}));
+    external_write(&room, &path, &disk).await;
+
+    assert_eq!(
+        live_cells(&room).await,
+        owned_cells(&[("a", "x = 2"), ("b", "y = 2")])
+    );
+    assert!(displaced_edits(&room).is_empty());
+    assert_room_healthy(&room).await;
+}
+
+#[tokio::test]
+async fn quiet_writes_raise_no_notice() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path) = saved_room(&tmp, "quiet.ipynb", &[("a", "x = 1"), ("b", "y = 1")]).await;
+
+    // Reformat-only rewrite with no session edits.
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    external_write(&room, &path, &serde_json::to_vec_pretty(&saved).unwrap()).await;
+    assert_eq!(
+        live_cells(&room).await,
+        owned_cells(&[("a", "x = 1"), ("b", "y = 1")])
+    );
+
+    // The daemon's own save of a session edit.
+    edit_in_session(&room, |doc| {
+        doc.update_source("a", "x = 2").map(|_| ()).unwrap()
+    })
+    .await;
+    save_notebook_to_disk(&room, None).await.unwrap();
+    process_watcher_event(&room, &path).await;
+
+    // Running a cell moves its execution pointer; that is not an edit.
+    edit_in_session(&room, |doc| {
+        doc.set_execution_id("b", Some("unsaved-execution"))
+            .unwrap();
+    })
+    .await;
+    external_write(
+        &room,
+        &path,
+        &rewrite_ipynb(&[("a", "x = 2"), ("b", "y = 3")], serde_json::json!({})),
+    )
+    .await;
+
+    assert_eq!(
+        live_cells(&room).await,
+        owned_cells(&[("a", "x = 2"), ("b", "y = 3")])
+    );
+    assert!(displaced_edits(&room).is_empty());
+    assert_room_healthy(&room).await;
+}
+
+#[tokio::test]
+async fn structural_session_edits_lose_to_disk_and_are_snapshotted() {
+    // A cell deleted in session but changed on disk comes back.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path) = saved_room(&tmp, "deleted.ipynb", &[("a", "x = 1"), ("b", "y = 1")]).await;
+    edit_in_session(&room, |doc| {
+        doc.delete_cell("a").unwrap();
+    })
+    .await;
+    external_write(
+        &room,
+        &path,
+        &rewrite_ipynb(&[("a", "x = 2"), ("b", "y = 1")], serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(
+        live_cells(&room).await,
+        owned_cells(&[("a", "x = 2"), ("b", "y = 1")])
+    );
+    let entries = displaced_edits(&room);
+    assert_eq!(entries[0].cell_ids, vec!["a".to_string()]);
+    assert_eq!(snapshot_cells(&entries[0]), owned_cells(&[("b", "y = 1")]));
+    assert_room_healthy(&room).await;
+
+    // A cell added in session goes.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path) = saved_room(&tmp, "added.ipynb", &[("a", "x = 1")]).await;
+    edit_in_session(&room, |doc| {
+        doc.add_cell(1, "c", "code").unwrap();
+        doc.update_source("c", "new = 1").unwrap();
+    })
+    .await;
+    external_write(
+        &room,
+        &path,
+        &rewrite_ipynb(&[("a", "x = 2")], serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(live_cells(&room).await, owned_cells(&[("a", "x = 2")]));
+    let entries = displaced_edits(&room);
+    assert_eq!(entries[0].cell_ids, vec!["c".to_string()]);
+    assert_eq!(
+        snapshot_cells(&entries[0]),
+        owned_cells(&[("a", "x = 1"), ("c", "new = 1")])
+    );
+    assert_room_healthy(&room).await;
+
+    // Disk reorders while the session edits one of the moved cells.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path) = saved_room(&tmp, "reorder.ipynb", &[("a", "x = 1"), ("b", "y = 1")]).await;
+    edit_in_session(&room, |doc| {
+        doc.update_source("a", "x = 2").map(|_| ()).unwrap()
+    })
+    .await;
+    external_write(
+        &room,
+        &path,
+        &rewrite_ipynb(&[("b", "y = 1"), ("a", "x = 1")], serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(
+        live_cells(&room).await,
+        owned_cells(&[("b", "y = 1"), ("a", "x = 1")])
+    );
+    assert_eq!(displaced_edits(&room)[0].cell_ids, vec!["a".to_string()]);
+    assert_room_healthy(&room).await;
+
+    // The session reorders; disk changes content only. Order alone counts.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path) = saved_room(&tmp, "moved.ipynb", &[("a", "x = 1"), ("b", "y = 1")]).await;
+    edit_in_session(&room, |doc| {
+        doc.move_cell("a", Some("b")).unwrap();
+    })
+    .await;
+    assert_eq!(
+        live_cells(&room).await,
+        owned_cells(&[("b", "y = 1"), ("a", "x = 1")])
+    );
+    external_write(
+        &room,
+        &path,
+        &rewrite_ipynb(&[("a", "x = 1"), ("b", "y = 2")], serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(
+        live_cells(&room).await,
+        owned_cells(&[("a", "x = 1"), ("b", "y = 2")])
+    );
+    let entries = displaced_edits(&room);
+    assert_eq!(entries.len(), 1);
+    assert!(entries[0].cell_ids.is_empty());
+    assert_eq!(
+        snapshot_cells(&entries[0]),
+        owned_cells(&[("b", "y = 1"), ("a", "x = 1")])
+    );
+    assert_room_healthy(&room).await;
+}
+
+#[tokio::test]
+async fn dependency_metadata_takes_disk_and_snapshots_session_specs() {
+    // (baseline uv deps, session uv deps, disk uv deps). `None` is a
+    // notebook with no `uv` section at all.
+    type DependencyCase<'a> = (Option<&'a [&'a str]>, &'a [&'a str], &'a [&'a str]);
+    let cases: [DependencyCase; 3] = [
+        (Some(&["pandas"]), &["pandas>=3"], &["pandas>=2"]),
+        (
+            Some(&["numpy"]),
+            &["numpy", "pandas"],
+            &["numpy", "pandas>=2"],
+        ),
+        (None, &["pandas>=3"], &["pandas>=2"]),
+    ];
+    for (baseline, session, disk) in cases {
+        let metadata_with = |deps: Option<&[&str]>| match deps {
+            Some(deps) => serde_json::json!({
+                "runt": {"schema_version": "1", "uv": {"dependencies": deps}}
+            }),
+            None => serde_json::json!({"runt": {"schema_version": "1"}}),
+        };
+        let snapshot_for =
+            |deps: Option<&[&str]>| -> notebook_doc::metadata::NotebookMetadataSnapshot {
+                serde_json::from_value(metadata_with(deps)).unwrap()
+            };
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, path) = test_room_with_path(&tmp, "deps.ipynb");
+        {
+            let mut doc = room.doc.write().await;
+            doc.add_cell(0, "a", "code").unwrap();
+            doc.set_metadata_snapshot(&snapshot_for(baseline)).unwrap();
+        }
+        commit_test_room_doc(&room).await;
+        save_notebook_to_disk(&room, None).await.unwrap();
+
+        edit_in_session(&room, |doc| {
+            doc.set_metadata_snapshot(&snapshot_for(Some(session)))
+                .unwrap()
+        })
+        .await;
+        external_write(
+            &room,
+            &path,
+            &rewrite_ipynb(&[("a", "")], metadata_with(Some(disk))),
+        )
+        .await;
+
+        let case = format!("baseline {baseline:?}, session {session:?}, disk {disk:?}");
+        let live = room.doc.read().await.get_metadata_snapshot().unwrap();
+        assert_eq!(
+            live.runt.uv.as_ref().map(|uv| uv.dependencies.clone()),
+            Some(disk.iter().map(|d| d.to_string()).collect()),
+            "{case}: disk dependencies win as a whole"
+        );
+        let entries = displaced_edits(&room);
+        assert_eq!(entries.len(), 1, "{case}");
+        assert!(entries[0].metadata, "{case}");
+        assert!(entries[0].cell_ids.is_empty(), "{case}");
+        let snapshot: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&entries[0].snapshot_path).unwrap()).unwrap();
+        assert_eq!(
+            snapshot["metadata"]["runt"]["uv"]["dependencies"],
+            serde_json::json!(session),
+            "{case}: the snapshot keeps the session's specs"
+        );
+        assert_room_healthy(&room).await;
+    }
+}
+
+#[tokio::test]
+async fn outputs_follow_the_file_and_are_not_edits() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path) = saved_room(&tmp, "outputs.ipynb", &[("a", "print(1)")]).await;
+    let disk = serde_json::to_vec(&serde_json::json!({
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": {},
+        "cells": [{
+            "id": "a",
+            "cell_type": "code",
+            "source": "print(1)",
+            "execution_count": 3,
+            "outputs": [{"output_type": "stream", "name": "stdout", "text": "1\n"}],
+            "metadata": {}
+        }]
+    }))
+    .unwrap();
+    external_write(&room, &path, &disk).await;
+
+    let execution_id = room
+        .doc
+        .read()
+        .await
+        .get_execution_id("a")
+        .expect("execution");
+    let outputs = room
+        .state
+        .read(|state| state.get_outputs(&execution_id))
+        .unwrap();
+    assert_eq!(outputs.len(), 1, "outputs come from disk without a kernel");
+    assert!(displaced_edits(&room).is_empty());
+    assert_room_healthy(&room).await;
+}
+
+#[tokio::test]
+async fn unreproducible_revision_is_rejected_without_moving_the_baseline() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path) = saved_room(&tmp, "dupes.ipynb", &[("a", "x = 1")]).await;
+    let manifest_before = room.durability.manifest();
+    let known_before = room.persistence.known_disk_hash();
+
+    let disk = rewrite_ipynb(&[("a", "x = 2"), ("a", "x = 3")], serde_json::json!({}));
+    external_write(&room, &path, &disk).await;
+
+    assert_eq!(live_cells(&room).await, owned_cells(&[("a", "x = 1")]));
+    let manifest_after = room.durability.manifest();
+    assert_eq!(
+        manifest_after.source_fingerprint,
+        manifest_before.source_fingerprint
+    );
+    assert_eq!(
+        manifest_after.exported_heads,
+        manifest_before.exported_heads
+    );
+    assert_eq!(room.persistence.known_disk_hash(), known_before);
+    assert!(matches!(
+        room.state
+            .read(|state| state.file_checkpoint().source_issue)
+            .unwrap(),
+        Some(runtime_doc::FileSourceIssue::Degraded { .. })
+    ));
+
+    // The next good write recovers.
+    external_write(
+        &room,
+        &path,
+        &rewrite_ipynb(&[("a", "x = 4")], serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(live_cells(&room).await, owned_cells(&[("a", "x = 4")]));
+    assert_room_healthy(&room).await;
+}
+
+#[tokio::test]
+async fn external_write_without_a_file_checkpoint_keeps_every_live_difference() {
+    // No exported heads: every live difference from the file counts.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "unexported.ipynb");
+    let disk_revision = br#"{"nbformat":4,"nbformat_minor":5,"metadata":{},"cells":[]}"#;
+    tokio::fs::write(&notebook_path, disk_revision)
+        .await
+        .unwrap();
+    edit_in_session(&room, |doc| {
+        doc.add_cell(0, "unsaved-peer-cell", "code").unwrap();
+        doc.update_source("unsaved-peer-cell", "value = 42")
+            .unwrap();
+    })
+    .await;
+
+    process_watcher_event(&room, &notebook_path).await;
+
+    assert!(live_cells(&room).await.is_empty());
+    let entries = displaced_edits(&room);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].cell_ids, vec!["unsaved-peer-cell".to_string()]);
+    assert_eq!(
+        snapshot_cells(&entries[0]),
+        owned_cells(&[("unsaved-peer-cell", "value = 42")])
+    );
+    assert_eq!(
+        tokio::fs::read(&notebook_path).await.unwrap(),
+        disk_revision
+    );
+    assert_room_healthy(&room).await;
+}
+
+#[tokio::test]
+async fn restored_source_conflict_resolves_on_the_next_external_write() {
+    // A room reopened with journal heads its file never had sits in
+    // `source_conflict`. The next external write applies like any other: the
+    // file wins, the recovered notebook is snapshotted, and the room is
+    // writable again.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path) = test_room_with_path(&tmp, "restored.ipynb");
+    tokio::fs::write(&path, b"original source").await.unwrap();
+    edit_in_session(&room, |doc| {
+        doc.add_cell(0, "recovered", "code").unwrap();
+        doc.update_source("recovered", "value = 42").unwrap();
+    })
+    .await;
+    let document_heads = room.doc.write().await.get_heads_hex();
+    let reason = "source_conflict: disk and recovery differ".to_string();
+    room.lifecycle.restore_source_conflict(
+        1,
+        super::recovery::source_fingerprint(b"original source"),
+        1,
+        document_heads,
+        reason.clone(),
+    );
+    room.state
+        .with_doc(|state| {
+            state.set_file_source_issue(Some(&runtime_doc::FileSourceIssue::Conflict { reason }))
+        })
+        .unwrap();
+
+    external_write(
+        &room,
+        &path,
+        &rewrite_ipynb(&[("from-git", "x = 1")], serde_json::json!({})),
+    )
+    .await;
+
+    assert_eq!(
+        live_cells(&room).await,
+        owned_cells(&[("from-git", "x = 1")])
+    );
+    let entries = displaced_edits(&room);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        snapshot_cells(&entries[0]),
+        owned_cells(&[("recovered", "value = 42")])
+    );
+    assert_room_healthy(&room).await;
 }
