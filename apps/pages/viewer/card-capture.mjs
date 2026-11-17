@@ -14,7 +14,8 @@
 // when the Page opens, then from each upload's answer: no request per edit.
 //
 // A tab never captures on Save-Data, on a device reporting under 2 GB of
-// memory, or for anyone but the Page's owner with write access. Every timer
+// memory (card-raster.mjs captureAllowed), or for anyone but the Page's owner
+// with write access. Every timer
 // runs through an RxJS scheduler, so tests drive it on virtual time.
 import {
   EMPTY,
@@ -28,6 +29,7 @@ import {
   timer,
 } from "rxjs";
 import { defineMachine, reject } from "../shared/machine.mjs";
+import { captureAllowed } from "./card-raster.mjs";
 
 /** Quiet time after the last change before a capture starts. */
 export const CARD_CAPTURE_IDLE_MS = 3_000;
@@ -35,8 +37,6 @@ export const CARD_CAPTURE_IDLE_MS = 3_000;
 export const CARD_CAPTURE_REST_MS = 120_000;
 /** How long the local hash waits for typing to pause before it's rebuilt. */
 export const CARD_HASH_DEBOUNCE_MS = 1_000;
-/** Below this `navigator.deviceMemory` (GB), a tab never captures. */
-export const CARD_CAPTURE_MIN_MEMORY_GB = 2;
 
 const HASH = /^[0-9a-f]{64}$/;
 const hashOrNull = (value, label) => {
@@ -248,14 +248,6 @@ export const cardCaptureMachine = defineMachine({
     }
   },
 });
-
-/** Whether this device should ever capture: not on Save-Data, and not on a
- * device that reports little memory. */
-export function captureAllowed(browser = globalThis.navigator) {
-  if (browser?.connection?.saveData === true) return false;
-  const memory = browser?.deviceMemory;
-  return !(typeof memory === "number" && memory < CARD_CAPTURE_MIN_MEMORY_GB);
-}
 
 /**
  * The machine with its effects at the edge.

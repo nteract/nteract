@@ -37,8 +37,9 @@
 // would split it: `fetchpriority` moves little here.
 //
 // Per load: LCP (buffered PerformanceObserver) and its element, when the
-// first card image finished, when the first screen's shown card images had
-// all finished, and when the editor chunk and the WASM started and finished.
+// first card image finished, when each of the first screen's shown card
+// images finished and its body bytes, and when the editor chunk and the WASM
+// started and finished.
 // A second load per variant and round clicks the first card the moment a
 // card image is reported as LCP, and records how long the Page's editor
 // content takes to show after that click: a person who opens a Page as soon
@@ -207,17 +208,22 @@ try {
   );
 
   const storageState = await ownerContext.storageState();
-  // Each viewer's editor chunk (app.js's one dynamic import) and hashed WASM.
+  // Each viewer's editor chunk and hashed WASM.
   const files = async ({ dir }) => {
     const read = (name) => readFile(path.join(dir, name), "utf8");
     const html = await read("index.html");
     const app = html.match(/src="\/(app-[A-Z2-7]{8}\.js)"/)[1];
     const source = await read(app);
     const theme = await read(html.match(/src="\/(theme-[A-Z2-7]{8}\.js)"/)[1]);
-    const imports = [...source.matchAll(/import\("\.\/(chunks\/[A-Z2-7]{8}\.js)"\)/g)];
+    const imports = [...source.matchAll(/import\("\.\/(chunks\/[A-Z2-7]{8}\.js)"\)/g)].map(
+      (match) => match[1],
+    );
     const wasm = (html + source + theme).match(/\/automerge-[A-Z2-7]{8}\.wasm/)?.[0] ?? null;
     assert.ok(imports.length && wasm, `${dir}: no editor chunk or WASM`);
-    return { editorChunk: `/${imports[0][1]}`, wasm };
+    // The editor is the largest dynamic import; the other is the card image
+    // shrink pass.
+    const sizes = await Promise.all(imports.map(async (chunk) => (await read(chunk)).length));
+    return { editorChunk: `/${imports[sizes.indexOf(Math.max(...sizes))]}`, wasm };
   };
   const variants = VARIANTS.length
     ? VARIANTS
@@ -390,14 +396,14 @@ try {
               getComputedStyle(image).display !== "none" &&
               image.getBoundingClientRect().top < innerHeight,
           );
-          const shownEnds = shown
-            .map(
-              (image) =>
-                resources.find(
-                  (entry) => entry.name === image.currentSrc || entry.name === image.src,
-                )?.responseEnd,
+          const shownEntries = shown
+            .map((image) =>
+              resources.find(
+                (entry) => entry.name === image.currentSrc || entry.name === image.src,
+              ),
             )
-            .filter((end) => end !== undefined);
+            .filter((entry) => entry !== undefined);
+          const shownEnds = shownEntries.map((entry) => entry.responseEnd);
           const lcp = window.__lcp.at(-1) ?? null;
           return {
             protocol: resources.find((entry) => entry.nextHopProtocol)?.nextHopProtocol ?? null,
@@ -412,6 +418,10 @@ try {
               : null,
             firstScreenImagesEnd: shownEnds.length ? Math.max(...shownEnds) : null,
             firstScreenImages: shown.length,
+            // Each shown first-screen image's body bytes (0 from the HTTP
+            // cache) and when it finished, in grid order.
+            firstScreenImageBytes: shownEntries.map((entry) => entry.encodedBodySize),
+            firstScreenImageEnds: shownEnds.map(Math.round),
             imagesFetched: images.length,
             editor: timing(editorChunk),
             wasm: timing(wasm),
@@ -452,6 +462,9 @@ try {
     lcp: median(runs.map((run) => run.lcp)),
     firstImageEnd: median(runs.map((run) => run.firstImageEnd)),
     firstScreenImagesEnd: median(runs.map((run) => run.firstScreenImagesEnd)),
+    firstScreenImageBytes: median(
+      runs.map((run) => run.firstScreenImageBytes?.reduce((sum, bytes) => sum + bytes, 0)),
+    ),
     editorStart: median(runs.map((run) => run.editor?.start)),
     editorEnd: median(runs.map((run) => run.editor?.end)),
     wasmStart: median(runs.map((run) => run.wasm?.start)),

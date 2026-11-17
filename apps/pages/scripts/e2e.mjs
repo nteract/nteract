@@ -181,7 +181,8 @@ const SUITES = Object.freeze([
   },
   { name: "cards", harness: sharing("--cards"), timeout: 4 * minute },
   { name: "home-boot", harness: sharing("--home-boot"), timeout: 3 * minute },
-  { name: "card-images", harness: sharing("--card-images"), timeout: 4 * minute },
+  // Its shrink check waits out the host's one upload per theme a minute.
+  { name: "card-images", harness: sharing("--card-images"), timeout: 6 * minute },
   {
     name: "oauth",
     harness: ["scripts/local-oauth-e2e.mjs"],

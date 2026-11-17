@@ -487,9 +487,18 @@ test("app.js renders the shell without a static path to the WASM runtimes", asyn
   );
   assert.ok(editor, "page-editor.mjs is its own chunk");
   assert.ok(inputsOf([editor]).includes("wasm-ready:pages-wasm-ready"));
+  // The card image shrink pass loads on the library's first large image.
+  const [shrink] = chunks.filter(
+    (file) => local(outputs[file].entryPoint ?? "") === "viewer/card-shrink.mjs",
+  );
+  assert.ok(shrink, "card-shrink.mjs is its own chunk");
+  assert.equal(shell.includes("viewer/card-shrink.mjs"), false);
   assert.deepEqual(
-    outputs["public/app.js"].imports.filter((item) => item.kind === "dynamic-import"),
-    [{ path: editor, kind: "dynamic-import" }],
+    outputs["public/app.js"].imports
+      .filter((item) => item.kind === "dynamic-import")
+      .map((item) => item.path)
+      .sort(),
+    [editor, shrink].sort(),
   );
   assert.ok(chunks.every((file) => VIEWER_CHUNK.test(file)));
   // The home route's critical path is app.js and its static chunks, within

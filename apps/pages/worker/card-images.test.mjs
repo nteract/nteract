@@ -294,6 +294,74 @@ test("sequential first-screen uploads replace the images and remove the old hash
   assert.equal(behind.body.cards[pageId].image, undefined);
 });
 
+test("a smaller image re-uploaded under the same hash, theme and extension replaces the bytes and keeps the key", async (t) => {
+  const { w, assets, hashOf, create, upload } = await imagesWorld(t);
+  const pageId = await create();
+  const hash = await hashOf(pageId);
+  const large = sizedPng(1280, 960);
+  const small = sizedPng(640, 480);
+  for (const theme of ["light", "dark"])
+    assert.equal(
+      (await upload("owner", pageId, { theme, body: large, type: "image/png" })).status,
+      201,
+    );
+  const before = recordOf(assets, pageId);
+  const key = cardImageKey(pageId, hash, "light", "png");
+  // The owner's library shrinks the stored image a minute later.
+  w.page(pageId).cardImageGuard = new CardImageGuard(0);
+  const deletes = t.mock.method(assets, "delete");
+  const again = await upload("owner", pageId, { theme: "light", body: small, type: "image/png" });
+  assert.equal(again.status, 201, JSON.stringify(again.body));
+  assert.deepEqual(again.body, { card_hash: hash, themes: { light: "png", dark: "png" } });
+  // The record swap and its cleanup leave the object just written alone.
+  assert.deepEqual(
+    deletes.mock.calls.map((call) => call.arguments[0]),
+    [],
+  );
+  assert.deepEqual(assets.objects.get(key).bytes, small);
+  // The revision rule takes the same hash at any revision: the host's next.
+  const after = recordOf(assets, pageId);
+  assert.equal(after.card_hash, hash);
+  assert.ok(after.revision > before.revision, JSON.stringify({ before, after }));
+  const cards = await w.call("owner", "page_cards", { page_ids: [pageId] });
+  assert.equal(
+    cards.body.cards[pageId].image.light,
+    `/api/pages/${pageId}/card-image/${hash}-light.png`,
+  );
+});
+
+test("a PNG shrunk to WebP moves the record to .webp and deletes the .png", async (t) => {
+  const { w, assets, hashOf, create, upload } = await imagesWorld(t);
+  const pageId = await create();
+  const hash = await hashOf(pageId);
+  for (const theme of ["light", "dark"])
+    assert.equal(
+      (await upload("owner", pageId, { theme, body: sizedPng(1280, 960), type: "image/png" }))
+        .status,
+      201,
+    );
+  w.page(pageId).cardImageGuard = new CardImageGuard(0);
+  const light = await upload("owner", pageId, { theme: "light", kind: "webp" });
+  assert.equal(light.status, 201, JSON.stringify(light.body));
+  assert.deepEqual(light.body, { card_hash: hash, themes: { light: "webp", dark: "png" } });
+  const keys = () => [...assets.objects.keys()].filter((key) => key.includes("/card/")).sort();
+  assert.deepEqual(keys(), [
+    cardImageKey(pageId, hash, "dark", "png"),
+    cardImageKey(pageId, hash, "light", "webp"),
+  ]);
+  assert.equal((await upload("owner", pageId, { theme: "dark", kind: "webp" })).status, 201);
+  assert.deepEqual(keys(), [
+    cardImageKey(pageId, hash, "dark", "webp"),
+    cardImageKey(pageId, hash, "light", "webp"),
+  ]);
+  const cards = await w.call("owner", "page_cards", { page_ids: [pageId] });
+  assert.deepEqual(cards.body.cards[pageId].image, {
+    card_hash: hash,
+    light: `/api/pages/${pageId}/card-image/${hash}-light.webp`,
+    dark: `/api/pages/${pageId}/card-image/${hash}-dark.webp`,
+  });
+});
+
 test("a trashed Page takes no upload, and a purge deletes its card images", async (t) => {
   const { w, assets, create, upload } = await imagesWorld(t);
   const pageId = await create();

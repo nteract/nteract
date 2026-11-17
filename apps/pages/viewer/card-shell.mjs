@@ -25,13 +25,8 @@ import { textPath } from "../model/richtext-format.mjs";
 import { decode } from "./wordgard-model.mjs";
 import { readOnlyPageConfig } from "./wordgard-page-config.mjs";
 import { VIEW_EMBED_UNAVAILABLE } from "./wordgard-views.mjs";
-import { CARD_IMAGE_MAX_BYTES } from "../shared/card-images.mjs";
+import { CARD_HEIGHT, CARD_SCALE, CARD_WIDTH, encodeCard } from "./card-raster.mjs";
 
-/** The card's first screen in CSS pixels: the grid card's 4:3 body. */
-export const CARD_WIDTH = 640;
-export const CARD_HEIGHT = 480;
-/** Device pixels per CSS pixel in the image: 1280×960. */
-export const CARD_SCALE = 2;
 /** Top-level nodes and text the shell renders: well past one screen. */
 const MAX_NODES = 24;
 const MAX_TEXT = 4_000;
@@ -281,21 +276,6 @@ function cardImageFetch(shell, origin) {
   };
 }
 
-const toBlob = (canvas, type, quality) =>
-  new Promise((resolve) => canvas.toBlob((blob) => resolve(blob), type, quality));
-
-/** WebP where the browser encodes it (Safari doesn't: it answers PNG),
- * then PNG, then JPEG if PNG is over the upload limit. */
-export async function encodeCard(canvas) {
-  const webp = await toBlob(canvas, "image/webp", 0.86);
-  if (webp?.type === "image/webp" && webp.size <= CARD_IMAGE_MAX_BYTES) return webp;
-  const png = webp?.type === "image/png" ? webp : await toBlob(canvas, "image/png");
-  if (png && png.size <= CARD_IMAGE_MAX_BYTES) return png;
-  const jpeg = await toBlob(canvas, "image/jpeg", 0.85);
-  if (jpeg?.type === "image/jpeg" && jpeg.size <= CARD_IMAGE_MAX_BYTES) return jpeg;
-  throw Error("The card image is larger than the upload limit");
-}
-
 /** Run `work` when the main thread is idle, or after `ms` at the latest. */
 function whenIdle(ms = 2_000) {
   return new Promise((resolve) => {
@@ -307,7 +287,8 @@ function whenIdle(ms = 2_000) {
 
 /**
  * Light and dark images of `doc`'s first screen: `[{ theme, blob }]`, each
- * CARD_WIDTH×CARD_HEIGHT CSS pixels at CARD_SCALE. Stops when `signal`
+ * CARD_WIDTH×CARD_HEIGHT CSS pixels at CARD_SCALE (card-raster.mjs), encoded
+ * by encodeCard. Stops when `signal`
  * aborts. Each rasterization is measured as `pages-card-capture`. `views`
  * and `sources` are the session's (session.mjs `views`, `pageSources`);
  * without them a view node draws as its inert figure.

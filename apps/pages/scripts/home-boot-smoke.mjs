@@ -106,19 +106,24 @@ try {
     pages.push(created.body.page_id);
   }
   const storageState = await owner.context().storageState();
-  // The editor chunk is app.js's one dynamic import; the WASM is the hashed
-  // URL app.js names.
+  // The editor chunk is the largest of app.js's dynamic imports (the other is
+  // the card image shrink pass); the WASM is the hashed URL app.js names.
   const { editorChunk, wasm } = await owner.evaluate(async () => {
     const html = await (await fetch("/")).text();
     const app = html.match(/src="(\/app-[A-Z2-7]{8}\.js)"/)[1];
     const source = await (await fetch(app)).text();
-    const imports = [...source.matchAll(/import\("\.\/(chunks\/[A-Z2-7]{8}\.js)"\)/g)];
+    const imports = [...source.matchAll(/import\("\.\/(chunks\/[A-Z2-7]{8}\.js)"\)/g)].map(
+      (match) => `/${match[1]}`,
+    );
+    const sizes = await Promise.all(
+      imports.map(async (url) => (await (await fetch(url)).text()).length),
+    );
     return {
-      editorChunk: imports.length === 1 ? `/${imports[0][1]}` : null,
+      editorChunk: imports.length ? imports[sizes.indexOf(Math.max(...sizes))] : null,
       wasm: source.match(/\/automerge-[A-Z2-7]{8}\.wasm/)?.[0] ?? null,
     };
   });
-  assert.ok(editorChunk, "app.js has one dynamic import, the editor");
+  assert.ok(editorChunk, "app.js imports the editor dynamically");
   assert.ok(wasm, "app.js names the hashed WASM");
 
   for (const [name, viewport] of [

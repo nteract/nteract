@@ -7,10 +7,10 @@ import {
   CARD_CAPTURE_REST_MS,
   CARD_HASH_DEBOUNCE_MS,
   CardCapture,
-  captureAllowed,
   captureCards,
   cardCaptureMachine,
 } from "./card-capture.mjs";
+import { captureAllowed } from "./card-raster.mjs";
 
 const A = "a".repeat(64);
 const B = "b".repeat(64);
