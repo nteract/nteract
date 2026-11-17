@@ -203,4 +203,66 @@ describe("useLocalEnvironmentSelection", () => {
     expect(result.current.state.installedPackages).toBeNull();
     unmount();
   });
+
+  it("requests installed kernels only for an attachment that advertised them", async () => {
+    const transport = new DirectTransport({
+      flush_local_changes: () => null,
+      receive_sync_message: () => false,
+      reset_sync_state: () => {},
+    });
+    const requests: NotebookRequest[] = [];
+    transport.requestHandler = async (request) => {
+      const typed = request as NotebookRequest;
+      requests.push(typed);
+      if (typed.type === "list_installed_kernelspecs")
+        return {
+          result: "installed_kernelspecs",
+          inventory: {
+            kernelspecs: [{ name: "ir", display_name: "R", language: "R" }],
+            warnings: [],
+            truncated: false,
+          },
+        };
+      return {
+        result: "environment_selection",
+        selection: { revision: 1, selected: null, applied: null, applying: false },
+      };
+    };
+    const client = new NotebookClient({ transport });
+    const { result, rerender, unmount } = renderHook(
+      ({ installedKernelspecs, generation }) =>
+        useLocalEnvironmentSelection({
+          client,
+          enabled: true,
+          installedKernelspecs,
+          connectionGeneration: generation,
+          connectionStatus$: transport.connectionStatus$,
+        }),
+      { initialProps: { installedKernelspecs: undefined as boolean | undefined, generation: 1 } },
+    );
+    await waitFor(() => expect(result.current.state.selection).not.toBeNull());
+    expect(result.current.state.kernelspecCatalog.status).toBe("unsupported");
+    await act(async () => {
+      await result.current.store.loadKernelspecs();
+    });
+    expect(requests).toEqual([{ type: "get_environment_selection" }]);
+
+    rerender({ installedKernelspecs: true, generation: 2 });
+    await waitFor(() => expect(result.current.state.kernelspecCatalog.status).toBe("idle"));
+    await act(async () => {
+      await result.current.store.loadKernelspecs();
+    });
+    expect(requests.at(-1)).toEqual({ type: "list_installed_kernelspecs" });
+    expect(result.current.state.kernelspecCatalog.status).toBe("ready");
+
+    // A dropped transport forgets the listing and the capability with it.
+    act(() => transport.disconnect());
+    expect(result.current.state.kernelspecCatalog.status).toBe("unsupported");
+    const sent = requests.length;
+    await act(async () => {
+      await result.current.store.loadKernelspecs();
+    });
+    expect(requests).toHaveLength(sent);
+    unmount();
+  });
 });

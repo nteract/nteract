@@ -219,6 +219,11 @@ export class NotebookClient {
     return this.sendRequest({ type: "list_conda_environments", refresh });
   }
 
+  /** Only for daemons that advertise the `installed_kernelspecs` capability. */
+  listInstalledKernelspecs(): Promise<NotebookResponse> {
+    return this.sendRequest({ type: "list_installed_kernelspecs" });
+  }
+
   listInstalledCondaPackages(refresh = false): Promise<NotebookResponse> {
     return this.sendRequest({ type: "list_installed_conda_packages", refresh });
   }
