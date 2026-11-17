@@ -5,8 +5,10 @@
 // - a collaborator opening one sees the refusal and no action;
 // - its owner moves it to Trash from the stopped screen, opens it from Trash
 //   (which offers Trash again), restores it and deletes it permanently;
-// - the owner's tab that had the other Page open when the host restarted
-//   moves it to Trash from the Page menu.
+// - the owner's tab that had the other Page open when the host restarted,
+//   with edits the host never confirmed, moves it to Trash from the Page
+//   menu, and the library shows no copy of it; opening it again by its
+//   address and moving it to Trash again leaves none either.
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
@@ -87,6 +89,72 @@ async function openTrash(page) {
   await page.getByRole("dialog", { name: "Pages" }).getByRole("button", { name: "Trash" }).click();
   await expect(page.getByRole("heading", { name: "Trash" })).toBeVisible();
 }
+/** This browser's local catalog entries for a Page: whether each is
+ * pending and whether it records the Page as in Trash. */
+const storedEntries = (page, pageId) =>
+  page.evaluate(async (pageId) => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("pages-local-catalog-v1");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    try {
+      if (!db.objectStoreNames.contains("bytes")) return [];
+      const all = (method) =>
+        new Promise((resolve, reject) => {
+          const request = db.transaction("bytes").objectStore("bytes")[method]();
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+      const [keys, values] = await Promise.all([all("getAllKeys"), all("getAll")]);
+      return keys
+        .map((key, i) => [key, JSON.parse(new TextDecoder().decode(values[i]))])
+        .filter(([key, record]) => key.startsWith("account/") && record.page_id === pageId)
+        .map(([, record]) => ({ pending: !!record.pending, trashed: !!record.access?.trashed }));
+    } finally {
+      db.close();
+    }
+  }, pageId);
+/** Drop the Trash record from this browser's entry for a Page, as a build
+ * that never wrote one leaves it. */
+const forgetTrash = (page, pageId) =>
+  page.evaluate(async (pageId) => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("pages-local-catalog-v1");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    try {
+      await new Promise((resolve, reject) => {
+        const transaction = db.transaction("bytes", "readwrite");
+        const records = transaction.objectStore("bytes");
+        const cursor = records.openCursor();
+        cursor.onsuccess = () => {
+          const at = cursor.result;
+          if (!at) return;
+          const record = JSON.parse(new TextDecoder().decode(at.value));
+          if (String(at.key).startsWith("account/") && record.page_id === pageId) {
+            const { trashed: _, ...access } = record.access;
+            at.update(new TextEncoder().encode(JSON.stringify({ ...record, access })));
+          }
+          at.continue();
+        };
+        transaction.oncomplete = resolve;
+        transaction.onerror = () => reject(transaction.error);
+      });
+    } finally {
+      db.close();
+    }
+  }, pageId);
+/** The library's rows (list or grid) that open a Page. */
+const libraryRows = (page, pageId) =>
+  page.locator(`.library-view :is(a.index-row-link, a.index-card-link)[href*="${pageId}"]`);
+/** Load the library and wait for the server's row of `keptId`, so the rows
+ * this browser adds beside the server's have had their turn. */
+async function library(page, keptId) {
+  await page.goto(`${origin}/`);
+  await expect(libraryRows(page, keptId)).toHaveCount(1, { timeout: 30000 });
+}
 const MESSAGE = "This Page is stored in a format this version of Pages doesn't open.";
 const stopped = (page) => page.locator("main.unopened-page");
 
@@ -99,7 +167,8 @@ try {
   const pageId = await create(owner, title, "Stored in a format from elsewhere.");
   const openTitle = `Open when stopped ${stamp}`;
   const openId = await create(owner, openTitle, "Open in a tab when its host stops it.");
-  report.pageIds = [pageId, openId];
+  const keptId = await create(owner, `Kept ${stamp}`, "Stays in the library.");
+  report.pageIds = [pageId, openId, keptId];
   const current = await api(owner, `/api/access?page=${pageId}`);
   const invite = await api(owner, `/api/access?page=${pageId}`, {
     action: "invite",
@@ -111,8 +180,17 @@ try {
   assert.equal(invite.status, 200, JSON.stringify(invite.body));
   await editor.goto(`${origin}/p/${pageId}`);
   await expect(editor.locator("wg-content")).toContainText("Stored in a format from elsewhere.");
+  // Its durability receipts never answer, so its copy keeps an edit the
+  // host never confirmed.
+  await openTab.route("**/api/saved?*", () => {});
   await openTab.goto(`${origin}/p/${openId}`);
   await expect(openTab.locator("wg-content")).toContainText("Open in a tab");
+  await openTab.locator("wg-content").getByText("Open in a tab").click();
+  await openTab.keyboard.press("End");
+  await openTab.keyboard.type(" A held edit.");
+  await expect
+    .poll(() => storedEntries(openTab, openId), { timeout: 30000 })
+    .toEqual([{ pending: true, trashed: false }]);
   await editor.goto(`${origin}/`);
   complete("Owner created two Pages and shared one with an editor");
 
@@ -153,7 +231,7 @@ try {
   assert.equal(new URL(owner.url()).pathname, "/");
   await expect(owner.getByRole("link", { name: new RegExp(title) }).first()).toBeVisible();
   await owner.goForward();
-  assert.equal(new URL(owner.url()).pathname, `/p/${pageId}`);
+  assert.match(new URL(owner.url()).pathname, new RegExp(`^/p/${pageId}(/|$)`));
   await expect(stopped(owner)).toHaveAttribute("data-state", "owner", { timeout: 30000 });
   complete("Back from the stopped screen shows the library; Forward shows it again");
   await expect(stopped(owner)).toContainText(MESSAGE);
@@ -208,6 +286,31 @@ try {
   assert.equal(await listed(owner, openId, { in_trash: true }), true);
   await openTab.screenshot({ path: `${output}/unopened-open-tab.png` });
   complete("A tab that had the Page open when its host stopped it moves it to Trash");
+
+  // The copy stays for restore, with its unconfirmed edit, and the library
+  // doesn't show it as a Page on this device.
+  assert.deepEqual(await storedEntries(openTab, openId), [{ pending: true, trashed: true }]);
+  await library(openTab, keptId);
+  await expect(libraryRows(openTab, openId)).toHaveCount(0);
+  await expect(openTab.getByText("On this device")).toHaveCount(0);
+  complete("The library shows no copy of the Page it moved to Trash");
+
+  // A copy an earlier build left lists on this device. Its address opens
+  // the stopped copy again, whose menu still offers Move to Trash; the host
+  // answers that the Page is already in Trash, and the copy leaves.
+  await forgetTrash(openTab, openId);
+  await library(openTab, keptId);
+  await expect(libraryRows(openTab, openId)).toHaveCount(1, { timeout: 30000 });
+  await openTab.goto(`${origin}/p/${openId}`);
+  await expect(openTab.getByText(MESSAGE).first()).toBeVisible({ timeout: 60000 });
+  await openTab.getByLabel("Document actions", { exact: true }).click();
+  await openTab.getByRole("button", { name: "Move to Trash" }).click();
+  await expect(openTab.getByText("Moved to Trash")).toBeVisible({ timeout: 30000 });
+  assert.equal(await listed(owner, openId, { in_trash: true }), true);
+  await library(openTab, keptId);
+  await expect(libraryRows(openTab, openId)).toHaveCount(0);
+  await expect(openTab.getByText("On this device")).toHaveCount(0);
+  complete("Moving it to Trash again from its address leaves no copy in the library");
 
   report.cleaned = true;
   assert.deepEqual(report.errors, []);

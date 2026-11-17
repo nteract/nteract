@@ -5,6 +5,7 @@ import {
   MAX_PAGE_QUOTA,
   TRASH_REQUESTS,
   confirmPurge,
+  inTrash,
   listTrash,
   moveToTrashError,
   previewPurge,
@@ -144,4 +145,22 @@ test("a peer's edit that beats Move to Trash gets a message a person can act on"
   assert.equal(mapped.status, 409);
   const other = Object.assign(Error("Forbidden"), { status: 403, code: "forbidden" });
   assert.equal(moveToTrashError(other), other);
+});
+
+test("only a receipt that puts the Page in Trash counts as trashed", () => {
+  // The host answers a Page already in this account's Trash with the same
+  // receipt as the move itself.
+  const receipt = { page_id: pageId, state: "trashed", trashed: true, trashed_at: "2026-11-17" };
+  assert.equal(inTrash(receipt), true);
+  for (const other of [
+    undefined,
+    null,
+    {},
+    { page_id: pageId },
+    { superseded: true, state: "trashed" },
+    { superseded: true, state: "trashed", trashed: true },
+    { state: "active" },
+    { state: "trashed" },
+  ])
+    assert.equal(inTrash(other), false, JSON.stringify(other));
 });

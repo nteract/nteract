@@ -4038,8 +4038,14 @@ out of the library and the Page picker. Each local checkpoint records
 refusal (`none`) keeps it. An entry without it answers from the grant it
 stored, and one with neither lists like the account's own until the Page is
 opened again. A draft that never reached the server, and an owned copy past
-the server's first page, still show. When the listing fails, local copies show
-there too, whoever owns them. A `project` that `list_pages` refuses with
+the server's first page, still show. A Page moved to Trash from this browser
+leaves them: once the host answers that the Page is in the account's Trash,
+the local copy's entry records it and stays for restore, unconfirmed edits
+included (a Page whose format this build doesn't open never syncs them). The
+host gives a Page already in Trash the same answer, so moving it again clears a
+copy an earlier move left. A later checkpoint from another tab that still holds
+the Page can drop that record and list the copy again. When the listing fails,
+local copies show there too, whoever owns them, except those in Trash. A `project` that `list_pages` refuses with
 `project_not_found` reads "Unknown Project", with a button that clears the
 filter; the account's Projects alone can't say so, since a Project created a
 moment ago may not be in them yet. Load more follows

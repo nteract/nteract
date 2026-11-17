@@ -9,7 +9,7 @@ import {
   readLocalPage,
   writeLocalPage,
 } from "./local-pages.mjs";
-import { encoder, key, store } from "./local-catalog.mjs";
+import { encoder, key, markLocalPageTrashed, store } from "./local-catalog.mjs";
 import { deviceRows } from "./listing.mjs";
 
 function fixture() {
@@ -313,6 +313,97 @@ test("an entry written before ownership was recorded answers from its stored gra
   // The next write records it.
   await writeLocalPage(identity, { ...refused, access: grant("editor", 4) });
   assert.equal((await listed(identity))[refused.page_id].owned, false);
+});
+
+test("a pending copy of a Page the host moved to Trash leaves the library and keeps its copy", async () => {
+  // The owner's copy has edits the host never confirmed, as a Page whose
+  // format the host doesn't open always does: its session never syncs.
+  const { identity, page } = fixture();
+  const access = grant("owner");
+  const written = await writeLocalPage(identity, { ...page, access, replicaKey: "1:owner" });
+  const before = await readLocalPage(identity, page.page_id, { markers: true });
+  assert.deepEqual(
+    deviceRows(await listLocalPages(identity), [], ALL).map((row) => row.page_id),
+    [page.page_id],
+    "the server no longer lists the Page, so its pending copy shows",
+  );
+  const marked = await markLocalPageTrashed(identity, page.page_id, {
+    grant: "1:owner",
+    revision: access.revision,
+  });
+  assert.equal(marked.access.trashed, true);
+  assert.deepEqual(await listLocalPages(identity), []);
+  assert.deepEqual(deviceRows(await listLocalPages(identity), [], ALL), []);
+  assert.deepEqual(
+    deviceRows(await listLocalPages(identity), [], ALL, { failed: true }),
+    [],
+    "offline, Trash still holds it",
+  );
+  // The copy stays for restore: only the access fact changed.
+  const after = await readLocalPage(identity, page.page_id, { markers: true });
+  assert.deepEqual(after, { ...before, access: { ...before.access, trashed: true } });
+  assert.equal(after.snapshot, written.snapshot);
+  assert.equal(after.pending, true);
+  // Restored and opened again: the host-verified checkpoint names the
+  // untrashed grant, and the copy lists as before.
+  await writeLocalPage(identity, { ...page, access, replicaKey: "1:owner" });
+  assert.deepEqual(
+    deviceRows(await listLocalPages(identity), [], ALL).map((row) => row.page_id),
+    [page.page_id],
+  );
+});
+
+test("marking a Page trashed writes nothing over a marker, another account's entry or a newer grant", async () => {
+  const { identity, page } = fixture();
+  const raw = async (entry, who = identity) =>
+    store.save(key(who, entry.page_id), encoder.encode(JSON.stringify(entry)));
+  const stored = async (pageId, who = identity) =>
+    JSON.parse(new TextDecoder().decode(await store.load(key(who, pageId))));
+  // Nothing stored: nothing is created.
+  assert.equal(await markLocalPageTrashed(identity, page.page_id, { grant: "1:owner" }), null);
+  assert.equal(await store.load(key(identity, page.page_id)), undefined);
+  // A deletion or access marker stays as it is.
+  const deleted = { principal: identity.principal, page_id: crypto.randomUUID(), deleted: true };
+  const revoked = { principal: identity.principal, page_id: crypto.randomUUID(), revoked: true };
+  for (const marker of [deleted, revoked]) {
+    await raw(marker);
+    assert.equal(await markLocalPageTrashed(identity, marker.page_id, { grant: "1:owner" }), null);
+    assert.deepEqual(await stored(marker.page_id), marker);
+  }
+  // An entry under this account's key that names another principal.
+  const foreign = { ...page, page_id: crypto.randomUUID(), principal: crypto.randomUUID() };
+  await raw(foreign);
+  assert.equal(await markLocalPageTrashed(identity, foreign.page_id, { grant: "1:owner" }), null);
+  assert.deepEqual(await stored(foreign.page_id), foreign);
+  // A newer grant's entry: another replica key, or a greater grant revision.
+  const access = grant("owner", 7);
+  const rekeyed = { ...page, page_id: crypto.randomUUID(), access, replicaKey: "2:owner" };
+  const revised = {
+    ...page,
+    page_id: crypto.randomUUID(),
+    access,
+    replicaKey: "1:owner",
+    grant_revision: 7,
+  };
+  for (const entry of [rekeyed, revised]) {
+    await raw(entry);
+    assert.equal(
+      await markLocalPageTrashed(identity, entry.page_id, { grant: "1:owner", revision: 3 }),
+      null,
+    );
+    assert.deepEqual(await stored(entry.page_id), entry);
+    assert.equal((await listed(identity))[entry.page_id].page_id, entry.page_id);
+  }
+  // The same grant at the same revision is marked; a legacy entry without a
+  // grant revision is too.
+  const current = { ...page, page_id: crypto.randomUUID(), access, replicaKey: "1:owner" };
+  await raw(current);
+  await markLocalPageTrashed(identity, current.page_id, { grant: "1:owner", revision: 7 });
+  assert.deepEqual(await stored(current.page_id), {
+    ...current,
+    access: { ...access, trashed: true },
+  });
+  assert.equal((await listed(identity))[current.page_id], undefined);
 });
 
 test("a clean write the pending fence keeps pending still records owned", async () => {

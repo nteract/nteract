@@ -26,6 +26,12 @@ export function moveToTrashError(error) {
     : error;
 }
 
+/** Whether a delete_page receipt says the Page is in this account's Trash.
+ * The host answers a Page already in Trash with the same receipt as the move
+ * that put it there (worker/page-lifecycle.mjs `trash`). */
+export const inTrash = (receipt) =>
+  receipt?.state === "trashed" && receipt.trashed === true && !receipt.superseded;
+
 /** A superseded result was not applied; the Page changed since the request. */
 function applied(result) {
   if (result?.superseded || result?.applied === false)

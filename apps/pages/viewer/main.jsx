@@ -25,7 +25,7 @@ import {
   sessionAnswerNotice,
   sessionCheckBanner,
 } from "./alerts.mjs";
-import { listLocalPages, retireLocalPage } from "./local-catalog.mjs";
+import { listLocalPages, markLocalPageTrashed, retireLocalPage } from "./local-catalog.mjs";
 import { recoveryDownloadAction } from "./recovery-capture.mjs";
 import {
   LIBRARY_DEFAULTS,
@@ -68,7 +68,7 @@ import { pageCreations } from "./page-create-machine.mjs";
 import { ProjectsIndex } from "./IndexViews.jsx";
 import { Library } from "./Library.jsx";
 import { listProjectPages, pageLocation, watchPageLocation } from "./projects.mjs";
-import { closeTrashedSessions, moveToTrashError, restorePage } from "./trash.mjs";
+import { closeTrashedSessions, inTrash, moveToTrashError, restorePage } from "./trash.mjs";
 import { listAllPages } from "./page-list.mjs";
 import { listingCache } from "./listing-cache.mjs";
 import { PageRefs } from "./page-refs.mjs";
@@ -1375,17 +1375,19 @@ function App() {
       const closing = closeTrashedSessions(host, [deleting, activeDeletion], {
         onError: showError,
       });
-      // Keep the local replica: the Page can be restored from Trash. A draft
-      // the host never registered has no Trash entry, so move it to the
-      // recovery archive instead of leaving it listed as saved locally.
-      if (!deleting.localPage?.registered) {
-        await closing;
-        await retireLocalPage(deleting.identity, deleting.pageId, {
-          reason: "deleted",
-          grant: deleting.replicaKey,
-          revision: deleting.access?.revision,
-        });
-      }
+      await closing;
+      const grant = { grant: deleting.replicaKey, revision: deleting.access?.revision };
+      // A draft the host never registered has no Trash entry, so move it to
+      // the recovery archive instead of leaving it listed as saved locally.
+      if (!deleting.localPage?.registered)
+        await retireLocalPage(deleting.identity, deleting.pageId, { reason: "deleted", ...grant });
+      // A registered Page keeps its local replica for restore. The host's
+      // receipt says the Page is in this account's Trash, which it also
+      // answers for a Page already there, so the entry records that and
+      // leaves the library even when its pending edits never reached the
+      // host (a Page whose format the host doesn't open never syncs).
+      else if (inTrash(trashed))
+        await markLocalPageTrashed(deleting.identity, deleting.pageId, grant).catch(showError);
       // A return to the library mustn't paint it from memory.
       listingCache.forget(deleting.pageId);
       setNotice("Moved to Trash");
