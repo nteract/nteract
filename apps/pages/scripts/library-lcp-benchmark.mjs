@@ -18,6 +18,10 @@
 //                    variant per round, so every variant sees the same fixture
 //                    and machine load; a busy machine makes separate runs
 //                    incomparable. Without it, this build's own viewer.
+//   PAGES_LCP_OPEN   "page": each load opens the first Page's address
+//                    directly, as a shared link does, instead of the grid,
+//                    and records when its editor content shows (no click
+//                    load)
 //
 // The owner creates the Pages, edits each once (which writes its JSON card)
 // and opens each, so their own tab captures the card images
@@ -55,6 +59,7 @@ const RUNS = Number(process.env.PAGES_LCP_RUNS || 5);
 const PAGES = Number(process.env.PAGES_LCP_PAGES || 24);
 const HTTP2 = (process.env.PAGES_LCP_HTTP || "2") === "2";
 const REPEAT = process.env.PAGES_LCP_REPEAT === "1";
+const PAGE_OPEN = process.env.PAGES_LCP_OPEN === "page";
 const VARIANTS = (process.env.PAGES_LCP_VARIANTS || "")
   .split(",")
   .filter(Boolean)
@@ -245,6 +250,16 @@ try {
   const CLICK = (text) => {
     window.__clickAt = null;
     window.__editorReady = null;
+    // When an editor first shows a fixture Page's body, however it opened.
+    window.__contentShown = null;
+    new MutationObserver((_, watch) => {
+      const shown = [...document.querySelectorAll("wg-content")].some((content) =>
+        content.textContent.includes(text),
+      );
+      if (!shown) return;
+      window.__contentShown = performance.now();
+      watch.disconnect();
+    }).observe(document, { childList: true, subtree: true, characterData: true });
     window.__armClick = () =>
       new PerformanceObserver((list, observer) => {
         const entry = list
@@ -265,7 +280,18 @@ try {
         }).observe(document, { childList: true, subtree: true, characterData: true });
       }).observe({ type: "largest-contentful-paint", buffered: true });
   };
-  // A new signed-in context on the throttled grid; `click` arms the click.
+  // What a load opens, and what shows it has drawn.
+  const target = PAGE_OPEN ? `${proxy.origin}/p/${ids[0]}` : `${proxy.origin}/?grid=1`;
+  const drawn = (page) =>
+    PAGE_OPEN
+      ? expect
+          .poll(() => page.evaluate(() => window.__contentShown), {
+            timeout: 120000,
+            intervals: [250],
+          })
+          .not.toBeNull()
+      : expect(page.locator("img.page-card-image").first()).toBeVisible({ timeout: 120000 });
+  // A new signed-in context on the throttled target; `click` arms the click.
   const openGrid = async (click) => {
     // The Pages session cookie is for localhost, whatever the port and scheme.
     const context = await browser.newContext({
@@ -293,12 +319,12 @@ try {
     if (REPEAT) {
       // A visit before, unthrottled: its HTTP cache, and the rows and cards
       // the device keeps, are what the measured load starts from.
-      await page.goto(`${proxy.origin}/?grid=1`, { waitUntil: "load", timeout: 120000 });
-      await expect(page.locator("img.page-card-image").first()).toBeVisible({ timeout: 120000 });
+      await page.goto(target, { waitUntil: "load", timeout: 120000 });
+      await drawn(page);
       await page.waitForTimeout(5000);
     }
     await cdp.send("Network.emulateNetworkConditions", FAST_4G);
-    await page.goto(`${proxy.origin}/?grid=1`, { waitUntil: "commit", timeout: 120000 });
+    await page.goto(target, { waitUntil: "commit", timeout: 120000 });
     // The init scripts ran; arm before the first paint can report.
     if (click) await page.evaluate(() => window.__armClick());
     return { context, page, priorities };
@@ -307,7 +333,8 @@ try {
     for (const variant of variants) {
       current = VARIANTS.length ? variant : null;
       const { editorChunk, wasm } = variant;
-      {
+      variant.clicks ??= [];
+      if (!PAGE_OPEN) {
         const { context, page } = await openGrid(true);
         await expect
           .poll(() => page.evaluate(() => window.__editorReady), {
@@ -319,12 +346,12 @@ try {
           clickAt: window.__clickAt,
           editorReady: window.__editorReady - window.__clickAt,
         }));
-        (variant.clicks ??= []).push(click);
+        variant.clicks.push(click);
         console.log(`[Library LCP] ${variant.name} click ${run}: ${JSON.stringify(click)}`);
         await context.close();
       }
       const { context, page, priorities } = await openGrid(false);
-      await expect(page.locator("img.page-card-image").first()).toBeVisible({ timeout: 120000 });
+      await drawn(page);
       // Let the editor and WASM finish, or give up after a minute.
       await expect
         .poll(
@@ -375,6 +402,7 @@ try {
           return {
             protocol: resources.find((entry) => entry.nextHopProtocol)?.nextHopProtocol ?? null,
             firstCard: window.__firstCard,
+            contentShown: window.__contentShown,
             // A banner over the grid would be measured instead of the grid.
             banner: document.querySelector(".build-update-message")?.textContent ?? null,
             lcp: lcp?.time ?? null,
@@ -419,6 +447,8 @@ try {
     clickAt: median(clicks.map((click) => click.clickAt)),
     editorReadyAfterClick: median(clicks.map((click) => click.editorReady)),
     firstCard: median(runs.map((run) => run.firstCard)),
+    contentShown: median(runs.map((run) => run.contentShown)),
+    contentShowns: runs.map((run) => Math.round(run.contentShown ?? NaN)),
     lcp: median(runs.map((run) => run.lcp)),
     firstImageEnd: median(runs.map((run) => run.firstImageEnd)),
     firstScreenImagesEnd: median(runs.map((run) => run.firstScreenImagesEnd)),
@@ -445,7 +475,9 @@ try {
   );
   report.clicks = Object.fromEntries(variants.map(({ name, clicks }) => [name, clicks]));
   console.log(JSON.stringify(report.medians, null, 2));
-  complete(`Measured ${RUNS} throttled loads of the grid for each of ${variants.length} viewers`);
+  complete(
+    `Measured ${RUNS} throttled loads of ${PAGE_OPEN ? "a Page" : "the grid"} for each of ${variants.length} viewers`,
+  );
 } catch (error) {
   report.failure = error.stack ?? String(error);
   report.errors.push(error.message);
