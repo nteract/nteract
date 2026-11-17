@@ -24,6 +24,33 @@ other platforms from this result.
    and start time. The fixture is outside the checkout so project discovery
    cannot silently select the repository's own `pyproject.toml`.
 
+## Pinned all-local package input
+
+Prefer `serve --mirror /absolute/local/snapshot` over live CDN redirects for
+repeatability. The snapshot contains `SUBDIR/repodata.json`, its original package
+archives, and `manifest.json` with `{"files":{"noarch/repodata.json":"SHA256",...}}`.
+Every entry needs a lowercase SHA-256. Repodata `info` must contain only its
+matching `subdir`; each package record needs the matching `subdir`, `sha256`, and
+`size`. All referenced archives must be present, with no unreferenced archives.
+The harness verifies bytes at startup and again before serving, refuses drift,
+and never redirects missing files. It records the manifest digest in session
+metadata. The declared source remains the deterministic empty relation fixture.
+
+For real kernel execution, obtain a complete platform-specific closure from an
+approved official package registry, retain the original archives and existing
+lock/checksums, and independently verify origin and checksums before writing the
+manifest. A self-generated manifest alone does not establish provenance. Keep
+artifacts outside Git; never repack expanded caches, invent an interpreter, or
+replace product package/consent validation. A complete closure must satisfy the
+notebook's Python, rich, and daemon base dependencies. Solver validation remains
+unchanged. Archive identity is pinned, not the machine's OS cache state.
+
+The unit-test generator reuses the harmless one-file archive pattern from
+`crates/kernel-env/tests/rattler_upgrade.rs`. It is only a fixture-server test,
+not evidence of native installation or a real Python/kernel. If verified real
+archives are unavailable, stop at deterministic review/refusal coverage and
+report the missing execution gate. Do not retry the live proxy as a substitute.
+
 ## Isolated native profile
 
 Use a fresh private HOME under the printed short session root, with separate
@@ -78,7 +105,7 @@ behalf of the app, or drives hidden approval APIs.
    `python3 scripts/qa/scoped_channel_fixture.py check LEDGER --before install`.
    Require related metadata and **zero package archive contact**. The empty
    local fixture can exercise both decisions but cannot install Python.
-4. In explicit live mode only, approve the exact source list, wait for actual
+4. With a verified real mirror (or separately authorized live mode), approve the exact source list, wait for actual
    kernel readiness, and run the existing synced cell. Verify marker, `2`, and
    a new private reviewed prefix in output. Save via Cmd/Ctrl-S; verify saved
    execution count and stdout. “Installation complete” alone is not a pass.

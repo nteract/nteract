@@ -6,6 +6,7 @@ This server never grants consent or drives the UI. Local-only is the default;
 """
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -120,7 +121,76 @@ def response(request_path: str, live: bool) -> tuple[int, dict[str, str], bytes]
     return 200, {}, body
 
 
-def serve(live: bool) -> None:
+class LocalMirror:
+    """An explicit checksummed related-channel snapshot, never a general file server."""
+
+    def __init__(self, root: Path):
+        self.root = root.resolve(strict=True)
+        manifest = (self.root / "manifest.json").read_bytes()
+        self.digest = hashlib.sha256(manifest).hexdigest()
+        self.files = json.loads(manifest)["files"]
+        if not isinstance(self.files, dict) or not self.files:
+            raise ValueError("Mirror manifest needs a nonempty files mapping")
+        archives = {}
+        for path, digest in self.files.items():
+            parts = path.split("/")
+            if (
+                len(parts) != 2
+                or parts[0] not in SUBDIRS
+                or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                or classify("/related/" + path) == "invalid"
+                or (classify("/related/" + path) == "metadata" and parts[1] != "repodata.json")
+            ):
+                raise ValueError(f"Unsupported mirror entry: {path}")
+            body = self.read(path)
+            if parts[1] != "repodata.json":
+                archives[path] = (digest, len(body))
+        referenced = {}
+        for path in self.files:
+            if not path.endswith("/repodata.json"):
+                continue
+            data = json.loads(self.read(path))
+            if set(data) - {"info", "packages", "packages.conda", "repodata_version"}:
+                raise ValueError("Unsupported repodata representation in local mirror")
+            subdir = path.split("/")[0]
+            if data.get("info") != {"subdir": subdir}:
+                raise ValueError("Mirror metadata must have only its matching subdir info")
+            for section in ("packages", "packages.conda"):
+                for filename, record in data.get(section, {}).items():
+                    key = subdir + "/" + filename
+                    if (
+                        "/" in filename
+                        or record.get("subdir") != subdir
+                        or any(k in record for k in ("url", "channel", "base_url"))
+                        or key not in archives
+                        or archives[key] != (record.get("sha256"), record.get("size"))
+                    ):
+                        raise ValueError(f"Unverified package record: {key}")
+                    referenced[key] = archives[key]
+        if not referenced or set(referenced) != set(archives):
+            raise ValueError("Mirror must contain exactly the archives referenced by repodata")
+
+    def read(self, path: str) -> bytes:
+        candidate = (self.root / path).resolve(strict=True)
+        if not candidate.is_relative_to(self.root):
+            raise ValueError("Mirror file escaped its root")
+        body = candidate.read_bytes()
+        if hashlib.sha256(body).hexdigest() != self.files[path]:
+            raise ValueError(f"Mirror checksum changed: {path}")
+        return body
+
+    def response(self, request_path: str) -> tuple[int, dict[str, str], bytes]:
+        path = urlsplit(request_path).path.removeprefix("/related/")
+        if path not in self.files:
+            return 404, {}, b""
+        try:
+            return 200, {}, self.read(path)
+        except (OSError, ValueError):
+            # Never redirect or silently serve a changed snapshot.
+            return 409, {}, b"Mirror snapshot changed"
+
+
+def serve(live: bool, mirror: LocalMirror | None = None) -> None:
     # A short private root avoids macOS SUN_LEN. Never reuse/delete user caches.
     root = Path(tempfile.mkdtemp(prefix="ncr-", dir="/tmp" if sys.platform == "darwin" else None))
     ledger = root / "requests.jsonl"
@@ -141,7 +211,10 @@ def serve(live: bool) -> None:
                     )
                     + "\n"
                 )
-            status, headers, body = response(self.path, live)
+            if mirror is not None and urlsplit(self.path).path.startswith("/related/"):
+                status, headers, body = mirror.response(self.path)
+            else:
+                status, headers, body = response(self.path, live)
             self.send_response(status)
             for key, value in headers.items():
                 self.send_header(key, value)
@@ -158,6 +231,7 @@ def serve(live: bool) -> None:
             {
                 "channel": channel,
                 "live": live,
+                "mirror_sha256": mirror.digest if mirror else None,
                 "note": "Fresh fixture storage only; OS caches are not cold-reset.",
             },
             indent=2,
@@ -170,6 +244,7 @@ def serve(live: bool) -> None:
                 "notebook": str(root / "review.ipynb"),
                 "ledger": str(ledger),
                 "live": live,
+                "mirror_sha256": mirror.digest if mirror else None,
             }
         ),
         flush=True,
@@ -187,7 +262,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     start = commands.add_parser("serve")
-    start.add_argument(
+    mode = start.add_mutually_exclusive_group()
+    mode.add_argument("--mirror", type=Path, help="Verified all-local related-channel snapshot")
+    mode.add_argument(
         "--live", action="store_true", help="Explicitly allow public conda-forge redirects"
     )
     check = commands.add_parser("check")
@@ -195,7 +272,7 @@ def main() -> None:
     check.add_argument("--before", choices=("metadata", "install"), required=True)
     args = parser.parse_args()
     if args.command == "serve":
-        serve(args.live)
+        serve(args.live, LocalMirror(args.mirror) if args.mirror else None)
     else:
         rows = [json.loads(line) for line in args.ledger.read_text().splitlines()]
         checkpoint(rows, args.before)
