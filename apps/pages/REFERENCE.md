@@ -1261,6 +1261,18 @@ browser session, and the viewer offers the dialog only then. If the list
 answers 404 anyway, as an ingress without these routes does, the dialog says
 they aren't available here, shows no error, and the menu stops offering them.
 
+Each isolate remembers a browser session it read from D1 for up to 10 seconds,
+and never past the session's own expiry
+([session-memo.mjs](worker/session-memo.mjs)), because every host a request
+crosses authenticates it again. The memo is keyed by the session id the
+store derives from the cookie, so an unknown or malformed cookie is never
+answered from it. Signing out, signing out everywhere and a
+`GET /api/auth/session` renewal forget the session in the isolate that handles
+them. Another isolate may accept it for up to 10 seconds after sign-out or
+sign out everywhere, and an open sync socket, which re-authenticates every
+15 seconds, may stay open up to 25 seconds after. OAuth access tokens, API
+keys and Kilo tokens are not remembered this way.
+
 An hourly cron (`35 * * * *` UTC, [shared/schedule.mjs](shared/schedule.mjs))
 sweeps the auth database (worker/auth-maintenance.mjs). It deletes expired
 sign-in transactions and server sessions, expired OAuth consents, codes, tokens
@@ -1364,8 +1376,35 @@ report a bounded category, log it once, and close with `request_rejected` or
 
 Cloudflare closes a socket that carries no data for about two minutes (its
 125 s proxy read timeout), so an idle background tab reconnects on that
-cadence. A tab reconnecting after its old socket died takes that socket's
+cadence until it parks. A tab reconnecting after its old socket died takes that socket's
 place ([Plain Automerge sync](#plain-automerge-sync)).
+
+A Page tab hidden for five minutes in a row (`PARK_AFTER_MS`, a constant)
+parks: it closes its sync socket and stops reconnecting, so the Page's
+Durable Object stops renewing the socket's lease every 15 s and ticking usage
+every second. Showing the tab before then cancels the countdown. A parked tab
+reconnects as soon as `visibilitychange` (or `pageshow`) reports it visible,
+with no backoff, no Offline or Reconnecting status and no banner; the status
+keeps saying Saved while it reconnects, catch-up brings in edits made
+elsewhere, and the editor keeps its selection and scroll position. If the
+session expired meanwhile, that reconnect's session check shows the usual
+sign-in notice. Presence for the tab ends while it is parked.
+
+Parking never drops work. It waits until the host has acknowledged every head
+of the Page and comments documents (the same test the close drain uses,
+`recoveryPending`), so a hidden tab with an outstanding edit or receipt keeps
+its socket and parks the moment the receipt lands. A local change while
+parked, such as an image whose upload finishes in the background, reconnects
+at once and parks again once acknowledged. Uploads go over HTTP and don't need
+the socket. The close is the one leaving a Page uses: the socket leaves the
+session before it closes, so nothing counts it as a failure, and the host
+runs its ordinary close: the usage session's last flush, the socket's lease
+and renewal timers cleared, the sender's presence and profile removed for the
+other tabs, and the `sync.close` usage line. Parking is the `parked` state of
+[reconnect-machine.mjs](viewer/reconnect-machine.mjs); its `online` and
+renewal-driven resumes are ignored until the tab shows. Listing routes hold no
+socket, and a tab hidden before its Page first opened starts the countdown
+once it opens.
 
 A Page holds at most 24 sockets, 4 per account, and 20 across members other than
 the owner. A socket over a quota still completes the upgrade, then closes at once
@@ -3967,19 +4006,22 @@ retried by the next flush; it never fails the flush or the edit. A Page that
 hasn't changed since cards shipped has none until its next edit, and the grid
 keeps its icon.
 
-Writes from different hosts of one Page are ordered by the object's etag. Each
-put carries `onlyIf` with the etag the host last saw (none yet: only while no
-object exists), and the object's `customMetadata` holds its `card_hash` and
-`content_updated_at`. A host's first write after boot reads them (`head()`) and
-compares the built card with the object, not `host/card`, so a stale card left
-by an older host is rewritten. A retiring host's put that lands late carries
-an etag the next host's write replaced, and the bucket refuses it. A refused
-put reads the object again and retries once, unless the host stopped during
-that read or the object's `content_updated_at` is later than the built card's:
-then a newer host wrote it, and this host puts nothing, logs
-`page_card.superseded`, and reads the object again on its next write. A first
-write skips its put the same way. An object time more than 5 minutes
-(`CONTENT_ACTIVITY_MAX_SKEW_MS`) ahead of the host's clock counts as missing,
+Writes to the object are ordered by its etag. Its `customMetadata` holds the
+card's `card_hash` and `content_updated_at`, and the card image record that
+uploads write ([Card images](#card-images)). Every put first reads the
+metadata (`head()`) and carries `onlyIf` with the etag it read (none: only
+while no object exists). It compares the built card with the object, not
+`host/card`, so a stale card left by an older host is rewritten, and it copies
+the image record unchanged. Only a flush whose card matches the hash the host
+last wrote or read skips the read, since it puts nothing. A retiring host's put
+that lands late carries an etag a newer write replaced, and the bucket refuses
+it. A refused put reads the object again and retries once, unless the host
+stopped during that read or the object's `content_updated_at` is later than
+the built card's: then a newer host wrote it, and this host puts nothing, logs
+`page_card.superseded`, and reads the object again on its next write. A write
+whose first read finds a later card skips its put the same way. An object time
+more than 5 minutes (`CONTENT_ACTIVITY_MAX_SKEW_MS`) ahead of the host's clock
+counts as missing,
 as content activity drops it, so a card from a node whose clock ran fast never
 blocks the writes after it. Equal times with different hashes still put, and
 the later put wins: that is the same content built by two builder versions.
@@ -3994,8 +4036,8 @@ put can land after the next host's first write skipped an unchanged card: it
 holds a card the Page had moments before, until the next change to its first
 screen.
 
-A purge or tombstone deletes the object and `host/card` with the content time,
-waiting at most 2 seconds on the bucket; a missed delete leaves an object
+A purge or tombstone deletes the object, its card images and `host/card` with
+the content time, waiting at most 2 seconds on the bucket; a missed delete leaves an object
 `page_cards` never serves, since a deleted Page admits no one. A write still
 running then deletes the object again when it ends, whether its put landed or
 timed out. A host that retires without a deletion (an abandoned boot, a storage
@@ -4023,7 +4065,11 @@ or hides the owner's own card for one call. A pending creation or reservation
 slot never counts. A shared ID is allowed only by its Page host's answer, which
 no Catalog state replaces. The Catalog answers only the allowed IDs, and the gateway reads
 their objects all at once under one 1.2-second deadline, so a slow bucket never
-holds the account's listings, creates or reports. Only allowed IDs reach the bucket, and no object URL leaves the Worker.
+holds the account's listings, creates or reports. Each card is one `get`: the
+object's body is the card and its metadata holds the image record, so 20 cards
+cost 20 reads. A legacy object, written before the record moved into it, also
+reads the image pointer ([Card images](#card-images)). Only allowed IDs reach
+the bucket, and no object URL leaves the Worker.
 Every other ID, unknown, refused, unchecked in time, read too late or without a
 card, answers `null`, so a caller can't tell "no access" from "no card". The
 answer names its `principal`. It isn't an MCP tool: an agent can read the Page
@@ -4031,7 +4077,9 @@ itself, and a card is a drawing aid shaped for the grid, not a reading surface
 worth a stable contract.
 
 In grid mode each card asks for its card when it comes within 400px of the
-viewport ([page-cards.mjs](viewer/page-cards.mjs)). A card that asks waits at
+viewport ([page-cards.mjs](viewer/page-cards.mjs)). The grid's first request
+goes out as soon as the cards in view on the first paint have asked, with no
+gather window. After that, a card that asks waits at
 most 200 ms for others to share its request, counted from the first card
 waiting, and 24 waiting cards go out at once, so a steady scroll keeps loading
 while it runs: with a 150 ms round trip, every card shows within 350 ms of
@@ -4044,9 +4092,40 @@ down a 100-card grid sends 5 requests, not one per row. Each card follows a smal
 machine, `idle → requested → shown | empty | failed`, keyed by Page ID and the
 row's `content_updated_at`, so a Page edited since the grid asked asks again; a
 failed card asks again when it scrolls back in. One answer is one store update.
-The machines live as long as the mounted grid, with no cross-visit cache; a grid
-that doesn't know its account asks for nothing, and an answer naming another
-account is ignored. [PageCardPreview.jsx](viewer/PageCardPreview.jsx) draws the
+The machines live as long as the mounted grid. A card the library device cache
+kept (below) starts `stale`: it draws at once, asks again when it comes into
+view (`revalidating`, still drawn), and the answer replaces it; `null` drops
+it, and a failed request keeps it drawn. A grid that doesn't know its account
+asks for nothing and draws no kept card, and an answer naming another account
+is ignored.
+
+The library's default view (All, Last activity, no search, no Project) also
+paints from this browser's device cache
+([library-device-cache.mjs](viewer/library-device-cache.mjs)): IndexedDB
+`pages-library-cache`, one record per account under `library/v1/<principal>`,
+holding the first page `list_pages` last returned to that account here (at
+most 50 rows) and the `page_cards` answers for those rows (each at most
+12 KiB, with the image routes, so the browser's HTTP cache serves the image
+bytes). It is a rebuildable device cache, never normative; the local Page
+catalog is a separate database it never reads. An owned row keeps its title,
+times and Project; a row shared with the account keeps only its place (Page
+ID and times), drawn as an empty, inert slot until the server lists it, so a
+revoked share's title never outlives the 5-minute in-tab rule. Once the
+session names the account, the library sends `list_pages` and reads the
+record together; rows from the record paint if they land first
+([listing-machine.mjs](viewer/listing-machine.mjs) `revalidating`), and the
+answer replaces them in place, keyed by Page ID: a row no longer listed
+disappears, a stale title or time updates. A read that fails, stalls or lands
+late changes nothing. A failed first page over device rows keeps the
+account's own rows with Try again (`kept`). The record is written only under
+the account that answered and the cache revision its request began under,
+patched by Trash and renames, and removed for every account on sign-out,
+Sign out everywhere and an account change. A record paints for 14 days after
+`saved_at`, the time the server last listed its rows to that account here;
+only a fresh first page sets it, so card answers, Trash and renames never
+extend it. A record past the limit, or with a `saved_at` that is missing, not
+a number, or more than 5 minutes ahead of the clock, reads as nothing and the
+read removes it. The version is in the key: a new format reads nothing old. [PageCardPreview.jsx](viewer/PageCardPreview.jsx) draws the
 card through PagePreview's allowlist in its inert mode (no links, controls or
 images), laid out at a reading width and scaled with `transform: scale()`,
 `aria-hidden` with pointer events off: the card's link carries the title.
@@ -4076,7 +4155,8 @@ during it runs it once more when it settles, at most twice in a row, so a
 server that keeps refusing, or keeps answering for someone else, can't loop
 the tab. The cache overlays a rename this tab saw, forgets a Page
 moved to Trash or hidden by its host, drops the views of the account's own
-Pages after a create, move or restore, and is never persisted. Each patch
+Pages after a create, move or restore, and lives in memory only (the device
+cache above is a separate, narrower copy of the default view). Each patch
 moves the cache's revision, and a reply whose request began under an older
 one isn't written back, so a listing in flight across a create can't restore
 what it dropped. The Browse picker
@@ -4379,23 +4459,41 @@ Page host's own policy ([card-images.mjs](worker/card-images.mjs)). The bytes
 must be a static WebP, PNG or JPEG of at most 300 KB, never SVG. `hash` must be
 the `card_hash` of the host's loaded document, and each theme uploads at most
 once a minute. The host numbers each admitted upload from its durable storage.
-The images live at `pages/<id>/card/<hash>-<theme>.<ext>`. An etag-fenced
-`card/latest` pointer names the current hash and the highest revision it has
-seen. A swap to another hash with a lower revision is refused as stale, so an
-upload for an older first screen that lands late can't replace a newer one.
-The pointer references at most one image per theme, not a bound on stored bytes.
+The images live at `pages/<id>/card/<hash>-<theme>.<ext>`. The image record
+lives in `card.json`'s `customMetadata`, beside the card writer's fields:
+`image_hash`, `image_revision` and each theme's extension (`light`, `dark`).
+It names the current hash and the highest revision it has seen. An upload
+reads `card.json`, body and metadata, and puts the same body and card fields
+with the new record, fenced on the etag it read; a refused put reads again, up
+to three times. The card writer copies the record the same way, so a card
+write racing an upload keeps both. An upload for a Page with no `card.json`
+creates it with the body `null`, which reads as no card. A swap to another hash
+with a lower revision is refused as stale, so an upload for an older first
+screen that lands late can't replace a newer one.
+The record references at most one image per theme, not a bound on stored bytes.
 A stale upload retains its image key because a newer accepted upload may already
 reuse that hash/theme key. Rejected uploads and failed writes or deletes can leave
 orphaned bytes. Successful swaps still attempt to delete old images; that separate,
 unfenced cleanup can race with newer uploads reusing those keys.
-`page_cards` adds `image: { card_hash, light, dark }` only when the pointer's
-hash is the stored JSON card's and both themes exist. The image route decides
+`page_cards` adds `image: { card_hash, light, dark }` only when the record's
+hash is the stored JSON card's and both themes exist.
+
+Builds before the record moved into `card.json` kept it in an empty
+`card/latest` pointer object. A `card.json` without `image_revision` is that
+legacy shape. `page_cards`, `/p/<id>/card.json` and the stored-hash route then
+also read the pointer, so a picture stored that way still shows. The next card
+write or upload of the Page copies the pointer's record into `card.json`; an
+upload starts from its hash, revision and themes. Nothing writes the pointer,
+and nothing reads it once `card.json` holds a record. A Page never edited or
+captured again keeps the legacy shape and its second read. The image route decides
 access as `page_cards` does, on every request: the caller's own Catalog entry
 for an owned Page, or its shared entry plus the Page host's record-only check.
 A grid of image cards boots no Page document, and a revoked grant fails on
 the next fetch. Its responses are `private, immutable`
-and carry `nosniff`. Purge and tombstone delete `card.json`, the image pointer and
-its referenced images, plus orphans found in at most four prefix-listing pages.
+and carry `nosniff`. Purge and tombstone delete `card.json`, the legacy pointer
+and the images either record names, plus orphans found in at most four
+prefix-listing pages.
+An upload whose recheck finds the Page purged deletes the same set.
 That bounded cleanup may leave orphaned bytes beyond the listing limit.
 The server can't check that the pixels match the content. That is the trust of
 any image the owner inserts into the Page, and only the Page's readers see it.

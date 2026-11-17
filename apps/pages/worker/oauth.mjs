@@ -15,6 +15,7 @@ import {
   OAuthStoreError,
 } from "./oauth-store.mjs";
 import { logAuthEvent, recordOidcEvent } from "./auth-events.mjs";
+import { forgetServerAppSession } from "./session-memo.mjs";
 import {
   OAuthError,
   boundedText,
@@ -259,6 +260,7 @@ async function currentSession(request, env) {
   const refreshed = await serverOidcSessionStatus(request, env, async () => {}, {
     onAuthEvent: recordOidcEvent,
   });
+  await forgetServerAppSession(env, request);
   if (!refreshed.ok) return { response: refreshed };
   const now = Math.floor(Date.now() / 1000);
   const row = await loadServerSession(env, request, now);

@@ -7,13 +7,23 @@
 //
 // - `pages/<id>/card/<card_hash>-<theme>.<ext>`: the image. `ext` is webp,
 //   png or jpg; Safari has no WebP encoder, so its captures are PNG.
-// - `pages/<id>/card/latest`: an empty pointer object whose `customMetadata`
-//   names the current `card_hash` and each theme's extension. Every pointer
-//   put is fenced on the etag it read (`onlyIf`), as the card writer's put
-//   is (page-card-writer.mjs), and retried after a refusal.
+// - `pages/<id>/card.json`: the JSON card, whose `customMetadata` also holds
+//   the image record: `image_hash`, `image_revision` and each theme's
+//   extension (`light`, `dark`). One `get` answers the card and its image.
+//   The card writer (page-card-writer.mjs) owns the body and the card fields;
+//   an upload owns the image fields. Each puts a new version fenced on the
+//   etag of the version it read (`onlyIf`), copying the other's part from
+//   it, and retries after a refusal, so neither drops the other's write.
+//   An upload for a Page with no card yet creates the object with the body
+//   `null`, which reads as no card.
+// - `pages/<id>/card/latest`: the legacy pointer, an empty object whose
+//   `customMetadata` holds the same record. A `card.json` without
+//   `image_revision` is the legacy shape: readers fall back to the pointer,
+//   and the next card write or upload copies its record into `card.json`.
+//   Nothing writes the pointer; purge deletes it.
 //
-// The pointer references at most two images, one per theme. An upload for a
-// new hash swaps the pointer, then attempts to delete the old images. Stale
+// The record references at most two images, one per theme. An upload for a
+// new hash swaps the record, then attempts to delete the old images. Stale
 // uploads and failed writes or deletes can leave unreferenced bytes. Purge
 // scans at most four prefix-listing pages; it may not collect every orphan.
 // Successful-swap cleanup is not fenced and can still race with key reuse.
@@ -23,7 +33,7 @@
 // host also requires the upload's hash to be the `card_hash` of its loaded
 // document, so a capture of an older first screen is refused, and allows one
 // upload per theme per minute. Each admitted upload gets the host's next
-// revision, and the pointer refuses a swap to an older one (storeCardImage).
+// revision, and the record refuses a swap to an older one (storeCardImage).
 // The server can't check that the pixels match
 // the content: that is the same trust as an image the owner inserts into the
 // Page, and only people who can read the Page see it.
@@ -32,9 +42,10 @@
 // access as page_cards does, on every request, without loading the Page's
 // document (handleCardImage), and streams the object with a private,
 // immutable cache header: the hash is in the URL. No object URL leaves the
-// Worker. `page_cards` names an image only when the pointer's hash
+// Worker. `page_cards` names an image only when the record's hash
 // is the stored JSON card's and both themes exist.
 import { authenticate, HttpError, errorResponse } from "./auth.mjs";
+import { cardKey } from "../model/page-card.mjs";
 import { validPageId } from "./registration.mjs";
 import { setResponseHeaders } from "./response-headers.mjs";
 import { inspectImage, readImageBody } from "./image-assets.mjs";
@@ -61,8 +72,8 @@ const HASH = /^[0-9a-f]{64}$/;
 export const CARD_IMAGE_FILE = /^([0-9a-f]{64})-(light|dark)\.(webp|png|jpg)$/;
 /** The Page host's storage key for its last card image revision. */
 export const CARD_IMAGE_REVISION_KEY = "host/card-image-revision";
-/** How many times a pointer swap re-reads after its put was refused. */
-const POINTER_ATTEMPTS = 3;
+/** How many times a record swap re-reads after its put was refused. */
+const RECORD_ATTEMPTS = 3;
 
 export const validCardHash = (value) => typeof value === "string" && HASH.test(value);
 export const validCardTheme = (value) => CARD_IMAGE_THEMES.includes(value);
@@ -100,25 +111,57 @@ function matchesContentType(inspected, contentType) {
   return inspected;
 }
 
-/** The pointer as stored, or null. A theme whose extension isn't one this
- * build writes counts as missing. */
-export async function readCardImagePointer(bucket, pageId) {
-  const object = await bucket.head(cardImagePointerKey(pageId));
-  if (!object) return null;
-  const metadata = object.customMetadata ?? {};
+/** A record `{ card_hash, revision, themes }` from its stored fields. A
+ * theme whose extension isn't one this build writes counts as missing. */
+function imageRecord(hash, revision, metadata) {
   const themes = {};
   for (const theme of CARD_IMAGE_THEMES)
     if (MEDIA_TYPES[metadata[theme]]) themes[theme] = metadata[theme];
-  const revision = Number(metadata.revision);
+  const number = Number(revision);
   return {
-    etag: object.etag,
-    card_hash: validCardHash(metadata.card_hash) ? metadata.card_hash : null,
-    revision: Number.isSafeInteger(revision) && revision > 0 ? revision : 0,
+    card_hash: validCardHash(hash) ? hash : null,
+    revision: Number.isSafeInteger(number) && number > 0 ? number : 0,
     themes,
   };
 }
 
-/** What a reader learns about a pointer: its hash only when every theme is
+/** The legacy pointer's record, or null. */
+export async function readCardImagePointer(bucket, pageId) {
+  const object = await bucket.head(cardImagePointerKey(pageId));
+  if (!object) return null;
+  const metadata = object.customMetadata ?? {};
+  return imageRecord(metadata.card_hash, metadata.revision, metadata);
+}
+
+/** The image record a card object's `customMetadata` holds, or undefined
+ * for the legacy shape (no object, or no `image_revision`), whose record is
+ * the pointer's. */
+export function cardImageRecordOf(metadata) {
+  if (typeof metadata?.image_revision !== "string") return undefined;
+  return imageRecord(metadata.image_hash, metadata.image_revision, metadata);
+}
+
+/** The `customMetadata` fields that store `record` (null: none). */
+export function cardImageMetadata(record) {
+  return {
+    image_hash: record?.card_hash ?? "",
+    image_revision: String(record?.revision ?? 0),
+    light: record?.themes?.light ?? "",
+    dark: record?.themes?.dark ?? "",
+  };
+}
+
+/**
+ * The image record of a card object whose `customMetadata` is `metadata`
+ * (undefined: no object): its own, or the legacy pointer's when it holds
+ * none. Only the legacy shape reads the bucket; `measure(read)` wraps that
+ * read, for timing.
+ */
+export async function readCardImageRecord(bucket, pageId, metadata, measure = (read) => read()) {
+  return cardImageRecordOf(metadata) ?? (await measure(() => readCardImagePointer(bucket, pageId)));
+}
+
+/** What a reader learns about a record: its hash only when every theme is
  * stored, and the image URLs. */
 export function cardImageView(pageId, pointer) {
   const complete =
@@ -135,20 +178,73 @@ export function cardImageView(pageId, pointer) {
   };
 }
 
+/** page_cards' bucket reads (page-cards.mjs readPageCards): the card
+ * object with its metadata, and the image view of its record. A current card
+ * object is one read; a legacy one adds the pointer's. `measure(read)` wraps
+ * each bucket read, for timing. */
+export function cardObjectReaders(bucket, measure = (read) => read()) {
+  return {
+    readObject: (key) =>
+      measure(async () => {
+        const object = await bucket.get(key);
+        return object ? { text: await object.text(), metadata: object.customMetadata ?? {} } : null;
+      }),
+    readImage: async (pageId, metadata) =>
+      cardImageView(pageId, await readCardImageRecord(bucket, pageId, metadata, measure)),
+  };
+}
+
 /**
- * Store one theme's image for `hash` and point `latest` at it. Returns the
- * pointer it wrote. Authorization belongs to the caller.
+ * The card writer's store (page-card-writer.mjs) over `card.json`, without
+ * its deadlines. `head()` answers the card fields and the image record (a
+ * legacy object, or none, takes the legacy pointer's); `put()` writes the
+ * card with the record it is given, fenced on `etag`.
+ */
+export function cardObjectStore(bucket, pageId) {
+  return {
+    head: async () => {
+      const object = await bucket.head(cardKey(pageId));
+      const metadata = object?.customMetadata;
+      return {
+        etag: object?.etag ?? null,
+        card_hash: metadata?.card_hash || null,
+        content_updated_at: metadata?.content_updated_at ?? null,
+        image: await readCardImageRecord(bucket, pageId, metadata),
+      };
+    },
+    put: async (bundle, { etag, image }) => {
+      const object = await bucket.put(cardKey(pageId), JSON.stringify(bundle), {
+        httpMetadata: { contentType: "application/json" },
+        customMetadata: {
+          card_hash: bundle.card_hash,
+          content_updated_at: bundle.content_updated_at ?? "",
+          ...cardImageMetadata(image),
+        },
+        // The fence card image uploads share; head() reads every field back.
+        onlyIf: etag ? { etagMatches: etag } : { etagDoesNotMatch: "*" },
+      });
+      return object ? { etag: object.etag } : null;
+    },
+  };
+}
+
+/**
+ * Store one theme's image for `hash` and record it in `card.json`. Returns
+ * the record it wrote. Authorization belongs to the caller.
  *
- * The image lands before the pointer swap, which is fenced on the etag it
- * read; a refused put reads again, up
- * to POINTER_ATTEMPTS times. Once the swap lands, images the previous
- * pointer named and this one doesn't are deleted. That cleanup is not
- * fenced against a newer upload reusing those keys.
+ * The image lands before the record swap. The swap reads `card.json` (body
+ * and metadata), then puts the same body and card fields with the new
+ * record, fenced on the etag it read; a refused put reads again, up to
+ * RECORD_ATTEMPTS times. A card write that lands in between is kept: the
+ * retry copies it. A legacy `card.json` (or none) starts from the legacy
+ * pointer's record. Once the swap lands, images the previous record named
+ * and this one doesn't are deleted. That cleanup is not fenced against a
+ * newer upload reusing those keys.
  *
  * The etag orders writes to the bucket, not first screens. `revision` does:
  * the Page host hands out one per admitted upload, in order, from durable
  * storage, and admits only its current `card_hash`, so a later revision is
- * always a later (or the same) first screen. The pointer keeps the highest
+ * always a later (or the same) first screen. The record keeps the highest
  * revision it has seen, and a swap to another hash with a lower revision is
  * refused as stale (409), without deleting the shared image key. Uploads of
  * the same hash merge whatever their order.
@@ -163,25 +259,24 @@ export async function storeCardImage(
     httpMetadata: { contentType: inspected.mime_type, cacheControl: "private, no-store" },
     customMetadata: { page_id: pageId, card_hash: hash, theme },
   });
-  for (let attempt = 0; attempt < POINTER_ATTEMPTS; attempt++) {
-    const previous = await readCardImagePointer(bucket, pageId);
+  for (let attempt = 0; attempt < RECORD_ATTEMPTS; attempt++) {
+    const card = await bucket.get(cardKey(pageId));
+    const metadata = card?.customMetadata ?? {};
+    const body = card ? await card.text() : "null";
+    const previous = await readCardImageRecord(bucket, pageId, card ? metadata : undefined);
     const same = previous?.card_hash === hash;
     if (previous && !same && previous.revision > revision) {
       // The hash/theme key is shared: a newer accepted upload may already
-      // reuse it. This stale pointer snapshot cannot authorize its deletion.
+      // reuse it. This stale record cannot authorize its deletion.
       throw new HttpError(409, "This card image is for an older first screen", "card_image_stale");
     }
     const themes = { ...(same ? previous.themes : {}), [theme]: inspected.ext };
     const kept = same ? Math.max(previous.revision, revision) : revision;
-    const written = await bucket.put(cardImagePointerKey(pageId), "", {
-      httpMetadata: { contentType: "application/octet-stream" },
-      customMetadata: {
-        card_hash: hash,
-        revision: String(kept),
-        light: themes.light ?? "",
-        dark: themes.dark ?? "",
-      },
-      onlyIf: previous ? { etagMatches: previous.etag } : { etagDoesNotMatch: "*" },
+    const record = { card_hash: hash, revision: kept, themes };
+    const written = await bucket.put(cardKey(pageId), body, {
+      httpMetadata: { contentType: "application/json" },
+      customMetadata: { ...metadata, ...cardImageMetadata(record) },
+      onlyIf: card ? { etagMatches: card.etag } : { etagDoesNotMatch: "*" },
     });
     if (!written) continue;
     const keep = new Set(
@@ -198,14 +293,22 @@ export async function storeCardImage(
   throw new HttpError(503, "Card image storage is busy; try again", "card_image_busy");
 }
 
-/** Delete the pointer and its referenced images, plus orphans found in at
- * most four prefix-listing pages when the bucket lists. More may remain. */
-export async function deleteCardImages(bucket, pageId) {
-  const keys = new Set([cardImagePointerKey(pageId)]);
-  const pointer = await readCardImagePointer(bucket, pageId).catch(() => null);
-  if (pointer?.card_hash)
-    for (const [theme, ext] of Object.entries(pointer.themes))
-      keys.add(cardImageKey(pageId, pointer.card_hash, theme, ext));
+/** Delete `card.json`, the legacy pointer and the images either record
+ * names, plus orphans found in at most four prefix-listing pages when the
+ * bucket lists. More may remain. */
+export async function deleteCardObjects(bucket, pageId) {
+  const keys = new Set([cardKey(pageId), cardImagePointerKey(pageId)]);
+  const records = await Promise.all([
+    bucket
+      .head(cardKey(pageId))
+      .then((object) => cardImageRecordOf(object?.customMetadata))
+      .catch(() => null),
+    readCardImagePointer(bucket, pageId).catch(() => null),
+  ]);
+  for (const record of records)
+    if (record?.card_hash)
+      for (const [theme, ext] of Object.entries(record.themes))
+        keys.add(cardImageKey(pageId, record.card_hash, theme, ext));
   if (typeof bucket.list === "function") {
     let cursor;
     // Bound purge work even when uploads have left many unreferenced objects.
@@ -314,7 +417,7 @@ function cardImageHeaders(response, cache = "private, no-store") {
  *   `authorizeUpload({ hash, theme })` is the Page host's check; it answers
  *   `{ revision }` (see storeCardImage). After the write, `recheckUpload()`
  *   asks the host again: a Page purged meanwhile admits no one, and its card
- *   images are deleted here.
+ *   object and images are deleted here.
  * - `GET /api/pages/:id/card-image`: the stored image's hash, for the
  *   owner's scheduler: `{ card_hash }`, null until both themes exist.
  * - `GET|HEAD /api/pages/:id/card-image/<hash>-<theme>.<ext>`: the image.
@@ -376,7 +479,7 @@ export async function handleCardImage(
       });
       const current = await recheckUpload();
       if (!current.ok) {
-        await deleteCardImages(bucket, pageId).catch(() => {});
+        await deleteCardObjects(bucket, pageId).catch(() => {});
         return cardImageHeaders(current);
       }
       return cardImageHeaders(
@@ -387,9 +490,11 @@ export async function handleCardImage(
       );
     }
     if (pointer) {
+      const measure = (read) => timingFor(request).measure("r2", read);
+      const card = await measure(() => bucket.head(cardKey(pageId)));
       const view = cardImageView(
         pageId,
-        await timingFor(request).measure("r2", () => readCardImagePointer(bucket, pageId)),
+        await readCardImageRecord(bucket, pageId, card?.customMetadata, measure),
       );
       return cardImageHeaders(Response.json({ card_hash: view?.card_hash ?? null }));
     }

@@ -338,8 +338,9 @@ test("the library's three calls and a card image read carry their phases", async
   assertTiming(cardTiming, ["total", "auth", "catalog", "cat_cards", "r2"], secrets);
   // The access step runs outside the Catalog's queue (catalog-lanes.mjs).
   assert.equal(names(cardTiming).includes("cat_queue"), false);
-  // One card object and one image pointer.
-  assert.match(cardTiming, /(^|, )r2;dur=[\d.]+;desc="n=2", r2_max;dur=/);
+  // One read: the card object, which holds its image record.
+  assert.match(cardTiming, /(^|, )r2;dur=[\d.]+(, |$)/);
+  assert.doesNotMatch(cardTiming, /r2_max/);
   const memberCards = await tool("page_cards", { page_ids: [shared.pageId] }, "member");
   assertTiming(memberCards.headers.get("server-timing"), ["cat_verify"], secrets);
 

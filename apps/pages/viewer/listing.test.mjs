@@ -27,10 +27,10 @@ const TABLE = new URL("../test/fixtures/machines/listing.json", import.meta.url)
 
 test("the listing table runs through the pure machine", async () => {
   assert.deepEqual(await runTable(listingMachine, loadTable(TABLE)), {
-    rows: 44,
-    pairs: 33,
-    unreachable: 2,
-    cases: 15,
+    rows: 74,
+    pairs: 60,
+    unreachable: 3,
+    cases: 21,
   });
 });
 
@@ -326,6 +326,7 @@ test("library Page rows retain only host-disclosed Project membership", () => {
   assert.deepEqual(pageRow({ page_id: pageId, title: "", project_id: projectId }, titles), {
     id: pageId,
     title: "Untitled",
+    held: false,
     href: `/p/${pageId}`,
     slug: null,
     activityAt: null,
@@ -335,6 +336,10 @@ test("library Page rows retain only host-disclosed Project membership", () => {
     local: null,
   });
   assert.deepEqual(pageRow({ page_id: pageId, title: "Notes" }).project, null);
+  // A shared row's place from the device cache names nothing.
+  const held = pageRow({ page_id: pageId, shared: true, held: true, title: "Secret" });
+  assert.equal(held.held, true);
+  assert.equal(held.title, "");
   assert.equal(
     pageRow({ page_id: pageId, updated_at: "2026-11-01T18:00:00.000Z" }).activityAt,
     "2026-11-01T18:00:00.000Z",

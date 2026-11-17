@@ -16,22 +16,30 @@ import { acceptedTime, validTime } from "./content-activity.mjs";
  * card again next time. A failed write is logged and left: the next flush
  * tries again. It never fails the flush or the edit that caused it.
  *
- * Ordering across hosts. Every put is conditional on the object's etag as
- * this host last saw it (`onlyIf`; none yet: no object may exist). A
- * retiring host's put that lands late carries an etag the next host's own
- * write has replaced, so the bucket refuses it. A host's first write after
- * boot reads the object's metadata first (`head()`): it learns the etag,
- * and compares the built hash with the object's own, not `host/card`, so a
- * stale card that landed before this host booted is rewritten.
+ * Ordering across hosts. Every put reads the object's metadata first
+ * (`head()`) and is conditional on the etag it read (`onlyIf`; none: no
+ * object may exist). A retiring host's put that lands late carries an etag
+ * the next host's own write has replaced, so the bucket refuses it. The
+ * write compares the built hash with the object's own, not `host/card`, so
+ * a stale card that landed before this host booted is rewritten. Only a
+ * flush whose card matches the hash this host last wrote or read skips the
+ * read, and puts nothing.
+ *
+ * The object also holds the card image record (card-images.mjs), which
+ * uploads write under the same etag fence. `head()` returns it, and the put
+ * copies it unchanged, so a card write never drops an upload's record and
+ * an upload never drops a card. Reading before each put, rather than
+ * putting on the etag this host last saw, keeps an upload since the last
+ * write from turning the next put into a refusal and a retry.
  *
  * A put refused by its condition reads the object again and retries once,
  * unless the host stopped during that read, or the object's
  * `content_updated_at` is later than the built card's: then a newer host
- * wrote it, and this write puts nothing. A first write skips its put the
- * same way. Such a write ends as `failed`, logs the skip through `onSkip`,
- * and the next one reads the object again. Equal times with different
- * hashes still put: the same content built by two builder versions, where
- * the later put wins. A time either side lacks never skips, and neither
+ * wrote it, and this write puts nothing. A write whose first read finds a
+ * newer card skips its put the same way. Such a write ends as `failed`,
+ * logs the skip through `onSkip`, and the next one reads the object again.
+ * Equal times with different hashes still put: the same content built by
+ * two builder versions, where the later put wins. A time either side lacks never skips, and neither
  * does an object time more than `CONTENT_ACTIVITY_MAX_SKEW_MS` ahead of this
  * host's clock: content activity drops such a time (`acceptedTime`), so a
  * card from a node whose clock ran fast would otherwise block every write
@@ -161,11 +169,12 @@ export const pageCardWriterMachine = defineMachine({
  *
  * - `build()` returns the card bundle for the loaded document, or null when
  *   there is nothing to write (no document, a Page that isn't active).
- * - `store.head()` returns `{ etag, card_hash, content_updated_at }` for
- *   the stored object, or null. `store.put(bundle, { etag })` writes it
- *   only while the object's etag is `etag` (null: only while there is none)
- *   and returns `{ etag }`, or null when the condition failed.
- *   `store.delete()` removes it.
+ * - `store.head()` returns `{ etag, card_hash, content_updated_at, image }`
+ *   for the stored object (`etag` null: no object), or null. `image` is its
+ *   card image record. `store.put(bundle, { etag, image })` writes the card
+ *   with that record only while the object's etag is `etag` (null: only
+ *   while there is none) and returns `{ etag }`, or null when the condition
+ *   failed. `store.delete()` removes it.
  * - `storage` is the host's Durable Object storage, for `PAGE_CARD_KEY`.
  * - `hold(work)` keeps the calling request running until `work` settles.
  * - `onSkip()` hears a write that put nothing over a newer card.
@@ -178,7 +187,8 @@ export class PageCardWriter {
    * null for no object. It lives beside the machine, not in it: a write
    * reads and replaces it partway through, between its head and its puts,
    * and the transition never branches on it. Folding it in would split
-   * `writing` into a state per bucket call. */
+   * `writing` into a state per bucket call. The image record a put copies
+   * stays inside that one write, from its own read. */
   #etag = undefined;
   constructor({
     build,
@@ -254,11 +264,16 @@ export class PageCardWriter {
       if (effect.type === "write") this.hold(this.#write(effect.stored));
   }
 
-  /** Read the object's etag; returns its hash and content time. */
+  /** Read the object's etag; returns its hash, content time and image
+   * record. */
   async #head() {
     const head = await this.store.head();
     this.#etag = head?.etag ?? null;
-    return { hash: head?.card_hash ?? null, contentUpdatedAt: head?.content_updated_at ?? null };
+    return {
+      hash: head?.card_hash ?? null,
+      contentUpdatedAt: head?.content_updated_at ?? null,
+      image: head?.image ?? null,
+    };
   }
 
   get #stopped() {
@@ -269,24 +284,28 @@ export class PageCardWriter {
     let outcome;
     try {
       const bundle = await this.build();
-      // A host's first write compares with the object itself.
-      const object = bundle && this.#etag === undefined ? await this.#head() : null;
+      // An unchanged card on an object this host has read needs no read:
+      // nothing is put. Every other write reads the object first.
+      const unchanged = this.#etag !== undefined && bundle?.card_hash === previous;
+      const object = bundle && !unchanged && !this.#stopped ? await this.#head() : null;
       const known = object ? object.hash : previous;
       if (!bundle || this.#stopped) outcome = { type: "failed" };
       else if (bundle.card_hash === known) {
         if (known !== previous) await this.storage.put(PAGE_CARD_KEY, { card_hash: known });
         outcome = { type: "written", hash: known };
-      } else if (object && this.#newer(object.contentUpdatedAt, bundle.content_updated_at)) {
+      } else if (this.#newer(object.contentUpdatedAt, bundle.content_updated_at)) {
         outcome = this.#superseded();
       } else {
-        let landed = await this.store.put(bundle, { etag: this.#etag });
+        let landed = await this.store.put(bundle, { etag: this.#etag, image: object.image });
         let newer = false;
         if (!landed && !this.#stopped) {
-          // Another writer moved the object since this host saw it. A stop
-          // during this read ends the write below, before any put.
+          // Another writer (a host, or a card image upload) moved the object
+          // between the read and the put. A stop during this read ends the
+          // write below, before any put.
           const moved = await this.#head();
           newer = this.#newer(moved.contentUpdatedAt, bundle.content_updated_at);
-          if (!newer && !this.#stopped) landed = await this.store.put(bundle, { etag: this.#etag });
+          if (!newer && !this.#stopped)
+            landed = await this.store.put(bundle, { etag: this.#etag, image: moved.image });
         }
         if (this.#stopped) {
           // The host deleted the Page while this put ran.

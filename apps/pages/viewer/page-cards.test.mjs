@@ -15,7 +15,10 @@ import {
 
 const CARD = { v: 1, card_hash: "h", blocks: [{ id: "b", content: [["p", {}, "Hi"]] }] };
 const BLANK = { v: 1, card_hash: "h", blocks: [] };
+const OTHER = { v: 1, card_hash: "h2", blocks: [{ id: "b", content: [["p", {}, "Bye"]] }] };
 const shown = { name: "shown", card: CARD };
+const stale = { name: "stale", card: CARD };
+const revalidating = { name: "revalidating", card: CARD };
 const ok = (state, effects = []) => ({ state, effects });
 const no = (state, rejected) => ({ state, effects: [], rejected });
 const fetch = [{ type: "fetch" }];
@@ -120,26 +123,132 @@ const rows = [
     event: { type: "left" },
     expect: ok({ name: "idle" }),
   },
+  // Cards this browser kept from an earlier visit (library-device-cache.mjs).
+  {
+    label: "a kept card draws before this visit asks",
+    state: { name: "idle" },
+    event: { type: "recalled", card: CARD },
+    expect: ok(stale),
+  },
+  {
+    label: "a card this visit asked for keeps what it has",
+    state: { name: "requested" },
+    event: { type: "recalled", card: CARD },
+    expect: no({ name: "requested" }, "already requested"),
+  },
+  { state: shown, event: { type: "recalled", card: OTHER }, expect: no(shown, "already shown") },
+  {
+    state: { name: "empty" },
+    event: { type: "recalled", card: CARD },
+    expect: no({ name: "empty" }, "already empty"),
+  },
+  {
+    state: { name: "failed" },
+    event: { type: "recalled", card: CARD },
+    expect: no({ name: "failed" }, "already failed"),
+  },
+  { state: stale, event: { type: "recalled", card: OTHER }, expect: no(stale, "already stale") },
+  {
+    state: revalidating,
+    event: { type: "recalled", card: OTHER },
+    expect: no(revalidating, "already revalidating"),
+  },
+  {
+    label: "a kept card in view is asked for again and stays drawn",
+    state: stale,
+    event: { type: "visible" },
+    expect: ok(revalidating, fetch),
+  },
+  {
+    label: "a batch with room takes a kept card too",
+    state: stale,
+    event: { type: "ahead" },
+    expect: ok(revalidating),
+  },
+  {
+    state: revalidating,
+    event: { type: "visible" },
+    expect: no(revalidating, "already revalidating"),
+  },
+  {
+    state: revalidating,
+    event: { type: "ahead" },
+    expect: no(revalidating, "already revalidating"),
+  },
+  {
+    label: "a kept card that leaves before its request goes out stays drawn",
+    state: revalidating,
+    event: { type: "left" },
+    expect: ok(stale),
+  },
+  {
+    case: "content",
+    label: "the answer replaces the kept card",
+    state: revalidating,
+    event: { type: "answered", card: OTHER },
+    expect: ok({ name: "shown", card: OTHER }),
+  },
+  {
+    case: "blank",
+    state: revalidating,
+    event: { type: "answered", card: BLANK },
+    expect: ok({ name: "empty" }),
+  },
+  {
+    label: "no card for this account now: the kept one goes",
+    state: revalidating,
+    event: { type: "missing" },
+    expect: ok({ name: "empty" }),
+  },
+  {
+    label: "a failed request keeps the kept card, which asks again when seen",
+    state: revalidating,
+    event: { type: "failed" },
+    expect: ok(stale),
+  },
 ];
 
 test("the page-card machine covers every state and event", async () => {
   assert.deepEqual(await runTable(pageCardMachine, rows), {
-    rows: 24,
-    pairs: 23,
-    unreachable: 7,
-    cases: 2,
+    rows: 40,
+    pairs: 38,
+    unreachable: 11,
+    cases: 4,
   });
 });
 
 // Batch limits small enough to read: 3 cards a request, 2 requests at once.
-const batches = (name, waiting, busy) => ({ name, waiting, busy, batch: 3, slots: 2 });
+// `opened`: whether the grid has sent a request yet.
+const batches = (name, waiting, busy, opened = true) => ({
+  name,
+  waiting,
+  busy,
+  batch: 3,
+  slots: 2,
+  opened,
+});
 const send = (take) => ({ type: "send", take });
 const batchRows = [
   {
-    label: "the first card to ask starts the window",
+    case: "eager",
+    label: "the grid's first card starts an eager window: the cards in view go out together",
+    state: batches("quiet", 0, 0, false),
+    event: { type: "wanted" },
+    expect: ok(batches("gathering", 1, 0, false), [{ type: "arm", eager: true }]),
+  },
+  {
+    case: "gather",
+    label: "after the first request, the first card to ask starts the gather window",
     state: batches("quiet", 0, 0),
     event: { type: "wanted" },
-    expect: ok(batches("gathering", 1, 0), [{ type: "arm" }]),
+    expect: ok(batches("gathering", 1, 0), [{ type: "arm", eager: false }]),
+  },
+  {
+    label: "the eager window's end sends the first request",
+    case: "sent",
+    state: batches("gathering", 2, 0, false),
+    event: { type: "elapsed" },
+    expect: ok(batches("quiet", 0, 1), [send(2)]),
   },
   {
     state: batches("quiet", 0, 0),
@@ -268,10 +377,10 @@ const batchRows = [
 
 test("the page-card-batches machine covers every state and event", async () => {
   assert.deepEqual(await runTable(pageCardBatchMachine, batchRows), {
-    rows: 22,
+    rows: 24,
     pairs: 12,
     unreachable: 0,
-    cases: 13,
+    cases: 15,
   });
   assert.deepEqual(pageCardBatchMachine.initial, {
     name: "quiet",
@@ -279,6 +388,7 @@ test("the page-card-batches machine covers every state and event", async () => {
     busy: 0,
     batch: PAGE_CARDS_BATCH,
     slots: PAGE_CARDS_CONCURRENCY,
+    opened: false,
   });
 });
 
@@ -637,10 +747,11 @@ for (const scroll of [
   test(`a continuous scroll loads cards as it runs (${scroll.label})`, async () => {
     const rttMs = 150;
     const result = await continuousScroll({ ...scroll, rttMs, total: 300 });
-    assert.equal(result.firstSentMs, PAGE_CARDS_GATHER_MS, JSON.stringify(result));
+    // The first screen goes out without the gather window.
+    assert.equal(result.firstSentMs, 0, JSON.stringify(result));
     assert.ok(
-      result.firstScreenMs <= PAGE_CARDS_GATHER_MS + rttMs + 5,
-      `first screen within the window and one round trip: ${JSON.stringify(result)}`,
+      result.firstScreenMs <= rttMs + 5,
+      `first screen within one round trip: ${JSON.stringify(result)}`,
     );
     assert.ok(
       result.worstWaitMs <= PAGE_CARDS_GATHER_MS + rttMs + 5,
@@ -652,20 +763,32 @@ for (const scroll of [
 test("a card waits at most the window for others, and 24 waiting go out at once", async () => {
   const grid = virtualGrid({ total: 100, rttMs: 10 });
   grid.cards.arrange([]);
+  // The grid's first card goes out at once (the eager first window).
+  grid.at(0, () => grid.show(99, 100));
+  await grid.run(20);
+  assert.deepEqual(
+    grid.calls.map(({ at, ids }) => [at, ids.length]),
+    [[0, 1]],
+  );
+  const start = 20;
   // One card every 50 ms: a quiet-time debounce would never fire.
-  for (let n = 0; n < 8; n++) grid.at(n * 50, () => grid.show(n, n + 1));
+  for (let n = 0; n < 8; n++) grid.at(start + n * 50, () => grid.show(n, n + 1));
   await grid.run(PAGE_CARDS_GATHER_MS);
   assert.deepEqual(
     grid.calls.map(({ at, ids }) => [at, ids.length]),
-    [[PAGE_CARDS_GATHER_MS, 5]],
+    [
+      [0, 1],
+      [start + PAGE_CARDS_GATHER_MS, 5],
+    ],
     "the window runs from the first card",
   );
   await grid.run(PAGE_CARDS_GATHER_MS + 50);
   assert.deepEqual(
     grid.calls.map(({ at, ids }) => [at, ids.length]),
     [
-      [PAGE_CARDS_GATHER_MS, 5],
-      [2 * PAGE_CARDS_GATHER_MS + 50, 3],
+      [0, 1],
+      [start + PAGE_CARDS_GATHER_MS, 5],
+      [start + 2 * PAGE_CARDS_GATHER_MS + 50, 3],
     ],
   );
   grid.at(grid.calls.at(-1).at + 100, () => grid.show(20, 20 + PAGE_CARDS_BATCH));

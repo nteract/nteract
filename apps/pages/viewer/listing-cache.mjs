@@ -25,7 +25,8 @@
 // server just didn't confirm. The entry itself stays, under the same age
 // limit, and a 401 clears everything (see below).
 //
-// What keeps it current. Nothing is persisted: a reload starts empty. The
+// What keeps it current. The entries live in memory: a reload starts empty
+// (the device cache below is a separate, narrower copy). The
 // shell clears every entry on sign-out, on an account change and on any tool
 // call the server refuses as signed out. It also patches entries after edits
 // this tab made, so a return visit doesn't paint what it just changed: a
@@ -39,13 +40,29 @@
 // reads the revision when its request starts and hands it back with the
 // write; a write from an older revision is refused, so a reply asked for
 // before a create or move can't put back the rows the patch dropped.
-import { libraryRequest } from "../shared/routes.mjs";
+//
+// What reaches the device. The default view's first page (All, Last
+// activity, no search, no Project) is also written to the library's device
+// cache (library-device-cache.mjs), under the same account and revision
+// rules, so a reload paints it before the server answers. `forget` and
+// `retitle` patch it too. `forgetOwnedViews` leaves it: a device copy only
+// paints while the server is asked again, and the next answer replaces it.
+// `clear` leaves it; `clearDevice` removes it with everything else. The
+// shell clears it on sign-out and account change, not on a 401 the session
+// check hasn't settled yet.
+import { LIBRARY_DEFAULTS, libraryRequest, sameLibraryRequest } from "../shared/routes.mjs";
+import { libraryDevice } from "./library-device-cache.mjs";
 import { monotonicNow } from "./monotonic.mjs";
 
 /** How many views one tab remembers; the least recently shown goes first. */
 export const LISTING_CACHE_LIMIT = 24;
 /** How long after it was shown an entry still paints. */
 export const LISTING_CACHE_MAX_AGE_MS = 5 * 60_000;
+
+const DEFAULT_REQUEST = libraryRequest(LIBRARY_DEFAULTS);
+/** Whether `params` is the one view the device cache keeps: the library's
+ * default. A search, a tab, a sort or a Project stays in memory only. */
+export const deviceView = (params) => sameLibraryRequest(libraryRequest(params), DEFAULT_REQUEST);
 
 const keyOf = (principal, params) => {
   const { query, access, sort, projectId } = libraryRequest(params);
@@ -58,17 +75,21 @@ export class ListingCache {
   #limit;
   #maxAge;
   #now;
+  #device;
   /** `now()` is a monotonic clock in milliseconds (monotonic.mjs), so a
    * system clock change can't stretch or cut short the age limit; tests pass
-   * a virtual one. */
+   * a virtual one. `device` is the library's device cache
+   * (library-device-cache.mjs), or null to keep everything in memory. */
   constructor({
     limit = LISTING_CACHE_LIMIT,
     maxAgeMs = LISTING_CACHE_MAX_AGE_MS,
     now = monotonicNow,
+    device = null,
   } = {}) {
     this.#limit = limit;
     this.#maxAge = maxAgeMs;
     this.#now = now;
+    this.#device = device;
   }
   /** The rows `principal` was shown on the first page of `params` within
    * the age limit, or null. An expired entry is dropped. */
@@ -91,6 +112,7 @@ export class ListingCache {
     if (!principal || revision === undefined || revision !== this.#revision) return;
     const key = keyOf(principal, params);
     this.#entries.delete(key);
+    if (this.#device && deviceView(params)) void this.#device.write(principal, items);
     if (!Array.isArray(items) || items.length === 0) return;
     this.#entries.set(key, {
       principal,
@@ -116,6 +138,7 @@ export class ListingCache {
   }
   /** Drop `pageId` from every remembered page (it moved to Trash). */
   forget(pageId) {
+    void this.#device?.forget(pageId);
     this.#patch((items) =>
       items.some((page) => page.page_id === pageId)
         ? items.filter((page) => page.page_id !== pageId)
@@ -126,6 +149,7 @@ export class ListingCache {
    * it, or saw it renamed while it was open). */
   retitle(pageId, title) {
     if (typeof title !== "string") return;
+    void this.#device?.retitle(pageId, title);
     this.#patch((items) =>
       items.some((page) => page.page_id === pageId && page.title !== title)
         ? items.map((page) => (page.page_id === pageId ? { ...page, title } : page))
@@ -140,23 +164,47 @@ export class ListingCache {
     for (const [key, entry] of this.#entries)
       if (entry.access !== "shared") this.#entries.delete(key);
   }
-  /** Forget everything: the account changed or signed out. */
+  /** Forget everything in memory: the account changed or signed out, or a
+   * tool call was refused as signed out. A write from a request that began
+   * before this is refused, the device cache's included. */
   clear() {
     this.#revision++;
     this.#entries.clear();
   }
-  /** The read/write/revision triple a Listing takes for one account, or null
-   * when no one is signed in. `write` files a page only when `answeredBy`,
-   * the principal the reply named, is this account; any other reply forgets
-   * the view. Either way it does nothing when `revision` (the one the request
-   * began under) is missing or no longer current. */
+  /** `clear`, and remove the device cache's records for every account: the
+   * account signed out or changed. Resolves once the removal committed or
+   * gave up (LibraryDeviceCache.clear), so a sign-out can wait for it before
+   * it leaves the page. */
+  clearDevice() {
+    this.clear();
+    return this.#device ? this.#device.clear() : Promise.resolve(true);
+  }
+  /** What a Listing takes for one account, or null when no one is signed
+   * in. `write` files a page only when `answeredBy`, the principal the reply
+   * named, is this account; any other reply forgets the view. Either way it
+   * does nothing when `revision` (the one the request began under) is
+   * missing or no longer current.
+   *
+   * `device`, when this cache has one, reads the account's device record
+   * (`read()`, which never rejects) and keeps `page_cards` answers for its
+   * rows (`cards(entries)`); `deviceView(params)` says whether `params` is
+   * the view it keeps. A device read happens only through a scope, so only
+   * for an account the session named. */
   scope(principal) {
     if (!principal) return null;
+    const device = this.#device;
     return {
       read: (params) => this.read(principal, params),
       revision: () => this.#revision,
       write: (params, items, answeredBy, revision) =>
         this.write(principal, params, answeredBy === principal ? items : [], { revision }),
+      deviceView,
+      device: device
+        ? {
+            read: () => device.read(principal),
+            cards: (entries) => void device.writeCards(principal, entries),
+          }
+        : null,
     };
   }
   get size() {
@@ -164,5 +212,6 @@ export class ListingCache {
   }
 }
 
-/** This tab's cache, shared by every library mount. */
-export const listingCache = new ListingCache();
+/** This tab's cache, shared by every library mount, over this browser's
+ * library device cache. */
+export const listingCache = new ListingCache({ device: libraryDevice });

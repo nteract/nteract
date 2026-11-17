@@ -13,10 +13,10 @@ import {
   CardImageGuard,
   cardImageKey,
   cardImagePointerKey,
+  cardImageRecordOf,
   cardImageView,
-  deleteCardImages,
+  deleteCardObjects,
   inspectCardImage,
-  readCardImagePointer,
   storeCardImage,
 } from "./card-images.mjs";
 import { CARD_IMAGE_MAX_BYTES as SHARED_MAX_BYTES } from "../shared/card-images.mjs";
@@ -28,6 +28,9 @@ const fixtures = {
   jpeg: "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAACAAMDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwBlFFFfQnzx/9k=",
 };
 const bytes = (kind) => new Uint8Array(Buffer.from(fixtures[kind], "base64"));
+/** The image record `card.json` holds, or undefined. */
+const recordOf = (assets, pageId) =>
+  cardImageRecordOf(assets.objects.get(cardKey(pageId))?.customMetadata);
 const TYPES = { png: "image/png", webp: "image/webp", jpeg: "image/jpeg" };
 
 async function imagesWorld(t) {
@@ -108,7 +111,7 @@ const discover = (w, principal, pageId) =>
     shared: true,
   });
 
-test("the owner uploads both themes; the pointer names the hash once both land", async (t) => {
+test("the owner uploads both themes; the card object names the hash once both land", async (t) => {
   const { w, assets, hashOf, create, send, upload } = await imagesWorld(t);
   const pageId = await create();
   const hash = await hashOf(pageId);
@@ -268,15 +271,11 @@ test("sequential first-screen uploads replace the images and remove the old hash
   assert.equal((await upload("owner", pageId, { hash: first, theme: "light" })).status, 409);
   assert.equal((await upload("owner", pageId, { theme: "light", kind: "png" })).status, 201);
   const keys = () => [...assets.objects.keys()].filter((key) => key.includes("/card/")).sort();
-  assert.deepEqual(keys(), [
-    cardImageKey(pageId, second, "light", "png"),
-    cardImagePointerKey(pageId),
-  ]);
+  assert.deepEqual(keys(), [cardImageKey(pageId, second, "light", "png")]);
   assert.equal((await upload("owner", pageId, { theme: "dark" })).status, 201);
   assert.deepEqual(keys(), [
     cardImageKey(pageId, second, "dark", "webp"),
     cardImageKey(pageId, second, "light", "png"),
-    cardImagePointerKey(pageId),
   ]);
   // An accepted upload asked the host's card writer to catch up, so the
   // stored JSON card holds the new hash too and page_cards names the images.
@@ -284,7 +283,13 @@ test("sequential first-screen uploads replace the images and remove the old hash
   assert.equal(answer.body.cards[pageId].card_hash, second);
   assert.equal(answer.body.cards[pageId].image.card_hash, second);
   // A JSON card behind the images names none: the grid shows the JSON.
-  await assets.seed(cardKey(pageId), { ...answer.body.cards[pageId], card_hash: first });
+  const stored = assets.objects.get(cardKey(pageId));
+  await assets.put(
+    cardKey(pageId),
+    JSON.stringify({ ...answer.body.cards[pageId], card_hash: first }),
+    { customMetadata: { ...stored.customMetadata, card_hash: first } },
+  );
+  assert.equal(recordOf(assets, pageId).card_hash, second, "the record still names the images");
   const behind = await w.call("owner", "page_cards", { page_ids: [pageId] });
   assert.equal(behind.body.cards[pageId].image, undefined);
 });
@@ -305,7 +310,7 @@ test("a trashed Page takes no upload, and a purge deletes its card images", asyn
   const refused = await upload("owner", pageId, { theme: "light" });
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   assert.equal(refused.body.code, "page_trashed");
-  assert.ok(assets.objects.has(cardImagePointerKey(pageId)), "Trash keeps the images");
+  assert.ok(recordOf(assets, pageId).card_hash, "Trash keeps the images");
   const preview = await w.call("owner", "purge_page", { page_id: pageId, action: "preview" });
   const purged = await w.call("owner", "purge_page", {
     page_id: pageId,
@@ -321,19 +326,19 @@ test("a trashed Page takes no upload, and a purge deletes its card images", asyn
   );
 });
 
-test("a pointer swap refused by its fence reads again and keeps both themes", async () => {
+test("a record swap refused by its fence reads again and keeps both themes", async () => {
   const assets = cardBucket();
   const pageId = "11111111-1111-4111-8111-111111111111";
   const hash = "a".repeat(64);
   await storeCardImage(assets, { pageId, hash, theme: "light", bytes: bytes("webp") });
-  // Another upload of the same hash lands between this one's read and put.
+  // Another write to card.json lands between this upload's read and put.
   let raced = false;
   assets.beforePut = async (key) => {
-    if (raced || key !== cardImagePointerKey(pageId)) return;
+    if (raced || key !== cardKey(pageId)) return;
     raced = true;
     assets.beforePut = null;
-    const current = await assets.head(key);
-    await assets.put(key, "", {
+    const current = await assets.get(key);
+    await assets.put(key, await current.text(), {
       customMetadata: { ...current.customMetadata },
       onlyIf: { etagMatches: current.etag },
     });
@@ -348,8 +353,7 @@ test("a pointer swap refused by its fence reads again and keeps both themes", as
   assert.ok(raced);
   assert.equal(assets.refused, 1);
   assert.deepEqual(stored.themes, { light: "webp", dark: "png" });
-  const pointer = await readCardImagePointer(assets, pageId);
-  assert.deepEqual(cardImageView(pageId, pointer), {
+  assert.deepEqual(cardImageView(pageId, recordOf(assets, pageId)), {
     card_hash: hash,
     light: `/api/pages/${pageId}/card-image/${hash}-light.webp`,
     dark: `/api/pages/${pageId}/card-image/${hash}-dark.png`,
@@ -399,7 +403,7 @@ test("a 1601-pixel-wide upload is refused before the host's check", async (t) =>
   assert.equal(refused.body.code, "card_image_too_large");
   // The refusal spent nothing: the next upload is admitted.
   assert.equal((await upload("owner", pageId)).status, 201);
-  assert.ok(assets.objects.has(cardImagePointerKey(pageId)));
+  assert.ok(recordOf(assets, pageId).themes.light);
 });
 
 test("reading a card image boots no Page document", async (t) => {
@@ -445,7 +449,7 @@ test("reading a card image boots no Page document", async (t) => {
   );
 });
 
-test("a late upload for an older first screen never replaces a newer pointer", async () => {
+test("a late upload for an older first screen never replaces a newer record", async () => {
   const assets = cardBucket();
   const pageId = "11111111-1111-4111-8111-111111111111";
   const H1 = "1".repeat(64);
@@ -457,18 +461,18 @@ test("a late upload for an older first screen never replaces a newer pointer", a
   await store(H2, "light", 2);
   await store(H2, "dark", 3);
   await assert.rejects(store(H1, "light", 1), { status: 409, code: "card_image_stale" });
-  const pointer = await readCardImagePointer(assets, pageId);
-  assert.equal(pointer.card_hash, H2);
-  assert.equal(pointer.revision, 3);
+  const record = recordOf(assets, pageId);
+  assert.equal(record.card_hash, H2);
+  assert.equal(record.revision, 3);
   assert.ok(assets.objects.has(cardImageKey(pageId, H2, "light", "webp")));
   assert.ok(assets.objects.has(cardImageKey(pageId, H2, "dark", "webp")));
   assert.ok(assets.objects.has(cardImageKey(pageId, H1, "light", "webp")));
   // Same-hash uploads merge in any order and keep the higher revision.
   await store(H2, "light", 2);
-  assert.equal((await readCardImagePointer(assets, pageId)).revision, 3);
+  assert.equal(recordOf(assets, pageId).revision, 3);
   // A newer first screen still replaces it.
   await store(H1, "light", 4);
-  assert.equal((await readCardImagePointer(assets, pageId)).card_hash, H1);
+  assert.equal(recordOf(assets, pageId).card_hash, H1);
 });
 
 test("a stale upload keeps a shared image key reused by newer accepted uploads", async () => {
@@ -481,14 +485,14 @@ test("a stale upload keeps a shared image key reused by newer accepted uploads",
   await store(H2, "light", 2, bytes("webp"));
   await store(H2, "dark", 3, bytes("webp"));
 
-  // Only the old upload's head response waits; later reads see the live pointer.
+  // Only the old upload's read waits; later reads see the live record.
   const reached = Promise.withResolvers();
   const release = Promise.withResolvers();
-  const head = assets.head;
-  assets.head = async (key) => {
-    const snapshot = await head.call(assets, key);
-    if (key === cardImagePointerKey(pageId)) {
-      assets.head = head;
+  const get = assets.get;
+  assets.get = async (key) => {
+    const snapshot = await get.call(assets, key);
+    if (key === cardKey(pageId)) {
+      assets.get = get;
       reached.resolve(snapshot);
       await release.promise;
     }
@@ -504,8 +508,8 @@ test("a stale upload keeps a shared image key reused by newer accepted uploads",
   const darkKey = cardImageKey(pageId, H1, "dark", "webp");
   try {
     const snapshot = await reached.promise;
-    assert.equal(snapshot.customMetadata.card_hash, H2);
-    assert.equal(snapshot.customMetadata.revision, "3");
+    assert.equal(snapshot.customMetadata.image_hash, H2);
+    assert.equal(snapshot.customMetadata.image_revision, "3");
     assert.equal((await store(H1, "light", 4, light)).revision, 4);
     assert.equal((await store(H1, "dark", 5, dark)).revision, 5);
     assert.deepEqual(assets.objects.get(lightKey)?.bytes, light);
@@ -514,9 +518,9 @@ test("a stale upload keeps a shared image key reused by newer accepted uploads",
     release.resolve();
   }
   await older;
-  const pointer = await readCardImagePointer(assets, pageId);
-  assert.equal(pointer.revision, 5);
-  assert.deepEqual(cardImageView(pageId, pointer), {
+  const record = recordOf(assets, pageId);
+  assert.equal(record.revision, 5);
+  assert.deepEqual(cardImageView(pageId, record), {
     card_hash: H1,
     light: `/api/pages/${pageId}/card-image/${H1}-light.png`,
     dark: `/api/pages/${pageId}/card-image/${H1}-dark.webp`,
@@ -525,18 +529,18 @@ test("a stale upload keeps a shared image key reused by newer accepted uploads",
   assert.deepEqual(assets.objects.get(darkKey)?.bytes, dark);
 });
 
-test("two first screens racing to the pointer: the older one loses even if its put is retried", async () => {
+test("two first screens racing to the record: the older one loses even if its put is retried", async () => {
   const assets = cardBucket();
   const pageId = "11111111-1111-4111-8111-111111111111";
   const H1 = "1".repeat(64);
   const H2 = "2".repeat(64);
-  // H1 (revision 1) reads the pointer first, then waits while H2 (revision 2)
+  // H1 (revision 1) reads the record first, then waits while H2 (revision 2)
   // swaps it; H1's fenced put is refused, it reads again and sees H2.
   const reached = Promise.withResolvers();
   const release = Promise.withResolvers();
   let first = true;
   assets.beforePut = async (key) => {
-    if (key === cardImagePointerKey(pageId) && first) {
+    if (key === cardKey(pageId) && first) {
       first = false;
       reached.resolve();
       await release.promise;
@@ -563,15 +567,13 @@ test("two first screens racing to the pointer: the older one loses even if its p
   }
   await assert.rejects(older, { status: 409, code: "card_image_stale" });
   assert.equal(assets.refused, 1);
-  const pointer = await readCardImagePointer(assets, pageId);
-  assert.equal(pointer.card_hash, H2);
+  assert.equal(recordOf(assets, pageId).card_hash, H2);
   assert.deepEqual([...assets.objects.keys()].filter((key) => key.includes("/card/")).sort(), [
     cardImageKey(pageId, H1, "dark", "webp"),
     cardImageKey(pageId, H2, "light", "webp"),
-    cardImagePointerKey(pageId),
   ]);
-  // H1 is not pointer-referenced; only the prefix listing can find its orphan.
-  await deleteCardImages(assets, pageId);
+  // H1 is not referenced; only the prefix listing can find its orphan.
+  await deleteCardObjects(assets, pageId);
   assert.equal(assets.objects.size, 0);
 });
 
@@ -581,7 +583,7 @@ test("each admitted upload gets the host's next revision, kept in its storage", 
   await upload("owner", pageId, { theme: "light" });
   await upload("owner", pageId, { theme: "dark" });
   assert.equal(await w.page(pageId).ctx.storage.get("host/card-image-revision"), 2);
-  assert.equal((await readCardImagePointer(assets, pageId)).revision, 2);
+  assert.equal(recordOf(assets, pageId).revision, 2);
 });
 
 test("a purge that lands between the host's check and the write deletes what the write stored", async (t) => {
@@ -612,7 +614,7 @@ test("a purge that lands between the host's check and the write deletes what the
   assert.deepEqual(
     [...assets.objects.keys()].filter((key) => key.startsWith(`pages/${pageId}/`)),
     [],
-    "the cleanup after the write removed the image and its pointer",
+    "the cleanup after the write removed the image and the card object it made",
   );
 });
 
@@ -661,4 +663,92 @@ test("card image reads authorize through page_cards outside the Catalog queue: a
   w.faults.set(pageId, "before");
   assert.equal(await read("member"), 404, "unavailable");
   assert.equal(await read("member"), 200, "the next check answers");
+});
+
+/** Store a card and its images as builds before the record moved into
+ * card.json did: a legacy card object and a `card/latest` pointer. */
+async function seedLegacy(assets, pageId, card, { revision = 1 } = {}) {
+  const hash = card.card_hash;
+  await assets.seed(cardKey(pageId), card, { legacy: true });
+  for (const [theme, kind] of [
+    ["light", "webp"],
+    ["dark", "png"],
+  ])
+    await assets.put(cardImageKey(pageId, hash, theme, kind), bytes(kind), {
+      httpMetadata: { contentType: TYPES[kind] },
+      customMetadata: { page_id: pageId, card_hash: hash, theme },
+    });
+  await assets.put(cardImagePointerKey(pageId), "", {
+    customMetadata: { card_hash: hash, revision: String(revision), light: "webp", dark: "png" },
+  });
+}
+
+test("a card is one R2 read; a legacy card adds its pointer's and keeps its picture", async (t) => {
+  const { w, assets, hashOf, create, send } = await imagesWorld(t);
+  const pageId = await create();
+  const hash = await hashOf(pageId);
+  await seedLegacy(assets, pageId, assets.card(cardKey(pageId)), { revision: 2 });
+  const url = (theme, ext) => `/api/pages/${pageId}/card-image/${hash}-${theme}.${ext}`;
+  const cards = async () => {
+    assets.reads.length = 0;
+    assets.heads.length = 0;
+    const answer = await w.call("owner", "page_cards", { page_ids: [pageId] });
+    assert.equal(answer.status, 200, JSON.stringify(answer.body));
+    return { image: answer.body.cards[pageId].image, get: assets.reads, head: assets.heads };
+  };
+  // The legacy shape: the card object, then the pointer it falls back to.
+  assert.deepEqual(await cards(), {
+    image: { card_hash: hash, light: url("light", "webp"), dark: url("dark", "png") },
+    get: [cardKey(pageId)],
+    head: [cardImagePointerKey(pageId)],
+  });
+  const stored = await send("owner", "GET", `/api/pages/${pageId}/card-image`);
+  assert.deepEqual(await stored.json(), { card_hash: hash }, "the owner's tab sees the picture");
+  assert.equal((await send("owner", "GET", url("light", "webp"))).status, 200);
+
+  // An upload starts from the pointer's record and writes it into card.json:
+  // the other theme and the higher revision carry over, the card body stays.
+  const light = await storeCardImage(assets, {
+    pageId,
+    hash,
+    theme: "light",
+    bytes: bytes("png"),
+    contentType: "image/png",
+    revision: 1,
+  });
+  assert.deepEqual(light.themes, { light: "png", dark: "png" });
+  assert.equal(light.revision, 2);
+  assert.equal(assets.card(cardKey(pageId)).card_hash, hash);
+  assert.equal(assets.objects.has(cardImageKey(pageId, hash, "light", "webp")), false);
+  assert.deepEqual(await cards(), {
+    image: { card_hash: hash, light: url("light", "png"), dark: url("dark", "png") },
+    get: [cardKey(pageId)],
+    head: [],
+  });
+});
+
+test("an upload's record for another card_hash never shows on the card", async (t) => {
+  const { w, assets, hashOf, create } = await imagesWorld(t);
+  const pageId = await create();
+  const hash = await hashOf(pageId);
+  const other = "e".repeat(64);
+  for (const theme of ["light", "dark"])
+    await storeCardImage(assets, { pageId, hash: other, theme, bytes: bytes("webp"), revision: 9 });
+  assert.equal(recordOf(assets, pageId).card_hash, other);
+  const answer = await w.call("owner", "page_cards", { page_ids: [pageId] });
+  assert.equal(answer.body.cards[pageId].card_hash, hash);
+  assert.equal(answer.body.cards[pageId].image, undefined);
+});
+
+test("an upload before any card object leaves one that reads as no card", async (t) => {
+  const { w, assets, hashOf, create } = await imagesWorld(t);
+  const pageId = await create();
+  await assets.delete(cardKey(pageId));
+  const hash = await hashOf(pageId);
+  await storeCardImage(assets, { pageId, hash, theme: "light", bytes: bytes("webp"), revision: 1 });
+  assert.equal(assets.objects.get(cardKey(pageId)).text, "null");
+  assert.equal(recordOf(assets, pageId).card_hash, hash);
+  const answer = await w.call("owner", "page_cards", { page_ids: [pageId] });
+  assert.equal(answer.status, 200);
+  assert.equal(answer.body.cards[pageId], null);
 });
