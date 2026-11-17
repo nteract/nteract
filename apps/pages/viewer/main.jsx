@@ -129,9 +129,18 @@ const editor = new EditorLoader({
 });
 // When to start it ahead of an open (editor-start-machine.mjs): at boot on a
 // route that opens a document; on a listing (/, /pages, /projects) once its
-// first rows paint and the browser is idle, or on intent. Opening a Page
-// starts it regardless.
-const editorStart = new EditorStart({ start: () => editor.start() });
+// first rows paint, their card images settle and the browser is idle, with
+// the WASM at low priority, or at once on intent. Opening a Page starts the
+// loader itself, which ends the wait and removes the watchers.
+const editorStart = new EditorStart({
+  start: ({ priority }) => {
+    preloadWasm(document, { priority });
+    editor.start();
+  },
+});
+editor.store.state$.subscribe(({ name }) => {
+  if (name !== "idle") editorStart.opened();
+});
 editorStart.boot(readPageRoute(location.href).kind);
 // The routed Page's read-only preview from the head script's discovery
 // (boot-preview.mjs). Read at boot, before a session can take that request.

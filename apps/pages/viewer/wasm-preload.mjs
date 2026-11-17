@@ -21,8 +21,10 @@ const DOCUMENT_ROUTES = Object.freeze(["page", "project"]);
 export const opensDocument = (route) => DOCUMENT_ROUTES.includes(route?.kind);
 
 /** Add the WASM preload to `page`'s head unless it has one. Returns whether
- * it added one. */
-export function preloadWasm(page, url = AUTOMERGE_WASM_URL) {
+ * it added one. `priority: "low"` marks it `fetchpriority="low"`, for a
+ * listing that starts the editor ahead of need; the chunk's fetch(url) still
+ * reuses it, since priority isn't part of the match. */
+export function preloadWasm(page, { url = AUTOMERGE_WASM_URL, priority = null } = {}) {
   const head = page?.head;
   if (!head) return false;
   for (const link of head.querySelectorAll('link[rel="preload"]'))
@@ -31,6 +33,7 @@ export function preloadWasm(page, url = AUTOMERGE_WASM_URL) {
   link.setAttribute("rel", "preload");
   link.setAttribute("as", "fetch");
   link.setAttribute("crossorigin", "anonymous");
+  if (priority) link.setAttribute("fetchpriority", priority);
   link.setAttribute("href", url);
   head.append(link);
   return true;

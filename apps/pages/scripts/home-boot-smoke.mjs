@@ -87,6 +87,10 @@ const firstStart = async (page, pathname, timeout = 10_000) => {
   return Math.min(...found.map((entry) => entry.startTime));
 };
 const round = (value) => Math.round(value * 10) / 10;
+const preloadPriority = (page) =>
+  page.evaluate(() =>
+    document.head.querySelector('link[rel="preload"][as="fetch"]')?.getAttribute("fetchpriority") ?? null,
+  );
 
 let owner;
 const pages = [];
@@ -143,6 +147,9 @@ try {
     assert.ok(editorStart - firstRow <= IDLE_TIMEOUT_MS + 1000, `${name}: editor waited too long`);
     assert.ok(wasmStart - firstRow <= IDLE_TIMEOUT_MS + 1000, `${name}: WASM waited too long`);
     assert.equal((await entries(page, wasm)).length, 1, "the WASM downloads once");
+    // Ahead of need, the WASM yields to the library's own requests, and the
+    // chunk's fetch still reuses the low-priority preload.
+    assert.equal(await preloadPriority(page), "low");
     report.timings[`home_${name}`] = {
       first_row: round(firstRow),
       editor_chunk_start: round(editorStart),
@@ -167,6 +174,7 @@ try {
     await row.hover();
     const editorStart = await firstStart(page, editorChunk);
     const wasmStart = await firstStart(page, wasm);
+    assert.equal(await preloadPriority(page), null, "intent keeps the default priority");
     assert.ok(editorStart >= hovered && editorStart - hovered < 1000, `editor at ${editorStart}`);
     assert.ok(wasmStart >= hovered && wasmStart - hovered < 1000, `WASM at ${wasmStart}`);
     report.timings.home_hover = {

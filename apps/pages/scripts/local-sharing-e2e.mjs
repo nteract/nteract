@@ -41,6 +41,7 @@ const cards = process.argv.includes("--cards");
 const cardImages = process.argv.includes("--card-images");
 const listingBench = process.argv.includes("--listing-bench");
 const homeBoot = process.argv.includes("--home-boot");
+const libraryLcp = process.argv.includes("--library-lcp");
 if (
   [
     domainView,
@@ -65,10 +66,11 @@ if (
     cardImages,
     listingBench,
     homeBoot,
+    libraryLcp,
   ].filter(Boolean).length > 1
 )
   throw new Error(
-    "Choose one qualification: --sources-panel, --domain-view, --images, --datasets, --views, --views-layout, --views-stored, --mcp-images, --task-lists, --admission, --build-update, --trash, --unopened, --projects, --revocation, --cold-open, --commenter, --content-activity, --cards, --card-images, --listing-bench or --home-boot",
+    "Choose one qualification: --sources-panel, --domain-view, --images, --datasets, --views, --views-layout, --views-stored, --mcp-images, --task-lists, --admission, --build-update, --trash, --unopened, --projects, --revocation, --cold-open, --commenter, --content-activity, --cards, --card-images, --listing-bench, --home-boot or --library-lcp",
   );
 const children = new Set();
 let canceled = false;
@@ -108,7 +110,7 @@ async function run(command, args, options, onMessage) {
     () => {
       void stop(child);
     },
-    coldOpen || listingBench ? 1_800_000 : 180000,
+    coldOpen || listingBench || libraryLcp ? 1_800_000 : 180000,
   );
   let code;
   try {
@@ -417,7 +419,9 @@ try {
                                                 ? "scripts/listing-benchmark.mjs"
                                                 : homeBoot
                                                   ? "scripts/home-boot-smoke.mjs"
-                                                  : "scripts/sharing-smoke.mjs",
+                                                  : libraryLcp
+                                                    ? "scripts/library-lcp-benchmark.mjs"
+                                                    : "scripts/sharing-smoke.mjs",
     ],
     {
       env: {

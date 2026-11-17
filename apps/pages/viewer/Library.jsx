@@ -77,6 +77,7 @@ import {
 } from "./library-folds.mjs";
 import { listingCache } from "./listing-cache.mjs";
 import { useStore } from "./store.mjs";
+import { FIRST_SCREEN_CARDS } from "./first-screen-cards.mjs";
 import { readDisplayMode, writeDisplayMode } from "./display-mode.mjs";
 import { timeCell } from "./relative-time.mjs";
 import { Clock } from "./clock.mjs";
@@ -718,13 +719,6 @@ function PageList({
   );
 }
 
-// The grid is at most 1200px wide with 200px columns and 1rem gaps
-// (style.css, .index-grid), so its widest layout has 5 columns. Its first
-// row starts about 340px down and a row is about 220px, so four rows fill a
-// 1080px-tall first screen. Those cards' images load eagerly at high
-// priority; the rest load lazily.
-export const FIRST_SCREEN_CARDS = 20;
-
 /** Grid mode: each card is one link to its Page, so it carries no Project
  * label (a link inside a link). */
 function PageGrid({ sections, folded, onToggle, busy, onOpen, onOpenProject, onWarm, cards }) {
@@ -737,7 +731,7 @@ function PageGrid({ sections, folded, onToggle, busy, onOpen, onOpenProject, onW
       ),
     [cards, sections, folded],
   );
-  // The cards that fill the first screen, whose images load first.
+  // The first-screen cards (first-screen-cards.mjs), whose images load first.
   const first = useMemo(
     () =>
       new Set(

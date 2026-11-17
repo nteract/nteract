@@ -18,6 +18,7 @@ const preloads = (page) =>
     href: link.getAttribute("href"),
     as: link.getAttribute("as"),
     crossorigin: link.getAttribute("crossorigin"),
+    priority: link.getAttribute("fetchpriority"),
   }));
 
 test("unbundled code preloads the source name the build hashes", () => {
@@ -42,14 +43,27 @@ test("Pages and Project content open a document; listings and other paths don't"
 
 test("the preload is the CORS fetch the editor chunk reuses, added once", () => {
   const { window } = new JSDOM("<!doctype html><head></head><body></body>");
-  assert.equal(preloadWasm(window.document, HASHED), true);
-  assert.equal(preloadWasm(window.document, HASHED), false, "a second call adds nothing");
+  assert.equal(preloadWasm(window.document, { url: HASHED }), true);
+  assert.equal(
+    preloadWasm(window.document, { url: HASHED, priority: "low" }),
+    false,
+    "a second call adds nothing",
+  );
   // fetch(url) is a CORS request with same-origin credentials; a preload
   // matches it only as crossorigin="anonymous" (or a bare crossorigin).
   assert.deepEqual(preloads(window.document), [
-    { href: HASHED, as: "fetch", crossorigin: "anonymous" },
+    { href: HASHED, as: "fetch", crossorigin: "anonymous", priority: null },
   ]);
-  assert.equal(preloadWasm(undefined, HASHED), false, "no document, nothing to do");
+  assert.equal(preloadWasm(undefined, { url: HASHED }), false, "no document, nothing to do");
+  window.close();
+});
+
+test("a listing's idle start preloads the WASM at low fetch priority", () => {
+  const { window } = new JSDOM("<!doctype html><head></head><body></body>");
+  assert.equal(preloadWasm(window.document, { url: HASHED, priority: "low" }), true);
+  assert.deepEqual(preloads(window.document), [
+    { href: HASHED, as: "fetch", crossorigin: "anonymous", priority: "low" },
+  ]);
   window.close();
 });
 
@@ -84,7 +98,7 @@ test("theme.js preloads the WASM in <head> on a route that opens a document", ()
   for (const path of [`/p/${pageId}/roadmap`, `/?page=${pageId}`, `/project/${projectId}`])
     assert.deepEqual(
       headAfterTheme(path),
-      [{ href: HASHED, as: "fetch", crossorigin: "anonymous" }],
+      [{ href: HASHED, as: "fetch", crossorigin: "anonymous", priority: null }],
       path,
     );
 });

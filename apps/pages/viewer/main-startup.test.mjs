@@ -285,6 +285,8 @@ test("/pages and /projects render from the shell without importing the editor", 
 
 test("Home is the Pages library and starts the editor once its rows paint and the tab is idle", async () => {
   history.replaceState(null, "", "/");
+  // Earlier boots share this document's head.
+  for (const link of document.head.querySelectorAll('link[rel="preload"]')) link.remove();
   const app = await boot(signedIn, {
     ...catalog,
     list_pages: {
@@ -300,6 +302,11 @@ test("Home is the Pages library and starts the editor once its rows paint and th
   await act(() => runIdle());
   await settle();
   assert.equal(app.editorImports(), 1);
+  // Ahead of need, so the WASM doesn't compete with the library's images.
+  assert.equal(
+    document.head.querySelector('link[rel="preload"][as="fetch"]')?.getAttribute("fetchpriority"),
+    "low",
+  );
   const nav = [...document.querySelectorAll(".index-nav a")].map((link) => link.textContent);
   assert.deepEqual(nav, ["Pages", "Projects"]);
   assert.equal(document.querySelector(".index-nav [aria-current=page]")?.textContent, "Pages");

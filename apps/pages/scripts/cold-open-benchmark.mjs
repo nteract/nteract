@@ -23,11 +23,10 @@
 // uncompressed and Fast 3G would otherwise measure bytes no user downloads.
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
-import http from "node:http";
-import net from "node:net";
 import path from "node:path";
-import { brotliCompressSync, deflateRawSync, constants as zlib } from "node:zlib";
+import { deflateRawSync } from "node:zlib";
 import { chromium, expect } from "@playwright/test";
+import { startEdgeProxy } from "./edge-proxy.mjs";
 
 const origin = process.env.PAGES_ORIGIN;
 assert.equal(new URL(origin).hostname, "localhost");
@@ -46,90 +45,9 @@ const FAST_3G = {
 };
 const report = { completed: [], errors: [], runs: [], cleaned: false };
 
-// ---- Edge-like compressing proxy ------------------------------------------
-const upstream = new URL(origin);
-const compressible = /^(text\/|application\/(javascript|json|wasm)|image\/svg)/;
-const brotliCache = new Map();
-const proxy = http.createServer((request, response) => {
-  const headers = { ...request.headers, host: upstream.host };
-  // The Worker checks Origin against its configured public origin.
-  if (headers.origin) headers.origin = origin;
-  if (headers.referer) headers.referer = headers.referer.replace(/^http:\/\/[^/]+/, origin);
-  delete headers["accept-encoding"];
-  const forward = http.request(
-    {
-      host: upstream.hostname,
-      port: upstream.port,
-      path: request.url,
-      method: request.method,
-      headers,
-    },
-    (reply) => {
-      const type = String(reply.headers["content-type"] || "");
-      const wantsBrotli = /\bbr\b/.test(String(request.headers["accept-encoding"] || ""));
-      const replyHeaders = { ...reply.headers };
-      if (replyHeaders.location)
-        replyHeaders.location = replyHeaders.location.replace(origin, proxyOrigin);
-      if (!wantsBrotli || !compressible.test(type) || reply.headers["content-encoding"]) {
-        response.writeHead(reply.statusCode, replyHeaders);
-        reply.pipe(response);
-        return;
-      }
-      const parts = [];
-      reply.on("data", (part) => parts.push(part));
-      reply.on("end", () => {
-        const body = Buffer.concat(parts);
-        const key = request.url + "\0" + body.length;
-        let compressed = brotliCache.get(key);
-        if (!compressed || !body.equals(compressed.source)) {
-          compressed = {
-            source: body,
-            bytes: brotliCompressSync(body, {
-              params: {
-                [zlib.BROTLI_PARAM_QUALITY]: 9,
-                [zlib.BROTLI_PARAM_SIZE_HINT]: body.length,
-              },
-            }),
-          };
-          brotliCache.set(key, compressed);
-        }
-        delete replyHeaders["content-length"];
-        delete replyHeaders["transfer-encoding"];
-        response.writeHead(reply.statusCode, {
-          ...replyHeaders,
-          "content-encoding": "br",
-          "content-length": compressed.bytes.length,
-        });
-        response.end(compressed.bytes);
-      });
-    },
-  );
-  forward.on("error", () => response.destroy());
-  request.pipe(forward);
-});
-proxy.on("upgrade", (request, socket, head) => {
-  const target = net.connect(Number(upstream.port), upstream.hostname, () => {
-    const lines = [`${request.method} ${request.url} HTTP/1.1`];
-    for (let i = 0; i < request.rawHeaders.length; i += 2) {
-      const name = request.rawHeaders[i];
-      let value = request.rawHeaders[i + 1];
-      if (/^host$/i.test(name)) value = upstream.host;
-      if (/^origin$/i.test(name)) value = origin;
-      lines.push(`${name}: ${value}`);
-    }
-    target.write(lines.join("\r\n") + "\r\n\r\n");
-    if (head.length) target.write(head);
-    socket.pipe(target).pipe(socket);
-  });
-  const close = () => {
-    socket.destroy();
-    target.destroy();
-  };
-  target.on("error", close);
-  socket.on("error", close);
-});
-await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
-const proxyOrigin = `http://localhost:${proxy.address().port}`;
+// ---- Edge-like compressing proxy (edge-proxy.mjs) --------------------------
+const proxy = await startEdgeProxy(origin);
+const proxyOrigin = proxy.origin;
 
 // ---- Fixture Page -----------------------------------------------------------
 const browser = await chromium.launch({

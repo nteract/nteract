@@ -2946,12 +2946,15 @@ the [editor-start machine](viewer/editor-start-machine.mjs) decides when to
 ask for it ahead of an open. A route that opens a document (a Page, Project
 content) starts it at boot, and `theme.js` preloads Automerge's WASM in
 `<head>` on those routes only. The listing routes, `/`, `/pages` and
-`/projects`, render from the shell and its static chunks alone, and start the
-editor once their first rows have painted and the browser is idle (at most 2
-seconds later), or at once when a pointer or keyboard focus enters a row,
-New Page or the Page switcher. Starting the import also preloads the WASM, so
-the two download together. Opening a Page or creating one starts it in any
-case. `scripts/viewer-chunks.mjs` records a ceiling on the size of `app.js`
+`/projects`, render from the shell and its static chunks alone. They start the
+editor once their first rows have painted, the grid's first-screen card
+images have loaded or failed (at most 3 seconds after the rows), and the
+browser is idle (at most 2 seconds more), with the WASM preload at
+`fetchpriority="low"` so it doesn't take the link from the images. A pointer
+or keyboard focus entering a row, New Page or the Page switcher starts it at
+once, at normal priority. Starting the import also preloads the WASM, so the
+two download together. Opening a Page or creating one starts it in any case
+and ends the wait. `scripts/viewer-chunks.mjs` records a ceiling on the size of `app.js`
 and its static chunks, and the build fails past it or if that graph reaches
 the editor or a WASM runtime. A
 release serves only its own chunks, so a tab still running an earlier `app.js`

@@ -4,9 +4,10 @@
 // lazily loaded image that isn't shown isn't fetched. The JSON card stays
 // underneath, so an image that fails to load leaves it showing.
 //
-// The first cards in the grid are the library's largest paint, so their
-// shown image loads eagerly at high priority (`priority`). The hidden theme's
-// image always stays lazy, so it is never fetched while hidden.
+// The grid's first row (first-screen-cards.mjs) holds the library's largest
+// paint, so its cards' shown image loads eagerly at high priority
+// (`priority`). The hidden theme's image always stays lazy, so it is never
+// fetched while hidden.
 import { useState, useSyncExternalStore } from "react";
 import { themeStore } from "./theme.mjs";
 

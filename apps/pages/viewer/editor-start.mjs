@@ -1,11 +1,15 @@
 // Interprets editor-start-machine.mjs in the browser: reads the boot route,
-// watches a listing for its first rows and for intent, and asks for the
-// editor when the machine says so.
+// watches a listing for its first rows, their card images and intent, and
+// asks for the editor when the machine says so.
 import { editorStartMachine } from "./editor-start-machine.mjs";
+import { HELD, cardSettled, firstScreenCards } from "./first-screen-cards.mjs";
 
 /** A listing's rows: the library's list rows and grid cards, and /projects'
- * rows. The first one in the document means the listing has drawn. */
+ * rows. The first one in the document that isn't a held placeholder means the
+ * listing has drawn. */
 export const FIRST_ROWS = ".index-row-link, .index-card-link";
+const drawnRow = (page) =>
+  [...page.querySelectorAll(FIRST_ROWS)].some((row) => !row.closest(HELD));
 /** What a person reaches for to open or start a Page: a row link, New Page,
  * the Page switcher and its rows. */
 export const INTENT_TARGETS = [
@@ -19,10 +23,12 @@ export const INTENT_TARGETS = [
 // Events that show intent before a click: hover, a touch or press, and
 // keyboard focus.
 const INTENT_EVENTS = Object.freeze(["pointerover", "pointerdown", "focusin"]);
-/** The longest the editor waits for an idle period once the rows painted. */
+/** The longest the editor waits for the first-screen card images. A card
+ * with no card yet, or a slow image, never holds it longer. */
+export const SETTLE_CAP_MS = 3_000;
+/** The longest the editor waits for an idle period after that. */
 export const IDLE_TIMEOUT_MS = 2_000;
-/** Where there is no requestIdleCallback (Safari), the wait after the rows
- * painted. */
+/** Where there is no requestIdleCallback (Safari), the wait instead. */
 export const IDLE_FALLBACK_MS = 300;
 
 export class EditorStart {
@@ -30,8 +36,9 @@ export class EditorStart {
   #win;
   #start;
   #stops = [];
-  /** `start` asks the loader for the editor; it runs at most once. `win` is
-   * the window whose document is watched. */
+  /** `start({ priority })` asks the loader for the editor; it runs at most
+   * once, with `priority: "low"` from the idle wait. `win` is the window
+   * whose document is watched. */
   constructor({ start, win = globalThis.window }) {
     this.#start = start;
     this.#win = win;
@@ -47,14 +54,19 @@ export class EditorStart {
   intent() {
     this.#dispatch({ type: "intent" });
   }
+  /** The loader started, whoever asked: the watchers can go. */
+  opened() {
+    this.#dispatch({ type: "opened" });
+  }
   #dispatch(event) {
     const result = editorStartMachine.step(this.#state, event);
     if (result.rejected) return;
     this.#state = result.state;
     for (const effect of result.effects) {
       if (effect.type === "watch") this.#watch();
+      else if (effect.type === "settle") this.#settle();
       else if (effect.type === "idle") this.#requestIdle();
-      else if (effect.type === "start") this.#start();
+      else if (effect.type === "start") this.#start({ priority: effect.priority ?? null });
       else if (effect.type === "stop") for (const stop of this.#stops.splice(0)) stop();
       else throw new Error(`unknown effect ${effect.type}`);
     }
@@ -64,28 +76,64 @@ export class EditorStart {
     const page = win?.document;
     if (!page) return;
     const onIntent = (event) => {
-      if (event.target?.closest?.(INTENT_TARGETS)) this.intent();
+      // A held placeholder has no link; it's never intent.
+      if (event.target?.closest?.(INTENT_TARGETS) && !event.target.closest(HELD)) this.intent();
     };
     for (const type of INTENT_EVENTS) page.addEventListener(type, onIntent, true);
     this.#stops.push(() => {
       for (const type of INTENT_EVENTS) page.removeEventListener(type, onIntent, true);
     });
     // One shot: it reports the first rows once, a frame after they are in
-    // the document, and disconnects.
+    // the document, with the first-screen cards they hold, and disconnects.
     let frame = null;
-    const observer = new win.MutationObserver(() => {
-      if (!page.querySelector(FIRST_ROWS)) return;
-      observer.disconnect();
+    let observer = null;
+    const found = () => {
+      observer?.disconnect();
       frame = win.requestAnimationFrame(() => {
         frame = null;
-        this.#dispatch({ type: "painted" });
+        this.#dispatch({ type: "painted", cards: firstScreenCards(page, win).length });
       });
-    });
-    observer.observe(page.documentElement, { childList: true, subtree: true });
+    };
     this.#stops.push(() => {
-      observer.disconnect();
+      observer?.disconnect();
       if (frame !== null) win.cancelAnimationFrame(frame);
     });
+    if (drawnRow(page)) return found();
+    observer = new win.MutationObserver(() => {
+      if (drawnRow(page)) found();
+    });
+    observer.observe(page.documentElement, { childList: true, subtree: true });
+  }
+  #settle() {
+    const win = this.#win;
+    const page = win.document;
+    const cards = firstScreenCards(page, win);
+    let done = false;
+    const check = () => {
+      if (done || !cards.every((card) => cardSettled(card, win))) return;
+      finish();
+    };
+    // Cards draw their previews later (page-cards.mjs), and images report
+    // load and error on themselves, which the document sees while capturing.
+    const observer = new win.MutationObserver(check);
+    for (const card of cards) observer.observe(card, { childList: true, subtree: true });
+    page.addEventListener("load", check, true);
+    page.addEventListener("error", check, true);
+    const cap = win.setTimeout(() => finish(), SETTLE_CAP_MS);
+    const release = () => {
+      observer.disconnect();
+      page.removeEventListener("load", check, true);
+      page.removeEventListener("error", check, true);
+      win.clearTimeout(cap);
+    };
+    const finish = () => {
+      if (done) return;
+      done = true;
+      release();
+      this.#dispatch({ type: "settled" });
+    };
+    this.#stops.push(release);
+    check();
   }
   #requestIdle() {
     const win = this.#win;
