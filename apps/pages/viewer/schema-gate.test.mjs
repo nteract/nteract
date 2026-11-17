@@ -325,6 +325,8 @@ async function refusedDuringReload(t, checkpoint, { acceptCheckpoints = false } 
   s.repo = { flush: async () => {} };
   s.connection = { documentId: "doc" };
   s.localPage = { pending: true };
+  // The edits the host refuses are this replica's own.
+  s.syncStatus({ type: "opened", pending: true });
   let writes = 0;
   // The receipt's own pending write succeeds; later writes are the checkpoint.
   s.persistLocal = (patch) => (writes++ === 0 ? Promise.resolve() : checkpoint(patch));

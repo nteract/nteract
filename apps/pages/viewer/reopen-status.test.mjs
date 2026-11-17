@@ -9,11 +9,25 @@ import * as A from "@automerge/automerge";
 import { AutomergeSyncBackend } from "../sync/backend.mjs";
 import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
 import { PageSession } from "./session.mjs";
-import { encodeSnapshot, readLocalPage, writeLocalPage } from "./local-pages.mjs";
+import { encodeSnapshot, listLocalPages, readLocalPage, writeLocalPage } from "./local-pages.mjs";
+import { store } from "./local-catalog.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 const AGENT = "bb".repeat(16);
+
+/** The host's access fact for `role`. */
+const roleAccess = (role) => ({
+  role,
+  generation: 0,
+  revision: 0,
+  canRead: true,
+  canWrite: role === "owner" || role === "editor",
+  canComment: role !== "viewer",
+});
+/** The replica a session opens for `role`: session.mjs replicaKey. */
+const roleReplica = (role) =>
+  `0:${role === "owner" || role === "editor" ? "writer" : role === "commenter" ? "commenter" : "reader"}`;
 
 /** A browser tab: one sessionStorage, so a reopen uses the same replica, and
  * Web Locks. The host answers discovery and opens the sync socket; receipts
@@ -69,7 +83,7 @@ function host(t) {
     identity: { principal: crypto.randomUUID(), displayName: "Kyle", driver: "Browser" },
     canWrite: true,
   };
-  const state = { offline: false, documentId: undefined };
+  const state = { offline: false, documentId: undefined, role: "owner" };
   const receipts = [];
   // Answer receipts still waiting when a test ends, so none outlives it.
   t.after(() => {
@@ -82,14 +96,7 @@ function host(t) {
       return Response.json({
         identity: auth.identity,
         documentId: state.documentId,
-        access: {
-          role: "owner",
-          generation: 0,
-          revision: 0,
-          canRead: true,
-          canWrite: true,
-          canComment: true,
-        },
+        access: roleAccess(state.role),
         serverSenderId: "fixture-host",
         peerProfiles: {},
       });
@@ -121,6 +128,12 @@ async function cachedPage(h) {
     canWrite: true,
     registered: true,
     pending: false,
+    // Another role's copy lives on that role's replica.
+    ...(h.state.role !== "owner" && {
+      access: roleAccess(h.state.role),
+      replicaKey: roleReplica(h.state.role),
+      canWrite: roleAccess(h.state.role).canWrite,
+    }),
   });
   return pageId;
 }
@@ -176,7 +189,7 @@ test("a Page closed while syncing remote changes reopens Syncing, not Saving", a
   await receipt(h, first); // Outstanding when the Page closes.
   await first.close();
   const closed = await readLocalPage(h.auth.identity, pageId);
-  assert.equal(closed.pending, true, "the checkpoint records the outstanding receipt");
+  assert.equal(closed.pending, false, "a remote change is the host's, never this copy's edit");
 
   const seen = [];
   const reopened = await open(h, pageId, seen);
@@ -200,7 +213,7 @@ test("a Page closed offline with no local edit reopens without Saving", async (t
   clearTimeout(first.retryTimer);
   assert.equal(first.status, "Offline");
   await first.close();
-  assert.equal((await readLocalPage(h.auth.identity, pageId)).pending, true);
+  assert.equal((await readLocalPage(h.auth.identity, pageId)).pending, false);
 
   const seen = [];
   const offline = await open(h, pageId, seen);
@@ -264,7 +277,7 @@ test("an acknowledged local edit followed by remote catch-up never reopens Savin
   const actor = first.actor();
   await first.close();
   const closed = await readLocalPage(h.auth.identity, pageId);
-  assert.equal(closed.pending, true);
+  assert.equal(closed.pending, false, "the edit was acknowledged; catch-up is the host's");
   assert.ok(
     !closed.localEdits.actors.some((entry) => entry.actor === actor),
     "a close with nothing unconfirmed retires its actor",
@@ -444,6 +457,7 @@ test("an open that fails before classifying keeps the replica's unconfirmed acto
     cleaned.localEdits.actors.some((entry) => entry.actor === actor),
     "the cleanup close keeps the actor with the unconfirmed edit",
   );
+  assert.equal(cleaned.pending, true, "the document's own edit marks the copy pending");
 
   const reopened = await open(h, pageId);
   t.after(() => reopened.close());
@@ -479,4 +493,168 @@ test("closing a legacy pending checkpoint early keeps its receipt flag as unattr
   const reopened = await open(h, pageId);
   t.after(() => reopened.close());
   assert.equal(reopened.sync$.snapshot().pending, true);
+});
+
+/** Every `pending` value the local catalog stores for `pageId`, in order:
+ * each checkpoint write's merged record. */
+function storedFlags(t, pageId) {
+  const flags = [];
+  const run = store.run.bind(store);
+  t.mock.method(store, "run", async (...args) => {
+    const result = await run(...args);
+    if (result?.page_id === pageId) flags.push(result.pending);
+    return result;
+  });
+  return flags;
+}
+const stored = async (h, pageId) => (await readLocalPage(h.auth.identity, pageId)).pending;
+const listedPending = async (h) =>
+  (await listLocalPages(h.auth.identity, { pendingOnly: true })).map((page) => page.page_id);
+
+for (const role of ["owner", "editor", "commenter", "viewer"]) {
+  test(`an unedited open as ${role} never stores pending, whatever its receipt does`, async (t) => {
+    const h = host(t);
+    h.state.role = role;
+    const pageId = await cachedPage(h);
+    const flags = storedFlags(t, pageId);
+
+    // Slow: the receipt is held while another peer's change arrives.
+    const first = await open(h, pageId);
+    await remoteChange(first, "From an agent");
+    const held = await receipt(h, first);
+    assert.equal(await stored(h, pageId), false);
+    // Failed: a transient failure leaves nothing pending.
+    held.resolve(Response.json({ error: "Restarting" }, { status: 503 }));
+    await held.sent;
+    clearTimeout(first.retryTimer);
+    assert.equal(await stored(h, pageId), false);
+    // Left mid-request: the tab closes with a second receipt held.
+    await receipt(h, first);
+    await first.close();
+    assert.equal(await stored(h, pageId), false);
+    assert.deepEqual(await listedPending(h), [], "the library lists no unsaved copy");
+
+    // Acknowledged: the receipt's checkpoint is clean too.
+    const second = await open(h, pageId);
+    t.after(() => second.close());
+    await acknowledge(h, second);
+    assert.equal(second.status, "Saved");
+    assert.ok(flags.length > 0, "the opens wrote checkpoints");
+    assert.ok(!flags.includes(true), `stored pending flags: ${flags.join(", ")}`);
+  });
+}
+
+test("an edit stores pending before its receipt and clears it on the acknowledgement", async (t) => {
+  const h = host(t);
+  const pageId = await cachedPage(h);
+  const session = await open(h, pageId);
+  t.after(() => session.close());
+  await acknowledge(h, session);
+  await session.change((doc) => A.updateText(doc, ["title"], "Typed"));
+  const held = await receipt(h, session);
+  assert.equal(await stored(h, pageId), true);
+  held.resolve(Response.json({ durableHeads: held.heads }));
+  await held.sent;
+  assert.equal(await stored(h, pageId), false);
+});
+
+test("an edit whose receipt fails or is refused stays pending", async (t) => {
+  const h = host(t);
+  const pageId = await cachedPage(h);
+  const session = await open(h, pageId);
+  await acknowledge(h, session);
+  await session.change((doc) => A.updateText(doc, ["title"], "Typed offline"));
+  const failed = await receipt(h, session);
+  failed.resolve(Response.json({ error: "Restarting" }, { status: 503 }));
+  await failed.sent;
+  clearTimeout(session.retryTimer);
+  assert.equal(await stored(h, pageId), true);
+  const refused = await receipt(h, session);
+  refused.resolve(Response.json({ error: "Trashed", code: "page_trashed" }, { status: 403 }));
+  await refused.sent;
+  await tick();
+  assert.equal(await stored(h, pageId), true);
+  await session.close();
+  assert.equal(await stored(h, pageId), true);
+});
+
+test("an unedited open whose receipt is refused stores no pending flag", async (t) => {
+  const h = host(t);
+  const pageId = await cachedPage(h);
+  const session = await open(h, pageId);
+  await remoteChange(session, "From an agent");
+  const refused = await receipt(h, session);
+  refused.resolve(Response.json({ error: "Trashed", code: "page_trashed" }, { status: 403 }));
+  await refused.sent;
+  await tick();
+  assert.equal(await stored(h, pageId), false);
+  await session.close();
+  assert.equal(await stored(h, pageId), false);
+});
+
+test("an edit in a tab killed before its receipt lands lists as pending on the next load", async (t) => {
+  const h = host(t);
+  const pageId = await cachedPage(h);
+  const first = await open(h, pageId);
+  await acknowledge(h, first);
+  await first.change((doc) => A.updateText(doc, ["title"], "Typed before the kill"));
+  // The receipt's checkpoint is written, then the tab dies with it in flight.
+  await receipt(h, first);
+  first.skipCloseCheckpoint = true;
+  await first.close();
+  assert.deepEqual(await listedPending(h), [pageId]);
+
+  const reopened = await open(h, pageId);
+  t.after(() => reopened.close());
+  assert.equal(reopened.snapshot().title, "Typed before the kill");
+  assert.equal(reopened.statusId, "saving");
+  await acknowledge(h, reopened);
+  assert.equal(await stored(h, pageId), false);
+});
+
+test("an unedited tab leaving mid-receipt never clears another tab's pending edit", async (t) => {
+  const h = host(t);
+  const pageId = await cachedPage(h);
+  const left = await open(h, pageId);
+  await acknowledge(h, left);
+  // The right tab opens after the left tab's last write, so the left tab
+  // has never seen its actor.
+  const right = await open(h, pageId);
+  await acknowledge(h, right);
+  await right.change((doc) => A.updateText(doc, ["title"], "Typed in the right tab"));
+  await receipt(h, right);
+  assert.equal(await stored(h, pageId), true);
+  // The right tab's edit reaches the left tab through the host.
+  await left.handle.update((doc) => A.merge(doc, A.clone(right.doc)));
+  await receipt(h, left);
+  await left.close();
+  assert.equal(await stored(h, pageId), true, "the other tab's flag stands");
+  right.skipCloseCheckpoint = true;
+  await right.close();
+  assert.equal(await stored(h, pageId), true);
+});
+
+test("an acknowledgement clears another tab's flag only once it knows that tab's actor", async (t) => {
+  const h = host(t);
+  const pageId = await cachedPage(h);
+  const left = await open(h, pageId);
+  t.after(() => left.close());
+  await acknowledge(h, left);
+  const right = await open(h, pageId);
+  await acknowledge(h, right);
+  await right.change((doc) => A.updateText(doc, ["title"], "Typed in the right tab"));
+  await receipt(h, right);
+  const actor = right.actor();
+  right.skipCloseCheckpoint = true;
+  await right.close();
+  await left.handle.update((doc) => A.merge(doc, A.clone(right.doc)));
+  // The first acknowledgement can't vouch for an actor it never saw; the
+  // stored record tells it.
+  await acknowledge(h, left);
+  assert.equal(await stored(h, pageId), true);
+  assert.ok(left.localPage.localEdits.actors.some((entry) => entry.actor === actor));
+  // Its next acknowledgement covers that edit and clears the flag.
+  await remoteChange(left, "From an agent");
+  await acknowledge(h, left);
+  assert.equal(await stored(h, pageId), false);
 });

@@ -1488,8 +1488,22 @@ work. Catching up on other peers' changes after a reopen says "Syncing"; a
 local edit says "Saving" until a receipt for heads that include it lands, even
 if remote changes arrive in between.
 
+The checkpoint's `pending` flag says the copy holds edits the host hasn't
+acknowledged; the library and the Page picker list such copies above the
+server's rows. A session writes it `true` only while its sync status holds a
+local edit, to the Page or its comments, that no receipt has acknowledged:
+before it asks for that receipt, and when it closes. An acknowledgement writes
+it `false`. Opening a Page, catching up on other peers' changes, and a receipt
+that is slow, fails or is cut off by a leave never set it, for any role. Any
+other write keeps the stored flag unless the current heads are acknowledged.
+A write that clears the flag keeps it when the stored copy names an actor of
+another tab this writer never saw: that tab's edits aren't this writer's to
+vouch for. A receipt with nothing to mark still reads the stored entry, so
+another tab's deletion, revocation or grant change stops it before it asks.
+
 A reopen decides from the restored replica, not from the checkpoint's `pending`
-flag, which only says a receipt was outstanding. The checkpoint's `localEdits`
+flag: a tab that dies within the receipt's 300 ms debounce never wrote it.
+The checkpoint's `localEdits`
 records every Automerge actor this browser authored with (each session records
 its fresh actor before it accepts an edit) and the heads the host last
 acknowledged. The replica has unconfirmed work exactly when it holds a change by

@@ -2,10 +2,11 @@
  * Which edits in a local Page checkpoint are this browser's own and still
  * unconfirmed by the host.
  *
- * A checkpoint's `pending` says a receipt was outstanding when it was
- * written. That includes catch-up on other peers' changes, so it can't say
- * whether this person has unsaved work. `localEdits` answers that from facts
- * that survive a crash:
+ * A checkpoint's `pending` says its writer held edits the host hadn't
+ * acknowledged; the library lists such copies. A session writes it from its
+ * sync state when a receipt starts or the session closes, so a tab that dies
+ * between an edit and that write leaves it unset. `localEdits` answers from
+ * facts that survive a crash:
  *
  * - `actors`: `{ actor, replica }` for every Automerge actor a session in this
  *   browser authored with, and the native replica it wrote into. Each session
