@@ -17537,8 +17537,8 @@ async fn late_concurrent_keystroke_goes_back_to_the_file_version_before_saving()
     assert_eq!(entries[1].cell_ids, vec!["a".to_string()]);
     assert_eq!(
         snapshot_cells(&entries[1]),
-        owned_cells(&[("a", "x = 1\nprint(x)"), ("b", "z = 1")]),
-        "the snapshot is the session's version without the reload"
+        merged,
+        "the snapshot holds everything typed, as it stood before the put-back"
     );
 
     // Edits made after the reload descend from it and are kept.
@@ -17603,7 +17603,12 @@ async fn snapshot_failure_leaves_the_notebook_and_file_untouched_until_it_can_sa
     std::fs::write(displaced_edits_dir(&room), b"not a directory").unwrap();
 
     let disk = rewrite_ipynb(&[("a", "x = 3")], serde_json::json!({}));
-    external_write(&room, &path, &disk).await;
+    write_file_atomic_sync(&path, &disk).unwrap();
+    assert_eq!(
+        process_watcher_event(&room, &path).await,
+        WatcherOutcome::RetryLater,
+        "the watcher retries on its own; no new file event will come"
+    );
 
     assert_eq!(
         live_cells(&room).await,
@@ -17622,7 +17627,10 @@ async fn snapshot_failure_leaves_the_notebook_and_file_untouched_until_it_can_sa
     // Once the snapshot can be written, the next event applies and the entry
     // is durable before anything else happens.
     std::fs::remove_file(displaced_edits_dir(&room)).unwrap();
-    process_watcher_event(&room, &path).await;
+    assert_eq!(
+        process_watcher_event(&room, &path).await,
+        WatcherOutcome::Done
+    );
     assert_eq!(live_cells(&room).await, owned_cells(&[("a", "x = 3")]));
     let entries = displaced_edits(&room);
     assert_eq!(entries.len(), 1);
@@ -17855,4 +17863,233 @@ async fn dismissing_by_id_keeps_entries_that_arrived_later() {
     assert_eq!(remaining.len(), 1);
     assert!(!shown.contains(&remaining[0].id));
     assert_eq!(durable_entries(&room), remaining);
+}
+
+/// Source of cell `index` in the saved file.
+fn saved_source(path: &Path, index: usize) -> String {
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    match &saved["cells"][index]["source"] {
+        serde_json::Value::Array(lines) => lines.iter().map(|l| l.as_str().unwrap()).collect(),
+        other => other.as_str().unwrap().to_string(),
+    }
+}
+
+/// A notebook with an unsaved edit to `a`, and a peer fork that typed `)`
+/// against it before any reload.
+async fn room_with_pending_keystroke(
+    tmp: &tempfile::TempDir,
+    name: &str,
+) -> (NotebookRoom, PathBuf, notebook_doc::NotebookDoc) {
+    let (room, path) = saved_room(tmp, name, &[("a", "x = 1"), ("b", "z = 0")]).await;
+    edit_in_session(&room, |doc| {
+        doc.update_source("a", "x = 1\nprint(x")
+            .map(|_| ())
+            .unwrap()
+    })
+    .await;
+    let mut peer = room.doc.write().await.fork();
+    peer.update_source("a", "x = 1\nprint(x)").unwrap();
+    (room, path, peer)
+}
+
+#[tokio::test]
+async fn keystroke_typed_onto_merged_text_does_not_save_it() {
+    // 1b: after the late `)` merges, the user types once more on the merged
+    // text before autosave. That keystroke descends from the reload but
+    // builds on the late change.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path, mut peer) = room_with_pending_keystroke(&tmp, "typing.ipynb").await;
+    external_write(
+        &room,
+        &path,
+        &rewrite_ipynb(&[("a", "y = 2"), ("b", "z = 0")], serde_json::json!({})),
+    )
+    .await;
+    edit_in_session(&room, |doc| {
+        doc.doc_mut().merge(peer.doc_mut()).unwrap();
+    })
+    .await;
+    let merged_a = live_cells(&room).await[0].1.clone();
+    assert!(
+        merged_a.contains(')'),
+        "premise: merged text, got {merged_a:?}"
+    );
+    edit_in_session(&room, |doc| {
+        doc.update_source("a", &format!("{merged_a}!"))
+            .map(|_| ())
+            .unwrap()
+    })
+    .await;
+
+    save_notebook_to_disk(&room, None).await.unwrap();
+
+    assert_eq!(saved_source(&path, 0), "y = 2");
+    assert_eq!(live_cells(&room).await[0].1, "y = 2");
+    let entries = displaced_edits(&room);
+    assert_eq!(entries.len(), 2);
+    assert_eq!(snapshot_cells(&entries[1])[0].1, format!("{merged_a}!"));
+}
+
+#[tokio::test]
+async fn late_keystroke_after_a_second_write_is_still_put_back() {
+    // 1c: a second write that leaves `a` alone lands before the late `)`.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path, mut peer) = room_with_pending_keystroke(&tmp, "second.ipynb").await;
+    external_write(
+        &room,
+        &path,
+        &rewrite_ipynb(&[("a", "y = 2"), ("b", "z = 0")], serde_json::json!({})),
+    )
+    .await;
+    external_write(
+        &room,
+        &path,
+        &rewrite_ipynb(&[("a", "y = 2"), ("b", "z = 5")], serde_json::json!({})),
+    )
+    .await;
+    edit_in_session(&room, |doc| {
+        doc.doc_mut().merge(peer.doc_mut()).unwrap();
+    })
+    .await;
+    assert!(
+        live_cells(&room).await[0].1.contains(')'),
+        "premise: merged text"
+    );
+
+    save_notebook_to_disk(&room, None).await.unwrap();
+
+    assert_eq!(
+        live_cells(&room).await,
+        owned_cells(&[("a", "y = 2"), ("b", "z = 5")])
+    );
+    assert_eq!(saved_source(&path, 0), "y = 2");
+    assert_eq!(saved_source(&path, 1), "z = 5");
+}
+
+#[tokio::test]
+async fn late_edit_guard_does_not_expire_while_its_snapshot_cannot_be_written() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path, mut peer) = room_with_pending_keystroke(&tmp, "stuck.ipynb").await;
+    external_write(
+        &room,
+        &path,
+        &rewrite_ipynb(&[("a", "y = 2"), ("b", "z = 0")], serde_json::json!({})),
+    )
+    .await;
+    edit_in_session(&room, |doc| {
+        doc.doc_mut().merge(peer.doc_mut()).unwrap();
+    })
+    .await;
+    let entries_dir = displaced_edits_dir(&room);
+    std::fs::rename(&entries_dir, tmp.path().join("moved-aside")).unwrap();
+    std::fs::write(&entries_dir, b"not a directory").unwrap();
+
+    assert!(matches!(
+        save_notebook_to_disk(&room, None).await,
+        Err(SaveError::Retryable(_))
+    ));
+    // Long past the window: a failing guard still holds the save.
+    room.persistence.update_external_revision_guard(|guard| {
+        guard.applied_at = std::time::Instant::now() - 2 * EXTERNAL_REVISION_GUARD_WINDOW;
+    });
+    assert!(matches!(
+        save_notebook_to_disk(&room, None).await,
+        Err(SaveError::Retryable(_))
+    ));
+    assert_eq!(
+        saved_source(&path, 0),
+        "y = 2",
+        "the merged text never reached the file"
+    );
+
+    std::fs::remove_file(&entries_dir).unwrap();
+    save_notebook_to_disk(&room, None).await.unwrap();
+    assert_eq!(saved_source(&path, 0), "y = 2");
+    assert_eq!(live_cells(&room).await[0].1, "y = 2");
+}
+
+#[tokio::test]
+async fn watcher_retries_an_unapplied_revision_without_a_new_file_event() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path) = saved_room(&tmp, "requeue.ipynb", &[("a", "x = 1")]).await;
+    let room = Arc::new(room);
+    edit_in_session(&room, |doc| {
+        doc.update_source("a", "x = 2").map(|_| ()).unwrap()
+    })
+    .await;
+    std::fs::write(displaced_edits_dir(&room), b"not a directory").unwrap();
+    let shutdown = spawn_notebook_file_watcher(path.canonicalize().unwrap(), Arc::clone(&room));
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    write_file_atomic_sync(
+        &path,
+        &rewrite_ipynb(&[("a", "x = 3")], serde_json::json!({})),
+    )
+    .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while room
+        .state
+        .read(|state| state.file_checkpoint().source_issue)
+        .unwrap()
+        .is_none()
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the watcher never saw the write"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(live_cells(&room).await, owned_cells(&[("a", "x = 2")]));
+
+    // Clearing the obstruction is enough; nothing touches the notebook file.
+    std::fs::remove_file(displaced_edits_dir(&room)).unwrap();
+    while live_cells(&room).await != owned_cells(&[("a", "x = 3")]) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the watcher never retried"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(displaced_edits(&room).len(), 1);
+    assert_eq!(
+        room.state
+            .read(|state| state.file_checkpoint().source_issue)
+            .unwrap(),
+        None
+    );
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn durable_entries_share_the_cap_and_dismiss_all_clears_them() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, path) = saved_room(&tmp, "cap.ipynb", &[("a", "x = 1")]).await;
+    let capture = DisplacedCapture {
+        cells: Vec::new(),
+        metadata: None,
+        execution_ids: HashMap::new(),
+        cell_ids: vec!["a".to_string()],
+        metadata_changed: false,
+        order_changed: false,
+    };
+    for _ in 0..(runtime_doc::MAX_DISPLACED_EDITS + 5) {
+        let entry = super::persist::prepare_displaced_snapshot(&room, &path, &capture, Vec::new())
+            .await
+            .unwrap();
+        super::persist::publish_displaced_edits(&room, &path, entry);
+    }
+    assert_eq!(durable_entries(&room), displaced_edits(&room));
+    assert_eq!(
+        durable_entries(&room).len(),
+        runtime_doc::MAX_DISPLACED_EDITS
+    );
+
+    super::persist::dismiss_displaced_edits(&room, None)
+        .await
+        .unwrap();
+    assert!(displaced_edits(&room).is_empty());
+    assert!(
+        durable_entries(&room).is_empty(),
+        "nothing comes back on reopen"
+    );
 }

@@ -2377,7 +2377,15 @@ pub(crate) async fn prepare_displaced_snapshot(
         if let Some(permissions) = source_permissions {
             let _ = std::fs::set_permissions(&snapshot, permissions);
         }
-        update_displaced_entries(&dir, |entries| entries.push(durable_entry))
+        update_displaced_entries(&dir, |entries| {
+            entries.push(durable_entry);
+            // Same cap as RuntimeStateDoc, so a reopened room shows exactly
+            // what a dismiss-all cleared. Older snapshot files stay.
+            let excess = entries
+                .len()
+                .saturating_sub(runtime_doc::MAX_DISPLACED_EDITS);
+            entries.drain(..excess);
+        })
     })
     .await
     .map_err(|error| error.to_string())?
@@ -2445,6 +2453,7 @@ pub(crate) async fn dismiss_displaced_edits(
         .into_iter()
         .map(|entry| entry.id)
         .collect();
+    let dismiss_all = ids.is_none();
     let dismissed = ids.unwrap_or(shown);
     room.state
         .with_doc(|state| state.dismiss_displaced_edits(Some(&dismissed)))
@@ -2452,7 +2461,11 @@ pub(crate) async fn dismiss_displaced_edits(
     let dir = displaced_edits_dir(room);
     tokio::task::spawn_blocking(move || {
         update_displaced_entries(&dir, |entries| {
-            entries.retain(|entry| !dismissed.contains(&entry.id))
+            if dismiss_all {
+                entries.clear();
+            } else {
+                entries.retain(|entry| !dismissed.contains(&entry.id));
+            }
         })
     })
     .await
@@ -2460,19 +2473,36 @@ pub(crate) async fn dismiss_displaced_edits(
     .map_err(|error| error.to_string())
 }
 
+/// What the watcher should do after handling an event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WatcherOutcome {
+    Done,
+    /// The revision was not applied yet and nothing on disk will announce
+    /// the next chance, so the watcher handles the file again on a timer.
+    RetryLater,
+}
+
+/// First and longest delay before the watcher re-handles a revision it
+/// could not apply yet.
+const WATCHER_RETRY_MIN: std::time::Duration = std::time::Duration::from_millis(500);
+const WATCHER_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Handle one debounced watcher event for `notebook_path`: read the file,
 /// classify the observation against the room's skip baselines, and ingest
 /// genuine external truth. Extracted from the watcher loop so tests can
 /// drive the classifier and ingest seams directly instead of through real
 /// filesystem notifications.
-pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &Path) {
+pub(crate) async fn process_watcher_event(
+    room: &NotebookRoom,
+    notebook_path: &Path,
+) -> WatcherOutcome {
     // Read and parse the file
     let contents = match tokio::fs::read_to_string(notebook_path).await {
         Ok(c) => c,
         Err(e) => {
             // File may be deleted or being written
             debug!("[notebook-watch] Cannot read {:?}: {}", notebook_path, e);
-            return;
+            return WatcherOutcome::Done;
         }
     };
     let manifest = room.durability.manifest();
@@ -2491,7 +2521,7 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
                 "[notebook-watch] Skipping event for {:?} ({:?})",
                 notebook_path, reason
             );
-            return;
+            return WatcherOutcome::Done;
         }
         WatcherIngestDecision::Ingest => {}
     }
@@ -2513,7 +2543,7 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
                 "[notebook-watch] Cannot parse cells from {:?} - skipping: {}",
                 notebook_path, e
             );
-            return;
+            return WatcherOutcome::Done;
         }
     };
     let (external_cells, external_outputs) = streaming_cells_into_snapshots(streaming_cells);
@@ -2530,7 +2560,7 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
             );
             let heads = room.durability.status().durable_heads;
             room.lifecycle.mark_degraded(reason.clone(), heads, true);
-            return;
+            return WatcherOutcome::Done;
         }
     };
     let source_save_sequence = source_claim.sequence();
@@ -2548,31 +2578,30 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
     // the file. Session content it replaces is saved first. If that save
     // fails the revision does not apply; it is retried a few times and then
     // reported.
-    let mut applied = AppliedIpynbChanges::default();
-    for attempt in 0..3 {
-        if attempt > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        }
-        applied = apply_ipynb_changes_from_source(
-            room,
-            &external_cells,
-            &external_outputs,
-            &external_attachments,
-            external_metadata.as_ref(),
-            has_kernel,
-            source_revision.clone(),
-        )
-        .await;
-        if applied.snapshot_failed.is_none() {
-            break;
-        }
+    let mut applied = apply_ipynb_changes_from_source(
+        room,
+        &external_cells,
+        &external_outputs,
+        &external_attachments,
+        external_metadata.as_ref(),
+        has_kernel,
+        source_revision,
+    )
+    .await;
+    if applied.contended {
+        debug!(
+            "[notebook-watch] {:?} kept changing while replaced edits were saved; retrying",
+            notebook_path
+        );
+        return WatcherOutcome::RetryLater;
     }
     if let Some(entry) = applied.displaced_entry.take() {
         publish_displaced_edits(room, notebook_path, entry);
     }
+    let retry = applied.snapshot_failed.is_some();
     let unapplied_reason = if let Some(error) = applied.snapshot_failed.as_ref() {
         Some(format!(
-            "{} changed on disk, but the edits it would replace could not be saved first ({error}). The open notebook was kept and will not be saved over the file until the file changes again.",
+            "{} changed on disk, but the edits it would replace could not be saved first ({error}). The open notebook was kept and is not saved over the file; the change is retried until the edits can be saved.",
             notebook_path.display()
         ))
     } else if applied.rejected {
@@ -2592,7 +2621,11 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
             warn!("[notebook-watch] Failed to publish unapplied revision: {error}");
         }
         warn!("[notebook-watch] {reason}");
-        return;
+        return if retry {
+            WatcherOutcome::RetryLater
+        } else {
+            WatcherOutcome::Done
+        };
     }
     let cells_changed = applied.cells_changed;
     let metadata_changed = applied.metadata_changed;
@@ -2604,7 +2637,7 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
     // for exported content.
     match tokio::fs::read(notebook_path).await {
         Ok(current) if super::recovery::source_fingerprint(&current) == observed_fingerprint => {}
-        Ok(_) | Err(_) => return,
+        Ok(_) | Err(_) => return WatcherOutcome::Done,
     }
 
     if room.durability.status().is_degraded() {
@@ -2612,7 +2645,7 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
         // back when its journal marker fails. Do not
         // apply metadata, advance source baselines, or
         // publish a recovery over that terminal state.
-        return;
+        return WatcherOutcome::Done;
     }
 
     // Recovery is published only after the apply verified, under the
@@ -2653,6 +2686,7 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
     if cells_changed || metadata_changed {
         check_and_update_trust_state(room).await;
     }
+    WatcherOutcome::Done
 }
 
 pub(crate) fn spawn_notebook_file_watcher(
@@ -2713,8 +2747,21 @@ pub(crate) fn spawn_notebook_file_watcher(
             notebook_path
         );
 
+        // A revision that could not apply yet (its replaced edits could not
+        // be saved, or the document kept moving) is retried with backoff
+        // until it applies or a new file event supersedes it.
+        let mut retry_delay: Option<std::time::Duration> = None;
         loop {
+            let retry_sleep = tokio::time::sleep(retry_delay.unwrap_or(WATCHER_RETRY_MAX));
             tokio::select! {
+                _ = retry_sleep, if retry_delay.is_some() => {
+                    let outcome = process_watcher_event(&room, &notebook_path).await;
+                    retry_delay = match (outcome, retry_delay) {
+                        (WatcherOutcome::RetryLater, Some(delay)) => Some((delay * 2).min(WATCHER_RETRY_MAX)),
+                        (WatcherOutcome::RetryLater, None) => Some(WATCHER_RETRY_MIN),
+                        (WatcherOutcome::Done, _) => None,
+                    };
+                }
                 Some(result) = rx.recv() => {
                     match result {
                         Ok(events) => {
@@ -2723,7 +2770,10 @@ pub(crate) fn spawn_notebook_file_watcher(
                             if !relevant {
                                 continue;
                             }
-                            process_watcher_event(&room, &notebook_path).await;
+                            retry_delay = match process_watcher_event(&room, &notebook_path).await {
+                                WatcherOutcome::RetryLater => Some(WATCHER_RETRY_MIN),
+                                WatcherOutcome::Done => None,
+                            };
                         }
                         Err(errs) => {
                             warn!("[notebook-watch] Watch error for {:?}: {:?}", notebook_path, errs);

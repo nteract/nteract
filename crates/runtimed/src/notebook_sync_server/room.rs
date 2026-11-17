@@ -567,12 +567,31 @@ impl RoomPersistence {
         }
     }
 
-    /// Remember the latest external revision for late-edit checks.
-    pub(crate) fn set_external_revision_guard(&self, guard: super::load::ExternalRevisionGuard) {
-        *self
+    /// Start guarding a new external revision. Cells rewritten by revisions
+    /// still inside the guard window stay guarded.
+    pub(crate) fn record_external_revision(
+        &self,
+        notebook_path: PathBuf,
+        revision_heads: Vec<automerge::ChangeHash>,
+        mut rewritten: std::collections::HashSet<String>,
+    ) {
+        let mut guard = self
             .external_revision_guard
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(guard);
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // A new revision replaces whatever late edits an older one was
+        // still waiting to put back, and records them itself.
+        if let Some(previous) = guard.as_ref().filter(|previous| !previous.expired()) {
+            rewritten.extend(previous.rewritten.iter().cloned());
+        }
+        *guard = Some(super::load::ExternalRevisionGuard {
+            notebook_path,
+            revision_heads,
+            rewritten,
+            resolved: std::collections::HashSet::new(),
+            applied_at: std::time::Instant::now(),
+            failing: false,
+        });
     }
 
     pub(crate) fn external_revision_guard(&self) -> Option<super::load::ExternalRevisionGuard> {
@@ -580,6 +599,20 @@ impl RoomPersistence {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    pub(crate) fn update_external_revision_guard(
+        &self,
+        update: impl FnOnce(&mut super::load::ExternalRevisionGuard),
+    ) {
+        if let Some(guard) = self
+            .external_revision_guard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_mut()
+        {
+            update(guard);
+        }
     }
 
     /// Drop the guard unless a newer revision replaced it.

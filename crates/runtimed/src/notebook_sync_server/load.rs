@@ -2168,6 +2168,9 @@ pub(crate) struct AppliedIpynbChanges {
     /// The replaced session content could not be saved first, so the
     /// revision was not applied.
     pub(crate) snapshot_failed: Option<String>,
+    /// The document kept changing while the replaced content was being
+    /// saved, so the revision was not applied this time.
+    pub(crate) contended: bool,
     /// The revision's changes committed to the journal: the live document
     /// now equals the file, even if a later step failed.
     pub(crate) committed: bool,
@@ -2418,6 +2421,56 @@ pub(crate) fn capture_displaced_edits(
     })
 }
 
+/// Snapshot attempts before an external revision gives up for now because
+/// the document keeps moving while the snapshot is written.
+const MAX_SNAPSHOT_ATTEMPTS: usize = 5;
+
+/// Execution pointer and, unless a kernel is running, RuntimeStateDoc
+/// outputs and execution count for each live cell that has one.
+#[allow(clippy::type_complexity)]
+fn live_execution_state(
+    doc: &NotebookDoc,
+    room: &NotebookRoom,
+    cells: &[CellSnapshot],
+    has_running_kernel: bool,
+) -> (
+    HashMap<String, String>,
+    HashMap<String, (Vec<serde_json::Value>, Option<i64>)>,
+) {
+    let execution_ids: HashMap<String, String> = cells
+        .iter()
+        .filter_map(|cell| {
+            doc.get_execution_id(&cell.id)
+                .map(|execution_id| (cell.id.clone(), execution_id))
+        })
+        .collect();
+    let state = if has_running_kernel {
+        HashMap::new()
+    } else {
+        room.state
+            .read(|sd| {
+                execution_ids
+                    .iter()
+                    .map(|(cell_id, eid)| {
+                        let ec = sd.get_execution(eid).and_then(|e| e.execution_count);
+                        (cell_id.clone(), (sd.get_outputs(eid), ec))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    (execution_ids, state)
+}
+
+fn live_outputs_of(
+    state: &HashMap<String, (Vec<serde_json::Value>, Option<i64>)>,
+) -> HashMap<String, Vec<serde_json::Value>> {
+    state
+        .iter()
+        .map(|(cell_id, (outputs, _))| (cell_id.clone(), outputs.clone()))
+        .collect()
+}
+
 #[derive(Clone)]
 pub(crate) struct ExternalSourceRevision {
     pub(crate) fingerprint: super::recovery::SourceFingerprint,
@@ -2599,11 +2652,88 @@ pub(crate) async fn apply_ipynb_changes_inner(
         edit(&mut *room.doc.write().await);
     }
 
+    // A watcher revision saves what it replaces before it commits. The
+    // snapshot is written without the document lock, so peers keep syncing
+    // during file IO: capture under the lock, release it, write, then
+    // re-lock and go ahead only if the document has not moved since.
+    let mut prepared: Option<(Vec<automerge::ChangeHash>, runtime_doc::DisplacedEdits)> = None;
+    let mut snapshot_attempts = 0;
+    let mut doc = loop {
+        let mut doc = room.doc.write().await;
+        let heads_now = doc.get_heads();
+        if prepared
+            .as_ref()
+            .is_some_and(|(heads, _)| *heads == heads_now)
+        {
+            break doc;
+        }
+        let capture = match source_revision {
+            Some(_) => {
+                let cells = doc.get_cells();
+                let (_, state) = live_execution_state(&doc, room, &cells, has_running_kernel);
+                let live_outputs = live_outputs_of(&state);
+                capture_displaced_edits(
+                    &mut doc,
+                    &DisplacementInputs {
+                        exported_heads: &room.durability.manifest().exported_heads,
+                        external_cells,
+                        external_metadata,
+                        external_attachments: &converted_attachments,
+                        external_outputs: (!has_running_kernel).then_some(&converted_outputs),
+                        live_outputs: &live_outputs,
+                    },
+                )
+            }
+            None => None,
+        };
+        let Some(capture) = capture else {
+            match prepared.take() {
+                // The edits it saved are gone; nothing needs a snapshot now.
+                Some((_, stale)) => {
+                    drop(doc);
+                    super::persist::abandon_displaced_snapshot(room, &stale).await;
+                    continue;
+                }
+                None => break doc,
+            }
+        };
+        let heads_hex = doc.get_heads_hex();
+        drop(doc);
+        if let Some((_, stale)) = prepared.take() {
+            super::persist::abandon_displaced_snapshot(room, &stale).await;
+        }
+        snapshot_attempts += 1;
+        if snapshot_attempts > MAX_SNAPSHOT_ATTEMPTS {
+            return AppliedIpynbChanges {
+                contended: true,
+                ..AppliedIpynbChanges::default()
+            };
+        }
+        let Some(revision) = source_revision else {
+            unreachable!("captures are only taken for watcher revisions");
+        };
+        match super::persist::prepare_displaced_snapshot(
+            room,
+            &revision.canonical_path,
+            &capture,
+            heads_hex,
+        )
+        .await
+        {
+            Ok(entry) => prepared = Some((heads_now, entry)),
+            Err(error) => {
+                return AppliedIpynbChanges {
+                    snapshot_failed: Some(error),
+                    ..AppliedIpynbChanges::default()
+                };
+            }
+        }
+    };
+
     // Everything that depends on the live document is read under the same
     // write lock the transaction runs under, so a concurrent edit cannot make
     // the diff stale. RuntimeStateDoc reads are synchronous and nothing that
     // holds the RuntimeStateDoc lock waits on the NotebookDoc lock.
-    let mut doc = room.doc.write().await;
     let current_cells = doc.get_cells();
     let current_map: HashMap<&str, &CellSnapshot> =
         current_cells.iter().map(|c| (c.id.as_str(), c)).collect();
@@ -2627,36 +2757,11 @@ pub(crate) async fn apply_ipynb_changes_inner(
     let no_common_cells = !current_ids.is_empty()
         && !external_ids.is_empty()
         && !current_ids.iter().any(|id| external_map.contains_key(id));
-    let current_execution_ids: HashMap<String, String> = current_cells
-        .iter()
-        .filter_map(|cell| {
-            doc.get_execution_id(&cell.id)
-                .map(|execution_id| (cell.id.clone(), execution_id))
-        })
-        .collect();
-    let current_execution_state: HashMap<String, (Vec<serde_json::Value>, Option<i64>)> =
-        if has_running_kernel {
-            HashMap::new()
-        } else {
-            room.state
-                .read(|sd| {
-                    current_execution_ids
-                        .iter()
-                        .map(|(cell_id, eid)| {
-                            let ec = sd.get_execution(eid).and_then(|e| e.execution_count);
-                            (cell_id.clone(), (sd.get_outputs(eid), ec))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-    let live_outputs: HashMap<String, Vec<serde_json::Value>> = current_execution_state
-        .iter()
-        .map(|(cell_id, (outputs, _))| (cell_id.clone(), outputs.clone()))
-        .collect();
+    let (current_execution_ids, current_execution_state) =
+        live_execution_state(&doc, room, &current_cells, has_running_kernel);
+    let live_outputs = live_outputs_of(&current_execution_state);
 
     let heads = doc.get_heads();
-    let pre_heads_hex = doc.get_heads_hex();
     let exported_heads = room.durability.manifest().exported_heads;
     let displaced = capture_displaced_edits(
         &mut doc,
@@ -2669,27 +2774,12 @@ pub(crate) async fn apply_ipynb_changes_inner(
             live_outputs: &live_outputs,
         },
     );
-    // A watcher revision saves what it replaces before it commits. Any
-    // failure here leaves the document and the file untouched.
-    let mut displaced_entry = None;
-    if let (Some(capture), Some(revision)) = (displaced.as_ref(), source_revision) {
-        match super::persist::prepare_displaced_snapshot(
-            room,
-            &revision.canonical_path,
-            capture,
-            pre_heads_hex,
-        )
-        .await
-        {
-            Ok(entry) => displaced_entry = Some(entry),
-            Err(error) => {
-                return AppliedIpynbChanges {
-                    snapshot_failed: Some(error),
-                    ..AppliedIpynbChanges::default()
-                };
-            }
-        }
-    }
+    // The snapshot matches these heads. If runtime outputs alone changed the
+    // verdict since, the entry is withdrawn below.
+    let (displaced_entry, unneeded_entry) = match prepared.map(|(_, entry)| entry) {
+        Some(entry) if displaced.is_some() => (Some(entry), None),
+        other => (None, other),
+    };
     // Cells whose content this revision replaces. Edits concurrent with the
     // revision that land in these cells later are put back to the file's
     // version before the next save.
@@ -2955,6 +3045,7 @@ pub(crate) async fn apply_ipynb_changes_inner(
             {
                 drop(doc);
                 withdraw_displaced_entry(room, displaced_entry.as_ref()).await;
+                withdraw_displaced_entry(room, unneeded_entry.as_ref()).await;
                 return AppliedIpynbChanges::default();
             }
             (cells_changed, metadata_changed, deferred)
@@ -2963,6 +3054,7 @@ pub(crate) async fn apply_ipynb_changes_inner(
             reject_unreproducible_revision(&mut doc, &rollback_snapshot, &rollback_actor);
             drop(doc);
             withdraw_displaced_entry(room, displaced_entry.as_ref()).await;
+            withdraw_displaced_entry(room, unneeded_entry.as_ref()).await;
             return AppliedIpynbChanges {
                 rejected: true,
                 ..AppliedIpynbChanges::default()
@@ -2972,11 +3064,13 @@ pub(crate) async fn apply_ipynb_changes_inner(
             warn!("[file-watcher] external revision transaction failed: {error}");
             drop(doc);
             withdraw_displaced_entry(room, displaced_entry.as_ref()).await;
+            withdraw_displaced_entry(room, unneeded_entry.as_ref()).await;
             return AppliedIpynbChanges::default();
         }
     };
     let revision_heads = doc.get_heads();
     drop(doc);
+    withdraw_displaced_entry(room, unneeded_entry.as_ref()).await;
 
     // Committed: the live document equals the file from here on, so the
     // displaced content is reported even if a later step fails.
@@ -2989,14 +3083,11 @@ pub(crate) async fn apply_ipynb_changes_inner(
         ..AppliedIpynbChanges::default()
     };
     if let Some(revision) = source_revision {
-        room.persistence
-            .set_external_revision_guard(ExternalRevisionGuard {
-                notebook_path: revision.canonical_path.clone(),
-                pre_heads: heads,
-                revision_heads,
-                rewritten,
-                applied_at: std::time::Instant::now(),
-            });
+        room.persistence.record_external_revision(
+            revision.canonical_path.clone(),
+            revision_heads,
+            rewritten,
+        );
     }
 
     #[cfg(test)]
@@ -3067,18 +3158,28 @@ async fn withdraw_displaced_entry(
 pub(crate) const EXTERNAL_REVISION_GUARD_WINDOW: std::time::Duration =
     std::time::Duration::from_secs(60);
 
-/// What the last external revision replaced, kept so late concurrent edits
+/// What recent external revisions replaced, kept so late concurrent edits
 /// can be told apart from edits made after the reload.
 #[derive(Clone, Debug)]
 pub(crate) struct ExternalRevisionGuard {
     pub(crate) notebook_path: PathBuf,
-    /// Document heads just before the revision.
-    pub(crate) pre_heads: Vec<automerge::ChangeHash>,
-    /// Document heads just after the revision committed.
+    /// Document heads just after the latest revision committed.
     pub(crate) revision_heads: Vec<automerge::ChangeHash>,
-    /// Cells whose content the revision replaced or removed.
+    /// Cells rewritten by any revision inside the window.
     pub(crate) rewritten: HashSet<String>,
+    /// Changes concurrent with the latest revision that were already put
+    /// back or found to touch no rewritten cell.
+    pub(crate) resolved: HashSet<automerge::ChangeHash>,
     pub(crate) applied_at: std::time::Instant,
+    /// The last put-back could not finish. The guard does not expire until
+    /// one does, so merged text never saves unrecorded.
+    pub(crate) failing: bool,
+}
+
+impl ExternalRevisionGuard {
+    pub(crate) fn expired(&self) -> bool {
+        !self.failing && self.applied_at.elapsed() > EXTERNAL_REVISION_GUARD_WINDOW
+    }
 }
 
 /// Heads of `base` plus `changes`: every hash no change in `changes` depends on.
@@ -3103,75 +3204,74 @@ fn heads_of(
     heads
 }
 
-/// Put back the file's version of rewritten cells that a late concurrent
-/// edit changed, after saving the session's version.
-///
-/// A peer can author an edit against the notebook from before an external
-/// revision and sync it after the revision applied. Automerge then merges it
-/// into the file's text: a pending `)` typed after `print(x` lands as
-/// `y = 2)`. Changes made after the reload descend from the revision's heads
-/// and are kept. Changes that do not are concurrent with it; where they touch
-/// a cell the revision rewrote, the session's version (pre-revision heads
-/// plus those changes) is snapshotted and recorded like any other displaced
-/// edit, and the cell goes back to the file's version plus later edits.
-///
-/// Runs before every in-place save for [`EXTERNAL_REVISION_GUARD_WINDOW`]
-/// after a revision. `Err` means the snapshot could not be written and the
-/// save must wait.
-pub(crate) async fn put_back_late_concurrent_edits(room: &NotebookRoom) -> Result<(), String> {
-    let Some(guard) = room.persistence.external_revision_guard() else {
-        return Ok(());
-    };
-    if guard.applied_at.elapsed() > EXTERNAL_REVISION_GUARD_WINDOW {
-        room.persistence
-            .clear_external_revision_guard(guard.applied_at);
-        return Ok(());
+/// Changes in `deps`, dependencies first.
+fn topological_order(
+    deps: &HashMap<automerge::ChangeHash, Vec<automerge::ChangeHash>>,
+) -> Vec<automerge::ChangeHash> {
+    let mut pending: HashMap<automerge::ChangeHash, usize> = deps
+        .iter()
+        .map(|(hash, ds)| (*hash, ds.iter().filter(|d| deps.contains_key(d)).count()))
+        .collect();
+    let mut dependents: HashMap<automerge::ChangeHash, Vec<automerge::ChangeHash>> = HashMap::new();
+    for (hash, ds) in deps {
+        for dep in ds.iter().filter(|d| deps.contains_key(d)) {
+            dependents.entry(*dep).or_default().push(*hash);
+        }
     }
+    let mut ready: Vec<automerge::ChangeHash> = pending
+        .iter()
+        .filter(|(_, count)| **count == 0)
+        .map(|(hash, _)| *hash)
+        .collect();
+    let mut order = Vec::with_capacity(deps.len());
+    while let Some(hash) = ready.pop() {
+        order.push(hash);
+        for dependent in dependents.get(&hash).into_iter().flatten() {
+            if let Some(count) = pending.get_mut(dependent) {
+                *count -= 1;
+                if *count == 0 {
+                    ready.push(*dependent);
+                }
+            }
+        }
+    }
+    order
+}
 
-    let mut doc = room.doc.write().await;
+enum LateEdits {
+    /// Concurrent changes that touched no rewritten cell.
+    Harmless(HashSet<automerge::ChangeHash>),
+    Conflict {
+        concurrent: HashSet<automerge::ChangeHash>,
+        /// The live notebook, with `cell_ids` naming the cells to put back.
+        capture: Box<DisplacedCapture>,
+        heads: Vec<automerge::ChangeHash>,
+        /// Heads holding the file's version plus every edit made after the
+        /// reload that does not build on a concurrent change.
+        file_heads: Vec<automerge::ChangeHash>,
+    },
+}
+
+/// Find changes concurrent with the latest revision and the rewritten cells
+/// they changed.
+///
+/// A change is after the reload when it descends from every head of the
+/// revision. Anything else in the document since the revision is concurrent
+/// with it, and so is anything that builds on a concurrent change: a
+/// keystroke typed onto merged text. The file's version of a cell is the
+/// document at the revision plus the clean after-reload changes.
+fn analyze_late_edits(doc: &mut NotebookDoc, guard: &ExternalRevisionGuard) -> Option<LateEdits> {
     let since = doc.doc_mut().get_changes(&guard.revision_heads);
     if since.is_empty() {
-        return Ok(());
+        return None;
     }
     let deps: HashMap<automerge::ChangeHash, Vec<automerge::ChangeHash>> = since
         .iter()
         .map(|change| (change.hash(), change.deps().to_vec()))
         .collect();
-
-    // Topological order within `since`: dependencies first.
-    let mut order: Vec<automerge::ChangeHash> = Vec::with_capacity(deps.len());
-    {
-        let mut pending: HashMap<automerge::ChangeHash, usize> = deps
-            .iter()
-            .map(|(hash, ds)| (*hash, ds.iter().filter(|d| deps.contains_key(d)).count()))
-            .collect();
-        let mut dependents: HashMap<automerge::ChangeHash, Vec<automerge::ChangeHash>> =
-            HashMap::new();
-        for (hash, ds) in &deps {
-            for dep in ds.iter().filter(|d| deps.contains_key(d)) {
-                dependents.entry(*dep).or_default().push(*hash);
-            }
-        }
-        let mut ready: Vec<automerge::ChangeHash> = pending
-            .iter()
-            .filter(|(_, count)| **count == 0)
-            .map(|(hash, _)| *hash)
-            .collect();
-        while let Some(hash) = ready.pop() {
-            order.push(hash);
-            for dependent in dependents.get(&hash).into_iter().flatten() {
-                if let Some(count) = pending.get_mut(dependent) {
-                    *count -= 1;
-                    if *count == 0 {
-                        ready.push(*dependent);
-                    }
-                }
-            }
-        }
-    }
-
-    // Which revision heads each change reaches through its dependencies.
+    let order = topological_order(&deps);
     let revision: HashSet<automerge::ChangeHash> = guard.revision_heads.iter().copied().collect();
+
     let mut reaches: HashMap<automerge::ChangeHash, HashSet<automerge::ChangeHash>> =
         HashMap::new();
     for hash in &order {
@@ -3185,93 +3285,163 @@ pub(crate) async fn put_back_late_concurrent_edits(room: &NotebookRoom) -> Resul
         }
         reaches.insert(*hash, reached);
     }
-    // After the reload: descendants of every revision head, and what they
-    // build on. Everything else in `since` is concurrent with the revision.
-    let mut after: HashSet<automerge::ChangeHash> = order
-        .iter()
-        .filter(|hash| reaches[*hash] == revision)
-        .copied()
-        .collect();
-    for hash in order.iter().rev() {
-        if after.contains(hash) {
-            for dep in deps[hash].iter().filter(|d| deps.contains_key(d)) {
-                after.insert(*dep);
-            }
-        }
-    }
     let concurrent: HashSet<automerge::ChangeHash> = order
         .iter()
-        .filter(|hash| !after.contains(hash))
+        .filter(|hash| reaches[*hash] != revision && !guard.resolved.contains(*hash))
         .copied()
         .collect();
     if concurrent.is_empty() {
-        return Ok(());
+        return None;
     }
-    let mut session_changes = concurrent.clone();
-    for hash in order.iter().rev() {
-        if session_changes.contains(hash) {
-            for dep in deps[hash].iter().filter(|d| deps.contains_key(d)) {
-                session_changes.insert(*dep);
-            }
+    let mut tainted: HashSet<automerge::ChangeHash> = HashSet::new();
+    for hash in &order {
+        if concurrent.contains(hash) || deps[hash].iter().any(|dep| tainted.contains(dep)) {
+            tainted.insert(*hash);
         }
     }
-    let session_heads = heads_of(&guard.pre_heads, &session_changes, &deps);
-    let file_heads = heads_of(&guard.revision_heads, &after, &deps);
+    let clean_after: HashSet<automerge::ChangeHash> = order
+        .iter()
+        .filter(|hash| reaches[*hash] == revision && !tainted.contains(*hash))
+        .copied()
+        .collect();
+    let file_heads = heads_of(&guard.revision_heads, &clean_after, &deps);
 
-    let before_cells = doc.get_cells_at_heads_with_content(&guard.pre_heads);
-    let session_cells = doc.get_cells_at_heads_with_content(&session_heads);
-    let before_by_id: HashMap<&str, CellContent<'_>> = before_cells
+    let live_cells = doc.get_cells();
+    let file_cells = doc.get_cells_at_heads_with_content(&file_heads);
+    let live_by_id: HashMap<&str, CellContent<'_>> = live_cells
         .iter()
         .map(|c| (c.id.as_str(), CellContent::of(c)))
         .collect();
-    let session_by_id: HashMap<&str, CellContent<'_>> = session_cells
+    let file_by_id: HashMap<&str, CellContent<'_>> = file_cells
         .iter()
         .map(|c| (c.id.as_str(), CellContent::of(c)))
-        .collect();
-    let mut cell_ids: Vec<String> = session_cells
-        .iter()
-        .map(|c| c.id.as_str())
-        .chain(before_cells.iter().map(|c| c.id.as_str()))
-        .filter(|id| guard.rewritten.contains(*id))
-        .filter(|id| before_by_id.get(id) != session_by_id.get(id))
-        .map(str::to_string)
         .collect();
     let mut seen = HashSet::new();
-    cell_ids.retain(|id| seen.insert(id.clone()));
+    let cell_ids: Vec<String> = live_cells
+        .iter()
+        .chain(file_cells.iter())
+        .map(|c| c.id.as_str())
+        .filter(|id| guard.rewritten.contains(*id))
+        .filter(|id| live_by_id.get(id) != file_by_id.get(id))
+        .filter(|id| seen.insert(*id))
+        .map(str::to_string)
+        .collect();
     if cell_ids.is_empty() {
-        return Ok(());
+        return Some(LateEdits::Harmless(concurrent));
     }
-
+    let execution_ids = live_cells
+        .iter()
+        .map(|cell| (cell.id.clone(), doc.get_execution_id(&cell.id)))
+        .collect();
     let capture = DisplacedCapture {
-        execution_ids: session_cells
-            .iter()
-            .map(|cell| {
-                (
-                    cell.id.clone(),
-                    doc.get_execution_id_at_heads(&cell.id, &session_heads),
-                )
-            })
-            .collect(),
-        metadata: doc.get_metadata_snapshot_at_heads(&session_heads),
-        cells: session_cells.clone(),
-        cell_ids: cell_ids.clone(),
+        metadata: doc.get_metadata_snapshot(),
+        execution_ids,
+        cells: live_cells,
+        cell_ids,
         metadata_changed: false,
         order_changed: false,
     };
-    let session_heads_hex = session_heads.iter().map(|hash| hash.to_string()).collect();
-    let entry = super::persist::prepare_displaced_snapshot(
+    Some(LateEdits::Conflict {
+        concurrent,
+        capture: Box::new(capture),
+        heads: doc.get_heads(),
+        file_heads,
+    })
+}
+
+enum PutBack {
+    Done,
+    /// The document changed while the snapshot was written; try again.
+    Moved,
+    Failed(String),
+}
+
+/// Put back the file's version of rewritten cells that a late concurrent
+/// edit changed, after saving the live notebook.
+///
+/// A peer can author an edit against the notebook from before an external
+/// revision and sync it after the revision applied. Automerge then merges it
+/// into the file's text: a pending `)` typed after `print(x` lands as
+/// `y = 2)`, and keystrokes typed onto that merged text build on it. Before
+/// an in-place save, every rewritten cell such edits changed is snapshotted
+/// with the rest of the live notebook, recorded like any other displaced
+/// edit, and set back to the file's version plus clean later edits. Late
+/// edits to cells no revision rewrote stay.
+///
+/// Runs before every in-place save for [`EXTERNAL_REVISION_GUARD_WINDOW`]
+/// after the latest revision, and until a failed put-back succeeds. `Err`
+/// means the save must wait.
+pub(crate) async fn put_back_late_concurrent_edits(room: &NotebookRoom) -> Result<(), String> {
+    for _ in 0..MAX_SNAPSHOT_ATTEMPTS {
+        match put_back_once(room).await {
+            PutBack::Done => {
+                room.persistence
+                    .update_external_revision_guard(|guard| guard.failing = false);
+                return Ok(());
+            }
+            PutBack::Moved => continue,
+            PutBack::Failed(error) => {
+                room.persistence
+                    .update_external_revision_guard(|guard| guard.failing = true);
+                return Err(error);
+            }
+        }
+    }
+    room.persistence
+        .update_external_revision_guard(|guard| guard.failing = true);
+    Err("the notebook kept changing while late edits were being saved".to_string())
+}
+
+async fn put_back_once(room: &NotebookRoom) -> PutBack {
+    let Some(guard) = room.persistence.external_revision_guard() else {
+        return PutBack::Done;
+    };
+    if guard.expired() {
+        room.persistence
+            .clear_external_revision_guard(guard.applied_at);
+        return PutBack::Done;
+    }
+    let analysis = {
+        let mut doc = room.doc.write().await;
+        analyze_late_edits(&mut doc, &guard)
+    };
+    let (concurrent, capture, heads, file_heads) = match analysis {
+        None => return PutBack::Done,
+        Some(LateEdits::Harmless(concurrent)) => {
+            room.persistence
+                .update_external_revision_guard(|guard| guard.resolved.extend(concurrent));
+            return PutBack::Done;
+        }
+        Some(LateEdits::Conflict {
+            concurrent,
+            capture,
+            heads,
+            file_heads,
+        }) => (concurrent, capture, heads, file_heads),
+    };
+
+    let heads_hex = heads.iter().map(|hash| hash.to_string()).collect();
+    let entry = match super::persist::prepare_displaced_snapshot(
         room,
         &guard.notebook_path,
         &capture,
-        session_heads_hex,
+        heads_hex,
     )
-    .await?;
+    .await
+    {
+        Ok(entry) => entry,
+        Err(error) => return PutBack::Failed(error),
+    };
 
+    let mut doc = room.doc.write().await;
+    if doc.get_heads() != heads {
+        drop(doc);
+        super::persist::abandon_displaced_snapshot(room, &entry).await;
+        return PutBack::Moved;
+    }
     let file_cells = doc.get_cells_at_heads_with_content(&file_heads);
     let file_by_id: HashMap<&str, &CellSnapshot> =
         file_cells.iter().map(|c| (c.id.as_str(), c)).collect();
-    let live_cells = doc.get_cells();
-    let heads = doc.get_heads();
     let rollback_actor = doc.get_actor_id();
     let rollback_snapshot = doc.save();
     let put_back = doc.transact_at_heads_recovering(
@@ -3279,7 +3449,11 @@ pub(crate) async fn put_back_late_concurrent_edits(room: &NotebookRoom) -> Resul
         Some("runtimed:filesystem"),
         "file-watcher-late-edit-transaction",
         |doc| {
-            for live in live_cells.iter().filter(|c| cell_ids.contains(&c.id)) {
+            for live in capture
+                .cells
+                .iter()
+                .filter(|c| capture.cell_ids.contains(&c.id))
+            {
                 match file_by_id.get(live.id.as_str()) {
                     Some(file) => {
                         if live.source != file.source {
@@ -3290,6 +3464,9 @@ pub(crate) async fn put_back_late_concurrent_edits(room: &NotebookRoom) -> Resul
                         }
                         if live.metadata != file.metadata {
                             doc.set_cell_metadata(&live.id, &file.metadata)?;
+                        }
+                        if live.attachments != file.attachments {
+                            doc.set_cell_attachments(&live.id, &file.attachments)?;
                         }
                     }
                     None => {
@@ -3312,11 +3489,15 @@ pub(crate) async fn put_back_late_concurrent_edits(room: &NotebookRoom) -> Resul
     drop(doc);
     if !committed {
         super::persist::abandon_displaced_snapshot(room, &entry).await;
-        return Err("could not put back the file's version of late-edited cells".to_string());
+        return PutBack::Failed(
+            "could not put back the file's version of late-edited cells".to_string(),
+        );
     }
+    room.persistence
+        .update_external_revision_guard(|guard| guard.resolved.extend(concurrent));
     super::persist::publish_displaced_edits(room, &guard.notebook_path, entry);
     let _ = room.broadcasts.changed_tx.send(());
-    Ok(())
+    PutBack::Done
 }
 
 #[cfg(test)]
