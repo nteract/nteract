@@ -2203,7 +2203,14 @@ async fn handle_runtime_agent_request(
 
             // Shut down existing kernel
             if let Some(ref mut k) = kernel {
-                k.shutdown().await.ok();
+                if let Err(e) = k.shutdown().await {
+                    return (
+                        RuntimeAgentResponse::Error {
+                            error: format!("Cannot restart before kernel shutdown completes: {e}"),
+                        },
+                        None,
+                    );
+                }
             }
             *kernel = None;
 
@@ -2385,7 +2392,14 @@ async fn handle_runtime_agent_request(
         RuntimeAgentRequest::ShutdownKernel => {
             let shutdown_kernel_id = kernel.as_ref().map(|kernel| kernel.kernel_id().to_string());
             if let Some(ref mut k) = kernel {
-                k.shutdown().await.ok();
+                if let Err(e) = k.shutdown().await {
+                    return (
+                        RuntimeAgentResponse::Error {
+                            error: format!("Kernel shutdown failed: {e}"),
+                        },
+                        None,
+                    );
+                }
             }
             *kernel = None;
             let (interrupted, cleared) = state.shutdown();

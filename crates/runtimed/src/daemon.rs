@@ -8465,8 +8465,9 @@ mod tests {
         };
         let temp = TempDir::new().unwrap();
         let daemon = Daemon::new_for_test(lease_test_config(&temp)).unwrap();
+        let room_id = uuid::Uuid::new_v4();
         let room = Arc::new(NotebookRoom::new_fresh(
-            uuid::Uuid::new_v4(),
+            room_id,
             None,
             temp.path(),
             Arc::new(BlobStore::new(temp.path().join("blobs"))),
@@ -8476,11 +8477,15 @@ mod tests {
             let mut doc = room.doc.write().await;
             let mut metadata = notebook_doc::metadata::NotebookMetadataSnapshot::default();
             metadata.kernelspec = Some(notebook_doc::metadata::KernelspecSnapshot {
-                name: "python3".into(),
-                display_name: "Python 3".into(),
+                name: "lumen".into(),
+                display_name: "Lumen".into(),
                 language: Some("python".into()),
                 ..Default::default()
             });
+            metadata
+                .runt
+                .extra
+                .insert("installed_kernelspec".into(), "lumen".into());
             doc.set_metadata_snapshot(&metadata).unwrap();
         }
         let observed_heads = room.doc.write().await.get_heads_hex();
@@ -8557,6 +8562,23 @@ mod tests {
                 .unwrap(),
             runtime_doc::RuntimeLifecycle::Running(_)
         ));
+        drop(room);
+        let reopened = NotebookRoom::new_fresh(
+            room_id,
+            None,
+            temp.path(),
+            Arc::new(BlobStore::new(temp.path().join("blobs"))),
+            false,
+        );
+        let meta = reopened
+            .doc
+            .read()
+            .await
+            .get_metadata_snapshot()
+            .expect("recover saved Automatic selection");
+        assert_eq!(meta.kernelspec.as_ref().unwrap().name, "python3");
+        assert!(!meta.runt.extra.contains_key("installed_kernelspec"));
+        assert!(crate::kernelspec::imported(Some(&meta), Default::default()).is_none());
     }
 
     #[tokio::test]
