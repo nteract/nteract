@@ -36,6 +36,15 @@ export async function locationEntries(storage) {
   return (await locationScan(storage)).entries;
 }
 
+/** The prefixes `locationScan` lists, with the state of an entry under each.
+ * The Catalog's scan memo (catalog-scan-memo.mjs) drops its scan on any
+ * write under these. */
+const SCANNED = [
+  ["page/", "active"],
+  ["trash/", "trashed"],
+];
+export const LOCATION_SCAN_PREFIXES = Object.freeze(SCANNED.map(([prefix]) => prefix));
+
 /** Location entries, plus Project content documents and the number of keys
  * under each prefix that the scan read: `{ entries, contents, counts }`.
  * `contents` maps each content document ID to `{ space_id, state }`. A Page
@@ -45,10 +54,7 @@ export async function locationEntries(storage) {
 export async function locationScan(storage) {
   const raw = [];
   const counts = {};
-  for (const [prefix, state] of [
-    ["page/", "active"],
-    ["trash/", "trashed"],
-  ]) {
+  for (const [prefix, state] of SCANNED) {
     const listed = await listAll(storage, prefix);
     counts[prefix] = listed.size;
     for (const entry of listed.values()) {

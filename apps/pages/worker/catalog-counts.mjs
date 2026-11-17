@@ -160,12 +160,35 @@ function overlay(storage, overrides) {
   });
 }
 
+/** What onWrite hears for a write that may change any key. */
+export const ALL_KEYS = "all";
+/** onWrite's default: no one watches the writes. */
+const unwatched = () => () => {};
+
 /**
  * The Catalog's storage, keeping the stored counts. `ctx` is the object's
  * state: each counted write holds the request open until it settles
  * (request-hold.mjs), so a caller that goes away can't strand the turn.
+ *
+ * `onWrite(keys)` hears of every write before it is issued: the keys of a
+ * put or delete, or ALL_KEYS for a transaction,
+ * `transactionSync` or `deleteAll`. It returns a function this calls once
+ * the write settles, whether it succeeded or failed. These overrides are the
+ * only write methods the Catalog uses; one added here must report too.
  */
-export function countedStorage(storage, { ctx } = {}) {
+export function countedStorage(storage, { ctx, onWrite = unwatched } = {}) {
+  const watched = (keys, issue) => {
+    const settle = onWrite(keys);
+    let run;
+    try {
+      run = issue();
+    } catch (error) {
+      settle();
+      throw error;
+    }
+    Promise.resolve(run).then(settle, settle);
+    return run;
+  };
   let cache = { name: "unloaded" };
   let turn = Promise.resolve();
   const step = (event) => {
@@ -207,14 +230,24 @@ export function countedStorage(storage, { ctx } = {}) {
   const overrides = {
     put: (keyOrEntries, valueOrOptions, options) => {
       const keys = typeof keyOrEntries === "string" ? [keyOrEntries] : Object.keys(keyOrEntries);
-      if (!keys.some(countedPrefix)) return storage.put(keyOrEntries, valueOrOptions, options);
-      return write((writer) => writer.put(keyOrEntries, valueOrOptions, options));
+      return watched(keys, () => {
+        if (!keys.some(countedPrefix)) return storage.put(keyOrEntries, valueOrOptions, options);
+        return write((writer) => writer.put(keyOrEntries, valueOrOptions, options));
+      });
     },
     delete: (keyOrKeys, options) => {
       const keys = Array.isArray(keyOrKeys) ? keyOrKeys : [keyOrKeys];
-      if (!keys.some(countedPrefix)) return storage.delete(keyOrKeys, options);
-      return write((writer) => writer.delete(keyOrKeys, options));
+      return watched(keys, () => {
+        if (!keys.some(countedPrefix)) return storage.delete(keyOrKeys, options);
+        return write((writer) => writer.delete(keyOrKeys, options));
+      });
     },
+    ...(typeof storage.deleteAll === "function" && {
+      deleteAll: (options) => watched(ALL_KEYS, () => storage.deleteAll(options)),
+    }),
+    ...(typeof storage.transactionSync === "function" && {
+      transactionSync: (run) => watched(ALL_KEYS, () => storage.transactionSync(run)),
+    }),
     /** The stored counts, or null before they are first stored. */
     counts,
     /** Count every key under both prefixes and store the result. */
@@ -240,14 +273,16 @@ export function countedStorage(storage, { ctx } = {}) {
       }),
     ...(typeof storage.transaction === "function" && {
       transaction: (run) =>
-        write((writer, target) => {
-          const joined = overlay(target, {
-            put: writer.put,
-            delete: writer.delete,
-            transaction: (inner) => inner(joined),
-          });
-          return run(joined);
-        }),
+        watched(ALL_KEYS, () =>
+          write((writer, target) => {
+            const joined = overlay(target, {
+              put: writer.put,
+              delete: writer.delete,
+              transaction: (inner) => inner(joined),
+            });
+            return run(joined);
+          }),
+        ),
     }),
   };
   return overlay(storage, overrides);

@@ -2898,7 +2898,9 @@ a check reads only the stored count. At the limit, or before the counts exist,
 it counts every entry, releasing stale reservations, and rebuilds them. Every
 `list_pages` reads every owned entry for location anyway and rewrites counts
 that disagree, logging `catalog.count_repaired`; a rollback build that writes
-entries without counts leaves that to repair.
+entries without counts leaves that to repair. That read is the location scan,
+which the Catalog keeps in memory (below); a listing checks the counts against
+each kept scan once, since nothing can change either until a write drops it.
 
 At the limit, creating or restoring returns `409 page_quota_exceeded` and moving
 to Trash returns `409 trash_capacity`, each with `limit` and `count`.
@@ -4154,6 +4156,20 @@ ancestor IDs and the root's Project and nothing else. Each ancestor and the
 Project then answer with the caller's credentials, so the trail stops at the
 first Page the caller cannot open and `project_id` appears only when the
 Project is readable.
+
+Every listing and every `/internal/location` read needs the owner's location
+scan: all of its `page/` and `trash/` entries
+([catalog-location.mjs](worker/catalog-location.mjs)). The location route runs
+outside the Catalog's serial queue, and a Page check by someone other than the
+owner asks for it once or twice per request. The Catalog is the only writer of
+its storage, and every write goes through its counted storage, which reports it
+before it is issued and again when it settles, success or not. A transaction or
+`deleteAll` reports every key. So the Catalog keeps the last scan in memory
+until a write under `page/` or `trash/` drops it
+([catalog-scan-memo.mjs](worker/catalog-scan-memo.mjs)). A scan that overlapped
+such a write answers its own caller and isn't kept, and no request waits on
+another's scan. Callers get their own maps over frozen entries. A listing that
+reuses a kept scan reports `cat_scan_memo`, a count without a duration.
 
 `move_page` reparents or reorders an owned Page in one Catalog write
 ([move-page.mjs](worker/move-page.mjs)): the moved entry's `parent_id` and

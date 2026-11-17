@@ -413,6 +413,7 @@ import { serialQueue, serialQueueBounds } from "./serial-queue.mjs";
 import { opensIndex } from "./account-index-machine.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
 import { CARDS_LANE, CARDS_LANE_HEADER, catalogLane } from "./catalog-lanes.mjs";
+import { locationScanMemo } from "./catalog-scan-memo.mjs";
 import { boundedMap } from "./bounded-map.mjs";
 import { legibleEnv, overloadRetryAfterMs, withRepeatSafety } from "./host-busy.mjs";
 import { readTool } from "./tool-reads.mjs";
@@ -1987,10 +1988,17 @@ export class Catalog {
     this.ctx = ctx;
     this.env = env;
     this.queue = serialQueue(ctx, "catalog-queue");
+    /** The location scan, kept until a write changes a key it covers
+     * (catalog-scan-memo.mjs). Every write reaches it through `storage`. */
+    this.scans = locationScanMemo();
   }
-  /** Storage that keeps the `page/` and `trash/` key counts (catalog.mjs). */
+  /** Storage that keeps the `page/` and `trash/` key counts (catalog.mjs)
+   * and reports every write to the scan memo. */
   get storage() {
-    return (this.counted ??= countedStorage(this.ctx.storage, { ctx: this.ctx }));
+    return (this.counted ??= countedStorage(this.ctx.storage, {
+      ctx: this.ctx,
+      onWrite: (keys) => this.scans.writing(keys),
+    }));
   }
   fetch(request) {
     // catalog-lanes.mjs says which requests skip the serial queue and why.
@@ -2052,7 +2060,7 @@ export class Catalog {
           owner_name: typeof entry.owner_name === "string" ? entry.owner_name : null,
         });
       }
-      const { entries, contents } = await locationScan(this.storage);
+      const { entries, contents } = (await this.scans.read(this.storage)).scan;
       if (query?.project_content !== undefined) {
         if (request.headers.has("authorization") || request.headers.has("cookie"))
           throw spaceNotFound();
@@ -4482,12 +4490,20 @@ export class Catalog {
       if (space.pending || space.deletion) throw spaceNotFound();
     }
     // This account's entries record where each owned Page is, and its
-    // Project is derived from them. A listing builds the map once. The same
-    // scan counts every key, which checks the stored counts: a build that
-    // wrote keys without them leaves them wrong until this repairs them.
+    // Project is derived from them. A listing reads the map once, from the
+    // scan memo when no write has changed an entry since the last scan
+    // (counted as `scan_memo`). The scan counts every key, which checks the
+    // stored counts: a build that wrote keys without them leaves them wrong
+    // until this repairs them. A kept scan is checked once; until a write
+    // drops it, nothing can change either count.
     const endScan = timing.start("scan");
-    const { entries: locations, counts } = await locationScan(storage);
-    if (await storage.verifyCounts(counts)) logCountRepair(counts);
+    const scanned = await this.scans.read(storage);
+    if (scanned.hit) timing.count("scan_memo");
+    const { entries: locations, counts } = scanned.scan;
+    if (!scanned.verified) {
+      if (await storage.verifyCounts(counts)) logCountRepair(counts);
+      this.scans.verified(scanned.token);
+    }
     endScan();
     const quota = { limit, count: counts["page/"], trash_count: counts["trash/"] };
     // Child IDs of a shared parent, from its owner's Catalog.
