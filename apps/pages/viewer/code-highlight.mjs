@@ -1,7 +1,7 @@
 // Syntax highlighting for code blocks with a known language. It is a view
 // decoration only: Wordgard adds a `wg-t-<kind>` class to each token span and
 // never writes to the document, so code text stays unmarked (#4572). Token
-// colors live in wordgard.css and follow nteract's editor palette.
+// colors live in code-highlight.css and follow nteract's editor palette.
 import {
   CSS,
   Go,
@@ -178,9 +178,16 @@ export function insideStringOrComment(stored, text, offset) {
 
 /** Add token decorations for a code block, relative to the start of its content. */
 function addCodeBlockTokens(block, add) {
-  const language = languageFor(block.mark(CodeBlockLanguage));
-  const text = language && blockText(block);
-  if (!text) return;
+  const text = blockText(block);
+  if (text)
+    codeTokens(text, block.mark(CodeBlockLanguage), (cls, from, to) => add(decoFor(cls), from, to));
+}
+
+/** Shared, bounded tokenizer for document decorations and read-only previews.
+ * Offsets refer to the original text; callers keep unstyled text intact. */
+export function codeTokens(text, stored, add) {
+  const language = languageFor(stored);
+  if (!language || !text) return;
   const { parser } = language;
   let offset = 0;
   const state = parser.startState ? parser.startState(2) : true;
@@ -193,7 +200,7 @@ function addCodeBlockTokens(block, add) {
       while (!stream.eol()) {
         const token = readToken(parser.token, stream, state);
         const cls = token && tokenClass(token);
-        if (cls) add(decoFor(cls), offset + stream.start, offset + stream.pos);
+        if (cls) add(cls, offset + stream.start, offset + stream.pos);
       }
     offset += line.length + 1;
   }

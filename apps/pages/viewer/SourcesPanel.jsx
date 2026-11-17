@@ -7,12 +7,7 @@ import {
   ChartNoAxesCombined,
   ChevronRight,
   Database,
-  File,
-  FileAudio,
-  FileCode,
-  FileDigit,
   History,
-  Paintbrush,
   Puzzle,
   Search,
   Table2,
@@ -25,6 +20,8 @@ import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
 import { useStore } from "./store.mjs";
 import { PaneBack, PaneClose, PaneExpand, PaneHeader, PaneNavigation } from "./PaneHeader.jsx";
+import { SourceIcon } from "./SourceIcon.jsx";
+import { CodeHighlight } from "./CodeHighlight.jsx";
 import "./sources-panel.css";
 
 const sourceNotices = {
@@ -34,20 +31,6 @@ const sourceNotices = {
     "This version of Pages can't read this Page's sources format. Update Pages to inspect its sources.",
   unserved: "This host doesn't support sources inspection for this version of Pages.",
 };
-
-function SourceIcon({ mediaType }) {
-  const Icon =
-    {
-      [PARQUET_MEDIA_TYPE]: Table2,
-      "text/javascript": FileCode,
-      "text/css": Paintbrush,
-      "application/octet-stream": FileDigit,
-      "audio/wav": FileAudio,
-      "application/vnd.vegalite.v6+json": ChartNoAxesCombined,
-      [ANYWIDGET_MEDIA_TYPE]: Puzzle,
-    }[mediaType] ?? File;
-  return <Icon size={16} aria-hidden="true" />;
-}
 
 function Timestamp({ value }) {
   const time = sourceTime(value, Date.now());
@@ -182,7 +165,14 @@ function SourceFilePreview({ session, source }) {
         <SourceAudio key={value.version.asset_id} bytes={preview.bytes} />
       ) : (
         <pre tabIndex={0} aria-label={preview.kind === "text" ? "Source code" : "Hex bytes"}>
-          <code>{preview.kind === "text" ? preview.text : preview.hex}</code>
+          {preview.kind === "text" ? (
+            <CodeHighlight
+              text={preview.text}
+              language={value.version.media_type === "text/css" ? "css" : "javascript"}
+            />
+          ) : (
+            <code>{preview.hex}</code>
+          )}
         </pre>
       )}
       <small>

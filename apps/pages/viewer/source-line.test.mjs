@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { VirtualTimeScheduler } from "rxjs";
 import { sourceLine, sourceLineClock, sourceTime } from "./source-line.mjs";
+import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
 
 const now = Date.parse("2026-11-14T17:00:00Z");
 const options = { locale: "en-US", timeZone: "America/Los_Angeles" };
@@ -9,6 +10,32 @@ const minute = 60_000,
   hour = 60 * minute,
   day = 24 * hour;
 const source = (id, name, revision, set_at) => ({ source_id: id, name, revision, set_at });
+
+test("rendering assets don't affect title entries, counts, or refresh dates", () => {
+  const renderers = Object.fromEntries(
+    ["text/javascript", "text/css", ANYWIDGET_MEDIA_TYPE].map((media_type, i) => [
+      `code${i}`,
+      { ...source(`code${i}`, `Code ${i}`, "2", new Date(now).toISOString()), media_type },
+    ]),
+  );
+  assert.equal(sourceLine(renderers, now, options), null);
+  const data = Object.fromEntries(
+    ["application/vnd.apache.parquet", "audio/wav", "application/octet-stream"].map(
+      (media_type, i) => [
+        `data${i}`,
+        { ...source(`data${i}`, `Data ${i}`, "1", "2026-11-13T17:00:00Z"), media_type },
+      ],
+    ),
+  );
+  assert.deepEqual(
+    sourceLine({ ...data, ...renderers }, now, options),
+    sourceLine(data, now, options),
+  );
+  assert.deepEqual(
+    sourceLine(data, now, options).entries.map((entry) => entry.mediaType),
+    Object.values(data).map((entry) => entry.media_type),
+  );
+});
 
 test("zero sources has no line; sources without consumers still appear", () => {
   assert.equal(sourceLine({}, now), null);

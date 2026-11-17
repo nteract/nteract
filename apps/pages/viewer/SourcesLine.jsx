@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Database } from "lucide-react";
+import { SourceIcon } from "./SourceIcon.jsx";
 import { useStore } from "./store.mjs";
 import { sourceLine, sourceLineClock } from "./source-line.mjs";
 
@@ -12,8 +13,6 @@ function SourceTime({ source }) {
     </time>
   );
 }
-
-const SourceIcon = () => <Database size={13} strokeWidth={1.5} aria-hidden="true" />;
 
 /** Read-only metadata, outside the document's editable/commentable body. */
 export function SourcesLineView({ value, onOpen, open = false }) {
@@ -35,7 +34,7 @@ export function SourcesLineView({ value, onOpen, open = false }) {
           {value.entries.map((source) => (
             <li key={source.id} className="sources-line-entry">
               <Name className="sources-line-name" title={source.name} {...trigger(source.id)}>
-                <SourceIcon />
+                <SourceIcon mediaType={source.mediaType} size={13} strokeWidth={1.5} />
                 <span>{source.name}</span>
               </Name>
               <span aria-hidden="true">·</span>
@@ -49,7 +48,7 @@ export function SourcesLineView({ value, onOpen, open = false }) {
       {value.count >= 3 && (
         <div className="sources-line-summary">
           <Name className="sources-line-name" {...trigger(null)}>
-            <SourceIcon />
+            <Database size={13} strokeWidth={1.5} aria-hidden="true" />
             <span>{value.count} sources</span>
           </Name>
           <span>
