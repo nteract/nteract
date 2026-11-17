@@ -8,8 +8,7 @@ import { HELD, cardSettled, firstScreenCards } from "./first-screen-cards.mjs";
  * rows. The first one in the document that isn't a held placeholder means the
  * listing has drawn. */
 export const FIRST_ROWS = ".index-row-link, .index-card-link";
-const drawnRow = (page) =>
-  [...page.querySelectorAll(FIRST_ROWS)].some((row) => !row.closest(HELD));
+const drawnRow = (page) => [...page.querySelectorAll(FIRST_ROWS)].some((row) => !row.closest(HELD));
 /** What a person reaches for to open or start a Page: a row link, New Page,
  * the Page switcher and its rows. */
 export const INTENT_TARGETS = [
@@ -23,8 +22,11 @@ export const INTENT_TARGETS = [
 // Events that show intent before a click: hover, a touch or press, and
 // keyboard focus.
 const INTENT_EVENTS = Object.freeze(["pointerover", "pointerdown", "focusin"]);
-/** The longest the editor waits for the first-screen card images. A card
- * with no card yet, or a slow image, never holds it longer. */
+/** The longest the editor waits for the first-screen card images after the
+ * rows paint. On Fast 4G they settled about 1.5 s after the first card drew
+ * (scripts/library-lcp-benchmark.mjs); twice that leaves room for a slower
+ * link, and a card with no card yet, or an image that never answers, holds
+ * the editor no longer. */
 export const SETTLE_CAP_MS = 3_000;
 /** The longest the editor waits for an idle period after that. */
 export const IDLE_TIMEOUT_MS = 2_000;

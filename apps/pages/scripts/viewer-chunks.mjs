@@ -178,11 +178,12 @@ const EDITOR_ENTRY_INPUT = "../viewer/page-editor.mjs";
  * The ceiling on the home route's critical path: app.js plus every chunk it
  * imports statically, in raw (uncompressed) bytes. The library at / can't
  * draw until all of it has downloaded and run. A deliberate number, not a
- * measurement: when it was set the path was 1,138.9 KiB raw (365.7 KiB
- * gzip), and its largest piece was the Wordgard editor chunk that
- * MarginThreads.jsx pulls in. Raise it in a change that says why.
+ * measurement: when it was last set the path was 1,149.2 KiB raw, with the
+ * library's device cache and the editor start's image settle in it, and its
+ * largest piece was the Wordgard editor chunk that MarginThreads.jsx pulls in.
+ * Raise it in a change that says why.
  */
-export const CRITICAL_PATH_CEILING = 1_175_000;
+export const CRITICAL_PATH_CEILING = 1_210_000;
 
 /**
  * The home route's critical path, checked: the files (app.js and its static

@@ -88,8 +88,11 @@ const firstStart = async (page, pathname, timeout = 10_000) => {
 };
 const round = (value) => Math.round(value * 10) / 10;
 const preloadPriority = (page) =>
-  page.evaluate(() =>
-    document.head.querySelector('link[rel="preload"][as="fetch"]')?.getAttribute("fetchpriority") ?? null,
+  page.evaluate(
+    () =>
+      document.head
+        .querySelector('link[rel="preload"][as="fetch"]')
+        ?.getAttribute("fetchpriority") ?? null,
   );
 
 let owner;

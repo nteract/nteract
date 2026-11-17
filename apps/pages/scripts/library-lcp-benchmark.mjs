@@ -9,6 +9,9 @@
 //                    (default 24)
 //   PAGES_LCP_HTTP   "2" (default): the proxy serves HTTP/2 over TLS, as the
 //                    edge does; "1.1": plain HTTP/1.1, six connections a host
+//   PAGES_LCP_REPEAT "1": each measured load follows an unthrottled visit in
+//                    the same context, so it starts from that visit's HTTP
+//                    cache and the device's remembered rows and cards
 //   PAGES_LCP_VARIANTS  name=dir,name=dir: other builds' dist/public
 //                    directories, whose viewer the proxy serves in turn (the
 //                    Worker stays this build's). Loads interleave, one per
@@ -44,6 +47,7 @@ await mkdir(output, { recursive: true });
 const RUNS = Number(process.env.PAGES_LCP_RUNS || 5);
 const PAGES = Number(process.env.PAGES_LCP_PAGES || 24);
 const HTTP2 = (process.env.PAGES_LCP_HTTP || "2") === "2";
+const REPEAT = process.env.PAGES_LCP_REPEAT === "1";
 const VARIANTS = (process.env.PAGES_LCP_VARIANTS || "")
   .split(",")
   .filter(Boolean)
@@ -105,7 +109,8 @@ const markdown = (i) => {
       0,
       "```mermaid\nflowchart LR\n  Draft --> Review --> Publish\n  Review -->|changes| Draft\n```",
     );
-  if (i % 4 === 1) parts.splice(2, 0, "> A quote from the last retro that set the tone for this one.");
+  if (i % 4 === 1)
+    parts.splice(2, 0, "> A quote from the last retro that set the tone for this one.");
   return parts.join("\n\n");
 };
 
@@ -227,98 +232,108 @@ try {
   };
   for (let run = 1; run <= RUNS; run++)
     for (const variant of variants) {
-    current = VARIANTS.length ? variant : null;
-    const { editorChunk, wasm } = variant;
-    // The Pages session cookie is for localhost, whatever the port and scheme.
-    const context = await browser.newContext({
-      storageState,
-      viewport: VIEWPORT,
-      ignoreHTTPSErrors: true,
-    });
-    await context.addInitScript(INSTRUMENT);
-    const page = await context.newPage();
-    page.on("pageerror", (error) => report.errors.push(error.message));
-    const cdp = await context.newCDPSession(page);
-    await cdp.send("Network.enable");
-    await cdp.send("Network.emulateNetworkConditions", FAST_4G);
-    await page.goto(`${proxy.origin}/?grid=1`, { waitUntil: "commit", timeout: 120000 });
-    await expect(page.locator("img.page-card-image").first()).toBeVisible({ timeout: 120000 });
-    // Let the editor and WASM finish, or give up after a minute.
-    await expect
-      .poll(
-        () =>
-          page.evaluate(
-            (wasm) =>
-              performance
-                .getEntriesByType("resource")
-                .some((entry) => new URL(entry.name).pathname === wasm && entry.responseEnd > 0),
-            wasm,
-          ),
-        { timeout: 60000, intervals: [500] },
-      )
-      .toBe(true)
-      .catch(() => {});
-    await page.waitForTimeout(500);
-    const sample = await page.evaluate(
-      ({ editorChunk, wasm }) => {
-        const resources = performance.getEntriesByType("resource");
-        const timing = (pathname) => {
-          const found = resources.filter((entry) => new URL(entry.name).pathname === pathname);
-          return found.length
-            ? {
-                start: Math.min(...found.map((entry) => entry.startTime)),
-                end: Math.max(...found.map((entry) => entry.responseEnd)),
-                count: found.length,
-              }
-            : null;
-        };
-        const images = resources.filter((entry) =>
-          /\/card-image\/[0-9a-f]{64}-(light|dark)\./.test(new URL(entry.name).pathname),
-        );
-        // The shown images in the first screen, by their element's place.
-        const shown = [...document.querySelectorAll("img.page-card-image")].filter(
-          (image) =>
-            getComputedStyle(image).display !== "none" &&
-            image.getBoundingClientRect().top < innerHeight,
-        );
-        const shownEnds = shown
-          .map(
-            (image) =>
-              resources.find((entry) => entry.name === image.currentSrc || entry.name === image.src)
-                ?.responseEnd,
-          )
-          .filter((end) => end !== undefined);
-        const lcp = window.__lcp.at(-1) ?? null;
-        return {
-          protocol: resources.find((entry) => entry.nextHopProtocol)?.nextHopProtocol ?? null,
-          firstCard: window.__firstCard,
-          // A banner over the grid would be measured instead of the grid.
-          banner: document.querySelector(".build-update-message")?.textContent ?? null,
-          lcp: lcp?.time ?? null,
-          lcpElement: lcp?.element ?? null,
-          firstImageEnd: images.length ? Math.min(...images.map((entry) => entry.responseEnd)) : null,
-          firstScreenImagesEnd: shownEnds.length ? Math.max(...shownEnds) : null,
-          firstScreenImages: shown.length,
-          imagesFetched: images.length,
-          editor: timing(editorChunk),
-          wasm: timing(wasm),
-          wasmPriority:
-            document.querySelector('link[rel="preload"][as="fetch"]')?.getAttribute(
-              "fetchpriority",
-            ) ?? null,
-        };
-      },
-      { editorChunk, wasm },
-    );
-    sample.variant = variant.name;
-    report.runs.push(sample);
-    console.log(`[Library LCP] ${variant.name} run ${run}: ${JSON.stringify(sample)}`);
-    if (run === 1)
-      await page.screenshot({
-        path: path.join(output, `library-grid-${variant.name.replace(/\W+/g, "-")}.png`),
+      current = VARIANTS.length ? variant : null;
+      const { editorChunk, wasm } = variant;
+      // The Pages session cookie is for localhost, whatever the port and scheme.
+      const context = await browser.newContext({
+        storageState,
+        viewport: VIEWPORT,
+        ignoreHTTPSErrors: true,
       });
-    await context.close();
-  }
+      await context.addInitScript(INSTRUMENT);
+      const page = await context.newPage();
+      page.on("pageerror", (error) => report.errors.push(error.message));
+      const cdp = await context.newCDPSession(page);
+      await cdp.send("Network.enable");
+      if (REPEAT) {
+        // A visit before, unthrottled: its HTTP cache, and the rows and cards
+        // the device keeps, are what the measured load starts from.
+        await page.goto(`${proxy.origin}/?grid=1`, { waitUntil: "load", timeout: 120000 });
+        await expect(page.locator("img.page-card-image").first()).toBeVisible({ timeout: 120000 });
+        await page.waitForTimeout(5000);
+      }
+      await cdp.send("Network.emulateNetworkConditions", FAST_4G);
+      await page.goto(`${proxy.origin}/?grid=1`, { waitUntil: "commit", timeout: 120000 });
+      await expect(page.locator("img.page-card-image").first()).toBeVisible({ timeout: 120000 });
+      // Let the editor and WASM finish, or give up after a minute.
+      await expect
+        .poll(
+          () =>
+            page.evaluate(
+              (wasm) =>
+                performance
+                  .getEntriesByType("resource")
+                  .some((entry) => new URL(entry.name).pathname === wasm && entry.responseEnd > 0),
+              wasm,
+            ),
+          { timeout: 60000, intervals: [500] },
+        )
+        .toBe(true)
+        .catch(() => {});
+      await page.waitForTimeout(500);
+      const sample = await page.evaluate(
+        ({ editorChunk, wasm }) => {
+          const resources = performance.getEntriesByType("resource");
+          const timing = (pathname) => {
+            const found = resources.filter((entry) => new URL(entry.name).pathname === pathname);
+            return found.length
+              ? {
+                  start: Math.min(...found.map((entry) => entry.startTime)),
+                  end: Math.max(...found.map((entry) => entry.responseEnd)),
+                  count: found.length,
+                }
+              : null;
+          };
+          const images = resources.filter((entry) =>
+            /\/card-image\/[0-9a-f]{64}-(light|dark)\./.test(new URL(entry.name).pathname),
+          );
+          // The shown images in the first screen, by their element's place.
+          const shown = [...document.querySelectorAll("img.page-card-image")].filter(
+            (image) =>
+              getComputedStyle(image).display !== "none" &&
+              image.getBoundingClientRect().top < innerHeight,
+          );
+          const shownEnds = shown
+            .map(
+              (image) =>
+                resources.find(
+                  (entry) => entry.name === image.currentSrc || entry.name === image.src,
+                )?.responseEnd,
+            )
+            .filter((end) => end !== undefined);
+          const lcp = window.__lcp.at(-1) ?? null;
+          return {
+            protocol: resources.find((entry) => entry.nextHopProtocol)?.nextHopProtocol ?? null,
+            firstCard: window.__firstCard,
+            // A banner over the grid would be measured instead of the grid.
+            banner: document.querySelector(".build-update-message")?.textContent ?? null,
+            lcp: lcp?.time ?? null,
+            lcpElement: lcp?.element ?? null,
+            firstImageEnd: images.length
+              ? Math.min(...images.map((entry) => entry.responseEnd))
+              : null,
+            firstScreenImagesEnd: shownEnds.length ? Math.max(...shownEnds) : null,
+            firstScreenImages: shown.length,
+            imagesFetched: images.length,
+            editor: timing(editorChunk),
+            wasm: timing(wasm),
+            wasmPriority:
+              document
+                .querySelector('link[rel="preload"][as="fetch"]')
+                ?.getAttribute("fetchpriority") ?? null,
+          };
+        },
+        { editorChunk, wasm },
+      );
+      sample.variant = variant.name;
+      report.runs.push(sample);
+      console.log(`[Library LCP] ${variant.name} run ${run}: ${JSON.stringify(sample)}`);
+      if (run === 1)
+        await page.screenshot({
+          path: path.join(output, `library-grid-${variant.name.replace(/\W+/g, "-")}.png`),
+        });
+      await context.close();
+    }
   current = null;
   const median = (values) => {
     const sorted = values.filter((value) => typeof value === "number").sort((a, b) => a - b);

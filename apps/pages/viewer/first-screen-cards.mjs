@@ -4,11 +4,11 @@
 
 // The grid is at most 1200px wide with 200px columns and 1rem gaps
 // (style.css, .index-grid), so its widest layout has 5 columns: this is its
-// first row. One row, not the whole first screen: the largest paint is the
-// first image to finish, and on a throttled HTTP/2 link every high-priority
-// image shares the bandwidth, so fewer of them finish the first one sooner.
-// scripts/library-lcp-benchmark.mjs on Fast 4G put LCP at 2.4 s with 5,
-// 3.2 s with 10 and 2.8 s with 20. Measure again before raising it.
+// first row. The largest paint is the first card image to finish, and
+// scripts/library-lcp-benchmark.mjs on Fast 4G over HTTP/2 measured the same
+// LCP with 5, 10 or 20 eager images (2.40, 2.38 and 2.39 s, 24 captured
+// cards at 1440x900). With nothing to gain from more, the first row keeps the
+// fewest images ahead of everything else on the link. Measure before raising.
 export const FIRST_SCREEN_CARDS = 5;
 
 /** A held placeholder for a row the device remembers but the server hasn't

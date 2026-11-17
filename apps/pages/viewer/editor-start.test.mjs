@@ -6,12 +6,7 @@ import { JSDOM } from "jsdom";
 import { loadTable, runTable } from "../shared/machine-test.mjs";
 import { readPageRoute } from "../shared/routes.mjs";
 import { LISTING_ROUTES, editorStartMachine } from "./editor-start-machine.mjs";
-import {
-  EditorStart,
-  IDLE_FALLBACK_MS,
-  IDLE_TIMEOUT_MS,
-  SETTLE_CAP_MS,
-} from "./editor-start.mjs";
+import { EditorStart, IDLE_FALLBACK_MS, IDLE_TIMEOUT_MS, SETTLE_CAP_MS } from "./editor-start.mjs";
 
 const TABLE = new URL("../test/fixtures/machines/editor-start.json", import.meta.url);
 const pageId = "1a160b47-6df1-4983-81eb-489ca5a26812";
@@ -205,7 +200,9 @@ test("hovering or focusing a row starts the editor at once, at normal priority",
     await f.flush();
     f.runFrames();
     assert.equal(f.timers.size, 1);
-    card.querySelector(".index-card-preview").dispatchEvent(new f.win.Event(type, { bubbles: true }));
+    card
+      .querySelector(".index-card-preview")
+      .dispatchEvent(new f.win.Event(type, { bubbles: true }));
     assert.deepEqual(f.starts, [{ priority: null }], type);
     assert.equal(f.timers.size, 0, `${type} clears the cap`);
     f.close();
