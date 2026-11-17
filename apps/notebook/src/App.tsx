@@ -3,6 +3,8 @@ import { useRuntimeStateLoaded } from "@/components/notebook/state/runtime-state
 import { NotebookCommentPreview } from "@/components/notebook/NotebookCommentPreview";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  borrowedEnvironmentKind,
+  projectRunningEnvironment,
   colorForActorIdentity,
   contrastColorForActorIdentity,
   DEFAULT_PROJECT_TRUST_STATE,
@@ -118,10 +120,6 @@ import { CrdtBridgeProvider } from "@/components/notebook";
 import { startCursorDispatch } from "@/components/notebook/cursor-registry";
 import { useDaemonKernel } from "./hooks/useDaemonKernel";
 import { useLocalEnvironmentSelection } from "./hooks/useLocalEnvironmentSelection";
-import {
-  borrowedEnvironmentKind,
-  projectRunningEnvironment,
-} from "./lib/local-environment-projection";
 import { useDenoConfig } from "./hooks/useDenoConfig";
 import { type EnvSyncState, useDependencies } from "./hooks/useDependencies";
 import { useEnvProgress } from "./hooks/useEnvProgress";

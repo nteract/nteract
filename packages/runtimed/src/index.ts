@@ -78,6 +78,15 @@ export type {
   KernelspecInventory,
 } from "./request-types";
 
+export {
+  borrowedEnvironmentKind,
+  projectRunningEnvironment,
+  runningEnvironmentFallbackName,
+  type BorrowedEnvironmentKind,
+  type RunningEnvironment,
+  type RunningEnvironmentFacts,
+} from "./environment-selection-projection";
+
 // Polling + fetch-on-input primitives (injected scheduler/fetch, abort-wired)
 export {
   createPoll,
