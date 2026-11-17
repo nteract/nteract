@@ -346,15 +346,21 @@ export type EnvironmentSyncNextAction = "none" | "restart" | "inspect";
 /**
  * Daemon verdict for `syncEnvironmentResult()`.
  *
- * - `applied`: packages are installed in the running kernel. `needsRestart` false, `nextAction` `"none"`.
+ * - `applied`: the daemon completed its sync request. `syncedPackages` names the
+ *   packages it reports installing; an empty list can mean no applicable changes.
+ *   `needsRestart` false, `nextAction` `"none"`.
  * - `restart_required`: the daemon cannot hot-apply this change (removals, channel or
- *   package-manager changes, project file updates). Nothing was installed. Call
+ *   package-manager changes, project file updates). Call
  *   `restartKernel()` when discarding in-memory state is acceptable.
  *   `needsRestart` true, `nextAction` `"restart"`.
- * - `failed`: the change was not applied and a restart will not apply it (trust not
- *   approved, borrowed environment, install error). `needsRestart` false, `nextAction` `"inspect"`.
+ * - `failed`: sync did not complete (trust not approved, borrowed environment,
+ *   install error). Inspect the error; it does not establish that no side effects
+ *   occurred. `needsRestart` false, `nextAction` `"inspect"`.
  *
  * Notebook dependency metadata is the saved spec. It is not proof of the running environment.
+ * Sync does not select a package manager or environment. In particular, a new
+ * Conda declaration can be outside a running UV kernel's sync scope. Check the
+ * requested manager against RuntimeStatus and use explicit environment selection.
  */
 export interface EnvironmentSyncResult {
   status: EnvironmentSyncStatus;

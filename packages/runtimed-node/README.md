@@ -313,16 +313,22 @@ Pass the native `PackageManager` string enum (`"uv"`, `"conda"`, or `"pixi"`) on
   `lifecycle` is `"Running"`; empty means unreported. `runtimeAgentId` is reused
   across restarts and is not a kernel generation. It reads this session's
   replica; right after a launch it can lag the daemon.
-- `Session.syncEnvironment()` installs recorded notebook dependencies into the
-  running kernel and rejects when the daemon cannot apply them.
+- `Session.syncEnvironment()` requests dependency sync for the running
+  environment and rejects when the daemon reports that it cannot apply changes.
 - `Session.syncEnvironmentResult()` sends the same request and returns the
   daemon's verdict: `{ status, syncedPackages, needsRestart, error?, nextAction }`.
-  `applied` means the packages are in the running kernel. `restart_required`
+  `applied` means the daemon completed that sync request; `syncedPackages` names
+  the packages it reports installing. An empty list can mean no applicable changes.
+  Sync does not select an environment or package manager: for example, a new Conda
+  declaration can be outside a running UV kernel's sync scope. Compare the requested
+  manager with `getRuntimeStatus().envSource` and use explicit environment selection.
+  `restart_required`
   (`nextAction: "restart"`) means the change needs a new kernel: removals,
-  channel or package-manager changes, or project file updates. Nothing was
-  installed, and the kernel was not restarted. Call `restartKernel()` when
+  channel or package-manager changes, or project file updates. The kernel was
+  not restarted. Call `restartKernel()` when
   losing in-memory state is acceptable. `failed` (`nextAction: "inspect"`)
-  covers trust refusals, borrowed environments, and install errors. Dependency
+  covers trust refusals, borrowed environments, and install errors; it does not
+  guarantee that a failed installer made no changes. Dependency
   metadata is the saved spec, not the running environment; check
   `getRuntimeStatus().envSource` after a restart.
 - `Session.saveNotebook(path?)` saves the notebook.
