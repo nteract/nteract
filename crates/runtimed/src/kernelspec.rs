@@ -205,8 +205,6 @@ pub fn command(spec: &KernelspecLaunch, connection: &Path) -> tokio::process::Co
         s.replace("{resource_dir}", &spec.resource_dir.to_string_lossy())
             .replace("{connection_file}", &connection.to_string_lossy())
     }));
-    #[cfg(unix)]
-    cmd.process_group(0);
     cmd
 }
 

@@ -32,6 +32,8 @@ For local notebooks, the daemon can borrow an installed kernel instead of creati
 
 The standard `python3` name alone keeps managed selection. Explicitly applying installed `python3` also saves `metadata.runt.installed_kernelspec: "python3"`. Only the name is portable; paths, argv, and environment values stay on the machine. Staging does not interrupt the running kernel. Apply starts or replaces it. Stage and apply Automatic to return to project or managed selection.
 
+Explicit Project mode belongs to the room, not the notebook file. Restarts in that room continue to use Project mode. Reopening the file in a new Automatic room evaluates its saved metadata again. Applying Automatic in the picker is different: a successful apply removes the installed marker and replaces the custom kernelspec name, so the cleared selection survives reopening.
+
 Discovery searches `kernels` below `JUPYTER_PATH` entries, the user Jupyter data directory (`JUPYTER_DATA_DIR` can override it), active Python/Conda prefixes, and system Jupyter data directories. `JUPYTER_PREFER_ENV_PATH=1` puts prefix paths before the user path. Install dependencies with the kernel's own tools: nteract does not sync packages into, or delete, borrowed environments. This is not a JupyterHub or remote-kernel connector. The native integration test runs ipykernel on macOS; Windows runtime behavior is not verified by that test.
 
 ## Channels

@@ -153,8 +153,96 @@ fn kernel_process_exited_error(
     anyhow::anyhow!(message)
 }
 
+/// Only this owner waits on the child. An unreaped leader pins its process-group ID.
+struct KernelChild {
+    child: tokio::process::Child,
+    #[cfg(unix)]
+    group: Option<nix::unistd::Pid>,
+}
+
+impl KernelChild {
+    fn spawn(cmd: &mut tokio::process::Command, installed: bool) -> std::io::Result<Self> {
+        #[cfg(unix)]
+        if installed {
+            cmd.process_group(0);
+        }
+        let child = cmd.spawn()?;
+        #[cfg(unix)]
+        let group =
+            installed.then(|| nix::unistd::Pid::from_raw(child.id().expect("just spawned") as i32));
+        #[cfg(not(unix))]
+        let _ = installed;
+        Ok(Self {
+            child,
+            #[cfg(unix)]
+            group,
+        })
+    }
+
+    #[cfg(unix)]
+    fn terminate_group(&mut self) {
+        if let Some(group) = self.group.take() {
+            if let Err(e) = nix::sys::signal::killpg(group, nix::sys::signal::Signal::SIGKILL) {
+                if e != nix::errno::Errno::ESRCH {
+                    warn!("Failed to terminate kernel process group {group}: {e}");
+                }
+            }
+        }
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        #[cfg(unix)]
+        if let Some(group) = self.group {
+            // WNOWAIT leaves the leader waitable even when the wrapper exits before its children.
+            let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
+            if unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    group.as_raw() as libc::id_t,
+                    &mut info,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            } < 0
+            {
+                let e = std::io::Error::last_os_error();
+                if e.raw_os_error() == Some(libc::ECHILD) {
+                    self.group = None;
+                }
+                return Err(e);
+            }
+            if unsafe { info.si_pid() } == 0 {
+                return Ok(None);
+            }
+            self.terminate_group();
+        }
+        self.child.try_wait()
+    }
+
+    async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        #[cfg(unix)]
+        while self.group.is_some() {
+            match self.try_wait() {
+                Ok(Some(status)) => return Ok(status),
+                Ok(None) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        self.child.wait().await
+    }
+}
+
+impl Drop for KernelChild {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        self.terminate_group();
+        // Child's kill_on_drop and Tokio's orphan reaper own the final leader wait.
+    }
+}
+
 fn check_kernel_process_still_running(
-    process: &mut tokio::process::Child,
+    process: &mut KernelChild,
     kernel_id: &str,
     stderr_buffer: &Arc<StdMutex<VecDeque<String>>>,
     ipc_prefix: Option<&Path>,
@@ -476,6 +564,8 @@ impl InterruptHandle {
 /// methods directly, but must be kept alive for the struct's lifetime.
 #[allow(dead_code)]
 pub struct JupyterKernel {
+    #[cfg(unix)]
+    group_shutdown: Option<(mpsc::Sender<()>, oneshot::Receiver<std::io::Result<()>>)>,
     signal: Option<mpsc::Sender<tokio::sync::oneshot::Sender<Result<()>>>>,
     /// Kernel type (e.g., "python", "deno").
     kernel_type: String,
@@ -508,7 +598,7 @@ pub struct JupyterKernel {
     /// Handle to the shell reader task.
     shell_reader_task: Option<JoinHandle<()>>,
     /// Handle to the process watcher task (detects process exit).
-    process_watcher_task: Option<JoinHandle<()>>,
+    process_watcher_task: Option<tokio_util::task::AbortOnDropHandle<()>>,
     /// Handle to the heartbeat monitor task (detects unresponsive kernel).
     heartbeat_task: Option<JoinHandle<()>>,
     /// Channel for coalesced comm state writes (IOPub -> coalesce task).
@@ -1110,11 +1200,7 @@ impl KernelConnection for JupyterKernel {
         // only "exit status: 1" with no clue why the kernel died.
         const STDERR_BUFFER_LINES: usize = 50;
 
-        type LaunchedKernel = (
-            tokio::process::Child,
-            Arc<StdMutex<VecDeque<String>>>,
-            ConnectionInfo,
-        );
+        type LaunchedKernel = (KernelChild, Arc<StdMutex<VecDeque<String>>>, ConnectionInfo);
 
         #[cfg(unix)]
         let use_ipc = kernel_type != "deno" && installed.is_none();
@@ -1157,11 +1243,11 @@ impl KernelConnection for JupyterKernel {
                 );
 
                 let spawn_started = std::time::Instant::now();
-                let mut process = cmd.spawn()?;
+                let mut process = KernelChild::spawn(&mut cmd, false)?;
                 let stderr_buffer: Arc<StdMutex<VecDeque<String>>> =
                     Arc::new(StdMutex::new(VecDeque::with_capacity(STDERR_BUFFER_LINES)));
                 let stderr_drain: Option<JoinHandle<()>> =
-                    if let Some(stderr) = process.stderr.take() {
+                    if let Some(stderr) = process.child.stderr.take() {
                         let kid = kernel_id.clone();
                         let buffer = stderr_buffer.clone();
                         Some(spawn_best_effort("kernel-stderr", async move {
@@ -1187,7 +1273,7 @@ impl KernelConnection for JupyterKernel {
 
                 info!(
                     "[jupyter-kernel] Spawned kernel process (pid={:?}, kernel_id={}, transport=ipc, prefix={}, spawn_elapsed_ms={}, launch_elapsed_ms={})",
-                    process.id(),
+                    process.child.id(),
                     kernel_id,
                     prefix.display(),
                     spawn_started.elapsed().as_millis(),
@@ -1262,7 +1348,7 @@ impl KernelConnection for JupyterKernel {
                     );
                 }
                 let spawn_started = std::time::Instant::now();
-                let mut process = cmd.spawn()?;
+                let mut process = KernelChild::spawn(&mut cmd, installed.is_some())?;
                 #[cfg(not(windows))]
                 drop(listeners);
                 #[cfg(windows)]
@@ -1283,7 +1369,7 @@ impl KernelConnection for JupyterKernel {
                 let stderr_buffer: Arc<StdMutex<VecDeque<String>>> =
                     Arc::new(StdMutex::new(VecDeque::with_capacity(STDERR_BUFFER_LINES)));
                 let stderr_drain: Option<JoinHandle<()>> =
-                    if let Some(stderr) = process.stderr.take() {
+                    if let Some(stderr) = process.child.stderr.take() {
                         let kid = kernel_id.clone();
                         let buffer = stderr_buffer.clone();
                         Some(spawn_best_effort("kernel-stderr", async move {
@@ -1309,7 +1395,7 @@ impl KernelConnection for JupyterKernel {
 
                 info!(
                     "[jupyter-kernel] Spawned kernel process (pid={:?}, kernel_id={}, transport=tcp, ports={:?}, spawn_elapsed_ms={}, launch_elapsed_ms={})",
-                    process.id(),
+                    process.child.id(),
                     kernel_id,
                     ports,
                     spawn_started.elapsed().as_millis(),
@@ -1337,7 +1423,7 @@ impl KernelConnection for JupyterKernel {
         let _ = &stderr_buffer;
 
         #[cfg(unix)]
-        let kernel_pid = process.id().map(|pid| pid as i32);
+        let kernel_pid = process.child.id().map(|pid| pid as i32);
 
         // Fresh session_id for ZMQ connections
         let session_id = Uuid::new_v4().to_string();
@@ -1401,45 +1487,6 @@ impl KernelConnection for JupyterKernel {
             }
         }
 
-        // Create iopub connection and spawn listener
-        let iopub_endpoint = connection_info.iopub_url();
-        let iopub_connect_started = std::time::Instant::now();
-        info!(
-            "[jupyter-kernel] Connecting IOPub: kernel_id={} endpoint={} launch_elapsed_ms={}",
-            kernel_id,
-            iopub_endpoint,
-            launch_started.elapsed().as_millis()
-        );
-        let mut iopub = match jupyter_zmq_client::create_client_iopub_connection(
-            &connection_info,
-            "",
-            &session_id,
-        )
-        .await
-        {
-            Ok(conn) => {
-                info!(
-                        "[jupyter-kernel] IOPub connected: kernel_id={} endpoint={} connect_elapsed_ms={} launch_elapsed_ms={}",
-                        kernel_id,
-                        iopub_endpoint,
-                        iopub_connect_started.elapsed().as_millis(),
-                        launch_started.elapsed().as_millis()
-                    );
-                conn
-            }
-            Err(e) => {
-                error!(
-                        "[jupyter-kernel] IOPub connect failed: kernel_id={} endpoint={} connect_elapsed_ms={} launch_elapsed_ms={} error={}",
-                        kernel_id,
-                        iopub_endpoint,
-                        iopub_connect_started.elapsed().as_millis(),
-                        launch_started.elapsed().as_millis(),
-                        e
-                    );
-                return Err(e.into());
-            }
-        };
-
         // Create command channels for queue processing. Lifecycle commands are
         // control-plane signals and must not be backpressured by bounded output
         // work such as captured Output widget updates.
@@ -1457,7 +1504,13 @@ impl KernelConnection for JupyterKernel {
         // Spawn process watcher — detects process exit and signals via oneshot
         let process_cmd_tx = lifecycle_cmd_tx.clone();
         let panic_cmd_tx = lifecycle_cmd_tx.clone();
-        let (died_tx, died_rx) = tokio::sync::oneshot::channel::<String>();
+        let (died_tx, mut died_rx) = tokio::sync::oneshot::channel::<String>();
+        let (stop_tx, mut stop_rx) = mpsc::channel::<()>(1);
+        let (exit_tx, exit_rx) = oneshot::channel();
+        #[cfg(unix)]
+        let group_shutdown = installed.as_ref().map(|_| (stop_tx, exit_rx));
+        #[cfg(not(unix))]
+        drop((stop_tx, exit_rx));
         let (signal, mut signal_rx) = mpsc::channel::<tokio::sync::oneshot::Sender<Result<()>>>(1);
         let signal = installed
             .as_ref()
@@ -1465,15 +1518,21 @@ impl KernelConnection for JupyterKernel {
                 s.interrupt_mode == notebook_protocol::protocol::KernelspecInterrupt::Signal
             })
             .map(|_| signal);
-        let process_watcher_task = spawn_supervised(
+        let process_watcher_task = tokio_util::task::AbortOnDropHandle::new(spawn_supervised(
             "process-watcher",
             async move {
                 let status = loop {
                     tokio::select! {
                         status=process.wait()=>break status,
+                        Some(())=stop_rx.recv()=>{
+                            #[cfg(unix)]
+                            process.terminate_group();
+                            let _=exit_tx.send(process.child.wait().await.map(|_|()));
+                            return;
+                        }
                         Some(reply)=signal_rx.recv()=>{
                             #[cfg(unix)]
-                            let result=process.id().ok_or_else(||anyhow::anyhow!("Kernel exited")).and_then(|pid|nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pid as i32),nix::sys::signal::Signal::SIGINT).map_err(Into::into));
+                            let result=process.group.ok_or_else(||anyhow::anyhow!("Kernel exited")).and_then(|group|nix::sys::signal::killpg(group,nix::sys::signal::Signal::SIGINT).map_err(Into::into));
                             #[cfg(windows)]
                             let result=interrupt_event.as_ref().ok_or_else(||anyhow::anyhow!("Kernel has no interrupt event")).and_then(|event|{
                                 use std::os::windows::io::AsRawHandle;
@@ -1483,6 +1542,12 @@ impl KernelConnection for JupyterKernel {
                         }
                     }
                 };
+                let _ = exit_tx.send(
+                    status
+                        .as_ref()
+                        .map(|_| ())
+                        .map_err(|e| std::io::Error::new(e.kind(), e.to_string())),
+                );
                 let msg = match status {
                     Ok(exit_status) => {
                         warn!("[jupyter-kernel] Kernel process exited: {}", exit_status);
@@ -1499,7 +1564,13 @@ impl KernelConnection for JupyterKernel {
             move |_| {
                 let _ = panic_cmd_tx.send(LifecycleSignal::KernelDied);
             },
-        );
+        ));
+
+        // A wrapper may exit without ever opening a Jupyter socket.
+        let mut iopub = tokio::select! {
+            result=jupyter_zmq_client::create_client_iopub_connection(&connection_info,"",&session_id)=>result?,
+            msg=&mut died_rx=>anyhow::bail!("{}",msg.unwrap_or_else(|_|"Kernel watcher stopped during IOPub connect".into())),
+        };
 
         // Extension requests get their own shell so a long kernel callback
         // never holds the primary shell. Extensions launch before IOPub is
@@ -3207,7 +3278,9 @@ impl KernelConnection for JupyterKernel {
             #[cfg(unix)]
             ipc_prefix,
             #[cfg(unix)]
-            kernel_pid,
+            kernel_pid: kernel_pid.filter(|_| installed.is_none()),
+            #[cfg(unix)]
+            group_shutdown,
             iopub_task: Some(iopub_task),
             shell_reader_task: Some(shell_reader_task),
             process_watcher_task: Some(process_watcher_task),
@@ -3334,6 +3407,46 @@ impl KernelConnection for JupyterKernel {
             task.abort();
         }
         if let Some(task) = self.process_watcher_task.take() {
+            #[cfg(unix)]
+            if let Some((terminate, exit)) = self.group_shutdown.take() {
+                let _ = terminate.try_send(());
+                exit.await??;
+                task.await?;
+                // A wrapper is our child; a grandchild may own the Jupyter listeners.
+                if let Some(ci) = self.connection_info.as_ref() {
+                    let ports = KernelPorts {
+                        stdin: ci.stdin_port,
+                        control: ci.control_port,
+                        hb: ci.hb_port,
+                        shell: ci.shell_port,
+                        iopub: ci.iopub_port,
+                    };
+                    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                        loop {
+                            match bind_kernel_port_listeners(Ipv4Addr::LOCALHOST.into(), ports)
+                                .await
+                            {
+                                Ok(_) => return Ok(()),
+                                Err(e)
+                                    if e.downcast_ref::<std::io::Error>().is_some_and(|e| {
+                                        e.kind() == std::io::ErrorKind::AddrInUse
+                                    }) =>
+                                {
+                                    tokio::time::sleep(std::time::Duration::from_millis(10)).await
+                                }
+                                Err(e) => return Err(e),
+                            }
+                        }
+                    })
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!("Kernel exited but its TCP ports are still in use")
+                    })??;
+                }
+            } else {
+                task.abort();
+            }
+            #[cfg(not(unix))]
             task.abort();
         }
         if let Some(task) = self.heartbeat_task.take() {
@@ -3789,6 +3902,60 @@ fn conda_activation_paths(prefix: &Path, windows: bool) -> Vec<PathBuf> {
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn installed_wrapper_descendants_close_on_failure_cancel_and_shutdown() {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+        use tokio_util::task::AbortOnDropHandle;
+        for scenario in [
+            "startup failure",
+            "cancel before watcher",
+            "cancel during handshake",
+            "shutdown",
+        ] {
+            // The sleep process inherits stdout. EOF proves the descendant exited,
+            // even after the wrapper itself has been reaped.
+            let script = if scenario == "startup failure" {
+                "sleep 30 & echo ready; exit 7"
+            } else {
+                "sleep 30 & echo ready; wait"
+            };
+            let mut cmd = tokio::process::Command::new("/bin/sh");
+            cmd.args(["-c", script])
+                .kill_on_drop(true)
+                .stdout(Stdio::piped());
+            let mut child = KernelChild::spawn(&mut cmd, true).unwrap();
+            let mut pipe = BufReader::new(child.child.stdout.take().unwrap());
+            let mut ready = String::new();
+            pipe.read_line(&mut ready).await.unwrap();
+            assert_eq!(ready, "ready\n");
+            match scenario {
+                "startup failure" => {
+                    assert_eq!(child.wait().await.unwrap().code(), Some(7));
+                    assert!(child.group.is_none());
+                }
+                "cancel before watcher" => drop(child),
+                _ => {
+                    let task =
+                        AbortOnDropHandle::new(tokio::spawn(async move { child.wait().await }));
+                    if scenario == "shutdown" {
+                        task.abort();
+                        assert!(task.await.unwrap_err().is_cancelled());
+                    } else {
+                        drop(task);
+                    }
+                }
+            }
+            tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                pipe.read_to_end(&mut Vec::new()),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("{scenario}: descendant still holds stdout"))
+            .unwrap();
+        }
+    }
 
     #[test]
     fn borrowed_conda_command_keeps_explicit_prefix_and_interpreter() {
