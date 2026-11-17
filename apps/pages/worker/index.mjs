@@ -412,6 +412,7 @@ import {
 import { serialQueue, serialQueueBounds } from "./serial-queue.mjs";
 import { opensIndex } from "./account-index-machine.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
+import { CARDS_LANE, CARDS_LANE_HEADER, catalogLane } from "./catalog-lanes.mjs";
 import { boundedMap } from "./bounded-map.mjs";
 import { legibleEnv, overloadRetryAfterMs, withRepeatSafety } from "./host-busy.mjs";
 import { readTool } from "./tool-reads.mjs";
@@ -903,6 +904,10 @@ function bodyAgent(body) {
   return normalizeAgentAssertions(meta.agent);
 }
 
+/** A gateway or Catalog request to a host route. It carries only the
+ * caller's headers named below, plus headers this code sets: a client can't
+ * add an internal header (such as catalog-lanes.mjs CARDS_LANE_HEADER) to a
+ * host request by sending it. */
 function forwarded(request, path, body) {
   const url = new URL(request.url);
   url.pathname = path;
@@ -1281,6 +1286,10 @@ async function allowedCards(request, env, identity, ids) {
     }),
     timing,
   );
+  // The access step reads and never writes the Catalog, so it runs outside
+  // the Catalog's queue (catalog-lanes.mjs). `forwarded` drops every caller
+  // header outside its allowlist, so only this line can set the lane.
+  internal.headers.set(CARDS_LANE_HEADER, CARDS_LANE);
   // An <img> fetch sends no Origin; this request is the gateway's own.
   if (!internal.headers.has("origin"))
     internal.headers.set("origin", new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin);
@@ -1302,9 +1311,9 @@ async function allowedCards(request, env, identity, ids) {
 
 /**
  * page_cards (page-cards.mjs). The caller's Catalog answers which IDs it
- * allows, from inside its serial queue; the card objects are read here,
- * after that queue has moved on, so a slow bucket never holds the account's
- * listings or writes. Only the allowed IDs reach the bucket.
+ * allows, outside its serial queue; the card objects are read here, so a
+ * slow bucket never holds the account's listings or writes. Only the allowed
+ * IDs reach the bucket.
  */
 async function pageCards(request, env, identity, args) {
   const ids = parsePageCardIds(args.page_ids);
@@ -1984,24 +1993,29 @@ export class Catalog {
     return (this.counted ??= countedStorage(this.ctx.storage, { ctx: this.ctx }));
   }
   fetch(request) {
-    // Location reads write nothing, so they never wait behind the queue. A
-    // Catalog listing a shared parent asks the owner's Catalog from inside
-    // its own queue; two Catalogs doing that to each other must not wait on
-    // each other.
-    if (new URL(request.url).pathname === "/internal/location") return this.location(request);
-    if (new URL(request.url).pathname === "/internal/project-discovery") return this.run(request);
+    // catalog-lanes.mjs says which requests skip the serial queue and why.
+    const lane = catalogLane(request);
+    if (lane === "location") return this.location(request);
+    if (lane === "discovery") return this.run(request);
     // A gateway forward that asks for phase timings gets them back in an
-    // internal header (server-timing.mjs); `queue` is the wait for this
-    // Catalog's serial queue.
+    // internal header (server-timing.mjs). `queue` is the wait for this
+    // Catalog's serial queue; a `cards` request never waits there and
+    // records no `queue` phase.
     const timing = request.headers.has(TIMING_REQUEST_HEADER) ? createTiming() : NO_TIMING;
     attachTiming(request, timing);
-    const endQueue = timing.start("queue");
+    let started;
+    if (lane === "cards") started = this.run(request, { lane });
+    else {
+      const endQueue = timing.start("queue");
+      started = this.queue(() => {
+        endQueue();
+        return this.run(request);
+      });
+    }
     // A request whose `run` returns `AfterQueue` finishes after the queue has
-    // released it, and holds itself open until then (request-hold.mjs).
-    const answer = this.queue(() => {
-      endQueue();
-      return this.run(request);
-    })
+    // released it, and holds itself open until then (request-hold.mjs). Both
+    // lanes hold the request open until its answer settles.
+    const answer = started
       .then((result) => (result instanceof AfterQueue ? result.finish() : result))
       .then((response) => withPhaseTimings(response, timing));
     holdUntilSettled(this.ctx, answer);
@@ -2199,7 +2213,9 @@ export class Catalog {
   async locationShape() {
     return migrateLocationShape(this.storage);
   }
-  async run(request) {
+  /** One Catalog request. `lane` is `cards` for a request that runs outside
+   * the serial queue (catalog-lanes.mjs); it may only name `page_cards`. */
+  async run(request, { lane = "queued" } = {}) {
     try {
       const pathname = new URL(request.url).pathname;
       if (pathname === "/internal/project-discovery") {
@@ -2325,6 +2341,10 @@ export class Catalog {
       if (this.ctx.id.name && this.ctx.id.name !== identity.principal)
         throw new HttpError(403, "Account access denied");
       const body = await readJson(request);
+      // Only page_cards writes nothing to this Catalog, so only it may run
+      // outside the queue.
+      if (lane === "cards" && body.operation !== "page_cards")
+        throw new HttpError(400, "Only page_cards runs in the cards lane");
       if (new URL(request.url).pathname === "/internal/title") {
         if (
           !validPageId(body.page_id) ||
@@ -4369,9 +4389,9 @@ export class Catalog {
 
   /** The access step of page_cards (page-cards.mjs): which of up to
    * PAGE_CARDS_MAX IDs the caller may read, each checked as list_pages
-   * checks its row. Answers IDs only; the gateway reads the objects outside
-   * this queue. Read-only: a refused shared entry is pruned by the next
-   * listing that meets it. */
+   * checks its row. Answers IDs only; the gateway reads the objects. It runs
+   * outside the serial queue (catalog-lanes.mjs), so it must stay read-only:
+   * a refused shared entry is pruned by the next listing that meets it. */
   async pageCards(request, identity, args) {
     const ids = parsePageCardIds(args.page_ids);
     const allowed = await timingFor(request).measure("cards", () =>

@@ -1,10 +1,13 @@
 // `page_cards`: the cards (model/page-card.mjs) of up to 24 Pages, for the
-// library grid. It runs in two steps, so object reads never hold the
-// account's Catalog queue:
+// library grid. It runs in two steps, and neither waits in the account's
+// Catalog queue:
 //
-// 1. The caller's Catalog decides access, inside its serial queue, with
-//    list_pages' rules (`allowedPageCards`), and answers only the IDs it
-//    allows. That route is internal: the gateway never forwards it.
+// 1. The caller's Catalog decides access with list_pages' rules
+//    (`allowedPageCards`) and answers only the IDs it allows. That route is
+//    internal: the gateway never forwards it. It reads and never writes the
+//    Catalog, so it runs outside the Catalog's serial queue
+//    (catalog-lanes.mjs). A queued write may be partway through while it
+//    reads; an owned entry counts only once it is settled, below.
 // 2. The gateway reads those IDs' card objects, outside every queue, all at
 //    once under one deadline (`readPageCards`). Only the Catalog's allowed
 //    IDs reach the bucket.

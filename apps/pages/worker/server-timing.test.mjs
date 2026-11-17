@@ -335,7 +335,9 @@ test("the library's three calls and a card image read carry their phases", async
   const cards = await tool("page_cards", { page_ids: [own.pageId] });
   assert.equal(cards.status, 200, cards.text);
   const cardTiming = cards.headers.get("server-timing");
-  assertTiming(cardTiming, ["total", "auth", "catalog", "cat_queue", "cat_cards", "r2"], secrets);
+  assertTiming(cardTiming, ["total", "auth", "catalog", "cat_cards", "r2"], secrets);
+  // The access step runs outside the Catalog's queue (catalog-lanes.mjs).
+  assert.equal(names(cardTiming).includes("cat_queue"), false);
   // One card object and one image pointer.
   assert.match(cardTiming, /(^|, )r2;dur=[\d.]+;desc="n=2", r2_max;dur=/);
   const memberCards = await tool("page_cards", { page_ids: [shared.pageId] }, "member");

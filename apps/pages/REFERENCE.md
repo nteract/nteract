@@ -4004,14 +4004,24 @@ card at once rather than after the next edit.
 
 `page_cards` (`/api/tools` only) takes up to 24 `page_ids`
 ([page-cards.mjs](worker/page-cards.mjs)). The caller's Catalog decides access
-inside its serial queue with `list_pages`' rules: an owned ID needs a settled
-`page/<id>` entry (so a trashed Page has none), and a shared ID needs a
-`shared/<id>` entry and a fresh `verifyShared` by its Page host, the metadata
-check that doesn't boot the document, finding the Page active. D1 is never
-read. The Catalog answers only the allowed IDs, and the gateway reads their
-objects after the queue has moved on, all at once under one 1.2-second
-deadline, so a slow bucket never holds the account's listings, creates or
-reports. Only allowed IDs reach the bucket, and no object URL leaves the Worker.
+with `list_pages`' rules: an owned ID needs a settled `page/<id>` entry (so a
+trashed Page has none), and a shared ID needs a `shared/<id>` entry and a fresh
+`verifyShared` by its Page host, the metadata check that doesn't boot the
+document, finding the Page active. D1 is never read. That step reads and never
+writes the Catalog, so it runs outside the Catalog's serial queue: the gateway
+marks its own forward with an internal lane header, which `forwarded()` never
+copies from a client, and the Catalog refuses any other operation in that lane
+([catalog-lanes.mjs](worker/catalog-lanes.mjs)). It records no `cat_queue`
+phase. A library's card and card-image requests therefore never wait behind its
+listings or each other in the queue. A queued write may be partway through
+while the step reads. That can't show a card to anyone who must not see it: a
+`page/` entry in this Catalog is always a Page this account owns, and only this
+account's own credential reaches its Catalog, so a partway state at most shows
+or hides the owner's own card for one call. A pending creation or reservation
+slot never counts. A shared ID is allowed only by its Page host's answer, which
+no Catalog state replaces. The Catalog answers only the allowed IDs, and the gateway reads
+their objects all at once under one 1.2-second deadline, so a slow bucket never
+holds the account's listings, creates or reports. Only allowed IDs reach the bucket, and no object URL leaves the Worker.
 Every other ID, unknown, refused, unchecked in time, read too late or without a
 card, answers `null`, so a caller can't tell "no access" from "no card". The
 answer names its `principal`. It isn't an MCP tool: an agent can read the Page
