@@ -555,6 +555,7 @@ async fn handle_attempt(
     };
 
     // Resolve metadata snapshot from Automerge doc (preferred) or disk
+    let initialization_fence = room.local_environment_selection.initialization_fence();
     let mut metadata_snapshot = resolve_metadata_snapshot(room, notebook_path.as_deref()).await;
 
     let selection = room.local_environment_selection.snapshot();
@@ -591,7 +592,7 @@ async fn handle_attempt(
                 error: "Installed kernelspecs require a local notebook".into(),
             };
         }
-        if apply.is_none() {
+        if let (None, Some(fence)) = (apply, initialization_fence) {
             if let Some(intent) = metadata_snapshot
                 .as_ref()
                 .and_then(|metadata| metadata.kernelspec.as_ref())
@@ -603,6 +604,7 @@ async fn handle_attempt(
                         display_name: intent.display_name.clone(),
                         language: intent.language.clone().unwrap_or_default(),
                     },
+                    fence,
                 );
             }
         }

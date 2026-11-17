@@ -15,8 +15,36 @@ use notebook_protocol::protocol::{
 };
 use tokio::sync::watch;
 
+/// Whether notebook metadata may still seed the staged intent. This is
+/// separate from the revision: the revision only grows, while a runtime
+/// session reset returns the selection to `Pending` so a reconnect re-imports
+/// the saved named kernel intent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Initialization {
+    Pending,
+    Initialized,
+}
+
+struct SelectionState {
+    snapshot: EnvironmentSelectionSnapshot,
+    initialization: Initialization,
+}
+
+impl std::ops::Deref for SelectionState {
+    type Target = EnvironmentSelectionSnapshot;
+    fn deref(&self) -> &Self::Target {
+        &self.snapshot
+    }
+}
+
+impl std::ops::DerefMut for SelectionState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.snapshot
+    }
+}
+
 pub(crate) struct LocalEnvironmentSelection {
-    state: Mutex<EnvironmentSelectionSnapshot>,
+    state: Mutex<SelectionState>,
     changed: watch::Sender<EnvironmentSelectionSnapshot>,
     replacing: std::sync::atomic::AtomicBool,
     observed_heads: Mutex<Option<Vec<String>>>,
@@ -28,7 +56,10 @@ impl Default for LocalEnvironmentSelection {
     fn default() -> Self {
         let (changed, _) = watch::channel(EnvironmentSelectionSnapshot::default());
         Self {
-            state: Mutex::new(EnvironmentSelectionSnapshot::default()),
+            state: Mutex::new(SelectionState {
+                snapshot: EnvironmentSelectionSnapshot::default(),
+                initialization: Initialization::Pending,
+            }),
             changed,
             replacing: std::sync::atomic::AtomicBool::new(false),
             observed_heads: Mutex::new(None),
@@ -40,7 +71,19 @@ impl Default for LocalEnvironmentSelection {
 
 impl LocalEnvironmentSelection {
     pub(crate) fn snapshot(&self) -> EnvironmentSelectionSnapshot {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .snapshot
+            .clone()
+    }
+
+    /// Revision fence for metadata inference, captured before any await.
+    /// `None` once an explicit choice or earlier import owns the intent.
+    pub(crate) fn initialization_fence(&self) -> Option<u64> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        (state.initialization == Initialization::Pending && !state.applying)
+            .then_some(state.revision)
     }
 
     pub(crate) fn subscribe(&self) -> watch::Receiver<EnvironmentSelectionSnapshot> {
@@ -65,8 +108,9 @@ impl LocalEnvironmentSelection {
         Self::validate(&state, expected_revision)?;
         state.selected = selected;
         state.selected_kernelspec = kernelspec;
+        state.initialization = Initialization::Initialized;
         self.publish(&mut state);
-        Ok(state.clone())
+        Ok(state.snapshot.clone())
     }
 
     pub(crate) fn begin_apply(
@@ -96,18 +140,25 @@ impl LocalEnvironmentSelection {
         })
     }
 
-    /// Preserve imported intent before discovery or launch can fail. A later
-    /// explicit choice owns the revision and must never be replaced by inference.
+    /// Preserve imported intent before discovery or launch can fail. `fence`
+    /// comes from [`Self::initialization_fence`] before the metadata read; an
+    /// explicit choice or reset in between advances the revision and wins.
     pub(crate) fn adopt_imported_kernelspec(
         &self,
         spec: notebook_protocol::protocol::InstalledKernelspec,
-    ) {
+        fence: u64,
+    ) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if state.revision != 0 || state.applying {
-            return;
+        if state.initialization != Initialization::Pending
+            || state.revision != fence
+            || state.applying
+        {
+            return false;
         }
         state.selected_kernelspec = Some(spec);
+        state.initialization = Initialization::Initialized;
         self.publish(&mut state);
+        true
     }
 
     /// Automatic launch can resolve imported portable intent without a picker apply.
@@ -122,8 +173,9 @@ impl LocalEnvironmentSelection {
         if spec.is_some() {
             state.applied = None;
         }
-        if state.revision == 0 {
+        if state.initialization == Initialization::Pending && spec.is_some() {
             state.selected_kernelspec = spec.cloned();
+            state.initialization = Initialization::Initialized;
         }
         state.applied_kernelspec = spec.cloned();
         self.publish(&mut state);
@@ -187,9 +239,9 @@ impl LocalEnvironmentSelection {
         Ok(())
     }
 
-    fn publish(&self, state: &mut EnvironmentSelectionSnapshot) {
+    fn publish(&self, state: &mut SelectionState) {
         state.revision += 1;
-        self.changed.send_replace(state.clone());
+        self.changed.send_replace(state.snapshot.clone());
     }
 
     pub(crate) fn is_preparing(&self) -> bool {
@@ -207,6 +259,7 @@ impl LocalEnvironmentSelection {
         state.selected_kernelspec = None;
         state.applied_kernelspec = None;
         state.applying = false;
+        state.initialization = Initialization::Pending;
         self.publish(&mut state);
     }
 }
@@ -252,6 +305,7 @@ impl EnvironmentApply<'_> {
             state.applied = applied;
             state.applied_kernelspec = state.selected_kernelspec.clone();
             state.applying = false;
+            state.initialization = Initialization::Initialized;
             self.selection.publish(&mut state);
         }
     }
@@ -336,12 +390,13 @@ pub(crate) async fn list_installed_packages(room: &NotebookRoom) -> NotebookResp
 }
 
 async fn initialize_imported_intent(room: &NotebookRoom) {
-    if room.local_environment_selection.snapshot().revision != 0
-        || matches!(
-            room.bound_environment.snapshot(),
-            super::bound_environment::BoundEnvironmentState::Bound(_)
-        )
-    {
+    let Some(fence) = room.local_environment_selection.initialization_fence() else {
+        return;
+    };
+    if matches!(
+        room.bound_environment.snapshot(),
+        super::bound_environment::BoundEnvironmentState::Bound(_)
+    ) {
         return;
     }
     let mode = *room.identity.environment_mode.read().await;
@@ -357,6 +412,7 @@ async fn initialize_imported_intent(room: &NotebookRoom) {
                     display_name: intent.display_name,
                     language: intent.language.unwrap_or_default(),
                 },
+                fence,
             );
         }
     }
@@ -715,13 +771,15 @@ mod tests {
             display_name: "Julia".into(),
             language: "julia".into(),
         };
-        selection.adopt_imported_kernelspec(spec.clone());
+        let fence = selection.initialization_fence().unwrap();
+        assert!(selection.adopt_imported_kernelspec(spec.clone(), fence));
+        assert!(selection.initialization_fence().is_none());
         let imported = selection.snapshot();
         assert_eq!(imported.selected_kernelspec, Some(spec.clone()));
         assert!(imported.applied_kernelspec.is_none());
         assert!(!imported.applying);
         let automatic = selection.set(None, imported.revision).unwrap();
-        selection.adopt_imported_kernelspec(spec);
+        assert!(!selection.adopt_imported_kernelspec(spec, automatic.revision));
         assert_eq!(selection.snapshot(), automatic);
         assert!(automatic.selected_kernelspec.is_none());
     }
@@ -773,5 +831,108 @@ mod tests {
         assert!(
             matches!(get(&room).await, NotebookResponse::EnvironmentSelection { selection } if selection.selected_kernelspec.is_none())
         );
+    }
+
+    fn missing_spec() -> notebook_protocol::protocol::InstalledKernelspec {
+        notebook_protocol::protocol::InstalledKernelspec {
+            name: "missing-julia".into(),
+            display_name: "Julia".into(),
+            language: "julia".into(),
+        }
+    }
+
+    #[test]
+    fn reset_returns_initialization_to_pending_at_a_newer_revision() {
+        let selection = LocalEnvironmentSelection::default();
+        let fence = selection.initialization_fence().unwrap();
+        assert!(selection.adopt_imported_kernelspec(missing_spec(), fence));
+        let before = selection.snapshot().revision;
+        selection.reset();
+        let fence = selection.initialization_fence().expect("reset is pending");
+        assert!(fence > before);
+        assert!(selection.adopt_imported_kernelspec(missing_spec(), fence));
+        let restored = selection.snapshot();
+        assert_eq!(restored.selected_kernelspec, Some(missing_spec()));
+        assert!(restored.revision > fence);
+    }
+
+    #[test]
+    fn stale_initialization_is_rejected_after_reset_or_explicit_choice() {
+        let selection = LocalEnvironmentSelection::default();
+        let stale = selection.initialization_fence().unwrap();
+        selection.reset();
+        assert!(!selection.adopt_imported_kernelspec(missing_spec(), stale));
+        assert!(selection.snapshot().selected_kernelspec.is_none());
+
+        let stale = selection.initialization_fence().unwrap();
+        let automatic = selection.set(None, stale).unwrap();
+        assert!(!selection.adopt_imported_kernelspec(missing_spec(), stale));
+        assert!(selection.initialization_fence().is_none());
+        assert_eq!(selection.snapshot(), automatic);
+    }
+
+    #[test]
+    fn launch_publication_does_not_resurrect_choice_after_explicit_automatic() {
+        let selection = LocalEnvironmentSelection::default();
+        selection.reset();
+        let automatic = selection.set(None, selection.snapshot().revision).unwrap();
+        selection.record_launch(Some(&missing_spec()));
+        let snapshot = selection.snapshot();
+        assert!(snapshot.selected_kernelspec.is_none());
+        assert_eq!(snapshot.applied_kernelspec, Some(missing_spec()));
+        assert!(snapshot.revision > automatic.revision);
+    }
+
+    #[tokio::test]
+    async fn retained_room_reset_restores_imported_intent_and_keeps_explicit_automatic() {
+        let temp = tempfile::tempdir().unwrap();
+        let room = NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            temp.path(),
+            Arc::new(crate::blob_store::BlobStore::new(temp.path().join("blobs"))),
+            false,
+        );
+        {
+            let mut metadata = notebook_doc::metadata::NotebookMetadataSnapshot::default();
+            metadata.kernelspec = Some(notebook_doc::metadata::KernelspecSnapshot {
+                name: "uninstalled-julia".into(),
+                display_name: "Julia".into(),
+                language: Some("julia".into()),
+                ..Default::default()
+            });
+            room.doc
+                .write()
+                .await
+                .set_metadata_snapshot(&metadata)
+                .unwrap();
+        }
+        let get_selection = || async {
+            let NotebookResponse::EnvironmentSelection { selection } = get(&room).await else {
+                panic!("expected local selection")
+            };
+            selection
+        };
+        let first = get_selection().await;
+        assert_eq!(
+            first.selected_kernelspec.as_ref().unwrap().name,
+            "uninstalled-julia"
+        );
+        // Last-peer teardown on a retained room; reconnect with no autolaunch.
+        room.local_environment_selection.reset();
+        let restored = get_selection().await;
+        assert_eq!(restored.selected_kernelspec, first.selected_kernelspec);
+        assert!(restored.applied_kernelspec.is_none());
+        assert!(restored.revision > first.revision + 1);
+
+        room.local_environment_selection.reset();
+        let pending = room.local_environment_selection.snapshot();
+        let automatic = room
+            .local_environment_selection
+            .set(None, pending.revision)
+            .unwrap();
+        let after = get_selection().await;
+        assert_eq!(after, automatic);
+        assert!(after.selected_kernelspec.is_none());
     }
 }
