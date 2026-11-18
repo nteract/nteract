@@ -7,26 +7,15 @@ import { createRequire } from "node:module";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { compile } from "tailwindcss";
+import { standardImports as entries } from "../../shared/widget-imports.mjs";
 import { FRAME_HTML } from "../../.output-dist/frame-html.mjs";
 import worker, { FRAME_CSP } from "../../output/worker.mjs";
 import { OUTPUT_FRAME_PATH } from "../../shared/output-frame-paths.mjs";
 
 const app = fileURLToPath(new URL("../../", import.meta.url));
-const root = path.resolve(app, "../..");
 const dir = path.join(app, ".output-dist/catalog");
 const port = Number(process.env.PAGES_CATALOG_PORT || 9446);
 const origin = `http://127.0.0.1:${port}`;
-const uiDir = path.join(root, "src/components/ui");
-const entries = [
-  "react",
-  "react-dom",
-  "react-dom/client",
-  "react/jsx-runtime",
-  "d3",
-  "@observablehq/plot",
-  "@nteract/pages-ui",
-];
 const nameOf = (id) => id.replace(/^@/, "").replaceAll("/", "-");
 const requireFromApp = createRequire(path.join(app, "package.json"));
 const result = await build({
@@ -42,7 +31,6 @@ const result = await build({
   outdir: dir,
   define: { "process.env.NODE_ENV": '"production"' },
   alias: {
-    "@": path.join(root, "src"),
     react: path.join(app, "node_modules/react"),
     "react-dom": path.join(app, "node_modules/react-dom"),
   },
@@ -56,11 +44,7 @@ const result = await build({
         }));
         plugin.onLoad({ filter: /.*/, namespace: "catalog" }, ({ path: id }) => {
           let contents;
-          if (id === "@nteract/pages-ui") {
-            contents = ["toggle-group", "separator"]
-              .map((name) => `export * from ${JSON.stringify(path.join(uiDir, name + ".tsx"))}`)
-              .join("\n");
-          } else if (id.startsWith("react")) {
+          if (id.startsWith("react")) {
             // Publish CJS React entry points as real named ESM exports. All
             // importers resolve the same React module within the split graph.
             const names = Object.keys(requireFromApp(id)).filter((name) =>
@@ -77,39 +61,11 @@ const result = await build({
   ],
 });
 const files = new Map(result.outputFiles.map((f) => [path.basename(f.path), f.contents]));
-const theme = await readFile(requireFromApp.resolve("tailwindcss/theme.css"), "utf8");
-const colors = [
-  "border",
-  "input",
-  "accent",
-  "accent-foreground",
-  "ring",
-  "muted",
-  "muted-foreground",
-];
-const compiler = await compile(
-  theme +
-    "\n@theme inline {" +
-    colors.map((c) => `--color-${c}:var(--${c});`).join("") +
-    "} @tailwind utilities;",
-);
-const candidates = [];
-for (const file of ["toggle", "toggle-group", "separator"]) {
-  const source = await readFile(path.join(uiDir, file + ".tsx"), "utf8");
-  for (const [, literal] of source.matchAll(/"([^"\n]+)"/g))
-    candidates.push(...literal.split(/\s+/));
-}
-// The frame's native button defaults pair a filled primary background with
-// primary-foreground. Radix toggles have transparent unselected backgrounds.
-const toggleBase =
-  "button:where([data-radix-collection-item][data-state=off]) {color: var(--foreground)}";
-files.set("components.css", Buffer.from(toggleBase + "\n" + compiler.build(candidates)));
 const hash = (data) => createHash("sha256").update(data).digest("hex");
 const manifest =
   JSON.stringify(
     {
       imports: Object.fromEntries(entries.map((id) => [id, nameOf(id) + ".js"])),
-      stylesheet: "components.css",
       files: Object.fromEntries(
         [...files]
           .map(([name, data]) => [name, hash(data)])
@@ -124,6 +80,7 @@ const directory = path.join(dir, pin);
 await mkdir(directory, { recursive: true });
 for (const [name, data] of files) await writeFile(path.join(directory, name), data);
 await writeFile(path.join(directory, "manifest.json"), manifest);
+await writeFile(path.join(dir, "current-" + port), pin);
 const server = createServer(async (req, res) => {
   const send = (status, type, body, headers = {}) => {
     res.writeHead(status, {
@@ -170,7 +127,7 @@ const server = createServer(async (req, res) => {
         "text/html; charset=utf-8",
         FRAME_HTML.replace(
           "</head>",
-          `<link rel="stylesheet" href="${base}${stylesheet}"><script type="importmap">${JSON.stringify(map)}</script></head>`,
+          `${stylesheet ? `<link rel="stylesheet" href="${base}${stylesheet}">` : ""}<script type="application/json" id="widget-catalog-map">${JSON.stringify(map)}</script></head>`,
         ),
         {
           "Content-Security-Policy": FRAME_CSP.replace(

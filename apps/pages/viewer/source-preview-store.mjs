@@ -1,3 +1,4 @@
+import { decodeWidgetImports } from "../shared/widget-imports.mjs";
 // Read-only previews of authenticated source bytes. Never import JavaScript or
 // attach source CSS to the Page; both are rendered as text.
 import { Observable, distinctUntilChanged, map, of, scan, switchMap } from "rxjs";
@@ -26,14 +27,13 @@ export function previewTransition(state, event) {
 
 export function previewOf({ bytes, mediaType }, catalogPin = null) {
   if (catalogPin && bytes.byteLength <= TEXT_PREVIEW_LIMIT) {
-    const manifest = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-    if (
-      !manifest?.imports ||
-      Array.isArray(manifest.imports) ||
-      typeof manifest.imports !== "object"
-    )
-      throw Error("This source does not contain a widget catalog.");
-    return { kind: "catalog", imports: Object.keys(manifest.imports), pin: catalogPin };
+    const declaration = decodeWidgetImports(bytes, catalogPin);
+    return {
+      kind: "catalog",
+      imports: declaration.imports,
+      modules: declaration.modules,
+      pin: declaration.catalog_revision,
+    };
   }
   if (mediaType === "text/javascript" || mediaType === "text/css") {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);

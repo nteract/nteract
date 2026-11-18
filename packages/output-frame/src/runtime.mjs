@@ -66,6 +66,21 @@ function connect(event) {
     state = outputTransition(state, "mount");
     try {
       context = applyHostContext(document, data.context ?? { theme: "light" });
+      const catalog = document.getElementById("widget-catalog-map");
+      if (catalog || data.payload.imports) {
+        const imports = catalog ? JSON.parse(catalog.textContent).imports : {};
+        for (const [name, asset] of Object.entries(data.payload.imports ?? {})) {
+          if (Object.hasOwn(imports, name))
+            throw Error("Page module shadows a catalog import: " + name);
+          const url = URL.createObjectURL(new Blob([asset.bytes], { type: "text/javascript" }));
+          cleanup(() => URL.revokeObjectURL(url));
+          imports[name] = url;
+        }
+        const script = document.createElement("script");
+        script.type = "importmap";
+        script.textContent = JSON.stringify({ imports });
+        document.head.append(script);
+      }
       const session = createWidgetSession(data.payload, {
         document,
         signal: lifetime.signal,
