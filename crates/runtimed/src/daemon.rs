@@ -2250,9 +2250,8 @@ impl Daemon {
                     )
                     .await;
                 }
-                // Drop the handle so it tears down the runtime-agent ownership
-                // group and removes the matching manifest only after cleanup
-                // succeeds.
+                // Dropping the Unix handle requests graceful termination. If the
+                // runtime stops polling its watcher, the watcher owner kills the group on drop.
                 {
                     let mut ra_guard = room.runtime_agent_handle.lock().await;
                     *ra_guard = None;
@@ -2741,8 +2740,8 @@ impl Daemon {
         //
         // Runtime agents are spawned in their own process group (process_group(0)),
         // so they do NOT receive the SIGINT/SIGTERM that the daemon receives.
-        // Their kernel subprocesses inherit the agent's PGID, so killing the
-        // agent's process group kills the kernel too.
+        // Managed kernels inherit the agent's PGID. Installed kernels have
+        // separate groups whose guards observe EOF when the agent dies.
         //
         // Without explicit shutdown here, agent process groups become orphans.
         // We cannot rely on Drop alone because:

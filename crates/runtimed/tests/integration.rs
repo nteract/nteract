@@ -1293,7 +1293,7 @@ async fn stalled_kernelspec_teardown(force: bool) {
     };
     // This child reports readiness but never opens a Jupyter socket. EOF is a
     // process-bound observation independent of any daemon lifecycle projection.
-    definition(serde_json::json!([python,"-c","import os,socket,sys,time; s=socket.create_connection(('127.0.0.1',int(sys.argv[1]))); s.sendall(f'{os.getppid()}\\n'.encode()); time.sleep(90)",listener.local_addr().unwrap().port().to_string(),"{connection_file}"]));
+    definition(serde_json::json!([python,"-c","import json,os,socket,sys,time; s=socket.create_connection(('127.0.0.1',int(sys.argv[1]))); s.sendall((json.dumps([os.getppid(),sys.argv[2]])+'\\n').encode()); time.sleep(90)",listener.local_addr().unwrap().port().to_string(),"{connection_file}"]));
     let temp = TempDir::new().unwrap();
     let path = temp.path().join("stall.ipynb");
     std::fs::write(&path,serde_json::json!({"nbformat":4,"nbformat_minor":5,"cells":[],"metadata":{"kernelspec":{"name":name,"display_name":"Cancellation fixture","language":"python"}}}).to_string()).unwrap();
@@ -1313,9 +1313,14 @@ async fn stalled_kernelspec_teardown(force: bool) {
         .expect("installed child spawned")
         .unwrap();
     let mut stream = BufReader::new(stream);
-    let mut pid = String::new();
-    stream.read_line(&mut pid).await.unwrap();
-    let agent = nix::unistd::Pid::from_raw(pid.trim().parse().unwrap());
+    let mut ready = String::new();
+    stream.read_line(&mut ready).await.unwrap();
+    let (pid, connection_file): (i32, std::path::PathBuf) = serde_json::from_str(&ready).unwrap();
+    let agent = nix::unistd::Pid::from_raw(pid);
+    assert!(
+        connection_file.is_file(),
+        "pending launch needs its connection file"
+    );
     if force {
         // Same signal and target as the Unix manifest reaper. Stop only this
         // fixture's live agent group; never sweep other manifests on the machine.
@@ -1341,6 +1346,13 @@ async fn stalled_kernelspec_teardown(force: bool) {
     })
     .await
     .expect("cancelled handshake must release child socket and reap actual runtime agent");
+    if !force {
+        assert!(
+            !connection_file.try_exists().unwrap(),
+            "graceful cancellation leaked {}",
+            connection_file.display()
+        );
+    }
     definition(serde_json::json!([
         python,
         "-m",

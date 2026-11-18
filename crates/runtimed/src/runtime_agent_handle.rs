@@ -18,6 +18,47 @@ use tracing::{info, warn};
 use crate::runtime_agent_manifest::RuntimeAgentManifest;
 use crate::task_supervisor::spawn_supervised;
 
+#[cfg(unix)]
+struct OwnedAgentGroup {
+    child: tokio::process::Child,
+    // Disarmed before reaping, or when waitid reports that ownership is uncertain.
+    owner: Option<String>,
+}
+
+#[cfg(unix)]
+impl OwnedAgentGroup {
+    fn terminate(&mut self) {
+        use nix::{
+            sys::signal::{killpg, Signal},
+            unistd::Pid,
+        };
+        let (Some(owner), Some(pid)) = (self.owner.take(), self.child.id()) else {
+            return;
+        };
+        let group = Pid::from_raw(pid as i32);
+        let decision = crate::runtime_agent_manifest::unix_cleanup_decision(
+            &owner,
+            group.as_raw(),
+            killpg(group, Signal::SIGKILL),
+        );
+        if decision != crate::runtime_agent_manifest::CleanupDecision::RetainForRetry {
+            crate::runtime_agent_manifest::remove_manifest(&owner);
+        }
+    }
+
+    async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.terminate();
+        self.child.wait().await
+    }
+}
+
+#[cfg(unix)]
+impl Drop for OwnedAgentGroup {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
 /// Handle to a running runtime agent subprocess.
 ///
 /// The runtime agent connects back to the daemon socket as a peer. Managed Unix
@@ -81,20 +122,23 @@ impl RuntimeAgentHandle {
         let mut child_exits =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child())?;
 
-        let mut child = cmd.spawn()?;
+        let child = cmd.spawn()?;
+        #[cfg(windows)]
+        let mut child = child;
 
         #[cfg(unix)]
         let pgid = child.id().map(|pid| pid as i32);
 
         #[cfg(unix)]
-        let manifest = match pgid {
-            Some(pgid) => {
-                RuntimeAgentManifest::unix(runtime_agent_id.clone(), notebook_id.clone(), pgid)
-            }
-            None => {
-                let _ = child.kill().await;
-                anyhow::bail!("runtime agent spawned without a process id");
-            }
+        let manifest = RuntimeAgentManifest::unix(
+            runtime_agent_id.clone(),
+            notebook_id.clone(),
+            pgid.ok_or_else(|| anyhow::anyhow!("runtime agent spawned without a process id"))?,
+        );
+        #[cfg(unix)]
+        let mut child = OwnedAgentGroup {
+            child,
+            owner: Some(runtime_agent_id.clone()),
         };
 
         #[cfg(windows)]
@@ -132,13 +176,14 @@ impl RuntimeAgentHandle {
         };
 
         if let Err(e) = crate::runtime_agent_manifest::write_manifest(&manifest) {
+            #[cfg(windows)]
             let _ = child.kill().await;
             return Err(e.context("failed to persist runtime-agent ownership manifest"));
         }
 
         info!(
             "[runtime-agent-handle] Runtime agent spawned (pid={:?}, notebook_id={}, runtime_agent_id={})",
-            child.id(),
+            manifest.pgid.map(|pid|pid as u32).or(manifest.pid),
             notebook_id,
             runtime_agent_id,
         );
@@ -156,10 +201,7 @@ impl RuntimeAgentHandle {
             async move {
                 #[cfg(unix)]
                 {
-                    use nix::{
-                        sys::signal::{killpg, Signal},
-                        unistd::Pid,
-                    };
+                    use nix::{sys::signal::Signal, unistd::Pid};
                     let group = Pid::from_raw(pgid.expect("manifest requires a child PID"));
                     // Observe exit without reaping: even after natural exit, the leader
                     // pins this group's identity until its managed descendants are killed.
@@ -198,24 +240,9 @@ impl RuntimeAgentHandle {
                             tokio::time::timeout(std::time::Duration::from_secs(8),exit).await.unwrap_or(Ok(()))
                         }
                     };
-                    match observed {
-                        Ok(()) => {
-                            let decision = crate::runtime_agent_manifest::unix_cleanup_decision(
-                                &runtime_agent_id_clone,
-                                group.as_raw(),
-                                killpg(group, Signal::SIGKILL),
-                            );
-                            if decision
-                                != crate::runtime_agent_manifest::CleanupDecision::RetainForRetry
-                            {
-                                crate::runtime_agent_manifest::remove_manifest(
-                                    &runtime_agent_id_clone,
-                                );
-                            }
-                        }
-                        Err(e) => warn!(
-                            "Cannot establish ownership of agent {runtime_agent_id_clone}: {e}"
-                        ),
+                    if let Err(e) = observed {
+                        child.owner = None;
+                        warn!("Cannot establish ownership of agent {runtime_agent_id_clone}: {e}");
                     }
                 }
                 match child.wait().await {
@@ -268,5 +295,50 @@ impl Drop for RuntimeAgentHandle {
             "[runtime-agent-handle] RuntimeAgentHandle dropped for notebook {} runtime_agent {}",
             self.notebook_id, self.runtime_agent_id
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn abort_unpolled_agent_watcher_kills_managed_descendant() {
+        let mut child = tokio::process::Command::new("/bin/sh")
+            .args(["-c", "sleep 30 & echo ready; wait"])
+            .stdout(std::process::Stdio::piped())
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut pipe = BufReader::new(child.stdout.take().unwrap());
+        let mut ready = String::new();
+        pipe.read_line(&mut ready).await.unwrap();
+        assert_eq!(ready, "ready\n");
+        let mut group = OwnedAgentGroup {
+            child,
+            owner: Some(format!("test-{}", uuid::Uuid::new_v4())),
+        };
+        let polled = Arc::new(AtomicBool::new(false));
+        let started = polled.clone();
+        let task = spawn_supervised(
+            "test-agent-watcher",
+            async move {
+                started.store(true, Ordering::Relaxed);
+                let _ = group.wait().await;
+            },
+            |_| {},
+        );
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(!polled.load(Ordering::Relaxed));
+        tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            pipe.read_to_end(&mut Vec::new()),
+        )
+        .await
+        .expect("descendant still holds stdout")
+        .unwrap();
     }
 }
