@@ -1498,6 +1498,15 @@ span.unknown-node {
   font-size: 0.8rem;
   color: var(--muted-foreground);
 }
+.account-organizations {
+  display: block;
+  max-width: min(16rem, calc(100vw - 5rem));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--foreground);
+}
 .danger {
   color: var(--destructive);
 }

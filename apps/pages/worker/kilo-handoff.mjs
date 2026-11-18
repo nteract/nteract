@@ -27,8 +27,8 @@
  * renew with. It ends after `SESSION_SECONDS` and the browser signs in again; that is also how long a
  * person Kilo has blocked can keep a session here.
  *
- * The address goes into the session as signed email proof (app-session.ts),
- * never as the address itself. The proof is good for
+ * The session keeps signed email proof for invitations and a separately sealed
+ * address for the browser account menu (app-session.ts). The proof is good for
  * `NOTEBOOK_CLOUD_IDENTITY_PROOF_MAX_AGE_SECONDS` (6 hours) from sign-in, so
  * for the first 6 of a session's 8 hours the person can claim an invitation
  * to a Page or a Project sent to that address, and email quota rules apply to
@@ -38,6 +38,7 @@
  * company domains (identity-provider.mjs). */
 import { createServerSession, ServerSessionGrantRejected } from "@cloud/server-oidc.ts";
 import { cookieValue, randomSecret, readServerAppSession, secretHash } from "@nteract/session";
+import { browserSessionOptions } from "./browser-account.mjs";
 import { recordOidcEvent } from "./auth-events.mjs";
 import { migrateSchema } from "./catalog-index.mjs";
 import { isolateSetup } from "./isolate-setup.mjs";
@@ -253,7 +254,7 @@ async function completeHandoff(request, env, config) {
       expiresAt: Math.floor(Date.now() / 1000) + SESSION_SECONDS,
       bundle: { kind: "kilo-handoff", appUrl: config.appUrl, userId: account.id },
     },
-    { onAuthEvent: recordOidcEvent },
+    browserSessionOptions,
   );
   return noStore(
     new Response(null, {

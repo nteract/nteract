@@ -118,7 +118,12 @@ export interface ServerOidcCallbackFailure {
   accountRejected: boolean;
 }
 
-export interface ServerOidcCallbackOptions {
+interface AccountEmailOptions {
+  /** Keep the verified address sealed for the signed-in person's own account menu. */
+  retainAccountEmail?: boolean;
+}
+
+export interface ServerOidcCallbackOptions extends AccountEmailOptions {
   /**
    * Same-origin path for a browser that already holds a session when a stale or
    * repeated callback arrives. Defaults to `/`.
@@ -201,7 +206,7 @@ export interface ServerSessionProvider {
   refresh(bundle: Record<string, unknown>): Promise<ServerSessionGrant>;
 }
 
-export interface ServerOidcSessionOptions {
+export interface ServerOidcSessionOptions extends AccountEmailOptions {
   /** Receives session expiry outcomes for an application's audit log. */
   onAuthEvent?: ServerOidcAuthEventListener;
   /** Renews sessions with this provider in place of the OIDC token endpoint. */
@@ -694,11 +699,18 @@ export async function completeServerOidcLogin(
       nonce: transaction.nonce,
       subject: verified.subject,
     };
-    const cookie = await insertServerSession(env, db, config.context, now, {
-      identity: verified.identity,
-      expiresAt: verified.expiresAt,
-      bundle: { ...bundle },
-    });
+    const cookie = await insertServerSession(
+      env,
+      db,
+      config.context,
+      now,
+      {
+        identity: verified.identity,
+        expiresAt: verified.expiresAt,
+        bundle: { ...bundle },
+      },
+      options,
+    );
     response = privateResponse(null, 303, {
       Location: safeReturnTo(transaction.returnTo, config.origin),
       "Set-Cookie": cookie,
@@ -788,6 +800,7 @@ async function insertServerSession(
   context: string,
   now: number,
   grant: ServerSessionGrant,
+  options: AccountEmailOptions,
 ): Promise<string> {
   const sessionToken = randomSecret(),
     id = await serverSessionId(env, sessionToken);
@@ -797,6 +810,7 @@ async function insertServerSession(
     id,
     Math.min(grant.expiresAt, now + SERVER_SESSION_IDLE_SECONDS),
     now,
+    options,
   );
   await db
     .prepare(
@@ -846,7 +860,14 @@ export async function createServerSession(
   const context = providerSessionContext(env, request);
   const now = Math.floor(Date.now() / 1000);
   const checked = checkedProviderGrant(grant, now);
-  const cookie = await insertServerSession(env, await oidcDatabase(env), context, now, checked);
+  const cookie = await insertServerSession(
+    env,
+    await oidcDatabase(env),
+    context,
+    now,
+    checked,
+    options,
+  );
   notifyAuthEvent(options.onAuthEvent, { type: "sign_in", principal: grant.identity.principal });
   return cookie;
 }
@@ -1062,6 +1083,7 @@ async function refreshSession(
       initial.id,
       Math.min(verified.expiresAt, idleExpiry),
       refreshedAt,
+      options,
     );
     const saved = await conditionalSessionUpdate(
       db,

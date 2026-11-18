@@ -192,6 +192,8 @@ async function setTheme(page, mode) {
   const account = page.locator(".account-actions");
   if (!(await account.evaluate((element) => element.open)))
     await account.locator("summary").click();
+  await expect(account.locator(".account-name")).toHaveAttribute("title", "dev@localhost");
+  await expect(account).not.toContainText("dev@localhost");
   await account
     .getByRole("button", { name: mode === "dark" ? "Dark" : "Light", exact: true })
     .click();

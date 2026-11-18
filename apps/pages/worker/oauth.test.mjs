@@ -4,6 +4,8 @@ import { test } from "node:test";
 import {
   createServerAppSession,
   oidcDatabase,
+  readServerAppSession,
+  readServerAccountEmail,
   randomSecret,
   sealServerSecret,
   secretHash,
@@ -11,6 +13,7 @@ import {
   serverSessionId,
   SERVER_SESSION_COOKIE,
 } from "@nteract/session";
+import worker from "./index.mjs";
 import { handleOAuth, mcpAuthChallenge } from "./oauth.mjs";
 import { cloudflareConfig, structuralConfig } from "../scripts/cloudflare-stage.mjs";
 import { metadataFetchTimeouts } from "./oauth-clients.mjs";
@@ -160,6 +163,42 @@ function post(path, fields, headers = {}) {
     body: new URLSearchParams(fields),
   });
 }
+test("renewing the browser session at OAuth consent keeps its private account-menu email", async (t) => {
+  const local = "http://127.0.0.1:9477";
+  const env = fixture(t, {
+    NOTEBOOK_CLOUD_PUBLIC_ORIGIN: local,
+    NOTEBOOK_CLOUD_LOCAL_OIDC: "true",
+    NOTEBOOK_CLOUD_OIDC_ISSUER: local + "/dev/oidc",
+    NOTEBOOK_CLOUD_OIDC_AUDIENCE: "oidc-client",
+  });
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    const request = new Request(url, init);
+    assert.equal(new URL(request.url).origin, local);
+    return worker.fetch(request, env);
+  });
+  const cookieOf = (response) => response.headers.getSetCookie()[0].split(";", 1)[0];
+  const begin = await fetch(local + "/api/auth/login");
+  const authorize = await fetch(begin.headers.get("location"));
+  const finish = await fetch(authorize.headers.get("location"), {
+    headers: { cookie: cookieOf(begin) },
+  });
+  assert.equal(finish.status, 303);
+  const cookie = cookieOf(finish);
+  const now = Math.floor(Date.now() / 1000);
+  env.DB.sqlite.prepare("UPDATE oidc_server_sessions SET access_expires_at = ?").run(now + 30);
+  const screen = await handleOAuth(
+    get("/oauth/authorize?" + (await authorization(env)), cookie),
+    env,
+  );
+  assert.equal(screen.status, 200);
+  assert.equal(
+    env.DB.sqlite.prepare("SELECT generation FROM oidc_server_sessions").get().generation,
+    1,
+  );
+  const session = await readServerAppSession(env, get("/", cookie), now);
+  assert.equal(await readServerAccountEmail(env, session), "dev@localhost");
+});
+
 async function consent(env, login, overrides = {}) {
   const result = await handleOAuth(
     get("/oauth/authorize?" + (await authorization(env, overrides)), login.cookie),

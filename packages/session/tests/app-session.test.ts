@@ -9,6 +9,7 @@ import {
   appSessionRenewalCookie,
   appSessionConnectionIdentity,
   createServerAppSession,
+  readServerAccountEmail,
   NOTEBOOK_CLOUD_IDENTITY_PROOF_MAX_AGE_SECONDS,
   appSessionHasFreshVerifiedEmail,
   appSessionHasFreshVerifiedEmailDomain,
@@ -411,6 +412,23 @@ function devIdentity(): AuthenticatedConnection {
     },
   };
 }
+
+describe("server account email", () => {
+  it("seals only an opted-in, verified address and binds it to that person's session", async () => {
+    const env = { NOTEBOOK_CLOUD_APP_SESSION_SECRET: SESSION_SECRET };
+    const identity = oidcIdentity();
+    const create = (retainAccountEmail?: boolean) =>
+      createServerAppSession(env, identity, "session-a", 2_000, 1_000, { retainAccountEmail });
+    assert.equal((await create()).sealedAccountEmail, undefined);
+    const session = await create(true);
+    assert.ok(!JSON.stringify(session).includes("user@example.test"));
+    assert.equal(await readServerAccountEmail(env, session), "user@example.test");
+    assert.equal(await readServerAccountEmail(env, { ...session, cacheKey: "session-b" }), null);
+    assert.equal(await readServerAccountEmail(env, { ...session, principal: "other" }), null);
+    identity.metadata.emailVerified = false;
+    assert.equal((await create(true)).sealedAccountEmail, undefined);
+  });
+});
 
 describe("verified email domain proof", () => {
   it("binds normalized domain, account, namespace and verification time independently from exact-email proof", async () => {

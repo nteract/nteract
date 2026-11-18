@@ -57,6 +57,7 @@ export {
   createCloudAppSessionCookie,
   createServerAppSession,
   readCloudAppSession,
+  readServerAccountEmail,
   type AppSessionEnvironment,
   type CloudAppSession,
 } from "./app-session.ts";

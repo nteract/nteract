@@ -14,7 +14,8 @@ import {
   revokeOAuthToken,
   OAuthStoreError,
 } from "./oauth-store.mjs";
-import { logAuthEvent, recordOidcEvent } from "./auth-events.mjs";
+import { browserSessionOptions } from "./browser-account.mjs";
+import { logAuthEvent } from "./auth-events.mjs";
 import { forgetServerAppSession } from "./session-memo.mjs";
 import {
   OAuthError,
@@ -257,9 +258,12 @@ function publicClient(params, request, env) {
   return requestClient(single(params, "client_id"), env);
 }
 async function currentSession(request, env) {
-  const refreshed = await serverOidcSessionStatus(request, env, async () => {}, {
-    onAuthEvent: recordOidcEvent,
-  });
+  const refreshed = await serverOidcSessionStatus(
+    request,
+    env,
+    async () => {},
+    browserSessionOptions,
+  );
   await forgetServerAppSession(env, request);
   if (!refreshed.ok) return { response: refreshed };
   const now = Math.floor(Date.now() / 1000);

@@ -1402,6 +1402,37 @@ const accountMenuItems = () =>
     ),
   ].map((node) => node.textContent.trim());
 
+test("the account menu shows memberships and keeps a personal email in the name's hover title", async (t) => {
+  cleanUp(t);
+  history.replaceState(null, "", "/pages");
+  let accountMenu = { organizations: ["Anaconda", "Example Labs"] };
+  let identity = { principal: "work", displayName: "Example Person" };
+  await boot(() => Response.json({ identity, accountMenu, canWrite: true }), {
+    list_pages: () => ({ pages: [], principal: identity.principal }),
+    list_projects: () => ({ projects: [], principal: identity.principal }),
+  });
+  await settle();
+  const name = () => document.querySelector(".account-name");
+  assert.equal(
+    name().querySelector(".account-organizations").textContent,
+    "Anaconda, Example Labs",
+  );
+  assert.equal(name().hasAttribute("title"), false);
+
+  identity = { principal: "personal", displayName: "Example Person" };
+  accountMenu = { email: "person@example.test" };
+  await sessionCheck();
+  assert.equal(name().textContent, "Example Person");
+  assert.equal(name().title, accountMenu.email);
+  assert.equal(document.querySelector(".account-actions summary").title, "Account");
+
+  identity.displayName = accountMenu.email;
+  accountMenu = undefined;
+  await sessionCheck();
+  assert.equal(name().textContent, "Your account");
+  assert.equal(name().hasAttribute("title"), false);
+});
+
 test("a host that doesn't advertise account controls offers no Connected agents", async (t) => {
   cleanUp(t);
   history.replaceState(null, "", "/pages");
