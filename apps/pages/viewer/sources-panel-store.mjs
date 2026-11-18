@@ -17,6 +17,7 @@ import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
 import { parseAssetPath } from "../shared/dataset-assets.mjs";
 import { viewDependencies } from "../shared/view-dependencies.mjs";
 import { sourcesAnswer } from "./page-source-store.mjs";
+import { WIDGET_IMPORTS, localWidgetCatalog, widgetCatalogPin } from "./widget-imports.mjs";
 import { Store } from "./store.mjs";
 
 export function sourceMediaLabel(type) {
@@ -94,7 +95,13 @@ export function sourcePlacements(doc, cache = new WeakMap()) {
   return { placements, unreadableBlocks };
 }
 
-export function projectSourcesPanel(doc, placements, views, answer = "known") {
+export function projectSourcesPanel(
+  doc,
+  placements,
+  views,
+  answer = "known",
+  catalogEnabled = false,
+) {
   const sources = new Map();
   let unreadableSources = 0;
   for (const id of Object.keys(doc?.sources ?? {})) {
@@ -154,6 +161,16 @@ export function projectSourcesPanel(doc, placements, views, answer = "known") {
     } catch {
       unresolvedViews.push({ ...placement, status: "unreadable" });
       continue;
+    }
+    if (
+      catalogEnabled &&
+      view.media_type === ANYWIDGET_MEDIA_TYPE &&
+      widgetCatalogPin(sources.get(WIDGET_IMPORTS))
+    ) {
+      dependencies = [
+        ...dependencies,
+        { source: { source_id: WIDGET_IMPORTS }, role: "catalog", location: "Page imports" },
+      ];
     }
     for (const { source, role, location } of dependencies) {
       add(source, {
@@ -260,6 +277,7 @@ export function sourcesPanelStore(session) {
               state.name === "unreadable" || state.name === "unserved"
                 ? state.name
                 : sourcesAnswer(state, sync?.link),
+              localWidgetCatalog(),
             ),
           ),
           distinctUntilChanged(same),

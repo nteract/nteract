@@ -148,6 +148,16 @@ function SourceFilePreview({ session, source }) {
       </p>
     );
   const { preview } = value;
+  if (preview.kind === "catalog")
+    return (
+      <section className="source-file-preview" aria-label="Widget imports">
+        <h4>Widget imports</h4>
+        <pre tabIndex={0}>
+          <code>{preview.imports.join("\n")}</code>
+        </pre>
+        <small title={preview.pin}>Catalog SHA-256 · {preview.pin.slice(0, 12)}</small>
+      </section>
+    );
   return (
     <section
       className="source-file-preview"

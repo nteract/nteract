@@ -26,6 +26,10 @@ await writeFile(
   [
     `NOTEBOOK_CLOUD_APP_SESSION_SECRET=${secret}`,
     "NOTEBOOK_CLOUD_LOCAL_OIDC=true",
+    ...(process.env.PAGES_OUTPUT_FRAME_URL
+      ? [`PAGES_OUTPUT_FRAME_URL=${new URL(process.env.PAGES_OUTPUT_FRAME_URL).href}`]
+      : []),
+    ...(process.env.PAGES_E2E_ONLY === "true" ? ["PAGES_E2E_ONLY=true"] : []),
     `PAGES_CATALOG_INDEX=${process.env.PAGES_CATALOG_INDEX ?? "1"}`,
     "NOTEBOOK_CLOUD_OIDC_FLOW=server",
     `NOTEBOOK_CLOUD_PUBLIC_ORIGIN=${origin}`,

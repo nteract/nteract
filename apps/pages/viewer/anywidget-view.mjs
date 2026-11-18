@@ -13,6 +13,7 @@ import { OUTPUT_MAX_TOTAL_BYTES, OUTPUT_FRAME_URL } from "../shared/anywidget-vi
 import { viewDependencies } from "../shared/view-dependencies.mjs";
 import { fetchOutputAsset } from "./output-assets.mjs";
 import { mountAnywidgetOutput, readHostContext } from "@nteract/output-frame";
+import { WIDGET_IMPORTS, widgetCatalogPin, localWidgetCatalog } from "./widget-imports.mjs";
 import { themeStore } from "./theme.mjs";
 
 export function anywidgetPlan(view, sources) {
@@ -51,6 +52,13 @@ export function mount(
   button.type = "button";
   button.textContent = "Retry interactive view";
   const output = root.appendChild(doc.createElement("div"));
+  const catalog$ =
+    localWidgetCatalog(frameUrl) && sources.sources$
+      ? sources.sources$.pipe(
+          map((all) => widgetCatalogPin(all[WIDGET_IMPORTS])),
+          distinctUntilChanged(),
+        )
+      : of(null);
   const plans$ = view$.pipe(
     switchMap((projection) => {
       if (projection.status !== "ready")
@@ -62,10 +70,13 @@ export function mount(
       } catch (error) {
         return of({ error: error.message });
       }
-      return combineLatest([sources.versions(ids), sourcesAnswer$ ?? of("known")]).pipe(
-        map(() => {
+      return combineLatest([sources.versions(ids), sourcesAnswer$ ?? of("known"), catalog$]).pipe(
+        map(([, , catalog]) => {
           try {
-            return anywidgetPlan(view, sources);
+            const plan = anywidgetPlan(view, sources);
+            const url = new URL(frameUrl);
+            if (catalog) url.searchParams.set("catalog", catalog);
+            return { ...plan, frameUrl: url.href, key: JSON.stringify([plan.key, catalog]) };
           } catch (error) {
             return { error: error.message };
           }
@@ -128,7 +139,7 @@ export function mount(
                               assets,
                             },
                             {
-                              ...(frameUrl && { frameUrl }),
+                              frameUrl: plan.frameUrl,
                               hostContext: readHostContext(root, theme.getSnapshot().resolved),
                               onState(state, error) {
                                 if (controller.signal.aborted) return;
