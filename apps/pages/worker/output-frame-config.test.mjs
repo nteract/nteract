@@ -162,7 +162,7 @@ test("configured URL dollar sequences remain literal in the meta attribute", asy
 });
 
 test("the configured catalog stays associated with its frame through an HTTPS proxy", async () => {
-  const { localWidgetCatalog } = await import("../viewer/widget-imports.mjs");
+  const { hasWidgetCatalog } = await import("../viewer/widget-imports.mjs");
   const assets = outputFrameAssets({ fetch: async () => asset() }, frame, origin, {
     catalog: true,
   });
@@ -175,10 +175,10 @@ test("the configured catalog stays associated with its frame through an HTTPS pr
       configurable: true,
       value: { querySelector: () => config },
     });
-    assert.equal(localWidgetCatalog(frame), true);
-    assert.equal(localWidgetCatalog("https://other.example/frame/v2/"), false);
+    assert.equal(hasWidgetCatalog(frame), true);
+    assert.equal(hasWidgetCatalog("https://other.example/frame/v2/"), false);
     delete config.dataset.widgetCatalog;
-    assert.equal(localWidgetCatalog(frame), false);
+    assert.equal(hasWidgetCatalog(frame), false);
   } finally {
     if (previous) Object.defineProperty(globalThis, "document", previous);
     else delete globalThis.document;
