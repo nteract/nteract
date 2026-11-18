@@ -216,7 +216,9 @@ test("cloud packaging validates PRs while main artifacts remain restricted to ma
   assert.doesNotMatch(job, /id-token:|secrets\.|send-main-deployment|deploy\.runtimed\.run/);
   assert.match(job, /\(github.event_name == 'push' && github.ref == 'refs\/heads\/main'\) \|\|/);
   const build = job.split("      - name: Build and validate cloud deployment bundle\n")[1].split("\n      - ")[0];
-  assert.match(build, /^        if: github.event_name == 'pull_request' \|\| \(github.event_name == 'push' && github.ref == 'refs\/heads\/main'\)$/m);
+  // `pr_like` covers a pull request and the merge queue entry that carries it.
+  assert.match(workflow, /^      pr_like: \$\{\{ github.event_name == 'pull_request' \|\| github.event_name == 'merge_group' \}\}$/m);
+  assert.match(build, /^        if: needs.changes.outputs.pr_like == 'true' \|\| \(github.event_name == 'push' && github.ref == 'refs\/heads\/main'\)$/m);
   assert.doesNotMatch(build, /base_ref|pull_request\.base|id-token:|upload-artifact|send-deployment/);
   const upload = job.split("      - name: Upload main cloud deployment bundle\n")[1].split("\n      - ")[0];
   assert.match(upload, /^        if: github.event_name == 'push' && github.ref == 'refs\/heads\/main'$/m);
