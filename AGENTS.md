@@ -49,6 +49,32 @@ has its own content and comments documents; notebook schema, wire protocol,
 and daemon rules do not automatically apply to them. Describe the implemented
 boundary before proposing shared infrastructure.
 
+## Shared packages and outward interfaces
+
+A rule that two products must compute the same way lives in one package under
+`packages/`, and each product imports it by package name. Do not import
+another app's source tree by relative path, and do not keep a second copy of a
+rule in an app.
+
+- `@nteract/identity` holds identity rules: connection scopes, actor colours,
+  invite email normalization, and the authenticated-connection type.
+- `@nteract/session` holds browser sign-in sessions: the keyring, the server
+  session store, and the app session. It is auth code.
+- `@runtimed/contract` holds the names a notebook server and its clients agree
+  on. It has one entry point for each Rust crate that owns a contract.
+- `runtimed` is the notebook client library. It re-exports identity and
+  contract names for notebook code. Server code that needs only frame types,
+  request shapes, runtime-state types, or scopes imports `@runtimed/contract`.
+
+Each package's `README.md` lists its modules, and its `AGENTS.md` gives the
+rules for changing it. Put new shared code in the package that owns the
+concept. Start a package when a second product needs the code, not earlier.
+
+What leaves this repository is build output or a published npm package. A
+release asset must not carry a workspace source tree. The way packages are
+split here is then free to change without breaking a repository that pins a
+release.
+
 ## Working in the repository
 
 - Inspect the implementation and its tests before changing behavior. Do not

@@ -9,6 +9,22 @@ projections). Mechanism only - no React and no
 (cloud auth/access-request/catalog/workstations) live in
 `apps/notebook-cloud/viewer/` per the convergence memo's do-not-converge list.
 
+## Package boundary
+
+`runtimed` is the notebook client library: stores, transport, sync, and
+projections. Names that a notebook server also needs live in other packages,
+and `src/index.ts` re-exports them for notebook code.
+
+- Frame types, request and response shapes, and runtime-state types are in
+  `@runtimed/contract`. Add or change one there, with its Rust owner, then
+  re-export it here.
+- Connection scopes and actor colours are in `@nteract/identity`.
+- `protocol-contract.ts` stays here. It is generated, and it holds the
+  discriminant lists and exhaustiveness checks for the request and response
+  unions in `@runtimed/contract/requests`.
+- The dependency points one way. `runtimed` imports those packages; they never
+  import `runtimed`.
+
 ## Invariants
 
 - **Preserve `ObservableStore` emission order.** `setState` emits state

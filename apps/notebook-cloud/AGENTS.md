@@ -57,6 +57,13 @@ stores, not from using document boundaries as a rerender workaround.
 - `viewer/` owns the browser shell, live room session, cloud-specific host
   adapter, shell capabilities, dashboard/list projections, and shared notebook
   surface integration.
+- Identity rules and browser sign-in session code that Pages also runs live in
+  `@nteract/identity` and `@nteract/session`, not in `src/`. Add a shared rule
+  to the package and import it by name. `src/server-oidc.ts` holds the sign-in
+  and token refresh flow that drives the session store.
+- Session table, column, cookie, and `NOTEBOOK_CLOUD_*` variable names are live
+  in deployed databases and browsers. Renaming one is a migration, not a
+  refactor.
 - Keep notebook UI behavior in shared notebook surfaces where possible. Cloud
   code should adapt host capabilities and routes, not fork cell/output/runtime
   UI semantics.
