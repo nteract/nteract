@@ -1,6 +1,9 @@
 import { OUTPUT_FRAME_PATH } from "./output-frame-paths.mjs";
 
 export const ANYWIDGET_MEDIA_TYPE = "application/vnd.nteract.anywidget.v2+json";
+export const MODULE_MEDIA_TYPE = "application/vnd.nteract.module-view.v1+json";
+export const isExecutableView = (type) =>
+  type === ANYWIDGET_MEDIA_TYPE || type === MODULE_MEDIA_TYPE;
 export const ESM_MEDIA_TYPE = "text/javascript";
 export const CSS_MEDIA_TYPE = "text/css";
 export const BINARY_MEDIA_TYPE = "application/octet-stream";

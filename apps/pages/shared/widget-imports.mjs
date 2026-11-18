@@ -8,6 +8,7 @@ export const standardImports = Object.freeze([
   "react/jsx-runtime",
   "d3",
   "@observablehq/plot",
+  "@nteract/sift/parquet",
 ]);
 export const catalogDigest = /^[a-f0-9]{64}$/;
 export function localCatalogRevision(env = {}) {

@@ -44,7 +44,10 @@ const result = await build({
         }));
         plugin.onLoad({ filter: /.*/, namespace: "catalog" }, ({ path: id }) => {
           let contents;
-          if (id.startsWith("react")) {
+          if (id === "@nteract/sift/parquet") {
+            contents =
+              "import {setWasmUrl} from '@nteract/sift'; setWasmUrl(new URL('./sift.wasm', import.meta.url).href); export {loadTableFile} from '@nteract/sift';";
+          } else if (id.startsWith("react")) {
             // Publish CJS React entry points as real named ESM exports. All
             // importers resolve the same React module within the split graph.
             const names = Object.keys(requireFromApp(id)).filter((name) =>
@@ -61,6 +64,7 @@ const result = await build({
   ],
 });
 const files = new Map(result.outputFiles.map((f) => [path.basename(f.path), f.contents]));
+files.set("sift.wasm", await readFile(requireFromApp.resolve("@nteract/sift/sift.wasm")));
 const hash = (data) => createHash("sha256").update(data).digest("hex");
 const manifest =
   JSON.stringify(
@@ -93,7 +97,7 @@ const server = createServer(async (req, res) => {
   if (!["GET", "HEAD"].includes(req.method)) return send(405, "text/plain", "Use GET");
   try {
     const url = new URL(req.url, origin);
-    const asset = /^\/catalog\/([a-f0-9]{64})\/([\w-]+\.(?:js|css|json))$/.exec(url.pathname);
+    const asset = /^\/catalog\/([a-f0-9]{64})\/([\w-]+\.(?:js|css|json|wasm))$/.exec(url.pathname);
     if (asset || url.pathname === "/catalog.json") {
       const [, revision, name] = asset ?? [null, pin, "manifest.json"];
       const data = await readFile(path.join(dir, revision, name));
@@ -103,7 +107,9 @@ const server = createServer(async (req, res) => {
           ? "text/javascript"
           : name.endsWith(".css")
             ? "text/css"
-            : "application/json",
+            : name.endsWith(".wasm")
+              ? "application/wasm"
+              : "application/json",
         data,
         {
           "Access-Control-Allow-Origin": "*",

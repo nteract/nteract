@@ -1,3 +1,4 @@
+import { receiveByteSource } from "./byte-source.mjs";
 import { outputTransition } from "./lifecycle.mjs";
 import { applyHostContext } from "./context.mjs";
 
@@ -67,7 +68,8 @@ function connect(event) {
     try {
       context = applyHostContext(document, data.context ?? { theme: "light" });
       const catalog = document.getElementById("widget-catalog-map");
-      if (catalog || data.payload.imports) {
+      const files = Object.entries(data.files ?? {});
+      if (catalog || data.payload.imports || files.length) {
         const imports = catalog ? JSON.parse(catalog.textContent).imports : {};
         for (const [name, asset] of Object.entries(data.payload.imports ?? {})) {
           if (Object.hasOwn(imports, name))
@@ -76,27 +78,55 @@ function connect(event) {
           cleanup(() => URL.revokeObjectURL(url));
           imports[name] = url;
         }
+        const bindings = [];
+        for (const [name, descriptor] of files) {
+          const url = URL.createObjectURL(
+            new Blob(
+              [
+                "let file; export {file as default}; export const bind = value => { file ??= value }",
+              ],
+              { type: "text/javascript" },
+            ),
+          );
+          cleanup(() => URL.revokeObjectURL(url));
+          imports[name] = url;
+          bindings.push([url, receiveByteSource(descriptor, lifetime.signal)]);
+        }
         const script = document.createElement("script");
         script.type = "importmap";
         script.textContent = JSON.stringify({ imports });
         document.head.append(script);
+        for (const [url, source] of bindings) (await import(url)).bind(source);
       }
-      const session = createWidgetSession(data.payload, {
-        document,
-        signal: lifetime.signal,
-        contextHost: {
-          getContext: () => context,
-          onContextChange(listener) {
-            contextListeners.add(listener);
-            return () => contextListeners.delete(listener);
+      if (data.payload.kind === "module") {
+        const url = URL.createObjectURL(
+          new Blob([data.payload.assets.entry.bytes], { type: "text/javascript" }),
+        );
+        cleanup(() => URL.revokeObjectURL(url));
+        phase("loaded");
+        const { render } = await import(url);
+        lifetime.signal.throwIfAborted();
+        if (typeof render !== "function") throw Error("Export a render({el, signal}) function.");
+        phase("initialized");
+        cleanup(await render({ el: document.querySelector("main"), signal: lifetime.signal }));
+      } else {
+        const session = createWidgetSession(data.payload, {
+          document,
+          signal: lifetime.signal,
+          contextHost: {
+            getContext: () => context,
+            onContextChange(listener) {
+              contextListeners.add(listener);
+              return () => contextListeners.delete(listener);
+            },
           },
-        },
-      });
-      phase("loaded");
-      await session.initialize();
-      lifetime.signal.throwIfAborted();
-      phase("initialized");
-      await session.render(document.querySelector("main"));
+        });
+        phase("loaded");
+        await session.initialize();
+        lifetime.signal.throwIfAborted();
+        phase("initialized");
+        await session.render(document.querySelector("main"));
+      }
       lifetime.signal.throwIfAborted();
       phase("rendered");
       // The shell owns normal-flow layout. Measuring its flow-root body includes

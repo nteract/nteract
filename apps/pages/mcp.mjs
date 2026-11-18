@@ -331,15 +331,15 @@ const editOperation = {
     spec: {
       type: "object",
       description:
-        "Vega-Lite: named data. Anywidget: {module, stylesheet?, state?, buffers?:[{source,path}], models?}; module/stylesheet/source are {source_id, revision?}. Local state; no backend. See /llms/anywidget.txt.",
+        "Vega-Lite uses named data. Module views bind {module, files?} in /llms/views.txt. Anywidget binds {module, stylesheet?, state?, buffers?, models?} in /llms/anywidget.txt.",
     },
     data: {
       type: "object",
-      description: "Vega-Lite only: dataset name → {source_id, revision?}. Omit for anywidget.",
+      description: "Vega-Lite only: dataset name → {source_id, revision?}.",
     },
     view_revision: {
       type: ["string", "null"],
-      description: "set_view: view_revision you read; null creates. Else stale_view.",
+      description: "Observed view revision; null creates. Else stale_view.",
     },
     dark_asset_id: {
       ...assetId,
@@ -358,8 +358,7 @@ const editOperation = {
       properties: {
         type: {
           ...choice("dataframe", "view"),
-          description:
-            "dataframe: a dataset's table. view: a set_view chart or interactive anywidget.",
+          description: "Place a dataframe or a configured view.",
         },
         attrs: {
           type: "object",

@@ -1,3 +1,4 @@
+import { openAssetByteSource } from "./asset-byte-source.mjs";
 import { decodeWidgetImports } from "../shared/widget-imports.mjs";
 import {
   Observable,
@@ -10,10 +11,14 @@ import {
   switchMap,
 } from "rxjs";
 import { checkViewSpec } from "../shared/view-spec.mjs";
-import { OUTPUT_MAX_TOTAL_BYTES, OUTPUT_FRAME_URL } from "../shared/anywidget-view.mjs";
+import {
+  MODULE_MEDIA_TYPE,
+  OUTPUT_MAX_TOTAL_BYTES,
+  OUTPUT_FRAME_URL,
+} from "../shared/anywidget-view.mjs";
 import { viewDependencies } from "../shared/view-dependencies.mjs";
 import { fetchOutputAsset } from "./output-assets.mjs";
-import { mountAnywidgetOutput, readHostContext } from "@nteract/output-frame";
+import { mountModuleOutput, readHostContext } from "@nteract/output-frame";
 import { WIDGET_IMPORTS, widgetCatalogPin, localWidgetCatalog } from "./widget-imports.mjs";
 import { themeStore } from "./theme.mjs";
 
@@ -40,7 +45,7 @@ export function mount(
     sourcesAnswer$ = of("known"),
     frameUrl = container.ownerDocument.querySelector('meta[name="pages-output-frame-url"]')
       ?.content ?? OUTPUT_FRAME_URL,
-    mountOutput = mountAnywidgetOutput,
+    mountOutput = mountModuleOutput,
     theme = themeStore,
   },
 ) {
@@ -145,17 +150,29 @@ export function mount(
                                 media_type: "text/javascript",
                               });
                           }
-                          for (const [name, version] of Object.entries(plan.versions))
-                            assets[name] = await load(version);
+                          const byteSources = {};
+                          for (const [name, version] of Object.entries(plan.versions)) {
+                            if (name.startsWith("data/"))
+                              byteSources[name] = await openAssetByteSource(
+                                sources.pageId,
+                                version,
+                                { signal: controller.signal, request: sources.request },
+                              );
+                            else assets[name] = await load(version);
+                          }
+                          controller.signal.throwIfAborted();
                           outputHandle = mountOutput(
                             output,
                             {
                               title: plan.view.title,
-                              spec: plan.spec,
+                              ...(plan.view.media_type === MODULE_MEDIA_TYPE
+                                ? { kind: "module" }
+                                : { spec: plan.spec }),
                               assets,
                               ...(Object.keys(imports).length && { imports }),
                             },
                             {
+                              byteSources,
                               frameUrl: url.href,
                               hostContext: readHostContext(root, theme.getSnapshot().resolved),
                               onState(state, error) {

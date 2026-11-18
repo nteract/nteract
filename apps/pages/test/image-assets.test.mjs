@@ -69,10 +69,14 @@ class Bucket {
     this.objects.set(key, object);
     return object;
   }
-  async get(key) {
-    this.calls.push(["get", key]);
+  async get(key, { range } = {}) {
+    this.calls.push(range ? ["get", key, range] : ["get", key]);
     const object = this.objects.get(key);
-    return object ? { ...object, body: new Blob([object.bytes]).stream() } : null;
+    if (!object) return null;
+    const bytes = range
+      ? object.bytes.subarray(range.offset, range.offset + range.length)
+      : object.bytes;
+    return { ...object, range, body: new Blob([bytes]).stream() };
   }
 }
 
@@ -983,4 +987,48 @@ test("an asset path that names no asset is refused as JSON with a code, for ever
       privateHeaders(response);
     }
   assert.equal(f.forwarded.length, 0, "no Page is asked about a malformed path");
+});
+
+test("authorized byte ranges issue bounded storage reads, including a footer suffix", async (t) => {
+  const f = await fixture(t);
+  const { asset_id } = await upload(f);
+  const bytes = bytesFor();
+  for (const [header, start, length] of [
+    ["bytes=3-11", 3, 9],
+    ["bytes=-8", bytes.length - 8, 8],
+    ["bytes=20-", 20, bytes.length - 20],
+  ]) {
+    const response = await run(f, { asset: asset_id, headers: { range: header } });
+    assert.equal(response.status, 206);
+    assert.equal(
+      response.headers.get("content-range"),
+      `bytes ${start}-${start + length - 1}/${bytes.length}`,
+    );
+    assert.deepEqual(
+      new Uint8Array(await response.arrayBuffer()),
+      bytes.slice(start, start + length),
+    );
+    assert.deepEqual(f.env.PAGES_ASSETS.calls.at(-1), [
+      "get",
+      imageAssetKey(pageId, asset_id),
+      { offset: start, length },
+    ]);
+  }
+  const stale = await run(f, {
+    asset: asset_id,
+    headers: { range: "bytes=3-11", "if-range": '"old"' },
+  });
+  assert.equal(stale.status, 200);
+  assert.deepEqual(new Uint8Array(await stale.arrayBuffer()), bytes);
+  const before = f.env.PAGES_ASSETS.calls.length;
+  const denied = await run(f, {
+    asset: asset_id,
+    authenticated: false,
+    headers: { range: "bytes=0-4" },
+  });
+  assert.equal(denied.status, 401);
+  assert.equal(f.env.PAGES_ASSETS.calls.length, before);
+  const invalid = await run(f, { asset: asset_id, headers: { range: "bytes=999999-" } });
+  assert.equal(invalid.status, 416);
+  assert.equal(invalid.headers.get("content-range"), "bytes */" + bytes.length);
 });

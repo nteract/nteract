@@ -1,4 +1,4 @@
-import { ANYWIDGET_MEDIA_TYPE } from "./anywidget-view.mjs";
+import { ANYWIDGET_MEDIA_TYPE, MODULE_MEDIA_TYPE } from "./anywidget-view.mjs";
 // A Page's views: charts and anywidgets stored each in its own `pages.view` document
 // (model/view-doc.mjs), placed in the Page body by a `view` node. These are
 // the limits and names the host, the model, the tool schemas (mcp.mjs) and
@@ -14,6 +14,7 @@ export const MAX_VIEW_TITLE = 200;
 export const VIEW_MEDIA_TYPES = Object.freeze([
   "application/vnd.vegalite.v6+json",
   ANYWIDGET_MEDIA_TYPE,
+  MODULE_MEDIA_TYPE,
 ]);
 /** A view revision: decimal, minted by the host from "1". */
 export const VIEW_REVISION_PATTERN = "^[1-9][0-9]{0,15}$";

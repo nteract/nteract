@@ -1,5 +1,5 @@
 import { Observable, Subscription, distinctUntilChanged, map, shareReplay, switchMap } from "rxjs";
-import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
+import { isExecutableView } from "../shared/anywidget-view.mjs";
 
 // Preserve the editor's existing chart warm-up lease across the dispatcher.
 export function warm(doc) {
@@ -19,7 +19,7 @@ export function mount(container, options) {
   const subscription = view$
     .pipe(
       map((p) =>
-        p.status === "ready" && p.view.media_type === ANYWIDGET_MEDIA_TYPE ? "anywidget" : "chart",
+        p.status === "ready" && isExecutableView(p.view.media_type) ? "anywidget" : "chart",
       ),
       distinctUntilChanged(),
       switchMap(

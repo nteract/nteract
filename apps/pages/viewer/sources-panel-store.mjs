@@ -13,7 +13,11 @@ import { nativeRead, readChildren, readKind } from "../model/native-read.mjs";
 import * as A from "@automerge/automerge/slim";
 import { orderedBlockIds } from "../model/order.mjs";
 import { readSource } from "../model/sources-doc.mjs";
-import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
+import {
+  isExecutableView,
+  ANYWIDGET_MEDIA_TYPE,
+  MODULE_MEDIA_TYPE,
+} from "../shared/anywidget-view.mjs";
 import { parseAssetPath } from "../shared/dataset-assets.mjs";
 import { viewDependencies } from "../shared/view-dependencies.mjs";
 import { sourcesAnswer } from "./page-source-store.mjs";
@@ -30,6 +34,7 @@ export function sourceMediaLabel(type) {
       "application/octet-stream": "Binary",
       "application/vnd.vegalite.v6+json": "Vega-Lite chart",
       [ANYWIDGET_MEDIA_TYPE]: "Anywidget",
+      [MODULE_MEDIA_TYPE]: "Module view",
     }[type] ??
     type ??
     "Unknown type"
@@ -164,7 +169,7 @@ export function projectSourcesPanel(
     }
     if (
       catalogEnabled &&
-      view.media_type === ANYWIDGET_MEDIA_TYPE &&
+      isExecutableView(view.media_type) &&
       widgetCatalogPin(sources.get(WIDGET_IMPORTS))
     ) {
       dependencies = [

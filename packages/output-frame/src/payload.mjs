@@ -3,7 +3,8 @@ import { checkAnywidgetSpec, widgetDefinitions } from "./schema.mjs";
 // Copy exactly the authorized view, never the unseen tail of a shared buffer.
 // Only dedicated buffers are transferred; callers retain their data.
 export function preparePayload(payload) {
-  const checked = checkAnywidgetSpec(payload.spec);
+  const module = payload.kind === "module";
+  const checked = module ? { ok: true, names: ["entry"] } : checkAnywidgetSpec(payload.spec);
   if (!checked.ok) throw Error(checked.error);
   const inputs = payload.assets ?? {};
   if (
@@ -37,7 +38,9 @@ export function preparePayload(payload) {
       return [name, copy(input)];
     }),
   );
-  for (const [, definition] of widgetDefinitions(payload.spec)) {
+  if (module && assets.entry.mediaType !== "text/javascript")
+    throw Error("Module entry requires text/javascript.");
+  for (const [, definition] of module ? [] : widgetDefinitions(payload.spec)) {
     if (assets[definition._esm].mediaType !== "text/javascript")
       throw Error("_esm requires text/javascript.");
     if (definition._css && assets[definition._css].mediaType !== "text/css")
@@ -45,7 +48,7 @@ export function preparePayload(payload) {
   }
   return {
     title: payload.title,
-    spec: structuredClone(payload.spec),
+    ...(module ? { kind: "module" } : { spec: structuredClone(payload.spec) }),
     assets,
     ...(entries.length && { imports }),
   };

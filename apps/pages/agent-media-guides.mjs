@@ -1,4 +1,8 @@
-import { ANYWIDGET_MEDIA_TYPE, OUTPUT_ASSET_TYPES } from "./shared/anywidget-view.mjs";
+import {
+  ANYWIDGET_MEDIA_TYPE,
+  MODULE_MEDIA_TYPE,
+  OUTPUT_ASSET_TYPES,
+} from "./shared/anywidget-view.mjs";
 import { CHART_MAX_ROWS } from "./shared/chart-spec.mjs";
 import { VIEW_SPEC_MAX_BYTES } from "./shared/view-spec.mjs";
 import { SOURCE_HISTORY_LIMIT } from "./model/sources-doc.mjs";
@@ -109,6 +113,14 @@ A view has its own identity, title, configuration and source bindings. A documen
 ${VIEW_MEDIA_TYPES.map((type) => `- \`${type}\``).join("\n")}
 
 The spec field contains configuration for the selected type. For Vega-Lite, data maps the named datasets to {source_id} or {source_id, revision}. Anywidget instead carries direct source references in spec.module, spec.stylesheet and each spec.buffers entry; omit data. See ${link(origin, "/llms/anywidget.txt", "Anywidget examples")} or ${link(origin, "/llms/vega-lite.txt", "Vega-Lite examples")} for complete set_view operations. Do not place source text or URLs where a source reference is expected.
+
+## Module views and ranged files
+
+A plain JavaScript entry exports render({el, signal}) and can return a cleanup function. Use this spec with media_type \`${MODULE_MEDIA_TYPE}\`:
+
+{"module":{"source_id":"activity-chart","revision":"1"},"files":{"activity":{"source_id":"project-activity","revision":"1"}}}
+
+In the entry, \`import activity from "data/activity"\` returns a ByteSource scoped to this view. Its byteLength is the size in bytes. Its read(offset, length, signal) resolves to exactly that span as a Uint8Array. Each source can follow its current revision or specify a retained revision. Read the Parquet source with read_page and source_id to discover its columns. On the local standard catalog, import loadTableFile from the named exports of @nteract/sift/parquet. Use await loadTableFile(activity, {maxRows:28, overflow:"truncate"}) for a bounded leading preview and call table.dispose() when done. The host authorizes each range. Omitting a file binding leaves its alias unavailable to the view.
 
 ## Create, place, and inspect
 

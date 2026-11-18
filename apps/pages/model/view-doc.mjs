@@ -1,4 +1,4 @@
-import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
+import { isExecutableView } from "../shared/anywidget-view.mjs";
 import { viewDependencies } from "../shared/view-dependencies.mjs";
 import * as A from "@automerge/automerge/slim";
 import { boundedWriter } from "./author.mjs";
@@ -94,7 +94,7 @@ export function viewSummary(doc, viewId) {
   if (!view) return undefined;
   const { view_id, title, media_type, revision, data } = view;
   const summary = { view_id, title, media_type, revision };
-  if (media_type !== ANYWIDGET_MEDIA_TYPE) return { ...summary, data };
+  if (!isExecutableView(media_type)) return { ...summary, data };
   try {
     return {
       ...summary,
@@ -140,11 +140,11 @@ export function validateViewOperation(op) {
   // their spec before checking the dataset names that data must bind.
   const checked = checkViewSpec(
     op.spec,
-    op.media_type === ANYWIDGET_MEDIA_TYPE ? op.data : undefined,
+    isExecutableView(op.media_type) ? op.data : undefined,
     op.media_type,
   );
   if (!checked.ok) fail("invalid_view", checked.error);
-  if (op.media_type === ANYWIDGET_MEDIA_TYPE) return op;
+  if (isExecutableView(op.media_type)) return op;
   if (!isMap(op.data) || !Object.keys(op.data).length)
     fail(
       "invalid_view",
@@ -260,10 +260,9 @@ export function setView(doc, op, { sourcesDoc, by, at = new Date().toISOString()
   if (typeof doc.spec !== "string") doc.spec = spec;
   else if (doc.spec !== spec) A.updateText(doc, ["spec"], spec);
   // Preserve the generic record shape; widget references live only in spec.
-  doc.data =
-    op.media_type === ANYWIDGET_MEDIA_TYPE
-      ? {}
-      : Object.fromEntries(Object.entries(op.data).map(([name, b]) => [name, bindingOf(b)]));
+  doc.data = isExecutableView(op.media_type)
+    ? {}
+    : Object.fromEntries(Object.entries(op.data).map(([name, b]) => [name, bindingOf(b)]));
   doc.revision = revision;
   doc.producer = { kind: "edit_page", at, by: boundedWriter(by) };
   return { op: "set_view", view_id: op.view_id, view_revision: revision };

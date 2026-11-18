@@ -1,3 +1,4 @@
+import { byteRange } from "../shared/byte-range.mjs";
 import {
   ESM_MEDIA_TYPE,
   CSS_MEDIA_TYPE,
@@ -590,8 +591,34 @@ export async function handleImageAssets(
       );
     }
     const key = imageAssetKey(pageId, assetId);
-    const object = await (request.method === "HEAD" ? bucket.head(key) : bucket.get(key));
-    if (!object) throw new HttpError(404, "Image not found");
+    const header = request.method === "GET" ? request.headers.get("Range") : null;
+    let range;
+    let object;
+    if (header !== null) {
+      const metadata = await bucket.head(key);
+      if (!metadata) throw new HttpError(404, "Asset not found");
+      const validator = request.headers.get("If-Range");
+      if (validator === null || validator === metadata.httpEtag) {
+        range = byteRange(header, metadata.size);
+        if (!range)
+          return privateImageResponse(
+            new Response(null, {
+              status: 416,
+              headers: { "Content-Range": "bytes */" + metadata.size },
+            }),
+          );
+      }
+      object = await bucket.get(key, range ? { range } : undefined);
+      if (
+        object &&
+        range &&
+        (object.range?.offset !== range.offset || object.range?.length !== range.length)
+      )
+        throw Error("Storage did not confirm the requested byte range.");
+    } else {
+      object = await (request.method === "HEAD" ? bucket.head(key) : bucket.get(key));
+    }
+    if (!object) throw new HttpError(404, "Asset not found");
     const contentType = object.httpMetadata?.contentType;
     if (!SERVED_MEDIA_TYPES.includes(contentType)) throw new Error("Invalid stored asset type");
     // A dataset is data for the viewer to fetch, never a document to open:
@@ -601,13 +628,18 @@ export async function handleImageAssets(
       : "inline";
     return servedAssetResponse(
       new Response(request.method === "HEAD" ? null : object.body, {
+        status: range ? 206 : 200,
         headers: {
           "Content-Type": [ESM_MEDIA_TYPE, CSS_MEDIA_TYPE].includes(contentType)
             ? "application/octet-stream"
             : contentType,
           "X-Pages-Media-Type": contentType,
           "Content-Security-Policy": "sandbox; default-src 'none'",
-          "Content-Length": String(object.size),
+          "Accept-Ranges": "bytes",
+          ...(range && {
+            "Content-Range": `bytes ${range.offset}-${range.offset + range.length - 1}/${object.size}`,
+          }),
+          "Content-Length": String(range?.length ?? object.size),
           "Content-Disposition": disposition,
           ...(object.httpEtag && { ETag: object.httpEtag }),
         },
