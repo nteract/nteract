@@ -75,3 +75,27 @@ test("a full response to a requested range is refused without consuming the file
   await assert.rejects(source.read(0, 4), /requested range/);
   assert.ok(cancelled);
 });
+
+test("partial responses without Content-Length must deliver exactly the requested bytes", async () => {
+  let size = 4;
+  const source = await openAssetByteSource(
+    "33333333-3333-4333-8333-333333333333",
+    { asset_id: "a".repeat(64), media_type: "application/octet-stream" },
+    {
+      request: async (_, options) =>
+        options.method === "HEAD"
+          ? new Response(null, {
+              headers: { "content-length": "8", "x-pages-media-type": "application/octet-stream" },
+            })
+          : new Response(new Uint8Array(size), {
+              status: 206,
+              headers: { "content-range": "bytes 2-5/8" },
+            }),
+    },
+  );
+  assert.equal((await source.read(2, 4)).byteLength, 4);
+  size = 3;
+  await assert.rejects(source.read(2, 4), /Incomplete range/);
+  size = 5;
+  await assert.rejects(source.read(2, 4), /exceeds requested length/);
+});

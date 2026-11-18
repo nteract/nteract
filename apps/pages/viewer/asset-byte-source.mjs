@@ -37,18 +37,33 @@ export async function openAssetByteSource(pageId, version, { signal, request = f
         signal: active,
         headers: { Range: `bytes=${offset}-${end}` },
       });
+      const declaredLength = response.headers.get("content-length");
       if (
         response.status !== 206 ||
         response.headers.get("content-range") !== `bytes ${offset}-${end}/${byteLength}` ||
-        response.headers.get("content-length") !== String(length)
+        (declaredLength !== null && declaredLength !== String(length))
       ) {
         await response.body?.cancel();
         throw Error(
           "The asset server did not return the requested range (" + response.status + ").",
         );
       }
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      if (bytes.length !== length) throw Error("Incomplete range.");
+      const reader = response.body?.getReader();
+      if (!reader) throw Error("Incomplete range.");
+      const bytes = new Uint8Array(length);
+      let copied = 0;
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value.byteLength > length - copied) throw Error("Range exceeds requested length.");
+          bytes.set(value, copied);
+          copied += value.byteLength;
+        }
+      } finally {
+        await reader.cancel().catch(() => {});
+      }
+      if (copied !== length) throw Error("Incomplete range.");
       return bytes;
     },
   };
