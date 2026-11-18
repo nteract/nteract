@@ -3,6 +3,8 @@ import { useRuntimeStateLoaded } from "@/components/notebook/state/runtime-state
 import { NotebookCommentPreview } from "@/components/notebook/NotebookCommentPreview";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  borrowedEnvironmentKind,
+  projectRunningEnvironment,
   colorForActorIdentity,
   contrastColorForActorIdentity,
   DEFAULT_PROJECT_TRUST_STATE,
@@ -423,6 +425,7 @@ function AppContent() {
     connectionScope,
     hostedNotebookUrl,
     localEnvironmentSelectionAvailable,
+    installedKernelspecsAvailable,
     connectionGeneration,
   } = useNotebook();
 
@@ -708,8 +711,8 @@ function AppContent() {
       statusKey,
     ],
   );
+  // Not limited to Python: an installed Jupyter kernel can run any language.
   const localEnvironmentOwner =
-    runtime === "python" &&
     !hostedNotebookUrl &&
     shellCapabilities.access.level === "owner" &&
     shellCapabilities.access.source === "local";
@@ -719,11 +722,15 @@ function AppContent() {
     client: notebookClient,
     connectionStatus$: host.transport.connectionStatus$,
     enabled: localEnvironmentOwner && localEnvironmentSelectionEnabled && sessionReady,
+    installedKernelspecs: installedKernelspecsAvailable,
     connectionGeneration,
   });
-  const borrowedEnvironmentActive = runtimeState.kernel.env_source === "conda:existing:local";
+  const borrowedEnvironment = borrowedEnvironmentKind(runtimeState.kernel.env_source);
+  const borrowedEnvironmentActive = borrowedEnvironment !== null;
+  // Installed-package records exist only for a borrowed Conda environment.
+  const borrowedCondaActive = borrowedEnvironment === "conda";
   const autoInventoryEnvironmentId =
-    borrowedEnvironmentActive &&
+    borrowedCondaActive &&
     runtimeState.kernel.lifecycle.lifecycle === "Running" &&
     localEnvironment.state.selection?.selected?.id &&
     localEnvironment.state.selection.selected.id === localEnvironment.state.selection.applied?.id &&
@@ -741,11 +748,11 @@ function AppContent() {
   useEffect(() => {
     const runningId = runtimeState.kernel.environment_id;
     void localEnvironment.store.loadInstalledPackagesForRunningEnvironment(
-      borrowedEnvironmentActive ? runningId || null : null,
+      borrowedCondaActive ? runningId || null : null,
       runtimeState.kernel.lifecycle.lifecycle === "Running",
     );
   }, [
-    borrowedEnvironmentActive,
+    borrowedCondaActive,
     localEnvironment.store,
     runtimeState.kernel.environment_id,
     runtimeState.kernel.lifecycle.lifecycle,
@@ -2347,16 +2354,16 @@ function AppContent() {
                       key={connectionGeneration}
                       {...localEnvironment.state}
                       available={localEnvironmentSelectionEnabled}
-                      running={
-                        runtimeState.kernel.lifecycle.lifecycle === "Running"
-                          ? {
-                              id: kernelInfo.environmentId ?? null,
-                              name:
-                                kernelInfo.environmentName || envSource || "Automatic environment",
-                              pythonVersion: kernelInfo.pythonVersion ?? null,
-                            }
-                          : null
-                      }
+                      // The daemon rejects a Conda target for a Deno notebook.
+                      condaAvailable={runtime !== "deno"}
+                      running={projectRunningEnvironment({
+                        lifecycle: runtimeState.kernel.lifecycle.lifecycle,
+                        envSource,
+                        environmentId: kernelInfo.environmentId,
+                        environmentName: kernelInfo.environmentName,
+                        pythonVersion: kernelInfo.pythonVersion,
+                        language: runtimeState.kernel.language,
+                      })}
                       blocked={
                         !sessionReady ||
                         !shellCapabilities.canExecute ||
@@ -2367,6 +2374,7 @@ function AppContent() {
                         runtimeState.queue.queued.length > 0
                       }
                       onLoadInventory={(refresh) => localEnvironment.store.loadInventory(refresh)}
+                      onLoadKernelspecs={() => localEnvironment.store.loadKernelspecs()}
                       onSelect={(target) => localEnvironment.store.setSelection(target)}
                       onApply={handleApplyEnvironment}
                       onRetrySelection={() => localEnvironment.store.refreshSelection()}
@@ -2376,14 +2384,14 @@ function AppContent() {
                     <section className="space-y-2" aria-label="Notebook declarations">
                       <h3 className="text-xs font-medium">Notebook declarations</h3>
                       <p className="text-xs text-muted-foreground">
-                        The existing Conda environment is borrowed. Notebook declarations are
-                        read-only here and are not installed into it. Select Automatic and apply to
-                        use managed package controls.
+                        {borrowedEnvironment === "kernelspec"
+                          ? "This Jupyter kernel is installed outside nteract and is borrowed. nteract does not install or change its packages, and notebook declarations are read-only here. Select Automatic and apply to use managed package controls."
+                          : "The existing Conda environment is borrowed. Notebook declarations are read-only here and are not installed into it. Select Automatic and apply to use managed package controls."}
                       </p>
                       <EnvironmentPackageSummaryPanel
                         packages={notebookMetadataToPackageViewModel(notebookMetadata)}
                       />
-                      {localEnvironmentOwner && (
+                      {localEnvironmentOwner && borrowedCondaActive && (
                         <section
                           className="space-y-2 border-t border-border pt-3"
                           aria-label="Installed Conda packages"

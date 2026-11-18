@@ -238,6 +238,7 @@ pub enum EnvSource {
     EnvYml,
     /// Explicit borrowed Conda prefix. Never prepare, capture or mutate it.
     ExistingConda,
+    Kernelspec,
     /// PEP 723 script deps extracted from cell source (e.g. `"uv:pep723"`).
     Pep723(PackageManager),
     /// Deno TypeScript kernel — no Python env.
@@ -265,6 +266,7 @@ impl EnvSource {
             Self::PixiToml => "pixi:toml",
             Self::EnvYml => "conda:env_yml",
             Self::ExistingConda => "conda:existing:local",
+            Self::Kernelspec => "kernelspec",
             Self::Pep723(PackageManager::Uv) => "uv:pep723",
             Self::Pep723(PackageManager::Conda) => "conda:pep723",
             Self::Pep723(PackageManager::Pixi) => "pixi:pep723",
@@ -288,6 +290,7 @@ impl EnvSource {
             "pixi:toml" => Self::PixiToml,
             "conda:env_yml" => Self::EnvYml,
             "conda:existing:local" => Self::ExistingConda,
+            "kernelspec" => Self::Kernelspec,
             "uv:pep723" => Self::Pep723(PackageManager::Uv),
             "conda:pep723" => Self::Pep723(PackageManager::Conda),
             "pixi:pep723" => Self::Pep723(PackageManager::Pixi),
@@ -309,7 +312,7 @@ impl EnvSource {
             Self::Pyproject => Some(PackageManager::Uv),
             Self::PixiToml => Some(PackageManager::Pixi),
             Self::EnvYml | Self::ExistingConda => Some(PackageManager::Conda),
-            Self::Deno => None,
+            Self::Deno | Self::Kernelspec => None,
             Self::Unknown(s) => {
                 if s.starts_with("uv:") {
                     Some(PackageManager::Uv)

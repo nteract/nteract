@@ -34,6 +34,9 @@ async function runtimeStateProxy(upstreamPath: string, proxyPath: string) {
   let holdRuntime = false;
   let noKernelResponses = 0;
   let queuedWhileHeld = 0;
+  let holdNextLaunch = false;
+  let launchResponsesWhileHeld = 0;
+  const releaseHeld = new Set<() => void>();
   const proxy = net.createServer((client) => {
     const upstream = net.createConnection(upstreamPath);
     sockets.add(client);
@@ -48,9 +51,39 @@ async function runtimeStateProxy(upstreamPath: string, proxyPath: string) {
       sockets.delete(upstream);
       client.destroy();
     });
-    client.pipe(upstream);
+    // Client connections start with a five-byte protocol preamble, then
+    // length-prefixed frames (including the initial JSON handshake).
+    let ingress = Buffer.alloc(0);
+    let preambleForwarded = false;
+    client.on("data", (chunk: Buffer) => {
+      ingress = Buffer.concat([ingress, chunk]);
+      if (!preambleForwarded) {
+        if (ingress.length < 5) return;
+        upstream.write(ingress.subarray(0, 5));
+        ingress = ingress.subarray(5);
+        preambleForwarded = true;
+      }
+      while (ingress.length >= 4 && ingress.length >= 4 + ingress.readUInt32BE(0)) {
+        const frame = ingress.subarray(0, 4 + ingress.readUInt32BE(0));
+        ingress = ingress.subarray(frame.length);
+        if (
+          holdNextLaunch &&
+          frame[4] === 1 &&
+          JSON.parse(frame.subarray(5).toString()).action === "launch_kernel"
+        ) {
+          holdNextLaunch = false;
+          holdRuntime = true;
+        }
+        upstream.write(frame);
+      }
+    });
     let pending = Buffer.alloc(0);
     const held: Buffer[] = [];
+    const release = () => {
+      for (const delayed of held.splice(0)) client.write(delayed);
+    };
+    releaseHeld.add(release);
+    client.on("close", () => releaseHeld.delete(release));
     upstream.on("data", (chunk: Buffer) => {
       pending = Buffer.concat([pending, chunk]);
       while (pending.length >= 4 && pending.length >= 4 + pending.readUInt32BE(0)) {
@@ -76,6 +109,15 @@ async function runtimeStateProxy(upstreamPath: string, proxyPath: string) {
             for (const delayed of held.splice(0)) client.write(delayed);
           }, 150);
         }
+        if (
+          holdRuntime &&
+          frame[4] === 2 &&
+          ["kernel_launched", "kernel_already_running"].includes(
+            JSON.parse(frame.subarray(5).toString()).result,
+          )
+        ) {
+          launchResponsesWhileHeld += 1;
+        }
         client.write(frame);
       }
     });
@@ -86,8 +128,19 @@ async function runtimeStateProxy(upstreamPath: string, proxyPath: string) {
     hold: () => {
       holdRuntime = true;
     },
+    holdAfterNextLaunch: () => {
+      holdNextLaunch = true;
+    },
+    release: () => {
+      holdRuntime = false;
+      for (const release of releaseHeld) release();
+    },
+    launchResponsesWhileHeld: () => launchResponsesWhileHeld,
     noKernelResponses: () => noKernelResponses,
     queuedWhileHeld: () => queuedWhileHeld,
+    disconnect: () => {
+      for (const socket of sockets) socket.destroy();
+    },
     close: async () => {
       for (const socket of sockets) socket.destroy();
       await new Promise<void>((resolve) => proxy.close(() => resolve()));
@@ -279,6 +332,105 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
       }
     }
   });
+
+  it.skipIf(!executionEnabled).each(["release", "timeout", "close", "disconnect"] as const)(
+    "confirms or reports pending restart after delayed runtime frames (%s)",
+    async (resolution) => {
+      const proxyPath = path.join(directory, `restart-sync-${resolution}.sock`);
+      const proxy = await runtimeStateProxy(socketPath, proxyPath);
+      const session = await rt.createNotebook({
+        socketPath: proxyPath,
+        dependencies: ["ipykernel"],
+        workingDir: directory,
+        packageManager: "uv",
+        environmentMode: "notebook",
+      });
+      const testDiagnostics = diagnostics.forTest(
+        `restart delayed runtime confirmation (${resolution})`,
+      );
+      onTestFailed(() => captureSession("session", session, testDiagnostics));
+      try {
+        expect((await session.runCell("print('before restart')")).success).toBe(true);
+        const before = await session.getRuntimeStatus();
+        expect(before.lifecycle).toBe("Running");
+        expect(before.envSource).not.toBe("");
+        proxy.holdAfterNextLaunch();
+        let settled = false;
+        const restart = session
+          .restartKernelResult({ timeoutMs: resolution === "timeout" ? 1000 : 10000 })
+          .finally(() => {
+            settled = true;
+          });
+        // Keep a rejection handled even if a preceding assertion fails and
+        // cleanup closes the session while this operation is still pending.
+        void restart.catch(() => {});
+        // Observe the real launch response while withholding the runtime frame.
+        await expect.poll(proxy.launchResponsesWhileHeld, { timeout: 30000 }).toBe(1);
+        await delay(50);
+        expect(settled).toBe(false);
+        const pending = await session.getRuntimeStatus();
+        expect(pending.lifecycle).not.toBe("Running");
+        for (const field of [
+          "envSource",
+          "name",
+          "language",
+          "runtimeAgentId",
+          "environmentId",
+        ] as const) {
+          expect(pending[field]).toBe("");
+        }
+        if (resolution === "close") {
+          await session.close();
+          await expect(restart).rejects.toThrow(/closed/);
+          return;
+        }
+        if (resolution === "disconnect") {
+          proxy.disconnect();
+          await expect(restart).rejects.toThrow(/connection/i);
+          return;
+        }
+        if (resolution === "timeout") {
+          const result = await restart;
+          expect(result.outcome).toBe("timed_out");
+          expect(result.status.lifecycle).not.toBe("Running");
+          expect(result.status.envSource).toBe("");
+          expect(result.launchedEnvSource).toBe(before.envSource);
+          // A timeout says only that confirmation is pending. The daemon
+          // already launched successfully; releasing sync must reveal it.
+          proxy.release();
+          await expect
+            .poll(async () => (await session.getRuntimeStatus()).lifecycle)
+            .toBe("Running");
+          return;
+        }
+        proxy.release();
+        const result = await restart;
+        expect(result.outcome).toBe("running");
+        expect(result.status.lifecycle).toBe("Running");
+        expect(result.status.envSource).toBe(before.envSource);
+        expect((await session.getRuntimeStatus()).lifecycle).toBe("Running");
+        expect((await session.runCell("print('after restart')")).success).toBe(true);
+      } finally {
+        proxy.release();
+        try {
+          if (resolution === "close" || resolution === "disconnect") {
+            const cleanup = await rt.openNotebook(session.notebookId, { socketPath });
+            try {
+              await cleanup.shutdownNotebook();
+            } finally {
+              await cleanup.close();
+            }
+          } else {
+            await session.shutdownNotebook();
+          }
+        } finally {
+          await session.close();
+          await proxy.close();
+        }
+      }
+    },
+    120000,
+  );
 
   it.skipIf(!executionEnabled).each([false, true])(
     "recovers execution after another session shuts down the kernel (stale=%s)",

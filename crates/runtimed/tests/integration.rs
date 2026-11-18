@@ -1128,6 +1128,652 @@ fn write_untrusted_selection_notebook(path: &Path) {
 }
 
 #[tokio::test]
+async fn imported_missing_kernelspec_reports_error_without_managed_fallback() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("missing.ipynb");
+    let name = format!("missing-{}", uuid::Uuid::new_v4());
+    let notebook = serde_json::json!({"nbformat":4,"nbformat_minor":5,"cells":[],"metadata":{"kernelspec":{"name":name,"language":"python","display_name":"Missing"},"runt":{"schema_version":"1","uv":{"dependencies":[]}}}});
+    std::fs::write(&path, notebook.to_string()).unwrap();
+    let config = test_config(&temp);
+    let socket = config.socket_path.clone();
+    let daemon = Daemon::new_for_test(config).unwrap();
+    let task = tokio::spawn(async move { daemon.run().await.unwrap() });
+    assert!(wait_for_daemon(&PoolClient::new(socket.clone())).await);
+    let peer = connect::connect_open(socket.clone(), path, "missing-kernelspec")
+        .await
+        .unwrap();
+    assert_session_ready(&peer.handle, "missing-kernelspec").await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(state) = peer.handle.get_runtime_state() {
+                if state.kernel.lifecycle == runtime_doc::RuntimeLifecycle::Error {
+                    assert!(
+                        state
+                            .kernel
+                            .error_details
+                            .as_deref()
+                            .is_some_and(|e| e.contains(&name) && e.contains("not found")),
+                        "{:?}",
+                        state.kernel
+                    );
+                    break;
+                }
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("open publishes missing name without launching managed Python");
+    let response = peer
+        .handle
+        .send_request(NotebookRequest::GetEnvironmentSelection {})
+        .await
+        .unwrap();
+    let NotebookResponse::EnvironmentSelection { selection } = response else {
+        panic!("{response:?}")
+    };
+    assert_eq!(selection.selected_kernelspec.as_ref().unwrap().name, name);
+    assert!(selection.applied_kernelspec.is_none());
+    let heads = peer.handle.confirm_notebook_sync().await.unwrap();
+    let response = peer
+        .handle
+        .send_request_after_heads(
+            NotebookRequest::ApplyEnvironmentSelection {
+                expected_revision: selection.revision,
+                observed_heads: heads.clone(),
+            },
+            heads,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        response,
+        NotebookResponse::EnvironmentSelectionRejected { .. }
+    ));
+    let response = peer
+        .handle
+        .send_request(NotebookRequest::GetEnvironmentSelection {})
+        .await
+        .unwrap();
+    let NotebookResponse::EnvironmentSelection { selection } = response else {
+        panic!("{response:?}")
+    };
+    assert_eq!(selection.selected_kernelspec.as_ref().unwrap().name, name);
+    assert!(selection.applied_kernelspec.is_none());
+    let response = peer
+        .handle
+        .send_request(NotebookRequest::SetEnvironmentSelection {
+            target: notebook_protocol::protocol::LocalEnvironmentTarget::Automatic,
+            expected_revision: selection.revision,
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(response, NotebookResponse::EnvironmentSelection { selection } if selection.selected_kernelspec.is_none())
+    );
+    drop(peer);
+    stop_claiming_daemon(&socket, task).await;
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn kernelspec_guard_is_not_a_waitable_child_of_kernel() {
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt;
+    let mut kernel = tokio::process::Command::new(env!("CARGO_BIN_EXE_runtimed"))
+        .args([
+            "__kernelspec_exec",
+            "/bin/sh",
+            "-c",
+            "sleep .01 & wait; echo done",
+        ])
+        .process_group(0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let ownership = kernel.stdin.take().unwrap();
+    // A bare wait must finish naturally, not because closing the lease killed the group.
+    assert!(tokio::time::timeout(Duration::from_secs(5), kernel.wait())
+        .await
+        .expect("wrapper blocked on its guard")
+        .unwrap()
+        .success());
+    let mut output = String::new();
+    kernel
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut output)
+        .await
+        .unwrap();
+    assert_eq!(output, "done\n");
+    drop(ownership);
+}
+
+#[tokio::test]
+#[ignore = "requires a disposable lumen ipykernel on JUPYTER_PATH and KERNELSPEC_SMOKE_PYTHON"]
+#[cfg(unix)]
+async fn stalled_kernelspec_last_peer_teardown_exits_agent_and_child() {
+    stalled_kernelspec_teardown(false).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable KERNELSPEC_SMOKE_PYTHON and JUPYTER_PATH"]
+#[cfg(unix)]
+async fn stalled_kernelspec_forced_agent_reap_closes_external_group() {
+    stalled_kernelspec_teardown(true).await;
+}
+
+#[cfg(unix)]
+async fn stalled_kernelspec_teardown(force: bool) {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+    let python = std::env::var("KERNELSPEC_SMOKE_PYTHON").unwrap();
+    let prefix = std::path::Path::new(&python)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    assert_eq!(prefix.file_name().unwrap(), "kernelspec-smoke");
+    let spec = tempfile::Builder::new()
+        .prefix("stall-")
+        .tempdir_in(prefix.join("share/jupyter/kernels"))
+        .unwrap();
+    let name = spec
+        .path()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_ascii_lowercase();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let definition = |argv: serde_json::Value| {
+        std::fs::write(spec.path().join("kernel.json"),serde_json::json!({"argv":argv,"display_name":"Cancellation fixture","language":"python"}).to_string()).unwrap()
+    };
+    // This child reports readiness but never opens a Jupyter socket. EOF is a
+    // process-bound observation independent of any daemon lifecycle projection.
+    definition(serde_json::json!([python,"-c","import json,os,socket,sys,time; s=socket.create_connection(('127.0.0.1',int(sys.argv[1]))); s.sendall((json.dumps([os.getppid(),sys.argv[2]])+'\\n').encode()); time.sleep(90)",listener.local_addr().unwrap().port().to_string(),"{connection_file}"]));
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("stall.ipynb");
+    std::fs::write(&path,serde_json::json!({"nbformat":4,"nbformat_minor":5,"cells":[],"metadata":{"kernelspec":{"name":name,"display_name":"Cancellation fixture","language":"python"}}}).to_string()).unwrap();
+    let mut config = test_config(&temp);
+    config.room_eviction_delay_ms = Some(0);
+    let socket = config.socket_path.clone();
+    let daemon = Daemon::new_for_test(config).unwrap();
+    let inspect = daemon.clone();
+    let task = tokio::spawn(async move { daemon.run().await.unwrap() });
+    assert!(wait_for_daemon(&PoolClient::new(socket.clone())).await);
+    let peer = connect::connect_open(socket.clone(), path.clone(), "stall-owner")
+        .await
+        .unwrap();
+    let id = uuid::Uuid::parse_str(&peer.info.notebook_id).unwrap();
+    let (stream, _) = tokio::time::timeout(Duration::from_secs(12), listener.accept())
+        .await
+        .expect("installed child spawned")
+        .unwrap();
+    let mut stream = BufReader::new(stream);
+    let mut ready = String::new();
+    stream.read_line(&mut ready).await.unwrap();
+    let (pid, connection_file): (i32, std::path::PathBuf) = serde_json::from_str(&ready).unwrap();
+    let agent = nix::unistd::Pid::from_raw(pid);
+    assert!(
+        connection_file.is_file(),
+        "pending launch needs its connection file"
+    );
+    if force {
+        // Same signal and target as the Unix manifest reaper. Stop only this
+        // fixture's live agent group; never sweep other manifests on the machine.
+        assert_eq!(nix::unistd::getpgid(Some(agent)).unwrap(), agent);
+        nix::sys::signal::killpg(agent, nix::sys::signal::Signal::SIGKILL).unwrap();
+    }
+    drop(peer);
+    tokio::time::timeout(Duration::from_secs(15), async {
+        assert_eq!(stream.read(&mut [0]).await.unwrap(), 0);
+        loop {
+            let room = inspect.test_get_room(id).await.unwrap();
+            if nix::sys::signal::kill(agent, None) == Err(nix::errno::Errno::ESRCH)
+                && room
+                    .connections
+                    .last_kernel_torn_down_at
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    != 0
+            {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("cancelled handshake must release child socket and reap actual runtime agent");
+    if !force {
+        assert!(
+            !connection_file.try_exists().unwrap(),
+            "graceful cancellation leaked {}",
+            connection_file.display()
+        );
+    }
+    definition(serde_json::json!([
+        python,
+        "-m",
+        "ipykernel_launcher",
+        "-f",
+        "{connection_file}"
+    ]));
+    let reopened = connect::connect_open(socket.clone(), path, "after-cancel")
+        .await
+        .unwrap();
+    assert_session_ready(&reopened.handle, "after-cancel").await;
+    let launch = reopened
+        .handle
+        .send_request(NotebookRequest::LaunchKernel {
+            kernel_type: "auto".into(),
+            env_source: notebook_protocol::connection::LaunchSpec::Auto,
+            notebook_path: None,
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(&launch,NotebookResponse::KernelAlreadyRunning{launched_config,..}|NotebookResponse::KernelLaunched{launched_config,..} if launched_config.installed_kernelspec.as_ref().is_some_and(|s|s.name==name)),
+        "{launch:?}"
+    );
+    reopened
+        .handle
+        .send_request(NotebookRequest::ShutdownKernel {})
+        .await
+        .unwrap();
+    drop(reopened);
+    stop_claiming_daemon(&socket, task).await;
+}
+
+#[tokio::test]
+#[ignore = "requires a disposable lumen ipykernel on JUPYTER_PATH and KERNELSPEC_SMOKE_PYTHON"]
+#[cfg(unix)]
+async fn installed_wrapper_shutdown_closes_descendants_socket() {
+    use tokio::io::AsyncReadExt;
+    let python = std::env::var("KERNELSPEC_SMOKE_PYTHON").unwrap();
+    let prefix = std::path::Path::new(&python)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    assert_eq!(prefix.file_name().unwrap(), "kernelspec-smoke");
+    let spec = tempfile::Builder::new()
+        .prefix("wrapper-")
+        .tempdir_in(prefix.join("share/jupyter/kernels"))
+        .unwrap();
+    let name = spec
+        .path()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_ascii_lowercase();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let wrapper = r#""$1" -c 'import socket,sys,time; guard=socket.socket(); guard.bind(("127.0.0.1",int(sys.argv[2]))); guard.listen(); s=socket.create_connection(("127.0.0.1",int(sys.argv[1]))); s.sendall(b"r"); time.sleep(60)' "$2" "$4" &
+"$1" -m ipykernel_launcher -f "$3"
+wait"#;
+    let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let guard_addr = reservation.local_addr().unwrap();
+    drop(reservation);
+    std::fs::write(spec.path().join("kernel.json"),serde_json::json!({"argv":["/bin/sh","-c",wrapper,"wrapper",python,listener.local_addr().unwrap().port().to_string(),"{connection_file}",guard_addr.port().to_string()],"display_name":"Wrapper","language":"python"}).to_string()).unwrap();
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("wrapped.ipynb");
+    std::fs::write(&path,serde_json::json!({"nbformat":4,"nbformat_minor":5,"cells":[],"metadata":{"kernelspec":{"name":name,"language":"python","display_name":"Wrapper"}}}).to_string()).unwrap();
+    let config = test_config(&temp);
+    let socket = config.socket_path.clone();
+    let daemon = Daemon::new_for_test(config).unwrap();
+    let task = tokio::spawn(async move { daemon.run().await.unwrap() });
+    assert!(wait_for_daemon(&PoolClient::new(socket.clone())).await);
+    let peer = connect::connect_open(socket.clone(), path, "wrapper")
+        .await
+        .unwrap();
+    assert_session_ready(&peer.handle, "wrapper").await;
+    let launch = peer
+        .handle
+        .send_request(NotebookRequest::LaunchKernel {
+            kernel_type: "auto".into(),
+            env_source: notebook_protocol::connection::LaunchSpec::Auto,
+            notebook_path: None,
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(&launch,NotebookResponse::KernelAlreadyRunning{launched_config,..}|NotebookResponse::KernelLaunched{launched_config,..} if launched_config.installed_kernelspec.as_ref().is_some_and(|s|s.name==name)),
+        "{launch:?}"
+    );
+    let (mut descendant, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(descendant.read_u8().await.unwrap(), b'r');
+    let heads = peer.handle.confirm_notebook_sync().await.unwrap();
+    let NotebookResponse::EnvironmentSelection { selection } = peer
+        .handle
+        .send_request(NotebookRequest::GetEnvironmentSelection {})
+        .await
+        .unwrap()
+    else {
+        panic!("missing selection")
+    };
+    let restart = peer
+        .handle
+        .send_request_after_heads(
+            NotebookRequest::ApplyEnvironmentSelection {
+                expected_revision: selection.revision,
+                observed_heads: heads.clone(),
+            },
+            heads,
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(&restart,NotebookResponse::EnvironmentSelection{selection} if selection.applied_kernelspec.as_ref().is_some_and(|s|s.name==name)),
+        "{restart:?}"
+    );
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(3), descendant.read(&mut [0]))
+            .await
+            .expect("old descendant survived immediate restart")
+            .unwrap(),
+        0
+    );
+    let (mut descendant, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(descendant.read_u8().await.unwrap(), b'r');
+    let shutdown = peer
+        .handle
+        .send_request(NotebookRequest::ShutdownKernel {})
+        .await
+        .unwrap();
+    assert!(
+        matches!(shutdown, NotebookResponse::KernelShuttingDown {}),
+        "{shutdown:?}"
+    );
+    let _rebound = tokio::net::TcpListener::bind(guard_addr)
+        .await
+        .expect("descendant's fixed port must be free at shutdown acknowledgment");
+    let n = tokio::time::timeout(Duration::from_secs(5), descendant.read(&mut [0]))
+        .await
+        .expect("non-kernel descendant survived daemon shutdown")
+        .unwrap();
+    assert_eq!(n, 0);
+    drop(peer);
+    stop_claiming_daemon(&socket, task).await;
+}
+
+#[tokio::test]
+#[ignore = "requires a disposable lumen ipykernel on JUPYTER_PATH and KERNELSPEC_SMOKE_PYTHON"]
+async fn installed_kernelspec_native_smoke() {
+    use notebook_protocol::protocol::LocalEnvironmentTarget;
+    let expected = std::env::var("KERNELSPEC_SMOKE_PYTHON").expect("disposable interpreter");
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("named.ipynb");
+    let code=format!("import sys, pathlib\nassert sys.executable == {expected:?}, sys.executable\nlive_token = object()\npathlib.Path('executed').write_text(str(id(live_token)))");
+    let busy = r#"import subprocess, time
+child = subprocess.Popen([sys.executable, '-c', '''import signal, time, pathlib
+def interrupted(*_):
+    pathlib.Path("child-interrupted").touch()
+    raise SystemExit(0)
+signal.signal(signal.SIGINT, interrupted)
+pathlib.Path("busy").touch()
+time.sleep(15)'''])
+try:
+    time.sleep(15)
+except KeyboardInterrupt:
+    pathlib.Path('kernel-interrupted').touch()
+finally:
+    child.wait(timeout=3)
+"#;
+    write_test_ipynb(&path, &[("check", "code", &code, vec![]),("busy","code",busy,vec![]),("verify","code","assert str(id(live_token)) == pathlib.Path('executed').read_text()\npathlib.Path('preserved').touch()",vec![])]);
+    let mut notebook: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    notebook["metadata"]["kernelspec"]["name"] = "lumen".into();
+    std::fs::write(&path, notebook.to_string()).unwrap();
+    let config = test_config(&temp);
+    let socket = config.socket_path.clone();
+    let daemon = Daemon::new_for_test(config).unwrap();
+    let task = tokio::spawn(async move { daemon.run().await.unwrap() });
+    assert!(wait_for_daemon(&PoolClient::new(socket.clone())).await);
+    let peer = connect::connect_open(socket.clone(), path.clone(), "named-smoke")
+        .await
+        .unwrap();
+    assert_session_ready(&peer.handle, "named-smoke").await;
+    let resp = peer
+        .handle
+        .send_request(NotebookRequest::LaunchKernel {
+            kernel_type: "auto".into(),
+            env_source: notebook_protocol::connection::LaunchSpec::Auto,
+            notebook_path: None,
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(&resp,NotebookResponse::KernelLaunched{launched_config,..}|NotebookResponse::KernelAlreadyRunning{launched_config,..} if launched_config.installed_kernelspec.as_ref().is_some_and(|s|s.name=="lumen")),
+        "{resp:?}"
+    );
+    let response = peer
+        .handle
+        .send_request(NotebookRequest::GetEnvironmentSelection {})
+        .await
+        .unwrap();
+    let NotebookResponse::EnvironmentSelection { selection } = response else {
+        panic!("{response:?}")
+    };
+    let response = peer
+        .handle
+        .send_request(NotebookRequest::SetEnvironmentSelection {
+            target: LocalEnvironmentTarget::Kernelspec {
+                name: "lumen".into(),
+            },
+            expected_revision: selection.revision,
+        })
+        .await
+        .unwrap();
+    let NotebookResponse::EnvironmentSelection { selection } = response else {
+        panic!("{response:?}")
+    };
+    let heads = peer.handle.confirm_notebook_sync().await.unwrap();
+    let resp = peer
+        .handle
+        .send_request_after_heads(
+            NotebookRequest::ApplyEnvironmentSelection {
+                expected_revision: selection.revision,
+                observed_heads: heads.clone(),
+            },
+            heads,
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(&resp,NotebookResponse::EnvironmentSelection{selection} if selection.applied_kernelspec.is_some()),
+        "{resp:?}"
+    );
+    let resp = peer
+        .handle
+        .send_request(NotebookRequest::SyncEnvironment { guard: None })
+        .await
+        .unwrap();
+    assert!(
+        matches!(&resp,NotebookResponse::SyncEnvironmentFailed{needs_restart:false,error} if error.contains("externally")),
+        "{resp:?}"
+    );
+    let resp = peer
+        .handle
+        .send_request(NotebookRequest::ExecuteCell {
+            cell_id: "check".into(),
+            execution_id: None,
+        })
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while !temp.path().join("executed").is_file() {
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("No cell side effect in notebook cwd; response {resp:?}"));
+    #[cfg(unix)]
+    {
+        peer.handle
+            .send_request(NotebookRequest::ExecuteCell {
+                cell_id: "busy".into(),
+                execution_id: None,
+            })
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(8), async {
+            while !temp.path().join("busy").exists() {
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("descendant installed its interrupt handler");
+        let response = peer
+            .handle
+            .send_request(NotebookRequest::InterruptExecution {})
+            .await
+            .unwrap();
+        assert!(
+            matches!(response, NotebookResponse::InterruptSent {}),
+            "{response:?}"
+        );
+        tokio::time::timeout(Duration::from_secs(8), async {
+            while !(temp.path().join("kernel-interrupted").exists()
+                && temp.path().join("child-interrupted").exists())
+            {
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("both kernel and descendant received SIGINT");
+    }
+    // Only create/remove a spec in this explicitly disposable fixture prefix.
+    let prefix = std::path::Path::new(&expected)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    assert_eq!(prefix.file_name().unwrap(), "kernelspec-smoke");
+    let transient = tempfile::Builder::new()
+        .prefix("vanishing-")
+        .tempdir_in(prefix.join("share/jupyter/kernels"))
+        .unwrap();
+    std::fs::write(transient.path().join("kernel.json"),serde_json::json!({"argv":[expected,"-m","ipykernel_launcher","-f","{connection_file}"],"display_name":"Transient","language":"python"}).to_string()).unwrap();
+    let NotebookResponse::EnvironmentSelection { selection } = peer
+        .handle
+        .send_request(NotebookRequest::GetEnvironmentSelection {})
+        .await
+        .unwrap()
+    else {
+        panic!("missing selection")
+    };
+    let NotebookResponse::EnvironmentSelection { selection } = peer
+        .handle
+        .send_request(NotebookRequest::SetEnvironmentSelection {
+            target: LocalEnvironmentTarget::Kernelspec {
+                name: transient
+                    .path()
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .into(),
+            },
+            expected_revision: selection.revision,
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("could not stage fixture")
+    };
+    transient.close().unwrap();
+    let heads = peer.handle.confirm_notebook_sync().await.unwrap();
+    let rejected = peer
+        .handle
+        .send_request_after_heads(
+            NotebookRequest::ApplyEnvironmentSelection {
+                expected_revision: selection.revision,
+                observed_heads: heads.clone(),
+            },
+            heads,
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(&rejected,NotebookResponse::EnvironmentSelectionRejected{error} if error.contains("not found")),
+        "{rejected:?}"
+    );
+    peer.handle
+        .send_request(NotebookRequest::ExecuteCell {
+            cell_id: "verify".into(),
+            execution_id: None,
+        })
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while !temp.path().join("preserved").exists() {
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("kernel namespace and cwd survive failed apply");
+    let saved = peer
+        .handle
+        .send_request(NotebookRequest::SaveNotebook {
+            format_cells: false,
+            path: None,
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            saved,
+            NotebookResponse::NotebookSaved { .. }
+                | NotebookResponse::NotebookAlreadyCurrent { .. }
+        ),
+        "{saved:?}"
+    );
+    let disk: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(disk["metadata"]["kernelspec"]["name"], "lumen");
+    assert_eq!(disk["metadata"]["runt"]["installed_kernelspec"], "lumen");
+    assert!(!disk["metadata"].to_string().contains(&expected));
+    peer.handle
+        .send_request(NotebookRequest::ShutdownKernel {})
+        .await
+        .unwrap();
+    drop(peer);
+    let copy = temp.path().join("reopened.ipynb");
+    std::fs::copy(path, &copy).unwrap();
+    let reopened = connect::connect_open(socket.clone(), copy, "reopened-smoke")
+        .await
+        .unwrap();
+    assert_session_ready(&reopened.handle, "reopened").await;
+    let resp = reopened
+        .handle
+        .send_request(NotebookRequest::LaunchKernel {
+            kernel_type: "auto".into(),
+            env_source: notebook_protocol::connection::LaunchSpec::Auto,
+            notebook_path: None,
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(&resp,NotebookResponse::KernelLaunched{launched_config,..}|NotebookResponse::KernelAlreadyRunning{launched_config,..} if launched_config.installed_kernelspec.as_ref().is_some_and(|s|s.name=="lumen")),
+        "{resp:?}"
+    );
+    reopened
+        .handle
+        .send_request(NotebookRequest::ShutdownKernel {})
+        .await
+        .unwrap();
+    drop(reopened);
+    stop_claiming_daemon(&socket, task).await;
+}
+
+#[tokio::test]
 async fn test_local_environment_selection_owner_fanout_and_session_reset() {
     use notebook_protocol::protocol::LocalEnvironmentTarget;
     let temp = TempDir::new().unwrap();
@@ -1342,6 +1988,7 @@ async fn test_local_environment_selection_viewer_requests_are_denied_over_wire()
     );
     for request in [
         NotebookRequest::ListCondaEnvironments { refresh: false },
+        NotebookRequest::ListInstalledKernelspecs {},
         NotebookRequest::GetEnvironmentSelection {},
         NotebookRequest::SetEnvironmentSelection {
             target: LocalEnvironmentTarget::Automatic,
@@ -1929,8 +2576,10 @@ async fn test_launch_kernel_environment_mode_controls_project_priority() {
     // Auto keeps project-first priority, and the project folder is not
     // trusted, so the launch parks before conda sees the file.
     let (auto, auto_handle) = launch_with_mode(CreateNotebookEnvironmentMode::Auto, "auto").await;
+    // The parked launch is a typed approval refusal, not a generic error, so
+    // clients report trust as required without reading RuntimeStateDoc.
     assert!(
-        matches!(auto, NotebookResponse::Error { ref error } if error.contains("not trusted")),
+        matches!(auto, NotebookResponse::GuardRejected { ref reason } if reason.contains("project folder is not trusted")),
         "auto should stop at the untrusted project folder, got {auto:?}"
     );
     let parked = wait_for_runtime_state(&auto_handle, |s| {
@@ -1961,7 +2610,7 @@ async fn test_launch_kernel_environment_mode_controls_project_priority() {
     let (project, _project_handle) =
         launch_with_mode(CreateNotebookEnvironmentMode::Project, "project").await;
     assert!(
-        matches!(project, NotebookResponse::Error { ref error } if error.contains("not trusted")),
+        matches!(project, NotebookResponse::GuardRejected { ref reason } if reason.contains("project folder is not trusted")),
         "project mode should stop at the untrusted project folder, got {project:?}"
     );
 

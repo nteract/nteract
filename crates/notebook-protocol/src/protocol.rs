@@ -68,6 +68,21 @@ pub struct InstalledCondaPackageInventory {
 pub enum LocalEnvironmentTarget {
     Automatic,
     Conda { prefix: PathBuf },
+    Kernelspec { name: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InstalledKernelspec {
+    pub name: String,
+    pub display_name: String,
+    pub language: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct KernelspecInventory {
+    pub kernelspecs: Vec<InstalledKernelspec>,
+    pub warnings: Vec<String>,
+    pub truncated: bool,
 }
 
 /// Owner-scoped, daemon-session intent, separate from actual kernel facts.
@@ -76,6 +91,10 @@ pub struct EnvironmentSelectionSnapshot {
     pub revision: u64,
     pub selected: Option<LocalCondaEnvironment>,
     pub applied: Option<LocalCondaEnvironment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_kernelspec: Option<InstalledKernelspec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_kernelspec: Option<InstalledKernelspec>,
     pub applying: bool,
 }
 
@@ -144,6 +163,8 @@ pub struct LaunchedEnvConfig {
     /// Borrowed local environment: execution only, never capture or package sync.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_environment: Option<LocalEnvironmentIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_kernelspec: Option<InstalledKernelspec>,
 
     /// Unique identifier for this kernel launch session.
     /// Used to detect if kernel was swapped during async operations (e.g., hot-sync).
@@ -699,6 +720,7 @@ fn default_comm_channel() -> String {
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum NotebookRequest {
     /// Bounded passive Conda discovery. Only local Owner connections may list.
+    ListInstalledKernelspecs {},
     ListCondaEnvironments {
         refresh: bool,
     },
@@ -957,6 +979,9 @@ pub enum NotebookResponse {
     CondaEnvironments {
         inventory: CondaEnvironmentInventory,
     },
+    InstalledKernelspecs {
+        inventory: KernelspecInventory,
+    },
     InstalledCondaPackages {
         inventory: InstalledCondaPackageInventory,
     },
@@ -1010,7 +1035,9 @@ pub enum NotebookResponse {
     NoKernel {},
 
     /// A guarded action was not queued because current notebook state no
-    /// longer matches the state the user approved.
+    /// longer matches the state the user approved, or an approval is still
+    /// required. `LaunchKernel` returns it when notebook dependencies are not
+    /// trusted or when the room is parked awaiting project folder trust.
     GuardRejected {
         reason: String,
     },
@@ -1217,6 +1244,30 @@ pub struct KernelPorts {
     pub iopub: u16,
 }
 
+/// Private launch inputs. Never part of a notebook response or document.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct KernelspecLaunch {
+    pub executable: PathBuf,
+    pub args: Vec<String>,
+    pub resource_dir: PathBuf,
+    pub env: std::collections::BTreeMap<String, String>,
+    pub interrupt_mode: KernelspecInterrupt,
+}
+
+impl std::fmt::Debug for KernelspecLaunch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KernelspecLaunch").finish_non_exhaustive()
+    }
+}
+
+#[derive(Default, Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum KernelspecInterrupt {
+    #[default]
+    Signal,
+    Message,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 #[allow(clippy::large_enum_variant)]
@@ -1229,6 +1280,8 @@ pub enum RuntimeAgentRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         notebook_path: Option<String>,
         launched_config: LaunchedEnvConfig,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kernelspec: Option<KernelspecLaunch>,
         kernel_ports: KernelPorts,
         /// Environment variables to set for the kernel process.
         #[serde(default)]
@@ -1254,6 +1307,8 @@ pub enum RuntimeAgentRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         notebook_path: Option<String>,
         launched_config: LaunchedEnvConfig,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kernelspec: Option<KernelspecLaunch>,
         kernel_ports: KernelPorts,
         #[serde(default)]
         env_vars: std::collections::HashMap<String, String>,
@@ -1831,6 +1886,10 @@ mod tests {
     fn wire_action_names_match_ts_discriminators() {
         let cases: Vec<(&str, serde_json::Value)> = vec![
             (
+                "list_installed_kernelspecs",
+                serde_json::json!({"action":"list_installed_kernelspecs"}),
+            ),
+            (
                 "list_conda_environments",
                 serde_json::json!({"action": "list_conda_environments", "refresh": false}),
             ),
@@ -2169,6 +2228,7 @@ mod tests {
             notebook_path: None,
             launched_config: Default::default(),
             kernel_ports: ports,
+            kernelspec: None,
             env_vars: Default::default(),
             redact_env_values_in_outputs: true,
         };
@@ -2209,6 +2269,7 @@ mod tests {
             notebook_path: None,
             launched_config: Default::default(),
             kernel_ports: ports,
+            kernelspec: None,
             env_vars: Default::default(),
             redact_env_values_in_outputs: true,
         };
@@ -2272,6 +2333,7 @@ mod tests {
                 iopub: 9004,
             },
             env_vars: Default::default(),
+            kernelspec: None,
             redact_env_values_in_outputs: true,
         }
         .is_command());
@@ -2288,6 +2350,7 @@ mod tests {
                 iopub: 9009,
             },
             env_vars: Default::default(),
+            kernelspec: None,
             redact_env_values_in_outputs: true,
         }
         .is_command());

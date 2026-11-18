@@ -22,11 +22,16 @@ const { Session } = require("../src/session.cjs") as {
     declineProjectTrust: (directory: string, remember?: boolean) => Promise<void>;
     localEnvironment: unknown;
     getEnvironmentSelection: () => Promise<unknown>;
+    listInstalledKernelspecs: () => Promise<unknown>;
     setEnvironmentSelection: (target: unknown, expectedRevision: number) => Promise<unknown>;
     applyEnvironmentSelection: (
       expectedRevision: number,
       observedHeads?: string[],
     ) => Promise<unknown>;
+    syncEnvironment: () => Promise<void>;
+    syncEnvironmentResult: () => Promise<unknown>;
+    restartKernel: (options?: Record<string, unknown>) => Promise<unknown>;
+    restartKernelResult: (options?: Record<string, unknown>) => Promise<unknown>;
     close: () => Promise<void>;
   };
 };
@@ -363,6 +368,11 @@ describe("@runtimed/node Session wrapper", () => {
     const native = {
       notebookId: "nb-1",
       getEnvironmentSelection: vi.fn(async () => selection),
+      listInstalledKernelspecs: vi.fn(async () => ({
+        kernelspecs: [],
+        warnings: [],
+        truncated: false,
+      })),
       setEnvironmentSelection: vi.fn(async () => selection),
       applyEnvironmentSelection: vi.fn(async () => selection),
       close: vi.fn(async () => {}),
@@ -371,11 +381,61 @@ describe("@runtimed/node Session wrapper", () => {
     const target = { kind: "conda", prefix: "/envs/kilo" };
 
     await expect(session.getEnvironmentSelection()).resolves.toBe(selection);
+    await expect(session.listInstalledKernelspecs()).resolves.toEqual({
+      kernelspecs: [],
+      warnings: [],
+      truncated: false,
+    });
     await expect(session.setEnvironmentSelection(target, 1)).resolves.toBe(selection);
     await expect(session.applyEnvironmentSelection(2)).resolves.toBe(selection);
 
     expect(native.setEnvironmentSelection).toHaveBeenCalledWith(target, 1);
     expect(native.applyEnvironmentSelection).toHaveBeenCalledWith(2, undefined);
+  });
+
+  it("returns the native sync verdict without restarting the kernel", async () => {
+    const verdict = {
+      status: "restart_required",
+      syncedPackages: [],
+      needsRestart: true,
+      error: "Environment changes include removals or config changes that require a kernel restart",
+      nextAction: "restart",
+    };
+    const native = {
+      notebookId: "nb-1",
+      syncEnvironmentResult: vi.fn(async () => verdict),
+      syncEnvironment: vi.fn(async () => {
+        throw new Error(verdict.error);
+      }),
+      restartKernel: vi.fn(async () => true),
+      restartKernelResult: vi.fn(),
+      close: vi.fn(async () => {}),
+    };
+    const session = new Session(native);
+
+    await expect(session.syncEnvironmentResult()).resolves.toBe(verdict);
+    await expect(session.syncEnvironment()).rejects.toThrow(verdict.error);
+    expect(native.restartKernel).not.toHaveBeenCalled();
+    expect(native.restartKernelResult).not.toHaveBeenCalled();
+  });
+
+  it("forwards only the restart timeout option", async () => {
+    const result = { outcome: "running", launchedEnvSource: "conda:inline", status: {} };
+    const native = {
+      notebookId: "nb-1",
+      restartKernel: vi.fn(async () => true),
+      restartKernelResult: vi.fn(async () => result),
+      close: vi.fn(async () => {}),
+    };
+    const session = new Session(native);
+
+    await session.restartKernel();
+    await session.restartKernel({ timeoutMs: 5000, extra: true });
+    await expect(session.restartKernelResult({ timeoutMs: 100 })).resolves.toBe(result);
+
+    expect(native.restartKernel).toHaveBeenNthCalledWith(1, undefined);
+    expect(native.restartKernel).toHaveBeenNthCalledWith(2, { timeoutMs: 5000 });
+    expect(native.restartKernelResult).toHaveBeenCalledWith({ timeoutMs: 100 });
   });
 });
 

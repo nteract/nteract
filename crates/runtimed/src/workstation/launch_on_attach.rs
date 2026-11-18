@@ -79,6 +79,7 @@ pub fn build_current_python_launch(
         env_vars: launch.env_vars.clone(),
         // current_python does not redact (no daemon-managed secret env overlay).
         redact_env_values_in_outputs: false,
+        kernelspec: None,
     }
 }
 
@@ -121,6 +122,7 @@ mod tests {
             kernel_ports,
             env_vars,
             redact_env_values_in_outputs,
+            kernelspec: None,
         } = req
         else {
             panic!("expected LaunchKernel");

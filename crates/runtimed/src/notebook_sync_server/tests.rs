@@ -7112,6 +7112,249 @@ async fn test_format_notebook_cells_skips_unknown_runtime() {
 }
 
 #[tokio::test]
+async fn kernelspec_formatter_preserves_foreign_source_on_execute_and_save() {
+    let daemon_tmp = tempfile::TempDir::new().unwrap();
+    let daemon = crate::daemon::Daemon::new_for_test(test_daemon_config(&daemon_tmp)).unwrap();
+    // Valid Python too: choosing Ruff for this R assignment silently changes its meaning.
+    assert_eq!(
+        format_source("a<-1", "python").await.as_deref(),
+        Some("a < -1")
+    );
+    for language in ["R", "Julia", "Python"] {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, path) = test_room_with_path(&tmp, "language.ipynb");
+        let room = Arc::new(room);
+        let mut metadata = build_new_notebook_metadata(
+            "python",
+            "captured",
+            crate::settings_doc::PythonEnvType::Uv,
+            None,
+            &[],
+        );
+        let spec = metadata.kernelspec.as_mut().unwrap();
+        spec.name = "python-named-wrapper".into();
+        spec.language = Some(language.into());
+        assert!(metadata.runt.uv.is_some());
+        assert_eq!(metadata.language_info.as_ref().unwrap().name, "python");
+        {
+            let mut doc = room.doc.write().await;
+            doc.set_metadata_snapshot(&metadata).unwrap();
+            doc.add_cell(0, "cell", "code").unwrap();
+            doc.update_source("cell", "a<-1").unwrap();
+        }
+        commit_test_room_doc(&room).await;
+        // No live kernel on save: imported kernelspec.language is authoritative.
+        let response = crate::requests::save_notebook::handle(&room, &daemon, true, None).await;
+        assert!(
+            matches!(response, NotebookResponse::NotebookSaved { .. }),
+            "{response:?}"
+        );
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let expected = if language == "Python" {
+            "a < -1"
+        } else {
+            "a<-1"
+        };
+        assert_eq!(
+            notebook_text_mime(saved["cells"][0].get("source")).as_deref(),
+            Some(expected)
+        );
+
+        // The runtime projection drives execution even when saved intent disagrees.
+        metadata.kernelspec.as_mut().unwrap().language =
+            Some(if language == "Python" { "R" } else { "python" }.into());
+        {
+            let mut doc = room.doc.write().await;
+            doc.set_metadata_snapshot(&metadata).unwrap();
+            doc.update_source("cell", "a<-1").unwrap();
+        }
+        commit_test_room_doc(&room).await;
+        room.state
+            .with_doc(|sd| {
+                sd.set_kernel_info("actual", language, "kernelspec")?;
+                sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+            })
+            .unwrap();
+        room.local_environment_selection
+            .set(
+                Some(notebook_protocol::protocol::LocalCondaEnvironment {
+                    id: "staged".into(),
+                    name: "Staged Python".into(),
+                    prefix: "/staged".into(),
+                    python_path: "/staged/python".into(),
+                    python_version: None,
+                }),
+                0,
+            )
+            .unwrap();
+        {
+            let doc = room.doc.read().await;
+            assert_eq!(
+                room_formatter(&room, &doc),
+                if language == "Python" {
+                    Some("python")
+                } else {
+                    None
+                }
+            );
+        }
+        let (tx, _rx) = mpsc::channel(1);
+        *room.runtime_agent_request_tx.lock().await = Some(tx);
+        let response = crate::requests::execute_cell::handle_with_submitter(
+            &room,
+            "cell".into(),
+            None,
+            false,
+            None,
+        )
+        .await;
+        assert!(
+            matches!(response, NotebookResponse::CellQueued { .. }),
+            "{response:?}"
+        );
+        if language == "Python" {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    if room.doc.read().await.get_cell("cell").unwrap().source == expected {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("Ruff formats for the applied Python kernel");
+        }
+        assert_eq!(
+            room.doc.read().await.get_cell("cell").unwrap().source,
+            expected
+        );
+    }
+}
+
+#[tokio::test]
+async fn kernelspec_persist_preserves_same_identity_extras() {
+    use notebook_protocol::protocol::InstalledKernelspec;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "extras.ipynb");
+    let mut doc = room.doc.write().await;
+    let mut meta = build_new_notebook_metadata(
+        "python",
+        "captured",
+        crate::settings_doc::PythonEnvType::Uv,
+        None,
+        &[],
+    );
+    let ks = meta.kernelspec.as_mut().unwrap();
+    ks.extras
+        .insert("metadata".into(), serde_json::json!({"debugger":true}));
+    ks.extras.insert("interrupt_mode".into(), "message".into());
+    let extras = ks.extras.clone();
+    doc.set_metadata_snapshot(&meta).unwrap();
+    let heads = doc.get_heads();
+    crate::kernelspec::persist(&room, &mut doc, None, "python").unwrap();
+    assert_eq!(doc.get_heads(), heads);
+    let mut target = InstalledKernelspec {
+        name: "python3".into(),
+        display_name: "Installed Python".into(),
+        language: "Python".into(),
+    };
+    crate::kernelspec::persist(&room, &mut doc, Some(&target), "Python").unwrap();
+    let saved = doc.get_metadata_snapshot().unwrap();
+    assert_eq!(saved.kernelspec.unwrap().extras, extras);
+    assert_eq!(saved.runt.extra["installed_kernelspec"], "python3");
+    crate::kernelspec::persist(&room, &mut doc, None, "python").unwrap();
+    let saved = doc.get_metadata_snapshot().unwrap();
+    assert_eq!(saved.kernelspec.unwrap().extras, extras);
+    assert!(!saved.runt.extra.contains_key("installed_kernelspec"));
+    target.name = "ark".into();
+    target.language = "R".into();
+    crate::kernelspec::persist(&room, &mut doc, Some(&target), "R").unwrap();
+    let saved = doc.get_metadata_snapshot().unwrap();
+    assert!(saved.kernelspec.unwrap().extras.is_empty());
+    assert_eq!(saved.language_info.unwrap().name, "R");
+    crate::kernelspec::persist(&room, &mut doc, None, "python").unwrap();
+    let saved = doc.get_metadata_snapshot().unwrap();
+    assert_eq!(saved.kernelspec.unwrap().name, "python3");
+    assert!(!saved.runt.extra.contains_key("installed_kernelspec"));
+}
+
+#[tokio::test]
+async fn kernelspec_formatter_discards_pending_python_after_language_switch() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "switch.ipynb");
+    let mut metadata = build_new_notebook_metadata(
+        "python",
+        "captured",
+        crate::settings_doc::PythonEnvType::Uv,
+        None,
+        &[],
+    );
+    metadata.language_info.as_mut().unwrap().version = Some("3.12".into());
+    metadata
+        .language_info
+        .as_mut()
+        .unwrap()
+        .extras
+        .insert("pygments_lexer".into(), "python3".into());
+    let heads = {
+        let mut doc = room.doc.write().await;
+        doc.set_metadata_snapshot(&metadata).unwrap();
+        doc.add_cell(0, "cell", "code").unwrap();
+        doc.update_source("cell", "a<-1").unwrap();
+        doc.get_heads()
+    };
+    commit_test_room_doc(&room).await;
+    let result = format_source("a<-1", "python").await.unwrap();
+    room.state
+        .with_doc(|sd| {
+            sd.set_kernel_info("ark", "R", "kernelspec")?;
+            sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+        })
+        .unwrap();
+    let pending = [("cell".to_owned(), result)];
+    // No NotebookDoc changes yet: a heads-only fence would accept this result.
+    assert_eq!(
+        apply_formatted_sources(&room, "python", &heads, &pending)
+            .await
+            .unwrap(),
+        0
+    );
+    room.state
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Shutdown))
+        .unwrap();
+    {
+        let mut doc = room.doc.write().await;
+        crate::kernelspec::persist(
+            &room,
+            &mut doc,
+            Some(&notebook_protocol::protocol::InstalledKernelspec {
+                name: "ark".into(),
+                display_name: "Ark".into(),
+                language: "R".into(),
+            }),
+            "R",
+        )
+        .unwrap();
+        let updated = doc.get_metadata_snapshot().unwrap();
+        let info = updated.language_info.unwrap();
+        assert_eq!(info.name, "R");
+        assert!(info.version.is_none() && info.extras.is_empty());
+        assert_eq!(updated.runt.uv, metadata.runt.uv);
+    }
+    assert_eq!(
+        apply_formatted_sources(&room, "python", &heads, &pending)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        room.doc.read().await.get_cell("cell").unwrap().source,
+        "a<-1"
+    );
+}
+
+#[tokio::test]
 async fn test_save_notebook_skips_format_when_disable_auto_format_enabled() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, notebook_path) = test_room_with_path(&tmp, "disable-format.ipynb");
@@ -8228,6 +8471,7 @@ async fn test_notebook_sync_path_handshake_reuses_existing_room() {
 #[test]
 fn test_compute_env_sync_diff_in_sync() {
     let launched = LaunchedEnvConfig {
+        installed_kernelspec: None,
         uv_deps: Some(vec!["numpy".to_string(), "pandas".to_string()]),
         conda_deps: None,
         conda_channels: None,
@@ -8255,6 +8499,7 @@ fn test_compute_env_sync_diff_in_sync() {
 #[test]
 fn test_compute_env_sync_diff_added() {
     let launched = LaunchedEnvConfig {
+        installed_kernelspec: None,
         uv_deps: Some(vec!["numpy".to_string()]),
         conda_deps: None,
         conda_channels: None,
@@ -8282,6 +8527,7 @@ fn test_compute_env_sync_diff_added() {
 #[test]
 fn test_compute_env_sync_diff_removed() {
     let launched = LaunchedEnvConfig {
+        installed_kernelspec: None,
         uv_deps: Some(vec!["numpy".to_string(), "pandas".to_string()]),
         conda_deps: None,
         conda_channels: None,
@@ -8308,6 +8554,7 @@ fn test_compute_env_sync_diff_removed() {
 #[test]
 fn test_compute_env_sync_diff_added_and_removed() {
     let launched = LaunchedEnvConfig {
+        installed_kernelspec: None,
         uv_deps: Some(vec!["numpy".to_string(), "old-pkg".to_string()]),
         conda_deps: None,
         conda_channels: None,
@@ -8334,6 +8581,7 @@ fn test_compute_env_sync_diff_added_and_removed() {
 #[test]
 fn test_compute_env_sync_diff_conda_channels_changed() {
     let launched = LaunchedEnvConfig {
+        installed_kernelspec: None,
         uv_deps: None,
         conda_deps: Some(vec!["scipy".to_string()]),
         conda_channels: Some(vec!["conda-forge".to_string()]),
@@ -18271,4 +18519,245 @@ async fn durable_entries_share_the_cap_and_dismiss_all_clears_them() {
         durable_entries(&room).is_empty(),
         "nothing comes back on reopen"
     );
+}
+
+/// Saved notebook without dependencies beside an untrusted `pyproject.toml`.
+/// Any project-backed launch stops at the project trust gate.
+fn untrusted_project_room() -> (tempfile::TempDir, Arc<NotebookRoom>) {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let project = tmp.path().join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("pyproject.toml"),
+        "[project]\nname = 'test'\nversion = '1'\ndependencies = ['pandas']\n",
+    )
+    .unwrap();
+    let path = project.join("test.ipynb");
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "nbformat": 4, "nbformat_minor": 5, "metadata": {},
+            "cells": [{"cell_type":"code","id":"c","metadata":{},"source":"","outputs":[],"execution_count":null}]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let room = Arc::new(
+        NotebookRoom::new_fresh_with_trusted_packages(
+            Uuid::new_v4(),
+            Some(path),
+            tmp.path(),
+            test_blob_store(&tmp),
+            false,
+            crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trust.sqlite"))
+                .unwrap(),
+        )
+        .unwrap(),
+    );
+    (tmp, room)
+}
+
+fn assert_project_trust_refusal(response: &crate::protocol::NotebookResponse) {
+    match response {
+        crate::protocol::NotebookResponse::GuardRejected { reason } => {
+            assert_eq!(reason, crate::project_trust::LAUNCH_REFUSAL_REASON)
+        }
+        other => panic!("expected the typed project trust refusal, got {other:?}"),
+    }
+}
+
+async fn wait_for_completion(room: &NotebookRoom, generation: u64) -> KernelLaunchCompletion {
+    for _ in 0..200 {
+        if let Some(completion) = room.launch_completion(generation) {
+            return completion;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("generation {generation} never completed");
+}
+
+/// A manual `LaunchKernel` that joins an auto-launch parked at the project
+/// trust gate receives the same typed refusal as the owner would, through
+/// the real auto-launch and request handler. The parked auto attempt keeps
+/// its reconnect cooldown, and later RuntimeStateDoc changes cannot alter
+/// the recorded generation result.
+#[tokio::test]
+async fn manual_launch_joining_auto_project_trust_park_returns_same_refusal() {
+    let (tmp, room) = untrusted_project_room();
+    let daemon = crate::daemon::Daemon::new_for_test(test_daemon_config(&tmp)).unwrap();
+    room.connections
+        .active_peers
+        .store(1, std::sync::atomic::Ordering::Release);
+    let attempt = match room.try_begin_auto_launch() {
+        AutoLaunchAdmission::Admitted(attempt) => attempt,
+        _ => panic!("auto-launch should be admitted"),
+    };
+    let mut joiner = Box::pin(crate::requests::launch_kernel::handle(
+        &room,
+        &daemon,
+        "python".to_string(),
+        notebook_protocol::connection::LaunchSpec::Auto,
+        None,
+    ));
+    // Poll the second request into its generation wait before running the
+    // owner; this avoids relying on a scheduler-yield count for the race.
+    std::future::poll_fn(|cx| {
+        assert!(std::future::Future::poll(joiner.as_mut(), cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+
+    auto_launch_kernel(
+        &room,
+        &room.id.to_string(),
+        crate::runtime::Runtime::Python,
+        crate::settings_doc::PythonEnvType::Uv,
+        Arc::clone(&daemon),
+        attempt,
+    )
+    .await;
+
+    assert_eq!(
+        wait_for_completion(&room, 1).await,
+        KernelLaunchCompletion::ProjectTrustRequired
+    );
+    let response = joiner.await;
+    assert_project_trust_refusal(&response);
+    assert_eq!(
+        room.launch_successor_generation(1),
+        None,
+        "the manual request must have joined generation 1, not owned a new one"
+    );
+    assert_eq!(
+        room.state
+            .read(|sd| sd.read_state().kernel.lifecycle)
+            .unwrap(),
+        RuntimeLifecycle::AwaitingProjectTrust,
+        "abandoned-launch cleanup must not replace the committed prompt"
+    );
+    assert!(
+        matches!(
+            room.try_begin_auto_launch(),
+            AutoLaunchAdmission::CoolingDown { .. }
+        ),
+        "a parked auto-launch keeps the reconnect failure cooldown"
+    );
+
+    room.state
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle)))
+        .unwrap();
+    assert_eq!(
+        room.launch_completion(1),
+        Some(KernelLaunchCompletion::ProjectTrustRequired)
+    );
+}
+
+/// A manual owner that parks at the project trust gate records the refusal
+/// on its generation, so a concurrent `LaunchKernel` that joined it gets the
+/// identical typed reply.
+#[tokio::test]
+async fn manual_launch_joining_manual_project_trust_park_returns_same_refusal() {
+    let (tmp, room) = untrusted_project_room();
+    let daemon = crate::daemon::Daemon::new_for_test(test_daemon_config(&tmp)).unwrap();
+    let attempt = match room.try_begin_manual_launch() {
+        ManualLaunchAdmission::Admitted(attempt) => attempt,
+        ManualLaunchAdmission::InFlight { .. } => panic!("launch should be admitted"),
+    };
+    let mut joiner = Box::pin(crate::requests::launch_kernel::handle(
+        &room,
+        &daemon,
+        "python".to_string(),
+        notebook_protocol::connection::LaunchSpec::Auto,
+        None,
+    ));
+    // Poll the second request into its generation wait before running the
+    // owner; this avoids relying on a scheduler-yield count for the race.
+    std::future::poll_fn(|cx| {
+        assert!(std::future::Future::poll(joiner.as_mut(), cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+
+    let owner = crate::requests::launch_kernel::handle_admitted(
+        &room,
+        &daemon,
+        "python".to_string(),
+        notebook_protocol::connection::LaunchSpec::Auto,
+        None,
+        attempt,
+        None,
+        None,
+    )
+    .await;
+    assert_project_trust_refusal(&owner);
+    assert_eq!(
+        wait_for_completion(&room, 1).await,
+        KernelLaunchCompletion::ProjectTrustRequired
+    );
+    assert_project_trust_refusal(&joiner.await);
+    assert_eq!(room.launch_successor_generation(1), None);
+    match room.try_begin_auto_launch() {
+        AutoLaunchAdmission::Admitted(attempt) => attempt.release_without_cooldown(),
+        _ => panic!("a manual trust refusal must not throttle reconnect launches"),
+    }
+}
+
+/// Shutdown cancellation recorded before the owner reports the trust refusal
+/// stays the generation result.
+#[tokio::test]
+async fn cancellation_takes_precedence_over_project_trust_refusal() {
+    let (_tmp, room) = gate_test_room();
+    let mut attempt = match room.try_begin_auto_launch() {
+        AutoLaunchAdmission::Admitted(attempt) => attempt,
+        _ => panic!("auto-launch should be admitted"),
+    };
+    assert_eq!(room.cancel_in_flight_launch(), Some(1));
+    attempt.require_project_trust();
+    drop(attempt);
+    assert_eq!(
+        wait_for_completion(&room, 1).await,
+        KernelLaunchCompletion::Cancelled
+    );
+}
+
+/// The owning handler must not report a trust refusal when shutdown prevented
+/// the project gate from publishing its prompt.
+#[tokio::test]
+async fn cancelled_project_launch_returns_cancellation_without_prompt() {
+    let (tmp, room) = untrusted_project_room();
+    let daemon = crate::daemon::Daemon::new_for_test(test_daemon_config(&tmp)).unwrap();
+    let attempt = match room.try_begin_manual_launch() {
+        ManualLaunchAdmission::Admitted(attempt) => attempt,
+        ManualLaunchAdmission::InFlight { .. } => panic!("launch should be admitted"),
+    };
+    assert_eq!(room.cancel_launch_and_mark_shutdown_with(|| {}), Some(1));
+    let trust_before = room.state.read(|sd| sd.read_state().project_trust).unwrap();
+    let response = crate::requests::launch_kernel::handle_admitted(
+        &room,
+        &daemon,
+        "python".to_string(),
+        notebook_protocol::connection::LaunchSpec::Auto,
+        None,
+        attempt,
+        None,
+        None,
+    )
+    .await;
+    assert!(
+        matches!(response, crate::protocol::NotebookResponse::Error { ref error } if error.contains("cancelled")),
+        "{response:?}"
+    );
+    assert_eq!(
+        wait_for_completion(&room, 1).await,
+        KernelLaunchCompletion::Cancelled
+    );
+    let state = room.state.read(|sd| sd.read_state()).unwrap();
+    assert_eq!(state.kernel.lifecycle, RuntimeLifecycle::Shutdown);
+    assert_eq!(state.project_trust, trust_before);
+    assert!(room
+        .project_trust_prompt
+        .lock()
+        .unwrap()
+        .launch_context
+        .is_none());
 }

@@ -102,6 +102,7 @@ pub struct RelayInfo {
     pub actor_label: Option<String>,
     pub connection_scope: Option<String>,
     pub local_environment_selection: Option<bool>,
+    pub installed_kernelspecs: Option<bool>,
     /// Daemon verdict on `createRelay({ localEnvironment })`. Absent when none
     /// was requested or the daemon predates the option.
     pub local_environment: Option<LocalEnvironmentStatus>,
@@ -423,6 +424,7 @@ fn relay_info_from_capabilities(
         actor_label: capabilities.actor_label,
         connection_scope: capabilities.connection_scope,
         local_environment_selection: Some(capabilities.local_environment_selection),
+        installed_kernelspecs: Some(capabilities.installed_kernelspecs),
         local_environment: capabilities.local_environment.map(Into::into),
         comments_doc_id: capabilities.comments_doc_id,
         keyed_doc_kinds: capabilities.keyed_doc_kinds,

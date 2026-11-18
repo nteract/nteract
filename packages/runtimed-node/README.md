@@ -344,8 +344,27 @@ sessions.
 - `Session.executeCell(cellId, options)` runs an existing code cell.
 - `Session.showNotebook()` opens the session in nteract Desktop when a display
   is available.
-- `Session.interruptKernel()`, `Session.shutdownKernel()`, and
-  `Session.restartKernel()` manage the running kernel.
+- `Session.interruptKernel()` and `Session.shutdownKernel()` manage the running
+  kernel.
+- `Session.restartKernel({ timeoutMs? })` restarts the kernel and discards its
+  in-memory state. It resolves only after this session's runtime state shows the
+  old kernel stopped and then a kernel `Running` with the envSource (and local
+  environment ID, when the daemon reports one) of the accepted launch. A launch
+  reply alone, or an earlier snapshot, never resolves it.
+  Every other ending rejects. `timeoutMs` (default 30000) bounds each client
+  wait; the daemon's environment preparation keeps its own deadline.
+- `Session.restartKernelResult({ timeoutMs? })` runs the same restart and
+  returns `{ outcome, error?, launchedEnvSource?, status }`. `outcome` is
+  `running`, `trust_required`, `launch_rejected`, `failed`, `stopped`, or
+  `timed_out`. `trust_required` means the daemon refused the launch until an
+  approval: notebook dependencies (`approveTrust()`) or the project folder
+  (`approveProjectTrust()` or `declineProjectTrust()`). Older daemons report an
+  untrusted project folder as `launch_rejected`. A refused launch returns on
+  the daemon's reply, so `status` may not yet show `AwaitingProjectTrust`.
+  `status` reports an observed Running kernel after a stopped state only for `running`;
+  confirmation matches the accepted environment source and local environment ID when supplied. The
+  protocol has no launch generation, so a concurrent restart by another peer
+  of the same environment cannot be distinguished from this call's launch.
 - `Session.shutdownNotebook()` shuts down this notebook room and closes the session.
 - `Session.runCell(source, options)` appends, runs, and waits for a cell.
 - `Session.queueCell(source, options)` appends a cell, queues it, and returns IDs.
@@ -370,8 +389,30 @@ sessions.
 - `Session.getDependencyStatus()` returns dependency metadata, fingerprint, and
   trust state in one call.
 - `Session.getRuntimeStatus()` returns kernel lifecycle, activity, env source,
-  and startup error details.
-- `Session.syncEnvironment()` installs recorded notebook dependencies.
+  `environmentId`, `environmentName`, `pythonVersion`, and startup error
+  details. Identity fields (`name`, `language`, `envSource`, `runtimeAgentId`,
+  `environmentId`, `environmentName`, `pythonVersion`) are empty unless
+  `lifecycle` is `"Running"`; empty means unreported. `runtimeAgentId` is reused
+  across restarts and is not a kernel generation. It reads this session's
+  replica; right after a launch it can lag the daemon.
+- `Session.syncEnvironment()` requests dependency sync for the running
+  environment and rejects when the daemon reports that it cannot apply changes.
+- `Session.syncEnvironmentResult()` sends the same request and returns the
+  daemon's verdict: `{ status, syncedPackages, needsRestart, error?, nextAction }`.
+  `applied` means the daemon completed that sync request; `syncedPackages` names
+  the packages it reports installing. An empty list can mean no applicable changes.
+  Sync does not select an environment or package manager: for example, a new Conda
+  declaration can be outside a running UV kernel's sync scope. Compare the requested
+  manager with `getRuntimeStatus().envSource` and use explicit environment selection.
+  `restart_required`
+  (`nextAction: "restart"`) means the change needs a new kernel: removals,
+  channel or package-manager changes, or project file updates. The kernel was
+  not restarted. Call `restartKernel()` when
+  losing in-memory state is acceptable. `failed` (`nextAction: "inspect"`)
+  covers trust refusals, borrowed environments, and install errors; it does not
+  guarantee that a failed installer made no changes. Dependency
+  metadata is the saved spec, not the running environment; check
+  `getRuntimeStatus().envSource` after a restart.
 - `Session.saveNotebook(path?)` saves the notebook.
 - `Session.confirmNotebookSync()` returns the current NotebookDoc heads after
   the connected local daemon accepts them. Later edits are outside that receipt.

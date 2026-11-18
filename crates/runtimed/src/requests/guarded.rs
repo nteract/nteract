@@ -132,6 +132,15 @@ pub(crate) fn validate_dependencies_unchanged_since_observed(
 ) -> GuardResult {
     let observed = parse_heads(observed_heads)?;
     let reviewed = dependency_fingerprint_at_observed_heads(doc, &observed)?;
+    if doc
+        .get_metadata_snapshot_at_heads(&observed)
+        .and_then(|s| s.kernelspec)
+        != doc.get_metadata_snapshot().and_then(|s| s.kernelspec)
+    {
+        return Err(rejected(
+            "Notebook kernelspec changed; review before applying",
+        ));
+    }
     let current = current_dependency_fingerprint(doc);
     if current != reviewed {
         return Err(rejected(

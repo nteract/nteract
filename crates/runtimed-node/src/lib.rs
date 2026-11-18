@@ -24,6 +24,7 @@ use napi_derive::napi;
 
 mod arrow_ipc;
 mod error;
+mod kernel_restart;
 mod parquet;
 mod project_files;
 mod relay;

@@ -33,6 +33,7 @@ async fn apply_runtime_agent_notebook_doc_frame(
     room: &NotebookRoom,
     sync_state: &mut automerge::sync::State,
     payload: &[u8],
+    runtime_agent_id: &str,
 ) -> anyhow::Result<Option<Vec<u8>>> {
     let message = automerge::sync::Message::decode(payload)
         .map_err(|error| anyhow::anyhow!("decode error: {error}"))?;
@@ -41,132 +42,142 @@ async fn apply_runtime_agent_notebook_doc_frame(
 
     let (persist_bytes, reply_encoded) = {
         let mut doc = room.doc.write().await;
-        super::durability::run_blocking_durability_boundary(|| -> anyhow::Result<_> {
-            let rollback_state = has_agent_changes.then(|| (doc.save(), doc.get_actor_id()));
-            let preview_snapshot = has_agent_changes.then(|| {
-                doc.doc_mut().save_with_options(SaveOptions {
-                    deflate: true,
-                    retain_orphans: false,
-                })
-            });
-            let heads_before = doc.get_heads();
+        room.with_runtime_agent_owner(runtime_agent_id, || {
+            super::durability::run_blocking_durability_boundary(|| -> anyhow::Result<_> {
+                let rollback_state = has_agent_changes.then(|| (doc.save(), doc.get_actor_id()));
+                let preview_snapshot = has_agent_changes.then(|| {
+                    doc.doc_mut().save_with_options(SaveOptions {
+                        deflate: true,
+                        retain_orphans: false,
+                    })
+                });
+                let heads_before = doc.get_heads();
 
-            let admitted_changes = if has_agent_changes {
-                let Some((_, actor)) = rollback_state.as_ref() else {
-                    anyhow::bail!("runtime-agent changes did not capture rollback state");
-                };
-                let Some(preview_snapshot) = preview_snapshot.as_ref() else {
-                    anyhow::bail!("runtime-agent changes did not capture a clean preview");
-                };
-                // Reloading the preview from bytes intentionally excludes any
-                // previously parked orphan queue from the live Automerge doc.
-                let mut preview =
-                    notebook_doc::NotebookDoc::load_with_actor(preview_snapshot, actor).map_err(
-                        |error| anyhow::anyhow!("runtime-agent preview load failed: {error}"),
-                    )?;
-                let mut preview_sync_state = sync_state.clone();
-                preview
-                    .receive_sync_message_recovering(
-                        &mut preview_sync_state,
-                        message.clone(),
-                        "peer-runtime-agent-doc-preview",
+                let admitted_changes = if has_agent_changes {
+                    let Some((_, actor)) = rollback_state.as_ref() else {
+                        anyhow::bail!("runtime-agent changes did not capture rollback state");
+                    };
+                    let Some(preview_snapshot) = preview_snapshot.as_ref() else {
+                        anyhow::bail!("runtime-agent changes did not capture a clean preview");
+                    };
+                    // Reloading the preview from bytes intentionally excludes any
+                    // previously parked orphan queue from the live Automerge doc.
+                    let mut preview =
+                        notebook_doc::NotebookDoc::load_with_actor(preview_snapshot, actor)
+                            .map_err(|error| {
+                                anyhow::anyhow!("runtime-agent preview load failed: {error}")
+                            })?;
+                    let mut preview_sync_state = sync_state.clone();
+                    preview
+                        .receive_sync_message_recovering(
+                            &mut preview_sync_state,
+                            message.clone(),
+                            "peer-runtime-agent-doc-preview",
+                        )
+                        .map_err(|error| {
+                            anyhow::anyhow!("runtime-agent doc preview failed: {error}")
+                        })?;
+                    let unresolved = preview.doc_mut().get_missing_deps(&[]);
+                    if !unresolved.is_empty() {
+                        anyhow::bail!(
+                            "runtime-agent sync frame left {} unresolved dependencies",
+                            unresolved.len()
+                        );
+                    }
+                    let preview_changes = preview
+                        .doc_mut()
+                        .get_changes(&heads_before)
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                    admit_trusted_notebook_changes(
+                        preview_changes,
+                        TrustedNotebookChangeSource::RuntimeAgent,
                     )
+                } else {
+                    admit_trusted_notebook_changes(
+                        Vec::new(),
+                        TrustedNotebookChangeSource::RuntimeAgent,
+                    )
+                };
+
+                doc.receive_sync_message_recovering(sync_state, message, "peer-runtime-agent-doc")
                     .map_err(|error| {
-                        anyhow::anyhow!("runtime-agent doc preview failed: {error}")
+                        anyhow::anyhow!("runtime-agent doc receive failed: {error}")
                     })?;
-                let unresolved = preview.doc_mut().get_missing_deps(&[]);
-                if !unresolved.is_empty() {
-                    anyhow::bail!(
-                        "runtime-agent sync frame left {} unresolved dependencies",
-                        unresolved.len()
-                    );
-                }
-                let preview_changes = preview
+
+                let applied_changes = doc
                     .doc_mut()
                     .get_changes(&heads_before)
                     .into_iter()
                     .collect::<Vec<_>>();
-                admit_trusted_notebook_changes(
-                    preview_changes,
-                    TrustedNotebookChangeSource::RuntimeAgent,
-                )
-            } else {
-                admit_trusted_notebook_changes(
-                    Vec::new(),
-                    TrustedNotebookChangeSource::RuntimeAgent,
-                )
-            };
-
-            doc.receive_sync_message_recovering(sync_state, message, "peer-runtime-agent-doc")
-                .map_err(|error| anyhow::anyhow!("runtime-agent doc receive failed: {error}"))?;
-
-            let applied_changes = doc
-                .doc_mut()
-                .get_changes(&heads_before)
-                .into_iter()
-                .collect::<Vec<_>>();
-            let admitted_changes = match admitted_changes.reconcile_applied(applied_changes) {
-                Ok(changes) => changes,
-                Err(error) => {
-                    if let (Some((_, actor)), Some(preview_snapshot)) =
-                        (rollback_state.as_ref(), preview_snapshot.as_ref())
-                    {
-                        if let Ok(restored) =
-                            notebook_doc::NotebookDoc::load_with_actor(preview_snapshot, actor)
+                let admitted_changes = match admitted_changes.reconcile_applied(applied_changes) {
+                    Ok(changes) => changes,
+                    Err(error) => {
+                        if let (Some((_, actor)), Some(preview_snapshot)) =
+                            (rollback_state.as_ref(), preview_snapshot.as_ref())
                         {
+                            if let Ok(restored) =
+                                notebook_doc::NotebookDoc::load_with_actor(preview_snapshot, actor)
+                            {
+                                *doc = restored;
+                            }
+                        }
+                        *sync_state = sync_state_before.clone();
+                        return Err(error.context(
+                            "runtime-agent preview differed from live NotebookDoc application",
+                        ));
+                    }
+                };
+
+                let changed = heads_before != doc.get_heads();
+                if changed && has_agent_changes {
+                    if let Err(error) = room.durability.commit_peer_changes(admitted_changes) {
+                        let restored = rollback_state.as_ref().and_then(|(snapshot, actor)| {
+                            notebook_doc::NotebookDoc::load_with_actor(snapshot, actor).ok()
+                        });
+                        let document_readable = restored.is_some();
+                        if let Some(restored) = restored {
                             *doc = restored;
                         }
+                        *sync_state = sync_state_before;
+                        let document_heads = doc.get_heads_hex();
+                        let reason = format!(
+                            "journal commit failed before runtime-agent acknowledgement: {error}"
+                        );
+                        room.durability.mark_degraded(
+                            super::durability::DegradationKind::DurabilityBoundary,
+                            reason.clone(),
+                        );
+                        room.lifecycle.mark_degraded(
+                            reason.clone(),
+                            document_heads,
+                            document_readable,
+                        );
+                        let _ = room.state.with_doc(|state| {
+                            state.set_file_source_issue(Some(
+                                &runtime_doc::FileSourceIssue::Degraded {
+                                    reason: reason.clone(),
+                                },
+                            ))
+                        });
+                        warn!("[notebook-sync] {reason}");
+                        return Err(anyhow::anyhow!(reason));
                     }
-                    *sync_state = sync_state_before.clone();
-                    return Err(error.context(
-                        "runtime-agent preview differed from live NotebookDoc application",
-                    ));
                 }
-            };
 
-            let changed = heads_before != doc.get_heads();
-            if changed && has_agent_changes {
-                if let Err(error) = room.durability.commit_peer_changes(admitted_changes) {
-                    let restored = rollback_state.as_ref().and_then(|(snapshot, actor)| {
-                        notebook_doc::NotebookDoc::load_with_actor(snapshot, actor).ok()
-                    });
-                    let document_readable = restored.is_some();
-                    if let Some(restored) = restored {
-                        *doc = restored;
-                    }
-                    *sync_state = sync_state_before;
-                    let document_heads = doc.get_heads_hex();
-                    let reason = format!(
-                        "journal commit failed before runtime-agent acknowledgement: {error}"
-                    );
-                    room.durability.mark_degraded(
-                        super::durability::DegradationKind::DurabilityBoundary,
-                        reason.clone(),
-                    );
-                    room.lifecycle
-                        .mark_degraded(reason.clone(), document_heads, document_readable);
-                    let _ = room.state.with_doc(|state| {
-                        state.set_file_source_issue(Some(&runtime_doc::FileSourceIssue::Degraded {
-                            reason: reason.clone(),
-                        }))
-                    });
-                    warn!("[notebook-sync] {reason}");
-                    return Err(anyhow::anyhow!(reason));
+                if changed {
+                    // The append above is the visibility boundary for runtime-agent
+                    // changes. Other peers are notified only after it is durable.
+                    let _ = room.broadcasts.changed_tx.send(());
                 }
-            }
 
-            if changed {
-                // The append above is the visibility boundary for runtime-agent
-                // changes. Other peers are notified only after it is durable.
-                let _ = room.broadcasts.changed_tx.send(());
-            }
-
-            let persist_bytes = changed.then(|| doc.save());
-            let reply_encoded = doc
-                .generate_sync_message_recovering(sync_state, "peer-runtime-agent-doc-reply")
-                .map_err(|error| anyhow::anyhow!("runtime-agent doc reply failed: {error}"))?
-                .map(|reply| reply.encode());
-            Ok((persist_bytes, reply_encoded))
+                let persist_bytes = changed.then(|| doc.save());
+                let reply_encoded = doc
+                    .generate_sync_message_recovering(sync_state, "peer-runtime-agent-doc-reply")
+                    .map_err(|error| anyhow::anyhow!("runtime-agent doc reply failed: {error}"))?
+                    .map(|reply| reply.encode());
+                Ok((persist_bytes, reply_encoded))
+            })
         })?
     };
 
@@ -387,6 +398,12 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     let mut retirement_dirty = true;
     let mut retirement_sent = std::collections::HashSet::new();
     'sync: loop {
+        if room
+            .with_runtime_agent_owner(&runtime_agent_id, || Ok(()))
+            .is_err()
+        {
+            break;
+        }
         if retirement_dirty {
             retirement_dirty = false;
             match output_retirement_requests_in_room(&room, &mut retirement_sent).await {
@@ -444,6 +461,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                             &room,
                             &mut doc_sync_state,
                             &typed_frame.payload,
+                            &runtime_agent_id,
                         ).await {
                             Ok(reply) => reply,
                             Err(e) => {
@@ -466,7 +484,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                         if let Ok(msg) = automerge::sync::Message::decode(&typed_frame.payload) {
                             let mut state_changed = false;
                             let mut runtime_file_dirty = false;
-                            let reply_encoded = room.state.with_doc(|sd| {
+                            let reply_encoded = room.with_runtime_agent_owner(&runtime_agent_id, || room.state.with_doc(|sd| {
                                 let before = runtime_file_save_fingerprint(sd);
                                 match sd.receive_sync_message_with_changes_recovering(
                                     &mut state_sync_state,
@@ -495,7 +513,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                                     )
                                     .map(|message| (message.map(|reply| reply.encode()), state_acknowledged))
                                     .map_err(Into::into)
-                            });
+                            }).map_err(Into::into));
                             let (reply_encoded, state_acknowledged) = match reply_encoded {
                                 Ok(result) => result,
                                 Err(e) => {
@@ -536,7 +554,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                     NotebookFrameType::CommsDocSync => {
                         if let Ok(msg) = automerge::sync::Message::decode(&typed_frame.payload) {
                             let mut comms_changed = false;
-                            let reply_encoded = room.comms.with_doc(|comms_doc| {
+                            let reply_encoded = room.with_runtime_agent_owner(&runtime_agent_id, || room.comms.with_doc(|comms_doc| {
                                 match comms_doc.receive_sync_message_with_changes_recovering(
                                     &mut comms_sync_state,
                                     msg,
@@ -559,7 +577,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                                     )
                                     .map(|message| message.map(|reply| reply.encode()))
                                     .map_err(Into::into)
-                            });
+                            }).map_err(Into::into));
                             let reply_encoded = match reply_encoded {
                                 Ok(encoded) => encoded,
                                 Err(e) => {
@@ -586,17 +604,23 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                             notebook_protocol::protocol::RuntimeAgentResponseEnvelope,
                         >(&typed_frame.payload) {
                             if let Some((reply, _sync_lease)) = pending_replies.remove(&envelope.id) {
-                                let _ = reply.send(envelope.response);
+                                if room.with_runtime_agent_owner(&runtime_agent_id, || {
+                                    let _ = reply.send(envelope.response);
+                                    Ok(())
+                                }).is_err() { break; }
                             } else {
                                 debug!("[notebook-sync] Agent response for unknown id: {}", envelope.id);
                             }
                         }
                     }
                     NotebookFrameType::KeyedDocSync => {
-                        for frame in room
+                        let frames = match room.with_runtime_agent_owner(&runtime_agent_id, || Ok(room
                             .keyed_docs
-                            .receive_runtime_frame(&mut keyed_sync_states, &typed_frame.payload)
-                        {
+                            .receive_runtime_frame(&mut keyed_sync_states, &typed_frame.payload))) {
+                            Ok(frames) => frames,
+                            Err(_) => break,
+                        };
+                        for frame in frames {
                             if let Err(e) =
                                 agent_writer.send_frame(NotebookFrameType::KeyedDocSync, frame)
                             {
@@ -606,11 +630,11 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                         }
                     }
                     NotebookFrameType::Broadcast => {
-                        match forward_runtime_agent_broadcast(
+                        match room.with_runtime_agent_owner(&runtime_agent_id, || forward_runtime_agent_broadcast(
                             &room.broadcasts.kernel_broadcast_tx,
                             &room.keyed_docs,
                             &typed_frame.payload,
-                        ) {
+                        )) {
                             Ok(0) => {
                                 debug!(
                                     "[notebook-sync] Runtime agent broadcast had no subscribers"
@@ -730,7 +754,8 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
 
             // Forward requests to the runtime agent. Commands are fire-and-forget;
             // queries register a pending reply keyed by correlation ID.
-            Some(msg) = ra_rx.recv() => {
+            message = ra_rx.recv() => {
+                let Some(msg) = message else { break; };
                 let (envelope, reply_tx, sync_lease) = match msg {
                     RuntimeAgentMessage::Command(env) => (env, None, None),
                     RuntimeAgentMessage::Query(env, tx) => (env, Some(tx), None),
@@ -1388,9 +1413,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn replaced_runtime_agent_cannot_commit_a_queued_notebook_frame() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (_, _, room) = test_file_backed_room(&tmp);
+        room.expect_runtime_agent("old");
+        assert!(room.mark_runtime_agent_connected("old"));
+        let frame = runtime_agent_change_frame(&room).await;
+        let mut sync_state = automerge::sync::State::new();
+        let mut pending = Box::pin(apply_runtime_agent_notebook_doc_frame(
+            &room,
+            &mut sync_state,
+            &frame,
+            "old",
+        ));
+        {
+            let _doc = room.doc.write().await;
+            // Poll once while the document lock is held: admission must happen
+            // after this await, at the mutation boundary, not when queued.
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(std::future::Future::poll(pending.as_mut(), &mut context).is_pending());
+            room.invalidate_runtime_agent_connection();
+            room.expect_runtime_agent("replacement");
+            assert!(room.mark_runtime_agent_connected("replacement"));
+        }
+        assert!(pending
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("no longer owns"));
+        assert!(room
+            .doc
+            .read()
+            .await
+            .get_cell("runtime-agent-cell")
+            .is_none());
+
+        let stale_write = std::cell::Cell::new(false);
+        assert!(room
+            .with_runtime_agent_owner("old", || {
+                stale_write.set(true);
+                Ok(())
+            })
+            .is_err());
+        assert!(!stale_write.get());
+        room.with_runtime_agent_owner("replacement", || {
+            room.state
+                .with_doc(|state| state.set_runtime_agent_id("replacement"))
+                .map_err(Into::into)
+        })
+        .unwrap();
+        assert_eq!(
+            room.state
+                .read(|state| state.read_state().kernel.runtime_agent_id)
+                .unwrap(),
+            "replacement"
+        );
+        room.invalidate_runtime_agent_connection();
+        assert!(room
+            .with_runtime_agent_owner("replacement", || Ok(()))
+            .is_err());
+    }
+
+    #[tokio::test]
     async fn runtime_agent_doc_change_is_rolled_back_until_journal_commit() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let (notebook_id, persist_path, room) = test_file_backed_room(&tmp);
+        room.expect_runtime_agent("test-agent");
+        assert!(room.mark_runtime_agent_connected("test-agent"));
         let journal_path = persist_path.with_extension("recovery");
         std::fs::create_dir(&journal_path).expect("install journal write fault");
 
@@ -1408,9 +1497,10 @@ mod tests {
         };
         let mut changed_rx = room.broadcasts.changed_tx.subscribe();
 
-        let error = apply_runtime_agent_notebook_doc_frame(&room, &mut server_state, &frame)
-            .await
-            .expect_err("journal fault must reject runtime-agent changes");
+        let error =
+            apply_runtime_agent_notebook_doc_frame(&room, &mut server_state, &frame, "test-agent")
+                .await
+                .expect_err("journal fault must reject runtime-agent changes");
         assert!(error.to_string().contains("journal commit failed"));
         {
             let mut doc = room.doc.write().await;
@@ -1444,9 +1534,10 @@ mod tests {
         ));
 
         std::fs::remove_dir(&journal_path).expect("repair journal path");
-        let _reply = apply_runtime_agent_notebook_doc_frame(&room, &mut server_state, &frame)
-            .await
-            .expect("exact frame should replay after storage repair");
+        let _reply =
+            apply_runtime_agent_notebook_doc_frame(&room, &mut server_state, &frame, "test-agent")
+                .await
+                .expect("exact frame should replay after storage repair");
         tokio::time::timeout(std::time::Duration::from_secs(1), changed_rx.recv())
             .await
             .expect("accepted change should broadcast")
@@ -1522,6 +1613,8 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(parked_changes.len(), 1);
 
+        room.expect_runtime_agent("test-agent");
+        assert!(room.mark_runtime_agent_connected("test-agent"));
         let unresolved_frame = automerge::sync::Message {
             heads: attacker.get_heads(),
             need: Vec::new(),
@@ -1536,10 +1629,14 @@ mod tests {
         }
         .encode();
         let sync_state_before = format!("{server_state:?}");
-        let unresolved_error =
-            apply_runtime_agent_notebook_doc_frame(&room, &mut server_state, &unresolved_frame)
-                .await
-                .expect_err("orphan-only frame must not be acknowledged");
+        let unresolved_error = apply_runtime_agent_notebook_doc_frame(
+            &room,
+            &mut server_state,
+            &unresolved_frame,
+            "test-agent",
+        )
+        .await
+        .expect_err("orphan-only frame must not be acknowledged");
         assert!(unresolved_error
             .to_string()
             .contains("unresolved dependencies"));
@@ -1575,9 +1672,10 @@ mod tests {
         }
         .encode();
 
-        let error = apply_runtime_agent_notebook_doc_frame(&room, &mut server_state, &frame)
-            .await
-            .expect_err("trusted frame must not sweep in a parked change");
+        let error =
+            apply_runtime_agent_notebook_doc_frame(&room, &mut server_state, &frame, "test-agent")
+                .await
+                .expect_err("trusted frame must not sweep in a parked change");
         assert!(error.to_string().contains("preview differed"));
         let mut doc = room.doc.write().await;
         assert_eq!(doc.get_heads(), heads_before);

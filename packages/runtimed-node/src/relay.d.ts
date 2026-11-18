@@ -75,6 +75,7 @@ export interface RelayInfo {
   connectionScope?: string;
   /** Optional daemon feature support; absent older bindings must fail closed. */
   localEnvironmentSelection?: boolean;
+  installedKernelspecs?: boolean;
   /** Absent when no `localEnvironment` was requested or the daemon predates it. */
   localEnvironment?: LocalEnvironmentStatus;
   commentsDocId?: string;

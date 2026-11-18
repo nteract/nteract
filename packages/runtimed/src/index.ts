@@ -65,9 +65,27 @@ export { ObservableStore, select } from "./observable-store";
 export { NotebookMetadataStore, type NotebookMetadataHandle } from "./notebook-metadata-store";
 export {
   EnvironmentSelectionStore,
+  INITIAL_KERNELSPEC_CATALOG,
+  transitionKernelspecCatalog,
   type EnvironmentSelectionState,
+  type KernelspecCatalogEvent,
+  type KernelspecCatalogState,
 } from "./environment-selection-store";
-export type { InstalledCondaPackage, InstalledCondaPackageInventory } from "./request-types";
+export type {
+  InstalledCondaPackage,
+  InstalledCondaPackageInventory,
+  InstalledKernelspec,
+  KernelspecInventory,
+} from "./request-types";
+
+export {
+  borrowedEnvironmentKind,
+  projectRunningEnvironment,
+  runningEnvironmentFallbackName,
+  type BorrowedEnvironmentKind,
+  type RunningEnvironment,
+  type RunningEnvironmentFacts,
+} from "./environment-selection-projection";
 
 // Polling + fetch-on-input primitives (injected scheduler/fetch, abort-wired)
 export {

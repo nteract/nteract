@@ -285,7 +285,9 @@ export function useNotebookActionPolicy({
           return false;
         }
         if (response.result === "guard_rejected") {
-          setTrustActionNotice(response.reason);
+          // A parked project launch replies guard_rejected. Tie the notice to
+          // the retained action so project trust recovery can retire it.
+          setTrustActionNotice({ message: response.reason, blockedLaunchAction: blockedAction });
           return false;
         }
         if (response.result === "environment_selection_rejected") {
@@ -622,8 +624,11 @@ export function useNotebookActionPolicy({
           return;
         }
         if (response.result === "guard_rejected") {
+          // Project folder trust can still gate the launch after notebook
+          // trust. Keep the action for that dialog's guarded replay.
           setTrustApprovalHandoffPending(false);
-          setTrustActionNotice(response.reason);
+          setBlockedTrustAction(action);
+          setTrustActionNotice({ message: response.reason, blockedLaunchAction: action });
           return;
         }
         if (response.result === "environment_selection_rejected") {

@@ -86,6 +86,47 @@ async fn wait_for_joined_launch(
     }
 }
 
+/// Map a joined generation's completion to the joiner's reply. `None` means
+/// the owner released the gate without a result and the joiner retries
+/// admission.
+async fn joined_launch_response(
+    room: &NotebookRoom,
+    completion: Result<KernelLaunchCompletion, ()>,
+) -> Option<NotebookResponse> {
+    match completion {
+        Ok(KernelLaunchCompletion::Succeeded) => Some(
+            existing_kernel_response(room)
+                .await
+                .unwrap_or_else(|| NotebookResponse::Error {
+                    error: "Kernel launch completed without an active launch identity".to_string(),
+                }),
+        ),
+        Ok(KernelLaunchCompletion::Released) => None,
+        Ok(KernelLaunchCompletion::Cancelled) => Some(NotebookResponse::Error {
+            error: "Kernel launch was cancelled by shutdown".to_string(),
+        }),
+        Ok(KernelLaunchCompletion::ProjectTrustRequired) => Some(project_trust_refusal()),
+        Ok(KernelLaunchCompletion::Failed) | Err(_) => Some(NotebookResponse::Error {
+            error: "Kernel launch timed out or failed".to_string(),
+        }),
+    }
+}
+
+fn project_trust_refusal() -> NotebookResponse {
+    NotebookResponse::GuardRejected {
+        reason: crate::project_trust::LAUNCH_REFUSAL_REASON.to_string(),
+    }
+}
+
+/// Owner reply after the gate committed a project trust park. The generation
+/// records the refusal so joined requests return the same typed reply.
+fn refuse_for_project_trust(launch_attempt: &mut Option<KernelLaunchAttempt>) -> NotebookResponse {
+    if let Some(attempt) = launch_attempt.as_mut() {
+        attempt.require_project_trust();
+    }
+    project_trust_refusal()
+}
+
 fn commit_apply_delivery(
     room: &NotebookRoom,
     lease: &super::local_environment_selection::EnvironmentApply<'_>,
@@ -103,7 +144,13 @@ fn commit_apply_delivery(
         })?;
     }
     if let Some(metadata) = doc.get_metadata_snapshot() {
-        if metadata.detect_runtime().unwrap_or_else(|| "python".into()) != expected_runtime {
+        if room
+            .local_environment_selection
+            .snapshot()
+            .selected_kernelspec
+            .is_none()
+            && metadata.detect_runtime().unwrap_or_else(|| "python".into()) != expected_runtime
+        {
             anyhow::bail!("Notebook runtime changed during environment preflight");
         }
         let trust =
@@ -183,8 +230,16 @@ async fn complete_manual_launch(
         });
     };
     let env_source_label = env_source.as_str().to_string();
+    let mut persistence = Ok(());
     let commit_result = {
-        let (mut config, mut presence_state) = tokio::join!(
+        let (mut doc, mut config, mut presence_state) = tokio::join!(
+            async {
+                if apply.is_some() {
+                    Some(room.doc.write().await)
+                } else {
+                    None
+                }
+            },
             room.runtime_agent_launched_config.write(),
             room.broadcasts.presence.write()
         );
@@ -198,7 +253,11 @@ async fn complete_manual_launch(
             );
             if let Err(e) = room.state.with_doc(|sd| {
                 sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
-                sd.set_kernel_info(kernel_type, kernel_type, &env_source_label)?;
+                let name = launched_config
+                    .installed_kernelspec
+                    .as_ref()
+                    .map_or(kernel_type, |s| s.name.as_str());
+                sd.set_kernel_info(name, kernel_type, &env_source_label)?;
                 let identity = launched_config.local_environment.as_ref();
                 sd.set_local_environment_identity(
                     identity.map_or("", |e| e.id.as_str()),
@@ -221,7 +280,25 @@ async fn complete_manual_launch(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = None;
             if let Some((lease, binding)) = apply {
+                if let Some(doc) = doc.as_deref_mut() {
+                    persistence = match lease.observed_heads().map(|heads| {
+                        guarded::validate_dependencies_unchanged_since_observed(doc, &heads)
+                    }) {
+                        Some(Err(_)) => Err(anyhow::anyhow!(
+                            "Kernel started but notebook metadata changed; selection not saved"
+                        )),
+                        _ => crate::kernelspec::persist(
+                            room,
+                            doc,
+                            launched_config.installed_kernelspec.as_ref(),
+                            kernel_type,
+                        ),
+                    };
+                }
                 lease.commit(binding);
+            } else {
+                room.local_environment_selection
+                    .record_launch(launched_config.installed_kernelspec.as_ref());
             }
         })
     };
@@ -229,7 +306,9 @@ async fn complete_manual_launch(
     match commit_result {
         Ok(()) => {
             check_and_broadcast_sync_state(room).await;
-            Ok(())
+            persistence.map_err(|e| NotebookResponse::Error {
+                error: format!("{e:#}"),
+            })
         }
         Err((cancelled_attempt, KernelLaunchCommitRejection::Cancelled)) => {
             // Shutdown won the gate before success was linearized. Keep the
@@ -288,26 +367,9 @@ pub(crate) async fn handle(
                 cancel_rx,
             } => {
                 let completion = wait_for_joined_launch(room, generation, cancel_rx).await;
-                match completion {
-                    Ok(KernelLaunchCompletion::Succeeded) => {
-                        return existing_kernel_response(room).await.unwrap_or_else(|| {
-                            NotebookResponse::Error {
-                                error: "Kernel launch completed without an active launch identity"
-                                    .to_string(),
-                            }
-                        });
-                    }
-                    Ok(KernelLaunchCompletion::Released) => continue,
-                    Ok(KernelLaunchCompletion::Cancelled) => {
-                        return NotebookResponse::Error {
-                            error: "Kernel launch was cancelled by shutdown".to_string(),
-                        };
-                    }
-                    Ok(KernelLaunchCompletion::Failed) | Err(_) => {
-                        return NotebookResponse::Error {
-                            error: "Kernel launch timed out or failed".to_string(),
-                        };
-                    }
+                match joined_launch_response(room, completion).await {
+                    Some(response) => return response,
+                    None => continue,
                 }
             }
         }
@@ -442,7 +504,9 @@ pub(crate) async fn handle_admitted(
                         })
                     });
                 }
-                attempt.release_without_cooldown();
+                // Keeps a committed trust refusal as the generation result
+                // without running cleanup against the prior kernel's agent.
+                attempt.release_to_prior_kernel();
             }
         }
     }
@@ -517,10 +581,95 @@ async fn handle_attempt(
     };
 
     // Resolve metadata snapshot from Automerge doc (preferred) or disk
+    let initialization_fence = room.local_environment_selection.initialization_fence();
     let mut metadata_snapshot = resolve_metadata_snapshot(room, notebook_path.as_deref()).await;
 
+    let selection = room.local_environment_selection.snapshot();
+    let mode = *room.identity.environment_mode.read().await;
+    let installed_name = if apply.is_some() {
+        selection.selected_kernelspec.map(|s| s.name)
+    } else if local_environment.is_none()
+        && matches!(
+            env_source,
+            LaunchSpec::Auto | LaunchSpec::Concrete(EnvSource::Kernelspec)
+        )
+    {
+        selection.applied_kernelspec.map(|s| s.name).or_else(|| {
+            if matches!(
+                room.bound_environment.snapshot(),
+                super::bound_environment::BoundEnvironmentState::Bound(_)
+            ) {
+                None
+            } else {
+                crate::kernelspec::imported(metadata_snapshot.as_ref(), mode)
+            }
+        })
+    } else {
+        None
+    };
+    let inherited = if daemon.import_shell_environment().await {
+        overlay_env_vars(&daemon.shell_env_overlay())
+    } else {
+        Default::default()
+    };
+    let (installed, kernelspec) = if let Some(name) = installed_name {
+        if room.is_hosted() {
+            return NotebookResponse::EnvironmentSelectionRejected {
+                error: "Installed kernelspecs require a local notebook".into(),
+            };
+        }
+        if let (None, Some(fence)) = (apply, initialization_fence) {
+            if let Some(intent) = metadata_snapshot
+                .as_ref()
+                .and_then(|metadata| metadata.kernelspec.as_ref())
+                .filter(|intent| intent.name.eq_ignore_ascii_case(&name))
+            {
+                room.local_environment_selection.adopt_imported_kernelspec(
+                    notebook_protocol::protocol::InstalledKernelspec {
+                        name: name.to_ascii_lowercase(),
+                        display_name: intent.display_name.clone(),
+                        language: intent.language.clone().unwrap_or_default(),
+                    },
+                    fence,
+                );
+            }
+        }
+        if let Err(rejection) = guarded::ensure_trusted(room).await {
+            return rejection.into_response();
+        }
+        match crate::kernelspec::resolve(name.clone())
+            .await
+            .and_then(|spec| Ok((Some(spec.info(&name)), Some(spec.prepare(&inherited)?))))
+        {
+            Ok(spec) => spec,
+            Err(e) => {
+                let error = format!("{e:#}");
+                if apply.is_none() {
+                    reset_starting_state_with_outcome(
+                        room,
+                        None,
+                        ResetOutcome::Error {
+                            reason: None,
+                            details: &error,
+                        },
+                    )
+                    .await;
+                }
+                return NotebookResponse::EnvironmentSelectionRejected { error };
+            }
+        }
+    } else if env_source == LaunchSpec::Concrete(EnvSource::Kernelspec) {
+        return NotebookResponse::EnvironmentSelectionRejected {
+            error: "No installed kernelspec selected".into(),
+        };
+    } else {
+        (None, None)
+    };
+
     // Auto-detect kernel type if "auto" or empty
-    let resolved_kernel_type = if kernel_type == "auto" || kernel_type.is_empty() {
+    let resolved_kernel_type = if let Some(spec) = installed.as_ref() {
+        spec.language.clone()
+    } else if kernel_type == "auto" || kernel_type.is_empty() {
         metadata_snapshot
             .as_ref()
             .and_then(|s| s.detect_runtime())
@@ -557,7 +706,9 @@ async fn handle_attempt(
     // Set when auto selection lands on the prewarmed fallback, the only slot
     // a host-bound environment may fill.
     let mut bound_environment_eligible = false;
-    let resolved_env_source = if resolved_kernel_type == "deno" {
+    let resolved_env_source = if installed.is_some() {
+        EnvSource::Kernelspec
+    } else if resolved_kernel_type == "deno" {
         match &launch_spec {
             LaunchSpec::Auto | LaunchSpec::AutoScoped(_) => {
                 info!("[notebook-sync] Deno kernel detected, using 'deno' env_source");
@@ -847,11 +998,26 @@ async fn handle_attempt(
             );
             return NotebookResponse::Error { error };
         }
+        // The gate committed `AwaitingProjectTrust` and the prompt. The reply
+        // is the typed approval refusal, so clients classify it without
+        // reading RuntimeStateDoc or the text. The generation records the same
+        // refusal for requests that joined it.
         crate::project_trust::RoomProjectGate::Parked => {
+            return refuse_for_project_trust(launch_attempt);
+        }
+        // Shutdown or agent disconnect already committed the terminal
+        // projection. Dropping the cancelled token records `Cancelled`.
+        crate::project_trust::RoomProjectGate::Cancelled => {
             return NotebookResponse::Error {
-                error: "The project folder is not trusted on this machine. \
-                            Trust it or use the notebook environment to launch."
-                    .to_string(),
+                error: "Kernel launch was cancelled by shutdown".to_string(),
+            };
+        }
+        // This launch published no prompt. Dropping the token records
+        // `Failed` and projects the generic launch error over the unfinished
+        // lifecycle.
+        crate::project_trust::RoomProjectGate::WriteFailed(error) => {
+            return NotebookResponse::Error {
+                error: format!("Could not record the project trust prompt: {error}"),
             };
         }
     };
@@ -1004,7 +1170,7 @@ async fn handle_attempt(
     } else {
         // Python kernels require pooled environment
         match resolved_env_source.as_str() {
-            "conda:existing:local" => None,
+            "conda:existing:local" | "kernelspec" => None,
             "uv:prewarmed" | "conda:prewarmed" => {
                 // Route through the capture-aware acquirer so:
                 //  - Reopen path: if metadata has env_id + captured
@@ -1978,6 +2144,19 @@ async fn handle_attempt(
         // Borrowed prefixes must never enter the daemon-owned cleanup slot.
         *room.runtime_agent_env_path.write().await = None;
     }
+    if let Some(spec) = installed {
+        launched_config = notebook_protocol::protocol::LaunchedEnvConfig {
+            launch_id: launched_config.launch_id,
+            local_environment: Some(notebook_protocol::protocol::LocalEnvironmentIdentity {
+                id: format!("kernelspec:{}", spec.name),
+                name: spec.display_name.clone(),
+                python_version: None,
+            }),
+            installed_kernelspec: Some(spec),
+            ..Default::default()
+        };
+        *room.runtime_agent_env_path.write().await = None;
+    }
 
     if launch_attempt
         .as_ref()
@@ -2023,8 +2202,6 @@ async fn handle_attempt(
         }
     }
     let redact_env_values_in_outputs = daemon.redact_env_values_in_outputs().await;
-    let import_shell_environment = daemon.import_shell_environment().await;
-    let shell_overlay = daemon.shell_env_overlay();
 
     // If runtime agent is already connected, restart kernel in-place
     // (handles the shutdown → launch sequence without subprocess respawn).
@@ -2037,12 +2214,7 @@ async fn handle_attempt(
             info!("[notebook-sync] Agent connected — sending RestartKernel");
             // Precedence: overlay (lowest) → uv → pixi (highest), so daemon-required
             // vars always win over imported shell values.
-            let mut restart_env_vars: std::collections::HashMap<String, String> =
-                if import_shell_environment {
-                    overlay_env_vars(&shell_overlay)
-                } else {
-                    std::collections::HashMap::new()
-                };
+            let mut restart_env_vars: std::collections::HashMap<String, String> = inherited.clone();
             restart_env_vars.extend(crate::uv_project::uv_offline_env_vars(uv_pyproject_offline));
             restart_env_vars.extend(crate::pixi_project::pixi_frozen_env_vars(pixi_toml_frozen));
             let build_request =
@@ -2055,6 +2227,7 @@ async fn handle_attempt(
                     launched_config: launched_config.clone(),
                     kernel_ports,
                     env_vars: restart_env_vars.clone(),
+                    kernelspec: kernelspec.clone(),
                     redact_env_values_in_outputs,
                 };
             let response = if let Some(lease) = apply {
@@ -2345,12 +2518,7 @@ async fn handle_attempt(
 
                 // Send LaunchKernel RPC. Same precedence as the restart path
                 // above: overlay (lowest) → uv → pixi (highest).
-                let mut launch_env_vars: std::collections::HashMap<String, String> =
-                    if import_shell_environment {
-                        overlay_env_vars(&shell_overlay)
-                    } else {
-                        std::collections::HashMap::new()
-                    };
+                let mut launch_env_vars: std::collections::HashMap<String, String> = inherited;
                 launch_env_vars
                     .extend(crate::uv_project::uv_offline_env_vars(uv_pyproject_offline));
                 launch_env_vars.extend(crate::pixi_project::pixi_frozen_env_vars(pixi_toml_frozen));
@@ -2364,6 +2532,7 @@ async fn handle_attempt(
                         launched_config: launched_config.clone(),
                         kernel_ports,
                         env_vars: launch_env_vars.clone(),
+                        kernelspec: kernelspec.clone(),
                         redact_env_values_in_outputs,
                     };
                 let response = if let Some(lease) = apply {
@@ -3087,5 +3256,66 @@ mod tests {
             KernelLaunchCompletion::Failed
         );
         assert!(existing_kernel_response(&room).await.is_none());
+    }
+
+    /// An Apply that parks at the project trust gate restores the kernel it
+    /// preserved. The generation still reports the trust refusal to joiners,
+    /// not the old kernel as a launch success, and the old kernel's agent
+    /// slots survive.
+    #[tokio::test]
+    async fn apply_trust_refusal_keeps_prior_kernel_and_reports_refusal() {
+        let (_tmp, room) = test_room();
+        *room.current_runtime_agent_id.write().await = Some("old-agent".to_string());
+        assert!(
+            room.record_active_kernel_launch_if_current(
+                "old-agent".to_string(),
+                "python".to_string(),
+                EnvSource::Prewarmed(PackageManager::Uv),
+            )
+            .await
+        );
+        let (request_tx, _request_rx) = tokio::sync::mpsc::channel(1);
+        *room.runtime_agent_request_tx.lock().await = Some(request_tx);
+        room.state
+            .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle)))
+            .unwrap();
+
+        let mut attempt = match room.try_begin_manual_launch() {
+            ManualLaunchAdmission::Admitted(attempt) => attempt,
+            ManualLaunchAdmission::InFlight { .. } => panic!("launch should be admitted"),
+        };
+        attempt.preserve_kernel_during_preparation();
+        room.state
+            .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::AwaitingProjectTrust))
+            .unwrap();
+        let mut launch_attempt = Some(attempt);
+        let response = refuse_for_project_trust(&mut launch_attempt);
+        launch_attempt.unwrap().release_to_prior_kernel();
+        tokio::task::yield_now().await;
+
+        assert!(matches!(response, NotebookResponse::GuardRejected { .. }));
+        assert_eq!(
+            room.launch_completion(1),
+            Some(KernelLaunchCompletion::ProjectTrustRequired)
+        );
+        assert_eq!(
+            room.current_runtime_agent_id.read().await.as_deref(),
+            Some("old-agent")
+        );
+        assert!(room.runtime_agent_request_tx.lock().await.is_some());
+        assert!(room.active_kernel_launch().is_some());
+        assert_eq!(
+            room.state
+                .read(|sd| sd.read_state().kernel.lifecycle)
+                .unwrap(),
+            RuntimeLifecycle::Running(KernelActivity::Idle)
+        );
+        match joined_launch_response(&room, Ok(KernelLaunchCompletion::ProjectTrustRequired)).await
+        {
+            Some(NotebookResponse::GuardRejected { reason }) => {
+                assert_eq!(reason, crate::project_trust::LAUNCH_REFUSAL_REASON)
+            }
+            other => panic!("joiner must get the trust refusal, got {other:?}"),
+        }
     }
 }

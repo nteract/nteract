@@ -46,6 +46,7 @@ pub(crate) mod kernel_launch_failure;
 pub(crate) mod kernel_ports;
 pub(crate) mod kernel_shell_requester;
 pub mod kernel_state;
+mod kernelspec;
 pub(crate) mod keyed_doc;
 pub mod launcher_cache;
 pub(crate) mod local_conda_environments;

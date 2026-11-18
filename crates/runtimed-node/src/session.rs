@@ -21,6 +21,9 @@ use runtimed_outputs::output_resolver as shared_resolver;
 use runtimed_outputs::resolved_output::DataValue as SharedDataValue;
 
 use crate::error::to_napi_err;
+use crate::kernel_restart::{
+    step, KernelObservation, LaunchReply, RestartEvent, RestartPhase, RestartVerdict, TimeoutStage,
+};
 use runtime_doc::{diff_executions, ExecutionViewProjector, ProjectContext, ProjectFileKind};
 
 /// Valid cell types accepted by `runCell`.
@@ -144,6 +147,7 @@ pub enum EnvironmentSelectionTargetKind {
     Automatic,
     /// Borrow an existing Conda prefix.
     Conda,
+    Kernelspec,
 }
 
 /// Target for `Session.setEnvironmentSelection()`. `prefix` is required for
@@ -153,6 +157,7 @@ pub enum EnvironmentSelectionTargetKind {
 pub struct EnvironmentSelectionTarget {
     pub kind: EnvironmentSelectionTargetKind,
     pub prefix: Option<String>,
+    pub name: Option<String>,
 }
 
 impl TryFrom<EnvironmentSelectionTarget> for notebook_protocol::protocol::LocalEnvironmentTarget {
@@ -161,6 +166,11 @@ impl TryFrom<EnvironmentSelectionTarget> for notebook_protocol::protocol::LocalE
     fn try_from(value: EnvironmentSelectionTarget) -> Result<Self> {
         match value.kind {
             EnvironmentSelectionTargetKind::Automatic => Ok(Self::Automatic),
+            EnvironmentSelectionTargetKind::Kernelspec => Ok(Self::Kernelspec {
+                name: value
+                    .name
+                    .ok_or_else(|| Error::from_reason("A kernelspec target requires a name"))?,
+            }),
             EnvironmentSelectionTargetKind::Conda => value
                 .prefix
                 .map(|prefix| Self::Conda {
@@ -198,6 +208,8 @@ impl From<notebook_protocol::protocol::LocalCondaEnvironment> for LocalCondaEnvi
 #[napi(object)]
 #[derive(Clone, Debug)]
 pub struct EnvironmentSelection {
+    pub selected_kernelspec: Option<InstalledKernelspec>,
+    pub applied_kernelspec: Option<InstalledKernelspec>,
     /// Pass back as `expectedRevision` to set or apply.
     pub revision: i64,
     /// Staged target. Null means Automatic.
@@ -211,6 +223,8 @@ impl From<notebook_protocol::protocol::EnvironmentSelectionSnapshot> for Environ
     fn from(value: notebook_protocol::protocol::EnvironmentSelectionSnapshot) -> Self {
         Self {
             revision: i64::try_from(value.revision).unwrap_or(i64::MAX),
+            selected_kernelspec: value.selected_kernelspec.map(Into::into),
+            applied_kernelspec: value.applied_kernelspec.map(Into::into),
             selected: value.selected.map(Into::into),
             applied: value.applied.map(Into::into),
             applying: value.applying,
@@ -228,6 +242,29 @@ fn environment_selection_response(response: NotebookResponse) -> Result<Environm
             "Unexpected response: {other:?}"
         ))),
     }
+}
+
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct InstalledKernelspec {
+    pub name: String,
+    pub display_name: String,
+    pub language: String,
+}
+impl From<notebook_protocol::protocol::InstalledKernelspec> for InstalledKernelspec {
+    fn from(s: notebook_protocol::protocol::InstalledKernelspec) -> Self {
+        Self {
+            name: s.name,
+            display_name: s.display_name,
+            language: s.language,
+        }
+    }
+}
+#[napi(object)]
+pub struct KernelspecInventory {
+    pub kernelspecs: Vec<InstalledKernelspec>,
+    pub truncated: bool,
+    pub warnings: Vec<String>,
 }
 
 fn expected_revision(revision: i64) -> Result<u64> {
@@ -393,11 +430,93 @@ pub struct RuntimeStatus {
     pub starting_phase: String,
     pub name: String,
     pub language: String,
+    /// Active identity fields are empty unless lifecycle is Running.
     pub env_source: String,
     pub runtime_agent_id: String,
+    pub environment_id: String,
+    pub environment_name: String,
+    pub python_version: String,
     pub error_reason: Option<String>,
     pub error_details: Option<String>,
     pub project_trust: ProjectTrustStatus,
+}
+
+/// Daemon verdict for `Session.syncEnvironmentResult()`.
+///
+/// `status` is `"applied"`, `"restart_required"`, or `"failed"`.
+/// `nextAction` is `"none"`, `"restart"`, or `"inspect"` respectively.
+#[napi(object)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvironmentSyncResult {
+    pub status: String,
+    /// Packages the daemon installed into the running kernel.
+    pub synced_packages: Vec<String>,
+    pub needs_restart: bool,
+    pub error: Option<String>,
+    pub next_action: String,
+}
+
+impl EnvironmentSyncResult {
+    fn applied(synced_packages: Vec<String>) -> Self {
+        Self {
+            status: "applied".into(),
+            synced_packages,
+            needs_restart: false,
+            error: None,
+            next_action: "none".into(),
+        }
+    }
+
+    fn restart_required(error: String) -> Self {
+        Self {
+            status: "restart_required".into(),
+            synced_packages: Vec::new(),
+            needs_restart: true,
+            error: Some(error),
+            next_action: "restart".into(),
+        }
+    }
+
+    fn failed(error: String) -> Self {
+        Self {
+            status: "failed".into(),
+            synced_packages: Vec::new(),
+            needs_restart: false,
+            error: Some(error),
+            next_action: "inspect".into(),
+        }
+    }
+}
+
+/// Options for `Session.restartKernel()` and `Session.restartKernelResult()`.
+#[napi(object)]
+#[derive(Default)]
+pub struct RestartKernelOptions {
+    /// Bound in milliseconds for each confirmation wait: the old kernel
+    /// observed stopped, then a matching kernel observed running. Default 30_000.
+    /// The daemon's LaunchKernel request keeps its own deadline.
+    pub timeout_ms: Option<u32>,
+}
+
+/// Result of `Session.restartKernelResult()`.
+///
+/// `outcome` is one of `"running"`, `"trust_required"`, `"launch_rejected"`,
+/// `"failed"`, `"stopped"`, or `"timed_out"`. `"trust_required"` comes only
+/// from the daemon's typed `GuardRejected` launch reply: notebook dependencies
+/// or the project folder need approval.
+#[napi(object)]
+pub struct KernelRestartResult {
+    pub outcome: String,
+    pub error: Option<String>,
+    /// envSource the daemon reported for the accepted launch.
+    pub launched_env_source: Option<String>,
+    /// This client's RuntimeStateDoc view when the restart finished. It is
+    /// an observed matching running kernel only when `outcome` is `"running"`.
+    /// A rejection returns as soon as the reply arrives, so this view may not
+    /// yet show the daemon's matching state, such as `AwaitingProjectTrust`.
+    /// No launch generation exists; a peer restart of the same environment
+    /// cannot be distinguished from this call's launch.
+    pub status: RuntimeStatus,
 }
 
 /// Options for `Session.runCell()`.
@@ -1224,6 +1343,34 @@ impl Session {
         .await
     }
 
+    #[napi]
+    pub async fn list_installed_kernelspecs(&self) -> Result<KernelspecInventory> {
+        let handle = session_handle(&self.state).await?;
+        if !handle.supports_installed_kernelspecs() {
+            return Err(Error::from_reason(
+                "Daemon does not support installed kernelspecs",
+            ));
+        }
+        match handle
+            .send_request(NotebookRequest::ListInstalledKernelspecs {})
+            .await
+            .map_err(to_napi_err)?
+        {
+            NotebookResponse::InstalledKernelspecs { inventory } => Ok(KernelspecInventory {
+                kernelspecs: inventory.kernelspecs.into_iter().map(Into::into).collect(),
+                warnings: inventory.warnings,
+                truncated: inventory.truncated,
+            }),
+            NotebookResponse::Error { error }
+            | NotebookResponse::EnvironmentSelectionRejected { error } => {
+                Err(Error::from_reason(error))
+            }
+            other => Err(Error::from_reason(format!(
+                "Unexpected response: {other:?}"
+            ))),
+        }
+    }
+
     /// Read the staged and applied local environment selection.
     #[napi]
     pub async fn get_environment_selection(&self) -> Result<EnvironmentSelection> {
@@ -1247,6 +1394,15 @@ impl Session {
         let target = target.try_into()?;
         let expected_revision = self::expected_revision(expected_revision)?;
         let handle = session_handle(&self.state).await?;
+        if matches!(
+            &target,
+            notebook_protocol::protocol::LocalEnvironmentTarget::Kernelspec { .. }
+        ) && !handle.supports_installed_kernelspecs()
+        {
+            return Err(Error::from_reason(
+                "Daemon does not support installed kernelspecs",
+            ));
+        }
         environment_selection_response(
             handle
                 .send_request(NotebookRequest::SetEnvironmentSelection {
@@ -1289,33 +1445,39 @@ impl Session {
 
     /// Ask the daemon to hot-install any pending dependency changes into
     /// the running kernel's env. Starts the kernel first if needed.
-    /// Returns once the install finishes.
+    /// Resolves once the install finishes; rejects with the daemon's error
+    /// for every other verdict. Use `syncEnvironmentResult()` to tell a
+    /// required restart apart from a failure.
     #[napi]
     pub async fn sync_environment(&self) -> Result<()> {
+        let result = self.sync_environment_result().await?;
+        match result.error {
+            Some(error) if result.status != "applied" => Err(Error::from_reason(error)),
+            _ => Ok(()),
+        }
+    }
+
+    /// Ask the daemon to hot-install pending dependency changes and return
+    /// its verdict as a value. Never restarts a running kernel: when the
+    /// daemon cannot hot-apply (removals, channel or manager changes, project
+    /// file updates), the result is `restart_required`. Joins or starts a
+    /// launch first only when no kernel is running. Rejects when the session
+    /// is not connected, the connection drops, or the daemon replies with an
+    /// unexpected response; the daemon-side effect is then unknown.
+    #[napi]
+    pub async fn sync_environment_result(&self) -> Result<EnvironmentSyncResult> {
         // Environment sync cannot queue during launch like code execution can.
         // Join the daemon's launch request so the kernel is ready first.
-        launch_kernel(&self.state).await?;
-        let handle = {
-            let st = self.state.lock().await;
-            st.handle
-                .as_ref()
-                .ok_or_else(|| Error::from_reason("Not connected"))?
-                .clone()
-        };
+        if let Some(failed) = sync_launch_failure(send_launch_kernel(&self.state).await?)? {
+            return Ok(failed);
+        }
+        let handle = session_handle(&self.state).await?;
         handle.confirm_sync().await.map_err(to_napi_err)?;
         let response = handle
             .send_request(NotebookRequest::SyncEnvironment { guard: None })
             .await
             .map_err(to_napi_err)?;
-        match response {
-            NotebookResponse::SyncEnvironmentComplete { .. } => Ok(()),
-            NotebookResponse::SyncEnvironmentFailed { error, .. } => Err(Error::from_reason(error)),
-            NotebookResponse::GuardRejected { reason } => Err(Error::from_reason(reason)),
-            NotebookResponse::Error { error } => Err(Error::from_reason(error)),
-            other => Err(Error::from_reason(format!(
-                "Unexpected response: {other:?}"
-            ))),
-        }
+        environment_sync_result_from_response(response)
     }
 
     /// Return all cells in notebook order.
@@ -1515,16 +1677,45 @@ impl Session {
         }
     }
 
-    /// Restart the kernel, clearing in-memory state while preserving notebook dependencies.
+    /// Restart the kernel, clearing in-memory state while preserving notebook
+    /// dependencies. Resolves `true` only after this client's RuntimeStateDoc
+    /// shows Running after a stopped state, matching the accepted envSource and
+    /// local environment identity when supplied. A peer restart of the same
+    /// environment cannot be distinguished without a launch generation.
+    /// Rejects for every other outcome; see `restartKernelResult()`.
     #[napi]
-    pub async fn restart_kernel(&self) -> Result<bool> {
-        let handle = session_handle(&self.state).await?;
-        let had_kernel = self.shutdown_kernel().await?;
-        if had_kernel {
-            wait_for_kernel_not_running(&handle, Duration::from_secs(30)).await?;
+    pub async fn restart_kernel(&self, options: Option<RestartKernelOptions>) -> Result<bool> {
+        let result = self.restart_kernel_result(options).await?;
+        if result.outcome == "running" {
+            Ok(true)
+        } else {
+            Err(Error::from_reason(result.error.unwrap_or_else(|| {
+                format!("Kernel restart ended as {}", result.outcome)
+            })))
         }
-        launch_kernel(&self.state).await?;
-        Ok(true)
+    }
+
+    /// Restart the kernel and report how it ended. Shuts the kernel down,
+    /// waits for the stop to reach this client, launches, then waits until
+    /// the replica shows Running with the launched envSource. Rejects when
+    /// the session closes, the connection drops, or the daemon replies with
+    /// an unexpected response.
+    #[napi]
+    pub async fn restart_kernel_result(
+        &self,
+        options: Option<RestartKernelOptions>,
+    ) -> Result<KernelRestartResult> {
+        let timeout_ms = options.and_then(|o| o.timeout_ms).unwrap_or(30_000);
+        if timeout_ms == 0 {
+            return Err(Error::from_reason("timeoutMs must be greater than 0"));
+        }
+        let closed_rx = self.closed_tx.subscribe();
+        restart_kernel_flow(
+            &self.state,
+            closed_rx,
+            Duration::from_millis(u64::from(timeout_ms)),
+        )
+        .await
     }
 
     /// Shutdown this notebook's kernel and evict its daemon room.
@@ -1878,36 +2069,6 @@ fn runtime_from_handle(handle: &DocHandle) -> String {
         .unwrap_or_else(|| "python".to_string())
 }
 
-async fn wait_for_kernel_not_running(handle: &DocHandle, timeout: Duration) -> Result<()> {
-    let start = std::time::Instant::now();
-    loop {
-        match handle.get_runtime_state() {
-            Ok(state)
-                if !matches!(
-                    state.kernel.lifecycle,
-                    runtime_doc::RuntimeLifecycle::Running(_)
-                ) =>
-            {
-                return Ok(());
-            }
-            Ok(_) | Err(_) if start.elapsed() < timeout => {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            Ok(state) => {
-                return Err(Error::from_reason(format!(
-                    "Timed out waiting for kernel shutdown; lifecycle is {}",
-                    state.kernel.lifecycle.variant_str()
-                )));
-            }
-            Err(e) => {
-                return Err(Error::from_reason(format!(
-                    "Timed out waiting for kernel shutdown; runtime state unavailable: {e}"
-                )));
-            }
-        }
-    }
-}
-
 fn active_notebook_from_room(room: runtimed_client::protocol::RoomInfo) -> ActiveNotebook {
     ActiveNotebook {
         notebook_id: room.notebook_id,
@@ -2163,7 +2324,19 @@ fn runtime_status_for_handle(handle: &DocHandle) -> RuntimeStatus {
 }
 
 fn runtime_status_from_state(state: runtime_doc::RuntimeState) -> RuntimeStatus {
-    let kernel = state.kernel;
+    let mut kernel = state.kernel;
+    // RuntimeStateDoc retains the previous kernel's identity while preparing
+    // its replacement. Those historical fields do not identify an active
+    // environment until the daemon publishes Running for the new kernel.
+    if !matches!(kernel.lifecycle, runtime_doc::RuntimeLifecycle::Running(_)) {
+        kernel.name.clear();
+        kernel.language.clear();
+        kernel.env_source.clear();
+        kernel.runtime_agent_id.clear();
+        kernel.environment_id.clear();
+        kernel.environment_name.clear();
+        kernel.python_version.clear();
+    }
     let (lifecycle, activity) = match &kernel.lifecycle {
         runtime_doc::RuntimeLifecycle::Running(activity) => (
             kernel.lifecycle.variant_str().to_string(),
@@ -2180,6 +2353,9 @@ fn runtime_status_from_state(state: runtime_doc::RuntimeState) -> RuntimeStatus 
         language: kernel.language,
         env_source: kernel.env_source,
         runtime_agent_id: kernel.runtime_agent_id,
+        environment_id: kernel.environment_id,
+        environment_name: kernel.environment_name,
+        python_version: kernel.python_version,
         error_reason: kernel.error_reason.filter(|s| !s.is_empty()),
         error_details: kernel.error_details.filter(|s| !s.is_empty()),
         project_trust: state.project_trust.into(),
@@ -2295,6 +2471,308 @@ async fn ensure_kernel_started(state: &Arc<Mutex<SessionState>>) -> Result<()> {
 }
 
 async fn launch_kernel(state: &Arc<Mutex<SessionState>>) -> Result<()> {
+    match send_launch_kernel(state).await? {
+        NotebookResponse::KernelLaunched { .. } | NotebookResponse::KernelAlreadyRunning { .. } => {
+            Ok(())
+        }
+        NotebookResponse::GuardRejected { reason } => Err(Error::from_reason(reason)),
+        NotebookResponse::Error { error } => Err(Error::from_reason(error)),
+        other => Err(Error::from_reason(format!(
+            "Unexpected response: {other:?}"
+        ))),
+    }
+}
+
+/// Map the on-demand launch before an environment sync. `None` means a kernel
+/// is running and the sync request may follow.
+fn sync_launch_failure(response: NotebookResponse) -> Result<Option<EnvironmentSyncResult>> {
+    match response {
+        NotebookResponse::KernelLaunched { .. } | NotebookResponse::KernelAlreadyRunning { .. } => {
+            Ok(None)
+        }
+        NotebookResponse::GuardRejected { reason } => {
+            Ok(Some(EnvironmentSyncResult::failed(reason)))
+        }
+        NotebookResponse::Error { error }
+        | NotebookResponse::EnvironmentSelectionRejected { error } => {
+            Ok(Some(EnvironmentSyncResult::failed(error)))
+        }
+        other => Err(Error::from_reason(format!(
+            "Unexpected response: {other:?}"
+        ))),
+    }
+}
+
+/// Map the daemon's `SyncEnvironment` reply. The daemon decides whether a
+/// restart is needed; metadata is never consulted here.
+fn environment_sync_result_from_response(
+    response: NotebookResponse,
+) -> Result<EnvironmentSyncResult> {
+    match response {
+        NotebookResponse::SyncEnvironmentComplete { synced_packages } => {
+            Ok(EnvironmentSyncResult::applied(synced_packages))
+        }
+        NotebookResponse::SyncEnvironmentFailed {
+            error,
+            needs_restart: true,
+        } => Ok(EnvironmentSyncResult::restart_required(error)),
+        NotebookResponse::SyncEnvironmentFailed {
+            error,
+            needs_restart: false,
+        } => Ok(EnvironmentSyncResult::failed(error)),
+        NotebookResponse::GuardRejected { reason } => Ok(EnvironmentSyncResult::failed(reason)),
+        NotebookResponse::Error { error } => Ok(EnvironmentSyncResult::failed(error)),
+        other => Err(Error::from_reason(format!(
+            "Unexpected response: {other:?}"
+        ))),
+    }
+}
+
+fn launch_reply_for_restart(response: NotebookResponse) -> Result<LaunchReply> {
+    match response {
+        NotebookResponse::KernelLaunched {
+            env_source,
+            launched_config,
+            ..
+        }
+        | NotebookResponse::KernelAlreadyRunning {
+            env_source,
+            launched_config,
+            ..
+        } => Ok(LaunchReply::Accepted {
+            env_source: env_source.as_str().to_string(),
+            environment_id: launched_config.local_environment.map(|env| env.id),
+        }),
+        // The reply type alone decides trust. Error text is never parsed.
+        NotebookResponse::GuardRejected { reason } => Ok(LaunchReply::TrustRejected { reason }),
+        NotebookResponse::Error { error }
+        | NotebookResponse::EnvironmentSelectionRejected { error } => {
+            Ok(LaunchReply::Rejected { error })
+        }
+        other => Err(Error::from_reason(format!(
+            "Unexpected response to restartKernel launch: {other:?}"
+        ))),
+    }
+}
+
+fn shutdown_reply_for_restart(response: NotebookResponse) -> Result<()> {
+    match response {
+        NotebookResponse::KernelShuttingDown {} | NotebookResponse::NoKernel {} => Ok(()),
+        NotebookResponse::Error { error } => Err(Error::from_reason(error)),
+        other => Err(Error::from_reason(format!(
+            "Unexpected response to restartKernel shutdown: {other:?}"
+        ))),
+    }
+}
+
+/// What woke a restart wait.
+enum RestartWake {
+    Changed,
+    TimedOut,
+}
+
+/// Wait for the next RuntimeStateDoc change or the deadline. Session close and
+/// a dropped sync task are rejections: they say nothing about the kernel.
+async fn next_restart_wake(
+    runtime_rx: &mut tokio::sync::watch::Receiver<runtime_doc::RuntimeState>,
+    closed_rx: &mut tokio::sync::watch::Receiver<bool>,
+    deadline: tokio::time::Instant,
+) -> Result<RestartWake> {
+    tokio::select! {
+        biased;
+        _ = closed_rx.wait_for(|closed| *closed) => {
+            Err(Error::from_reason("Session closed during kernel restart"))
+        }
+        changed = runtime_rx.changed() => match changed {
+            Ok(()) => Ok(RestartWake::Changed),
+            Err(_) => Err(Error::from_reason("Connection lost during kernel restart")),
+        },
+        _ = tokio::time::sleep_until(deadline) => Ok(RestartWake::TimedOut),
+    }
+}
+
+/// The replica's current kernel. The document can be ahead of the watch value.
+fn current_runtime_state(
+    handle: &DocHandle,
+    runtime_rx: &mut tokio::sync::watch::Receiver<runtime_doc::RuntimeState>,
+) -> runtime_doc::RuntimeState {
+    let watched = runtime_rx.borrow_and_update().clone();
+    handle.get_runtime_state().unwrap_or(watched)
+}
+
+/// Feed observations into `phase` until it leaves the waiting phase or the
+/// deadline passes. Returns the new phase and the last runtime state read.
+async fn observe_until_transition(
+    handle: &DocHandle,
+    mut phase: RestartPhase,
+    runtime_rx: &mut tokio::sync::watch::Receiver<runtime_doc::RuntimeState>,
+    closed_rx: &mut tokio::sync::watch::Receiver<bool>,
+    timeout: Duration,
+) -> Result<(RestartPhase, runtime_doc::RuntimeState)> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let waiting = std::mem::discriminant(&phase);
+    loop {
+        // A replica retains its last Running snapshot after disconnect. Never
+        // turn that retained value into successful restart confirmation.
+        if *closed_rx.borrow() {
+            return Err(Error::from_reason("Session closed during kernel restart"));
+        }
+        if handle.status().connection == notebook_sync::status::ConnectionState::Disconnected {
+            return Err(Error::from_reason("Connection lost during kernel restart"));
+        }
+        let state = current_runtime_state(handle, runtime_rx);
+        phase = step(
+            phase,
+            RestartEvent::Observed(KernelObservation::from(&state.kernel)),
+        );
+        if std::mem::discriminant(&phase) != waiting {
+            return Ok((phase, state));
+        }
+        if let RestartWake::TimedOut = next_restart_wake(runtime_rx, closed_rx, deadline).await? {
+            return Ok((step(phase, RestartEvent::TimedOut), state));
+        }
+    }
+}
+
+async fn restart_kernel_flow(
+    session_state: &Arc<Mutex<SessionState>>,
+    mut closed_rx: tokio::sync::watch::Receiver<bool>,
+    timeout: Duration,
+) -> Result<KernelRestartResult> {
+    let handle = session_handle(session_state).await?;
+    let mut runtime_rx = handle.subscribe_runtime_state();
+
+    let shutdown = handle.send_request(NotebookRequest::ShutdownKernel {});
+    let response = tokio::select! {
+        biased;
+        _ = closed_rx.wait_for(|closed| *closed) => {
+            return Err(Error::from_reason("Session closed during kernel restart"));
+        }
+        response = shutdown => response.map_err(to_napi_err)?,
+    };
+    shutdown_reply_for_restart(response)?;
+    let phase = step(RestartPhase::initial(), RestartEvent::ShutdownAcknowledged);
+
+    // Fence: the replica shows the old kernel stopped.
+    let (mut phase, mut last_state) =
+        observe_until_transition(&handle, phase, &mut runtime_rx, &mut closed_rx, timeout).await?;
+
+    if matches!(phase, RestartPhase::Launching { .. }) {
+        let launch = send_launch_kernel(session_state);
+        tokio::pin!(launch);
+        let response = loop {
+            tokio::select! {
+                biased;
+                _ = closed_rx.wait_for(|closed| *closed) => {
+                    return Err(Error::from_reason("Session closed during kernel restart"));
+                }
+                response = &mut launch => break response?,
+                changed = runtime_rx.changed() => {
+                    if changed.is_err() {
+                        return Err(Error::from_reason("Connection lost during kernel restart"));
+                    }
+                    last_state = current_runtime_state(&handle, &mut runtime_rx);
+                    phase = step(
+                        phase,
+                        RestartEvent::Observed(KernelObservation::from(&last_state.kernel)),
+                    );
+                }
+            }
+        };
+        phase = step(
+            phase,
+            RestartEvent::LaunchReplied(launch_reply_for_restart(response)?),
+        );
+    }
+
+    if matches!(phase, RestartPhase::Confirming { .. }) {
+        (phase, last_state) =
+            observe_until_transition(&handle, phase, &mut runtime_rx, &mut closed_rx, timeout)
+                .await?;
+    }
+
+    match phase {
+        RestartPhase::Done(verdict) => Ok(restart_result(verdict, last_state, timeout)),
+        other => Err(Error::from_reason(format!(
+            "Kernel restart stopped in an unexpected phase: {other:?}"
+        ))),
+    }
+}
+
+fn restart_result(
+    verdict: RestartVerdict,
+    state: runtime_doc::RuntimeState,
+    timeout: Duration,
+) -> KernelRestartResult {
+    let status = runtime_status_from_state(state);
+    let (outcome, error, launched_env_source) = match verdict {
+        RestartVerdict::Running { env_source } => ("running", None, Some(env_source)),
+        RestartVerdict::TrustRequired { reason } => ("trust_required", Some(reason), None),
+        RestartVerdict::LaunchRejected { error } => ("launch_rejected", Some(error), None),
+        RestartVerdict::Failed {
+            env_source,
+            observation,
+        } => {
+            let detail = observation
+                .error_details
+                .or(observation.error_reason)
+                .unwrap_or_else(|| "no error details".to_string());
+            (
+                "failed",
+                Some(format!(
+                    "Kernel ({env_source}) failed after the daemon accepted the launch: {detail}"
+                )),
+                Some(env_source),
+            )
+        }
+        RestartVerdict::Stopped {
+            env_source,
+            observation,
+        } => (
+            "stopped",
+            Some(format!(
+                "Kernel ({env_source}) is {} after the daemon accepted the launch",
+                observation.lifecycle.variant_str()
+            )),
+            Some(env_source),
+        ),
+        RestartVerdict::TimedOut {
+            stage,
+            env_source,
+            last,
+        } => {
+            let last = last
+                .map(|o| format!("{} {}", o.lifecycle.variant_str(), o.env_source))
+                .unwrap_or_else(|| "unknown".to_string());
+            let waiting_for = match (stage, &env_source) {
+                (TimeoutStage::AwaitingStopped, _) => "the old kernel to stop".to_string(),
+                (TimeoutStage::Confirming, Some(env)) => {
+                    format!("the new kernel ({env}) to report Running")
+                }
+                (TimeoutStage::Confirming, None) => "the new kernel to report Running".to_string(),
+            };
+            (
+                "timed_out",
+                Some(format!(
+                    "Timed out after {} ms waiting for {waiting_for}; last observed: {}",
+                    timeout.as_millis(),
+                    last.trim_end()
+                )),
+                env_source,
+            )
+        }
+    };
+    KernelRestartResult {
+        outcome: outcome.to_string(),
+        error,
+        launched_env_source,
+        status,
+    }
+}
+
+/// Send `LaunchKernel` (auto source) after confirming notebook sync and
+/// return the raw daemon reply. Transport errors reject.
+async fn send_launch_kernel(state: &Arc<Mutex<SessionState>>) -> Result<NotebookResponse> {
     let (handle, runtime, notebook_path) = {
         let st = state.lock().await;
         let handle = st
@@ -2305,25 +2783,14 @@ async fn launch_kernel(state: &Arc<Mutex<SessionState>>) -> Result<()> {
         (handle, st.runtime.clone(), st.working_dir.clone())
     };
     handle.confirm_sync().await.map_err(to_napi_err)?;
-    let response = handle
+    handle
         .send_request(NotebookRequest::LaunchKernel {
-            kernel_type: runtime.clone(),
+            kernel_type: runtime,
             env_source: notebook_protocol::connection::LaunchSpec::Auto,
             notebook_path,
         })
         .await
-        .map_err(to_napi_err)?;
-
-    match response {
-        NotebookResponse::KernelLaunched { .. } | NotebookResponse::KernelAlreadyRunning { .. } => {
-            Ok(())
-        }
-        NotebookResponse::GuardRejected { reason } => Err(Error::from_reason(reason)),
-        NotebookResponse::Error { error } => Err(Error::from_reason(error)),
-        other => Err(Error::from_reason(format!(
-            "Unexpected response: {other:?}"
-        ))),
-    }
+        .map_err(to_napi_err)
 }
 
 async fn queue_existing_cell(state: &Arc<Mutex<SessionState>>, cell_id: &str) -> Result<String> {
@@ -2628,6 +3095,67 @@ mod tests {
     use std::path::Path;
 
     #[test]
+    fn runtime_status_reports_identity_only_for_running_kernel() {
+        use runtime_doc::{KernelActivity, RuntimeLifecycle};
+        for lifecycle in [
+            RuntimeLifecycle::NotStarted,
+            RuntimeLifecycle::AwaitingTrust,
+            RuntimeLifecycle::AwaitingProjectTrust,
+            RuntimeLifecycle::AwaitingEnvBuild,
+            RuntimeLifecycle::Resolving,
+            RuntimeLifecycle::PreparingEnv,
+            RuntimeLifecycle::Launching,
+            RuntimeLifecycle::Connecting,
+            RuntimeLifecycle::Error,
+            RuntimeLifecycle::Shutdown,
+            RuntimeLifecycle::Running(KernelActivity::Idle),
+            RuntimeLifecycle::Running(KernelActivity::Busy),
+        ] {
+            let running = matches!(lifecycle, RuntimeLifecycle::Running(_));
+            let state = runtime_doc::RuntimeState {
+                kernel: runtime_doc::KernelState {
+                    lifecycle,
+                    name: "python".into(),
+                    language: "python".into(),
+                    env_source: "conda:existing:local".into(),
+                    runtime_agent_id: "runtime-agent:previous".into(),
+                    environment_id: "conda:chosen".into(),
+                    environment_name: "chosen".into(),
+                    python_version: "3.13.2".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let status = runtime_status_from_state(state);
+            assert_eq!(status.name, if running { "python" } else { "" });
+            assert_eq!(status.language, if running { "python" } else { "" });
+            let expected = if running {
+                [
+                    "conda:existing:local",
+                    "runtime-agent:previous",
+                    "conda:chosen",
+                    "chosen",
+                    "3.13.2",
+                ]
+            } else {
+                ["", "", "", "", ""]
+            };
+            assert_eq!(
+                [
+                    status.env_source.as_str(),
+                    status.runtime_agent_id.as_str(),
+                    status.environment_id.as_str(),
+                    status.environment_name.as_str(),
+                    status.python_version.as_str()
+                ],
+                expected,
+                "active identity must follow lifecycle {}",
+                status.lifecycle,
+            );
+        }
+    }
+
+    #[test]
     fn runtime_status_projects_parked_project_trust() {
         let state = runtime_doc::RuntimeState {
             kernel: runtime_doc::KernelState {
@@ -2769,6 +3297,294 @@ mod tests {
 
         let err = insertion_anchor_from_order(&cells, Some("cell-1"), Some(0)).unwrap_err();
         assert!(err.reason.contains("cannot both be set"));
+    }
+
+    #[test]
+    fn sync_result_maps_every_daemon_verdict() {
+        let applied =
+            environment_sync_result_from_response(NotebookResponse::SyncEnvironmentComplete {
+                synced_packages: vec!["numpy".into()],
+            })
+            .unwrap();
+        assert_eq!(
+            applied,
+            EnvironmentSyncResult::applied(vec!["numpy".into()])
+        );
+        assert_eq!(
+            (
+                applied.status.as_str(),
+                applied.needs_restart,
+                applied.next_action.as_str()
+            ),
+            ("applied", false, "none")
+        );
+        assert_eq!(applied.error, None);
+
+        // The incident: uv -> conda metadata change on a running uv kernel.
+        let message =
+            "Environment changes include removals or config changes that require a kernel restart";
+        let restart =
+            environment_sync_result_from_response(NotebookResponse::SyncEnvironmentFailed {
+                error: message.into(),
+                needs_restart: true,
+            })
+            .unwrap();
+        assert_eq!(
+            (
+                restart.status.as_str(),
+                restart.needs_restart,
+                restart.next_action.as_str()
+            ),
+            ("restart_required", true, "restart")
+        );
+        assert_eq!(restart.error.as_deref(), Some(message));
+        assert!(restart.synced_packages.is_empty());
+
+        let failed =
+            environment_sync_result_from_response(NotebookResponse::SyncEnvironmentFailed {
+                error: "Package sync is disabled for a borrowed local environment".into(),
+                needs_restart: false,
+            })
+            .unwrap();
+        assert_eq!(
+            (
+                failed.status.as_str(),
+                failed.needs_restart,
+                failed.next_action.as_str()
+            ),
+            ("failed", false, "inspect")
+        );
+
+        let guard = environment_sync_result_from_response(NotebookResponse::GuardRejected {
+            reason: "Trust changed before the action could run.".into(),
+        })
+        .unwrap();
+        assert_eq!(guard.status, "failed");
+        assert_eq!(
+            guard.error.as_deref(),
+            Some("Trust changed before the action could run.")
+        );
+
+        let error = environment_sync_result_from_response(NotebookResponse::Error {
+            error: "boom".into(),
+        })
+        .unwrap();
+        assert_eq!(error, EnvironmentSyncResult::failed("boom".into()));
+
+        assert!(environment_sync_result_from_response(NotebookResponse::Ok {}).is_err());
+    }
+
+    #[test]
+    fn sync_launch_step_continues_only_for_running_kernel() {
+        let launched_config = notebook_protocol::protocol::LaunchedEnvConfig::default();
+        let env_source = notebook_protocol::connection::EnvSource::Prewarmed(
+            notebook_protocol::connection::PackageManager::Uv,
+        );
+        assert_eq!(
+            sync_launch_failure(NotebookResponse::KernelAlreadyRunning {
+                kernel_type: "python".into(),
+                env_source: env_source.clone(),
+                launched_config: launched_config.clone(),
+            })
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            sync_launch_failure(NotebookResponse::KernelLaunched {
+                kernel_type: "python".into(),
+                env_source,
+                launched_config,
+            })
+            .unwrap(),
+            None
+        );
+        let guard = sync_launch_failure(NotebookResponse::GuardRejected {
+            reason: "untrusted".into(),
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(guard, EnvironmentSyncResult::failed("untrusted".into()));
+        let rejected = sync_launch_failure(NotebookResponse::EnvironmentSelectionRejected {
+            error: "runtime changed".into(),
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(rejected.next_action, "inspect");
+        assert!(sync_launch_failure(NotebookResponse::NoKernel {}).is_err());
+    }
+
+    #[test]
+    fn restart_launch_reply_uses_daemon_env_source() {
+        let reply = launch_reply_for_restart(NotebookResponse::KernelLaunched {
+            kernel_type: "python".into(),
+            env_source: notebook_protocol::connection::EnvSource::Inline(
+                notebook_protocol::connection::PackageManager::Conda,
+            ),
+            launched_config: Default::default(),
+        })
+        .unwrap();
+        assert_eq!(
+            reply,
+            LaunchReply::Accepted {
+                env_source: "conda:inline".into(),
+                environment_id: None,
+            }
+        );
+        assert_eq!(
+            launch_reply_for_restart(NotebookResponse::GuardRejected { reason: "r".into() })
+                .unwrap(),
+            LaunchReply::TrustRejected { reason: "r".into() }
+        );
+        assert_eq!(
+            launch_reply_for_restart(NotebookResponse::Error { error: "e".into() }).unwrap(),
+            LaunchReply::Rejected { error: "e".into() }
+        );
+        assert!(launch_reply_for_restart(NotebookResponse::Ok {}).is_err());
+        assert!(shutdown_reply_for_restart(NotebookResponse::NoKernel {}).is_ok());
+        assert!(shutdown_reply_for_restart(NotebookResponse::KernelShuttingDown {}).is_ok());
+        assert!(shutdown_reply_for_restart(NotebookResponse::Ok {}).is_err());
+    }
+
+    #[test]
+    fn restart_launch_reply_retains_local_environment_identity() {
+        let reply = launch_reply_for_restart(NotebookResponse::KernelLaunched {
+            kernel_type: "python".into(),
+            env_source: notebook_protocol::connection::EnvSource::Inline(
+                notebook_protocol::connection::PackageManager::Conda,
+            ),
+            launched_config: notebook_protocol::protocol::LaunchedEnvConfig {
+                local_environment: Some(notebook_protocol::protocol::LocalEnvironmentIdentity {
+                    id: "selected-prefix".into(),
+                    name: "Selected environment".into(),
+                    python_version: None,
+                }),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        assert!(
+            matches!(reply, LaunchReply::Accepted { environment_id: Some(id), .. } if id == "selected-prefix")
+        );
+    }
+
+    #[test]
+    fn restart_result_keeps_status_conservative() {
+        let mut state = runtime_doc::RuntimeState::default();
+        state.kernel.lifecycle = runtime_doc::RuntimeLifecycle::Launching;
+        state.kernel.env_source = "uv:prewarmed".into();
+        let result = restart_result(
+            RestartVerdict::TimedOut {
+                stage: TimeoutStage::Confirming,
+                env_source: Some("conda:inline".into()),
+                last: Some(KernelObservation::from(&state.kernel)),
+            },
+            state,
+            Duration::from_millis(500),
+        );
+        assert_eq!(result.outcome, "timed_out");
+        assert_eq!(result.launched_env_source.as_deref(), Some("conda:inline"));
+        // A non-Running status never reports the stale pre-restart identity.
+        assert_eq!(result.status.lifecycle, "Launching");
+        assert_eq!(result.status.env_source, "");
+        let error = result.error.unwrap();
+        assert!(error.contains("conda:inline"), "{error}");
+        assert!(error.contains("Launching uv:prewarmed"), "{error}");
+
+        let mut state = runtime_doc::RuntimeState::default();
+        state.kernel.lifecycle =
+            runtime_doc::RuntimeLifecycle::Running(runtime_doc::KernelActivity::Idle);
+        state.kernel.env_source = "conda:inline".into();
+        let result = restart_result(
+            RestartVerdict::Running {
+                env_source: "conda:inline".into(),
+            },
+            state,
+            Duration::from_secs(1),
+        );
+        assert_eq!(result.outcome, "running");
+        assert_eq!(result.error, None);
+        assert_eq!(result.status.lifecycle, "Running");
+    }
+
+    /// Runs the restart transitions the driver feeds for a project trust
+    /// refusal, in both arrival orders, and returns the public result.
+    fn project_trust_restart_result(
+        park_observed_first: bool,
+        response: NotebookResponse,
+    ) -> KernelRestartResult {
+        let mut stopped = runtime_doc::RuntimeState::default();
+        stopped.kernel.lifecycle = runtime_doc::RuntimeLifecycle::Shutdown;
+        stopped.kernel.env_source = "uv:prewarmed".into();
+        let mut parked = runtime_doc::RuntimeState::default();
+        parked.kernel.lifecycle = runtime_doc::RuntimeLifecycle::AwaitingProjectTrust;
+        parked.project_trust.status = "untrusted".into();
+        parked.project_trust.needs_approval = true;
+        parked.project_trust.kind = "environment_yml".into();
+
+        let mut phase = step(RestartPhase::initial(), RestartEvent::ShutdownAcknowledged);
+        phase = step(
+            phase,
+            RestartEvent::Observed(KernelObservation::from(&stopped.kernel)),
+        );
+        assert!(matches!(phase, RestartPhase::Launching { .. }), "{phase:?}");
+        let mut last_state = stopped;
+        if park_observed_first {
+            last_state = parked;
+            phase = step(
+                phase,
+                RestartEvent::Observed(KernelObservation::from(&last_state.kernel)),
+            );
+        }
+        phase = step(
+            phase,
+            RestartEvent::LaunchReplied(launch_reply_for_restart(response).unwrap()),
+        );
+        let RestartPhase::Done(verdict) = phase else {
+            panic!("a launch refusal must be terminal, got {phase:?}");
+        };
+        restart_result(verdict, last_state, Duration::from_secs(1))
+    }
+
+    #[test]
+    fn project_trust_guard_rejection_is_trust_required_in_either_order() {
+        let reason = "The project folder is not trusted on this machine. \
+                      Trust it or use the notebook environment to launch.";
+        for park_observed_first in [true, false] {
+            let result = project_trust_restart_result(
+                park_observed_first,
+                NotebookResponse::GuardRejected {
+                    reason: reason.into(),
+                },
+            );
+            assert_eq!(result.outcome, "trust_required", "{park_observed_first}");
+            assert_eq!(result.error.as_deref(), Some(reason));
+            assert_eq!(result.launched_env_source, None);
+            // The result returns on the reply. Its status is whatever the
+            // replica held then; it is not awaited or used for the verdict.
+            if park_observed_first {
+                assert_eq!(result.status.lifecycle, "AwaitingProjectTrust");
+                assert!(result.status.project_trust.needs_approval);
+            } else {
+                assert_eq!(result.status.lifecycle, "Shutdown");
+                assert!(!result.status.project_trust.needs_approval);
+            }
+            assert_eq!(result.status.env_source, "");
+        }
+    }
+
+    #[test]
+    fn generic_launch_error_stays_launch_rejected_even_with_trust_text() {
+        // Daemons that predate the typed refusal reply `Error` for a parked
+        // project. Without a typed reply this is a generic launch failure.
+        for park_observed_first in [true, false] {
+            let result = project_trust_restart_result(
+                park_observed_first,
+                NotebookResponse::Error {
+                    error: "The project folder is not trusted on this machine.".into(),
+                },
+            );
+            assert_eq!(result.outcome, "launch_rejected", "{park_observed_first}");
+        }
     }
 
     #[test]
