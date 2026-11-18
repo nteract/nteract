@@ -163,7 +163,7 @@ export function proposeAccessUpdate(metadata, identity, input, options) {
   const principal = validateAccessPrincipal(input.principal);
   if (principal === metadata.owner) throw new AccessError(400, "The Page owner cannot be changed");
   if (![...MEMBER_ROLES, null].includes(input.role))
-    throw new AccessError(400, "Access must be viewer, commenter, editor, or null to remove");
+    throw new AccessError(400, "Access must be viewer, commenter, editor, or none to remove");
   if (!Number.isSafeInteger(input.expected_revision) || input.expected_revision < 0)
     throw new AccessError(400, "expected_revision is required");
   const revision = revisionOf(metadata);

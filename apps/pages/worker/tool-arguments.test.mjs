@@ -105,7 +105,7 @@ test("an argument an operation doesn't take is refused before anything runs, ove
   assert.deepEqual(g.catalog, [], "no Catalog saw a refused call");
 });
 
-test("CLEAR reaches the Page as null, over both transports, and null still does", async (t) => {
+test("CLEAR reaches the Page as null, over MCP, the tools route and REST, and null still does", async (t) => {
   const g = await gateway(t);
   const sent = async (send) => {
     const before = g.forwarded.length;
@@ -121,13 +121,25 @@ test("CLEAR reaches the Page as null, over both transports, and null still does"
     expected_revision: 0,
     nonce: crypto.randomUUID(),
   });
+  // POST /api/access forwards to the Page without invoke().
+  const rest = ({ page_id, ...body }) =>
+    worker.fetch(
+      new Request(`${privateOrigin}/api/access?page=${page_id}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: g.bearer },
+        body: JSON.stringify(body),
+      }),
+      g.env,
+    );
   for (const role of [CLEAR, null]) {
     assert.equal((await sent(() => g.mcp("manage_page_access", access(role)))).role, null);
     assert.equal(
       (await sent(() => g.tool("bearer", "manage_page_access", access(role)))).role,
       null,
     );
+    assert.equal((await sent(() => rest(access(role)))).role, null);
   }
+  assert.equal((await sent(() => rest(access("viewer")))).role, "viewer");
   assert.equal((await sent(() => g.mcp("manage_page_access", access("editor")))).role, "editor");
 
   const setNode = (align) => ({
