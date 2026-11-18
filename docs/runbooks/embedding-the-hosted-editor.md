@@ -25,6 +25,7 @@ The tarball holds:
 | `output-document/` | `index.html`, the frame that renders untrusted cell output |
 | `wasm/runtimed-wasm/` | The `runtimed-wasm` engine (`runtimed_wasm.js` and `runtimed_wasm_bg.wasm`) for the host's server |
 | `protocol/` | The TypeScript protocol package source and its `package.json` |
+| `identity/` | The `@nteract/identity` source and its `package.json`, which `protocol/` imports by package name |
 | `LICENSE` | License text |
 
 The bundle has no host endpoints, credentials, or origins baked in. They arrive
@@ -35,7 +36,9 @@ The packager fixes entry order, owners, modification times, and `built_at`
 inputs deterministic. Publication retries reuse the original packed bytes;
 rebuilding dependencies or the viewer is not a reproducibility guarantee.
 
-`protocol/` is source, not an npm package. Import it by path.
+`protocol/` is source, not an npm package. Import it by path. It imports
+`@nteract/identity` by name, so map that name to `identity/src/index.ts` in
+the host's resolver.
 
 ## Verify
 

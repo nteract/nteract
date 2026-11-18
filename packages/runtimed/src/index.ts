@@ -157,7 +157,7 @@ export {
   isConnectionScope,
   parseConnectionScope,
   type ConnectionScope,
-} from "./scope-capabilities";
+} from "@nteract/identity";
 
 // Handle
 export type {
@@ -361,7 +361,7 @@ export {
   identityColorKey,
   peerColor,
   readableForegroundForColor,
-} from "./notebook-actor-color";
+} from "@nteract/identity";
 
 // Notebook actor display
 export { onBehalfOfPhrase, onBehalfOfText } from "./notebook-actor-attribution";

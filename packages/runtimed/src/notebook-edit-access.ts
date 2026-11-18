@@ -1,5 +1,5 @@
 import { getBoundedCacheValue, setBoundedCacheValue, stableCacheKey } from "./projection-cache";
-import { isConnectionScope, type ConnectionScope } from "./scope-capabilities";
+import { isConnectionScope, type ConnectionScope } from "@nteract/identity";
 
 export type NotebookEditMode = "view" | "edit";
 export type NotebookEditState = "viewing" | "requested" | "editing";

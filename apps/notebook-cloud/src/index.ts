@@ -139,12 +139,8 @@ import {
   type PendingNotebookInviteRow,
   type PrincipalProfileRow,
 } from "./sharing-storage.ts";
-import {
-  normalizeInviteEmail,
-  normalizeProviderHint,
-  shareTargetDisplay,
-  type PrincipalProfile,
-} from "./sharing.ts";
+import { normalizeInviteEmail } from "@nteract/identity";
+import { normalizeProviderHint, shareTargetDisplay, type PrincipalProfile } from "./sharing.ts";
 import {
   createNotebookAccessRequest,
   getLatestNotebookAccessRequestForRequester,

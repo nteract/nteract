@@ -2,7 +2,7 @@
  * (sharing.mjs) and the address a sign-in provider vouches for
  * (kilo-exchange.mjs) both go through it, so a provider's address is usable
  * exactly when an invitation to it could exist. */
-import { normalizeInviteEmail } from "@cloud/sharing.ts";
+import { normalizeInviteEmail } from "@nteract/identity";
 
 /** The longest address an invitation holds. */
 export const MAX_INVITE_EMAIL_LENGTH = 254;

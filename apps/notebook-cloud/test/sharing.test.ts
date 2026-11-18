@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 
 import {
   inviteLookupKey,
-  normalizeInviteEmail,
   normalizeProviderHint,
   publicViewerAclGrant,
   resolvePendingInvitesForLogin,
@@ -113,17 +112,9 @@ describe("hosted notebook sharing prototype", () => {
   });
 
   it("keeps pending invite lookup keyed by normalized email plus provider hint", () => {
-    assert.equal(normalizeInviteEmail(" Alice@Example.COM "), "alice@example.com");
     assert.equal(normalizeProviderHint(" OIDC "), "oidc");
     assert.equal(inviteLookupKey(" OIDC ", " Alice@Example.COM "), "oidc:alice@example.com");
     assert.equal(inviteLookupKey(null, "alice@example.com"), "*:alice@example.com");
-  });
-
-  it("rejects structurally invalid invite emails", () => {
-    assert.throws(() => normalizeInviteEmail("@@"), /invite email is invalid/);
-    assert.throws(() => normalizeInviteEmail("a@b@c"), /invite email is invalid/);
-    assert.throws(() => normalizeInviteEmail("@example.com"), /invite email is invalid/);
-    assert.throws(() => normalizeInviteEmail("alice@"), /invite email is invalid/);
   });
 
   it("represents public viewers as explicit public ACL rows", () => {

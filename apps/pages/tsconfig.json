@@ -9,11 +9,11 @@
       "@cloud/*": [
         "../notebook-cloud/src/*"
       ],
+      "@nteract/identity": [
+        "../../packages/identity/src/index.ts"
+      ],
       "@nteract/local-oidc": [
         "../../packages/local-oidc/src/index.ts"
-      ],
-      "runtimed": [
-        "../../packages/runtimed/src/scope-capabilities.ts"
       ],
       "jose": [
         "./node_modules/jose/dist/webapi/index.js"

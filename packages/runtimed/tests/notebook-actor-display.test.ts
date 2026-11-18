@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { colorForActorIdentity } from "../src/notebook-actor-color";
+import { colorForActorIdentity } from "@nteract/identity";
 import { actorInitials, resolveActorDisplay } from "../src/notebook-actor-display";
 import { notebookAgentBrandSlug } from "../src/notebook-actor-projection";
 

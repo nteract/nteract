@@ -43,11 +43,12 @@ test("fingerprint follows imported auth source and ignores output, generated ups
     );
     write(
       "apps/notebook-cloud/src/identity.ts",
-      'import "./verify.ts"; import "@nteract/local-oidc"; import "runtimed";',
+      'import "./verify.ts"; import "@nteract/local-oidc"; import "@nteract/identity";',
     );
     write("apps/notebook-cloud/src/verify.ts", "export const verified = true;");
     write("packages/local-oidc/src/index.ts", "export const local = true;");
-    write("packages/runtimed/src/scope-capabilities.ts", "export const scopes = ['reader'];");
+    write("packages/identity/src/index.ts", 'export * from "./scope-capabilities";');
+    write("packages/identity/src/scope-capabilities.ts", "export const scopes = ['reader'];");
     const original = sourceFingerprint(app, { root });
     assert.equal(sourceFingerprint(app, { root }).sha256, original.sha256);
     for (const output of [
@@ -68,7 +69,8 @@ test("fingerprint follows imported auth source and ignores output, generated ups
     const updated = sourceFingerprint(app, { root }).sha256;
     write("apps/pages/new.mjs", "export const feature = true;");
     assert.notEqual(sourceFingerprint(app, { root }).sha256, updated);
-    assert.ok(original.files["packages/runtimed/src/scope-capabilities.ts"]);
+    assert.ok(original.files["packages/identity/src/index.ts"]);
+    assert.ok(original.files["packages/identity/src/scope-capabilities.ts"]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -3024,6 +3024,7 @@ fn classify_change(path: &Path, project_root: &Path) -> Option<ChangeKind> {
     if rel_str.starts_with("src/")
         || rel_str.starts_with("packages/sift/src/")
         || rel_str.starts_with("packages/runtimed/src/")
+        || rel_str.starts_with("packages/identity/src/")
         || rel_str.starts_with("packages/odometer/src/")
         || rel_str.starts_with("apps/mcp-app/src/")
         || matches!(
@@ -3088,6 +3089,7 @@ fn start_file_watcher(
         "src",
         "packages/sift/src",
         "packages/runtimed/src",
+        "packages/identity/src",
         "packages/odometer/src",
         "apps/mcp-app/src",
         "apps/mcp-app/vite.config.ts",
@@ -4547,6 +4549,7 @@ mod tests {
             "src/components/outputs/ansi-output.tsx",
             "packages/sift/src/style.css",
             "packages/runtimed/src/blob-resolver.ts",
+            "packages/identity/src/notebook-actor-color.ts",
             "apps/mcp-app/src/mcp-app.tsx",
             "apps/mcp-app/build-html.js",
             "apps/mcp-app/vite.config.ts",

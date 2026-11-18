@@ -1,5 +1,5 @@
 import type { AuthenticatedConnection, ConnectionScope } from "./identity.ts";
-import { normalizeInviteEmail } from "./sharing.ts";
+import { normalizeInviteEmail } from "@nteract/identity";
 import {
   readServerAppSession,
   serverOidcEnabled,

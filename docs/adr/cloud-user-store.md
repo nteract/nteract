@@ -20,7 +20,8 @@ consumer reinvents the connection.
 into an `ActorDisplay`: `{displayName, principalId, kind, isAgent, onBehalfOf,
 agentSlug, color, initials, imageUrl}`. It parses the label
 (`notebook-actor-projection.ts`), hashes a deterministic color
-(`notebook-actor-color.ts`), computes initials, and overlays a caller-supplied
+(`packages/identity/src/notebook-actor-color.ts`, shared with Pages through
+`@nteract/identity`), computes initials, and overlays a caller-supplied
 `peers: ReadonlyArray<ActorDisplayPeer>` directory (`{participantKey, label,
 imageUrl}`) to replace the parsed fallback with a real name and avatar. It does
 no I/O (its projection helpers keep module-level caches, but nothing fetches). It

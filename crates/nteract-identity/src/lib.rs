@@ -365,7 +365,7 @@ pub enum ConnectionScope {
 
 impl ConnectionScope {
     /// Every scope, in privilege order. The TypeScript mirror in
-    /// `packages/runtimed/src/scope-capabilities.ts` is generated from this
+    /// `packages/identity/src/scope-capabilities.ts` is generated from this
     /// list (see `notebook-protocol/src/typescript.rs`); both hosts must see
     /// the same lattice.
     pub const ALL: [Self; 4] = [Self::Viewer, Self::Editor, Self::RuntimePeer, Self::Owner];

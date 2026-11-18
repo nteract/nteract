@@ -29,9 +29,11 @@ export const LAYOUT = [
   ["output-document", "apps/notebook-cloud/dist-output-document"],
   ["wasm/runtimed-wasm", "apps/notebook/src/wasm/runtimed-wasm"],
   ["protocol/src", "packages/runtimed/src"],
+  ["identity/src", "packages/identity/src"],
 ];
 const SINGLE_FILES = [
   ["protocol/package.json", "packages/runtimed/package.json"],
+  ["identity/package.json", "packages/identity/package.json"],
   ["LICENSE", "LICENSE"],
 ];
 

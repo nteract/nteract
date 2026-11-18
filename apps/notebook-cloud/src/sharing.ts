@@ -1,3 +1,4 @@
+import { normalizeInviteEmail } from "@nteract/identity";
 import type { ConnectionScope } from "./auth-shared.ts";
 
 export type InviteStatus = "pending" | "accepted" | "revoked" | "expired";
@@ -69,22 +70,6 @@ export type ShareTargetDisplay =
     };
 
 const INVITE_RESOLUTION_ACTOR_LABEL = "system/invite-resolution";
-
-export function normalizeInviteEmail(email: string): string {
-  const normalized = email.trim().toLowerCase();
-  const parts = normalized.split("@");
-  if (
-    !normalized ||
-    normalized.includes("/") ||
-    /\s/.test(normalized) ||
-    parts.length !== 2 ||
-    !parts[0] ||
-    !parts[1]
-  ) {
-    throw new Error("invite email is invalid");
-  }
-  return normalized;
-}
 
 export function inviteLookupKey(provider: string | null, email: string): string {
   const providerKey = normalizeProviderHint(provider) ?? "*";

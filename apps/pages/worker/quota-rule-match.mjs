@@ -3,11 +3,12 @@
  * (page-quota.mjs) and the operator script (scripts/quota-rules.mjs), so a
  * rule the script writes is the rule the Worker matches.
  *
- * The script runs under plain `node`, which has no tsconfig path aliases, so
- * this module imports sharing.ts by relative path and imports nothing that
+ * The script runs under plain `node`, which has no tsconfig path aliases and
+ * no installed `@nteract/identity`, so this module imports the identity
+ * package's invite-email source by relative path and imports nothing that
  * needs the Worker runtime.
  */
-import { normalizeInviteEmail } from "../../notebook-cloud/src/sharing.ts";
+import { normalizeInviteEmail } from "../../../packages/identity/src/invite-email.ts";
 
 /** The largest limit any rule or default can set. Catalog scans that read
  * every entry stay bounded by it. */
