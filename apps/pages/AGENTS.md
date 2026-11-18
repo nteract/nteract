@@ -71,6 +71,26 @@ holds superseded notes; don't follow them.
 - Async lifecycles use the repository's state-machine and RxJS rules. Keep
   local drafts, synced content and host-confirmed persistence distinct.
 
+## Shared source
+
+Pages is not in the pnpm workspace. It reads shared source in place through
+the `paths` entries in `tsconfig.json`, which the esbuild build and the `tsx`
+test runner both read. `.npmrc` sets `install-links=true`, so a `file:`
+dependency is a copy that goes stale; don't add one for source that changes
+with Pages.
+
+- Import a shared package by name: `@nteract/identity`, `@nteract/session`,
+  `@nteract/local-oidc`. Don't add a relative import that leaves `apps/pages`.
+  A few older ones remain; move one to a package name when you touch it.
+- `@cloud/*` reaches into `apps/notebook-cloud/src`. Don't add imports through
+  it. When Pages needs code from there, move the code into a package first and
+  import the package from both apps.
+- A new shared source directory needs four changes in one pull request: the
+  `tsconfig.json` path, its entry in `scripts/source-fingerprint.mjs`, the path
+  filters and sparse checkouts in the Pages workflows, and a line in the pull
+  request that says so. The page10 controller keeps its own list of Pages
+  paths, and the maintainer updates it.
+
 ## Develop and verify
 
 Run setup and the Pages build from `apps/pages`

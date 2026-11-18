@@ -35,11 +35,19 @@ Prefer at most 12 findings.
   topology are daemon/runtime-owned RuntimeStateDoc facts. Mutable widget values
   belong in CommsDoc. React/app stores should be projections or local UI policy,
   not durable sources of truth.
-- Shared surfaces: reusable notebook UI, output rendering, identity helpers,
-  and headless state/projection logic belong under `src/components/**`,
-  `src/lib/**`, or `packages/runtimed/**`. Keep `apps/notebook/**` and
+- Shared surfaces: reusable notebook UI, output rendering, and headless
+  state/projection logic belong under `src/components/**`, `src/lib/**`, or
+  `packages/runtimed/**`. Keep `apps/notebook/**` and
   `apps/notebook-cloud/**` focused on host policy, routes, shell wiring, and
   side effects.
+- Shared packages: a rule that notebooks and Pages must compute the same way
+  belongs in a package both import by name. Identity rules go in
+  `packages/identity`, sign-in session code in `packages/session`, and names a
+  notebook server shares with its clients in `packages/contract`. Flag a second
+  copy of such a rule in an app, a relative import into another app's source
+  tree, and a new Pages import through `@cloud/*`.
+- Outward interfaces: a release asset carries build output only. Flag a
+  packager or workflow that copies workspace source into an asset.
 - Host boundaries: shared libraries must stay free of Tauri, Cloudflare, OIDC,
   D1/R2/Durable Object, ACL, credential, and daemon launch policy. Host adapters
   own those effects.
@@ -48,8 +56,9 @@ Prefer at most 12 findings.
   persistence, and tests. Viewer and `runtime_peer` roles must not gain
   unintended writes; client plumbing alone is not enough evidence for hosted
   authority changes.
-- Protocol changes: wire protocol, Rust handling, WASM bindings,
-  `packages/runtimed` types/stores, recovery, and tests should move together.
+- Protocol changes: wire protocol, Rust handling, WASM bindings, the generated
+  types in `packages/contract`, `packages/runtimed` stores, recovery, and tests
+  should move together.
 - Outputs/widgets: RuntimeStateDoc is the durable output/runtime record;
   output/control ordering must survive stdout floods and display churn;
   MIME/blob/renderer plugin changes need artifact or browser-backed evidence
