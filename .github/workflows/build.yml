@@ -365,11 +365,12 @@ jobs:
           uv run --no-sync python -I -m ty check python/ || failed=1
           exit "$failed"
 
-  # Pull requests with source changes always run the two branch-protection checks
-  # above: Lint & Format and JS Tests & Benchmarks. Docs/agent-only changes run
-  # the Docs & Agent Guidance verifier. The jobs below are advisory on PRs: they
-  # run for relevant paths or ci:* labels, but branch protection does not require
-  # them.
+  # Pull requests with source changes always run two of the branch-protection
+  # checks: Lint & Format and JS Tests & Benchmarks. The third, Build shared UI
+  # artifacts, runs for frontend or CI changes. Docs/agent-only changes run the
+  # Docs & Agent Guidance verifier. Every other job below is advisory on PRs: it
+  # runs for relevant paths or ci:* labels, but branch protection does not
+  # require it.
   nsis-bootstrap:
     name: NSIS Bootstrap (${{ matrix.os }})
     needs: [changes]
