@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createServerAppSession } from "@cloud/app-session.ts";
+import { createServerAppSession } from "@nteract/session";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
 import worker, { Catalog } from "./index.mjs";

@@ -616,6 +616,9 @@ importers:
       '@nteract/notebook-host':
         specifier: workspace:*
         version: link:../../packages/notebook-host
+      '@nteract/session':
+        specifier: workspace:*
+        version: link:../../packages/session
       lucide-react:
         specifier: ^0.513.0
         version: 0.513.0(react@19.2.7)
@@ -677,6 +680,9 @@ importers:
 
   apps/operator:
     dependencies:
+      '@nteract/session':
+        specifier: workspace:*
+        version: link:../../packages/session
       react:
         specifier: 19.2.7
         version: 19.2.7
@@ -934,6 +940,12 @@ importers:
   packages/runtimed-node/npm/win32-x64-msvc: {}
 
   packages/runtimed-wasm: {}
+
+  packages/session:
+    dependencies:
+      '@nteract/identity':
+        specifier: workspace:*
+        version: link:../identity
 
   packages/sift:
     dependencies:

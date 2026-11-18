@@ -11,6 +11,7 @@ on:
       - packages/local-oidc/src/**
       - packages/output-frame/**
       - packages/identity/**
+      - packages/session/**
       - src/components/markdown/mermaid-renderer.ts
       - src/components/sharing/**
       - src/styles/notebook-tokens.css
@@ -23,6 +24,7 @@ on:
       - packages/local-oidc/src/**
       - packages/output-frame/**
       - packages/identity/**
+      - packages/session/**
       - src/components/markdown/mermaid-renderer.ts
       - src/components/sharing/**
       - src/styles/notebook-tokens.css
@@ -55,6 +57,7 @@ jobs:
             apps/pages
             apps/notebook-cloud/src
             packages/identity/src
+            packages/session/src
             packages/local-oidc/src
             packages/output-frame
             src/components/markdown
@@ -65,7 +68,7 @@ jobs:
           node-version: "24"
           package-manager-cache: false
       # No root dependency installation: tsconfig.json resolves
-      # @nteract/identity to packages/identity/src. Shared
+      # @nteract/identity and @nteract/session to their package src. Shared
       # Mermaid rendering and sharing UI use Pages' own pinned browser dependencies.
       # Keep checkout paths and filters in sync with imported verifier and UI sources.
       - name: Prepare pinned upstream packages and locked dependencies
@@ -94,6 +97,7 @@ jobs:
             apps/pages
             apps/notebook-cloud/src
             packages/identity/src
+            packages/session/src
             packages/local-oidc/src
             packages/output-frame
             src/components/markdown
@@ -175,6 +179,7 @@ jobs:
             apps/pages
             apps/notebook-cloud/src
             packages/identity/src
+            packages/session/src
             packages/local-oidc/src
             packages/output-frame
             src/components/markdown

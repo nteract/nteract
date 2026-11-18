@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
-import { createServerAppSession } from "@cloud/app-session.ts";
+import { createServerAppSession } from "@nteract/session";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { WRITTEN_FORMATS } from "../model/document-types.mjs";
 import { createPageData, initializePage } from "../model/page.mjs";

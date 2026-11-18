@@ -2,14 +2,14 @@
 // for one account, over one Page host.
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { createServerAppSession } from "@cloud/app-session.ts";
 import {
+  createServerAppSession,
   oidcDatabase,
   randomSecret,
   SERVER_SESSION_COOKIE,
   serverSessionContext,
   serverSessionId,
-} from "@cloud/oidc-session-store.ts";
+} from "@nteract/session";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { Page } from "./index.mjs";
 import { DocumentPolicy } from "./policy.mjs";

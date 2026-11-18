@@ -3,7 +3,7 @@
 // (projects-fixture.mjs).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { secretHash } from "@cloud/oidc-session-store.ts";
+import { secretHash } from "@nteract/session";
 import { startLocalKiloHandoff } from "../scripts/fixtures/local-kilo-handoff.mjs";
 import worker from "./index.mjs";
 import { exchangeAuthorizationCode, issueAuthorizationCode } from "./oauth-store.mjs";

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseSessionKeyring } from "@cloud/session-keyring.ts";
+import { parseSessionKeyring, SERVER_SESSION_ABSOLUTE_SECONDS } from "@nteract/session";
 import { OAUTH_REFRESH_SECONDS } from "../shared/oauth-grant.mjs";
 import {
   DEFAULT_OVERLAP_DAYS,
@@ -16,7 +16,6 @@ import {
   sessionVars,
   withSessionVars,
 } from "./deployment/session-keys.mjs";
-import { SERVER_SESSION_ABSOLUTE_SECONDS } from "@cloud/oidc-session-store.ts";
 
 const A = "a".repeat(32);
 const B = "b".repeat(48);

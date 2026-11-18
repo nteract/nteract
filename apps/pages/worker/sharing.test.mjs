@@ -6,7 +6,7 @@ import {
   proposeSharingMutation,
   sharingProjection,
 } from "./sharing.mjs";
-import { createServerAppSession } from "@cloud/app-session.ts";
+import { createServerAppSession } from "@nteract/session";
 const now = Date.now();
 const owner = {
   principal: "anaconda:owner",

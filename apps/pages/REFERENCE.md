@@ -1268,7 +1268,7 @@ Only a browser session cookie reaches these routes; a bearer
 credential is refused, and writes need this origin. Grants record their
 principal in an indexed column, backfilled from the identity snapshot of older
 rows; sessions are found through an expression index on the session's principal
-([oidc-session-store.ts](../notebook-cloud/src/oidc-session-store.ts)).
+([oidc-session-store.ts](../../packages/session/src/oidc-session-store.ts)).
 Grants issued before the column existed show no connection date. Last use is
 not recorded. `GET /api/auth/session` answers `accountControls: true` for a
 browser session, and the viewer offers the dialog only then. If the list

@@ -4,17 +4,6 @@ import {
   APP_SESSION_ACCOUNT_KEY_HEADER,
   createServerAppSession,
   type CloudAppSession,
-} from "./app-session.ts";
-import { readCanonicalPrincipalForSession } from "./storage.ts";
-import {
-  AuthError,
-  authenticateOidcRequest,
-  encodePrincipalComponent,
-  verifyOidcIdToken,
-  type AuthenticatedConnection,
-} from "./identity.ts";
-import { OidcUserInfoError } from "./oidc-userinfo.ts";
-import {
   cookieValue,
   conditionalSessionUpdate,
   loadServerSession,
@@ -32,9 +21,19 @@ import {
   SERVER_SESSION_IDLE_SECONDS,
   SERVER_SESSION_ABSOLUTE_SECONDS,
   type ServerSessionRow,
-} from "./oidc-session-store.ts";
+  SessionKeyringError,
+  sessionKeyring,
+} from "@nteract/session";
+import { readCanonicalPrincipalForSession } from "./storage.ts";
+import {
+  AuthError,
+  authenticateOidcRequest,
+  encodePrincipalComponent,
+  verifyOidcIdToken,
+  type AuthenticatedConnection,
+} from "./identity.ts";
+import { OidcUserInfoError } from "./oidc-userinfo.ts";
 import { cloudLog } from "./observability.ts";
-import { SessionKeyringError, sessionKeyring } from "./session-keyring.ts";
 
 // Server login also serves small celld applications without notebook rooms.
 export type ServerOidcEnvironment = Omit<NotebookEnvironment, "NOTEBOOK_ROOMS">;

@@ -8,7 +8,7 @@ import {
   readCloudAppSession,
   appSessionConnectionIdentity,
   appSessionHasFreshVerifiedEmailDomain,
-} from "../src/app-session.ts";
+} from "@nteract/session";
 import {
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,

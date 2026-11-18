@@ -34,7 +34,7 @@ test("fingerprint follows imported auth source and ignores output, generated ups
       "UPSTREAM.md",
     ])
       write("apps/pages/" + name, name.endsWith(".json") ? "{}" : "");
-    write("apps/pages/worker.mjs", 'import "@cloud/identity.ts";');
+    write("apps/pages/worker.mjs", 'import "@cloud/identity.ts"; import "@nteract/session";');
     // Setup generates upstream/. An import into it is pinned by setup.mjs and
     // upstream-provenance.json, so the fingerprint neither follows nor needs it.
     write(
@@ -49,6 +49,8 @@ test("fingerprint follows imported auth source and ignores output, generated ups
     write("packages/local-oidc/src/index.ts", "export const local = true;");
     write("packages/identity/src/index.ts", 'export * from "./scope-capabilities";');
     write("packages/identity/src/scope-capabilities.ts", "export const scopes = ['reader'];");
+    write("packages/session/src/index.ts", 'export * from "./session-keyring.ts";');
+    write("packages/session/src/session-keyring.ts", "export const kid = 'k1';");
     const original = sourceFingerprint(app, { root });
     assert.equal(sourceFingerprint(app, { root }).sha256, original.sha256);
     for (const output of [
@@ -71,6 +73,8 @@ test("fingerprint follows imported auth source and ignores output, generated ups
     assert.notEqual(sourceFingerprint(app, { root }).sha256, updated);
     assert.ok(original.files["packages/identity/src/index.ts"]);
     assert.ok(original.files["packages/identity/src/scope-capabilities.ts"]);
+    assert.ok(original.files["packages/session/src/index.ts"]);
+    assert.ok(original.files["packages/session/src/session-keyring.ts"]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

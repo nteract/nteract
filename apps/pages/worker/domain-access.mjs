@@ -1,7 +1,7 @@
 import {
   appSessionHasFreshVerifiedEmailDomain,
   NOTEBOOK_CLOUD_IDENTITY_PROOF_MAX_AGE_SECONDS,
-} from "@cloud/app-session.ts";
+} from "@nteract/session";
 import { normalizeInviteEmail } from "@nteract/identity";
 import { companyDomainValid, identityProvider } from "../identity-provider.mjs";
 import { domainViewRole } from "./authz.mjs";

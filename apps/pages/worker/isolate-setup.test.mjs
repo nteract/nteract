@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { randomSecret, SERVER_SESSION_COOKIE } from "@cloud/oidc-session-store.ts";
+import { randomSecret, SERVER_SESSION_COOKIE } from "@nteract/session";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { authenticate } from "./auth.mjs";
 import {

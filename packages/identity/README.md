@@ -12,6 +12,9 @@ product imports them by package name, so there is one copy to change.
   an actor's durable identity, plus a readable foreground for any palette color.
 - `invite-email.ts`: `normalizeInviteEmail`, the lookup form of an invite or
   verified email.
+- `authenticated-connection.ts`: `AuthenticatedConnection`, the plain-data
+  identity a host attaches to a request or socket once it has authenticated
+  it, and its provider and transport metadata.
 
 The package has no runtime dependencies and no host APIs. `runtimed` re-exports
 the scope and color names, so notebook code that imports them from `runtimed`

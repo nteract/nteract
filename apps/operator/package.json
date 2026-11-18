@@ -9,6 +9,7 @@
     "dev": "vp dev --host 127.0.0.1"
   },
   "dependencies": {
+    "@nteract/session": "workspace:*",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "rxjs": "^7.8.2",

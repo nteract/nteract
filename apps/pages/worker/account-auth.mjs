@@ -15,7 +15,7 @@ import {
   readServerAppSession,
   revokeServerSessionsFor,
   serverSessionCookie,
-} from "@cloud/oidc-session-store.ts";
+} from "@nteract/session";
 import { withAdmissionReason } from "./admission-reasons.mjs";
 import { logAuthEvent, sessionRowPrincipal } from "./auth-events.mjs";
 import { HttpError, json, logFailure, requireSameOrigin } from "./auth.mjs";

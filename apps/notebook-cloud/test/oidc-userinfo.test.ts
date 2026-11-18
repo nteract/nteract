@@ -8,7 +8,7 @@ import {
   type IdentityEnvironment,
 } from "../src/identity.ts";
 import { loadOidcUserInfo, OidcUserInfoError } from "../src/oidc-userinfo.ts";
-import { createServerAppSession } from "../src/app-session.ts";
+import { createServerAppSession } from "@nteract/session";
 import { base64Url, oidcTokenFixture } from "./oidc-jwt-fixture.ts";
 
 async function fixture(options: Parameters<typeof oidcTokenFixture>[0] = {}) {
