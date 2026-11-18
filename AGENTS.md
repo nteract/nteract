@@ -160,6 +160,23 @@ The reviewer can run only the command forms its allowlist names, such as
 run the tests yourself and tell it the result. Its report ends the output;
 the tool calls and file contents ahead of it are not findings.
 
+### Merging
+
+`main` merges through a merge queue. A pull request cannot be merged directly.
+
+- Queue a pull request with `gh pr merge <number> --squash --auto`. It enters
+  the queue when its required checks pass, and the queue squash-merges it.
+- Main requires three checks, all jobs of the Build workflow: `Lint & Format`,
+  `JS Tests & Benchmarks`, and `Build shared UI artifacts`. The queue runs them
+  again on the commit it would put on `main`.
+- Only Build runs in the queue. The Pages, Smoke, and Nix workflows run on the
+  pull request and on `main` after the merge. Read their results on the pull
+  request before you queue it, and on `main` afterward.
+- The queue is not a review. Queue a pull request only when you may merge it.
+- In `build.yml`, a lane that treats a queue entry like a pull request reads
+  `needs.changes.outputs.pr_like`. Do not test `github.event_name` against
+  `pull_request` in a lane.
+
 ### Kilo review authorization
 
 This is a public, open-source repository. The maintainer explicitly authorizes
