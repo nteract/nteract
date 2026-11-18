@@ -117,8 +117,12 @@ test("every other card loads both images lazily, with the 4:3 ratio before CSS a
   }
 });
 
-test("the intrinsic size is the size cards are captured at", async () => {
-  const { CARD_HEIGHT, CARD_WIDTH } = await import("./card-shell.mjs");
+test("the intrinsic size is the size cards are captured at: 640×480 pixels", async () => {
+  const { CARD_HEIGHT, CARD_SCALE, CARD_WIDTH } = await import("./card-raster.mjs");
   const { CARD_IMAGE_HEIGHT, CARD_IMAGE_WIDTH } = await import("./PageCardImage.jsx");
-  assert.deepEqual([CARD_IMAGE_WIDTH, CARD_IMAGE_HEIGHT], [CARD_WIDTH, CARD_HEIGHT]);
+  assert.deepEqual(
+    [CARD_IMAGE_WIDTH, CARD_IMAGE_HEIGHT],
+    [CARD_WIDTH * CARD_SCALE, CARD_HEIGHT * CARD_SCALE],
+  );
+  assert.deepEqual([CARD_IMAGE_WIDTH, CARD_IMAGE_HEIGHT], [640, 480]);
 });

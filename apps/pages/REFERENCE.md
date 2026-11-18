@@ -4527,14 +4527,35 @@ read-only. The renderer
 ([card-shell.mjs](viewer/card-shell.mjs)) uses the editor's own widgets in a
 hidden same-origin iframe, light and dark. It rasterizes them with
 `modern-screenshot`, a lazy chunk loaded on the first capture, at
-640×480 CSS px and 2x. It uploads WebP, or PNG where the browser has no WebP
-encoder (Safari). A capture starts at most once every two minutes, never on
+640×480 CSS px and one device pixel per CSS pixel
+([card-raster.mjs](viewer/card-raster.mjs)): the grid draws a card at most
+about 300 CSS px wide, so 640×480 covers it at 2x. It uploads WebP at quality
+0.86, or PNG where the browser has no WebP encoder (Safari). A capture starts at most once every two minutes, never on
 Save-Data or under 2 GB of device memory, and never runs beside another one. A
 changed first screen, a hidden tab or leaving the Page cancels it. Input
 cancels it too, and the cancelled capture doesn't count against the
 two-minute rest. The tab
 learns the stored hash from one `GET /api/pages/:id/card-image` when the Page
 opens, then from each upload's answer.
+
+The owner's library also redraws stored images larger than 640×480, such as
+1280×960 ones drawn at 2x ([card-shrink.mjs](viewer/card-shrink.mjs)). A grid
+card whose row is one of the account's own Pages reports each card image it
+loaded; one wider or taller than a capture offers its Page to a pass that
+loads as a lazy chunk on the first offer. The pass works one Page at a time,
+5 s apart and then only on an idle main thread, only while the tab is visible,
+and never on Save-Data or under 2 GB of device memory. For each theme it
+fetches the stored image with `cache: "reload"`, since this browser can hold
+a larger copy under the same immutable URL after another device shrank it. An
+image already at 640×480 or smaller needs nothing. A larger one is drawn into
+a 640×480 canvas with high smoothing, encoded as a capture is and uploaded
+through the same route with the same `card_hash` and theme, so the Page host
+checks it as it checks a capture. The URL the record names afterwards is
+fetched with `cache: "reload"` too, so the next visit loads the smaller image.
+A refusal or a failure (a stale hash, the per-minute limit, a denial, a failed
+read) ends that Page's turn until the next visit to the library; nothing
+retries on a timer. Each upload wakes that Page's host, which loads its
+document to check the hash.
 
 `PUT /api/pages/:id/card-image?hash=&theme=` admits only the Page owner, by the
 Page host's own policy ([card-images.mjs](worker/card-images.mjs)). The bytes
@@ -4551,7 +4572,10 @@ to three times. The card writer copies the record the same way, so a card
 write racing an upload keeps both. An upload for a Page with no `card.json`
 creates it with the body `null`, which reads as no card. A swap to another hash
 with a lower revision is refused as stale, so an upload for an older first
-screen that lands late can't replace a newer one.
+screen that lands late can't replace a newer one. A re-upload of the same
+hash and theme overwrites its key when the extension matches, and the record
+keeps that key; with another extension (a PNG redrawn as WebP), the record
+names the new key and the old one is deleted.
 The record references at most one image per theme, not a bound on stored bytes.
 A stale upload retains its image key because a newer accepted upload may already
 reuse that hash/theme key. Rejected uploads and failed writes or deletes can leave

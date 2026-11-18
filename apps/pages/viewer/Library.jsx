@@ -88,6 +88,7 @@ import { timeCell } from "./relative-time.mjs";
 import { Clock } from "./clock.mjs";
 import { PageCardPreview } from "./PageCardPreview.jsx";
 import { IDLE_CARD, PageCards, cardKeyOf, drawnCard } from "./page-cards.mjs";
+import { CardShrinkOffers } from "./card-shrink-offers.mjs";
 import { ChoiceMenu } from "./ChoiceMenu.jsx";
 import { IndexNav, ListingFooter, follow, useConnected } from "./IndexViews.jsx";
 
@@ -241,6 +242,9 @@ export function Library({
       }),
   );
   cardsRef.current = cards;
+  // Card images of the account's own Pages that are larger than a capture,
+  // for this visit's shrink pass (card-shrink-offers.mjs).
+  const shrink = useConnected(() => new CardShrinkOffers());
   const chooseDisplay = useCallback((mode) => {
     const shown = writeDisplayMode(browser(), mode);
     if (shown) setDisplay(shown);
@@ -501,6 +505,7 @@ export function Library({
             onCopyLink={onCopyLink}
             onWarm={onWarm}
             cards={cards}
+            shrink={shrink}
           />
         )}
         {!view.failed && (
@@ -785,7 +790,17 @@ function HeldRow({ source }) {
 // fewest images ahead of everything else on the link. Measure before raising.
 export const FIRST_SCREEN_CARDS = 5;
 
-function PageGrid({ sections, folded, onToggle, busy, onOpen, onOpenProject, onWarm, cards }) {
+function PageGrid({
+  sections,
+  folded,
+  onToggle,
+  busy,
+  onOpen,
+  onOpenProject,
+  onWarm,
+  cards,
+  shrink,
+}) {
   // The order batches top up in (page-cards.mjs): the cards as shown, which
   // leaves out a folded group's.
   useEffect(
@@ -823,6 +838,7 @@ function PageGrid({ sections, folded, onToggle, busy, onOpen, onOpenProject, onW
                 key={row.id}
                 row={row}
                 cards={cards}
+                shrink={shrink}
                 onOpen={onOpen}
                 onWarm={onWarm}
                 priority={first.has(row.id)}
@@ -836,11 +852,21 @@ function PageGrid({ sections, folded, onToggle, busy, onOpen, onOpenProject, onW
 }
 
 /** One grid card. A row the server listed asks for its card once it nears
- * the viewport; a row only this browser holds has none to ask for. */
-function GridCard({ row, cards, onOpen, onWarm, priority }) {
+ * the viewport; a row only this browser holds has none to ask for. A listed
+ * row of the account's own Page offers its loaded card images to the shrink
+ * pass; the Page host still decides whether it may upload. */
+function GridCard({ row, cards, shrink, onOpen, onWarm, priority }) {
   const element = useRef(null);
   const key = cardKeyOf(row);
   const listed = !row.local && !row.held;
+  const owned = listed && !row.shared;
+  const onImageLoaded = useMemo(
+    () =>
+      owned && shrink
+        ? (image, width, height) => shrink.offer(row.id, image, width, height)
+        : undefined,
+    [owned, shrink, row.id],
+  );
   useEffect(
     () => (listed ? cards.observe(element.current, row) : undefined),
     // `row` is read when the key changes; its other fields don't change the ask.
@@ -874,7 +900,11 @@ function GridCard({ row, cards, onOpen, onWarm, priority }) {
             {row.title}
           </span>
         </span>
-        <PageCardPreview card={drawnCard(state)} priority={priority} />
+        <PageCardPreview
+          card={drawnCard(state)}
+          priority={priority}
+          onImageLoaded={onImageLoaded}
+        />
       </a>
     </li>
   );

@@ -5,7 +5,10 @@
 // image from the card-image route instead of the JSON card. A member sees
 // it too, a stranger can't fetch it, and removing the member stops her
 // fetches on the next request. A second Page opens with a chart: the shell
-// draws it from the Page's view and source before it rasterizes.
+// draws it from the Page's view and source before it rasterizes. Captures
+// are 640×480. A third Page's stored images are 1280×960: a viewer's library
+// uploads nothing, and the owner's library redraws them at 640×480 without
+// opening the Page, once (viewer/card-shrink.mjs).
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -236,7 +239,7 @@ try {
   await expect(lightImage).toHaveAttribute("src", image.light);
   await expect
     .poll(() => lightImage.evaluate((img) => img.complete && img.naturalWidth), { timeout: 15000 })
-    .toBe(1280);
+    .toBe(640);
   await expect(card(owner, TITLE).locator('img.page-card-image[data-theme="dark"]')).toBeHidden();
   await shoot(owner, "card-images-desktop-light.png");
   await card(owner, TITLE).screenshot({ path: path.join(shots, "card-images-card-light.png") });
@@ -249,7 +252,7 @@ try {
   await expect(darkImage).toBeVisible({ timeout: 30000 });
   await expect
     .poll(() => darkImage.evaluate((img) => img.complete && img.naturalWidth), { timeout: 15000 })
-    .toBe(1280);
+    .toBe(640);
   await shoot(owner, "card-images-desktop-dark.png");
   await card(owner, TITLE).screenshot({ path: path.join(shots, "card-images-card-dark.png") });
   complete("Dark theme shows the dark image");
@@ -452,6 +455,167 @@ try {
     leftover.map(() => 0),
   );
   complete("A chart on the first screen draws at full width in both card images");
+
+  // A Page whose stored images are 1280×960, as a capture at two device
+  // pixels per CSS pixel stored them. The owner never opens it: the library
+  // alone redraws them at 640×480 (viewer/card-shrink.mjs).
+  const large = await tool(owner, "create_page", {
+    title: "Large card",
+    markdown: "# Release notes\n\nWhat shipped this week, and what is next.",
+    nonce: crypto.randomUUID(),
+  });
+  assert.equal(large.status, 200, JSON.stringify(large.body));
+  const largeId = large.body.page_id;
+  const largeRead = await tool(owner, "read_page", { page_id: largeId, comments: "none" });
+  const largeEdit = await tool(owner, "edit_page", {
+    page_id: largeId,
+    revision: largeRead.body.revision,
+    nonce: crypto.randomUUID(),
+    operations: [{ op: "insert_markdown", markdown: "Each change links its Page." }],
+  });
+  assert.equal(largeEdit.status, 200, JSON.stringify(largeEdit.body));
+  let largeHash;
+  await expect
+    .poll(
+      async () => {
+        const answer = await tool(owner, "page_cards", { page_ids: [largeId] });
+        largeHash = answer.body.cards[largeId]?.card_hash ?? null;
+        return largeHash;
+      },
+      { timeout: 30000, intervals: [500] },
+    )
+    .toMatch(/^[0-9a-f]{64}$/);
+  const seeded = await owner.evaluate(
+    async ({ pageId, hash }) => {
+      const answers = [];
+      for (const [theme, background, ink] of [
+        ["light", "#ffffff", "#1f2328"],
+        ["dark", "#151b23", "#e6edf3"],
+      ]) {
+        const canvas = document.createElement("canvas");
+        canvas.width = 1280;
+        canvas.height = 960;
+        const context = canvas.getContext("2d");
+        context.fillStyle = background;
+        context.fillRect(0, 0, 1280, 960);
+        context.fillStyle = ink;
+        context.font = "bold 72px sans-serif";
+        context.fillText("Release notes", 60, 140);
+        context.font = "40px sans-serif";
+        context.fillText("What shipped this week, and what is next.", 60, 240);
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/webp", 0.86));
+        const response = await fetch(
+          `/api/pages/${pageId}/card-image?hash=${hash}&theme=${theme}`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": blob.type },
+            body: blob,
+          },
+        );
+        answers.push({ status: response.status, bytes: blob.size, body: await response.json() });
+      }
+      return answers;
+    },
+    { pageId: largeId, hash: largeHash },
+  );
+  const seededAt = Date.now();
+  assert.deepEqual(
+    seeded.map((answer) => answer.status),
+    [201, 201],
+    JSON.stringify(seeded),
+  );
+  /** The stored image's pixel width for each theme, read past the cache. */
+  const storedWidths = async (page) => {
+    const answer = await tool(page, "page_cards", { page_ids: [largeId] });
+    const named = answer.body.cards[largeId]?.image;
+    if (!named) return null;
+    return page.evaluate(
+      async (urls) =>
+        Promise.all(
+          urls.map(async (url) => {
+            const blob = await (await fetch(url, { cache: "no-store" })).blob();
+            return { width: (await createImageBitmap(blob)).width, bytes: blob.size };
+          }),
+        ),
+      [named.light, named.dark],
+    );
+  };
+  assert.deepEqual(
+    (await storedWidths(owner)).map((image) => image.width),
+    [1280, 1280],
+  );
+  report.largeSeeded = seeded.map((answer) => answer.bytes);
+  complete("A Page with stored 1280×960 card images, never opened by its owner");
+
+  // Uploads each tab makes to the card image route.
+  const uploads = (page) => {
+    const seen = [];
+    page.on("request", (request) => {
+      if (request.method() === "PUT" && /\/card-image\?/.test(request.url()))
+        seen.push(request.url());
+    });
+    return seen;
+  };
+  const largeCard = (page) =>
+    card(page, "Large card").locator('img.page-card-image[data-theme="light"]');
+  const shownWidth = (page) =>
+    largeCard(page).evaluate((img) => (img.complete ? img.naturalWidth : 0));
+
+  // A viewer's library loads the large image and uploads nothing.
+  const shareLarge = async () => {
+    const current = await api(owner, `/api/access?page=${largeId}`);
+    const result = await api(owner, `/api/access?page=${largeId}`, {
+      action: "invite",
+      email: "alice@localhost",
+      role: "viewer",
+      expected_revision: current.body.access.revision,
+      nonce: crypto.randomUUID(),
+    });
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+  };
+  await shareLarge();
+  await alice.goto(`${origin}/p/${largeId}`);
+  await expect(alice.locator("wg-content").first()).toContainText("Release notes", {
+    timeout: 30000,
+  });
+  const aliceUploads = uploads(alice);
+  await alice.emulateMedia({ colorScheme: "light" });
+  await openGrid(alice);
+  await expect.poll(() => shownWidth(alice), { timeout: 30000 }).toBe(1280);
+  await alice.waitForTimeout(8000);
+  assert.deepEqual(aliceUploads, []);
+  complete("A viewer's library loads a 1280×960 image and uploads nothing");
+
+  // The host admits one upload per theme a minute: the owner's library
+  // starts once the seeding uploads are a minute old.
+  await owner.waitForTimeout(Math.max(0, seededAt + 61_000 - Date.now()));
+  const ownerUploads = uploads(owner);
+  await owner.emulateMedia({ colorScheme: "light" });
+  await openGrid(owner);
+  await expect.poll(() => shownWidth(owner), { timeout: 30000 }).toBe(1280);
+  await expect
+    .poll(async () => (await storedWidths(owner))?.map((image) => image.width), {
+      timeout: 60000,
+      intervals: [1000],
+    })
+    .toEqual([640, 640]);
+  report.largeShrunk = (await storedWidths(owner)).map((image) => image.bytes);
+  assert.equal(ownerUploads.length, 2, JSON.stringify(ownerUploads));
+  complete(
+    `The owner's library redrew both stored images at 640×480 (${report.largeSeeded.join(", ")} → ${report.largeShrunk.join(", ")} bytes) without opening the Page`,
+  );
+
+  // The next visit loads the 640×480 image from this browser's refreshed
+  // cache and offers nothing.
+  await owner.reload();
+  await expect(owner.locator("ul.index-grid").first()).toBeVisible({ timeout: 30000 });
+  await expect.poll(() => shownWidth(owner), { timeout: 30000 }).toBe(640);
+  await owner.waitForTimeout(8000);
+  assert.equal(ownerUploads.length, 2, JSON.stringify(ownerUploads));
+  await card(owner, "Large card").screenshot({
+    path: path.join(shots, "card-images-shrunk-light.png"),
+  });
+  complete("A second library visit shows the 640×480 image and uploads nothing");
   assert.deepEqual(report.errors, []);
 } catch (error) {
   report.failure = error.stack ?? String(error);

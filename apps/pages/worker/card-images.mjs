@@ -1,7 +1,9 @@
 // Grid card images: a raster of a Page's first screen, one per theme, drawn
 // by the owner's own browser (viewer/card-capture.mjs) and shown in the
 // library grid in place of the JSON card (model/page-card.mjs) when both
-// were built from the same `card_hash`.
+// were built from the same `card_hash`. The owner's library also redraws a
+// stored image larger than a capture and uploads it through the same route,
+// hash and theme (viewer/card-shrink.mjs).
 //
 // Storage, in the Page assets bucket:
 //
@@ -53,7 +55,9 @@ import { CARD_IMAGE_MAX_BYTES } from "../shared/card-images.mjs";
 import { timingFor } from "./server-timing.mjs";
 
 export { CARD_IMAGE_MAX_BYTES };
-/** The largest side an upload may have. Captures are 1280×960. */
+/** The largest side an upload may have. Captures are 640×480
+ * (viewer/card-raster.mjs); stored 1280×960 images stay readable until the
+ * owner's library redraws them at 640×480 (viewer/card-shrink.mjs). */
 export const CARD_IMAGE_MAX_DIMENSION = 1600;
 export const CARD_IMAGE_THEMES = Object.freeze(["light", "dark"]);
 /** The shortest gap between two uploads of one theme of one Page. */
@@ -248,6 +252,11 @@ export function cardObjectStore(bucket, pageId) {
  * revision it has seen, and a swap to another hash with a lower revision is
  * refused as stale (409), without deleting the shared image key. Uploads of
  * the same hash merge whatever their order.
+ *
+ * A re-upload of the same hash and theme overwrites its key when the
+ * extension matches, and the new record keeps that key, so the cleanup never
+ * deletes it. With another extension (a PNG redrawn as WebP), the record
+ * names the new key and the cleanup deletes the old one.
  */
 export async function storeCardImage(
   bucket,

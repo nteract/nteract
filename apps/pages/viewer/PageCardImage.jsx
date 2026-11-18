@@ -8,18 +8,23 @@
 // paint, so its cards' shown image loads eagerly at high priority
 // (`priority`). The hidden theme's image always stays lazy, so it is never
 // fetched while hidden.
+//
+// `onLoaded(image, width, height)` hears each image's natural size once it
+// loads; the owner's grid uses it to find images larger than a capture
+// (card-shrink-offers.mjs).
 import { useState, useSyncExternalStore } from "react";
 import { themeStore } from "./theme.mjs";
+import { CARD_PIXEL_HEIGHT, CARD_PIXEL_WIDTH } from "./card-raster.mjs";
 
 const THEMES = ["light", "dark"];
-// The card's 4:3 box (style.css, .index-card-preview), which the capture
-// draws at (card-shell.mjs CARD_WIDTH × CARD_HEIGHT). The attributes give
-// the ratio before CSS applies; CSS sets the drawn size.
-export const CARD_IMAGE_WIDTH = 640;
-export const CARD_IMAGE_HEIGHT = 480;
+// The card's 4:3 box (style.css, .index-card-preview) at the size a capture
+// draws (card-raster.mjs). The attributes give the ratio before CSS applies;
+// CSS sets the drawn size.
+export const CARD_IMAGE_WIDTH = CARD_PIXEL_WIDTH;
+export const CARD_IMAGE_HEIGHT = CARD_PIXEL_HEIGHT;
 
-/** @param {{ image: { card_hash: string, light: string, dark: string }, priority?: boolean }} props */
-export function PageCardImage({ image, priority = false }) {
+/** @param {{ image: { card_hash: string, light: string, dark: string }, priority?: boolean, onLoaded?: (image: { card_hash: string, light: string, dark: string }, width: number, height: number) => void }} props */
+export function PageCardImage({ image, priority = false, onLoaded }) {
   // The hash whose images failed: a newer card tries again.
   const [failed, setFailed] = useState(null);
   const { resolved } = useSyncExternalStore(
@@ -43,6 +48,11 @@ export function PageCardImage({ image, priority = false }) {
         fetchPriority={eager ? "high" : undefined}
         decoding="async"
         draggable={false}
+        onLoad={
+          onLoaded &&
+          ((event) =>
+            onLoaded(image, event.currentTarget.naturalWidth, event.currentTarget.naturalHeight))
+        }
         onError={() => setFailed(image.card_hash)}
       />
     );
