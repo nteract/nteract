@@ -227,6 +227,28 @@ test("a merge queue entry takes the pull request lanes in Build", () => {
   }
 });
 
+test("a required Build check fails when change detection does not succeed", () => {
+  const workflow = readFileSync(new URL("../workflows/build.yml", import.meta.url), "utf8");
+  // A required check that is skipped counts as passed. These three must run
+  // and fail when the `changes` job did not succeed.
+  // Branch protection names the checks, so the names are pinned with the jobs.
+  const required = {
+    lint: "Lint & Format",
+    "build-ui": "Build shared UI artifacts",
+    "js-tests": "JS Tests & Benchmarks",
+  };
+  for (const [id, name] of Object.entries(required)) {
+    const job = workflow.split(`\n  ${id}:\n`)[1].split(/\n(?=  [a-z][\w-]*:\n)/)[0];
+    assert.ok(job.startsWith(`    name: ${name}\n`), id);
+    assert.doesNotMatch(job, /continue-on-error/, id);
+    assert.match(job, /^    needs: \[changes\]$/m, id);
+    assert.match(job, /^    if: \|\n      !cancelled\(\) && \(\n        needs\.changes\.result != 'success' \|\|$/m, id);
+    assert.match(job, /^    steps:\n      - name: Require change detection\n        if: needs\.changes\.result != 'success'$/m, id);
+    const guard = job.split("      - name: Require change detection\n")[1].split("\n      - ")[0];
+    assert.match(guard, /^          exit 1$/m, id);
+  }
+});
+
 test("cloud packaging validates PRs while main artifacts remain restricted to main pushes", () => {
   const workflow = readFileSync(new URL("../workflows/build.yml", import.meta.url), "utf8");
   const job = workflow.split("\n  build-ui:\n")[1].split("\n  js-tests:\n")[0];

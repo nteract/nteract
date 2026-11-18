@@ -260,16 +260,34 @@ jobs:
           fi
           python3 scripts/ci/check-docs-guidance.py --paths-json "$DOCS_AGENT_FILES"
 
+  # Branch protection requires three jobs: lint, build-ui and js-tests. GitHub
+  # counts a skipped required check as passed, and a job is skipped when a job
+  # it needs fails. Each of the three therefore runs when `changes` did not
+  # succeed, and its first step fails. A skip then always means the path
+  # filters ran and found nothing for the job.
   lint:
     name: Lint & Format
     needs: [changes]
     # The root pyproject.toml is not in the `source` filter, so a change to
     # the ruff or ty configuration alone still has to start this job.
-    if: needs.changes.outputs.source_changed == 'true' || needs.changes.outputs.python_lint_changed == 'true'
+    if: |
+      !cancelled() && (
+        needs.changes.result != 'success' ||
+        needs.changes.outputs.source_changed == 'true' ||
+        needs.changes.outputs.python_lint_changed == 'true'
+      )
     # Keep generic PR/build checks on GitHub-hosted capacity. The Anaconda
     # runner pool is reserved for post-merge/manual env-heavy lanes below.
     runs-on: ubuntu-24.04
     steps:
+      - name: Require change detection
+        if: needs.changes.result != 'success'
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+        run: |
+          echo "::error::Detect source changes ended as ${CHANGES_RESULT}, so this required check cannot tell what the commit touches."
+          exit 1
+
       - uses: actions/checkout@v6
         with:
           lfs: true
@@ -347,11 +365,12 @@ jobs:
           uv run --no-sync python -I -m ty check python/ || failed=1
           exit "$failed"
 
-  # Pull requests with source changes always run the two branch-protection checks
-  # above: Lint & Format and JS Tests & Benchmarks. Docs/agent-only changes run
-  # the Docs & Agent Guidance verifier. The jobs below are advisory on PRs: they
-  # run for relevant paths or ci:* labels, but branch protection does not require
-  # them.
+  # Pull requests with source changes always run two of the branch-protection
+  # checks: Lint & Format and JS Tests & Benchmarks. The third, Build shared UI
+  # artifacts, runs for frontend or CI changes. Docs/agent-only changes run the
+  # Docs & Agent Guidance verifier. Every other job below is advisory on PRs: it
+  # runs for relevant paths or ci:* labels, but branch protection does not
+  # require it.
   nsis-bootstrap:
     name: NSIS Bootstrap (${{ matrix.os }})
     needs: [changes]
@@ -711,18 +730,29 @@ jobs:
     # Every main push produces a revision-bound cloud bundle, including docs-only
     # commits. The later deployment workflow still requires the whole Build run.
     if: |
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (needs.changes.outputs.source_changed == 'true' && (
-        needs.changes.outputs.pr_like != 'true' ||
-        needs.changes.outputs.ci_changed == 'true' ||
-        needs.changes.outputs.frontend_changed == 'true' ||
-        contains(github.event.pull_request.labels.*.name, 'ci:full') ||
-        contains(github.event.pull_request.labels.*.name, 'ci:frontend')
-      ))
+      !cancelled() && (
+        needs.changes.result != 'success' ||
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (needs.changes.outputs.source_changed == 'true' && (
+          needs.changes.outputs.pr_like != 'true' ||
+          needs.changes.outputs.ci_changed == 'true' ||
+          needs.changes.outputs.frontend_changed == 'true' ||
+          contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+          contains(github.event.pull_request.labels.*.name, 'ci:frontend')
+        ))
+      )
     runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
+      - name: Require change detection
+        if: needs.changes.result != 'success'
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+        run: |
+          echo "::error::Detect source changes ended as ${CHANGES_RESULT}, so this required check cannot tell what the commit touches."
+          exit 1
+
       - uses: actions/checkout@v6
         with:
           lfs: true
@@ -832,9 +862,21 @@ jobs:
   js-tests:
     name: JS Tests & Benchmarks
     needs: [changes]
-    if: needs.changes.outputs.source_changed == 'true'
+    if: |
+      !cancelled() && (
+        needs.changes.result != 'success' ||
+        needs.changes.outputs.source_changed == 'true'
+      )
     runs-on: ubuntu-24.04
     steps:
+      - name: Require change detection
+        if: needs.changes.result != 'success'
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+        run: |
+          echo "::error::Detect source changes ended as ${CHANGES_RESULT}, so this required check cannot tell what the commit touches."
+          exit 1
+
       - uses: actions/checkout@v6
         with:
           lfs: true
