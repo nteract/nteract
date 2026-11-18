@@ -9,6 +9,10 @@ on:
     # through the PR concurrency group and makes checks appear to start only
     # after a PR leaves draft.
     types: [opened, synchronize, reopened, labeled, unlabeled]
+  # A merge queue asks for checks on the commit it would put on main. Those
+  # runs take the pull request lanes: see `pr_like` in the changes job.
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
   schedule:
     - cron: "23 10 * * *"
@@ -32,6 +36,10 @@ jobs:
     name: Detect source changes
     runs-on: ubuntu-24.04
     outputs:
+      # True for a pull request and for a merge queue entry. Both run the same
+      # lanes; the post-merge, scheduled and manual lanes test for false. A
+      # merge queue entry has no labels, so `ci:*` labels do not reach it.
+      pr_like: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
       source_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.source == 'true' || steps.app_source_filter.outputs.app_source == 'true' || steps.e2e_source_filter.outputs.e2e_source == 'true' }}
       docs_agent_changed: ${{ steps.filter.outputs.docs_agent == 'true' }}
       docs_agent_files: ${{ steps.filter.outputs.docs_agent_files }}
@@ -349,7 +357,7 @@ jobs:
     needs: [changes]
     if: |
       needs.changes.outputs.source_changed == 'true' && (
-        github.event_name != 'pull_request' ||
+        needs.changes.outputs.pr_like != 'true' ||
         needs.changes.outputs.ci_changed == 'true' ||
         needs.changes.outputs.windows_changed == 'true' ||
         contains(github.event.pull_request.labels.*.name, 'ci:full') ||
@@ -410,7 +418,7 @@ jobs:
     needs: [changes]
     if: |
       needs.changes.outputs.source_changed == 'true' && (
-        github.event_name != 'pull_request' ||
+        needs.changes.outputs.pr_like != 'true' ||
         needs.changes.outputs.ci_changed == 'true' ||
         needs.changes.outputs.windows_changed == 'true' ||
         contains(github.event.pull_request.labels.*.name, 'ci:full') ||
@@ -454,7 +462,7 @@ jobs:
     needs: [changes]
     if: |
       needs.changes.outputs.source_changed == 'true' && (
-        github.event_name != 'pull_request' ||
+        needs.changes.outputs.pr_like != 'true' ||
         needs.changes.outputs.ci_changed == 'true' ||
         needs.changes.outputs.windows_changed == 'true' ||
         contains(github.event.pull_request.labels.*.name, 'ci:full') ||
@@ -487,7 +495,7 @@ jobs:
     name: Windows daemon restart tests
     needs: [changes]
     if: |
-      github.event_name == 'pull_request' && needs.changes.outputs.source_changed == 'true' && (
+      needs.changes.outputs.pr_like == 'true' && needs.changes.outputs.source_changed == 'true' && (
         needs.changes.outputs.ci_changed == 'true' ||
         needs.changes.outputs.windows_restart_changed == 'true' ||
         contains(github.event.pull_request.labels.*.name, 'ci:full') ||
@@ -522,7 +530,7 @@ jobs:
     needs: [changes]
     if: |
       needs.changes.outputs.source_changed == 'true' && (
-        github.event_name != 'pull_request' ||
+        needs.changes.outputs.pr_like != 'true' ||
         needs.changes.outputs.ci_changed == 'true' ||
         needs.changes.outputs.windows_changed == 'true' ||
         contains(github.event.pull_request.labels.*.name, 'ci:full') ||
@@ -569,7 +577,7 @@ jobs:
     needs: [changes]
     if: |
       needs.changes.outputs.source_changed == 'true' && (
-        github.event_name != 'pull_request' ||
+        needs.changes.outputs.pr_like != 'true' ||
         needs.changes.outputs.ci_changed == 'true' ||
         contains(github.event.pull_request.labels.*.name, 'ci:full') ||
         contains(github.event.pull_request.labels.*.name, 'ci:linux-arm64')
@@ -626,7 +634,7 @@ jobs:
     needs: [changes]
     if: |
       needs.changes.outputs.source_changed == 'true' && (
-        github.event_name != 'pull_request' ||
+        needs.changes.outputs.pr_like != 'true' ||
         needs.changes.outputs.ci_changed == 'true' ||
         needs.changes.outputs.wasm_changed == 'true' ||
         contains(github.event.pull_request.labels.*.name, 'ci:full') ||
@@ -705,7 +713,7 @@ jobs:
     if: |
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       (needs.changes.outputs.source_changed == 'true' && (
-        github.event_name != 'pull_request' ||
+        needs.changes.outputs.pr_like != 'true' ||
         needs.changes.outputs.ci_changed == 'true' ||
         needs.changes.outputs.frontend_changed == 'true' ||
         contains(github.event.pull_request.labels.*.name, 'ci:full') ||
@@ -742,7 +750,7 @@ jobs:
       # Validate the complete cloud package on PRs too, including stacked PRs
       # that do not target main and therefore have no PR preview deployment.
       - name: Build and validate cloud deployment bundle
-        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        if: needs.changes.outputs.pr_like == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         run: |
           pnpm --filter @nteract/preview-python build
           pnpm --dir apps/notebook-cloud build:viewer
@@ -753,7 +761,7 @@ jobs:
       # Exercise packaging and smoke here so breaks surface on the PR before
       # a release triggers that independent workflow.
       - name: Package and smoke the embeddable editor assets
-        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        if: needs.changes.outputs.pr_like == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         run: |
           node scripts/ci/package-notebook-cloud-assets.mjs \
             --out="$RUNNER_TEMP/notebook-cloud-assets" \
@@ -902,7 +910,7 @@ jobs:
     needs: [changes]
     if: |
       needs.changes.outputs.source_changed == 'true' && (
-        github.event_name != 'pull_request' ||
+        needs.changes.outputs.pr_like != 'true' ||
         needs.changes.outputs.ci_changed == 'true' ||
         needs.changes.outputs.browser_e2e_changed == 'true' ||
         contains(github.event.pull_request.labels.*.name, 'ci:full') ||
@@ -991,7 +999,7 @@ jobs:
     # This builds the native Tauri/WebDriver app and stages release-like
     # artifacts for the native E2E smoke below. Keep it off per-commit PR CI;
     # run it post-merge or manually when the native smoke signal is needed.
-    if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
+    if: needs.changes.outputs.source_changed == 'true' && needs.changes.outputs.pr_like != 'true'
     runs-on: ubuntu-22.04
     env:
       # Shrink test-profile debuginfo to stay under the runner disk ceiling.
@@ -1119,7 +1127,7 @@ jobs:
     needs: [changes]
     if: |
       needs.changes.outputs.source_changed == 'true' && (
-        github.event_name != 'pull_request' ||
+        needs.changes.outputs.pr_like != 'true' ||
         needs.changes.outputs.ci_changed == 'true' ||
         needs.changes.outputs.rust_changed == 'true' ||
         contains(github.event.pull_request.labels.*.name, 'ci:full') ||
@@ -1173,7 +1181,7 @@ jobs:
     needs: [changes]
     if: |
       needs.changes.outputs.source_changed == 'true' && (
-        github.event_name != 'pull_request' ||
+        needs.changes.outputs.pr_like != 'true' ||
         needs.changes.outputs.ci_changed == 'true' ||
         needs.changes.outputs.rust_changed == 'true' ||
         contains(github.event.pull_request.labels.*.name, 'ci:full') ||
@@ -1244,7 +1252,7 @@ jobs:
     needs: [changes]
     if: |
       needs.changes.outputs.source_changed == 'true' && (
-        github.event_name != 'pull_request' ||
+        needs.changes.outputs.pr_like != 'true' ||
         needs.changes.outputs.ci_changed == 'true' ||
         needs.changes.outputs.node_changed == 'true' ||
         contains(github.event.pull_request.labels.*.name, 'ci:full') ||
@@ -1331,7 +1339,7 @@ jobs:
       - linux-rust-clippy
       - linux-rust-tests
       - linux-runtimed-node
-    if: always() && needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
+    if: always() && needs.changes.outputs.source_changed == 'true' && needs.changes.outputs.pr_like != 'true'
     runs-on: ubuntu-24.04
     steps:
       - name: Check shard results
@@ -1357,10 +1365,10 @@ jobs:
   build:
     name: ${{ matrix.platform.name }}
     needs: [changes, build-ui]
-    if: ${{ always() && needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request' && needs.build-ui.result == 'success' }}
+    if: ${{ always() && needs.changes.outputs.source_changed == 'true' && needs.changes.outputs.pr_like != 'true' && needs.build-ui.result == 'success' }}
     continue-on-error: ${{ matrix.platform.non_blocking }}
     timeout-minutes: 120
-    runs-on: ${{ needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr) && matrix.platform.runner || 'ubuntu-latest' }}
+    runs-on: ${{ needs.changes.outputs.source_changed == 'true' && (needs.changes.outputs.pr_like != 'true' || matrix.platform.run_on_pr) && matrix.platform.runner || 'ubuntu-latest' }}
     strategy:
       matrix:
         platform:
@@ -1380,55 +1388,55 @@ jobs:
         run: echo "No source changes detected; skipping this platform leg."
 
       - name: Skip this platform on pull requests
-        if: needs.changes.outputs.source_changed == 'true' && github.event_name == 'pull_request' && !matrix.platform.run_on_pr
+        if: needs.changes.outputs.source_changed == 'true' && needs.changes.outputs.pr_like == 'true' && !matrix.platform.run_on_pr
         run: echo "Skipping this platform for pull_request events."
 
       - uses: actions/checkout@v6
         with:
           lfs: true
-        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
+        if: needs.changes.outputs.source_changed == 'true' && (needs.changes.outputs.pr_like != 'true' || matrix.platform.run_on_pr)
 
       - name: Download UI build artifacts
-        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
+        if: needs.changes.outputs.source_changed == 'true' && (needs.changes.outputs.pr_like != 'true' || matrix.platform.run_on_pr)
         uses: actions/download-artifact@v8
         with:
           name: ui-build-dist
           path: apps/notebook/dist
 
       - name: Install system dependencies
-        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
+        if: needs.changes.outputs.source_changed == 'true' && (needs.changes.outputs.pr_like != 'true' || matrix.platform.run_on_pr)
         run: ${{ matrix.platform.setup }}
 
       - name: Install uv
-        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
+        if: needs.changes.outputs.source_changed == 'true' && (needs.changes.outputs.pr_like != 'true' || matrix.platform.run_on_pr)
         uses: astral-sh/setup-uv@v8.1.0
 
       - uses: ./.github/actions/prepare-self-hosted-rust
-        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr) && runner.environment == 'self-hosted'
+        if: needs.changes.outputs.source_changed == 'true' && (needs.changes.outputs.pr_like != 'true' || matrix.platform.run_on_pr) && runner.environment == 'self-hosted'
 
       - name: Install rust
-        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
+        if: needs.changes.outputs.source_changed == 'true' && (needs.changes.outputs.pr_like != 'true' || matrix.platform.run_on_pr)
         uses: dsherret/rust-toolchain-file@v1
 
       - uses: Swatinem/rust-cache@v2
-        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
+        if: needs.changes.outputs.source_changed == 'true' && (needs.changes.outputs.pr_like != 'true' || matrix.platform.run_on_pr)
         with:
           shared-key: ${{ matrix.platform.runner }}
 
       - name: Download WASM artifacts
-        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
+        if: needs.changes.outputs.source_changed == 'true' && (needs.changes.outputs.pr_like != 'true' || matrix.platform.run_on_pr)
         uses: actions/download-artifact@v8
         with:
           name: wasm-artifacts
 
       - uses: ./.github/actions/build-runtime-artifacts
-        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
+        if: needs.changes.outputs.source_changed == 'true' && (needs.changes.outputs.pr_like != 'true' || matrix.platform.run_on_pr)
         with:
           skip-wasm: true
           include-mcp-widget: true
 
       - name: Build external binaries
-        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
+        if: needs.changes.outputs.source_changed == 'true' && (needs.changes.outputs.pr_like != 'true' || matrix.platform.run_on_pr)
         shell: bash
         run: |
           cargo build --release -p runtimed -p runt -p nteract-mcp
@@ -1447,18 +1455,18 @@ jobs:
           fi
 
       - name: Clippy
-        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
+        if: needs.changes.outputs.source_changed == 'true' && (needs.changes.outputs.pr_like != 'true' || matrix.platform.run_on_pr)
         # runtimed-py is built/tested in the dedicated maturin/PyO3 job below.
         # Testing it as a plain workspace crate links the extension-module build
         # without Python symbols on macOS.
         run: cargo clippy --workspace --exclude runtimed-py --all-targets -- -D warnings
 
       - name: Build
-        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
+        if: needs.changes.outputs.source_changed == 'true' && (needs.changes.outputs.pr_like != 'true' || matrix.platform.run_on_pr)
         run: cargo build --release
 
       - name: Run tests
-        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
+        if: needs.changes.outputs.source_changed == 'true' && (needs.changes.outputs.pr_like != 'true' || matrix.platform.run_on_pr)
         run: cargo test --workspace --exclude runtimed-node --exclude runtimed-py --verbose
 
   # Native WebDriver E2E stays focused on Tauri shell behavior. Notebook UI,
@@ -1470,7 +1478,7 @@ jobs:
     needs: [changes, build-linux]
     # Native WebDriver smoke is intentionally post-merge/manual. PR coverage
     # stays in Browser E2E so agent commit churn does not fan out Tauri builds.
-    if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
+    if: needs.changes.outputs.source_changed == 'true' && needs.changes.outputs.pr_like != 'true'
     strategy:
       fail-fast: false
       # The native WebDriver app uses fixed display/WebDriver ports, so keep
@@ -1723,7 +1731,7 @@ jobs:
     needs: [changes]
     # This daemon-heavy lane is ~30 minutes on stock GitHub runners. Keep it
     # on post-merge/manual runs so PR pushes do not pay that long tail.
-    if: needs.changes.outputs.source_changed == 'true' && github.event_name != 'pull_request'
+    if: needs.changes.outputs.source_changed == 'true' && needs.changes.outputs.pr_like != 'true'
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v6
@@ -1873,7 +1881,7 @@ jobs:
     needs: [changes]
     if: |
       needs.changes.outputs.source_changed == 'true' && (
-        github.event_name != 'pull_request' ||
+        needs.changes.outputs.pr_like != 'true' ||
         needs.changes.outputs.ci_changed == 'true' ||
         needs.changes.outputs.python_changed == 'true' ||
         contains(github.event.pull_request.labels.*.name, 'ci:full') ||
@@ -1966,7 +1974,7 @@ jobs:
         run: |
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ] || [ "$GITHUB_EVENT_NAME" = "merge_group" ]; then
             {
               echo "# Long-tail CI health"
               echo
@@ -2067,7 +2075,7 @@ jobs:
           cat long-tail-ci-summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload health summary
-        if: github.event_name != 'pull_request'
+        if: needs.changes.outputs.pr_like != 'true'
         uses: actions/upload-artifact@v7
         with:
           name: long-tail-ci-health-summary
