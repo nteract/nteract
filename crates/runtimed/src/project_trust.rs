@@ -337,6 +337,28 @@ pub(crate) enum RoomProjectGate {
     Parked,
     /// The room moved while a manual launch path was being resolved.
     ContextChanged,
+    /// Shutdown or agent disconnect cancelled the launch generation first.
+    /// Nothing was published; the cancelling authority owns the projection.
+    Cancelled,
+    /// Writing this launch's trust state and lifecycle failed. This launch
+    /// published no prompt; the projection may still hold an earlier one.
+    WriteFailed(String),
+}
+
+/// Reason sent with `GuardRejected` when a launch stops at the project trust
+/// gate, by the owning request and by every request that joined it.
+pub(crate) const LAUNCH_REFUSAL_REASON: &str =
+    "The project folder is not trusted on this machine. \
+     Trust it or use the notebook environment to launch.";
+
+/// Result of trying to publish the project trust prompt.
+#[derive(Debug, PartialEq, Eq)]
+enum ParkResult {
+    /// Trust state and `AwaitingProjectTrust` are committed.
+    Parked,
+    ContextChanged,
+    Cancelled,
+    WriteFailed(String),
 }
 
 /// Whether `env_source` hands a project file to uv, pixi, or conda.
@@ -431,10 +453,11 @@ pub(crate) fn require_for_launch_in_context(
                 };
                 eval.state.summary = summarize(&detected, &project_dir);
             }
-            if park(room, &eval.state, context) {
-                RoomProjectGate::Parked
-            } else {
-                RoomProjectGate::ContextChanged
+            match park(room, &eval.state, context) {
+                ParkResult::Parked => RoomProjectGate::Parked,
+                ParkResult::ContextChanged => RoomProjectGate::ContextChanged,
+                ParkResult::Cancelled => RoomProjectGate::Cancelled,
+                ParkResult::WriteFailed(error) => RoomProjectGate::WriteFailed(error),
             }
         }
     }
@@ -457,40 +480,45 @@ pub(crate) fn publish_state(
 }
 
 /// Write project trust state and park the room in `AwaitingProjectTrust`.
+/// Only [`ParkResult::Parked`] means a prompt is visible.
 fn park(
     room: &crate::notebook_sync_server::NotebookRoom,
     state: &ProjectTrustRuntimeState,
     context: Option<ProjectTrustLaunchContext>,
-) -> bool {
-    tracing::info!(
-        "[project-trust] {} is not trusted; waiting for approval",
-        state.project_dir
-    );
-    let mut context_current = true;
-    if let Some(Err(error)) = room.commit_unless_launch_cancelled(|| {
-        let mut prompt = room
-            .project_trust_prompt
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if context
-            .as_ref()
-            .is_some_and(|context| context.identity_revision != prompt.identity_revision)
-        {
-            context_current = false;
-            return Ok(());
-        }
-        let result = room.state.with_doc(|sd| {
-            sd.set_project_trust(state)?;
-            sd.set_lifecycle(&runtime_doc::RuntimeLifecycle::AwaitingProjectTrust)
-        });
-        if result.is_ok() {
-            prompt.replace(context);
-        }
-        result
-    }) {
-        warn!("[runtime-state] {}", error);
+) -> ParkResult {
+    let result = room
+        .commit_unless_launch_cancelled(|| {
+            let mut prompt = room
+                .project_trust_prompt
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if context
+                .as_ref()
+                .is_some_and(|context| context.identity_revision != prompt.identity_revision)
+            {
+                return ParkResult::ContextChanged;
+            }
+            match room.state.with_doc(|sd| {
+                sd.set_project_trust(state)?;
+                sd.set_lifecycle(&runtime_doc::RuntimeLifecycle::AwaitingProjectTrust)
+            }) {
+                Ok(()) => {
+                    prompt.replace(context);
+                    ParkResult::Parked
+                }
+                Err(error) => ParkResult::WriteFailed(error.to_string()),
+            }
+        })
+        .unwrap_or(ParkResult::Cancelled);
+    match &result {
+        ParkResult::Parked => tracing::info!(
+            "[project-trust] {} is not trusted; waiting for approval",
+            state.project_dir
+        ),
+        ParkResult::WriteFailed(error) => warn!("[runtime-state] {}", error),
+        ParkResult::ContextChanged | ParkResult::Cancelled => {}
     }
-    context_current
+    result
 }
 
 // ── Parse-only summary ──────────────────────────────────────────────

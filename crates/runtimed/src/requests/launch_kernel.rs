@@ -86,6 +86,47 @@ async fn wait_for_joined_launch(
     }
 }
 
+/// Map a joined generation's completion to the joiner's reply. `None` means
+/// the owner released the gate without a result and the joiner retries
+/// admission.
+async fn joined_launch_response(
+    room: &NotebookRoom,
+    completion: Result<KernelLaunchCompletion, ()>,
+) -> Option<NotebookResponse> {
+    match completion {
+        Ok(KernelLaunchCompletion::Succeeded) => Some(
+            existing_kernel_response(room)
+                .await
+                .unwrap_or_else(|| NotebookResponse::Error {
+                    error: "Kernel launch completed without an active launch identity".to_string(),
+                }),
+        ),
+        Ok(KernelLaunchCompletion::Released) => None,
+        Ok(KernelLaunchCompletion::Cancelled) => Some(NotebookResponse::Error {
+            error: "Kernel launch was cancelled by shutdown".to_string(),
+        }),
+        Ok(KernelLaunchCompletion::ProjectTrustRequired) => Some(project_trust_refusal()),
+        Ok(KernelLaunchCompletion::Failed) | Err(_) => Some(NotebookResponse::Error {
+            error: "Kernel launch timed out or failed".to_string(),
+        }),
+    }
+}
+
+fn project_trust_refusal() -> NotebookResponse {
+    NotebookResponse::GuardRejected {
+        reason: crate::project_trust::LAUNCH_REFUSAL_REASON.to_string(),
+    }
+}
+
+/// Owner reply after the gate committed a project trust park. The generation
+/// records the refusal so joined requests return the same typed reply.
+fn refuse_for_project_trust(launch_attempt: &mut Option<KernelLaunchAttempt>) -> NotebookResponse {
+    if let Some(attempt) = launch_attempt.as_mut() {
+        attempt.require_project_trust();
+    }
+    project_trust_refusal()
+}
+
 fn commit_apply_delivery(
     room: &NotebookRoom,
     lease: &super::local_environment_selection::EnvironmentApply<'_>,
@@ -326,26 +367,9 @@ pub(crate) async fn handle(
                 cancel_rx,
             } => {
                 let completion = wait_for_joined_launch(room, generation, cancel_rx).await;
-                match completion {
-                    Ok(KernelLaunchCompletion::Succeeded) => {
-                        return existing_kernel_response(room).await.unwrap_or_else(|| {
-                            NotebookResponse::Error {
-                                error: "Kernel launch completed without an active launch identity"
-                                    .to_string(),
-                            }
-                        });
-                    }
-                    Ok(KernelLaunchCompletion::Released) => continue,
-                    Ok(KernelLaunchCompletion::Cancelled) => {
-                        return NotebookResponse::Error {
-                            error: "Kernel launch was cancelled by shutdown".to_string(),
-                        };
-                    }
-                    Ok(KernelLaunchCompletion::Failed) | Err(_) => {
-                        return NotebookResponse::Error {
-                            error: "Kernel launch timed out or failed".to_string(),
-                        };
-                    }
+                match joined_launch_response(room, completion).await {
+                    Some(response) => return response,
+                    None => continue,
                 }
             }
         }
@@ -480,7 +504,9 @@ pub(crate) async fn handle_admitted(
                         })
                     });
                 }
-                attempt.release_without_cooldown();
+                // Keeps a committed trust refusal as the generation result
+                // without running cleanup against the prior kernel's agent.
+                attempt.release_to_prior_kernel();
             }
         }
     }
@@ -972,14 +998,26 @@ async fn handle_attempt(
             );
             return NotebookResponse::Error { error };
         }
-        // The gate already parked the room in `AwaitingProjectTrust` with the
-        // project trust prompt. The reply is the typed approval refusal, so
-        // clients classify it without reading RuntimeStateDoc or the text.
+        // The gate committed `AwaitingProjectTrust` and the prompt. The reply
+        // is the typed approval refusal, so clients classify it without
+        // reading RuntimeStateDoc or the text. The generation records the same
+        // refusal for requests that joined it.
         crate::project_trust::RoomProjectGate::Parked => {
-            return NotebookResponse::GuardRejected {
-                reason: "The project folder is not trusted on this machine. \
-                            Trust it or use the notebook environment to launch."
-                    .to_string(),
+            return refuse_for_project_trust(launch_attempt);
+        }
+        // Shutdown or agent disconnect already committed the terminal
+        // projection. Dropping the cancelled token records `Cancelled`.
+        crate::project_trust::RoomProjectGate::Cancelled => {
+            return NotebookResponse::Error {
+                error: "Kernel launch was cancelled by shutdown".to_string(),
+            };
+        }
+        // This launch published no prompt. Dropping the token records
+        // `Failed` and projects the generic launch error over the unfinished
+        // lifecycle.
+        crate::project_trust::RoomProjectGate::WriteFailed(error) => {
+            return NotebookResponse::Error {
+                error: format!("Could not record the project trust prompt: {error}"),
             };
         }
     };
@@ -3218,5 +3256,66 @@ mod tests {
             KernelLaunchCompletion::Failed
         );
         assert!(existing_kernel_response(&room).await.is_none());
+    }
+
+    /// An Apply that parks at the project trust gate restores the kernel it
+    /// preserved. The generation still reports the trust refusal to joiners,
+    /// not the old kernel as a launch success, and the old kernel's agent
+    /// slots survive.
+    #[tokio::test]
+    async fn apply_trust_refusal_keeps_prior_kernel_and_reports_refusal() {
+        let (_tmp, room) = test_room();
+        *room.current_runtime_agent_id.write().await = Some("old-agent".to_string());
+        assert!(
+            room.record_active_kernel_launch_if_current(
+                "old-agent".to_string(),
+                "python".to_string(),
+                EnvSource::Prewarmed(PackageManager::Uv),
+            )
+            .await
+        );
+        let (request_tx, _request_rx) = tokio::sync::mpsc::channel(1);
+        *room.runtime_agent_request_tx.lock().await = Some(request_tx);
+        room.state
+            .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle)))
+            .unwrap();
+
+        let mut attempt = match room.try_begin_manual_launch() {
+            ManualLaunchAdmission::Admitted(attempt) => attempt,
+            ManualLaunchAdmission::InFlight { .. } => panic!("launch should be admitted"),
+        };
+        attempt.preserve_kernel_during_preparation();
+        room.state
+            .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::AwaitingProjectTrust))
+            .unwrap();
+        let mut launch_attempt = Some(attempt);
+        let response = refuse_for_project_trust(&mut launch_attempt);
+        launch_attempt.unwrap().release_to_prior_kernel();
+        tokio::task::yield_now().await;
+
+        assert!(matches!(response, NotebookResponse::GuardRejected { .. }));
+        assert_eq!(
+            room.launch_completion(1),
+            Some(KernelLaunchCompletion::ProjectTrustRequired)
+        );
+        assert_eq!(
+            room.current_runtime_agent_id.read().await.as_deref(),
+            Some("old-agent")
+        );
+        assert!(room.runtime_agent_request_tx.lock().await.is_some());
+        assert!(room.active_kernel_launch().is_some());
+        assert_eq!(
+            room.state
+                .read(|sd| sd.read_state().kernel.lifecycle)
+                .unwrap(),
+            RuntimeLifecycle::Running(KernelActivity::Idle)
+        );
+        match joined_launch_response(&room, Ok(KernelLaunchCompletion::ProjectTrustRequired)).await
+        {
+            Some(NotebookResponse::GuardRejected { reason }) => {
+                assert_eq!(reason, crate::project_trust::LAUNCH_REFUSAL_REASON)
+            }
+            other => panic!("joiner must get the trust refusal, got {other:?}"),
+        }
     }
 }
