@@ -16,7 +16,10 @@ import {
   appSessionConnectionIdentity,
   appSessionHasFreshVerifiedEmailDomain,
   NOTEBOOK_CLOUD_IDENTITY_PROOF_MAX_AGE_SECONDS,
-} from "../src/app-session.ts";
+  readServerAppSession,
+  revokeServerSessionsFor,
+  SERVER_SESSION_COOKIE,
+} from "@nteract/session";
 import {
   beginServerOidcLogin,
   completeServerOidcLogin,
@@ -30,11 +33,6 @@ import {
   type ServerSessionGrant,
   type ServerSessionProvider,
 } from "../src/server-oidc.ts";
-import {
-  readServerAppSession,
-  revokeServerSessionsFor,
-  SERVER_SESSION_COOKIE,
-} from "../src/oidc-session-store.ts";
 import { AuthError, type AuthenticatedConnection } from "../src/identity.ts";
 
 // The repository's Node 20 type definitions predate node:sqlite, while the

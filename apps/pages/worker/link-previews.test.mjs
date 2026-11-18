@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createServerAppSession } from "@cloud/app-session.ts";
 import {
+  createServerAppSession,
   SERVER_SESSION_COOKIE,
   oidcDatabase,
   randomSecret,
@@ -9,7 +9,7 @@ import {
   secretHash,
   serverSessionContext,
   serverSessionId,
-} from "@cloud/oidc-session-store.ts";
+} from "@nteract/session";
 import worker, { Page } from "./index.mjs";
 import { world } from "./projects-fixture.mjs";
 import { proposeAccessUpdate } from "./access.mjs";

@@ -3,7 +3,7 @@
 // `deploy.mjs rotate-key` streams it to the host over SSH.
 //
 // The keyring is the JSON `NOTEBOOK_CLOUD_APP_SESSION_KEYS` holds (see
-// apps/notebook-cloud/src/session-keyring.ts, whose validation this mirrors):
+// packages/session/src/session-keyring.ts, whose validation this mirrors):
 //
 //   {"active":"k2","keys":{"k1":"…","k2":"…"},"activated_at":{"k2":"<ISO>"}}
 //
@@ -42,7 +42,7 @@ export const LEGACY_KID = "k1";
 export const MAX_KEYS = 4;
 export const MIN_SECRET_BYTES = 32;
 const DAY_SECONDS = 24 * 60 * 60;
-/** `SERVER_SESSION_ABSOLUTE_SECONDS` in apps/notebook-cloud/src/oidc-session-store.ts. */
+/** `SERVER_SESSION_ABSOLUTE_SECONDS` in packages/session/src/oidc-session-store.ts. */
 export const SESSION_OVERLAP_DAYS = 7;
 /** `OAUTH_REFRESH_SECONDS` in shared/oauth-grant.mjs, in days. A test keeps
  * them equal: this file is streamed to hosts alone and can't import it. */

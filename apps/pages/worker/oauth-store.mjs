@@ -1,4 +1,4 @@
-import { randomSecret, secretHash } from "@cloud/oidc-session-store.ts";
+import { randomSecret, secretHash } from "@nteract/session";
 import { pagesPublicOrigin } from "../agent-guide.mjs";
 import { isolateSetup } from "./isolate-setup.mjs";
 import { logAuthEvent } from "./auth-events.mjs";

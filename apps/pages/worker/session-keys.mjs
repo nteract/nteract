@@ -1,4 +1,4 @@
-import { assertSessionKeyring, SessionKeyringError } from "@cloud/session-keyring.ts";
+import { assertSessionKeyring, SessionKeyringError } from "@nteract/session";
 
 /**
  * A 500 for every request, `/health` included, while

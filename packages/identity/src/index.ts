@@ -19,3 +19,7 @@ export {
   readableForegroundForColor,
 } from "./notebook-actor-color";
 export { normalizeInviteEmail } from "./invite-email";
+export type {
+  AuthenticatedConnection,
+  AuthenticatedConnectionMetadata,
+} from "./authenticated-connection";

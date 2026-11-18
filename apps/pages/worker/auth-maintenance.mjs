@@ -10,7 +10,7 @@
 // expired sign-in rows, expired OAuth rows (with the replay-evidence rule of
 // cleanupOAuthStore), rows of grants revoked more than REVOKED_GRANT_GRACE_SECONDS
 // ago, and invitation index rows past their expiry.
-import { deleteExpiredOidcRows } from "@cloud/oidc-session-store.ts";
+import { deleteExpiredOidcRows } from "@nteract/session";
 import {
   cleanupOAuthTable,
   deleteRevokedGrantRows,

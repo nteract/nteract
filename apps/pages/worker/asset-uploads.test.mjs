@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { secretHash } from "@cloud/oidc-session-store.ts";
+import { secretHash } from "@nteract/session";
 import worker from "./index.mjs";
 import { Storage, world } from "./projects-fixture.mjs";
 import {

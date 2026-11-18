@@ -15,6 +15,9 @@
       "@nteract/local-oidc": [
         "../../packages/local-oidc/src/index.ts"
       ],
+      "@nteract/session": [
+        "../../packages/session/src/index.ts"
+      ],
       "jose": [
         "./node_modules/jose/dist/webapi/index.js"
       ],

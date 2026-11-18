@@ -3,8 +3,11 @@
 // token's verified address and an OAuth grant made from a Kilo session.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { NOTEBOOK_CLOUD_IDENTITY_PROOF_MAX_AGE_SECONDS } from "@cloud/app-session.ts";
-import { secretHash, SERVER_SESSION_COOKIE } from "@cloud/oidc-session-store.ts";
+import {
+  NOTEBOOK_CLOUD_IDENTITY_PROOF_MAX_AGE_SECONDS,
+  secretHash,
+  SERVER_SESSION_COOKIE,
+} from "@nteract/session";
 import { startLocalKiloHandoff } from "../scripts/fixtures/local-kilo-handoff.mjs";
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
 import { authenticate } from "./auth.mjs";

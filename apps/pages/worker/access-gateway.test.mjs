@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { SERVER_SESSION_COOKIE } from "@cloud/oidc-session-store.ts";
+import { SERVER_SESSION_COOKIE } from "@nteract/session";
 import worker, { Page } from "./index.mjs";
 import { gatewayFixture, pageId, privateOrigin, publicOrigin } from "./gateway-fixture.mjs";
 

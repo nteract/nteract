@@ -3,7 +3,7 @@
 // storage: a dataset on one Page or Project placed on another.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { secretHash } from "@cloud/oidc-session-store.ts";
+import { secretHash } from "@nteract/session";
 import worker from "./index.mjs";
 import { world } from "./projects-fixture.mjs";
 import { exchangeAuthorizationCode, issueAuthorizationCode } from "./oauth-store.mjs";

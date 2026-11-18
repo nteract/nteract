@@ -1,7 +1,4 @@
-import {
-  appSessionHasFreshVerifiedEmail,
-  readCloudAppSession,
-} from "../../notebook-cloud/src/app-session.ts";
+import { appSessionHasFreshVerifiedEmail, readCloudAppSession } from "@nteract/session";
 import { AuthError, type AuthenticatedConnection } from "../../notebook-cloud/src/identity.ts";
 import {
   ServerOidcIdentityRejected,

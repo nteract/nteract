@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { createServerAppSession } from "@cloud/app-session.ts";
 import {
+  createServerAppSession,
   oidcDatabase,
   randomSecret,
   sealServerSecret,
@@ -10,7 +10,7 @@ import {
   serverSessionContext,
   serverSessionId,
   SERVER_SESSION_COOKIE,
-} from "@cloud/oidc-session-store.ts";
+} from "@nteract/session";
 import { handleOAuth, mcpAuthChallenge } from "./oauth.mjs";
 import { cloudflareConfig, structuralConfig } from "../scripts/cloudflare-stage.mjs";
 import { metadataFetchTimeouts } from "./oauth-clients.mjs";

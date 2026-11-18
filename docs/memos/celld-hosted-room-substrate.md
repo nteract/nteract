@@ -138,7 +138,7 @@ What the source shows today:
   either way (`ensureCatalogSchema` in
   `apps/notebook-cloud/src/storage.ts`). Pages bootstraps its D1 tables the
   same way, with `CREATE TABLE IF NOT EXISTS` in `worker/oauth-store.mjs` and
-  `apps/notebook-cloud/src/oidc-session-store.ts`. Pages `install.mjs` runs
+  `packages/session/src/oidc-session-store.ts`. Pages `install.mjs` runs
   `celld deploy`, not D1 migrations.
 - A celld D1 database has one writer. Every statement dispatches to the cell
   that owns the database; `batch()` groups statements into one dispatch and

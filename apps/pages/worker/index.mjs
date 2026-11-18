@@ -8,8 +8,7 @@ import {
   serverOidcSessionStatus,
 } from "@cloud/server-oidc.ts";
 import { handleLocalOidcRequest } from "@cloud/dev-oidc.ts";
-import { loadServerSession } from "@cloud/oidc-session-store.ts";
-import { assertSessionKeyring } from "@cloud/session-keyring.ts";
+import { loadServerSession, assertSessionKeyring } from "@nteract/session";
 import { sessionKeysFailure } from "./session-keys.mjs";
 import { httpsRedirect, withTransportSecurity } from "./transport-security.mjs";
 import { logAuthEvent, recordOidcEvent, sessionRowPrincipal } from "./auth-events.mjs";

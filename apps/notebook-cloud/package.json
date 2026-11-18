@@ -47,6 +47,7 @@
     "@nteract/identity": "workspace:*",
     "@nteract/local-oidc": "workspace:*",
     "@nteract/notebook-host": "workspace:*",
+    "@nteract/session": "workspace:*",
     "lucide-react": "^0.513.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

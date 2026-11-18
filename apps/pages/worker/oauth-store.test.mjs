@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { secretHash } from "@cloud/oidc-session-store.ts";
+import { secretHash } from "@nteract/session";
 import { captureConsole } from "./auth-events-fixture.mjs";
 import {
   cleanupOAuthStore,

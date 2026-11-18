@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { createServerAppSession } from "@cloud/app-session.ts";
 import {
+  createServerAppSession,
   oidcDatabase,
   randomSecret,
   sealServerSecret,
   serverSessionContext,
   serverSessionId,
   SERVER_SESSION_COOKIE,
-} from "@cloud/oidc-session-store.ts";
+} from "@nteract/session";
 import worker from "./index.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createServerAppSession } from "@cloud/app-session.ts";
 import {
+  createServerAppSession,
   oidcDatabase,
   randomSecret,
   readServerAppSession,
@@ -9,7 +9,7 @@ import {
   serverSessionContext,
   serverSessionId,
   SERVER_SESSION_COOKIE,
-} from "@cloud/oidc-session-store.ts";
+} from "@nteract/session";
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
 import worker from "./index.mjs";
 import { gatewayFixture } from "./gateway-fixture.mjs";
