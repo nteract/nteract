@@ -109,6 +109,23 @@ const base = "/opt/" + expected.service,
   configDir = "/etc/" + expected.service,
   state = "/var/lib/" + expected.service;
 const unit = "/etc/systemd/system/" + expected.service + ".service";
+if (profile.output) {
+  const { listen, revision, hostname } = profile.output;
+  const shell = run("curl", [
+    "--fail",
+    "--silent",
+    "--max-time",
+    "5",
+    "http://" + listen + "/frame/v2/?catalog=" + revision,
+  ]);
+  if (
+    !shell.includes('id="widget-catalog-map"') ||
+    !shell.includes("https://" + hostname + "/catalog/" + revision + "/")
+  )
+    throw Error(
+      "The isolated output service must serve the configured catalog before installation",
+    );
+}
 const owned = existsSync(configDir + "/ownership.json");
 const installedRuntime =
   owned && existsSync(base + "/celld") ? hash(readFileSync(base + "/celld")) : null;
@@ -322,6 +339,10 @@ const configPath = release + "/wrangler.json",
 if (config.main !== "index.js" || config.no_bundle !== true || config.build || config.containers)
   throw new Error("Unexpected build configuration");
 config.vars = {
+  ...(profile.output && {
+    PAGES_OUTPUT_FRAME_URL: "https://" + profile.output.hostname + "/frame/v2/",
+    PAGES_WIDGET_CATALOG_REVISION: profile.output.revision,
+  }),
   ...(profile.companyViewDomains ? { PAGES_COMPANY_VIEW_DOMAINS: profile.companyViewDomains } : {}),
   ...(profile.catalogIndex ? { PAGES_CATALOG_INDEX: profile.catalogIndex } : {}),
   ...(profile.pageQuota ? { PAGES_DEFAULT_PAGE_QUOTA: profile.pageQuota } : {}),

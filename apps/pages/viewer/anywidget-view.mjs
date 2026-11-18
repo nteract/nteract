@@ -19,7 +19,7 @@ import {
 import { viewDependencies } from "../shared/view-dependencies.mjs";
 import { fetchOutputAsset } from "./output-assets.mjs";
 import { mountModuleOutput, readHostContext } from "@nteract/output-frame";
-import { WIDGET_IMPORTS, widgetCatalogPin, localWidgetCatalog } from "./widget-imports.mjs";
+import { WIDGET_IMPORTS, widgetCatalogPin, hasWidgetCatalog } from "./widget-imports.mjs";
 import { themeStore } from "./theme.mjs";
 
 export function anywidgetPlan(view, sources) {
@@ -59,7 +59,7 @@ export function mount(
   button.textContent = "Retry interactive view";
   const output = root.appendChild(doc.createElement("div"));
   const catalog$ =
-    localWidgetCatalog(frameUrl) && sources.sources$
+    hasWidgetCatalog(frameUrl) && sources.sources$
       ? sources.sources$.pipe(
           map((all) => widgetCatalogPin(all[WIDGET_IMPORTS])),
           distinctUntilChanged(),

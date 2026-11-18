@@ -341,6 +341,57 @@ const targets = Object.freeze({
     }),
     frozenTargets: Object.freeze(["pages2"]),
   }),
+  page12: Object.freeze({
+    deployment: Object.freeze({
+      host: "lab2",
+      hostname: "page12.runtimed.run",
+      service: "nteract-page12",
+      bucket: shared.bucket,
+      prefix: "standalone/page12",
+      region: shared.region,
+      listen: "127.0.0.1:9484",
+      internalListen: "127.0.0.1:19484",
+      runtime: shared.runtime,
+      requiredVersion: shared.requiredVersion,
+    }),
+    output: Object.freeze({
+      hostname: "page12-output.runtimed.run",
+      listen: "127.0.0.1:9485",
+      revision: "bd4ead40d71a425f81af202fd5e98161e3146c71bc1390f89fe6d68f6c5ad319",
+    }),
+    sharing: true,
+    oauth: true,
+    theme: true,
+    viewerChunks: true,
+    viewerAssets: true,
+    projectLinks: true,
+    indexRoutes: true,
+    siftTables: true,
+    whoami: true,
+    accountRoutes: true,
+    linkPreviews: true,
+    cardImages: true,
+    projectAssets: true,
+    firewallTable: "nteract_page12",
+    // Below Tailscale's reserved mark mask (0x00ff0000).
+    firewallMark: "0x00004000",
+    firewallComment: "nteract/preview-infra standalone-page12",
+    companyViewDomains: "anaconda.com",
+    catalogIndex: "1",
+    pageQuota: "250",
+    // celld scopes both D1 databases to this target's fleet prefix.
+    d1: AUTH_D1,
+    otelTracesSampler: "always_on",
+    // lab2 also hosts pages2 with a 4G ceiling; leave room for the OS.
+    memory: Object.freeze({ maxRssMb: 1280, memoryMax: "2G" }),
+    sharedTunnel: false,
+    tunnelService: "cloudflared-page12.service",
+    tunnelSlots: Object.freeze({
+      a: Object.freeze({ service: "cloudflared-page12-a.service", metrics: "127.0.0.1:29484" }),
+      b: Object.freeze({ service: "cloudflared-page12-b.service", metrics: "127.0.0.1:29494" }),
+    }),
+    frozenTargets: Object.freeze(["pages2"]),
+  }),
 });
 /** Every deployment profile name, qualified or not. */
 export const DEPLOYMENT_TARGETS = Object.freeze(Object.keys(targets));
@@ -350,13 +401,13 @@ export function deploymentProfile(target) {
 }
 
 // Every profile is a live target. Installation and publication run only for
-// these four; app qualification is separate and must precede installation.
+// these five; app qualification is separate and must precede installation.
 // Page10 stays deployable until its Projects are copied to Pages.
-export const QUALIFIED_TARGETS = Object.freeze(["page10", "pages", "pages2", "page11"]);
+export const QUALIFIED_TARGETS = Object.freeze(["page10", "pages", "pages2", "page11", "page12"]);
 export function assertQualifiedDeploymentTarget(target) {
   deploymentProfile(target);
   if (!QUALIFIED_TARGETS.includes(target))
-    throw new Error("This build deploys only page10, pages, pages2 and page11");
+    throw new Error("This build deploys only page10, pages, pages2, page11 and page12");
 }
 
 // The record storage each target may hold Pages in, beyond the native modes
@@ -369,6 +420,7 @@ export const RECORD_STORAGE_HISTORY = Object.freeze({
   pages: Object.freeze(["automerge"]),
   pages2: Object.freeze(["automerge"]),
   page11: Object.freeze(["automerge"]),
+  page12: Object.freeze(["automerge"]),
 });
 // The format each target's documents are in, by document type. A release that
 // does not read a target's format cannot open its documents, so
@@ -382,6 +434,7 @@ export const TARGET_DOCUMENT_FORMATS = Object.freeze({
   pages: FORMAT_1_DOCUMENTS,
   pages2: FORMAT_1_DOCUMENTS,
   page11: FORMAT_1_DOCUMENTS,
+  page12: FORMAT_3_DOCUMENTS,
 });
 const NATIVE_RECORD_STORAGE = Object.freeze(["local", "buffered"]);
 

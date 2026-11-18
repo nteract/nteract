@@ -14,8 +14,8 @@ import {
 
 const scripts = path.dirname(fileURLToPath(import.meta.url));
 
-test("deployment targets are exactly the four qualified profiles", () => {
-  assert.deepEqual(QUALIFIED_TARGETS, ["page10", "pages", "pages2", "page11"]);
+test("deployment targets are exactly the five qualified profiles", () => {
+  assert.deepEqual(QUALIFIED_TARGETS, ["page10", "pages", "pages2", "page11", "page12"]);
   assert.deepEqual(DEPLOYMENT_TARGETS, QUALIFIED_TARGETS);
   for (const target of QUALIFIED_TARGETS)
     assert.doesNotThrow(() => assertQualifiedDeploymentTarget(target), target);

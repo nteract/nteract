@@ -21,7 +21,7 @@ import {
 import { parseAssetPath } from "../shared/dataset-assets.mjs";
 import { viewDependencies } from "../shared/view-dependencies.mjs";
 import { sourcesAnswer } from "./page-source-store.mjs";
-import { WIDGET_IMPORTS, localWidgetCatalog, widgetCatalogPin } from "./widget-imports.mjs";
+import { WIDGET_IMPORTS, hasWidgetCatalog, widgetCatalogPin } from "./widget-imports.mjs";
 import { Store } from "./store.mjs";
 
 export function sourceMediaLabel(type) {
@@ -282,7 +282,7 @@ export function sourcesPanelStore(session) {
               state.name === "unreadable" || state.name === "unserved"
                 ? state.name
                 : sourcesAnswer(state, sync?.link),
-              localWidgetCatalog(),
+              hasWidgetCatalog(),
             ),
           ),
           distinctUntilChanged(same),

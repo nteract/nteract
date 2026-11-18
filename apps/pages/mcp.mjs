@@ -1,4 +1,4 @@
-import { localCatalogRevision } from "./shared/widget-imports.mjs";
+import { configuredCatalogRevision } from "./shared/widget-imports.mjs";
 import { pagePath, readPageRoute } from "./shared/routes.mjs";
 import { hasNonce } from "./model/nonce.mjs";
 import { pagesPublicOrigin } from "./agent-guide.mjs";
@@ -988,7 +988,7 @@ export const tools = [
   ),
 ];
 
-function localWidgetTools() {
+function catalogWidgetTools() {
   return tools.map((tool) => {
     if (tool.name === "read_page")
       return {
@@ -1004,8 +1004,7 @@ function localWidgetTools() {
       catalog: {
         type: "string",
         enum: ["standard"],
-        description:
-          "set_widget_imports (local trial). Select the standard widget catalog in one operation.",
+        description: "set_widget_imports. Select the standard widget catalog in one operation.",
       },
       modules: {
         type: "array",
@@ -1206,7 +1205,7 @@ export async function handleMcp(request, invoke, env, { onInitialize } = {}) {
       cacheHints: CACHE_HINTS,
     });
     server.setRequestHandler("tools/list", async () => ({
-      tools: localCatalogRevision(env) ? localWidgetTools() : tools,
+      tools: configuredCatalogRevision(env) ? catalogWidgetTools() : tools,
     }));
     server.setRequestHandler("tools/call", async ({ params }, ctx) => {
       const requestId = ctx.mcpReq.id;

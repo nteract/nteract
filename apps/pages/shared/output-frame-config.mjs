@@ -23,7 +23,7 @@ export function outputFrameUrl(value = OUTPUT_FRAME_URL, pageOrigin) {
     url.password ||
     url.search ||
     url.hash ||
-    url.origin === page.origin
+    url.hostname === page.hostname
   )
     throw Error(
       "PAGES_OUTPUT_FRAME_URL must be HTTPS on a separate origin, without credentials, query or fragment",

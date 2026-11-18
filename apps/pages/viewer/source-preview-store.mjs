@@ -4,7 +4,7 @@ import { decodeWidgetImports } from "../shared/widget-imports.mjs";
 import { Observable, distinctUntilChanged, map, of, scan, switchMap } from "rxjs";
 import { sameVersion } from "./page-source-store.mjs";
 import { fetchOutputAsset } from "./output-assets.mjs";
-import { localWidgetCatalog, widgetCatalogPin } from "./widget-imports.mjs";
+import { hasWidgetCatalog, widgetCatalogPin } from "./widget-imports.mjs";
 import { Store } from "./store.mjs";
 
 export const TEXT_PREVIEW_LIMIT = 16000;
@@ -78,7 +78,7 @@ export function sourcePreviewStore(session, sourceId, read = fetchOutputAsset) {
                         assetId: version.asset_id,
                         preview: previewOf(
                           asset,
-                          localWidgetCatalog() ? widgetCatalogPin(version) : null,
+                          hasWidgetCatalog() ? widgetCatalogPin(version) : null,
                         ),
                       });
                       subscriber.complete();

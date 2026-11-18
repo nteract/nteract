@@ -2,8 +2,17 @@
 import { pathToFileURL } from "node:url";
 import { deploymentProfile, selectTarget, assertQualifiedDeploymentTarget } from "./profiles.mjs";
 const zone = "7de7c86232f80c97a7aabfc880186b63";
-export async function configureDns({ token, tunnelId, apply = false, fetchImpl = fetch, target }) {
-  const name = deploymentProfile(target).deployment.hostname;
+export async function configureDns({
+  token,
+  tunnelId,
+  apply = false,
+  fetchImpl = fetch,
+  target,
+  output = false,
+}) {
+  const profile = deploymentProfile(target);
+  const name = (output ? profile.output : profile.deployment)?.hostname;
+  if (!name) throw Error("This target has no output hostname");
   if (
     typeof token !== "string" ||
     !token ||

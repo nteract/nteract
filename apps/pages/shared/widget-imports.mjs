@@ -1,3 +1,4 @@
+import { outputFrameUrl } from "./output-frame-config.mjs";
 import { validSourceId, SOURCE_REVISION_PATTERN } from "./sources.mjs";
 const revisionPattern = new RegExp(SOURCE_REVISION_PATTERN);
 export const WIDGET_IMPORTS = "widget-imports";
@@ -11,12 +12,18 @@ export const standardImports = Object.freeze([
   "@nteract/sift/parquet",
 ]);
 export const catalogDigest = /^[a-f0-9]{64}$/;
-export function localCatalogRevision(env = {}) {
-  return catalogDigest.test(env.PAGES_WIDGET_CATALOG_REVISION) &&
-    URL.canParse(env.PAGES_OUTPUT_FRAME_URL) &&
-    new URL(env.PAGES_OUTPUT_FRAME_URL).hostname === "127.0.0.1"
-    ? env.PAGES_WIDGET_CATALOG_REVISION
-    : null;
+export function configuredCatalogRevision(env = {}) {
+  if (!catalogDigest.test(env.PAGES_WIDGET_CATALOG_REVISION) || !env.PAGES_OUTPUT_FRAME_URL)
+    return null;
+  try {
+    outputFrameUrl(
+      env.PAGES_OUTPUT_FRAME_URL,
+      env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN ?? "http://localhost",
+    );
+    return env.PAGES_WIDGET_CATALOG_REVISION;
+  } catch {
+    return null;
+  }
 }
 
 export function checkedModules(modules, reserved = standardImports) {

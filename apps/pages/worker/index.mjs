@@ -1,4 +1,4 @@
-import { localCatalogRevision } from "../shared/widget-imports.mjs";
+import { configuredCatalogRevision } from "../shared/widget-imports.mjs";
 import { declareWidgetImports, readWidgetImports } from "./widget-imports.mjs";
 import { hasNonce } from "../model/nonce.mjs";
 import * as A from "@automerge/automerge";
@@ -2033,7 +2033,7 @@ const gateway = {
               env.ASSETS,
               env.PAGES_OUTPUT_FRAME_URL,
               env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || url.origin,
-              { catalog: Boolean(localCatalogRevision(env)) },
+              { catalog: Boolean(configuredCatalogRevision(env)) },
             ),
           },
         });
@@ -7088,7 +7088,7 @@ export class Page {
           const options = {
             recovery: this.recoveryBlocked,
             historyIncomplete: incompleteHistory(this.handle.doc()),
-            widgetImports: localCatalogRevision(this.env)
+            widgetImports: configuredCatalogRevision(this.env)
               ? (doc) => readWidgetImports(this.env, this.metadata.pageId, doc)
               : undefined,
             getPresence: (doc) => this.activityState().read(doc),

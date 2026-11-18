@@ -1,6 +1,6 @@
 import { readSource, checkSources, validateSourceBatch } from "../model/sources-doc.mjs";
 import {
-  localCatalogRevision,
+  configuredCatalogRevision,
   checkedModules,
   decodeWidgetImports,
   standardImports,
@@ -9,7 +9,7 @@ import {
 import { imageAssetKey, persistPageAsset } from "./image-assets.mjs";
 
 export async function declareWidgetImports(env, pageId, doc, op) {
-  const pin = localCatalogRevision(env);
+  const pin = configuredCatalogRevision(env);
   if (!pin || op.catalog !== "standard") throw Error("The standard widget catalog is unavailable.");
   if (Object.keys(op).some((k) => !["op", "catalog", "modules", "source_revision"].includes(k)))
     throw Error("Unknown widget import declaration field.");

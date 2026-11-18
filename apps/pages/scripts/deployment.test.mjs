@@ -94,7 +94,7 @@ test("every deployable target owns a tunnel service, so publication never edits 
         profiles.deploymentProfile(target).frozenTargets ?? [],
       ]),
     ),
-    { page10: [], pages: [], pages2: [], page11: ["pages2"] },
+    { page10: [], pages: [], pages2: [], page11: ["pages2"], page12: ["pages2"] },
   );
 });
 
@@ -407,10 +407,9 @@ function installFixture(
       build_id: "0123456789ab",
       record_storage: CURRENT_RECORD_STORAGE,
       plain_storage_formats: CURRENT_PLAIN_STORAGE_FORMATS,
-      document_formats:
-        target === "page10"
-          ? { "pages.page": [3], "pages.comments": [2] }
-          : { "pages.page": [1], "pages.comments": [1] },
+      document_formats: ["page10", "page12"].includes(target)
+        ? { "pages.page": [3], "pages.comments": [2] }
+        : { "pages.page": [1], "pages.comments": [1] },
     },
   } = {},
 ) {
@@ -602,6 +601,16 @@ function installFixture(
           startedAt: Math.floor(Date.now() / 1000),
         });
         return "";
+      }
+      if (command === "curl" && args.at(-1).includes("/frame/v2/?catalog=")) {
+        const { hostname, revision } = profiles.deploymentProfile(target).output;
+        return (
+          '<script id="widget-catalog-map">https://' +
+          hostname +
+          "/catalog/" +
+          revision +
+          "/</script>"
+        );
       }
       if (command === "curl" && args.at(-1).endsWith("/state")) {
         const addr = args.at(-1).slice("http://".length, -"/state".length);
@@ -1017,7 +1026,7 @@ test("every deploy profile owns distinct hosts, ports, prefixes and firewall res
   // Every profile, so a new one can't skip the check. Ports are compared
   // across hosts too: a profile may move hosts, and its ports must stay free.
   const targets = profiles.DEPLOYMENT_TARGETS;
-  assert.deepEqual(targets, ["page10", "pages", "pages2", "page11"]);
+  assert.deepEqual(targets, ["page10", "pages", "pages2", "page11", "page12"]);
   const seen = new Map();
   const claim = (kind, value, target) => {
     if (value === undefined) return;
@@ -1111,7 +1120,7 @@ for (const target of Object.keys(frozenBy))
   });
 
 test("company viewing and the catalog index are enabled for every serving target", (t) => {
-  for (const target of ["page10", "pages", "pages2", "page11"]) {
+  for (const target of ["page10", "pages", "pages2", "page11", "page12"]) {
     const f = installFixture(t, { target });
     f.execute();
     const config = JSON.parse(f.read(f.release + "/wrangler.json"));
@@ -2203,7 +2212,7 @@ test("Pages refuses a release without plain storage from its history alone", () 
 });
 
 test("serving targets hold plain Pages for good, and no profile names record storage", () => {
-  for (const target of ["page10", "pages", "pages2", "page11"]) {
+  for (const target of ["page10", "pages", "pages2", "page11", "page12"]) {
     const profile = profiles.deploymentProfile(target);
     for (const key of ["recordStorage", "recordStorageMigration", "asyncPersistence"])
       assert.equal(profile[key], undefined, `${target} ${key}`);
