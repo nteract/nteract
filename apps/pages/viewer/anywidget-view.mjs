@@ -1,3 +1,4 @@
+import { decodeWidgetImports } from "../shared/widget-imports.mjs";
 import {
   Observable,
   combineLatest,
@@ -74,9 +75,7 @@ export function mount(
         map(([, , catalog]) => {
           try {
             const plan = anywidgetPlan(view, sources);
-            const url = new URL(frameUrl);
-            if (catalog) url.searchParams.set("catalog", catalog);
-            return { ...plan, frameUrl: url.href, key: JSON.stringify([plan.key, catalog]) };
+            return { ...plan, catalog, key: JSON.stringify([plan.key, catalog]) };
           } catch (error) {
             return { error: error.message };
           }
@@ -120,7 +119,7 @@ export function mount(
                           // Sequential bounded reads cap memory independently of number of bindings.
                           const assets = {};
                           let total = 0;
-                          for (const [name, version] of Object.entries(plan.versions)) {
+                          const load = async (version) => {
                             const asset = await fetchOutputAsset(sources.pageId, version, {
                               signal: controller.signal,
                               request: sources.request,
@@ -129,17 +128,35 @@ export function mount(
                             total += asset.bytes.byteLength;
                             if (total > OUTPUT_MAX_TOTAL_BYTES)
                               throw Error("This view's inputs exceed 32 MiB.");
-                            assets[name] = asset;
+                            return asset;
+                          };
+                          const url = new URL(frameUrl);
+                          const imports = {};
+                          if (plan.catalog) {
+                            const source = await load({
+                              asset_id: plan.catalog,
+                              media_type: "application/octet-stream",
+                            });
+                            const declaration = decodeWidgetImports(source.bytes, plan.catalog);
+                            url.searchParams.set("catalog", declaration.catalog_revision);
+                            for (const module of declaration.modules)
+                              imports[module.name] = await load({
+                                asset_id: module.asset_id,
+                                media_type: "text/javascript",
+                              });
                           }
+                          for (const [name, version] of Object.entries(plan.versions))
+                            assets[name] = await load(version);
                           outputHandle = mountOutput(
                             output,
                             {
                               title: plan.view.title,
                               spec: plan.spec,
                               assets,
+                              ...(Object.keys(imports).length && { imports }),
                             },
                             {
-                              frameUrl: plan.frameUrl,
+                              frameUrl: url.href,
                               hostContext: readHostContext(root, theme.getSnapshot().resolved),
                               onState(state, error) {
                                 if (controller.signal.aborted) return;

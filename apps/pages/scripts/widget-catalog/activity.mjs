@@ -1,6 +1,6 @@
 import { createElement as h, useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
-import { ToggleGroup, ToggleGroupItem, Separator } from "@nteract/pages-ui";
+import { ChoiceGroup } from "activity-controls";
 import * as Plot from "@observablehq/plot";
 import { max } from "d3";
 
@@ -47,17 +47,15 @@ function Activity({ days }) {
   return h(
     "div",
     null,
-    h(
-      ToggleGroup,
-      {
-        type: "single",
-        value: window,
-        onValueChange: (v) => v && setWindow(v),
-        "aria-label": "Activity window",
-      },
-      ...["7", "14"].map((v) => h(ToggleGroupItem, { key: v, value: v }, v + " days")),
-    ),
-    h(Separator),
+    h(ChoiceGroup, {
+      label: "Activity window",
+      value: window,
+      onChange: setWindow,
+      options: [
+        ["7", "7 days"],
+        ["14", "14 days"],
+      ],
+    }),
     h("p", { style: { marginTop: "0.75rem" } }, "Daily active people · last " + window + " days"),
     h("div", { ref: drawing }),
   );

@@ -58,10 +58,15 @@ try {
     assert.ok(!result.isError, result.content?.[0]?.text);
     return result.structuredContent ?? JSON.parse(result.content[0].text);
   }
+  assert.ok(
+    (await client.listTools()).tools
+      .find((t) => t.name === "edit_page")
+      .inputSchema.properties.operations.items.properties.op.enum.includes("set_widget_imports"),
+  );
   const { page_id } = await tool("create_page", {
-    title: "Activity explorer · widget imports",
+    title: "Activity explorer · Page modules",
     markdown:
-      "Two views share one pinned widget catalog. Explore these illustrative dogfooding counts, then open Sources to inspect the declaration and the two widget modules.",
+      "These example counts illustrate our dogfooding activity. Both views use the same controls. Open Widget imports in Sources to see which libraries come from the catalog and which component belongs to this Page.",
     nonce: crypto.randomUUID(),
   });
   const link = origin + "/p/" + page_id;
@@ -70,7 +75,7 @@ try {
     const { revision } = await tool("read_page", { page_id });
     return tool("edit_page", { page_id, revision, operations, nonce: crypto.randomUUID() });
   }
-  async function source(source_id, name, bytes, content_type) {
+  async function source(source_id, name, bytes, content_type, source_revision = null) {
     const cap = await tool("create_page_asset_upload", {
       page_id,
       content_type,
@@ -83,7 +88,7 @@ try {
     });
     assert.ok(uploaded.ok, await uploaded.clone().text());
     const { asset_id } = await uploaded.json();
-    await edit([{ op: "set_source", source_id, name, asset_id, source_revision: null }]);
+    await edit([{ op: "set_source", source_id, name, asset_id, source_revision }]);
     return asset_id;
   }
   const days = [2, 4, 3, 5, 2, 3, 4, 3, 5, 4, 3, 6, 5, 4].map((people, i) => ({
@@ -114,19 +119,34 @@ try {
   await expect(page.locator('.pages-anywidget-view[data-output-state="failed"]')).toHaveCount(2, {
     timeout: 30000,
   });
-  assert.equal(
-    await source(
-      "widget-imports",
-      "Widget imports · " + pin.slice(0, 8),
-      Buffer.from(manifest),
-      "application/octet-stream",
-    ),
-    pin,
+  const controls = await readFile(new URL("activity-controls.mjs", import.meta.url));
+  await source("controls", "Activity controls", controls, "text/javascript");
+  const declaration = {
+    op: "set_widget_imports",
+    catalog: "standard",
+    source_revision: null,
+    modules: [{ name: "activity-controls", source_id: "controls", revision: "1" }],
+  };
+  const initial = await tool("read_page", { page_id });
+  assert.equal(initial.widget_imports.available_catalog, "standard");
+  await assert.rejects(
+    edit([{ ...declaration, modules: [{ ...declaration.modules[0], name: "react" }] }]),
+    /unique bare name/,
   );
+  await edit([declaration]);
+  await assert.rejects(edit([declaration]), /stale_source|source exists/i);
+  const read = await tool("read_page", { page_id });
+  assert.equal(read.widget_imports.catalog_revision, pin);
+  assert.deepEqual(read.widget_imports.imports, Object.keys(JSON.parse(manifest).imports));
+  assert.equal(read.widget_imports.modules[0].revision, "1");
+  const nextControls = controls
+    .toString()
+    .replace('"aria-pressed":', '"data-controls-revision":"2","aria-pressed":');
+  assert.notEqual(nextControls, controls.toString());
+  await source("controls", "Activity controls", Buffer.from(nextControls), "text/javascript", "1");
   await expect(page.locator('.pages-anywidget-view[data-output-state="ready"]')).toHaveCount(2, {
     timeout: 30000,
   });
-  await client.close();
   await page.goto(link);
   const chart = page.frameLocator('iframe[title="Daily activity"]');
   const roles = page.frameLocator('iframe[title="Participation"]');
@@ -143,14 +163,11 @@ try {
       "Nov 1",
     );
     const off = chart.getByText("7 days", { exact: true });
-    await expect
-      .poll(() =>
-        off.evaluate(
-          (button) =>
-            getComputedStyle(button).color === getComputedStyle(document.documentElement).color,
-        ),
-      )
-      .toBe(true);
+    await expect(off).toHaveAttribute("aria-pressed", "false");
+    await expect(chart.getByRole("button", { name: "14 days", exact: true })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     await roles.getByText("Writers", { exact: true }).click();
     await expect(roles.locator("p")).toContainText("5 people edited");
     await expect(chart.locator("html")).toHaveAttribute("data-theme", scheme);
@@ -161,6 +178,25 @@ try {
       assert.ok(await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     }
   }
+  await expect(chart.locator('[data-controls-revision="2"]')).toHaveCount(0);
+  async function repin(revision) {
+    const { widget_imports } = await tool("read_page", { page_id });
+    await edit([
+      {
+        ...declaration,
+        source_revision: widget_imports.source_revision,
+        modules: [{ ...declaration.modules[0], revision }],
+      },
+    ]);
+  }
+  await repin("2");
+  await expect(chart.locator('[data-controls-revision="2"]')).toHaveCount(2);
+  await expect(roles.locator('[data-controls-revision="2"]')).toHaveCount(2);
+  await repin("1");
+  await expect(page.locator('.pages-anywidget-view[data-output-state="ready"]')).toHaveCount(2);
+  await expect(chart.getByRole("button", { name: "7 days" })).toBeVisible();
+  await expect(chart.locator('[data-controls-revision="2"]')).toHaveCount(0);
+  await client.close();
   await page.setViewportSize({ width: 1200, height: 950 });
   await page
     .locator(".sources-line")
@@ -168,7 +204,7 @@ try {
     .click();
   const panel = page.getByRole("dialog", { name: "Sources", exact: true });
   await expect(panel.getByRole("region", { name: "Widget imports" })).toContainText(
-    "@nteract/pages-ui",
+    "activity-controls",
   );
   await expect(panel).toContainText("Used on this Page · 2");
   console.log("Verified both widgets at wide and narrow widths. " + link);

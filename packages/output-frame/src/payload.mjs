@@ -12,17 +12,29 @@ export function preparePayload(payload) {
   )
     throw Error("Provide exactly the assets named by the widget spec.");
   let total = 0;
-  const assets = Object.fromEntries(
-    checked.names.map((name) => {
-      const input = inputs[name];
-      if (!(input?.bytes instanceof Uint8Array) || input.bytes.length > 5 * 1024 * 1024)
-        throw Error("Widget assets require Uint8Array bytes, at most 5 MiB each.");
-      total += input.bytes.length;
-      if (total > 32 * 1024 * 1024) throw Error("Widget assets exceed 32 MiB.");
-      return [
-        name,
-        { bytes: new Uint8Array(input.bytes), mediaType: input.mediaType, assetId: input.assetId },
-      ];
+  function copy(input) {
+    if (!(input?.bytes instanceof Uint8Array) || input.bytes.length > 5 * 1024 * 1024)
+      throw Error("Widget assets require Uint8Array bytes, at most 5 MiB each.");
+    total += input.bytes.length;
+    if (total > 32 * 1024 * 1024) throw Error("Widget assets exceed 32 MiB.");
+    return {
+      bytes: new Uint8Array(input.bytes),
+      mediaType: input.mediaType,
+      assetId: input.assetId,
+    };
+  }
+  const assets = Object.fromEntries(checked.names.map((name) => [name, copy(inputs[name])]));
+  const entries = Object.entries(payload.imports ?? {});
+  if (entries.length > 16) throw Error("At most 16 widget module imports are supported.");
+  const imports = Object.fromEntries(
+    entries.map(([name, input]) => {
+      if (
+        !/^[a-z][a-z0-9-]{0,63}$/.test(name) ||
+        name in Object.prototype ||
+        input?.mediaType !== "text/javascript"
+      )
+        throw Error("Widget imports require a bare name and text/javascript.");
+      return [name, copy(input)];
     }),
   );
   for (const [, definition] of widgetDefinitions(payload.spec)) {
@@ -31,5 +43,10 @@ export function preparePayload(payload) {
     if (definition._css && assets[definition._css].mediaType !== "text/css")
       throw Error("_css requires text/css.");
   }
-  return { title: payload.title, spec: structuredClone(payload.spec), assets };
+  return {
+    title: payload.title,
+    spec: structuredClone(payload.spec),
+    assets,
+    ...(entries.length && { imports }),
+  };
 }

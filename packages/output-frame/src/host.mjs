@@ -68,7 +68,10 @@ export function mountAnywidgetOutput(
       if (!data || typeof data !== "object") return;
       if (data.type === "connected" && state === "handshaking") {
         step("connected");
-        const transfers = Object.values(payload.assets).map((asset) => asset.bytes.buffer);
+        const transfers = [
+          ...Object.values(payload.assets),
+          ...Object.values(payload.imports ?? {}),
+        ].map((asset) => asset.bytes.buffer);
         try {
           step("mount");
           channel.port1.postMessage({ type: "mount", payload, context }, [...new Set(transfers)]);

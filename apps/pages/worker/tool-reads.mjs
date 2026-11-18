@@ -196,6 +196,7 @@ export async function readTool(
     revisions,
     recovery,
     historyIncomplete,
+    widgetImports,
     getPresence,
     commentsDoc,
     sourcesDoc,
@@ -311,6 +312,9 @@ export async function readTool(
     ...(sources_revision && { sources_revision }),
     // The Page's schema stamp; empty when it uses only the baseline.
     ...(operation === "read_page" && { schema_features: documentFeatures(doc) }),
+    ...(operation === "read_page" &&
+      status === 200 &&
+      widgetImports && { widget_imports: await widgetImports(sourcesDoc) }),
     ...(recovery && { recovery }),
     ...(historyIncomplete && { history_incomplete: historyIncomplete }),
   };

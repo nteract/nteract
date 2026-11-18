@@ -1,6 +1,7 @@
 // A local authoring trial. Only the configured loopback output host serves
 // this catalog. A declaration contains a digest, never an executable URL.
-export const WIDGET_IMPORTS = "widget-imports";
+import { WIDGET_IMPORTS } from "../shared/widget-imports.mjs";
+export { WIDGET_IMPORTS };
 export function localWidgetCatalog(
   frameUrl = globalThis.document?.querySelector('meta[name="pages-output-frame-url"]')?.content,
 ) {

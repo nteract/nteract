@@ -32,6 +32,7 @@ export interface AnywidgetOutput {
   title?: string;
   spec: AnywidgetSpec;
   assets: Record<string, OutputAsset>;
+  imports?: Record<string, OutputAsset>;
 }
 export interface OutputOptions {
   frameUrl: string;

@@ -561,3 +561,19 @@ test("removal immediately after render of an initialized child prevents a detach
   await rejected;
   assert.equal(rendered, 0);
 });
+
+test("Page imports have independent buffers and share the widget byte budget", () => {
+  const widget = { spec: { _esm: "code" }, assets: { code: asset("export default {}") } };
+  const input = asset("export const value = 1");
+  const payload = preparePayload({ ...widget, imports: { controls: input } });
+  assert.deepEqual(payload.imports.controls.bytes, input.bytes);
+  assert.notEqual(payload.imports.controls.bytes.buffer, input.bytes.buffer);
+  assert.throws(
+    () => preparePayload({ ...widget, imports: { controls: asset("x", "text/css") } }),
+    /text.javascript/,
+  );
+  assert.throws(() => preparePayload({ ...widget, imports: { "./controls": input } }), /bare name/);
+  const large = { bytes: new Uint8Array(5 * 1024 * 1024), mediaType: "text/javascript" };
+  const imports = Object.fromEntries(Array.from({ length: 6 }, (_, i) => ["module-" + i, large]));
+  assert.throws(() => preparePayload({ ...widget, assets: { code: large }, imports }), /32 MiB/);
+});

@@ -1,3 +1,4 @@
+import { localCatalogRevision } from "./shared/widget-imports.mjs";
 import { pagePath, readPageRoute } from "./shared/routes.mjs";
 import { hasNonce } from "./model/nonce.mjs";
 import { pagesPublicOrigin } from "./agent-guide.mjs";
@@ -988,6 +989,46 @@ export const tools = [
   ),
 ];
 
+function localWidgetTools() {
+  return tools.map((tool) => {
+    if (tool.name === "read_page")
+      return {
+        ...tool,
+        description:
+          tool.description + " widget_imports lists the Page’s pinned libraries and modules.",
+      };
+    if (tool.name !== "edit_page") return tool;
+    const local = structuredClone(tool);
+    const properties = local.inputSchema.properties.operations.items.properties;
+    properties.op.enum.push("set_widget_imports");
+    Object.assign(properties, {
+      catalog: {
+        type: "string",
+        enum: ["standard"],
+        description:
+          "set_widget_imports (local trial). Select the standard widget catalog in one operation.",
+      },
+      modules: {
+        type: "array",
+        maxItems: 16,
+        items: {
+          type: "object",
+          required: ["name", "source_id", "revision"],
+          additionalProperties: false,
+          properties: {
+            name: { type: "string" },
+            source_id: { type: "string", pattern: SOURCE_ID_PATTERN },
+            revision: { type: "string", pattern: SOURCE_REVISION_PATTERN },
+          },
+        },
+        description:
+          "Optional complete list of Page-owned JavaScript imports, each pinned to a named source revision.",
+      },
+    });
+    return local;
+  });
+}
+
 /** Codes only this endpoint emits, beside the service's own and the
  * status fallback (STATUS_FALLBACK_CODES). Every `code:` literal in this file
  * is listed here, and the agent guide documents each one. */
@@ -1165,7 +1206,9 @@ export async function handleMcp(request, invoke, env, { onInitialize } = {}) {
         richContentInstructions(origin),
       cacheHints: CACHE_HINTS,
     });
-    server.setRequestHandler("tools/list", async () => ({ tools }));
+    server.setRequestHandler("tools/list", async () => ({
+      tools: localCatalogRevision(env) ? localWidgetTools() : tools,
+    }));
     server.setRequestHandler("tools/call", async ({ params }, ctx) => {
       const requestId = ctx.mcpReq.id;
       const descriptor = tools.find((tool) => tool.name === params.name);

@@ -155,6 +155,18 @@ function SourceFilePreview({ session, source }) {
         <pre tabIndex={0}>
           <code>{preview.imports.join("\n")}</code>
         </pre>
+        {preview.modules?.length > 0 && (
+          <>
+            <h4>Page modules</h4>
+            <ul>
+              {preview.modules.map((m) => (
+                <li key={m.name}>
+                  <code>{m.name}</code> · {m.source_id} · revision {m.revision}
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
         <small title={preview.pin}>Catalog SHA-256 · {preview.pin.slice(0, 12)}</small>
       </section>
     );

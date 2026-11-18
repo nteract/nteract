@@ -141,19 +141,24 @@ function anywidgetGuide(origin, frameUrl) {
 
 ## Local widget imports
 
-Declare the catalog once per Page. Fetch the exact bytes of ${new URL("/catalog.json", frameUrl).href} and upload them as application/octet-stream. Set a source named widget-imports (source_id) to that asset. Its SHA-256 pins every anywidget on the Page to the same modules and component CSS. Read existing sources before setting it. To upgrade the catalog, update this source with its current source_revision.
+Read widget_imports on read_page to see the active catalog, import names, Page modules, and source_revision. Select the local standard catalog in one edit_page operation:
 
-The manifest lists available import names. For example:
+{"op":"set_widget_imports","catalog":"standard","source_revision":null}
+
+For a shared component, upload browser-ready text/javascript and set_source as usual. Declare its import name and exact source revision in the same catalog operation:
+
+{"op":"set_widget_imports","catalog":"standard","source_revision":null,"modules":[{"name":"activity-controls","source_id":"controls","revision":"1"}]}
+
+Use null for the first declaration. To replace it, pass the widget_imports.source_revision you read and the complete list of modules. Selecting standard captures the local catalog build. Each widget frame installs its own import map before loading widget code. New revisions of a component take effect only when you update the declaration. Module names cannot shadow the catalog. Theme tokens and native button styles are available in the frame.
 
 \`\`\`js
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { ToggleGroup, ToggleGroupItem, Separator } from "@nteract/pages-ui";
 import * as Plot from "@observablehq/plot";
-import * as d3 from "d3";
+import { ChoiceGroup } from "activity-controls";
 \`\`\`
 
-ToggleGroup takes type="single", value and onValueChange. Each ToggleGroupItem takes a value and a text child. Compile JSX before uploading, or use createElement. The frame supplies the controls' CSS and theme.
+Compile JSX before uploading, or use createElement.
 `
     : "";
   const counter = {
