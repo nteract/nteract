@@ -62,10 +62,10 @@ export function mediaGuideIndex(origin) {
   ).join("\n");
 }
 
-export function mediaGuide(path, origin, frameUrl) {
+export function mediaGuide(path, origin, { catalogEnabled = false } = {}) {
   const guide = MEDIA_GUIDES.find((entry) => entry.path === path);
   if (!guide) return null;
-  return `# Pages: ${guide.title}\n\nThese instructions describe the API supported by this deployment. Code examples use the HTTP tool envelope; in MCP, call the named tool with its arguments object. Replace angle-bracket placeholders with returned values. Do not send example placeholders literally.\n\n${guide.body(origin, frameUrl)}\n\n## Related guides\n\n${link(origin, "/llms.txt", "Pages entry point and authentication")}\n\n${mediaGuideIndex(origin)}\n`;
+  return `# Pages: ${guide.title}\n\nThese instructions describe the API supported by this deployment. Code examples use the HTTP tool envelope; in MCP, call the named tool with its arguments object. Replace angle-bracket placeholders with returned values. Do not send example placeholders literally.\n\n${guide.body(origin, catalogEnabled)}\n\n## Related guides\n\n${link(origin, "/llms.txt", "Pages entry point and authentication")}\n\n${mediaGuideIndex(origin)}\n`;
 }
 
 function assetsGuide(origin) {
@@ -103,7 +103,7 @@ Images can be inserted directly from an asset. A Parquet dataframe can use asset
 `;
 }
 
-function viewsGuide(origin) {
+function viewsGuide(origin, catalogEnabled) {
   return `Use a direct asset block when it already provides the presentation you need: insert_image for an image, or insert_node with type:dataframe for Parquet. A dataframe can also follow or pin a source. You do not need a separate view record for those cases.
 
 A view has its own identity, title, configuration and source bindings. A document block refers to that view by view_id. Use a view for a chart or an executable anywidget frontend. A view's media_type identifies its configuration format, while its inputs retain their own asset media types.
@@ -120,7 +120,7 @@ A plain JavaScript entry exports render({el, signal}) and can return a cleanup f
 
 {"module":{"source_id":"activity-chart","revision":"1"},"files":{"activity":{"source_id":"project-activity","revision":"1"}}}
 
-In the entry, \`import activity from "data/activity"\` returns a ByteSource scoped to this view. Its byteLength is the size in bytes. Its read(offset, length, signal) resolves to exactly that span as a Uint8Array. Each source can follow its current revision or specify a retained revision. Read the Parquet source with read_page and source_id to discover its columns. On the local standard catalog, import loadTableFile from the named exports of @nteract/sift/parquet. Use await loadTableFile(activity, {maxRows:28, overflow:"truncate"}) for a bounded leading preview and call table.dispose() when done. The host authorizes each range. Omitting a file binding leaves its alias unavailable to the view.
+In the entry, \`import activity from "data/activity"\` returns a ByteSource scoped to this view. Its byteLength is the size in bytes. Its read(offset, length, signal) resolves to exactly that span as a Uint8Array. Each source can follow its current revision or specify a retained revision. Read the Parquet source with read_page and source_id to discover its columns.${catalogEnabled ? ` To read Parquet with @nteract/sift/parquet, first follow the ${link(origin, "/llms/anywidget.txt", "Page imports setup")}. Then import its named export loadTableFile. Use await loadTableFile(activity, {maxRows:28, overflow:"truncate"}) for a bounded leading preview and call table.dispose() when done.` : ""} The host authorizes each range. Omitting a file binding leaves its alias unavailable to the view.
 
 ## Create, place, and inspect
 
@@ -142,26 +142,19 @@ unknown_source means a binding names a source not registered on this Page. unkno
 `;
 }
 
-function anywidgetGuide(origin, frameUrl) {
-  const local =
-    new URL(origin).hostname === "localhost" &&
-    frameUrl &&
-    URL.canParse(frameUrl) &&
-    new URL(frameUrl).hostname === "127.0.0.1";
-  const catalog = local
+function anywidgetGuide(origin, catalogEnabled) {
+  const catalog = catalogEnabled
     ? `
 
-## Local widget imports
+## Page imports
 
-Read widget_imports on read_page to see the active catalog, import names, Page modules, and source_revision. Select the local standard catalog in one edit_page operation:
+Before using a bare import such as \`@observablehq/plot\`, call read_page on the destination Page and inspect widget_imports. If catalog is null, available_imports lists names the deployment can provide. To activate them for this Page, send this edit with the Page revision you just read:
+${edit("select-widget-imports-001", [{ op: "set_widget_imports", catalog: "standard", source_revision: null }])}
+Read the Page again. When widget_imports.imports contains the exact name, the iframe can resolve it. Pages that already list the name can skip the edit. Each Page has its own declaration, including when you copy a widget from another Page.
 
-{"op":"set_widget_imports","catalog":"standard","source_revision":null}
-
-For a shared component, upload browser-ready text/javascript and set_source as usual. Declare its import name and exact source revision in the same catalog operation:
-
-{"op":"set_widget_imports","catalog":"standard","source_revision":null,"modules":[{"name":"activity-controls","source_id":"controls","revision":"1"}]}
-
-Use null for the first declaration. To replace it, pass the widget_imports.source_revision you read and the complete list of modules. Selecting standard captures the local catalog build. Each widget frame installs its own import map before loading widget code. New revisions of a component take effect only when you update the declaration. Module names cannot shadow the catalog. Theme tokens and native button styles are available in the frame.
+For a shared component, upload browser-ready text/javascript, register its source, and bind a name to its exact revision. To extend an existing declaration, use its current widget_imports.source_revision and include every module you want to keep:
+${edit("pin-widget-component-001", [{ op: "set_widget_imports", catalog: "standard", source_revision: "<widget_imports.source_revision>", modules: [{ name: "activity-controls", source_id: "controls", revision: "1" }] }])}
+Use null for the first declaration. The host pins the catalog build. Each widget frame installs its own import map before loading widget code. Updating a component pin updates the views that use it. Module names cannot shadow the catalog. Theme tokens and native button styles are available in the frame.
 
 \`\`\`js
 import { createElement } from "react";
@@ -171,6 +164,8 @@ import { ChoiceGroup } from "activity-controls";
 \`\`\`
 
 Compile JSX before uploading, or use createElement.
+
+If the browser reports “Failed to resolve module specifier”, compare that name with widget_imports.imports and the names in widget_imports.modules on this Page. For an available library on a Page with catalog:null, apply the selection above. Scroll the view into sight in an authenticated browser and exercise a control to verify the render. A successful edit receipt confirms the saved declaration; the browser resolves the imports when it mounts the view.
 `
     : "";
   const counter = {

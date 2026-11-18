@@ -994,7 +994,8 @@ function catalogWidgetTools() {
       return {
         ...tool,
         description:
-          tool.description + " widget_imports lists the Page’s pinned libraries and modules.",
+          tool.description +
+          " Check widget_imports before using bare imports. With catalog:null, available_imports lists libraries you can enable with set_widget_imports. After selection, imports lists the active names.",
       };
     if (tool.name !== "edit_page") return tool;
     const local = structuredClone(tool);
@@ -1004,7 +1005,8 @@ function catalogWidgetTools() {
       catalog: {
         type: "string",
         enum: ["standard"],
-        description: "set_widget_imports. Select the standard widget catalog in one operation.",
+        description:
+          "set_widget_imports. Enable bare library imports on this Page. Send this operation alone with the observed widget_imports.source_revision (null for first selection). See /llms/anywidget.txt.",
       },
       modules: {
         type: "array",

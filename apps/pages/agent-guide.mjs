@@ -1,3 +1,4 @@
+import { configuredCatalogRevision } from "./shared/widget-imports.mjs";
 import { mediaGuide, mediaGuideIndex } from "./agent-media-guides.mjs";
 import { identityProvider } from "./identity-provider.mjs";
 import { OAUTH_REFRESH_REUSE_SECONDS } from "./shared/oauth-grant.mjs";
@@ -1670,7 +1671,9 @@ export function agentGuideResponse(request, env) {
   const body =
     path === "/llms.txt"
       ? agentGuide(env)
-      : mediaGuide(path, pagesPublicOrigin(env), env.PAGES_OUTPUT_FRAME_URL);
+      : mediaGuide(path, pagesPublicOrigin(env), {
+          catalogEnabled: Boolean(configuredCatalogRevision(env)),
+        });
   if (body === null)
     return new Response(request.method === "HEAD" ? null : "Unknown guide. Start at /llms.txt.\n", {
       status: 404,

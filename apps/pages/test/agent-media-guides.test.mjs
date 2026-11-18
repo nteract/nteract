@@ -67,6 +67,68 @@ test("media guides are discoverable, public, and use the configured origin", asy
   }
 });
 
+test("a Page author can discover the same catalog setup through MCP and the public guides", async () => {
+  const hosted = "https://output.example/frame/v2/";
+  const local = "http://localhost:9917";
+  const loopback = "http://127.0.0.1:9447/frame/v2/";
+  const pin = "a".repeat(64);
+  for (const [site, frame, revision, enabled] of [
+    [origin, hosted, pin, true],
+    [local, loopback, pin, true],
+    [origin, hosted, undefined, false],
+    [local, loopback, undefined, false],
+    [origin, origin + "/frame/", pin, false],
+  ]) {
+    const config = {
+      NOTEBOOK_CLOUD_PUBLIC_ORIGIN: site,
+      PAGES_OUTPUT_FRAME_URL: frame,
+      PAGES_WIDGET_CATALOG_REVISION: revision,
+    };
+    const guide = await (
+      await worker.fetch(new Request(site + "/llms/anywidget.txt"), config)
+    ).text();
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    const response = await worker.fetch(
+      new Request(site + "/mcp", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          "Content-Length": String(body.length),
+        },
+        body,
+      }),
+      config,
+    );
+    assert.equal(response.status, 200, await response.clone().text());
+    const catalog = (await response.json()).result.tools;
+    const readTool = catalog.find((tool) => tool.name === "read_page");
+    const editTool = catalog.find((tool) => tool.name === "edit_page");
+    const ops = editTool.inputSchema.properties.operations.items.properties.op.enum;
+    assert.equal(ops.includes("set_widget_imports"), enabled);
+    assert.equal(guide.includes("set_widget_imports"), enabled, site);
+    assert.equal(readTool.description.includes("available_imports"), enabled);
+    const views = await (await worker.fetch(new Request(site + "/llms/views.txt"), config)).text();
+    assert.equal(views.includes("Page imports setup"), enabled);
+    if (enabled) {
+      const examples = [...guide.matchAll(/```json\n([\s\S]*?)\n```/g)].map((match) =>
+        JSON.parse(match[1]),
+      );
+      const setup = examples.find((example) =>
+        example.arguments.operations?.some((op) => op.op === "set_widget_imports"),
+      );
+      assert.equal(setup.operation, "edit_page");
+      assert.deepEqual(setup.arguments.operations, [
+        { op: "set_widget_imports", catalog: "standard", source_revision: null },
+      ]);
+      for (const field of editTool.inputSchema.required)
+        assert.ok(Object.hasOwn(setup.arguments, field));
+      assert.match(guide, /available_imports/);
+      assert.match(guide, /widget_imports\.imports/);
+    }
+  }
+});
+
 test("unknown guide paths return 404 rather than an app shell or login", async () => {
   for (const path of [
     "/llms/",
