@@ -3231,7 +3231,7 @@ async fn auto_launch_kernel_attempt(
     default_runtime: crate::runtime::Runtime,
     default_python_env: crate::settings_doc::PythonEnvType,
     daemon: std::sync::Arc<crate::daemon::Daemon>,
-    attempt: super::room::KernelLaunchAttempt,
+    mut attempt: super::room::KernelLaunchAttempt,
 ) -> Option<super::room::KernelLaunchAttempt> {
     if attempt.is_cancelled() {
         debug!("[notebook-sync] Auto-launch cancelled before environment resolution");
@@ -3819,8 +3819,15 @@ async fn auto_launch_kernel_attempt(
                 None
             }
             crate::project_trust::RoomProjectGate::Trusted(trusted) => Some(trusted),
-            crate::project_trust::RoomProjectGate::Parked
-            | crate::project_trust::RoomProjectGate::ContextChanged => return None,
+            // Requests that joined this generation return the same typed
+            // trust refusal as a manual owner.
+            crate::project_trust::RoomProjectGate::Parked => {
+                attempt.require_project_trust();
+                return None;
+            }
+            crate::project_trust::RoomProjectGate::ContextChanged
+            | crate::project_trust::RoomProjectGate::Cancelled
+            | crate::project_trust::RoomProjectGate::WriteFailed(_) => return None,
         };
 
     // For pixi:toml, verify ipykernel is in pixi.toml before launching.
