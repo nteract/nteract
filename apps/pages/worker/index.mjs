@@ -2033,6 +2033,7 @@ const gateway = {
               env.ASSETS,
               env.PAGES_OUTPUT_FRAME_URL,
               env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || url.origin,
+              { catalog: Boolean(localCatalogRevision(env)) },
             ),
           },
         });

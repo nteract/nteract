@@ -160,3 +160,27 @@ test("configured URL dollar sequences remain literal in the meta attribute", asy
   assert.ok(body.includes('content="https://widgets.example/$&amp;/$\'/$1/frame/v2/"'));
   assert.equal(body.match(/<body>/g).length, 1);
 });
+
+test("the configured catalog stays associated with its frame through an HTTPS proxy", async () => {
+  const { localWidgetCatalog } = await import("../viewer/widget-imports.mjs");
+  const assets = outputFrameAssets({ fetch: async () => asset() }, frame, origin, {
+    catalog: true,
+  });
+  const html = await (await assets.fetch(new Request(origin))).text();
+  assert.ok(html.includes(`content="${frame}" data-widget-catalog="enabled"`));
+  const config = { content: frame, dataset: { widgetCatalog: "enabled" } };
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "document");
+  try {
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: { querySelector: () => config },
+    });
+    assert.equal(localWidgetCatalog(frame), true);
+    assert.equal(localWidgetCatalog("https://other.example/frame/v2/"), false);
+    delete config.dataset.widgetCatalog;
+    assert.equal(localWidgetCatalog(frame), false);
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "document", previous);
+    else delete globalThis.document;
+  }
+});
