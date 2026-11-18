@@ -209,6 +209,24 @@ test("main uses the existing controller transport without PR comments or artifac
   assert.deepEqual(calls, [`${CONTROLLER}/authorize`, `${CONTROLLER}/deploy`, `${CONTROLLER}/deployments/${id}`]);
 });
 
+test("a merge queue entry takes the pull request lanes in Build", () => {
+  const workflow = readFileSync(new URL("../workflows/build.yml", import.meta.url), "utf8");
+  assert.match(workflow, /^  merge_group:\n    types: \[checks_requested\]$/m);
+  // Only two places may name the pull_request event: the concurrency group,
+  // which stays per pull request, and the definition of `pr_like`. A lane that
+  // tests the event itself treats a queue entry as a post-merge run.
+  const lanes = workflow
+    .replace(/^concurrency:\n(?:  .*\n)+/m, "")
+    .replace(/^      pr_like: .*\n/m, "");
+  assert.doesNotMatch(lanes, /github\.event_name [!=]= 'pull_request'/);
+  assert.doesNotMatch(lanes, /GITHUB_EVENT_NAME" = "pull_request" \]; then/);
+  const jobs = workflow.split("\njobs:\n")[1].split(/\n(?=  [a-z][\w-]*:\n)/);
+  for (const job of jobs) {
+    if (job.startsWith("  changes:") || !job.includes("needs.changes.outputs.pr_like")) continue;
+    assert.match(job, /^    needs:(?: \[[^\]]*\bchanges\b[^\]]*\]|\n(?:      - .*\n)*      - changes$)/m, job.split("\n")[0]);
+  }
+});
+
 test("cloud packaging validates PRs while main artifacts remain restricted to main pushes", () => {
   const workflow = readFileSync(new URL("../workflows/build.yml", import.meta.url), "utf8");
   const job = workflow.split("\n  build-ui:\n")[1].split("\n  js-tests:\n")[0];
@@ -216,7 +234,9 @@ test("cloud packaging validates PRs while main artifacts remain restricted to ma
   assert.doesNotMatch(job, /id-token:|secrets\.|send-main-deployment|deploy\.runtimed\.run/);
   assert.match(job, /\(github.event_name == 'push' && github.ref == 'refs\/heads\/main'\) \|\|/);
   const build = job.split("      - name: Build and validate cloud deployment bundle\n")[1].split("\n      - ")[0];
-  assert.match(build, /^        if: github.event_name == 'pull_request' \|\| \(github.event_name == 'push' && github.ref == 'refs\/heads\/main'\)$/m);
+  // `pr_like` covers a pull request and the merge queue entry that carries it.
+  assert.match(workflow, /^      pr_like: \$\{\{ github.event_name == 'pull_request' \|\| github.event_name == 'merge_group' \}\}$/m);
+  assert.match(build, /^        if: needs.changes.outputs.pr_like == 'true' \|\| \(github.event_name == 'push' && github.ref == 'refs\/heads\/main'\)$/m);
   assert.doesNotMatch(build, /base_ref|pull_request\.base|id-token:|upload-artifact|send-deployment/);
   const upload = job.split("      - name: Upload main cloud deployment bundle\n")[1].split("\n      - ")[0];
   assert.match(upload, /^        if: github.event_name == 'push' && github.ref == 'refs\/heads\/main'$/m);
