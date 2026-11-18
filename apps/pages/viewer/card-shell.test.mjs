@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as A from "@automerge/automerge";
+import { BehaviorSubject } from "rxjs";
+import { mount } from "./view-output.mjs";
+import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
 import { JSDOM } from "jsdom";
 import { createPageData, initializePage } from "../model/page.mjs";
 import { firstScreenSpans, shellBlocks, viewSettled } from "./card-shell.mjs";
@@ -93,4 +96,21 @@ test("a chart on the first screen holds the capture until Vega finishes or a sen
   assert.equal(viewSettled(embed({ state: "blocked" })), true);
   assert.equal(viewSettled(embed({ state: "failed" })), true);
   assert.equal(viewSettled(embed({ status: VIEW_EMBED_UNAVAILABLE })), true);
+});
+
+test("a card renders an interactive view as a live title without fetching its widget inputs", () => {
+  const section = embed();
+  const ready = (title) => ({ status: "ready", view: { title, media_type: ANYWIDGET_MEDIA_TYPE } });
+  const view$ = new BehaviorSubject(ready("Daily activity"));
+  const handle = mount(section, { view$, card: true });
+  try {
+    assert.equal(viewSettled(section), true);
+    assert.equal(section.querySelector("[data-widget-caption]").textContent, "Daily activity");
+    view$.next(ready("Participation"));
+    assert.equal(section.querySelector("[data-widget-caption]").textContent, "Participation");
+    assert.equal(section.querySelector("iframe"), null);
+  } finally {
+    handle.destroy();
+  }
+  assert.equal(section.querySelector("[data-widget-caption]"), null);
 });

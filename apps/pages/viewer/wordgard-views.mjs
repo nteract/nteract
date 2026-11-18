@@ -90,6 +90,7 @@ export function viewLifecycle({
   load = VIEW_RENDERER,
   onUnavailable = reportRendererUnavailable,
   comments = null,
+  card = false,
   ...options
 }) {
   const mirror = () => {
@@ -121,6 +122,7 @@ export function viewLifecycle({
           try {
             chart = chunk.mount(canvas, {
               view$: held.view$,
+              card,
               sources,
               sourcesAnswer$,
               ...(comments && {
@@ -315,7 +317,8 @@ const viewEmbed = Widget.define({
     a.eager === b.eager &&
     a.heights === b.heights &&
     a.warmup === b.warmup &&
-    a.comments === b.comments,
+    a.comments === b.comments &&
+    a.card === b.card,
   render(attrs) {
     const frame = viewFrame(attrs);
     mounted.set(frame.dom, {
@@ -327,6 +330,7 @@ const viewEmbed = Widget.define({
         sources: attrs.sources,
         sourcesAnswer$: attrs.sourcesAnswer$,
         comments: attrs.comments,
+        card: attrs.card,
         frame,
         ...(attrs.eager && { observe: alwaysNear }),
       }),
@@ -368,6 +372,7 @@ export function wordgardViews({
   sources = null,
   sourcesAnswer$ = null,
   eager = false,
+  card = false,
   heights = null,
   comments = null,
 } = {}) {
@@ -386,6 +391,7 @@ export function wordgardViews({
             sources,
             sourcesAnswer$,
             eager,
+            card,
             heights,
             warmup,
             comments,

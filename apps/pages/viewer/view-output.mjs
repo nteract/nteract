@@ -25,6 +25,20 @@ export function mount(container, options) {
       switchMap(
         (kind) =>
           new Observable((subscriber) => {
+            // A grid card is a raster image. Its renderer cannot read an
+            // opaque widget frame. Draw its caption without mounting code.
+            if (kind === "anywidget" && options.card) {
+              const caption = container.ownerDocument.createElement("p");
+              caption.dataset.widgetCaption = "";
+              container.append(caption);
+              const titles = view$.subscribe(({ view }) => {
+                caption.textContent = view?.title || "Interactive view";
+              });
+              return () => {
+                titles.unsubscribe();
+                caption.remove();
+              };
+            }
             let mounted;
             void (
               kind === "anywidget" ? import("./anywidget-view.mjs") : import("./view-chart.mjs")
