@@ -12,7 +12,7 @@ on:
       - apps/notebook-cloud/src/**
       - packages/local-oidc/src/**
       - packages/output-frame/**
-      - packages/runtimed/src/scope-capabilities.ts
+      - packages/identity/**
       - src/components/markdown/mermaid-renderer.ts
       - src/components/sharing/**
       - src/styles/notebook-tokens.css
@@ -24,7 +24,7 @@ on:
       - apps/notebook-cloud/src/**
       - packages/local-oidc/src/**
       - packages/output-frame/**
-      - packages/runtimed/src/scope-capabilities.ts
+      - packages/identity/**
       - src/components/markdown/mermaid-renderer.ts
       - src/components/sharing/**
       - src/styles/notebook-tokens.css
@@ -56,7 +56,7 @@ jobs:
           sparse-checkout: |
             apps/pages
             apps/notebook-cloud/src
-            packages/runtimed/src
+            packages/identity/src
             packages/local-oidc/src
             packages/output-frame
             src/components/markdown

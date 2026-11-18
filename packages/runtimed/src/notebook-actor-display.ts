@@ -4,7 +4,7 @@ import {
   notebookAgentBrandSlug,
   type NotebookActorKind,
 } from "./notebook-actor-projection";
-import { colorForActorIdentity } from "./notebook-actor-color";
+import { colorForActorIdentity } from "@nteract/identity";
 
 export interface ActorDisplayPeer {
   participantKey: string;

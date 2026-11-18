@@ -843,7 +843,7 @@ pub fn write_generated_files() -> std::io::Result<()> {
         generated_protocol_contract_ts(),
     )?;
     std::fs::write(
-        root.join("packages/runtimed/src/scope-capabilities.ts"),
+        root.join("packages/identity/src/scope-capabilities.ts"),
         generated_scope_capabilities_ts(),
     )?;
     Ok(())
@@ -863,7 +863,7 @@ mod tests {
         let wire_constants =
             std::fs::read_to_string(root.join("packages/runtimed/src/wire-constants.ts"))?;
         let scope_capabilities =
-            std::fs::read_to_string(root.join("packages/runtimed/src/scope-capabilities.ts"))?;
+            std::fs::read_to_string(root.join("packages/identity/src/scope-capabilities.ts"))?;
 
         assert_eq!(
             wire_constants,
@@ -874,7 +874,7 @@ mod tests {
         assert_eq!(
             scope_capabilities,
             generated_scope_capabilities_ts(),
-            "packages/runtimed/src/scope-capabilities.ts is stale; run `cargo run -p notebook-protocol --bin generate-runtimed-types`"
+            "packages/identity/src/scope-capabilities.ts is stale; run `cargo run -p notebook-protocol --bin generate-runtimed-types`"
         );
 
         assert_eq!(

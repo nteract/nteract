@@ -36,7 +36,7 @@ import {
   appSessionHasFreshVerifiedEmail,
   appSessionHasFreshVerifiedEmailDomain,
 } from "@cloud/app-session.ts";
-import { normalizeInviteEmail } from "@cloud/sharing.ts";
+import { normalizeInviteEmail } from "@nteract/identity";
 import { HttpError, logFailure } from "./auth.mjs";
 import { migrateSchema, withTimeout } from "./catalog-index.mjs";
 import { isolateSetup } from "./isolate-setup.mjs";

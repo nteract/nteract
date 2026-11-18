@@ -689,16 +689,15 @@ export function parseScope(value: string): ConnectionScope {
 }
 
 // Capability predicates re-exported from the generated hosted-room lattice
-// (`packages/runtimed/src/scope-capabilities.ts`). The daemon shares the same
-// scope model but uses a local-only blob-upload predicate so same-UID editor
-// attachments can keep working until hosted editor uploads ship with
-// reference-path validation.
+// (`@nteract/identity`). The daemon shares the same scope model but uses a
+// local-only blob-upload predicate so same-UID editor attachments can keep
+// working until hosted editor uploads ship with reference-path validation.
 export {
   allowsBlobUpload,
   allowsExecutionRequestSubmit,
   allowsNotebookWrite,
   allowsPublish,
-} from "runtimed";
+} from "@nteract/identity";
 
 export function parseActorLabel(value: string): ActorLabel {
   const delimiter = value.indexOf("/");

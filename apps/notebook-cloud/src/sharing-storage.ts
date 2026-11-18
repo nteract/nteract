@@ -6,8 +6,8 @@ import {
   ensureCatalogSchema,
   type PrincipalAccountLinkRow,
 } from "./storage.ts";
+import { normalizeInviteEmail } from "@nteract/identity";
 import {
-  normalizeInviteEmail,
   normalizeProviderHint,
   resolvePendingInvitesForLogin,
   type AuthenticatedLoginProfile,

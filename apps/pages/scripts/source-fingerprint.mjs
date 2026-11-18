@@ -80,8 +80,8 @@ export function sourceFingerprint(app, { root = repository(app), verifyInstalled
                 )
               : name === "@nteract/local-oidc"
                 ? path.join(root, "packages/local-oidc/src/index.ts")
-                : name === "runtimed"
-                  ? path.join(root, "packages/runtimed/src/scope-capabilities.ts")
+                : name === "@nteract/identity"
+                  ? path.join(root, "packages/identity/src/index.ts")
                   : undefined;
         // An import into a generated directory, such as the pinned upstream
         // checkout, is not source: setup.mjs and upstream-provenance.json pin it.

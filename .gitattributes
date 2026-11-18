@@ -1,7 +1,7 @@
 packages/runtimed/src/request-types.ts text eol=lf
 packages/runtimed/src/protocol-contract.ts text eol=lf
 packages/runtimed/src/wire-constants.ts text eol=lf
-packages/runtimed/src/scope-capabilities.ts text eol=lf
+packages/identity/src/scope-capabilities.ts text eol=lf
 
 # Attribution supplements verify exact upstream bytes, including line endings.
 scripts/licenses/** -text -whitespace

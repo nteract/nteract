@@ -24,7 +24,6 @@ The tarball holds:
 | `viewer/plugins/` | Renderer plugin assets the editor loads from `rendererAssetsBasePath` |
 | `output-document/` | `index.html`, the frame that renders untrusted cell output |
 | `wasm/runtimed-wasm/` | The `runtimed-wasm` engine (`runtimed_wasm.js` and `runtimed_wasm_bg.wasm`) for the host's server |
-| `protocol/` | The TypeScript protocol package source and its `package.json` |
 | `LICENSE` | License text |
 
 The bundle has no host endpoints, credentials, or origins baked in. They arrive
@@ -35,7 +34,8 @@ The packager fixes entry order, owners, modification times, and `built_at`
 inputs deterministic. Publication retries reuse the original packed bytes;
 rebuilding dependencies or the viewer is not a reproducibility guarantee.
 
-`protocol/` is source, not an npm package. Import it by path.
+Every directory is build output. The tarball carries no TypeScript source, so
+a host does not depend on how packages are split in this repository.
 
 ## Verify
 
@@ -107,7 +107,7 @@ sign-in when it carries `issuer`, `clientId`, and `redirectUri`;
 without those three keys, the editor runs with no sign-in.
 
 The endpoints point at a notebook server you run. That server imports the
-engine in `wasm/runtimed-wasm/` and the types in `protocol/`. Cross-origin
+engine in `wasm/runtimed-wasm/`. Cross-origin
 allow-lists, identity mapping, and credentials are that server's concern, not
 the editor's.
 

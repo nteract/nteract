@@ -1,5 +1,5 @@
 import { createSettledLookup } from "./settled-lookup.ts";
-import { normalizeInviteEmail } from "./sharing.ts";
+import { normalizeInviteEmail } from "@nteract/identity";
 
 export interface OidcUserInfo {
   sub: string;

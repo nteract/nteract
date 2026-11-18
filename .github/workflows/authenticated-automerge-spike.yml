@@ -10,7 +10,7 @@ on:
       - apps/notebook-cloud/src/**
       - packages/local-oidc/src/**
       - packages/output-frame/**
-      - packages/runtimed/src/scope-capabilities.ts
+      - packages/identity/**
       - src/components/markdown/mermaid-renderer.ts
       - src/components/sharing/**
       - src/styles/notebook-tokens.css
@@ -22,7 +22,7 @@ on:
       - apps/notebook-cloud/src/**
       - packages/local-oidc/src/**
       - packages/output-frame/**
-      - packages/runtimed/src/scope-capabilities.ts
+      - packages/identity/**
       - src/components/markdown/mermaid-renderer.ts
       - src/components/sharing/**
       - src/styles/notebook-tokens.css
@@ -54,7 +54,7 @@ jobs:
           sparse-checkout: |
             apps/pages
             apps/notebook-cloud/src
-            packages/runtimed/src
+            packages/identity/src
             packages/local-oidc/src
             packages/output-frame
             src/components/markdown
@@ -64,8 +64,8 @@ jobs:
         with:
           node-version: "24"
           package-manager-cache: false
-      # No root dependency installation: tsconfig.json resolves identity.ts's
-      # capability re-export to the actual scope-capabilities source. Shared
+      # No root dependency installation: tsconfig.json resolves
+      # @nteract/identity to packages/identity/src. Shared
       # Mermaid rendering and sharing UI use Pages' own pinned browser dependencies.
       # Keep checkout paths and filters in sync with imported verifier and UI sources.
       - name: Prepare pinned upstream packages and locked dependencies
@@ -93,7 +93,7 @@ jobs:
           sparse-checkout: |
             apps/pages
             apps/notebook-cloud/src
-            packages/runtimed/src
+            packages/identity/src
             packages/local-oidc/src
             packages/output-frame
             src/components/markdown
@@ -174,7 +174,7 @@ jobs:
           sparse-checkout: |
             apps/pages
             apps/notebook-cloud/src
-            packages/runtimed/src
+            packages/identity/src
             packages/local-oidc/src
             packages/output-frame
             src/components/markdown

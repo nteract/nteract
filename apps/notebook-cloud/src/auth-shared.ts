@@ -1,9 +1,9 @@
 // The scope union comes from the generated capability lattice
-// (`packages/runtimed/src/scope-capabilities.ts`, generated from
-// `nteract_identity::ConnectionScope`) so the Worker cannot drift from the
-// daemon's Rust enforcement. Keep the runtime guard local so dashboard/auth
-// code does not eagerly pull the notebook sync runtime into the app shell.
-import type { ConnectionScope } from "runtimed";
+// (`@nteract/identity`, generated from `nteract_identity::ConnectionScope`)
+// so the Worker cannot drift from the daemon's Rust enforcement. Keep the
+// runtime guard local so dashboard/auth code does not eagerly pull the
+// notebook sync runtime into the app shell.
+import type { ConnectionScope } from "@nteract/identity";
 
 export type { ConnectionScope };
 
