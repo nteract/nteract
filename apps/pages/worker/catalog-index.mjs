@@ -41,7 +41,7 @@
  * the same records: `pages_catalog_spaces`, the `space_id` column and the
  * `host/index/spaces-*` markers. project-api.mjs maps `space_id` in results.
  */
-import { sessionKeyring } from "@cloud/session-keyring.ts";
+import { sessionKeyring } from "@nteract/session";
 import { pageGrant, pageState } from "./access.mjs";
 import {
   accountIndexMachine,

@@ -616,6 +616,9 @@ importers:
       '@nteract/notebook-host':
         specifier: workspace:*
         version: link:../../packages/notebook-host
+      '@nteract/session':
+        specifier: workspace:*
+        version: link:../../packages/session
       lucide-react:
         specifier: ^0.513.0
         version: 0.513.0(react@19.2.7)
@@ -635,6 +638,9 @@ importers:
       '@playwright/test':
         specifier: ^1.59.1
         version: 1.59.1
+      '@runtimed/contract':
+        specifier: workspace:*
+        version: link:../../packages/contract
       '@runtimed/node':
         specifier: workspace:*
         version: link:../../packages/runtimed-node
@@ -677,6 +683,9 @@ importers:
 
   apps/operator:
     dependencies:
+      '@nteract/session':
+        specifier: workspace:*
+        version: link:../../packages/session
       react:
         specifier: 19.2.7
         version: 19.2.7
@@ -811,6 +820,12 @@ importers:
         specifier: 'catalog:'
         version: 0.1.16(@opentelemetry/api@1.9.1)(@types/node@24.12.2)(@voidzero-dev/vite-plus-core@0.1.16(@types/node@24.12.2)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3))(esbuild@0.28.0)(jiti@2.7.0)(jsdom@29.0.2)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)
 
+  packages/contract:
+    dependencies:
+      '@nteract/identity':
+        specifier: workspace:*
+        version: link:../identity
+
   packages/identity: {}
 
   packages/local-oidc:
@@ -886,6 +901,9 @@ importers:
       '@nteract/identity':
         specifier: workspace:*
         version: link:../identity
+      '@runtimed/contract':
+        specifier: workspace:*
+        version: link:../contract
       rxjs:
         specifier: ^7.8.2
         version: 7.8.2
@@ -934,6 +952,12 @@ importers:
   packages/runtimed-node/npm/win32-x64-msvc: {}
 
   packages/runtimed-wasm: {}
+
+  packages/session:
+    dependencies:
+      '@nteract/identity':
+        specifier: workspace:*
+        version: link:../identity
 
   packages/sift:
     dependencies:

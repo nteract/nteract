@@ -13,7 +13,9 @@ import {
 } from "./loopback.ts";
 import { loadOidcUserInfo, OidcUserInfoError } from "./oidc-userinfo.ts";
 import { createSettledLookup } from "./settled-lookup.ts";
+import type { AuthenticatedConnection, AuthenticatedConnectionMetadata } from "@nteract/identity";
 
+export type { AuthenticatedConnection, AuthenticatedConnectionMetadata } from "@nteract/identity";
 export {
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
   DEV_AUTH_TOKEN_HEADER,
@@ -26,15 +28,6 @@ export interface ActorLabel {
   value: string;
   principal: string;
   operator: string;
-}
-
-export interface AuthenticatedConnection {
-  principal: string;
-  operator: string;
-  actorLabel: string;
-  scope: ConnectionScope;
-  metadata: AuthenticatedConnectionMetadata;
-  webSocketProtocol?: string;
 }
 
 export interface IdentityEnvironment {
@@ -52,40 +45,6 @@ export interface IdentityEnvironment {
   NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE?: string;
   NOTEBOOK_CLOUD_OIDC_USERINFO?: string;
   NOTEBOOK_CLOUD_OIDC_USERINFO_ORIGIN?: string;
-}
-
-export interface AuthenticatedConnectionMetadata {
-  provider:
-    | "anonymous"
-    | "app-session"
-    | "dev"
-    | "oidc"
-    | "anaconda-api-key"
-    | "workstation-credential";
-  transport:
-    | "anonymous"
-    | "app-session-cookie"
-    | "loopback-dev"
-    | "dev-token-header"
-    | "dev-token-subprotocol"
-    | "api-key-bearer"
-    | "host-session-cookie"
-    | "oidc-bearer"
-    | "oidc-subprotocol"
-    | "workstation-credential-header";
-  principalNamespace: string;
-  displayName?: string;
-  avatarUrl?: string;
-  email?: string;
-  emailVerified?: boolean;
-  /** When the provider answer that verified `email` stops being current
-   * (epoch ms). Set for an Anaconda API key with an email. */
-  emailVerifiedUntil?: number;
-  identityVerifiedAt?: number;
-  verifiedEmailBinding?: string;
-  verifiedEmailDomainBinding?: string;
-  workstationCredentialId?: string;
-  workstationPairingCodeId?: string;
 }
 
 const ANONYMOUS_PRINCIPAL_PREFIX = "anonymous:";

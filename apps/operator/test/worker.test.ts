@@ -3,7 +3,7 @@ import { test, type TestContext } from "node:test";
 import { createLocalOidcIssuer } from "../../../packages/local-oidc/src/index.ts";
 import worker from "../src/worker.ts";
 import { requireAllowedIdentity, type OperatorEnvironment } from "../src/auth.ts";
-import { SERVER_SESSION_COOKIE } from "../../notebook-cloud/src/oidc-session-store.ts";
+import { SERVER_SESSION_COOKIE } from "@nteract/session";
 import { SqliteD1 } from "./sqlite.ts";
 
 const ORIGIN = "https://deploy.example.test";

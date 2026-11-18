@@ -1,4 +1,4 @@
-import { oidcDatabase } from "@cloud/oidc-session-store.ts";
+import { oidcDatabase } from "@nteract/session";
 import { withAdmissionReason } from "./admission-reasons.mjs";
 
 /*

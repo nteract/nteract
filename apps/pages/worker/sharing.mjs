@@ -1,4 +1,4 @@
-import { appSessionHasFreshVerifiedEmail } from "@cloud/app-session.ts";
+import { appSessionHasFreshVerifiedEmail } from "@nteract/session";
 import { MEMBER_ROLES, pageAccess, proposeAccessUpdate } from "./access.mjs";
 import { HttpError } from "./auth.mjs";
 import { domainViewRole } from "./authz.mjs";

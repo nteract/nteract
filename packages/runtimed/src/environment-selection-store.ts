@@ -7,7 +7,7 @@ import type {
   InstalledCondaPackageInventory,
   LocalEnvironmentTarget,
   NotebookResponse,
-} from "./request-types";
+} from "@runtimed/contract/requests";
 
 export interface EnvironmentSelectionState {
   selection: EnvironmentSelectionSnapshot | null;

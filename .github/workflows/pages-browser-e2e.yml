@@ -13,6 +13,7 @@ on:
       - packages/local-oidc/src/**
       - packages/output-frame/**
       - packages/identity/**
+      - packages/session/**
       - src/components/markdown/mermaid-renderer.ts
       - src/components/sharing/**
       - src/styles/notebook-tokens.css
@@ -25,6 +26,7 @@ on:
       - packages/local-oidc/src/**
       - packages/output-frame/**
       - packages/identity/**
+      - packages/session/**
       - src/components/markdown/mermaid-renderer.ts
       - src/components/sharing/**
       - src/styles/notebook-tokens.css
@@ -57,6 +59,7 @@ jobs:
             apps/pages
             apps/notebook-cloud/src
             packages/identity/src
+            packages/session/src
             packages/local-oidc/src
             packages/output-frame
             src/components/markdown

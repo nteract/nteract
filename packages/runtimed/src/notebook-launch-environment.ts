@@ -4,7 +4,7 @@ import type {
   ProjectFileExtras,
   ProjectFileKind,
   RuntimeState,
-} from "./runtime-state";
+} from "@runtimed/contract/runtime-state";
 import { getBoundedCacheValue, setBoundedCacheValue, stableCacheKey } from "./projection-cache";
 import type {
   NotebookRegisteredWorkstationProjection,

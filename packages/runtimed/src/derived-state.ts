@@ -11,7 +11,7 @@ import type {
   ProjectFileKind,
   QueueEntry,
   RuntimeState,
-} from "./runtime-state";
+} from "@runtimed/contract/runtime-state";
 
 // ── Kernel status ───────────────────────────────────────────────────
 

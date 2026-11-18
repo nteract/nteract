@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { createServerAppSession } from "@cloud/app-session.ts";
 import {
+  createServerAppSession,
   oidcDatabase,
   randomSecret,
   SERVER_SESSION_COOKIE,
   serverSessionContext,
   serverSessionId,
-} from "@cloud/oidc-session-store.ts";
+} from "@nteract/session";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { MEMBER_FORMATS } from "../model/document-types.mjs";
 import worker, { Page } from "../worker/index.mjs";

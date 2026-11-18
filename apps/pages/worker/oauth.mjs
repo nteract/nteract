@@ -4,7 +4,7 @@ import { FAVICON_LINK } from "../shared/favicon.mjs";
 import { PRODUCT_NAME, tabTitle } from "../shared/product.mjs";
 import { STYLESHEET, THEME_SCRIPT } from "../shared/shell-assets.mjs";
 import { serverOidcSessionStatus } from "@cloud/server-oidc.ts";
-import { loadServerSession, readServerAppSession } from "@cloud/oidc-session-store.ts";
+import { loadServerSession, readServerAppSession } from "@nteract/session";
 import {
   issueConsent,
   consumeConsent,

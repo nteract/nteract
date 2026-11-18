@@ -179,7 +179,9 @@ import {
   createCloudAppSessionCookie,
   readCloudAppSession,
   type CloudAppSession,
-} from "./app-session.ts";
+  SERVER_SESSION_COOKIE,
+  serverOidcEnabled,
+} from "@nteract/session";
 import { authenticateHostSessionRequest, hostSessionHealth } from "./host-session.ts";
 import {
   NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY,
@@ -192,7 +194,6 @@ import {
   trustsLoopbackRequestHeaders,
 } from "./loopback.ts";
 import { handleLocalOidcRequest, localOidcEnabled } from "./dev-oidc.ts";
-import { SERVER_SESSION_COOKIE, serverOidcEnabled } from "./oidc-session-store.ts";
 import {
   beginServerOidcLogin,
   completeServerOidcLogin,

@@ -47,6 +47,7 @@
     "@nteract/identity": "workspace:*",
     "@nteract/local-oidc": "workspace:*",
     "@nteract/notebook-host": "workspace:*",
+    "@nteract/session": "workspace:*",
     "lucide-react": "^0.513.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
@@ -55,6 +56,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",
+    "@runtimed/contract": "workspace:*",
     "@runtimed/node": "workspace:*",
     "@tailwindcss/vite": "^4.1.8",
     "@types/node": "^20.10.0",

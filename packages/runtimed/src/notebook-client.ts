@@ -27,7 +27,7 @@ import type {
   SourceReconciliation,
   SourceReconciliationBlockedReason,
   SourceReconciliationOperation,
-} from "./request-types";
+} from "@runtimed/contract/requests";
 
 export interface GuardedNotebookProvenance {
   observed_heads: string[];

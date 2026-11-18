@@ -10,17 +10,17 @@
 
 import type { Observable } from "rxjs";
 
-import type { NotebookResponse } from "./request-types";
+import type { NotebookResponse } from "@runtimed/contract/requests";
 
-import { FrameType } from "./wire-constants";
-import type { FrameTypeValue } from "./wire-constants";
+import { FrameType } from "@runtimed/contract/wire";
+import type { FrameTypeValue } from "@runtimed/contract/wire";
 export {
   FrameType,
   MAX_CONTROL_FRAME_SIZE,
   MAX_FRAME_SIZE,
   frameSizeLimits,
-} from "./wire-constants";
-export type { FrameSizeLimits, FrameTypeValue } from "./wire-constants";
+} from "@runtimed/contract/wire";
+export type { FrameSizeLimits, FrameTypeValue } from "@runtimed/contract/wire";
 
 export function sendAutomergeSyncFrame(
   transport: Pick<NotebookTransport, "sendFrame">,

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { chromium } from "@playwright/test";
-import { FrameType } from "runtimed/src/wire-constants.ts";
+import { FrameType } from "@runtimed/contract/wire";
 import { notebookCloudBaseUrl } from "./local-dev.mjs";
 
 // Only creates disposable LOCAL notebooks. Never accepts an existing notebook id.

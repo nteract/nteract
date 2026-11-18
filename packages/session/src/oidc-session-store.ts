@@ -1,4 +1,4 @@
-import type { D1Database, D1Value } from "./cloudflare-types.ts";
+import type { SessionDatabase, SessionDatabaseValue } from "./session-database.ts";
 import type { CloudAppSession } from "./app-session.ts";
 import {
   sessionKeyByKid,
@@ -9,7 +9,7 @@ import {
 } from "./session-keyring.ts";
 
 export interface ServerSessionEnvironment {
-  DB?: D1Database;
+  DB?: SessionDatabase;
   NOTEBOOK_CLOUD_OIDC_FLOW?: string;
   NOTEBOOK_CLOUD_APP_SESSION_SECRET?: string;
   NOTEBOOK_CLOUD_APP_SESSION_KEYS?: string;
@@ -42,13 +42,16 @@ export const OIDC_SESSION_SCHEMA = [
 // caller never awaits another caller's pending setup, so one that hangs can't
 // hold every later caller. Concurrent first callers each run the idempotent
 // schema; a host that wants one run at a time serializes them itself.
-const schemas = new WeakSet<D1Database>();
+const schemas = new WeakSet<SessionDatabase>();
 
 export function serverOidcEnabled(env: ServerSessionEnvironment): boolean {
   return env.NOTEBOOK_CLOUD_OIDC_FLOW === "server";
 }
 
-export async function oidcDatabase(env: ServerSessionEnvironment): Promise<D1Database> {
+/** Returns the caller's own binding, so a Worker keeps its full D1 type. */
+export async function oidcDatabase<Environment extends ServerSessionEnvironment>(
+  env: Environment,
+): Promise<NonNullable<Environment["DB"]>> {
   const db = env.DB;
   if (!db) throw new Error("Server sign-in requires database storage");
   if (!schemas.has(db)) {
@@ -195,7 +198,7 @@ function idMatch(ids: readonly string[]): string {
 // revokeServerSessionsFor creates and uses it.
 const SESSION_PRINCIPAL_INDEX = `CREATE INDEX IF NOT EXISTS oidc_session_principal
   ON oidc_server_sessions(json_extract(session_json, '$.principal'))`;
-const principalIndexes = new WeakSet<D1Database>();
+const principalIndexes = new WeakSet<SessionDatabase>();
 
 /**
  * Deletes every server session `principal` holds for this deployment's issuer,
@@ -370,11 +373,11 @@ function decode(value: string): Uint8Array<ArrayBuffer> {
 }
 
 export async function conditionalSessionUpdate(
-  db: D1Database,
+  db: SessionDatabase,
   row: ServerSessionRow,
   lease: string,
   set: string,
-  values: D1Value[],
+  values: SessionDatabaseValue[],
 ): Promise<boolean> {
   const result = await db
     .prepare(`UPDATE oidc_server_sessions SET ${set} WHERE id = ? AND generation = ? AND lease = ?`)

@@ -35,7 +35,7 @@
 import {
   appSessionHasFreshVerifiedEmail,
   appSessionHasFreshVerifiedEmailDomain,
-} from "@cloud/app-session.ts";
+} from "@nteract/session";
 import { normalizeInviteEmail } from "@nteract/identity";
 import { HttpError, logFailure } from "./auth.mjs";
 import { migrateSchema, withTimeout } from "./catalog-index.mjs";

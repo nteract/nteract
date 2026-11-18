@@ -31,7 +31,7 @@ import type {
   NotebookRequestOptions,
   NotebookTransport,
 } from "./transport";
-import type { NotebookResponse } from "./request-types";
+import type { NotebookResponse } from "@runtimed/contract/requests";
 import type { SessionStatus } from "./handle";
 
 // ── Server handle interface ──────────────────────────────────────────

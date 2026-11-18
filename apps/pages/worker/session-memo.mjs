@@ -41,7 +41,7 @@ import {
   SERVER_SESSION_COOKIE,
   serverSessionContext,
   serverSessionIds,
-} from "@cloud/oidc-session-store.ts";
+} from "@nteract/session";
 
 /** How long one read answers for in this isolate. Not configurable. */
 export const SESSION_MEMO_MS = 10_000;

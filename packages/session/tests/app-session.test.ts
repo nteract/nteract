@@ -1,6 +1,7 @@
+// @vitest-environment node
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import { describe, it } from "node:test";
+import { describe, it } from "vite-plus/test";
 import {
   NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME,
   NOTEBOOK_CLOUD_APP_SESSION_DISPLAY_NAME_MAX_LENGTH,
@@ -17,8 +18,8 @@ import {
   appSessionAccountKey,
   appSessionConfigured,
   type CloudAppSession,
-} from "../src/app-session";
-import type { AuthenticatedConnection } from "../src/identity";
+} from "../src/app-session.ts";
+import type { AuthenticatedConnection } from "@nteract/identity";
 
 const SESSION_SECRET = "0123456789abcdef0123456789abcdef";
 

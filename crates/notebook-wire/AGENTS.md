@@ -2,7 +2,7 @@
 
 The notebook app and the runtimed daemon communicate over a Unix socket (named pipe on Windows) using length-prefixed, typed frames. Traffic classes: Automerge sync, request/response, runtime/pool state sync, broadcasts, and presence/session-control.
 
-Scope: `crates/notebook-wire/`, `crates/notebook-doc/`, `crates/notebook-protocol/`, `crates/notebook-sync/`, `crates/runtime-doc/`, `crates/runtimed/src/notebook_sync_server/`, `crates/runtimed/src/requests/`, `packages/runtimed/src/{transport,protocol-contract,request-types}.ts`, `apps/notebook/src/lib/{frame-pipeline,notebook-frame-bus}.ts`.
+Scope: `crates/notebook-wire/`, `crates/notebook-doc/`, `crates/notebook-protocol/`, `crates/notebook-sync/`, `crates/runtime-doc/`, `crates/runtimed/src/notebook_sync_server/`, `crates/runtimed/src/requests/`, `packages/runtimed/src/{transport,protocol-contract}.ts`, `packages/contract/src/{request-types,wire-constants}.ts`, `apps/notebook/src/lib/{frame-pipeline,notebook-frame-bus}.ts`.
 
 ## Crate boundaries
 
@@ -121,8 +121,8 @@ After the handshake, frames carry a leading type byte:
 
 | Source of truth | File |
 |-----------------|------|
-| `FrameType` constants and caps | `crates/notebook-wire/src/lib.rs`, generated into `packages/runtimed/src/wire-constants.ts` |
-| Frontend `NotebookRequest` / `NotebookResponse` unions | `packages/runtimed/src/request-types.ts` |
+| `FrameType` constants and caps | `crates/notebook-wire/src/lib.rs`, generated into `packages/contract/src/wire-constants.ts` |
+| Frontend `NotebookRequest` / `NotebookResponse` unions | `packages/contract/src/request-types.ts` |
 | Discriminant lists + exhaustiveness checks | `packages/runtimed/src/protocol-contract.ts` |
 | Rust ↔ TS contract test | `crates/notebook-protocol/src/protocol.rs` |
 

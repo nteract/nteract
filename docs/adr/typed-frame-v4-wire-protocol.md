@@ -128,7 +128,7 @@ Every frame type has a hard cap (reject) and a soft warn threshold (log, continu
 | `SessionControl` | 1 MiB | 256 KiB | Tiny readiness JSON |
 | `PutBlob` | 32 MiB | 8 MiB | Single-frame blob upload ceiling |
 
-The caps and warns are defined in `notebook_wire::frame_size_limits` and generated into `packages/runtimed/src/wire-constants.ts` by `cargo run -p notebook-protocol --bin generate-runtimed-types`. JS consumers import `FrameType`, `MAX_FRAME_SIZE`, `MAX_CONTROL_FRAME_SIZE`, and `frameSizeLimits` through `packages/runtimed/src/transport.ts`, but the values come from the Rust source of truth.
+The caps and warns are defined in `notebook_wire::frame_size_limits` and generated into `packages/contract/src/wire-constants.ts` by `cargo run -p notebook-protocol --bin generate-runtimed-types`. JS consumers import `FrameType`, `MAX_FRAME_SIZE`, `MAX_CONTROL_FRAME_SIZE`, and `frameSizeLimits` from `@runtimed/contract/wire`, or through `packages/runtimed/src/transport.ts`, but the values come from the Rust source of truth.
 
 Two tests cover the generated surface:
 

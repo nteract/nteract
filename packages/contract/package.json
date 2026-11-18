@@ -1,0 +1,18 @@
+{
+  "name": "@runtimed/contract",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./wire": "./src/wire-constants.ts",
+    "./requests": "./src/request-types.ts",
+    "./runtime-state": "./src/runtime-state.ts",
+    "./scopes": "./src/scopes.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.test.json --noEmit"
+  },
+  "dependencies": {
+    "@nteract/identity": "workspace:*"
+  }
+}

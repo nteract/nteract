@@ -6,7 +6,7 @@ import {
   serverOidcSessionStatus,
 } from "../../notebook-cloud/src/server-oidc.ts";
 import { AuthError } from "../../notebook-cloud/src/identity.ts";
-import { sessionKeyring } from "../../notebook-cloud/src/session-keyring.ts";
+import { sessionKeyring } from "@nteract/session";
 import {
   allowedEmails,
   authorizeOperator,

@@ -8,7 +8,7 @@ import type {
   RuntimeStatePhase,
   SessionStatus,
 } from "./handle";
-import type { NotebookRequest, NotebookResponse } from "./request-types";
+import type { NotebookRequest, NotebookResponse } from "@runtimed/contract/requests";
 
 type MissingUnionMember<Union extends string, Values extends readonly string[]> = Exclude<
   Union,

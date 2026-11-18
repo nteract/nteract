@@ -44,6 +44,7 @@ jobs:
             apps/pages
             apps/notebook-cloud/src
             packages/identity/src
+            packages/session/src
             packages/local-oidc/src
             packages/output-frame
             src/components/markdown

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { DirectTransport } from "../src/direct-transport";
 import { NotebookClient } from "../src/notebook-client";
 import { EnvironmentSelectionStore } from "../src/environment-selection-store";
-import type { EnvironmentSelectionSnapshot, NotebookRequest } from "../src/request-types";
+import type { EnvironmentSelectionSnapshot, NotebookRequest } from "@runtimed/contract/requests";
 
 const rankings = {
   id: "conda:rankings",
