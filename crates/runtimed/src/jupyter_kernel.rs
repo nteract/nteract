@@ -153,6 +153,32 @@ fn kernel_process_exited_error(
     anyhow::anyhow!(message)
 }
 
+struct ConnectionFile(PathBuf);
+
+impl ConnectionFile {
+    fn create(path: &Path, json: &[u8]) -> std::io::Result<Self> {
+        use std::io::Write;
+        let mut options = std::fs::File::options();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(path)?;
+        let owner = Self(path.to_owned());
+        // Finish the small local write before yielding; cancellation cannot leave
+        // a background writer racing the owner's unlink.
+        let result = file.write_all(json);
+        drop(file);
+        result?;
+        Ok(owner)
+    }
+}
+
+impl Drop for ConnectionFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Only this owner waits on the child. An unreaped leader pins its process-group ID.
 struct KernelChild {
     child: tokio::process::Child,
@@ -589,8 +615,7 @@ pub struct JupyterKernel {
     kernel_actor_id: String,
     /// Connection info for the kernel.
     connection_info: Option<ConnectionInfo>,
-    /// Path to the connection file.
-    connection_file: Option<PathBuf>,
+    connection_file: Option<ConnectionFile>,
     /// Shell writer for sending execute requests.
     shell_writer: Option<jupyter_zmq_client::DealerSendConnection>,
     /// IPC socket path prefix for cleanup (Unix only).
@@ -1231,6 +1256,7 @@ impl KernelConnection for JupyterKernel {
         #[cfg(not(unix))]
         let ipc_prefix: Option<PathBuf> = None;
 
+        let connection_file;
         let (mut process, stderr_buffer, connection_info) = {
             if let Some(ref prefix) = ipc_prefix {
                 let connection_info = ConnectionInfo {
@@ -1245,11 +1271,10 @@ impl KernelConnection for JupyterKernel {
                     key: Uuid::new_v4().to_string(),
                     kernel_name: Some(kernelspec_name.to_string()),
                 };
-                tokio::fs::write(
+                connection_file = ConnectionFile::create(
                     &connection_file_path,
-                    serde_json::to_string_pretty(&connection_info)?,
-                )
-                .await?;
+                    &serde_json::to_vec_pretty(&connection_info)?,
+                )?;
                 info!(
                     "[jupyter-kernel] Wrote connection file: kernel_id={} transport=ipc path={} launch_elapsed_ms={}",
                     kernel_id,
@@ -1330,11 +1355,10 @@ impl KernelConnection for JupyterKernel {
                     key: Uuid::new_v4().to_string(),
                     kernel_name: Some(kernelspec_name.to_string()),
                 };
-                tokio::fs::write(
+                connection_file = ConnectionFile::create(
                     &connection_file_path,
-                    serde_json::to_string_pretty(&connection_info)?,
-                )
-                .await?;
+                    &serde_json::to_vec_pretty(&connection_info)?,
+                )?;
                 info!(
                     "[jupyter-kernel] Wrote connection file: kernel_id={} transport=tcp path={} ports={:?} launch_elapsed_ms={}",
                     kernel_id,
@@ -3288,7 +3312,7 @@ impl KernelConnection for JupyterKernel {
             kernel_id: kernel_id.clone(),
             kernel_actor_id,
             connection_info: Some(connection_info),
-            connection_file: Some(connection_file_path),
+            connection_file: Some(connection_file),
             shell_writer: Some(shell_writer),
             #[cfg(unix)]
             ipc_prefix,
@@ -3517,10 +3541,6 @@ impl KernelConnection for JupyterKernel {
         {
             // On non-Unix platforms, kill the child process directly
             // (process groups aren't available)
-        }
-
-        if let Some(ref path) = self.connection_file {
-            let _ = std::fs::remove_file(path);
         }
 
         #[cfg(unix)]
@@ -3802,11 +3822,6 @@ impl Drop for JupyterKernel {
             let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
         }
 
-        // Clean up connection file
-        if let Some(ref path) = self.connection_file {
-            let _ = std::fs::remove_file(path);
-        }
-
         #[cfg(unix)]
         if let Some(ref prefix) = self.ipc_prefix {
             cleanup_ipc_sockets(prefix);
@@ -3918,6 +3933,22 @@ mod tests {
     use super::*;
     use std::ffi::OsStr;
 
+    #[test]
+    fn connection_file_only_removes_its_own_claim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("kernel.json");
+        let owner = ConnectionFile::create(&path, b"original").unwrap();
+        assert_eq!(
+            ConnectionFile::create(&path, b"collision")
+                .err()
+                .unwrap()
+                .kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"original");
+        drop(owner);
+        assert!(!path.try_exists().unwrap());
+    }
     #[cfg(unix)]
     #[tokio::test]
     async fn installed_wrapper_descendants_close_on_failure_cancel_and_shutdown() {
