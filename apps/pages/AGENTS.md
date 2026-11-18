@@ -85,11 +85,17 @@ with Pages.
 - `@cloud/*` reaches into `apps/notebook-cloud/src`. Don't add imports through
   it. When Pages needs code from there, move the code into a package first and
   import the package from both apps.
-- A new shared source directory needs four changes in one pull request: the
-  `tsconfig.json` path, its entry in `scripts/source-fingerprint.mjs`, the path
-  filters and sparse checkouts in the Pages workflows, and a line in the pull
-  request that says so. The page10 controller keeps its own list of Pages
-  paths, and the maintainer updates it.
+
+When adding a shared source directory, include all four items in one pull
+request:
+
+1. Add its path mapping to `tsconfig.json`.
+2. Add it to `scripts/source-fingerprint.mjs`.
+3. Update the path filters and sparse checkouts in the Pages workflows.
+4. State the new shared source directory in the pull request description.
+
+The page10 controller has a separate list of Pages paths. The maintainer
+updates that list.
 
 ## Develop and verify
 
