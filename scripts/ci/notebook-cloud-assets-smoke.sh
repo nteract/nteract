@@ -52,7 +52,7 @@ const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) =>
 for (const rel of walk(root)) if (rel !== "manifest.json" && !listed.has(rel)) fail(`unlisted file ${rel}`);
 console.log(`${listed.size} files verified, protocol_version=${manifest.protocol_version}`);
 
-for (const dir of ["viewer", "output-document", "wasm/runtimed-wasm", "protocol/src", "identity/src"]) {
+for (const dir of ["viewer", "output-document", "wasm/runtimed-wasm"]) {
   if (![...listed].some((f) => f.startsWith(dir + "/"))) fail(`no files under ${dir}/`);
 }
 

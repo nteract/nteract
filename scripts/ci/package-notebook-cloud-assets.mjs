@@ -23,19 +23,15 @@ const USTAR_SIZE_MAX = 0o77777777777;
 // RFC 1952 OS byte for "Unix". zlib fills it from the build platform.
 const GZIP_OS_UNIX = 3;
 
-// Each entry: archive directory <- repository path.
+// Each entry: archive directory <- repository path. Every entry is build
+// output. Workspace source stays out of the archive, so the way packages are
+// split in this repository is not part of what a host pins.
 export const LAYOUT = [
   ["viewer", "apps/notebook-cloud/dist"],
   ["output-document", "apps/notebook-cloud/dist-output-document"],
   ["wasm/runtimed-wasm", "apps/notebook/src/wasm/runtimed-wasm"],
-  ["protocol/src", "packages/runtimed/src"],
-  ["identity/src", "packages/identity/src"],
 ];
-const SINGLE_FILES = [
-  ["protocol/package.json", "packages/runtimed/package.json"],
-  ["identity/package.json", "packages/identity/package.json"],
-  ["LICENSE", "LICENSE"],
-];
+const SINGLE_FILES = [["LICENSE", "LICENSE"]];
 
 export function readProtocolVersion(root = repoRoot) {
   const source = readFileSync(path.join(root, HANDSHAKE_RS), "utf8");

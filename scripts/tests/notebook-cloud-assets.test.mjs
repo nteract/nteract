@@ -24,10 +24,6 @@ function fixtureRoot({ protocolVersion = 99, extraFiles = [] } = {}) {
   };
   put(HANDSHAKE, `// fixture\npub const PROTOCOL_VERSION: u8 = ${protocolVersion};\n`);
   put("LICENSE", "license\n");
-  put("packages/runtimed/package.json", "{}\n");
-  put("packages/runtimed/src/index.ts", "export {};\n");
-  put("packages/identity/package.json", "{}\n");
-  put("packages/identity/src/index.ts", "export {};\n");
   put("apps/notebook-cloud/dist/assets/notebook-cloud-viewer.js", "//viewer\n");
   put("apps/notebook-cloud/dist/assets/notebook-cloud-viewer.css", "/* css */\n");
   put("apps/notebook-cloud/dist/assets/runtimed_wasm_bg.0123abcd.wasm", Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]));
@@ -35,7 +31,7 @@ function fixtureRoot({ protocolVersion = 99, extraFiles = [] } = {}) {
   put("apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm", Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]));
   put("apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm.js", "//glue\n");
   for (const [rel, data] of extraFiles) put(rel, data);
-  assert.equal(LAYOUT.length, 5);
+  assert.equal(LAYOUT.length, 3);
   return root;
 }
 
