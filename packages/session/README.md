@@ -8,8 +8,8 @@ keyring, the server session store, and the app session a request carries.
   `NOTEBOOK_CLOUD_APP_SESSION_SECRET`.
 - `oidc-session-store.ts`: the `oidc_login_transactions` and
   `oidc_server_sessions` tables (`OIDC_SESSION_SCHEMA`), session ids, sealing,
-  idle and absolute expiry, and the generation-and-lease fence that refresh
-  writes go through.
+  idle and absolute expiry. Before saving a refresh, the store checks that
+  the session id, generation, and lease value still match.
 - `app-session.ts`: `CloudAppSession`, the signed app-session cookie, the
   server-session projection, and verified-email proof.
 - `session-database.ts`: `SessionDatabase`, the part of a D1-style binding the
