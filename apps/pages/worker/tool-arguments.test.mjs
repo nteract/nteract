@@ -2,8 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import worker from "./index.mjs";
 import { gatewayFixture, pageId, privateOrigin, publicOrigin } from "./gateway-fixture.mjs";
-import { API_ARGUMENTS, REST_ARGUMENTS, allowedArguments } from "./tool-arguments.mjs";
-import { tools } from "../mcp.mjs";
+import {
+  API_ARGUMENTS,
+  REST_ARGUMENTS,
+  allowedArguments,
+  hostArguments,
+} from "./tool-arguments.mjs";
+import { CLEAR, tools } from "../mcp.mjs";
 
 /** A gateway whose Catalog records what reaches it and answers 200. */
 async function gateway(t) {
@@ -98,6 +103,58 @@ test("an argument an operation doesn't take is refused before anything runs, ove
   );
   assert.equal(g.forwarded.length, 0, "no Page saw a refused call");
   assert.deepEqual(g.catalog, [], "no Catalog saw a refused call");
+});
+
+test("CLEAR reaches the Page as null, over both transports, and null still does", async (t) => {
+  const g = await gateway(t);
+  const sent = async (send) => {
+    const before = g.forwarded.length;
+    await send();
+    assert.equal(g.forwarded.length, before + 1, "the call reached the Page");
+    return g.forwarded.at(-1).json();
+  };
+  const access = (role) => ({
+    page_id: pageId,
+    action: "set_role",
+    principal: "someone",
+    role,
+    expected_revision: 0,
+    nonce: crypto.randomUUID(),
+  });
+  for (const role of [CLEAR, null]) {
+    assert.equal((await sent(() => g.mcp("manage_page_access", access(role)))).role, null);
+    assert.equal(
+      (await sent(() => g.tool("bearer", "manage_page_access", access(role)))).role,
+      null,
+    );
+  }
+  assert.equal((await sent(() => g.mcp("manage_page_access", access("editor")))).role, "editor");
+
+  const setNode = (align) => ({
+    op: "set_node",
+    node_id: "n",
+    match_text: "Total",
+    attrs: { align, level: 2 },
+  });
+  const args = hostArguments("edit_page", {
+    page_id: pageId,
+    revision: "r1",
+    nonce: "n-123456",
+    operations: [
+      setNode(CLEAR),
+      setNode(null),
+      setNode("right"),
+      { op: "set_title", title: CLEAR },
+    ],
+  });
+  assert.deepEqual(
+    args.operations.map((operation) => operation.attrs?.align),
+    [null, null, "right", undefined],
+  );
+  // Only clearable attrs change; a title of "none" is a title.
+  assert.equal(args.operations[0].attrs.level, 2);
+  assert.equal(args.operations[3].title, CLEAR);
+  assert.equal(hostArguments("set_role_elsewhere", { role: CLEAR }).role, CLEAR);
 });
 
 test("delete_page with base_heads from an agent credential is refused and nothing is trashed", async (t) => {

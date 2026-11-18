@@ -41,6 +41,12 @@ test("tool schemas use only the JSON Schema subset clients forward as written", 
       types[0] !== "null" && (types.length === 1 || (types.length === 2 && types[1] === "null")),
       `${path} type`,
     );
+    // Gemini refuses a nullable enum: a clearable enum names CLEAR instead.
+    if (schema.enum)
+      assert.ok(
+        types.length === 1 && !schema.enum.includes(null),
+        `${path} is a nullable enum; use CLEAR`,
+      );
     for (const [name, property] of Object.entries(schema.properties ?? {}))
       visit(property, `${path}.${name}`);
     if (schema.items) visit(schema.items, `${path}[]`);

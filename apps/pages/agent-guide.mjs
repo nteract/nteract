@@ -568,7 +568,7 @@ ${part.sharingScopeParagraph}${emailInviteNote}
   link to the content document does not claim a Project invitation.
   Use action: revoke_invite with invite_id from the returned invites to cancel
   a pending invitation. Use action: set_role with an accepted member's returned
-  principal and role (or null to remove) to manage that membership. Project
+  principal and role (or none to remove) to manage that membership. Project
   company-domain sharing is not supported.
   Where the deployment's sign-in reports organizations, get_project_access also
   returns organizationOptions, organizationProof and organizationAccess, and
@@ -1521,7 +1521,7 @@ type takes paragraph or heading; a heading needs attrs.level (1 to 6), and
 type paragraph drops it. attrs.level changes an existing heading's level.
 attrs.checked applies to task list items, attrs.language to code blocks (an empty
 string makes plain text), and attrs.align to table cells: it aligns that cell's
-whole column, header included, and null clears it. A quote's or list item's first
+whole column, header included, and none clears it. A quote's or list item's first
 paragraph belongs to the quote or item, so a type change there is refused. Any
 other node is refused with invalid_edit_selector naming the node the text is in.
 Receipts include matched: 1 and, for align, cells. type paragraph on a paragraph
@@ -1793,7 +1793,7 @@ Page is still shared with that company but you cannot currently prove it; you ca
 set Restricted. Owners may POST to the same endpoint with
 an action, expected_revision from access.revision, and a new nonce.
 Actions are invite (email, role: viewer, commenter or editor), set_role (principal,
-role: viewer, commenter, editor or null to remove), revoke_invite (invite_id), and
+role: viewer, commenter, editor or none to remove), revoke_invite (invite_id), and
 set_domain_view. ${companyDomainSharing} ${organizationSharing}
 A 409 requires reading access again. An uncertain request can be retried with its identical nonce and body.`,
     fileImportParagraph: `A file import requires pages:read and pages:write plus current Page edit
@@ -2202,7 +2202,7 @@ means the Page is still shared with that company but you cannot currently prove
 it; you can set Restricted. Owners call manage_page_access with an action,
 expected_revision from access.revision, and a new nonce. Actions are
 invite (email, role: viewer, commenter or editor), set_role (principal, role:
-viewer, commenter, editor or null to remove), revoke_invite (invite_id), and
+viewer, commenter, editor or none to remove), revoke_invite (invite_id), and
 set_domain_view. ${companyDomainSharing} ${organizationSharing} A 409 requires reading access again. An uncertain request can be
 retried with its identical nonce and body.`,
     fileImportParagraph: `A file import requires pages:read and pages:write plus current Page edit

@@ -430,7 +430,7 @@ import { legibleEnv, overloadRetryAfterMs, withRepeatSafety } from "./host-busy.
 import { readTool } from "./tool-reads.mjs";
 import { DatasetSummaries } from "./dataset-summary.mjs";
 import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
-import { checkArguments } from "./tool-arguments.mjs";
+import { checkArguments, hostArguments } from "./tool-arguments.mjs";
 import { readChangesTool } from "./tool-changes.mjs";
 import { resolveWriters } from "./host-writers.mjs";
 import { PageActivity } from "./page-activity.mjs";
@@ -1201,6 +1201,7 @@ async function invoke(request, env, operation, args = {}, seen, call) {
   if (!operations.has(operation) && !(rest && REST_OPERATIONS.has(operation)))
     throw unknownOperation(operation, operations);
   if (!args || typeof args !== "object" || Array.isArray(args)) throw invalidArguments();
+  args = hostArguments(operation, args);
   const identity = await authenticate(request, env);
   if (seen) seen.identity = identity;
   if (
