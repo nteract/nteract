@@ -52,7 +52,7 @@ import {
   DEFAULT_RUNTIME_STATE,
   type RuntimeState,
   type WorkstationAttachmentState,
-} from "./runtime-state";
+} from "@runtimed/contract/runtime-state";
 
 /**
  * How long a `RUNNING_BUSY` transition is held back before being shown.

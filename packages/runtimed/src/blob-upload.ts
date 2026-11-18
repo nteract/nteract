@@ -1,5 +1,9 @@
 import { FrameType, type NotebookTransport } from "./transport";
-import type { BlobDurability, BlobUploadErrorKind, NotebookResponse } from "./request-types";
+import type {
+  BlobDurability,
+  BlobUploadErrorKind,
+  NotebookResponse,
+} from "@runtimed/contract/requests";
 
 export interface PutBlobResult {
   blob: string;

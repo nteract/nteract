@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import type { EnvProgressEvent } from "../src/runtime-state";
+import type { EnvProgressEvent } from "@runtimed/contract/runtime-state";
 import { envProgressKey, getEnvProgressStatusText, projectEnvProgress } from "../src/env-progress";
 
 describe("env progress projection", () => {

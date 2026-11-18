@@ -1,4 +1,8 @@
-import type { EnvProgressEnvType, EnvProgressEvent, EnvProgressPhase } from "./runtime-state";
+import type {
+  EnvProgressEnvType,
+  EnvProgressEvent,
+  EnvProgressPhase,
+} from "@runtimed/contract/runtime-state";
 
 export interface EnvProgressState {
   /** Whether environment preparation is currently active. */

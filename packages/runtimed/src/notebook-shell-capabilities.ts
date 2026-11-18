@@ -5,7 +5,10 @@ import type {
 } from "./notebook-edit-access";
 import type { NotebookActorProjection } from "./notebook-actor-projection";
 import { getBoundedCacheValue, setBoundedCacheValue, stableCacheKey } from "./projection-cache";
-import type { WorkstationAcceleratorState, WorkstationAttachmentState } from "./runtime-state";
+import type {
+  WorkstationAcceleratorState,
+  WorkstationAttachmentState,
+} from "@runtimed/contract/runtime-state";
 
 export type {
   NotebookActorOperator,

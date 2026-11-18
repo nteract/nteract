@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@nteract/identity": "workspace:*",
+    "@runtimed/contract": "workspace:*",
     "rxjs": "^7.8.2"
   },
   "devDependencies": {

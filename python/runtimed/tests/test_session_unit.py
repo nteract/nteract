@@ -288,7 +288,7 @@ class TestKernelErrorReasonConstants:
 
     def test_missing_ipykernel_matches_ts_mirror(self):
         """Value matches the TypeScript ``KERNEL_ERROR_REASON.MISSING_IPYKERNEL``."""
-        # The TS mirror lives in packages/runtimed/src/runtime-state.ts;
+        # The TS mirror lives in packages/contract/src/runtime-state.ts;
         # both ends must serialise to the same CRDT value.
         assert runtimed.KERNEL_ERROR_REASON.MISSING_IPYKERNEL == "missing_ipykernel"
 

@@ -1,4 +1,4 @@
-import type { WorkstationAttachmentState } from "./runtime-state";
+import type { WorkstationAttachmentState } from "@runtimed/contract/runtime-state";
 import { getBoundedCacheValue, setBoundedCacheValue, stableCacheKey } from "./projection-cache";
 
 export type NotebookComputeSessionStatus = "starting" | "active" | "stale" | "error";

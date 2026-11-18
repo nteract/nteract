@@ -13,10 +13,10 @@ import { SyncEngine } from "../src/sync-engine";
 import { DirectTransport } from "../src/direct-transport";
 import { FrameType } from "../src/transport";
 import { mergeChangesets } from "../src/cell-changeset";
-import { DEFAULT_PROJECT_TRUST_STATE, diffExecutions } from "../src/runtime-state";
+import { DEFAULT_PROJECT_TRUST_STATE, diffExecutions } from "@runtimed/contract/runtime-state";
 import type { FrameEvent, HostedBridgeStatus, SessionStatus, SyncableHandle } from "../src/handle";
 import type { CellChangeset } from "../src/cell-changeset";
-import type { RuntimeState } from "../src/runtime-state";
+import type { RuntimeState } from "@runtimed/contract/runtime-state";
 
 // ── Mock factories ──────────────────────────────────────────────────
 
@@ -1003,7 +1003,7 @@ describe("SyncEngine", () => {
       const engine = createEngine();
       engine.start();
 
-      const received: import("../src/runtime-state").ExecutionTransition[][] = [];
+      const received: import("@runtimed/contract/runtime-state").ExecutionTransition[][] = [];
       engine.executionTransitions$.subscribe((t) => received.push(t));
 
       transport.deliver(Array.from([0x05, 1]));
@@ -2062,7 +2062,8 @@ describe("SyncEngine", () => {
       const engine = setupWithInitialSync();
 
       const cellEmissions: (CellChangeset | null)[] = [];
-      const transitionEmissions: import("../src/runtime-state").ExecutionTransition[][] = [];
+      const transitionEmissions: import("@runtimed/contract/runtime-state").ExecutionTransition[][] =
+        [];
       engine.cellChanges$.subscribe((cs) => cellEmissions.push(cs));
       engine.executionTransitions$.subscribe((transitions) =>
         transitionEmissions.push(transitions),
@@ -2099,7 +2100,8 @@ describe("SyncEngine", () => {
       // Flush past coalescing to clear the "started" emission
       advanceBy(scheduler, 50);
 
-      const transitionEmissions: import("../src/runtime-state").ExecutionTransition[][] = [];
+      const transitionEmissions: import("@runtimed/contract/runtime-state").ExecutionTransition[][] =
+        [];
       engine.executionTransitions$.subscribe((transitions) =>
         transitionEmissions.push(transitions),
       );
@@ -2133,7 +2135,8 @@ describe("SyncEngine", () => {
       // Flush past coalescing
       advanceBy(scheduler, 50);
 
-      const transitionEmissions: import("../src/runtime-state").ExecutionTransition[][] = [];
+      const transitionEmissions: import("@runtimed/contract/runtime-state").ExecutionTransition[][] =
+        [];
       engine.executionTransitions$.subscribe((transitions) =>
         transitionEmissions.push(transitions),
       );
@@ -2167,7 +2170,8 @@ describe("SyncEngine", () => {
       // Flush past coalescing
       advanceBy(scheduler, 50);
 
-      const transitionEmissions: import("../src/runtime-state").ExecutionTransition[][] = [];
+      const transitionEmissions: import("@runtimed/contract/runtime-state").ExecutionTransition[][] =
+        [];
       engine.executionTransitions$.subscribe((transitions) =>
         transitionEmissions.push(transitions),
       );
@@ -2203,7 +2207,8 @@ describe("SyncEngine", () => {
       // Flush past coalescing to process the first emission
       advanceBy(scheduler, 50);
 
-      const transitionEmissions: import("../src/runtime-state").ExecutionTransition[][] = [];
+      const transitionEmissions: import("@runtimed/contract/runtime-state").ExecutionTransition[][] =
+        [];
       engine.executionTransitions$.subscribe((transitions) =>
         transitionEmissions.push(transitions),
       );
@@ -2239,7 +2244,8 @@ describe("SyncEngine", () => {
       // Deliver a sync frame that does NOT complete initial sync
       transport.deliver(Array.from([0x00, 1]));
 
-      const transitionEmissions: import("../src/runtime-state").ExecutionTransition[][] = [];
+      const transitionEmissions: import("@runtimed/contract/runtime-state").ExecutionTransition[][] =
+        [];
       engine.executionTransitions$.subscribe((transitions) =>
         transitionEmissions.push(transitions),
       );

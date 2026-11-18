@@ -849,6 +849,11 @@ jobs:
       - name: Type-check runtimed tests
         run: pnpm --dir packages/runtimed typecheck
 
+      # The contract tests assert request and response shapes with
+      # expectTypeOf, which only fails under tsc.
+      - name: Type-check contract tests
+        run: pnpm --dir packages/contract typecheck
+
       # Same enforcement for the cloud viewer stores' equality manifests and
       # store typing: no other lane runs the notebook-cloud tsc pass. Its
       # wasm-ensure-runtime pretypecheck is satisfied by the artifact build
