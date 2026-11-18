@@ -198,6 +198,7 @@ const onScreen = (element) => element.getBoundingClientRect().top < CARD_HEIGHT;
  * couldn't load (view-draw.mjs), or a chart chunk that didn't load.
  */
 export function viewSettled(embed) {
+  if (embed.querySelector("[data-widget-caption]")) return true;
   const view = embed.querySelector(".pages-view");
   const state = view?.dataset.viewState;
   if (state === "blocked" || state === "failed") return true;
