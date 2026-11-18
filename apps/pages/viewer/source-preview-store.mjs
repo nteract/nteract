@@ -3,6 +3,7 @@
 import { Observable, distinctUntilChanged, map, of, scan, switchMap } from "rxjs";
 import { sameVersion } from "./page-source-store.mjs";
 import { fetchOutputAsset } from "./output-assets.mjs";
+import { localWidgetCatalog, widgetCatalogPin } from "./widget-imports.mjs";
 import { Store } from "./store.mjs";
 
 export const TEXT_PREVIEW_LIMIT = 16000;
@@ -23,7 +24,17 @@ export function previewTransition(state, event) {
   return state;
 }
 
-export function previewOf({ bytes, mediaType }) {
+export function previewOf({ bytes, mediaType }, catalogPin = null) {
+  if (catalogPin && bytes.byteLength <= TEXT_PREVIEW_LIMIT) {
+    const manifest = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    if (
+      !manifest?.imports ||
+      Array.isArray(manifest.imports) ||
+      typeof manifest.imports !== "object"
+    )
+      throw Error("This source does not contain a widget catalog.");
+    return { kind: "catalog", imports: Object.keys(manifest.imports), pin: catalogPin };
+  }
   if (mediaType === "text/javascript" || mediaType === "text/css") {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     return {
@@ -65,7 +76,10 @@ export function sourcePreviewStore(session, sourceId, read = fetchOutputAsset) {
                       subscriber.next({
                         type: "loaded",
                         assetId: version.asset_id,
-                        preview: previewOf(asset),
+                        preview: previewOf(
+                          asset,
+                          localWidgetCatalog() ? widgetCatalogPin(version) : null,
+                        ),
                       });
                       subscriber.complete();
                     })

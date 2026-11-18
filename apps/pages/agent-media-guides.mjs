@@ -58,10 +58,10 @@ export function mediaGuideIndex(origin) {
   ).join("\n");
 }
 
-export function mediaGuide(path, origin) {
+export function mediaGuide(path, origin, frameUrl) {
   const guide = MEDIA_GUIDES.find((entry) => entry.path === path);
   if (!guide) return null;
-  return `# Pages: ${guide.title}\n\nThese instructions describe the API supported by this deployment. Code examples use the HTTP tool envelope; in MCP, call the named tool with its arguments object. Replace angle-bracket placeholders with returned values. Do not send example placeholders literally.\n\n${guide.body(origin)}\n\n## Related guides\n\n${link(origin, "/llms.txt", "Pages entry point and authentication")}\n\n${mediaGuideIndex(origin)}\n`;
+  return `# Pages: ${guide.title}\n\nThese instructions describe the API supported by this deployment. Code examples use the HTTP tool envelope; in MCP, call the named tool with its arguments object. Replace angle-bracket placeholders with returned values. Do not send example placeholders literally.\n\n${guide.body(origin, frameUrl)}\n\n## Related guides\n\n${link(origin, "/llms.txt", "Pages entry point and authentication")}\n\n${mediaGuideIndex(origin)}\n`;
 }
 
 function assetsGuide(origin) {
@@ -130,7 +130,32 @@ unknown_source means a binding names a source not registered on this Page. unkno
 `;
 }
 
-function anywidgetGuide(origin) {
+function anywidgetGuide(origin, frameUrl) {
+  const local =
+    new URL(origin).hostname === "localhost" &&
+    frameUrl &&
+    URL.canParse(frameUrl) &&
+    new URL(frameUrl).hostname === "127.0.0.1";
+  const catalog = local
+    ? `
+
+## Local widget imports
+
+Declare the catalog once per Page. Fetch the exact bytes of ${new URL("/catalog.json", frameUrl).href} and upload them as application/octet-stream. Set a source named widget-imports (source_id) to that asset. Its SHA-256 pins every anywidget on the Page to the same modules and component CSS. Read existing sources before setting it. To upgrade the catalog, update this source with its current source_revision.
+
+The manifest lists available import names. For example:
+
+\`\`\`js
+import { createElement } from "react";
+import { createRoot } from "react-dom/client";
+import { ToggleGroup, ToggleGroupItem, Separator } from "@nteract/pages-ui";
+import * as Plot from "@observablehq/plot";
+import * as d3 from "d3";
+\`\`\`
+
+ToggleGroup takes type="single", value and onValueChange. Each ToggleGroupItem takes a value and a text child. Compile JSX before uploading, or use createElement. The frame supplies the controls' CSS and theme.
+`
+    : "";
   const counter = {
     op: "set_view",
     view_id: "counter",
@@ -152,7 +177,7 @@ function anywidgetGuide(origin) {
     },
     view_revision: null,
   };
-  return `Author an [Anywidget Front-End Module](https://anywidget.dev/en/afm/). Pages supplies local model state in an isolated iframe. The Pages envelope is \`${ANYWIDGET_MEDIA_TYPE}\`; it is not a Jupyter widget-view model_id reference.
+  return `Author an [Anywidget Front-End Module](https://anywidget.dev/en/afm/). Pages supplies local model state in an isolated iframe. The Pages envelope is \`${ANYWIDGET_MEDIA_TYPE}\`; it is not a Jupyter widget-view model_id reference.${catalog}
 
 ## A complete counter
 
