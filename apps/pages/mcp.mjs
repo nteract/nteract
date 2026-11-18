@@ -213,13 +213,26 @@ const locator = {
   context_after: matchProperties.context_after,
   occurrence: matchProperties.occurrence,
 };
+/**
+ * The value a clearable enum advertises for "clear it". The host stores null.
+ *
+ * A nullable enum (`type: ["string", "null"]` with null among its values) is
+ * valid JSON Schema, but Gemini refuses the whole tool list over it: clients
+ * lower the type array to `anyOf`, and Gemini allows no keyword beside
+ * `anyOf`. So the schema names CLEAR instead, and the public boundary
+ * (worker/tool-arguments.mjs hostArguments) turns it into null. null is still
+ * accepted. If every client Pages serves accepts nullable enums, the schema can
+ * go back to null and CLEAR can be dropped.
+ */
+export const CLEAR = "none";
+const clearable = (values) => ({ type: "string", enum: [...values, CLEAR] });
 // set_node's attrs schema, from model/node-registry.mjs: one property per
 // settable attribute, under the name read_page reports.
 const ATTR_DESCRIPTIONS = {
   level: "Heading level, 1 to 6.",
   language: 'Code block language; "" for plain text.',
   checked: "Task item checked.",
-  align: "Alignment of the column holding match_text; null clears it.",
+  align: `Alignment of the column holding match_text; ${CLEAR} clears it.`,
 };
 const attrSchema = ({ spec }) =>
   spec.type === "boolean"
@@ -227,10 +240,9 @@ const attrSchema = ({ spec }) =>
     : spec.type === "integer"
       ? { type: "integer", minimum: spec.min, maximum: spec.max }
       : spec.type === "enum"
-        ? {
-            type: spec.nullable ? ["string", "null"] : "string",
-            enum: [...spec.values, ...(spec.nullable ? [null] : [])],
-          }
+        ? spec.nullable
+          ? clearable(spec.values)
+          : { type: "string", enum: [...spec.values] }
         : { ...string, maxLength: 64 };
 /** A Page-local asset: the SHA-256 of its bytes, as an upload returns it. */
 const assetId = { type: "string", pattern: "^[a-f0-9]{64}$" };
@@ -453,7 +465,7 @@ const accessPrincipal = {
   maxLength: 512,
   description: "Account principal from an access read; never guessed.",
 };
-const accessRole = { type: ["string", "null"], enum: ["viewer", "commenter", "editor", null] };
+const accessRole = clearable(["viewer", "commenter", "editor"]);
 const tool = (name, description, properties, required, annotations, share = false) => {
   if (!annotations || HINTS.some((hint) => typeof annotations[hint] !== "boolean"))
     throw Error(`${name} must declare ${HINTS.join(", ")}`);
@@ -494,7 +506,7 @@ export const tools = [
   ),
   tool(
     "manage_page_access",
-    "Change direct Page sharing as its owner, at access.revision from get_page_access. invite: email and role. set_role: principal and role (null removes). revoke_invite: invite_id. set_domain_view: a domainOptions domain (or domainView's to lower) and role, or null. set_organization_access: organization_id from organizationOptions and role, or null. Grants never cover sub-pages. Needs pages:share consent.",
+    "Change direct Page sharing as its owner, at access.revision from get_page_access. invite: email and role. set_role: principal and role (none removes). revoke_invite: invite_id. set_domain_view: a domainOptions domain (or domainView's to lower) and role, or null. set_organization_access: organization_id from organizationOptions and role, or null. Grants never cover sub-pages. Needs pages:share consent.",
     {
       page_id: page,
       action: {
@@ -527,7 +539,7 @@ export const tools = [
   ),
   tool(
     "manage_project_access",
-    "Share a whole Project as its owner, at the revision from get_project_access. invite takes an exact known email and role; no email is sent. set_role takes a member's principal (null removes). revoke_invite takes invite_id. set_organization_access: organization_id from organizationOptions and role, or null. Project access covers content and all Pages; direct Page grants stay separate. Needs pages:share consent.",
+    "Share a whole Project as its owner, at the revision from get_project_access. invite takes an exact known email and role; no email is sent. set_role takes a member's principal (none removes). revoke_invite takes invite_id. set_organization_access: organization_id from organizationOptions and role, or null. Project access covers content and all Pages; direct Page grants stay separate. Needs pages:share consent.",
     {
       project_id: project,
       action: {

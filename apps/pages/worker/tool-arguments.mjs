@@ -11,7 +11,8 @@
  * scripts call there. The REST routes take the same schema, plus REST_ARGUMENTS
  * for the operations only they call. An operation with none takes no arguments.
  */
-import { tools } from "../mcp.mjs";
+import { CLEAR, tools } from "../mcp.mjs";
+import { SETTABLE_ATTRS } from "../model/node-registry.mjs";
 import { HttpError } from "./auth.mjs";
 
 const SCHEMA_ARGUMENTS = new Map(
@@ -67,6 +68,38 @@ export function allowedArguments(operation, transport, identity) {
     for (const name of REST_ARGUMENTS[operation] ?? []) names.add(name);
   if (operation === "delete_page" && !browserSession(identity)) names.delete(BROWSER_TRASH_GUARD);
   return names;
+}
+
+/** set_node attrs whose schema is a clearable enum (mcp.mjs CLEAR). */
+const CLEARABLE_ATTRS = Object.entries(SETTABLE_ATTRS)
+  .filter(([, { spec }]) => spec.type === "enum" && spec.nullable)
+  .map(([name]) => name);
+const isRecord = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+const cleared = (value) => (value === CLEAR ? null : value);
+function clearedOperation(operation) {
+  if (!isRecord(operation) || !isRecord(operation.attrs)) return operation;
+  const attrs = { ...operation.attrs };
+  for (const name of CLEARABLE_ATTRS)
+    if (Object.hasOwn(attrs, name)) attrs[name] = cleared(attrs[name]);
+  return { ...operation, attrs };
+}
+
+/**
+ * `args` as the hosts take them: a clearable enum's CLEAR becomes null, the
+ * value the hosts store for "cleared". The schemas advertise CLEAR in place
+ * of null (see mcp.mjs CLEAR); null is accepted as well. Any other argument
+ * is returned as sent.
+ */
+export function hostArguments(operation, args) {
+  if (!isRecord(args)) return args;
+  if (
+    (operation === "manage_page_access" || operation === "manage_project_access") &&
+    args.role === CLEAR
+  )
+    return { ...args, role: null };
+  if (operation === "edit_page" && Array.isArray(args.operations))
+    return { ...args, operations: args.operations.map(clearedOperation) };
+  return args;
 }
 
 /** Refuse a public call that names an argument its operation doesn't take. */
