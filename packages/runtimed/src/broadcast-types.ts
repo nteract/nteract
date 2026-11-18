@@ -11,7 +11,7 @@
  * `useRuntimeState()` instead of subscribing to broadcasts.
  */
 
-import type { BokehSessionEvents } from "./request-types";
+import type { BokehSessionEvents } from "@runtimed/contract/requests";
 
 // ── Broadcast interfaces ────────────────────────────────────────────
 

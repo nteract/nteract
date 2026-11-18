@@ -1,4 +1,8 @@
-import { KERNEL_ERROR_REASON, type RuntimeLifecycle, type RuntimeState } from "./runtime-state";
+import {
+  KERNEL_ERROR_REASON,
+  type RuntimeLifecycle,
+  type RuntimeState,
+} from "@runtimed/contract/runtime-state";
 import {
   KERNEL_STATUS,
   RUNTIME_STATUS,

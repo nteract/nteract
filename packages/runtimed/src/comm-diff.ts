@@ -10,7 +10,7 @@
  * platform-specific concerns.
  */
 
-import type { CommDocEntry } from "./runtime-state";
+import type { CommDocEntry } from "@runtimed/contract/runtime-state";
 
 // ── Types ───────────────────────────────────────────────────────────
 

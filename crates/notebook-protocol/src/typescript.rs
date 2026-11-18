@@ -689,7 +689,7 @@ pub fn generated_protocol_contract_ts() -> String {
   RuntimeStatePhase,
   SessionStatus,
 }} from "./handle";
-import type {{ NotebookRequest, NotebookResponse }} from "./request-types";
+import type {{ NotebookRequest, NotebookResponse }} from "@runtimed/contract/requests";
 
 type MissingUnionMember<Union extends string, Values extends readonly string[]> = Exclude<
   Union,
@@ -831,11 +831,11 @@ fn workspace_root() -> std::io::Result<PathBuf> {
 pub fn write_generated_files() -> std::io::Result<()> {
     let root = workspace_root()?;
     std::fs::write(
-        root.join("packages/runtimed/src/wire-constants.ts"),
+        root.join("packages/contract/src/wire-constants.ts"),
         generated_wire_constants_ts(),
     )?;
     std::fs::write(
-        root.join("packages/runtimed/src/request-types.ts"),
+        root.join("packages/contract/src/request-types.ts"),
         generated_request_types_ts(),
     )?;
     std::fs::write(
@@ -857,18 +857,18 @@ mod tests {
     fn generated_typescript_bindings_are_current() -> std::io::Result<()> {
         let root = workspace_root()?;
         let request_types =
-            std::fs::read_to_string(root.join("packages/runtimed/src/request-types.ts"))?;
+            std::fs::read_to_string(root.join("packages/contract/src/request-types.ts"))?;
         let protocol_contract =
             std::fs::read_to_string(root.join("packages/runtimed/src/protocol-contract.ts"))?;
         let wire_constants =
-            std::fs::read_to_string(root.join("packages/runtimed/src/wire-constants.ts"))?;
+            std::fs::read_to_string(root.join("packages/contract/src/wire-constants.ts"))?;
         let scope_capabilities =
             std::fs::read_to_string(root.join("packages/identity/src/scope-capabilities.ts"))?;
 
         assert_eq!(
             wire_constants,
             generated_wire_constants_ts(),
-            "packages/runtimed/src/wire-constants.ts is stale; run `cargo run -p notebook-protocol --bin generate-runtimed-types`"
+            "packages/contract/src/wire-constants.ts is stale; run `cargo run -p notebook-protocol --bin generate-runtimed-types`"
         );
 
         assert_eq!(
@@ -880,7 +880,7 @@ mod tests {
         assert_eq!(
             request_types,
             generated_request_types_ts(),
-            "packages/runtimed/src/request-types.ts is stale; run `cargo run -p notebook-protocol --bin generate-runtimed-types`"
+            "packages/contract/src/request-types.ts is stale; run `cargo run -p notebook-protocol --bin generate-runtimed-types`"
         );
         assert_eq!(
             protocol_contract,

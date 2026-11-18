@@ -66,7 +66,7 @@ import {
   type RuntimeState,
   type ExecutionState,
   diffExecutions,
-} from "./runtime-state";
+} from "@runtimed/contract/runtime-state";
 import { parseKeyedDocFrameHeader } from "./keyed-doc-frame";
 import { createTextAttributionEvent } from "./text-attribution-event";
 import { FrameType } from "./transport";

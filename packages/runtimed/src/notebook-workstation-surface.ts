@@ -1,6 +1,6 @@
 import type { NotebookShellCapabilities } from "./notebook-shell-capabilities";
 import { getBoundedCacheValue, setBoundedCacheValue, stableCacheKey } from "./projection-cache";
-import type { WorkstationAttachmentState } from "./runtime-state";
+import type { WorkstationAttachmentState } from "@runtimed/contract/runtime-state";
 import {
   projectNotebookWorkstationLaunchReadiness,
   type NotebookWorkstationLaunchActionKind,
