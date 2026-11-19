@@ -1,5 +1,5 @@
 import { configuredCatalogRevision } from "./shared/widget-imports.mjs";
-import { mediaGuide, mediaGuideIndex } from "./agent-media-guides.mjs";
+import { DATA_FORMAT_ADVICE, mediaGuide, mediaGuideIndex } from "./agent-media-guides.mjs";
 import { identityProvider } from "./identity-provider.mjs";
 import { OAUTH_REFRESH_REUSE_SECONDS } from "./shared/oauth-grant.mjs";
 import {
@@ -700,7 +700,8 @@ image reference.
 ${part.fileImportParagraph}
 
 For a JSON file, register the returned asset_id with set_source. A module view
-reads the bound file with await model.get(name).json(). For an image or table,
+reads the bound file with await model.get(name).json(), or a CSV as rows with
+await model.get(name).csv(). For an image or table,
 call read_page and send the returned insert
 operation through edit_page, with alt added for an image. For an image it is
 insert_image with the asset_id, which creates one rich-text block containing
@@ -1836,7 +1837,7 @@ has no tool that fetches an arbitrary remote URL, and image bytes don't go in
 tool arguments. A reference from read_page is not evidence that an
 agent has seen the image. Copying a document to another deployment also requires
 transferring its private assets; copying Markdown alone is insufficient.`,
-    datasetUploadParagraph: `A Page can show a Parquet file as an interactive table. The file is a private
+    datasetUploadParagraph: `A Page can show a Parquet or CSV file as an interactive table. The file is a private
 Page asset like an image, up to 5 MiB, and the same upload route stores it:
 get an upload URL from create_page_asset_upload (content_type
 application/vnd.apache.parquet) and POST the raw bytes there, or POST them to
@@ -1844,7 +1845,9 @@ ${origin}/api/pages/<page_id>/assets with Content-Type
 application/vnd.apache.parquet and your API-key bearer header. The response
 contains asset_id, asset_url, mime_type, size and insert, the insert_node
 operation below with the asset_id filled in. In the browser, an editor can
-drop or paste a .parquet file into a block.`,
+drop or paste a .parquet file into a block. A CSV uploads with content_type
+text/csv and returns insert: null; place it with insert_node and attrs
+{asset_id, media_type: "text/csv"}. ${DATA_FORMAT_ADVICE}`,
     datasetReaderParagraph: `Readers see a Sift table: they can sort, filter and scroll it, and those
 changes stay in their own view. Nothing they do changes the document. Pages
 does not decode the file on the server, so read the Parquet yourself when you
@@ -2246,13 +2249,15 @@ image bytes don't go in tool arguments. A reference from read_page is not
 evidence that an agent has seen the image. Copying a document to another
 deployment also requires transferring its private assets; copying Markdown alone
 is insufficient.`,
-    datasetUploadParagraph: `A Page can show a Parquet file as an interactive table. The file is a private
+    datasetUploadParagraph: `A Page can show a Parquet or CSV file as an interactive table. The file is a private
 Page asset like an image, up to 5 MiB, and the same upload route stores it: get
 an upload URL from create_page_asset_upload (content_type
 application/vnd.apache.parquet) and POST the raw bytes there. The response
 contains asset_id, asset_url, mime_type, size and insert, the insert_node
 operation below with the asset_id filled in. In the browser, an editor can
-drop or paste a .parquet file into a block.`,
+drop or paste a .parquet file into a block. A CSV uploads with content_type
+text/csv and returns insert: null; place it with insert_node and attrs
+{asset_id, media_type: "text/csv"}. ${DATA_FORMAT_ADVICE}`,
     datasetReaderParagraph: `Readers see a Sift table: they can sort, filter and scroll it, and those changes
 stay in their own view. Nothing they do changes the document. Pages does not
 decode the file on the server, so read the Parquet yourself when you need its

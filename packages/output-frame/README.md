@@ -179,12 +179,13 @@ session code as an anywidget view: `model.get/set/on/off`, a no-op
 `files` maps up to 16 `data/<alias>` names to file inputs. The embedder
 supplies one object per name and serves it when the view asks:
 `{mimeType, byteLength, read(offset, length, signal), bytes(signal),
-columns?(signal)}`. `read` answers one range, `bytes` the whole file, and
-`columns` the file's ColumnSet, checked by the embedder when it decodes it;
-leave `columns` out for a file that is not a table. Each signal ends when the
-frame cancels the request or the mount ends. The library calls `bytes` and
-`columns` for one request at a time per file, and delivers each at most once
-per file.
+columns?(format, signal)}`. `read` answers one range, `bytes` the whole file,
+and `columns` the file read as a table in `format` (`"parquet"` or `"csv"`), as
+a ColumnSet the embedder checks when it decodes it. `columns` rejects for a
+format the file is not in; leave it out when the file is no table in any
+format. Each signal ends when the frame cancels the request or the mount ends.
+The library calls `bytes`, and `columns` for each format, for one request at a
+time per file, and delivers each at most once per file.
 
 The frame receives `{mimeType, size, port}` per name, and nothing else until
 the view asks. The model's value for each alias is a file object
@@ -194,14 +195,20 @@ object, bound once to the file the view mounted with:
 - `name`, `mimeType`, `size`: known at mount;
 - `arrayBuffer()`, `text()`, `json()`: the whole file, read once per file
   object and shared; `arrayBuffer()` gives a new copy on each call;
-- `parquet()`: an Arrow-style table (below); it rejects when the embedder
-  supplied no `columns`, and for any argument, since it takes no options yet;
+- `parquet()`: an Arrow-style table (below); it rejects for a file that is not
+  Parquet, and for any argument, since it takes no options yet;
+- `csv()`: the file parsed as CSV by the embedder, as an array of plain row
+  objects with a `columns` property naming the columns in file order, the
+  shape of Observable's `FileAttachment.csv`. Values are typed as the table's
+  are. It takes no options or `{typed: true}` and refuses any other, naming
+  the option. It reads any file, whatever its media type, and rejects for one
+  that does not parse;
 - `slice(start, end)`: a range object `{size, arrayBuffer(), text()}`, clamped
   as `Blob.slice` clamps, that reads its span with one range request;
 - `byteLength` and `read(offset, length, signal)`: the members that make the
   file a Sift byte source, for Sift's `loadTableFile`.
 
-`text()`, `json()` and `parquet()` return the same promise on each call
+`text()`, `json()`, `parquet()` and `csv()` return the same promise on each call
 while it is pending and after it resolves; after a rejection, the next call
 asks again. A failed read rejects that call with a plain message and never
 fails the mount. Opening a bound file is the embedder's work before it mounts,
@@ -209,19 +216,20 @@ and can fail the mount (in Pages, a missing asset or a media type that does
 not match its source).
 
 Each file has its own port (`src/byte-source.mjs`). A request names its kind:
-`{kind: "range", offset, length}`, `{kind: "bytes"}` or `{kind: "columns"}`,
-each on its own reply port, and any message on that reply port cancels it.
+`{kind: "range", offset, length}`, `{kind: "bytes"}` or `{kind: "columns",
+format}` with `format` `"parquet"` or `"csv"`, each on its own reply port, and any message on that reply port cancels it.
 The answer is `{bytes}`, `{columns}` with its typed arrays transferred, or
 `{error}`. Both ends check every request, and the frame checks every reply,
 ColumnSets included. Every kind counts as one read in the view's read budget.
 
-`bytes` and `columns` are whole reads, with one share each per exposed file
-(`wholeFileTransition` in `src/whole-file-total.mjs`). A share is none,
-reading or delivered. A request starts only from none; while reading or once
-delivered, another request of that kind is refused with `{error}`, so the
-parent serves one at a time and delivers each at most once. A failure or a
-cancel, queued or in flight, returns a reading share to none, so a retry may
-start. A new file under the name drops both shares. A whole-file read is at
+`bytes` and `columns` are whole reads, with one share per exposed file for
+`bytes` and one for each table format (`wholeFileTransition` in
+`src/whole-file-total.mjs`). A share is none, reading or delivered. A request
+starts only from none; while reading or once delivered, another request for
+that share is refused with `{error}`, so the parent serves one at a time and
+delivers each at most once. A failure or a cancel, queued or in flight,
+returns a reading share to none, so a retry may start. A new file under the
+name drops its shares. A whole-file read is at
 most 5 MiB, and the `bytes` shares of the view's live files, reading or
 delivered, stay within 32 MiB, so that is a bound on the bytes the frame
 holds whole. A ColumnSet counts toward no total; the embedder's decode limits
@@ -235,7 +243,7 @@ array). `nulls` is a `Uint8Array` validity mask, 1 where a value is present,
 and is absent when the column has no nulls. `checkColumnSet` checks lengths,
 types, value kinds, and at most 256 columns with unique names of 1 to 256
 characters. The embedder checks a ColumnSet once, when it decodes it (Pages
-does in `parquetColumns`, before its shared cache keeps it); the host copies
+does in `parquetColumns` and `csvColumns`, before its shared cache keeps it); the host copies
 it to each frame without checking it again, and the frame checks its copy.
 
 The table (`src/table.mjs`) spells its members as an Apache Arrow JS table

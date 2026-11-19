@@ -2038,10 +2038,11 @@ The host checks each source, retained pin and module/CSS media type before
 saving; the renderer rechecks types when following a changed source. The stored
 view accepts no `data` alias map. The AFM API and iframe transport are unchanged.
 
-Upload ESM, CSS, WAV (`audio/wav`), JSON (`application/json`), arbitrary binary (`application/octet-stream`)
+Upload ESM, CSS, WAV (`audio/wav`), JSON (`application/json`), CSV (`text/csv`), arbitrary binary (`application/octet-stream`)
 or Parquet, then register each asset with `set_source`. ESM, CSS, WAV and generic
 binary uploads require a content-type-bound capability and return `insert: null`.
 Upload JSON with `content_type: "application/json"`. Sources previews the data and a module reads it with `await model.get(name).json()`.
+Upload CSV with `content_type: "text/csv"`; the upload checks only that it is UTF-8 text. Sources shows its header and first rows, a module reads it with `await model.get(name).csv()`, and a chart or a dataframe (`media_type: "text/csv"`) draws it.
 After `set_view` succeeds, place `{ type: "view", attrs: { view_id } }` with
 `insert_node`. Module/CSS assets are immutable content-addressed bytes; source
 revisions select their version just like data. Source history retains its newest
@@ -2190,22 +2191,40 @@ read rejects that call with a plain message.
 | `name`, `mimeType`, `size` | the data name, the file's media type and its size in bytes, known at mount |
 | `arrayBuffer()`, `text()`, `json()` | the whole file, read once per file object; `arrayBuffer()` gives a new copy on each call. At most 5 MiB per file, and 32 MiB across the view's current files read whole |
 | `parquet()` | the file as a table (below); rejects for a file that is not Parquet, and for any argument, since it takes no options yet |
+| `csv()` | the file parsed as CSV: an array of plain row objects, one per data row, with `columns` naming the columns in file order, as Observable's `FileAttachment.csv` gives. Values follow the column types below. Takes no options or `{typed: true}` and refuses any other, naming it. Reads a file of any media type; rejects one that does not parse, saying why |
 | `slice(start, end)` | a range object `{size, arrayBuffer(), text()}`, counted and clamped as `Blob.slice`; each range object reads its span once |
 | Sift byte source: `byteLength`, `read(offset, length, signal)` | make the file a byte source for Sift's `loadTableFile` |
 
-`text()`, `json()` and `parquet()` return the same promise on each call
-while it is pending and after it resolves. After a rejection, the next call
-asks again. The page serves one whole read and one table read of a file at a
-time, and delivers each at most once per file, so a view cannot make it read
-or copy the same file whole twice. These are Observable `FileAttachment`'s names and meanings where the two
+`text()`, `json()`, `parquet()` and `csv()` return the same promise on each
+call while it is pending and after it resolves. After a rejection, the next
+call asks again. The page serves one whole read, and one table read in each
+format, of a file at a time, and delivers each at most once per file, so a
+view cannot make it read or copy the same file whole twice. These are Observable `FileAttachment`'s names and meanings where the two
 overlap. Nothing else on a file object is part of the interface.
 
 A table comes from the page: it fetches the file through the Page's byte
-cache, decodes it with Sift's `parquetToArrowStream` within the limits charts
-use (250,000 rows, 256 columns, 128 MiB decoded), and turns the Arrow stream
-into a ColumnSet ([viewer/parquet-columns.mjs](viewer/parquet-columns.mjs)).
-It keeps the newest 4 per asset id, so views of one file decode it once, and
-sends each frame its own copy. A decode failure is kept in the same cache and
+cache, which gives each version's normalized bytes
+([viewer/normalized-bytes.mjs](viewer/normalized-bytes.mjs)): a Parquet file
+as it is, and a CSV converted once to Arrow IPC by `@nteract/sift-csv`
+([viewer/csv-arrow.mjs](viewer/csv-arrow.mjs)). `csv()` converts a file of any
+media type that way. Parquet is decoded with Sift's `parquetToArrowStream`;
+both stay within the limits charts use (250,000 rows, 256 columns, 128 MiB
+decoded, 5 MiB of input). The Arrow stream becomes a ColumnSet
+([viewer/parquet-columns.mjs](viewer/parquet-columns.mjs)). It keeps the
+newest 4 per asset id and format, so views of one file decode it once, and
+sends each frame its own copy.
+
+Prefer Parquet when you can write it: it stores each column's type, so
+dates, integers, decimals and text arrive exactly as written, and a module
+view can hand the file to Sift to read only the parts it needs. CSV is
+accepted for convenience, and its types are inferred when it is read, so
+check the result: a column of digits such as postal codes becomes numbers and
+loses its leading zero, the first row is always the header, only commas
+separate fields, the file must be UTF-8, and a timestamp with no zone is read
+as UTC. JSON suits a small nested object, not a table of rows. Every limit is
+an error; nothing is truncated. CSV columns read as booleans (`true` or
+`false` in any case), 64-bit integers, floats, dates, timestamps or text, and
+an empty field is `null`. A decode failure is kept in the same cache and
 answered again, since the same bytes fail the same way; a failed fetch is not
 kept, so the next call fetches again. The ColumnSet is defined in
 `@nteract/output-frame` (`src/column-set.mjs`); the page checks it once, when
@@ -2506,7 +2525,10 @@ decodes the footer through Sift ([Sources document](#sources-document)). A datas
 served as `application/vnd.apache.parquet` with `Content-Disposition:
 attachment`, so opening its URL downloads it. `insert_image` refuses
 datasets; `insert_node` checks with `HEAD` that its
-asset is a dataset of the node's media type on the same Page.
+asset is a dataset of the node's media type on the same Page. A dataframe
+node shows a Parquet or a CSV (`text/csv`) asset or source; the viewer
+converts a CSV to Arrow IPC before Sift reads it. Only Parquet copies between
+Pages.
 
 Current limits are 5 MiB per image or dataset, 8192 pixels per side, and 25
 million pixels; the HTTP request ceiling is 6 MiB. SVG, HTML, GIF, APNG, and animated WebP are not
