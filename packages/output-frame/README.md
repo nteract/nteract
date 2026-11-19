@@ -57,7 +57,7 @@ cannot clear a sibling's listeners. Values remain shared across views.
 `send()` throws a descriptive no-backend error. `msg:custom` listeners may be
 registered, but there is no remote peer to supply messages. Removing/reloading
 an output or changing its code resets it to the supplied initial state. A data
-change does not (see [Data changes](#data-changes)).
+change that the view listens for does not (see [Data changes](#data-changes)).
 
 `buffers` and `buffer_paths` use Jupyter's parallel buffer/path convention:
 buffers name assets, while paths identify object keys and numeric array indices
@@ -113,7 +113,8 @@ browser-wide denial-of-service sandbox. Keep credentials off the output domain
 and enforce CSRF protections on authenticated host endpoints. The embedding product decides when a mount runs and authorizes every input.
 Pages renders automatically within its viewport lifecycle and remounts when the
 view's code changes. A changed data input reaches the mounted view through
-`setData`; failures expose a Retry button.
+`setData`, and Pages remounts a view that does not listen for it; failures
+expose a Retry button.
 
 ## Module views
 
@@ -139,7 +140,7 @@ reading the new one at stale offsets.
 
 ## Data changes
 
-`handle.setData(name, value)` replaces one data input without a remount. The
+`handle.setData(name, value)` offers a mounted view a new data input. The
 name must be one the mount declared: a `data/<alias>` of a module view, or a
 buffer name of an anywidget view that is not also a module or stylesheet name.
 Anything else throws. A module view takes a `Uint8Array` or a `ByteSource`; an
@@ -160,6 +161,16 @@ ignores any other.
   `change:<alias>` fires. For an anywidget buffer, each model key that holds a
   path bound to that buffer gets a copy with a new DataView at the path, and
   `change:<key>` fires once per key. Other local values under that key are kept.
+- The frame applies a change only when the view listens for it. Listen with
+  `model.on("change:<alias>", …)` to update in place and keep the reader's
+  state. If no key the change affects has a `change:<key>` listener on its
+  model at that moment, the frame applies nothing, leaves the view as it is and
+  answers `{type: 'unhandled-data', name}`. The host passes that to the
+  `onUnhandledData(name)` option, only in `ready` and only for a declared name.
+  Pages then mounts the view again, so a view that does not listen is remounted
+  when its data changes. When one affected key listens and another does not,
+  every affected key takes the new value (`dataDecision` and
+  `receiveDataChange` in `src/data.mjs`).
 - `model.set` on a data key by view code stays local, like any other key.
 
 ## Read budget

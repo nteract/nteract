@@ -17,6 +17,39 @@ export function bufferNames(spec) {
   ];
 }
 
+// What a rendered view does with a data change. `listening` has one entry
+// per model key the change affects: whether a change:<key> listener is
+// registered on that key's model now.
+// - "apply": at least one affected key has a listener. Every affected key
+//   takes the new value and its listeners fire.
+// - "unhandled": no affected key has a listener, so nothing would show the
+//   new value. The frame leaves the view as it is and tells the parent, which
+//   mounts it again.
+// - "unknown": the name affects no key the mount declared.
+export function dataDecision(listening) {
+  if (!listening.length) return "unknown";
+  return listening.some(Boolean) ? "apply" : "unhandled";
+}
+
+// The frame's handling of one {type: "data", name, input} message for a
+// rendered session. `frameData` is a module view's inputs (createFrameData),
+// absent for an anywidget view. Returns the decision. On "unhandled" it
+// sends {type: "unhandled-data", name} and changes nothing, so the view and
+// its current input stay as they are until the parent mounts it again.
+export function receiveDataChange({ name, input }, { session, frameData, send }) {
+  if (typeof name !== "string" || (frameData && !DATA_NAME.test(name))) return "unknown";
+  const decision = session.dataDecision(frameData ? dataAlias(name) : name);
+  if (decision === "unhandled") send({ type: "unhandled-data", name });
+  if (decision !== "apply") return decision;
+  if (frameData) {
+    const next = frameData.replace(name, input);
+    if (!next) return "unknown";
+    session.setValue(dataAlias(name), next.value);
+  } else if (input?.bytes instanceof Uint8Array) session.setBuffer(name, input.bytes);
+  else throw Error("Invalid data input.");
+  return decision;
+}
+
 // A whole file held in the frame, read through the same interface as a
 // ranged file. Reads after `lifetime` ends reject as aborted.
 function bytesByteSource(bytes, lifetime) {

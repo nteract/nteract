@@ -8,11 +8,13 @@ import {
   fromEvent,
   groupBy,
   map,
+  merge,
   mergeMap,
   of,
   scan,
   share,
   startWith,
+  Subject,
   switchMap,
 } from "rxjs";
 import { checkViewSpec } from "../shared/view-spec.mjs";
@@ -87,7 +89,8 @@ export function planChange(previous, next) {
 
 // One mount per code identity. A code change cancels all loading and destroys
 // the old frame before rendering the new code. A data change loads the new
-// input and hands it to the mounted frame; a title change relabels it.
+// input and hands it to the mounted frame; a view with no listener for it is
+// mounted again. A title change relabels it.
 export function mount(
   container,
   {
@@ -162,7 +165,11 @@ export function mount(
                 title.textContent = text ?? "Interactive view";
                 if (outputHandle) outputHandle.frame.title = text || "Interactive output";
               });
-            const activation = fromEvent(button, "click")
+            // A mount starts on first render, on Retry, and when the frame
+            // reports a data change no listener in the view would show. Each
+            // starts from the newest plan, so nothing is left to redeliver.
+            const remount$ = new Subject();
+            const activation = merge(fromEvent(button, "click"), remount$)
               .pipe(
                 startWith(null),
                 switchMap(
@@ -308,6 +315,9 @@ export function mount(
                                 button.hidden = state !== "failed";
                                 button.disabled = state !== "failed";
                                 if (state === "ready") showFailures();
+                              },
+                              onUnhandledData() {
+                                if (!controller.signal.aborted) remount$.next();
                               },
                             },
                           );

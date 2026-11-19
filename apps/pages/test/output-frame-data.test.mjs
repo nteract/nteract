@@ -7,7 +7,7 @@ import { mountModuleOutput } from "@nteract/output-frame";
 import { OUTPUT_STATES, dataTransition } from "@nteract/output-frame/lifecycle";
 import { receiveByteSource } from "@nteract/output-frame/byte-source";
 import { READ_CONCURRENCY } from "@nteract/output-frame/read-budget";
-import { createFrameData } from "@nteract/output-frame/data";
+import { createFrameData, dataDecision, receiveDataChange } from "@nteract/output-frame/data";
 import { preparePayload } from "../../../packages/output-frame/src/payload.mjs";
 // The installed package's session, as test/anywidget.test.mjs loads it.
 const { createWidgetSession } = await import(
@@ -369,4 +369,122 @@ test("an anywidget buffer change replaces each bound path and fires change once 
     ["new", "new"],
   );
   assert.equal(session.setBuffer("code", text("x")), false, "code is never data");
+});
+
+test("the data decision applies when any affected key listens and is unhandled when none does", () => {
+  assert.equal(dataDecision([]), "unknown");
+  assert.equal(dataDecision([false]), "unhandled");
+  assert.equal(dataDecision([false, false]), "unhandled");
+  assert.equal(dataDecision([true]), "apply");
+  assert.equal(dataDecision([false, true]), "apply");
+});
+
+test("a module view applies a data change only for a key with a change listener", async (t) => {
+  const lifetime = new AbortController();
+  t.after(() => lifetime.abort());
+  const frameData = createFrameData(
+    { "data/label": { bytes: text("first") }, "data/once": { bytes: text("read once") } },
+    lifetime.signal,
+  );
+  const state = Object.fromEntries(
+    Object.entries(frameData.initial).map(([name, input]) => [name.slice(5), input.value]),
+  );
+  let model;
+  const fired = [];
+  const { session, el } = sessionFixture(t, moduleView(state), async () => ({
+    render(props) {
+      model = props.model;
+      model.on("change:label", () => fired.push(new TextDecoder().decode(model.get("label"))));
+    },
+  }));
+  await session.initialize();
+  await session.render(el);
+  const sent = [];
+  const send = (message) => sent.push(message);
+  const receive = (name, value) =>
+    receiveDataChange({ name, input: { bytes: text(value) } }, { session, frameData, send });
+
+  assert.equal(receive("data/label", "second"), "apply");
+  assert.deepEqual(fired, ["second"]);
+  assert.deepEqual(sent, []);
+
+  const before = model.get("once");
+  const oldHandle = frameData.initial["data/once"].handle;
+  assert.equal(receive("data/once", "changed"), "unhandled");
+  assert.deepEqual(sent, [{ type: "unhandled-data", name: "data/once" }]);
+  assert.equal(model.get("once"), before, "nothing is applied");
+  assert.equal(
+    new TextDecoder().decode(await oldHandle.read(0, 4)),
+    "read",
+    "the import still reads",
+  );
+
+  assert.equal(receive("data/missing", "x"), "unknown");
+  assert.equal(receive("label", "x"), "unknown");
+  assert.equal(sent.length, 1);
+});
+
+test("an anywidget buffer change applies to every bound key when one of them listens", async (t) => {
+  const payload = preparePayload({
+    spec: {
+      _esm: "code",
+      state: { heard: null, silent: null, alone: null },
+      buffers: ["clip", "clip", "solo"],
+      buffer_paths: [["heard"], ["silent"], ["alone"]],
+    },
+    assets: {
+      code: { bytes: text("code"), mediaType: "text/javascript" },
+      clip: { bytes: text("old"), mediaType: "application/octet-stream" },
+      solo: { bytes: text("solo"), mediaType: "application/octet-stream" },
+    },
+  });
+  let model;
+  const fired = [];
+  const { session, el } = sessionFixture(t, payload, async () => ({
+    default: {
+      render(props) {
+        model = props.model;
+        model.on("change:heard", () => fired.push("heard"));
+      },
+    },
+  }));
+  await session.initialize();
+  await session.render(el);
+  const sent = [];
+  const receive = (name, value) =>
+    receiveDataChange(
+      { name, input: { bytes: text(value) } },
+      { session, send: (message) => sent.push(message) },
+    );
+  assert.equal(receive("clip", "new"), "apply");
+  assert.deepEqual(fired, ["heard"]);
+  for (const key of ["heard", "silent"])
+    assert.equal(new TextDecoder().decode(model.get(key)), "new", key);
+  assert.deepEqual(sent, []);
+  const alone = model.get("alone");
+  assert.equal(receive("solo", "changed"), "unhandled");
+  assert.equal(model.get("alone"), alone);
+  assert.deepEqual(sent, [{ type: "unhandled-data", name: "solo" }]);
+  assert.equal(receive("code", "x"), "unknown");
+});
+
+test("the host reports unhandled data only once ready and only for declared names", async (t) => {
+  const unhandled = [];
+  const { output, frame } = mountWithFakeFrame(t, modulePayload, {
+    byteSources: { "data/label": text("one") },
+    onUnhandledData: (name) => unhandled.push(name),
+  });
+  await until(() => frame.messages.some((m) => m.type === "mount"), "no mount");
+  frame.port.postMessage({ type: "unhandled-data", name: "data/label" });
+  await tick();
+  assert.deepEqual(unhandled, [], "not before ready");
+  await frame.render();
+  for (const name of ["data/missing", "label", 7, "__proto__"])
+    frame.port.postMessage({ type: "unhandled-data", name });
+  frame.port.postMessage({ type: "unhandled-data", name: "data/label" });
+  await until(() => unhandled.length > 0, "a declared name was not reported");
+  await tick();
+  assert.deepEqual(unhandled, ["data/label"]);
+  output.destroy();
+  assert.deepEqual(unhandled, ["data/label"]);
 });

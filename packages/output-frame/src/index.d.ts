@@ -54,15 +54,23 @@ export interface OutputOptions {
   timeoutMs?: number;
   scheduler?: SchedulerLike;
   onState?: (state: OutputState, error?: string) => void;
+  /**
+   * A data change reached a rendered view with no `change:<key>` listener on
+   * any key it affects, so the frame did not apply it. Called only in "ready"
+   * and only for a declared data name. Mount the view again to show it.
+   */
+  onUnhandledData?: (name: string) => void;
 }
 export interface OutputHandle {
   readonly frame: HTMLIFrameElement;
   readonly state: OutputState;
   setHostContext(context: OutputHostContext): void;
   /**
-   * Replace one declared data input without a remount: a `data/<alias>` of a
-   * module view, or a buffer name of an anywidget view (Uint8Array only).
-   * Sent once the view has rendered; throws for an undeclared name.
+   * Offer a mounted view a new value for one declared data input: a
+   * `data/<alias>` of a module view, or a buffer name of an anywidget view
+   * (Uint8Array only). Sent once the view has rendered; throws for an
+   * undeclared name. A view with no listener for it answers through
+   * `onUnhandledData`.
    */
   setData(name: string, value: DataInput): void;
   destroy(): void;

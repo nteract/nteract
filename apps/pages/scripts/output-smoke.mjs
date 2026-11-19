@@ -123,6 +123,17 @@ const entries = {
 }`),
     "text/javascript",
   ],
+  // A module view that reads its file once through the import and never
+  // listens for changes: a data change mounts it again.
+  modonce: [
+    Buffer.from(`import file from 'data/label';
+export async function render({ el, signal }) {
+  const bytes = await file.read(0, file.byteLength, signal);
+  el.innerHTML = '<p id="once"></p>';
+  el.querySelector('#once').textContent = new TextDecoder().decode(bytes);
+}`),
+    "text/javascript",
+  ],
   label1: [Buffer.from("first label"), "application/octet-stream"],
   label2: [Buffer.from("second label"), "application/octet-stream"],
   table1: [Buffer.from("tab1 rows PAR1"), "application/vnd.apache.parquet"],
@@ -255,6 +266,13 @@ window.fixture={editor(){
   const moduleHandle=mount(el,{view$:moduleView$,sources,sourcesAnswer$:null});
   window.fixture.moveData=()=>{versions.label=versions.label2;versions.table=versions.table2;changes.next(5)};
   window.fixture.endModuleView=()=>{moduleHandle.destroy();el.remove()};
+},onceView(){
+  const el=document.createElement('div');el.id='module-view3';document.body.append(el);
+  versions.label=versions.label1;
+  const onceView$=new BehaviorSubject({status:'ready',view:{view_id:'once',title:'Read once',media_type:'application/vnd.nteract.module-view.v1+json',spec:{module:{source_id:'modonce'},files:{label:{source_id:'label'}}},revision:'1'}});
+  const onceHandle=mount(el,{view$:onceView$,sources,sourcesAnswer$:null});
+  window.fixture.moveOnce=()=>{versions.label=versions.label2;changes.next(6)};
+  window.fixture.endOnceView=()=>{onceHandle.destroy();el.remove()};
 },example(){versions.code=versions.example;view$.next({status:'ready',view:{...view,spec:{module:{source_id:'code'},buffers:[{source:{source_id:'recording'},path:['recording']},{source:{source_id:'dmel'},path:['dmel']}],state:{description:${JSON.stringify(description)}}}}})},module(){
   const view=${JSON.stringify(moduleView)};
   const text=s=>new TextEncoder().encode(s);
@@ -405,6 +423,22 @@ try {
   await expect(dataFrame.locator("#count")).toHaveText("2");
   await expect(dataView).toHaveAttribute("data-output-state", "ready");
   await page.evaluate(() => window.fixture.endModuleView());
+  // A module view that reads its file once and never listens is mounted
+  // again when that file changes, and shows the new value.
+  await page.evaluate(() => window.fixture.onceView());
+  const onceView = page.locator("#module-view3 .pages-anywidget-view");
+  await expect(onceView).toHaveAttribute("data-output-state", "ready");
+  const onceFrame = page.frameLocator("#module-view3 iframe");
+  await expect(onceFrame.locator("#once")).toHaveText("first label");
+  await page.locator("#module-view3 iframe").evaluate((frame) => {
+    frame.dataset.marker = "first";
+  });
+  await page.evaluate(() => window.fixture.moveOnce());
+  await expect(onceFrame.locator("#once")).toHaveText("second label");
+  await expect(page.locator("#module-view3 iframe")).toHaveCount(1);
+  await expect(page.locator("#module-view3 iframe")).not.toHaveAttribute("data-marker", "first");
+  await expect(onceView).toHaveAttribute("data-output-state", "ready");
+  await page.evaluate(() => window.fixture.endOnceView());
   await expect(page.getByRole("button", { name: "Retry interactive view" })).toBeHidden();
   const frame = page.frameLocator("iframe");
   await expect(frame.getByRole("heading", { name: "Listen and explore" })).toBeVisible();
@@ -652,6 +686,7 @@ try {
           "automatic render; a new recording reaches the model without a remount",
           "code-change remount",
           "module view model: whole-file and ranged Parquet inputs change in place through change: listeners",
+          "a module view with no change listener is mounted again with its new data",
           "retry after a transient input failure",
           "failure recovery",
           "Wordgard node selection preserves iframe document and local model at wide/narrow widths",

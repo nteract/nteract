@@ -292,7 +292,7 @@ async function until(predicate, message) {
   assert.fail(message);
 }
 
-function mountModuleView(t) {
+function mountModuleView(t, { listening = true } = {}) {
   const write = moduleViewWriter();
   const { window } = new JSDOM("<!doctype html><body></body>");
   const request = async (url, options = {}) => {
@@ -332,7 +332,11 @@ function mountModuleView(t) {
         frame: { title: payload.title },
         destroy: () => calls.destroyed++,
         setHostContext() {},
-        setData: (name, value) => calls.data.push([name, value]),
+        setData(name, value) {
+          calls.data.push([name, value]);
+          // A frame whose view has no change listener reports the change back.
+          if (!listening) queueMicrotask(() => options.onUnhandledData(name));
+        },
       };
       calls.mounts.push({ payload, options, handle });
       options.onState("ready");
@@ -414,4 +418,19 @@ test("a data change that fails to load keeps the mounted view and its earlier da
   await until(() => calls.data.length === 1, "the next change did not load");
   assert.equal(root.dataset.inputError, undefined);
   assert.equal(root.querySelector("p").textContent, "");
+});
+
+test("a view with no listener for a data change is mounted again with the new data", async (t) => {
+  const { doc$, calls, root } = mountModuleView(t, { listening: false });
+  await until(() => calls.mounts.length === 1, "the view never mounted");
+  doc$.next(moveSources(dataSources, [setSource("label", ids.label2, "1")]));
+  await until(() => calls.mounts.length === 2, "the unhandled change did not remount");
+  assert.equal(calls.destroyed, 1, "the old frame is gone");
+  const { byteSources } = calls.mounts[1].options;
+  assert.equal(new TextDecoder().decode(byteSources["data/label"]), "second label");
+  // The new mount starts from the newest plan: nothing is redelivered.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(calls.mounts.length, 2);
+  assert.equal(calls.data.length, 1);
+  assert.equal(root.dataset.outputState, "ready");
 });

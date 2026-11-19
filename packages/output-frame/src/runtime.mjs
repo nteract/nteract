@@ -1,4 +1,4 @@
-import { createFrameData, dataAlias } from "./data.mjs";
+import { createFrameData, dataAlias, receiveDataChange } from "./data.mjs";
 import { outputTransition } from "./lifecycle.mjs";
 import { applyHostContext } from "./context.mjs";
 
@@ -66,14 +66,11 @@ function connect(event) {
     }
     if (data?.type === "data") {
       // The parent sends data only after "rendered", and only for names the
-      // mount declared. Anything else is ignored.
-      if (state !== "ready" || !session || typeof data.name !== "string") return;
+      // mount declared. Anything else is ignored. A change no listener would
+      // show is not applied: the parent mounts the view again instead.
+      if (state !== "ready" || !session) return;
       try {
-        if (frameData) {
-          const input = frameData.replace(data.name, data.input);
-          if (input) session.setValue(dataAlias(data.name), input.value);
-        } else if (data.input?.bytes instanceof Uint8Array)
-          session.setBuffer(data.name, data.input.bytes);
+        receiveDataChange(data, { session, frameData, send });
       } catch (error) {
         console.error("Output data update failed", error);
       }

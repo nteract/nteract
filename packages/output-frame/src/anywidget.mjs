@@ -1,6 +1,6 @@
 import { firstValueFrom, from, fromEvent, takeUntil, timeout } from "rxjs";
 import { widgetDefinitions, widgetState, ROOT_MODEL_ID } from "./schema.mjs";
-import { bufferNames } from "./data.mjs";
+import { bufferNames, dataDecision } from "./data.mjs";
 
 export function localModel(initial) {
   const values = new Map(Object.entries(initial));
@@ -22,6 +22,9 @@ export function localModel(initial) {
         else listeners.get(key)?.delete(fn);
       }
     },
+    // Whether a change:<key> listener is registered now. Listeners are only
+    // ever registered per key; there is no bare "change" event.
+    listening: (key) => (listeners.get(`change:${key}`)?.size ?? 0) > 0,
     save_changes() {}, // Viewer-local state; no persistent or remote destination.
     send() {
       throw Error("This anywidget host has no backend for custom messages.");
@@ -346,9 +349,24 @@ export function createWidgetSession(
   const root = registry.get(ROOT_MODEL_ID);
   const dataKeys = new Set(module ? Object.keys(payload.state ?? {}) : []);
   const buffers = new Set(module ? [] : bufferNames(payload.spec));
+  // [record, key, rest of path] for each model path a buffer is bound to.
+  const bufferPaths = (name) =>
+    [...registry.values()].flatMap((record) => {
+      const { buffers: bindings = [], buffer_paths: paths = [] } = record.definition;
+      return bindings.flatMap((binding, index) =>
+        binding === name ? [[record, paths[index][0], paths[index].slice(1)]] : [],
+      );
+    });
   return {
     initialize: () => initialize(root),
     render: (el) => render(root, { el, signal }),
+    // Whether a change to data `name` can update this session in place (see
+    // dataDecision): a module view's data key, or an anywidget buffer name.
+    dataDecision(name) {
+      if (module) return dataDecision(dataKeys.has(name) ? [root.model.listening(name)] : []);
+      if (!buffers.has(name)) return dataDecision([]);
+      return dataDecision(bufferPaths(name).map(([record, key]) => record.model.listening(key)));
+    },
     // A module view's data key takes a new value and `change:<key>` fires.
     // Returns false for a key the mount did not declare.
     setValue(key, value) {
@@ -361,17 +379,15 @@ export function createWidgetSession(
     // fires once per key. Returns false for a name that is not a buffer.
     setBuffer(name, bytes) {
       if (!buffers.has(name)) return false;
-      for (const record of registry.values()) {
-        const { buffers: bindings = [], buffer_paths: paths = [] } = record.definition;
-        const values = new Map();
-        for (const [index, binding] of bindings.entries()) {
-          if (binding !== name) continue;
-          const [key, ...rest] = paths[index];
-          const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-          values.set(key, replaceAt(values.get(key) ?? record.model.get(key), rest, view));
-        }
-        for (const [key, value] of values) record.model.set(key, value);
+      const values = new Map();
+      for (const [record, key, rest] of bufferPaths(name)) {
+        if (!values.has(record)) values.set(record, new Map());
+        const keys = values.get(record);
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        keys.set(key, replaceAt(keys.get(key) ?? record.model.get(key), rest, view));
       }
+      for (const [record, keys] of values)
+        for (const [key, value] of keys) record.model.set(key, value);
       return true;
     },
   };

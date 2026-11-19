@@ -45,6 +45,7 @@ export function mountModuleOutput(
     timeoutMs = 20000,
     scheduler,
     onState = () => {},
+    onUnhandledData = () => {},
   } = {},
 ) {
   if (!frameUrl) throw Error("An output frame URL is required.");
@@ -176,6 +177,15 @@ export function mountModuleOutput(
           "fail",
           typeof data.message === "string" ? data.message.slice(0, 500) : "Output failed.",
         );
+      } else if (
+        data.type === "unhandled-data" &&
+        state === "ready" &&
+        typeof data.name === "string" &&
+        dataNames.has(data.name)
+      ) {
+        // No listener in the view would show this change. The embedding
+        // product decides whether to mount the view again.
+        onUnhandledData(data.name);
       } else if (data.type === "height" && state === "ready" && Number.isFinite(data.height)) {
         // A document output grows with its content. Retain an abuse bound, not
         // a normal widget-sized viewport that makes every tall view scroll twice.

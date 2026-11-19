@@ -187,7 +187,9 @@ test("the views guide leads with the model and keeps the data import as the low-
     "Any other source arrives as a DataView of the whole file.",
     'model.on("change:activity", show);',
     "That import names the file the view was mounted with; after a change its reads fail as aborted",
-    "reaches the mounted view as a change event and keeps its local state.",
+    "reaches the mounted view as a change event and keeps its local state when the view listens for that change",
+    'Listen with model.on("change:<name>", …) to update in place and keep the reader\'s state.',
+    "A view that does not listen is mounted again when its data changes.",
     "A title change relabels the view in place.",
   ])
     assert.ok(guide.includes(sentence), sentence);
