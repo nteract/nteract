@@ -200,8 +200,8 @@ object, bound once to the file the view mounted with:
 - `csv()`: the file parsed as CSV by the embedder, as an array of plain row
   objects with a `columns` property naming the columns in file order, the
   shape of Observable's `FileAttachment.csv`. Values are typed as the table's
-  are. It takes no options or `{typed: true}` and refuses any other, naming
-  the option. It reads any file, whatever its media type, and rejects for one
+  are. It takes no options, `{}` or `{typed: true}`, and refuses any other,
+  naming the option. It reads any file, whatever its media type, and rejects for one
   that does not parse;
 - `slice(start, end)`: a range object `{size, arrayBuffer(), text()}`, clamped
   as `Blob.slice` clamps, that reads its span with one range request;

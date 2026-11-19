@@ -102,9 +102,10 @@ export interface FileObject extends ByteSource {
   /**
    * The file parsed as CSV: one plain object per data row, with typed values
    * as `parquet()` gives them, and `columns` naming the columns in file
-   * order. Values are always typed; the only option is `{ typed: true }`.
+   * order. Values are always typed, so the options object may be empty or
+   * `{ typed: true }`.
    */
-  csv(options?: { typed: true }): Promise<CsvRows>;
+  csv(options?: { typed?: true }): Promise<CsvRows>;
   slice(start?: number, end?: number): FileRange;
 }
 /** What `csv()` resolves to: Observable FileAttachment.csv's shape. */

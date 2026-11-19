@@ -2191,7 +2191,7 @@ read rejects that call with a plain message.
 | `name`, `mimeType`, `size` | the data name, the file's media type and its size in bytes, known at mount |
 | `arrayBuffer()`, `text()`, `json()` | the whole file, read once per file object; `arrayBuffer()` gives a new copy on each call. At most 5 MiB per file, and 32 MiB across the view's current files read whole |
 | `parquet()` | the file as a table (below); rejects for a file that is not Parquet, and for any argument, since it takes no options yet |
-| `csv()` | the file parsed as CSV: an array of plain row objects, one per data row, with `columns` naming the columns in file order, as Observable's `FileAttachment.csv` gives. Values follow the column types below. Takes no options or `{typed: true}` and refuses any other, naming it. Reads a file of any media type; rejects one that does not parse, saying why |
+| `csv()` | the file parsed as CSV: an array of plain row objects, one per data row, with `columns` naming the columns in file order, as Observable's `FileAttachment.csv` gives. Values follow the column types below. Takes no options, `{}` or `{typed: true}`, and refuses any other, naming it. Reads a file of any media type; rejects one that does not parse, saying why |
 | `slice(start, end)` | a range object `{size, arrayBuffer(), text()}`, counted and clamped as `Blob.slice`; each range object reads its span once |
 | Sift byte source: `byteLength`, `read(offset, length, signal)` | make the file a byte source for Sift's `loadTableFile` |
 

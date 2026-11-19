@@ -178,6 +178,7 @@ test("csv() gives typed rows with columns, once per file object", async (t) => {
   const rows = file.csv();
   assert.equal(file.csv(), rows, "the same promise while pending");
   assert.equal(file.csv({ typed: true }), rows, "{ typed: true } is the same call");
+  assert.equal(file.csv({}), rows, "an empty options object is the same call");
   const data = await rows;
   assert.ok(Array.isArray(data));
   assert.deepEqual(data.columns, ["city", "people", "share", "open", "day"]);
@@ -201,7 +202,7 @@ test("csv() gives typed rows with columns, once per file object", async (t) => {
   await assert.rejects(file.parquet(), { message: "This file is not Parquet." });
 });
 
-test("csv() refuses every option but { typed: true }, naming it", async (t) => {
+test("csv() takes {} or { typed: true } and refuses any other option, naming it", async (t) => {
   const lifetime = new AbortController();
   t.after(() => lifetime.abort());
   const { input, served } = csvInput("a\n1\n");
@@ -209,7 +210,7 @@ test("csv() refuses every option but { typed: true }, naming it", async (t) => {
   for (const [options, message] of [
     [[{ typed: false }], /typed option must be true/],
     [[{ typed: "auto" }], /typed option must be true/],
-    [[{}], /typed option must be true/],
+    [[{ typed: undefined }], /typed option must be true/],
     [[{ array: true }], /csv\(\) has no array option/],
     [[{ typed: true, delimiter: ";" }], /csv\(\) has no delimiter option/],
     [[true], /takes an options object/],
@@ -219,6 +220,7 @@ test("csv() refuses every option but { typed: true }, naming it", async (t) => {
     await assert.rejects(file.csv(...options), message, JSON.stringify(options));
   assert.equal(served.columns, 0, "a refused call asks nothing");
   assert.deepEqual((await file.csv(undefined)).columns, ["a"]);
+  assert.deepEqual((await file.csv({})).columns, ["a"]);
 });
 
 test("csv() reads a file of any media type, and one that does not parse rejects plainly", async (t) => {

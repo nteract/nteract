@@ -8,8 +8,8 @@
 // - parquet(): the file as a table (table.mjs), decoded by the parent. It
 //   takes no options yet, and one passed is refused rather than ignored;
 // - csv(): the file parsed as CSV by the parent, as rows (table.mjs
-//   columnRows) with typed values. It takes no options or { typed: true };
-//   any other is refused rather than ignored;
+//   columnRows) with typed values. It takes no options, {} or
+//   { typed: true }; any other is refused rather than ignored;
 // - slice(start, end): a range object {size, arrayBuffer(), text()} over
 //   that span, clamped as Blob.slice clamps, read with one range request on
 //   first use.
@@ -46,9 +46,9 @@ const clamp = (value, fallback, size) => {
   return offset < 0 ? Math.max(size + offset, 0) : Math.min(offset, size);
 };
 
-// Why csv() refuses `options`, or null. Its values are always typed, so the
-// one options object it takes is { typed: true }. Observable's csv() reads
-// an object without `typed` as untyped, so that is refused too.
+// Why csv() refuses `options`, or null. Its values are always typed, so its
+// one options object may be empty or { typed: true }; typed set to anything
+// else, or any other key, is refused.
 const CSV_OPTIONS = "call it with no options or { typed: true }.";
 function csvRefusal(options) {
   if (options.length > 1) return `csv() takes one options object; ${CSV_OPTIONS}`;
@@ -58,7 +58,7 @@ function csvRefusal(options) {
     return `csv() takes an options object; ${CSV_OPTIONS}`;
   for (const key of Object.keys(given))
     if (key !== "typed") return `csv() has no ${key.slice(0, 40)} option; ${CSV_OPTIONS}`;
-  if (given.typed !== true)
+  if ("typed" in given && given.typed !== true)
     return `csv() always types its values, so its typed option must be true; ${CSV_OPTIONS}`;
   return null;
 }
