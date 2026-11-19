@@ -102,7 +102,7 @@ await writeAsset(
 );
 // Sift's WASM loads only when a Page shows a Parquet dataframe (viewer/sift-table.jsx).
 await writeAsset("sift.wasm", await readFile(siftWasmPath(app)));
-// Sift's CSV WASM loads only when a module view calls csv() (viewer/module-csv.mjs).
+// Sift's CSV WASM loads the first time a Page reads a CSV (viewer/module-csv.mjs).
 await writeAsset("sift-csv.wasm", await readFile(siftCsvWasmPath(app)));
 
 // The chart Worker runs Vega off the page's thread (viewer/vega-chart.mjs). A
