@@ -892,7 +892,8 @@ quantile, regression, sample, stack, timeUnit, window. A chart reads at most
 100,000 rows of each dataset; past that it shows a sentence, not a chart.
 
 Refusals create nothing: invalid_view (a malformed field, a spec a chart can't
-draw, checked before data, or data that doesn't match the names the spec reads),
+draw, checked before data, data that doesn't match the names the spec reads,
+or a module view's static import that can't load),
 unknown_source (data names a source this Page doesn't have),
 unknown_source_revision (a pinned revision its history no longer holds),
 stale_view (409, the view changed or exists), view_not_found (404, a
@@ -1184,7 +1185,8 @@ The heading may be a bounded preview (heading_truncated:true). Warnings are part
 of the exact stored receipt and describe its revision, even on retries after later
 edits. A warning means the write succeeded; it is not a reason to repeat it.
 edit_page receipts use the same list for marks_dropped (see Guarded edits).
-create_page and Markdown edits use it for list_numbers_reset.
+create_page and Markdown edits use it for list_numbers_reset. set_view and
+set_source use it for a view import that can't load (see /llms/views.txt).
 
 The detector checks only the first nonempty top-level body node. It compares
 opening headings with the title using conservative Unicode/case/punctuation
