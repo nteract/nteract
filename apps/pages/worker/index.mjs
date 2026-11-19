@@ -1592,8 +1592,9 @@ export default {
       if (insecure) return insecure;
       // View library files are public build output: they answer before the
       // session configuration check and any account code, and never touch a
-      // cookie (library-catalog.mjs).
-      const library = await libraryCatalogResponse(request, env);
+      // cookie (library-catalog.mjs). `ctx` holds the archive of this
+      // build's revision past the response.
+      const library = await libraryCatalogResponse(request, env, ctx);
       if (library) return withTransportSecurity(request, library);
       const misconfigured = sessionKeysFailure(env);
       if (misconfigured) return withTransportSecurity(request, misconfigured);

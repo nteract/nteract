@@ -1153,6 +1153,28 @@ target with `PAGES_OUTPUT_FRAME_URL`). A view saved against a catalog this relea
 longer serves loads that current revision instead, so a release that changes
 the catalog needs no view to be saved again.
 
+The Worker also keeps every revision a reader has used in the asset bucket
+(`PAGES_ASSETS`), under `catalog/<revision>/<file>`, so a view pinned to a
+revision that a later build no longer carries keeps its exact libraries
+([worker/library-archive.mjs](worker/library-archive.mjs)). There is no
+deploy step: the first request for a build's own `manifest.json` copies that
+revision from the build's assets into the bucket after the response, checking
+each file's sha256 against the manifest and the manifest's against the
+revision, and writing `manifest.json` last. A copy that stops part way leaves
+no manifest, so readers see the revision as absent and the next attempt puts
+the same bytes again. Each isolate checks the bucket once per revision; after
+a failed check or copy it waits a minute, doubling to at most an hour, and logs
+`library_catalog.archive_failed` with the revision and a reason. A check or
+copy still running after two minutes counts as failed (reason `deadline`), so
+work the runtime dropped does not hold the revision. The copy
+makes one bucket `head`, reads each catalog file from the assets once and puts
+it once: 34 subrequests in the request that triggers it, for the 16-file
+catalog. A host without the bucket binding serves its build's catalog alone.
+
+A revision costs about 11 MB of bucket storage, most of it Sift's WASM.
+Nothing deletes archived revisions; the retention rule is undecided. Page
+deletion removes only `pages/<pageId>/` keys and never touches `catalog/`.
+
 The receipt's `files` maps every file the release carries, except
 `build-receipt.json` itself, to its sha256: `index.js`, both WASM modules,
 `wrangler.json`, `public/index.html`, `public/connect.js`, `public/_headers`,

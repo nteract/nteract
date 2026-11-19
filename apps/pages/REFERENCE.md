@@ -2102,17 +2102,22 @@ sha256. The revision is the sha256 of the manifest's text, and the Worker
 knows its own from the build ([shared/library-catalog.mjs](shared/library-catalog.mjs)).
 The Pages Worker serves `GET`/`HEAD /catalog/<revision>/<file>` before any
 session code, with `Access-Control-Allow-Origin: *`,
-`Cross-Origin-Resource-Policy: cross-origin` and immutable caching; a file or
-revision the build lacks is a 404
-([worker/library-catalog.mjs](worker/library-catalog.mjs)). An app shell
+`Cross-Origin-Resource-Policy: cross-origin` and immutable caching
+([worker/library-catalog.mjs](worker/library-catalog.mjs)). A file the build
+lacks is read from the archive of revisions in the asset bucket, with the same
+headers; a file neither holds is a 404 with `Cache-Control: no-store`. The
+first request for the build's own `manifest.json` copies its revision into
+that archive after the response, manifest last, so a revision whose manifest
+is in the bucket is complete
+([worker/library-archive.mjs](worker/library-archive.mjs)). An app shell
 configured with an output frame URL also names the build's revision in
 `<meta name="pages-library-catalog">`
 ([worker/output-frame-config.mjs](worker/output-frame-config.mjs)); a shell
 without one names no current revision.
-A host serves only its own build's catalog. To mount an executable view, the
-viewer fetches a manifest from its own origin, checks its sha256, and sends
-the frame a library map of absolute URLs on that origin, with each catalog
-module's integrity from the manifest
+A host serves its own build's catalog and the revisions in its archive. To
+mount an executable view, the viewer fetches a manifest from its own origin,
+checks its sha256, and sends the frame a library map of absolute URLs on that
+origin, with each catalog module's integrity from the manifest
 ([viewer/library-catalog.mjs](viewer/library-catalog.mjs)):
 
 - the view's `catalog_revision` while this host serves it (200 and a matching
