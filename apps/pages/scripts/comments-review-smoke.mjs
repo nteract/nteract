@@ -165,6 +165,8 @@ try {
     threadIds.push(added.result.thread_id);
   }
   const reviewed = page.locator("#page-comments .thread-view");
+  await page.setViewportSize({ width: 1920, height: HEIGHT });
+  await page.evaluate(() => localStorage.setItem("pages.margin", "1"));
   await page.goto(origin + "/p/" + pageId);
   await expect(page.locator("wg-content").first()).toContainText("reading column");
 
@@ -175,23 +177,29 @@ try {
   await page.getByRole("button", { name: "Comments", exact: true }).click();
   await firstRow.click();
   await expect(firstPassage.first()).toHaveClass(/comment-passage-active/);
-  await mutate("manage_page_comment", {
-    page_id: pageId,
-    action: "resolve",
-    thread_id: threadIds[0],
-  });
-  await expect(firstPassage).toHaveCount(0);
-  await expect(page.locator("#page-comments")).toBeVisible();
-  await page.reload();
+  const changeFirst = (action) =>
+    mutate("manage_page_comment", { page_id: pageId, action, thread_id: threadIds[0] });
+  for (const reopen of [
+    () => changeFirst("reopen"),
+    () => reviewed.getByRole("button", { name: "Reopen", exact: true }).click(),
+  ]) {
+    await changeFirst("resolve");
+    await expect(firstPassage).toHaveCount(0);
+    await expect(page.locator("#page-comments")).toBeVisible();
+    await page.reload();
+    await page.getByRole("button", { name: "Comments", exact: true }).click();
+    await page.getByRole("tab", { name: /^Resolved/ }).click();
+    await firstRow.click();
+    await expect(firstPassage.first()).toHaveClass(/comment-passage-active/);
+    await reopen();
+    await expect(reviewed.getByRole("button", { name: "Resolve", exact: true })).toBeVisible();
+    await expect(firstPassage.first()).toHaveClass(/comment-passage-active/);
+  }
   await page.getByRole("button", { name: "Comments", exact: true }).click();
-  await page.getByRole("tab", { name: /^Resolved/ }).click();
-  await firstRow.click();
-  await expect(firstPassage.first()).toHaveClass(/comment-passage-active/);
-  await mutate("manage_page_comment", {
-    page_id: pageId,
-    action: "reopen",
-    thread_id: threadIds[0],
-  });
+  await expect(page.locator(`[data-margin-thread="${threadIds[0]}"]`)).toHaveClass(
+    /margin-thread-active/,
+  );
+  await page.evaluate(() => localStorage.removeItem("pages.margin"));
 
   for (const width of WIDTHS) {
     const at = String(width);

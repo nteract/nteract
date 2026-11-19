@@ -71,8 +71,11 @@ test("groupByHeading orders by document and groups consecutive headings", () => 
 
 test("review enters from any state, keeps its mode while moving, and exits to the thread", () => {
   const review = navigate({ name: "list", scroll: 40 }, { type: "review", id: "a" });
-  assert.deepEqual(review, { name: "review", id: "a", listScroll: 40 });
-  assert.equal(navigate(review, { type: "step", by: 1, ids }).name, "review");
+  assert.deepEqual(review, { name: "review", id: "a", listScroll: 40, queue: "open" });
+  const history = navigate(review, { type: "go", id: "a", queue: "resolved" });
+  assert.deepEqual(history, { ...review, queue: "resolved" }, "choosing history on the same id");
+  assert.equal(navigate(history, { type: "step", by: 1, ids }).queue, "resolved");
+  assert.equal(navigate(history, { type: "show", id: "a", queue: "open" }).queue, "open");
   assert.deepEqual(navigate(review, { type: "go", id: "c" }), { ...review, id: "c" });
   assert.deepEqual(navigate(review, { type: "show", id: "b" }), { ...review, id: "b" });
   assert.deepEqual(navigate(review, { type: "exit" }), { name: "thread", id: "a", listScroll: 40 });
@@ -81,7 +84,11 @@ test("review enters from any state, keeps its mode while moving, and exits to th
   assert.equal(navigate(LIST, { type: "go", id: "a" }), LIST);
   assert.equal(navigate(LIST, { type: "exit" }), LIST);
   const thread = { name: "thread", id: "b", listScroll: 7 };
-  assert.deepEqual(navigate(thread, { type: "review", id: "b" }), { ...thread, name: "review" });
+  assert.deepEqual(navigate(thread, { type: "review", id: "b" }), {
+    ...thread,
+    name: "review",
+    queue: "open",
+  });
 });
 
 test("afterResolve prefers the next open thread, then the previous", async () => {

@@ -6,16 +6,16 @@
  * States:
  *   { name: "list", scroll }               the grouped thread list
  *   { name: "thread", id, listScroll }     one thread; Back returns to the list
- *   { name: "review", id, listScroll }     full-width review of one thread at a time
+ *   { name: "review", id, queue, listScroll }     full-width review of one thread at a time
  *
  * Events:
  *   { type: "open", id, scroll }           drill into a thread from the list
- *   { type: "show", id }                   reveal a thread from outside (a passage click)
+ *   { type: "show", id, queue }                   reveal a thread from outside (a passage click)
  *   { type: "back" }                       return to the list at its saved scroll
  *   { type: "step", by, ids }              move to the previous/next thread in `ids`
  *   { type: "sync", ids }                  the visible thread ids changed
  *   { type: "review", id }                 enter review at a thread
- *   { type: "go", id }                     move to a thread, keeping the current mode
+ *   { type: "go", id, queue? }                     move to a thread, keeping the current mode
  *   { type: "exit" }                       leave review for that thread's drill-in view
  */
 
@@ -23,6 +23,12 @@ const saved = (state, scroll) =>
   state.name === "list" ? (scroll ?? state.scroll) : state.listScroll;
 
 export const LIST = Object.freeze({ name: "list", scroll: 0 });
+
+// Only an explicit choice changes the review queue. Peer edits may change
+// the selected thread's state while the reader is still in its conversation.
+function selectReviewThread(state, id, queue = state.queue) {
+  return state.id === id && state.queue === queue ? state : { ...state, id, queue };
+}
 
 export function navigate(state, event) {
   switch (event.type) {
@@ -35,8 +41,8 @@ export function navigate(state, event) {
       };
     case "show":
       if (!event.id) return state;
-      if (state.name !== "list" && state.id === event.id) return state;
-      if (state.name === "review") return { ...state, id: event.id };
+      if (state.name === "review") return selectReviewThread(state, event.id, event.queue);
+      if (state.name === "thread" && state.id === event.id) return state;
       return {
         name: "thread",
         id: event.id,
@@ -46,12 +52,20 @@ export function navigate(state, event) {
       return state.name === "list" ? state : { name: "list", scroll: state.listScroll };
     case "review":
       if (!event.id) return state;
-      return { name: "review", id: event.id, listScroll: saved(state, event.scroll) };
+      return {
+        name: "review",
+        id: event.id,
+        queue: "open",
+        listScroll: saved(state, event.scroll),
+      };
     case "go":
       if (!event.id || state.name === "list") return state;
+      if (state.name === "review") return selectReviewThread(state, event.id, event.queue);
       return state.id === event.id ? state : { ...state, id: event.id };
     case "exit":
-      return state.name === "review" ? { ...state, name: "thread" } : state;
+      return state.name === "review"
+        ? { name: "thread", id: state.id, listScroll: state.listScroll }
+        : state;
     case "step": {
       if (state.name === "list") return state;
       const ids = event.ids ?? [];

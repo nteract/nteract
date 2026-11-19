@@ -1017,11 +1017,14 @@ function App() {
   const page = session?.snapshot(),
     threads = page?.comments ?? [];
   const targetedThreadState = target && threads.find((thread) => thread.id === target.id)?.state;
-  // A peer can resolve the highlighted passage while the panel stays open.
-  // Visiting the thread later in Resolved starts a fresh highlight.
+  // Resolving clears the passage. Reopening a selected thread from history
+  // keeps it highlighted until it is resolved again or another thread is selected.
   useEffect(() => {
-    if (targetedThreadState && targetedThreadState !== target.state)
-      setTarget((current) => (current === target ? null : current));
+    if (!targetedThreadState || targetedThreadState === target.state) return;
+    setTarget((current) => {
+      if (current !== target) return current;
+      return targetedThreadState === "open" ? { ...current, state: "open" } : null;
+    });
   }, [target, targetedThreadState]);
   // The Project whose content is open. A link to it there is no Project link
   // (current-page.mjs); in an ordinary Page of the Project it still is.

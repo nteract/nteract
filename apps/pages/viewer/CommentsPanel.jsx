@@ -135,10 +135,10 @@ export function CommentsPanel({
     if (target?.source !== "passage" || !target.id) return;
     const thread = threads.find((item) => item.id === target.id);
     if (thread) setFilter((current) => filterFor(thread, current, principal));
-    dispatch({ type: "show", id: target.id });
+    dispatch({ type: "show", id: target.id, queue: thread?.state });
     // Only a new request should open a thread, not a thread list update.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target]);
+  }, [target?.id, target?.source, target?.request]);
   const changeDraft = (id, value) => setDrafts((previous) => ({ ...previous, [id]: value }));
   const markSending = (id, value) =>
     setSending((previous) => {
@@ -223,7 +223,9 @@ export function CommentsPanel({
   const reviewing = Boolean(current) && nav.name === "review";
   // Review steps through open threads, or through history when a resolved row is selected.
   const stepIds = reviewing
-    ? documentOrder.filter((thread) => thread.state === current.state).map((thread) => thread.id)
+    ? documentOrder
+        .filter((thread) => thread.state === nav.queue || thread.id === current.id)
+        .map((thread) => thread.id)
     : current && !orderedIds.includes(current.id)
       ? documentOrder.map((thread) => thread.id)
       : orderedIds;
@@ -249,24 +251,21 @@ export function CommentsPanel({
         thread_id: thread.id,
       });
       const latest = panel.current;
-      if (
-        thread.state === "open" &&
-        (reviewing || filter === "open") &&
-        latest?.open &&
-        latest.nav === nav &&
-        latest.filter === filter
-      ) {
+      const stillHere = latest?.open && latest.nav === nav && latest.filter === filter;
+      if (stillHere && thread.state === "open" && (reviewing || filter === "open")) {
         const queue = latest.documentOrder.filter((t) => t.state === "open" || t.id === thread.id);
         const next = afterResolve(
           thread.id,
           queue.map((t) => t.id),
         );
-        if (next) dispatch({ type: "go", id: next });
+        if (next) dispatch({ type: "go", id: next, queue: "open" });
         else {
           setFilter("open");
           onSelect?.(null);
           dispatch({ type: "back" });
         }
+      } else if (stillHere && reviewing && thread.state === "resolved") {
+        dispatch({ type: "go", id: thread.id, queue: "open" });
       }
       requestAnimationFrame(() => {
         if (!dialog.current?.open) return;
@@ -465,6 +464,7 @@ export function CommentsPanel({
         <ReviewWorkspace
           current={current}
           ordered={documentOrder}
+          queue={nav.queue}
           where={where}
           locate={locate}
           now={now}
@@ -472,7 +472,7 @@ export function CommentsPanel({
           problem={problem}
           canComment={session.canComment}
           changing={changing === current.id || Boolean(sending[current.id])}
-          onGo={(id) => dispatch({ type: "go", id })}
+          onGo={(thread) => dispatch({ type: "go", id: thread.id, queue: thread.state })}
           onStep={(by) => reviewCommand(by > 0 ? "next" : "previous")}
           onResolveNext={() => reviewCommand("resolve")}
           onExit={() => reviewCommand("exit")}
@@ -726,6 +726,7 @@ function emptyText(filter, total, canComment) {
 function ReviewWorkspace({
   current,
   ordered,
+  queue,
   where,
   locate,
   now,
@@ -756,12 +757,10 @@ function ReviewWorkspace({
   const location = locate(current);
   const path = location.headings;
   const groups = groupByHeading(open, locate);
-  const [showResolved, setShowResolved] = useState(current.state === "resolved");
+  const [showResolved, setShowResolved] = useState(queue === "resolved");
   useEffect(() => {
-    if (current.state === "resolved") setShowResolved(true);
-    // An explicit selection may open history. Resolving the same thread should not.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current.id]);
+    if (queue === "resolved") setShowResolved(true);
+  }, [queue, current.id]);
   const row = (thread) => (
     <ThreadRow
       key={thread.id}
@@ -770,7 +769,7 @@ function ReviewWorkspace({
       location={locate(thread)}
       active={thread.id === current.id}
       draft={hasDraft(drafts[thread.id])}
-      onOpen={() => onGo(thread.id)}
+      onOpen={() => onGo(thread)}
       onHover={() => {}}
     />
   );

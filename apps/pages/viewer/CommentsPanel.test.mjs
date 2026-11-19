@@ -396,7 +396,7 @@ test("resolving in Open follows the remaining queue and finishes on the caught-u
   assert.ok(dialogOf(f).contains(document.activeElement));
 });
 
-test("a delayed resolution respects navigation that happened while saving", async (t) => {
+test("a delayed review resolution respects navigation that happened while saving", async (t) => {
   const f = await fixture(t, { threads: ["first", "next", "other"].map((id) => thread(id)) });
   const save = f.props.session.comment;
   let finish;
@@ -406,8 +406,8 @@ test("a delayed resolution respects navigation that happened while saving", asyn
     });
     await save(action);
   };
-  await f.open("first");
-  await f.click(f.view().querySelector(".thread-state-action"));
+  await f.click(f.container.querySelector(".comments-review-start"));
+  await f.click(f.container.querySelector(".review-resolve-next"));
   const next = () => f.container.querySelector('[aria-label="Next thread"]');
   await f.click(next());
   await f.click(next());
@@ -415,6 +415,40 @@ test("a delayed resolution respects navigation that happened while saving", asyn
   await act(async () => finish());
   assert.equal(f.view().dataset.threadId, "other");
   assert.equal(f.props.target.id, "other");
+});
+
+test("a peer resolving the conversation being read keeps J and K in the open queue", async (t) => {
+  const f = await fixture(t, {
+    threads: [thread("first"), thread("done", "resolved"), thread("middle"), thread("last")],
+  });
+  await f.click(f.container.querySelector(".comments-review-start"));
+  await f.open("middle");
+  f.props.threads = f.props.threads.map((item) =>
+    item.id === "middle" ? { ...item, state: "resolved" } : item,
+  );
+  await f.render();
+  const position = () => f.container.querySelector(".comments-position").textContent;
+  assert.equal(f.view().dataset.threadId, "middle", "keep the conversation being read");
+  assert.match(position(), /2 of 3/);
+  assert.equal(
+    f.container.querySelector(".review-navigator .comments-list-end").getAttribute("aria-expanded"),
+    "false",
+  );
+  await f.key("j", f.view());
+  assert.equal(f.view().dataset.threadId, "last");
+  assert.match(position(), /2 of 2/);
+  await f.key("k", f.view());
+  assert.equal(f.view().dataset.threadId, "first", "skip the resolved threads in between");
+
+  await f.click(f.container.querySelector(".review-navigator .comments-list-end"));
+  await f.open("done");
+  f.props.threads = f.props.threads.map((item) =>
+    item.id === "done" ? { ...item, state: "open" } : item,
+  );
+  await f.render();
+  assert.match(position(), /1 of 2/);
+  await f.key("j", f.view());
+  assert.equal(f.view().dataset.threadId, "middle", "explicit history browsing stays in history");
 });
 
 test("review can explicitly browse resolved history and reopen the selected thread", async (t) => {
