@@ -157,7 +157,7 @@ does: `numRows`, `numCols`, `schema.fields`, `getChild(name)`,
 `getChildAt(index)`, `get(index)`, `toArray()`, `select(names)` and iteration
 over rows; a column has `length`, `nullCount`, `type`, `get(index)`,
 `toArray()`, `toJSON()` and iteration. Values are plain JavaScript: a `date`
-is a `Date`, a missing value `null`, and rows are frozen plain objects. Nothing
+is a `Date`, a missing value `null`, and rows are plain objects a view may change. Nothing
 else on the object is part of the interface. The Pages reference lists where it
 differs from Arrow JS.
 

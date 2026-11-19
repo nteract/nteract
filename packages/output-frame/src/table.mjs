@@ -13,9 +13,12 @@
 // Where it differs from Arrow JS on purpose:
 // - Values are plain JavaScript: a "date" value is a Date, a "bigint"
 //   value a BigInt, a missing value null.
-// - A row is a frozen plain object, built once with every other row.
+// - A row is a plain object the view may change, built once with every
+//   other row. The table, its schema and its columns are frozen.
 // - A column's toArray() is its typed array when it is "number" or
-//   "bigint" with no nulls; otherwise a frozen array with nulls as null.
+//   "bigint" with no nulls; otherwise an array with nulls as null. Each
+//   frame holds its own copy, so a view that writes to one changes only
+//   what it reads back.
 // - getChild and getChildAt answer null for a name or index the table does
 //   not hold, and select skips unknown names, as Arrow JS does.
 import { checkColumnSet } from "./column-set.mjs";
@@ -53,13 +56,11 @@ function tableOf(numRows, children) {
   const toArray = () => {
     if (!rows) {
       const values = children.map(({ column }) => column.toArray());
-      rows = Object.freeze(
-        Array.from({ length: numRows }, (_, row) => {
-          const out = {};
-          children.forEach(({ name }, index) => (out[name] = values[index][row]));
-          return Object.freeze(out);
-        }),
-      );
+      rows = Array.from({ length: numRows }, (_, row) => {
+        const out = {};
+        children.forEach(({ name }, index) => (out[name] = values[index][row]));
+        return out;
+      });
     }
     return rows;
   };
@@ -96,7 +97,7 @@ function columnOf({ name, type, values, nulls }, numRows) {
     for (let row = 0; row < numRows; row++)
       out[row] =
         nulls && !nulls[row] ? null : type === "date" ? new Date(values[row]) : values[row];
-    return (built = Object.freeze(out));
+    return (built = out);
   };
   const column = Object.freeze({
     length: numRows,

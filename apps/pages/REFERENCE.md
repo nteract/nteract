@@ -2211,7 +2211,7 @@ from Arrow JS on purpose:
 | | Arrow JS | This table |
 |---|---|---|
 | Values | Arrow's own: BigInt for every 64-bit integer, numbers for dates | plain JavaScript, by the column types above |
-| Rows | row proxies | frozen plain objects, built once |
+| Rows | row proxies | plain objects the view may change, built once |
 | `toArray()` of a column with nulls | the stored values | an array with `null` for each missing value |
 | `getChild`, `getChildAt` for an unknown column | `null` | `null` |
 | `select` with an unknown name | skips it | skips it |

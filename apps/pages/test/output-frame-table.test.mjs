@@ -197,7 +197,7 @@ test("a malformed ColumnSet is refused", () => {
   for (const set of cases) assert.throws(() => checkColumnSet(set), /Invalid column set/);
 });
 
-test("the table: names, rows and columns built once, nulls, Dates and BigInts, frozen", async () => {
+test("the table: names, rows and columns built once, nulls, Dates and BigInts; the interface is frozen, the values are the view's", async () => {
   const { columns } = await fixture({ days: 4, unsafe: true });
   const table = columnTable(columns);
   assert.ok(Object.isFrozen(table));
@@ -221,7 +221,7 @@ test("the table: names, rows and columns built once, nulls, Dates and BigInts, f
   assert.deepEqual([...table.getChild("people")], [3, 8, 13, 7]);
   assert.deepEqual([...table.getChild("big")], [0n, 1n, 2n, 2n ** 60n]);
   assert.equal(score.toArray(), score.toArray(), "built once");
-  assert.ok(Object.isFrozen(score.toArray()) && Object.isFrozen(score));
+  assert.ok(Object.isFrozen(score) && !Object.isFrozen(score.toArray()));
   assert.equal(table.getChild("missing"), null);
   assert.equal(table.getChildAt(7), null);
   assert.equal(table.getChildAt(1), at);
@@ -231,7 +231,10 @@ test("the table: names, rows and columns built once, nulls, Dates and BigInts, f
   assert.equal(table.get(9), null);
   const rows = table.toArray();
   assert.equal(table.toArray(), rows, "built once");
-  assert.ok(Object.isFrozen(rows) && Object.isFrozen(rows[0]));
+  // A view may add a derived field to its rows, as with any array of objects.
+  assert.ok(!Object.isFrozen(rows) && !Object.isFrozen(rows[0]));
+  rows[0].derived = 1;
+  assert.equal(table.toArray()[0].derived, 1);
   assert.deepEqual(rows[1], {
     day: new Date(FIRST_DAY_MS + DAY_MS),
     at: noon(1),
