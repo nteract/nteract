@@ -155,15 +155,21 @@ export function outdentTask({ state }) {
     return false;
   // Close the parent before this item. Later siblings become this item's
   // children, preserving the reading order of the outline.
+  const parent = list.parent;
+  // A loose task can have notes after its checklist. Keep those blocks
+  // inside the original parent when the promoted task becomes its sibling.
+  const followingBlocks = parent.node.content.slice(list.index + 1);
+  const closeParent = [...followingBlocks, Plot.End];
   const before = item.isFirst
-    ? { from: list.before, to: item.before, insert: [Plot.End] }
-    : { from: item.before, insert: [Plot.End, Plot.End] };
+    ? { from: list.before, to: item.before, insert: closeParent }
+    : { from: item.before, insert: [Plot.End, ...closeParent] };
   const after = item.nextSibling
     ? openChildList(item.node, item.after)
-    : list.isLast
-      ? { from: item.after, to: list.parent.after }
-      : { from: item.end, to: list.after };
-  return { changes: [before, after], scrollIntoView: true, userEvent: "input.outdent" };
+    : { from: item.after, to: parent.after };
+  const changes = [before, after];
+  if (item.nextSibling && followingBlocks.length)
+    changes.push({ from: list.after, to: parent.end });
+  return { changes, scrollIntoView: true, userEvent: "input.outdent" };
 }
 
 export const taskLists = () => [

@@ -264,12 +264,36 @@ test("Tab falls through on the first sibling, at the top level, and outside an e
     ["- [ ] First", "First", false],
     ["- [ ] First\n- [x] Second", "Second", true],
     ["- Ordinary\n- Bullet", "Bullet", false],
+    ["- Ordinary\n  - [x] Nested", "Nested", false],
     ["- [ ] First\n- [x] Second\n\n  Notes", "Notes", false],
   ]) {
     const { binding, editor } = fixture(source, readOnly);
     editor.dispatch({ selection: { anchor: textPosition(editor.state.doc, label) } });
     assert.equal(Command.dispatch(editor, indentTask), false);
     assert.equal(Command.dispatch(editor, outdentTask), false);
+    binding.destroy();
+  }
+});
+
+test("promoting a task leaves any paragraphs after the nested list with their parent", () => {
+  for (const following of ["", "  - [ ] Sibling\n"]) {
+    const { editor, binding } = fixture(
+      "- [ ] Parent\n  - [x] Child\n" + following + "\n  Parent notes\n- [ ] Next",
+    );
+    editor.dispatch({ selection: { anchor: textPosition(editor.state.doc, "Child") + 2 } });
+    assert.equal(Command.dispatch(editor, outdentTask), true);
+    const [parent, child, next] = editor.state.doc.content[0].content;
+    assert.deepEqual(
+      parent.content.map((node) => node.textContent()),
+      ["Parent", "Parent notes"],
+    );
+    assert.deepEqual(
+      child.content.map((node) => node.textContent()),
+      following ? ["Child", "Sibling"] : ["Child"],
+    );
+    assert.equal(child.mark(TaskChecked), true);
+    assert.equal(next.textContent(), "Next");
+    assert.equal(editor.state.selection.head, textPosition(editor.state.doc, "Child") + 2);
     binding.destroy();
   }
 });

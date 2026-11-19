@@ -401,7 +401,8 @@ else replaces the screen with a Reload notice and leaves the Page unchanged.
   unchecked item; an empty item returns to prose. Native list-item markers store
   checked state independently of the text, so checkbox and text edits can merge.
   With the caret in a task label, Tab nests it under its preceding sibling and
-  Shift+Tab moves it out one level. On the checkbox itself, Space toggles it
+  Shift+Tab promotes it into its parent checklist. At the outermost checklist
+  Shift+Tab moves focus. On the checkbox itself, Space toggles it
   and Tab moves focus. Markdown preserves nested tasks. Read-only Pages disable
   checkbox changes.
 ## Opening, recovery, and ownership
