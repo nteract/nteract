@@ -1,6 +1,7 @@
 import { createFrameData, dataAlias, receiveDataChange } from "./data.mjs";
 import { PROTOCOL_VERSION, RUNTIME_ENTRY, connectVersion, outputTransition } from "./lifecycle.mjs";
 import { applyHostContext } from "./context.mjs";
+import { frameImportMap } from "./import-map.mjs";
 
 import { createWidgetSession } from "./anywidget.mjs";
 
@@ -102,18 +103,18 @@ function connect(event) {
     state = outputTransition(state, "mount");
     try {
       context = applyHostContext(document, data.context ?? { theme: "light" });
-      const catalog = document.getElementById("widget-catalog-map");
       const module = data.payload.kind === "module";
       frameData = module ? createFrameData(data.files ?? {}, lifetime.signal) : undefined;
       const files = Object.entries(frameData?.initial ?? {});
-      if (catalog || data.payload.imports || files.length) {
-        const imports = catalog ? JSON.parse(catalog.textContent).imports : {};
+      const libraries = data.payload.libraries;
+      if (libraries || data.payload.imports || files.length) {
+        // The libraries are absolute URLs the host checked (payload.mjs);
+        // the bound names come after them and may not replace one.
+        const bound = [];
         for (const [name, asset] of Object.entries(data.payload.imports ?? {})) {
-          if (Object.hasOwn(imports, name))
-            throw Error("Page module shadows a catalog import: " + name);
           const url = URL.createObjectURL(new Blob([asset.bytes], { type: "text/javascript" }));
           cleanup(() => URL.revokeObjectURL(url));
-          imports[name] = url;
+          bound.push([name, url]);
         }
         // Each data/ import is bound once, to the file object the view
         // mounted with, which the model also starts with. A later change
@@ -129,7 +130,7 @@ function connect(event) {
             ),
           );
           cleanup(() => URL.revokeObjectURL(url));
-          imports[name] = url;
+          bound.push([name, url]);
           bindings.push([url, input]);
         }
         // The runtime is a classic script: an import map appended at mount
@@ -138,7 +139,9 @@ function connect(event) {
         // be shipped as type="module" or imported by another module script.
         const script = document.createElement("script");
         script.type = "importmap";
-        script.textContent = JSON.stringify({ imports });
+        script.textContent = JSON.stringify(
+          frameImportMap(libraries, bound, data.payload.libraryIntegrity),
+        );
         document.head.append(script);
         for (const [url, source] of bindings) (await import(url)).bind(source);
       }

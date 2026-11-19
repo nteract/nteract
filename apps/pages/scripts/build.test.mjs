@@ -156,6 +156,16 @@ for (const fails of [true, false])
             "export const bootstrapSha256 = () => 'fixture-bootstrap-sha256';",
           ].join("\n"),
         );
+        // The library catalog's build is stubbed; its files land in public/.
+        write(
+          "scripts/library-catalog.mjs",
+          [
+            "import {mkdirSync, writeFileSync} from 'node:fs';",
+            "export const LIBRARY_CATALOG_DIRECTORY = 'public/catalog';",
+            `export const buildLibraryCatalog = async () => ({revision: '${"c".repeat(64)}', files: new Map([['shout.js', new TextEncoder().encode('export {}')], ['manifest.json', new TextEncoder().encode('{}')]])});`,
+            "export const writeLibraryCatalog = async (directory, {revision, files}) => { mkdirSync(directory + '/' + revision, {recursive: true}); for (const [name, data] of files) writeFileSync(directory + '/' + revision + '/' + name, data); return [...files.keys()].map((name) => revision + '/' + name).sort(); };",
+          ].join("\n"),
+        );
         for (const name of [
           "anywidget-view.mjs",
           "output-frame-paths.mjs",
@@ -195,7 +205,7 @@ for (const fails of [true, false])
               'public/chunks/CHARTAAA.js': {inputs: {'../viewer/view-chart.mjs': {}}, imports: [], bytes: 14}
             }}};
           }
-          writeFileSync(options.outfile, 'fixture worker');
+          writeFileSync(options.outfile, 'fixture worker ' + (options.define?.__PAGES_LIBRARY_CATALOG__ ?? ''));
         }
       `,
         );
@@ -266,9 +276,26 @@ for (const fails of [true, false])
           const options = JSON.parse(
             readFileSync(path.join(fixture, "dist/receipt-options.json"), "utf8"),
           );
+          // The library catalog's files are release files too, and the
+          // receipt records its revision.
+          const catalog = `public/catalog/${"c".repeat(64)}`;
+          assert.deepEqual(options.libraryCatalog, {
+            revision: "c".repeat(64),
+            files: [`${catalog}/manifest.json`, `${catalog}/shout.js`],
+          });
           assert.deepEqual(
             options.releaseFiles,
-            releaseFilesOf(options.viewerChunks, options.viewerAssets),
+            releaseFilesOf(
+              options.viewerChunks,
+              options.viewerAssets,
+              options.libraryCatalog.files,
+            ),
+          );
+          assert.ok(existsSync(path.join(fixture, "dist", catalog, "shout.js")));
+          // The Worker bundle carries the catalog's revision.
+          assert.equal(
+            readFileSync(path.join(fixture, "dist/index.js"), "utf8"),
+            `fixture worker "${"c".repeat(64)}"`,
           );
           assert.deepEqual(options.documentFormats, {
             "pages.page": [3],

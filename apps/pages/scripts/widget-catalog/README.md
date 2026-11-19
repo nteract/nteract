@@ -1,12 +1,11 @@
 # Share a component between module views
 
-Two independent React roots import the same ChoiceGroup from [activity-controls.mjs](activity-controls.mjs). Each view imports its own entry, the shared component and the same synthetic counts. React, D3, Plot and the Sift Parquet reader come from the catalog revision saved on the view.
+Two independent React roots import the same ChoiceGroup from [activity-controls.mjs](activity-controls.mjs). Each view imports its own entry, the shared component and the same synthetic counts. React, D3, Plot and the Sift Parquet reader come from the library catalog the Page host's build carries, at the revision saved on the view.
 
-Run the Pages setup and build from `apps/pages`. Start the catalog first, then
-start celld in a second terminal from the same directory.
+Run the Pages setup and build from `apps/pages`. Start the local output host first, then start celld in a second terminal from the same directory. The output host serves the frame with a CSP that admits the local Pages origin, which serves the libraries at `/catalog/<revision>/`.
 
 ```sh
-node scripts/widget-catalog/serve.mjs
+PAGES_PORT=9916 node scripts/widget-catalog/serve.mjs
 PAGES_E2E_ONLY=true PAGES_PORT=9916 PAGES_OUTPUT_FRAME_URL=http://127.0.0.1:9446/frame/v2/ npm run dev
 ```
 

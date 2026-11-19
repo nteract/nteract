@@ -70,18 +70,17 @@ test("a Page author can discover the same catalog setup through MCP and the publ
   const hosted = "https://output.example/frame/v2/";
   const local = "http://localhost:9917";
   const loopback = "http://127.0.0.1:9447/frame/v2/";
-  const pin = "a".repeat(64);
-  for (const [site, frame, revision, enabled] of [
-    [origin, hosted, pin, true],
-    [local, loopback, pin, true],
-    [origin, hosted, undefined, false],
-    [local, loopback, undefined, false],
-    [origin, origin + "/frame/", pin, false],
+  // Every host serves its build's libraries, whatever its frame host and
+  // with no catalog variable.
+  for (const [site, frame] of [
+    [origin, hosted],
+    [local, loopback],
+    [origin, undefined],
+    [origin, origin + "/frame/"],
   ]) {
     const config = {
       NOTEBOOK_CLOUD_PUBLIC_ORIGIN: site,
-      PAGES_OUTPUT_FRAME_URL: frame,
-      PAGES_WIDGET_CATALOG_REVISION: revision,
+      ...(frame && { PAGES_OUTPUT_FRAME_URL: frame }),
     };
     const guide = await (await worker.fetch(new Request(site + "/llms/views.txt"), config)).text();
     const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" });
@@ -108,11 +107,15 @@ test("a Page author can discover the same catalog setup through MCP and the publ
     );
     assert.ok(guide.includes('"view_type": "module"'));
     assert.ok(guide.includes('"activity-controls"'));
-    assert.equal(guide.includes("read_page.libraries"), enabled);
-    assert.equal(guide.includes("view.catalog_revision"), enabled);
+    assert.ok(guide.includes("read_page.libraries"));
+    assert.ok(guide.includes("view.catalog_revision"));
     // What a view can import, and what set_view does when it can't.
-    assert.ok(guide.includes("data/<alias> for a file bound in data, or an https: URL."));
-    assert.equal(guide.includes("This host offers no libraries."), !enabled);
+    assert.ok(
+      guide.includes(
+        "A view's modules can import the names in read_page.libraries, a name bound in imports, data/<alias> for a file bound in data, or an https: URL.",
+      ),
+    );
+    assert.ok(!guide.includes("This host offers no libraries."));
     assert.ok(guide.includes("refuses the view with invalid_view when a static import can't load"));
   }
 });
@@ -189,7 +192,6 @@ test("the views guide teaches files asked with await, the table, and change list
     ".parquet() rejects for a file that is not Parquet.",
     "a 64-bit integer column is numbers when every value is a safe integer (within ±(2^53 − 1)), otherwise BigInt.",
     ".arrayBuffer(), .text() and .json() read the whole file: at most 5 MiB, read once per file, and at most 32 MiB across one view's files.",
-    'model.on("change:activity", show);',
     '`await model.get("activity").slice(0, 4).arrayBuffer()` reads those four bytes',
     "after a change its calls fail as aborted",
     "To show part of a table, filter it in the view",
@@ -199,18 +201,17 @@ test("the views guide teaches files asked with await, the table, and change list
     assert.ok(guide.includes(sentence), sentence);
   assert.ok(guide.indexOf("model.get") < guide.indexOf("## Read part of a file"));
   assert.doesNotMatch(guide, /code or input changes remount/);
-  // With the standard libraries, the example draws the table with Plot.
-  const withCatalog = mediaGuide("/llms/views.txt", origin, { catalogEnabled: true });
+  // Every host has the libraries: the example draws the table with Plot.
   for (const sentence of [
     'const table = await model.get("activity").parquet();\n  el.append(Plot.barY(table, { x: "day", y: "people" }).plot());',
     'model.on("change:activity", draw);\n  await draw();',
     'For plain rows, read (await model.get("activity").parquet()).toArray()',
+    "When a view says its libraries are no longer on this host, save it again with set_view to pin the current ones.",
   ])
-    assert.ok(withCatalog.includes(sentence), sentence);
-  for (const text of [guide, withCatalog]) {
-    assert.doesNotMatch(text, /loadTableFile/);
-    assert.doesNotMatch(text, /read\(offset/, "the guide teaches slice, not read");
-  }
+    assert.ok(guide.includes(sentence), sentence);
+  assert.doesNotMatch(guide, /loadTableFile/);
+  assert.doesNotMatch(guide, /read\(offset/, "the guide teaches slice, not read");
+  assert.doesNotMatch(guide, /offers no libraries|self-contained entry/);
   const module = tools.find(({ name }) => name === "edit_page").inputSchema.properties.operations
     .items.properties.module;
   assert.match(module.description, /render\(\{model, el, signal\}\)/);

@@ -10,6 +10,7 @@ import { setSources, sourcesGenesis } from "../model/sources-doc.mjs";
 import { readView, setView, viewGenesis } from "../model/view-doc.mjs";
 import { imageAssetUrl } from "../shared/image-assets.mjs";
 import { anywidgetPlan, mount, planChange } from "./anywidget-view.mjs";
+import { forgetLibraryMaps, libraryMap$, sha256Integrity } from "./library-catalog.mjs";
 import { PageSourceStore } from "./page-source-store.mjs";
 import { projectSourcesPanel } from "./sources-panel-store.mjs";
 import { sourceLine } from "./source-line.mjs";
@@ -18,7 +19,7 @@ import { parquetFixture } from "../test/parquet-fixture.mjs";
 
 const PAGE = "33333333-3333-4333-8333-333333333333";
 const by = { principal: "account:test", displayName: "Test", driver: "Agent" };
-// A loopback output host serves a catalog (widget-imports.mjs).
+// A loopback output host.
 const FRAME = "http://127.0.0.1:9896/frame/v2/";
 const encoder = new TextEncoder();
 const sha256 = async (bytes) =>
@@ -86,7 +87,7 @@ function viewRecord(catalogRevision) {
   return readView(doc, "daily");
 }
 
-async function mountView(view) {
+async function mountView(view, { libraryMap } = {}) {
   const { window } = new JSDOM("<!doctype html><body></body>");
   const requested = [];
   const request = async (url) => {
@@ -108,6 +109,7 @@ async function mountView(view) {
       sources,
       frameUrl: FRAME,
       theme: { subscribe: () => () => {}, getSnapshot: () => ({ resolved: "light" }) },
+      ...(libraryMap && { libraryMap }),
       mountOutput(_container, payload, options) {
         resolve({ payload, frameUrl: options.frameUrl });
         return { destroy() {}, setHostContext() {} };
@@ -128,16 +130,27 @@ async function mountView(view) {
 test("a source named widget-imports is an ordinary source an executable view never loads", async () => {
   const declarationUrl = imageAssetUrl(PAGE, declarationId);
   const moduleUrl = imageAssetUrl(PAGE, moduleId);
+  // The library map comes from the view's pinned catalog alone.
+  const pinned = { react: `https://pages.example/catalog/${"a".repeat(64)}/react.js` };
   for (const catalog of [null, "a".repeat(64)]) {
     const view = viewRecord(catalog);
     assert.equal(view.catalog_revision, catalog ?? undefined);
-    const mounted = await mountView(view);
+    const asked = [];
+    const mounted = await mountView(view, {
+      libraryMap: (revision) => {
+        asked.push(revision);
+        return of({ kind: "ready", libraries: revision ? pinned : undefined });
+      },
+    });
     assert.equal(mounted.failed, undefined, mounted.failed);
+    assert.deepEqual(asked, [catalog]);
     assert.deepEqual(mounted.requested, [imageAssetUrl(PAGE, entryId)]);
     assert.ok(!mounted.requested.includes(declarationUrl));
     assert.ok(!mounted.requested.includes(moduleUrl));
     assert.equal(mounted.payload.imports, undefined);
-    assert.equal(new URL(mounted.frameUrl).searchParams.get("catalog"), catalog);
+    assert.deepEqual(mounted.payload.libraries, catalog ? pinned : undefined);
+    // The frame URL is the configured bootstrap, with no catalog in it.
+    assert.equal(mounted.frameUrl, FRAME);
   }
 
   const view = viewRecord("a".repeat(64));
@@ -641,3 +654,74 @@ test("a Parquet file that cannot be decoded rejects its table and leaves the vie
   await until(() => calls.data.length === 1, "the change was not delivered");
   assert.equal(await rows(calls.data[0][1]), 9);
 });
+
+// A view whose pinned catalog this host lacks mounts no frame and says so.
+// Retry asks for the manifest again.
+for (const [name, first] of [
+  ["missing", () => new Response("No such library file\n", { status: 404 })],
+  ["altered", () => new Response('{"imports":{}}\n')],
+])
+  test(`a view whose pinned manifest is ${name} shows the plain message, and Retry loads it again`, async (t) => {
+    t.after(forgetLibraryMaps);
+    const manifest = '{"imports":{"d3":"d3.js"},"files":{"d3.js":"' + "1".repeat(64) + '"}}\n';
+    const revision = await sha256(encoder.encode(manifest));
+    const view = viewRecord(revision);
+    const { window } = new JSDOM("<!doctype html><body></body>");
+    const sources = new PageSourceStore({
+      pageId: PAGE,
+      doc$: new BehaviorSubject(sourcesDoc),
+      request: async (url) => {
+        const asset = assets.get(url.split("/").at(-1));
+        return new Response(asset.bytes, { headers: { "content-type": asset.media_type } });
+      },
+    });
+    const answers = [first(), new Response(manifest)];
+    const asked = [];
+    const mounts = [];
+    const mounted = mount(window.document.body, {
+      view$: of({ status: "ready", view }),
+      sources,
+      frameUrl: FRAME,
+      theme: { subscribe: () => () => {}, getSnapshot: () => ({ resolved: "light" }) },
+      libraryMap: (pin) =>
+        libraryMap$(pin, {
+          origin: "https://pages.example",
+          fetch: async (url) => {
+            asked.push(url);
+            return answers.shift();
+          },
+        }),
+      mountOutput(_container, payload, options) {
+        mounts.push({ payload, options });
+        return { destroy() {}, setHostContext() {} };
+      },
+    });
+    t.after(() => {
+      mounted.destroy();
+      sources.destroy();
+      window.close();
+    });
+    const root = window.document.querySelector(".pages-anywidget-view");
+    const button = root.querySelector("button");
+    await until(() => root.dataset.outputState === "failed", "the view never failed");
+    assert.equal(
+      root.querySelector("p").textContent,
+      "This view's libraries are no longer on this host. Save the view again to use the current ones.",
+    );
+    assert.equal(button.hidden, false);
+    assert.equal(button.disabled, false);
+    // No frame mounted.
+    assert.equal(mounts.length, 0);
+    assert.equal(root.querySelector("iframe"), null);
+    assert.deepEqual(asked, [`https://pages.example/catalog/${revision}/manifest.json`]);
+    button.dispatchEvent(new window.MouseEvent("click"));
+    await until(() => mounts.length === 1, "Retry never mounted the view");
+    assert.equal(asked.length, 2);
+    assert.deepEqual(mounts[0].payload.libraries, {
+      d3: `https://pages.example/catalog/${revision}/d3.js`,
+    });
+    assert.deepEqual(mounts[0].payload.libraryIntegrity, {
+      [`https://pages.example/catalog/${revision}/d3.js`]: sha256Integrity("1".repeat(64)),
+    });
+    assert.equal(mounts[0].options.frameUrl, FRAME);
+  });

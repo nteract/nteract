@@ -6,7 +6,7 @@ const escapeAttribute = (value) =>
 
 /** Configure the app shell at delivery, including shells used by link previews.
  * Asset bytes stay immutable; configured HTML has no build-time validator. */
-export function outputFrameAssets(assets, value, pageOrigin, { catalog = false } = {}) {
+export function outputFrameAssets(assets, value, pageOrigin) {
   if (value === undefined) return assets;
   const frameUrl = outputFrameUrl(value, pageOrigin);
   return {
@@ -32,7 +32,7 @@ export function outputFrameAssets(assets, value, pageOrigin, { catalog = false }
       const body = html.replace(
         "</head>",
         () =>
-          `<meta name="pages-output-frame-url" content="${escapeAttribute(frameUrl)}"${catalog ? ' data-widget-catalog="enabled"' : ""} /></head>`,
+          `<meta name="pages-output-frame-url" content="${escapeAttribute(frameUrl)}" /></head>`,
       );
       const out = new Headers(response.headers);
       // Set this here even when the host's asset binding omits _headers.

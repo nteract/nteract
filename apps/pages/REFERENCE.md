@@ -1901,7 +1901,7 @@ root is:
 {
   title:      string, 1 to 200 characters; a write refuses control characters
   media_type: one of the formats in shared/views.mjs
-  catalog_revision?: SHA-256 of the executable view’s standard libraries
+  catalog_revision?: the host's library catalog at the executable view's last save
   spec:       text, the media-specific spec as JSON
   data:       { [data_name]: { source_id } | { source_id, revision } }
   revision:   decimal string: "1", then one more per write
@@ -2093,6 +2093,26 @@ viewer sends the frame runtime from its own build; see the
 `@nteract/output-frame` README. The shell deployment remains separate from
 Pages and the notebook output host.
 
+Every build carries the view library catalog
+([scripts/library-catalog.mjs](scripts/library-catalog.mjs)): the libraries in
+`read_page.libraries`, bundled into `public/catalog/<revision>/` with a
+`manifest.json` that maps each library to its file and each file to its
+sha256. The revision is the sha256 of the manifest's text, and the Worker
+knows its own from the build ([shared/library-catalog.mjs](shared/library-catalog.mjs)).
+The Pages Worker serves `GET`/`HEAD /catalog/<revision>/<file>` before any
+session code, with `Access-Control-Allow-Origin: *`,
+`Cross-Origin-Resource-Policy: cross-origin` and immutable caching; a file or
+revision the build lacks is a 404
+([worker/library-catalog.mjs](worker/library-catalog.mjs)). To mount a view
+with a `catalog_revision`, the viewer fetches that revision's manifest from its
+own origin, checks its sha256, and sends the frame a library map of absolute
+URLs on that origin, with each catalog module's integrity from the manifest
+([viewer/library-catalog.mjs](viewer/library-catalog.mjs)).
+A host serves only its own build's catalog. A view whose manifest is missing
+or does not match mounts no frame and says "This view's libraries are no
+longer on this host. Save the view again to use the current ones."; Retry
+loads the manifest again.
+
 ### Writes
 
 `edit_page` sends `set_view` alone. Every view has a `view_id`, title, `view_type` and `view_revision`. For new JavaScript use `module`. Its `module` field names the entry source, optional `data` binds files, and optional `imports` binds JavaScript sources under names local to the view. The entry exports `render({model, el, signal})`, or a default AFM object or factory. Each `data` name is a key on that model whose value is a file, read only when the view asks (see [Module view data: files and tables](#module-view-data-files-and-tables)). `import f from "data/<name>"` gives the same kind of file, bound to the one the view mounted with. A followed `data` source that moves to a new asset reaches the mounted view as `change:<name>` when the view listens with `model.on("change:<name>", …)`, and the view keeps the reader's state; the old file's calls then fail as aborted. A move to another file type is a data change like any other. A view that does not listen is mounted again when its data changes. Changes to the entry, an import, the spec or the catalog remount the view. Each binding follows its source unless it specifies a revision. Use `vega-lite` with a chart spec and named data, or `anywidget` with a widget spec for code that needs a model. All three use the same view node. `read_page.libraries` lists the host-provided names. It names the Page `revision` it read, fenced like
@@ -2152,7 +2172,8 @@ Before the slot, set_view reads the text of an executable view's modules (the
 entry and each import, or an anywidget's modules) at the versions the view
 binds and lexes their imports ([worker/view-imports.mjs](worker/view-imports.mjs),
 [shared/module-imports.mjs](shared/module-imports.mjs)). A view can use the
-catalog's libraries only when it keeps or records a `catalog_revision`. A
+host's libraries (`read_page.libraries`): every save of an executable view
+records the host's `catalog_revision`. A
 module view's static import that can't load is the refusal above. An
 `import("…")` with a literal that can't load, a module the lexer can't parse,
 and every finding for an anywidget view are warnings on the edit

@@ -161,26 +161,9 @@ test("configured URL dollar sequences remain literal in the meta attribute", asy
   assert.equal(body.match(/<body>/g).length, 1);
 });
 
-test("the configured catalog stays associated with its frame through an HTTPS proxy", async () => {
-  const { hasWidgetCatalog } = await import("../viewer/widget-imports.mjs");
-  const assets = outputFrameAssets({ fetch: async () => asset() }, frame, origin, {
-    catalog: true,
-  });
+test("the shell's frame meta names the frame URL and nothing about libraries", async () => {
+  const assets = outputFrameAssets({ fetch: async () => asset() }, frame, origin);
   const html = await (await assets.fetch(new Request(origin))).text();
-  assert.ok(html.includes(`content="${frame}" data-widget-catalog="enabled"`));
-  const config = { content: frame, dataset: { widgetCatalog: "enabled" } };
-  const previous = Object.getOwnPropertyDescriptor(globalThis, "document");
-  try {
-    Object.defineProperty(globalThis, "document", {
-      configurable: true,
-      value: { querySelector: () => config },
-    });
-    assert.equal(hasWidgetCatalog(frame), true);
-    assert.equal(hasWidgetCatalog("https://other.example/frame/v2/"), false);
-    delete config.dataset.widgetCatalog;
-    assert.equal(hasWidgetCatalog(frame), false);
-  } finally {
-    if (previous) Object.defineProperty(globalThis, "document", previous);
-    else delete globalThis.document;
-  }
+  assert.ok(html.includes(`<meta name="pages-output-frame-url" content="${frame}" /></head>`));
+  assert.ok(!html.includes("data-widget-catalog"));
 });

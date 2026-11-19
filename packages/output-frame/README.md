@@ -59,8 +59,33 @@ The bootstrap's one script (`BOOTSTRAP_SCRIPT`) can be read in a minute:
   posts `{type: "nteract-output-boot-failed"}` to its parent. The host then
   fails the mount at once.
 
-It knows nothing about protocol versions, ports, views, data or catalogs. An
-output host may place stylesheets or a `widget-catalog-map` before the script.
+It knows nothing about protocol versions, ports, views, data or libraries.
+Every output host serves the same bytes.
+
+## Libraries
+
+A view's libraries reach the frame in its mount payload, never in the frame
+document. `payload.libraries` maps a bare name, such as `d3` or
+`@observablehq/plot`, to the absolute URL of an ES module the embedder serves
+on its own origin. The host checks the map before the frame loads
+(`checkLibraries` in `src/payload.mjs`): at most 64 entries, each URL of the
+form `<origin>/catalog/<revision>/<file>.js` with the embedding document's
+origin and one revision for the whole map, over https, or over http only on a
+loopback host. `payload.libraryIntegrity` maps module URLs in the same
+catalog revision (the libraries and the chunks they import) to
+`sha256-<base64>` of their bytes, at most 256 of them. The runtime builds its
+one import map from the libraries, then the view's bound imports and `data/`
+files as blob URLs, and carries the integrity map as the import map's
+`integrity` (`src/import-map.mjs`). The browser then refuses a library module
+whose bytes differ; Chromium, Firefox and WebKit all enforce it. A bound name
+that repeats a library fails the mount.
+
+The frame has an opaque origin, so it loads these modules in CORS mode: each
+library response needs `Access-Control-Allow-Origin: *`. The output host's CSP
+must admit the embedder's origin in `script-src`; `https:` does for any https
+embedder. A local http embedder needs its own origin added there by its local
+frame server, and that frame server must itself be on a loopback address:
+Chromium refuses a frame on a public address that loads from a loopback one.
 
 The bootstrap runs code only from its embedding parent. The parent already
 supplies the view's code to the frame, and the frame stays an opaque-origin

@@ -105,11 +105,10 @@ function where(view, label) {
   return label === "entry" ? "the module" : `import ${quoted(label)}`;
 }
 
-/** What this view's modules can import. `hostCatalog` is true when the host
- * has a catalog, whether or not this view records one. */
-function importable(view, { libraries, imports, files, hostCatalog }) {
-  const options = [];
-  if (libraries.length) options.push(`one of the host's libraries (${libraries.join(", ")})`);
+/** What this view's modules can import: the host's libraries, a module
+ * view's bound imports and data/ files, and https: URLs. */
+function importable(view, { libraries, imports, files }) {
+  const options = [`one of the host's libraries (${libraries.join(", ")})`];
   if (view.media_type === MODULE_MEDIA_TYPE) {
     options.push(`a name bound under imports${imports.length ? ` (${imports.join(", ")})` : ""}`);
     options.push(
@@ -117,16 +116,8 @@ function importable(view, { libraries, imports, files, hostCatalog }) {
     );
   }
   options.push("an https: URL");
-  const list =
-    options.length === 1
-      ? options[0]
-      : `${options.slice(0, -1).join(", ")}${options.length > 2 ? "," : ""} or ${options.at(-1)}`;
-  const none = libraries.length
-    ? ""
-    : hostCatalog
-      ? " This view records no library catalog, so the host's libraries don't load in it; a view written under a new view_id records one."
-      : " This host offers no libraries.";
-  return `A view can import ${list}.${none} Relative paths and subpaths the view doesn't name don't load.`;
+  const list = `${options.slice(0, -1).join(", ")}${options.length > 2 ? "," : ""} or ${options.at(-1)}`;
+  return `A view can import ${list}. Relative paths and subpaths the view doesn't name don't load.`;
 }
 
 const UNCHECKED = {
@@ -137,11 +128,10 @@ const UNCHECKED = {
 
 /**
  * The import check of a set_view `op` (as model/view-doc.mjs
- * validateViewOperation returns it) before it is written. `previous` is the
- * stored view, if any; `catalogRevision` the host's catalog, recorded on the
- * write that makes a view executable (model/view-doc.mjs setView), so the
- * view has libraries when it keeps one or this write records one.
- * `readImports` is a createModuleReader reader.
+ * validateViewOperation returns it) before it is written. A view can import
+ * the host's libraries: every save of an executable view records the host's
+ * catalog on it (model/view-doc.mjs setView). `readImports` is a
+ * createModuleReader reader.
  *
  * A module view with a static import that can't resolve is refused with
  * `invalid_view`, its details listing every one. Otherwise, and for every
@@ -159,8 +149,6 @@ const UNCHECKED = {
 export async function viewImportCheck(
   op,
   {
-    previous,
-    catalogRevision,
     sourcesDoc,
     readImports,
     assetFor = () => undefined,
@@ -169,10 +157,7 @@ export async function viewImportCheck(
   },
 ) {
   if (!isExecutableView(op.media_type)) return [];
-  const hasCatalog = isExecutableView(previous?.media_type)
-    ? !!previous.catalog_revision
-    : !!catalogRevision;
-  const libraries = hasCatalog ? [...standardImports] : [];
+  const libraries = [...standardImports];
   const moduleView = op.media_type === MODULE_MEDIA_TYPE;
   const imports = moduleView ? Object.keys(op.spec.imports ?? {}) : [];
   const files = moduleView ? Object.keys(op.spec.files ?? {}) : [];
@@ -195,7 +180,7 @@ export async function viewImportCheck(
     else modules[label] = lexed;
   }
   const found = checkModuleImports({ modules, libraries, imports, files });
-  const allowed = importable(op, { libraries, imports, files, hostCatalog: !!catalogRevision });
+  const allowed = importable(op, { libraries, imports, files });
   const statics = found.unresolved.filter(({ kind }) => kind === "static");
   if (refuse && moduleView && statics.length) {
     const named = statics
@@ -259,7 +244,6 @@ export async function sourceImportWarnings({
   operations,
   mediaTypes,
   views,
-  catalogRevision,
   sourcesDoc,
   readImports,
 }) {
@@ -284,8 +268,6 @@ export async function sourceImportWarnings({
       .map(({ source }) => follows(source).index);
     if (!hits.length) continue;
     const warnings = await viewImportCheck(view, {
-      previous: view,
-      catalogRevision,
       sourcesDoc,
       readImports,
       assetFor: (binding) => follows(binding)?.assetId,

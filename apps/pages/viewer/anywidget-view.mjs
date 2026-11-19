@@ -27,7 +27,7 @@ import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 import { viewDependencies } from "../shared/view-dependencies.mjs";
 import { fetchOutputAsset } from "./output-assets.mjs";
 import { mountModuleOutput, readHostContext } from "@nteract/output-frame";
-import { hasWidgetCatalog } from "./widget-imports.mjs";
+import { libraryMap$ } from "./library-catalog.mjs";
 import { themeStore } from "./theme.mjs";
 
 const sameAsset = (a, b) => a?.asset_id === b?.asset_id && a?.media_type === b?.media_type;
@@ -128,6 +128,10 @@ export function mount(
     // Resolves with the decoder `sources.sharedResolver` decodes Parquet
     // files to ColumnSets with (parquet-columns.mjs).
     columnDecoder = loadColumnDecoder,
+    // Resolves a view's pinned catalog to its library map
+    // (library-catalog.mjs libraryMap$), from this document's origin.
+    libraryMap = (revision) =>
+      libraryMap$(revision, { origin: container.ownerDocument.location.origin }),
   },
 ) {
   const doc = container.ownerDocument;
@@ -196,231 +200,255 @@ export function mount(
             // reports a data change no listener in the view would show. Each
             // starts from the newest plan, so nothing is left to redeliver.
             const remount$ = new Subject();
+            // A view that pins a library catalog first loads that catalog's
+            // manifest from this origin. No frame mounts until it is known:
+            // a catalog this host lacks leaves the view unavailable, with
+            // Retry, which asks for the manifest again.
+            const unavailable = (text) =>
+              new Observable(() => {
+                root.dataset.outputState = "failed";
+                message.textContent = text;
+                button.disabled = false;
+                button.hidden = false;
+              });
             const activation = merge(fromEvent(button, "click"), remount$)
               .pipe(
                 startWith(null),
-                switchMap(
-                  () =>
-                    new Observable(() => {
-                      const controller = new AbortController();
-                      let changes;
-                      // Presentation changes do not change code/input identity.
-                      const appearance = theme.subscribe(() =>
-                        outputHandle?.setHostContext(
-                          readHostContext(root, theme.getSnapshot().resolved),
-                        ),
-                      );
-                      button.disabled = true;
-                      button.hidden = true;
-                      message.textContent = "Loading view inputs…";
-                      root.dataset.outputState = "loading";
-                      delete root.dataset.inputError;
-                      const plan = latest$.value;
-                      const module = plan.view.media_type === MODULE_MEDIA_TYPE;
-                      // Bytes the frame holds from mount, by name: the entry,
-                      // imports and anywidget assets and buffers. Each buffer
-                      // change replaces its name's share of the view's total.
-                      // A size is recorded only once the frame holds it. A
-                      // module view's files count nothing here; the frame
-                      // host keeps their whole-file total itself.
-                      const sizes = new Map();
-                      const checkTotal = (name, size) => {
-                        let total = size;
-                        for (const [other, held] of sizes) if (other !== name) total += held;
-                        if (total > maxTotalBytes)
-                          throw Error(
-                            `This view's inputs exceed ${maxTotalBytes / (1024 * 1024)} MiB.`,
-                          );
-                      };
-                      const loadBytes = async (version, signal) => {
-                        const loaded = await fetchOutputAsset(sources.pageId, version, {
-                          signal,
-                          request: sources.request,
-                        });
-                        signal.throwIfAborted();
-                        return loaded;
-                      };
-                      // A module view's file is opened for its size at
-                      // mount and read only when the view asks: ranges from
-                      // the asset, the whole file through fetchOutputAsset
-                      // (5 MiB), and for Parquet a ColumnSet through the
-                      // Page's shared cache, so views of one asset decode it
-                      // once. Those reads run under the mount and the
-                      // frame's request, not this load. An anywidget buffer
-                      // arrives whole.
-                      const loadData = async (name, version, signal) => {
-                        if (!module) {
-                          const { bytes } = await loadBytes(version, signal);
-                          return { value: bytes, size: bytes.byteLength };
-                        }
-                        const file = await openAssetByteSource(sources.pageId, version, {
-                          signal,
-                          request: sources.request,
-                        });
-                        signal.throwIfAborted();
-                        const within = (request) => AbortSignal.any([controller.signal, request]);
-                        const input = {
-                          mimeType: version.media_type,
-                          byteLength: file.byteLength,
-                          read: file.read,
-                          bytes: async (request) =>
-                            (await loadBytes(version, within(request))).bytes,
-                        };
-                        if (version.media_type === PARQUET_MEDIA_TYPE)
-                          input.columns = async (request) => {
-                            const decode = await columnDecoder();
-                            const loaded = await sources
-                              .sharedResolver(decode)
-                              .load(version, { signal: within(request) });
-                            return loaded.table;
-                          };
-                        return { value: input, size: 0 };
-                      };
-                      // Data changes that failed to load, by name. The frame
-                      // keeps the data it has for those names.
-                      const failures = new Map();
-                      // Shown only on a ready frame: a frame still starting
-                      // has no earlier data, and a failed one owns the
-                      // message and Retry.
-                      const showFailures = () => {
-                        if (root.dataset.outputState !== "ready") return;
-                        if (!failures.size) {
-                          if (root.dataset.inputError === undefined) return;
-                          delete root.dataset.inputError;
-                          message.textContent = "";
-                          button.hidden = true;
-                          button.disabled = true;
-                          return;
-                        }
-                        root.dataset.inputError = [...failures.keys()].join(" ");
-                        message.textContent = `This view still shows its earlier data. ${[...failures.values()][0]}`;
-                        button.hidden = false;
-                        button.disabled = false;
-                      };
-                      // A load ends when a newer change for its name arrives
-                      // or the mount ends. Once handed to the frame, a file
-                      // reads under the mount's signal, not the load's.
-                      const update = (name, version) =>
-                        new Observable((subscriber) => {
-                          const loading = new AbortController();
-                          let delivered = false;
-                          void (async () => {
-                            try {
-                              const input = await loadData(
-                                name,
-                                version,
-                                AbortSignal.any([controller.signal, loading.signal]),
-                              );
-                              if (loading.signal.aborted) return;
-                              checkTotal(name, input.size);
-                              outputHandle.setData(name, input.value);
-                              sizes.set(name, input.size);
-                              delivered = true;
-                              failures.delete(name);
-                            } catch (error) {
-                              if (loading.signal.aborted) return;
-                              failures.set(name, error.message);
-                            }
-                            showFailures();
-                            subscriber.complete();
-                          })();
-                          return () => delivered || loading.abort();
-                        });
-                      void (async () => {
-                        try {
-                          // Sequential bounded reads cap memory independently of number of bindings.
-                          const assets = {};
-                          const url = new URL(frameUrl);
-                          const imports = {};
-                          const catalogRevision = plan.view.catalog_revision;
-                          if (catalogRevision) {
-                            if (!hasWidgetCatalog(frameUrl))
-                              throw Error(
-                                "This output host cannot serve the catalog pinned by this view.",
-                              );
-                            url.searchParams.set("catalog", catalogRevision);
-                          }
-                          const files = {};
-                          for (const [name, version] of Object.entries(plan.versions)) {
-                            if (name.startsWith("data/")) {
-                              const input = await loadData(name, version, controller.signal);
-                              files[name] = input.value;
-                            } else {
-                              const loaded = await loadBytes(version, controller.signal);
-                              checkTotal(name, loaded.bytes.byteLength);
-                              sizes.set(name, loaded.bytes.byteLength);
-                              if (name.startsWith("import/")) imports[name.slice(7)] = loaded;
-                              else assets[name] = loaded;
-                            }
-                          }
-                          controller.signal.throwIfAborted();
-                          outputHandle = mountOutput(
-                            output,
-                            {
-                              // The newest title: it may have changed while
-                              // inputs loaded.
-                              title: latest$.value.view.title,
-                              ...(module ? { kind: "module" } : { spec: plan.spec }),
-                              assets,
-                              ...(Object.keys(imports).length && { imports }),
-                            },
-                            {
-                              files,
-                              frameUrl: url.href,
-                              runtime: frameRuntime,
-                              hostContext: readHostContext(root, theme.getSnapshot().resolved),
-                              onState(state, error) {
+                switchMap(() => {
+                  button.disabled = true;
+                  button.hidden = true;
+                  root.dataset.outputState = "loading";
+                  message.textContent = "Loading view libraries…";
+                  delete root.dataset.inputError;
+                  return libraryMap(latest$.value.view.catalog_revision ?? null).pipe(
+                    switchMap((outcome) =>
+                      outcome.kind !== "ready"
+                        ? unavailable(outcome.message)
+                        : new Observable(() => {
+                            const libraries = outcome.libraries;
+                            const controller = new AbortController();
+                            let changes;
+                            // Presentation changes do not change code/input identity.
+                            const appearance = theme.subscribe(() =>
+                              outputHandle?.setHostContext(
+                                readHostContext(root, theme.getSnapshot().resolved),
+                              ),
+                            );
+                            button.disabled = true;
+                            button.hidden = true;
+                            message.textContent = "Loading view inputs…";
+                            root.dataset.outputState = "loading";
+                            delete root.dataset.inputError;
+                            const plan = latest$.value;
+                            const module = plan.view.media_type === MODULE_MEDIA_TYPE;
+                            // Bytes the frame holds from mount, by name: the entry,
+                            // imports and anywidget assets and buffers. Each buffer
+                            // change replaces its name's share of the view's total.
+                            // A size is recorded only once the frame holds it. A
+                            // module view's files count nothing here; the frame
+                            // host keeps their whole-file total itself.
+                            const sizes = new Map();
+                            const checkTotal = (name, size) => {
+                              let total = size;
+                              for (const [other, held] of sizes) if (other !== name) total += held;
+                              if (total > maxTotalBytes)
+                                throw Error(
+                                  `This view's inputs exceed ${maxTotalBytes / (1024 * 1024)} MiB.`,
+                                );
+                            };
+                            const loadBytes = async (version, signal) => {
+                              const loaded = await fetchOutputAsset(sources.pageId, version, {
+                                signal,
+                                request: sources.request,
+                              });
+                              signal.throwIfAborted();
+                              return loaded;
+                            };
+                            // A module view's file is opened for its size at
+                            // mount and read only when the view asks: ranges from
+                            // the asset, the whole file through fetchOutputAsset
+                            // (5 MiB), and for Parquet a ColumnSet through the
+                            // Page's shared cache, so views of one asset decode it
+                            // once. Those reads run under the mount and the
+                            // frame's request, not this load. An anywidget buffer
+                            // arrives whole.
+                            const loadData = async (name, version, signal) => {
+                              if (!module) {
+                                const { bytes } = await loadBytes(version, signal);
+                                return { value: bytes, size: bytes.byteLength };
+                              }
+                              const file = await openAssetByteSource(sources.pageId, version, {
+                                signal,
+                                request: sources.request,
+                              });
+                              signal.throwIfAborted();
+                              const within = (request) =>
+                                AbortSignal.any([controller.signal, request]);
+                              const input = {
+                                mimeType: version.media_type,
+                                byteLength: file.byteLength,
+                                read: file.read,
+                                bytes: async (request) =>
+                                  (await loadBytes(version, within(request))).bytes,
+                              };
+                              if (version.media_type === PARQUET_MEDIA_TYPE)
+                                input.columns = async (request) => {
+                                  const decode = await columnDecoder();
+                                  const loaded = await sources
+                                    .sharedResolver(decode)
+                                    .load(version, { signal: within(request) });
+                                  return loaded.table;
+                                };
+                              return { value: input, size: 0 };
+                            };
+                            // Data changes that failed to load, by name. The frame
+                            // keeps the data it has for those names.
+                            const failures = new Map();
+                            // Shown only on a ready frame: a frame still starting
+                            // has no earlier data, and a failed one owns the
+                            // message and Retry.
+                            const showFailures = () => {
+                              if (root.dataset.outputState !== "ready") return;
+                              if (!failures.size) {
+                                if (root.dataset.inputError === undefined) return;
+                                delete root.dataset.inputError;
+                                message.textContent = "";
+                                button.hidden = true;
+                                button.disabled = true;
+                                return;
+                              }
+                              root.dataset.inputError = [...failures.keys()].join(" ");
+                              message.textContent = `This view still shows its earlier data. ${[...failures.values()][0]}`;
+                              button.hidden = false;
+                              button.disabled = false;
+                            };
+                            // A load ends when a newer change for its name arrives
+                            // or the mount ends. Once handed to the frame, a file
+                            // reads under the mount's signal, not the load's.
+                            const update = (name, version) =>
+                              new Observable((subscriber) => {
+                                const loading = new AbortController();
+                                let delivered = false;
+                                void (async () => {
+                                  try {
+                                    const input = await loadData(
+                                      name,
+                                      version,
+                                      AbortSignal.any([controller.signal, loading.signal]),
+                                    );
+                                    if (loading.signal.aborted) return;
+                                    checkTotal(name, input.size);
+                                    outputHandle.setData(name, input.value);
+                                    sizes.set(name, input.size);
+                                    delivered = true;
+                                    failures.delete(name);
+                                  } catch (error) {
+                                    if (loading.signal.aborted) return;
+                                    failures.set(name, error.message);
+                                  }
+                                  showFailures();
+                                  subscriber.complete();
+                                })();
+                                return () => delivered || loading.abort();
+                              });
+                            void (async () => {
+                              try {
+                                // Sequential bounded reads cap memory independently of number of bindings.
+                                const assets = {};
+                                const imports = {};
+                                const files = {};
+                                for (const [name, version] of Object.entries(plan.versions)) {
+                                  if (name.startsWith("data/")) {
+                                    const input = await loadData(name, version, controller.signal);
+                                    files[name] = input.value;
+                                  } else {
+                                    const loaded = await loadBytes(version, controller.signal);
+                                    checkTotal(name, loaded.bytes.byteLength);
+                                    sizes.set(name, loaded.bytes.byteLength);
+                                    if (name.startsWith("import/")) imports[name.slice(7)] = loaded;
+                                    else assets[name] = loaded;
+                                  }
+                                }
+                                controller.signal.throwIfAborted();
+                                outputHandle = mountOutput(
+                                  output,
+                                  {
+                                    // The newest title: it may have changed while
+                                    // inputs loaded.
+                                    title: latest$.value.view.title,
+                                    ...(module ? { kind: "module" } : { spec: plan.spec }),
+                                    assets,
+                                    ...(Object.keys(imports).length && { imports }),
+                                    ...(libraries && { libraries }),
+                                    ...(outcome.integrity && {
+                                      libraryIntegrity: outcome.integrity,
+                                    }),
+                                  },
+                                  {
+                                    files,
+                                    frameUrl,
+                                    runtime: frameRuntime,
+                                    hostContext: readHostContext(
+                                      root,
+                                      theme.getSnapshot().resolved,
+                                    ),
+                                    onState(state, error) {
+                                      if (controller.signal.aborted) return;
+                                      root.dataset.outputState = state;
+                                      message.textContent =
+                                        error ??
+                                        (state === "ready" ? "" : "Starting interactive view…");
+                                      button.hidden = state !== "failed";
+                                      button.disabled = state !== "failed";
+                                      if (state === "ready") showFailures();
+                                      else delete root.dataset.inputError;
+                                    },
+                                    onUnhandledData() {
+                                      if (!controller.signal.aborted) remount$.next();
+                                    },
+                                  },
+                                );
+                                // Each data name follows its newest asset. A newer
+                                // change cancels that name's load in progress.
+                                changes = latest$
+                                  .pipe(
+                                    scan(
+                                      (previous, next) => ({
+                                        plan: next,
+                                        names: planChange(previous.plan, next).data,
+                                      }),
+                                      { plan, names: [] },
+                                    ),
+                                    mergeMap(({ plan: next, names }) =>
+                                      names.map((name) => [name, next.versions[name]]),
+                                    ),
+                                    groupBy(([name]) => name),
+                                    mergeMap((name$) =>
+                                      name$.pipe(
+                                        switchMap(([name, version]) => update(name, version)),
+                                      ),
+                                    ),
+                                  )
+                                  .subscribe();
+                              } catch (error) {
                                 if (controller.signal.aborted) return;
-                                root.dataset.outputState = state;
-                                message.textContent =
-                                  error ?? (state === "ready" ? "" : "Starting interactive view…");
-                                button.hidden = state !== "failed";
-                                button.disabled = state !== "failed";
-                                if (state === "ready") showFailures();
-                                else delete root.dataset.inputError;
-                              },
-                              onUnhandledData() {
-                                if (!controller.signal.aborted) remount$.next();
-                              },
-                            },
-                          );
-                          // Each data name follows its newest asset. A newer
-                          // change cancels that name's load in progress.
-                          changes = latest$
-                            .pipe(
-                              scan(
-                                (previous, next) => ({
-                                  plan: next,
-                                  names: planChange(previous.plan, next).data,
-                                }),
-                                { plan, names: [] },
-                              ),
-                              mergeMap(({ plan: next, names }) =>
-                                names.map((name) => [name, next.versions[name]]),
-                              ),
-                              groupBy(([name]) => name),
-                              mergeMap((name$) =>
-                                name$.pipe(switchMap(([name, version]) => update(name, version))),
-                              ),
-                            )
-                            .subscribe();
-                        } catch (error) {
-                          if (controller.signal.aborted) return;
-                          root.dataset.outputState = "failed";
-                          message.textContent = error.message;
-                          button.disabled = false;
-                          button.hidden = false;
-                        }
-                      })();
-                      return () => {
-                        controller.abort();
-                        changes?.unsubscribe();
-                        appearance();
-                        outputHandle?.destroy();
-                        outputHandle = undefined;
-                      };
-                    }),
-                ),
+                                root.dataset.outputState = "failed";
+                                message.textContent = error.message;
+                                button.disabled = false;
+                                button.hidden = false;
+                              }
+                            })();
+                            return () => {
+                              controller.abort();
+                              changes?.unsubscribe();
+                              appearance();
+                              outputHandle?.destroy();
+                              outputHandle = undefined;
+                            };
+                          }),
+                    ),
+                  );
+                }),
               )
               .subscribe();
             return () => {
