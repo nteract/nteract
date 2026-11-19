@@ -130,7 +130,6 @@ async function mount(props = {}) {
         session,
         projectId: null,
         onOpenRoute: (route, anchor) => opened.push({ route, anchor }),
-        onNotice: (message) => notices.push(message),
         onError: (message) => notices.push(message),
         ...props,
         scroll,
@@ -288,7 +287,7 @@ test("the # beside a hovered heading copies its link", async () => {
   await act(async () => button.click());
   await frames();
   assert.equal(copied, `http://localhost/p/${pageId}#getting-lean-automerge`);
-  assert.deepEqual(notices, ["Link to section copied"]);
+  assert.deepEqual(notices, [], "a copy that works shows no message");
   assert.deepEqual(scrolled, ["Getting lean: Automerge"]);
   await act(async () =>
     article.dispatchEvent(new window.MouseEvent("pointerleave", { bubbles: false })),
