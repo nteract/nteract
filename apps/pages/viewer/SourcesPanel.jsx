@@ -21,7 +21,6 @@ import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
 import { useStore } from "./store.mjs";
 import { PaneBack, PaneClose, PaneExpand, PaneHeader, PaneNavigation } from "./PaneHeader.jsx";
-import { widgetCatalogPin } from "./widget-imports.mjs";
 import { SourceIcon } from "./SourceIcon.jsx";
 import { CodeHighlight } from "./CodeHighlight.jsx";
 import "./sources-panel.css";
@@ -150,28 +149,6 @@ function SourceFilePreview({ session, source }) {
       </p>
     );
   const { preview } = value;
-  if (preview.kind === "catalog")
-    return (
-      <section className="source-file-preview" aria-label="Library imports">
-        <h4>Standard imports</h4>
-        <pre tabIndex={0}>
-          <code>{preview.imports.join("\n")}</code>
-        </pre>
-        {preview.modules?.length > 0 && (
-          <>
-            <h4>Imports from this Page</h4>
-            <ul>
-              {preview.modules.map((m) => (
-                <li key={m.name}>
-                  <code>{m.name}</code> · {m.source_id} · revision {m.revision}
-                </li>
-              ))}
-            </ul>
-          </>
-        )}
-        <small title={preview.pin}>Catalog SHA-256 · {preview.pin.slice(0, 12)}</small>
-      </section>
-    );
   return (
     <section
       className="source-file-preview"
@@ -330,24 +307,16 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
   }, [mobile]);
 
   const source = value.sources.find((item) => item.source_id === selected);
-  const pageLibraries = Boolean(widgetCatalogPin(source));
   const attached = source?.kind === "attachment";
   const unavailable = source && source.availability !== "available";
   const incomplete = value.unresolvedViews.length > 0 || value.unreadableBlocks > 0;
-  const hasPageLibraries = value.sources.some(widgetCatalogPin);
-  const searchable =
-    value.sources.length + Number(!hasPageLibraries && value.libraryPins.length > 0) > 1;
+  const searchable = value.sources.length + Number(value.libraryPins.length > 0) > 1;
   const libraryPins = value.libraryPins.filter((pin) =>
     `standard libraries ${pin.title} ${pin.digest}`
       .toLocaleLowerCase()
       .includes(query.toLocaleLowerCase()),
   );
-  const results = value.sources.filter(
-    (item) =>
-      !searchable ||
-      sourceMatchesQuery(item, query) ||
-      (widgetCatalogPin(item) && libraryPins.length > 0),
-  );
+  const results = value.sources.filter((item) => !searchable || sourceMatchesQuery(item, query));
   const revealLibraryUse = (pin) => onReveal(pin, { close: mobile });
   const index = results.findIndex((item) => item.source_id === selected);
   const position = index >= 0 ? { index: index + 1, total: results.length } : null;
@@ -436,10 +405,7 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
                     data-source-id={item.source_id}
                     onClick={() => choose(item.source_id)}
                   >
-                    <SourceIcon
-                      mediaType={item.media_type}
-                      libraries={Boolean(widgetCatalogPin(item))}
-                    />
+                    <SourceIcon mediaType={item.media_type} />
                     <span>
                       <strong>{item.name}</strong>
                       <small>
@@ -447,9 +413,7 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
                           ? "Unreadable source"
                           : item.availability === "missing"
                             ? "Unavailable source"
-                            : widgetCatalogPin(item)
-                              ? "Page import map"
-                              : sourceMediaLabel(item.media_type)}{" "}
+                            : sourceMediaLabel(item.media_type)}{" "}
                         {item.kind === "attachment" ? "· Attached file " : ""}· {item.uses.length}{" "}
                         {item.uses.length === 0
                           ? "direct connections"
@@ -465,7 +429,7 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
                 {results.length === 0 && libraryPins.length === 0 && (
                   <p className="muted">No matching sources.</p>
                 )}
-                {!hasPageLibraries && libraryPins.length > 0 && (
+                {libraryPins.length > 0 && (
                   <LibraryRevisions pins={libraryPins} onReveal={revealLibraryUse} />
                 )}
               </nav>
@@ -494,10 +458,7 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
         )}
         {source && (
           <section className="source-inspector" aria-label="Source details">
-            <h3 className={pageLibraries ? "library-heading" : undefined}>
-              {pageLibraries && <Library size={18} aria-hidden="true" />}
-              {source.name}
-            </h3>
+            <h3>{source.name}</h3>
             {!attached && <p className="source-id">Source ID: {source.source_id}</p>}
             {unavailable ? (
               <p className="sources-notice">
@@ -515,7 +476,7 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
             ) : (
               <>
                 <p className="source-type" title={source.media_type}>
-                  {pageLibraries ? "Page import map" : sourceMediaLabel(source.media_type)}
+                  {sourceMediaLabel(source.media_type)}
                 </p>
                 <dl className="source-facts">
                   <div>
@@ -542,9 +503,6 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
             )}
             {!unavailable && SOURCE_PREVIEW_TYPES.includes(source.media_type) && (
               <SourceFilePreview key={source.source_id} session={session} source={source} />
-            )}
-            {pageLibraries && value.libraryPins.length > 0 && (
-              <LibraryRevisions pins={value.libraryPins} onReveal={revealLibraryUse} />
             )}
             <div className="source-sections" role="group" aria-label="Source sections">
               <button aria-pressed={tab === "uses"} onClick={() => setTab("uses")}>

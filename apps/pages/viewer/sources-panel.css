@@ -84,12 +84,6 @@
   margin: 0;
   overflow-wrap: anywhere;
 }
-.source-inspector h3.library-heading {
-  justify-content: flex-start;
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-}
 .library-revisions summary {
   cursor: pointer;
   list-style: none;

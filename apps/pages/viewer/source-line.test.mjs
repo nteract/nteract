@@ -18,11 +18,6 @@ test("rendering assets don't affect title entries, counts, or refresh dates", ()
       { ...source(`code${i}`, `Code ${i}`, "2", new Date(now).toISOString()), media_type },
     ]),
   );
-  renderers.libraries = {
-    ...source("widget-imports", "Page libraries", "2", new Date(now).toISOString()),
-    media_type: "application/octet-stream",
-    asset_id: "a".repeat(64),
-  };
   assert.equal(sourceLine(renderers, now, options), null);
   const data = Object.fromEntries(
     ["application/vnd.apache.parquet", "audio/wav", "application/octet-stream"].map(

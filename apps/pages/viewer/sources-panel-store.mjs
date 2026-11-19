@@ -21,12 +21,6 @@ import {
 import { parseAssetPath } from "../shared/dataset-assets.mjs";
 import { viewDependencies } from "../shared/view-dependencies.mjs";
 import { sourcesAnswer } from "./page-source-store.mjs";
-import {
-  WIDGET_IMPORTS,
-  hasWidgetCatalog,
-  sourceDisplayName,
-  widgetCatalogPin,
-} from "./widget-imports.mjs";
 import { Store } from "./store.mjs";
 
 export function sourceMediaLabel(type) {
@@ -48,8 +42,7 @@ export function sourceMediaLabel(type) {
 
 export function sourceMatchesQuery(source, query) {
   const titles = source.kind === "attachment" ? source.uses.map((use) => use.title).join(" ") : "";
-  const type = widgetCatalogPin(source) ? "Page import map" : sourceMediaLabel(source.media_type);
-  return `${source.name} ${source.source_id} ${type} ${titles}`
+  return `${source.name} ${source.source_id} ${sourceMediaLabel(source.media_type)} ${titles}`
     .toLocaleLowerCase()
     .includes(query.toLocaleLowerCase());
 }
@@ -106,13 +99,7 @@ export function sourcePlacements(doc, cache = new WeakMap()) {
   return { placements, unreadableBlocks };
 }
 
-export function projectSourcesPanel(
-  doc,
-  placements,
-  views,
-  answer = "known",
-  catalogEnabled = false,
-) {
+export function projectSourcesPanel(doc, placements, views, answer = "known") {
   const sources = new Map();
   const libraryPins = [];
   let unreadableSources = 0;
@@ -122,7 +109,6 @@ export function projectSourcesPanel(
       const source = readSource(doc, id);
       sources.set(id, {
         ...source,
-        name: sourceDisplayName(source),
         uses: [],
         availability: "available",
       });
@@ -186,16 +172,6 @@ export function projectSourcesPanel(
         title: view.title || placement.viewId,
         digest: view.catalog_revision,
       });
-    }
-    if (
-      catalogEnabled &&
-      isExecutableView(view.media_type) &&
-      widgetCatalogPin(sources.get(WIDGET_IMPORTS))
-    ) {
-      dependencies = [
-        ...dependencies,
-        { source: { source_id: WIDGET_IMPORTS }, role: "catalog", location: "Page libraries" },
-      ];
     }
     for (const { source, role, location } of dependencies) {
       add(source, {
@@ -305,7 +281,6 @@ export function sourcesPanelStore(session) {
               state.name === "unreadable" || state.name === "unserved"
                 ? state.name
                 : sourcesAnswer(state, sync?.link),
-              hasWidgetCatalog(),
             ),
           ),
           distinctUntilChanged(same),

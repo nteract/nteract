@@ -1,5 +1,4 @@
 import { openAssetByteSource } from "./asset-byte-source.mjs";
-import { decodeWidgetImports } from "../shared/widget-imports.mjs";
 import {
   Observable,
   combineLatest,
@@ -19,7 +18,7 @@ import {
 import { viewDependencies } from "../shared/view-dependencies.mjs";
 import { fetchOutputAsset } from "./output-assets.mjs";
 import { mountModuleOutput, readHostContext } from "@nteract/output-frame";
-import { WIDGET_IMPORTS, widgetCatalogPin, hasWidgetCatalog } from "./widget-imports.mjs";
+import { hasWidgetCatalog } from "./widget-imports.mjs";
 import { themeStore } from "./theme.mjs";
 
 export function anywidgetPlan(view, sources) {
@@ -58,13 +57,6 @@ export function mount(
   button.type = "button";
   button.textContent = "Retry interactive view";
   const output = root.appendChild(doc.createElement("div"));
-  const catalog$ =
-    hasWidgetCatalog(frameUrl) && sources.sources$
-      ? sources.sources$.pipe(
-          map((all) => widgetCatalogPin(all[WIDGET_IMPORTS])),
-          distinctUntilChanged(),
-        )
-      : of(null);
   const plans$ = view$.pipe(
     switchMap((projection) => {
       if (projection.status !== "ready")
@@ -76,11 +68,10 @@ export function mount(
       } catch (error) {
         return of({ error: error.message });
       }
-      return combineLatest([sources.versions(ids), sourcesAnswer$ ?? of("known"), catalog$]).pipe(
-        map(([, , catalog]) => {
+      return combineLatest([sources.versions(ids), sourcesAnswer$ ?? of("known")]).pipe(
+        map(() => {
           try {
-            const plan = anywidgetPlan(view, sources);
-            return { ...plan, catalog, key: JSON.stringify([plan.key, catalog]) };
+            return anywidgetPlan(view, sources);
           } catch (error) {
             return { error: error.message };
           }
@@ -137,20 +128,7 @@ export function mount(
                           };
                           const url = new URL(frameUrl);
                           const imports = {};
-                          let catalogRevision = plan.view.catalog_revision;
-                          if (plan.catalog) {
-                            const source = await load({
-                              asset_id: plan.catalog,
-                              media_type: "application/octet-stream",
-                            });
-                            const declaration = decodeWidgetImports(source.bytes, plan.catalog);
-                            catalogRevision ??= declaration.catalog_revision;
-                            for (const module of declaration.modules)
-                              imports[module.name] = await load({
-                                asset_id: module.asset_id,
-                                media_type: "text/javascript",
-                              });
-                          }
+                          const catalogRevision = plan.view.catalog_revision;
                           if (catalogRevision) {
                             if (!hasWidgetCatalog(frameUrl))
                               throw Error(
