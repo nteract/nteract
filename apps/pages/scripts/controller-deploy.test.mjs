@@ -19,6 +19,11 @@ import {
 } from "./controller-deploy.mjs";
 import { sourceFingerprint } from "./source-fingerprint.mjs";
 import { releaseArtifacts, releaseFilesOf } from "./stage-artifacts.mjs";
+import {
+  libraryCatalogContents,
+  libraryCatalogFiles,
+  libraryCatalogReceipt,
+} from "./fixtures/library-catalog-fixture.mjs";
 import { deploymentProfile } from "./deployment/profiles.mjs";
 import { VIEWER_ASSETS, hashedAssetPath } from "./viewer-chunks.mjs";
 
@@ -129,14 +134,14 @@ function createFixture(t) {
     Object.entries(assets).map(([file, bytes]) => [file, sha256(bytes)]),
   );
   fs.mkdirSync(path.join(dist, "public", "chunks"), { recursive: true });
-  for (const file of [...releaseArtifacts, chunk, ...Object.keys(assets)])
+  for (const file of [...releaseArtifacts, chunk, ...Object.keys(assets), ...libraryCatalogFiles])
     write(
       path.join(dist, file),
       file === "build-receipt.json"
         ? "pending\n"
         : file === "wrangler.json"
           ? JSON.stringify({ main: "index.js", no_bundle: true, vars: {} }, null, 2) + "\n"
-          : (assets[file] ?? file),
+          : (assets[file] ?? libraryCatalogContents[file] ?? file),
     );
   const fingerprint = sourceFingerprint(sourceApp, { root: sourceRoot });
   const receipt = {
@@ -150,8 +155,9 @@ function createFixture(t) {
     document_formats: { "pages.page": [3], "pages.comments": [2] },
     viewer_chunks: viewerChunks,
     viewer_assets: viewerAssets,
+    library_catalog: libraryCatalogReceipt(),
     files: Object.fromEntries(
-      releaseFilesOf([chunk], Object.keys(assets)).map((file) => [
+      releaseFilesOf([chunk], Object.keys(assets), libraryCatalogFiles).map((file) => [
         file,
         sha256(fs.readFileSync(path.join(dist, file))),
       ]),

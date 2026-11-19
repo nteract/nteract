@@ -192,6 +192,7 @@ export function writeBuildReceipt(
     viewerChunks = [],
     viewerAssets = [],
     releaseFiles = [],
+    libraryCatalog = { revision: undefined, files: [] },
     outputFiles = [],
     outputFrameBootstrapSha256,
     documentFormats,
@@ -224,6 +225,10 @@ export function writeBuildReceipt(
     document_formats: documentFormats,
     viewer_chunks: certify(viewerChunks),
     viewer_assets: certify(viewerAssets),
+    // The view library catalog this build serves (scripts/library-catalog.mjs):
+    // its revision and each of its files under public/catalog/<revision>/.
+    // `files` lists them too.
+    library_catalog: { revision: libraryCatalog.revision, files: certify(libraryCatalog.files) },
     files: certify(releaseFiles),
     // The frame paths this build's output Worker serves, and its bundled
     // module. The release package ships that module as output/worker.js.

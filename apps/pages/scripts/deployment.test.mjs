@@ -244,17 +244,25 @@ test("release staging copies only built artifacts, never development credentials
   const certifiedAssets = Object.fromEntries(
     Object.entries(assetBytes).map(([file, bytes]) => [file, sha256(bytes)]),
   );
+  const { libraryCatalogContents, libraryCatalogFiles, libraryCatalogReceipt } =
+    await import("./fixtures/library-catalog-fixture.mjs");
   const contents = (artifact) =>
-    artifact === "build-receipt.json" ? receipt : (assetBytes[artifact] ?? "artifact:" + artifact);
+    artifact === "build-receipt.json"
+      ? receipt
+      : (assetBytes[artifact] ?? libraryCatalogContents[artifact] ?? "artifact:" + artifact);
   const releaseFiles = Object.fromEntries(
-    releaseFilesOf(chunks, assets).map((file) => [file, sha256(contents(file))]),
+    releaseFilesOf(chunks, assets, libraryCatalogFiles).map((file) => [
+      file,
+      sha256(contents(file)),
+    ]),
   );
   const receipt = JSON.stringify({
     viewer_chunks: certified,
     viewer_assets: certifiedAssets,
+    library_catalog: libraryCatalogReceipt(),
     files: releaseFiles,
   });
-  const hashed = [...chunks, ...assets];
+  const hashed = [...chunks, ...assets, ...libraryCatalogFiles];
   const theme = assets.find((file) => file.startsWith("public/theme-"));
   try {
     for (const artifact of [...releaseArtifacts, ...hashed]) write(artifact, contents(artifact));
@@ -418,8 +426,13 @@ function installFixture(
     // The bootstrap script the isolated output service serves at a frame
     // path, or null where it answers an error.
     outputShell = (framePath) => (framePath === OUTPUT_FRAME_PATH ? BOOTSTRAP_SCRIPT : null),
+    // The frame document around that script, as the output service serves it.
+    outputDocument = (script) =>
+      `<!doctype html><html><head><meta charset="utf-8"></head><body><script>${script}</script></body></html>`,
   } = {},
 ) {
+  // Every URL the installer asked the output service for.
+  const outputRequests = [];
   const root = mkdtempSync(path.join(tmpdir(), "pages-install-retry-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const deployment = profiles.deploymentProfile(target).deployment;
@@ -609,19 +622,15 @@ function installFixture(
         });
         return "";
       }
-      if (command === "curl" && args.at(-1).includes("?catalog=")) {
-        const { hostname, revision } = profiles.deploymentProfile(target).output;
+      if (
+        command === "curl" &&
+        profiles.deploymentProfile(target).output &&
+        args.at(-1).startsWith("http://" + profiles.deploymentProfile(target).output.listen + "/")
+      ) {
+        outputRequests.push(args.at(-1));
         const shell = outputShell(new URL(args.at(-1)).pathname);
         if (shell === null) throw Object.assign(Error("curl: (22) 404"), { status: 22 });
-        return (
-          '<!doctype html><html><head><script type="application/json" id="widget-catalog-map">https://' +
-          hostname +
-          "/catalog/" +
-          revision +
-          "/</script></head><body><main></main><script>" +
-          shell +
-          "</script></body></html>"
-        );
+        return outputDocument(shell);
       }
       if (command === "curl" && args.at(-1).endsWith("/state")) {
         const addr = args.at(-1).slice("http://".length, -"/state".length);
@@ -678,6 +687,7 @@ function installFixture(
     execute,
     calls,
     mutations,
+    outputRequests,
     outputs,
     unitState,
     write,
@@ -1160,8 +1170,12 @@ test("the installer mounts the receipt's frame path once the output service serv
   const f = installFixture(t, { target });
   f.execute();
   const config = JSON.parse(f.read(f.release + "/wrangler.json"));
-  const { hostname } = profiles.deploymentProfile(target).output;
+  const { hostname, listen } = profiles.deploymentProfile(target).output;
   assert.equal(config.vars.PAGES_OUTPUT_FRAME_URL, "https://" + hostname + OUTPUT_FRAME_PATH);
+  // The release serves its own libraries: the installer asks for the plain
+  // frame document and configures no catalog.
+  assert.deepEqual(f.outputRequests, ["http://" + listen + OUTPUT_FRAME_PATH]);
+  assert.equal(config.vars.PAGES_WIDGET_CATALOG_REVISION, undefined);
 });
 
 test("the installer refuses a release whose frame bootstrap the output service does not serve", (t) => {
@@ -1172,6 +1186,15 @@ test("the installer refuses a release whose frame bootstrap the output service d
     // Another bootstrap at the same path.
     [
       { outputShell: () => BOOTSTRAP_SCRIPT + "// changed" },
+      /serves a different frame bootstrap at \/frame\/v2\//,
+    ],
+    // The same bootstrap with a second script before it, such as an injected
+    // library map: every output host serves the bootstrap alone.
+    [
+      {
+        outputDocument: (script) =>
+          `<!doctype html><html><head><script type="application/json" id="widget-catalog-map">{}</script></head><body><script>${script}</script></body></html>`,
+      },
       /serves a different frame bootstrap at \/frame\/v2\//,
     ],
     // A receipt without the frame path and bootstrap digest.

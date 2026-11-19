@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createAuthFixture } from "../auth-fixtures.mjs";
-import { configuredCatalogRevision } from "../shared/widget-imports.mjs";
+import { LIBRARY_CATALOG_REVISION } from "../shared/library-catalog.mjs";
 import { lexModuleImports } from "../shared/module-imports.mjs";
 import { validateViewOperation } from "../model/view-doc.mjs";
 import { Storage, pageId } from "./trash-fixture.mjs";
@@ -15,16 +15,15 @@ const ENTRY = "e".repeat(64),
   HELPER = "f".repeat(64),
   NEXT_HELPER = "c".repeat(64),
   DATA = "d".repeat(64);
-const CATALOG = {
-  NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.invalid",
-  PAGES_OUTPUT_FRAME_URL: "https://output.example/frame/v2/",
-  PAGES_WIDGET_CATALOG_REVISION: "a".repeat(64),
-};
+// What every host's views can import from its library catalog.
+const LIBRARIES =
+  "one of the host's libraries (react, react-dom, react-dom/client, react/jsx-runtime, d3, @observablehq/plot, @nteract/sift/parquet)";
 
 /** A Page with three sources: `main` (asset ENTRY) and `helper` (HELPER),
  * both JavaScript, and `sales` (DATA), a dataset. `code` maps an asset id to
- * the text its object holds; an id it lacks has no object. */
-async function importsHost(t, { catalog = false } = {}) {
+ * the text its object holds; an id it lacks has no object. The host has no
+ * catalog or frame configuration: its libraries come with its build. */
+async function importsHost(t) {
   const auth = await createAuthFixture();
   t.mock.method(globalThis, "fetch", auth.fetch);
   t.mock.method(console, "error", () => {});
@@ -37,7 +36,6 @@ async function importsHost(t, { catalog = false } = {}) {
   };
   const env = {
     ...auth.env,
-    ...(catalog && CATALOG),
     CATALOGS: { getByName: () => ({ fetch: async () => Response.json({ ok: true }) }) },
     PAGES_ASSETS: {
       head: async (key) => ({
@@ -51,7 +49,8 @@ async function importsHost(t, { catalog = false } = {}) {
       },
     },
   };
-  assert.equal(!!configuredCatalogRevision(env), catalog);
+  assert.equal(env.PAGES_WIDGET_CATALOG_REVISION, undefined);
+  assert.equal(env.PAGES_OUTPUT_FRAME_URL, undefined);
   const token = auth.apiKey();
   const hosts = [];
   t.after(async () => {
@@ -126,7 +125,7 @@ test("a module view whose static import can't resolve is refused, and nothing is
   assert.equal(refused.body.code, "invalid_view");
   assert.equal(
     refused.body.error,
-    `This view's imports can't load in its frame: "lodash" in the module, "./util.js" in the module. A view can import a name bound under imports, data/<alias> for a file bound under data, or an https: URL. This host offers no libraries. Relative paths and subpaths the view doesn't name don't load. Bind JavaScript under imports and import it by that name, or change the import.`,
+    `This view's imports can't load in its frame: "lodash" in the module, "./util.js" in the module. A view can import ${LIBRARIES}, a name bound under imports, data/<alias> for a file bound under data, or an https: URL. Relative paths and subpaths the view doesn't name don't load. Bind JavaScript under imports and import it by that name, or change the import.`,
   );
   assert.deepEqual(await h.views(), []);
   // The refusal took no slot, so the same view id still creates.
@@ -148,7 +147,7 @@ test("an import bound under imports resolves, and its own imports are checked", 
   assert.equal(refused.status, 400, JSON.stringify(refused.body));
   assert.match(
     refused.body.error,
-    /^This view's imports can't load in its frame: "\.\/sibling\.js" in import "helper"\. A view can import a name bound under imports \(helper\), data\/<alias> for a file bound under data \(data\/sales\), or an https: URL\./,
+    /^This view's imports can't load in its frame: "\.\/sibling\.js" in import "helper"\. A view can import one of the host's libraries \([^)]*\), a name bound under imports \(helper\), data\/<alias> for a file bound under data \(data\/sales\), or an https: URL\./,
   );
   h.code.set(HELPER, `import "data/sales"; import x from "https://esm.sh/x"; export default 1;`);
   const accepted = await h.edit([moduleView(bound)]);
@@ -161,38 +160,35 @@ test("an import bound under imports resolves, and its own imports are checked", 
   assert.equal((await h.views())[0].revision, "1");
 });
 
-for (const catalog of [true, false])
-  test(`react ${catalog ? "is accepted on a host with a catalog" : "is refused on a host without one"}`, async (t) => {
-    const h = await importsHost(t, { catalog });
-    h.code.set(
-      ENTRY,
-      `import React from "react";\nimport { createRoot } from "react-dom/client";\n${render}`,
-    );
-    const written = await h.edit([moduleView()]);
-    if (catalog) {
-      assert.equal(written.status, 200, JSON.stringify(written.body));
-      assert.equal(
-        written.body.result.edits[0].catalog_revision,
-        CATALOG.PAGES_WIDGET_CATALOG_REVISION,
-      );
-      // A subpath the catalog doesn't list is still refused.
-      h.code.set(ENTRY, `import { renderToString } from "react-dom/server";\n${render}`);
-      const subpath = await h.edit([moduleView({ view_revision: "1" })]);
-      assert.equal(subpath.status, 400);
-      assert.match(
-        subpath.body.error,
-        /"react-dom\/server" in the module\. A view can import one of the host's libraries \(react, react-dom, react-dom\/client, react\/jsx-runtime, d3, @observablehq\/plot, @nteract\/sift\/parquet\), /,
-      );
-    } else {
-      assert.equal(written.status, 400, JSON.stringify(written.body));
-      assert.match(
-        written.body.error,
-        /"react" in the module, "react-dom\/client" in the module\./,
-      );
-      assert.match(written.body.error, /This host offers no libraries\./);
-      assert.deepEqual(await h.views(), []);
-    }
-  });
+test("react is accepted on a host with no catalog configuration, and the save pins the build's catalog", async (t) => {
+  const h = await importsHost(t);
+  h.code.set(
+    ENTRY,
+    `import React from "react";\nimport { createRoot } from "react-dom/client";\n${render}`,
+  );
+  const written = await h.edit([moduleView()]);
+  assert.equal(written.status, 200, JSON.stringify(written.body));
+  assert.equal(written.body.result.edits[0].catalog_revision, LIBRARY_CATALOG_REVISION);
+  // read_page lists the libraries the check accepted.
+  const read = await h.tool("read_page", { include_content: false });
+  assert.deepEqual(read.body.libraries, [
+    "react",
+    "react-dom",
+    "react-dom/client",
+    "react/jsx-runtime",
+    "d3",
+    "@observablehq/plot",
+    "@nteract/sift/parquet",
+  ]);
+  // A subpath the catalog doesn't list is still refused.
+  h.code.set(ENTRY, `import { renderToString } from "react-dom/server";\n${render}`);
+  const subpath = await h.edit([moduleView({ view_revision: "1" })]);
+  assert.equal(subpath.status, 400);
+  assert.match(
+    subpath.body.error,
+    /"react-dom\/server" in the module\. A view can import one of the host's libraries \(react, react-dom, react-dom\/client, react\/jsx-runtime, d3, @observablehq\/plot, @nteract\/sift\/parquet\), /,
+  );
+});
 
 test("a dynamic import that can't resolve is written with a warning the receipt replays", async (t) => {
   const h = await importsHost(t);
@@ -212,8 +208,7 @@ test("a dynamic import that can't resolve is written with a warning the receipt 
     view_id: "chart",
     specifier: "lodash",
     in: "entry",
-    suggested_action:
-      "import(\"lodash\") in the module can't load in this view's frame, so the view fails when it runs that import. A view can import a name bound under imports, data/<alias> for a file bound under data, or an https: URL. This host offers no libraries. Relative paths and subpaths the view doesn't name don't load. The view was saved.",
+    suggested_action: `import("lodash") in the module can't load in this view's frame, so the view fails when it runs that import. A view can import ${LIBRARIES}, a name bound under imports, data/<alias> for a file bound under data, or an https: URL. Relative paths and subpaths the view doesn't name don't load. The view was saved.`,
   };
   assert.deepEqual(written.body.warnings, [{ ...warning, edit_index: 0 }]);
   assert.deepEqual(written.body.result.edits[0].warnings, [warning]);
@@ -358,7 +353,7 @@ test("a view's first import warning says what it can import, and the others don'
       ["unresolved_dynamic_import", "moment"],
     ],
   );
-  assert.match(warnings[0].suggested_action, /A view can import a name bound under imports/);
+  assert.match(warnings[0].suggested_action, /A view can import one of the host's libraries/);
   assert.equal(
     warnings[1].suggested_action,
     `import "./util.js" in the module can't load in this view's frame, so the view fails when it loads. The view was saved.`,
@@ -366,34 +361,17 @@ test("a view's first import warning says what it can import, and the others don'
   assert.doesNotMatch(warnings[2].suggested_action, /A view can import/);
 });
 
-test("a view with no catalog on a host that has one is told so", async () => {
-  const stored = { ...checkedView(), revision: "1" };
-  await assert.rejects(
-    viewImportCheck(checkedView({ view_revision: "1" }), {
-      previous: stored,
-      catalogRevision: "a".repeat(64),
-      assetFor,
-      readImports: reader({ [ENTRY]: `import React from "react";` }),
-    }),
-    (error) => {
-      assert.equal(error.code, "invalid_view");
-      assert.match(
-        error.message,
-        /This view records no library catalog, so the host's libraries don't load in it; a view written under a new view_id records one\./,
-      );
-      assert.doesNotMatch(error.message, /This host offers no libraries/);
-      return true;
-    },
-  );
-  // The same module in a view this write makes executable takes the host's catalog.
-  assert.deepEqual(
-    await viewImportCheck(checkedView(), {
-      catalogRevision: "a".repeat(64),
-      assetFor,
-      readImports: reader({ [ENTRY]: `import React from "react";` }),
-    }),
-    [],
-  );
+test("a library import is the host's whether or not the stored view records a catalog", async () => {
+  // A stored view saved where no catalog was recorded: this save records the
+  // host's, so its libraries load.
+  for (const stored of [undefined, { ...checkedView(), revision: "1" }])
+    assert.deepEqual(
+      await viewImportCheck(checkedView(stored ? { view_revision: "1" } : {}), {
+        assetFor,
+        readImports: reader({ [ENTRY]: `import React from "react";` }),
+      }),
+      [],
+    );
 });
 
 test("a module past the byte bound is named, and the modules that were read are still checked", async () => {
@@ -539,7 +517,7 @@ test("an anywidget view with an unresolved static import is written with a warni
   );
   assert.match(
     written.body.warnings[0].suggested_action,
-    /A view can import an https: URL\. This host offers no libraries\./,
+    /A view can import one of the host's libraries \([^)]*\) or an https: URL\. Relative paths/,
   );
   assert.equal((await h.views()).length, 1);
 });

@@ -17,9 +17,8 @@
 // - If running the runtime throws, it defines no entry, or the entry throws,
 //   the bootstrap posts {type: BOOT_FAILED_MESSAGE} to the parent and stops.
 //
-// It is a classic script, not a module, so the import map a catalog server
-// places before it, and the one the runtime appends at mount, still apply in
-// Firefox. A change to this text or to BOOTSTRAP_HTML needs a new frame path
+// It is a classic script, not a module, so the import map the runtime appends
+// at mount still applies in Firefox. A change to this text or to BOOTSTRAP_HTML needs a new frame path
 // (apps/pages/shared/output-frame-paths.mjs).
 //
 // The names it shares with the host and the runtime live in lifecycle.mjs, so

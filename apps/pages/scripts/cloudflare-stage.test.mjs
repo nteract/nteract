@@ -13,6 +13,12 @@ import {
 import { workerShape } from "./worker-shape.mjs";
 import { OUTPUT_WORKER, releaseArtifacts, releaseFilesOf } from "./stage-artifacts.mjs";
 import { VIEWER_ASSETS, hashedAssetPath } from "./viewer-chunks.mjs";
+import {
+  LIBRARY_REVISION_FIXTURE,
+  libraryCatalogContents,
+  libraryCatalogFiles,
+  libraryCatalogReceipt,
+} from "./fixtures/library-catalog-fixture.mjs";
 
 test("Cloudflare staging separates native modules from browser assets and excludes local secrets/state", (t) => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "pages-cloudflare-stage-"));
@@ -25,8 +31,9 @@ test("Cloudflare staging separates native modules from browser assets and exclud
     VIEWER_ASSETS.map((name) => [hashedAssetPath(name, name), name]),
   );
   mkdirSync(path.join(dist, "public/chunks"));
-  const contents = (file) => assets[file] ?? file;
-  for (const file of [...releaseArtifacts, chunk, ...Object.keys(assets)])
+  mkdirSync(path.join(dist, `public/catalog/${LIBRARY_REVISION_FIXTURE}`), { recursive: true });
+  const contents = (file) => assets[file] ?? libraryCatalogContents[file] ?? file;
+  for (const file of [...releaseArtifacts, chunk, ...Object.keys(assets), ...libraryCatalogFiles])
     writeFileSync(
       path.join(dist, file),
       file === "build-receipt.json"
@@ -35,8 +42,9 @@ test("Cloudflare staging separates native modules from browser assets and exclud
             viewer_assets: Object.fromEntries(
               Object.entries(assets).map(([path, bytes]) => [path, sha256(bytes)]),
             ),
+            library_catalog: libraryCatalogReceipt(),
             files: Object.fromEntries(
-              releaseFilesOf([chunk], Object.keys(assets)).map((file) => [
+              releaseFilesOf([chunk], Object.keys(assets), libraryCatalogFiles).map((file) => [
                 file,
                 sha256(contents(file)),
               ]),

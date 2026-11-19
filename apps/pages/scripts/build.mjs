@@ -10,6 +10,11 @@ import { sourceFingerprint, writeBuildReceipt } from "./source-fingerprint.mjs";
 import { OUTPUT_WORKER, releaseFilesOf } from "./stage-artifacts.mjs";
 import { bootstrapSha256, bundleOutputWorker, writeFrameHtml } from "./build-output.mjs";
 import {
+  LIBRARY_CATALOG_DIRECTORY,
+  buildLibraryCatalog,
+  writeLibraryCatalog,
+} from "./library-catalog.mjs";
+import {
   CRITICAL_PATH_CEILING,
   VIEWER_ASSETS,
   VIEWER_CSP,
@@ -175,6 +180,22 @@ for (const name of ["app.js", "app.css"]) {
   await rm(file);
 }
 
+// The view library catalog, served by the Worker from
+// public/catalog/<revision>/ (worker/library-catalog.mjs). Only this build's
+// revision stays in public/.
+await rm(path.join(dist, LIBRARY_CATALOG_DIRECTORY), { recursive: true, force: true });
+const libraryCatalog = await buildLibraryCatalog(app);
+const libraryFiles = (
+  await writeLibraryCatalog(path.join(dist, LIBRARY_CATALOG_DIRECTORY), libraryCatalog)
+).map((file) => `${LIBRARY_CATALOG_DIRECTORY}/${file}`);
+{
+  let bytes = 0;
+  for (const data of libraryCatalog.files.values()) bytes += data.byteLength;
+  console.log(
+    `Library catalog ${libraryCatalog.revision}: ${libraryFiles.length} files, ${(bytes / 1024).toFixed(1)} KiB`,
+  );
+}
+
 await build({
   entryPoints: [path.join(app, "worker/index.mjs")],
   bundle: true,
@@ -186,7 +207,13 @@ await build({
   external: ["node:*"],
   outfile: path.join(dist, "index.js"),
   // The Worker's own pages (/connect, OAuth) load the hashed theme and styles.
-  define: { ...buildDefine, ...shellAssetDefine(Object.values(assets)) },
+  // It records its catalog revision on every view save
+  // (shared/library-catalog.mjs).
+  define: {
+    ...buildDefine,
+    ...shellAssetDefine(Object.values(assets)),
+    __PAGES_LIBRARY_CATALOG__: JSON.stringify(libraryCatalog.revision),
+  },
   plugins: [celldCborPlugin(), workerWasmPlugin(dist)],
 });
 // The output Worker, with the same build id: the module the release package
@@ -247,7 +274,8 @@ writeBuildReceipt(app, {
   expectedFingerprint,
   viewerChunks,
   viewerAssets: Object.values(assets),
-  releaseFiles: releaseFilesOf(viewerChunks, Object.values(assets)),
+  releaseFiles: releaseFilesOf(viewerChunks, Object.values(assets), libraryFiles),
+  libraryCatalog: { revision: libraryCatalog.revision, files: libraryFiles },
   outputFiles: [OUTPUT_WORKER],
   outputFrameBootstrapSha256: bootstrapSha256(),
   documentFormats: formatsByType(),

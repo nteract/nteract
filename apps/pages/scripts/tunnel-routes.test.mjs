@@ -243,6 +243,9 @@ for (const target of QUALIFIED_TARGETS)
       "/Internal/create",
       "/dev/oidcX",
       "/favicon.ico",
+      // The library catalog (worker/library-catalog.mjs).
+      `/catalog/${HASH}/manifest.json`,
+      `/catalog/${HASH}/d3.js`,
     ])
       assert.equal(admitted(target, path), true, `${target} reaches the Worker: ${path}`);
     const internal = routeStrings()

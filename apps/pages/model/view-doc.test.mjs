@@ -316,7 +316,7 @@ test("module authoring binds an entry, ranged files and JavaScript aliases in on
     });
 });
 
-test("new executable views keep the host catalog they first used", () => {
+test("every save of an executable view records the host's current catalog", () => {
   const first = "a".repeat(64),
     next = "b".repeat(64);
   const js = "c".repeat(64);
@@ -356,15 +356,26 @@ test("new executable views keep the host catalog they first used", () => {
     assert.equal(readView(doc, "daily").catalog_revision, first);
     assert.equal(viewSummary(doc, "daily").catalog_revision, first);
     const edit = { ...create, title: "Updated", view_revision: "1" };
-    const renamed = write(doc, edit, next);
-    assert.equal(readView(renamed, "daily").catalog_revision, first);
+    // A save on a host with another catalog moves the view to it.
+    let receipt;
+    const renamed = A.change(doc, (draft) => {
+      receipt = setView(draft, edit, { sourcesDoc, by, catalogRevision: next });
+    });
+    assert.equal(receipt.catalog_revision, next);
+    assert.equal(readView(renamed, "daily").catalog_revision, next);
+    // A save on the same host leaves the recorded catalog as it is.
+    const again = write(renamed, { ...edit, title: "Again", view_revision: "2" }, next);
+    assert.equal(readView(again, "daily").catalog_revision, next);
+    assert.deepEqual(A.getChanges(renamed, again).length, 1);
     assert.throws(
       () => validateViewOperation({ ...create, catalog_revision: next }),
       /does not take/,
     );
+    // A view saved where no catalog was recorded takes one on its next save.
     const legacy = write(viewGenesis(uuid), create, null);
-    assert.equal(readView(write(legacy, edit, next), "daily").catalog_revision, undefined);
-    const chart = write(renamed, op({ view_revision: "2" }), next);
+    assert.equal(readView(legacy, "daily").catalog_revision, undefined);
+    assert.equal(readView(write(legacy, edit, next), "daily").catalog_revision, next);
+    const chart = write(again, op({ view_revision: "3" }), next);
     assert.equal(readView(chart, "daily").catalog_revision, undefined);
   }
 });

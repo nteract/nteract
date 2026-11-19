@@ -42,7 +42,7 @@ import {
  *   title: string,               // 1 to MAX_VIEW_TITLE characters
  *   media_type: string,          // one of VIEW_MEDIA_TYPES
  *   spec: Text,                  // the spec as JSON, replaced with updateText
- *   catalog_revision?: string,  // host-selected manifest for a new executable view
+ *   catalog_revision?: string,  // the host's library catalog at the executable view's last save
  *   data: {                      // chart dataset bindings; empty for anywidget
  *     [data_name]: { source_id } | { source_id, revision },
  *   },
@@ -301,12 +301,13 @@ export function setView(
   const title = op.title.trim();
   if (doc.title !== title) doc.title = title;
   if (doc.media_type !== op.media_type) doc.media_type = op.media_type;
-  // An executable view records the host's catalog on the write that makes it
-  // executable and keeps that catalog on later edits. A view that isn't
-  // executable holds none.
+  // Every save of an executable view records the host's catalog: the catalog
+  // the view was last saved against, which the viewer uses while the host
+  // still serves it, and otherwise the host's current one
+  // (viewer/library-catalog.mjs). A view that isn't executable holds none.
   if (!isExecutableView(op.media_type)) {
     if (doc.catalog_revision !== undefined) delete doc.catalog_revision;
-  } else if (catalogRevision && !isExecutableView(previous?.media_type)) {
+  } else if (catalogRevision && doc.catalog_revision !== catalogRevision) {
     doc.catalog_revision = catalogRevision;
   }
   const spec = JSON.stringify(op.spec);

@@ -1,4 +1,5 @@
-import { configuredCatalogRevision, standardImports } from "../shared/widget-imports.mjs";
+import { standardImports } from "../shared/widget-imports.mjs";
+import { LIBRARY_CATALOG_REVISION } from "../shared/library-catalog.mjs";
 
 import { hasNonce } from "../model/nonce.mjs";
 import * as A from "@automerge/automerge";
@@ -474,6 +475,7 @@ import {
 } from "./link-previews.mjs";
 import { pageShellSlug, slugShellResponse } from "./page-shell.mjs";
 import { outputFrameAssets } from "./output-frame-config.mjs";
+import { libraryCatalogResponse } from "./library-catalog.mjs";
 import { titleProjection } from "./title-projection.mjs";
 
 const operations = new Set([
@@ -1588,6 +1590,11 @@ export default {
       // (transport-security.mjs).
       const insecure = httpsRedirect(request, env);
       if (insecure) return insecure;
+      // View library files are public build output: they answer before the
+      // session configuration check and any account code, and never touch a
+      // cookie (library-catalog.mjs).
+      const library = await libraryCatalogResponse(request, env);
+      if (library) return withTransportSecurity(request, library);
       const misconfigured = sessionKeysFailure(env);
       if (misconfigured) return withTransportSecurity(request, misconfigured);
       return withTransportSecurity(
@@ -2038,7 +2045,6 @@ const gateway = {
               env.ASSETS,
               env.PAGES_OUTPUT_FRAME_URL,
               env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || url.origin,
-              { catalog: Boolean(configuredCatalogRevision(env)) },
             ),
           },
         });
@@ -7093,7 +7099,7 @@ export class Page {
           const options = {
             recovery: this.recoveryBlocked,
             historyIncomplete: incompleteHistory(this.handle.doc()),
-            libraries: configuredCatalogRevision(this.env) ? standardImports : [],
+            libraries: standardImports,
             getPresence: (doc) => this.activityState().read(doc),
             commentsDoc: this.commentsView(),
             sourcesDoc: this.sourcesView(),
@@ -7668,7 +7674,6 @@ export class Page {
                 return undefined;
               }
             }),
-            catalogRevision: configuredCatalogRevision(this.env),
             sourcesDoc: handle.doc(),
             readImports: this.moduleReader(),
           });
@@ -7721,10 +7726,8 @@ export class Page {
     try {
       const sourcesDoc = this.sourcesView();
       const checked = validateViewOperation(op);
-      const previous = checkViewBindings(handle.doc(), checked, sourcesDoc);
+      checkViewBindings(handle.doc(), checked, sourcesDoc);
       warnings = await viewImportCheck(checked, {
-        previous,
-        catalogRevision: configuredCatalogRevision(this.env),
         sourcesDoc,
         readImports: this.moduleReader(),
       });
@@ -7878,7 +7881,7 @@ export class Page {
         apply: (draft, effectiveArgs) => {
           try {
             const edit = setView(draft, effectiveArgs.operations[0], {
-              catalogRevision: configuredCatalogRevision(this.env),
+              catalogRevision: LIBRARY_CATALOG_REVISION,
               sourcesDoc: this.sourcesView(),
               by: authorOf(publicIdentity(identity), agent),
             });

@@ -7,9 +7,7 @@ import { readFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
 
 const origin = "http://localhost:" + Number(process.env.PAGES_PORT || 9916);
-const catalog = "http://127.0.0.1:" + Number(process.env.PAGES_CATALOG_PORT || 9446);
-const manifest = await (await fetch(catalog + "/catalog.json")).text();
-const pin = createHash("sha256").update(manifest).digest("hex");
+const output = "http://127.0.0.1:" + Number(process.env.PAGES_CATALOG_PORT || 9446);
 const browser = await chromium.launch();
 try {
   const page = await browser.newPage({ viewport: { width: 1200, height: 950 } });
@@ -61,7 +59,10 @@ try {
   }
   const read = await tool("read_page", { page_id, view_id: "activity" });
   assert.equal(read.view.view_type, "module");
-  assert.equal(read.view.catalog_revision, pin);
+  // The view pins the catalog the Page host serves from its own origin.
+  const pin = read.view.catalog_revision;
+  const manifest = await (await fetch(`${origin}/catalog/${pin}/manifest.json`)).text();
+  assert.equal(createHash("sha256").update(manifest).digest("hex"), pin);
   assert.deepEqual(read.view.imports["activity-controls"], { source_id: "controls" });
   assert.ok(read.libraries.includes("@observablehq/plot"));
   await page.goto(link);
@@ -88,10 +89,11 @@ try {
     await roles.getByText("Writers", { exact: true }).click();
     await expect(roles.locator("p")).toContainText("5 people edited");
     await expect(chart.locator("html")).toHaveAttribute("data-theme", scheme);
-    const frames = page.frames().filter((f) => f.url().startsWith(catalog));
+    const frames = page.frames().filter((f) => f.url().startsWith(output));
     assert.equal(frames.length, 2);
     for (const frame of frames) {
-      assert.equal(new URL(frame.url()).searchParams.get("catalog"), pin);
+      // The frame URL is the plain bootstrap; the libraries came with the mount.
+      assert.equal(new URL(frame.url()).search, "");
       assert.ok(await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     }
   }

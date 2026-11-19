@@ -9,6 +9,8 @@
       "default": "./src/host.mjs"
     },
     "./runtime": "./src/runtime.mjs",
+    "./import-map": "./src/import-map.mjs",
+    "./payload": "./src/payload.mjs",
     "./bootstrap": "./src/bootstrap.mjs",
     "./lifecycle": "./src/lifecycle.mjs",
     "./context": "./src/context.mjs",
