@@ -19,7 +19,7 @@ import {
   validAssetId,
   imageAssetUrl,
 } from "../shared/image-assets.mjs";
-import { DATASET_MAX_BYTES, PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
+import { DATAFRAME_MEDIA_TYPES, DATASET_MAX_BYTES, PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 import {
   ImageValidationError,
   inspectImage as inspectImageContainer,
@@ -375,29 +375,17 @@ export async function persistPageAsset(bucket, { pageId, bytes, contentTypes = [
 /**
  * The edit_page operation that places a stored asset as the block its type
  * calls for: insert_image for a raster, an insert_node dataframe for a Parquet
- * dataset or a CSV, and null for any other view input. insert_image also
- * needs alt text, which only the caller can write, so the operation leaves it
- * out and edit_page refuses it until alt is added.
+ * dataset or CSV. A table follows its named source when the upload created one.
+ * insert_image also needs alt text, which only the caller can write.
  */
-export const assetInsertOperation = ({ asset_id, mime_type }) =>
-  mime_type === CSV_MEDIA_TYPE
-    ? {
-        op: "insert_node",
-        node: { type: "dataframe", attrs: { asset_id, media_type: CSV_MEDIA_TYPE } },
-      }
-    : OUTPUT_ASSET_TYPES.includes(mime_type)
-      ? null
-      : mime_type === PARQUET_MEDIA_TYPE
-        ? { op: "insert_node", node: { type: "dataframe", attrs: { asset_id } } }
-        : { op: "insert_image", asset_id };
-
-/** The answer to a stored upload or copy: the asset, its URL under both names,
- * and the operation that places it. */
-const assetReceipt = (asset) => ({
-  ...asset,
-  asset_url: asset.url,
-  insert: assetInsertOperation(asset),
-});
+function assetInsertOperation({ asset_id, mime_type }, sourceId) {
+  if (DATAFRAME_MEDIA_TYPES.includes(mime_type)) {
+    const attrs = sourceId ? { binding: { source_id: sourceId } } : { asset_id };
+    if (mime_type === CSV_MEDIA_TYPE) attrs.media_type = mime_type;
+    return { op: "insert_node", node: { type: "dataframe", attrs } };
+  }
+  return OUTPUT_ASSET_TYPES.includes(mime_type) ? null : { op: "insert_image", asset_id };
+}
 
 const FILE_TOO_LARGE = "Files must be 5 MiB or smaller";
 /** Read an image or dataset body under the shared asset ceiling. */
@@ -418,7 +406,13 @@ async function grantedExpectation(access) {
 
 /** After private storage, disclose the asset only if the host still admits
  * the caller. A create conflict leaves the uploaded bytes available to reuse. */
-export async function uploadReceipt(asset, duplicate, access, named, fields = assetReceipt(asset)) {
+export async function uploadReceipt(
+  asset,
+  duplicate,
+  access,
+  named,
+  fields = { ...asset, asset_url: asset.url },
+) {
   if (!access.ok) {
     if (named && [400, 404, 409].includes(access.status)) {
       // Only source admission errors prove the host admitted this caller.
@@ -436,7 +430,10 @@ export async function uploadReceipt(asset, duplicate, access, named, fields = as
   }
   const source = named ? await access.json() : {};
   return privateImageResponse(
-    Response.json({ ...fields, ...source }, { status: duplicate ? 200 : 201 }),
+    Response.json(
+      { ...fields, ...source, insert: assetInsertOperation(asset, source.source_id) },
+      { status: duplicate ? 200 : 201 },
+    ),
   );
 }
 
@@ -609,10 +606,7 @@ export async function handleImageAssets(
       if (!bucket) throw new HttpError(503, "Image storage is unavailable");
       const { asset, duplicate } = await copyDatasetAsset(bucket, { pageId, assetId, sourceId });
       const current = await authorize(true);
-      if (!current.ok) return privateImageResponse(current);
-      return privateImageResponse(
-        Response.json(assetReceipt(asset), { status: duplicate ? 200 : 201 }),
-      );
+      return await uploadReceipt(asset, duplicate, current, false);
     }
     const access = await authorize(upload);
     if (!access.ok) return privateImageResponse(access);

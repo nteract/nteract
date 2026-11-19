@@ -1841,11 +1841,11 @@ get an upload URL from create_page_asset_upload (content_type
 application/vnd.apache.parquet) and POST the raw bytes there, or POST them to
 ${origin}/api/pages/<page_id>/assets with Content-Type
 application/vnd.apache.parquet and your API-key bearer header. The response
-contains asset_id, asset_url, mime_type, size and insert, the insert_node
-operation below with the asset_id filled in. In the browser, an editor can
+contains asset_id, asset_url, mime_type, size and insert. Send the returned
+insert_node operation to place the table. A named upload binds the table to
+its source. An unnamed upload pins it to the asset_id. In the browser, an editor can
 drop or paste a .parquet file into a block. A CSV uploads with content_type
-text/csv and returns an insert_node operation with attrs
-{asset_id, media_type: "text/csv"}. ${DATA_FORMAT_ADVICE}`,
+text/csv and its insert operation includes media_type: "text/csv". ${DATA_FORMAT_ADVICE}`,
     datasetReaderParagraph: `Readers see a Sift table: they can sort, filter and scroll it, and those
 changes stay in their own view. Nothing they do changes the document. Pages
 does not decode the file on the server, so read the Parquet yourself when you
@@ -2251,11 +2251,11 @@ is insufficient.`,
 Page asset like an image, up to 5 MiB, and the same upload route stores it: get
 an upload URL from create_page_asset_upload (content_type
 application/vnd.apache.parquet) and POST the raw bytes there. The response
-contains asset_id, asset_url, mime_type, size and insert, the insert_node
-operation below with the asset_id filled in. In the browser, an editor can
+contains asset_id, asset_url, mime_type, size and insert. Send the returned
+insert_node operation to place the table. A named upload binds the table to
+its source. An unnamed upload pins it to the asset_id. In the browser, an editor can
 drop or paste a .parquet file into a block. A CSV uploads with content_type
-text/csv and returns an insert_node operation with attrs
-{asset_id, media_type: "text/csv"}. ${DATA_FORMAT_ADVICE}`,
+text/csv and its insert operation includes media_type: "text/csv". ${DATA_FORMAT_ADVICE}`,
     datasetReaderParagraph: `Readers see a Sift table: they can sort, filter and scroll it, and those changes
 stay in their own view. Nothing they do changes the document. Pages does not
 decode the file on the server, so read the Parquet yourself when you need its

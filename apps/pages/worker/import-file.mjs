@@ -6,7 +6,6 @@
 import { HttpError, errorResponse } from "./auth.mjs";
 import { validPageId } from "./registration.mjs";
 import {
-  assetInsertOperation,
   uploadReceipt,
   persistPageAsset,
   privateImageResponse,
@@ -154,7 +153,6 @@ export async function handleFileImport(request, env, { pageId, file, source, aut
       page_id: pageId,
       ...metadata,
       asset_url,
-      insert: assetInsertOperation(asset),
     });
   } catch (error) {
     return privateImageResponse(errorResponse(error, "import-page-file"));

@@ -81,15 +81,19 @@ POST that file's raw bytes to the returned upload_url using the returned headers
 
 Supported view input types are ${OUTPUT_ASSET_TYPES.map((type) => `\`${type}\``).join(", ")}. For nested objects, lists and settings, upload UTF-8 JSON with content_type application/json and a source name. Readers can inspect the fields and original JSON in the browser’s Sources pane. For tabular records, upload Parquet, or a CSV with content_type text/csv, whose header and first rows the Sources pane shows. ${DATA_FORMAT_ADVICE} Use application/octet-stream for untyped bytes. The main guide covers image, Parquet and CSV insertion. A client-attached file can use the upload tool's file argument instead of POST; never invent a client file descriptor.
 
-Independent files can request capabilities and upload in parallel. JSON, JavaScript, CSS, WAV and binary upload receipts have insert:null: use sources and a view to display them.
+Independent files can request capabilities and upload in parallel. For Parquet, send the returned insert operation to place a table. A named upload gives you a table that follows the source on refresh. An unnamed upload gives you a table pinned to those bytes. JSON, JavaScript, CSS, WAV and binary upload receipts have insert:null: use sources and a view to display them.
 
-## Register and update sources
+## Refresh an existing source
 
-If you uploaded without a name, you can submit the same bytes with source to create the name. Identical bytes reuse the asset. If you already have just the asset_id, use set_source to name it. Source IDs are chosen by the author and scoped to this Page. Explicit source_revision:null creates only; omission is currently invalid. If the ID exists, read it before deciding whether to update or choose a different ID.
-${edit("register-counter-001", [source("counter-module", "Counter module")])}
-Multiple set_source operations may share one batch; source operations cannot mix with view or body edits. Each result.edits entry returns source_id and source_revision. A source starts at revision "1". Preserve the latest Page revision from reads/receipts for later body edits.
+The named upload above created counter-module. To publish a new version, upload the replacement bytes without a source name and keep their asset_id. Read counter-module to get its current source_revision:
 ${call("read_page", { page_id: "<page_id>", source_id: "counter-module" })}
-To update, upload new bytes, then send set_source with the same source_id, the new asset_id, and the source_revision just read. Keep the intended name too. A stale_source refusal means reread and reconcile; never bypass the revision check. An exact retry uses the same nonce and payload. A changed request uses a new nonce.
+If the read returns source_revision "1", the update looks like this. Use the revision you actually read.
+${edit("refresh-counter-001", [{ ...source("counter-module", "Counter module"), source_revision: "1" }])}
+The receipt's result.edits entry gives the new source_revision. A stale_source refusal means another edit won. Read the source again and decide whether to update it. Reuse a nonce for an exact retry and choose a new nonce for a changed request.
+
+## Name bytes you uploaded earlier
+
+If your upload receipt has only an asset_id and the Page still needs a new source, use set_source with the asset_id, a new source_id, a display name and source_revision:null. You can also resubmit the same bytes with source on the upload. Identical bytes reuse the asset. A single edit_page batch can register several sources. Send view and body edits in their own batches.
 
 ## Datasets from another Page or Project
 

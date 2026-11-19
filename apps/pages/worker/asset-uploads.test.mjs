@@ -4,6 +4,7 @@ import { secretHash } from "@nteract/session";
 import worker from "./index.mjs";
 import { Storage, world } from "./projects-fixture.mjs";
 import {
+  ASSET_AUTHORIZE_PATH,
   ASSET_UPLOAD_MAX_BYTES,
   ASSET_UPLOAD_TTL_MS,
   ASSET_UPLOAD_TYPES,
@@ -1350,6 +1351,87 @@ test("a named client attachment returns a source and an identical retry replays 
   const replay = await issue(w, "owner", args);
   assert.equal(replay.status, 200);
   assert.deepEqual(replay.body, result.body);
+});
+
+test("named Parquet uploads return an insert that follows the new source", async (t) => {
+  const { w, pageId } = await setup(t);
+  editable(w, pageId);
+  const download_url = "https://files.oaiusercontent.com/measurements";
+  t.mock.method(globalThis, "fetch", (url, options) =>
+    String(url) === download_url
+      ? Promise.resolve(new Response(parquet, { headers: { "content-type": PARQUET_MEDIA_TYPE } }))
+      : w.auth.fetch(url, options),
+  );
+  const grant = await issued(w, {
+    page_id: pageId,
+    content_type: PARQUET_MEDIA_TYPE,
+    source: { source_id: "usage", name: "Usage" },
+  });
+  const uploaded = await upload(w, grant, { body: parquet });
+  const attached = await issue(w, "owner", {
+    page_id: pageId,
+    source: { source_id: "measurements", name: "Measurements" },
+    file: { file_id: "attached-parquet", download_url },
+  });
+  assert.equal(uploaded.status, 201, JSON.stringify(uploaded.body));
+  assert.equal(attached.status, 200, JSON.stringify(attached.body)); // Identical stored bytes.
+  for (const [receipt, source_id] of [
+    [uploaded.body, "usage"],
+    [attached.body, "measurements"],
+  ]) {
+    assert.equal(receipt.source_id, source_id);
+    assert.deepEqual(receipt.insert, {
+      op: "insert_node",
+      node: { type: "dataframe", attrs: { binding: { source_id } } },
+    });
+  }
+  const { revision } = (await w.call("owner", "read_page", { page_id: pageId })).body;
+  const placed = await w.call("owner", "edit_page", {
+    page_id: pageId,
+    revision,
+    nonce: crypto.randomUUID(),
+    operations: [uploaded.body.insert, attached.body.insert],
+  });
+  assert.equal(placed.status, 200, JSON.stringify(placed.body));
+  assert.deepEqual(
+    placed.body.result.edits.map((edit) => edit.attrs.binding),
+    [{ source_id: "usage" }, { source_id: "measurements" }],
+  );
+});
+
+test("source completion requires a named capability or a valid source from the caller", async (t) => {
+  const { w, pageId } = await setup(t);
+  const grant = await issued(w, { page_id: pageId, content_type: PARQUET_MEDIA_TYPE });
+  const stored = await upload(w, grant, { body: parquet });
+  assert.equal(stored.status, 201);
+  for (const [authorization, source, status, code] of [
+    [
+      grant.headers.Authorization,
+      { source_id: "usage", name: "Usage" },
+      401,
+      "upload_capability_invalid",
+    ],
+    [`Bearer ${w.auth.apiKey()}`, { name: "No source ID" }, 400, "invalid_arguments"],
+  ]) {
+    const result = await w.page(pageId).fetch(
+      new Request(origin + ASSET_AUTHORIZE_PATH, {
+        method: "POST",
+        headers: { authorization, origin, "content-type": "application/json" },
+        body: JSON.stringify({
+          page_id: pageId,
+          write: true,
+          completion: {
+            source,
+            file_id: "attached-parquet",
+            asset_id: stored.body.asset_id,
+          },
+        }),
+      }),
+    );
+    assert.equal(result.status, status);
+    assert.equal((await result.json()).code, code);
+  }
+  assert.equal(w.page(pageId).sourcesView(), undefined);
 });
 
 test("a named grant accepts only a new source ID and display name", async (t) => {

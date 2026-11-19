@@ -1833,7 +1833,9 @@ there is no persistent browser Parquet cache.
 
 To create a named source when uploading a non-image file, pass
 `source: {source_id, name}` to `create_page_asset_upload`. The transfer
-receipt includes `asset_id`, `source_id` and `source_revision`. The upload
+receipt includes `asset_id`, `source_id` and `source_revision`. For Parquet,
+its `insert` places a dataframe bound to the source. An unnamed Parquet
+upload returns an insertion pinned to its `asset_id`. The upload
 grant signs the source ID and name. After storage, the host checks edit
 access again and writes through the same journal as `set_source`. A
 conflicting ID returns the uploaded asset ID and current source revision.
@@ -2659,7 +2661,9 @@ For agents, importing bytes and inserting content are separate operations:
    block its type calls for (`assetInsertOperation` in
    [image-assets.mjs](worker/image-assets.mjs)). A raster gets
    `{"op": "insert_image", "asset_id": "<asset_id>"}`, and the agent adds alt text, which
-   `insert_image` requires; a Parquet dataset gets
+   `insert_image` requires. A named Parquet upload gets
+   `{"op":"insert_node","node":{"type":"dataframe","attrs":{"binding":{"source_id":"<source_id>"}}}}`.
+   An unnamed Parquet upload gets
    `{"op": "insert_node", "node": {"type": "dataframe", "attrs": {"asset_id": "<asset_id>"}}}`.
 2. Read the current Page, then call guarded `edit_page` with that `insert`
    operation: for an image, `insert_image`, `asset_id`, alt text, and optional
