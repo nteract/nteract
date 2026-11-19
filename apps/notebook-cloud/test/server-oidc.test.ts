@@ -25,10 +25,12 @@ import {
   completeServerOidcLogin,
   createServerSession,
   deleteServerOidcSession,
+  renewalStep,
   serverOidcSessionStatus,
   ServerOidcIdentityRejected,
   ServerSessionGrantRejected,
   type ServerOidcAuthEvent,
+  type RenewalStep,
   type ServerOidcEnvironment,
   type ServerSessionGrant,
   type ServerSessionProvider,
@@ -334,6 +336,96 @@ async function fixture(
     },
   };
 }
+
+describe("renewalStep", () => {
+  const now = 1_000_000;
+  const valid = now + 30;
+  const expired = now - 1;
+  const cases: [string, Parameters<typeof renewalStep>[0], RenewalStep][] = [
+    [
+      "unleased, proof valid",
+      { access_expires_at: valid, lease: null, lease_until: 0, retry_after: 0 },
+      "claim",
+    ],
+    [
+      "unleased, proof expired",
+      { access_expires_at: expired, lease: null, lease_until: 0, retry_after: 0 },
+      "claim",
+    ],
+    [
+      "unleased, proof ends this second",
+      { access_expires_at: now, lease: null, lease_until: 0, retry_after: 0 },
+      "claim",
+    ],
+    [
+      "lease lapsed, proof valid",
+      { access_expires_at: valid, lease: "l", lease_until: now - 1, retry_after: 0 },
+      "end_abandoned",
+    ],
+    [
+      "lease lapsed, proof expired",
+      { access_expires_at: expired, lease: "l", lease_until: now - 1, retry_after: 0 },
+      "end_abandoned",
+    ],
+    [
+      "lease ends this second, proof valid",
+      { access_expires_at: valid, lease: "l", lease_until: now, retry_after: 0 },
+      "end_abandoned",
+    ],
+    [
+      "lease live, proof valid",
+      { access_expires_at: valid, lease: "l", lease_until: now + 1, retry_after: 0 },
+      "keep_current",
+    ],
+    [
+      "lease live, proof expired",
+      { access_expires_at: expired, lease: "l", lease_until: now + 1, retry_after: 0 },
+      "wait_for_owner",
+    ],
+    [
+      "lease live, proof ends this second",
+      { access_expires_at: now, lease: "l", lease_until: now + 1, retry_after: 0 },
+      "wait_for_owner",
+    ],
+    [
+      "backoff, proof valid",
+      { access_expires_at: valid, lease: null, lease_until: 0, retry_after: now + 1 },
+      "keep_current",
+    ],
+    [
+      "backoff, proof expired",
+      { access_expires_at: expired, lease: null, lease_until: 0, retry_after: now + 1 },
+      "unavailable",
+    ],
+    [
+      "backoff, proof ends this second",
+      { access_expires_at: now, lease: null, lease_until: 0, retry_after: now + 1 },
+      "unavailable",
+    ],
+    [
+      "backoff ends this second, proof valid",
+      { access_expires_at: valid, lease: null, lease_until: 0, retry_after: now },
+      "claim",
+    ],
+    [
+      "backoff ends this second, proof expired",
+      { access_expires_at: expired, lease: null, lease_until: 0, retry_after: now },
+      "claim",
+    ],
+    [
+      "backoff and lapsed lease, proof valid",
+      { access_expires_at: valid, lease: "l", lease_until: now, retry_after: now + 1 },
+      "end_abandoned",
+    ],
+    [
+      "backoff and live lease, proof expired",
+      { access_expires_at: expired, lease: "l", lease_until: now + 1, retry_after: now + 1 },
+      "unavailable",
+    ],
+  ];
+  for (const [name, row, step] of cases)
+    it(`${name}: ${step}`, () => assert.equal(renewalStep(row, now), step));
+});
 
 describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
   it("logs only static reasons for rejected provider identity proofs", async (t) => {
@@ -1126,6 +1218,8 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     const gate = f.gateRefresh();
     const owner = serverOidcSessionStatus(request, f.env, noopProfile, { onAuthEvent });
     await gate.entered.promise;
+    // Only a check whose proof has expired waits for the owner.
+    f.expireAccess(-1);
     // The waiter first reads a live lease. The lease lapses before its claim,
     // and the owner saves right after the waiter's next read.
     f.db.afterNextRead = async () => {
@@ -1376,9 +1470,25 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     const request = f.request(undefined, sessionCookie);
     f.expireAccess();
     f.setRefreshFailure("unavailable");
+    const records: Record<string, unknown>[] = [];
+    t.mock.method(console, "warn", (_prefix: unknown, record: Record<string, unknown>) => {
+      records.push(record);
+    });
+    // The proof still has 30 seconds: the check answers with it.
     const unavailable = await serverOidcSessionStatus(request, f.env, noopProfile);
-    assert.equal(unavailable.status, 503);
-    assert.equal(unavailable.headers.get("Set-Cookie"), null);
+    assert.equal(unavailable.status, 200);
+    assert.ok((await unavailable.json()).session);
+    assert.equal(hasSessionCookie(unavailable), true);
+    assert.deepEqual(
+      records.map(({ event, phase, kind }) => ({ event, phase, kind })),
+      [
+        {
+          event: "auth.server_session.failed",
+          phase: "session_renewal",
+          kind: "provider_unavailable",
+        },
+      ],
+    );
     assert.equal(f.countRows(), 1);
     assert.ok(
       await readCloudAppSession(f.env, request),
@@ -1403,7 +1513,28 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
   it("keeps transient profile storage failures retryable", async (t) => {
     const f = await fixture(t);
     const { sessionCookie } = await f.login();
+    const failingProfile = async () => {
+      throw new Error("temporary profile store failure");
+    };
     f.expireAccess();
+    // The proof still has 30 seconds: the check answers with it.
+    const response = await serverOidcSessionStatus(
+      f.request(undefined, sessionCookie),
+      f.env,
+      failingProfile,
+    );
+    assert.equal(response.status, 200);
+    assert.ok((await response.json()).session);
+    assert.equal(f.countRows(), 1);
+    const row = f.db.sqlite.prepare("SELECT * FROM oidc_server_sessions").get()!;
+    assert.equal(row.lease, null);
+    assert.ok(Number(row.retry_after) > nowSeconds(), "the failure is retried after a backoff");
+  });
+
+  it("refuses a check whose proof expired while the profile store fails, retryably", async (t) => {
+    const f = await fixture(t);
+    const { sessionCookie } = await f.login();
+    f.expireAccess(-1);
     const response = await serverOidcSessionStatus(
       f.request(undefined, sessionCookie),
       f.env,
@@ -1412,8 +1543,86 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
       },
     );
     assert.equal(response.status, 503);
+    assert.equal(response.headers.get("Retry-After"), "15");
     assert.equal(f.countRows(), 1);
     assert.equal(response.headers.get("Set-Cookie"), null);
+  });
+
+  it("answers a check whose proof is valid at once while another request renews", async (t) => {
+    const f = await fixture(t);
+    const { sessionCookie } = await f.login();
+    const request = f.request(undefined, sessionCookie);
+    const row = () => f.db.sqlite.prepare("SELECT * FROM oidc_server_sessions").get()!;
+    const before = row();
+    f.expireAccess();
+    // The waiter's check renews idle time, so it writes the row.
+    f.db.sqlite
+      .prepare("UPDATE oidc_server_sessions SET idle_expires_at = ?")
+      .run(nowSeconds() + 3600);
+    const gate = f.gateRefresh();
+    const owner = serverOidcSessionStatus(request, f.env, noopProfile);
+    await gate.entered.promise;
+    const startedAt = Date.now();
+    const waiter = await serverOidcSessionStatus(request, f.env, noopProfile);
+    assert.ok(Date.now() - startedAt < 200, "the check does not wait for the owner");
+    assert.equal(waiter.status, 200);
+    assert.ok((await waiter.json()).session);
+    assert.equal(hasSessionCookie(waiter), true);
+    assert.equal(f.calls.filter((call) => call.grant === "refresh_token").length, 1);
+    const touched = row();
+    assert.ok(Number(touched.idle_expires_at) > nowSeconds() + 3600, "the waiter touched the row");
+    assert.equal(touched.generation, before.generation);
+    assert.ok(touched.lease, "the touch leaves the owner's lease");
+    gate.release.resolve();
+    const renewed = await owner;
+    assert.equal(renewed.status, 200);
+    assert.ok((await renewed.json()).session);
+    const after = row();
+    assert.equal(after.generation, Number(before.generation) + 1, "the owner's save succeeds");
+    assert.equal(after.lease, null);
+    assert.ok(Number(after.access_expires_at) > nowSeconds() + 30);
+    assert.equal(f.calls.filter((call) => call.grant === "refresh_token").length, 1);
+  });
+
+  it("makes a check whose proof expired wait for the owner's renewal", async (t) => {
+    const f = await fixture(t);
+    const { sessionCookie } = await f.login();
+    const request = f.request(undefined, sessionCookie);
+    const before = f.db.sqlite.prepare("SELECT generation FROM oidc_server_sessions").get()!;
+    f.expireAccess();
+    const gate = f.gateRefresh();
+    const owner = serverOidcSessionStatus(request, f.env, noopProfile);
+    await gate.entered.promise;
+    f.expireAccess(-1);
+    const waiter = serverOidcSessionStatus(request, f.env, noopProfile);
+    const waiting = { settled: false };
+    void waiter.then(() => (waiting.settled = true));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(waiting.settled, false, "the check waits while the owner renews");
+    gate.release.resolve();
+    const [ownerResponse, waiterResponse] = await Promise.all([owner, waiter]);
+    for (const response of [ownerResponse, waiterResponse]) {
+      assert.equal(response.status, 200);
+      assert.ok((await response.json()).session);
+    }
+    assert.equal(
+      f.db.sqlite.prepare("SELECT generation FROM oidc_server_sessions").get()!.generation,
+      Number(before.generation) + 1,
+    );
+    assert.equal(f.calls.filter((call) => call.grant === "refresh_token").length, 1);
+  });
+
+  it("answers a check in backoff whose proof is valid without asking the provider", async (t) => {
+    const f = await fixture(t);
+    const { sessionCookie } = await f.login();
+    const request = f.request(undefined, sessionCookie);
+    f.expireAccess();
+    f.db.sqlite.prepare("UPDATE oidc_server_sessions SET retry_after = ?").run(nowSeconds() + 15);
+    const response = await serverOidcSessionStatus(request, f.env, noopProfile);
+    assert.equal(response.status, 200);
+    assert.ok((await response.json()).session);
+    assert.equal(hasSessionCookie(response), true);
+    assert.equal(f.calls.filter((call) => call.grant === "refresh_token").length, 0);
   });
 
   it("extends active idle sessions with long access tokens without refreshing their identity proof", async (t) => {
@@ -1909,7 +2118,9 @@ describe("server sessions from a sign-in that is not OIDC", { concurrency: false
     const unavailable = await serverOidcSessionStatus(f.request(cookie), f.env, noopProfile, {
       provider: f.provider,
     });
-    assert.equal(unavailable.status, 503);
+    // The proof still has 30 seconds: the check answers with the stored session.
+    assert.equal(unavailable.status, 200);
+    assert.equal((await unavailable.json()).session.display_name, "Alice");
     assert.equal(f.countRows(), 1);
     assert.equal(logged.join("\n").includes("secret-detail"), false);
     // Backoff: the provider is not asked again inside the retry window.
@@ -1946,7 +2157,8 @@ describe("server sessions from a sign-in that is not OIDC", { concurrency: false
     const f = providerFixture(t);
     const cookie = await f.signIn();
     for (const expiresAt of [nowSeconds() - 5, Number.NaN, nowSeconds() + 0.5]) {
-      f.expireAccess();
+      // An expired proof: a valid one is answered as it is (renewalStep).
+      f.expireAccess(-1);
       f.db.sqlite.prepare("UPDATE oidc_server_sessions SET retry_after = 0").run();
       const synced: string[] = [];
       const response = await serverOidcSessionStatus(
@@ -2022,7 +2234,8 @@ describe("server sessions from a sign-in that is not OIDC", { concurrency: false
       f.db.sqlite.prepare("SELECT sealed, generation FROM oidc_server_sessions").get();
     const before = stored();
     for (const bundle of malformed) {
-      f.expireAccess();
+      // An expired proof: a valid one is answered as it is (renewalStep).
+      f.expireAccess(-1);
       f.db.sqlite.prepare("UPDATE oidc_server_sessions SET retry_after = 0").run();
       const synced: string[] = [];
       const response = await serverOidcSessionStatus(
@@ -2048,7 +2261,8 @@ describe("server sessions from a sign-in that is not OIDC", { concurrency: false
   it("does not store a grant that lapsed while the profile callback ran", async (t) => {
     const f = providerFixture(t);
     const cookie = await f.signIn();
-    f.expireAccess();
+    // An expired proof: a valid one is answered as it is (renewalStep).
+    f.expireAccess(-1);
     const stored = () =>
       f.db.sqlite.prepare("SELECT sealed, generation FROM oidc_server_sessions").get();
     const before = stored();
