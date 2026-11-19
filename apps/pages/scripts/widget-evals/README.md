@@ -1,0 +1,59 @@
+# Fresh-Page authoring eval
+
+Can an agent build an interactive Plot chart on a fresh Page, using only the deployment’s assets? The prompt asks for three daily counts, per-bar hover titles, a filter and a reset button. Each candidate starts with its own Page, a fresh Kilo project, a local test identity and access to the same Pages tools. A host pin makes the standard catalog available. Each Page starts with no catalog selected.
+
+## Run a comparison
+
+Use a full Git checkout of this branch. Follow the Pages setup instructions and build from `apps/pages`. Install Chromium with the checkout’s Playwright CLI. The runner needs a working `celld`, a signed-in Kilo CLI and provider internet access. Everything that reads or writes Pages runs on loopback. An HTTPS Git clone works on a network without SSH.
+
+Run these commands in separate terminals from `apps/pages`:
+
+```sh
+PAGES_CATALOG_PORT=9447 node scripts/widget-catalog/serve.mjs
+```
+
+```sh
+./scripts/widget-evals/start-host.sh
+```
+
+The host copies the existing build into a new temporary directory and starts with empty storage. Keep it running through the audit. If a host port is occupied, set PAGES_PORT on the start command and set EVAL_PAGES_ORIGIN to the corresponding localhost URL on the remaining commands. If changing the catalog port, pass PAGES_CATALOG_PORT to both the host and the audit.
+
+```sh
+node scripts/widget-evals/guides.mjs
+node scripts/widget-evals/run.mjs my-cohort
+node scripts/widget-evals/audit.mjs my-cohort
+```
+
+By default, the runner starts four concurrent sessions and runs five trials for each combination of Inkling 2 Small or Haiku 4.5 and the earlier or revised guide. Set EVAL_MODELS to comma-separated provider/model names, EVAL_REPETITIONS to a positive integer, and KILO_BIN to the desired CLI executable. For a two-trial smoke run:
+
+```sh
+EVAL_MODELS=google/gemini-3.1-flash-lite EVAL_REPETITIONS=1 node scripts/widget-evals/run.mjs gemini-smoke
+node scripts/widget-evals/audit.mjs gemini-smoke
+```
+
+Use a distinct cohort name for each experiment. The runner saves a randomized order with one of each condition in every block. Rerunning the same cohort on the same host resumes its original order and skips completed trials. If the runner was forcibly stopped, verify the PID in the cohort’s `running` file has exited before removing that file. Keep the temporary host directory to retain the evaluation Pages. On the same host, agents can work independently with separate cohort names. Avoid changing the shared guide files while trials run.
+
+## What varies
+
+`guides.mjs` reads the earlier and revised public guide generators from Git and evaluates them with the hosted Page12 configuration. Both arms use the same running service, current read_page and edit_page schemas, upload helper and browser tool. URLs in the generated guides resolve to the local service. The unchanged entry-point guide comes from the local host. A controlled guide lookup makes the experiment about written guidance. A full-client comparison would also need the client’s ordinary file, network and MCP discovery abilities.
+
+The candidate can read the assigned Page, upload JS or other text as an asset, edit the Page, and inspect it through an authenticated browser. The agent-side browser can click a named button and read chart text and SVG titles. It does not drive pointer hover. The independent grader does. Use the raw tool trace to compare a model’s final claim with the evidence it actually gathered.
+
+## Reading the results
+
+Per-trial inputs, model events, final claims, and browser evidence live under `apps/pages/.context/widget-evals/runs/<cohort>`. The audit writes `audit.json` beside each `result.json` and prints one verdict per trial. Treat transport/provider errors, catalog selection, rendering, tool verification and the model’s report as distinct outcomes. The registration of a view does not prove a browser could render it.
+
+The audit blocks external HTTP requests and checks whether local Plot code created the SVG, whether the bars have the requested titles and relative heights, and whether clicking each button yields the expected rows. It supports native SVG titles and Plot’s pointer-driven tip marks. Its Plot provenance check recognizes the deployment’s catalog build. Manually inspect a legitimate independently bundled Plot implementation if one appears. An agent can satisfy the visual request with hand-authored SVG and still miss the request to use Plot.
+
+## Pilot results
+
+Five sessions per model per guide ran in Kilo 7.8.27. The original 20 trials used the same pre-rebase MCP schema in both arms. The new guide described the distinction between available libraries and active Page imports.
+
+| Model | Guide | Catalog selected before placement | Complete reader passes | Median agent time |
+| --- | --- | ---: | ---: | ---: |
+| Inkling 2 Small | Earlier | 5/5 | 5/5 | 38.3 s |
+| Inkling 2 Small | Revised | 5/5 | 5/5 | 26.9 s |
+| Haiku 4.5 | Earlier | 0/5 | 1/5 | 94.7 s |
+| Haiku 4.5 | Revised | 4/5 | 2/5 | 74.7 s |
+
+Haiku eventually selected the catalog in all five revised-guide runs. Three of those charts had incorrect per-bar hover labels. Under the earlier guide, two charts depended on external CDNs. All twenty agents read the anywidget guide. These samples identify failure modes and suggest a follow-up experiment that gives the agent browser tool real hover support.
