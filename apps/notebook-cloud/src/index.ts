@@ -1185,8 +1185,11 @@ async function routeAppSession(
 
   if (serverOidcEnabled(env)) {
     if (request.method === "GET")
-      return serverOidcSessionStatus(request, env, (identity) =>
-        syncAuthenticatedProfile(env, identity),
+      return serverOidcSessionStatus(
+        request,
+        env,
+        (identity) => syncAuthenticatedProfile(env, identity),
+        { hold: (work) => ctx.waitUntil(work) },
       );
     const rejection = rejectUntrustedMutationOrigin(request, env);
     if (rejection) return rejection;

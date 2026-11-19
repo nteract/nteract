@@ -373,6 +373,27 @@ test("GET /api/auth/session reports the row as it is now", async (t) => {
   assert.equal(after.expiresAt, (now + 5000) * 1000);
 });
 
+test("GET /api/auth/session holds a renewal on the request's ctx", async (t) => {
+  const { env } = await fixture(t);
+  const now = second();
+  const status = async (seconds) => {
+    const login = await signIn(env, { now, seconds });
+    const held = [];
+    const ctx = { waitUntil: (work) => held.push(work) };
+    const response = await worker.fetch(
+      new Request(origin + "/api/auth/session", { headers: { cookie: login.cookie } }),
+      env,
+      ctx,
+    );
+    assert.equal(response.status, 200, await response.clone().text());
+    await Promise.all(held);
+    return held.length;
+  };
+  // Only a proof inside the renewal window starts a renewal.
+  const fresh = await status(3600);
+  assert.equal(await status(30), fresh + 1);
+});
+
 test("a gateway call that the Page host authenticates again reads the session once", async (t) => {
   const fixture = await gatewayFixture(t);
   const prepare = fixture.env.DB.prepare;

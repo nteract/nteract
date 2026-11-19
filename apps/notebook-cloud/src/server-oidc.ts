@@ -211,7 +211,17 @@ export interface ServerOidcSessionOptions extends AccountEmailOptions {
   onAuthEvent?: ServerOidcAuthEventListener;
   /** Renews sessions with this provider in place of the OIDC token endpoint. */
   provider?: ServerSessionProvider;
+  /**
+   * Keeps `work` running after the client that started it goes away, as
+   * `ctx.waitUntil` does. A renewal may claim the row's refresh lease, and
+   * whatever claims it must still save or release it: a renewal cut off with
+   * its client leaves the lease held, and the session ends once it lapses.
+   * `work` never rejects.
+   */
+  hold?: (work: Promise<unknown>) => void;
 }
+
+function noop(): void {}
 
 /** A listener never fails or changes the sign-in flow. */
 function notifyAuthEvent(
@@ -901,8 +911,13 @@ export async function serverOidcSessionStatus(
   const now = Math.floor(Date.now() / 1000);
   try {
     let row = await loadServerSession(env, request, now);
-    if (row && row.access_expires_at <= now + REFRESH_WINDOW_SECONDS)
-      row = await refreshSession(request, env, row, syncProfile, options);
+    if (row && row.access_expires_at <= now + REFRESH_WINDOW_SECONDS) {
+      // The hold starts in the same step as the renewal, so it covers the
+      // lease claim's own write as well as the provider exchange.
+      const renewal = refreshSession(request, env, row, syncProfile, options);
+      options.hold?.(renewal.then(noop, noop));
+      row = await renewal;
+    }
     const current = Math.floor(Date.now() / 1000);
     if (row) row = await touchServerSession(env, request, row, current);
     const session: CloudAppSession | null =
@@ -978,6 +993,40 @@ async function refreshOidcGrant(
   };
 }
 
+/**
+ * What a session check does with a row whose access proof is due for renewal.
+ * The proof is valid while `access_expires_at > now`. A renewal that cannot
+ * finish now never fails or delays a check whose proof is still valid.
+ *
+ * - `end_abandoned`: the row names a lease whose `lease_until` has passed. Its
+ *   owner may have spent a rotating refresh token, so the session ends even
+ *   while its proof is valid.
+ * - `keep_current`: a backoff (`retry_after > now`) or a live lease stands in
+ *   the way, and the proof is valid. The check answers with the row as it is.
+ * - `unavailable`: a backoff stands and the proof has expired. The check
+ *   answers 503.
+ * - `wait_for_owner`: another request holds a live lease and the proof has
+ *   expired. The check waits for that owner to save or release.
+ * - `claim`: nothing stands in the way. The check claims the lease and renews.
+ */
+export type RenewalStep =
+  | "end_abandoned"
+  | "keep_current"
+  | "unavailable"
+  | "wait_for_owner"
+  | "claim";
+
+export function renewalStep(
+  row: Pick<ServerSessionRow, "access_expires_at" | "lease" | "lease_until" | "retry_after">,
+  now: number,
+): RenewalStep {
+  if (row.lease && row.lease_until <= now) return "end_abandoned";
+  const proofValid = row.access_expires_at > now;
+  if (row.retry_after > now) return proofValid ? "keep_current" : "unavailable";
+  if (row.lease) return proofValid ? "keep_current" : "wait_for_owner";
+  return "claim";
+}
+
 async function refreshSession(
   request: Request,
   env: Env,
@@ -990,11 +1039,15 @@ async function refreshSession(
   const context = config?.context ?? providerSessionContext(env, request);
   const db = await oidcDatabase(env);
   const now = Math.floor(Date.now() / 1000);
-  if (initial.retry_after > now) throw new ProviderUnavailable();
-  if (initial.lease && initial.lease_until <= now) {
+  const step = renewalStep(initial, now);
+  if (step === "keep_current") return initial;
+  if (step === "unavailable") throw new ProviderUnavailable();
+  if (step === "wait_for_owner")
+    return followRenewalOwner(env, request, db, initial, undefined, options);
+  if (step === "end_abandoned") {
     // A crashed owner may have consumed a rotating refresh token. Do not let
     // another process reuse it, or let a late owner resurrect the session.
-    if (await endAbandonedSession(db, initial, initial.lease, options)) return null;
+    if (await endAbandonedSession(db, initial, initial.lease!, options)) return null;
     // The row changed after `initial` was read, so nothing here may act on
     // `initial`. A renewal the owner saved in that gap is the answer. A row
     // still at this generation was released for a retry.
@@ -1040,23 +1093,9 @@ async function refreshSession(
     .bind(lease, now + REFRESH_LEASE_SECONDS, initial.id, initial.generation, now, now, now, now)
     .run();
   if (claimed.meta.changes !== 1) {
-    // Another node may own a rotating refresh token. Never exchange it twice.
-    for (let attempt = 0; attempt < 50; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      const row = await loadServerSession(env, request, Math.floor(Date.now() / 1000));
-      if (!row || row.generation !== initial.generation) return row;
-      const current = Math.floor(Date.now() / 1000);
-      if (row.retry_after > current) throw new ProviderUnavailable();
-      // The owner's lease lapsed before this request's claim or during this
-      // wait. The row is as abandoned as one a new request would find.
-      if (
-        row.lease &&
-        row.lease_until <= current &&
-        (await endAbandonedSession(db, row, row.lease, options))
-      )
-        return null;
-    }
-    throw new ProviderUnavailable();
+    // The row changed since it was read. Decide again from what it holds now.
+    const row = await loadServerSession(env, request, Math.floor(Date.now() / 1000));
+    return followRenewalOwner(env, request, db, initial, row, options);
   }
   try {
     // A provider's grant is checked before the profile callback sees its
@@ -1124,7 +1163,55 @@ async function refreshSession(
       "lease = NULL, lease_until = 0, retry_after = ?",
       [Math.floor(Date.now() / 1000) + 15],
     );
-    throw new ProviderUnavailable();
+    // A provider's own failure keeps its status for the log. Any other
+    // transient failure reports as unavailable without one.
+    const unavailable = error instanceof ProviderUnavailable ? error : new ProviderUnavailable();
+    // The released row's proof may still be valid. The check answers with it,
+    // and a check after the backoff renews.
+    const current = await loadServerSession(env, request, Math.floor(Date.now() / 1000)).catch(
+      () => null,
+    );
+    if (current && renewalStep(current, Math.floor(Date.now() / 1000)) === "keep_current") {
+      logFailure("auth.server_session.failed", "session_renewal", unavailable);
+      return current;
+    }
+    throw unavailable;
+  }
+}
+
+/**
+ * Answers a check that does not own the renewal. `first` is the row as last
+ * read, or `undefined` to start with a poll. Another request may own a
+ * rotating refresh token, so this never exchanges it: it follows
+ * `renewalStep` until the owner saves (a new generation), releases or
+ * abandons the lease, and answers `ProviderUnavailable` after 50 polls
+ * 200 ms apart.
+ */
+async function followRenewalOwner(
+  env: Env,
+  request: Request,
+  db: D1Database,
+  initial: ServerSessionRow,
+  first: ServerSessionRow | null | undefined,
+  options: ServerOidcSessionOptions,
+): Promise<ServerSessionRow | null> {
+  let row = first;
+  for (let polls = 0; ; polls++) {
+    if (row !== undefined) {
+      if (!row || row.generation !== initial.generation) return row;
+      const step = renewalStep(row, Math.floor(Date.now() / 1000));
+      if (step === "keep_current") return row;
+      if (step === "unavailable") throw new ProviderUnavailable();
+      // The owner's lease lapsed before this request's claim or during this
+      // wait. The row is as abandoned as one a new request would find.
+      if (step === "end_abandoned" && (await endAbandonedSession(db, row, row.lease!, options)))
+        return null;
+      // `wait_for_owner`, a delete that missed, or a released row: only a
+      // request's first decision claims, so poll until the row changes.
+    }
+    if (polls === 50) throw new ProviderUnavailable();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    row = await loadServerSession(env, request, Math.floor(Date.now() / 1000));
   }
 }
 
@@ -1149,6 +1236,8 @@ async function endAbandonedSession(
     .bind(row.id, row.generation, lease)
     .run();
   if (removed.meta?.changes !== 1) return false;
+  // Static fields only: no session id, principal or token.
+  cloudLog("warn", "auth.server_session.expired", { phase: "refresh", kind: "lease_abandoned" });
   notifyAuthEvent(options.onAuthEvent, {
     type: "session_expired",
     principal: sessionPrincipal(row),

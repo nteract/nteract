@@ -1590,7 +1590,7 @@ export default {
       if (misconfigured) return withTransportSecurity(request, misconfigured);
       return withTransportSecurity(
         request,
-        advertiseBuild(request, await gateway.fetch(request, legibleEnv(env))),
+        advertiseBuild(request, await gateway.fetch(request, legibleEnv(env), ctx)),
       );
     } finally {
       flushUsage(env, ctx);
@@ -1603,7 +1603,7 @@ export default {
 };
 
 const gateway = {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     try {
       const url = new URL(request.url);
       // The test issuer is never mounted on a public hostname, even if a local
@@ -1628,7 +1628,7 @@ const gateway = {
         if ((error.status ?? 500) >= 500) logFailure(error, "gateway");
         return admissionErrorResponse(error, { stage: "gateway" });
       }
-      const oauth = await handleOAuth(request, env);
+      const oauth = await handleOAuth(request, env, ctx);
       if (oauth) return oauth;
       if (url.pathname === "/whoami") {
         if (request.method !== "GET") {
@@ -1673,6 +1673,7 @@ const gateway = {
           refreshed = await serverOidcSessionStatus(request, env, noop, {
             ...browserSessionOptions,
             provider: kiloSessionProvider(env, request),
+            hold: (work) => holdUntilSettled(ctx, work),
           });
           // A renewal may have changed or ended the session; the expiry
           // below comes from the row as it is now.
