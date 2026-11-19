@@ -1,14 +1,16 @@
 import { createServer } from "node:http";
-import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { FRAME_HTML } from "../../.output-dist/frame-html.mjs";
 import worker from "../../output/worker.mjs";
-import { FRAME_CSP } from "../../output/policy.mjs";
+import { localFrameCsp } from "../local-frame-csp.mjs";
 import { OUTPUT_FRAME_PATH } from "../../shared/output-frame-paths.mjs";
-const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
-export function startCatalogServer({ dir, pin, origin, port }) {
+// An output host on `origin`: the output Worker's answers (the frame
+// bootstrap and /health) and the catalog files under `dir`, by revision.
+// The bootstrap is the output Worker's bytes. With `pagesOrigin` a local http
+// Pages origin, the frame CSP also admits that origin's library modules.
+export function startCatalogServer({ dir, pin, origin, port, pagesOrigin }) {
+  const frameCsp = pagesOrigin ? localFrameCsp(pagesOrigin) : undefined;
   const server = createServer(async (req, res) => {
     const send = (status, type, body, headers = {}) => {
       res.writeHead(status, {
@@ -26,11 +28,7 @@ export function startCatalogServer({ dir, pin, origin, port }) {
       );
       if (asset || url.pathname === "/catalog.json") {
         const [, revision, name] = asset ?? [null, pin, "manifest.json"];
-        const file = path.join(dir, revision, name);
-        const compressed = /(?:^|,)\s*br\s*(?:,|$)/i.test(req.headers["accept-encoding"] ?? "")
-          ? await readFile(file + ".br").catch(() => null)
-          : null;
-        const data = compressed ?? (await readFile(file));
+        const data = await readFile(path.join(dir, revision, name));
         return send(
           200,
           name.endsWith(".js")
@@ -43,48 +41,16 @@ export function startCatalogServer({ dir, pin, origin, port }) {
           data,
           {
             "Access-Control-Allow-Origin": "*",
-            Vary: "Accept-Encoding",
-            ...(compressed && { "Content-Encoding": "br" }),
             "Content-Length": data.byteLength,
             "Cache-Control": asset ? "public, max-age=31536000, immutable" : "no-store",
           },
         );
       }
-      const revision = url.searchParams.get("catalog");
-      if (url.pathname === OUTPUT_FRAME_PATH && revision) {
-        if (!/^[0-9a-f]{64}$/.test(revision))
-          return send(400, "text/plain", "Invalid catalog revision");
-        const saved = await readFile(path.join(dir, revision, "manifest.json"));
-        if (hash(saved) !== revision) throw Error("Unknown revision");
-        const { imports, stylesheet } = JSON.parse(saved);
-        const base = `${origin}/catalog/${revision}/`;
-        const map = {
-          imports: Object.fromEntries(
-            Object.entries(imports).map(([id, file]) => [id, base + file]),
-          ),
-        };
-        return send(
-          200,
-          "text/html; charset=utf-8",
-          FRAME_HTML.replace(
-            "</head>",
-            `${stylesheet ? `<link rel="stylesheet" href="${base}${stylesheet}">` : ""}<script type="application/json" id="widget-catalog-map">${JSON.stringify(map)}</script></head>`,
-          ),
-          {
-            "Content-Security-Policy": FRAME_CSP.replace(
-              "https: blob:",
-              `https: blob: ${origin}`,
-            ).replace(
-              "style-src 'unsafe-inline' https:",
-              `style-src 'unsafe-inline' https: ${origin}`,
-            ),
-            "Cache-Control": "no-store",
-            "Referrer-Policy": "no-referrer",
-          },
-        );
-      }
       const response = await worker.fetch(new Request(url, { method: req.method }));
-      res.writeHead(response.status, Object.fromEntries(response.headers));
+      const headers = Object.fromEntries(response.headers);
+      if (frameCsp && response.headers.has("content-security-policy"))
+        headers["content-security-policy"] = frameCsp;
+      res.writeHead(response.status, headers);
       res.end(await response.text());
     } catch {
       send(404, "text/plain", "Catalog revision or asset unavailable");
@@ -92,7 +58,8 @@ export function startCatalogServer({ dir, pin, origin, port }) {
   });
   server.listen(port, "127.0.0.1", () =>
     console.log(
-      `Output ${origin}${OUTPUT_FRAME_PATH}\nCatalog ${origin}/catalog.json\nRevision ${pin}`,
+      `Output ${origin}${OUTPUT_FRAME_PATH}\nCatalog ${origin}/catalog.json\nRevision ${pin}` +
+        (pagesOrigin ? `\nLibraries from ${pagesOrigin}` : ""),
     ),
   );
 }

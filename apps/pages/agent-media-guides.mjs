@@ -64,10 +64,10 @@ export function mediaGuideIndex(origin) {
   ).join("\n");
 }
 
-export function mediaGuide(path, origin, { catalogEnabled = false } = {}) {
+export function mediaGuide(path, origin) {
   const guide = MEDIA_GUIDES.find((entry) => entry.path === path);
   if (!guide) return null;
-  return `# Pages: ${guide.title}\n\nThese instructions describe the API supported by this deployment. Code examples use the HTTP tool envelope; in MCP, call the named tool with its arguments object. Replace angle-bracket placeholders with returned values. Do not send example placeholders literally.\n\n${guide.body(origin, catalogEnabled)}\n\n## Related guides\n\n${link(origin, "/llms.txt", "Pages entry point and authentication")}\n\n${mediaGuideIndex(origin)}\n`;
+  return `# Pages: ${guide.title}\n\nThese instructions describe the API supported by this deployment. Code examples use the HTTP tool envelope; in MCP, call the named tool with its arguments object. Replace angle-bracket placeholders with returned values. Do not send example placeholders literally.\n\n${guide.body(origin)}\n\n## Related guides\n\n${link(origin, "/llms.txt", "Pages entry point and authentication")}\n\n${mediaGuideIndex(origin)}\n`;
 }
 
 function assetsGuide(origin) {
@@ -105,7 +105,7 @@ Images can be inserted directly from an asset. A Parquet or CSV dataframe can us
 `;
 }
 
-function viewsGuide(origin, catalogEnabled) {
+function viewsGuide(origin) {
   const example = {
     op: "set_view",
     view_id: "activity",
@@ -124,9 +124,7 @@ Upload JSON objects or lists with content_type application/json; upload a table 
 
 A file also has name, mimeType and size, and nothing is read until the view asks. .parquet() rejects for a file that is not Parquet; .csv() reads a file of any type as CSV and rejects one that does not parse, saying why. A table holds up to 250,000 rows and 256 columns; its values are plain JavaScript: dates and timestamps are Date objects, a missing value is null, decimals are numbers, and a 64-bit integer column is numbers when every value is a safe integer (within ±(2^53 − 1)), otherwise BigInt. .arrayBuffer(), .text() and .json() read the whole file: at most 5 MiB, read once per file, and at most 32 MiB across one view's files. A source that moves to a new version, or to another file type, gives the model a new file and fires change:<name>.
 
-${
-  catalogEnabled
-    ? `\`\`\`js
+\`\`\`js
 import * as Plot from "@observablehq/plot";
 export async function render({ model, el }) {
   const table = await model.get("activity").parquet();
@@ -150,21 +148,7 @@ export async function render({ model, el }) {
 
 For plain rows, read (await model.get("activity").parquet()).toArray(), or await model.get("activity").csv() for a CSV: one object per row, such as { day, people }.
 
-The host pins the standard libraries when you save a new view. read_page.libraries lists the exact names available here. Import them directly, as this entry imports @observablehq/plot. The receipt and read_page.view.catalog_revision identify the pinned library build.`
-    : `\`\`\`js
-export async function render({ model, el }) {
-  const note = el.appendChild(document.createElement("p"));
-  const show = async () => {
-    const table = await model.get("activity").parquet();
-    note.textContent = table.numRows + " rows of " + table.schema.fields.map((f) => f.name).join(", ");
-  };
-  model.on("change:activity", show);
-  await show();
-}
-\`\`\`
-
-Use a self-contained entry or bind Page-owned JavaScript sources in imports.`
-}
+Every save of a view pins the host's current libraries. read_page.libraries lists the exact names available here. Import them directly, as this entry imports @observablehq/plot. The receipt and read_page.view.catalog_revision identify that library build. A view runs on it while this host serves it, and otherwise on the host's current libraries, so every stored view can import the names read_page.libraries lists.
 
 ${edit("save-activity", [example])}
 ${edit("place-activity", [place("activity")])}
@@ -173,7 +157,7 @@ To share a component, upload its JavaScript once. Each view chooses an import na
 
 ${edit("save-shared-control", [{ ...example, view_revision: "1", imports: { "activity-controls": { source_id: "controls" } }, data: { activity: { source_id: "project-activity" } } }])}
 
-A view's modules can import${catalogEnabled ? " the names in read_page.libraries," : ""} a name bound in imports, data/<alias> for a file bound in data, or an https: URL.${catalogEnabled ? "" : " This host offers no libraries."} Names match exactly, so a subpath such as d3/array and any relative path fail. set_view reads the entry and each import and refuses the view with invalid_view when a static import can't load, naming each one. An import("…") that can't load, a module it can't parse, or a module it couldn't read is saved with a warning in the receipt. A set_source that gives a followed module new code warns for each view it breaks among the views the host has open; save a view again with set_view to check it.
+A view's modules can import the names in read_page.libraries, a name bound in imports, data/<alias> for a file bound in data, or an https: URL. Names match exactly, so a subpath such as d3/array and any relative path fail. set_view reads the entry and each import and refuses the view with invalid_view when a static import can't load, naming each one. An import("…") that can't load, a module it can't parse, or a module it couldn't read is saved with a warning in the receipt. A set_source that gives a followed module new code warns for each view it breaks among the views the host has open; save a view again with set_view to check it.
 
 ## Read part of a file
 

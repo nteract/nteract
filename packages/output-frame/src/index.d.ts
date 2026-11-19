@@ -33,6 +33,18 @@ export interface AnywidgetOutput {
   spec: AnywidgetSpec;
   assets: Record<string, OutputAsset>;
   imports?: Record<string, OutputAsset>;
+  /**
+   * Bare name → URL of a library module the embedder serves on its own
+   * origin: `<origin>/catalog/<revision>/<file>.js`, one revision per map,
+   * over https (http only on a loopback host). At most 64.
+   */
+  libraries?: Record<string, string>;
+  /**
+   * Library module URL (a library or a chunk it imports, in the same catalog
+   * revision) → `sha256-<base64>` of its bytes. The frame's import map
+   * carries it, so the browser refuses a module whose bytes differ.
+   */
+  libraryIntegrity?: Record<string, string>;
 }
 export interface ByteSource {
   readonly byteLength: number;
@@ -43,6 +55,18 @@ export interface ModuleOutput {
   title?: string;
   assets: { entry: OutputAsset };
   imports?: Record<string, OutputAsset>;
+  /**
+   * Bare name → URL of a library module the embedder serves on its own
+   * origin: `<origin>/catalog/<revision>/<file>.js`, one revision per map,
+   * over https (http only on a loopback host). At most 64.
+   */
+  libraries?: Record<string, string>;
+  /**
+   * Library module URL (a library or a chunk it imports, in the same catalog
+   * revision) → `sha256-<base64>` of its bytes. The frame's import map
+   * carries it, so the browser refuses a module whose bytes differ.
+   */
+  libraryIntegrity?: Record<string, string>;
 }
 export type ColumnType = "number" | "bigint" | "date" | "string" | "boolean" | "other";
 /** One column of a ColumnSet (src/column-set.mjs). `nulls` is a validity mask, 1 = present. */

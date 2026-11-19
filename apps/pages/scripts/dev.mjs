@@ -14,20 +14,10 @@ const host = process.env.PAGES_HOST || "localhost";
 if (!["localhost", "127.0.0.1"].includes(host))
   throw new Error("PAGES_HOST must be localhost or 127.0.0.1");
 const origin = `http://${host}:${port}`;
-let catalogRevision;
-if (process.env.PAGES_OUTPUT_FRAME_URL) {
-  const url = new URL(process.env.PAGES_OUTPUT_FRAME_URL);
-  if (url.hostname === "127.0.0.1") {
-    try {
-      catalogRevision = await readFile(
-        path.join(app, ".output-dist/catalog/current-" + url.port),
-        "utf8",
-      );
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-    }
-  }
-}
+// The build serves its view libraries from this origin. A frame host on
+// another origin admits them only over https, so module views that import a
+// library need a local frame host that admits this origin:
+// scripts/widget-catalog/serve.mjs, named with PAGES_OUTPUT_FRAME_URL.
 let secret;
 try {
   secret = (await readFile(path.join(app, "dist/.dev.vars"), "utf8")).match(
@@ -42,9 +32,6 @@ await writeFile(
     "NOTEBOOK_CLOUD_LOCAL_OIDC=true",
     ...(process.env.PAGES_OUTPUT_FRAME_URL
       ? [`PAGES_OUTPUT_FRAME_URL=${new URL(process.env.PAGES_OUTPUT_FRAME_URL).href}`]
-      : []),
-    ...(/^[a-f0-9]{64}$/.test(catalogRevision)
-      ? [`PAGES_WIDGET_CATALOG_REVISION=${catalogRevision}`]
       : []),
     ...(process.env.PAGES_E2E_ONLY === "true" ? ["PAGES_E2E_ONLY=true"] : []),
     `PAGES_CATALOG_INDEX=${process.env.PAGES_CATALOG_INDEX ?? "1"}`,

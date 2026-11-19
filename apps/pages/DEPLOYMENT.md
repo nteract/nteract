@@ -1139,10 +1139,24 @@ receipt maps each to its sha256, and the name's hash must be the first 40 bits
 of that digest. `prepare` stages exactly those seven files, checks their bytes
 first, and refuses any other file of that shape in `public`.
 
+Every build carries the view library catalog under
+`public/catalog/<revision>/`: one ES module per library and its split chunks,
+Sift's WASM and `manifest.json`. The revision is the sha256 of
+`manifest.json`. The receipt's `library_catalog` names the revision and maps
+each file to its sha256. `prepare` stages exactly those files, refuses a
+manifest whose sha256 is not the revision or whose file digests differ from the
+receipt, and refuses any other file or revision under `public/catalog`. The
+Pages Worker serves these files itself, with CORS and immutable caching, so the
+`_headers` file names none of them. The Worker names the revision in the app shell
+beside the output frame URL (`<meta name="pages-library-catalog">`, on every
+target with `PAGES_OUTPUT_FRAME_URL`). A view saved against a catalog this release no
+longer serves loads that current revision instead, so a release that changes
+the catalog needs no view to be saved again.
+
 The receipt's `files` maps every file the release carries, except
 `build-receipt.json` itself, to its sha256: `index.js`, both WASM modules,
 `wrangler.json`, `public/index.html`, `public/connect.js`, `public/_headers`,
-and the hashed chunks and shell assets above. Staging refuses a receipt whose
+the hashed chunks and shell assets above, and the library catalog's files. Staging refuses a receipt whose
 `files` lists anything else or leaves one out, and a file whose bytes changed
 since the build. The gate workflow's `release` job builds from a clean
 checkout, stages the bundle this way, and uploads it as the `pages-release`
@@ -2101,7 +2115,8 @@ To deploy the shell, the operator:
    `output_frame_path`, for example `https://widgets.example.net/frame/v2/`.
 
 The shell serves only a fixed bootstrap; the viewer sends the frame runtime
-from its own build. A runtime or port protocol change therefore needs no shell
+from its own build, and the library map of a view, whose modules the Pages
+Worker serves from its own origin over https. A runtime or port protocol change therefore needs no shell
 deploy, and several Pages deployments can share one shell. Only a change to the
 bootstrap document adds a new versioned path. That release keeps serving the
 previous path for at least one release, so `output_frame_paths` can grow, and
@@ -2366,7 +2381,9 @@ On a target with an isolated output service (`output` in its profile), the
 installer (`scripts/deployment/install.mjs`) fetches the receipt's
 `output_frame_path` from that service before it installs anything. It refuses
 the release, with a message that names the path, unless the service answers
-200 with the configured catalog and a bootstrap script whose sha256 is the
+200 with one attribute-free script, the bootstrap, whose sha256 is the
 receipt's `output_frame_bootstrap_sha256`. Update the output service first.
+The output service serves no view libraries: the Pages Worker serves its own
+build's catalog at `/catalog/<revision>/`.
 A Cloudflare deployment of `output/worker.js` has no such check in this
 repository; its operator runs step 4 of the release package's shell steps.

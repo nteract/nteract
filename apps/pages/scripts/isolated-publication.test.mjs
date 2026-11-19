@@ -21,9 +21,11 @@ import {
   restPaths,
   siftCsvPaths,
   siftPaths,
+  libraryCatalogPaths,
   whoamiPaths,
 } from "./deployment/routes.mjs";
 import { isIndexRoute, readPageRoute } from "../shared/routes.mjs";
+import { LIBRARY_PATH, LIBRARY_ROUTE } from "../shared/library-catalog.mjs";
 import { DEPLOYMENT_TARGETS, deploymentProfile } from "./deployment/profiles.mjs";
 import {
   isolatedPublicationPlan,
@@ -308,7 +310,10 @@ const lifecycle = (f) =>
 const digest = (text) => createHash("sha256").update(text).digest("hex");
 // A live target's routes without Page slugs: the route set the release before
 // them sealed.
-const beforeMediaGuides = (config) => config.replace(mediaGuidePaths, "");
+// Releases before the library catalog route lack it, and so does every
+// earlier route set below.
+const beforeLibraryCatalog = (config) => config.replace(libraryCatalogPaths, "");
+const beforeMediaGuides = (config) => beforeLibraryCatalog(config).replace(mediaGuidePaths, "");
 const beforePublishedPreviews = (config) =>
   beforeMediaGuides(config)
     .replace(publishedPreviewPaths, "")
@@ -2205,11 +2210,11 @@ test("media-guide migration refuses unrelated config edits even with a matching 
 // Every target's routes, by sha256. Update a hash only when the routes change
 // on purpose.
 const ROUTES_SHA256 = {
-  page10: "76a09e20c72eed6763db90e59c07381b675c4b3e86faf0bcee33c5b16e8056f4",
-  pages: "a7213b01d718d18415230413311f4e3e2c05fe000824ed3a8ceef91b89be865e",
-  pages2: "9e1af01d7e6bc3afcfe576d3639713a84ca87e0a0bc55bfbfcb5754f07234e39",
-  page12: "ee367ae72a2aeb5a904afa677c14d85f021fab93639850e1576c9d59c198d291",
-  page11: "eed03dfd057e793995ec8700e19eff816ee4608817994266387ca37a486a0d9a",
+  page10: "7efebc83df79d4094479514e7698cf5a30e12284d0421b7e2a3f0e8aa8e79376",
+  pages: "7309aa86cc0eeef8e238e35a794118a87b1569f7006a0699ed1979bfaa3049f1",
+  pages2: "60766b8f84e186f07a4446fc4b3fe7e6dc75ba576412c56be58ccdb184ebc78e",
+  page12: "743a2ba30b4479ee45fd887ad1330e4c8fc110ab6c556a65fffe1e9e22d3f446",
+  page11: "40019fee1b765adbb75f5c7120dd7a3845d3ae90ee55a2e5a0894f1fa3b4e505",
 };
 // Each route group's path string, by sha256.
 const SLOT_SHA256 = {
@@ -2218,6 +2223,7 @@ const SLOT_SHA256 = {
   assetPaths: "3a7485ab6ba0e95b394d4565e1aef41a03daa7eeabf2a9597561a1f67214de6b",
   siftPaths: "68a984a8ef64a919f97f9c2a5623c33adf533cd6a39ac5b0894d88827f209fb5",
   siftCsvPaths: "bf3adeb28de1a0ada00ba407483e0882a5691843c95b5ab3b68623ca75db45af",
+  libraryCatalogPaths: "8ae04559b0c618d16d4d7495bdac91f3aff74ca6263dfe08bd97b265933d54ce",
   rendererPaths: "3b31d8b815248a7e16df03943a4a667b15ea65faefe11b1f4322643284e48166",
   connectPaths: "837a28c92cf0090120b15be90c9aa315e867cf2faa416272981cff22c8cb8270",
   whoamiPaths: "4b183f7c96547772d245d5dcf53a8314059122bf5475ec562fd49ab0163d3076",
@@ -2253,6 +2259,7 @@ const SETTLED_GROUPS = [
 const STRIPPABLE_GROUPS = [
   "siftPaths",
   "siftCsvPaths",
+  "libraryCatalogPaths",
   "whoamiPaths",
   "mediaGuidePaths",
   "pageSlugPaths",
@@ -2329,6 +2336,57 @@ test("routesFor omits only strippable groups and uses only earlier strings", () 
     routesFor("page10").replace(restPaths, ""),
   );
 });
+
+// The Pages hostname's ingress path pattern in `config`, as a RegExp.
+const pagesIngress = (config) => new RegExp(/path: (\^\/\(.*\)\?\$)/.exec(config)[1]);
+
+test("the library catalog group admits exactly the Worker's catalog paths", () => {
+  // The same source as the Worker route's pattern (shared/library-catalog.mjs).
+  assert.equal(libraryCatalogPaths, LIBRARY_ROUTE + "|");
+  const revision = "a".repeat(64);
+  const ingress = pagesIngress(routesFor("page10"));
+  const without = pagesIngress(routesFor("page10", { omit: ["libraryCatalogPaths"] }));
+  for (const [path, admitted] of [
+    [`/catalog/${revision}/manifest.json`, true],
+    [`/catalog/${revision}/d3.js`, true],
+    [`/catalog/${revision}/sift_wasm-R7YVXK3V.js`, true],
+    [`/catalog/${revision}/sift.wasm`, true],
+    [`/catalog/${revision}/style.css`, true],
+    [`/catalog/${revision}/d3.mjs`, false],
+    [`/catalog/${revision}/nested/d3.js`, false],
+    [`/catalog/${"A".repeat(64)}/d3.js`, false],
+    ["/catalog/abc/d3.js", false],
+    ["/catalog.json", false],
+  ]) {
+    assert.equal(LIBRARY_PATH.test(path), admitted, path);
+    assert.equal(ingress.test(path), admitted, path);
+    assert.equal(without.test(path), false, path);
+  }
+});
+
+test("every target that serves the viewer admits the library catalog unless omitted", () => {
+  for (const target of DEPLOYMENT_TARGETS) {
+    const served = Boolean(deploymentProfile(target).viewerAssets);
+    assert.equal(routesFor(target).includes(libraryCatalogPaths), served, target);
+    if (!served) continue;
+    assert.equal(
+      routesFor(target, { omit: ["libraryCatalogPaths"] }),
+      routesFor(target).replace(libraryCatalogPaths, ""),
+      target,
+    );
+  }
+});
+
+for (const target of SLOTTED_TARGETS)
+  test(`${target} recognizes its installed config with and without the library catalog group`, () => {
+    const plan = isolatedPublicationPlan(inputFor(target));
+    const known = knownTunnelConfigs(target, tunnelId);
+    const without = configWithout(target, ["libraryCatalogPaths"]);
+    assert.ok(plan.config.includes(libraryCatalogPaths));
+    assert.ok(!without.includes(libraryCatalogPaths));
+    assert.equal(known.get(digest(plan.config)), plan.config);
+    assert.equal(known.get(digest(without)), without);
+  });
 
 // Publication refuses more than 2^16 combinations, so this fails in CI first.
 test("publication knows every combination of each target's strippable groups", () => {

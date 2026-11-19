@@ -6,38 +6,118 @@ import path from "node:path";
 import { test } from "node:test";
 import { releaseArtifacts, releaseFilesOf, stageArtifacts } from "./stage-artifacts.mjs";
 import { VIEWER_ASSETS, hashedAssetPath } from "./viewer-chunks.mjs";
+import {
+  LIBRARY_REVISION_FIXTURE,
+  libraryCatalogContents,
+  libraryCatalogFiles,
+  libraryCatalogReceipt,
+} from "./fixtures/library-catalog-fixture.mjs";
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const chunk = "public/chunks/ABCDEFGH.js";
 
 /** A built dist whose receipt certifies every release file. `edit` adjusts
- * the receipt's `files` before it is written. */
-function bundle(t, edit = (files) => files) {
+ * the receipt's `files` before it is written, and `editReceipt` the whole
+ * receipt. */
+function bundle(t, edit = (files) => files, editReceipt = (receipt) => receipt) {
   const root = mkdtempSync(path.join(tmpdir(), "pages-stage-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const dist = path.join(root, "dist");
   const assets = Object.fromEntries(
     VIEWER_ASSETS.map((name) => [hashedAssetPath(name, "asset:" + name), "asset:" + name]),
   );
-  const contents = (file) => assets[file] ?? "artifact:" + file;
+  const contents = (file) => assets[file] ?? libraryCatalogContents[file] ?? "artifact:" + file;
   const write = (file, value) => {
     mkdirSync(path.dirname(path.join(dist, file)), { recursive: true });
     writeFileSync(path.join(dist, file), value);
   };
   const files = Object.fromEntries(
-    releaseFilesOf([chunk], Object.keys(assets)).map((file) => [file, sha256(contents(file))]),
+    releaseFilesOf([chunk], Object.keys(assets), libraryCatalogFiles).map((file) => [
+      file,
+      sha256(contents(file)),
+    ]),
   );
   for (const file of Object.keys(files)) write(file, contents(file));
-  write(
-    "build-receipt.json",
-    JSON.stringify({
-      viewer_chunks: { [chunk]: files[chunk] },
-      viewer_assets: Object.fromEntries(Object.keys(assets).map((file) => [file, files[file]])),
-      files: edit({ ...files }),
-    }),
-  );
+  const receipt = {
+    viewer_chunks: { [chunk]: files[chunk] },
+    viewer_assets: Object.fromEntries(Object.keys(assets).map((file) => [file, files[file]])),
+    library_catalog: libraryCatalogReceipt(),
+    files: edit({ ...files }),
+  };
+  write("build-receipt.json", JSON.stringify(editReceipt(receipt)));
   return { root, dist, files, write, contents };
 }
+
+test("the receipt's files include each library catalog file", () => {
+  const listed = releaseFilesOf([chunk], [], libraryCatalogFiles);
+  for (const file of libraryCatalogFiles) assert.ok(listed.includes(file), file);
+});
+
+test("staging copies the library catalog under its revision", (t) => {
+  const { root, dist, contents } = bundle(t);
+  const destination = path.join(root, "release");
+  stageArtifacts(dist, destination);
+  for (const file of libraryCatalogFiles)
+    assert.equal(readFileSync(path.join(destination, file), "utf8"), contents(file));
+});
+
+for (const [name, change, message] of [
+  [
+    "a receipt with no library catalog",
+    (t, b) => b(t, undefined, ({ library_catalog, ...receipt }) => receipt),
+    /must list the library catalog's files/,
+  ],
+  [
+    "a revision that is not its manifest's sha256",
+    (t, b) =>
+      b(t, undefined, (receipt) => ({
+        ...receipt,
+        library_catalog: { ...receipt.library_catalog, revision: "f".repeat(64) },
+      })),
+    /must list the library catalog's files/,
+  ],
+  [
+    "a second revision in public/catalog",
+    (t, b) => {
+      const built = b(t);
+      built.write(`public/catalog/${"e".repeat(64)}/manifest.json`, "{}");
+      return built;
+    },
+    /holds a revision the build receipt does not certify/,
+  ],
+  [
+    "an extra file beside the catalog",
+    (t, b) => {
+      const built = b(t);
+      built.write(`public/catalog/${LIBRARY_REVISION_FIXTURE}/extra.js`, "export {}");
+      return built;
+    },
+    /public\/catalog differs from the library catalog/,
+  ],
+  [
+    "a missing catalog file",
+    (t, b) => {
+      const built = b(t);
+      rmSync(path.join(built.dist, `public/catalog/${LIBRARY_REVISION_FIXTURE}/shout.js`));
+      return built;
+    },
+    /public\/catalog differs from the library catalog/,
+  ],
+  [
+    "a catalog file changed since the build",
+    (t, b) => {
+      const built = b(t);
+      built.write(`public/catalog/${LIBRARY_REVISION_FIXTURE}/shout.js`, "export {}");
+      return built;
+    },
+    /Library file changed since the build/,
+  ],
+])
+  test(`staging refuses ${name}`, (t) => {
+    const { root, dist } = change(t, bundle);
+    assert.throws(() => stageArtifacts(dist, path.join(root, "release")), message);
+    assert.equal(existsSync(path.join(root, "release")), false);
+  });
 
 test("the receipt's files cover every release file but the receipt itself", () => {
   const listed = releaseFilesOf([chunk], ["public/app-ABCDEFGH.js"]);

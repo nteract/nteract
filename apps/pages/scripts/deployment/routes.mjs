@@ -16,6 +16,11 @@ export const siftPaths = "sift-[A-Z2-7]{8}[.]wasm|";
 // VIEWER_ASSET), loaded only when a Page first reads a CSV source. A group of
 // its own, so an installation from before CSV sources is recognized.
 export const siftCsvPaths = "sift-csv-[A-Z2-7]{8}[.]wasm|";
+// The view library catalog the Worker serves from the build
+// (worker/library-catalog.mjs): /catalog/<revision>/<name>. The same source as
+// shared/library-catalog.mjs LIBRARY_ROUTE; this module is copied on its own
+// to install hosts, so it spells the pattern out and a test keeps them equal.
+export const libraryCatalogPaths = "catalog/[a-f0-9]{64}/[A-Za-z0-9_-]+[.](js|css|wasm|json)|";
 // Exact identity endpoint; the Worker enforces GET and authentication.
 export const whoamiPaths = "whoami|";
 // Public media documentation; keep exact paths rather than opening /llms/* .
@@ -96,6 +101,7 @@ export const ROUTE_REGISTRY = Object.freeze([
   slot("assetPaths", assetPaths, (profile) => Boolean(profile.viewerAssets), { settled: true }),
   slot("siftPaths", siftPaths, (profile) => Boolean(profile.siftTables)),
   slot("siftCsvPaths", siftCsvPaths, (profile) => Boolean(profile.siftTables)),
+  slot("libraryCatalogPaths", libraryCatalogPaths, (profile) => Boolean(profile.viewerAssets)),
   slot("rendererPaths", "mermaid[.]js|", (profile) => Boolean(profile.tunnelService), {
     settled: true,
   }),
