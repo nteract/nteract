@@ -84,6 +84,11 @@
   margin: 0;
   overflow-wrap: anywhere;
 }
+.library-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
 .source-id {
   font-family: var(--font-mono, monospace);
   color: var(--muted-foreground);

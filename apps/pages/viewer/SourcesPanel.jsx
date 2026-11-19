@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Database,
   History,
+  Library,
   Puzzle,
   Search,
   Table2,
@@ -20,6 +21,7 @@ import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
 import { useStore } from "./store.mjs";
 import { PaneBack, PaneClose, PaneExpand, PaneHeader, PaneNavigation } from "./PaneHeader.jsx";
+import { widgetCatalogPin } from "./widget-imports.mjs";
 import { SourceIcon } from "./SourceIcon.jsx";
 import { CodeHighlight } from "./CodeHighlight.jsx";
 import "./sources-panel.css";
@@ -150,14 +152,14 @@ function SourceFilePreview({ session, source }) {
   const { preview } = value;
   if (preview.kind === "catalog")
     return (
-      <section className="source-file-preview" aria-label="Widget imports">
-        <h4>Widget imports</h4>
+      <section className="source-file-preview" aria-label="Library imports">
+        <h4>Standard imports</h4>
         <pre tabIndex={0}>
           <code>{preview.imports.join("\n")}</code>
         </pre>
         {preview.modules?.length > 0 && (
           <>
-            <h4>Page modules</h4>
+            <h4>Imports from this Page</h4>
             <ul>
               {preview.modules.map((m) => (
                 <li key={m.name}>
@@ -301,11 +303,17 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
   }, [mobile]);
 
   const source = value.sources.find((item) => item.source_id === selected);
+  const pageLibraries = Boolean(widgetCatalogPin(source));
   const attached = source?.kind === "attachment";
   const unavailable = source && source.availability !== "available";
   const incomplete = value.unresolvedViews.length > 0 || value.unreadableBlocks > 0;
   const searchable = value.sources.length > 1;
   const results = value.sources.filter((item) => !searchable || sourceMatchesQuery(item, query));
+  const libraryPins = value.libraryPins.filter((pin) =>
+    `standard libraries ${pin.title} ${pin.digest}`
+      .toLocaleLowerCase()
+      .includes(query.toLocaleLowerCase()),
+  );
   const index = results.findIndex((item) => item.source_id === selected);
   const position = index >= 0 ? { index: index + 1, total: results.length } : null;
   function back() {
@@ -372,7 +380,7 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
           <p className="sources-notice">Some source details couldn't be read.</p>
         )}
         {!selected &&
-          (value.sources.length > 0 ? (
+          (value.sources.length > 0 || value.libraryPins.length > 0 ? (
             <>
               {searchable && (
                 <label className="sources-search">
@@ -393,7 +401,10 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
                     data-source-id={item.source_id}
                     onClick={() => choose(item.source_id)}
                   >
-                    <SourceIcon mediaType={item.media_type} />
+                    <SourceIcon
+                      mediaType={item.media_type}
+                      libraries={Boolean(widgetCatalogPin(item))}
+                    />
                     <span>
                       <strong>{item.name}</strong>
                       <small>
@@ -401,7 +412,9 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
                           ? "Unreadable source"
                           : item.availability === "missing"
                             ? "Unavailable source"
-                            : sourceMediaLabel(item.media_type)}{" "}
+                            : widgetCatalogPin(item)
+                              ? "Page import map"
+                              : sourceMediaLabel(item.media_type)}{" "}
                         {item.kind === "attachment" ? "· Attached file " : ""}· {item.uses.length}{" "}
                         {item.uses.length === 1 ? "connection" : "connections"}
                         {incomplete ? " found" : ""}
@@ -410,8 +423,33 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
                     <ChevronRight size={15} aria-hidden="true" />
                   </button>
                 ))}
-                {results.length === 0 && <p className="muted">No matching sources.</p>}
+                {results.length === 0 && libraryPins.length === 0 && (
+                  <p className="muted">No matching sources.</p>
+                )}
               </nav>
+              {libraryPins.length > 0 && (
+                <section className="source-inspector" aria-label="Standard libraries">
+                  <h3 className="library-heading">
+                    <Library size={16} aria-hidden="true" /> Standard libraries
+                  </h3>
+                  <p className="source-type">Each view pins the library revision it imports.</p>
+                  {libraryPins.map((pin) => (
+                    <button
+                      className="source-use"
+                      key={pin.key}
+                      onClick={() => onReveal(pin, { close: mobile })}
+                    >
+                      <span>
+                        <strong>{pin.title}</strong>
+                        <small title={pin.digest}>
+                          Pinned revision · <code>{pin.digest.slice(0, 12)}</code>
+                        </small>
+                      </span>
+                      <ArrowUpRight size={15} aria-hidden="true" />
+                    </button>
+                  ))}
+                </section>
+              )}
             </>
           ) : (
             value.answer === "known" && (
@@ -437,7 +475,10 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
         )}
         {source && (
           <section className="source-inspector" aria-label="Source details">
-            <h3>{source.name}</h3>
+            <h3 className={pageLibraries ? "library-heading" : undefined}>
+              {pageLibraries && <Library size={18} aria-hidden="true" />}
+              {source.name}
+            </h3>
             {!attached && <p className="source-id">Source ID: {source.source_id}</p>}
             {unavailable ? (
               <p className="sources-notice">
@@ -455,7 +496,7 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
             ) : (
               <>
                 <p className="source-type" title={source.media_type}>
-                  {sourceMediaLabel(source.media_type)}
+                  {pageLibraries ? "Page import map" : sourceMediaLabel(source.media_type)}
                 </p>
                 <dl className="source-facts">
                   <div>

@@ -34,7 +34,12 @@ export function SourcesLineView({ value, onOpen, open = false }) {
           {value.entries.map((source) => (
             <li key={source.id} className="sources-line-entry">
               <Name className="sources-line-name" title={source.name} {...trigger(source.id)}>
-                <SourceIcon mediaType={source.mediaType} size={13} strokeWidth={1.5} />
+                <SourceIcon
+                  mediaType={source.mediaType}
+                  libraries={source.libraries}
+                  size={13}
+                  strokeWidth={1.5}
+                />
                 <span>{source.name}</span>
               </Name>
               <span aria-hidden="true">·</span>

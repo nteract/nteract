@@ -23,7 +23,7 @@ try {
   const { page_id } = await tool("create_page", {
     title: "Activity explorer · Page modules",
     markdown:
-      "These example counts illustrate our dogfooding activity. Both views use the same controls. Open Widget imports in Sources to see which libraries come from the catalog and which component belongs to this Page.",
+      "These example counts illustrate our dogfooding activity. Both views use the same controls. Open Page libraries in Sources to see which libraries come from the catalog and which component belongs to this Page.",
     nonce: crypto.randomUUID(),
   });
   const link = origin + "/p/" + page_id;
@@ -138,13 +138,22 @@ try {
   await page.setViewportSize({ width: 1200, height: 950 });
   await page
     .locator(".sources-line")
-    .getByRole("button", { name: /Widget imports/ })
+    .getByRole("button", { name: /Page libraries/ })
     .click();
   const panel = page.getByRole("dialog", { name: "Sources", exact: true });
-  await expect(panel.getByRole("region", { name: "Widget imports" })).toContainText(
+  await expect(panel.getByRole("region", { name: "Library imports" })).toContainText(
     "activity-controls",
   );
+  await expect(
+    panel.getByRole("heading", { name: "Page libraries" }).locator("svg.lucide-library"),
+  ).toBeVisible();
   await expect(panel).toContainText("Used on this Page · 2");
+  await panel.getByRole("button", { name: "All sources" }).click();
+  await expect(
+    panel
+      .getByRole("button", { name: /Page libraries.*Page import map/ })
+      .locator("svg.lucide-library"),
+  ).toBeVisible();
   console.log("Verified both widgets at wide and narrow widths. " + link);
 } finally {
   await browser.close();

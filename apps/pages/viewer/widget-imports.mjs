@@ -10,6 +10,9 @@ export function hasWidgetCatalog(frameUrl) {
       (configuration?.content === url && configuration.dataset.widgetCatalog === "enabled")),
   );
 }
+export function sourceDisplayName(source) {
+  return widgetCatalogPin(source) ? "Page libraries" : source.name;
+}
 export function widgetCatalogPin(source) {
   return source?.source_id === WIDGET_IMPORTS && source.media_type === "application/octet-stream"
     ? source.asset_id

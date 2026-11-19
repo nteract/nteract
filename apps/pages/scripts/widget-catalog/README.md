@@ -1,6 +1,6 @@
 # Try a Page with shared widget imports
 
-The local catalog supplies React, React DOM, D3 and Observable Plot as one
+The local catalog supplies React, React DOM, D3, Observable Plot and Sift’s Parquet reader as one
 immutable ESM build. Each widget has its own iframe and React root. The Page
 can pin additional JavaScript sources under import names. This demo's two
 widgets import the same ChoiceGroup from [activity-controls.mjs](activity-controls.mjs).
@@ -15,8 +15,9 @@ PAGES_E2E_ONLY=true PAGES_PORT=9916 PAGES_OUTPUT_FRAME_URL=http://127.0.0.1:9446
 ```
 
 Run `node scripts/widget-catalog/demo.mjs` to create a Page with illustrative
-counts and exercise both widgets. Open Widget imports in Sources to see the
-catalog, Page module pins, and the views using them.
+counts and exercise both widgets. Open **Page libraries** in Sources to see the standard import names and the
+component revisions shared on this Page. **Standard libraries** in the Sources
+inventory shows the catalog revision pinned by each placed executable view.
 
 On a fresh Page, `set_view` pins the deployed catalog on each new executable view.
 Import React or Plot directly and inspect `read_page.view.catalog_revision` to

@@ -21,7 +21,12 @@ import {
 import { parseAssetPath } from "../shared/dataset-assets.mjs";
 import { viewDependencies } from "../shared/view-dependencies.mjs";
 import { sourcesAnswer } from "./page-source-store.mjs";
-import { WIDGET_IMPORTS, hasWidgetCatalog, widgetCatalogPin } from "./widget-imports.mjs";
+import {
+  WIDGET_IMPORTS,
+  hasWidgetCatalog,
+  sourceDisplayName,
+  widgetCatalogPin,
+} from "./widget-imports.mjs";
 import { Store } from "./store.mjs";
 
 export function sourceMediaLabel(type) {
@@ -108,11 +113,18 @@ export function projectSourcesPanel(
   catalogEnabled = false,
 ) {
   const sources = new Map();
+  const libraryPins = [];
   let unreadableSources = 0;
   for (const id of Object.keys(doc?.sources ?? {})) {
     if (doc.sources[id]?.deleted) continue;
     try {
-      sources.set(id, { ...readSource(doc, id), uses: [], availability: "available" });
+      const source = readSource(doc, id);
+      sources.set(id, {
+        ...source,
+        name: sourceDisplayName(source),
+        uses: [],
+        availability: "available",
+      });
     } catch {
       unreadableSources++;
       sources.set(id, { source_id: id, name: id, uses: [], availability: "unreadable" });
@@ -167,6 +179,13 @@ export function projectSourcesPanel(
       unresolvedViews.push({ ...placement, status: "unreadable" });
       continue;
     }
+    if (isExecutableView(view.media_type) && view.catalog_revision) {
+      libraryPins.push({
+        ...placement,
+        title: view.title || placement.viewId,
+        digest: view.catalog_revision,
+      });
+    }
     if (
       catalogEnabled &&
       isExecutableView(view.media_type) &&
@@ -174,7 +193,7 @@ export function projectSourcesPanel(
     ) {
       dependencies = [
         ...dependencies,
-        { source: { source_id: WIDGET_IMPORTS }, role: "catalog", location: "Page imports" },
+        { source: { source_id: WIDGET_IMPORTS }, role: "catalog", location: "Page libraries" },
       ];
     }
     for (const { source, role, location } of dependencies) {
@@ -194,6 +213,7 @@ export function projectSourcesPanel(
       (a, b) => a.name.localeCompare(b.name) || a.source_id.localeCompare(b.source_id),
     ),
     answer,
+    libraryPins,
     unresolvedViews,
     unreadableSources,
     unreadableBlocks: placements.unreadableBlocks,
@@ -203,6 +223,7 @@ export function projectSourcesPanel(
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const EMPTY = {
   sources: [],
+  libraryPins: [],
   answer: "unknown",
   unresolvedViews: [],
   unreadableSources: 0,
@@ -251,6 +272,7 @@ export function sourcesPanelStore(session) {
                                   spec: state.view.spec,
                                   data: state.view.data,
                                   revision: state.view.revision,
+                                  catalog_revision: state.view.catalog_revision,
                                 },
                               }
                             : state,
