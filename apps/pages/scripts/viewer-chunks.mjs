@@ -93,14 +93,19 @@ export function viewerBuildOptions(app, dist, define = {}, urls = {}) {
   const wasm = { automerge: urls["automerge.wasm"] ?? BROWSER_WASM_URLS.automerge };
   return {
     entryPoints: { app: path.join(app, "viewer/main.jsx") },
-    // Shared UI source lives outside this npm workspace. Resolve one React
-    // instance for both the Page shell and shared components.
-    alias: Object.fromEntries(
-      ["react", "react-dom", "lucide-react"].map((name) => [
-        name,
-        path.dirname(require.resolve(`${name}/package.json`)),
-      ]),
-    ),
+    alias: {
+      // Automerge Repo's default CBOR decoder probes new Function at startup,
+      // which reports a violation under the viewer's script-src policy.
+      "cbor-x": require.resolve("cbor-x/index-no-eval"),
+      // Resolve shared UI imports from this workspace so the shell and
+      // components use a single React instance.
+      ...Object.fromEntries(
+        ["react", "react-dom", "lucide-react"].map((name) => [
+          name,
+          path.dirname(require.resolve(`${name}/package.json`)),
+        ]),
+      ),
+    },
     bundle: true,
     format: "esm",
     platform: "browser",

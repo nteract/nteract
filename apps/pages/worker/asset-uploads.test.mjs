@@ -1280,5 +1280,13 @@ for (const [mediaType, source] of [
     if (mediaType === "text/csv")
       assert.match(allowed.headers.get("content-disposition"), /\.csv"$/);
     assert.equal(allowed.headers.get("x-pages-media-type"), mediaType);
+    const head = await worker.fetch(
+      new Request(`${origin}/api/pages/${pageId}/assets/${assetId}`, {
+        method: "HEAD",
+        headers: { authorization: `Bearer ${w.auth.apiKey()}` },
+      }),
+      w.env,
+    );
+    assert.equal(head.headers.get("x-pages-asset-size"), String(bytes.length));
     assert.equal(await allowed.text(), new TextDecoder().decode(bytes));
   });

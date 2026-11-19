@@ -144,6 +144,8 @@ export function mount(
   root.className = "pages-anywidget-view";
   const title = root.appendChild(doc.createElement("h3"));
   const message = root.appendChild(doc.createElement("p"));
+  // A pointer selection in the status line belongs to the browser, including Copy.
+  message.tabIndex = -1;
   const button = root.appendChild(doc.createElement("button"));
   button.type = "button";
   button.textContent = "Retry interactive view";

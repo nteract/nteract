@@ -47,7 +47,7 @@ import { crc32 } from "node:zlib";
 
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
-async function bundle(plugins = []) {
+async function bundle(options = {}) {
   const result = await build({
     stdin: {
       contents:
@@ -60,7 +60,7 @@ async function bundle(plugins = []) {
     format: "iife",
     globalName: "CborProbe",
     target: "es2022",
-    plugins,
+    ...options,
   });
   return result.outputFiles[0].text;
 }
@@ -83,7 +83,7 @@ test("celld CBOR workaround round-trips text and binary past initial buffer size
     () => original.context.CborProbe.roundTrip({ hello: "world" }),
     /ByteArrayAllocate is not a constructor/,
   );
-  const fixed = evaluate(await bundle([celldCborPlugin()]));
+  const fixed = evaluate(await bundle({ plugins: [celldCborPlugin()] }));
   const result = vm.runInContext(
     'CborProbe.roundTrip({text:"🌊 collaboration".repeat(1500),binary:new Uint8Array([0,1,254,255])})',
     fixed.context,
@@ -97,6 +97,27 @@ test("celld CBOR workaround round-trips text and binary past initial buffer size
     readFileSync(path.join(packageRoot, "encode.js"), "utf8"),
     /const hasNodeBuffer = typeof Buffer !== 'undefined'/,
   );
+});
+
+test("the viewer round-trips CBOR without attempting dynamic code generation", async () => {
+  const { alias } = viewerBuildOptions(app, path.join(app, "dist"));
+  let attempts = 0;
+  const context = vm.createContext({
+    TextEncoder,
+    TextDecoder,
+    Function: function () {
+      attempts++;
+      throw new EvalError("Blocked by the viewer CSP");
+    },
+  });
+  vm.runInContext(await bundle({ alias }), context);
+  const decoded = vm.runInContext(
+    'CborProbe.roundTrip({ name: "Page", bytes: new Uint8Array([0, 255]) })',
+    context,
+  );
+  assert.equal(decoded.name, "Page");
+  assert.deepEqual([...decoded.bytes], [0, 255]);
+  assert.equal(attempts, 0);
 });
 
 test("celld CBOR workaround fails closed on an unexpected upstream allocation check", async () => {
@@ -222,6 +243,7 @@ for (const fails of [true, false])
           write(`node_modules/@automerge/${name}/${binary}`, "source-B wasm");
         }
         if (!fails) {
+          write("node_modules/cbor-x/index-no-eval.js", "/* fixture codec */");
           for (const name of ["react", "react-dom", "lucide-react"])
             write(`node_modules/${name}/package.json`, JSON.stringify({ name }));
           write(
