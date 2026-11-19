@@ -26,6 +26,9 @@ output.destroy();
 ```
 
 Bundle the `@nteract/output-frame/runtime` entry into a shell containing `<main>`.
+Ship it as a classic `<script>` (for example an esbuild IIFE) after `<main>`, never
+as `type="module"`: the runtime appends an import map at mount, and Firefox and
+older Safari ignore an import map added after any module has loaded.
 The shell must be served from a separate HTTPS origin. Pages' credential-free
 Worker in `apps/pages/output` is one deployment adapter. The library contains no
 Pages API routes, source IDs, authentication, or Cloudflare dependencies.

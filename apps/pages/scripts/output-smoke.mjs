@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { build } from "esbuild";
 import { browserMermaidPlugin } from "./browser-mermaid.mjs";
 import { browserSiftPlugin } from "./browser-sift.mjs";
-import { chromium, webkit, expect } from "@playwright/test";
+import { chromium, firefox, webkit, expect } from "@playwright/test";
 import { prepareFrameHtml } from "./build-output.mjs";
 await prepareFrameHtml();
 const { default: worker } = await import("../output/worker.mjs");
@@ -159,7 +159,30 @@ for (const [name, [bytes, media_type]] of Object.entries(entries)) {
   assets.set(asset_id, { bytes, media_type });
   versions[name] = { asset_id, media_type, revision: "1" };
 }
+// A module view resolves bare specifiers through the frame's import map: a
+// Page import, a bound data/ file and, on the local shell, a catalog entry.
+// The local shell's catalog map points at moduleCatalogUrl, served by a route.
+const moduleFrameUrl = process.env.PAGES_OUTPUT_LIVE
+  ? configuredFrameUrl
+  : `${configuredFrameUrl}?catalog=smoke`;
+const moduleCatalogUrl = new URL("/catalog/smoke/shout.js", configuredFrameUrl).href;
+const moduleEntry = `import { greet } from 'page-greeting';
+import file from 'data/sample';
+${process.env.PAGES_OUTPUT_LIVE ? "const shout = (s) => s;" : "import { shout } from 'catalog-shout';"}
+export async function render({ el, signal }) {
+  const bytes = await file.read(6, 5, signal);
+  const p = document.createElement('p');
+  p.id = 'module-result';
+  p.textContent = shout(greet(new TextDecoder().decode(bytes))) + ' of ' + file.byteLength;
+  el.append(p);
+}`;
+const moduleView = {
+  entry: moduleEntry,
+  greeting: "export const greet = (name) => 'hello ' + name;",
+  file: "hello frame bytes",
+};
 const fixture = `import { BehaviorSubject } from 'rxjs';
+import { mountModuleOutput } from '@nteract/output-frame';
 import { Wordgard, Decoration } from 'wordgard/editor';
 import { rangeHighlights } from './viewer/range-highlights.mjs';
 import { GardState, GardSelection } from 'wordgard/state';
@@ -195,7 +218,18 @@ window.fixture={editor(){
   view$.next({status:'ready',view:{...view,
     spec:composed ? {module:{source_id:'composed'},state:{child:'anywidget:counter'},models:{counter:{module:{source_id:'counter'},stylesheet:{source_id:'counterstyle'},state:{count:42}}}} : {module:{source_id:'counter'},stylesheet:{source_id:'counterstyle'},state:{count:42}}
   }});
-},audio(){view$.next({status:'ready',view})},layout(){versions.code=versions.layout;changes.next(4)},transient(){failNext=true;versions.recording={...versions.recording,revision:'3'};changes.next(3)},example(){versions.code=versions.example;view$.next({status:'ready',view:{...view,spec:{module:{source_id:'code'},buffers:[{source:{source_id:'recording'},path:['recording']},{source:{source_id:'dmel'},path:['dmel']}],state:{description:${JSON.stringify(description)}}}}})},change(){versions.recording={...versions.recording,revision:'2'};changes.next(1)},fail(){versions.code=versions.broken;changes.next(2)},destroy:()=>handle.destroy()};
+},audio(){view$.next({status:'ready',view})},layout(){versions.code=versions.layout;changes.next(4)},transient(){failNext=true;versions.recording={...versions.recording,revision:'3'};changes.next(3)},example(){versions.code=versions.example;view$.next({status:'ready',view:{...view,spec:{module:{source_id:'code'},buffers:[{source:{source_id:'recording'},path:['recording']},{source:{source_id:'dmel'},path:['dmel']}],state:{description:${JSON.stringify(description)}}}}})},module(){
+  const view=${JSON.stringify(moduleView)};
+  const text=s=>new TextEncoder().encode(s);
+  const file=text(view.file);
+  const el=document.createElement('div');el.id='module-view';document.body.append(el);
+  const output=mountModuleOutput(el,{kind:'module',title:'Module view',assets:{entry:{bytes:text(view.entry),mediaType:'text/javascript'}},imports:{'page-greeting':{bytes:text(view.greeting),mediaType:'text/javascript'}}},{
+    frameUrl:${JSON.stringify(moduleFrameUrl)},hostContext:{theme:'light'},
+    byteSources:{'data/sample':{byteLength:file.byteLength,read:async(offset,length)=>file.slice(offset,offset+length)}},
+    onState:(state,error)=>{el.dataset.outputState=state;if(error)el.dataset.error=error},
+  });
+  window.fixture.endModule=()=>{output.destroy();el.remove()};
+},change(){versions.recording={...versions.recording,revision:'2'};changes.next(1)},fail(){versions.code=versions.broken;changes.next(2)},destroy:()=>handle.destroy()};
 ${process.env.PAGES_OUTPUT_SERVE ? "window.fixture.example();" : ""}`;
 const result = await build({
   stdin: { contents: fixture, resolveDir: process.cwd(), sourcefile: "output-fixture.mjs" },
@@ -239,9 +273,13 @@ if (process.env.PAGES_OUTPUT_SERVE) {
   await new Promise((resolve) => server.close(resolve));
   process.exit(0);
 }
-const browser = await (process.env.PAGES_OUTPUT_BROWSER === "webkit" ? webkit : chromium).launch({
-  headless: true,
-});
+const engines = { chromium, firefox, webkit };
+const engine = process.env.PAGES_OUTPUT_BROWSER || "chromium";
+assert.ok(
+  Object.hasOwn(engines, engine),
+  `PAGES_OUTPUT_BROWSER must be one of chromium, firefox or webkit`,
+);
+const browser = await engines[engine].launch({ headless: true });
 try {
   const page = await browser.newPage({ viewport: { width: 1200, height: 850 }, hasTouch: true });
   await page.emulateMedia({ colorScheme: "dark" });
@@ -256,8 +294,46 @@ try {
         body: await response.text(),
       });
     });
+  if (!process.env.PAGES_OUTPUT_LIVE) {
+    // The local shell with a catalog map in its head, the way the widget
+    // catalog server embeds one, and the one catalog module that map names.
+    await page.route(
+      (url) => url.href === moduleFrameUrl,
+      async (route) => {
+        const response = await worker.fetch(new Request(configuredFrameUrl));
+        const map = { imports: { "catalog-shout": moduleCatalogUrl } };
+        await route.fulfill({
+          status: response.status,
+          headers: Object.fromEntries(response.headers),
+          body: (await response.text()).replace(
+            "</head>",
+            `<script type="application/json" id="widget-catalog-map">${JSON.stringify(map)}</script></head>`,
+          ),
+        });
+      },
+    );
+    await page.route(moduleCatalogUrl, (route) =>
+      route.fulfill({
+        status: 200,
+        headers: { "Content-Type": "text/javascript", "Access-Control-Allow-Origin": "*" },
+        body: "export const shout = (s) => s.toUpperCase();",
+      }),
+    );
+  }
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await expect(page.locator("section")).toHaveAttribute("data-output-state", "ready");
+  // A module view's entry imports a Page import, a data/ file and a catalog
+  // module by bare name. All three resolve through the import map the frame
+  // runtime appends at mount.
+  await page.evaluate(() => window.fixture.module());
+  const moduleHost = page.locator("#module-view");
+  await expect
+    .poll(async () => moduleHost.evaluate((el) => el.dataset.error ?? el.dataset.outputState))
+    .toBe("ready");
+  await expect(page.frameLocator("#module-view iframe").locator("#module-result")).toHaveText(
+    process.env.PAGES_OUTPUT_LIVE ? "hello frame of 17" : "HELLO FRAME of 17",
+  );
+  await page.evaluate(() => window.fixture.endModule());
   await expect(page.getByRole("button", { name: "Retry interactive view" })).toBeHidden();
   const frame = page.frameLocator("iframe");
   await expect(frame.getByRole("heading", { name: "Listen and explore" })).toBeVisible();
@@ -502,7 +578,9 @@ try {
           "retry after a transient input failure",
           "failure recovery",
           "Wordgard node selection preserves iframe document and local model at wide/narrow widths",
+          "module view resolves a Page import, a data/ file and a catalog import through the frame's import map",
         ],
+        browser: engine,
         live: !!process.env.PAGES_OUTPUT_LIVE,
       },
       null,

@@ -17,7 +17,10 @@ export async function writeFrameHtml(app = root) {
   const result = await build({
     entryPoints: [fileURLToPath(import.meta.resolve("@nteract/output-frame/runtime"))],
     bundle: true,
-    format: "esm",
+    // An IIFE leaves dynamic import() as written. The banner keeps the
+    // module's strict-mode semantics, which a classic script lacks.
+    format: "iife",
+    banner: { js: '"use strict";' },
     write: false,
     minify: true,
     target: "es2022",
@@ -27,7 +30,11 @@ export async function writeFrameHtml(app = root) {
     fileURLToPath(import.meta.resolve("@nteract/output-frame/styles.css")),
     "utf8",
   );
-  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body><main></main><script type="module">${js}</script></body></html>`;
+  // The runtime is a classic script: an import map appended at mount applies
+  // only while no module has loaded in this document. Firefox and older
+  // Safari ignore a map added after that, so a module shell would leave every
+  // bare specifier a view imports unresolved. It runs after <main> exists.
+  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body><main></main><script>${js}</script></body></html>`;
   await mkdir(path.join(app, ".output-dist"), { recursive: true });
   await writeFile(
     path.join(app, ".output-dist/frame-html.mjs"),
