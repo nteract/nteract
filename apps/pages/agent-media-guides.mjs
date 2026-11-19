@@ -136,7 +136,7 @@ To share a component, upload its JavaScript once. Each view chooses an import na
 
 ${edit("save-shared-control", [{ ...example, view_revision: "1", imports: { "activity-controls": { source_id: "controls" } }, data: { activity: { source_id: "project-activity" } } }])}
 
-A view's modules can import${catalogEnabled ? " the names in read_page.libraries," : ""} a name bound in imports, data/<alias> for a file bound in data, or an https: URL.${catalogEnabled ? "" : " This host offers no libraries."} Names match exactly, so a subpath such as d3/array and any relative path fail. set_view reads the entry and each import and refuses the view with invalid_view when a static import can't load, naming each one. An import("…") that can't load, or a module it can't parse, is saved with a warning in the receipt. A set_source that gives a followed module new code warns for each view it breaks.
+A view's modules can import${catalogEnabled ? " the names in read_page.libraries," : ""} a name bound in imports, data/<alias> for a file bound in data, or an https: URL.${catalogEnabled ? "" : " This host offers no libraries."} Names match exactly, so a subpath such as d3/array and any relative path fail. set_view reads the entry and each import and refuses the view with invalid_view when a static import can't load, naming each one. An import("…") that can't load, a module it can't parse, or a module it couldn't read is saved with a warning in the receipt. A set_source that gives a followed module new code warns for each view it breaks among the views the host has open; save a view again with set_view to check it.
 
 ## Read part of a file
 

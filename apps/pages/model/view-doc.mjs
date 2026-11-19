@@ -222,7 +222,17 @@ export function checkView(doc, op, { sourcesDoc } = {}) {
   return checkViewBindings(doc, validateViewOperation(op), sourcesDoc);
 }
 
-function checkViewBindings(doc, op, sourcesDoc) {
+/** The state of `source` (a readSource record) that `binding` names: its
+ * pinned revision, else the current one. Undefined when the source's history
+ * no longer holds the pinned revision. */
+export function boundVersion(source, binding) {
+  return binding.revision === undefined
+    ? source
+    : source.history.find((state) => state.revision === binding.revision);
+}
+
+/** checkView for an operation validateViewOperation already returned. */
+export function checkViewBindings(doc, op, sourcesDoc) {
   for (const { source: binding, location, mediaType } of viewDependencies(op)) {
     let source;
     try {
@@ -238,19 +248,13 @@ function checkViewBindings(doc, op, sourcesDoc) {
     // A pinned revision must still be in the source's history, which keeps
     // the asset each state named. Older states are not readable, so a view
     // pinned to one could never draw.
-    if (
-      binding.revision !== undefined &&
-      !source.history.some((state) => state.revision === binding.revision)
-    )
+    const version = boundVersion(source, binding);
+    if (!version)
       fail(
         "unknown_source_revision",
         `${location} pins source "${binding.source_id}" to revision ${binding.revision}, which its history doesn't hold. Read the source for the revisions it keeps.`,
         { source_id: binding.source_id, source_revision: source.source_revision },
       );
-    const version =
-      binding.revision === undefined
-        ? source
-        : source.history.find((state) => state.revision === binding.revision);
     if (mediaType && version.media_type !== mediaType)
       fail(
         "invalid_view",

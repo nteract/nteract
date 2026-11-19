@@ -42,9 +42,8 @@ import {
   validateSourceBatch,
   readSource,
 } from "../model/sources-doc.mjs";
-import { checkView, readView, setView, validateViewOperation } from "../model/view-doc.mjs";
-import { sourceImportWarnings, viewImportCheck } from "./view-imports.mjs";
-import { OUTPUT_MAX_BYTES } from "../shared/anywidget-view.mjs";
+import { checkViewBindings, readView, setView, validateViewOperation } from "../model/view-doc.mjs";
+import { createModuleReader, sourceImportWarnings, viewImportCheck } from "./view-imports.mjs";
 import { MAX_VIEWS, validViewId } from "../shared/views.mjs";
 import { CHART_WORKER_CSP, CHUNK_PATH } from "../shared/chart-worker-csp.mjs";
 import { setResponseHeaders } from "./response-headers.mjs";
@@ -733,9 +732,6 @@ export const sharedChildBounds = { scan: 100 };
 export const sharedCheckBounds = { concurrency: 16 };
 /** How long a Page host waits on one card object read or write. */
 const PAGE_CARD_STORE_TIMEOUT_MS = 10_000;
-/** How long one write's import check waits on module bytes in total. A
- * module not read by then is not checked. */
-const MODULE_READ_BUDGET_MS = 5_000;
 /** How long a deletion waits on the card object's delete. */
 const PAGE_CARD_DELETE_TIMEOUT_MS = 2_000;
 /** How long a permanent deletion waits for its uploaded assets to go. */
@@ -7672,8 +7668,9 @@ export class Page {
                 return undefined;
               }
             }),
+            catalogRevision: configuredCatalogRevision(this.env),
             sourcesDoc: handle.doc(),
-            readText: this.moduleReader(),
+            readImports: this.moduleReader(),
           });
           // Access can change while the asset records are read.
           this.policy.account(await authenticate(request, this.env), true);
@@ -7723,12 +7720,13 @@ export class Page {
     let warnings;
     try {
       const sourcesDoc = this.sourcesView();
-      const previous = checkView(handle.doc(), op, { sourcesDoc });
-      warnings = await viewImportCheck(validateViewOperation(op), {
+      const checked = validateViewOperation(op);
+      const previous = checkViewBindings(handle.doc(), checked, sourcesDoc);
+      warnings = await viewImportCheck(checked, {
         previous,
         catalogRevision: configuredCatalogRevision(this.env),
         sourcesDoc,
-        readText: this.moduleReader(),
+        readImports: this.moduleReader(),
       });
     } catch (error) {
       throw viewRefusal(error);
@@ -7782,39 +7780,17 @@ export class Page {
     return taken && { warnings };
   }
 
-  /** A reader of module text for one write's import check. It reads each
-   * asset once, and all of its reads share one deadline, so a slow bucket
-   * holds the write for MODULE_READ_BUDGET_MS at most. */
+  /** A reader of module imports for one write's import check, over this
+   * Page's stored assets (view-imports.mjs createModuleReader). */
   moduleReader() {
-    const texts = new Map();
-    const until = Date.now() + MODULE_READ_BUDGET_MS;
-    return (assetId) => {
-      if (!texts.has(assetId)) texts.set(assetId, this.moduleText(assetId, until - Date.now()));
-      return texts.get(assetId);
-    };
-  }
-
-  /** The text of module asset `assetId` on this Page, or null when it can't
-   * be read within `ms`: no bucket, no object, over OUTPUT_MAX_BYTES, or a
-   * failed or slow read. A module that can't be read is not checked; the
-   * binding's own checks answer for a missing source. */
-  async moduleText(assetId, ms) {
     const bucket = this.env.PAGES_ASSETS;
-    if (!(ms > 0) || typeof bucket?.get !== "function") return null;
-    try {
-      return await withTimeout(
-        (async () => {
-          const object = await bucket.get(imageAssetKey(this.metadata.pageId, assetId));
-          if (!object || !(object.size <= OUTPUT_MAX_BYTES)) return null;
-          return await object.text();
-        })(),
-        ms,
-        "View module read timed out",
-      );
-    } catch (error) {
-      logFailure(error, "view-module-read");
-      return null;
-    }
+    return createModuleReader({
+      get:
+        typeof bucket?.get === "function"
+          ? (assetId) => bucket.get(imageAssetKey(this.metadata.pageId, assetId))
+          : null,
+      onError: (error) => logFailure(error, "view-module-read"),
+    });
   }
 
   /**

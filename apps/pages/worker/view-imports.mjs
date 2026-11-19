@@ -1,9 +1,23 @@
-import { checkModuleImports } from "../shared/module-imports.mjs";
+import { checkModuleImports, lexModuleImports } from "../shared/module-imports.mjs";
 import { standardImports } from "../shared/widget-imports.mjs";
-import { ESM_MEDIA_TYPE, MODULE_MEDIA_TYPE, isExecutableView } from "../shared/anywidget-view.mjs";
+import {
+  ESM_MEDIA_TYPE,
+  MODULE_MEDIA_TYPE,
+  OUTPUT_MAX_BYTES,
+  OUTPUT_MAX_TOTAL_BYTES,
+  isExecutableView,
+} from "../shared/anywidget-view.mjs";
 import { viewDependencies } from "../shared/view-dependencies.mjs";
 import { readSource } from "../model/sources-doc.mjs";
+import { boundVersion } from "../model/view-doc.mjs";
 import { fail } from "../model/view-record.mjs";
+import { withTimeout } from "./catalog-index.mjs";
+
+/** How long one write's import check waits on module bytes in total. */
+export const MODULE_READ_BUDGET_MS = 5_000;
+/** How many module bytes one write's import check reads in total. Lexing is
+ * synchronous, so this also bounds the time the check holds the host. */
+export const MODULE_CHECK_MAX_BYTES = OUTPUT_MAX_TOTAL_BYTES;
 
 // A refusal's message names at most this many imports; its details hold up
 // to UNRESOLVED_DETAILS. A receipt holds at most MAX_WARNINGS of them.
@@ -14,14 +28,64 @@ const MAX_SPECIFIER = 200;
 
 const quoted = (value) => JSON.stringify(String(value).slice(0, MAX_SPECIFIER));
 
-/** The asset id of the version `binding` names: its pinned revision, else
- * the source's current version. Undefined when the sources document can't
- * answer; the write's binding check owns that refusal. */
+/**
+ * A reader of module imports for one write's import check. `get(assetId)`
+ * resolves to the asset's stored object (`{ size, text(), body? }`) or null.
+ *
+ * `read(assetId)` resolves to what lexModuleImports made of the module's
+ * text, or to `{ unchecked }` for a module it didn't lex: "unread" when the
+ * object is missing, the read fails, or the write's MODULE_READ_BUDGET_MS is
+ * spent, and "too_large" when the module is over OUTPUT_MAX_BYTES or would
+ * take the write past MODULE_CHECK_MAX_BYTES. It reads each asset once and
+ * keeps the import list, never the text.
+ */
+export function createModuleReader({
+  get,
+  now = Date.now,
+  budgetMs = MODULE_READ_BUDGET_MS,
+  maxBytes = MODULE_CHECK_MAX_BYTES,
+  onError = () => {},
+}) {
+  const read = new Map();
+  const until = now() + budgetMs;
+  let room = maxBytes;
+  const one = async (assetId) => {
+    const ms = until - now();
+    if (typeof get !== "function" || !(ms > 0)) return { unchecked: "unread" };
+    try {
+      return await withTimeout(
+        (async () => {
+          const object = await get(assetId);
+          if (!object) return { unchecked: "unread" };
+          if (!(object.size <= OUTPUT_MAX_BYTES && object.size <= room)) {
+            // Release the body this check won't read.
+            object.body?.cancel?.()?.catch?.(() => {});
+            return { unchecked: "too_large" };
+          }
+          room -= object.size;
+          const text = await object.text();
+          // Text that arrives after the deadline is dropped, not lexed.
+          return until - now() > 0 ? lexModuleImports(text) : { unchecked: "unread" };
+        })(),
+        ms,
+        "View module read timed out",
+      );
+    } catch (error) {
+      onError(error);
+      return { unchecked: "unread" };
+    }
+  };
+  return (assetId) => {
+    if (!read.has(assetId)) read.set(assetId, one(assetId));
+    return read.get(assetId);
+  };
+}
+
+/** The asset id of the version `binding` names. Undefined when the sources
+ * document can't answer; the write's binding check owns that refusal. */
 function assetOf(sourcesDoc, binding) {
   try {
-    const source = readSource(sourcesDoc, binding.source_id);
-    if (binding.revision === undefined) return source.asset_id;
-    return source.history.find((state) => state.revision === binding.revision)?.asset_id;
+    return boundVersion(readSource(sourcesDoc, binding.source_id), binding)?.asset_id;
   } catch {
     return undefined;
   }
@@ -33,8 +97,9 @@ function where(view, label) {
   return label === "entry" ? "the module" : `import ${quoted(label)}`;
 }
 
-/** One sentence: what this view's modules can import. */
-function importable(view, { libraries, imports, files }) {
+/** What this view's modules can import. `hostCatalog` is true when the host
+ * has a catalog, whether or not this view records one. */
+function importable(view, { libraries, imports, files, hostCatalog }) {
   const options = [];
   if (libraries.length) options.push(`one of the host's libraries (${libraries.join(", ")})`);
   if (view.media_type === MODULE_MEDIA_TYPE) {
@@ -48,8 +113,18 @@ function importable(view, { libraries, imports, files }) {
     options.length === 1
       ? options[0]
       : `${options.slice(0, -1).join(", ")}${options.length > 2 ? "," : ""} or ${options.at(-1)}`;
-  return `A view can import ${list}.${libraries.length ? "" : " This host offers no libraries."} Relative paths and subpaths the view doesn't name don't load.`;
+  const none = libraries.length
+    ? ""
+    : hostCatalog
+      ? " This view records no library catalog, so the host's libraries don't load in it; a view written under a new view_id records one."
+      : " This host offers no libraries.";
+  return `A view can import ${list}.${none} Relative paths and subpaths the view doesn't name don't load.`;
 }
+
+const UNCHECKED = {
+  unread: "its bytes couldn't be read in time",
+  too_large: `the modules of one write are checked up to ${MODULE_CHECK_MAX_BYTES / (1024 * 1024)} MiB`,
+};
 
 /**
  * The import check of a set_view `op` (as model/view-doc.mjs
@@ -57,13 +132,14 @@ function importable(view, { libraries, imports, files }) {
  * stored view, if any; `catalogRevision` the host's catalog, recorded on the
  * write that makes a view executable (model/view-doc.mjs setView), so the
  * view has libraries when it keeps one or this write records one.
- * `readText(assetId)` resolves to a module's text, or null when its bytes
- * can't be read; such a module is not checked.
+ * `readImports` is a createModuleReader reader.
  *
  * A module view with a static import that can't resolve is refused with
  * `invalid_view`, its details listing every one. Otherwise, and for every
  * finding of an anywidget view, returns the warnings the edit carries, each
- * `{ code, view_id, specifier?, in, suggested_action }`.
+ * `{ code, view_id, specifier?, in, suggested_action }`. A module the reader
+ * didn't lex is a `module_unchecked` warning. The first import warning says
+ * what the view can import; the others don't repeat it.
  *
  * A set_source that changes a module a stored view follows checks that
  * view with `refuse` false, so every finding is a warning, and `assetFor`,
@@ -76,7 +152,7 @@ export async function viewImportCheck(
     previous,
     catalogRevision,
     sourcesDoc,
-    readText,
+    readImports,
     assetFor = () => undefined,
     refuse = true,
     saved = "The view was saved.",
@@ -91,8 +167,9 @@ export async function viewImportCheck(
   const imports = moduleView ? Object.keys(op.spec.imports ?? {}) : [];
   const files = moduleView ? Object.keys(op.spec.files ?? {}) : [];
   const modules = {};
-  // Sequential: each module is at most OUTPUT_MAX_BYTES, and a view names
-  // at most 17 of them.
+  const unchecked = [];
+  const labelled = new Set();
+  // One at a time, so the reader holds one module's text at once.
   for (const { source, role, location } of viewDependencies(op)) {
     if (role !== "module" && role !== "import") continue;
     const label = !moduleView
@@ -100,13 +177,16 @@ export async function viewImportCheck(
       : role === "module"
         ? "entry"
         : location.slice("imports.".length);
-    if (Object.hasOwn(modules, label)) continue;
+    if (labelled.has(label)) continue;
+    labelled.add(label);
     const assetId = assetFor(source) ?? assetOf(sourcesDoc, source);
-    const text = assetId === undefined ? null : await readText(assetId);
-    if (typeof text === "string") modules[label] = text;
+    if (assetId === undefined) continue;
+    const lexed = await readImports(assetId);
+    if (lexed.unchecked) unchecked.push({ in: label, reason: lexed.unchecked });
+    else modules[label] = lexed;
   }
   const found = checkModuleImports({ modules, libraries, imports, files });
-  const allowed = importable(op, { libraries, imports, files });
+  const allowed = importable(op, { libraries, imports, files, hostCatalog: !!catalogRevision });
   const statics = found.unresolved.filter(({ kind }) => kind === "static");
   if (refuse && moduleView && statics.length) {
     const named = statics
@@ -135,7 +215,7 @@ export async function viewImportCheck(
       view_id: op.view_id,
       specifier,
       in: item.in,
-      suggested_action: `${statement} in ${where(op, item.in)} can't load in this view's frame, so the view fails when it ${item.kind === "static" ? "loads" : "runs that import"}. ${allowed} ${saved}`,
+      suggested_action: `${statement} in ${where(op, item.in)} can't load in this view's frame, so the view fails when it ${item.kind === "static" ? "loads" : "runs that import"}.${warnings.length ? "" : ` ${allowed}`} ${saved}`,
     });
   }
   for (const item of found.unparsed)
@@ -144,6 +224,13 @@ export async function viewImportCheck(
       view_id: op.view_id,
       in: item.in,
       suggested_action: `Pages couldn't read ${where(op, item.in)} as a JavaScript module (${String(item.message).slice(0, 80)}), so its imports weren't checked. ${saved} Check that the module parses.`,
+    });
+  for (const item of unchecked)
+    warnings.push({
+      code: "module_unchecked",
+      view_id: op.view_id,
+      in: item.in,
+      suggested_action: `Pages didn't check the imports of ${where(op, item.in)}: ${UNCHECKED[item.reason]}. ${saved}`,
     });
   return warnings.slice(0, MAX_WARNINGS);
 }
@@ -155,14 +242,15 @@ export async function viewImportCheck(
  * view's check with the batch's assets, every finding a warning. Returns one
  * list per operation; a view's warnings go on the first operation that
  * changed a module it follows. `mediaTypes` maps each asset the batch names
- * to its stored media type.
+ * to its stored media type. A view missing from `views` is not checked.
  */
 export async function sourceImportWarnings({
   operations,
   mediaTypes,
   views,
+  catalogRevision,
   sourcesDoc,
-  readText,
+  readImports,
 }) {
   const lists = operations.map(() => []);
   const changed = new Map();
@@ -186,8 +274,9 @@ export async function sourceImportWarnings({
     if (!hits.length) continue;
     const warnings = await viewImportCheck(view, {
       previous: view,
+      catalogRevision,
       sourcesDoc,
-      readText,
+      readImports,
       assetFor: (binding) => follows(binding)?.assetId,
       refuse: false,
       saved: "The source was saved; the view fails until the import resolves.",

@@ -5,8 +5,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createAuthFixture } from "../auth-fixtures.mjs";
 import { configuredCatalogRevision } from "../shared/widget-imports.mjs";
+import { lexModuleImports } from "../shared/module-imports.mjs";
+import { validateViewOperation } from "../model/view-doc.mjs";
 import { Storage, pageId } from "./trash-fixture.mjs";
 import { Page } from "./index.mjs";
+import { createModuleReader, sourceImportWarnings, viewImportCheck } from "./view-imports.mjs";
 
 const ENTRY = "e".repeat(64),
   HELPER = "f".repeat(64),
@@ -232,11 +235,207 @@ test("a module the lexer can't read is written with a warning", async (t) => {
   assert.equal(written.body.warnings[0].in, "entry");
 });
 
-test("a module whose bytes can't be read is not checked", async (t) => {
+test("a module whose bytes can't be read is written with a warning that it wasn't checked", async (t) => {
   const h = await importsHost(t);
   const written = await h.edit([moduleView()]);
   assert.equal(written.status, 200, JSON.stringify(written.body));
-  assert.equal(written.body.warnings, undefined);
+  assert.deepEqual(written.body.result.edits[0].warnings, [
+    {
+      code: "module_unchecked",
+      view_id: "chart",
+      in: "entry",
+      suggested_action:
+        "Pages didn't check the imports of the module: its bytes couldn't be read in time. The view was saved.",
+    },
+  ]);
+});
+
+/** A stored object as a bucket returns it, counting what the reader does. */
+function stored(text, seen) {
+  return {
+    size: text.length,
+    text: async () => (seen.texts++, text),
+    body: { cancel: async () => void seen.cancelled++ },
+  };
+}
+
+test("a module reader reads each asset once and keeps its import list", async () => {
+  const seen = { gets: 0, texts: 0, cancelled: 0 };
+  const read = createModuleReader({
+    get: async () => (seen.gets++, stored(`import "lodash"; import("./later.js");`, seen)),
+  });
+  const [first, again] = await Promise.all([read(ENTRY), read(ENTRY)]);
+  assert.deepEqual(first, {
+    imports: [
+      { specifier: "lodash", kind: "static" },
+      { specifier: "./later.js", kind: "dynamic" },
+    ],
+  });
+  assert.equal(again, first);
+  assert.deepEqual(seen, { gets: 1, texts: 1, cancelled: 0 });
+});
+
+test("a module reader's reads share one deadline", async () => {
+  let clock = 1_000;
+  const seen = { gets: 0, texts: 0, cancelled: 0 };
+  const read = createModuleReader({
+    now: () => clock,
+    budgetMs: 5_000,
+    get: async () => (seen.gets++, stored("export default 1;", seen)),
+  });
+  assert.deepEqual(await read(ENTRY), { imports: [] });
+  clock += 5_000;
+  // The budget is spent, so the next asset is never asked for.
+  assert.deepEqual(await read(HELPER), { unchecked: "unread" });
+  assert.equal(seen.gets, 1);
+  // An asset read in time keeps its answer.
+  assert.deepEqual(await read(ENTRY), { imports: [] });
+});
+
+test("a module reader doesn't lex text that arrives after the deadline", async () => {
+  let clock = 0;
+  const read = createModuleReader({
+    now: () => clock,
+    budgetMs: 5_000,
+    get: async () => ({
+      size: 16,
+      text: async () => ((clock = 5_000), `import { from "x"`),
+    }),
+  });
+  // Lexed, this text would answer `unparsed`.
+  assert.deepEqual(await read(ENTRY), { unchecked: "unread" });
+});
+
+test("a module reader stops at its byte bound and releases the body it won't read", async () => {
+  const seen = { gets: 0, texts: 0, cancelled: 0 };
+  const texts = {
+    [ENTRY]: "a".repeat(60),
+    [HELPER]: "b".repeat(60),
+    [NEXT_HELPER]: "c".repeat(40),
+  };
+  const read = createModuleReader({
+    maxBytes: 100,
+    get: async (assetId) => (seen.gets++, stored(texts[assetId], seen)),
+  });
+  assert.deepEqual(await read(ENTRY), { imports: [] });
+  assert.deepEqual(await read(HELPER), { unchecked: "too_large" });
+  // A smaller module still fits in what is left.
+  assert.deepEqual(await read(NEXT_HELPER), { imports: [] });
+  assert.deepEqual(seen, { gets: 3, texts: 2, cancelled: 1 });
+});
+
+test("a module reader answers unread for a missing object, a failed read and a host with no store", async () => {
+  const errors = [];
+  const read = createModuleReader({
+    get: async (assetId) => {
+      if (assetId === ENTRY) return null;
+      throw new Error("bucket down");
+    },
+    onError: (error) => errors.push(error.message),
+  });
+  assert.deepEqual(await read(ENTRY), { unchecked: "unread" });
+  assert.deepEqual(await read(HELPER), { unchecked: "unread" });
+  assert.deepEqual(errors, ["bucket down"]);
+  assert.deepEqual(await createModuleReader({ get: null })(ENTRY), { unchecked: "unread" });
+});
+
+const checkedView = (fields) => validateViewOperation(moduleView(fields));
+const assetFor = (binding) => ({ main: ENTRY, helper: HELPER })[binding.source_id];
+const reader = (texts) => async (assetId) =>
+  texts[assetId] === undefined ? { unchecked: "too_large" } : lexModuleImports(texts[assetId]);
+
+test("a view's first import warning says what it can import, and the others don't repeat it", async () => {
+  const warnings = await viewImportCheck(checkedView(), {
+    assetFor,
+    refuse: false,
+    readImports: reader({ [ENTRY]: `import "lodash"; import "./util.js"; import("moment");` }),
+  });
+  assert.deepEqual(
+    warnings.map(({ code, specifier }) => [code, specifier]),
+    [
+      ["unresolved_import", "lodash"],
+      ["unresolved_import", "./util.js"],
+      ["unresolved_dynamic_import", "moment"],
+    ],
+  );
+  assert.match(warnings[0].suggested_action, /A view can import a name bound under imports/);
+  assert.equal(
+    warnings[1].suggested_action,
+    `import "./util.js" in the module can't load in this view's frame, so the view fails when it loads. The view was saved.`,
+  );
+  assert.doesNotMatch(warnings[2].suggested_action, /A view can import/);
+});
+
+test("a view with no catalog on a host that has one is told so", async () => {
+  const stored = { ...checkedView(), revision: "1" };
+  await assert.rejects(
+    viewImportCheck(checkedView({ view_revision: "1" }), {
+      previous: stored,
+      catalogRevision: "a".repeat(64),
+      assetFor,
+      readImports: reader({ [ENTRY]: `import React from "react";` }),
+    }),
+    (error) => {
+      assert.equal(error.code, "invalid_view");
+      assert.match(
+        error.message,
+        /This view records no library catalog, so the host's libraries don't load in it; a view written under a new view_id records one\./,
+      );
+      assert.doesNotMatch(error.message, /This host offers no libraries/);
+      return true;
+    },
+  );
+  // The same module in a view this write makes executable takes the host's catalog.
+  assert.deepEqual(
+    await viewImportCheck(checkedView(), {
+      catalogRevision: "a".repeat(64),
+      assetFor,
+      readImports: reader({ [ENTRY]: `import React from "react";` }),
+    }),
+    [],
+  );
+});
+
+test("a module past the byte bound is named, and the modules that were read are still checked", async () => {
+  const warnings = await viewImportCheck(
+    checkedView({ imports: { helper: { source_id: "helper" } } }),
+    {
+      assetFor,
+      refuse: false,
+      readImports: reader({ [ENTRY]: `import helper from "helper";` }),
+    },
+  );
+  assert.deepEqual(warnings, [
+    {
+      code: "module_unchecked",
+      view_id: "chart",
+      in: "helper",
+      suggested_action: `Pages didn't check the imports of import "helper": the modules of one write are checked up to 32 MiB. The view was saved.`,
+    },
+  ]);
+});
+
+test("a set_source checks only the views it is given", async () => {
+  const view = { ...checkedView({ imports: { helper: { source_id: "helper" } } }), revision: "1" };
+  const asked = [];
+  const lists = await sourceImportWarnings({
+    operations: [{ op: "set_source", source_id: "helper", asset_id: NEXT_HELPER }],
+    mediaTypes: new Map([[NEXT_HELPER, "text/javascript"]]),
+    // A view the host couldn't read arrives as undefined.
+    views: [undefined, view],
+    sourcesDoc: undefined,
+    readImports: async (assetId) => {
+      asked.push(assetId);
+      return lexModuleImports(assetId === NEXT_HELPER ? `import "lodash";` : "");
+    },
+  });
+  assert.deepEqual(
+    lists.map((list) => list.map(({ code, view_id, in: location }) => [code, view_id, location])),
+    [[["unresolved_import", "chart", "helper"]]],
+  );
+  // The entry follows no changed source and the sources document can't name
+  // its asset here, so only the new helper is read.
+  assert.deepEqual(asked, [NEXT_HELPER]);
 });
 
 test("a set_source that gives a followed import new code warns for each view it breaks", async (t) => {

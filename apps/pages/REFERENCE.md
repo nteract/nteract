@@ -2143,10 +2143,19 @@ module view's static import that can't load is the refusal above. An
 `import("…")` with a literal that can't load, a module the lexer can't parse,
 and every finding for an anywidget view are warnings on the edit
 (`unresolved_dynamic_import`, `module_unparsed`, `unresolved_import`), stored
-with the receipt. A module whose bytes can't be read is not checked. A
-set_source that points a source at new JavaScript checks each loaded view
-that follows it as a module or import, and puts that view's findings on the
-set_source edit as warnings.
+with the receipt. The first import warning of a view says what the view can
+import; the others don't repeat it.
+
+One write's check reads each asset once, waits 5 seconds on module bytes in
+total and reads at most 32 MiB of them, lexing each module as it arrives and
+keeping only its import list. A module it didn't lex (a missing object, a
+failed or late read, or one past the byte bound) is a `module_unchecked`
+warning on the edit.
+
+A set_source that points a source at new JavaScript checks each view the
+host has open that follows it as a module or import, and puts that view's
+findings on the set_source edit as warnings. A view the host doesn't have
+open is not checked until its next set_view.
 
 ### The Page body
 
