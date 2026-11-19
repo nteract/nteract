@@ -109,15 +109,43 @@ const base = "/opt/" + expected.service,
   configDir = "/etc/" + expected.service,
   state = "/var/lib/" + expected.service;
 const unit = "/etc/systemd/system/" + expected.service + ".service";
+// The frame path this release's viewer mounts, and the bootstrap script it
+// expects there. The output service must serve both before the switch, or
+// every interactive view on the new release would fail to start.
+const framePath = manifest.build_receipt.output_frame_path;
+const bootstrapDigest = manifest.build_receipt.output_frame_bootstrap_sha256;
 if (profile.output) {
+  if (
+    !/^(?:\/[a-z0-9][a-z0-9-]*)+\/$/.test(framePath ?? "") ||
+    !/^[a-f0-9]{64}$/.test(bootstrapDigest ?? "")
+  )
+    throw new Error("Manifest build receipt must name the output frame path and bootstrap");
   const { listen, revision, hostname } = profile.output;
-  const shell = run("curl", [
-    "--fail",
-    "--silent",
-    "--max-time",
-    "5",
-    "http://" + listen + "/frame/v2/?catalog=" + revision,
-  ]);
+  let shell;
+  try {
+    shell = run("curl", [
+      "--fail",
+      "--silent",
+      "--max-time",
+      "5",
+      "http://" + listen + framePath + "?catalog=" + revision,
+    ]);
+  } catch {
+    throw new Error(
+      "The isolated output service does not serve " +
+        framePath +
+        ", which this release mounts. Update the output service before installation",
+    );
+  }
+  // The bootstrap is the document's one script without attributes; the
+  // catalog map before it has its own.
+  const script = /<script>([\s\S]*?)<\/script>/.exec(shell)?.[1];
+  if (script === undefined || hash(script) !== bootstrapDigest)
+    throw new Error(
+      "The isolated output service serves a different frame bootstrap at " +
+        framePath +
+        " than this release expects. Update the output service before installation",
+    );
   if (
     !shell.includes('id="widget-catalog-map"') ||
     !shell.includes("https://" + hostname + "/catalog/" + revision + "/")
@@ -340,7 +368,7 @@ if (config.main !== "index.js" || config.no_bundle !== true || config.build || c
   throw new Error("Unexpected build configuration");
 config.vars = {
   ...(profile.output && {
-    PAGES_OUTPUT_FRAME_URL: "https://" + profile.output.hostname + "/frame/v2/",
+    PAGES_OUTPUT_FRAME_URL: "https://" + profile.output.hostname + framePath,
     PAGES_WIDGET_CATALOG_REVISION: profile.output.revision,
   }),
   ...(profile.companyViewDomains ? { PAGES_COMPANY_VIEW_DOMAINS: profile.companyViewDomains } : {}),

@@ -9,6 +9,8 @@ import { configureDns } from "./deployment/dns.mjs";
 import { pagesFirewall } from "./deployment/firewall.mjs";
 import * as profiles from "./deployment/profiles.mjs";
 import { CRONS } from "../shared/schedule.mjs";
+import { OUTPUT_FRAME_PATH } from "../shared/output-frame-paths.mjs";
+import { BOOTSTRAP_SCRIPT } from "@nteract/output-frame/bootstrap";
 import * as activation from "./deployment/activation.mjs";
 import * as sessionKeys from "./deployment/session-keys.mjs";
 import * as fs from "node:fs";
@@ -410,7 +412,12 @@ function installFixture(
       document_formats: ["page10", "page12"].includes(target)
         ? { "pages.page": [3], "pages.comments": [2] }
         : { "pages.page": [1], "pages.comments": [1] },
+      output_frame_path: OUTPUT_FRAME_PATH,
+      output_frame_bootstrap_sha256: createHash("sha256").update(BOOTSTRAP_SCRIPT).digest("hex"),
     },
+    // The bootstrap script the isolated output service serves at a frame
+    // path, or null where it answers an error.
+    outputShell = (framePath) => (framePath === OUTPUT_FRAME_PATH ? BOOTSTRAP_SCRIPT : null),
   } = {},
 ) {
   const root = mkdtempSync(path.join(tmpdir(), "pages-install-retry-"));
@@ -602,14 +609,18 @@ function installFixture(
         });
         return "";
       }
-      if (command === "curl" && args.at(-1).includes("/frame/v2/?catalog=")) {
+      if (command === "curl" && args.at(-1).includes("?catalog=")) {
         const { hostname, revision } = profiles.deploymentProfile(target).output;
+        const shell = outputShell(new URL(args.at(-1)).pathname);
+        if (shell === null) throw Object.assign(Error("curl: (22) 404"), { status: 22 });
         return (
-          '<script id="widget-catalog-map">https://' +
+          '<!doctype html><html><head><script type="application/json" id="widget-catalog-map">https://' +
           hostname +
           "/catalog/" +
           revision +
-          "/</script>"
+          "/</script></head><body><main></main><script>" +
+          shell +
+          "</script></body></html>"
         );
       }
       if (command === "curl" && args.at(-1).endsWith("/state")) {
@@ -1135,6 +1146,51 @@ test("company viewing and the catalog index are enabled for every serving target
       "PAGES_MIGRATE_PAGE_IDS",
     ])
       assert.equal(config.vars[name], undefined, `${target} ${name}`);
+  }
+});
+
+const outputTarget = () =>
+  ["page10", "pages", "pages2", "page11", "page12"].find(
+    (target) => profiles.deploymentProfile(target).output,
+  );
+
+test("the installer mounts the receipt's frame path once the output service serves its bootstrap", (t) => {
+  const target = outputTarget();
+  assert.ok(target, "a target with an isolated output service");
+  const f = installFixture(t, { target });
+  f.execute();
+  const config = JSON.parse(f.read(f.release + "/wrangler.json"));
+  const { hostname } = profiles.deploymentProfile(target).output;
+  assert.equal(config.vars.PAGES_OUTPUT_FRAME_URL, "https://" + hostname + OUTPUT_FRAME_PATH);
+});
+
+test("the installer refuses a release whose frame bootstrap the output service does not serve", (t) => {
+  const target = outputTarget();
+  for (const [options, error] of [
+    // An output service that predates this frame path.
+    [{ outputShell: () => null }, /does not serve \/frame\/v3\/, which this release mounts/],
+    // Another bootstrap at the same path.
+    [
+      { outputShell: () => BOOTSTRAP_SCRIPT + "// changed" },
+      /serves a different frame bootstrap at \/frame\/v3\//,
+    ],
+    // A receipt without the frame path and bootstrap digest.
+    [
+      {
+        buildReceipt: {
+          build_id: "0123456789ab",
+          record_storage: CURRENT_RECORD_STORAGE,
+          plain_storage_formats: CURRENT_PLAIN_STORAGE_FORMATS,
+          document_formats: { "pages.page": [3], "pages.comments": [2] },
+        },
+      },
+      /must name the output frame path and bootstrap/,
+    ],
+  ]) {
+    const f = installFixture(t, { target, ...options });
+    assert.throws(f.execute, error);
+    assert.deepEqual(f.mutations, []);
+    assert.equal(fs.existsSync(f.local(f.release)), false);
   }
 });
 

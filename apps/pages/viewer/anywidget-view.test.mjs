@@ -19,7 +19,7 @@ import { parquetFixture } from "../test/parquet-fixture.mjs";
 const PAGE = "33333333-3333-4333-8333-333333333333";
 const by = { principal: "account:test", displayName: "Test", driver: "Agent" };
 // A loopback output host serves a catalog (widget-imports.mjs).
-const FRAME = "http://127.0.0.1:9896/frame/v2/";
+const FRAME = "http://127.0.0.1:9896/frame/v3/";
 const encoder = new TextEncoder();
 const sha256 = async (bytes) =>
   [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
@@ -550,7 +550,7 @@ test("an input failure shows only on a ready frame and never touches a failed on
   const { doc$, calls, root } = mountModuleView(t, { ready: false });
   await until(() => calls.mounts.length === 1, "the view never mounted");
   const { onState } = calls.mounts[0].options;
-  onState("handshaking");
+  onState("booting");
   const missing = "f".repeat(64);
   const broken = moveSources(
     dataSources,

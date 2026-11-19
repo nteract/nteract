@@ -397,7 +397,8 @@ test("a failed call is asked again; a pending or settled one is shared", async (
 function mountWithFakeFrame(t, files) {
   const dom = new JSDOM("<main></main>", { url: "https://host.example/" });
   const output = mountModuleOutput(dom.window.document.querySelector("main"), modulePayload, {
-    frameUrl: "https://outputs.example/frame/v2/",
+    frameUrl: "https://outputs.example/frame/v3/",
+    runtime: "runtime text",
     hostContext: { theme: "light" },
     files,
   });
@@ -429,7 +430,8 @@ test("the host sends {mimeType, size, port} per file and refuses whole reads pas
   );
   const { output, frame } = mountWithFakeFrame(t, inputs);
   await until(() => frame.messages.some((m) => m.type === "mount"), "no mount");
-  assert.equal(frame.connect.type, "nteract-output-connect-v3");
+  assert.equal(frame.connect.type, "nteract-output-boot");
+  assert.equal(frame.connect.connect, "nteract-output-connect-v3");
   const mount = frame.messages.find((m) => m.type === "mount");
   for (const descriptor of Object.values(mount.files))
     assert.deepEqual(Object.keys(descriptor).sort(), ["mimeType", "port", "size"]);

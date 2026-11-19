@@ -1,46 +1,68 @@
-// The output Worker's build. writeFrameHtml writes the frame shell HTML that
-// output/worker.mjs imports; bundleOutputWorker bundles that Worker into one
-// self-contained module. scripts/build.mjs runs both and writes the module to
-// dist/output/worker.js. Run directly, this script writes only the frame HTML,
-// for scripts/output-smoke.mjs, which runs the Worker unbundled.
+// The output frame's build. writeFrameHtml writes the bootstrap document that
+// output/worker.mjs imports and the frame runtime text the viewer imports;
+// bundleOutputWorker bundles that Worker into one self-contained module.
+// scripts/build.mjs runs both and writes the module to dist/output/worker.js.
+// Run directly, this script writes only .output-dist, for
+// scripts/output-smoke.mjs, which runs the Worker unbundled.
 import { build } from "esbuild";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { BOOTSTRAP_HTML, BOOTSTRAP_SCRIPT } from "@nteract/output-frame/bootstrap";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { sourceFingerprint } from "./source-fingerprint.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 
-/** Write .output-dist/frame-html.mjs: the @nteract/output-frame runtime and
- * stylesheet inlined in one HTML document. */
-export async function writeFrameHtml(app = root) {
+/** The frame runtime as the text of one classic script: @nteract/output-frame's
+ * runtime and its stylesheet. The viewer sends it to the frame at boot. */
+export async function frameRuntimeText() {
   const result = await build({
-    entryPoints: [fileURLToPath(import.meta.resolve("@nteract/output-frame/runtime"))],
+    stdin: {
+      contents: [
+        'import styles from "@nteract/output-frame/styles.css";',
+        'import { installRuntime } from "@nteract/output-frame/runtime";',
+        "installRuntime(styles);",
+      ].join("\n"),
+      resolveDir: root,
+      sourcefile: "frame-runtime.mjs",
+    },
     bundle: true,
+    loader: { ".css": "text" },
     // An IIFE leaves dynamic import() as written. The banner keeps the
-    // module's strict-mode semantics, which a classic script lacks.
+    // module's strict-mode semantics, which a classic script lacks. It must
+    // stay a classic script: an import map appended at mount applies only
+    // while no module has loaded in the frame, and Firefox and older Safari
+    // ignore a map added after that.
     format: "iife",
     banner: { js: '"use strict";' },
     write: false,
     minify: true,
     target: "es2022",
   });
-  const js = result.outputFiles[0].text.replace(/<\/script/gi, String.raw`<\/script`);
-  const css = await readFile(
-    fileURLToPath(import.meta.resolve("@nteract/output-frame/styles.css")),
-    "utf8",
-  );
-  // The runtime is a classic script: an import map appended at mount applies
-  // only while no module has loaded in this document. Firefox and older
-  // Safari ignore a map added after that, so a module shell would leave every
-  // bare specifier a view imports unresolved. It runs after <main> exists.
-  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body><main></main><script>${js}</script></body></html>`;
+  return result.outputFiles[0].text;
+}
+
+/** Write .output-dist: frame-html.mjs, the bootstrap document the output
+ * Worker serves (FRAME_HTML) and the sha256 of its script
+ * (FRAME_BOOTSTRAP_SHA256), and frame-runtime.mjs, the runtime text the viewer
+ * imports (FRAME_RUNTIME). */
+export async function writeFrameHtml(app = root) {
   await mkdir(path.join(app, ".output-dist"), { recursive: true });
   await writeFile(
     path.join(app, ".output-dist/frame-html.mjs"),
-    `export const FRAME_HTML = ${JSON.stringify(html)};\n`,
+    `export const FRAME_HTML = ${JSON.stringify(BOOTSTRAP_HTML)};\n` +
+      `export const FRAME_BOOTSTRAP_SHA256 = ${JSON.stringify(bootstrapSha256())};\n`,
+  );
+  await writeFile(
+    path.join(app, ".output-dist/frame-runtime.mjs"),
+    `export const FRAME_RUNTIME = ${JSON.stringify(await frameRuntimeText())};\n`,
   );
 }
+
+/** The sha256 of the bootstrap document's script, which the build receipt
+ * records and an installer compares with what the output host serves. */
+export const bootstrapSha256 = () => createHash("sha256").update(BOOTSTRAP_SCRIPT).digest("hex");
 
 /** The output Worker as one ES module with no imports, its bytes. `define`
  * carries __PAGES_BUILD__, which /health reports. Paths in the bundle's

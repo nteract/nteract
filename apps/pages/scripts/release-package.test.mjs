@@ -56,7 +56,7 @@ function fakeDist(dir) {
     files: Object.fromEntries(
       releaseFilesOf([chunk], Object.keys(assets)).map((file) => [file, sha256(contents(file))]),
     ),
-    output_frame_paths: ["/frame/v2/"],
+    output_frame_paths: ["/frame/v3/"],
     output_files: { [OUTPUT_WORKER]: sha256(OUTPUT_MODULE) },
   };
   for (const file of [...releaseArtifacts, chunk, ...Object.keys(assets)])
@@ -233,7 +233,7 @@ test("the shipped output/wrangler.json is the output structural config and names
   assert.deepEqual(manifest.output_structural_fields, [...OUTPUT_STRUCTURAL_FIELDS]);
   // The receipt in the archive names the frame paths this shell serves.
   const receipt = JSON.parse(readFileSync(path.join(extracted, "build-receipt.json"), "utf8"));
-  assert.deepEqual(receipt.output_frame_paths, ["/frame/v2/"]);
+  assert.deepEqual(receipt.output_frame_paths, ["/frame/v3/"]);
 });
 
 test("an output Worker that changed since the build, or a receipt without one, is refused", (t) => {
@@ -250,7 +250,7 @@ test("an output Worker that changed since the build, or a receipt without one, i
   assert.throws(() => writeReleasePackage(dist, path.join(dir, "uncertified")), /output_files/);
   writeFileSync(
     receiptPath,
-    JSON.stringify({ ...receipt, output_files: certified, output_frame_paths: ["frame/v2"] }),
+    JSON.stringify({ ...receipt, output_files: certified, output_frame_paths: ["frame/v3"] }),
   );
   assert.throws(() => writeReleasePackage(dist, path.join(dir, "paths")), /frame paths/);
 });

@@ -1,8 +1,13 @@
 import { createFrameData, dataAlias, receiveDataChange } from "./data.mjs";
-import { PROTOCOL_VERSION, connectVersion, outputTransition } from "./lifecycle.mjs";
+import { PROTOCOL_VERSION, RUNTIME_ENTRY, connectVersion, outputTransition } from "./lifecycle.mjs";
 import { applyHostContext } from "./context.mjs";
 
 import { createWidgetSession } from "./anywidget.mjs";
+
+// The frame runtime. The embedding page sends it as text in the boot message
+// and the frame's bootstrap (bootstrap.mjs) runs it as a classic script. Its
+// build (an IIFE, for example) calls installRuntime once with the text of
+// styles.css.
 
 let state = "connecting";
 const lifetime = new AbortController();
@@ -18,8 +23,11 @@ const stop = () => {
 };
 window.addEventListener("pagehide", stop, { once: true });
 
+// The boot message: {type, runtime, connect, nonce} with the mount's port
+// transferred. `connect` names the port protocol, and `nonce` must match this
+// document's fragment, which the host set for this mount.
 function connect(event) {
-  const version = connectVersion(event.data?.type);
+  const version = connectVersion(event.data?.connect);
   if (
     state !== "connecting" ||
     event.source !== window.parent ||
@@ -28,18 +36,18 @@ function connect(event) {
     event.ports.length !== 1
   )
     return;
-  window.removeEventListener("message", connect);
   const port = event.ports[0];
+  // Host and runtime come from one build; a mismatch is a build error.
   if (version !== PROTOCOL_VERSION) {
     stop();
     port.postMessage({
       type: "error",
-      message: `This output frame speaks protocol v${PROTOCOL_VERSION} and the page sent v${version}. Reload the page.`,
+      message: `This output runtime speaks protocol v${PROTOCOL_VERSION} and the page sent v${version}. Reload the page.`,
     });
     port.close();
     return;
   }
-  state = outputTransition(outputTransition(state, "connect"), "connected");
+  state = outputTransition(outputTransition(state, "boot"), "connected");
   const send = (message) => port.postMessage(message);
   const phase = (event) => {
     state = outputTransition(state, event);
@@ -179,4 +187,13 @@ function connect(event) {
   lifetime.signal.addEventListener("abort", () => port.close(), { once: true });
   send({ type: "connected" });
 }
-window.addEventListener("message", connect);
+
+// Installs the runtime in the frame document: `styles` first in <head>, ahead
+// of any stylesheet the output host placed there, and window[RUNTIME_ENTRY],
+// which the bootstrap removes and calls once with the boot event.
+export function installRuntime(styles) {
+  const style = document.createElement("style");
+  style.textContent = styles;
+  document.head.prepend(style);
+  window[RUNTIME_ENTRY] = connect;
+}

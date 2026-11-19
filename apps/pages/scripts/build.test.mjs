@@ -147,10 +147,14 @@ for (const fails of [true, false])
           "model/document-types.mjs",
           readFileSync(new URL("../model/document-types.mjs", import.meta.url), "utf8"),
         );
-        // The output Worker's bundling is stubbed; its bytes land in dist.
+        // The output frame's build is stubbed; the Worker's bytes land in dist.
         write(
           "scripts/build-output.mjs",
-          "export const bundleOutputWorker = async (app, define) => new TextEncoder().encode('fixture output worker ' + define.__PAGES_BUILD__);",
+          [
+            "export const bundleOutputWorker = async (app, define) => new TextEncoder().encode('fixture output worker ' + define.__PAGES_BUILD__);",
+            "export const writeFrameHtml = async () => {};",
+            "export const bootstrapSha256 = () => 'fixture-bootstrap-sha256';",
+          ].join("\n"),
         );
         for (const name of [
           "anywidget-view.mjs",
@@ -272,6 +276,8 @@ for (const fails of [true, false])
             "pages.sources": [1],
             "pages.view": [1],
           });
+          // The receipt records the bootstrap an installer must find served.
+          assert.equal(options.outputFrameBootstrapSha256, "fixture-bootstrap-sha256");
           assert.ok(options.releaseFiles.includes("index.js"));
           assert.ok(options.releaseFiles.includes("public/chunks/ABCDEFGH.js"));
           assert.ok(!options.releaseFiles.includes("build-receipt.json"));

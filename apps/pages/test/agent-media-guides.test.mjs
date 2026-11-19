@@ -67,9 +67,9 @@ test("media guides are discoverable, public, and use the configured origin", asy
 });
 
 test("a Page author can discover the same catalog setup through MCP and the public guides", async () => {
-  const hosted = "https://output.example/frame/v2/";
+  const hosted = "https://output.example/frame/v3/";
   const local = "http://localhost:9917";
-  const loopback = "http://127.0.0.1:9447/frame/v2/";
+  const loopback = "http://127.0.0.1:9447/frame/v3/";
   const pin = "a".repeat(64);
   for (const [site, frame, revision, enabled] of [
     [origin, hosted, pin, true],

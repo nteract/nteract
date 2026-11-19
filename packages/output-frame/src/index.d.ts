@@ -2,7 +2,7 @@ import type { SchedulerLike } from "rxjs";
 
 export type OutputState =
   | "connecting"
-  | "handshaking"
+  | "booting"
   | "loading"
   | "importing"
   | "initializing"
@@ -133,9 +133,18 @@ export type DataInput = FileInput | Uint8Array;
 export interface OutputOptions {
   /** A module view's `data/<alias>` files. Each alias is also a key on its model. */
   files?: Record<string, FileInput>;
+  /** The output host's frame path, which serves the bootstrap document. */
   frameUrl: string;
+  /**
+   * The frame runtime's text, from the embedder's own build, or a function
+   * that resolves to it. The host sends it to the bootstrap at boot.
+   */
+  runtime: string | (() => string | Promise<string>);
   hostContext: OutputHostContext;
+  /** The startup limit, from mount to "ready". Default 20 000 ms. */
   timeoutMs?: number;
+  /** How long "booting" waits for the runtime to answer. Default 10 000 ms. */
+  bootTimeoutMs?: number;
   scheduler?: SchedulerLike;
   onState?: (state: OutputState, error?: string) => void;
   /**

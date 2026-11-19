@@ -7,7 +7,7 @@ start celld in a second terminal from the same directory.
 
 ```sh
 node scripts/widget-catalog/serve.mjs
-PAGES_E2E_ONLY=true PAGES_PORT=9916 PAGES_OUTPUT_FRAME_URL=http://127.0.0.1:9446/frame/v2/ npm run dev
+PAGES_E2E_ONLY=true PAGES_PORT=9916 PAGES_OUTPUT_FRAME_URL=http://127.0.0.1:9446/frame/v3/ npm run dev
 ```
 
 Run `node scripts/widget-catalog/demo.mjs` to create a Page and exercise both controls. Open **Activity controls** in Sources to see the two views that import it. **Standard libraries** shows their catalog revision.

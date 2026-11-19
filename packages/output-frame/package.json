@@ -9,6 +9,7 @@
       "default": "./src/host.mjs"
     },
     "./runtime": "./src/runtime.mjs",
+    "./bootstrap": "./src/bootstrap.mjs",
     "./lifecycle": "./src/lifecycle.mjs",
     "./context": "./src/context.mjs",
     "./styles.css": "./src/styles.css",

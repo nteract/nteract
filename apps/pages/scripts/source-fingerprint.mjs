@@ -4,7 +4,7 @@ import { existsSync, lstatSync, readFileSync, readdirSync, writeFileSync } from 
 import path from "node:path";
 import { createRequire } from "node:module";
 import { RECORD_STORAGE_MODES, PLAIN_STORAGE_FORMATS } from "../shared/record-storage.mjs";
-import { OUTPUT_FRAME_PATHS } from "../shared/output-frame-paths.mjs";
+import { OUTPUT_FRAME_PATH, OUTPUT_FRAME_PATHS } from "../shared/output-frame-paths.mjs";
 
 const excluded = new Set([
   ".output-dist",
@@ -193,6 +193,7 @@ export function writeBuildReceipt(
     viewerAssets = [],
     releaseFiles = [],
     outputFiles = [],
+    outputFrameBootstrapSha256,
     documentFormats,
   } = {},
 ) {
@@ -227,6 +228,11 @@ export function writeBuildReceipt(
     // The frame paths this build's output Worker serves, and its bundled
     // module. The release package ships that module as output/worker.js.
     output_frame_paths: [...OUTPUT_FRAME_PATHS],
+    // The frame path this build's viewer mounts, and the sha256 of the
+    // bootstrap script it expects there. An installer compares the script the
+    // output host serves with it before switching (deployment/install.mjs).
+    output_frame_path: OUTPUT_FRAME_PATH,
+    output_frame_bootstrap_sha256: outputFrameBootstrapSha256,
     output_files: certify(outputFiles),
     fingerprint,
   };

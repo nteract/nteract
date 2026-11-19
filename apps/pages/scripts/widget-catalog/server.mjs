@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { FRAME_HTML } from "../../.output-dist/frame-html.mjs";
-import worker, { FRAME_CSP } from "../../output/worker.mjs";
+import worker from "../../output/worker.mjs";
+import { FRAME_CSP } from "../../output/policy.mjs";
 import { OUTPUT_FRAME_PATH } from "../../shared/output-frame-paths.mjs";
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 

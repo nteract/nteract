@@ -43,7 +43,7 @@ test("an anywidget view references its module and paired binary inputs directly"
 
 test("every lifecycle state/event is defined and stopped mounts never revive", () => {
   const events = [
-    "connect",
+    "boot",
     "connected",
     "mount",
     "loaded",
@@ -57,7 +57,7 @@ test("every lifecycle state/event is defined and stopped mounts never revive", (
     for (const event of events) assert.ok(OUTPUT_STATES.includes(outputTransition(state, event)));
   let state = "connecting";
   for (const [event, next] of [
-    ["connect", "handshaking"],
+    ["boot", "booting"],
     ["connected", "loading"],
     ["mount", "importing"],
     ["loaded", "initializing"],
@@ -67,7 +67,7 @@ test("every lifecycle state/event is defined and stopped mounts never revive", (
   ])
     assert.equal((state = outputTransition(state, event)), next);
   for (const event of events) assert.equal(outputTransition("disposed", event), "disposed");
-  for (const event of ["connect", "connected", "mount", "loaded", "initialized", "rendered"])
+  for (const event of ["boot", "connected", "mount", "loaded", "initialized", "rendered"])
     assert.equal(outputTransition("failed", event), "failed");
 });
 
@@ -144,7 +144,8 @@ test("frame startup timeout and teardown use an injected clock", async (t) => {
       },
     },
     {
-      frameUrl: "https://outputs.example/frame/v2/",
+      frameUrl: "https://outputs.example/frame/v3/",
+      runtime: "runtime text",
       hostContext: { theme: "light" },
       timeoutMs: 100,
       scheduler: clock,
