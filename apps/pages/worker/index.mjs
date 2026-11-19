@@ -733,9 +733,9 @@ export const sharedChildBounds = { scan: 100 };
 export const sharedCheckBounds = { concurrency: 16 };
 /** How long a Page host waits on one card object read or write. */
 const PAGE_CARD_STORE_TIMEOUT_MS = 10_000;
-/** How long set_view waits on one module's bytes before it skips the
- * module's import check. */
-const MODULE_READ_TIMEOUT_MS = 5_000;
+/** How long one write's import check waits on module bytes in total. A
+ * module not read by then is not checked. */
+const MODULE_READ_BUDGET_MS = 5_000;
 /** How long a deletion waits on the card object's delete. */
 const PAGE_CARD_DELETE_TIMEOUT_MS = 2_000;
 /** How long a permanent deletion waits for its uploaded assets to go. */
@@ -7673,7 +7673,7 @@ export class Page {
               }
             }),
             sourcesDoc: handle.doc(),
-            readText: (assetId) => this.moduleText(assetId),
+            readText: this.moduleReader(),
           });
           // Access can change while the asset records are read.
           this.policy.account(await authenticate(request, this.env), true);
@@ -7728,7 +7728,7 @@ export class Page {
         previous,
         catalogRevision: configuredCatalogRevision(this.env),
         sourcesDoc,
-        readText: (assetId) => this.moduleText(assetId),
+        readText: this.moduleReader(),
       });
     } catch (error) {
       throw viewRefusal(error);
@@ -7782,13 +7782,25 @@ export class Page {
     return taken && { warnings };
   }
 
+  /** A reader of module text for one write's import check. It reads each
+   * asset once, and all of its reads share one deadline, so a slow bucket
+   * holds the write for MODULE_READ_BUDGET_MS at most. */
+  moduleReader() {
+    const texts = new Map();
+    const until = Date.now() + MODULE_READ_BUDGET_MS;
+    return (assetId) => {
+      if (!texts.has(assetId)) texts.set(assetId, this.moduleText(assetId, until - Date.now()));
+      return texts.get(assetId);
+    };
+  }
+
   /** The text of module asset `assetId` on this Page, or null when it can't
-   * be read: no bucket, no object, over OUTPUT_MAX_BYTES, or a failed or
-   * slow read. A module that can't be read is not checked; the binding's
-   * own checks answer for a missing source. */
-  async moduleText(assetId) {
+   * be read within `ms`: no bucket, no object, over OUTPUT_MAX_BYTES, or a
+   * failed or slow read. A module that can't be read is not checked; the
+   * binding's own checks answer for a missing source. */
+  async moduleText(assetId, ms) {
     const bucket = this.env.PAGES_ASSETS;
-    if (typeof bucket?.get !== "function") return null;
+    if (!(ms > 0) || typeof bucket?.get !== "function") return null;
     try {
       return await withTimeout(
         (async () => {
@@ -7796,7 +7808,7 @@ export class Page {
           if (!object || !(object.size <= OUTPUT_MAX_BYTES)) return null;
           return await object.text();
         })(),
-        MODULE_READ_TIMEOUT_MS,
+        ms,
         "View module read timed out",
       );
     } catch (error) {

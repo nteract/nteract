@@ -4,7 +4,7 @@ import { parse } from "es-module-lexer/js";
 
 // es-module-lexer's import types. 3 is `import.meta`, which loads nothing.
 const STATIC = new Set([1, 4, 6]); // `import`/`export … from`, source phase, defer
-const DYNAMIC = new Set([2, 5]); // `import(…)`, `import.source(…)`
+const DYNAMIC = new Set([2, 5, 7]); // `import(…)`, `import.source(…)`, `import.defer(…)`
 
 /** True for an absolute `https:` URL, which a view loads from the network. */
 function isHttps(specifier) {

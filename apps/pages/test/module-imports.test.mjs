@@ -42,6 +42,9 @@ test("each kind of specifier resolves only by its exact rule", () => {
     [`const lib = await import(name);`, []],
     [`const lib = await import("lo" + "dash");`, []],
     [`const url = import.meta.url;`, []],
+    [`import defer * as lib from "lodash";`, [["lodash", "static"]]],
+    [`const lib = await import.defer("lodash");`, [["lodash", "dynamic"]]],
+    [`const lib = await import.source("lodash");`, [["lodash", "dynamic"]]],
   ];
   for (const [source, expected] of cases)
     assert.deepEqual(
