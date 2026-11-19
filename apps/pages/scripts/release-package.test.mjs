@@ -24,10 +24,17 @@ import {
   gzipOf,
   packageFiles,
   tarOf,
+  ustarName,
   writeReleasePackage,
 } from "./release-package.mjs";
 import { OUTPUT_WORKER, releaseArtifacts, releaseFilesOf } from "./stage-artifacts.mjs";
 import { VIEWER_ASSETS, hashedAssetPath } from "./viewer-chunks.mjs";
+import {
+  LIBRARY_REVISION_FIXTURE,
+  libraryCatalogContents,
+  libraryCatalogFiles,
+  libraryCatalogReceipt,
+} from "./fixtures/library-catalog-fixture.mjs";
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const BUILD_ID = "0123456789ab";
@@ -43,7 +50,7 @@ function fakeDist(dir) {
   const assets = Object.fromEntries(
     VIEWER_ASSETS.map((name) => [hashedAssetPath(name, name), name]),
   );
-  const contents = (file) => assets[file] ?? file;
+  const contents = (file) => assets[file] ?? libraryCatalogContents[file] ?? file;
   const receipt = {
     build_id: BUILD_ID,
     source_sha: COMMIT,
@@ -53,13 +60,18 @@ function fakeDist(dir) {
     viewer_assets: Object.fromEntries(
       Object.entries(assets).map(([file, bytes]) => [file, sha256(bytes)]),
     ),
+    library_catalog: libraryCatalogReceipt(),
     files: Object.fromEntries(
-      releaseFilesOf([chunk], Object.keys(assets)).map((file) => [file, sha256(contents(file))]),
+      releaseFilesOf([chunk], Object.keys(assets), libraryCatalogFiles).map((file) => [
+        file,
+        sha256(contents(file)),
+      ]),
     ),
     output_frame_paths: ["/frame/v2/"],
     output_files: { [OUTPUT_WORKER]: sha256(OUTPUT_MODULE) },
   };
-  for (const file of [...releaseArtifacts, chunk, ...Object.keys(assets)])
+  mkdirSync(path.join(dist, `public/catalog/${LIBRARY_REVISION_FIXTURE}`), { recursive: true });
+  for (const file of [...releaseArtifacts, chunk, ...Object.keys(assets), ...libraryCatalogFiles])
     writeFileSync(
       path.join(dist, file),
       file === "build-receipt.json" ? JSON.stringify(receipt) : contents(file),
@@ -157,6 +169,11 @@ test("the release package holds exactly the package entries, no symlinks, and a 
       file,
     );
   assert.ok(files.every((file) => !file.includes(".dev.vars") && !file.includes(".celld")));
+  // The library catalog travels under public/catalog/<revision>/.
+  assert.deepEqual(
+    files.filter((file) => file.startsWith("public/catalog/")),
+    [...libraryCatalogFiles],
+  );
 });
 
 test("the same package files give the same archive bytes", (t) => {
@@ -310,6 +327,19 @@ test("tarOf and gzipOf are deterministic and refuse an over-long path", () => {
   ];
   assert.deepEqual(gzipOf(tarOf(files)), gzipOf(tarOf([...files].reverse())));
   assert.throws(() => tarOf([["x".repeat(101), Buffer.alloc(0)]]), /too long/);
+  assert.throws(() => tarOf([[`${"p".repeat(156)}/name.js`, Buffer.alloc(0)]]), /too long/);
+});
+
+test("a library catalog path past 100 bytes travels in the ustar prefix", (t) => {
+  const file = `public/catalog/${"a".repeat(64)}/nteract-sift-parquet.js`;
+  assert.ok(Buffer.byteLength(file) > 100);
+  const { name, prefix } = ustarName(file);
+  assert.equal(`${prefix}/${name}`, file);
+  const dir = scratch(t);
+  const archive = path.join(dir, "catalog.tar.gz");
+  writeFileSync(archive, gzipOf(tarOf([[file, Buffer.from("export {};\n")]])));
+  // The system tar reads the path back whole.
+  assert.equal(execFileSync("tar", ["-tzf", archive], { encoding: "utf8" }).trim(), file);
 });
 
 test("a receipt without a clean commit is refused", (t) => {

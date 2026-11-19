@@ -15,9 +15,32 @@ const { default: worker } = await import("../output/worker.mjs");
 import { OUTPUT_FRAME_URL } from "../shared/anywidget-view.mjs";
 import { OUTPUT_FRAME_PATH } from "../shared/output-frame-paths.mjs";
 import { BOOT_FAILURE } from "@nteract/output-frame/lifecycle";
+import { libraryCatalogResponse } from "../worker/library-catalog.mjs";
+import { localFrameCsp } from "./local-frame-csp.mjs";
+// The page's origin, once its server listens below.
+let pageOrigin;
+// The local output host: the output Worker's answers, the bootstrap byte for
+// byte, on a loopback origin of its own, as the repository's local frame
+// servers serve it. Its CSP admits library modules over https only, so this
+// host also admits the page's loopback origin (local-frame-csp.mjs), where
+// the page serves its library catalog. Browsers let a loopback frame reach
+// another loopback origin; a frame on a public address could not.
+const frameServer = process.env.PAGES_OUTPUT_LIVE
+  ? null
+  : createServer(async (req, res) => {
+      const response = await worker.fetch(
+        new Request(`http://${req.headers.host}${req.url}`, { method: req.method }),
+      );
+      const headers = Object.fromEntries(response.headers);
+      if (headers["content-security-policy"])
+        headers["content-security-policy"] = localFrameCsp(pageOrigin);
+      res.writeHead(response.status, headers);
+      res.end(Buffer.from(await response.arrayBuffer()));
+    });
+if (frameServer) await new Promise((resolve) => frameServer.listen(0, "127.0.0.1", resolve));
 const configuredFrameUrl = process.env.PAGES_OUTPUT_LIVE
   ? OUTPUT_FRAME_URL
-  : `https://selfhosted.widgets.example${OUTPUT_FRAME_PATH}`;
+  : `http://localhost:${frameServer.address().port}${OUTPUT_FRAME_PATH}`;
 const out = new URL(
   process.env.PAGES_OUTPUT_ARTIFACT
     ? "../test-results/output-real/"
@@ -180,6 +203,39 @@ export async function render({ el }) {
     Buffer.from('export default {initialize(){throw Error("intentional failure")},render(){}}'),
     "text/javascript",
   ],
+  // A module view that imports a library from this origin's catalog.
+  libview: [
+    Buffer.from(`import { shout } from 'catalog-shout';
+export function render({ el }) {
+  const p = document.createElement('p');
+  p.id = 'library-result';
+  p.textContent = shout('from the page origin');
+  el.append(p);
+}`),
+    "text/javascript",
+  ],
+};
+// The library catalog the page's origin serves: one module and its manifest,
+// in the layout a build writes (scripts/library-catalog.mjs).
+const sha256Hex = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const libraryModule = "export const shout = (s) => s.toUpperCase();\n";
+const libraryManifest =
+  JSON.stringify(
+    { imports: { "catalog-shout": "shout.js" }, files: { "shout.js": sha256Hex(libraryModule) } },
+    null,
+    2,
+  ) + "\n";
+const libraryRevision = sha256Hex(libraryManifest);
+const libraryAssets = {
+  async fetch(request) {
+    const file = {
+      [`/catalog/${libraryRevision}/shout.js`]: [libraryModule, "text/javascript"],
+      [`/catalog/${libraryRevision}/manifest.json`]: [libraryManifest, "application/json"],
+    }[new URL(request.url).pathname];
+    return file
+      ? new Response(file[0], { headers: { "content-type": file[1] } })
+      : new Response("<!doctype html>", { headers: { "content-type": "text/html" } });
+  },
 };
 entries.plotlib[0] = Buffer.from(
   (
@@ -250,12 +306,9 @@ for (const [name, [bytes, media_type]] of Object.entries(entries)) {
   versions[name] = { asset_id, media_type, revision: "1" };
 }
 // A module view resolves bare specifiers through the frame's import map: a
-// Page import, a bound data/ file and, on the local shell, a catalog entry.
-// The local shell's catalog map points at moduleCatalogUrl, served by a route.
-const moduleFrameUrl = process.env.PAGES_OUTPUT_LIVE
-  ? configuredFrameUrl
-  : `${configuredFrameUrl}?catalog=smoke`;
-const moduleCatalogUrl = new URL("/catalog/smoke/shout.js", configuredFrameUrl).href;
+// Page import, a bound data/ file and, on the local shell, a library the page
+// supplies in the mount payload. The page's own origin serves that library at
+// /catalog/<revision>/ through the Pages Worker's route (libraryCatalogResponse).
 const moduleEntry = `import { greet } from 'page-greeting';
 import file from 'data/sample';
 ${process.env.PAGES_OUTPUT_LIVE ? "const shout = (s) => s;" : "import { shout } from 'catalog-shout';"}
@@ -335,13 +388,21 @@ window.fixture={editor(){
   const plotHandle=mount(el,{view$:plotView$,sources,sourcesAnswer$:null});
   window.fixture.movePlot=()=>{versions.activity=versions.table2;changes.next(7)};
   window.fixture.endPlotView=()=>{plotHandle.destroy();el.remove()};
-},example(){versions.code=versions.example;view$.next({status:'ready',view:{...view,spec:{module:{source_id:'code'},buffers:[{source:{source_id:'recording'},path:['recording']},{source:{source_id:'dmel'},path:['dmel']}],state:{description:${JSON.stringify(description)}}}}})},module(){
+},libraryView(pin){
+  const el=document.createElement('div');el.id='library-view';document.body.append(el);
+  const libraryView$=new BehaviorSubject({status:'ready',view:{view_id:'lib',title:'Library view',media_type:'application/vnd.nteract.module-view.v1+json',spec:{module:{source_id:'libview'}},catalog_revision:pin,revision:'1'}});
+  const libraryHandle=mount(el,{view$:libraryView$,sources,sourcesAnswer$:null});
+  window.fixture.endLibraryView=()=>{libraryHandle.destroy();el.remove()};
+},example(){versions.code=versions.example;view$.next({status:'ready',view:{...view,spec:{module:{source_id:'code'},buffers:[{source:{source_id:'recording'},path:['recording']},{source:{source_id:'dmel'},path:['dmel']}],state:{description:${JSON.stringify(description)}}}}})},module(integrity){
   const view=${JSON.stringify(moduleView)};
   const text=s=>new TextEncoder().encode(s);
   const file=text(view.file);
   const el=document.createElement('div');el.id='module-view';document.body.append(el);
-  const output=mountModuleOutput(el,{kind:'module',title:'Module view',assets:{entry:{bytes:text(view.entry),mediaType:'text/javascript'}},imports:{'page-greeting':{bytes:text(view.greeting),mediaType:'text/javascript'}}},{
-    frameUrl:${JSON.stringify(moduleFrameUrl)},runtime:FRAME_RUNTIME,hostContext:{theme:'light'},
+  const shout=location.origin+'/catalog/${libraryRevision}/shout.js';
+  const libraries=${process.env.PAGES_OUTPUT_LIVE ? "undefined" : "{'catalog-shout':shout}"};
+  const libraryIntegrity=integrity?{[shout]:integrity}:undefined;
+  const output=mountModuleOutput(el,{kind:'module',title:'Module view',assets:{entry:{bytes:text(view.entry),mediaType:'text/javascript'}},imports:{'page-greeting':{bytes:text(view.greeting),mediaType:'text/javascript'}},libraries,libraryIntegrity},{
+    frameUrl:${JSON.stringify(configuredFrameUrl)},runtime:FRAME_RUNTIME,hostContext:{theme:'light'},
     files:{'data/sample':{mimeType:'text/plain',byteLength:file.byteLength,read:async(offset,length)=>file.slice(offset,offset+length),bytes:async()=>file.slice()}},
     onState:(state,error)=>{el.dataset.outputState=state;if(error)el.dataset.error=error},
   });
@@ -364,7 +425,17 @@ const result = await build({
   write: false,
 });
 const siftWasm = await readFile(siftWasmPath(process.cwd()));
-const server = createServer((req, res) => {
+const server = createServer(async (req, res) => {
+  if (req.url.startsWith("/catalog/")) {
+    // The Pages Worker's library route, over this origin's catalog.
+    const response = await libraryCatalogResponse(
+      new Request(`http://${req.headers.host}${req.url}`, { method: req.method }),
+      { ASSETS: libraryAssets },
+    );
+    res.writeHead(response.status, Object.fromEntries(response.headers));
+    res.end(Buffer.from(await response.arrayBuffer()));
+    return;
+  }
   if (req.url === "/styles.css") {
     res.setHeader("Content-Type", "text/css");
     res.end(baseStyle + "\n" + tokens + "\n" + editorStyle);
@@ -409,16 +480,21 @@ const server = createServer((req, res) => {
     `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; frame-src ${new URL(configuredFrameUrl).origin}`,
   );
   res.end(
-    `<!doctype html><meta name="pages-output-frame-url" content="${configuredFrameUrl}"><meta name="viewport" content="width=device-width"><title>Audio exploration</title><link rel="stylesheet" href="/styles.css"><label style="max-width:900px;margin:20px auto">Appearance <select id="appearance"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><main style="max-width:900px;margin:30px auto;font:16px system-ui"></main><script type="module" src="/app.js"></script>`,
+    `<!doctype html><meta name="pages-output-frame-url" content="${configuredFrameUrl}"><meta name="pages-library-catalog" content="${libraryRevision}"><meta name="viewport" content="width=device-width"><title>Audio exploration</title><link rel="stylesheet" href="/styles.css"><label style="max-width:900px;margin:20px auto">Appearance <select id="appearance"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><main style="max-width:900px;margin:30px auto;font:16px system-ui"></main><script type="module" src="/app.js"></script>`,
   );
 });
 await new Promise((resolve) =>
   server.listen(Number(process.env.PAGES_OUTPUT_PORT ?? 0), "127.0.0.1", resolve),
 );
-if (process.env.PAGES_OUTPUT_SERVE) {
-  console.log(`Demo: http://127.0.0.1:${server.address().port}`);
-  await new Promise((resolve) => process.once("SIGINT", resolve));
+pageOrigin = `http://127.0.0.1:${server.address().port}`;
+const closeServers = async () => {
   await new Promise((resolve) => server.close(resolve));
+  if (frameServer) await new Promise((resolve) => frameServer.close(resolve));
+};
+if (process.env.PAGES_OUTPUT_SERVE) {
+  console.log(`Demo: ${pageOrigin}`);
+  await new Promise((resolve) => process.once("SIGINT", resolve));
+  await closeServers();
   process.exit(0);
 }
 const engines = { chromium, firefox, webkit };
@@ -433,47 +509,13 @@ try {
   await page.emulateMedia({ colorScheme: "dark" });
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  if (!process.env.PAGES_OUTPUT_LIVE)
-    await page.route(configuredFrameUrl, async (route) => {
-      const response = await worker.fetch(new Request(configuredFrameUrl));
-      await route.fulfill({
-        status: response.status,
-        headers: Object.fromEntries(response.headers),
-        body: await response.text(),
-      });
-    });
-  if (!process.env.PAGES_OUTPUT_LIVE) {
-    // The local shell with a catalog map in its head, the way the widget
-    // catalog server embeds one, and the one catalog module that map names.
-    await page.route(
-      (url) => url.href === moduleFrameUrl,
-      async (route) => {
-        const response = await worker.fetch(new Request(configuredFrameUrl));
-        const map = { imports: { "catalog-shout": moduleCatalogUrl } };
-        await route.fulfill({
-          status: response.status,
-          headers: Object.fromEntries(response.headers),
-          body: (await response.text()).replace(
-            "</head>",
-            `<script type="application/json" id="widget-catalog-map">${JSON.stringify(map)}</script></head>`,
-          ),
-        });
-      },
-    );
-    await page.route(moduleCatalogUrl, (route) =>
-      route.fulfill({
-        status: 200,
-        headers: { "Content-Type": "text/javascript", "Access-Control-Allow-Origin": "*" },
-        body: "export const shout = (s) => s.toUpperCase();",
-      }),
-    );
-  }
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await expect(page.locator("section")).toHaveAttribute("data-output-state", "ready");
-  // A module view's entry imports a Page import, a data/ file and a catalog
-  // module by bare name. All three resolve through the import map the frame
-  // runtime appends at mount.
-  await page.evaluate(() => window.fixture.module());
+  // A module view's entry imports a Page import, a data/ file and a library
+  // by bare name. All three resolve through the import map the frame runtime
+  // appends at mount; the library's integrity is in that map too.
+  const integrityOf = (text) => "sha256-" + createHash("sha256").update(text).digest("base64");
+  await page.evaluate((integrity) => window.fixture.module(integrity), integrityOf(libraryModule));
   const moduleHost = page.locator("#module-view");
   await expect
     .poll(async () => moduleHost.evaluate((el) => el.dataset.error ?? el.dataset.outputState))
@@ -482,6 +524,53 @@ try {
     process.env.PAGES_OUTPUT_LIVE ? "hello frame of 17" : "HELLO FRAME of 17",
   );
   await page.evaluate(() => window.fixture.endModule());
+  if (!process.env.PAGES_OUTPUT_LIVE) {
+    // A library whose bytes differ from its integrity value does not load,
+    // and the view fails.
+    await page.evaluate(
+      (integrity) => window.fixture.module(integrity),
+      integrityOf("other bytes"),
+    );
+    await expect
+      .poll(async () => moduleHost.evaluate((el) => el.dataset.outputState))
+      .toBe("failed");
+    await page.evaluate(() => window.fixture.endModule());
+    // A module view through the Pages viewer that pins a catalog: the viewer
+    // reads that catalog's manifest from this origin, checks its sha256, and
+    // the frame imports the library from /catalog/ on this origin.
+    await page.evaluate((pin) => window.fixture.libraryView(pin), libraryRevision);
+    const libraryView = page.locator("#library-view .pages-anywidget-view");
+    await expect
+      .poll(async () =>
+        libraryView.evaluate(
+          (el) => el.dataset.outputState + " " + el.querySelector("p")?.textContent,
+        ),
+      )
+      .toBe("ready ");
+    await expect(page.frameLocator("#library-view iframe").locator("#library-result")).toHaveText(
+      "FROM THE PAGE ORIGIN",
+    );
+    // The frame URL is the plain bootstrap: the map came with the mount.
+    assert.equal(
+      await page.locator("#library-view iframe").evaluate((frame) => new URL(frame.src).search),
+      "",
+    );
+    await page.evaluate(() => window.fixture.endLibraryView());
+    // A pin this origin does not serve: the view loads the host's current
+    // catalog, named in the shell, and still draws with its library.
+    await page.evaluate(() => window.fixture.libraryView("f".repeat(64)));
+    await expect
+      .poll(async () =>
+        libraryView.evaluate(
+          (el) => el.dataset.outputState + " " + el.querySelector("p")?.textContent,
+        ),
+      )
+      .toBe("ready ");
+    await expect(page.frameLocator("#library-view iframe").locator("#library-result")).toHaveText(
+      "FROM THE PAGE ORIGIN",
+    );
+    await page.evaluate(() => window.fixture.endLibraryView());
+  }
   // A runtime that throws: the bootstrap reports it at once, long before
   // either time limit, and the host says the frame did not start.
   if (!process.env.PAGES_OUTPUT_LIVE) {
@@ -837,5 +926,5 @@ try {
   throw error;
 } finally {
   await browser.close();
-  await new Promise((resolve) => server.close(resolve));
+  await closeServers();
 }

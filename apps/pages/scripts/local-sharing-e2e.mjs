@@ -172,11 +172,12 @@ try {
   const keyFile = path.join(scratch, "fixture-keys.json");
   await writeFile(keyFile, JSON.stringify(keys), { mode: 0o600 });
   // The fixture Worker advertises the same build id the viewer bundle embeds.
-  let buildId;
+  // It also records the library catalog the staged public/ carries.
+  let buildId, libraryRevision;
   try {
-    buildId = JSON.parse(
-      await readFile(path.join(app, "dist/build-receipt.json"), "utf8"),
-    ).build_id;
+    const receipt = JSON.parse(await readFile(path.join(app, "dist/build-receipt.json"), "utf8"));
+    buildId = receipt.build_id;
+    libraryRevision = receipt.library_catalog?.revision;
   } catch {
     if (buildUpdate) throw new Error("--build-update needs dist/build-receipt.json; build first");
   }
@@ -210,6 +211,7 @@ try {
         PAGES_E2E_FIXTURE_ID: JSON.stringify(imageSource.identity),
       }),
       ...(buildId ? { __PAGES_BUILD__: JSON.stringify(buildId) } : {}),
+      ...(libraryRevision ? { __PAGES_LIBRARY_CATALOG__: JSON.stringify(libraryRevision) } : {}),
       ...publicShellAssetDefine(path.join(runtime, "public")),
     },
     plugins: [celldCborPlugin(), workerWasmPlugin(runtime)],

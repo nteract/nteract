@@ -1,10 +1,10 @@
 # Local module views with ranged Page sources
 
-Run from `apps/pages` after the Pages setup and build. Start the catalog, then
-the Page server in another terminal. Each worktree has its own celld storage.
+Run from `apps/pages` after the Pages setup and build. Start the local output
+host, then the Page server in another terminal. Each worktree has its own celld storage.
 
 ```sh
-PAGES_CATALOG_PORT=9447 node scripts/widget-catalog/serve.mjs
+PAGES_CATALOG_PORT=9447 PAGES_PORT=9917 node scripts/widget-catalog/serve.mjs
 PAGES_E2E_ONLY=true PAGES_PORT=9917 PAGES_OUTPUT_FRAME_URL=http://127.0.0.1:9447/frame/v2/ npm run dev
 ```
 
@@ -46,9 +46,11 @@ node_modules/.bin/esbuild scripts/widget-catalog/hosted.mjs --platform=node --ta
 
 Copy `.output-dist/hosted.mjs` and the printed revision's directory under
 `.output-dist/catalog` to the same layout in `/opt/nteract-page12-output` on
-lab2. Retain earlier catalog revisions for Pages that pin them. Run the bundled
+lab2. Run the bundled
 entry with `/usr/bin/node` and the arguments
 `/opt/nteract-page12-output/catalog REVISION https://page12-output.runtimed.run 9485`.
-The editor installer checks the frame and its exact catalog pin before installing.
+The editor serves its own view libraries at `/catalog/<revision>/`; frames load
+them from there, not from this service. The editor installer checks that this
+service serves the release's frame bootstrap before installing.
 Use the standard `prepare`, `upload`, `install`, `provision`, `publish` sequence
 in the Pages deployment guide with `--target page12`.

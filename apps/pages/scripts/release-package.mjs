@@ -108,15 +108,30 @@ export function entryProblems(files) {
 
 const octal = (value, width) => value.toString(8).padStart(width - 1, "0") + "\0";
 
+/** A path as ustar's name and prefix fields: the whole path in `name` when it
+ * fits in 100 bytes, otherwise split at a slash into a prefix of at most 155
+ * bytes and a name of at most 100. A library catalog path
+ * (public/catalog/<64 hex>/<file>) needs the prefix. */
+export function ustarName(file) {
+  const bytes = Buffer.from(file);
+  if (bytes.length <= 100) return { name: bytes, prefix: Buffer.alloc(0) };
+  for (let at = file.lastIndexOf("/"); at > 0; at = file.lastIndexOf("/", at - 1)) {
+    const prefix = Buffer.from(file.slice(0, at));
+    const name = Buffer.from(file.slice(at + 1));
+    if (prefix.length <= 155 && name.length <= 100 && name.length > 0) return { name, prefix };
+  }
+  throw new Error(`${file} is too long for a ustar header`);
+}
+
 /** A ustar archive of `files` (path → bytes): sorted, mode 0644, owner 0, mtime
  * 0, no directory entries. The same files give the same bytes. */
 export function tarOf(files) {
   const blocks = [];
   for (const [file, bytes] of [...files].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
-    const name = Buffer.from(file);
-    if (name.length > 100) throw new Error(`${file} is too long for a ustar header`);
+    const { name, prefix } = ustarName(file);
     const header = Buffer.alloc(512);
     name.copy(header, 0);
+    prefix.copy(header, 345);
     header.write("0000644\0", 100);
     header.write(octal(0, 8), 108);
     header.write(octal(0, 8), 116);

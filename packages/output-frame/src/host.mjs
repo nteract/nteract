@@ -56,6 +56,10 @@ function checkDataInput(value, module) {
 // frame runtime's text from the embedder's own build, or a function that
 // resolves to it; the host sends it in the boot message, so the runtime always
 // matches this host.
+//
+// `payload.libraries` maps bare names to library modules the embedder serves
+// on its own origin (payload.mjs checkLibraries). The frame's import map
+// resolves them; the frame document itself names none.
 export { mountModuleOutput as mountAnywidgetOutput };
 export function mountModuleOutput(
   container,
@@ -75,7 +79,8 @@ export function mountModuleOutput(
   if (!frameUrl) throw Error("An output frame URL is required.");
   if (typeof runtime !== "string" && typeof runtime !== "function")
     throw Error("An output frame runtime is required.");
-  payload = preparePayload(payload);
+  const doc = container.ownerDocument;
+  payload = preparePayload(payload, { origin: doc.location.origin });
   const module = payload.kind === "module";
   const names = Object.keys(files);
   if (
@@ -88,7 +93,6 @@ export function mountModuleOutput(
   // The names setData accepts: what the frame can also check from its mount.
   const dataNames = new Set(module ? names : bufferNames(payload.spec));
   let context = normalizeHostContext(hostContext);
-  const doc = container.ownerDocument;
   const url = new URL(frameUrl, doc.location.href);
   if (
     url.origin === doc.location.origin ||

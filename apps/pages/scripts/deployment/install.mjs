@@ -120,16 +120,10 @@ if (profile.output) {
     !/^[a-f0-9]{64}$/.test(bootstrapDigest ?? "")
   )
     throw new Error("Manifest build receipt must name the output frame path and bootstrap");
-  const { listen, revision, hostname } = profile.output;
+  const { listen } = profile.output;
   let shell;
   try {
-    shell = run("curl", [
-      "--fail",
-      "--silent",
-      "--max-time",
-      "5",
-      "http://" + listen + framePath + "?catalog=" + revision,
-    ]);
+    shell = run("curl", ["--fail", "--silent", "--max-time", "5", "http://" + listen + framePath]);
   } catch {
     throw new Error(
       "The isolated output service does not serve " +
@@ -137,21 +131,14 @@ if (profile.output) {
         ", which this release mounts. Update the output service before installation",
     );
   }
-  // The bootstrap is the document's one script without attributes; the
-  // catalog map before it has its own.
-  const script = /<script>([\s\S]*?)<\/script>/.exec(shell)?.[1];
-  if (script === undefined || hash(script) !== bootstrapDigest)
+  // The bootstrap is the document's one script. The release serves its own
+  // view libraries, so the frame document carries nothing else to check.
+  const scripts = [...shell.matchAll(/<script([^>]*)>([\s\S]*?)<\/script>/g)];
+  if (scripts.length !== 1 || scripts[0][1] !== "" || hash(scripts[0][2]) !== bootstrapDigest)
     throw new Error(
       "The isolated output service serves a different frame bootstrap at " +
         framePath +
         " than this release expects. Update the output service before installation",
-    );
-  if (
-    !shell.includes('id="widget-catalog-map"') ||
-    !shell.includes("https://" + hostname + "/catalog/" + revision + "/")
-  )
-    throw Error(
-      "The isolated output service must serve the configured catalog before installation",
     );
 }
 const owned = existsSync(configDir + "/ownership.json");
@@ -369,7 +356,6 @@ if (config.main !== "index.js" || config.no_bundle !== true || config.build || c
 config.vars = {
   ...(profile.output && {
     PAGES_OUTPUT_FRAME_URL: "https://" + profile.output.hostname + framePath,
-    PAGES_WIDGET_CATALOG_REVISION: profile.output.revision,
   }),
   ...(profile.companyViewDomains ? { PAGES_COMPANY_VIEW_DOMAINS: profile.companyViewDomains } : {}),
   ...(profile.catalogIndex ? { PAGES_CATALOG_INDEX: profile.catalogIndex } : {}),
