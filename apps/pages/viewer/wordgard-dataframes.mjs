@@ -258,6 +258,7 @@ const dataframeTable = Widget.define({
         ...frame,
         attrs: {
           src: attrs.src,
+          media_type: attrs.media_type,
           pageId: attrs.pageId,
           binding: attrs.binding,
           sources: attrs.sources,
