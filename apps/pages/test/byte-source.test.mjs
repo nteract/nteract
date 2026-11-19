@@ -56,6 +56,23 @@ test("a file capability transfers only the selected span and cancels individual 
   }
 });
 
+test("opening file metadata bypasses a cached GET that omitted the byte length", async () => {
+  const media = "application/octet-stream";
+  const source = await openAssetByteSource(
+    "33333333-3333-4333-8333-333333333333",
+    { asset_id: "a".repeat(64), media_type: media },
+    {
+      async request(_, { method, cache }) {
+        assert.equal(method, "HEAD");
+        const headers = new Headers({ "x-pages-media-type": media });
+        if (cache === "no-store") headers.set("content-length", "4096");
+        return new Response(null, { headers });
+      },
+    },
+  );
+  assert.equal(source.byteLength, 4096);
+});
+
 test("a full response to a requested range is refused without consuming the file", async () => {
   let cancelled = false;
   const source = await openAssetByteSource(

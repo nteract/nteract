@@ -63,6 +63,9 @@ try {
   }
   const report = frame.locator("p[data-rows]");
   assert.equal(Number(await report.getAttribute("data-rows")), 84000);
+  // Reopen after the full table GET has populated the browser cache.
+  await page.reload();
+  await expect(report).toHaveAttribute("data-rows", "84000");
   await page.setViewportSize({ width: 390, height: 850 });
   await frame.getByRole("combobox").selectOption("28");
   await expect(frame.locator("svg rect")).toHaveCount(28);
