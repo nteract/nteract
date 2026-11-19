@@ -221,9 +221,43 @@ test("the supported targets include the isolated Page11 experiment", () => {
   assert.deepEqual(QUALIFIED_TARGETS, ["page10", "pages", "pages2", "page11", "page12"]);
 });
 
-test("the refused paths are /internal/ and the loopback test issuer", () => {
-  assert.equal(refusedPaths, "internal/|dev/oidc(/|$)");
+test("the refused paths are /internal/, the test issuer, celld's own path and dot segments", () => {
+  assert.equal(refusedPaths, "^/(internal/|dev/oidc(/|$)|[.]well-known/celld/)|(^|/)[.]{1,2}(/|$)");
   assert.equal(NOTEBOOK_CLOUD_LOCAL_OIDC_MOUNT_PATH, "/dev/oidc");
+  // Raw paths, as cloudflared matches them after decoding: no URL parser
+  // resolves the dot segments first.
+  const refused = new RegExp(refusedPaths);
+  for (const path of [
+    "/internal/",
+    "/internal/create",
+    "/dev/oidc",
+    "/dev/oidc/token",
+    "/.well-known/celld/health",
+    "/x/../internal/create",
+    "/./internal/create",
+    "/x/../dev/oidc/token",
+    "/x/../.well-known/celld/health",
+    "/x/..",
+    "/x/.",
+    "/..",
+    decodeURIComponent("/x/%2e%2e/internal/create"),
+    decodeURIComponent("/x/.%2e/internal/create"),
+    decodeURIComponent("/x/..%2finternal/create"),
+  ])
+    assert.equal(refused.test(path), true, `refuses ${path}`);
+  for (const path of [
+    "/",
+    "/internal",
+    "/dev/oidcX",
+    "/.well-known/oauth-authorization-server",
+    "/.well-known/oauth-protected-resource/mcp",
+    `/p/${U}/Some.Title`,
+    "/a..b",
+    "/x/..y",
+    "/...",
+    "/x/.hidden",
+  ])
+    assert.equal(refused.test(path), false, `admits ${path}`);
 });
 
 for (const target of QUALIFIED_TARGETS)

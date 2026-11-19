@@ -492,6 +492,13 @@ export function publishIsolated(
       ["/internal/create", "http_status:404"],
       ["/dev/oidc", "http_status:404"],
       ["/dev/oidc/token", "http_status:404"],
+      ["/.well-known/celld/health", "http_status:404"],
+      ["/.well-known/oauth-authorization-server", plan.listen],
+      // Dot segments the Worker's URL parser would resolve to a refused path.
+      ["/x/../internal/create", "http_status:404"],
+      ["/x/%2e%2e/internal/create", "http_status:404"],
+      ["/./internal/create", "http_status:404"],
+      ["/x/../dev/oidc/token", "http_status:404"],
     ]) {
       const rule = run("/usr/bin/cloudflared", [
         "--config",

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import {
   ROUTE_REGISTRY,
+  refusedPaths,
   routesFor,
   strippableSlots,
   accountPaths,
@@ -516,6 +517,16 @@ const PROBES = [
   "/internal/create",
   "/dev/oidc",
   "/dev/oidc/token",
+  "/.well-known/celld/health",
+  "/.well-known/oauth-authorization-server",
+];
+// Dot-segment probes, as the publisher sends them: a URL parser would
+// resolve them, so they are checked as raw arguments.
+const DOT_PROBES = [
+  "/x/../internal/create",
+  "/x/%2e%2e/internal/create",
+  "/./internal/create",
+  "/x/../dev/oidc/token",
 ];
 for (const target of ["page10", "pages"])
   test(`${target} publisher verifies refused and admitted paths before starting its connector`, (t) => {
@@ -525,12 +536,14 @@ for (const target of ["page10", "pages"])
       ({ command, args }) => command === "systemctl" && ["start", "restart"].includes(args[0]),
     );
     assert.ok(start >= 0);
-    const paths = f.calls
+    const probes = f.calls
       .slice(0, start)
       .filter(({ command, args }) => command === "/usr/bin/cloudflared" && args.includes("rule"))
-      .map(({ args }) => new URL(args.at(-1)))
-      .map((url) => url.pathname + url.search);
+      .map(({ args }) => args.at(-1));
+    const paths = probes.map((url) => new URL(url)).map((url) => url.pathname + url.search);
     for (const pathname of PROBES) assert.ok(paths.includes(pathname), pathname);
+    const host = "https://" + deploymentProfile(target).deployment.hostname;
+    for (const path of DOT_PROBES) assert.ok(probes.includes(host + path), path);
   });
 
 for (const target of ["page10", "pages"])
@@ -1737,11 +1750,11 @@ test("media-guide migration refuses unrelated config edits even with a matching 
 // Every target's routes, by sha256. Update a hash only when the routes change
 // on purpose.
 const ROUTES_SHA256 = {
-  page10: "7cf2498a446668a24db906a3ae27e99eea6d7efd8283c5d71ac3821327dda9ce",
-  pages: "8fabd8b00ac5799381ad53a9e397d222ab09403ea1f7738b948d0a18b9162c3b",
-  pages2: "23dfc30ebb62b7aa38df0f4520631a5a3440f5547c92eaef5a217ea06e033f7f",
-  page12: "3a1895350164033ccef7f0322e0796baa056758c8f84eba8aa2ecc6859f18063",
-  page11: "8b589fc25dd97c106727a7577651d1eeaef316d0ec61b4c64760248704948b9a",
+  page10: "955633300859bfb60a44075a0a8a48c9846e3452d5dcd49e9a9afbcc003abe5e",
+  pages: "4950e2c903e43ff3b8d1a3a7a0c3551136abd98f54f03b01c810d8dd38882b87",
+  pages2: "1a5cb184dc12e433372f71568f651082610856f56302ac9859cfb6f56fcee34c",
+  page12: "1abfaacd807e466c58f9984d105b7b945e1005004f2f48c86b2296650a5ccb9e",
+  page11: "50a793dc36c54314ad717a555c23e021f32bbeb84a1f08bd01b796612f6f1e00",
 };
 // Every target's earlier allowlist form with no strippable group, by sha256.
 // A new strippable group leaves it unchanged.
@@ -1779,7 +1792,7 @@ const INSTALLED_ROUTES_SHA256 = {
 };
 // Each route group's path string, by sha256.
 const SLOT_SHA256 = {
-  admitAll: "32bdfacacc822a9a41216509a65d1c491e0a34d9d626176008e473f29eb42f46",
+  admitAll: "52c691b5a99972d6abcd0cac13693fe1f57a6b1bdc93714f0d027e13a3dbd80c",
   themePaths: "10114183135a21a2e07cb9157fc1fcc2b7a8568e5be98e7607185b535276ca74",
   chunkPaths: "1387c0a673175a9a4685fd52b471f176125b11931af853d88cb37d0f4a5d060b",
   assetPaths: "3a7485ab6ba0e95b394d4565e1aef41a03daa7eeabf2a9597561a1f67214de6b",
@@ -1915,6 +1928,16 @@ test("routesFor omits only strippable groups and uses only earlier strings", () 
   assert.throws(() => routesFor("page10", { omit: ["nonsense"] }), /Not a strippable/);
   assert.throws(() => routesFor("page10", { use: { restPaths: "pages|" } }), /Not an earlier/);
   assert.throws(() => routesFor("page10", { use: { admitAll: "internal/" } }), /Not an earlier/);
+  // A config sealed with an earlier refusal string regenerates with it.
+  const standIn = "^/old-refusal/";
+  const registry = ROUTE_REGISTRY.map((entry) =>
+    entry.name === "admitAll" ? { ...entry, earlier: [standIn] } : entry,
+  );
+  const current = routesFor("page10", {}, registry);
+  const sealed = routesFor("page10", { use: { admitAll: standIn } }, registry);
+  assert.match(sealed, /^ {4}path: \^\/old-refusal\/$/m);
+  assert.equal(sealed, current.replace(refusedPaths, standIn));
+  assert.notEqual(sealed, current);
   // An allowlist group shapes only the earlier form.
   assert.equal(routesFor("page10", { omit: ["restPaths"] }), routesFor("page10"));
   assert.equal(

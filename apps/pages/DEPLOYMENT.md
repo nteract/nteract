@@ -1105,7 +1105,9 @@ in a catch-all 404:
 | Refused | Why |
 | --- | --- |
 | `/internal/` and everything under it | Durable Object host routes. The Worker and its Durable Objects call one another on these paths only; no request from outside may name one. |
-| `/dev/oidc` and everything under it | The loopback test issuer, which signs in whoever asks. The gateway mounts it only on a localhost hostname; the tunnel refuses it whatever the Worker's configuration. |
+| `/dev/oidc` and everything under it | The loopback test issuer, which signs in whoever asks. The gateway mounts it only on a localhost hostname with `NOTEBOOK_CLOUD_LOCAL_OIDC` set. |
+| `/.well-known/celld/` and everything under it | celld's public listener answers `/.well-known/celld/health` itself, before the Worker. |
+| Any path with a `.` or `..` segment | The Worker's URL parser resolves dot segments, so `/x/../internal/create` would reach it as `/internal/create`. `/.well-known/...` has no such segment and is admitted. |
 
 The Worker's gateway is the guard for these paths as well; the tunnel rule is
 a second one. A refused path gets the edge's own 404: empty, with no content type, which the
@@ -1114,8 +1116,16 @@ Worker never sees. Every other path reaches the Worker, and its gateway
 app shell and its files, and answers its own JSON 404 for any other `/api/`
 path and for every `/internal/` path. A new gateway route or a new hashed
 asset needs no tunnel change. celld's public listener (`--listen`) hands every
-path to the Worker; its operator routes, `/state` among them, are only on
-`--internal-listen`, which no tunnel reaches.
+path but `/.well-known/celld/health` to the Worker; its operator routes,
+`/state` among them, are only on `--internal-listen`, which no tunnel reaches.
+
+`cloudflared tunnel ingress rule` (cloudflared 2026.9.3) against a generated
+config refuses the paths above in plain, percent-encoded (`%2e%2e`, `%2F`,
+`%69`) and dot-segment forms, and admits `/internal`, `/dev/oidcX` and
+`/.well-known/oauth-authorization-server`. Before it starts a connector, the
+publisher asks the host's own cloudflared the same about each refused path,
+four dot-segment forms and an admitted path of each kind, and stops if one is
+wrong.
 
 A target with an output hostname keeps an allowlist there: `/health`,
 `/frame/v2/`, `catalog.json` and the catalog's hashed files, then a 404.
