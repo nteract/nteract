@@ -176,7 +176,7 @@ From `apps/pages`:
 ```sh
 npm test
 npm run build
-npx playwright install chromium
+npx playwright install chromium firefox
 npm run e2e
 ```
 
@@ -196,7 +196,8 @@ Pages build. A green push run of that workflow is the page10 deployment
 gate. The separate Pages browser E2E workflow runs on the same changes without
 holding that gate. It downloads the official celld 0.6.3 Linux x86_64
 release, checks the archive hash and the executable hash in `CELLD_RELEASE`,
-installs Playwright's Chromium with system dependencies, runs `npm run e2e` with
+installs Playwright's Chromium and Firefox with system dependencies (Firefox runs
+only the `output-frame-firefox` suite), runs `npm run e2e` with
 one retry and a flaky budget of one, and always uploads `test-results/`.
 Promotion to `pages.runtimed.run` is manual
 ([Promote production from the CI artifact](DEPLOYMENT.md#promote-production-from-the-ci-artifact)).
@@ -204,7 +205,7 @@ A build of `main` reads format 3 and is refused there. A format 1 fix is built
 from the maintenance branch cut from the `pages-format-1` tag. Before promoting,
 confirm both workflows are green for the exact source SHA. On a
 fresh Linux runner, install browser system dependencies with
-`npx playwright install --with-deps chromium`.
+`npx playwright install --with-deps chromium firefox`.
 
 The sharing suite (also `npm run test:e2e:sharing`) builds Pages and starts an
 isolated celld process on an available loopback port. Three browser profiles use the real local OIDC

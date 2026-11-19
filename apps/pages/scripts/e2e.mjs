@@ -33,7 +33,8 @@ const minute = 60_000;
 
 // Each timeout bounds the whole suite, including fixture startup and cleanup.
 // `optIn` suites run only when named. A new local-sharing-e2e.mjs mode joins
-// with one entry: { name, harness: sharing("--mode"), timeout }.
+// with one entry: { name, harness: sharing("--mode"), timeout }. A suite's
+// optional `env` adds variables to its child's environment.
 const sharing = (...flags) => ["scripts/local-sharing-e2e.mjs", ...flags];
 const SUITES = Object.freeze([
   { name: "sources-panel", harness: sharing("--sources-panel"), timeout: 4 * minute },
@@ -133,6 +134,13 @@ const SUITES = Object.freeze([
   // Draws viewer/vega-chart.mjs from a fixture page; needs no celld.
   { name: "chart", harness: ["scripts/chart-smoke.mjs"], timeout: 2 * minute },
   { name: "output-frame", harness: ["scripts/output-smoke.mjs"], timeout: 2 * minute },
+  // Firefox applies an import map only while no module has loaded in the frame.
+  {
+    name: "output-frame-firefox",
+    harness: ["scripts/output-smoke.mjs"],
+    env: { PAGES_OUTPUT_BROWSER: "firefox" },
+    timeout: 2 * minute,
+  },
   {
     name: "schema-features",
     script: "scripts/schema-features-smoke.mjs",
@@ -385,7 +393,7 @@ async function runSuite(suite, attempt) {
   }, suite.timeout);
   try {
     let command;
-    let env = { ...process.env, CELLD_BIN: celld };
+    let env = { ...process.env, CELLD_BIN: celld, ...suite.env };
     if (suite.harness) {
       const [script, ...flags] = suite.harness;
       command = [script, "--skip-build", ...flags];

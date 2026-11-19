@@ -92,6 +92,10 @@ function connect(event) {
           imports[name] = url;
           bindings.push([url, receiveByteSource(descriptor, lifetime.signal)]);
         }
+        // The runtime is a classic script: an import map appended at mount
+        // applies only while no module has loaded in this document. Nothing
+        // may import() a module before this append, and this module must not
+        // be shipped as type="module" or imported by another module script.
         const script = document.createElement("script");
         script.type = "importmap";
         script.textContent = JSON.stringify({ imports });
