@@ -1163,7 +1163,9 @@ async function refreshSession(
       "lease = NULL, lease_until = 0, retry_after = ?",
       [Math.floor(Date.now() / 1000) + 15],
     );
-    const unavailable = new ProviderUnavailable();
+    // A provider's own failure keeps its status for the log. Any other
+    // transient failure reports as unavailable without one.
+    const unavailable = error instanceof ProviderUnavailable ? error : new ProviderUnavailable();
     // The released row's proof may still be valid. The check answers with it,
     // and a check after the backoff renews.
     const current = await loadServerSession(env, request, Math.floor(Date.now() / 1000)).catch(

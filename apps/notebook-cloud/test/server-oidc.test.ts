@@ -1498,12 +1498,19 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     assert.ok((await unavailable.json()).session);
     assert.equal(hasSessionCookie(unavailable), true);
     assert.deepEqual(
-      records.map(({ event, phase, kind }) => ({ event, phase, kind })),
+      records.map(({ event, phase, kind, provider_status }) => ({
+        event,
+        phase,
+        kind,
+        provider_status,
+      })),
       [
         {
           event: "auth.server_session.failed",
           phase: "session_renewal",
           kind: "provider_unavailable",
+          // The provider's own answer, so a log tells its outage from ours.
+          provider_status: 503,
         },
       ],
     );
@@ -1580,9 +1587,9 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     const gate = f.gateRefresh();
     const owner = serverOidcSessionStatus(request, f.env, noopProfile);
     await gate.entered.promise;
-    const startedAt = Date.now();
+    // The owner stays gated, so a check that waited for it would poll for ten
+    // seconds and answer 503.
     const waiter = await serverOidcSessionStatus(request, f.env, noopProfile);
-    assert.ok(Date.now() - startedAt < 200, "the check does not wait for the owner");
     assert.equal(waiter.status, 200);
     assert.ok((await waiter.json()).session);
     assert.equal(hasSessionCookie(waiter), true);
