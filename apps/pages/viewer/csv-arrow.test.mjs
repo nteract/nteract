@@ -119,6 +119,33 @@ test("a header with a repeated, empty or overlong column name rejects, saying wh
   assert.deepEqual((await rowsOf(" a ,a\n1,2\n")).columns, [" a ", "a"]);
 });
 
+test("a value shaped like a date that is not a real one fails the whole file", async () => {
+  // The guide tells authors to fix the value or write Parquet. A column that
+  // mixes real dates with other text is still text.
+  for (const [source, message] of [
+    [
+      "a\n2024-02-30\n",
+      "This file can't be read as CSV: Parser error: Error while parsing value 2024-02-30 for column 0 at line 1",
+    ],
+    [
+      "a\n2024-01-01\n2024-13-01\n",
+      "This file can't be read as CSV: Parser error: Error while parsing value 2024-13-01 for column 0 at line 2",
+    ],
+  ])
+    await assert.rejects(csvArrow(encode(source), DATAFRAME_LIMITS), {
+      name: CSV_UNREADABLE,
+      message,
+    });
+  await assert.rejects(csvArrow(encode("a\n2024-01-01T25:00:00\n"), DATAFRAME_LIMITS), {
+    name: CSV_UNREADABLE,
+    message: /^This file can't be read as CSV: .*2024-01-01T25:00:00/,
+  });
+  assert.deepEqual(
+    (await rowsOf("a\n2024-01-01\nx\n")).map((row) => row.a),
+    ["2024-01-01", "x"],
+  );
+});
+
 test("a quote left open runs to the end of the file as one value", async () => {
   // The parser reads an unclosed quote as a field that ends with the file,
   // so this is one row whose value keeps the newline, not an error.

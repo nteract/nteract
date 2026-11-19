@@ -227,6 +227,7 @@ test("every guide that describes data uploads says which format to choose, Parqu
     "only commas separate fields",
     "the file must be UTF-8",
     "a timestamp with no zone is read as UTC",
+    "such as 2024-02-30, fails the whole file: fix the value, or write Parquet.",
     "JSON suits a small nested object, not a table of rows.",
   ])
     assert.ok(DATA_FORMAT_ADVICE.includes(sentence), sentence);

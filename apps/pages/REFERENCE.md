@@ -2221,7 +2221,9 @@ accepted for convenience, and its types are inferred when it is read, so
 check the result: a column of digits such as postal codes becomes numbers and
 loses its leading zero, the first row is always the header, only commas
 separate fields, the file must be UTF-8, and a timestamp with no zone is read
-as UTC. JSON suits a small nested object, not a table of rows. Every limit is
+as UTC. A value that looks like a date or timestamp but is not a real one,
+such as 2024-02-30, fails the whole file: fix the value, or write Parquet.
+JSON suits a small nested object, not a table of rows. Every limit is
 an error; nothing is truncated. CSV columns read as booleans (`true` or
 `false` in any case), 64-bit integers, floats, dates, timestamps or text, and
 an empty field is `null`. A decode failure is kept in the same cache and

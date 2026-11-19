@@ -9,7 +9,9 @@
 //   the file must be UTF-8 (a leading byte-order mark is skipped).
 // - Each column has one type, inferred from every row: booleans (true/false
 //   in any case), 64-bit integers, floats (exponents included), ISO dates,
-//   ISO timestamps (one with no zone is UTC), else text. A column of digits,
+//   ISO timestamps (one with no zone is UTC), else text. A value shaped like
+//   a date or timestamp that is not a real one (2024-02-30) is not text: it
+//   fails the whole file with the parser's reason. A column of digits,
 //   such as postal codes, is numbers, so a leading zero is lost.
 // - An empty field is null in every type.
 // - A ragged row, invalid UTF-8 or a crossed limit is an error. Nothing is
