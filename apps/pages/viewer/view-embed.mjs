@@ -5,6 +5,7 @@
 // The embed is bare: the view's title, the chart in one thin border, and the
 // Maximize and optional comment controls the chart renderer adds. A chart drawn without some of its
 // data carries one sentence under it naming the source.
+import { viewPlaceholder } from "./view-placeholder.mjs";
 import { createViewDraw } from "./view-draw.mjs";
 
 /**
@@ -23,18 +24,7 @@ export function mountViewEmbed(
   root.className = "pages-view";
   const chart = root.appendChild(doc.createElement("div"));
   chart.className = "pages-view-chart";
-  // The frame shown in place of a chart: the chart renderer's own classes,
-  // so a sentence sits where the chart would.
-  const placeholder = root.appendChild(doc.createElement("figure"));
-  placeholder.className = "pages-chart pages-view-placeholder";
-  const header = placeholder.appendChild(doc.createElement("figcaption"));
-  header.className = "pages-chart-header";
-  const title = header.appendChild(doc.createElement("span"));
-  title.className = "pages-chart-title";
-  const frame = placeholder.appendChild(doc.createElement("div"));
-  frame.className = "pages-chart-frame";
-  const message = frame.appendChild(doc.createElement("p"));
-  message.className = "pages-chart-message";
+  const { placeholder, header, title, message } = viewPlaceholder(root);
   const note = root.appendChild(doc.createElement("p"));
   note.className = "pages-view-note";
   note.hidden = true;

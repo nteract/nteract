@@ -1,4 +1,5 @@
 import { Observable, distinctUntilChanged, scan, shareReplay, switchMap } from "rxjs";
+import { viewPlaceholder } from "./view-placeholder.mjs";
 import { isExecutableView } from "../shared/anywidget-view.mjs";
 
 // Select a renderer without teaching the chart executor about executable
@@ -21,16 +22,15 @@ export function mount(container, options) {
         (kind) =>
           new Observable((subscriber) => {
             if (kind === "placeholder") {
-              const message = container.ownerDocument.createElement("p");
-              container.append(message);
+              const { placeholder, message } = viewPlaceholder(container);
               const status = view$.subscribe((projection) => {
-                message.dataset.viewState =
+                placeholder.dataset.viewState =
                   projection.status === "unavailable" ? "blocked" : "waiting";
                 message.textContent = projection.sentence ?? "Loading view…";
               });
               return () => {
                 status.unsubscribe();
-                message.remove();
+                placeholder.remove();
               };
             }
             // A grid card is a raster image. Its renderer cannot read an
