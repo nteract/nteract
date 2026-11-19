@@ -33,10 +33,16 @@ import { themeStore } from "./theme.mjs";
 const sameAsset = (a, b) => a?.asset_id === b?.asset_id && a?.media_type === b?.media_type;
 const asset = (version) => ({ asset_id: version.asset_id, media_type: version.media_type });
 
-// A module view reads a Parquet file in ranges; every other data input,
-// including every anywidget buffer, arrives whole.
+// A module view's Parquet file is a "table": the model holds a table over
+// the ColumnSet decoded from it, and the import a handle that reads the file
+// in ranges. Every other data input, including every anywidget buffer,
+// arrives whole.
 const dataShape = (module, version) =>
-  module && version.media_type === PARQUET_MEDIA_TYPE ? "ranged" : "whole";
+  module && version.media_type === PARQUET_MEDIA_TYPE ? "table" : "whole";
+
+// The Parquet decoder, in a chunk of its own: only a module view that binds
+// a Parquet file loads it.
+const loadColumnDecoder = () => import("./module-parquet.mjs").then((m) => m.parquetColumns);
 
 // A plan splits a view into its code identity, `key`, and its data inputs,
 // `data`: name → asset. The frame's lifetime follows `key` alone.
@@ -61,7 +67,7 @@ export function anywidgetPlan(view, sources) {
   const module = view.media_type === MODULE_MEDIA_TYPE;
   const code = {};
   const data = {};
-  // How each data name reaches the model: a ranged handle or a whole file.
+  // How each data name reaches the model: a table or a whole file.
   // A listener written for one shape cannot read the other, so it is code.
   const shapes = {};
   for (const [name, version] of Object.entries(versions)) {
@@ -116,8 +122,12 @@ export function mount(
       ?.content ?? OUTPUT_FRAME_URL,
     mountOutput = mountModuleOutput,
     theme = themeStore,
-    // The most input bytes one view's frame holds at once.
+    // The most fetched file bytes one view's frame holds at once. A Parquet
+    // file's ColumnSet is bounded by the decoder's limits instead.
     maxTotalBytes = OUTPUT_MAX_TOTAL_BYTES,
+    // Resolves with the decoder `sources.sharedResolver` decodes Parquet
+    // files to ColumnSets with (parquet-columns.mjs).
+    columnDecoder = loadColumnDecoder,
   },
 ) {
   const doc = container.ownerDocument;
@@ -227,14 +237,22 @@ export function mount(
                         signal.throwIfAborted();
                         return loaded;
                       };
+                      // A Parquet file is opened for ranged reads and
+                      // decoded to a ColumnSet through the Page's shared
+                      // cache, so views of one asset decode it once.
                       const loadData = async (name, version, signal) => {
-                        if (dataShape(module, version) === "ranged") {
-                          const file = await openAssetByteSource(sources.pageId, version, {
-                            signal,
-                            request: sources.request,
-                          });
+                        if (dataShape(module, version) === "table") {
+                          const [file, { table: columns }] = await Promise.all([
+                            openAssetByteSource(sources.pageId, version, {
+                              signal,
+                              request: sources.request,
+                            }),
+                            columnDecoder().then((decode) =>
+                              sources.sharedResolver(decode).load(version, { signal }),
+                            ),
+                          ]);
                           signal.throwIfAborted();
-                          return { value: file, size: 0 };
+                          return { value: { file, columns }, size: 0 };
                         }
                         const { bytes } = await loadBytes(version, signal);
                         return { value: bytes, size: bytes.byteLength };

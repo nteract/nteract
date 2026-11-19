@@ -2,7 +2,8 @@ import { bindingOf, validSourceId } from "./sources.mjs";
 import { standardImports } from "./widget-imports.mjs";
 import { ESM_MEDIA_TYPE } from "./anywidget-view.mjs";
 
-// A file binding is a ByteSource, independent of its format or decoder.
+// A file binding names a Page source, whatever its format. The viewer
+// decides how its bytes reach the view (viewer/anywidget-view.mjs dataShape).
 // Each alias is local to a single view's iframe.
 export function compileModuleView(spec) {
   if (

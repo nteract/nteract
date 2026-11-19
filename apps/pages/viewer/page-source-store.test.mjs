@@ -336,6 +336,59 @@ test("a table decoded after its reader left is freed, and destroy stops everythi
   assert.throws(() => small.resolver(async () => ({})), /closed/);
 });
 
+test("a shared resolver decodes one asset once for every reader, and keeps the newest", async () => {
+  const host = hostDoc();
+  host.set("usage", asset("a"));
+  const { fetches } = storeOver(host.doc);
+  const store = new PageSourceStore({
+    pageId: PAGE,
+    doc$: new BehaviorSubject(host.doc),
+    request: fetches.request,
+    maxEntries: 2,
+  });
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  const decoded = [];
+  const decode = async (bytes) => {
+    await held;
+    decoded.push(new TextDecoder().decode(bytes));
+    if (decoded.at(-1) === asset("c")) throw Error("Not a Parquet file.");
+    return new TextEncoder().encode(`arrow ${decoded.at(-1)}`);
+  };
+  const shared = store.sharedResolver(decode);
+  assert.equal(store.sharedResolver(decode), shared);
+  const version = store.resolve({ source_id: "usage" });
+  // One reader leaves before the decode ends; the other still gets it.
+  const leaving = new AbortController();
+  const first = shared.load(version, { signal: leaving.signal });
+  const second = shared.load(store.resolve({ asset_id: asset("a") }));
+  await tick();
+  leaving.abort();
+  release();
+  await assert.rejects(first, { name: "AbortError" });
+  const loaded = await second;
+  assert.equal(new TextDecoder().decode(loaded.table), `arrow ${asset("a")}`);
+  assert.equal(loaded.revision, null, "the load names the version it was asked for");
+  const again = await shared.load(version);
+  assert.equal(again.table, loaded.table, "the same decoded bytes");
+  assert.equal(again.source_id, "usage");
+  assert.deepEqual(decoded, [asset("a")], "decoded once");
+  assert.equal(fetches.calls.length, 1);
+  // A failed decode is not kept: the next reader decodes again.
+  const broken = { asset_id: asset("c"), media_type: PARQUET_MEDIA_TYPE, revision: null };
+  await assert.rejects(shared.load(broken), /Not a Parquet file/);
+  assert.deepEqual(shared.decoded(), [asset("a")]);
+  await assert.rejects(shared.load(broken), /Not a Parquet file/);
+  assert.equal(decoded.filter((id) => id === asset("c")).length, 2);
+  // The newest two assets stay decoded.
+  await shared.load({ ...broken, asset_id: asset("b") });
+  await shared.load(version);
+  await shared.load({ ...broken, asset_id: asset("d") });
+  assert.deepEqual(shared.decoded(), [asset("a"), asset("d")]);
+  store.destroy();
+  assert.throws(() => store.sharedResolver(decode), /closed/);
+});
+
 test("a destroyed store reads as a Page with no sources", () => {
   const host = hostDoc();
   host.set("usage", asset("a"));

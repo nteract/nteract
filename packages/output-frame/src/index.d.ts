@@ -44,8 +44,62 @@ export interface ModuleOutput {
   assets: { entry: OutputAsset };
   imports?: Record<string, OutputAsset>;
 }
-/** A whole file (the model holds a DataView) or a ranged file (the model holds the handle). */
-export type DataInput = Uint8Array | ByteSource;
+export type ColumnType = "number" | "bigint" | "date" | "string" | "boolean" | "other";
+/** One column of a ColumnSet (src/column-set.mjs). `nulls` is a validity mask, 1 = present. */
+export interface ColumnSetColumn {
+  name: string;
+  type: ColumnType;
+  values: Float64Array | BigInt64Array | BigUint64Array | unknown[];
+  nulls?: Uint8Array;
+}
+/** A table as it crosses the frame boundary: structured-cloneable, no class instances. */
+export interface ColumnSet {
+  numRows: number;
+  columns: ColumnSetColumn[];
+}
+/**
+ * A Parquet file: its ranged handle, which the `data/<alias>` import gives,
+ * and the ColumnSet decoded from it, which the model holds as a table.
+ */
+export interface TableInput {
+  file: ByteSource;
+  columns: ColumnSet;
+}
+/** A column type as an Arrow DataType reads (typeId from apache-arrow's Type enum). */
+export interface ColumnDataType {
+  readonly typeId: number;
+  readonly unit?: number;
+  readonly bitWidth?: number;
+  readonly kind: ColumnType;
+}
+type Row = Readonly<Record<string, unknown>>;
+/** One column of a ColumnTable, spelled as an Arrow JS vector. */
+export interface TableColumn extends Iterable<unknown> {
+  readonly length: number;
+  readonly nullCount: number;
+  readonly type: ColumnDataType;
+  get(index: number): unknown;
+  toArray(): Float64Array | BigInt64Array | BigUint64Array | readonly unknown[];
+  toJSON(): Float64Array | BigInt64Array | BigUint64Array | readonly unknown[];
+}
+/** What a module view's model holds for a Parquet file (src/table.mjs): an Arrow-style table. */
+export interface ColumnTable extends Iterable<Row> {
+  readonly numRows: number;
+  readonly numCols: number;
+  readonly schema: {
+    readonly fields: readonly { name: string; type: ColumnDataType; nullable: boolean }[];
+  };
+  getChild(name: string): TableColumn | null;
+  getChildAt(index: number): TableColumn | null;
+  get(index: number): Row | null;
+  toArray(): readonly Row[];
+  select(names: readonly string[]): ColumnTable;
+}
+/**
+ * A whole file (the model holds a DataView), a ranged file (the model holds
+ * the handle) or a Parquet file (the model holds a ColumnTable).
+ */
+export type DataInput = Uint8Array | ByteSource | TableInput;
 export interface OutputOptions {
   /** A module view's `data/<alias>` inputs. Each alias is also a key on its model. */
   byteSources?: Record<string, DataInput>;

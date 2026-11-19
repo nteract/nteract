@@ -5,9 +5,11 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { build } from "esbuild";
 import { browserMermaidPlugin } from "./browser-mermaid.mjs";
-import { browserSiftPlugin } from "./browser-sift.mjs";
+import { browserSiftPlugin, siftWasmPath } from "./browser-sift.mjs";
 import { chromium, firefox, webkit, expect } from "@playwright/test";
 import { prepareFrameHtml } from "./build-output.mjs";
+import { parquetFixture } from "../test/parquet-fixture.mjs";
+import { DATAFRAME_LIMITS } from "../viewer/sift-dataset.mjs";
 await prepareFrameHtml();
 const { default: worker } = await import("../output/worker.mjs");
 import { OUTPUT_FRAME_URL } from "../shared/anywidget-view.mjs";
@@ -103,7 +105,7 @@ const entries = {
   // A second recording: moving to it is a data change, not a remount.
   recording2: [Buffer.concat([wav.subarray(0, 44), Buffer.alloc(32000)]), "audio/wav"],
   // A module view that keeps a click count in its DOM and renders a value
-  // from a whole-file input and one from a ranged Parquet handle.
+  // from a whole-file input and one from a Parquet table.
   modview: [
     Buffer.from(`export function render({ model, el, signal }) {
   let count = 0;
@@ -111,18 +113,47 @@ const entries = {
   const button = el.querySelector('#count');
   button.addEventListener('click', () => { button.textContent = String(++count); }, { signal });
   const label = () => { el.querySelector('#label').textContent = new TextDecoder().decode(model.get('label')); };
-  const table = async () => {
-    const file = model.get('table');
-    const head = await file.read(0, 4, signal);
-    el.querySelector('#table').textContent = new TextDecoder().decode(head) + ' of ' + file.byteLength;
+  const table = () => {
+    const rows = model.get('table');
+    el.querySelector('#table').textContent = rows.numRows + ' rows of ' + rows.schema.fields.map((f) => f.name).join(' ');
   };
   model.on('change:label', label);
-  model.on('change:table', () => void table());
+  model.on('change:table', table);
   label();
-  return table();
+  table();
 }`),
     "text/javascript",
   ],
+  // A module view that draws its Parquet table with Plot, straight from the
+  // model: an int64 column, a string and a float column with nulls, and a
+  // microsecond timestamp. The data/ import still reads the file itself.
+  plotview: [
+    Buffer.from(`import * as Plot from 'plot';
+import file from 'data/activity';
+export async function render({ model, el, signal }) {
+  el.innerHTML = '<div id="plot"></div><p id="head"></p>';
+  const draw = () => {
+    const table = model.get('activity');
+    const plot = Plot.plot({
+      marks: [
+        Plot.dot(table, { x: 'at', y: 'people' }),
+        Plot.lineY(table, { x: 'at', y: 'score' }),
+        Plot.text(table, { x: 'at', y: 'people', text: 'name', dy: -8 }),
+      ],
+    });
+    el.querySelector('#plot').replaceChildren(plot);
+    el.dataset.xScale = plot.scale('x').type;
+    el.dataset.draws = String(Number(el.dataset.draws ?? 0) + 1);
+  };
+  model.on('change:activity', draw);
+  draw();
+  const head = await file.read(0, 4, signal);
+  el.querySelector('#head').textContent = new TextDecoder().decode(head) + ' of ' + file.byteLength;
+}`),
+    "text/javascript",
+  ],
+  // Plot as a Page-owned import, bundled below.
+  plotlib: [Buffer.alloc(0), "text/javascript"],
   // A module view that reads its file once through the import and never
   // listens for changes: a data change mounts it again.
   modonce: [
@@ -136,13 +167,24 @@ export async function render({ el, signal }) {
   ],
   label1: [Buffer.from("first label"), "application/octet-stream"],
   label2: [Buffer.from("second label"), "application/octet-stream"],
-  table1: [Buffer.from("tab1 rows PAR1"), "application/vnd.apache.parquet"],
-  table2: [Buffer.from("tab2 more rows PAR1"), "application/vnd.apache.parquet"],
+  table1: [Buffer.from(parquetFixture({ days: 5 })), "application/vnd.apache.parquet"],
+  table2: [Buffer.from(parquetFixture({ days: 9 })), "application/vnd.apache.parquet"],
   broken: [
     Buffer.from('export default {initialize(){throw Error("intentional failure")},render(){}}'),
     "text/javascript",
   ],
 };
+entries.plotlib[0] = Buffer.from(
+  (
+    await build({
+      stdin: { contents: 'export * from "@observablehq/plot";', resolveDir: process.cwd() },
+      bundle: true,
+      format: "esm",
+      minify: true,
+      write: false,
+    })
+  ).outputFiles[0].contents,
+);
 let description = "Synthetic C4 tone and test heatmap data; browser integration fixture.";
 if (process.env.PAGES_OUTPUT_CDN) {
   const { tableFromArrays, tableToIPC } = await import("apache-arrow");
@@ -240,7 +282,12 @@ const changes=new BehaviorSubject(0);
 const view={view_id:'audio',title:'Audio exploration',media_type:'application/vnd.nteract.anywidget.v2+json',spec:{module:{source_id:'code'},buffers:[{source:{source_id:'recording'},path:['recording']}]},revision:'1'};
 const view$=new BehaviorSubject({status:'ready',view});
 let failNext=false;
-const sources={pageId:'${pageId}',request:(...args)=>{if(failNext){failNext=false;return Promise.resolve(new Response('not yet',{status:503}))}return fetch(...args)},versions:()=>changes,resolve:b=>versions[b.source_id]};
+const decoded=new Map();
+const sources={pageId:'${pageId}',request:(...args)=>{if(failNext){failNext=false;return Promise.resolve(new Response('not yet',{status:503}))}return fetch(...args)},versions:()=>changes,resolve:b=>versions[b.source_id],
+  sharedResolver:decode=>({async load(v){
+    if(!decoded.has(v.asset_id))decoded.set(v.asset_id,fetch('/assets/'+v.asset_id).then(r=>r.arrayBuffer()).then(b=>decode(new Uint8Array(b),${JSON.stringify(DATAFRAME_LIMITS)})));
+    return {table:await decoded.get(v.asset_id),...v};
+  }})};
 const handle=mount(document.querySelector('main'),{view$,sources,sourcesAnswer$:null});
 let editor; let highlight=null; const permissions=new GardState.Compartment();
 window.fixture={editor(){
@@ -273,6 +320,13 @@ window.fixture={editor(){
   const onceHandle=mount(el,{view$:onceView$,sources,sourcesAnswer$:null});
   window.fixture.moveOnce=()=>{versions.label=versions.label2;changes.next(6)};
   window.fixture.endOnceView=()=>{onceHandle.destroy();el.remove()};
+},plotView(){
+  const el=document.createElement('div');el.id='module-view4';document.body.append(el);
+  versions.activity=versions.table1;
+  const plotView$=new BehaviorSubject({status:'ready',view:{view_id:'plot',title:'Plot from a table',media_type:'application/vnd.nteract.module-view.v1+json',spec:{module:{source_id:'plotview'},imports:{plot:{source_id:'plotlib'}},files:{activity:{source_id:'activity'}}},revision:'1'}});
+  const plotHandle=mount(el,{view$:plotView$,sources,sourcesAnswer$:null});
+  window.fixture.movePlot=()=>{versions.activity=versions.table2;changes.next(7)};
+  window.fixture.endPlotView=()=>{plotHandle.destroy();el.remove()};
 },example(){versions.code=versions.example;view$.next({status:'ready',view:{...view,spec:{module:{source_id:'code'},buffers:[{source:{source_id:'recording'},path:['recording']},{source:{source_id:'dmel'},path:['dmel']}],state:{description:${JSON.stringify(description)}}}}})},module(){
   const view=${JSON.stringify(moduleView)};
   const text=s=>new TextEncoder().encode(s);
@@ -293,6 +347,7 @@ const result = await build({
   format: "esm",
   write: false,
 });
+const siftWasm = await readFile(siftWasmPath(process.cwd()));
 const server = createServer((req, res) => {
   if (req.url === "/styles.css") {
     res.setHeader("Content-Type", "text/css");
@@ -304,9 +359,20 @@ const server = createServer((req, res) => {
     res.end(result.outputFiles[0].text);
     return;
   }
+  if (req.url === "/sift.wasm") {
+    res.setHeader("Content-Type", "application/wasm");
+    res.end(siftWasm);
+    return;
+  }
   const asset = assets.get(req.url.split("/").at(-1));
   if (asset) {
-    res.setHeader("Content-Type", "application/octet-stream");
+    // As the Page asset route serves them: a Parquet file as its own type.
+    res.setHeader(
+      "Content-Type",
+      asset.media_type === "application/vnd.apache.parquet"
+        ? asset.media_type
+        : "application/octet-stream",
+    );
     res.setHeader("X-Pages-Media-Type", asset.media_type);
     // Ranged reads, as the Page asset route serves a Parquet file.
     const range = /^bytes=(\d+)-(\d+)$/.exec(req.headers.range ?? "");
@@ -324,7 +390,7 @@ const server = createServer((req, res) => {
   }
   res.setHeader(
     "Content-Security-Policy",
-    `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-src ${new URL(configuredFrameUrl).origin}`,
+    `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; frame-src ${new URL(configuredFrameUrl).origin}`,
   );
   res.end(
     `<!doctype html><meta name="pages-output-frame-url" content="${configuredFrameUrl}"><meta name="viewport" content="width=device-width"><title>Audio exploration</title><link rel="stylesheet" href="/styles.css"><label style="max-width:900px;margin:20px auto">Appearance <select id="appearance"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><main style="max-width:900px;margin:30px auto;font:16px system-ui"></main><script type="module" src="/app.js"></script>`,
@@ -401,14 +467,15 @@ try {
   );
   await page.evaluate(() => window.fixture.endModule());
   // A module view through the Pages viewer: its model holds a whole file and
-  // a ranged Parquet handle. Moving both sources updates them through
+  // a Parquet table. Moving both sources updates them through
   // change: listeners in the same frame, with the view's own state intact.
   await page.evaluate(() => window.fixture.moduleView());
   const dataView = page.locator("#module-view2 .pages-anywidget-view");
   await expect(dataView).toHaveAttribute("data-output-state", "ready");
   const dataFrame = page.frameLocator("#module-view2 iframe");
   await expect(dataFrame.locator("#label")).toHaveText("first label");
-  await expect(dataFrame.locator("#table")).toHaveText(`tab1 of ${entries.table1[0].length}`);
+  const columns = "day at at_ms people name score";
+  await expect(dataFrame.locator("#table")).toHaveText(`5 rows of ${columns}`);
   await dataFrame.locator("#count").click();
   await dataFrame.locator("#count").click();
   await expect(dataFrame.locator("#count")).toHaveText("2");
@@ -417,7 +484,7 @@ try {
   });
   await page.evaluate(() => window.fixture.moveData());
   await expect(dataFrame.locator("#label")).toHaveText("second label");
-  await expect(dataFrame.locator("#table")).toHaveText(`tab2 of ${entries.table2[0].length}`);
+  await expect(dataFrame.locator("#table")).toHaveText(`9 rows of ${columns}`);
   await expect(page.locator("#module-view2 iframe")).toHaveCount(1);
   await expect(page.locator("#module-view2 iframe")).toHaveAttribute("data-marker", "kept");
   await expect(dataFrame.locator("#count")).toHaveText("2");
@@ -439,6 +506,34 @@ try {
   await expect(page.locator("#module-view3 iframe")).not.toHaveAttribute("data-marker", "first");
   await expect(onceView).toHaveAttribute("data-output-state", "ready");
   await page.evaluate(() => window.fixture.endOnceView());
+  // A module view draws its Parquet table with Plot from model.get, with an
+  // int64, a string and a nullable float column on a time axis. A new file
+  // redraws through the listener in the same frame. The data/ import reads
+  // the Parquet file itself.
+  await page.evaluate(() => window.fixture.plotView());
+  const plotView = page.locator("#module-view4 .pages-anywidget-view");
+  await expect
+    .poll(async () =>
+      plotView.evaluate((el) => el.dataset.outputState + " " + el.querySelector("p")?.textContent),
+    )
+    .toBe("ready ");
+  const plotFrame = page.frameLocator("#module-view4 iframe");
+  const plotMain = plotFrame.locator("main");
+  await expect(plotMain.locator("svg circle")).toHaveCount(5);
+  await expect(plotMain.locator("svg path[d]").first()).toBeAttached();
+  await expect(plotMain.locator("svg text").filter({ hasText: "day 3" })).toHaveCount(1);
+  await expect(plotMain).toHaveAttribute("data-x-scale", "utc");
+  await expect(plotFrame.locator("#head")).toHaveText(`PAR1 of ${entries.table1[0].length}`);
+  await page.locator("#module-view4 iframe").evaluate((frame) => {
+    frame.dataset.marker = "kept";
+  });
+  await page.evaluate(() => window.fixture.movePlot());
+  await expect(plotMain.locator("svg circle")).toHaveCount(9);
+  await expect(plotMain).toHaveAttribute("data-draws", "2");
+  await expect(page.locator("#module-view4 iframe")).toHaveCount(1);
+  await expect(page.locator("#module-view4 iframe")).toHaveAttribute("data-marker", "kept");
+  await expect(plotView).toHaveAttribute("data-output-state", "ready");
+  await page.evaluate(() => window.fixture.endPlotView());
   await expect(page.getByRole("button", { name: "Retry interactive view" })).toBeHidden();
   const frame = page.frameLocator("iframe");
   await expect(frame.getByRole("heading", { name: "Listen and explore" })).toBeVisible();
@@ -685,7 +780,8 @@ try {
           "forged ambient message",
           "automatic render; a new recording reaches the model without a remount",
           "code-change remount",
-          "module view model: whole-file and ranged Parquet inputs change in place through change: listeners",
+          "module view model: a whole file and a Parquet table change in place through change: listeners",
+          "module view draws a Parquet table with Plot from model.get: int64, string, nullable float, temporal axis; a new file redraws in the same frame; the data/ import reads PAR1",
           "a module view with no change listener is mounted again with its new data",
           "retry after a transient input failure",
           "failure recovery",

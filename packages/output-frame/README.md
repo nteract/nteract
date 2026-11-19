@@ -130,13 +130,39 @@ session code as an anywidget view: `model.get/set/on/off`, a no-op
 `byteSources` maps up to 16 `data/<alias>` names to inputs. Each alias is a key
 on the model:
 
+- `{file, columns}` is a Parquet file: `file` is its `ByteSource` and
+  `columns` the ColumnSet the embedder decoded from it. The model holds an
+  Arrow-style table over it, so a view writes
+  `Plot.barY(model.get("activity"), {x: "day", y: "people"}).plot()`. Pages
+  decodes with Sift in the page; the frame never loads Sift or an Arrow library.
 - A `Uint8Array` is a whole file of at most 5 MiB. The model holds a DataView of it.
   Pages also counts it toward the view's 32 MiB input total.
 - A `ByteSource` (`{byteLength, read(offset, length, signal)}`) is a ranged file
   behind its own port and the view's read budget. The model holds the handle.
 
+A ColumnSet (`src/column-set.mjs`) is `{numRows, columns: [{name, type,
+values, nulls?}]}`, structured-cloneable with no class instances. `type` is
+`number` or `date` (a `Float64Array`; a date in epoch milliseconds), `bigint` (a
+`BigInt64Array` or `BigUint64Array`), or `string`, `boolean` or `other` (an
+array). `nulls` is a `Uint8Array` validity mask, 1 where a value is present,
+and is absent when the column has no nulls. The host and the frame both check
+it with `checkColumnSet`: lengths, types, value kinds, and at most 256 columns
+with unique names of 1 to 256 characters. The host transfers a copy of its typed
+arrays and does not count it toward the 5 MiB file limit; the embedder's
+decode limits bound it. A ColumnSet the frame refuses fails the mount, or, as
+a data change, leaves the earlier table.
+
+The table (`src/table.mjs`) spells its members as an Apache Arrow JS table
+does: `numRows`, `numCols`, `schema.fields`, `getChild(name)`,
+`getChildAt(index)`, `get(index)`, `toArray()`, `select(names)` and iteration
+over rows; a column has `length`, `nullCount`, `type`, `get(index)`,
+`toArray()`, `toJSON()` and iteration. Values are plain JavaScript: a `date`
+is a `Date`, a missing value `null`, and rows are frozen plain objects. Nothing
+else on the object is part of the interface. The Pages reference lists where it
+differs from Arrow JS.
+
 `import f from "data/<alias>"` gives a `{byteLength, read}` handle on the input
-the view mounted with, in both cases. It is bound once: after a data change its
+the view mounted with, in every case: for a Parquet file, the ranged file. It is bound once: after a data change its
 reads reject as aborted, and `model.get(alias)` is the current input. A view
 that computed offsets from the old file therefore fails loudly instead of
 reading the new one at stale offsets.
@@ -146,13 +172,14 @@ reading the new one at stale offsets.
 `handle.setData(name, value)` offers a mounted view a new data input. The
 name must be one the mount declared: a `data/<alias>` of a module view, or a
 buffer name of an anywidget view that is not also a module or stylesheet name.
-Anything else throws. A module view takes a `Uint8Array` or a `ByteSource`; an
-anywidget buffer takes a `Uint8Array`.
+Anything else throws. A module view takes a `Uint8Array`, a `ByteSource` or a
+`{file, columns}` Parquet file; an anywidget buffer takes a `Uint8Array`.
 
 The parent sends one message per change on the mount's port:
 `{type: 'data', name, input}`, where `input` is `{bytes}` (a dedicated copy,
-transferred) or `{byteLength, port}` (a new port). It carries names, bytes and
-ports only. The frame checks the name against those its mount declared and
+transferred), `{byteLength, port}` (a new port) or, for a Parquet file,
+`{byteLength, port, columns}` (a new port and a copy of the ColumnSet). It
+carries names, data and ports only. The frame checks the name against those its mount declared and
 ignores any other.
 
 - The host sends data only once the frame has rendered. Changes before that wait,

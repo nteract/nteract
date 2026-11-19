@@ -1,4 +1,5 @@
 import { exposeByteSource } from "./byte-source.mjs";
+import { checkColumnSet, copyColumnSet } from "./column-set.mjs";
 import { createReadBudget } from "./read-budget.mjs";
 import { fromEvent, Subscription, timer } from "rxjs";
 import { answerTransition, dataTransition, outputTransition } from "./lifecycle.mjs";
@@ -9,23 +10,28 @@ export { readHostContext, OUTPUT_STYLE_VARIABLES } from "./context.mjs";
 
 const MAX_DATA_BYTES = 5 * 1024 * 1024;
 
-// A module view's data input is a whole file (Uint8Array) or a ranged file
-// (ByteSource). An anywidget buffer is always a whole file.
+const byteSource = (value) =>
+  Number.isSafeInteger(value?.byteLength) &&
+  value.byteLength >= 0 &&
+  typeof value.read === "function";
+
+// A module view's data input is a whole file (Uint8Array), a ranged file
+// (ByteSource) or a Parquet file ({file, columns}: its ByteSource and the
+// ColumnSet decoded from it). An anywidget buffer is always a whole file.
+// The decoder's limits bound `columns`, not the 5 MiB file limit.
 function checkDataInput(value, ranged) {
   if (value instanceof Uint8Array) {
     if (value.byteLength > MAX_DATA_BYTES) throw Error("A data input is at most 5 MiB.");
     return;
   }
-  if (
-    ranged &&
-    Number.isSafeInteger(value?.byteLength) &&
-    value.byteLength >= 0 &&
-    typeof value.read === "function"
-  )
+  if (ranged && byteSource(value)) return;
+  if (ranged && value?.columns !== undefined && byteSource(value.file)) {
+    checkColumnSet(value.columns);
     return;
+  }
   throw Error(
     ranged
-      ? "A data input is a Uint8Array or a {byteLength, read} file."
+      ? "A data input is a Uint8Array, a {byteLength, read} file or a {file, columns} table."
       : "A buffer is a Uint8Array.",
   );
 }
@@ -92,7 +98,8 @@ export function mountModuleOutput(
   let awaiting = [];
   const inputLifetimes = new Map();
   // Ends `name`'s previous input and describes `value` for the frame: a
-  // dedicated copy of whole bytes, or a new port onto a ranged file.
+  // dedicated copy of whole bytes, or a new port onto a ranged file. A
+  // Parquet file's port travels with a dedicated copy of its ColumnSet.
   const describe = (name, value) => {
     inputLifetimes.get(name)?.abort();
     inputLifetimes.delete(name);
@@ -102,7 +109,13 @@ export function mountModuleOutput(
     }
     const own = new AbortController();
     inputLifetimes.set(name, own);
-    const file = exposeByteSource(value, AbortSignal.any([lifetime.signal, own.signal]), budget);
+    const signal = AbortSignal.any([lifetime.signal, own.signal]);
+    if (value.columns) {
+      const file = exposeByteSource(value.file, signal, budget);
+      const [columns, buffers] = copyColumnSet(value.columns);
+      return [{ ...file, columns }, [file.port, ...buffers]];
+    }
+    const file = exposeByteSource(value, signal, budget);
     return [file, [file.port]];
   };
   const deliver = (change) => {
@@ -222,7 +235,7 @@ export function mountModuleOutput(
         channel.port1.postMessage({ type: "context", context });
     },
     // A new value for a data name the mount declared: a data/ name of a
-    // module view (Uint8Array or ByteSource) or a buffer of an anywidget view
+    // module view (Uint8Array, ByteSource or {file, columns}) or a buffer of an anywidget view
     // (Uint8Array). It reaches the frame once the view has rendered; until
     // then the latest value per name waits. A failed or disposed mount drops
     // it.

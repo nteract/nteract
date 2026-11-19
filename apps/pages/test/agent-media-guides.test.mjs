@@ -183,11 +183,15 @@ test("the views guide leads with the model and keeps the data import as the low-
   const guide = mediaGuide("/llms/views.txt", origin);
   for (const sentence of [
     "Each name in data is a key on the model.",
-    "A Parquet source arrives as a file handle with byteLength and read(offset, length, signal).",
+    "A Parquet source arrives as an Arrow-style table, decoded once by the Page.",
+    "The table has numRows, numCols, schema.fields, getChild(name), getChildAt(index), get(index), toArray() for plain row objects, select(names) and iteration over rows;",
+    "Nothing else on either is part of the interface.",
+    "a 64-bit integer column is numbers when every value fits in ±2^53, otherwise BigInt.",
     "Any other source arrives as a DataView of the whole file: at most 5 MiB, and it counts toward the view's 32 MiB input total.",
-    "A Parquet file is read in ranges and does not count.",
+    "A Parquet table does not count.",
     'model.on("change:activity", show);',
     "That import names the file the view was mounted with; after a change its reads fail as aborted",
+    "To show part of a table, filter it in the view",
     "reaches the mounted view as a change event and keeps its local state when the view listens for that change",
     'Listen with model.on("change:<name>", …) to update in place and keep the reader\'s state.',
     "A view that does not listen is mounted again when its data changes.",
@@ -196,6 +200,15 @@ test("the views guide leads with the model and keeps the data import as the low-
     assert.ok(guide.includes(sentence), sentence);
   assert.ok(guide.indexOf("model.get") < guide.indexOf("## Read part of a file"));
   assert.doesNotMatch(guide, /code or input changes remount/);
+  // With the standard libraries, the example draws the table with Plot.
+  const withCatalog = mediaGuide("/llms/views.txt", origin, { catalogEnabled: true });
+  for (const sentence of [
+    'el.replaceChildren(Plot.barY(model.get("activity"), { x: "day", y: "people" }).plot())',
+    'model.on("change:activity", draw);',
+    'For plain rows, read model.get("activity").toArray()',
+  ])
+    assert.ok(withCatalog.includes(sentence), sentence);
+  for (const text of [guide, withCatalog]) assert.doesNotMatch(text, /loadTableFile/);
   const module = tools.find(({ name }) => name === "edit_page").inputSchema.properties.operations
     .items.properties.module;
   assert.match(module.description, /render\(\{model, el, signal\}\)/);

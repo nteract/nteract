@@ -2092,7 +2092,7 @@ Pages and the notebook output host.
 
 ### Writes
 
-`edit_page` sends `set_view` alone. Every view has a `view_id`, title, `view_type` and `view_revision`. For new JavaScript use `module`. Its `module` field names the entry source, optional `data` binds files, and optional `imports` binds JavaScript sources under names local to the view. The entry exports `render({model, el, signal})`, or a default AFM object or factory. Each `data` name is a key on that model: a Parquet source as a ranged handle `{byteLength, read(offset, length, signal)}`, any other source as a DataView of the whole file. A whole file is at most 5 MiB and counts toward the view's 32 MiB input total, with its entry and imports; a Parquet file is read in ranges and does not count. A source that switches between Parquet and another type changes how its name arrives, so the view remounts. `import f from "data/<name>"` gives a handle on the file the view mounted with. A followed `data` source that moves to a new asset reaches the mounted view as `change:<name>` when the view listens with `model.on("change:<name>", …)`, and the view keeps the reader's state; the old handle's reads then fail as aborted. A view that does not listen is mounted again when its data changes. Changes to the entry, an import, the spec or the catalog remount the view. Each binding follows its source unless it specifies a revision. Use `vega-lite` with a chart spec and named data, or `anywidget` with a widget spec for code that needs a model. All three use the same view node. `read_page.libraries` lists the host-provided names. It names the Page `revision` it read, fenced like
+`edit_page` sends `set_view` alone. Every view has a `view_id`, title, `view_type` and `view_revision`. For new JavaScript use `module`. Its `module` field names the entry source, optional `data` binds files, and optional `imports` binds JavaScript sources under names local to the view. The entry exports `render({model, el, signal})`, or a default AFM object or factory. Each `data` name is a key on that model: a Parquet source as an Arrow-style table (see [Module view tables](#module-view-tables)), any other source as a DataView of the whole file. A whole file is at most 5 MiB and counts toward the view's 32 MiB input total, with its entry and imports; a Parquet table does not count, and the decode limits bound it. A Parquet file that cannot be decoded fails the mount with the decoder's message; on a data change the view keeps its earlier data. A source that switches between Parquet and another type changes how its name arrives, so the view remounts. `import f from "data/<name>"` gives a ranged handle `{byteLength, read(offset, length, signal)}` on the file the view mounted with, a Parquet file included. A followed `data` source that moves to a new asset reaches the mounted view as `change:<name>` when the view listens with `model.on("change:<name>", …)`, and the view keeps the reader's state; the old handle's reads then fail as aborted. A view that does not listen is mounted again when its data changes. Changes to the entry, an import, the spec or the catalog remount the view. Each binding follows its source unless it specifies a revision. Use `vega-lite` with a chart spec and named data, or `anywidget` with a widget spec for code that needs a model. All three use the same view node. `read_page.libraries` lists the host-provided names. It names the Page `revision` it read, fenced like
 any edit; a newer Page revision doesn't refuse it. `view_revision` is null to
 create, or the view's current `revision`. The receipt carries
 `view_revision`, the view's revision after the write, and `result.edits` of
@@ -2168,6 +2168,54 @@ A set_source that points a source at new JavaScript checks each view the
 host has open that follows it as a module or import, and puts that view's
 findings on the set_source edit as warnings. A view the host doesn't have
 open is not checked until its next set_view.
+
+### Module view tables
+
+A module view's Parquet data name reaches its model as a table. The page
+fetches the file through the Page's byte cache and decodes it with Sift's
+`parquetToArrowStream` within the limits charts use: 250,000 rows, 256
+columns, 128 MiB decoded. It turns the Arrow stream into a ColumnSet
+([viewer/parquet-columns.mjs](viewer/parquet-columns.mjs)), keeps the newest
+4 per asset id so views of one file decode it once, and transfers a copy into
+each frame. The ColumnSet is defined, and checked on both sides, in
+`@nteract/output-frame` (`src/column-set.mjs`). The frame wraps it in a table
+of our own (`src/table.mjs`); it loads no Arrow library and never loads Sift.
+
+Column types:
+
+| Type | Values | From |
+|------|--------|------|
+| `number` | numbers | 8- to 32-bit integers, floats, decimals (as floats: a large decimal loses precision), times of day (ms since midnight), and 64-bit integers when every value fits in ±2^53 |
+| `bigint` | BigInt, exact | a 64-bit integer column with any value outside ±2^53, signed or not |
+| `date` | `Date` | date32, date64 and timestamps of every unit |
+| `string` | strings | UTF-8 strings, dictionary-encoded or not |
+| `boolean` | booleans | booleans |
+| `other` | plain values | lists, structs and maps as arrays and objects, binary as bytes |
+
+A missing value is `null` in every type.
+
+The table spells its members as an Apache Arrow JS table does, so code
+written for an Arrow table, and Plot, read it. The interface is:
+
+- table: `numRows`, `numCols`, `schema.fields` (each `{name, type}`),
+  `getChild(name)`, `getChildAt(index)`, `get(index)`, `toArray()`,
+  `select(names)`, and iteration over rows;
+- column (what `getChild` returns): `length`, `nullCount`, `type`,
+  `get(index)`, `toArray()`, `toJSON()`, and iteration over values. `type` has
+  Arrow's `typeId` (and `unit` for a date), which Plot reads, and `kind`, the
+  column type above.
+
+Nothing else on either object is part of the interface. Where it differs
+from Arrow JS on purpose:
+
+| | Arrow JS | This table |
+|---|---|---|
+| Values | Arrow's own: BigInt for every 64-bit integer, numbers for dates | plain JavaScript, by the column types above |
+| Rows | row proxies | frozen plain objects, built once |
+| `toArray()` of a column with nulls | the stored values | an array with `null` for each missing value |
+| `getChild`, `getChildAt` for an unknown column | `null` | `null` |
+| `select` with an unknown name | skips it | skips it |
+| Builders, `slice`, `concat`, nested vectors | yes | no; nested values are plain arrays and objects |
 
 ### The Page body
 

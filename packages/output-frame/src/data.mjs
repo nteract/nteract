@@ -1,4 +1,5 @@
 import { receiveByteSource } from "./byte-source.mjs";
+import { columnTable } from "./table.mjs";
 import { widgetDefinitions } from "./schema.mjs";
 
 // A module view's data names, as `import x from "data/<alias>"` spells them.
@@ -70,10 +71,15 @@ function bytesByteSource(bytes, lifetime) {
   });
 }
 
-// One received data input. `{bytes}` is a whole file: the model holds a
-// DataView of it. `{byteLength, port}` is a ranged file: the model holds the
-// same handle the import gives. Both give the import a {byteLength, read}
+// One received data input. All three give the import a {byteLength, read}
 // handle that ends with `lifetime`.
+// - `{bytes}` is a whole file: the model holds a DataView of it.
+// - `{byteLength, port}` is a ranged file: the model holds the same handle
+//   the import gives.
+// - `{byteLength, port, columns}` is a Parquet file: the import's handle
+//   reads the file in ranges, and the model holds a table (table.mjs) over
+//   `columns`, the ColumnSet the parent decoded from that file. A ColumnSet
+//   checkColumnSet refuses is an invalid input, and its port closes.
 export function receiveDataInput(descriptor, lifetime) {
   if (descriptor?.bytes instanceof Uint8Array) {
     const { bytes } = descriptor;
@@ -87,8 +93,18 @@ export function receiveDataInput(descriptor, lifetime) {
     descriptor.byteLength >= 0 &&
     typeof descriptor.port?.postMessage === "function"
   ) {
-    const handle = receiveByteSource(descriptor, lifetime);
-    return { handle, value: handle };
+    if (descriptor.columns === undefined) {
+      const handle = receiveByteSource(descriptor, lifetime);
+      return { handle, value: handle };
+    }
+    let table;
+    try {
+      table = columnTable(descriptor.columns);
+    } catch (error) {
+      descriptor.port.close?.();
+      throw error;
+    }
+    return { handle: receiveByteSource(descriptor, lifetime), value: table };
   }
   throw Error("Invalid data input.");
 }
