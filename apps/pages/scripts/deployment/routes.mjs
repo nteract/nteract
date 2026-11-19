@@ -12,6 +12,10 @@ export const assetPaths =
 // only when a Page shows a Parquet dataframe. A separate group, so the asset
 // route bytes stay unchanged for a profile without Sift tables.
 export const siftPaths = "sift-[A-Z2-7]{8}[.]wasm|";
+// Sift's content-hashed CSV reader WASM (scripts/viewer-chunks.mjs
+// VIEWER_ASSET), loaded only when a Page first reads a CSV source. A group of
+// its own, so an installation from before CSV sources is recognized.
+export const siftCsvPaths = "sift-csv-[A-Z2-7]{8}[.]wasm|";
 // Exact identity endpoint; the Worker enforces GET and authentication.
 export const whoamiPaths = "whoami|";
 // Public media documentation; keep exact paths rather than opening /llms/* .
@@ -91,6 +95,7 @@ export const ROUTE_REGISTRY = Object.freeze([
   slot("chunkPaths", chunkPaths, (profile) => Boolean(profile.viewerChunks), { settled: true }),
   slot("assetPaths", assetPaths, (profile) => Boolean(profile.viewerAssets), { settled: true }),
   slot("siftPaths", siftPaths, (profile) => Boolean(profile.siftTables)),
+  slot("siftCsvPaths", siftCsvPaths, (profile) => Boolean(profile.siftTables)),
   slot("rendererPaths", "mermaid[.]js|", (profile) => Boolean(profile.tunnelService), {
     settled: true,
   }),

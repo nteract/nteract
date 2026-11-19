@@ -19,6 +19,7 @@ import {
   publishedPreviewApiPaths,
   publishedPreviewPaths,
   restPaths,
+  siftCsvPaths,
   siftPaths,
   whoamiPaths,
 } from "./deployment/routes.mjs";
@@ -2204,11 +2205,11 @@ test("media-guide migration refuses unrelated config edits even with a matching 
 // Every target's routes, by sha256. Update a hash only when the routes change
 // on purpose.
 const ROUTES_SHA256 = {
-  page10: "d66bcef8809207ba4f54db72c0ae31e73ba163efa850fe381e3c1c00ca878359",
-  pages: "6f24e1b42da8a405ed6682ff23076930f897f8aa079227f2971eab322e53b5a7",
-  pages2: "08ce2af861a2563a4d091f4b04b937096da6a113b065ea0a3544d5a9f67e3ef0",
-  page12: "571d1edb81fc1f25afd492be367b028afd4f19fca91ba92121e5d0c915d5c3f7",
-  page11: "e5882155195aea955d4e7950e36ab4da068398351a91b30b9657bd71fda47561",
+  page10: "76a09e20c72eed6763db90e59c07381b675c4b3e86faf0bcee33c5b16e8056f4",
+  pages: "a7213b01d718d18415230413311f4e3e2c05fe000824ed3a8ceef91b89be865e",
+  pages2: "9e1af01d7e6bc3afcfe576d3639713a84ca87e0a0bc55bfbfcb5754f07234e39",
+  page12: "ee367ae72a2aeb5a904afa677c14d85f021fab93639850e1576c9d59c198d291",
+  page11: "eed03dfd057e793995ec8700e19eff816ee4608817994266387ca37a486a0d9a",
 };
 // Each route group's path string, by sha256.
 const SLOT_SHA256 = {
@@ -2216,6 +2217,7 @@ const SLOT_SHA256 = {
   chunkPaths: "1387c0a673175a9a4685fd52b471f176125b11931af853d88cb37d0f4a5d060b",
   assetPaths: "3a7485ab6ba0e95b394d4565e1aef41a03daa7eeabf2a9597561a1f67214de6b",
   siftPaths: "68a984a8ef64a919f97f9c2a5623c33adf533cd6a39ac5b0894d88827f209fb5",
+  siftCsvPaths: "bf3adeb28de1a0ada00ba407483e0882a5691843c95b5ab3b68623ca75db45af",
   rendererPaths: "3b31d8b815248a7e16df03943a4a667b15ea65faefe11b1f4322643284e48166",
   connectPaths: "837a28c92cf0090120b15be90c9aa315e867cf2faa416272981cff22c8cb8270",
   whoamiPaths: "4b183f7c96547772d245d5dcf53a8314059122bf5475ec562fd49ab0163d3076",
@@ -2250,6 +2252,7 @@ const SETTLED_GROUPS = [
 ];
 const STRIPPABLE_GROUPS = [
   "siftPaths",
+  "siftCsvPaths",
   "whoamiPaths",
   "mediaGuidePaths",
   "pageSlugPaths",
@@ -2367,6 +2370,20 @@ for (const target of SLOTTED_TARGETS)
         assert.equal(installedReceipt(f), slotReceipt(x.plan.config, x.plan.unitSha256));
       }
   });
+
+test("the CSV reader's WASM route is published by default, omitted on request, and recognized either way", () => {
+  for (const target of SLOTTED_TARGETS) {
+    assert.ok(routesFor(target).includes(siftCsvPaths), target);
+    assert.ok(!routesFor(target, { omit: ["siftCsvPaths"] }).includes(siftCsvPaths), target);
+    assert.ok(routesFor(target, { omit: ["siftCsvPaths"] }).includes(siftPaths), target);
+    const known = knownTunnelConfigs(target, tunnelId);
+    const plan = isolatedPublicationPlan(inputFor(target));
+    const without = configWithout(target, ["siftCsvPaths"]);
+    assert.notEqual(without, plan.config);
+    assert.equal(known.get(digest(plan.config)), plan.config, target);
+    assert.equal(known.get(digest(without)), without, target);
+  }
+});
 
 test("page10 migrates a legacy connector at an installation missing several groups", (t) => {
   const f = fixture(t, { target: "page10" });
