@@ -705,8 +705,8 @@ source ID returns a conflict with the stored asset_id. To deliberately refresh
 it, pass that asset_id and the current source_revision to set_source. A module view
 reads the bound file with await model.get(name).json(), or a CSV as rows with
 await model.get(name).csv(). For an image or table,
-call read_page and send the returned insert
-operation through edit_page, with alt added for an image. For an image it is
+send the upload receipt’s insert operation through edit_page using the Page
+revision from read_page. Add alt for an image. For an image it is
 insert_image with the asset_id, which creates one rich-text block containing
 the image; for a Parquet file it is the dataframe insert_node under Datasets.
 Supply descriptive alt text; after_node_id

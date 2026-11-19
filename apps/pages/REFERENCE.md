@@ -2647,7 +2647,7 @@ For agents, importing bytes and inserting content are separate operations:
      ([import-file.mjs](worker/import-file.mjs)): it requires read/write scope
      and Page edit access, accepts bounded HTTPS downloads from the hosts in
      `FILE_HOSTS`, today only `files.oaiusercontent.com`, without redirects,
-     stores an image or a Parquet file under the upload's checks, and returns
+     stores an image, Parquet file or declared JSON file under the upload's checks, and returns
      `asset_id`, reference, MIME, size and an image's dimensions. With `file`
      the call takes no `content_type` or `size`. A file ID alone is not a
      download URL. Temporary source URLs are not stored in the document.

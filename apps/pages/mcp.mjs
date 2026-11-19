@@ -771,7 +771,7 @@ export const tools = [
   {
     ...tool(
       ASSET_UPLOAD_OPERATION,
-      "Add a local JSON, Parquet, CSV, image, WAV, JavaScript, CSS or binary file to a Page (API key or OAuth). Recipes: /llms/assets-and-sources.txt. Returns upload_url, headers (a Pages-Upload capability; never send your own key there), expires_at (at most 10 minutes) and a curl example: POST raw bytes, not multipart or base64. Access is checked again at upload. With file, Pages fetches the file instead. The same bytes return the same asset_id. Images, Parquet and CSV return an insert operation (add alt to an image). JSON and other view inputs return insert: null. To create a named source during upload, pass source with source_id and name. The upload receipt gives its source_revision. To refresh an existing source, use set_source with its current revision. If uploads cannot leave your environment, use Insert image in the browser.",
+      "Add a local JSON, Parquet, CSV, image, WAV, JavaScript, CSS or binary file to a Page (API key or OAuth). Recipes: /llms/assets-and-sources.txt. Returns upload_url, headers (a Pages-Upload capability; never send your own key there), expires_at (at most 10 minutes) and a curl example: POST raw bytes, not multipart or base64. Access is checked again at upload. With file, Pages fetches the file instead (image, Parquet, or declared JSON or CSV). The same bytes return the same asset_id. Images, Parquet and CSV return an insert operation (add alt to an image). JSON and other view inputs return insert: null. To create a named source during upload, pass source with source_id and name. The upload receipt gives its source_revision. To refresh an existing source, use set_source with its current revision. If uploads cannot leave your environment, use Insert image in the browser.",
       {
         page_id: page,
         content_type: {
@@ -788,7 +788,7 @@ export const tools = [
         source: {
           type: "object",
           description:
-            "Create a new Page source for this file. An existing ID is refused. Available for non-image files in either upload mode.",
+            "Create a new Page source for this file. An existing ID is refused. Use with a non-image upload. In attached-file mode this supports Parquet and declared JSON.",
           properties: {
             source_id: { type: "string", pattern: SOURCE_ID_PATTERN },
             name: { type: "string", minLength: 1, maxLength: MAX_SOURCE_NAME },
