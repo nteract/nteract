@@ -6,7 +6,9 @@ export async function openAssetByteSource(pageId, version, { signal, request = f
   if (!validAssetId(version.asset_id)) throw Error("Invalid file asset.");
   const url = imageAssetUrl(pageId, version.asset_id);
   const options = { credentials: "same-origin", redirect: "error", signal };
-  const head = await request(url, { ...options, method: "HEAD" });
+  // A cached streamed GET can answer HEAD without the asset size. Ask the
+  // host for metadata while leaving byte reads cacheable.
+  const head = await request(url, { ...options, method: "HEAD", cache: "no-store" });
   const size = head.headers.get("content-length");
   const byteLength = Number(size);
   if (
