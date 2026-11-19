@@ -38,9 +38,11 @@ export default {
           "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
           // Origin-dependent CDN injections (such as the RUM beacon) cannot
           // run correctly in this opaque sandbox. Serve the authored bytes.
-          // The bootstrap at a frame path never changes, so browsers may
-          // keep it for a day.
-          "Cache-Control": html ? "public, max-age=86400, no-transform" : "no-store, no-transform",
+          // A browser may keep the bootstrap for five minutes: long enough
+          // that the views of one Page share a download, short enough that a
+          // different document at this path, as after a rollback, reaches
+          // readers quickly.
+          "Cache-Control": html ? "public, max-age=300, no-transform" : "no-store, no-transform",
         },
       },
     );

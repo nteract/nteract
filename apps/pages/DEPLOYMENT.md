@@ -2353,8 +2353,10 @@ The shell serves the frame paths in `OUTPUT_FRAME_PATHS`
 (`shared/output-frame-paths.mjs`), and the viewer mounts `OUTPUT_FRAME_PATH`,
 one of them. Each path serves the frame's bootstrap document
 (`@nteract/output-frame/bootstrap`) with `Cache-Control: public,
-max-age=86400, no-transform`; `/health` and every other answer stay
-`no-store`. The bootstrap runs the frame runtime the viewer sends from its own
+max-age=300, no-transform`; `/health` and every other answer stay
+`no-store`. A browser keeps the bootstrap for up to five minutes, so after a
+rollback to a release that serves another document at the same path, views can
+fail to start for that long. The bootstrap runs the frame runtime the viewer sends from its own
 build, so a runtime or port protocol change needs no shell deploy and no new
 path. Only a change to the bootstrap document adds a new versioned path,
 keeps serving the previous one for at least one release, and deploys the shell

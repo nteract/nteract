@@ -223,7 +223,7 @@ test("the same bootstrap boots a runtime of any port protocol version", async (t
 
 test("this build's runtime connects through the bootstrap and checks its version", async (t) => {
   const runtime = await frameRuntimeText();
-  const answer = async (connect, nonce = NONCE) => {
+  const answer = async (connect, nonce = NONCE, failures = 0) => {
     const frame = bootstrapFrame(t);
     const { port1, port2 } = new MessageChannel();
     t.after(() => {
@@ -232,8 +232,9 @@ test("this build's runtime connects through the bootstrap and checks its version
     });
     const reply = new Promise((resolve) => (port1.onmessage = ({ data }) => resolve(data)));
     frame.boot(boot(runtime, { connect, nonce }), { ports: [port2] });
-    await tick();
-    assert.deepEqual(frame.failures, []);
+    if (failures) await until(() => frame.failures.length === failures, "no failure message");
+    else await tick();
+    assert.equal(frame.failures.length, failures);
     assert.deepEqual(frame.scriptErrors, []);
     // The runtime's stylesheet comes first in <head>.
     assert.match(frame.window.document.head.firstElementChild.textContent, /--background/);
@@ -249,7 +250,9 @@ test("this build's runtime connects through the bootstrap and checks its version
   const older = await answer(connectMessageType(2));
   assert.equal(older.type, "error");
   assert.match(older.message, /protocol v3 and the page sent v2/);
-  assert.equal(await answer(connectMessageType(), "another-nonce"), "no reply");
+  // A boot message for another mount: the runtime refuses it by throwing, so
+  // the bootstrap reports the failure and nothing answers on the port.
+  assert.equal(await answer(connectMessageType(), "another-nonce", 1), "no reply");
 });
 
 test("the boot state: every state and event, and the startup failure texts", () => {

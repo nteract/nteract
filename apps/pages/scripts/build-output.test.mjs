@@ -24,7 +24,7 @@ test("the viewer's default frame URL is a path the output Worker serves", () => 
   assert.deepEqual(OUTPUT_FRAME_PATHS, ["/frame/v2/"]);
 });
 
-const FRAME_CACHE = "public, max-age=86400, no-transform";
+const FRAME_CACHE = "public, max-age=300, no-transform";
 // Every response's headers but Content-Type and Cache-Control, which differ
 // between the bootstrap and the other answers. The frame CSP, in full.
 const COMMON_HEADERS = {

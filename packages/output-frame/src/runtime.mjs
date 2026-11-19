@@ -35,7 +35,9 @@ function connect(event) {
     event.data.nonce !== location.hash.slice(1) ||
     event.ports.length !== 1
   )
-    return;
+    // The bootstrap reports a throw as a boot failure, so the host fails the
+    // mount at once and does not wait out the boot bound.
+    throw Error("The boot message does not belong to this mount.");
   const port = event.ports[0];
   // Host and runtime come from one build; a mismatch is a build error.
   if (version !== PROTOCOL_VERSION) {
