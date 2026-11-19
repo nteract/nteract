@@ -1,5 +1,5 @@
 import { html } from "./oauth.mjs";
-import { recordOidcEvent } from "./auth-events.mjs";
+import { browserSessionOptions } from "./browser-account.mjs";
 
 /** The Pages index a signed-in browser lands on when a callback is stale. */
 export const SIGN_IN_HOME = "/pages";
@@ -23,6 +23,6 @@ export function signInFailurePage({ status, accountRejected }) {
 
 export const signInCallbackOptions = {
   homePath: SIGN_IN_HOME,
+  ...browserSessionOptions,
   failurePage: signInFailurePage,
-  onAuthEvent: recordOidcEvent,
 };

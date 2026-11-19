@@ -4,7 +4,9 @@ import {
   type ConnectionScope,
 } from "@nteract/identity";
 import {
+  openServerSecret,
   readServerAppSession,
+  sealServerSecret,
   serverOidcEnabled,
   type ServerSessionEnvironment,
 } from "./oidc-session-store.ts";
@@ -16,6 +18,7 @@ export interface AppSessionEnvironment extends ServerSessionEnvironment {
 
 export interface CloudAppSession {
   cacheKey: string;
+  sealedAccountEmail?: string;
   displayName?: string;
   expiresAt: number;
   issuedAt: number;
@@ -164,11 +167,21 @@ export async function createServerAppSession(
   cacheKey: string,
   expiresAt: number,
   nowSeconds: number,
+  { retainAccountEmail = false } = {},
 ): Promise<CloudAppSession> {
   const proof = await verifiedEmailProof(env, identity, nowSeconds);
   return {
     provider: "oidc",
     cacheKey,
+    ...(retainAccountEmail && proof.verified_email_binding && identity.metadata.email
+      ? {
+          sealedAccountEmail: await sealServerSecret(
+            env,
+            identity.metadata.email.trim(),
+            accountEmailBinding(cacheKey, identity.principal),
+          ),
+        }
+      : {}),
     principal: identity.principal,
     principalNamespace: identity.metadata.principalNamespace,
     issuedAt: nowSeconds,
@@ -184,6 +197,24 @@ export async function createServerAppSession(
         }
       : {}),
   };
+}
+
+const accountEmailBinding = (cacheKey: string, principal: string) =>
+  JSON.stringify(["account-menu-email", cacheKey, principal]);
+
+/** For the signed-in person's own account menu. Older sessions have no address. */
+export async function readServerAccountEmail(env: AppSessionEnvironment, session: CloudAppSession) {
+  if (!session.sealedAccountEmail) return null;
+  try {
+    return await openServerSecret<string>(
+      env,
+      session.sealedAccountEmail,
+      accountEmailBinding(session.cacheKey, session.principal),
+    );
+  } catch {
+    // An unreadable display hint needn't interrupt a valid session.
+    return null;
+  }
 }
 
 /** Project session evidence; callers must still enforce notebook ACLs. */

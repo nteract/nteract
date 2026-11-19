@@ -11,7 +11,8 @@ import { handleLocalOidcRequest } from "@cloud/dev-oidc.ts";
 import { loadServerSession, assertSessionKeyring } from "@nteract/session";
 import { sessionKeysFailure } from "./session-keys.mjs";
 import { httpsRedirect, withTransportSecurity } from "./transport-security.mjs";
-import { logAuthEvent, recordOidcEvent, sessionRowPrincipal } from "./auth-events.mjs";
+import { browserAccountMenu, browserSessionOptions } from "./browser-account.mjs";
+import { logAuthEvent, sessionRowPrincipal } from "./auth-events.mjs";
 import {
   createPageData,
   initializePage,
@@ -1668,7 +1669,7 @@ const gateway = {
         let refreshed;
         if (!request.headers.has("authorization")) {
           refreshed = await serverOidcSessionStatus(request, env, noop, {
-            onAuthEvent: recordOidcEvent,
+            ...browserSessionOptions,
             provider: kiloSessionProvider(env, request),
           });
           // A renewal may have changed or ended the session; the expiry
@@ -1686,6 +1687,7 @@ const gateway = {
           identity
             ? {
                 identity: publicIdentity(identity),
+                ...(await browserAccountMenu(request, env, identity)),
                 canWrite: identity.canWrite,
                 expiresAt: identity.expiresAt,
                 // This host serves account-auth.mjs, which only a browser

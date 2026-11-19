@@ -1398,8 +1398,10 @@ A Kilo deployment differs in three ways:
   `sign_in_unavailable`). Without a usable address, invitations by email
   can't be accepted and email quota rules don't apply.
 
-A browser session keeps the address as signed email proof, not as the
-address. The proof is good for 6 hours from sign-in
+Pages keeps signed email proof for invitations. It also encrypts the verified
+address in the server session for the browser account menu. That menu shows
+Kilo organization names when available. Otherwise, hovering the account name
+reveals the address. The invitation proof is good for 6 hours from sign-in
 (`NOTEBOOK_CLOUD_IDENTITY_PROOF_MAX_AGE_SECONDS`), so a Kilo session claims
 invitations for the first 6 of its 8 hours; after that the person signs in
 again.

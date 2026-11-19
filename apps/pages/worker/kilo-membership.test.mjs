@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { secretHash, SERVER_SESSION_COOKIE } from "@nteract/session";
 import { startLocalKiloHandoff } from "../scripts/fixtures/local-kilo-handoff.mjs";
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
+import worker from "./index.mjs";
 import { authenticate } from "./auth.mjs";
 import { KILO_MEMBERSHIP_SECONDS } from "./kilo-config.mjs";
 import { kiloOrganizations, MAX_ORGANIZATIONS } from "./kilo-exchange.mjs";
@@ -649,4 +650,33 @@ test("one Kilo sign-in gives both an email proof and organization leases, in a b
   assert.equal(agent.verifiedEmail, "member@example.test");
   assert.equal(await invitationMatches(agent, invite(agent), env), true);
   assert.deepEqual(named(agent), [sentinel]);
+});
+
+test("the private browser menu shows organization names or the signed-in person's verified email", async (t) => {
+  const { env, kilo, lines } = await fixture(t);
+  const account = { ...person([sentinel, second]), verifiedEmail: "member@example.test" };
+  const cookie = await browserSignIn(env, kilo, account);
+  const status = async (cookie) => {
+    const response = await worker.fetch(request("/api/auth/session", { cookie }), env);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    return response.json();
+  };
+  const member = await status(cookie);
+  assert.deepEqual(member.accountMenu, { organizations: [sentinel.name, second.name] });
+  assert.ok(!JSON.stringify(member).includes(account.verifiedEmail));
+  const another = { ...person([]), verifiedEmail: "another@example.test" };
+  const personalCookie = await browserSignIn(env, kilo, another);
+  const personal = await status(personalCookie);
+  const foreign = await worker.fetch(
+    request("/api/auth/session", { cookie: personalCookie, origin: "https://elsewhere.test" }),
+    env,
+  );
+  assert.equal(foreign.status, 403);
+  assert.ok(!(await foreign.text()).includes(another.verifiedEmail));
+  assert.deepEqual(personal.accountMenu, { email: another.verifiedEmail });
+  assert.deepEqual(Object.keys(personal.identity).sort(), ["displayName", "driver", "principal"]);
+  assert.equal((await status(await browserSignIn(env, kilo, person([])))).accountMenu, undefined);
+  assert.equal((await status(cookie)).accountMenu.organizations.length, 2);
+  assert.ok(!lines.join("\n").includes(another.verifiedEmail));
 });

@@ -229,6 +229,7 @@ function App() {
     documentDisclosure = useDismissibleDisclosure(),
     activityDisclosure = useDismissibleDisclosure();
   const [account, setAccount] = useState(undefined),
+    [menuAccount, setMenuAccount] = useState(null),
     [, paint] = useState(0),
     [error, setError] = useState(""),
     // The session check's banner: { message, signIn } or null.
@@ -905,7 +906,7 @@ function App() {
     const maintenance = maintainBrowserSession({
       // The first refresh takes the request theme.js started (early-session.mjs).
       request: () => requestSession(request),
-      onSession: (result, { refusal }) => {
+      onSession: ({ accountMenu, ...result }, { refusal }) => {
         if (!alive) return;
         // A refusal keeps the sign-out below and says why it happened.
         setSessionNotice(
@@ -931,6 +932,7 @@ function App() {
           setOpening(false);
         }
         authentication.current = result;
+        setMenuAccount(result.identity && { ...result.identity, ...accountMenu });
         const live = host.current;
         if (!live) {
           setAccount(result.identity);
@@ -1602,6 +1604,13 @@ function App() {
   const projectPagesList = projectPagesShown
     ? projectPages.pages.filter((item) => item.project_id === placement.project_id).map(ownTitle)
     : [];
+  const accountName =
+    menuAccount?.displayName &&
+    menuAccount.displayName !== menuAccount.principal &&
+    !/@|%40/i.test(menuAccount.displayName)
+      ? menuAccount.displayName
+      : "Your account";
+  const organizationNames = menuAccount?.organizations?.join(", ");
   const usage = quotaNotice(quota);
   const openComments = threads.filter((thread) => thread.state === "open").length;
   // The page menu: Document actions on desktop, the ⋯ menu on phones.
@@ -1769,17 +1778,23 @@ function App() {
               </div>
             </div>
           )}
-          {account && (
+          {menuAccount && (
             <details className="account-actions" ref={accountDisclosure}>
-              <summary
-                className="icon-button"
-                aria-label="Account"
-                title={account.displayName || "Account"}
-              >
+              <summary className="icon-button" aria-label="Account" title="Account">
                 <UserRound size={19} aria-hidden="true" />
               </summary>
               <div className="menu-popover">
-                <p className="account-name">{account.displayName || "Your workspace"}</p>
+                <p
+                  className="account-name"
+                  title={organizationNames ? undefined : menuAccount.email}
+                >
+                  {accountName}
+                  {organizationNames && (
+                    <span className="account-organizations" title={organizationNames}>
+                      {organizationNames}
+                    </span>
+                  )}
+                </p>
                 <AppearanceControls />
                 <a
                   href="/connect"
