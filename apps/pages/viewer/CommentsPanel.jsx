@@ -135,10 +135,10 @@ export function CommentsPanel({
     if (target?.source !== "passage" || !target.id) return;
     const thread = threads.find((item) => item.id === target.id);
     if (thread) setFilter((current) => filterFor(thread, current, principal));
-    dispatch({ type: "show", id: target.id });
+    dispatch({ type: "show", id: target.id, queue: thread?.state });
     // Only a new request should open a thread, not a thread list update.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target]);
+  }, [target?.id, target?.source, target?.request]);
   const changeDraft = (id, value) => setDrafts((previous) => ({ ...previous, [id]: value }));
   const markSending = (id, value) =>
     setSending((previous) => {
@@ -214,43 +214,69 @@ export function CommentsPanel({
   const groups = groupByHeading(visible, locate);
   const ordered = groups.flatMap((group) => group.threads);
   const orderedIds = ordered.map((thread) => thread.id);
-  const unresolvedIds = groupByHeading(openThreads, locate).flatMap((g) =>
-    g.threads.map((t) => t.id),
-  );
+  const documentOrder = groupByHeading(threads, locate).flatMap((group) => group.threads);
+  const unresolvedIds = documentOrder.filter((thread) => thread.state === "open").map((t) => t.id);
   const allIds = threads.map((thread) => thread.id);
   const idsKey = allIds.join("\n");
   useEffect(() => dispatch({ type: "sync", ids: idsKey ? idsKey.split("\n") : [] }), [idsKey]);
   const current = nav.name !== "list" ? threads.find((t) => t.id === nav.id) : null;
-  // A thread opened from the Page may sit outside the filter; step within the
-  // filter when it's there, else among every thread in document order.
-  const stepIds =
-    current && !orderedIds.includes(current.id)
-      ? groupByHeading(threads, locate).flatMap((g) => g.threads.map((t) => t.id))
+  const reviewing = Boolean(current) && nav.name === "review";
+  // Review steps through open threads, or through history when a resolved row is selected.
+  const stepIds = reviewing
+    ? documentOrder
+        .filter((thread) => thread.state === nav.queue || thread.id === current.id)
+        .map((thread) => thread.id)
+    : current && !orderedIds.includes(current.id)
+      ? documentOrder.map((thread) => thread.id)
       : orderedIds;
   const where = current ? position(nav, stepIds) : null;
-  const reviewing = Boolean(current) && nav.name === "review";
   const resolvedDraft = resolvedThreads.some((t) => hasDraft(drafts[t.id]));
+
+  // A resolve may finish after the reader moves or another thread changes.
+  // Advance against the latest document order while the same queue is on screen.
+  const panel = useRef(null);
+  useLayoutEffect(() => {
+    panel.current = { nav, filter, open, documentOrder };
+    return () => {
+      panel.current = null;
+    };
+  });
 
   async function changeThread(thread) {
     setProblem("");
     setChanging(thread.id);
-    const advanceTo =
-      reviewing && thread.state === "open" ? afterResolve(thread.id, unresolvedIds) : null;
     try {
       await session.comment({
         action: thread.state === "open" ? "resolve" : "reopen",
         thread_id: thread.id,
       });
-      if (reviewing && advanceTo) dispatch({ type: "go", id: advanceTo });
+      const latest = panel.current;
+      const stillHere = latest?.open && latest.nav === nav && latest.filter === filter;
+      if (stillHere && thread.state === "open" && (reviewing || filter === "open")) {
+        const queue = latest.documentOrder.filter((t) => t.state === "open" || t.id === thread.id);
+        const next = afterResolve(
+          thread.id,
+          queue.map((t) => t.id),
+        );
+        if (next) dispatch({ type: "go", id: next, queue: "open" });
+        else {
+          setFilter("open");
+          onSelect?.(null);
+          dispatch({ type: "back" });
+        }
+      } else if (stillHere && reviewing && thread.state === "resolved") {
+        dispatch({ type: "go", id: thread.id, queue: "open" });
+      }
       requestAnimationFrame(() => {
         if (!dialog.current?.open) return;
         const active = document.activeElement;
         if (active && active !== document.body && dialog.current.contains(active)) {
           if (active.isConnected && !active.disabled) return;
         }
-        dialog.current
-          .querySelector(".thread-view .thread-state-action, .comments-back")
-          ?.focus({ preventScroll: true });
+        const nextFocus =
+          dialog.current.querySelector(".thread-view .thread-state-action, .comments-back") ??
+          dialog.current.querySelector(".comments-filter[aria-selected=true]");
+        nextFocus?.focus({ preventScroll: true });
       });
     } catch (error) {
       setProblem(error.message);
@@ -290,7 +316,7 @@ export function CommentsPanel({
     if (keptKey) dispatch({ type: "back" });
   }, [keptKey]);
   function startReview() {
-    const id = current?.id ?? unresolvedIds[0] ?? orderedIds[0];
+    const id = current?.state === "open" ? current.id : unresolvedIds[0];
     if (!id) return;
     dispatch({ type: "review", id, scroll: list.current?.scrollTop ?? 0 });
     requestAnimationFrame(() =>
@@ -309,9 +335,9 @@ export function CommentsPanel({
   function reviewCommand(command) {
     switch (command) {
       case "next":
-        return dispatch({ type: "step", by: 1, ids: allInOrder() });
+        return dispatch({ type: "step", by: 1, ids: stepIds });
       case "previous":
-        return dispatch({ type: "step", by: -1, ids: allInOrder() });
+        return dispatch({ type: "step", by: -1, ids: stepIds });
       case "resolve":
         if (current?.state === "open" && session.canComment && changing !== current.id)
           changeThread(current);
@@ -324,10 +350,6 @@ export function CommentsPanel({
         return;
     }
   }
-  const allInOrder = () => [
-    ...unresolvedIds,
-    ...groupByHeading(resolvedThreads, locate).flatMap((g) => g.threads.map((t) => t.id)),
-  ];
   // Restore the list where it was and return focus to the thread just left.
   useLayoutEffect(() => {
     if (nav.name !== "list") return;
@@ -441,15 +463,16 @@ export function CommentsPanel({
       {reviewing ? (
         <ReviewWorkspace
           current={current}
-          threads={threads}
-          order={allInOrder()}
+          ordered={documentOrder}
+          queue={nav.queue}
+          where={where}
           locate={locate}
           now={now}
           drafts={drafts}
           problem={problem}
           canComment={session.canComment}
           changing={changing === current.id || Boolean(sending[current.id])}
-          onGo={(id) => dispatch({ type: "go", id })}
+          onGo={(thread) => dispatch({ type: "go", id: thread.id, queue: thread.state })}
           onStep={(by) => reviewCommand(by > 0 ? "next" : "previous")}
           onResolveNext={() => reviewCommand("resolve")}
           onExit={() => reviewCommand("exit")}
@@ -702,8 +725,9 @@ function emptyText(filter, total, canComment) {
  */
 function ReviewWorkspace({
   current,
-  threads,
-  order,
+  ordered,
+  queue,
+  where,
   locate,
   now,
   drafts,
@@ -718,12 +742,10 @@ function ReviewWorkspace({
   onClose,
   threadView,
 }) {
-  const byId = new Map(threads.map((thread) => [thread.id, thread]));
-  const ordered = order.map((id) => byId.get(id)).filter(Boolean);
+  const byId = new Map(ordered.map((thread) => [thread.id, thread]));
   const open = ordered.filter((thread) => thread.state === "open");
   const resolved = ordered.filter((thread) => thread.state === "resolved");
   const done = resolved.length;
-  const index = ordered.findIndex((thread) => thread.id === current.id);
   const next =
     current.state === "open"
       ? afterResolve(
@@ -735,10 +757,10 @@ function ReviewWorkspace({
   const location = locate(current);
   const path = location.headings;
   const groups = groupByHeading(open, locate);
-  const [showResolved, setShowResolved] = useState(current.state === "resolved");
+  const [showResolved, setShowResolved] = useState(queue === "resolved");
   useEffect(() => {
-    if (current.state === "resolved") setShowResolved(true);
-  }, [current.id, current.state]);
+    if (queue === "resolved") setShowResolved(true);
+  }, [queue, current.id]);
   const row = (thread) => (
     <ThreadRow
       key={thread.id}
@@ -747,7 +769,7 @@ function ReviewWorkspace({
       location={locate(thread)}
       active={thread.id === current.id}
       draft={hasDraft(drafts[thread.id])}
-      onOpen={() => onGo(thread.id)}
+      onOpen={() => onGo(thread)}
       onHover={() => {}}
     />
   );
@@ -824,14 +846,14 @@ function ReviewWorkspace({
         <section className="review-conversation" aria-label="Conversation">
           <div className="review-column-head">
             <span className="comments-position">
-              <b>{index + 1}</b> of {ordered.length}
+              <b>{where.index}</b> of {where.total}
             </span>
             <button
               type="button"
               className="icon-button"
               aria-label="Previous thread"
               title="Previous thread (K)"
-              disabled={index <= 0}
+              disabled={where.index <= 1}
               onClick={() => onStep(-1)}
             >
               <ChevronUp size={16} aria-hidden="true" />
@@ -841,7 +863,7 @@ function ReviewWorkspace({
               className="icon-button"
               aria-label="Next thread"
               title="Next thread (J)"
-              disabled={index === ordered.length - 1}
+              disabled={where.index === where.total}
               onClick={() => onStep(1)}
             >
               <ChevronDown size={16} aria-hidden="true" />
