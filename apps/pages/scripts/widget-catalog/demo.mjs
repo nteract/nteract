@@ -52,7 +52,7 @@ try {
     await edit([{ op: "insert_node", node: { type: "view", attrs: { view_id: id } } }]);
   }
   await page.goto(link);
-  // Both widget modules use bare imports. Declaring the catalog while the
+  // Both widget modules import activity-controls. Binding that component while the
   // Page is open must remount them without a view edit or a page reload.
   await expect(page.locator('.pages-anywidget-view[data-output-state="failed"]')).toHaveCount(2, {
     timeout: 30000,

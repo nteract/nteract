@@ -67,6 +67,7 @@ export function projectView(viewId, doc) {
       title,
       media_type,
       spec,
+      ...(view.catalog_revision && { catalog_revision: view.catalog_revision }),
       ...(bindings && { data: Object.freeze(Object.fromEntries(bindings)) }),
       revision,
       // The spec as stored, for comparing two projections cheaply.
@@ -107,6 +108,7 @@ export function sameProjection(a, b) {
   return (
     x.view_id === y.view_id &&
     x.media_type === y.media_type &&
+    x.catalog_revision === y.catalog_revision &&
     x.revision === y.revision &&
     x.title === y.title &&
     x.specText === y.specText &&

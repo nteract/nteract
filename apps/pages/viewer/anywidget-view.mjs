@@ -137,18 +137,26 @@ export function mount(
                           };
                           const url = new URL(frameUrl);
                           const imports = {};
+                          let catalogRevision = plan.view.catalog_revision;
                           if (plan.catalog) {
                             const source = await load({
                               asset_id: plan.catalog,
                               media_type: "application/octet-stream",
                             });
                             const declaration = decodeWidgetImports(source.bytes, plan.catalog);
-                            url.searchParams.set("catalog", declaration.catalog_revision);
+                            catalogRevision ??= declaration.catalog_revision;
                             for (const module of declaration.modules)
                               imports[module.name] = await load({
                                 asset_id: module.asset_id,
                                 media_type: "text/javascript",
                               });
+                          }
+                          if (catalogRevision) {
+                            if (!hasWidgetCatalog(frameUrl))
+                              throw Error(
+                                "This output host cannot serve the catalog pinned by this view.",
+                              );
+                            url.searchParams.set("catalog", catalogRevision);
                           }
                           const byteSources = {};
                           for (const [name, version] of Object.entries(plan.versions)) {

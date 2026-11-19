@@ -109,7 +109,7 @@ test("a Page author can discover the same catalog setup through MCP and the publ
     assert.equal(guide.includes("set_widget_imports"), enabled, site);
     assert.equal(readTool.description.includes("available_imports"), enabled);
     const views = await (await worker.fetch(new Request(site + "/llms/views.txt"), config)).text();
-    assert.equal(views.includes("Page imports setup"), enabled);
+    assert.equal(views.includes("standard library guide"), enabled);
     if (enabled) {
       const examples = [...guide.matchAll(/```json\n([\s\S]*?)\n```/g)].map((match) =>
         JSON.parse(match[1]),
@@ -119,12 +119,17 @@ test("a Page author can discover the same catalog setup through MCP and the publ
       );
       assert.equal(setup.operation, "edit_page");
       assert.deepEqual(setup.arguments.operations, [
-        { op: "set_widget_imports", catalog: "standard", source_revision: null },
+        {
+          op: "set_widget_imports",
+          catalog: "standard",
+          source_revision: "<widget_imports.source_revision>",
+          modules: [{ name: "activity-controls", source_id: "controls", revision: "1" }],
+        },
       ]);
       for (const field of editTool.inputSchema.required)
         assert.ok(Object.hasOwn(setup.arguments, field));
       assert.match(guide, /available_imports/);
-      assert.match(guide, /widget_imports\.imports/);
+      assert.match(guide, /view\.catalog_revision/);
     }
   }
 });

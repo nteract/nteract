@@ -52,6 +52,17 @@ test("a ready view document projects its title, parsed spec, bindings and revisi
   assert.deepEqual({ ...pinned.view.data }, { sales: { source_id: "sales", revision: "3" } });
 });
 
+test("the reader passes the saved executable catalog to the output frame", () => {
+  const record = viewDoc({
+    media_type: "application/vnd.nteract.module-view.v1+json",
+    spec: JSON.stringify({ module: { source_id: "entry" } }),
+    data: {},
+    catalog_revision: "a".repeat(64),
+  });
+  assert.equal(projectView("daily", record).view.catalog_revision, record.catalog_revision);
+  assert.equal(projectView("daily", { ...record, catalog_revision: "latest" }).reason, "malformed");
+});
+
 test("a view the host holds no document for isn't on this Page", () => {
   for (const state of [{ name: "absent" }, { name: "absent", id: "x", cooling: true }])
     assert.deepEqual(viewProjection("sales", state, undefined), {

@@ -1,3 +1,4 @@
+import { WIDGET_IMPORTS } from "../shared/widget-imports.mjs";
 import { isExecutableView } from "../shared/anywidget-view.mjs";
 import { viewDependencies } from "../shared/view-dependencies.mjs";
 import * as A from "@automerge/automerge/slim";
@@ -41,6 +42,7 @@ import {
  *   title: string,               // 1 to MAX_VIEW_TITLE characters
  *   media_type: string,          // one of VIEW_MEDIA_TYPES
  *   spec: Text,                  // the spec as JSON, replaced with updateText
+ *   catalog_revision?: string,  // host-selected manifest for a new executable view
  *   data: {                      // chart dataset bindings; empty for anywidget
  *     [data_name]: { source_id } | { source_id, revision },
  *   },
@@ -93,7 +95,13 @@ export function viewSummary(doc, viewId) {
   const view = readView(doc, viewId);
   if (!view) return undefined;
   const { view_id, title, media_type, revision, data } = view;
-  const summary = { view_id, title, media_type, revision };
+  const summary = {
+    view_id,
+    title,
+    media_type,
+    revision,
+    ...(view.catalog_revision && { catalog_revision: view.catalog_revision }),
+  };
   if (!isExecutableView(media_type)) return { ...summary, data };
   try {
     return {
@@ -249,13 +257,25 @@ export function checkView(doc, op, { sourcesDoc } = {}) {
  * (author.mjs authorOf), stored within WRITER_LIMITS; `at` the host's time.
  * Mints the next revision. Returns the receipt's edit.
  */
-export function setView(doc, op, { sourcesDoc, by, at = new Date().toISOString() }) {
+export function setView(
+  doc,
+  op,
+  { sourcesDoc, by, catalogRevision, at = new Date().toISOString() },
+) {
   const previous = checkView(doc, op, { sourcesDoc });
   if (!validTime(at) || !isMap(by)) throw Error("A view write needs its writer and time");
   const revision = String(previous ? Number(previous.revision) + 1 : 1);
   const title = op.title.trim();
   if (doc.title !== title) doc.title = title;
   if (doc.media_type !== op.media_type) doc.media_type = op.media_type;
+  // Existing executable views keep their original resolution mode on edits.
+  // Pages with an explicit declaration already chose their own catalog.
+  if (!isExecutableView(op.media_type)) {
+    if (doc.catalog_revision !== undefined) delete doc.catalog_revision;
+  } else if (catalogRevision && !isExecutableView(previous?.media_type)) {
+    const declaration = sourcesDoc?.sources?.[WIDGET_IMPORTS];
+    if (!declaration || declaration.deleted) doc.catalog_revision = catalogRevision;
+  }
   const spec = JSON.stringify(op.spec);
   if (typeof doc.spec !== "string") doc.spec = spec;
   else if (doc.spec !== spec) A.updateText(doc, ["spec"], spec);

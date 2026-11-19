@@ -7841,6 +7841,7 @@ export class Page {
         apply: (draft, effectiveArgs) => {
           try {
             const edit = setView(draft, effectiveArgs.operations[0], {
+              catalogRevision: configuredCatalogRevision(this.env),
               sourcesDoc: this.sourcesView(),
               by: authorOf(publicIdentity(identity), agent),
             });

@@ -18,9 +18,12 @@ Run `node scripts/widget-catalog/demo.mjs` to create a Page with illustrative
 counts and exercise both widgets. Open Widget imports in Sources to see the
 catalog, Page module pins, and the views using them.
 
-An agent can discover the catalog through `read_page.widget_imports`. Upload a
+On a fresh Page, `set_view` pins the deployed catalog on each new executable view.
+Import React or Plot directly and inspect `read_page.view.catalog_revision` to
+see the saved digest. The shared controls in this demo also need a Page-owned
+module. Upload a
 component as a regular JavaScript source, then send this single operation to
-`edit_page` (omit `modules` to select just the standard libraries).
+`edit_page`.
 
 ```json
 {

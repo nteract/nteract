@@ -995,7 +995,7 @@ function catalogWidgetTools() {
         ...tool,
         description:
           tool.description +
-          " Check widget_imports before using bare imports. With catalog:null, available_imports lists libraries you can enable with set_widget_imports. After selection, imports lists the active names.",
+          " New executable views on a fresh Page automatically get the standard libraries in widget_imports.available_imports. Read view.catalog_revision for the saved pin. Page-owned shared modules use set_widget_imports.",
       };
     if (tool.name !== "edit_page") return tool;
     const local = structuredClone(tool);
@@ -1006,7 +1006,7 @@ function catalogWidgetTools() {
         type: "string",
         enum: ["standard"],
         description:
-          "set_widget_imports. Enable bare library imports on this Page. Send this operation alone with the observed widget_imports.source_revision (null for first selection). See /llms/anywidget.txt.",
+          "set_widget_imports. Declare Page-wide shared modules or select an explicit Page catalog. Send this operation alone with the observed widget_imports.source_revision (null for first selection). See /llms/anywidget.txt.",
       },
       modules: {
         type: "array",

@@ -285,3 +285,53 @@ test("a refusal prints a spec's data names bounded and escaped, on one line", ()
   bounded(many);
   assert.match(many, /"d7" and 4 more\)/);
 });
+
+test("new executable views keep the host catalog they first used", () => {
+  const first = "a".repeat(64),
+    next = "b".repeat(64);
+  const js = "c".repeat(64);
+  const sourcesDoc = A.change(sources(), (draft) =>
+    setSources(
+      draft,
+      [
+        {
+          op: "set_source",
+          source_id: "entry",
+          name: "Entry",
+          source_revision: null,
+          asset_id: js,
+        },
+      ],
+      { by, mediaTypes: new Map([[js, "text/javascript"]]) },
+    ),
+  );
+  for (const media_type of [
+    "application/vnd.nteract.module-view.v1+json",
+    "application/vnd.nteract.anywidget.v2+json",
+  ]) {
+    const create = {
+      op: "set_view",
+      view_id: "daily",
+      title: "Daily",
+      media_type,
+      spec: { module: { source_id: "entry" } },
+      view_revision: null,
+    };
+    const write = (doc, operation, catalogRevision) =>
+      A.change(doc, (draft) => setView(draft, operation, { sourcesDoc, by, catalogRevision }));
+    const doc = write(viewGenesis(uuid), create, first);
+    assert.equal(readView(doc, "daily").catalog_revision, first);
+    assert.equal(viewSummary(doc, "daily").catalog_revision, first);
+    const edit = { ...create, title: "Updated", view_revision: "1" };
+    const renamed = write(doc, edit, next);
+    assert.equal(readView(renamed, "daily").catalog_revision, first);
+    assert.throws(
+      () => validateViewOperation({ ...create, catalog_revision: next }),
+      /does not take/,
+    );
+    const legacy = write(viewGenesis(uuid), create, null);
+    assert.equal(readView(write(legacy, edit, next), "daily").catalog_revision, undefined);
+    const chart = write(renamed, op({ view_revision: "2" }), next);
+    assert.equal(readView(chart, "daily").catalog_revision, undefined);
+  }
+});

@@ -63,7 +63,7 @@ export async function readWidgetImports(env, pageId, doc) {
       source_revision: null,
     };
   }
-  const ref = { source_revision: source.source_revision };
+  const ref = { source_revision: source.source_revision, available_imports: standardImports };
   const object = await env.PAGES_ASSETS.get(imageAssetKey(pageId, source.asset_id));
   if (object && object.size <= 16384 && source.media_type === "application/octet-stream") {
     const bytes = await object.arrayBuffer();

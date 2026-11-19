@@ -32,7 +32,6 @@ try {
     await readFile(new URL("./activity.mjs", import.meta.url)),
     "text/javascript",
   );
-  await edit([{ op: "set_widget_imports", catalog: "standard", source_revision: null }]);
   await edit([
     {
       op: "set_view",
@@ -48,6 +47,8 @@ try {
   ]);
   await edit([{ op: "insert_node", node: { type: "view", attrs: { view_id: "daily" } } }]);
   const read = await tool("read_page", { page_id, view_id: "daily" });
+  assert.match(read.view.catalog_revision, /^[a-f0-9]{64}$/);
+  assert.equal(read.widget_imports.catalog, null);
   assert.equal(read.view.spec.files.activity.revision, "1");
   await client.close();
   // Disable the browser cache so the accounting includes every file response.

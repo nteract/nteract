@@ -120,7 +120,7 @@ A plain JavaScript entry exports render({el, signal}) and can return a cleanup f
 
 {"module":{"source_id":"activity-chart","revision":"1"},"files":{"activity":{"source_id":"project-activity","revision":"1"}}}
 
-In the entry, \`import activity from "data/activity"\` returns a ByteSource scoped to this view. Its byteLength is the size in bytes. Its read(offset, length, signal) resolves to exactly that span as a Uint8Array. Each source can follow its current revision or specify a retained revision. Read the Parquet source with read_page and source_id to discover its columns.${catalogEnabled ? ` To read Parquet with @nteract/sift/parquet, first follow the ${link(origin, "/llms/anywidget.txt", "Page imports setup")}. Then import its named export loadTableFile. Use await loadTableFile(activity, {maxRows:28, overflow:"truncate"}) for a bounded leading preview and call table.dispose() when done.` : ""} The host authorizes each range. Omitting a file binding leaves its alias unavailable to the view.
+In the entry, \`import activity from "data/activity"\` returns a ByteSource scoped to this view. Its byteLength is the size in bytes. Its read(offset, length, signal) resolves to exactly that span as a Uint8Array. Each source can follow its current revision or specify a retained revision. Read the Parquet source with read_page and source_id to discover its columns.${catalogEnabled ? ` To read Parquet with @nteract/sift/parquet, see the ${link(origin, "/llms/anywidget.txt", "standard library guide")}. Then import its named export loadTableFile. Use await loadTableFile(activity, {maxRows:28, overflow:"truncate"}) for a bounded leading preview and call table.dispose() when done.` : ""} The host authorizes each range. Omitting a file binding leaves its alias unavailable to the view.
 
 ## Create, place, and inspect
 
@@ -148,9 +148,7 @@ function anywidgetGuide(origin, catalogEnabled) {
 
 ## Page imports
 
-Before using a bare import such as \`@observablehq/plot\`, call read_page on the destination Page and inspect widget_imports. If catalog is null, available_imports lists names the deployment can provide. To activate them for this Page, send this edit with the Page revision you just read:
-${edit("select-widget-imports-001", [{ op: "set_widget_imports", catalog: "standard", source_revision: null }])}
-Read the Page again. When widget_imports.imports contains the exact name, the iframe can resolve it. Pages that already list the name can skip the edit. Each Page has its own declaration, including when you copy a widget from another Page.
+On a fresh Page, import standard libraries such as \`@observablehq/plot\` directly. The host pins its catalog on the first set_view for an executable view. Read view.catalog_revision to inspect the digest; later edits preserve it. widget_imports.available_imports lists the supplied names. A null Page catalog is normal. A pre-existing explicit Page declaration continues to supply its catalog to new views there.
 
 For a shared component, upload browser-ready text/javascript, register its source, and bind a name to its exact revision. To extend an existing declaration, use its current widget_imports.source_revision and include every module you want to keep:
 ${edit("pin-widget-component-001", [{ op: "set_widget_imports", catalog: "standard", source_revision: "<widget_imports.source_revision>", modules: [{ name: "activity-controls", source_id: "controls", revision: "1" }] }])}
@@ -165,7 +163,7 @@ import { ChoiceGroup } from "activity-controls";
 
 Compile JSX before uploading, or use createElement.
 
-If the browser reports “Failed to resolve module specifier”, compare that name with widget_imports.imports and the names in widget_imports.modules on this Page. For an available library on a Page with catalog:null, apply the selection above. Scroll the view into sight in an authenticated browser and exercise a control to verify the render. A successful edit receipt confirms the saved declaration; the browser resolves the imports when it mounts the view.
+If the browser reports “Failed to resolve module specifier”, compare the name with the supplied library names and any shared modules declared on the Page. Scroll the view into sight in an authenticated browser and exercise a control to verify the render. A successful edit receipt confirms the saved declaration; the browser resolves the imports when it mounts the view.
 `
     : "";
   const counter = {
