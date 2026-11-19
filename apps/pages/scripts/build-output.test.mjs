@@ -21,7 +21,7 @@ const BUILD_ID = "0123456789ab";
 test("the viewer's default frame URL is a path the output Worker serves", () => {
   assert.ok(OUTPUT_FRAME_PATHS.includes(new URL(OUTPUT_FRAME_URL).pathname), OUTPUT_FRAME_URL);
   assert.ok(OUTPUT_FRAME_PATHS.includes(OUTPUT_FRAME_PATH));
-  assert.deepEqual(OUTPUT_FRAME_PATHS, ["/frame/v3/"]);
+  assert.deepEqual(OUTPUT_FRAME_PATHS, ["/frame/v2/"]);
 });
 
 const FRAME_CACHE = "public, max-age=86400, no-transform";
@@ -65,7 +65,7 @@ test("the output Worker serves the bootstrap at the frame path and nothing at ot
     });
     assert.equal(await frame.text(), method === "HEAD" ? "" : BOOTSTRAP_HTML);
   }
-  for (const missing of ["/frame/v2/", "/frame/v1/", "/frame/v3", "/frame/v3/x", "/"]) {
+  for (const missing of ["/frame/v1/", "/frame/v9/", "/frame/v2", "/frame/v2/x", "/"]) {
     const response = await worker.fetch(new Request(`https://outputs.example${missing}`));
     assert.equal(response.status, 404, missing);
     assert.deepEqual(headersOf(response), {

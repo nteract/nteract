@@ -2082,7 +2082,7 @@ one pin and one digest cover the Pages Worker and the frame shell it embeds.
 The manifest lists both files in `entries` and their structural fields as
 `output_structural_fields`. The build receipt certifies `output/worker.js` in
 `output_files`, lists the frame paths that shell serves as
-`output_frame_paths`, today `["/frame/v3/"]`, and names the path the viewer
+`output_frame_paths`, today `["/frame/v2/"]`, and names the path the viewer
 mounts as `output_frame_path` and the sha256 of the bootstrap script it
 expects there as `output_frame_bootstrap_sha256`.
 
@@ -2098,7 +2098,7 @@ To deploy the shell, the operator:
 4. Checks `GET <output_frame_path>` on that origin: a 200 whose one
    attribute-free `<script>` hashes to `output_frame_bootstrap_sha256`.
 5. Sets `PAGES_OUTPUT_FRAME_URL` on the Pages Worker to that origin plus
-   `output_frame_path`, for example `https://widgets.example.net/frame/v3/`.
+   `output_frame_path`, for example `https://widgets.example.net/frame/v2/`.
 
 The shell serves only a fixed bootstrap; the viewer sends the frame runtime
 from its own build. A runtime or port protocol change therefore needs no shell
@@ -2326,7 +2326,7 @@ applied.
 ## Interactive output host
 
 Set `PAGES_OUTPUT_FRAME_URL` in the deployment's Worker environment to use your
-own output host, for example `https://widgets.example.net/frame/v3/`. Without
+own output host, for example `https://widgets.example.net/frame/v2/`. Without
 it, Pages uses `OUTPUT_FRAME_URL` in `shared/anywidget-view.mjs`. The URL must use
 HTTPS on a separate origin from `NOTEBOOK_CLOUD_PUBLIC_ORIGIN`, without
 credentials, query parameters or fragments. Use a separate registrable domain

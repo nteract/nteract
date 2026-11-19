@@ -3,6 +3,7 @@
 // script as a browser would; scripts/output-smoke.mjs runs it in Chromium,
 // Firefox and WebKit.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { VirtualTimeScheduler } from "rxjs";
@@ -43,7 +44,7 @@ function bootstrapFrame(t) {
   virtualConsole.on("jsdomError", (error) => scriptErrors.push(error));
   const dom = new JSDOM(BOOTSTRAP_HTML, {
     runScripts: "dangerously",
-    url: `https://outputs.example/frame/v3/#${NONCE}`,
+    url: `https://outputs.example/frame/v2/#${NONCE}`,
     virtualConsole,
   });
   const window = dom.window;
@@ -65,15 +66,31 @@ const countingRuntime = `window.runs = (window.runs ?? 0) + 1;
 window.${RUNTIME_ENTRY} = (event) => { (window.entered ??= []).push(event); };`;
 const boot = (runtime, extra = {}) => ({ type: BOOT_MESSAGE, runtime, ...extra });
 
-test("the bootstrap is one small classic script after <main>", () => {
+// The bootstrap as served. A change to it needs a new frame path
+// (shared/output-frame-paths.mjs); update these pins only with one.
+const BOOTSTRAP_SCRIPT_SHA256 = "c9afd2b4fa9e2c9fa69c72d272201e7d563592c035f4f1cf535c046d42f8fa8f";
+const BOOTSTRAP_HTML_BYTES = 754;
+
+test("the bootstrap is one small classic script, the body's only content", () => {
   const scripts = [...BOOTSTRAP_HTML.matchAll(/<script([^>]*)>/g)];
   assert.deepEqual(
     scripts.map((match) => match[1]),
     [""],
   );
-  assert.match(BOOTSTRAP_HTML, /<\/head><body><main><\/main><script>"use strict";/);
-  assert.ok(BOOTSTRAP_HTML.includes(`<script>${BOOTSTRAP_SCRIPT}</script>`));
-  assert.ok(Buffer.byteLength(BOOTSTRAP_HTML) < 1536, `${Buffer.byteLength(BOOTSTRAP_HTML)} bytes`);
+  assert.equal(
+    BOOTSTRAP_HTML,
+    '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" ' +
+      'content="width=device-width,initial-scale=1"></head><body><script>' +
+      BOOTSTRAP_SCRIPT +
+      "</script></body></html>",
+  );
+  assert.match(BOOTSTRAP_SCRIPT, /^"use strict";/);
+  assert.equal(
+    createHash("sha256").update(BOOTSTRAP_SCRIPT).digest("hex"),
+    BOOTSTRAP_SCRIPT_SHA256,
+  );
+  assert.equal(Buffer.byteLength(BOOTSTRAP_HTML), BOOTSTRAP_HTML_BYTES);
+  assert.ok(BOOTSTRAP_HTML_BYTES < 1536);
   // It names no protocol version, port meaning, view, data or catalog.
   assert.doesNotMatch(BOOTSTRAP_SCRIPT, /connect-v|PROTOCOL|catalog|importmap|ports|nonce/i);
 });
@@ -148,6 +165,19 @@ test("a runtime that does not start produces the one failure message", async (t)
   }
 });
 
+test("an entry point the bootstrap cannot delete still boots", async (t) => {
+  // A `var` global is a non-configurable property; deleting it throws in
+  // strict mode. That is no reason to report a boot failure.
+  const frame = bootstrapFrame(t);
+  const event = frame.boot(
+    boot(`var ${RUNTIME_ENTRY} = function (event) { window.entered = [event]; };`),
+  );
+  assert.equal(frame.window.entered[0], event);
+  await tick();
+  await tick();
+  assert.deepEqual(frame.failures, []);
+});
+
 test("ports and every other field reach the runtime untouched", (t) => {
   const frame = bootstrapFrame(t);
   const { port1, port2 } = new MessageChannel();
@@ -207,6 +237,12 @@ test("this build's runtime connects through the bootstrap and checks its version
     assert.deepEqual(frame.scriptErrors, []);
     // The runtime's stylesheet comes first in <head>.
     assert.match(frame.window.document.head.firstElementChild.textContent, /--background/);
+    // It creates the one element the view renders into.
+    assert.equal(frame.window.document.querySelectorAll("main").length, 1);
+    assert.equal(
+      frame.window.document.querySelector("main").parentElement,
+      frame.window.document.body,
+    );
     return Promise.race([reply, until(() => false, "no reply").catch(() => "no reply")]);
   };
   assert.deepEqual(await answer(connectMessageType()), { type: "connected" });
@@ -271,12 +307,12 @@ const modulePayload = {
 // what the frame does with the boot message: nothing, by default.
 function mountWithFrame(t, options = {}) {
   const dom = new JSDOM("<main></main>", { url: "https://host.example/" });
-  const child = new JSDOM("", { url: "https://outputs.example/frame/v3/" });
+  const child = new JSDOM("", { url: "https://outputs.example/frame/v2/" });
   const clock = new VirtualTimeScheduler();
   const states = [];
   const frame = { boots: [], answer: () => {} };
   const output = mountModuleOutput(dom.window.document.querySelector("main"), modulePayload, {
-    frameUrl: "https://outputs.example/frame/v3/",
+    frameUrl: "https://outputs.example/frame/v2/",
     runtime: "the runtime text",
     hostContext: { theme: "light" },
     scheduler: clock,
@@ -310,9 +346,10 @@ function mountWithFrame(t, options = {}) {
 test("the host boots after load with one message carrying the runtime and the port", async (t) => {
   const { output, frame } = mountWithFrame(t);
   assert.equal(output.state, "connecting");
+  frame.answer = () => assert.equal(output.state, "booting", "booting when the message goes");
   frame.load();
-  assert.equal(output.state, "booting");
   await until(() => frame.boots.length === 1, "no boot message");
+  assert.equal(output.state, "booting");
   const [message] = frame.boots;
   assert.deepEqual(Object.keys(message).sort(), ["connect", "nonce", "runtime", "type"]);
   assert.equal(message.type, BOOT_MESSAGE);
@@ -412,10 +449,114 @@ test("a runtime the embedder loads lazily is sent once it resolves", async (t) =
   frame.load();
   await tick();
   assert.deepEqual(frame.boots, []);
+  assert.equal(output.state, "connecting", "not booting while the runtime text loads");
   resolve("lazy runtime");
   await until(() => frame.boots.length === 1, "no boot message");
   assert.equal(frame.boots[0].runtime, "lazy runtime");
   assert.equal(output.state, "booting");
+});
+
+// A runtime text that resolves when the test says, and a clock moved to
+// `frame` without running the host's timers early.
+function slowRuntime() {
+  const slow = {};
+  slow.text = new Promise((resolve) => (slow.resolve = resolve));
+  slow.runtime = () => slow.text;
+  return slow;
+}
+function advance(clock, frame) {
+  clock.schedule(() => {}, frame - clock.now());
+  clock.maxFrames = frame;
+  clock.flush();
+  clock.maxFrames = Infinity;
+  assert.equal(clock.now(), frame);
+}
+
+test("a slow runtime text is not a boot failure; the boot bound starts at the send", async (t) => {
+  const slow = slowRuntime();
+  const { output, frame, clock, states } = mountWithFrame(t, {
+    runtime: slow.runtime,
+    bootTimeoutMs: 100,
+    timeoutMs: 1000,
+  });
+  frame.load();
+  await tick();
+  // Longer than the boot bound, while the runtime text is still loading.
+  advance(clock, 500);
+  assert.equal(output.state, "connecting");
+  assert.deepEqual(frame.boots, []);
+  slow.resolve("slow runtime");
+  await until(() => frame.boots.length === 1, "no boot message");
+  assert.equal(output.state, "booting");
+  clock.flush();
+  assert.equal(clock.now(), 600, "the boot bound, counted from the send");
+  assert.deepEqual(states, ["connecting", "booting", ["failed", BOOT_FAILURE]]);
+});
+
+test("a slow runtime text, then an answer: no boot failure", async (t) => {
+  const slow = slowRuntime();
+  const { output, frame, clock, states } = mountWithFrame(t, {
+    runtime: slow.runtime,
+    bootTimeoutMs: 100,
+    timeoutMs: 1000,
+  });
+  frame.answer = (_message, [port]) => {
+    frame.port = port;
+    port.postMessage({ type: "connected" });
+  };
+  t.after(() => frame.port?.close());
+  frame.load();
+  await tick();
+  advance(clock, 500);
+  slow.resolve("slow runtime");
+  await until(() => output.state === "importing", "the runtime's answer was not taken");
+  clock.flush();
+  assert.equal(clock.now(), 1000);
+  assert.ok(!states.some((entry) => entry[1] === BOOT_FAILURE));
+  assert.deepEqual(states.at(-1), ["failed", START_TIMEOUT_FAILURE]);
+});
+
+test("a runtime text that never arrives ends at the startup limit", async (t) => {
+  const slow = slowRuntime();
+  const { output, frame, clock, states } = mountWithFrame(t, {
+    runtime: slow.runtime,
+    bootTimeoutMs: 100,
+    timeoutMs: 1000,
+  });
+  frame.load();
+  await tick();
+  clock.flush();
+  assert.equal(clock.now(), 1000);
+  assert.equal(output.state, "failed");
+  assert.deepEqual(states, ["connecting", ["failed", START_TIMEOUT_FAILURE]]);
+  slow.resolve("too late");
+  await tick();
+  assert.deepEqual(frame.boots, []);
+});
+
+test("a second load fails the mount, even while the runtime text loads", async (t) => {
+  const slow = slowRuntime();
+  const { output, frame, states } = mountWithFrame(t, { runtime: slow.runtime });
+  frame.load();
+  frame.load();
+  assert.equal(output.state, "failed");
+  assert.deepEqual(states.at(-1), [
+    "failed",
+    "The output navigated away. Run it again to reconnect.",
+  ]);
+  slow.resolve("late runtime");
+  await tick();
+  await tick();
+  assert.deepEqual(frame.boots, []);
+});
+
+test("a second load after the boot fails the mount", async (t) => {
+  const { output, frame, states } = mountWithFrame(t);
+  frame.load();
+  await until(() => frame.boots.length === 1, "no boot message");
+  frame.load();
+  assert.equal(output.state, "failed");
+  assert.match(states.at(-1)[1], /navigated away/);
 });
 
 test("a runtime that fails to load fails the mount with its reason", async (t) => {
@@ -429,7 +570,7 @@ test("a runtime that fails to load fails the mount with its reason", async (t) =
   assert.throws(
     () =>
       mountModuleOutput(new JSDOM("<main></main>").window.document.body, modulePayload, {
-        frameUrl: "https://outputs.example/frame/v3/",
+        frameUrl: "https://outputs.example/frame/v2/",
         hostContext: { theme: "light" },
       }),
     /runtime is required/,

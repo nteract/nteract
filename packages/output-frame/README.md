@@ -18,7 +18,7 @@ const output = mountAnywidgetOutput(element, {
     recording: { bytes: wavBytes, mediaType: 'audio/wav' },
   },
 }, {
-  frameUrl: 'https://outputs.example/frame/v3/',
+  frameUrl: 'https://outputs.example/frame/v2/',
   runtime: frameRuntimeText, // the runtime from your own build, see below
   hostContext: { theme: 'light' },
 });
@@ -78,8 +78,10 @@ port only from its immediate parent. This is channel binding,
 not authentication of a parent application. The bootstrap can be embedded by anyone.
 
 The host's lifecycle (`outputTransition` in `src/lifecycle.mjs`) names the
-boot as its own state, `booting`, between the frame's load and the runtime's
-first answer on the port. It has its own bound, `bootTimeoutMs` (10 seconds
+boot as its own state, `booting`, from the boot message to the runtime's
+first answer on the port. The host sends that message once the frame has
+loaded and the runtime text has resolved; a slow runtime text counts against
+the startup limit only. `booting` has its own bound, `bootTimeoutMs` (10 seconds
 by default), and its own failure text: "The output frame did not start. The
 output host may need an update." The startup limit, `timeoutMs` (20 seconds),
 covers the whole mount; when it ends in `booting` it reports the boot text,

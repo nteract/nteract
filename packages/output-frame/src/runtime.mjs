@@ -165,7 +165,7 @@ function connect(event) {
       await created.initialize();
       lifetime.signal.throwIfAborted();
       phase("initialized");
-      await created.render(document.querySelector("main"));
+      await created.render(root);
       lifetime.signal.throwIfAborted();
       session = created;
       phase("rendered");
@@ -188,12 +188,18 @@ function connect(event) {
   send({ type: "connected" });
 }
 
+// The element the view renders into. installRuntime creates it: the frame
+// document's body holds only the bootstrap's script.
+let root;
+
 // Installs the runtime in the frame document: `styles` first in <head>, ahead
-// of any stylesheet the output host placed there, and window[RUNTIME_ENTRY],
-// which the bootstrap removes and calls once with the boot event.
+// of any stylesheet the output host placed there, the <main> root the view
+// renders into, at the end of <body>, and window[RUNTIME_ENTRY], which the
+// bootstrap reads once and calls with the boot event.
 export function installRuntime(styles) {
   const style = document.createElement("style");
   style.textContent = styles;
   document.head.prepend(style);
+  root = document.body.appendChild(document.createElement("main"));
   window[RUNTIME_ENTRY] = connect;
 }

@@ -1168,11 +1168,11 @@ test("the installer refuses a release whose frame bootstrap the output service d
   const target = outputTarget();
   for (const [options, error] of [
     // An output service that predates this frame path.
-    [{ outputShell: () => null }, /does not serve \/frame\/v3\/, which this release mounts/],
+    [{ outputShell: () => null }, /does not serve \/frame\/v2\/, which this release mounts/],
     // Another bootstrap at the same path.
     [
       { outputShell: () => BOOTSTRAP_SCRIPT + "// changed" },
-      /serves a different frame bootstrap at \/frame\/v3\//,
+      /serves a different frame bootstrap at \/frame\/v2\//,
     ],
     // A receipt without the frame path and bootstrap digest.
     [

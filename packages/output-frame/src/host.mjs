@@ -182,17 +182,22 @@ export function mountModuleOutput(
       return text;
     });
   runtimeText.catch(() => {});
+  // The frame document loads once per mount; another load is a navigation.
+  let loaded = false;
   subscriptions.add(
     fromEvent(frame, "load").subscribe(() => {
-      if (state !== "connecting") {
+      if (loaded) {
         step("fail", "The output navigated away. Run it again to reconnect.");
         return;
       }
-      step("boot");
+      loaded = true;
+      // "booting" starts with the boot message, not the load: a slow
+      // runtime text is the startup limit's to bound, not the boot bound's.
       subscriptions.add(
         from(runtimeText).subscribe({
           next(text) {
-            if (state !== "booting") return;
+            if (state !== "connecting") return;
+            step("boot");
             // The receiver has an opaque origin; targetOrigin cannot be a
             // domain. Transfer to this exact WindowProxy, with a
             // mount-specific nonce. The bootstrap passes the message on to

@@ -144,7 +144,7 @@ test("frame startup timeout and teardown use an injected clock", async (t) => {
       },
     },
     {
-      frameUrl: "https://outputs.example/frame/v3/",
+      frameUrl: "https://outputs.example/frame/v2/",
       runtime: "runtime text",
       hostContext: { theme: "light" },
       timeoutMs: 100,

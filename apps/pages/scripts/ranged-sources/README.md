@@ -5,7 +5,7 @@ the Page server in another terminal. Each worktree has its own celld storage.
 
 ```sh
 PAGES_CATALOG_PORT=9447 node scripts/widget-catalog/serve.mjs
-PAGES_E2E_ONLY=true PAGES_PORT=9917 PAGES_OUTPUT_FRAME_URL=http://127.0.0.1:9447/frame/v3/ npm run dev
+PAGES_E2E_ONLY=true PAGES_PORT=9917 PAGES_OUTPUT_FRAME_URL=http://127.0.0.1:9447/frame/v2/ npm run dev
 ```
 
 Generate the synthetic fixture and exercise the view in Chromium.

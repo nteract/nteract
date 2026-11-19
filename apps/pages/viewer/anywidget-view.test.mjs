@@ -19,7 +19,7 @@ import { parquetFixture } from "../test/parquet-fixture.mjs";
 const PAGE = "33333333-3333-4333-8333-333333333333";
 const by = { principal: "account:test", displayName: "Test", driver: "Agent" };
 // A loopback output host serves a catalog (widget-imports.mjs).
-const FRAME = "http://127.0.0.1:9896/frame/v3/";
+const FRAME = "http://127.0.0.1:9896/frame/v2/";
 const encoder = new TextEncoder();
 const sha256 = async (bytes) =>
   [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]

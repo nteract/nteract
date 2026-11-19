@@ -397,7 +397,7 @@ test("a failed call is asked again; a pending or settled one is shared", async (
 function mountWithFakeFrame(t, files) {
   const dom = new JSDOM("<main></main>", { url: "https://host.example/" });
   const output = mountModuleOutput(dom.window.document.querySelector("main"), modulePayload, {
-    frameUrl: "https://outputs.example/frame/v3/",
+    frameUrl: "https://outputs.example/frame/v2/",
     runtime: "runtime text",
     hostContext: { theme: "light" },
     files,

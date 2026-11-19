@@ -2,7 +2,7 @@
 // embedding parent sends. The runtime travels with the page, so the host and
 // the runtime always come from one build, and this document has no reason to
 // change when they do. It knows nothing about protocol versions, ports, views,
-// data or catalogs.
+// data or catalogs. The document's body holds only its script.
 //
 // BOOTSTRAP_SCRIPT, the document's one script, in full:
 // - It accepts one message, of type BOOT_MESSAGE, from window.parent only,
@@ -10,9 +10,10 @@
 //   every message after the first boot.
 // - It runs `runtime` once, as an inline classic script. The frame's CSP
 //   allows inline scripts and not eval.
-// - The runtime defines window[RUNTIME_ENTRY]. The bootstrap removes it and
-//   calls it once with the boot MessageEvent, untouched: its data and its
-//   transferred ports are the runtime's to read (runtime.mjs).
+// - The runtime defines window[RUNTIME_ENTRY]. The bootstrap reads it, removes
+//   it where the property allows (a `var` global does not; that is no
+//   failure), and calls it once with the boot MessageEvent, untouched: its
+//   data and its transferred ports are the runtime's to read (runtime.mjs).
 // - If running the runtime throws, it defines no entry, or the entry throws,
 //   the bootstrap posts {type: BOOT_FAILED_MESSAGE} to the parent and stops.
 //
@@ -36,7 +37,7 @@ addEventListener("message", function boot(event) {
     script.textContent = data.runtime;
     document.body.append(script);
     var start = window.${RUNTIME_ENTRY};
-    delete window.${RUNTIME_ENTRY};
+    try { delete window.${RUNTIME_ENTRY}; } catch {}
     start(event);
   } catch {
     parent.postMessage({ type: "${BOOT_FAILED_MESSAGE}" }, "*");
@@ -44,5 +45,7 @@ addEventListener("message", function boot(event) {
 });
 `;
 
-// The frame document. The runtime's stylesheet travels with the runtime.
-export const BOOTSTRAP_HTML = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><main></main><script>${BOOTSTRAP_SCRIPT}</script></body></html>`;
+// The frame document. Its body holds only the script: the runtime brings its
+// stylesheet and creates the element the view renders into, so the document
+// carries nothing the runtime depends on.
+export const BOOTSTRAP_HTML = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><script>${BOOTSTRAP_SCRIPT}</script></body></html>`;
