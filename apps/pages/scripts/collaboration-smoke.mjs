@@ -422,6 +422,9 @@ try {
   await thread.getByRole("button", { name: "Send" }).click();
   await a.getByRole("button", { name: /^Comments/ }).click();
   await thread.getByRole("button", { name: "Resolve" }).click();
+  await expect(
+    b.locator("#page-comments").getByText("All caught up.", { exact: true }),
+  ).toBeVisible();
   const resolvedTab = a.getByRole("tab", { name: /^Resolved/ });
   await expect(resolvedTab).toHaveText("Resolved1");
   await resolvedTab.click();
@@ -429,7 +432,9 @@ try {
   const resolved = a.locator(".thread-view");
   await expect(resolved).toContainText("Yes, brown.");
   await resolved.getByRole("button", { name: "Reopen" }).click();
-  await expect(b.locator(".thread-view").getByRole("button", { name: "Resolve" })).toBeVisible();
+  await expect(b.getByRole("tab", { name: /^Open/, selected: true })).toHaveText("Open1");
+  await b.locator(".thread-row").filter({ hasText: "Is it brown?" }).click();
+  await expect(thread.getByRole("button", { name: "Resolve" })).toBeVisible();
   complete(stage);
 
   stage = "Move to Trash refused by a peer's edit says so in plain words";
