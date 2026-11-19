@@ -1098,46 +1098,70 @@ service/connector configuration and PIDs. Do not use `cloudflared service
 install`, which targets the shared connector.
 
 The DNS step creates only an absent owned CNAME; conflicts are rejected.
-Public ingress allows application, auth, sharing, MCP, asset, card image, link
-preview and sync routes, then ends in a catch-all 404. Internal Durable Object
-routes stay private. The catch-all is the edge's: an empty 404 with no content
-type, which the Worker never sees. A gateway route that ingress doesn't admit
-works locally, where celld runs without a tunnel, and fails only through the
-edge ([Gateway routes and the allowlist](#gateway-routes-and-the-allowlist)).
+On the Pages hostname, public ingress admits every path except a short refused
+list, `refusedPaths` in [routes.mjs](scripts/deployment/routes.mjs), then ends
+in a catch-all 404:
+
+| Refused | Why |
+| --- | --- |
+| `/internal/` and everything under it | Durable Object host routes. The Worker and its Durable Objects call one another on these paths only; no request from outside may name one. |
+| `/dev/oidc` and everything under it | The loopback test issuer, which signs in whoever asks. The gateway mounts it only on a localhost hostname; the tunnel refuses it whatever the Worker's configuration. |
+
+cloudflared matches the decoded path, so an encoded form is refused too. A
+refused path gets the edge's own 404: empty, with no content type, which the
+Worker never sees. Every other path reaches the Worker, and its gateway
+(`worker/index.mjs`) is the guard: it answers the routes it serves, serves the
+app shell and its files, and answers its own JSON 404 for any other `/api/`
+path and for every `/internal/` path. A new gateway route or a new hashed
+asset needs no tunnel change. celld's public listener (`--listen`) hands every
+path to the Worker; its operator routes, `/state` among them, are only on
+`--internal-listen`, which no tunnel reaches.
+
+A target with an output hostname keeps an allowlist there: `/health`,
+`/frame/v2/`, `catalog.json` and the catalog's hashed files, then a 404.
+
 Page10 serves this route set on its own hostname and listener. Pages serves
 the same set on `pages.runtimed.run` and `127.0.0.1:9481`. Each publisher
 migrates only from an installation whose config it generates for its own
 target, and refuses another target's installation receipts.
 
 The ingress is built from the route registry (`ROUTE_REGISTRY` in
-[routes.mjs](scripts/deployment/routes.mjs)): fixed paths and named route
-groups, each enabled by the target's profile. A group is strippable unless it
-is marked `settled`. When the installed receipt is not this release's sealed
-receipt, the publisher generates the config for each combination of the target's strippable groups (present or absent) and
-recognizes the installed `tunnel-installation.json` only if every config hash
-it names is one of those, every unit hash is the legacy unit's or the slot
-units', and the receipt re-serializes byte for byte. It then migrates straight
-to the new config from the config on disk, and a failed start rolls back to
-exactly those bytes. A hand-edited config or receipt is refused. So a new route
-group needs no migration code: an installation without it is one of the
-generated combinations. Changing a group's path string does: keep the old one
-in the group's `earlier` list, or configs sealed with it stop matching. Mark a
-group `settled` once every installation still in service has it; the publisher
+[routes.mjs](scripts/deployment/routes.mjs)): named route groups, each enabled
+by the target's profile. A group is strippable unless it is marked `settled`.
+When the installed receipt is not this release's sealed receipt, the publisher
+generates the config for each combination of the target's strippable groups
+(present or absent) and recognizes the installed `tunnel-installation.json`
+only if every config hash it names is one of those, every unit hash is the
+legacy unit's or the slot units', and the receipt re-serializes byte for
+byte. It then migrates straight to the new config from the config on disk,
+and a failed start rolls back to exactly those bytes. A hand-edited config or
+receipt is refused. Changing a group's path string needs its old string in the
+group's `earlier` list, or configs sealed with it stop matching. Mark a group
+`settled` once every installation still in service has it; the publisher
 refuses more than 2^16 combinations.
 
-Every target admits the viewer's content-hashed chunks, `/chunks/` followed by
-eight base32 characters and `.js`. `build-receipt.json` maps each chunk to the
-sha256 of its bytes in `viewer_chunks`. `prepare` stages exactly those chunks,
-checks each one's bytes against its digest first, and refuses a changed chunk or
-a `public/chunks` directory that holds any other file.
+The `admitAll` group selects the Pages hostname's form. With it, the hostname
+admits every path but the refused ones. Without it, the hostname admits only
+the allowlist groups that follow it in the registry: the form every
+installation sealed before `admitAll`. So publication recognizes any of those
+installations, migrates it to `admitAll` by the usual connector handoff, and
+restores its exact allowlist if the new connector fails. Units stay
+byte-identical. Once every installation in service has sealed `admitAll`,
+mark it settled and delete the allowlist groups.
+
+`build-receipt.json` maps each content-hashed viewer chunk
+(`/chunks/<hash>.js`) to the sha256 of its bytes in `viewer_chunks`. `prepare`
+stages exactly those chunks, checks each one's bytes against its digest first,
+and refuses a changed chunk or a `public/chunks` directory that holds any other
+file.
 
 The shell's own files are hashed the same way: `app-<hash>.js`,
 `app-<hash>.css`, `theme-<hash>.js`, `mermaid-<hash>.js`,
-`automerge-<hash>.wasm`, `subduction-<hash>.wasm` and `sift-<hash>.wasm`. Every
-target admits each name with its own extension only. `viewer_assets` in the
-receipt maps each to its sha256, and the name's hash must be the first 40 bits
-of that digest. `prepare` stages exactly those seven files, checks their bytes
-first, and refuses any other file of that shape in `public`.
+`automerge-<hash>.wasm`, `subduction-<hash>.wasm` and `sift-<hash>.wasm`.
+`viewer_assets` in the receipt maps each to its sha256, and the name's hash
+must be the first 40 bits of that digest. `prepare` stages exactly those seven
+files, checks their bytes first, and refuses any other file of that shape in
+`public`.
 
 The receipt's `files` maps every file the release carries, except
 `build-receipt.json` itself, to its sha256: `index.js`, both WASM modules,
@@ -1148,66 +1172,10 @@ since the build. The gate workflow's `release` job builds from a clean
 checkout, stages the bundle this way, and uploads it as the `pages-release`
 artifact.
 
-Page10 and Pages admit `sift-<hash>.wasm` through their own route group, so
-the first release with Sift tables hands off that target's connector once;
-later releases are no-ops.
-
-Every target admits Project links: `/project/<id>` and the older `/s/<id>`, where the
-ID is `prj_` or `sp_` followed by a lowercase v4 UUID, with an optional
-trailing slash. These are the paths `shared/routes.mjs` opens as a Project;
-the viewer rewrites `/s/<id>` to `/project/<id>`.
-
-Every target admits the viewer's index routes, `/projects` and `/pages`, as exact
-paths with an optional trailing slash. `/pages` keeps its search in `?q=`;
-ingress matches the path only. These are the paths `shared/routes.mjs` opens
-as index routes.
-
-Page10, Pages and Pages2 admit the account routes (`accountPaths` in
-[routes.mjs](scripts/deployment/routes.mjs)): `/api/auth/logout-all`,
-`/api/auth/grants` and `/api/auth/grants/<handle>/revoke`, where a handle is
-43 base64url characters. Each publisher migrates from its sealed config without
-that group, by the same handoff as any route change: the next publish rewrites
-`tunnel.yml` with the group added, starts the idle slot, waits for `/ready`,
-stops the old slot and seals the new receipt. Units and every other route stay
-byte-identical.
-
-Page10, Pages and Pages2 also admit link previews, card images and Project
-assets (`linkPreviewPaths`, `cardImagePaths` and `projectAssetPaths` in
-[routes.mjs](scripts/deployment/routes.mjs), behind the profile flags
-`linkPreviews`, `cardImages` and `projectAssets`):
-
-- `/p/<uuid>/meta.json` and `/p/<uuid>/card.json`, and the same two files
-  under `/project/<id>` with a `prj_` or `sp_` ID
-  ([link-previews.mjs](worker/link-previews.mjs)). No trailing slash, and
-  nothing under `/s/<id>`.
-- `/api/pages/<uuid>/card-image`, which serves the stored hash and takes the
-  owner's `PUT ?hash=&theme=` upload (ingress matches the path only), and
-  `/api/pages/<uuid>/card-image/<sha256>-<light|dark>.<webp|png|jpg>`, the
-  shape `CARD_IMAGE_FILE` in [card-images.mjs](worker/card-images.mjs) names.
-- `/api/projects/<id>/assets` and `/api/projects/<id>/assets/<sha256>`: a
-  Project's assets, which the gateway serves from its content document.
-
-Every target also admits the REST routes (`restPaths` in
-[routes.mjs](scripts/deployment/routes.mjs)), with no profile flag: `GET
-/api/pages`, and `PUT` or `DELETE /api/pages/<uuid>/tags/<tag>`, where the tag is
-one percent-encoded segment (`:` and `/` are sent as `%3A` and `%2F`).
-cloudflared matches ingress rules against the decoded path, so the ingress
-admits up to 192 characters of a tag's alphabet including `/`; the Worker
-takes one raw segment and refuses a second. A target that has not published them answers 404 at the edge
-to a tag change or a listing by REST; MCP and `/api/tools` are unaffected. The
-publisher asks cloudflared where the listing, a plain tag and a tag with an
-encoded `/` go before it starts a connector, and stops if one is not forwarded.
-No request has crossed a live tunnel yet: confirm a `PUT` of `repo:org/name`
-reaches the Worker on a target after its first publish.
-
-IDs are lowercase v4 UUIDs, as in every other group. Until a target publishes
-these routes, the edge refuses them: hover cards on Page links show "Couldn't
-load a preview" and keep retrying, the library grid never shows a card image,
-and the owner's tab never uploads one. Each publisher migrates from the
-config it sealed, by the same handoff as any route change; units and every
-other route stay byte-identical. A pending receipt an earlier publish left
-toward another generated config migrates from whichever of its two configs is
-on disk, and a failed start restores that receipt.
+The REST routes take a tag as one percent-encoded segment (`:` and `/` are
+sent as `%3A` and `%2F`). cloudflared matches ingress rules against the
+decoded path, so the tunnel sees `repo:org/name`; it admits it like any other
+path, and the Worker takes one raw segment and refuses a second.
 
 The OIDC client must allow `https://<hostname>/oidc` as a redirect URI before
 sign-in works on a new target. For Pages, add
@@ -1217,19 +1185,20 @@ provider; no helper here does it.
 
 ### Gateway routes and the allowlist
 
-[tunnel-routes.test.mjs](scripts/tunnel-routes.test.mjs) holds a request for
-every route the gateway in `worker/index.mjs` answers, and every viewer route
-and shell file it serves from `ASSETS`, and checks that each live target's
-ingress admits them. It also sends each request through the gateway to confirm
-the route is really answered there, and lists paths kept off the tunnel on
-purpose (`/internal/*`, `/state`, the loopback `/dev/oidc` issuer) and near
-misses that must stay refused. A scan of the gateway's dispatch finds every
-exact path, path regex and route handler. A new one fails the test until its
-paths have samples there and a route group in routes.mjs, or are listed as
-kept off.
+[tunnel-routes.test.mjs](scripts/tunnel-routes.test.mjs) checks that every
+live target admits, on its Pages hostname, a request for every route the
+gateway in `worker/index.mjs` answers, every viewer route and shell file it
+serves from `ASSETS`, and every file in the last build's `dist/public` (or,
+without a build, the names the build gives its files), and that it refuses
+`refusedPaths`. It reads `worker/*.mjs` for the paths the Worker and its
+Durable Objects call one another on and dispatch on, and fails if a host-only
+route is outside `/internal/`. It sends every `/internal/` path through the
+gateway as both deployment shapes deliver it, standalone celld behind
+cloudflared and Cloudflare Workers, and checks that the gateway answers its
+JSON 404 without calling a Durable Object. It also checks that the output
+hostname keeps its allowlist byte for byte.
 
-After a publish that adds routes, check through the edge that the Worker
-answers them. Without a session, each answers JSON:
+After a publish, check through the edge that the Worker answers its routes. Without a session, each answers JSON:
 
 ```sh
 id=08c583e5-d29e-4f1e-b06b-333965254e94

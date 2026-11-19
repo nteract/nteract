@@ -1,5 +1,31 @@
 import { deploymentProfile } from "./profiles.mjs";
 
+// The paths the tunnel refuses on the Pages hostname, as one alternation
+// matched from the start of the path. Every other path reaches the Worker,
+// whose gateway (worker/index.mjs) answers the routes it serves and refuses
+// the rest, so a new route or asset needs no tunnel change. cloudflared
+// matches the decoded path, so an encoded form of these is refused too.
+//
+// - `internal/`: Durable Object host routes. The Worker and its Durable
+//   Objects call one another on these paths only (tunnel-routes.test.mjs
+//   reads the source to hold that), so no request from outside may name one.
+//   The gateway refuses them as well.
+// - `dev/oidc`: the loopback test issuer (@cloud/dev-oidc.ts
+//   NOTEBOOK_CLOUD_LOCAL_OIDC_MOUNT_PATH), which signs in whoever asks. The
+//   gateway mounts it only on a localhost hostname with NOTEBOOK_CLOUD_LOCAL_OIDC
+//   set; the tunnel refuses it whatever the Worker's configuration says.
+//
+// celld's public listener (`--listen`) hands every path to the Worker; its
+// operator routes are on `--internal-listen` only, which no tunnel reaches.
+// So no path here is celld's own.
+export const refusedPaths = "internal/|dev/oidc(/|$)";
+
+// The Pages hostname's allowlist groups below are its earlier form. With
+// `admitAll` omitted, routesFor builds the allowlist that installations
+// sealed before `admitAll` hold, so publication still recognizes them and
+// migrates from them. Once every installation in service has sealed
+// `admitAll`, mark it settled and delete the allowlist groups.
+
 export const oauthPaths =
   "oauth/(authorize|token|revoke)|[.]well-known/(oauth-protected-resource(/mcp)?|oauth-authorization-server)|";
 // Content-hashed viewer chunks (scripts/viewer-chunks.mjs VIEWER_CHUNK).
@@ -82,10 +108,12 @@ const fixed = (paths) => Object.freeze({ paths });
 const slot = (name, paths, enabled, { settled = false, earlier = [] } = {}) =>
   Object.freeze({ name, paths, enabled, settled, earlier: Object.freeze(earlier) });
 
-// Every route the tunnel admits, in the order the ingress regex lists them.
-// Sharing targets expose only the public setup page, its script, and the
-// authenticated access API.
+// The Pages hostname's route groups. `admitAll` selects the form: present,
+// the hostname admits every path but `refusedPaths`; omitted, it admits only
+// the allowlist that follows, in the order its ingress regex lists the
+// groups.
 export const ROUTE_REGISTRY = Object.freeze([
+  slot("admitAll", refusedPaths, always),
   fixed("index[.]html|app[.](js|css)|"),
   slot("themePaths", "theme[.]js|", (profile) => Boolean(profile.theme), { settled: true }),
   slot("chunkPaths", chunkPaths, (profile) => Boolean(profile.viewerChunks), { settled: true }),
@@ -142,16 +170,30 @@ export function routesFor(target, { omit = [], use = {} } = {}) {
   const strippable = new Set(strippableSlots(target).map((entry) => entry.name));
   for (const name of [...omit, ...Object.keys(use)])
     if (!strippable.has(name)) throw new Error("Not a strippable route group here: " + name);
+  for (const entry of ROUTE_REGISTRY)
+    if (Object.hasOwn(use, entry.name) && !entry.earlier.includes(use[entry.name]))
+      throw new Error("Not an earlier path string of " + entry.name);
   let paths = "";
   for (const entry of ROUTE_REGISTRY) {
+    if (entry.name === "admitAll") continue;
     if (!entry.name) paths += entry.paths;
     else if (!entry.enabled(profile) || omit.includes(entry.name)) continue;
-    else if (Object.hasOwn(use, entry.name)) {
-      if (!entry.earlier.includes(use[entry.name]))
-        throw new Error("Not an earlier path string of " + entry.name);
-      paths += use[entry.name];
-    } else paths += entry.paths;
+    else paths += Object.hasOwn(use, entry.name) ? use[entry.name] : entry.paths;
   }
+  const pages = omit.includes("admitAll")
+    ? `  - hostname: ${hostname}
+    path: ^/(${paths})?$
+    service: http://${listen}
+  - hostname: ${hostname}
+    service: http_status:404
+`
+    : `  - hostname: ${hostname}
+    path: ^/(${refusedPaths})
+    service: http_status:404
+  - hostname: ${hostname}
+    service: http://${listen}
+`;
+  // The output hostname keeps its own allowlist.
   const output = profile.output
     ? `  - hostname: ${profile.output.hostname}
     path: ^/(health|frame/v2/|catalog[.]json|catalog/[a-f0-9]{64}/[A-Za-z0-9_-]+[.](js|css|wasm|json))$
@@ -160,10 +202,5 @@ export function routesFor(target, { omit = [], use = {} } = {}) {
     service: http_status:404
 `
     : "";
-  return `  - hostname: ${hostname}
-    path: ^/(${paths})?$
-    service: http://${listen}
-  - hostname: ${hostname}
-    service: http_status:404
-${output}`;
+  return pages + output;
 }
