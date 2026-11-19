@@ -96,7 +96,7 @@ async function downloadFile(request, url) {
           signal: controller.signal,
           headers: {
             Accept:
-              "image/png, image/jpeg, image/webp, application/vnd.apache.parquet, application/octet-stream",
+              "image/png, image/jpeg, image/webp, application/vnd.apache.parquet, application/json, application/octet-stream",
           },
         });
         if (controller.signal.aborted) {

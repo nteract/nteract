@@ -2038,9 +2038,10 @@ The host checks each source, retained pin and module/CSS media type before
 saving; the renderer rechecks types when following a changed source. The stored
 view accepts no `data` alias map. The AFM API and iframe transport are unchanged.
 
-Upload ESM, CSS, WAV (`audio/wav`), arbitrary binary (`application/octet-stream`)
+Upload ESM, CSS, WAV (`audio/wav`), JSON (`application/json`), arbitrary binary (`application/octet-stream`)
 or Parquet, then register each asset with `set_source`. ESM, CSS, WAV and generic
 binary uploads require a content-type-bound capability and return `insert: null`.
+Upload JSON with `content_type: "application/json"`. Sources previews the data and a module reads it with `await model.get(name).json()`.
 After `set_view` succeeds, place `{ type: "view", attrs: { view_id } }` with
 `insert_node`. Module/CSS assets are immutable content-addressed bytes; source
 revisions select their version just like data. Source history retains its newest

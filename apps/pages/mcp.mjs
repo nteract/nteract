@@ -769,7 +769,7 @@ export const tools = [
   {
     ...tool(
       ASSET_UPLOAD_OPERATION,
-      "Add a local image, Parquet, WAV, JavaScript, CSS or binary file to a Page (API key or OAuth). Recipes: /llms/assets-and-sources.txt. Returns upload_url, headers (a Pages-Upload capability; never send your own key there), expires_at (at most 10 minutes) and a curl example: POST raw bytes, not multipart or base64. Access is checked again at upload. With file, Pages fetches the file instead. The same bytes return the same asset_id, with insert: the edit_page op that places it (add alt to an image). Widget inputs require content_type from the schema; insert is null: use set_source then set_view. If uploads cannot leave your environment, use Insert image in the browser.",
+      "Add a local JSON, Parquet, image, WAV, JavaScript, CSS or binary file to a Page (API key or OAuth). Recipes: /llms/assets-and-sources.txt. Returns upload_url, headers (a Pages-Upload capability; never send your own key there), expires_at (at most 10 minutes) and a curl example: POST raw bytes, not multipart or base64. Access is checked again at upload. With file, Pages fetches the file instead. The same bytes return the same asset_id. Images and Parquet return an insert operation (add alt to an image). JSON and other view inputs return insert: null. Use set_source to name the asset, then bind it in set_view. If uploads cannot leave your environment, use Insert image in the browser.",
       {
         page_id: page,
         content_type: {
