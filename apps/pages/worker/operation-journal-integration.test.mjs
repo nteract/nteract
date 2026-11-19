@@ -1480,7 +1480,7 @@ test("Page dataframe insertion checks storage once and replays without it", asyn
   assert.deepEqual(await (await f.request("edit_page", args)).json(), receipt);
 });
 
-test("Page dataframe preflight refuses missing, image and malformed assets before editing", async (t) => {
+test("Page dataframe preflight refuses missing, image, malformed and mismatched assets before editing", async (t) => {
   const assetId = "c".repeat(64);
   for (const [name, head, attrs, status, code] of [
     ["missing", () => null, { asset_id: assetId }, 404, "dataset_not_found"],
@@ -1513,9 +1513,28 @@ test("Page dataframe preflight refuses missing, image and malformed assets befor
     [
       "media type",
       () => assert.fail("No HEAD for an unknown media type"),
-      { asset_id: assetId, media_type: "text/csv" },
+      { asset_id: assetId, media_type: "text/plain" },
       400,
       "invalid_edit_selector",
+    ],
+    // A dataframe's media type must be the stored asset's, either way round.
+    [
+      "csv over parquet",
+      () => parquetHead(assetId),
+      { asset_id: assetId, media_type: "text/csv" },
+      415,
+      undefined,
+    ],
+    [
+      "parquet over csv",
+      () => ({
+        ...parquetHead(assetId),
+        size: 12,
+        httpMetadata: { contentType: "text/csv" },
+      }),
+      { asset_id: assetId },
+      415,
+      undefined,
     ],
   ]) {
     const f = await pageFixture(t);
@@ -1524,7 +1543,7 @@ test("Page dataframe preflight refuses missing, image and malformed assets befor
     const args = {
       page_id: pageId,
       revision: before.revision,
-      nonce: `dataframe-${name.replace(" ", "-")}`,
+      nonce: `dataframe-${name.replaceAll(" ", "-")}`,
       operations: [
         { op: "set_title", title: "Must not apply" },
         { op: "insert_node", node: { type: "dataframe", attrs } },
