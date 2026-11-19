@@ -52,7 +52,7 @@ export async function libraryCatalogResponse(request, env) {
     return notFound(request.method);
   }
   const headers = new Headers({
-    "Content-Type": CONTENT_TYPES[match[3]],
+    "Content-Type": CONTENT_TYPES[match[1]],
     "Access-Control-Allow-Origin": "*",
     "Cross-Origin-Resource-Policy": "cross-origin",
     "X-Content-Type-Options": "nosniff",

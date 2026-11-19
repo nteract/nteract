@@ -20,6 +20,11 @@ export const LIBRARY_CATALOG_REVISION =
     ? __PAGES_LIBRARY_CATALOG__
     : UNBUILT_LIBRARY_CATALOG;
 
+/** One catalog file's path without its leading slash, as a regular
+ * expression source that JavaScript and the tunnel's ingress rules
+ * (scripts/deployment/routes.mjs) both read: catalog/<revision>/<name>. Its
+ * one group is the extension. */
+export const LIBRARY_ROUTE = "catalog/[a-f0-9]{64}/[A-Za-z0-9_-]+[.](js|css|wasm|json)";
 /** The path of one catalog file: /catalog/<revision>/<name>. */
-export const LIBRARY_PATH = /^\/catalog\/([a-f0-9]{64})\/([\w-]+\.(js|css|wasm|json))$/;
+export const LIBRARY_PATH = new RegExp(`^/${LIBRARY_ROUTE}$`);
 export const libraryPath = (revision, name) => `/catalog/${revision}/${name}`;
