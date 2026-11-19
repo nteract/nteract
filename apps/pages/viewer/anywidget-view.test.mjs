@@ -550,7 +550,7 @@ test("an input failure shows only on a ready frame and never touches a failed on
   const { doc$, calls, root } = mountModuleView(t, { ready: false });
   await until(() => calls.mounts.length === 1, "the view never mounted");
   const { onState } = calls.mounts[0].options;
-  onState("handshaking");
+  onState("booting");
   const missing = "f".repeat(64);
   const broken = moveSources(
     dataSources,

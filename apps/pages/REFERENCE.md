@@ -2087,8 +2087,10 @@ The v2 type replaces the preproduction `application/vnd.nteract.anywidget.v1+jso
 alias-based envelope. Old experimental views are unsupported until explicitly
 rewritten with v2 spec and their observed view revision. There is no legacy
 renderer or automatic content conversion; Pages and their assets are not reset.
-The independently hosted `/frame/v2/` shell and MessagePort protocol do not change
-for this authoring-format update. The shell deployment remains separate from
+The authoring format's version is independent of the frame path and the port
+protocol. The output host serves a fixed bootstrap at the frame path, and the
+viewer sends the frame runtime from its own build; see the
+`@nteract/output-frame` README. The shell deployment remains separate from
 Pages and the notebook output host.
 
 ### Writes

@@ -13,9 +13,11 @@ import { DATAFRAME_LIMITS } from "../viewer/sift-dataset.mjs";
 await prepareFrameHtml();
 const { default: worker } = await import("../output/worker.mjs");
 import { OUTPUT_FRAME_URL } from "../shared/anywidget-view.mjs";
+import { OUTPUT_FRAME_PATH } from "../shared/output-frame-paths.mjs";
+import { BOOT_FAILURE } from "@nteract/output-frame/lifecycle";
 const configuredFrameUrl = process.env.PAGES_OUTPUT_LIVE
   ? OUTPUT_FRAME_URL
-  : "https://selfhosted.widgets.example/frame/v2/";
+  : `https://selfhosted.widgets.example${OUTPUT_FRAME_PATH}`;
 const out = new URL(
   process.env.PAGES_OUTPUT_ARTIFACT
     ? "../test-results/output-real/"
@@ -271,6 +273,7 @@ const moduleView = {
 };
 const fixture = `import { BehaviorSubject } from 'rxjs';
 import { mountModuleOutput } from '@nteract/output-frame';
+import { FRAME_RUNTIME } from './.output-dist/frame-runtime.mjs';
 import { Wordgard, Decoration } from 'wordgard/editor';
 import { rangeHighlights } from './viewer/range-highlights.mjs';
 import { GardState, GardSelection } from 'wordgard/state';
@@ -338,11 +341,19 @@ window.fixture={editor(){
   const file=text(view.file);
   const el=document.createElement('div');el.id='module-view';document.body.append(el);
   const output=mountModuleOutput(el,{kind:'module',title:'Module view',assets:{entry:{bytes:text(view.entry),mediaType:'text/javascript'}},imports:{'page-greeting':{bytes:text(view.greeting),mediaType:'text/javascript'}}},{
-    frameUrl:${JSON.stringify(moduleFrameUrl)},hostContext:{theme:'light'},
+    frameUrl:${JSON.stringify(moduleFrameUrl)},runtime:FRAME_RUNTIME,hostContext:{theme:'light'},
     files:{'data/sample':{mimeType:'text/plain',byteLength:file.byteLength,read:async(offset,length)=>file.slice(offset,offset+length),bytes:async()=>file.slice()}},
     onState:(state,error)=>{el.dataset.outputState=state;if(error)el.dataset.error=error},
   });
   window.fixture.endModule=()=>{output.destroy();el.remove()};
+},bootFailure(){
+  const el=document.createElement('div');el.id='boot-failure';document.body.append(el);
+  const output=mountModuleOutput(el,{kind:'module',assets:{entry:{bytes:new TextEncoder().encode('export function render() {}'),mediaType:'text/javascript'}}},{
+    frameUrl:${JSON.stringify(configuredFrameUrl)},runtime:'throw Error("a runtime that does not start")',hostContext:{theme:'light'},
+    timeoutMs:60000,bootTimeoutMs:60000,
+    onState:(state,error)=>{el.dataset.outputState=state;if(error)el.dataset.error=error},
+  });
+  window.fixture.endBootFailure=()=>{output.destroy();el.remove()};
 },change(){versions.recording=versions.recording2;changes.next(1)},fail(){versions.code=versions.broken;changes.next(2)},destroy:()=>handle.destroy()};
 ${process.env.PAGES_OUTPUT_SERVE ? "window.fixture.example();" : ""}`;
 const result = await build({
@@ -471,6 +482,18 @@ try {
     process.env.PAGES_OUTPUT_LIVE ? "hello frame of 17" : "HELLO FRAME of 17",
   );
   await page.evaluate(() => window.fixture.endModule());
+  // A runtime that throws: the bootstrap reports it at once, long before
+  // either time limit, and the host says the frame did not start.
+  if (!process.env.PAGES_OUTPUT_LIVE) {
+    await page.evaluate(() => window.fixture.bootFailure());
+    await expect(page.locator("#boot-failure")).toHaveAttribute("data-error", BOOT_FAILURE, {
+      timeout: 10000,
+    });
+    await page.evaluate(() => window.fixture.endBootFailure());
+    // The frame reports the runtime's own error; nothing else may fail.
+    const expected = errors.findIndex((message) => /a runtime that does not start/.test(message));
+    if (expected !== -1) errors.splice(expected, 1);
+  }
   // A module view through the Pages viewer: its model holds a whole file and
   // a Parquet table. Moving both sources updates them through
   // change: listeners in the same frame, with the view's own state intact.

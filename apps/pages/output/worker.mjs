@@ -1,33 +1,16 @@
-// The credential-free output Worker: it serves the anywidget frame shell on
-// its own origin. npm run build bundles this module, with the frame HTML
-// inlined, into dist/output/worker.js: the module the release package ships
-// as output/worker.js and wrangler.output.toml deploys.
+// The credential-free output Worker: it serves the output frame's bootstrap
+// document (@nteract/output-frame/bootstrap) on its own origin. The page
+// sends the frame runtime at boot, so a runtime change needs no deploy here.
+// npm run build bundles this module, with the bootstrap inlined, into
+// dist/output/worker.js: the module the release package ships as
+// output/worker.js and wrangler.output.toml deploys.
+//
+// This is the Worker's entry module: its only export is `default`. workerd
+// refuses an entry module with any other export, so shared values live in
+// output/policy.mjs.
 import { FRAME_HTML } from "../.output-dist/frame-html.mjs";
-import { PAGES_BUILD } from "../shared/build-identity.mjs";
 import { OUTPUT_FRAME_PATHS } from "../shared/output-frame-paths.mjs";
-
-// The bundle names its build: scripts/build.mjs defines __PAGES_BUILD__ as the
-// build receipt's build_id, so a deployer can match the deployed shell to a
-// package. Unbundled (scripts/output-smoke.mjs, unit tests) PAGES_BUILD is
-// "dev" and /health reports the bare version, with no id.
-export const HEALTH_TEXT =
-  PAGES_BUILD === "dev" ? "pages-output-v2" : `pages-output-v2 ${PAGES_BUILD}`;
-
-export const FRAME_CSP = [
-  "sandbox allow-scripts",
-  "default-src 'none'",
-  "script-src 'unsafe-inline' 'wasm-unsafe-eval' https: blob:",
-  "style-src 'unsafe-inline' https:",
-  "connect-src *",
-  "img-src * data: blob:",
-  "media-src * data: blob:",
-  "font-src https: data:",
-  "worker-src blob:",
-  "object-src 'none'",
-  "frame-src 'none'",
-  "base-uri 'none'",
-  "form-action 'none'",
-].join("; ");
+import { FRAME_CSP, HEALTH_TEXT } from "./policy.mjs";
 
 export default {
   fetch(request) {
@@ -54,8 +37,12 @@ export default {
           "Cross-Origin-Resource-Policy": "cross-origin",
           "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
           // Origin-dependent CDN injections (such as the RUM beacon) cannot
-          // run correctly in this opaque sandbox. Serve the authored shell.
-          "Cache-Control": "no-store, no-transform",
+          // run correctly in this opaque sandbox. Serve the authored bytes.
+          // A browser may keep the bootstrap for five minutes: long enough
+          // that the views of one Page share a download, short enough that a
+          // different document at this path, as after a rollback, reaches
+          // readers quickly.
+          "Cache-Control": html ? "public, max-age=300, no-transform" : "no-store, no-transform",
         },
       },
     );

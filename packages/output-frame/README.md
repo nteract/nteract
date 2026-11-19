@@ -18,7 +18,8 @@ const output = mountAnywidgetOutput(element, {
     recording: { bytes: wavBytes, mediaType: 'audio/wav' },
   },
 }, {
-  frameUrl: 'https://pages.kilousercontent.com/frame/v2/',
+  frameUrl: 'https://outputs.example/frame/v2/',
+  runtime: frameRuntimeText, // the runtime from your own build, see below
   hostContext: { theme: 'light' },
 });
 // A new recording reaches the mounted model; changed code needs a new mount.
@@ -26,18 +27,66 @@ output.setData('recording', newWavBytes);
 output.destroy();
 ```
 
-Bundle the `@nteract/output-frame/runtime` entry into a shell containing `<main>`.
-Ship it as a classic `<script>` (for example an esbuild IIFE) after `<main>`, never
-as `type="module"`: the runtime appends an import map at mount, and Firefox and
-older Safari ignore an import map added after any module has loaded.
-The shell must be served from a separate HTTPS origin. Pages' credential-free
-Worker in `apps/pages/output` is one deployment adapter. The library contains no
-Pages API routes, source IDs, authentication, or Cloudflare dependencies.
+## Bootstrap and runtime
 
-The host creates an opaque-origin `sandbox="allow-scripts"` iframe. A versioned,
-nonce-bound handshake transfers a MessagePort to that exact iframe WindowProxy;
-the runtime accepts it only from its immediate parent. This is channel binding,
-not authentication of a parent application. The shell can be embedded by anyone.
+The output host serves one fixed document, the bootstrap
+(`@nteract/output-frame/bootstrap`: `BOOTSTRAP_HTML`). Serve it from a
+separate HTTPS origin. The embedding page supplies everything else: it builds
+the runtime from this package and passes its text as the `runtime` option, a
+string or a function that resolves to one. Host and runtime then always come
+from the same build, however the output host is deployed or shared. A runtime
+or port protocol change needs no output host deploy. Only a change to the
+bootstrap document itself does, at a new frame path.
+
+Build the runtime as one classic script, never as a module: an entry that
+imports `styles.css` as text and calls `installRuntime(styles)` from
+`@nteract/output-frame/runtime`, bundled as an IIFE. The runtime appends an
+import map at mount, and Firefox and older Safari ignore an import map added
+after any module has loaded. Pages builds it in `apps/pages/scripts/build-output.mjs`
+and its credential-free Worker in `apps/pages/output` serves the bootstrap; the
+library contains no Pages API routes, source IDs, authentication, or Cloudflare
+dependencies.
+
+The bootstrap's one script (`BOOTSTRAP_SCRIPT`) can be read in a minute:
+
+- It accepts one message, `{type: "nteract-output-boot", runtime}`, and only
+  from `window.parent`. It ignores every other message and every later boot.
+- It runs `runtime` once as an inline classic script, then removes
+  `window.nteractOutputRuntime`, which the runtime defines, and calls it with
+  the boot event. The event's other fields and its transferred ports pass
+  through untouched.
+- If the runtime throws, defines no entry point, or the entry point throws, it
+  posts `{type: "nteract-output-boot-failed"}` to its parent. The host then
+  fails the mount at once.
+
+It knows nothing about protocol versions, ports, views, data or catalogs. An
+output host may place stylesheets or a `widget-catalog-map` before the script.
+
+The bootstrap runs code only from its embedding parent. The parent already
+supplies the view's code to the frame, and the frame stays an opaque-origin
+`sandbox="allow-scripts"` iframe without `allow-same-origin`, with no
+credentials, under the output host's CSP. Running the parent's runtime
+grants that code nothing it did not already have.
+
+The host creates that iframe and, after its `load` event, posts the boot
+message `{type, runtime, connect, nonce}` to that exact WindowProxy, with a
+MessagePort transferred. `connect` names the port protocol,
+`nteract-output-connect-v3` (`PROTOCOL_VERSION` in `src/lifecycle.mjs`); the
+runtime answers another version with an error that asks for a reload, and does
+not mount. The nonce matches the frame URL's fragment. The runtime accepts the
+port only from its immediate parent. This is channel binding,
+not authentication of a parent application. The bootstrap can be embedded by anyone.
+
+The host's lifecycle (`outputTransition` in `src/lifecycle.mjs`) names the
+boot as its own state, `booting`, from the boot message to the runtime's
+first answer on the port. The host sends that message once the frame has
+loaded and the runtime text has resolved; a slow runtime text counts against
+the startup limit only. `booting` has its own bound, `bootTimeoutMs` (10 seconds
+by default), and its own failure text: "The output frame did not start. The
+output host may need an update." The startup limit, `timeoutMs` (20 seconds),
+covers the whole mount; when it ends in `booting` it reports the boot text,
+and otherwise "The output took too long to start."
+
 Subsequent messages use the port. Inputs are copied into dedicated ArrayBuffers
 before transfer, including when callers provide a subarray of a larger buffer.
 The runtime never receives bearer tokens, storage handles, or a general fetch
@@ -95,21 +144,18 @@ See [the Pages spec](../../apps/pages/REFERENCE.md#anywidget-outputs).
 The Pages adapter validates and resolves references, then compiles them into the
 named-byte envelope shown above. This library still has no source IDs, revision
 lookup or authorization logic; AFM code sees the same model values. The authoring
-v2 change does not change the iframe `/frame/v2/` endpoint or MessagePort protocol.
+format's version is independent of the frame path and the port protocol.
 
-The shell and the embedding app deploy separately, so for a short time a new host
-can meet an old shell, or the reverse. A change that breaks the frame protocol
-adds a new versioned path (`/frame/v3/`) and keeps serving the previous one for at
-least one release. The shell deploys before the host that needs it. Pages lists
-the paths its shell serves in `apps/pages/shared/output-frame-paths.mjs`.
-The handshake message names the port protocol, `nteract-output-connect-v3`
-(`PROTOCOL_VERSION` in `src/lifecycle.mjs`). A runtime that receives another
-version answers with an error asking for a reload, and does not mount.
+The output host and the embedding app deploy separately. Because the runtime
+travels with the page, only a change to the bootstrap document needs care: it
+adds a new versioned frame path, keeps serving the previous one for at least
+one release, and deploys before the host that mounts the new path. Pages lists
+the paths its output Worker serves in `apps/pages/shared/output-frame-paths.mjs`.
 `preparePayload` requires exactly the referenced assets, checks module/CSS media
 types, and bounds assets to 5 MiB each / 32 MiB total. Pages also enforces spec-size
 and source authorization limits.
 
-The HTTP shell policy allows external HTTPS modules, WASM, and broad network
+The output host's HTTP policy (the frame CSP) allows external HTTPS modules, WASM, and broad network
 access. Output code can disclose every byte supplied to it. Isolation protects
 the host DOM and storage; it does not make untrusted code confidential or a
 browser-wide denial-of-service sandbox. Keep credentials off the output domain
@@ -292,14 +338,14 @@ For a native Inkling export, additionally set `PAGES_OUTPUT_ARTIFACT` to the
 The harness verifies both recorded SHA-256 values, converts the native matrix to
 Parquet, and saves wide/narrow screenshots in ignored `test-results/output-real`.
 It does not rerun the model or publish the research files. Set
-`PAGES_OUTPUT_LIVE=1` to exercise the deployed frame shell instead of intercepting
+`PAGES_OUTPUT_LIVE=1` to exercise the deployed output host's bootstrap instead of intercepting
 that request with the locally built Worker response.
 
 ## Theme and shared controls
 
 ### Document layout
 
-The shell starts borderless, with no body inset. Its normal-flow content determines
+The frame document starts borderless, with no body inset. Its normal-flow content determines
 the iframe height, including margins and floats; it grows and shrinks as content
 changes. Heights are rounded up and bounded to 1–100,000 CSS pixels by the host.
 The iframe document does not scroll vertically: the parent Page owns that scroll.
@@ -312,7 +358,7 @@ slider cannot pan the entire output sideways. Range controls fill their availabl
 width, have 44px touch targets, and reserve horizontal gestures for adjustment
 while allowing vertical scrolling and pinch zoom.
 Buttons also have a 44px minimum height. Ordinary content keeps native page scrolling
-and pinch zoom; the shell does not disable those gestures on an ancestor.
+and pinch zoom; the runtime's stylesheet does not disable those gestures on an ancestor.
 
 For content that should scroll, wrap it in an explicit `.output-scroll` region.
 Give vertical regions a height or max-height, and make them keyboard-accessible
@@ -345,7 +391,7 @@ ready. Subsequent updates change presentation without reinitializing the model,
 retransferring data or resetting playback. Pages subscribes to its existing theme
 store, so both explicit choices and OS changes in system mode propagate.
 
-The shell includes `@nteract/output-frame/styles.css`: semantic tokens, typography,
+The runtime includes `@nteract/output-frame/styles.css`: semantic tokens, typography,
 focus rings, native form controls, buttons, `.output-surface`, `.output-muted`,
 and `.output-stack`. Buttons support `data-variant="secondary"`. Use plain HTML
 with these defaults; no React or CSS compiler is required. Authors can also use
@@ -373,4 +419,4 @@ The context helpers are extensions alongside AFM's composition methods.
 
 For a persistent original-data demo, set `PAGES_OUTPUT_SERVE=1` alongside the CDN,
 artifact and WAV options above. `PAGES_OUTPUT_PORT` optionally chooses a local
-port. The demo has a Light/Dark/System selector and uses the deployed shell.
+port. The demo has a Light/Dark/System selector and uses the deployed output host.

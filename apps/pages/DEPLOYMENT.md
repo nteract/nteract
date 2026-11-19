@@ -2076,13 +2076,15 @@ one pin and one digest cover the Pages Worker and the frame shell it embeds.
 
 | File | Contents |
 | --- | --- |
-| `output/worker.js` | One ES module with no imports, the frame HTML inlined. `npm run build` bundles it from `output/worker.mjs` |
+| `output/worker.js` | One ES module with no imports, the frame bootstrap document inlined. `npm run build` bundles it from `output/worker.mjs` |
 | `output/wrangler.json` | `outputStructuralConfig()` in [cloudflare-stage.mjs](scripts/cloudflare-stage.mjs): `main`, `no_bundle`, `compatibility_date`. No name, route, account, `workers_dev`, binding or variable |
 
 The manifest lists both files in `entries` and their structural fields as
 `output_structural_fields`. The build receipt certifies `output/worker.js` in
-`output_files` and lists the frame paths that shell serves as
-`output_frame_paths`, today `["/frame/v2/"]`.
+`output_files`, lists the frame paths that shell serves as
+`output_frame_paths`, today `["/frame/v2/"]`, and names the path the viewer
+mounts as `output_frame_path` and the sha256 of the bootstrap script it
+expects there as `output_frame_bootstrap_sha256`.
 
 To deploy the shell, the operator:
 
@@ -2093,15 +2095,17 @@ To deploy the shell, the operator:
    `output_structural_fields`.
 3. Checks `GET /health` on that origin. It answers `pages-output-v2 <build_id>`,
    the build id of the package it came from.
-4. Sets `PAGES_OUTPUT_FRAME_URL` on the Pages Worker to that origin plus a path
-   from `output_frame_paths`, for example
-   `https://widgets.example.net/frame/v2/`.
+4. Checks `GET <output_frame_path>` on that origin: a 200 whose one
+   attribute-free `<script>` hashes to `output_frame_bootstrap_sha256`.
+5. Sets `PAGES_OUTPUT_FRAME_URL` on the Pages Worker to that origin plus
+   `output_frame_path`, for example `https://widgets.example.net/frame/v2/`.
 
-The output Worker and the Pages Worker deploy separately, so for a short time a
-new viewer can meet an old shell, or the reverse. Deploy the shell first. A
-change that breaks the frame protocol adds a new versioned path and keeps
-serving the previous one for at least one release, so `output_frame_paths` can
-grow; the viewer moves to the new path only in a release whose shell serves it.
+The shell serves only a fixed bootstrap; the viewer sends the frame runtime
+from its own build. A runtime or port protocol change therefore needs no shell
+deploy, and several Pages deployments can share one shell. Only a change to the
+bootstrap document adds a new versioned path. That release keeps serving the
+previous path for at least one release, so `output_frame_paths` can grow, and
+the shell deploys before the viewer that mounts the new path.
 
 A consumer whose archive check refuses unknown top-level entries must accept
 `output/` in the same change that pins the first release carrying it.
@@ -2323,7 +2327,7 @@ applied.
 
 Set `PAGES_OUTPUT_FRAME_URL` in the deployment's Worker environment to use your
 own output host, for example `https://widgets.example.net/frame/v2/`. Without
-it, Pages uses `https://pages.kilousercontent.com/frame/v2/`. The URL must use
+it, Pages uses `OUTPUT_FRAME_URL` in `shared/anywidget-view.mjs`. The URL must use
 HTTPS on a separate origin from `NOTEBOOK_CLOUD_PUBLIC_ORIGIN`, without
 credentials, query parameters or fragments. Use a separate registrable domain
 for untrusted widget code, and never put application cookies on that domain.
@@ -2346,7 +2350,23 @@ to `pages.kilousercontent.com`; its build command is `npm run build`. Its
 `scripts/output-smoke.mjs`, it answers `pages-output-v2` with no id.
 
 The shell serves the frame paths in `OUTPUT_FRAME_PATHS`
-(`shared/output-frame-paths.mjs`), and the viewer mounts one of them. A change
-that breaks the frame protocol adds a new versioned path, such as `/frame/v3/`,
-and keeps serving the previous one for at least one release. The shell deploys
-before the viewer that needs it.
+(`shared/output-frame-paths.mjs`), and the viewer mounts `OUTPUT_FRAME_PATH`,
+one of them. Each path serves the frame's bootstrap document
+(`@nteract/output-frame/bootstrap`) with `Cache-Control: public,
+max-age=300, no-transform`; `/health` and every other answer stay
+`no-store`. A browser keeps the bootstrap for up to five minutes, so after a
+rollback to a release that serves another document at the same path, views can
+fail to start for that long. The bootstrap runs the frame runtime the viewer sends from its own
+build, so a runtime or port protocol change needs no shell deploy and no new
+path. Only a change to the bootstrap document adds a new versioned path,
+keeps serving the previous one for at least one release, and deploys the shell
+before the viewer that mounts the new path.
+
+On a target with an isolated output service (`output` in its profile), the
+installer (`scripts/deployment/install.mjs`) fetches the receipt's
+`output_frame_path` from that service before it installs anything. It refuses
+the release, with a message that names the path, unless the service answers
+200 with the configured catalog and a bootstrap script whose sha256 is the
+receipt's `output_frame_bootstrap_sha256`. Update the output service first.
+A Cloudflare deployment of `output/worker.js` has no such check in this
+repository; its operator runs step 4 of the release package's shell steps.

@@ -82,6 +82,7 @@ function mountWithFakeFrame(t, payload, options = {}) {
   const states = [];
   const output = mountModuleOutput(dom.window.document.querySelector("main"), payload, {
     frameUrl: "https://outputs.example/frame/v2/",
+    runtime: "runtime text",
     hostContext: { theme: "light" },
     onState: (state) => states.push(state),
     ...options,

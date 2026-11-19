@@ -1,9 +1,14 @@
 // A mount runs one immutable set of code. A code change disposes it and needs
 // a new mount; no late completion can revive a disposed mount. Data inputs
 // can change within a mount (see dataTransition).
+//
+// - "connecting": the frame document is loading.
+// - "booting": the host sent the boot message (src/bootstrap.mjs) and waits
+//   for the runtime it carries to answer on the mount's port.
+// - "loading" to "ready": the runtime answered and the view mounts.
 export const OUTPUT_STATES = [
   "connecting",
-  "handshaking",
+  "booting",
   "loading",
   "importing",
   "initializing",
@@ -18,8 +23,8 @@ export function outputTransition(state, event) {
   if (event === "fail") return "failed";
   return (
     {
-      connecting: { connect: "handshaking" },
-      handshaking: { connected: "loading" },
+      connecting: { boot: "booting" },
+      booting: { connected: "loading" },
       loading: { mount: "importing" },
       importing: { loaded: "initializing" },
       initializing: { initialized: "rendering" },
@@ -27,6 +32,24 @@ export function outputTransition(state, event) {
     }[state]?.[event] ?? state
   );
 }
+
+// The bootstrap's names (src/bootstrap.mjs): the one message it accepts, the
+// one it posts when the runtime does not start, and the window property the
+// runtime defines as its entry point.
+export const BOOT_MESSAGE = "nteract-output-boot";
+export const BOOT_FAILED_MESSAGE = "nteract-output-boot-failed";
+export const RUNTIME_ENTRY = "nteractOutputRuntime";
+// How long the host waits in "booting" for the runtime's first answer.
+export const BOOT_TIMEOUT_MS = 10000;
+// The frame did not run the runtime: no answer within BOOT_TIMEOUT_MS, or the
+// bootstrap reported that the runtime did not start. The likely cause is an
+// output host that does not serve this bootstrap.
+export const BOOT_FAILURE = "The output frame did not start. The output host may need an update.";
+// The view did not render within the host's startup limit.
+export const START_TIMEOUT_FAILURE = "The output took too long to start.";
+// Why a mount fails when its startup limit ends while it is in `state`.
+export const startupFailure = (state) =>
+  state === "booting" ? BOOT_FAILURE : START_TIMEOUT_FAILURE;
 
 const NO_DATA = Object.freeze([]);
 
@@ -76,15 +99,14 @@ export function answerTransition(awaiting, event) {
   }
 }
 
-// The frame protocol's version, named in the handshake's message type. A
-// shell answers a handshake for another version with an error that names
-// both, so a page older than its shell fails with that reason. A page newer
-// than its shell sends a type the shell does not know, gets no answer, and
-// fails at the host's startup time limit.
+// The port protocol's version, named in the boot message's `connect` field.
+// The page supplies the runtime, so host and runtime come from one build and
+// agree. The runtime still checks: another version gets an error that names
+// both, and no mount.
 export const PROTOCOL_VERSION = 3;
 export const connectMessageType = (version = PROTOCOL_VERSION) =>
   `nteract-output-connect-v${version}`;
-// The version a handshake's message type names, or null for any other type.
+// The version a `connect` field names, or null for any other value.
 export function connectVersion(type) {
   const match = /^nteract-output-connect-v([1-9][0-9]{0,3})$/.exec(
     typeof type === "string" ? type : "",

@@ -8,7 +8,7 @@ import { siftWasmPath } from "./browser-sift.mjs";
 import { formatsByType } from "../model/document-types.mjs";
 import { sourceFingerprint, writeBuildReceipt } from "./source-fingerprint.mjs";
 import { OUTPUT_WORKER, releaseFilesOf } from "./stage-artifacts.mjs";
-import { bundleOutputWorker } from "./build-output.mjs";
+import { bootstrapSha256, bundleOutputWorker, writeFrameHtml } from "./build-output.mjs";
 import {
   CRITICAL_PATH_CEILING,
   VIEWER_ASSETS,
@@ -124,6 +124,9 @@ const chartWorker = chartWorkerChunk(chartWorkerBytes);
 await mkdir(path.join(dist, "public/chunks"), { recursive: true });
 await writeFile(path.join(dist, chartWorker), chartWorkerBytes);
 
+// The viewer imports the frame runtime from .output-dist and sends it to each
+// output frame, so it is written before the viewer is built.
+await writeFrameHtml(app);
 const viewer = await build(
   viewerBuildOptions(
     app,
@@ -246,6 +249,7 @@ writeBuildReceipt(app, {
   viewerAssets: Object.values(assets),
   releaseFiles: releaseFilesOf(viewerChunks, Object.values(assets)),
   outputFiles: [OUTPUT_WORKER],
+  outputFrameBootstrapSha256: bootstrapSha256(),
   documentFormats: formatsByType(),
 });
 console.log("Built native Pages Worker, WASM and viewer into dist.");

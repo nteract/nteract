@@ -37,6 +37,20 @@ const asset = (version) => ({ asset_id: version.asset_id, media_type: version.me
 // a Parquet file loads it.
 const loadColumnDecoder = () => import("./module-parquet.mjs").then((m) => m.parquetColumns);
 
+// The frame runtime from this build (scripts/build-output.mjs writes it), in a
+// chunk of its own that loads with the first view's frame. The output host
+// serves only a bootstrap, so the runtime always matches this viewer. A failed
+// load is not kept: Retry asks again.
+let frameRuntimeText;
+const loadFrameRuntime = () =>
+  (frameRuntimeText ??= import("../.output-dist/frame-runtime.mjs").then(
+    (m) => m.FRAME_RUNTIME,
+    (error) => {
+      frameRuntimeText = undefined;
+      throw error;
+    },
+  ));
+
 // A plan splits a view into its code identity, `key`, and its data inputs,
 // `data`: name → asset. The frame's lifetime follows `key` alone.
 // - Code: the media type, the stored spec, the catalog revision, and the asset
@@ -104,6 +118,9 @@ export function mount(
     frameUrl = container.ownerDocument.querySelector('meta[name="pages-output-frame-url"]')
       ?.content ?? OUTPUT_FRAME_URL,
     mountOutput = mountModuleOutput,
+    // Resolves with the frame runtime's text, which the output host's
+    // bootstrap runs.
+    frameRuntime = loadFrameRuntime,
     theme = themeStore,
     // The most bytes one view's frame holds from mount: its entry, imports
     // and anywidget assets and buffers.
@@ -350,6 +367,7 @@ export function mount(
                             {
                               files,
                               frameUrl: url.href,
+                              runtime: frameRuntime,
                               hostContext: readHostContext(root, theme.getSnapshot().resolved),
                               onState(state, error) {
                                 if (controller.signal.aborted) return;

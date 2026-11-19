@@ -1,11 +1,16 @@
 import { exposeFile } from "./byte-source.mjs";
 import { createReadBudget } from "./read-budget.mjs";
-import { fromEvent, Subscription, timer } from "rxjs";
+import { filter, from, fromEvent, Subscription, timer } from "rxjs";
 import {
   answerTransition,
+  BOOT_FAILED_MESSAGE,
+  BOOT_FAILURE,
+  BOOT_MESSAGE,
+  BOOT_TIMEOUT_MS,
   connectMessageType,
   dataTransition,
   outputTransition,
+  startupFailure,
 } from "./lifecycle.mjs";
 import { DATA_NAME, MAX_DATA_NAMES, bufferNames } from "./data.mjs";
 import { createWholeFiles } from "./whole-file-total.mjs";
@@ -46,21 +51,30 @@ function checkDataInput(value, module) {
 // URL. Each file port serves one data input. Data inputs, the module view's
 // data/ files or the anywidget buffers, can change within the mount through
 // setData.
+//
+// `frameUrl` serves the bootstrap document (bootstrap.mjs). `runtime` is the
+// frame runtime's text from the embedder's own build, or a function that
+// resolves to it; the host sends it in the boot message, so the runtime always
+// matches this host.
 export { mountModuleOutput as mountAnywidgetOutput };
 export function mountModuleOutput(
   container,
   payload,
   {
     frameUrl,
+    runtime,
     hostContext,
     files = {},
     timeoutMs = 20000,
+    bootTimeoutMs = BOOT_TIMEOUT_MS,
     scheduler,
     onState = () => {},
     onUnhandledData = () => {},
   } = {},
 ) {
   if (!frameUrl) throw Error("An output frame URL is required.");
+  if (typeof runtime !== "string" && typeof runtime !== "function")
+    throw Error("An output frame runtime is required.");
   payload = preparePayload(payload);
   const module = payload.kind === "module";
   const names = Object.keys(files);
@@ -145,6 +159,12 @@ export function mountModuleOutput(
     if (state === "ready") frame.style.visibility = "visible";
     onState(state, error);
     deliver();
+    if (state === "booting")
+      subscriptions.add(
+        timer(bootTimeoutMs, scheduler).subscribe(() => {
+          if (state === "booting") step("fail", BOOT_FAILURE);
+        }),
+      );
     if (state === "failed" || state === "disposed") {
       lifetime.abort();
       subscriptions.unsubscribe();
@@ -153,28 +173,67 @@ export function mountModuleOutput(
       frame.remove();
     }
   };
+  // Started now, so a runtime the embedder loads lazily arrives while the
+  // frame document loads.
+  const runtimeText = Promise.resolve()
+    .then(() => (typeof runtime === "function" ? runtime() : runtime))
+    .then((text) => {
+      if (typeof text !== "string") throw Error("The output frame runtime is not text.");
+      return text;
+    });
+  runtimeText.catch(() => {});
+  // The frame document loads once per mount; another load is a navigation.
+  let loaded = false;
   subscriptions.add(
     fromEvent(frame, "load").subscribe(() => {
-      if (state !== "connecting") {
+      if (loaded) {
         step("fail", "The output navigated away. Run it again to reconnect.");
         return;
       }
-      // The receiver has an opaque origin; targetOrigin cannot be a domain.
-      // Transfer to this exact WindowProxy, with a mount-specific handshake.
-      step("connect");
-      try {
-        frame.contentWindow.postMessage({ type: connectMessageType(), nonce }, "*", [
-          channel.port2,
-        ]);
-      } catch (error) {
-        step("fail", error.message);
-      }
+      loaded = true;
+      // "booting" starts with the boot message, not the load: a slow
+      // runtime text is the startup limit's to bound, not the boot bound's.
+      subscriptions.add(
+        from(runtimeText).subscribe({
+          next(text) {
+            if (state !== "connecting") return;
+            step("boot");
+            // The receiver has an opaque origin; targetOrigin cannot be a
+            // domain. Transfer to this exact WindowProxy, with a
+            // mount-specific nonce. The bootstrap passes the message on to
+            // the runtime as it is.
+            try {
+              frame.contentWindow.postMessage(
+                { type: BOOT_MESSAGE, runtime: text, connect: connectMessageType(), nonce },
+                "*",
+                [channel.port2],
+              );
+            } catch (error) {
+              step("fail", error.message);
+            }
+          },
+          error: (error) => step("fail", String(error?.message ?? error).slice(0, 500)),
+        }),
+      );
     }),
+  );
+  // The bootstrap's one message: the runtime it was sent did not start.
+  subscriptions.add(
+    fromEvent(doc.defaultView, "message")
+      .pipe(
+        filter(
+          (event) =>
+            state === "booting" &&
+            event.source === frame.contentWindow &&
+            event.data?.type === BOOT_FAILED_MESSAGE,
+        ),
+      )
+      .subscribe(() => step("fail", BOOT_FAILURE)),
   );
   subscriptions.add(
     fromEvent(channel.port1, "message").subscribe(({ data }) => {
       if (!data || typeof data !== "object") return;
-      if (data.type === "connected" && state === "handshaking") {
+      if (data.type === "connected" && state === "booting") {
         step("connected");
         const transfers = [
           ...Object.values(payload.assets),
@@ -223,7 +282,7 @@ export function mountModuleOutput(
   channel.port1.start();
   subscriptions.add(
     timer(timeoutMs, scheduler).subscribe(() => {
-      if (state !== "ready") step("fail", "The output took too long to start.");
+      if (state !== "ready") step("fail", startupFailure(state));
     }),
   );
   frame.src = url.href;
@@ -237,7 +296,7 @@ export function mountModuleOutput(
     setHostContext(next) {
       if (state === "failed" || state === "disposed") return;
       context = normalizeHostContext(next);
-      if (!["connecting", "handshaking"].includes(state))
+      if (!["connecting", "booting"].includes(state))
         channel.port1.postMessage({ type: "context", context });
     },
     // A new value for a data name the mount declared: a data/ name of a

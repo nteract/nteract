@@ -1,12 +1,18 @@
-// The frame protocol paths. The output Worker (output/worker.mjs) serves every
-// path in OUTPUT_FRAME_PATHS; this viewer mounts OUTPUT_FRAME_PATH, which must
-// be one of them. The build receipt records OUTPUT_FRAME_PATHS as
-// `output_frame_paths`.
+// The frame paths. The output Worker (output/worker.mjs) serves every path in
+// OUTPUT_FRAME_PATHS; this viewer mounts OUTPUT_FRAME_PATH, which must be one
+// of them. The build receipt records OUTPUT_FRAME_PATHS as
+// `output_frame_paths` and OUTPUT_FRAME_PATH as `output_frame_path`.
 //
-// The output Worker and the Pages Worker deploy separately, so a viewer can
-// meet an older or newer shell for a while. A change that breaks the frame
-// protocol adds a new versioned path here, keeps serving the previous one for
-// at least one release, and deploys the shell before the viewer that needs it.
+// A frame path serves the frame document: the bootstrap
+// (@nteract/output-frame/bootstrap), a fixed script that runs the frame
+// runtime the page sends it. The path's version names the version of that
+// document, not the port protocol; the port protocol is versioned in the boot
+// message's `connect` field, and the runtime travels with the page, so a
+// runtime or port protocol change needs no shell deploy and no new path.
+//
+// A change to the bootstrap document needs a new versioned path. That change
+// keeps serving the previous path for at least one release, and the shell
+// deploys before the viewer that mounts the new path.
 //
 // This module has no imports: the output Worker bundles it on its own.
 export const OUTPUT_FRAME_PATH = "/frame/v2/";
