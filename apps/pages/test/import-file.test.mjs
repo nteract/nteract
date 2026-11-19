@@ -340,6 +340,23 @@ test("requires real image bytes matching both the response and file MIME types",
   assert.equal(f.env.PAGES_ASSETS.objects.size, 0);
 });
 
+test("a client-attached JSON file retains its declared type and original bytes", async (t) => {
+  const bytes = new TextEncoder().encode('{"count":93000000000000001}');
+  const f = setup(t, {
+    fetchImage: () =>
+      new Response(bytes, { headers: { "content-type": "application/octet-stream" } }),
+  });
+  const response = await f.run({
+    file: descriptor({ mime_type: "application/json", file_name: "counts.json" }),
+  });
+  assert.equal(response.status, 201);
+  const asset = await response.json();
+  assert.equal(asset.mime_type, "application/json");
+  assert.equal(asset.insert, null);
+  const [stored] = f.env.PAGES_ASSETS.objects.values();
+  assert.deepEqual(stored.bytes, bytes);
+});
+
 test("a Parquet file imports as a dataset whose insert is a dataframe", async (t) => {
   // The smallest container the upload's check admits: PAR1, a footer, its
   // little-endian length, PAR1.

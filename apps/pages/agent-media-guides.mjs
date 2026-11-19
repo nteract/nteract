@@ -73,9 +73,9 @@ Create a Page with create_page or read an existing Page with read_page. Keep its
 ${call("create_page_asset_upload", { page_id: "<page_id>", content_type: "text/javascript" })}
 POST that file's raw bytes to the returned upload_url using the returned headers. Use the returned example command as a template. Do not send multipart or base64, and do not send your account credential to that URL. Keep the upload response's asset_id. A capability expires within ten minutes; request a new one if it expires. Identical bytes reuse the same asset ID.
 
-Widget input types are ${OUTPUT_ASSET_TYPES.map((type) => `\`${type}\``).join(", ")}. For nested objects, lists and settings, upload UTF-8 JSON with content_type application/json and register it with set_source. Sources shows its fields and values. Use Parquet for tabular records. Use application/octet-stream for untyped bytes. Images and Parquet also have upload support; the main guide covers their upload and insertion recipes. A client-attached file can use the upload tool's file argument instead of POST; never invent a client file descriptor.
+Supported view input types are ${OUTPUT_ASSET_TYPES.map((type) => `\`${type}\``).join(", ")}. For nested objects, lists and settings, upload UTF-8 JSON with content_type application/json and register it with set_source. Readers can inspect the fields and original JSON in the browser’s Sources pane. Use Parquet for tabular records. Use application/octet-stream for untyped bytes. The main guide covers image and Parquet insertion. A client-attached file can use the upload tool's file argument instead of POST; never invent a client file descriptor.
 
-Independent files can request capabilities and upload in parallel. Register sources only after their uploads succeed. JavaScript, CSS, WAV and binary upload receipts have insert:null: use sources and a view to display them.
+Independent files can request capabilities and upload in parallel. Register sources only after their uploads succeed. JSON, JavaScript, CSS, WAV and binary upload receipts have insert:null: use sources and a view to display them.
 
 ## Register and update sources
 

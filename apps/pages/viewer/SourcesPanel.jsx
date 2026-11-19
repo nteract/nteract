@@ -151,13 +151,17 @@ function SourceFilePreview({ session, source }) {
   const { preview } = value;
   if (preview.kind === "json")
     return (
-      <section className="source-file-preview source-schema" aria-label="JSON preview">
+      <section
+        className="source-file-preview source-schema"
+        aria-label="JSON preview"
+        data-source-revision={value.version.revision}
+      >
         <h4>JSON · {preview.summary}</h4>
         {preview.fields.length > 0 && (
           <ul>
             {preview.fields.map(([key, description]) => (
               <li key={key}>
-                <strong>{key}</strong>
+                <strong>{key.length > 100 ? key.slice(0, 99) + "…" : key}</strong>
                 <code>{description}</code>
               </li>
             ))}
