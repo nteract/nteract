@@ -143,8 +143,6 @@ test("a source named widget-imports is an ordinary source an executable view nev
     sourcesDoc,
     { unreadableBlocks: 0, placements: [{ key: "v:0", kind: "view", viewId: "daily" }] },
     { daily: { status: "ready", view } },
-    "known",
-    true,
   );
   const listed = panel.sources.find((source) => source.source_id === "widget-imports");
   assert.equal(listed.name, "Imports");
