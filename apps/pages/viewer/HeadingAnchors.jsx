@@ -79,13 +79,12 @@ export function HeadingAnchors({
   projectId,
   scroll: scroller,
   onOpenRoute,
-  onNotice,
   onError,
 }) {
   const scroll = useStore(scroller.store);
   const [hovered, setHovered] = useState(null);
   const latest = useRef(null);
-  latest.current = { session, projectId, onOpenRoute, onNotice, onError };
+  latest.current = { session, projectId, onOpenRoute, onError };
   const pageId = session?.pageId ?? null;
 
   const anchorsNow = () => {
@@ -329,11 +328,12 @@ export function HeadingAnchors({
     };
   }, [pageId]);
 
+  // A copy that works says nothing: the address bar already shows the
+  // section's link. Only a failed copy reports.
   async function copy(anchor) {
     showHere(anchor);
     try {
       await navigator.clipboard.writeText(location.href);
-      latest.current.onNotice?.("Link to section copied");
     } catch {
       latest.current.onError?.("Couldn't copy the link. You can copy it from the address bar.");
     }

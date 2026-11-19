@@ -391,7 +391,6 @@ try {
       await page.mouse.move(button.x + button.width / 2, button.y + button.height / 2);
       await expect(copy).toBeVisible();
       await copy.click();
-      await expect(page.getByText("Link to section copied")).toBeVisible();
       // The copied link is the viewer's anchor, and the outline's.
       expect(await page.evaluate(() => navigator.clipboard.readText())).toMatch(
         targetAddress(anchor),

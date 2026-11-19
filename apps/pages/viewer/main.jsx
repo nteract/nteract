@@ -1917,7 +1917,6 @@ function App() {
                     projectId={projectOpen}
                     scroll={headingScroll}
                     onOpenRoute={openRoute}
-                    onNotice={setNotice}
                     onError={setError}
                   />
                 )}
