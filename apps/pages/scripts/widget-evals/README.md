@@ -55,5 +55,9 @@ Five sessions per model per guide ran in Kilo 7.8.27. The original 20 trials use
 | Inkling 2 Small | Revised | 5/5 | 5/5 | 26.9 s |
 | Haiku 4.5 | Earlier | 0/5 | 1/5 | 94.7 s |
 | Haiku 4.5 | Revised | 4/5 | 2/5 | 74.7 s |
+| Gemini 3.1 Flash-Lite | Earlier | 2/5 | 2/5 | 60.9 s |
+| Gemini 3.1 Flash-Lite | Revised | 5/5 | 5/5 | 57.6 s |
 
 Haiku eventually selected the catalog in all five revised-guide runs. Three of those charts had incorrect per-bar hover labels. Under the earlier guide, two charts depended on external CDNs. All twenty agents read the anywidget guide. These samples identify failure modes and suggest a follow-up experiment that gives the agent browser tool real hover support.
+
+The ten Gemini trials used the rebased host at `a2e63d9cd`, including the Gemini-compatible tool schema from #5147. Gemini made tool calls in all ten trials. Three earlier-guide charts requested a third-party CDN and failed the local-assets audit. Compare guide versions within each model; the Gemini cohort ran with a newer MCP schema than the first two cohorts.
