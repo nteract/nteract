@@ -10,12 +10,15 @@ const unreachable = (generation = 2) => ({ name: "unreachable", generation });
 const blocked = (sentence = "No.", generation = 2) => ({ name: "blocked", generation, sentence });
 const loading = (key = "k1", generation = 2) => ({ name: "loading", generation, key });
 const drawn = (key = "k1", generation = 2) => ({ name: "drawn", generation, key });
-const failed = (key = "k1", generation = 2, cause = "load") => ({
+const failed = (key = "k1", generation = 2, cause = "load", reason) => ({
   name: "failed",
   generation,
   key,
   cause,
+  ...(reason !== undefined && { reason }),
 });
+const REASON = "This file can't be read as CSV: two columns are named day.";
+const unreadable = failed("k1", 2, "load", REASON);
 const destroyed = (generation = 2) => ({ name: "destroyed", generation });
 
 const pending = { type: "pending" };
@@ -23,7 +26,11 @@ const offline = { type: "unreachable" };
 const block = (sentence = "No.") => ({ type: "blocked", sentence });
 const plan = (key = "k1") => ({ type: "plan", key });
 const loaded = (generation = 2) => ({ type: "loaded", generation });
-const loadFailed = (generation = 2) => ({ type: "loadFailed", generation });
+const loadFailed = (generation = 2, reason) => ({
+  type: "loadFailed",
+  generation,
+  ...(reason !== undefined && { reason }),
+});
 const drawFailed = (generation = 2) => ({ type: "drawFailed", generation });
 const destroy = { type: "destroy" };
 
@@ -131,6 +138,20 @@ const ROWS = [
     "current",
   ),
   row(
+    "loading: the load fails with the file's reason, which the state keeps",
+    loading(),
+    loadFailed(2, REASON),
+    go(unreadable, [release(), clear]),
+    "current",
+  ),
+  row(
+    "loading: a cancelled load fails late with a reason",
+    loading(),
+    loadFailed(1, REASON),
+    no(loading(), REJECT.stale),
+    "stale",
+  ),
+  row(
     "loading: a cancelled load fails late",
     loading(),
     loadFailed(1),
@@ -189,6 +210,30 @@ const ROWS = [
   ...lateLoads(failed()),
   row("failed: destroy", failed(), destroy, go(destroyed(), [clear])),
 
+  // The tables failed to load, and the file said why.
+  row(
+    "failed with a reason: a reconnect keeps it",
+    unreadable,
+    pending,
+    no(unreadable, REJECT.keep),
+  ),
+  row(
+    "failed with a reason: the same plan again",
+    unreadable,
+    plan(),
+    no(unreadable, REJECT.same),
+    "same",
+  ),
+  row(
+    "failed with a reason: a new version drops it and loads",
+    unreadable,
+    plan("k2"),
+    go(loading("k2", 3), [load("k2")]),
+    "other",
+  ),
+  row("failed with a reason: the view goes away", unreadable, block(), go(blocked(), [clear])),
+  row("failed with a reason: destroy", unreadable, destroy, go(destroyed(), [clear])),
+
   // Gone.
   ...[pending, offline, block(), plan(), loaded(), loadFailed(), drawFailed(), destroy].map(
     (event) =>
@@ -205,6 +250,19 @@ test("the view-draw table covers every state and event", async () => {
   const result = await runTable(viewDrawMachine, ROWS);
   assert.equal(result.pairs, 56);
   assert.equal(result.unreachable, 0);
+});
+
+test("a reason is 1 to 240 characters, and only a failed load has one", () => {
+  for (const reason of ["", "x".repeat(241), 7])
+    assert.throws(() => viewDrawMachine.step(loading(), loadFailed(2, reason)), /reason/);
+  assert.throws(
+    () => viewDrawMachine.step(failed("k1", 2, "draw", REASON), plan("k2")),
+    /only a load has a reason/,
+  );
+  assert.equal(
+    viewDrawMachine.step(loading(), loadFailed(2, "x".repeat(240))).state.reason.length,
+    240,
+  );
 });
 
 test("generations rise, so an answer from a replaced load is always stale", () => {

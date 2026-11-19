@@ -127,13 +127,6 @@ export function createViewDraw({
   let serial = 0;
   let title = null;
   const loads = new Map();
-  // Why the newest failed load failed, when a CSV source couldn't be read:
-  // the converter's plain reason, already bounded (csv-arrow.mjs).
-  let loadReason = null;
-  const failedSentence = (generation) =>
-    loadReason?.generation === generation
-      ? `${VIEW_STATUS.failed} ${loadReason.text}`
-      : VIEW_STATUS.failed;
 
   const show = () => {
     const shown = model.name === "drawn" || model.name === "loading" ? (chart?.plan ?? null) : null;
@@ -145,7 +138,9 @@ export function createViewDraw({
           : model.name === "failed"
             ? model.cause === "draw"
               ? VIEW_STATUS.broken
-              : failedSentence(model.generation)
+              : model.reason
+                ? `${VIEW_STATUS.failed} ${model.reason}`
+                : VIEW_STATUS.failed
             : model.name === "unreachable"
               ? VIEW_STATUS.unreachable
               : model.name === "waiting" || (model.name === "loading" && !chart)
@@ -272,11 +267,16 @@ export function createViewDraw({
       if (results.some((result) => result.status === "rejected")) {
         // The failed load's record goes with the machine's release.
         load.owned = owned;
+        // A CSV the converter refused says why: its plain reason, already
+        // bounded (csv-arrow.mjs).
         const unreadable = results.find(
           (result) => result.status === "rejected" && result.reason?.name === CSV_UNREADABLE,
         );
-        loadReason = unreadable ? { generation, text: unreadable.reason.message } : null;
-        return step({ type: "loadFailed", generation });
+        return step({
+          type: "loadFailed",
+          generation,
+          ...(unreadable?.reason.message && { reason: unreadable.reason.message.slice(0, 240) }),
+        });
       }
       load.owned = owned;
       load.datasets = Object.fromEntries(
