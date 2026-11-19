@@ -1,6 +1,7 @@
 // Read-only previews of authenticated source bytes. Never import JavaScript or
 // attach source CSS to the Page; both are rendered as text.
 import { Observable, distinctUntilChanged, map, of, scan, switchMap } from "rxjs";
+import { csvHeaderProblem } from "./csv-header.mjs";
 import { sameVersion } from "./page-source-store.mjs";
 import { fetchOutputAsset } from "./output-assets.mjs";
 import { Store } from "./store.mjs";
@@ -79,7 +80,8 @@ export function previewOf({ bytes, mediaType }) {
 /** The header and first rows of a comma-separated UTF-8 file, as text: the
  * values a reader sees in the file, not the types a view reads. The whole
  * file is walked once, so a quote left open or a row with another number of
- * fields than the header is a plain error rather than a partial table. */
+ * fields than the header is a plain error rather than a partial table. A
+ * header csv-header.mjs refuses is an error here too, as it is for views. */
 function csvPreview(bytes) {
   const unreadable = (why) => Error(`This CSV can't be previewed: ${why}`);
   let text;
@@ -100,8 +102,11 @@ function csvPreview(bytes) {
   const endRecord = () => {
     fields.push(field);
     field = "";
-    if (width === -1) width = fields.length;
-    else if (fields.length !== width)
+    if (width === -1) {
+      width = fields.length;
+      const problem = csvHeaderProblem(fields);
+      if (problem) throw unreadable(problem);
+    } else if (fields.length !== width)
       throw unreadable(`row ${count} has ${fields.length} fields; the header has ${width}.`);
     if (records.length <= CSV_PREVIEW_ROWS)
       records.push(

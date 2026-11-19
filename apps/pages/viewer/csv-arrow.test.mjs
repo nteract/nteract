@@ -100,6 +100,33 @@ test("a header-only file has columns and no rows; a malformed file rejects with 
     });
 });
 
+test("a header with a repeated, empty or overlong column name rejects, saying which", async () => {
+  const long = "n".repeat(257);
+  for (const [source, message] of [
+    ["day,day\n1,2\n", "This file can't be read as CSV: two columns are named day."],
+    ["a,,b\n1,2,3\n", "This file can't be read as CSV: a column has no name."],
+    [",\n1,2\n", "This file can't be read as CSV: a column has no name."],
+    [
+      `${long}\n1\n`,
+      `This file can't be read as CSV: the column ${"n".repeat(40)}… has a name longer than 256 characters.`,
+    ],
+  ])
+    await assert.rejects(csvArrow(encode(source), DATAFRAME_LIMITS), {
+      name: CSV_UNREADABLE,
+      message,
+    });
+  // Names that differ only in spaces are different names.
+  assert.deepEqual((await rowsOf(" a ,a\n1,2\n")).columns, [" a ", "a"]);
+});
+
+test("a quote left open runs to the end of the file as one value", async () => {
+  // The parser reads an unclosed quote as a field that ends with the file,
+  // so this is one row whose value keeps the newline, not an error.
+  const rows = await rowsOf('a\n"x\n');
+  assert.deepEqual(rows.columns, ["a"]);
+  assert.deepEqual([...rows], [{ a: "x\n" }]);
+});
+
 test("every limit is an error; nothing is truncated", async () => {
   const source = encode("a,b\n1,2\n3,4\n5,6\n");
   for (const [limits, reason] of [

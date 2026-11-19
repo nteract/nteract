@@ -14,16 +14,27 @@
 // - An empty field is null in every type.
 // - A ragged row, invalid UTF-8 or a crossed limit is an error. Nothing is
 //   truncated or sampled.
+// - A header with an empty, repeated or overlong column name is an error
+//   (csv-header.mjs). The parser accepts one, so the schema is checked here.
 import { csvToArrowIpc } from "@nteract/sift-csv";
+import { RecordBatchReader } from "apache-arrow";
+import { csvHeaderProblem } from "./csv-header.mjs";
 import { CSV_UNREADABLE } from "./sift-dataset.mjs";
+
+const unreadable = (why) => {
+  const error = Error(`This file can't be read as CSV: ${why}`.slice(0, 240));
+  error.name = CSV_UNREADABLE;
+  return error;
+};
 
 /** CSV `bytes` as one Arrow IPC stream, within `limits` (sift-dataset.mjs
  * DATAFRAME_LIMITS: maxBytes, maxRows, maxColumns, maxDecodedBytes). A file
  * that does not parse, or crosses a limit, rejects with a CsvUnreadable
  * error whose message says why. */
 export async function csvArrow(bytes, { maxBytes, maxRows, maxColumns, maxDecodedBytes }) {
+  let ipc;
   try {
-    return await csvToArrowIpc(bytes, {
+    ipc = await csvToArrowIpc(bytes, {
       maxBytes,
       maxRows,
       maxColumns,
@@ -33,10 +44,11 @@ export async function csvArrow(bytes, { maxBytes, maxRows, maxColumns, maxDecode
     // The parser rejects with its reason as a string. Anything else, such as
     // a WASM that failed to load, is not about this file.
     if (typeof error !== "string") throw error;
-    const unreadable = Error(
-      `This file can't be read as CSV: ${error.replace(/^Csv error: /, "")}`.slice(0, 240),
-    );
-    unreadable.name = CSV_UNREADABLE;
-    throw unreadable;
+    throw unreadable(error.replace(/^Csv error: /, ""));
   }
+  // Opening the stream reads its schema message alone.
+  const reader = RecordBatchReader.from(ipc).open();
+  const problem = csvHeaderProblem(reader.schema.fields.map((field) => field.name));
+  if (problem) throw unreadable(problem);
+  return ipc;
 }

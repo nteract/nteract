@@ -103,6 +103,8 @@ test("CSV previews show the header and first rows as text, bounded, with what is
     ["a,b\n1\n", /row 1 has 1 fields; the header has 2/],
     ['a\n"open\n', /quoted field .* never closes/],
     ["", /no header row/],
+    ["day,day\n1,2\n", /^This CSV can't be previewed: two columns are named day\.$/],
+    ["a,,b\n1,2,3\n", /^This CSV can't be previewed: a column has no name\.$/],
   ])
     assert.throws(() => read(text), { message: reason });
   assert.throws(

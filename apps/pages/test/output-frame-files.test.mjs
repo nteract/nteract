@@ -250,6 +250,20 @@ test("csv() reads a file of any media type, and one that does not parse rejects 
   assert.notEqual(broken.csv(), first, "a rejection is dropped, so the next call asks again");
   await assert.rejects(broken.csv(), /can't be read as CSV/);
   assert.equal(ragged.served.columns, 2);
+  // A header a view can't tell apart says which name, not that the table
+  // failed a check.
+  for (const [source, message] of [
+    ["day,day\n1,2\n", "This file can't be read as CSV: two columns are named day."],
+    ["a,\n1,2\n", "This file can't be read as CSV: a column has no name."],
+  ]) {
+    const header = csvInput(source);
+    const unread = fileObject(
+      "header",
+      exposed(header.input, lifetime.signal).descriptor,
+      lifetime.signal,
+    );
+    await assert.rejects(unread.csv(), { message });
+  }
 });
 
 test("parquet() and csv() on one file each read their own format once", async (t) => {

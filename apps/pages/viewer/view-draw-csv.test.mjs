@@ -37,6 +37,7 @@ async function csvAsset(text) {
 const first = await csvAsset("region,sales,day\nNorth,3,2024-01-01\nSouth,4.5,2024-01-02\n");
 const second = await csvAsset("region,sales,day\nNorth,7,2024-02-01\n");
 const ragged = await csvAsset("region,sales\nNorth\n");
+const repeated = await csvAsset("region,sales,sales\nNorth,3,4\n");
 const tooMany = await csvAsset(
   "region\n" + Array.from({ length: 250_001 }, (_, i) => `r${i % 10}`).join("\n") + "\n",
 );
@@ -150,6 +151,13 @@ test("a CSV that can't be converted shows the failed sentence and the converter'
   f.move(tooMany);
   await until(() => /row limit/.test(f.shown.at(-1)?.sentence ?? ""));
   assert.match(f.shown.at(-1).sentence, /row limit \(250001 > 250000\)/);
+  // A header the chart can't tell apart names the column.
+  f.move(repeated);
+  await until(() => /two columns/.test(f.shown.at(-1)?.sentence ?? ""));
+  assert.equal(
+    f.shown.at(-1).sentence,
+    `${VIEW_STATUS.failed} This file can't be read as CSV: two columns are named sales.`,
+  );
   // A version that converts draws, with no reason left behind.
   f.move(first);
   await until(() => f.shown.at(-1)?.state === "drawn");
