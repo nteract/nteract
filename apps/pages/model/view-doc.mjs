@@ -1,4 +1,3 @@
-import { WIDGET_IMPORTS } from "../shared/widget-imports.mjs";
 import { isExecutableView } from "../shared/anywidget-view.mjs";
 import { viewDependencies } from "../shared/view-dependencies.mjs";
 import * as A from "@automerge/automerge/slim";
@@ -298,13 +297,13 @@ export function setView(
   const title = op.title.trim();
   if (doc.title !== title) doc.title = title;
   if (doc.media_type !== op.media_type) doc.media_type = op.media_type;
-  // Existing executable views keep their original resolution mode on edits.
-  // Pages with an explicit declaration already chose their own catalog.
+  // An executable view records the host's catalog on the write that makes it
+  // executable and keeps that catalog on later edits. A view that isn't
+  // executable holds none.
   if (!isExecutableView(op.media_type)) {
     if (doc.catalog_revision !== undefined) delete doc.catalog_revision;
   } else if (catalogRevision && !isExecutableView(previous?.media_type)) {
-    const declaration = sourcesDoc?.sources?.[WIDGET_IMPORTS];
-    if (!declaration || declaration.deleted) doc.catalog_revision = catalogRevision;
+    doc.catalog_revision = catalogRevision;
   }
   const spec = JSON.stringify(op.spec);
   if (typeof doc.spec !== "string") doc.spec = spec;

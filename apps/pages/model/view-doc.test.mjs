@@ -368,3 +368,52 @@ test("new executable views keep the host catalog they first used", () => {
     assert.equal(readView(chart, "daily").catalog_revision, undefined);
   }
 });
+
+test("a source named widget-imports has no say in the catalog an executable view records", () => {
+  const catalog = "a".repeat(64);
+  const [js, bytes] = ["c".repeat(64), "d".repeat(64)];
+  const sourcesDoc = A.change(sourcesGenesis("22222222-2222-4222-8222-222222222222"), (draft) =>
+    setSources(
+      draft,
+      [
+        {
+          op: "set_source",
+          source_id: "entry",
+          name: "Entry",
+          source_revision: null,
+          asset_id: js,
+        },
+        {
+          op: "set_source",
+          source_id: "widget-imports",
+          name: "Imports",
+          source_revision: null,
+          asset_id: bytes,
+        },
+      ],
+      {
+        by,
+        mediaTypes: new Map([
+          [js, "text/javascript"],
+          [bytes, "application/octet-stream"],
+        ]),
+      },
+    ),
+  );
+  const doc = A.change(viewGenesis(uuid), (draft) => {
+    const edit = setView(
+      draft,
+      {
+        op: "set_view",
+        view_id: "daily",
+        title: "Daily",
+        view_type: "module",
+        module: { source_id: "entry" },
+        view_revision: null,
+      },
+      { sourcesDoc, by, catalogRevision: catalog },
+    );
+    assert.equal(edit.catalog_revision, catalog);
+  });
+  assert.equal(readView(doc, "daily").catalog_revision, catalog);
+});
