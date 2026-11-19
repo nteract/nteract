@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import { describe, it } from "vite-plus/test";
 import type { AuthenticatedConnection } from "@nteract/identity";
-import { createServerAppSession } from "../src/app-session.ts";
+import { createServerAppSession, readServerAccountEmail } from "../src/app-session.ts";
 import {
   conditionalSessionUpdate,
   cookieValue,
@@ -122,7 +122,7 @@ function setup() {
   return { db, keys, env: environment(db, { active: "k1", keys }) };
 }
 
-function identity(principal = "user-1"): AuthenticatedConnection {
+function identity(principal = "user-1", verifiedEmail?: string): AuthenticatedConnection {
   return {
     principal,
     operator: "browser",
@@ -133,6 +133,7 @@ function identity(principal = "user-1"): AuthenticatedConnection {
       transport: "oidc-bearer",
       principalNamespace: "oidc:issuer.example.test",
       displayName: "Test User",
+      ...(verifiedEmail ? { email: verifiedEmail, emailVerified: true } : {}),
     },
   };
 }
@@ -146,11 +147,18 @@ function request(token: string | null, origin = ORIGIN): Request {
 /**
  * Inserts a session row the way the sign-in callback does, and returns its
  * cookie token and id. Access expiry defaults to an hour after `now`.
+ * `accountEmail` signs in with that verified address on a host that retains
+ * it for the account menu.
  */
 async function insertSession(
   env: ServerSessionEnvironment,
   now: number,
-  options: { principal?: string; accessExpiresAt?: number; bundle?: unknown } = {},
+  options: {
+    principal?: string;
+    accessExpiresAt?: number;
+    bundle?: unknown;
+    accountEmail?: string;
+  } = {},
 ): Promise<{ token: string; id: string; context: string }> {
   const db = await oidcDatabase(env);
   const token = randomSecret();
@@ -159,10 +167,11 @@ async function insertSession(
   const accessExpiresAt = options.accessExpiresAt ?? now + 60 * 60;
   const session = await createServerAppSession(
     env,
-    identity(options.principal),
+    identity(options.principal, options.accountEmail),
     id,
     accessExpiresAt,
     now,
+    { retainAccountEmail: options.accountEmail !== undefined },
   );
   await db
     .prepare(
@@ -357,6 +366,22 @@ describe("idle renewal", () => {
     const nearEnd = (await loadServerSession(env, request(token), late))!;
     const capped = await touchServerSession(env, request(token), nearEnd, late);
     assert.equal(capped?.idle_expires_at, absolute);
+  });
+
+  it("keeps the sealed account email when it rewrites the session", async () => {
+    const { env } = setup();
+    const email = "user@example.test";
+    const { token } = await insertSession(env, NOW, {
+      accessExpiresAt: NOW + SERVER_SESSION_ABSOLUTE_SECONDS,
+      accountEmail: email,
+    });
+    const now = NOW + SERVER_SESSION_IDLE_SECONDS - 10;
+    const row = (await loadServerSession(env, request(token), now))!;
+    await touchServerSession(env, request(token), row, now);
+    const session = (await readServerAppSession(env, request(token), now))!;
+    // The touch wrote a new session_json: its expiry moved with the idle window.
+    assert.equal(session.expiresAt, now + SERVER_SESSION_IDLE_SECONDS);
+    assert.equal(await readServerAccountEmail(env, session), email);
   });
 
   it("does not renew from a row read before a refresh saved a new generation", async () => {
