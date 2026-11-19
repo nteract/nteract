@@ -17,7 +17,7 @@ import {
   Paragraph,
 } from "./wordgard-model.mjs";
 import { createWordgardBinding } from "./wordgard-binding.mjs";
-import { taskLists, toggleTaskItem } from "./wordgard-task-lists.mjs";
+import { indentTask, outdentTask, taskLists, toggleTaskItem } from "./wordgard-task-lists.mjs";
 
 const path = textPath("one");
 
@@ -212,4 +212,64 @@ test("read-only task controls reject a toggle without changing document heads", 
   assert.deepEqual(A.getHeads(replica.doc), heads);
   assert.equal(items(editor.state.doc)[0].node.mark(TaskChecked), false);
   binding.destroy();
+});
+
+test("indenting and outdenting a checked task preserve its subtree, caret and native text identity", () => {
+  for (const nested of ["", "  - [x] Earlier child\n"]) {
+    const source = "- [ ] Parent\n" + nested + "- [x] Move me\n  - [ ] Grandchild\n- [ ] Later";
+    const { binding, editor, replica } = fixture(source);
+    const original = editor.state.doc;
+    const caret = textPosition(original, "Move me") + 3;
+    editor.dispatch({ selection: { anchor: caret } });
+    const cursor = A.getCursor(replica.doc, path, binding.current.map.wgToAm[caret]);
+
+    assert.equal(Command.dispatch(editor, indentTask), true);
+    const [parent, later] = editor.state.doc.content[0].content;
+    assert.equal(later.textContent(), "Later");
+    const moved = parent.content.at(-1).content.at(-1);
+    assert.equal(moved.mark(TaskChecked), true);
+    assert.equal(moved.content[1].content[0].textContent(), "Grandchild");
+    assert.equal(parent.content.at(-1).content.length, nested ? 2 : 1);
+    const movedCaret = editor.state.selection.head;
+    assert.equal(movedCaret, textPosition(editor.state.doc, "Move me") + 3);
+    assert.equal(
+      A.getCursorPosition(replica.doc, path, cursor),
+      binding.current.map.wgToAm[movedCaret],
+    );
+    assert.equal(Command.dispatch(editor, outdentTask), true);
+    assert.ok(editor.state.doc.eq(original));
+    assert.equal(editor.state.selection.head, caret);
+    binding.destroy();
+  }
+});
+
+test("outdenting a middle task keeps later children in reading order", () => {
+  const { editor, binding } = fixture(
+    "- [ ] Parent\n  - [ ] First\n  - [x] Middle\n    - [x] Grandchild\n  - [ ] Last",
+  );
+  editor.dispatch({ selection: { anchor: textPosition(editor.state.doc, "Middle") } });
+  assert.equal(Command.dispatch(editor, outdentTask), true);
+  const [parent, middle] = editor.state.doc.content[0].content;
+  assert.equal(parent.content[1].textContent(), "First");
+  assert.equal(middle.mark(TaskChecked), true);
+  assert.deepEqual(
+    middle.content[1].content.map((child) => child.textContent()),
+    ["Grandchild", "Last"],
+  );
+  binding.destroy();
+});
+
+test("Tab falls through on the first sibling, at the top level, and outside an editable task label", () => {
+  for (const [source, label, readOnly] of [
+    ["- [ ] First", "First", false],
+    ["- [ ] First\n- [x] Second", "Second", true],
+    ["- Ordinary\n- Bullet", "Bullet", false],
+    ["- [ ] First\n- [x] Second\n\n  Notes", "Notes", false],
+  ]) {
+    const { binding, editor } = fixture(source, readOnly);
+    editor.dispatch({ selection: { anchor: textPosition(editor.state.doc, label) } });
+    assert.equal(Command.dispatch(editor, indentTask), false);
+    assert.equal(Command.dispatch(editor, outdentTask), false);
+    binding.destroy();
+  }
 });

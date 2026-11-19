@@ -165,6 +165,38 @@ try {
   await saved(a);
   checkpoint(stage);
 
+  stage = "Tab in a checked task label nests it, survives reload, and Shift+Tab restores siblings";
+  const nestedTask = (page) =>
+    content(page).locator("li li").filter({ hasText: "Share the draft" });
+  const checkNesting = async (page) => {
+    await expect(nestedTask(page)).toHaveCount(1);
+    await expect(nestedTask(page).getByRole("checkbox")).toBeChecked();
+    await expect(nestedTask(page).locator("xpath=ancestor::li[1]")).toContainText(
+      "Review with a colleague",
+    );
+  };
+  await selectText(a, "Share the draft", true);
+  await a.keyboard.press("Tab");
+  await expect(content(a)).toBeFocused();
+  for (const page of [a, b]) await checkNesting(page);
+  await saved(a);
+  await a.reload();
+  await checkNesting(a);
+  await selectText(a, "Share the draft", true);
+  await a.keyboard.press("Shift+Tab");
+  for (const page of [a, b]) {
+    await expect(nestedTask(page)).toHaveCount(0);
+    await expect(checkbox(page, "Share the draft")).toBeChecked();
+  }
+  await saved(a);
+  await a.reload();
+  await expect(checkbox(a, "Share the draft")).toBeChecked();
+  await expect(nestedTask(a)).toHaveCount(0);
+  await checkbox(a, "Write the plan").focus();
+  await a.keyboard.press("Tab");
+  await expect(checkbox(a, "Review with a colleague")).toBeFocused();
+  checkpoint(stage);
+
   stage = "simultaneous checkbox and prose edits converge, and undo retains peer text";
   await selectText(b, "Write the plan", true);
   await Promise.all([checkbox(a, "Write the plan").click(), b.keyboard.insertText(" together")]);
