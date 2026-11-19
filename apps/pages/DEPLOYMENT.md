@@ -1147,7 +1147,11 @@ each file to its sha256. `prepare` stages exactly those files, refuses a
 manifest whose sha256 is not the revision or whose file digests differ from the
 receipt, and refuses any other file or revision under `public/catalog`. The
 Pages Worker serves these files itself, with CORS and immutable caching, so the
-`_headers` file names none of them.
+`_headers` file names none of them. The Worker names the revision in the app shell
+beside the output frame URL (`<meta name="pages-library-catalog">`, on every
+target with `PAGES_OUTPUT_FRAME_URL`). A view saved against a catalog this release no
+longer serves loads that current revision instead, so a release that changes
+the catalog needs no view to be saved again.
 
 The receipt's `files` maps every file the release carries, except
 `build-receipt.json` itself, to its sha256: `index.js`, both WASM modules,

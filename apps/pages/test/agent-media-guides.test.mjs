@@ -206,12 +206,12 @@ test("the views guide teaches files asked with await, the table, and change list
     'const table = await model.get("activity").parquet();\n  el.append(Plot.barY(table, { x: "day", y: "people" }).plot());',
     'model.on("change:activity", draw);\n  await draw();',
     'For plain rows, read (await model.get("activity").parquet()).toArray()',
-    "When a view says its libraries are no longer on this host, save it again with set_view to pin the current ones.",
+    "A view runs on it while this host serves it, and otherwise on the host's current libraries, so every stored view can import the names read_page.libraries lists.",
   ])
     assert.ok(guide.includes(sentence), sentence);
   assert.doesNotMatch(guide, /loadTableFile/);
   assert.doesNotMatch(guide, /read\(offset/, "the guide teaches slice, not read");
-  assert.doesNotMatch(guide, /offers no libraries|self-contained entry/);
+  assert.doesNotMatch(guide, /offers no libraries|self-contained entry|no longer on this host/);
   const module = tools.find(({ name }) => name === "edit_page").inputSchema.properties.operations
     .items.properties.module;
   assert.match(module.description, /render\(\{model, el, signal\}\)/);

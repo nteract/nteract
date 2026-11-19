@@ -31,6 +31,8 @@ function catalogRevision(value, origin, label) {
   if (
     url.href !== value ||
     url.origin !== origin ||
+    url.username ||
+    url.password ||
     !path ||
     url.search ||
     url.hash ||

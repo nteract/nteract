@@ -301,10 +301,10 @@ export function setView(
   const title = op.title.trim();
   if (doc.title !== title) doc.title = title;
   if (doc.media_type !== op.media_type) doc.media_type = op.media_type;
-  // Every save of an executable view records the host's catalog, the one its
-  // libraries load from. A host serves only the catalog its build carries, so
-  // saving a view again moves it to that catalog. A view that isn't
-  // executable holds none.
+  // Every save of an executable view records the host's catalog: the catalog
+  // the view was last saved against, which the viewer uses while the host
+  // still serves it, and otherwise the host's current one
+  // (viewer/library-catalog.mjs). A view that isn't executable holds none.
   if (!isExecutableView(op.media_type)) {
     if (doc.catalog_revision !== undefined) delete doc.catalog_revision;
   } else if (catalogRevision && doc.catalog_revision !== catalogRevision) {

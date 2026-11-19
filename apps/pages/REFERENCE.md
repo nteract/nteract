@@ -1901,7 +1901,8 @@ root is:
 {
   title:      string, 1 to 200 characters; a write refuses control characters
   media_type: one of the formats in shared/views.mjs
-  catalog_revision?: the host's library catalog at the executable view's last save
+  catalog_revision?: the host's library catalog at the executable view's last save;
+              the viewer uses it while the host still serves it
   spec:       text, the media-specific spec as JSON
   data:       { [data_name]: { source_id } | { source_id, revision } }
   revision:   decimal string: "1", then one more per write
@@ -2103,15 +2104,28 @@ The Pages Worker serves `GET`/`HEAD /catalog/<revision>/<file>` before any
 session code, with `Access-Control-Allow-Origin: *`,
 `Cross-Origin-Resource-Policy: cross-origin` and immutable caching; a file or
 revision the build lacks is a 404
-([worker/library-catalog.mjs](worker/library-catalog.mjs)). To mount a view
-with a `catalog_revision`, the viewer fetches that revision's manifest from its
-own origin, checks its sha256, and sends the frame a library map of absolute
-URLs on that origin, with each catalog module's integrity from the manifest
-([viewer/library-catalog.mjs](viewer/library-catalog.mjs)).
-A host serves only its own build's catalog. A view whose manifest is missing
-or does not match mounts no frame and says "This view's libraries are no
-longer on this host. Save the view again to use the current ones."; Retry
-loads the manifest again.
+([worker/library-catalog.mjs](worker/library-catalog.mjs)). An app shell
+configured with an output frame URL also names the build's revision in
+`<meta name="pages-library-catalog">`
+([worker/output-frame-config.mjs](worker/output-frame-config.mjs)); a shell
+without one names no current revision.
+A host serves only its own build's catalog. To mount an executable view, the
+viewer fetches a manifest from its own origin, checks its sha256, and sends
+the frame a library map of absolute URLs on that origin, with each catalog
+module's integrity from the manifest
+([viewer/library-catalog.mjs](viewer/library-catalog.mjs)):
+
+- the view's `catalog_revision` while this host serves it (200 and a matching
+  sha256);
+- otherwise, or for a view with no `catalog_revision`, the host's current
+  revision;
+- when this host serves neither (an unbundled host names the all-zero
+  revision), no library map: the view mounts, and a view that imports no
+  library runs.
+
+A manifest request that fails, or answers anything but 200 or 404, mounts no
+frame and says "This view's libraries didn't load. Retry to try again."; Retry
+asks again.
 
 ### Writes
 

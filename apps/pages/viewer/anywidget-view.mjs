@@ -27,7 +27,7 @@ import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 import { viewDependencies } from "../shared/view-dependencies.mjs";
 import { fetchOutputAsset } from "./output-assets.mjs";
 import { mountModuleOutput, readHostContext } from "@nteract/output-frame";
-import { libraryMap$ } from "./library-catalog.mjs";
+import { hostLibraryRevision, libraryMap$ } from "./library-catalog.mjs";
 import { themeStore } from "./theme.mjs";
 
 const sameAsset = (a, b) => a?.asset_id === b?.asset_id && a?.media_type === b?.media_type;
@@ -128,10 +128,15 @@ export function mount(
     // Resolves with the decoder `sources.sharedResolver` decodes Parquet
     // files to ColumnSets with (parquet-columns.mjs).
     columnDecoder = loadColumnDecoder,
-    // Resolves a view's pinned catalog to its library map
-    // (library-catalog.mjs libraryMap$), from this document's origin.
-    libraryMap = (revision) =>
-      libraryMap$(revision, { origin: container.ownerDocument.location.origin }),
+    // Resolves a view's pin to the library map it mounts with
+    // (library-catalog.mjs libraryMap$): the pinned catalog while this
+    // origin serves it, otherwise the host's current one named in this
+    // document.
+    libraryMap = (pin) =>
+      libraryMap$(pin, {
+        origin: container.ownerDocument.location.origin,
+        current: hostLibraryRevision(container.ownerDocument),
+      }),
   },
 ) {
   const doc = container.ownerDocument;
@@ -200,10 +205,11 @@ export function mount(
             // reports a data change no listener in the view would show. Each
             // starts from the newest plan, so nothing is left to redeliver.
             const remount$ = new Subject();
-            // A view that pins a library catalog first loads that catalog's
-            // manifest from this origin. No frame mounts until it is known:
-            // a catalog this host lacks leaves the view unavailable, with
-            // Retry, which asks for the manifest again.
+            // Each mount first settles the view's library map from this
+            // origin's manifests. No frame mounts until it is known: a
+            // manifest that fails to load leaves the view unavailable, with
+            // Retry, which asks again. A host with no libraries mounts the
+            // view without a map.
             const unavailable = (text) =>
               new Observable(() => {
                 root.dataset.outputState = "failed";
@@ -222,7 +228,7 @@ export function mount(
                   delete root.dataset.inputError;
                   return libraryMap(latest$.value.view.catalog_revision ?? null).pipe(
                     switchMap((outcome) =>
-                      outcome.kind !== "ready"
+                      outcome.kind === "failed"
                         ? unavailable(outcome.message)
                         : new Observable(() => {
                             const libraries = outcome.libraries;

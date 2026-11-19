@@ -203,7 +203,7 @@ export async function render({ el }) {
     Buffer.from('export default {initialize(){throw Error("intentional failure")},render(){}}'),
     "text/javascript",
   ],
-  // A module view that imports a library from the view's pinned catalog.
+  // A module view that imports a library from this origin's catalog.
   libview: [
     Buffer.from(`import { shout } from 'catalog-shout';
 export function render({ el }) {
@@ -480,7 +480,7 @@ const server = createServer(async (req, res) => {
     `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; frame-src ${new URL(configuredFrameUrl).origin}`,
   );
   res.end(
-    `<!doctype html><meta name="pages-output-frame-url" content="${configuredFrameUrl}"><meta name="viewport" content="width=device-width"><title>Audio exploration</title><link rel="stylesheet" href="/styles.css"><label style="max-width:900px;margin:20px auto">Appearance <select id="appearance"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><main style="max-width:900px;margin:30px auto;font:16px system-ui"></main><script type="module" src="/app.js"></script>`,
+    `<!doctype html><meta name="pages-output-frame-url" content="${configuredFrameUrl}"><meta name="pages-library-catalog" content="${libraryRevision}"><meta name="viewport" content="width=device-width"><title>Audio exploration</title><link rel="stylesheet" href="/styles.css"><label style="max-width:900px;margin:20px auto">Appearance <select id="appearance"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><main style="max-width:900px;margin:30px auto;font:16px system-ui"></main><script type="module" src="/app.js"></script>`,
   );
 });
 await new Promise((resolve) =>
@@ -556,13 +556,19 @@ try {
       "",
     );
     await page.evaluate(() => window.fixture.endLibraryView());
-    // A pin this origin does not serve: the plain message, and no frame.
+    // A pin this origin does not serve: the view loads the host's current
+    // catalog, named in the shell, and still draws with its library.
     await page.evaluate(() => window.fixture.libraryView("f".repeat(64)));
-    await expect(libraryView).toHaveAttribute("data-output-state", "failed");
-    await expect(libraryView.locator("p")).toHaveText(
-      "This view's libraries are no longer on this host. Save the view again to use the current ones.",
+    await expect
+      .poll(async () =>
+        libraryView.evaluate(
+          (el) => el.dataset.outputState + " " + el.querySelector("p")?.textContent,
+        ),
+      )
+      .toBe("ready ");
+    await expect(page.frameLocator("#library-view iframe").locator("#library-result")).toHaveText(
+      "FROM THE PAGE ORIGIN",
     );
-    await expect(page.locator("#library-view iframe")).toHaveCount(0);
     await page.evaluate(() => window.fixture.endLibraryView());
   }
   // A runtime that throws: the bootstrap reports it at once, long before

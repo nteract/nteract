@@ -142,7 +142,7 @@ export async function render({ model, el }) {
 
 For plain rows, read (await model.get("activity").parquet()).toArray(): one object per row, such as { day, people }.
 
-Every save of a view pins the host's current libraries. read_page.libraries lists the exact names available here. Import them directly, as this entry imports @observablehq/plot. The receipt and read_page.view.catalog_revision identify the pinned library build. When a view says its libraries are no longer on this host, save it again with set_view to pin the current ones.
+Every save of a view pins the host's current libraries. read_page.libraries lists the exact names available here. Import them directly, as this entry imports @observablehq/plot. The receipt and read_page.view.catalog_revision identify that library build. A view runs on it while this host serves it, and otherwise on the host's current libraries, so every stored view can import the names read_page.libraries lists.
 
 ${edit("save-activity", [example])}
 ${edit("place-activity", [place("activity")])}

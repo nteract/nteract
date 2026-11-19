@@ -102,6 +102,12 @@ for (const [name, libraries, at, message] of [
   ["a query", { d3: url("d3.js") + "?v=1" }, origin, /page's catalog/],
   ["a fragment", { d3: url("d3.js") + "#x" }, origin, /page's catalog/],
   [
+    "credentials",
+    { d3: url("d3.js").replace("https://", "https://user:pw@") },
+    origin,
+    /page's catalog/,
+  ],
+  [
     "a URL that is not normalized",
     { d3: `${origin}/catalog/./${revision}/d3.js` },
     origin,

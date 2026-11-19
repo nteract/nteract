@@ -1,22 +1,36 @@
-// A view's library map: what the viewer sends the frame for a view that pins a
-// library catalog (view.catalog_revision). The catalog lives on this origin at
+// An executable view's library map: what the viewer sends the frame so the
+// view can import the host's libraries. A catalog lives on this origin at
 // /catalog/<revision>/ (worker/library-catalog.mjs); its manifest.json maps
 // each library to a file, and the revision is the sha256 of the manifest's
 // text.
-import { Observable, of } from "rxjs";
+//
+// A view's catalog_revision is the catalog it was last saved against. The
+// viewer uses that catalog while this host still serves it, and otherwise the
+// host's current one, which the Worker writes into the app's HTML
+// (worker/output-frame-config.mjs). A host that serves neither has no
+// libraries: the view mounts without a map.
+import { Observable, of, switchMap } from "rxjs";
 import { LIBRARY_REVISION, libraryPath } from "../shared/library-catalog.mjs";
 
-export const LIBRARIES_MISSING =
-  "This view's libraries are no longer on this host. Save the view again to use the current ones.";
 export const LIBRARIES_UNREACHABLE = "This view's libraries didn't load. Retry to try again.";
+
+/** The meta element the Worker names the host's current catalog with. */
+export const LIBRARY_CATALOG_META = "pages-library-catalog";
 
 const FILE = /^[\w-]+\.js$/;
 const SHA256_HEX = /^[a-f0-9]{64}$/;
 
+/** The host's current catalog revision from `doc`'s meta, or null when the
+ * document names none or names something that is not a revision. */
+export function hostLibraryRevision(doc) {
+  const value = doc?.querySelector(`meta[name="${LIBRARY_CATALOG_META}"]`)?.content;
+  return typeof value === "string" && LIBRARY_REVISION.test(value) ? value : null;
+}
+
 /**
- * What one manifest answer means for the view, decided from the response
- * alone: `status` (an HTTP status, or 0 when the request failed), `text`,
- * the manifest's text, and `digest`, the sha256 hex of that text.
+ * What one manifest answer means, decided from the response alone: `status`
+ * (an HTTP status, or 0 when the request failed), `text`, the manifest's
+ * text, and `digest`, the sha256 hex of that text.
  * - {kind: "ready", libraries, integrity}: the map of name → absolute URL on
  *   `origin`, and each catalog module's URL → its integrity value from the
  *   manifest's sha256, so the frame refuses a module whose bytes differ;
@@ -26,22 +40,21 @@ const SHA256_HEX = /^[a-f0-9]{64}$/;
  *   a retry may fix.
  */
 export function libraryManifestOutcome({ revision, origin, status, text, digest }) {
-  if (status === 404) return { kind: "missing", message: LIBRARIES_MISSING };
-  if (status !== 200) return { kind: "failed", message: LIBRARIES_UNREACHABLE };
-  if (digest !== revision) return { kind: "missing", message: LIBRARIES_MISSING };
+  const missing = { kind: "missing" };
+  if (status === 404) return missing;
+  if (status !== 200) return { kind: "failed" };
+  if (digest !== revision) return missing;
   let imports, files;
   try {
     ({ imports, files } = JSON.parse(text));
   } catch {
-    return { kind: "missing", message: LIBRARIES_MISSING };
+    return missing;
   }
   const isRecord = (value) => value && typeof value === "object" && !Array.isArray(value);
-  if (!isRecord(imports) || !isRecord(files))
-    return { kind: "missing", message: LIBRARIES_MISSING };
+  if (!isRecord(imports) || !isRecord(files)) return missing;
   const libraries = {};
   for (const [name, file] of Object.entries(imports)) {
-    if (typeof file !== "string" || !FILE.test(file))
-      return { kind: "missing", message: LIBRARIES_MISSING };
+    if (typeof file !== "string" || !FILE.test(file)) return missing;
     libraries[name] = origin + libraryPath(revision, file);
   }
   // Every module of the catalog, the libraries and the chunks they share,
@@ -49,13 +62,44 @@ export function libraryManifestOutcome({ revision, origin, status, text, digest 
   const integrity = {};
   for (const [file, digest] of Object.entries(files)) {
     if (!FILE.test(file)) continue;
-    if (typeof digest !== "string" || !SHA256_HEX.test(digest))
-      return { kind: "missing", message: LIBRARIES_MISSING };
+    if (typeof digest !== "string" || !SHA256_HEX.test(digest)) return missing;
     integrity[origin + libraryPath(revision, file)] = sha256Integrity(digest);
   }
-  if (Object.values(libraries).some((url) => !Object.hasOwn(integrity, url)))
-    return { kind: "missing", message: LIBRARIES_MISSING };
+  if (Object.values(libraries).some((url) => !Object.hasOwn(integrity, url))) return missing;
   return { kind: "ready", libraries, integrity };
+}
+
+/**
+ * Which library map a view mounts with, from its pin, the host's current
+ * revision, and the manifest outcomes known so far (undefined: not asked yet).
+ * Each argument that is not a 64-hex revision counts as absent.
+ * - {kind: "fetch", revision}: ask for this revision's manifest, then decide
+ *   again with its outcome;
+ * - {kind: "ready", revision, libraries, integrity}: mount with this map;
+ * - {kind: "none"}: this host has no libraries; mount without a map;
+ * - {kind: "failed", message}: a manifest the view needs didn't load; show
+ *   the message and Retry.
+ * The pin comes first. Only a pin this host doesn't serve falls through to the
+ * current revision, and a current revision equal to the pin is not asked for
+ * twice.
+ */
+export function libraryDecision({ pin, current, pinned, latest }) {
+  const valid = (revision) => typeof revision === "string" && LIBRARY_REVISION.test(revision);
+  const use = (revision, outcome) =>
+    outcome === undefined
+      ? { kind: "fetch", revision }
+      : outcome.kind === "ready"
+        ? { kind: "ready", revision, libraries: outcome.libraries, integrity: outcome.integrity }
+        : outcome.kind === "failed"
+          ? { kind: "failed", message: LIBRARIES_UNREACHABLE }
+          : undefined;
+  if (valid(pin)) {
+    const decided = use(pin, pinned);
+    if (decided) return decided;
+    if (current === pin) return { kind: "none" };
+  }
+  if (!valid(current)) return { kind: "none" };
+  return use(current, latest) ?? { kind: "none" };
 }
 
 /** An import map integrity value from a sha256 in hex. */
@@ -76,15 +120,9 @@ async function sha256Hex(text) {
 // manifest is asked for again on the next load, such as Retry.
 const ready = new Map();
 
-/**
- * The manifest step of a mount: one outcome (libraryManifestOutcome) for
- * `revision` on `origin`. A view with no revision has no libraries:
- * {kind: "ready", libraries: undefined}. Unsubscribing aborts the request.
- */
-export function libraryMap$(revision, { origin, fetch = globalThis.fetch } = {}) {
-  if (revision === undefined || revision === null)
-    return of({ kind: "ready", libraries: undefined });
-  if (!LIBRARY_REVISION.test(revision)) return of({ kind: "missing", message: LIBRARIES_MISSING });
+/** One manifest outcome (libraryManifestOutcome) for `revision` on `origin`.
+ * Unsubscribing aborts the request. */
+export function libraryManifest$(revision, { origin, fetch = globalThis.fetch }) {
   const key = `${origin} ${revision}`;
   if (ready.has(key)) return of(ready.get(key));
   return new Observable((subscriber) => {
@@ -113,6 +151,24 @@ export function libraryMap$(revision, { origin, fetch = globalThis.fetch } = {})
     });
     return () => controller.abort();
   });
+}
+
+/**
+ * The library step of a mount: one libraryDecision that is not "fetch", for a
+ * view pinned to `pin` (or null) on a host whose current revision is
+ * `current` (or null). It asks for each manifest the decision names, in turn.
+ * Unsubscribing aborts the request in flight.
+ */
+export function libraryMap$(pin, { origin, current = null, fetch = globalThis.fetch } = {}) {
+  const step = (known) => {
+    const decision = libraryDecision({ pin, current, ...known });
+    if (decision.kind !== "fetch") return of(decision);
+    const slot = decision.revision === pin ? "pinned" : "latest";
+    return libraryManifest$(decision.revision, { origin, fetch }).pipe(
+      switchMap((outcome) => step({ ...known, [slot]: outcome })),
+    );
+  };
+  return step({});
 }
 
 /** Forget every ready map; for tests. */

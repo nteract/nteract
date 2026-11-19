@@ -40,8 +40,12 @@ const declaration = encoder.encode(
   }),
 );
 const declarationId = await sha256(declaration);
+// An entry that imports one of the host's libraries.
+const plot = encoder.encode('import * as d3 from "d3";\nexport default { render() {} };');
+const plotId = await sha256(plot);
 const assets = new Map([
   [entryId, { bytes: entry, media_type: "text/javascript" }],
+  [plotId, { bytes: plot, media_type: "text/javascript" }],
   [moduleId, { bytes: moduleBytes, media_type: "text/javascript" }],
   [declarationId, { bytes: declaration, media_type: "application/octet-stream" }],
 ]);
@@ -64,12 +68,19 @@ const sourcesDoc = A.change(sourcesGenesis(PAGE), (draft) =>
         source_revision: null,
         asset_id: declarationId,
       },
+      {
+        op: "set_source",
+        source_id: "plot",
+        name: "Plot",
+        source_revision: null,
+        asset_id: plotId,
+      },
     ],
     { by, mediaTypes: new Map([...assets].map(([id, asset]) => [id, asset.media_type])) },
   ),
 );
 
-function viewRecord(catalogRevision) {
+function viewRecord(catalogRevision, entrySource = "entry") {
   const doc = A.change(viewGenesis("44444444-4444-4444-8444-444444444444"), (draft) =>
     setView(
       draft,
@@ -78,7 +89,7 @@ function viewRecord(catalogRevision) {
         view_id: "daily",
         title: "Daily",
         view_type: "module",
-        module: { source_id: "entry" },
+        module: { source_id: entrySource },
         view_revision: null,
       },
       { sourcesDoc, by, catalogRevision },
@@ -130,7 +141,8 @@ async function mountView(view, { libraryMap } = {}) {
 test("a source named widget-imports is an ordinary source an executable view never loads", async () => {
   const declarationUrl = imageAssetUrl(PAGE, declarationId);
   const moduleUrl = imageAssetUrl(PAGE, moduleId);
-  // The library map comes from the view's pinned catalog alone.
+  // The library map comes from the library step (libraryMap), never a Page
+  // source.
   const pinned = { react: `https://pages.example/catalog/${"a".repeat(64)}/react.js` };
   for (const catalog of [null, "a".repeat(64)]) {
     const view = viewRecord(catalog);
@@ -655,73 +667,152 @@ test("a Parquet file that cannot be decoded rejects its table and leaves the vie
   assert.equal(await rows(calls.data[0][1]), 9);
 });
 
-// A view whose pinned catalog this host lacks mounts no frame and says so.
-// Retry asks for the manifest again.
+// The library step of a mount, end to end through libraryMap$: the manifests
+// it asks for, in order, and what the frame then receives.
+const ORIGIN = "https://pages.example";
+const catalogManifest = (file, digit) =>
+  `{"imports":{"d3":"${file}"},"files":{"${file}":"${digit.repeat(64)}"}}\n`;
+const pinnedManifest = catalogManifest("d3.js", "1");
+const currentManifest = catalogManifest("d3-next.js", "2");
+const pinnedRevision = await sha256(encoder.encode(pinnedManifest));
+const currentRevision = await sha256(encoder.encode(currentManifest));
+const manifestUrl = (revision) => `${ORIGIN}/catalog/${revision}/manifest.json`;
+const notFound = () => new Response("No such library file\n", { status: 404 });
+
+/** Mount `view` on a document whose host names `current` as its catalog,
+ * answering manifest requests from `answers` in order. */
+function mountWithLibraries(t, view, { current, answers, html = "" }) {
+  t.after(forgetLibraryMaps);
+  const { window } = new JSDOM(`<!doctype html><head>${html}</head><body></body>`, {
+    url: ORIGIN + "/",
+  });
+  const sources = new PageSourceStore({
+    pageId: PAGE,
+    doc$: new BehaviorSubject(sourcesDoc),
+    request: async (url) => {
+      const asset = assets.get(url.split("/").at(-1));
+      return new Response(asset.bytes, { headers: { "content-type": asset.media_type } });
+    },
+  });
+  const asked = [];
+  const mounts = [];
+  const fetch = async (url) => {
+    asked.push(url);
+    const next = answers.shift();
+    if (next instanceof Error) throw next;
+    return next;
+  };
+  const mounted = mount(window.document.body, {
+    view$: of({ status: "ready", view }),
+    sources,
+    frameUrl: FRAME,
+    theme: { subscribe: () => () => {}, getSnapshot: () => ({ resolved: "light" }) },
+    ...(current !== undefined && {
+      libraryMap: (pin) => libraryMap$(pin, { origin: ORIGIN, current, fetch }),
+    }),
+    mountOutput(_container, payload, options) {
+      mounts.push({ payload, options });
+      return { destroy() {}, setHostContext() {} };
+    },
+  });
+  t.after(() => {
+    mounted.destroy();
+    sources.destroy();
+    window.close();
+  });
+  const root = window.document.querySelector(".pages-anywidget-view");
+  return { window, root, asked, mounts, fetch };
+}
+
+const d3At = (revision, file) => ({ d3: `${ORIGIN}/catalog/${revision}/${file}` });
+
 for (const [name, first] of [
-  ["missing", () => new Response("No such library file\n", { status: 404 })],
+  ["missing", notFound],
   ["altered", () => new Response('{"imports":{}}\n')],
 ])
-  test(`a view whose pinned manifest is ${name} shows the plain message, and Retry loads it again`, async (t) => {
-    t.after(forgetLibraryMaps);
-    const manifest = '{"imports":{"d3":"d3.js"},"files":{"d3.js":"' + "1".repeat(64) + '"}}\n';
-    const revision = await sha256(encoder.encode(manifest));
-    const view = viewRecord(revision);
-    const { window } = new JSDOM("<!doctype html><body></body>");
-    const sources = new PageSourceStore({
-      pageId: PAGE,
-      doc$: new BehaviorSubject(sourcesDoc),
-      request: async (url) => {
-        const asset = assets.get(url.split("/").at(-1));
-        return new Response(asset.bytes, { headers: { "content-type": asset.media_type } });
-      },
+  test(`a view whose pinned manifest is ${name} mounts with the host's current libraries`, async (t) => {
+    const { root, asked, mounts } = mountWithLibraries(t, viewRecord(pinnedRevision), {
+      current: currentRevision,
+      answers: [first(), new Response(currentManifest)],
     });
-    const answers = [first(), new Response(manifest)];
-    const asked = [];
-    const mounts = [];
-    const mounted = mount(window.document.body, {
-      view$: of({ status: "ready", view }),
-      sources,
-      frameUrl: FRAME,
-      theme: { subscribe: () => () => {}, getSnapshot: () => ({ resolved: "light" }) },
-      libraryMap: (pin) =>
-        libraryMap$(pin, {
-          origin: "https://pages.example",
-          fetch: async (url) => {
-            asked.push(url);
-            return answers.shift();
-          },
-        }),
-      mountOutput(_container, payload, options) {
-        mounts.push({ payload, options });
-        return { destroy() {}, setHostContext() {} };
-      },
+    await until(() => mounts.length === 1, "the view never mounted");
+    assert.notEqual(root.dataset.outputState, "failed");
+    assert.deepEqual(asked, [manifestUrl(pinnedRevision), manifestUrl(currentRevision)]);
+    assert.deepEqual(mounts[0].payload.libraries, d3At(currentRevision, "d3-next.js"));
+    assert.deepEqual(mounts[0].payload.libraryIntegrity, {
+      [`${ORIGIN}/catalog/${currentRevision}/d3-next.js`]: sha256Integrity("2".repeat(64)),
     });
-    t.after(() => {
-      mounted.destroy();
-      sources.destroy();
-      window.close();
+    assert.equal(mounts[0].options.frameUrl, FRAME);
+  });
+
+test("a view whose pinned manifest this host serves mounts with the pinned libraries", async (t) => {
+  const { asked, mounts } = mountWithLibraries(t, viewRecord(pinnedRevision), {
+    current: currentRevision,
+    answers: [new Response(pinnedManifest)],
+  });
+  await until(() => mounts.length === 1, "the view never mounted");
+  assert.deepEqual(asked, [manifestUrl(pinnedRevision)]);
+  assert.deepEqual(mounts[0].payload.libraries, d3At(pinnedRevision, "d3.js"));
+});
+
+// The save-time rule that a view imports the host's libraries holds at run
+// time for a view saved with no pin: it gets the map named in the app's HTML.
+test("a view with no pin that imports a library mounts with the host's current map", async (t) => {
+  const answers = [new Response(currentManifest)];
+  const asked = [];
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    asked.push({ url, credentials: init.credentials });
+    return answers.shift();
+  });
+  const view = viewRecord(null, "plot");
+  assert.equal(view.catalog_revision, undefined);
+  const { mounts } = mountWithLibraries(t, view, {
+    answers: [],
+    html: `<meta name="pages-library-catalog" content="${currentRevision}">`,
+  });
+  await until(() => mounts.length === 1, "the view never mounted");
+  assert.deepEqual(asked, [{ url: manifestUrl(currentRevision), credentials: "omit" }]);
+  assert.deepEqual(mounts[0].payload.libraries, d3At(currentRevision, "d3-next.js"));
+});
+
+for (const [name, current, answers] of [
+  ["serves no catalog", currentRevision, () => [notFound(), notFound()]],
+  ["names no catalog", null, () => [notFound()]],
+])
+  test(`a host that ${name} mounts the view without a library map`, async (t) => {
+    const { root, mounts } = mountWithLibraries(t, viewRecord(pinnedRevision), {
+      current,
+      answers: answers(),
     });
-    const root = window.document.querySelector(".pages-anywidget-view");
+    await until(() => mounts.length === 1, "the view never mounted");
+    assert.notEqual(root.dataset.outputState, "failed");
+    assert.equal(mounts[0].payload.libraries, undefined);
+    assert.equal(mounts[0].payload.libraryIntegrity, undefined);
+  });
+
+for (const [name, answers] of [
+  ["the pinned manifest fails", () => [new Response("", { status: 503 })]],
+  ["the current manifest fails", () => [notFound(), new TypeError("network down")]],
+])
+  test(`a view whose ${name.replace("the ", "")} shows the retry message, and Retry loads it again`, async (t) => {
+    const queue = [...answers(), new Response(pinnedManifest)];
+    const { window, root, asked, mounts } = mountWithLibraries(t, viewRecord(pinnedRevision), {
+      current: currentRevision,
+      answers: queue,
+    });
     const button = root.querySelector("button");
     await until(() => root.dataset.outputState === "failed", "the view never failed");
     assert.equal(
       root.querySelector("p").textContent,
-      "This view's libraries are no longer on this host. Save the view again to use the current ones.",
+      "This view's libraries didn't load. Retry to try again.",
     );
     assert.equal(button.hidden, false);
     assert.equal(button.disabled, false);
-    // No frame mounted.
     assert.equal(mounts.length, 0);
     assert.equal(root.querySelector("iframe"), null);
-    assert.deepEqual(asked, [`https://pages.example/catalog/${revision}/manifest.json`]);
+    const before = asked.length;
     button.dispatchEvent(new window.MouseEvent("click"));
     await until(() => mounts.length === 1, "Retry never mounted the view");
-    assert.equal(asked.length, 2);
-    assert.deepEqual(mounts[0].payload.libraries, {
-      d3: `https://pages.example/catalog/${revision}/d3.js`,
-    });
-    assert.deepEqual(mounts[0].payload.libraryIntegrity, {
-      [`https://pages.example/catalog/${revision}/d3.js`]: sha256Integrity("1".repeat(64)),
-    });
-    assert.equal(mounts[0].options.frameUrl, FRAME);
+    assert.deepEqual(asked.slice(before), [manifestUrl(pinnedRevision)]);
+    assert.deepEqual(mounts[0].payload.libraries, d3At(pinnedRevision, "d3.js"));
   });
