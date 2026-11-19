@@ -16,8 +16,7 @@ PAGES_E2E_ONLY=true PAGES_PORT=9916 PAGES_OUTPUT_FRAME_URL=http://127.0.0.1:9446
 
 Run `node scripts/widget-catalog/demo.mjs` to create a Page with illustrative
 counts and exercise both widgets. Open **Page libraries** in Sources to see the standard import names and the
-component revisions shared on this Page. **Standard libraries** in the Sources
-inventory shows the catalog revision pinned by each placed executable view.
+component revisions shared on this Page. **Standard libraries** within those details shows the catalog revision pinned by each placed executable view.
 
 On a fresh Page, `set_view` pins the deployed catalog on each new executable view.
 Import React or Plot directly and inspect `read_page.view.catalog_revision` to

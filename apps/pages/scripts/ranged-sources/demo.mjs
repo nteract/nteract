@@ -87,11 +87,11 @@ try {
   await page.getByRole("button", { name: "Project activity archive" }).click();
   const panel = page.getByRole("dialog", { name: "Sources" });
   await panel.getByRole("button", { name: "All sources" }).click();
-  const libraries = panel.getByRole("region", { name: "Standard libraries" });
-  await expect(libraries.locator("svg.lucide-library")).toBeVisible();
-  await expect(libraries.getByRole("button", { name: /Daily activity/ })).toContainText(
-    read.view.catalog_revision.slice(0, 12),
-  );
+  const libraries = panel.locator("details").filter({ hasText: "Standard libraries" });
+  await expect(libraries.locator("summary svg.lucide-library")).toBeVisible();
+  await libraries.locator("summary").click();
+  await expect(libraries.locator("code")).toHaveText(read.view.catalog_revision.slice(0, 12));
+  await expect(libraries.getByRole("button", { name: "Daily activity" })).toBeVisible();
   console.log(await report.textContent(), link);
 } finally {
   await browser.close();

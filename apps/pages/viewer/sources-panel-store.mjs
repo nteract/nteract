@@ -48,7 +48,8 @@ export function sourceMediaLabel(type) {
 
 export function sourceMatchesQuery(source, query) {
   const titles = source.kind === "attachment" ? source.uses.map((use) => use.title).join(" ") : "";
-  return `${source.name} ${source.source_id} ${sourceMediaLabel(source.media_type)} ${titles}`
+  const type = widgetCatalogPin(source) ? "Page import map" : sourceMediaLabel(source.media_type);
+  return `${source.name} ${source.source_id} ${type} ${titles}`
     .toLocaleLowerCase()
     .includes(query.toLocaleLowerCase());
 }

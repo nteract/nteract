@@ -250,6 +250,33 @@ function SourcePreview({ session, source }) {
   );
 }
 
+function LibraryRevisions({ pins, onReveal }) {
+  return (
+    <details className="library-revisions">
+      <summary className="source-row">
+        <Library size={16} aria-hidden="true" />
+        <span>
+          <strong>Standard libraries</strong>
+        </span>
+        <ChevronRight size={15} aria-hidden="true" />
+      </summary>
+      {Object.entries(Object.groupBy(pins, (pin) => pin.digest)).map(([digest, placements]) => (
+        <div className="library-revision" key={digest}>
+          <small>
+            Revision <code title={digest}>{digest.slice(0, 12)}</code>
+          </small>
+          {placements.map((placement) => (
+            <button className="source-use" key={placement.key} onClick={() => onReveal(placement)}>
+              <span>{placement.title}</span>
+              <ArrowUpRight size={15} aria-hidden="true" />
+            </button>
+          ))}
+        </div>
+      ))}
+    </details>
+  );
+}
+
 /** Same dock/sheet geometry as comments; mounted only during inspection.
  * This component owns selection and search, never a second document copy. */
 export function SourcesPanel({ session, selection, onClose, onReveal }) {
@@ -307,13 +334,21 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
   const attached = source?.kind === "attachment";
   const unavailable = source && source.availability !== "available";
   const incomplete = value.unresolvedViews.length > 0 || value.unreadableBlocks > 0;
-  const searchable = value.sources.length > 1;
-  const results = value.sources.filter((item) => !searchable || sourceMatchesQuery(item, query));
+  const hasPageLibraries = value.sources.some(widgetCatalogPin);
+  const searchable =
+    value.sources.length + Number(!hasPageLibraries && value.libraryPins.length > 0) > 1;
   const libraryPins = value.libraryPins.filter((pin) =>
     `standard libraries ${pin.title} ${pin.digest}`
       .toLocaleLowerCase()
       .includes(query.toLocaleLowerCase()),
   );
+  const results = value.sources.filter(
+    (item) =>
+      !searchable ||
+      sourceMatchesQuery(item, query) ||
+      (widgetCatalogPin(item) && libraryPins.length > 0),
+  );
+  const revealLibraryUse = (pin) => onReveal(pin, { close: mobile });
   const index = results.findIndex((item) => item.source_id === selected);
   const position = index >= 0 ? { index: index + 1, total: results.length } : null;
   function back() {
@@ -416,7 +451,11 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
                               ? "Page import map"
                               : sourceMediaLabel(item.media_type)}{" "}
                         {item.kind === "attachment" ? "· Attached file " : ""}· {item.uses.length}{" "}
-                        {item.uses.length === 1 ? "connection" : "connections"}
+                        {item.uses.length === 0
+                          ? "direct connections"
+                          : item.uses.length === 1
+                            ? "connection"
+                            : "connections"}
                         {incomplete ? " found" : ""}
                       </small>
                     </span>
@@ -426,30 +465,10 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
                 {results.length === 0 && libraryPins.length === 0 && (
                   <p className="muted">No matching sources.</p>
                 )}
+                {!hasPageLibraries && libraryPins.length > 0 && (
+                  <LibraryRevisions pins={libraryPins} onReveal={revealLibraryUse} />
+                )}
               </nav>
-              {libraryPins.length > 0 && (
-                <section className="source-inspector" aria-label="Standard libraries">
-                  <h3 className="library-heading">
-                    <Library size={16} aria-hidden="true" /> Standard libraries
-                  </h3>
-                  <p className="source-type">Each view pins the library revision it imports.</p>
-                  {libraryPins.map((pin) => (
-                    <button
-                      className="source-use"
-                      key={pin.key}
-                      onClick={() => onReveal(pin, { close: mobile })}
-                    >
-                      <span>
-                        <strong>{pin.title}</strong>
-                        <small title={pin.digest}>
-                          Pinned revision · <code>{pin.digest.slice(0, 12)}</code>
-                        </small>
-                      </span>
-                      <ArrowUpRight size={15} aria-hidden="true" />
-                    </button>
-                  ))}
-                </section>
-              )}
             </>
           ) : (
             value.answer === "known" && (
@@ -524,6 +543,9 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
             {!unavailable && SOURCE_PREVIEW_TYPES.includes(source.media_type) && (
               <SourceFilePreview key={source.source_id} session={session} source={source} />
             )}
+            {pageLibraries && value.libraryPins.length > 0 && (
+              <LibraryRevisions pins={value.libraryPins} onReveal={revealLibraryUse} />
+            )}
             <div className="source-sections" role="group" aria-label="Source sections">
               <button aria-pressed={tab === "uses"} onClick={() => setTab("uses")}>
                 Connections
@@ -541,7 +563,7 @@ export function SourcesPanel({ session, selection, onClose, onReveal }) {
                   <p className="muted">
                     {incomplete
                       ? "No connections found yet."
-                      : "No placed tables or views read this source."}
+                      : "No placed tables or views read this source directly."}
                   </p>
                 )}
                 {source.uses.map((use) => (

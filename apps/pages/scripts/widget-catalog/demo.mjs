@@ -145,7 +145,12 @@ try {
     .or(page.getByRole("menuitem", { name: "Sources", exact: true }))
     .click();
   const panel = page.getByRole("dialog", { name: "Sources", exact: true });
+  await expect(panel.locator(".library-revisions")).toHaveCount(0);
   await panel.getByRole("button", { name: /Page libraries.*Page import map/ }).click();
+  const revisions = panel.locator(".library-revisions");
+  await revisions.locator("summary").click();
+  await expect(revisions.locator("code")).toHaveText(pin.slice(0, 12));
+  await expect(revisions.getByRole("button")).toHaveCount(2);
   await expect(panel.getByRole("region", { name: "Library imports" })).toContainText(
     "activity-controls",
   );
