@@ -281,7 +281,7 @@ const editOperation = {
         "set_view",
       ),
       description:
-        "set_title: title. replace_block_markdown: node_id, markdown. insert_markdown: markdown, after_node_id. move_block: node_id, after_node_id. delete_block: node_id. insert_image: asset_id, alt; optional dark_asset_id, title, after_node_id. set_image: node_id and the fields to change. insert_node: node, after_node_id. delete_node: node_id. replace_match: node_id, match_text, replacement or replacement_markdown. format_match: node_id, match_text, add or remove; optional all. set_node: node_id, match_text, type or attrs; a dataframe takes node_id and attrs without match_text, preserving its identity. set_source: source_id, name, asset_id, source_revision. delete_source: source_id, source_revision; retires the ID. Source operations batch only with source operations. Send set_view alone with view_id, title, view_type and view_revision. For JavaScript use module, optional data and imports. See /llms/views.txt.",
+        "Use fields for the selected op only. set_source takes source_id, name, asset_id and source_revision. Batch source edits together. Send set_view alone with view_id, title, view_type and view_revision. See /llms/views.txt for module, data and imports. insert_node places the view.",
     },
     node_id: {
       ...address,
