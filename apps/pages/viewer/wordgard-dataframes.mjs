@@ -9,7 +9,7 @@ import { Decoration, KeyBinding, Widget } from "wordgard/editor";
 import { GardSelection } from "wordgard/state";
 import { PagesDataframe } from "./wordgard-model.mjs";
 import { reportRendererUnavailable } from "./wordgard-widgets.mjs";
-import { PARQUET_MEDIA_TYPE, readDataframe } from "../shared/dataset-assets.mjs";
+import { CSV_MEDIA_TYPE, PARQUET_MEDIA_TYPE, readDataframe } from "../shared/dataset-assets.mjs";
 import { asyncScheduler, timer as rxTimer } from "rxjs";
 import { dataframeTableMachine } from "./dataframe-table-machine.mjs";
 import { bindingKey, storedBinding } from "./dataframe-binding.mjs";
@@ -20,6 +20,7 @@ import { bindingKey, storedBinding } from "./dataframe-binding.mjs";
  * kind of dataframe. */
 export const DATAFRAME_RENDERERS = Object.freeze({
   [PARQUET_MEDIA_TYPE]: () => import("./sift-table.jsx"),
+  [CSV_MEDIA_TYPE]: () => import("./sift-table.jsx"),
 });
 
 /**
@@ -257,6 +258,7 @@ const dataframeTable = Widget.define({
         ...frame,
         attrs: {
           src: attrs.src,
+          media_type: attrs.media_type,
           pageId: attrs.pageId,
           binding: attrs.binding,
           sources: attrs.sources,

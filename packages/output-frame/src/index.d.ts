@@ -81,6 +81,8 @@ export interface ColumnSet {
   numRows: number;
   columns: ColumnSetColumn[];
 }
+/** The formats a file can be read as a table in: `parquet()` and `csv()`. */
+export type TableFormat = "parquet" | "csv";
 /**
  * A module view's data input: one file the embedder serves when the view
  * asks (src/byte-source.mjs). Nothing is read at mount.
@@ -94,11 +96,13 @@ export interface FileInput extends ByteSource {
    */
   bytes(signal: AbortSignal): Promise<Uint8Array>;
   /**
-   * The file as a ColumnSet, checked by the embedder when it decodes it.
-   * Called for one request at a time and delivered at most once per exposed
-   * file. Absent for a file that is not a table: `parquet()` then rejects.
+   * The file read as a table in `format`, as a ColumnSet the embedder checks
+   * when it decodes it; it rejects for a format the file cannot be read in.
+   * Called for one request at a time per format and delivered at most once
+   * per format per exposed file. Absent when the file is no table in any
+   * format: `parquet()` and `csv()` then reject.
    */
-  columns?(signal: AbortSignal): Promise<ColumnSet>;
+  columns?(format: TableFormat, signal: AbortSignal): Promise<ColumnSet>;
 }
 /** A span of a file, from `file.slice(start, end)`. */
 export interface FileRange {
@@ -119,8 +123,17 @@ export interface FileObject extends ByteSource {
   text(): Promise<string>;
   json(): Promise<unknown>;
   parquet(): Promise<ColumnTable>;
+  /**
+   * The file parsed as CSV: one plain object per data row, with typed values
+   * as `parquet()` gives them, and `columns` naming the columns in file
+   * order. Values are always typed, so the options object may be empty or
+   * `{ typed: true }`.
+   */
+  csv(options?: { typed?: true }): Promise<CsvRows>;
   slice(start?: number, end?: number): FileRange;
 }
+/** What `csv()` resolves to: Observable FileAttachment.csv's shape. */
+export type CsvRows = Row[] & { columns: string[] };
 /** A column type as an Arrow DataType reads (typeId from apache-arrow's Type enum). */
 export interface ColumnDataType {
   readonly typeId: number;

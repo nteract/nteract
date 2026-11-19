@@ -20,6 +20,7 @@ import {
   publishedPreviewApiPaths,
   publishedPreviewPaths,
   restPaths,
+  siftCsvPaths,
   siftPaths,
   libraryCatalogPaths,
   whoamiPaths,
@@ -1766,28 +1767,33 @@ const EARLIER_BASE_SHA256 = {
   page11: "b93c2799039fc53156d085cce4000be367bb7d42e2609cd19a7dcb691598fe69",
 };
 // The routes releases before `admitAll` published, by sha256: before the
-// library catalog group, then with it. Each stays one of the earlier form's
+// library catalog group, with it, then with the CSV reader's WASM group. Each stays one of the earlier form's
 // combinations, so an installation holding it is recognized.
 const INSTALLED_ROUTES_SHA256 = {
   page10: [
     "d66bcef8809207ba4f54db72c0ae31e73ba163efa850fe381e3c1c00ca878359",
     "5715c9ff17e54fac23ab78937c60c1ed0680b3d3618986e92f4878a378173aff",
+    "7efebc83df79d4094479514e7698cf5a30e12284d0421b7e2a3f0e8aa8e79376",
   ],
   pages: [
     "6f24e1b42da8a405ed6682ff23076930f897f8aa079227f2971eab322e53b5a7",
     "d2434d3f4742fe056ac54b6ef4729e1038dff4f40e23bfe757178fa3a64dec82",
+    "7309aa86cc0eeef8e238e35a794118a87b1569f7006a0699ed1979bfaa3049f1",
   ],
   pages2: [
     "08ce2af861a2563a4d091f4b04b937096da6a113b065ea0a3544d5a9f67e3ef0",
     "750b25e627106b73eec033ec80a23d649961d80e741a8499362aa79795b44a3f",
+    "60766b8f84e186f07a4446fc4b3fe7e6dc75ba576412c56be58ccdb184ebc78e",
   ],
   page12: [
     "571d1edb81fc1f25afd492be367b028afd4f19fca91ba92121e5d0c915d5c3f7",
     "14e7cbfb960d91153f1d642179984f85d9c71113a4dd10e2528985f21a5b1303",
+    "743a2ba30b4479ee45fd887ad1330e4c8fc110ab6c556a65fffe1e9e22d3f446",
   ],
   page11: [
     "e5882155195aea955d4e7950e36ab4da068398351a91b30b9657bd71fda47561",
     "62b4c854ad75e11bdc75838f8f9d66bd5e14d7ecf61173257631700cb4e989f3",
+    "40019fee1b765adbb75f5c7120dd7a3845d3ae90ee55a2e5a0894f1fa3b4e505",
   ],
 };
 // Each route group's path string, by sha256.
@@ -1797,6 +1803,7 @@ const SLOT_SHA256 = {
   chunkPaths: "1387c0a673175a9a4685fd52b471f176125b11931af853d88cb37d0f4a5d060b",
   assetPaths: "3a7485ab6ba0e95b394d4565e1aef41a03daa7eeabf2a9597561a1f67214de6b",
   siftPaths: "68a984a8ef64a919f97f9c2a5623c33adf533cd6a39ac5b0894d88827f209fb5",
+  siftCsvPaths: "bf3adeb28de1a0ada00ba407483e0882a5691843c95b5ab3b68623ca75db45af",
   libraryCatalogPaths: "8ae04559b0c618d16d4d7495bdac91f3aff74ca6263dfe08bd97b265933d54ce",
   rendererPaths: "3b31d8b815248a7e16df03943a4a667b15ea65faefe11b1f4322643284e48166",
   connectPaths: "837a28c92cf0090120b15be90c9aa315e867cf2faa416272981cff22c8cb8270",
@@ -1834,6 +1841,7 @@ const SETTLED_GROUPS = [
 // gives the earlier allowlist form.
 const STRIPPABLE_GROUPS = [
   "siftPaths",
+  "siftCsvPaths",
   "libraryCatalogPaths",
   "whoamiPaths",
   "mediaGuidePaths",
@@ -2064,6 +2072,23 @@ for (const target of SLOTTED_TARGETS)
         assert.equal(installedReceipt(f), slotReceipt(x.plan.config, x.plan.unitSha256));
       }
   });
+
+test("the CSV reader's WASM route is in the earlier form by default, omitted on request, and recognized either way", () => {
+  for (const target of SLOTTED_TARGETS) {
+    const earlier = (omit = []) => routesFor(target, { omit: ["admitAll", ...omit] });
+    assert.ok(earlier().includes(siftCsvPaths), target);
+    assert.ok(!earlier(["siftCsvPaths"]).includes(siftCsvPaths), target);
+    assert.ok(earlier(["siftCsvPaths"]).includes(siftPaths), target);
+    const known = knownTunnelConfigs(target, tunnelId);
+    const plan = isolatedPublicationPlan(inputFor(target));
+    const withGroup = configWithout(target, []);
+    const without = configWithout(target, ["siftCsvPaths"]);
+    assert.notEqual(without, withGroup);
+    assert.equal(known.get(digest(plan.config)), plan.config, target);
+    assert.equal(known.get(digest(withGroup)), withGroup, target);
+    assert.equal(known.get(digest(without)), without, target);
+  }
+});
 
 test("page10 migrates a legacy connector at an installation missing several groups", (t) => {
   const f = fixture(t, { target: "page10" });

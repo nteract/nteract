@@ -4,7 +4,7 @@ import { workerShape } from "./worker-shape.mjs";
 import { workerWasmPlugin } from "./worker-modules.mjs";
 import { mermaidSource } from "./browser-mermaid.mjs";
 import { wasmUrlDefine } from "./browser-wasm.mjs";
-import { siftWasmPath } from "./browser-sift.mjs";
+import { siftCsvWasmPath, siftWasmPath } from "./browser-sift.mjs";
 import { formatsByType } from "../model/document-types.mjs";
 import { sourceFingerprint, writeBuildReceipt } from "./source-fingerprint.mjs";
 import { OUTPUT_WORKER, releaseFilesOf } from "./stage-artifacts.mjs";
@@ -107,6 +107,8 @@ await writeAsset(
 );
 // Sift's WASM loads only when a Page shows a Parquet dataframe (viewer/sift-table.jsx).
 await writeAsset("sift.wasm", await readFile(siftWasmPath(app)));
+// Sift's CSV WASM loads the first time a Page reads a CSV (viewer/module-csv.mjs).
+await writeAsset("sift-csv.wasm", await readFile(siftCsvWasmPath(app)));
 
 // The chart Worker runs Vega off the page's thread (viewer/vega-chart.mjs). A
 // classic script with nothing shared, so it loads in every engine under
@@ -138,7 +140,10 @@ const viewer = await build(
     dist,
     { ...buildDefine, __PAGES_CHART_WORKER_URL__: JSON.stringify(publicUrl(chartWorker)) },
     Object.fromEntries(
-      ["mermaid.js", "automerge.wasm", "sift.wasm"].map((name) => [name, publicUrl(assets[name])]),
+      ["mermaid.js", "automerge.wasm", "sift.wasm", "sift-csv.wasm"].map((name) => [
+        name,
+        publicUrl(assets[name]),
+      ]),
     ),
   ),
 );

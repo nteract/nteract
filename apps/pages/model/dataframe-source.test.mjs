@@ -61,6 +61,27 @@ test("follow and pin survive storage, decode, admission and Markdown read-back w
   }
 });
 
+test("set_node moves a table to a CSV source and refuses a media type no table reads", () => {
+  const doc = edit(fixture(), [insert({ asset_id, title: "Usage" })]);
+  const { node_id } = entry(doc);
+  const moved = edit(doc, [
+    {
+      op: "set_node",
+      node_id,
+      attrs: { binding: { source_id: "cities" }, media_type: "text/csv" },
+    },
+  ]);
+  assert.deepEqual(entry(moved).attrs, {
+    binding: { source_id: "cities" },
+    media_type: "text/csv",
+    title: "Usage",
+  });
+  assert.throws(
+    () => edit(doc, [{ op: "set_node", node_id, attrs: { media_type: "application/json" } }]),
+    /media_type must be one of application\/vnd\.apache\.parquet, text\/csv/,
+  );
+});
+
 test("in-place asset/follow/pin edits preserve marker cursor, surrounding text and comment cursor", () => {
   let doc = edit(fixture(), [insert({ asset_id, title: "Usage" })]);
   const initial = entry(doc);

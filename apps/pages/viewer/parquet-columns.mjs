@@ -1,8 +1,9 @@
-// A Parquet file as a ColumnSet (@nteract/output-frame/column-set): the
-// table a module view's model holds. Sift decodes the Parquet bytes to one
-// Arrow IPC stream (view-arrow.mjs, as a chart does), and apache-arrow reads
-// that stream here. parquetColumns is the only entry point, so a decoder
-// that yields columns directly can replace its inside alone.
+// A Parquet or CSV file as a ColumnSet (@nteract/output-frame/column-set):
+// the table a module view's parquet() and csv() read. Sift decodes Parquet
+// bytes to one Arrow IPC stream (view-arrow.mjs, as a chart does); a CSV
+// arrives as Arrow IPC from the source store (csv-arrow.mjs). apache-arrow
+// reads that stream here. parquetColumns is the only entry point, so a
+// decoder that yields columns directly can replace its inside alone.
 //
 // Types, by Arrow type (a dictionary by its value type):
 // - 64-bit integers, signed or not: "number" when every value is a safe
@@ -22,9 +23,11 @@ import { decodeArrow } from "./view-arrow.mjs";
 
 const SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 
-/** Decode Parquet `bytes` within `limits` (sift-dataset.mjs DATAFRAME_LIMITS)
- * into a ColumnSet, checked once here: the shared cache keeps it, and the
- * parent copies it to each frame without checking it again. */
+/** Decode a source's normalized bytes (normalized-bytes.mjs: Parquet, or
+ * Arrow IPC for a converted CSV) within `limits` (sift-dataset.mjs
+ * DATAFRAME_LIMITS) into a ColumnSet, checked once here: the shared cache
+ * keeps it, and the parent copies it to each frame without checking it
+ * again. */
 export async function parquetColumns(bytes, limits) {
   return checkColumnSet(arrowColumns(await decodeArrow(bytes, limits)));
 }

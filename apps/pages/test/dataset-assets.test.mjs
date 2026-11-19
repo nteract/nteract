@@ -53,12 +53,14 @@ test("dataframe attrs refuse foreign sources, other media types and unknown keys
     [],
     { media_type: PARQUET_MEDIA_TYPE },
     { src: "https://example.com/x.parquet", media_type: PARQUET_MEDIA_TYPE },
-    { src, media_type: "text/csv" },
+    { src, media_type: "application/json" },
     { src, media_type: PARQUET_MEDIA_TYPE, title: 42 },
     { src, media_type: PARQUET_MEDIA_TYPE, title: "x".repeat(201) },
     { src, media_type: PARQUET_MEDIA_TYPE, view: { sort: "events" } },
   ])
     assert.throws(() => dataframeAttrs(value), JSON.stringify(value));
+  // A CSV asset is a dataframe too.
+  assert.equal(dataframeAttrs({ src, media_type: "text/csv" }).media_type, "text/csv");
 });
 
 test("Parquet files are recognized by media type or by extension when the type is generic", () => {

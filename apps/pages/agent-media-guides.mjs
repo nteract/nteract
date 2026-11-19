@@ -25,6 +25,12 @@ const source = (source_id, name) => ({
 const place = (view_id) => ({ op: "insert_node", node: { type: "view", attrs: { view_id } } });
 const link = (origin, path, title) => `[${title}](${origin}${path})`;
 
+/** Which file format to upload for data, said wherever uploads and view
+ * data are described. Each CSV statement is what viewer/csv-arrow.test.mjs
+ * checks the conversion returns. */
+export const DATA_FORMAT_ADVICE =
+  "Prefer Parquet when you can write it: it stores each column's type, so dates, integers, decimals and text arrive exactly as written, and a module view can hand the file to Sift to read only the parts it needs. CSV (text/csv) is accepted for convenience, and its types are inferred when it is read, so check the result: a column of digits such as postal codes becomes numbers and loses its leading zero, the first row is always the header, only commas separate fields, the file must be UTF-8, and a timestamp with no zone is read as UTC. A value that looks like a date or timestamp but is not a real one, such as 2024-02-30, fails the whole file: fix the value, or write Parquet. JSON suits a small nested object, not a table of rows.";
+
 export const MEDIA_GUIDES = Object.freeze([
   {
     path: "/llms/assets-and-sources.txt",
@@ -73,9 +79,9 @@ Create a Page with create_page or read an existing Page with read_page. Keep its
 ${call("create_page_asset_upload", { page_id: "<page_id>", content_type: "text/javascript" })}
 POST that file's raw bytes to the returned upload_url using the returned headers. Use the returned example command as a template. Do not send multipart or base64, and do not send your account credential to that URL. Keep the upload response's asset_id. A capability expires within ten minutes; request a new one if it expires. Identical bytes reuse the same asset ID.
 
-Supported view input types are ${OUTPUT_ASSET_TYPES.map((type) => `\`${type}\``).join(", ")}. For nested objects, lists and settings, upload UTF-8 JSON with content_type application/json and register it with set_source. Readers can inspect the fields and original JSON in the browser’s Sources pane. Use Parquet for tabular records. Use application/octet-stream for untyped bytes. The main guide covers image and Parquet insertion. A client-attached file can use the upload tool's file argument instead of POST; never invent a client file descriptor.
+Supported view input types are ${OUTPUT_ASSET_TYPES.map((type) => `\`${type}\``).join(", ")}. For nested objects, lists and settings, upload UTF-8 JSON with content_type application/json and register it with set_source. Readers can inspect the fields and original JSON in the browser’s Sources pane. For tabular records, upload Parquet, or a CSV with content_type text/csv, whose header and first rows the Sources pane shows. ${DATA_FORMAT_ADVICE} Use application/octet-stream for untyped bytes. The main guide covers image and Parquet insertion. A client-attached file can use the upload tool's file argument instead of POST; never invent a client file descriptor.
 
-Independent files can request capabilities and upload in parallel. Register sources only after their uploads succeed. JSON, JavaScript, CSS, WAV and binary upload receipts have insert:null: use sources and a view to display them.
+Independent files can request capabilities and upload in parallel. Register sources only after their uploads succeed. JSON, CSV, JavaScript, CSS, WAV and binary upload receipts have insert:null: use sources and a view, or for a CSV a dataframe, to display them.
 
 ## Register and update sources
 
@@ -95,7 +101,7 @@ Pages copies the dataset to your Page under the same asset_id first. You need re
 
 A binding {"source_id":"counter-module"} follows current bytes. Adding "revision":"1" selects that retained source version. History holds the newest ${SOURCE_HISTORY_LIMIT} states: a pin is not a permanent archive. For a dataframe that must name immutable data directly, use its asset_id form.
 
-Images can be inserted directly from an asset. A Parquet dataframe can use asset_id or a source binding. There is no generic render-any-media block or direct WAV player block. For custom combinations, follow ${link(origin, "/llms/views.txt", "Rendering and views")}.
+Images can be inserted directly from an asset. A Parquet or CSV dataframe can use asset_id or a source binding; give a CSV one media_type text/csv. There is no generic render-any-media block or direct WAV player block. For custom combinations, follow ${link(origin, "/llms/views.txt", "Rendering and views")}.
 `;
 }
 
@@ -108,15 +114,15 @@ function viewsGuide(origin) {
     module: { source_id: "activity-module" },
     view_revision: null,
   };
-  return `For a Parquet table, use insert_node with type dataframe. For a custom JavaScript chart, control or React component, create a module view. A source names bytes. A view connects an entry module to its inputs. A view node places it on the Page.
+  return `For a Parquet or CSV table, use insert_node with type dataframe. For a custom JavaScript chart, control or React component, create a module view. A source names bytes. A view connects an entry module to its inputs. A view node places it on the Page.
 
 ## Create a JavaScript view
 
 Upload browser-ready text/javascript, then register its asset with set_source. Give the entry a named render export, or a default AFM export. Pages supplies a model, the DOM element and an AbortSignal; return a cleanup function if needed. React state and DOM events work inside the frame. Choose view_type anywidget for an existing widget with its own model state, or vega-lite for a declarative chart.
 
-Upload JSON objects or lists with content_type application/json; upload a Parquet table as application/vnd.apache.parquet. Each name in data is a key on the model, and model.get(name) is a file: ask it with await for .parquet(), .json(), .text() or .arrayBuffer(). A table has numRows, schema.fields, getChild(name).toArray() and toArray(), and Plot takes it directly. Listen for change:<name> to redraw in place; otherwise the view starts again with the new data. Forgetting await passes a promise to Plot, which then draws nothing.
+Upload JSON objects or lists with content_type application/json; upload a table as application/vnd.apache.parquet or text/csv. ${DATA_FORMAT_ADVICE} Each name in data is a key on the model, and model.get(name) is a file: ask it with await for .parquet(), .csv(), .json(), .text() or .arrayBuffer(). .csv() gives an array of row objects with a columns list of the names, as Observable's FileAttachment.csv does, typed as a table's values are. A table has numRows, schema.fields, getChild(name).toArray() and toArray(), and Plot takes it directly. Listen for change:<name> to redraw in place; otherwise the view starts again with the new data. Forgetting await passes a promise to Plot, which then draws nothing.
 
-A file also has name, mimeType and size, and nothing is read until the view asks. .parquet() rejects for a file that is not Parquet. A table holds up to 250,000 rows and 256 columns; its values are plain JavaScript: dates and timestamps are Date objects, a missing value is null, decimals are numbers, and a 64-bit integer column is numbers when every value is a safe integer (within ±(2^53 − 1)), otherwise BigInt. .arrayBuffer(), .text() and .json() read the whole file: at most 5 MiB, read once per file, and at most 32 MiB across one view's files. A source that moves to a new version, or to another file type, gives the model a new file and fires change:<name>.
+A file also has name, mimeType and size, and nothing is read until the view asks. .parquet() rejects for a file that is not Parquet; .csv() reads a file of any type as CSV and rejects one that does not parse, saying why. A table holds up to 250,000 rows and 256 columns; its values are plain JavaScript: dates and timestamps are Date objects, a missing value is null, decimals are numbers, and a 64-bit integer column is numbers when every value is a safe integer (within ±(2^53 − 1)), otherwise BigInt. .arrayBuffer(), .text() and .json() read the whole file: at most 5 MiB, read once per file, and at most 32 MiB across one view's files. A source that moves to a new version, or to another file type, gives the model a new file and fires change:<name>.
 
 \`\`\`js
 import * as Plot from "@observablehq/plot";
@@ -140,7 +146,7 @@ export async function render({ model, el }) {
 }
 \`\`\`
 
-For plain rows, read (await model.get("activity").parquet()).toArray(): one object per row, such as { day, people }.
+For plain rows, read (await model.get("activity").parquet()).toArray(), or await model.get("activity").csv() for a CSV: one object per row, such as { day, people }.
 
 Every save of a view pins the host's current libraries. read_page.libraries lists the exact names available here. Import them directly, as this entry imports @observablehq/plot. The receipt and read_page.view.catalog_revision identify that library build. A view runs on it while this host serves it, and otherwise on the host's current libraries, so every stored view can import the names read_page.libraries lists.
 
@@ -283,7 +289,7 @@ function vegaGuide(origin) {
     data: { usage: { source_id: "daily" } },
     view_revision: null,
   };
-  return `Pages renders a validated, static subset of Vega-Lite. Upload a Parquet file with day and count columns and register it as source daily using ${link(origin, "/llms/assets-and-sources.txt", "Assets and sources")}. The chart specification stays in the view; the dataset stays in its source.
+  return `Pages renders a validated, static subset of Vega-Lite. Upload a Parquet file with day and count columns and register it as source daily using ${link(origin, "/llms/assets-and-sources.txt", "Assets and sources")}. A chart's dataset may be a Parquet or a CSV source. The chart specification stays in the view; the dataset stays in its source.
 
 ## Create and place a chart
 ${edit("create-daily-chart-001", [view])}

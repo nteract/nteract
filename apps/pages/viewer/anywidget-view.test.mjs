@@ -15,7 +15,11 @@ import { PageSourceStore } from "./page-source-store.mjs";
 import { projectSourcesPanel } from "./sources-panel-store.mjs";
 import { sourceLine } from "./source-line.mjs";
 import { parquetColumns } from "./parquet-columns.mjs";
+import { csvArrow as convertCsv } from "./csv-arrow.mjs";
 import { parquetFixture } from "../test/parquet-fixture.mjs";
+
+// The CSV converter, as a source store loads it.
+const csvArrow = async () => convertCsv;
 
 const PAGE = "33333333-3333-4333-8333-333333333333";
 const by = { principal: "account:test", displayName: "Test", driver: "Agent" };
@@ -215,6 +219,11 @@ const files = {
   labelBig: [encoder.encode("L".repeat(20)), "application/octet-stream"],
   note1: [encoder.encode("n"), "application/octet-stream"],
   note2: [encoder.encode("n".repeat(10)), "application/octet-stream"],
+  cities1: [encoder.encode("city,people\nOslo,3\nBergen,\n"), "text/csv"],
+  cities2: [encoder.encode("city,people\nOslo,4\n"), "text/csv"],
+  // A CSV uploaded before CSV was a source type.
+  citiesBinary: [encoder.encode("city,people\nTromsø,1\n"), "application/octet-stream"],
+  citiesRagged: [encoder.encode("city,people\nOslo\n"), "text/csv"],
 };
 const ids = {};
 for (const [name, [bytes, media_type]] of Object.entries(files)) {
@@ -412,7 +421,8 @@ function mountModuleView(
   const doc$ = store?.doc$ ?? new BehaviorSubject(dataSources);
   const log = [];
   const sources =
-    store?.sources ?? new PageSourceStore({ pageId: PAGE, doc$, request: assetRequest(gate, log) });
+    store?.sources ??
+    new PageSourceStore({ pageId: PAGE, doc$, request: assetRequest(gate, log), csvArrow });
   const view$ = new BehaviorSubject({ status: "ready", view: write(fields) });
   const calls = { mounts: [], destroyed: 0, data: [] };
   const mounted = mount(window.document.body, {
@@ -453,7 +463,7 @@ function mountModuleView(
 
 // What the frame asks a file input for.
 const asking = () => new AbortController().signal;
-const rows = async (input) => (await input.columns(asking())).numRows;
+const rows = async (input) => (await input.columns("parquet", asking())).numRows;
 const head = async (input) => new TextDecoder().decode(await input.read(0, 4));
 const whole = async (input) => new TextDecoder().decode(await input.bytes(asking()));
 // Requests for data assets other than HEAD: bytes fetched for data.
@@ -467,10 +477,14 @@ test("a followed data source moving to a new asset updates the mounted view in p
   // The mount opens each file for its size and fetches no data bytes.
   assert.deepEqual(dataReads(log), []);
   assert.deepEqual(
-    { ...inputs["data/label"], read: 0, bytes: 0 },
-    { mimeType: "application/octet-stream", byteLength: 11, read: 0, bytes: 0 },
-    "a non-Parquet file has no columns",
+    { ...inputs["data/label"], read: 0, bytes: 0, columns: 0 },
+    { mimeType: "application/octet-stream", byteLength: 11, read: 0, bytes: 0, columns: 0 },
   );
+  // A file that is not Parquet refuses parquet() before anything is fetched.
+  await assert.rejects(inputs["data/label"].columns("parquet", asking()), {
+    message: "This file is not Parquet.",
+  });
+  assert.deepEqual(dataReads(log), []);
   assert.equal(inputs["data/table"].mimeType, PARQUET);
   assert.equal(inputs["data/table"].byteLength, files.table1[0].byteLength);
   // Each read happens when the frame asks.
@@ -635,7 +649,10 @@ test("two module views over one Parquet asset decode it once", async (t) => {
   const first = one.calls.mounts[0].options.files["data/table"];
   const second = two.calls.mounts[0].options.files["data/table"];
   assert.equal(decodes, 0, "nothing decodes until a view asks");
-  const [a, b] = await Promise.all([first.columns(asking()), second.columns(asking())]);
+  const [a, b] = await Promise.all([
+    first.columns("parquet", asking()),
+    second.columns("parquet", asking()),
+  ]);
   assert.equal(decodes, 1);
   assert.equal(a, b, "one cached ColumnSet; each frame gets a copy");
   doc$.next(moveSources(dataSources, [setSource("table", ids.table2, "1")]));
@@ -658,13 +675,86 @@ test("a Parquet file that cannot be decoded rejects its table and leaves the vie
   await until(() => calls.mounts.length === 1, "the view never mounted");
   assert.equal(root.dataset.outputState, "ready");
   const input = calls.mounts[0].options.files["data/table"];
-  await assert.rejects(input.columns(asking()), /^Error: Parquet footer length exceeds/);
+  await assert.rejects(input.columns("parquet", asking()), /^Error: Parquet footer length exceeds/);
   assert.equal(root.dataset.outputState, "ready");
   assert.equal(root.dataset.inputError, undefined);
   // A data change to a good file is a delivered file whose table reads.
   doc$.next(moveSources(bad, [setSource("table", ids.table2, "2")]));
   await until(() => calls.data.length === 1, "the change was not delivered");
   assert.equal(await rows(calls.data[0][1]), 9);
+});
+
+// The rows csv() reads from a file input, as the frame's columnRows builds them.
+const csvRows = async (input) => {
+  const { columnRows } = await import("@nteract/output-frame/table");
+  return columnRows(await input.columns("csv", asking()));
+};
+
+test("csv() over a CSV source converts it once for two views and follows a new version", async (t) => {
+  const withCsv = moveSources(dataSources, [setSource("table", ids.cities1, "1")]);
+  const doc$ = new BehaviorSubject(withCsv);
+  const log = [];
+  let conversions = 0;
+  const sources = new PageSourceStore({
+    pageId: PAGE,
+    doc$,
+    request: assetRequest(undefined, log),
+    csvArrow: async () => async (bytes, limits) => {
+      conversions++;
+      return convertCsv(bytes, limits);
+    },
+  });
+  t.after(() => sources.destroy());
+  const store = { doc$, sources };
+  const one = mountModuleView(t, { store });
+  const two = mountModuleView(t, { store });
+  await until(
+    () => one.calls.mounts.length === 1 && two.calls.mounts.length === 1,
+    "the views never mounted",
+  );
+  const first = one.calls.mounts[0].options.files["data/table"];
+  const second = two.calls.mounts[0].options.files["data/table"];
+  assert.equal(first.mimeType, "text/csv");
+  const [a, b] = await Promise.all([csvRows(first), csvRows(second)]);
+  assert.deepEqual(a.columns, ["city", "people"]);
+  assert.deepEqual(
+    [...a],
+    [
+      { city: "Oslo", people: 3 },
+      { city: "Bergen", people: null },
+    ],
+  );
+  assert.deepEqual([...b], [...a]);
+  assert.equal(conversions, 1, "one conversion for both views");
+  // parquet() on a CSV source is refused before any read.
+  await assert.rejects(first.columns("parquet", asking()), {
+    message: "This file is not Parquet.",
+  });
+  doc$.next(moveSources(withCsv, [setSource("table", ids.cities2, "2")]));
+  await until(
+    () => one.calls.data.length === 1 && two.calls.data.length === 1,
+    "the new version did not reach both views",
+  );
+  assert.deepEqual([...(await csvRows(one.calls.data[0][1]))], [{ city: "Oslo", people: 4 }]);
+  assert.deepEqual([...(await csvRows(two.calls.data[0][1]))], [{ city: "Oslo", people: 4 }]);
+  assert.equal(conversions, 2, "the new version converts once");
+});
+
+test("csv() reads a CSV stored as generic binary; one that does not parse rejects plainly", async (t) => {
+  const { doc$, calls, root } = mountModuleView(t);
+  await until(() => calls.mounts.length === 1, "the view never mounted");
+  const moved = moveSources(dataSources, [setSource("table", ids.citiesBinary, "1")]);
+  doc$.next(moved);
+  await until(() => calls.data.length === 1, "the change was not delivered");
+  const binary = calls.data[0][1];
+  assert.equal(binary.mimeType, "application/octet-stream");
+  assert.deepEqual([...(await csvRows(binary))], [{ city: "Tromsø", people: 1 }]);
+  doc$.next(moveSources(moved, [setSource("table", ids.citiesRagged, "2")]));
+  await until(() => calls.data.length === 2, "the second change was not delivered");
+  await assert.rejects(calls.data[1][1].columns("csv", asking()), {
+    message: /^This file can't be read as CSV: .*unequal lengths/,
+  });
+  assert.equal(root.dataset.outputState, "ready");
 });
 
 // The library step of a mount, end to end through libraryMap$: the manifests

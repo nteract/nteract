@@ -314,3 +314,34 @@
   color: var(--muted-foreground);
   font-size: 0.7rem;
 }
+.source-csv-scroll {
+  max-height: 18rem;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  margin-bottom: 0.4rem;
+}
+.source-csv-preview table {
+  border-collapse: collapse;
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+.source-csv-preview th,
+.source-csv-preview td {
+  max-width: 14rem;
+  padding: 0.3rem 0.55rem;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.source-csv-preview th {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  font-weight: 600;
+}
+.source-csv-preview small {
+  display: block;
+}

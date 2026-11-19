@@ -1,6 +1,7 @@
-// The Parquet decoder a module view (anywidget-view.mjs) loads when it binds
-// a Parquet file, and only then. It decodes with Sift's WASM from the URL a
-// chart uses, so a Page that shows both loads Sift once.
+// The table decoder a module view (anywidget-view.mjs) loads when it first
+// calls parquet() or csv(), and only then. It decodes Parquet with Sift's
+// WASM from the URL a chart uses, so a Page that shows both loads Sift once;
+// a CSV reaches it as Arrow IPC and needs no Sift WASM.
 import { setWasmUrl } from "@nteract/sift";
 import { SIFT_WASM_URL } from "pages-sift-assets";
 import { parquetColumns } from "./parquet-columns.mjs";

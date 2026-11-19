@@ -32,6 +32,7 @@
     "@modelcontextprotocol/server": "2.4.0",
     "@nteract/output-frame": "file:../../packages/output-frame",
     "@nteract/sift": "0.7.0-nightly.43424567443",
+    "@nteract/sift-csv": "0.3.1",
     "@types/node": "22.20.0",
     "apache-arrow": "17.0.0",
     "diff": "8.0.2",

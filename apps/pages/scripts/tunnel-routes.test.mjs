@@ -280,6 +280,8 @@ for (const target of QUALIFIED_TARGETS)
       // The library catalog (worker/library-catalog.mjs).
       `/catalog/${HASH}/manifest.json`,
       `/catalog/${HASH}/d3.js`,
+      // The CSV reader's hashed WASM.
+      "/sift-csv-ABCDEFGH.wasm",
     ])
       assert.equal(admitted(target, path), true, `${target} reaches the Worker: ${path}`);
     const internal = routeStrings()

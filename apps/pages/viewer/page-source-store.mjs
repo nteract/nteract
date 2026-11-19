@@ -11,9 +11,10 @@
 // - `resolver(decode)`: a resolver that loads a version's bytes through the
 //   Page's one byte cache and decodes them with `decode`: Sift's loader for a
 //   table, an Arrow decoder for a chart.
-// - `sharedResolver(decode)`: the same, for a decoded result no reader owns,
-//   decoded once per asset and shared: a module view's ColumnSet. A decode
-//   that fails is kept too, and answers again; a failed fetch is not.
+// - `sharedResolver(decode, { format })`: the same, for a decoded result no
+//   reader owns, decoded once per asset and table format and shared: a module
+//   view's ColumnSet, from Parquet or CSV. A decode that fails is kept too,
+//   and answers again; a failed fetch is not.
 //
 // A version is `{ source_id?, asset_id, media_type, revision }`. `revision`
 // is the source revision it reads, or null for a pinned asset.
@@ -26,10 +27,15 @@ import { Observable, combineLatest, distinctUntilChanged, map } from "rxjs";
 import { readSource } from "../model/sources-doc.mjs";
 import { imageAssetUrl, validAssetId } from "../shared/image-assets.mjs";
 import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
-import { DATAFRAME_LIMITS, fetchDataset } from "./sift-dataset.mjs";
+import { normalizedBytes, normalizedForm } from "./normalized-bytes.mjs";
+import { CSV_UNREADABLE, DATAFRAME_LIMITS, fetchDataset } from "./sift-dataset.mjs";
 import { Store } from "./store.mjs";
 
 const NO_SOURCES = Object.freeze({});
+
+// A shared resolver's table formats: csv() reads a file of any media type as
+// CSV, so a CSV uploaded as generic binary still parses.
+const SHARED_FORMATS = Object.freeze({ parquet: false, csv: true });
 
 /**
  * Every readable source in a sources document, by id: `{ source_id, name,
@@ -144,19 +150,23 @@ export class PageSourceStore {
   #resolvers = new Map();
   #sharedResolvers = new Map();
   #demand;
+  #csvArrow;
   #destroyed = false;
   /** The sources by id, deduplicated per source. */
   sources$ = this.#sources.state$.pipe(distinctUntilChanged(sameSources));
 
   /** `doc$` emits the sources document, or undefined while there is none.
    * `demand()` starts asking for it and returns the function that stops:
-   * the store asks while a reader waits on a source it doesn't hold. */
-  constructor({ pageId, doc$, request, maxEntries = 4, demand }) {
+   * the store asks while a reader waits on a source it doesn't hold.
+   * `csvArrow()`, when given, resolves with the CSV converter
+   * (normalized-bytes.mjs); by default its chunk loads on first use. */
+  constructor({ pageId, doc$, request, maxEntries = 4, demand, csvArrow }) {
     if (typeof pageId !== "string" || !pageId) throw Error("A source store needs its Page id");
     this.pageId = pageId;
     this.request = request;
     this.maxEntries = maxEntries;
     this.#demand = demand;
+    this.#csvArrow = csvArrow;
     this.#subscription = doc$.subscribe((doc) => {
       const next = projectSources(doc);
       this.#sources.update((current) => (sameSources(current, next) ? current : next));
@@ -255,21 +265,18 @@ export class PageSourceStore {
    * decoder for a chart. Every resolver reads the Page's one byte cache. Its
    * `load(version, { signal })` returns `{ table, ...version }` for a version
    * from resolve() or versions(), where `table` is what `decode(bytes,
-   * limits)` resolved with. The caller owns `table` and frees it
-   * (`table.dispose?.()`), as Sift does when the table unmounts or a newer
-   * version replaces it. A table decoded for a load whose signal aborted
-   * first is freed here.
+   * limits)` resolved with. `bytes` are the version's normalized bytes
+   * (normalized-bytes.mjs): Parquet for a Parquet source, Arrow IPC for a
+   * CSV one, so `decode` must take either. The caller owns `table` and frees
+   * it (`table.dispose?.()`), as Sift does when the table unmounts or a
+   * newer version replaces it. A table decoded for a load whose signal
+   * aborted first is freed here.
    */
   resolver(decode) {
     if (this.#destroyed) throw Error("This Page's sources are closed");
-    this.#bytes ??= createByteCache({
-      pageId: this.pageId,
-      request: this.request,
-      maxEntries: this.maxEntries,
-    });
     let resolver = this.#resolvers.get(decode);
     if (!resolver) {
-      resolver = createResolver(this.#bytes, decode);
+      resolver = createResolver(this.#byteCache(), decode, false);
       this.#resolvers.set(decode, resolver);
     }
     return resolver;
@@ -277,33 +284,54 @@ export class PageSourceStore {
 
   /**
    * The resolver for a `decode` whose result no reader owns: a module
-   * view's ColumnSet, which each view copies into its own frame. Its `load` has
-   * the same contract as resolver(decode)'s, except that every reader of one
-   * asset gets the same `table`, decoded once, and never frees, transfers or
-   * changes it. Results for the newest `maxEntries` asset ids are kept,
+   * view's ColumnSet, which each view copies into its own frame. `format`
+   * is the table format the view asked for: "parquet" reads a source as any
+   * resolver does; "csv" reads a source of any media type as CSV, converted
+   * to Arrow IPC in the byte cache. Its `load` has the same contract as
+   * resolver(decode)'s, except that every reader of one asset in one format
+   * gets the same `table`, decoded once, and never frees, transfers or
+   * changes it. Results are kept by asset and format, so the two formats of
+   * one asset never share one: the newest `maxEntries` asset ids per format,
    * least recently used first out, and so is a decode that failed: the same
    * bytes fail the same way. A failed fetch, a refused version or an abort is
    * not kept, so the next reader tries again. One reader's abort leaves the
    * decode running for the others.
    */
-  sharedResolver(decode) {
+  sharedResolver(decode, { format = "parquet" } = {}) {
     if (this.#destroyed) throw Error("This Page's sources are closed");
-    let shared = this.#sharedResolvers.get(decode);
+    if (!Object.hasOwn(SHARED_FORMATS, format)) throw Error(`Unknown table format: ${format}`);
+    let byDecode = this.#sharedResolvers.get(format);
+    if (!byDecode) this.#sharedResolvers.set(format, (byDecode = new Map()));
+    let shared = byDecode.get(decode);
     if (!shared) {
       const failures = new WeakSet();
-      const marked = async (bytes, limits) => {
+      const marked = async (...args) => {
         try {
-          return await decode(bytes, limits);
+          return await decode(...args);
         } catch (error) {
           const failure = error instanceof Error ? error : Error(String(error));
           failures.add(failure);
           throw failure;
         }
       };
-      shared = createSharedResolver(this.resolver(marked), this.maxEntries, failures);
-      this.#sharedResolvers.set(decode, shared);
+      shared = createSharedResolver(
+        createResolver(this.#byteCache(), marked, SHARED_FORMATS[format]),
+        this.maxEntries,
+        failures,
+      );
+      byDecode.set(decode, shared);
     }
     return shared;
+  }
+
+  #byteCache() {
+    this.#bytes ??= createByteCache({
+      pageId: this.pageId,
+      request: this.request,
+      maxEntries: this.maxEntries,
+      csvArrow: this.#csvArrow,
+    });
+    return this.#bytes;
   }
 
   /** Stop following the document, cancel downloads and drop the byte cache.
@@ -328,28 +356,40 @@ export class PageSourceStore {
  * dataset's bytes never change for its id. At most `maxEntries` are kept,
  * least recently used first out.
  */
-function createByteCache({ pageId, request, maxEntries }) {
+function createByteCache({ pageId, request, maxEntries, csvArrow }) {
   if (!Number.isSafeInteger(maxEntries) || maxEntries < 1 || maxEntries > 16)
     throw Error("Invalid source cache size");
   const cache = new Map();
   const stop = new AbortController();
   return {
     signal: stop.signal,
-    bytesOf(assetId) {
-      let pending = cache.get(assetId);
+    /** The normalized bytes of `version` (normalized-bytes.mjs), within
+     * DATAFRAME_LIMITS: kept by asset id, and a CSV conversion under its own
+     * key, so it runs once per asset. A conversion that fails is kept like a
+     * result, since the same bytes fail the same way; a failed fetch is not. */
+    bytesOf(version, { asCsv = false } = {}) {
+      const csv = normalizedForm(version, { asCsv }) === "csv";
+      const key = csv ? `csv ${version.asset_id}` : version.asset_id;
+      let pending = cache.get(key);
       if (pending) {
-        cache.delete(assetId);
-        cache.set(assetId, pending);
+        cache.delete(key);
+        cache.set(key, pending);
         return pending;
       }
-      pending = fetchDataset(imageAssetUrl(pageId, assetId), {
+      pending = fetchDataset(imageAssetUrl(pageId, version.asset_id), {
         pageId,
         signal: stop.signal,
+        mediaType: version.media_type,
         ...(request && { request }),
-      });
-      cache.set(assetId, pending);
-      pending.catch(() => {
-        if (cache.get(assetId) === pending) cache.delete(assetId);
+      }).then((bytes) =>
+        normalizedBytes(version, bytes, DATAFRAME_LIMITS, {
+          asCsv,
+          ...(csvArrow && { csvArrow }),
+        }),
+      );
+      cache.set(key, pending);
+      pending.catch((error) => {
+        if (error?.name !== CSV_UNREADABLE && cache.get(key) === pending) cache.delete(key);
       });
       while (cache.size > maxEntries) cache.delete(cache.keys().next().value);
       return pending;
@@ -362,10 +402,11 @@ function createByteCache({ pageId, request, maxEntries }) {
   };
 }
 
-/** A resolver over `bytes` (createByteCache) that decodes with `decode`.
- * Each load decodes its own table, because a Sift table owns a mutable WASM
- * store. */
-function createResolver(bytes, decode) {
+/** A resolver over `bytes` (createByteCache) that decodes the normalized
+ * bytes of each version with `decode`; with `asCsv`, every version is read
+ * as CSV. Each load decodes its own table, because a Sift table owns a
+ * mutable WASM store. */
+function createResolver(bytes, decode, asCsv) {
   const stopped = () => new DOMException("Source load stopped", "AbortError");
 
   async function load(version, { signal } = {}) {
@@ -373,10 +414,10 @@ function createResolver(bytes, decode) {
     signal?.throwIfAborted();
     if (!version || !validAssetId(version.asset_id))
       throw new SourceUnavailable("This table names no dataset.", version);
-    if (version.media_type !== PARQUET_MEDIA_TYPE)
+    if (!normalizedForm(version, { asCsv }))
       throw new SourceUnavailable(`This build can't show ${version.media_type}.`, version);
     // One reader's abort leaves the shared download running for the others.
-    const held = await forReader(bytes.bytesOf(version.asset_id), signal);
+    const held = await forReader(bytes.bytesOf(version, { asCsv }), signal);
     if (signal?.aborted || bytes.signal.aborted) throw stopped();
     const table = await decode(held.slice(), DATAFRAME_LIMITS);
     if (signal?.aborted || bytes.signal.aborted) {

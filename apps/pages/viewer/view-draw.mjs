@@ -11,6 +11,7 @@
 // redraws when the source is removed.
 import { combineLatest, map, of, switchMap } from "rxjs";
 import { SourceUnavailable } from "./page-source-store.mjs";
+import { CSV_UNREADABLE } from "./sift-dataset.mjs";
 import { versionKey } from "./source-follow.mjs";
 import { viewDrawMachine } from "./view-draw-machine.mjs";
 
@@ -137,7 +138,9 @@ export function createViewDraw({
           : model.name === "failed"
             ? model.cause === "draw"
               ? VIEW_STATUS.broken
-              : VIEW_STATUS.failed
+              : model.reason
+                ? `${VIEW_STATUS.failed} ${model.reason}`
+                : VIEW_STATUS.failed
             : model.name === "unreachable"
               ? VIEW_STATUS.unreachable
               : model.name === "waiting" || (model.name === "loading" && !chart)
@@ -264,7 +267,16 @@ export function createViewDraw({
       if (results.some((result) => result.status === "rejected")) {
         // The failed load's record goes with the machine's release.
         load.owned = owned;
-        return step({ type: "loadFailed", generation });
+        // A CSV the converter refused says why: its plain reason, already
+        // bounded (csv-arrow.mjs).
+        const unreadable = results.find(
+          (result) => result.status === "rejected" && result.reason?.name === CSV_UNREADABLE,
+        );
+        return step({
+          type: "loadFailed",
+          generation,
+          ...(unreadable?.reason.message && { reason: unreadable.reason.message.slice(0, 240) }),
+        });
       }
       load.owned = owned;
       load.datasets = Object.fromEntries(
