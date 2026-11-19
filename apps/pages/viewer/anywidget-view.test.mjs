@@ -265,15 +265,22 @@ test("a plan change is a remount, a data change, a title change or nothing", () 
   assert.equal(planChange({ error: "e" }, { error: "e" }).kind, "none");
   assert.equal(planChange({ error: "e" }, { error: "f" }).kind, "remount");
   assert.equal(planChange({ error: "e" }, base).kind, "remount");
-  // A data name that changes shape (table ↔ whole) is a code change.
+  // Every module view data name is a file, so a name that moves between
+  // Parquet and another type is a data change like any other.
   const store = new PageSourceStore({ pageId: PAGE, doc$: new BehaviorSubject(dataSources) });
   const whole = new PageSourceStore({
     pageId: PAGE,
     doc$: new BehaviorSubject(moveSources(dataSources, [setSource("table", ids.tableWhole, "1")])),
   });
   const view = moduleViewWriter()({});
-  assert.equal(planChange(anywidgetPlan(view, store), anywidgetPlan(view, whole)).kind, "remount");
-  assert.equal(planChange(anywidgetPlan(view, whole), anywidgetPlan(view, store)).kind, "remount");
+  for (const [from, to] of [
+    [store, whole],
+    [whole, store],
+  ])
+    assert.deepEqual(
+      { ...planChange(anywidgetPlan(view, from), anywidgetPlan(view, to)) },
+      { kind: "data", data: ["data/table"], title: false },
+    );
   store.destroy();
   whole.destroy();
 });
@@ -283,11 +290,9 @@ test("a module view plan follows code for remounts and data for updates", () => 
   const store = new PageSourceStore({ pageId: PAGE, doc$: new BehaviorSubject(dataSources) });
   const first = anywidgetPlan(write({}), store);
   assert.deepEqual(Object.keys(first.data), ["data/label", "data/table"]);
-  // The Parquet name's shape is its own value in the code identity.
-  assert.deepEqual(JSON.parse(first.key).at(-1), {
-    "data/label": "whole",
-    "data/table": "table",
-  });
+  // The code identity names no data asset and no data type.
+  assert.doesNotMatch(first.key, new RegExp(ids.table1));
+  assert.doesNotMatch(first.key, /parquet/);
   // Another Parquet file under the same name is a data change.
   const nextTable = new PageSourceStore({
     pageId: PAGE,
@@ -330,10 +335,13 @@ async function until(predicate, message) {
 
 // The asset route's responses: a Parquet file is served as its media type,
 // every other file as octet-stream; each names its media type.
-function assetRequest(gate) {
+// `log` records each request as [asset id, "HEAD" | "range" | "whole"].
+function assetRequest(gate, log = []) {
   return async (url, options = {}) => {
     await gate;
-    const asset = assets.get(url.split("/").at(-1));
+    const id = url.split("/").at(-1);
+    log.push([id, options.method === "HEAD" ? "HEAD" : options.headers?.Range ? "range" : "whole"]);
+    const asset = assets.get(id);
     if (!asset) return new Response(null, { status: 404 });
     const headers = {
       "content-type": asset.media_type === PARQUET ? PARQUET : "application/octet-stream",
@@ -377,8 +385,9 @@ function mountModuleView(
   const write = moduleViewWriter();
   const { window } = new JSDOM("<!doctype html><body></body>");
   const doc$ = store?.doc$ ?? new BehaviorSubject(dataSources);
+  const log = [];
   const sources =
-    store?.sources ?? new PageSourceStore({ pageId: PAGE, doc$, request: assetRequest(gate) });
+    store?.sources ?? new PageSourceStore({ pageId: PAGE, doc$, request: assetRequest(gate, log) });
   const view$ = new BehaviorSubject({ status: "ready", view: write(fields) });
   const calls = { mounts: [], destroyed: 0, data: [] };
   const mounted = mount(window.document.body, {
@@ -414,25 +423,41 @@ function mountModuleView(
     window.close();
   });
   const root = window.document.querySelector(".pages-anywidget-view");
-  return { write, doc$, view$, calls, root };
+  return { write, doc$, view$, calls, root, log };
 }
 
-const rows = (input) => input.columns.numRows;
-const head = async (input) => new TextDecoder().decode(await input.file.read(0, 4));
+// What the frame asks a file input for.
+const asking = () => new AbortController().signal;
+const rows = async (input) => (await input.columns(asking())).numRows;
+const head = async (input) => new TextDecoder().decode(await input.read(0, 4));
+const whole = async (input) => new TextDecoder().decode(await input.bytes(asking()));
+// Requests for data assets other than HEAD: bytes fetched for data.
+const dataReads = (log) =>
+  log.filter(([id, kind]) => kind !== "HEAD" && id !== entryId && id !== moduleId);
 
 test("a followed data source moving to a new asset updates the mounted view in place", async (t) => {
-  const { doc$, calls, root } = mountModuleView(t);
+  const { doc$, calls, root, log } = mountModuleView(t);
   await until(() => calls.mounts.length === 1, "the view never mounted");
-  const { byteSources } = calls.mounts[0].options;
-  assert.equal(new TextDecoder().decode(byteSources["data/label"]), "first label");
-  // A Parquet file reaches the frame as its ranged file and its Arrow stream.
-  assert.equal(byteSources["data/table"].file.byteLength, files.table1[0].byteLength);
-  assert.equal(await head(byteSources["data/table"]), "PAR1");
-  assert.equal(rows(byteSources["data/table"]), 5);
+  const { files: inputs } = calls.mounts[0].options;
+  // The mount opens each file for its size and fetches no data bytes.
+  assert.deepEqual(dataReads(log), []);
+  assert.deepEqual(
+    { ...inputs["data/label"], read: 0, bytes: 0 },
+    { mimeType: "application/octet-stream", byteLength: 11, read: 0, bytes: 0 },
+    "a non-Parquet file has no columns",
+  );
+  assert.equal(inputs["data/table"].mimeType, PARQUET);
+  assert.equal(inputs["data/table"].byteLength, files.table1[0].byteLength);
+  // Each read happens when the frame asks.
+  assert.equal(await whole(inputs["data/label"]), "first label");
+  assert.equal(await head(inputs["data/table"]), "PAR1");
+  assert.equal(await rows(inputs["data/table"]), 5);
   doc$.next(moveSources(dataSources, [setSource("label", ids.label2, "1")]));
   await until(() => calls.data.length === 1, "the label change never reached the frame");
   assert.equal(calls.data[0][0], "data/label");
-  assert.equal(new TextDecoder().decode(calls.data[0][1]), "second label");
+  const asked = dataReads(log).length;
+  assert.equal(await whole(calls.data[0][1]), "second label");
+  assert.equal(dataReads(log).length, asked + 1, "the change fetched nothing until asked");
   doc$.next(
     moveSources(dataSources, [
       setSource("label", ids.label2, "1"),
@@ -441,8 +466,8 @@ test("a followed data source moving to a new asset updates the mounted view in p
   );
   await until(() => calls.data.length === 2, "the table change never reached the frame");
   assert.equal(calls.data[1][0], "data/table");
-  assert.equal(calls.data[1][1].file.byteLength, files.table2[0].byteLength);
-  assert.equal(rows(calls.data[1][1]), 9);
+  assert.equal(calls.data[1][1].byteLength, files.table2[0].byteLength);
+  assert.equal(await rows(calls.data[1][1]), 9);
   // The new file stays readable after its load has finished.
   await new Promise((resolve) => setTimeout(resolve, 5));
   assert.equal(await head(calls.data[1][1]), "PAR1");
@@ -497,8 +522,7 @@ test("a view with no listener for a data change is mounted again with the new da
   doc$.next(moveSources(dataSources, [setSource("label", ids.label2, "1")]));
   await until(() => calls.mounts.length === 2, "the unhandled change did not remount");
   assert.equal(calls.destroyed, 1, "the old frame is gone");
-  const { byteSources } = calls.mounts[1].options;
-  assert.equal(new TextDecoder().decode(byteSources["data/label"]), "second label");
+  assert.equal(await whole(calls.mounts[1].options.files["data/label"]), "second label");
   // The new mount starts from the newest plan: nothing is redelivered.
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(calls.mounts.length, 2);
@@ -506,32 +530,20 @@ test("a view with no listener for a data change is mounted again with the new da
   assert.equal(root.dataset.outputState, "ready");
 });
 
-test("the input total counts only what the frame accepted", async (t) => {
+test("a refused data change shows its failure; module view files count toward no mount total", async (t) => {
   const { doc$, calls, root } = mountModuleView(t, {
-    fields: {
-      data: {
-        label: { source_id: "label" },
-        table: { source_id: "table" },
-        note: { source_id: "note" },
-      },
-    },
-    // The entry, the first label (11) and the larger note (10), with 2 to spare.
-    maxTotalBytes: entry.byteLength + 11 + 10 + 2,
+    // The entry alone: the files are read only on request.
+    maxTotalBytes: entry.byteLength,
     rejectData: "data/label",
   });
   await until(() => calls.mounts.length === 1, "the view never mounted");
-  doc$.next(moveSources(dataSources, [setSource("label", ids.labelBig, "1")]));
+  const big = moveSources(dataSources, [setSource("label", ids.labelBig, "1")]);
+  doc$.next(big);
   await until(() => root.dataset.inputError === "data/label", "the refusal was not shown");
   assert.match(root.querySelector("p").textContent, /refused/);
-  // The frame still holds the 11-byte label, so the 10-byte note fits.
-  doc$.next(
-    moveSources(dataSources, [
-      setSource("label", ids.labelBig, "1"),
-      setSource("note", ids.note2, "1"),
-    ]),
-  );
-  await until(() => calls.data.some(([name]) => name === "data/note"), "the note was refused");
-  assert.equal(new TextDecoder().decode(calls.data.at(-1)[1]), "n".repeat(10));
+  doc$.next(moveSources(big, [setSource("label", ids.label2, "2")]));
+  await until(() => calls.data.length === 1, "the next change was not delivered");
+  assert.equal(root.dataset.inputError, undefined);
 });
 
 test("an input failure shows only on a ready frame and never touches a failed one", async (t) => {
@@ -595,45 +607,37 @@ test("two module views over one Parquet asset decode it once", async (t) => {
     () => one.calls.mounts.length === 1 && two.calls.mounts.length === 1,
     "the views never mounted",
   );
-  const first = one.calls.mounts[0].options.byteSources["data/table"];
-  const second = two.calls.mounts[0].options.byteSources["data/table"];
+  const first = one.calls.mounts[0].options.files["data/table"];
+  const second = two.calls.mounts[0].options.files["data/table"];
+  assert.equal(decodes, 0, "nothing decodes until a view asks");
+  const [a, b] = await Promise.all([first.columns(asking()), second.columns(asking())]);
   assert.equal(decodes, 1);
-  assert.equal(first.columns, second.columns, "one cached ColumnSet; each frame gets a copy");
-  assert.notEqual(first.file, second.file, "each view opens its own ranged file");
+  assert.equal(a, b, "one cached ColumnSet; each frame gets a copy");
   doc$.next(moveSources(dataSources, [setSource("table", ids.table2, "1")]));
   await until(
     () => one.calls.data.length === 1 && two.calls.data.length === 1,
     "the change did not reach both views",
   );
+  assert.equal(decodes, 1, "a data change decodes nothing");
+  assert.equal(await rows(two.calls.data[0][1]), 9);
+  assert.equal(await rows(one.calls.data[0][1]), 9);
   assert.equal(decodes, 2, "the new asset decodes once for both");
-  assert.equal(rows(two.calls.data[0][1]), 9);
 });
 
-test("a Parquet file that cannot be decoded fails the mount with the decoder's message", async (t) => {
-  const doc$ = new BehaviorSubject(
-    moveSources(dataSources, [setSource("table", ids.tableBad, "1")]),
-  );
+test("a Parquet file that cannot be decoded rejects its table and leaves the view ready", async (t) => {
+  const bad = moveSources(dataSources, [setSource("table", ids.tableBad, "1")]);
+  const doc$ = new BehaviorSubject(bad);
   const sources = new PageSourceStore({ pageId: PAGE, doc$, request: assetRequest() });
   t.after(() => sources.destroy());
   const { calls, root } = mountModuleView(t, { store: { doc$, sources } });
-  await until(() => root.dataset.outputState === "failed", "the mount did not fail");
-  assert.equal(calls.mounts.length, 0, "no frame for a view whose input failed");
-  assert.match(root.querySelector("p").textContent, /^Parquet footer length exceeds/);
-  assert.equal(root.querySelector("button").hidden, false);
-});
-
-test("a Parquet data change that cannot be decoded keeps the view and its earlier table", async (t) => {
-  const { doc$, calls, root } = mountModuleView(t);
   await until(() => calls.mounts.length === 1, "the view never mounted");
-  const broken = moveSources(dataSources, [setSource("table", ids.tableBad, "1")]);
-  doc$.next(broken);
-  await until(() => root.dataset.inputError === "data/table", "the failure was not shown");
-  assert.match(root.querySelector("p").textContent, /earlier data/);
   assert.equal(root.dataset.outputState, "ready");
-  assert.deepEqual(calls.data, []);
-  assert.equal(calls.destroyed, 0);
-  doc$.next(moveSources(broken, [setSource("table", ids.table2, "2")]));
-  await until(() => calls.data.length === 1, "the next change did not load");
-  assert.equal(rows(calls.data[0][1]), 9);
+  const input = calls.mounts[0].options.files["data/table"];
+  await assert.rejects(input.columns(asking()), /^Error: Parquet footer length exceeds/);
+  assert.equal(root.dataset.outputState, "ready");
   assert.equal(root.dataset.inputError, undefined);
+  // A data change to a good file is a delivered file whose table reads.
+  doc$.next(moveSources(bad, [setSource("table", ids.table2, "2")]));
+  await until(() => calls.data.length === 1, "the change was not delivered");
+  assert.equal(await rows(calls.data[0][1]), 9);
 });

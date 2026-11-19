@@ -1,9 +1,9 @@
 import * as Plot from "@observablehq/plot";
 
-// Daily active people in the archive's first project. `activity` is an Arrow
-// table the Page decodes from the bound Parquet file; its first 28 rows are
-// that project's latest 28 days.
-export function render({ model, el, signal }) {
+// Daily active people in the archive's first project. `activity` is the bound
+// Parquet file; `parquet()` gives it as an Arrow-style table whose first 28
+// rows are that project's latest 28 days.
+export async function render({ model, el, signal }) {
   const chart = document.createElement("div");
   const label = document.createElement("label");
   label.textContent = "Show ";
@@ -13,8 +13,8 @@ export function render({ model, el, signal }) {
   const detail = document.createElement("p");
   el.append(label, chart, detail);
   let rows = [];
-  const read = () => {
-    const table = model.get("activity");
+  const read = async () => {
+    const table = await model.get("activity").parquet();
     const project = table.getChild("project_id").toArray();
     const day = table.getChild("day").toArray();
     const people = table.getChild("active_people").toArray();
@@ -50,14 +50,14 @@ export function render({ model, el, signal }) {
       }),
     );
   };
-  model.on("change:activity", () => {
-    read();
+  model.on("change:activity", async () => {
+    await read();
     draw();
   });
   select.addEventListener("change", draw, { signal });
   const observer = new ResizeObserver(draw);
   observer.observe(el);
-  read();
+  await read();
   draw();
   return () => observer.disconnect();
 }

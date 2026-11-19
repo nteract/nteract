@@ -2092,7 +2092,7 @@ Pages and the notebook output host.
 
 ### Writes
 
-`edit_page` sends `set_view` alone. Every view has a `view_id`, title, `view_type` and `view_revision`. For new JavaScript use `module`. Its `module` field names the entry source, optional `data` binds files, and optional `imports` binds JavaScript sources under names local to the view. The entry exports `render({model, el, signal})`, or a default AFM object or factory. Each `data` name is a key on that model: a Parquet source as an Arrow-style table (see [Module view tables](#module-view-tables)), any other source as a DataView of the whole file. A whole file is at most 5 MiB and counts toward the view's 32 MiB input total, with its entry and imports; a Parquet table does not count, and the decode limits bound it. A Parquet file that cannot be decoded fails the mount with the decoder's message; on a data change the view keeps its earlier data. A source that switches between Parquet and another type changes how its name arrives, so the view remounts. `import f from "data/<name>"` gives a ranged handle `{byteLength, read(offset, length, signal)}` on the file the view mounted with, a Parquet file included. A followed `data` source that moves to a new asset reaches the mounted view as `change:<name>` when the view listens with `model.on("change:<name>", …)`, and the view keeps the reader's state; the old handle's reads then fail as aborted. A view that does not listen is mounted again when its data changes. Changes to the entry, an import, the spec or the catalog remount the view. Each binding follows its source unless it specifies a revision. Use `vega-lite` with a chart spec and named data, or `anywidget` with a widget spec for code that needs a model. All three use the same view node. `read_page.libraries` lists the host-provided names. It names the Page `revision` it read, fenced like
+`edit_page` sends `set_view` alone. Every view has a `view_id`, title, `view_type` and `view_revision`. For new JavaScript use `module`. Its `module` field names the entry source, optional `data` binds files, and optional `imports` binds JavaScript sources under names local to the view. The entry exports `render({model, el, signal})`, or a default AFM object or factory. Each `data` name is a key on that model whose value is a file, read only when the view asks (see [Module view data: files and tables](#module-view-data-files-and-tables)). `import f from "data/<name>"` gives the same kind of file, bound to the one the view mounted with. A followed `data` source that moves to a new asset reaches the mounted view as `change:<name>` when the view listens with `model.on("change:<name>", …)`, and the view keeps the reader's state; the old file's calls then fail as aborted. A move to another file type is a data change like any other. A view that does not listen is mounted again when its data changes. Changes to the entry, an import, the spec or the catalog remount the view. Each binding follows its source unless it specifies a revision. Use `vega-lite` with a chart spec and named data, or `anywidget` with a widget spec for code that needs a model. All three use the same view node. `read_page.libraries` lists the host-provided names. It names the Page `revision` it read, fenced like
 any edit; a newer Page revision doesn't refuse it. `view_revision` is null to
 create, or the view's current `revision`. The receipt carries
 `view_revision`, the view's revision after the write, and `result.edits` of
@@ -2169,17 +2169,38 @@ host has open that follows it as a module or import, and puts that view's
 findings on the set_source edit as warnings. A view the host doesn't have
 open is not checked until its next set_view.
 
-### Module view tables
+### Module view data: files and tables
 
-A module view's Parquet data name reaches its model as a table. The page
-fetches the file through the Page's byte cache and decodes it with Sift's
-`parquetToArrowStream` within the limits charts use: 250,000 rows, 256
-columns, 128 MiB decoded. It turns the Arrow stream into a ColumnSet
-([viewer/parquet-columns.mjs](viewer/parquet-columns.mjs)), keeps the newest
-4 per asset id so views of one file decode it once, and transfers a copy into
-each frame. The ColumnSet is defined, and checked on both sides, in
-`@nteract/output-frame` (`src/column-set.mjs`). The frame wraps it in a table
-of our own (`src/table.mjs`); it loads no Arrow library and never loads Sift.
+Each `data` name of a module view is a file object on the model, and the
+`data/<name>` import gives the same kind of object, bound to the file the
+view mounted with. Nothing is read when the view mounts: the page opens each
+file for its size, and the frame asks for a range, the whole file or a table
+only when the view calls a member. Every request goes through the view's one
+read budget. A data change gives the model a new file object and fires
+`change:<name>`; the old object's pending and later calls reject as aborted.
+Failures are promise rejections with plain messages; none fails the mount.
+
+| Members | |
+|---|---|
+| `name`, `mimeType`, `size` | the data name, the file's media type and its size in bytes, known at mount |
+| `arrayBuffer()`, `text()`, `json()` | the whole file, read once per file object; `arrayBuffer()` gives a new copy on each call. At most 5 MiB per file and 32 MiB across one view's files read whole |
+| `parquet()` | the file as a table (below); rejects for a file that is not Parquet, and for any argument, since it takes no options yet |
+| `slice(start, end)` | a range object `{size, arrayBuffer(), text()}`, counted and clamped as `Blob.slice`; each range object reads its span once |
+| Sift byte source: `byteLength`, `read(offset, length, signal)` | make the file a byte source for Sift's `loadTableFile` |
+
+`text()`, `json()` and `parquet()` return the same promise on each call.
+These are Observable `FileAttachment`'s names and meanings where the two
+overlap. Nothing else on a file object is part of the interface.
+
+A table comes from the page: it fetches the file through the Page's byte
+cache, decodes it with Sift's `parquetToArrowStream` within the limits charts
+use (250,000 rows, 256 columns, 128 MiB decoded), and turns the Arrow stream
+into a ColumnSet ([viewer/parquet-columns.mjs](viewer/parquet-columns.mjs)).
+It keeps the newest 4 per asset id, so views of one file decode it once, and
+sends each frame its own copy. The ColumnSet is defined, and checked on both
+sides, in `@nteract/output-frame` (`src/column-set.mjs`). The frame wraps it
+in a table of our own (`src/table.mjs`); it loads no Arrow library and never
+loads Sift.
 
 Column types:
 

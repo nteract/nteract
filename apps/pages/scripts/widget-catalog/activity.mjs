@@ -63,8 +63,7 @@ function Activity({ days }) {
 }
 
 export async function render({ el, signal }) {
-  const bytes = await activity.read(0, activity.byteLength, signal);
-  const { days } = JSON.parse(new TextDecoder().decode(bytes));
+  const { days } = await activity.json();
   signal.throwIfAborted();
   const root = createRoot(el);
   root.render(h(Activity, { days }));

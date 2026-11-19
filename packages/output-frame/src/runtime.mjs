@@ -1,5 +1,5 @@
 import { createFrameData, dataAlias, receiveDataChange } from "./data.mjs";
-import { outputTransition } from "./lifecycle.mjs";
+import { PROTOCOL_VERSION, connectVersion, outputTransition } from "./lifecycle.mjs";
 import { applyHostContext } from "./context.mjs";
 
 import { createWidgetSession } from "./anywidget.mjs";
@@ -19,16 +19,26 @@ const stop = () => {
 window.addEventListener("pagehide", stop, { once: true });
 
 function connect(event) {
+  const version = connectVersion(event.data?.type);
   if (
     state !== "connecting" ||
     event.source !== window.parent ||
-    event.data?.type !== "nteract-output-connect-v2" ||
+    version === null ||
     event.data.nonce !== location.hash.slice(1) ||
     event.ports.length !== 1
   )
     return;
   window.removeEventListener("message", connect);
   const port = event.ports[0];
+  if (version !== PROTOCOL_VERSION) {
+    stop();
+    port.postMessage({
+      type: "error",
+      message: `This output frame speaks protocol v${PROTOCOL_VERSION} and the page sent v${version}. Reload the page.`,
+    });
+    port.close();
+    return;
+  }
   state = outputTransition(outputTransition(state, "connect"), "connected");
   const send = (message) => port.postMessage(message);
   const phase = (event) => {
@@ -95,8 +105,9 @@ function connect(event) {
           cleanup(() => URL.revokeObjectURL(url));
           imports[name] = url;
         }
-        // Each data/ import is bound once, to the file the view mounted with.
-        // A later change reaches the model; this handle's reads then abort.
+        // Each data/ import is bound once, to the file object the view
+        // mounted with, which the model also starts with. A later change
+        // gives the model a new file object; this one's calls then abort.
         const bindings = [];
         for (const [name, input] of files) {
           const url = URL.createObjectURL(
@@ -109,7 +120,7 @@ function connect(event) {
           );
           cleanup(() => URL.revokeObjectURL(url));
           imports[name] = url;
-          bindings.push([url, input.handle]);
+          bindings.push([url, input]);
         }
         // The runtime is a classic script: an import map appended at mount
         // applies only while no module has loaded in this document. Nothing
@@ -127,9 +138,7 @@ function connect(event) {
         module
           ? {
               ...data.payload,
-              state: Object.fromEntries(
-                files.map(([name, input]) => [dataAlias(name), input.value]),
-              ),
+              state: Object.fromEntries(files.map(([name, file]) => [dataAlias(name), file])),
             }
           : data.payload,
         {

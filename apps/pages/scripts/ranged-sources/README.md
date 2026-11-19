@@ -16,18 +16,19 @@ node scripts/ranged-sources/demo.mjs /tmp/pages-ranged-activity.parquet
 ```
 
 The demo declares a pinned module entry and one file alias in `data`. The
-[entry](activity.mjs) reads `model.get("activity")`, an Arrow table the Page
-decodes from the Parquet file with Sift, and charts the first project's latest
-28 days. The line under the chart reports the archive's row count, which the
-demo checks.
+[entry](activity.mjs) awaits `model.get("activity").parquet()`, an Arrow-style
+table the Page decodes from the Parquet file with Sift, and charts the first
+project's latest 28 days. The line under the chart reports the archive's row
+count, which the demo checks.
 
-The parent fetches the immutable Page asset once, decodes it, and transfers a
-copy of the Arrow stream into the frame. The view can still
-`import activity from "data/activity"` for the file itself: the parent opens
-the asset with HEAD, and a separate message port per binding serves
-`read(offset, length, signal)`. Each HTTP request goes through the existing
-Page access check and asks storage for one range. Replacing the view closes
-its ports and aborts pending reads. The existing Page upload limit is 5 MiB.
+`model.get("activity")` is a file object. The parent opens the immutable Page
+asset with HEAD for its size and reads nothing more until the view asks. A
+separate message port per binding serves each request: `parquet()` has the
+parent fetch and decode the file once and transfer a copy of the columns,
+`slice(start, end)` reads one range, and `text()` or `json()` read the whole
+file. Each HTTP request goes through the existing Page access check. Replacing
+the view closes its ports and aborts pending requests. The existing Page upload
+limit is 5 MiB.
 
 ### Page12 on lab2
 
