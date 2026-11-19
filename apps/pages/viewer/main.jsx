@@ -364,7 +364,7 @@ function App() {
             })?.focus({ preventScroll: true }),
           ),
         flash: (threadId) =>
-          setTarget({ id: threadId, request: performance.now(), source: "created" }),
+          setTarget({ id: threadId, state: "open", request: performance.now(), source: "created" }),
       }),
   );
   const composerState = useStore(composer.store);
@@ -1016,6 +1016,13 @@ function App() {
   }, []);
   const page = session?.snapshot(),
     threads = page?.comments ?? [];
+  const targetedThreadState = target && threads.find((thread) => thread.id === target.id)?.state;
+  // A peer can resolve the highlighted passage while the panel stays open.
+  // Visiting the thread later in Resolved starts a fresh highlight.
+  useEffect(() => {
+    if (targetedThreadState && targetedThreadState !== target.state)
+      setTarget((current) => (current === target ? null : current));
+  }, [target, targetedThreadState]);
   // The Project whose content is open. A link to it there is no Project link
   // (current-page.mjs); in an ordinary Page of the Project it still is.
   // projectOpen alone: it's set with the placement that finds the content and
@@ -1531,12 +1538,16 @@ function App() {
       setHoveredThread(null);
     };
   }, [commentsOpen, session?.pageId]);
+  function selectThreadTarget(id, source) {
+    const thread = id && threads.find((thread) => thread.id === id);
+    setTarget(thread ? { id, state: thread.state, request: performance.now(), source } : null);
+  }
   function selectComment(id) {
-    setTarget({ id, request: performance.now(), source: "passage" });
+    selectThreadTarget(id, "passage");
     setCommentsOpen(true);
   }
   function revealComment(thread) {
-    setTarget({ id: thread.id, request: performance.now(), source: "quote" });
+    setTarget({ id: thread.id, state: thread.state, request: performance.now(), source: "quote" });
     const id =
       thread.target.kind === "selection" ? thread.target.anchor.blockId : thread.target.blockId;
     if (thread.target.kind === "block" || thread.selectionContext?.status === "detached")
@@ -2173,7 +2184,7 @@ function App() {
                 onReveal={revealComment}
                 onSelect={(id) => {
                   // Panel selections highlight the passage without drilling in.
-                  setTarget({ id, request: performance.now(), source: "panel" });
+                  selectThreadTarget(id, "panel");
                 }}
               />
               <CommentPopover

@@ -112,6 +112,14 @@ async function fixture(t, options = {}) {
       commentMessage: () => undefined,
       comment: async (action) => {
         calls.push(action);
+        if (action.action === "resolve" || action.action === "reopen") {
+          props.threads = props.threads.map((item) =>
+            item.id === action.thread_id
+              ? { ...item, state: action.action === "resolve" ? "resolved" : "open" }
+              : item,
+          );
+          render();
+        }
       },
     },
     threads: [thread("first", "open", 2), thread("next"), thread("done", "resolved")],
@@ -371,12 +379,56 @@ test("reply drafts are readable by the session, so a retirement can archive them
   ]);
 });
 
-test("resolve and reopen send the action and keep focus in the thread", async (t) => {
+test("resolving in Open follows the remaining queue and finishes on the caught-up list", async (t) => {
   const f = await fixture(t);
   await f.open("next");
   await f.click(f.view().querySelector(".thread-state-action"));
   assert.deepEqual(f.calls, [{ action: "resolve", thread_id: "next" }]);
-  assert.ok(f.container.querySelector("dialog").contains(document.activeElement));
+  assert.equal(f.view().dataset.threadId, "first", "the last item steps back to the remaining one");
+  assert.match(f.container.querySelector(".comments-position").textContent, /1 of 1/);
+  assert.equal(f.props.target.id, "first");
+  assert.ok(dialogOf(f).contains(document.activeElement));
+
+  await f.click(f.view().querySelector(".thread-state-action"));
+  assert.equal(f.view(), null);
+  assert.match(f.container.querySelector(".comments-empty").textContent, /All caught up/);
+  assert.equal(f.props.target.id, null);
+  assert.ok(dialogOf(f).contains(document.activeElement));
+});
+
+test("a delayed resolution respects navigation that happened while saving", async (t) => {
+  const f = await fixture(t, { threads: ["first", "next", "other"].map((id) => thread(id)) });
+  const save = f.props.session.comment;
+  let finish;
+  f.props.session.comment = async (action) => {
+    await new Promise((resolve) => {
+      finish = resolve;
+    });
+    await save(action);
+  };
+  await f.open("first");
+  await f.click(f.view().querySelector(".thread-state-action"));
+  const next = () => f.container.querySelector('[aria-label="Next thread"]');
+  await f.click(next());
+  await f.click(next());
+  assert.equal(f.view().dataset.threadId, "other");
+  await act(async () => finish());
+  assert.equal(f.view().dataset.threadId, "other");
+  assert.equal(f.props.target.id, "other");
+});
+
+test("review can explicitly browse resolved history and reopen the selected thread", async (t) => {
+  const f = await fixture(t);
+  await f.click(f.container.querySelector(".comments-review-start"));
+  await f.click(f.container.querySelector(".review-navigator .comments-list-end"));
+  await f.open("done");
+  assert.equal(f.view().dataset.threadId, "done");
+  assert.match(f.container.querySelector(".comments-position").textContent, /1 of 1/);
+  assert.equal(f.container.querySelector('[aria-label="Next thread"]').disabled, true);
+  await f.click(f.view().querySelector(".thread-state-action"));
+  assert.deepEqual(f.calls, [{ action: "reopen", thread_id: "done" }]);
+  assert.equal(f.view().dataset.threadId, "done");
+  assert.match(f.container.querySelector(".comments-position").textContent, /of 3/);
 });
 
 test("viewers read threads without Reply or Resolve; resolved threads say so", async (t) => {
@@ -430,15 +482,6 @@ test("expanded shows the list and the open thread side by side", async (t) => {
 
 test("review is a workspace: navigator, passage, conversation; J/K move, E resolves and advances, R replies", async (t) => {
   const f = await fixture(t);
-  f.props.session.comment = async (action) => {
-    f.calls.push(action);
-    f.props.threads = f.props.threads.map((thread) =>
-      thread.id === action.thread_id
-        ? { ...thread, state: action.action === "resolve" ? "resolved" : "open" }
-        : thread,
-    );
-    f.renderSync();
-  };
   await f.click(f.container.querySelector(".comments-review-start"));
   assert.ok(dialogOf(f).classList.contains("comments-review"));
   assert.match(f.container.querySelector(".review-progress-label").textContent, /1 of 3 resolved/);
@@ -459,6 +502,10 @@ test("review is a workspace: navigator, passage, conversation; J/K move, E resol
   await f.key("e", f.view());
   assert.deepEqual(f.calls, [{ action: "resolve", thread_id: "first" }]);
   assert.equal(f.view().dataset.threadId, "next", "resolve-and-next");
+  assert.match(f.container.querySelector(".comments-position").textContent, /1 of 1/);
+  assert.equal(f.container.querySelector('[aria-label="Next thread"]').disabled, true);
+  await f.key("j", f.view());
+  assert.equal(f.view().dataset.threadId, "next", "J stays in the open queue");
   assert.match(f.container.querySelector(".review-progress-label").textContent, /2 of 3 resolved/);
   assert.match(f.container.querySelector(".review-up-next").textContent, /Last open thread/);
   await f.key("r", f.view());

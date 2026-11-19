@@ -168,6 +168,31 @@ try {
   await page.goto(origin + "/p/" + pageId);
   await expect(page.locator("wg-content").first()).toContainText("reading column");
 
+  // A peer resolves the open thread while its passage is highlighted. Only an
+  // explicit visit from resolved history should light that passage again.
+  const firstPassage = page.locator(`.comment-passage[data-comment-thread="${threadIds[0]}"]`);
+  const firstRow = page.locator(`.thread-row[data-thread-id="${threadIds[0]}"]`);
+  await page.getByRole("button", { name: "Comments", exact: true }).click();
+  await firstRow.click();
+  await expect(firstPassage.first()).toHaveClass(/comment-passage-active/);
+  await mutate("manage_page_comment", {
+    page_id: pageId,
+    action: "resolve",
+    thread_id: threadIds[0],
+  });
+  await expect(firstPassage).toHaveCount(0);
+  await expect(page.locator("#page-comments")).toBeVisible();
+  await page.reload();
+  await page.getByRole("button", { name: "Comments", exact: true }).click();
+  await page.getByRole("tab", { name: /^Resolved/ }).click();
+  await firstRow.click();
+  await expect(firstPassage.first()).toHaveClass(/comment-passage-active/);
+  await mutate("manage_page_comment", {
+    page_id: pageId,
+    action: "reopen",
+    thread_id: threadIds[0],
+  });
+
   for (const width of WIDTHS) {
     const at = String(width);
     const entry = (report.widths[at] = { wheel: {}, touch: {} });
@@ -182,6 +207,9 @@ try {
     await rest();
     await page.getByRole("button", { name: "Comments", exact: true }).click();
     await expect(page.locator("#page-comments")).toBeVisible();
+    for (const threadId of threadIds) {
+      await expect(page.locator(`.thread-row[data-thread-id="${threadId}"]`)).toBeVisible();
+    }
     await page.getByRole("button", { name: "Review open threads", exact: true }).click();
     await expect(page.locator("#page-comments.comments-review")).toBeVisible();
     await rest();
@@ -345,12 +373,27 @@ try {
     const clampedAgain = await messagesClamped();
     check(clampedAgain.more > 0, `${at}: the panel's thread view still offers Show more`);
     await page.screenshot({ path: `${output}/review-${at}-exited.png` });
-    // The next width reviews both threads again.
+    // Resolve from the ordinary thread panel while the editor stays visible.
+    const passage = (id) => page.locator(`.comment-passage[data-comment-thread="${id}"]`);
     await mutate("manage_page_comment", {
       page_id: pageId,
       action: "reopen",
       thread_id: threadIds[0],
     });
+    await expect(passage(threadIds[0]).first()).toBeAttached();
+    await reviewed.getByRole("button", { name: "Resolve", exact: true }).click();
+    await expect(reviewed).toHaveAttribute("data-thread-id", threadIds[0]);
+    await expect(passage(threadIds[1])).toHaveCount(0);
+    await expect(passage(threadIds[0]).first()).toBeAttached();
+    await reviewed.getByRole("button", { name: "Resolve", exact: true }).click();
+    await expect(
+      page.locator("#page-comments").getByText("All caught up.", { exact: true }),
+    ).toBeVisible();
+    await expect(passage(threadIds[0])).toHaveCount(0);
+    if (width !== WIDTHS.at(-1)) {
+      for (const thread_id of threadIds)
+        await mutate("manage_page_comment", { page_id: pageId, action: "reopen", thread_id });
+    }
     console.log(`review ${at}: ${JSON.stringify(entry)}`);
   }
   check(report.errors.length === 0, `page errors: ${report.errors.join("; ")}`);
