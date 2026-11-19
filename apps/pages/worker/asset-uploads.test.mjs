@@ -1248,8 +1248,18 @@ for (const [mediaType, source] of [
     });
     const result = await upload(w, grant, { body: bytes });
     assert.equal(result.status, 201, JSON.stringify(result.body));
-    assert.equal(result.body.insert, null);
     const assetId = result.body.asset_id;
+    // A CSV is a table, so its receipt places a dataframe; other view inputs
+    // have no block of their own.
+    assert.deepEqual(
+      result.body.insert,
+      mediaType === "text/csv"
+        ? {
+            op: "insert_node",
+            node: { type: "dataframe", attrs: { asset_id: assetId, media_type: "text/csv" } },
+          }
+        : null,
+    );
     const denied = await worker.fetch(
       new Request(`${origin}/api/pages/${pageId}/assets/${assetId}`),
       w.env,

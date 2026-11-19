@@ -1813,8 +1813,8 @@ A 409 requires reading access again. An uncertain request can be retried with it
     fileImportParagraph: `A file import requires pages:read and pages:write plus current Page edit
 access. It does not insert content. It copies the file into private Page storage and returns asset_id,
 asset_url, mime_type and size. Images also return width and height. For an
-image or Parquet file, send the returned insert operation to place it. For a
-JSON file, insert is null. Use set_source to name the returned asset_id.
+image, Parquet or CSV file, send the returned insert operation to place it.
+For a JSON file, insert is null. Use set_source to name the returned asset_id.
 Repeating an import of identical bytes to the same Page reuses the asset.
 No additional API key or public hosting is needed. If ChatGPT doesn't offer the
 file argument yet, refresh the connection's tool list. Newly generated images
@@ -1846,7 +1846,7 @@ application/vnd.apache.parquet and your API-key bearer header. The response
 contains asset_id, asset_url, mime_type, size and insert, the insert_node
 operation below with the asset_id filled in. In the browser, an editor can
 drop or paste a .parquet file into a block. A CSV uploads with content_type
-text/csv and returns insert: null; place it with insert_node and attrs
+text/csv and returns an insert_node operation with attrs
 {asset_id, media_type: "text/csv"}. ${DATA_FORMAT_ADVICE}`,
     datasetReaderParagraph: `Readers see a Sift table: they can sort, filter and scroll it, and those
 changes stay in their own view. Nothing they do changes the document. Pages
@@ -2225,8 +2225,8 @@ retried with its identical nonce and body.`,
     fileImportParagraph: `A file import requires pages:read and pages:write plus current Page edit
 access. It does not insert content. It copies the file into private Page storage and returns asset_id,
 asset_url, mime_type and size. Images also return width and height. For an
-image or Parquet file, send the returned insert operation to place it. For a
-JSON file, insert is null. Use set_source to name the returned asset_id.
+image, Parquet or CSV file, send the returned insert operation to place it.
+For a JSON file, insert is null. Use set_source to name the returned asset_id.
 Repeating an import of identical bytes to the same Page reuses the asset. No
 public hosting is needed. If ChatGPT doesn't offer the file argument yet,
 refresh the connection's tool list. Newly generated images must be available as
@@ -2256,7 +2256,7 @@ application/vnd.apache.parquet) and POST the raw bytes there. The response
 contains asset_id, asset_url, mime_type, size and insert, the insert_node
 operation below with the asset_id filled in. In the browser, an editor can
 drop or paste a .parquet file into a block. A CSV uploads with content_type
-text/csv and returns insert: null; place it with insert_node and attrs
+text/csv and returns an insert_node operation with attrs
 {asset_id, media_type: "text/csv"}. ${DATA_FORMAT_ADVICE}`,
     datasetReaderParagraph: `Readers see a Sift table: they can sort, filter and scroll it, and those changes
 stay in their own view. Nothing they do changes the document. Pages does not

@@ -2042,7 +2042,7 @@ Upload ESM, CSS, WAV (`audio/wav`), JSON (`application/json`), CSV (`text/csv`),
 or Parquet, then register each asset with `set_source`. ESM, CSS, WAV and generic
 binary uploads require a content-type-bound capability and return `insert: null`.
 Upload JSON with `content_type: "application/json"`. Sources previews the data and a module reads it with `await model.get(name).json()`.
-Upload CSV with `content_type: "text/csv"`; the upload checks only that it is UTF-8 text. Sources shows its header and first rows, a module reads it with `await model.get(name).csv()`, and a chart or a dataframe (`media_type: "text/csv"`) draws it.
+Upload CSV with `content_type: "text/csv"`; the upload checks only that it is UTF-8 text, and its `insert` is the dataframe `insert_node` with `media_type: "text/csv"`. Sources shows its header and first rows, a module reads it with `await model.get(name).csv()`, and a chart or a dataframe (`media_type: "text/csv"`) draws it.
 After `set_view` succeeds, place `{ type: "view", attrs: { view_id } }` with
 `insert_node`. Module/CSS assets are immutable content-addressed bytes; source
 revisions select their version just like data. Source history retains its newest

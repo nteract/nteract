@@ -369,15 +369,21 @@ export async function persistPageAsset(bucket, { pageId, bytes, contentTypes = [
 /**
  * The edit_page operation that places a stored asset as the block its type
  * calls for: insert_image for a raster, an insert_node dataframe for a Parquet
- * dataset. insert_image also needs alt text, which only the caller can write,
- * so the operation leaves it out and edit_page refuses it until alt is added.
+ * dataset or a CSV, and null for any other view input. insert_image also
+ * needs alt text, which only the caller can write, so the operation leaves it
+ * out and edit_page refuses it until alt is added.
  */
 export const assetInsertOperation = ({ asset_id, mime_type }) =>
-  OUTPUT_ASSET_TYPES.includes(mime_type)
-    ? null
-    : mime_type === PARQUET_MEDIA_TYPE
-      ? { op: "insert_node", node: { type: "dataframe", attrs: { asset_id } } }
-      : { op: "insert_image", asset_id };
+  mime_type === CSV_MEDIA_TYPE
+    ? {
+        op: "insert_node",
+        node: { type: "dataframe", attrs: { asset_id, media_type: CSV_MEDIA_TYPE } },
+      }
+    : OUTPUT_ASSET_TYPES.includes(mime_type)
+      ? null
+      : mime_type === PARQUET_MEDIA_TYPE
+        ? { op: "insert_node", node: { type: "dataframe", attrs: { asset_id } } }
+        : { op: "insert_image", asset_id };
 
 /** The answer to a stored upload or copy: the asset, its URL under both names,
  * and the operation that places it. */

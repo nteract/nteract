@@ -58,7 +58,7 @@ test("tool schemas use only the JSON Schema subset clients forward as written", 
 
 test("tool catalog has a deliberate size ceiling", () => {
   assert.ok(
-    JSON.stringify(tools).length <= 39650,
+    JSON.stringify(tools).length <= 39655,
     "Tool catalog grew; raise the ceiling on purpose when a tool grows",
   );
 });
@@ -1033,7 +1033,7 @@ test("MCP lists create_page_asset_upload for any client with write scope, and po
     /Access is checked again at upload/,
     /With file, Pages fetches the file instead/,
     /same bytes return the same asset_id/,
-    /Images and Parquet return an insert operation \(add alt to an image\)/,
+    /Images, Parquet and CSV return an insert operation \(add alt to an image\)/,
     /JSON and other view inputs return insert: null\. Use set_source/,
     /Insert image in the browser/,
   ])

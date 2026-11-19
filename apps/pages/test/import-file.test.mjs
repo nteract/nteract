@@ -369,7 +369,10 @@ test("a client-attached CSV file retains its declared type and original bytes", 
   assert.equal(response.status, 201);
   const asset = await response.json();
   assert.equal(asset.mime_type, "text/csv");
-  assert.equal(asset.insert, null);
+  assert.deepEqual(asset.insert, {
+    op: "insert_node",
+    node: { type: "dataframe", attrs: { asset_id: asset.asset_id, media_type: "text/csv" } },
+  });
   const [stored] = f.env.PAGES_ASSETS.objects.values();
   assert.deepEqual(stored.bytes, bytes);
 });
