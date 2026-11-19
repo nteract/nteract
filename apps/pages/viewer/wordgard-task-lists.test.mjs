@@ -275,25 +275,15 @@ test("Tab falls through on the first sibling, at the top level, and outside an e
   }
 });
 
-test("promoting a task leaves any paragraphs after the nested list with their parent", () => {
+test("outdent keeps native text positions when parent notes follow a nested list", () => {
   for (const following of ["", "  - [ ] Sibling\n"]) {
-    const { editor, binding } = fixture(
+    const { editor, binding, replica } = fixture(
       "- [ ] Parent\n  - [x] Child\n" + following + "\n  Parent notes\n- [ ] Next",
     );
+    const before = A.getHeads(replica.doc);
     editor.dispatch({ selection: { anchor: textPosition(editor.state.doc, "Child") + 2 } });
-    assert.equal(Command.dispatch(editor, outdentTask), true);
-    const [parent, child, next] = editor.state.doc.content[0].content;
-    assert.deepEqual(
-      parent.content.map((node) => node.textContent()),
-      ["Parent", "Parent notes"],
-    );
-    assert.deepEqual(
-      child.content.map((node) => node.textContent()),
-      following ? ["Child", "Sibling"] : ["Child"],
-    );
-    assert.equal(child.mark(TaskChecked), true);
-    assert.equal(next.textContent(), "Next");
-    assert.equal(editor.state.selection.head, textPosition(editor.state.doc, "Child") + 2);
+    assert.equal(Command.dispatch(editor, outdentTask), false);
+    assert.deepEqual(A.getHeads(replica.doc), before);
     binding.destroy();
   }
 });

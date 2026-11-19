@@ -468,6 +468,38 @@ try {
   await readerContext.close();
   checkpoint(stage);
 
+  stage = "Shift+Tab leaves a parent note and the child's passage comment attached";
+  const commented = await create(
+    "- [ ] Parent\n  - [x] Child label\n\n  Notes belonging to Parent",
+    "Commented checklist",
+  );
+  const readCommented = () => call(a, "read_page", { page_id: commented.page_id });
+  const source = await readCommented();
+  const { result: thread } = await call(a, "manage_page_comment", {
+    page_id: commented.page_id,
+    node_id: source.blocks[0].node_id,
+    action: "add",
+    selected_text: "Child label",
+    body: "Discuss the child",
+    nonce: crypto.randomUUID(),
+    revision: source.revision,
+  });
+  const { revision: commentedRevision } = await readCommented();
+  await selectText(a, "Child label", true);
+  await a.keyboard.press("Shift+Tab");
+  await expect(content(a)).not.toBeFocused();
+  await a.reload();
+  await saved(a);
+  const after = await readCommented();
+  assert.deepEqual(after.revision, commentedRevision);
+  const passage = after.comments.find(
+    (comment) => comment.id === thread.thread_id,
+  ).selectionContext;
+  assert.equal(passage.status, "attached");
+  assert.equal(passage.text, "Child label");
+  await expect(content(a).locator("li li").getByRole("checkbox")).toBeChecked();
+  checkpoint(stage);
+
   stage = "typed dash and star task shortcuts create real checkboxes";
   const typed = await create("", "Typed checklist");
   await content(a).click();
