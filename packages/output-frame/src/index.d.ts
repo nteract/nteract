@@ -44,18 +44,35 @@ export interface ModuleOutput {
   assets: { entry: OutputAsset };
   imports?: Record<string, OutputAsset>;
 }
+/** A whole file (the model holds a DataView) or a ranged file (the model holds the handle). */
+export type DataInput = Uint8Array | ByteSource;
 export interface OutputOptions {
-  byteSources?: Record<string, ByteSource>;
+  /** A module view's `data/<alias>` inputs. Each alias is also a key on its model. */
+  byteSources?: Record<string, DataInput>;
   frameUrl: string;
   hostContext: OutputHostContext;
   timeoutMs?: number;
   scheduler?: SchedulerLike;
   onState?: (state: OutputState, error?: string) => void;
+  /**
+   * A data change reached a rendered view with no `change:<key>` listener on
+   * any key it affects, so the frame did not apply it. Called only in "ready"
+   * and only for a declared data name. Mount the view again to show it.
+   */
+  onUnhandledData?: (name: string) => void;
 }
 export interface OutputHandle {
   readonly frame: HTMLIFrameElement;
   readonly state: OutputState;
   setHostContext(context: OutputHostContext): void;
+  /**
+   * Offer a mounted view a new value for one declared data input: a
+   * `data/<alias>` of a module view, or a buffer name of an anywidget view
+   * (Uint8Array only). Sent once the view has rendered; throws for an
+   * undeclared name. A view with no listener for it answers through
+   * `onUnhandledData`.
+   */
+  setData(name: string, value: DataInput): void;
   destroy(): void;
 }
 /** Structurally compatible with the theme/styles subset of notebook HostContext. */

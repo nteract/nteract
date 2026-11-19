@@ -1,4 +1,4 @@
-import { receiveByteSource } from "./byte-source.mjs";
+import { createFrameData, dataAlias, receiveDataChange } from "./data.mjs";
 import { outputTransition } from "./lifecycle.mjs";
 import { applyHostContext } from "./context.mjs";
 
@@ -7,6 +7,9 @@ import { createWidgetSession } from "./anywidget.mjs";
 let state = "connecting";
 const lifetime = new AbortController();
 let context;
+// The rendered session, and a module view's data inputs by declared name.
+let session;
+let frameData;
 const contextListeners = new Set();
 lifetime.signal.addEventListener("abort", () => contextListeners.clear(), { once: true });
 const stop = () => {
@@ -61,6 +64,18 @@ function connect(event) {
       }
       return;
     }
+    if (data?.type === "data") {
+      // The parent sends data only after "rendered", and only for names the
+      // mount declared. Anything else is ignored. A change no listener would
+      // show is not applied: the parent mounts the view again instead.
+      if (state !== "ready" || !session) return;
+      try {
+        receiveDataChange(data, { session, frameData, send });
+      } catch (error) {
+        console.error("Output data update failed", error);
+      }
+      return;
+    }
     if (state !== "loading" || data?.type !== "mount") return;
     // Transition before the first interruptible step: duplicate mount
     // messages cannot import another module or replay initialize.
@@ -68,7 +83,9 @@ function connect(event) {
     try {
       context = applyHostContext(document, data.context ?? { theme: "light" });
       const catalog = document.getElementById("widget-catalog-map");
-      const files = Object.entries(data.files ?? {});
+      const module = data.payload.kind === "module";
+      frameData = module ? createFrameData(data.files ?? {}, lifetime.signal) : undefined;
+      const files = Object.entries(frameData?.initial ?? {});
       if (catalog || data.payload.imports || files.length) {
         const imports = catalog ? JSON.parse(catalog.textContent).imports : {};
         for (const [name, asset] of Object.entries(data.payload.imports ?? {})) {
@@ -78,8 +95,10 @@ function connect(event) {
           cleanup(() => URL.revokeObjectURL(url));
           imports[name] = url;
         }
+        // Each data/ import is bound once, to the file the view mounted with.
+        // A later change reaches the model; this handle's reads then abort.
         const bindings = [];
-        for (const [name, descriptor] of files) {
+        for (const [name, input] of files) {
           const url = URL.createObjectURL(
             new Blob(
               [
@@ -90,7 +109,7 @@ function connect(event) {
           );
           cleanup(() => URL.revokeObjectURL(url));
           imports[name] = url;
-          bindings.push([url, receiveByteSource(descriptor, lifetime.signal)]);
+          bindings.push([url, input.handle]);
         }
         // The runtime is a classic script: an import map appended at mount
         // applies only while no module has loaded in this document. Nothing
@@ -102,19 +121,18 @@ function connect(event) {
         document.head.append(script);
         for (const [url, source] of bindings) (await import(url)).bind(source);
       }
-      if (data.payload.kind === "module") {
-        const url = URL.createObjectURL(
-          new Blob([data.payload.assets.entry.bytes], { type: "text/javascript" }),
-        );
-        cleanup(() => URL.revokeObjectURL(url));
-        phase("loaded");
-        const { render } = await import(url);
-        lifetime.signal.throwIfAborted();
-        if (typeof render !== "function") throw Error("Export a render({el, signal}) function.");
-        phase("initialized");
-        cleanup(await render({ el: document.querySelector("main"), signal: lifetime.signal }));
-      } else {
-        const session = createWidgetSession(data.payload, {
+      // A module view's model holds one key per data alias. Its entry is
+      // imported here, after the import map above.
+      const created = createWidgetSession(
+        module
+          ? {
+              ...data.payload,
+              state: Object.fromEntries(
+                files.map(([name, input]) => [dataAlias(name), input.value]),
+              ),
+            }
+          : data.payload,
+        {
           document,
           signal: lifetime.signal,
           contextHost: {
@@ -124,14 +142,15 @@ function connect(event) {
               return () => contextListeners.delete(listener);
             },
           },
-        });
-        phase("loaded");
-        await session.initialize();
-        lifetime.signal.throwIfAborted();
-        phase("initialized");
-        await session.render(document.querySelector("main"));
-      }
+        },
+      );
+      phase("loaded");
+      await created.initialize();
       lifetime.signal.throwIfAborted();
+      phase("initialized");
+      await created.render(document.querySelector("main"));
+      lifetime.signal.throwIfAborted();
+      session = created;
       phase("rendered");
       // The shell owns normal-flow layout. Measuring its flow-root body includes
       // child margins, floats and padding without a viewport-height feedback loop.

@@ -333,7 +333,8 @@ const editOperation = {
     },
     module: {
       ...sourceBinding,
-      description: "Module view entry. Export render({el, signal}) from this JavaScript source.",
+      description:
+        "Module view entry. Export render({model, el, signal}) or a default AFM object from this JavaScript source.",
     },
     imports: {
       type: "object",

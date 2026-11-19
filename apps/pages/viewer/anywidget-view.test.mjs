@@ -9,7 +9,7 @@ import { BehaviorSubject, of } from "rxjs";
 import { setSources, sourcesGenesis } from "../model/sources-doc.mjs";
 import { readView, setView, viewGenesis } from "../model/view-doc.mjs";
 import { imageAssetUrl } from "../shared/image-assets.mjs";
-import { mount } from "./anywidget-view.mjs";
+import { anywidgetPlan, mount, planChange } from "./anywidget-view.mjs";
 import { PageSourceStore } from "./page-source-store.mjs";
 import { projectSourcesPanel } from "./sources-panel-store.mjs";
 import { sourceLine } from "./source-line.mjs";
@@ -170,4 +170,369 @@ test("a source named widget-imports is an ordinary source an executable view nev
     line.entries.map((entry) => entry.id),
     ["widget-imports"],
   );
+});
+
+// A module view keeps its frame when a followed data source moves. Its plan
+// splits code identity from data inputs.
+const PARQUET = "application/vnd.apache.parquet";
+const files = {
+  entry2: [encoder.encode("export function render() { /* v2 */ }"), "text/javascript"],
+  label1: [encoder.encode("first label"), "application/octet-stream"],
+  label2: [encoder.encode("second label"), "application/octet-stream"],
+  table1: [encoder.encode("PAR1 table one PAR1"), PARQUET],
+  table2: [encoder.encode("PAR1 table two, longer PAR1"), PARQUET],
+  // The table source moving to a file that arrives whole.
+  tableWhole: [encoder.encode("not parquet"), "application/octet-stream"],
+  labelBig: [encoder.encode("L".repeat(20)), "application/octet-stream"],
+  note1: [encoder.encode("n"), "application/octet-stream"],
+  note2: [encoder.encode("n".repeat(10)), "application/octet-stream"],
+};
+const ids = {};
+for (const [name, [bytes, media_type]] of Object.entries(files)) {
+  ids[name] = await sha256(bytes);
+  assets.set(ids[name], { bytes, media_type });
+}
+const mediaTypes = new Map([...assets].map(([id, asset]) => [id, asset.media_type]));
+const setSource = (source_id, asset_id, source_revision) => ({
+  op: "set_source",
+  source_id,
+  name: source_id,
+  source_revision,
+  asset_id,
+});
+const moveSources = (doc, operations, types = mediaTypes) =>
+  A.change(A.clone(doc), (draft) => setSources(draft, operations, { by, mediaTypes: types }));
+const dataSources = moveSources(sourcesDoc, [
+  setSource("label", ids.label1, null),
+  setSource("table", ids.table1, null),
+  setSource("note", ids.note1, null),
+]);
+
+// Writes the "chart" module view, as set_view would, and returns its record.
+function moduleViewWriter() {
+  let doc = viewGenesis("55555555-5555-4555-8555-555555555555");
+  return (fields, writer = by) => {
+    const revision = readView(doc, "chart")?.revision ?? null;
+    doc = A.change(doc, (draft) =>
+      setView(
+        draft,
+        {
+          op: "set_view",
+          view_id: "chart",
+          title: "Chart",
+          view_type: "module",
+          module: { source_id: "entry" },
+          data: { label: { source_id: "label" }, table: { source_id: "table" } },
+          view_revision: revision,
+          ...fields,
+        },
+        { sourcesDoc: dataSources, by: writer },
+      ),
+    );
+    return readView(doc, "chart");
+  };
+}
+
+const plan = (key, data, title = "T") => ({ key, data, view: { title } });
+
+test("a plan change is a remount, a data change, a title change or nothing", () => {
+  const a = { asset_id: "a".repeat(64), media_type: "application/octet-stream" };
+  const b = { asset_id: "b".repeat(64), media_type: "application/octet-stream" };
+  const base = plan("code", { "data/x": a, "data/y": a });
+  const none = { kind: "none", data: [], title: false };
+  const remount = { kind: "remount", data: [], title: false };
+  for (const [next, expected] of [
+    [plan("code", { "data/x": a, "data/y": a }), none],
+    [plan("code", { "data/x": b, "data/y": a }), { kind: "data", data: ["data/x"], title: false }],
+    [
+      plan("code", { "data/x": b, "data/y": b }, "U"),
+      { kind: "data", data: ["data/x", "data/y"], title: true },
+    ],
+    [plan("code", { "data/x": a, "data/y": a }, "U"), { kind: "title", data: [], title: true }],
+    [
+      plan("code", { "data/x": { ...a, media_type: PARQUET }, "data/y": a }),
+      { kind: "data", data: ["data/x"], title: false },
+    ],
+    [plan("other", { "data/x": a, "data/y": a }), remount],
+    [plan("other", { "data/x": b, "data/y": a }, "U"), remount],
+    [{ error: "This view isn't executable." }, remount],
+  ])
+    assert.deepEqual({ ...planChange(base, next) }, expected);
+  assert.equal(planChange({ error: "e" }, { error: "e" }).kind, "none");
+  assert.equal(planChange({ error: "e" }, { error: "f" }).kind, "remount");
+  assert.equal(planChange({ error: "e" }, base).kind, "remount");
+  // A data name that changes shape (ranged ↔ whole) is a code change.
+  const store = new PageSourceStore({ pageId: PAGE, doc$: new BehaviorSubject(dataSources) });
+  const whole = new PageSourceStore({
+    pageId: PAGE,
+    doc$: new BehaviorSubject(moveSources(dataSources, [setSource("table", ids.tableWhole, "1")])),
+  });
+  const view = moduleViewWriter()({});
+  assert.equal(planChange(anywidgetPlan(view, store), anywidgetPlan(view, whole)).kind, "remount");
+  assert.equal(planChange(anywidgetPlan(view, whole), anywidgetPlan(view, store)).kind, "remount");
+  store.destroy();
+  whole.destroy();
+});
+
+test("a module view plan follows code for remounts and data for updates", () => {
+  const write = moduleViewWriter();
+  const store = new PageSourceStore({ pageId: PAGE, doc$: new BehaviorSubject(dataSources) });
+  const first = anywidgetPlan(write({}), store);
+  assert.deepEqual(Object.keys(first.data), ["data/label", "data/table"]);
+  // A producer-only rewrite and a title rewrite keep the code identity.
+  const rewritten = anywidgetPlan(write({}, { ...by, displayName: "Other" }), store);
+  assert.equal(planChange(first, rewritten).kind, "none");
+  assert.equal(planChange(first, anywidgetPlan(write({ title: "Renamed" }), store)).kind, "title");
+  // A different entry is new code.
+  const moved = moveSources(dataSources, [setSource("entry", ids.entry2, "1")]);
+  const other = new PageSourceStore({ pageId: PAGE, doc$: new BehaviorSubject(moved) });
+  assert.equal(planChange(first, anywidgetPlan(write({ title: "Chart" }), other)).kind, "remount");
+  // A view that becomes non-executable is a plan error, and so a remount.
+  const chart = { ...write({}), media_type: "application/vnd.vegalite.v5+json", spec: {} };
+  let error;
+  try {
+    anywidgetPlan(chart, store);
+  } catch (caught) {
+    error = { error: caught.message };
+  }
+  assert.ok(error);
+  assert.equal(planChange(first, error).kind, "remount");
+  store.destroy();
+  other.destroy();
+});
+
+async function until(predicate, message) {
+  for (let i = 0; i < 300; i++) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  assert.fail(message);
+}
+
+// `ready: false` leaves the fake frame starting until the test calls
+// onState; `gate` holds every asset response until it resolves; `rejectData`
+// makes the frame refuse setData for a name once.
+function mountModuleView(
+  t,
+  { listening = true, ready = true, gate, rejectData, fields = {}, maxTotalBytes } = {},
+) {
+  const write = moduleViewWriter();
+  const { window } = new JSDOM("<!doctype html><body></body>");
+  const request = async (url, options = {}) => {
+    await gate;
+    const asset = assets.get(url.split("/").at(-1));
+    if (!asset) return new Response(null, { status: 404 });
+    const headers = {
+      "content-type": "application/octet-stream",
+      "x-pages-media-type": asset.media_type,
+      "content-length": String(asset.bytes.byteLength),
+    };
+    if (options.method === "HEAD") return new Response(null, { headers });
+    const range = /^bytes=(\d+)-(\d+)$/.exec(options.headers?.Range ?? "");
+    if (range) {
+      const [start, end] = [Number(range[1]), Number(range[2])];
+      return new Response(asset.bytes.slice(start, end + 1), {
+        status: 206,
+        headers: {
+          ...headers,
+          "content-length": String(end - start + 1),
+          "content-range": `bytes ${start}-${end}/${asset.bytes.byteLength}`,
+        },
+      });
+    }
+    return new Response(asset.bytes, { headers });
+  };
+  const doc$ = new BehaviorSubject(dataSources);
+  const sources = new PageSourceStore({ pageId: PAGE, doc$, request });
+  const view$ = new BehaviorSubject({ status: "ready", view: write(fields) });
+  const calls = { mounts: [], destroyed: 0, data: [] };
+  const mounted = mount(window.document.body, {
+    view$,
+    sources,
+    frameUrl: FRAME,
+    maxTotalBytes,
+    theme: { subscribe: () => () => {}, getSnapshot: () => ({ resolved: "light" }) },
+    mountOutput(_container, payload, options) {
+      const handle = {
+        frame: { title: payload.title },
+        destroy: () => calls.destroyed++,
+        setHostContext() {},
+        setData(name, value) {
+          if (rejectData === name) {
+            rejectData = undefined;
+            throw Error("The frame refused this input.");
+          }
+          calls.data.push([name, value]);
+          // A frame whose view has no change listener reports the change back.
+          if (!listening) queueMicrotask(() => options.onUnhandledData(name));
+        },
+      };
+      calls.mounts.push({ payload, options, handle });
+      if (ready) options.onState("ready");
+      return handle;
+    },
+  });
+  t.after(() => {
+    mounted.destroy();
+    sources.destroy();
+    window.close();
+  });
+  const root = window.document.querySelector(".pages-anywidget-view");
+  return { write, doc$, view$, calls, root };
+}
+
+test("a followed data source moving to a new asset updates the mounted view in place", async (t) => {
+  const { doc$, calls, root } = mountModuleView(t);
+  await until(() => calls.mounts.length === 1, "the view never mounted");
+  const { byteSources } = calls.mounts[0].options;
+  assert.equal(new TextDecoder().decode(byteSources["data/label"]), "first label");
+  assert.equal(byteSources["data/table"].byteLength, files.table1[0].byteLength);
+  assert.equal(typeof byteSources["data/table"].read, "function");
+  doc$.next(moveSources(dataSources, [setSource("label", ids.label2, "1")]));
+  await until(() => calls.data.length === 1, "the label change never reached the frame");
+  assert.equal(calls.data[0][0], "data/label");
+  assert.equal(new TextDecoder().decode(calls.data[0][1]), "second label");
+  doc$.next(
+    moveSources(dataSources, [
+      setSource("label", ids.label2, "1"),
+      setSource("table", ids.table2, "1"),
+    ]),
+  );
+  await until(() => calls.data.length === 2, "the table change never reached the frame");
+  assert.equal(calls.data[1][0], "data/table");
+  assert.equal(calls.data[1][1].byteLength, files.table2[0].byteLength);
+  // The new file stays readable after its load has finished.
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(new TextDecoder().decode(await calls.data[1][1].read(0, 9)), "PAR1 tabl");
+  assert.equal(calls.mounts.length, 1, "no remount");
+  assert.equal(calls.destroyed, 0, "the frame stays");
+  assert.equal(root.dataset.outputState, "ready");
+});
+
+test("an entry change remounts, a title change relabels, a producer rewrite does nothing", async (t) => {
+  const { write, doc$, view$, calls, root } = mountModuleView(t);
+  await until(() => calls.mounts.length === 1, "the view never mounted");
+  view$.next({ status: "ready", view: write({}, { ...by, displayName: "Someone else" }) });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(calls.mounts.length, 1);
+  view$.next({ status: "ready", view: write({ title: "Renamed" }) });
+  await until(() => root.querySelector("h3").textContent === "Renamed", "title not updated");
+  assert.equal(calls.mounts[0].handle.frame.title, "Renamed");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(calls.mounts.length, 1);
+  assert.equal(calls.destroyed, 0);
+  assert.deepEqual(calls.data, []);
+  doc$.next(moveSources(dataSources, [setSource("entry", ids.entry2, "1")]));
+  await until(() => calls.mounts.length === 2, "an entry change did not remount");
+  assert.equal(calls.destroyed, 1);
+  assert.deepEqual(calls.data, []);
+});
+
+test("a data change that fails to load keeps the mounted view and its earlier data", async (t) => {
+  const { doc$, calls, root } = mountModuleView(t);
+  await until(() => calls.mounts.length === 1, "the view never mounted");
+  const missing = "f".repeat(64);
+  const broken = moveSources(
+    dataSources,
+    [setSource("label", missing, "1")],
+    new Map([[missing, "application/octet-stream"]]),
+  );
+  doc$.next(broken);
+  await until(() => root.dataset.inputError === "data/label", "the failure was not shown");
+  assert.match(root.querySelector("p").textContent, /earlier data/);
+  assert.equal(root.dataset.outputState, "ready");
+  assert.equal(calls.destroyed, 0);
+  assert.deepEqual(calls.data, []);
+  doc$.next(moveSources(broken, [setSource("label", ids.label2, "2")]));
+  await until(() => calls.data.length === 1, "the next change did not load");
+  assert.equal(root.dataset.inputError, undefined);
+  assert.equal(root.querySelector("p").textContent, "");
+});
+
+test("a view with no listener for a data change is mounted again with the new data", async (t) => {
+  const { doc$, calls, root } = mountModuleView(t, { listening: false });
+  await until(() => calls.mounts.length === 1, "the view never mounted");
+  doc$.next(moveSources(dataSources, [setSource("label", ids.label2, "1")]));
+  await until(() => calls.mounts.length === 2, "the unhandled change did not remount");
+  assert.equal(calls.destroyed, 1, "the old frame is gone");
+  const { byteSources } = calls.mounts[1].options;
+  assert.equal(new TextDecoder().decode(byteSources["data/label"]), "second label");
+  // The new mount starts from the newest plan: nothing is redelivered.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(calls.mounts.length, 2);
+  assert.equal(calls.data.length, 1);
+  assert.equal(root.dataset.outputState, "ready");
+});
+
+test("the input total counts only what the frame accepted", async (t) => {
+  const { doc$, calls, root } = mountModuleView(t, {
+    fields: {
+      data: {
+        label: { source_id: "label" },
+        table: { source_id: "table" },
+        note: { source_id: "note" },
+      },
+    },
+    // The entry, the first label (11) and the larger note (10), with 2 to spare.
+    maxTotalBytes: entry.byteLength + 11 + 10 + 2,
+    rejectData: "data/label",
+  });
+  await until(() => calls.mounts.length === 1, "the view never mounted");
+  doc$.next(moveSources(dataSources, [setSource("label", ids.labelBig, "1")]));
+  await until(() => root.dataset.inputError === "data/label", "the refusal was not shown");
+  assert.match(root.querySelector("p").textContent, /refused/);
+  // The frame still holds the 11-byte label, so the 10-byte note fits.
+  doc$.next(
+    moveSources(dataSources, [
+      setSource("label", ids.labelBig, "1"),
+      setSource("note", ids.note2, "1"),
+    ]),
+  );
+  await until(() => calls.data.some(([name]) => name === "data/note"), "the note was refused");
+  assert.equal(new TextDecoder().decode(calls.data.at(-1)[1]), "n".repeat(10));
+});
+
+test("an input failure shows only on a ready frame and never touches a failed one", async (t) => {
+  const { doc$, calls, root } = mountModuleView(t, { ready: false });
+  await until(() => calls.mounts.length === 1, "the view never mounted");
+  const { onState } = calls.mounts[0].options;
+  onState("handshaking");
+  const missing = "f".repeat(64);
+  const broken = moveSources(
+    dataSources,
+    [setSource("label", missing, "1")],
+    new Map([[missing, "application/octet-stream"]]),
+  );
+  doc$.next(broken);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(root.dataset.inputError, undefined, "not while the frame is starting");
+  assert.doesNotMatch(root.querySelector("p").textContent, /earlier data/);
+  onState("ready");
+  assert.equal(root.dataset.inputError, "data/label");
+  assert.match(root.querySelector("p").textContent, /earlier data/);
+  onState("failed", "The output failed.");
+  const button = root.querySelector("button");
+  assert.equal(button.hidden, false);
+  assert.equal(root.dataset.inputError, undefined);
+  doc$.next(moveSources(broken, [setSource("label", ids.label2, "2")]));
+  await until(() => calls.data.length === 1, "the next change did not load");
+  assert.equal(button.hidden, false, "Retry stays on a failed frame");
+  assert.equal(button.disabled, false);
+  assert.equal(root.querySelector("p").textContent, "The output failed.");
+});
+
+test("a title change while inputs load reaches the new frame's title", async (t) => {
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  const { write, view$, calls, root } = mountModuleView(t, { gate });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(calls.mounts.length, 0);
+  view$.next({ status: "ready", view: write({ title: "Renamed while loading" }) });
+  await until(
+    () => root.querySelector("h3").textContent === "Renamed while loading",
+    "label not updated",
+  );
+  release();
+  await until(() => calls.mounts.length === 1, "the view never mounted");
+  assert.equal(calls.mounts[0].handle.frame.title, "Renamed while loading");
 });

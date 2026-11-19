@@ -1,5 +1,6 @@
-import { firstValueFrom, from, fromEvent, takeUntil, timeout } from "rxjs";
+import { firstValueFrom, from, fromEvent, identity, takeUntil, timeout } from "rxjs";
 import { widgetDefinitions, widgetState, ROOT_MODEL_ID } from "./schema.mjs";
+import { bufferNames, dataDecision } from "./data.mjs";
 
 export function localModel(initial) {
   const values = new Map(Object.entries(initial));
@@ -21,6 +22,9 @@ export function localModel(initial) {
         else listeners.get(key)?.delete(fn);
       }
     },
+    // Whether a change:<key> listener is registered now. Listeners are only
+    // ever registered per key; there is no bare "change" event.
+    listening: (key) => (listeners.get(`change:${key}`)?.size ?? 0) > 0,
     save_changes() {}, // Viewer-local state; no persistent or remote destination.
     send() {
       throw Error("This anywidget host has no backend for custom messages.");
@@ -126,8 +130,21 @@ async function importModule(code) {
   }
 }
 
-// A registry belongs to one immutable iframe mount. Every model has one factory
-// and initialize lifetime, but may render multiple independently disposed views.
+// Replace the value at `path` inside `container`, copying each container on
+// the way so the top-level value is new and change listeners fire.
+function replaceAt(container, path, leaf) {
+  if (!path.length) return leaf;
+  const [key, ...rest] = path;
+  const copy = Array.isArray(container) ? [...container] : { ...container };
+  copy[key] = replaceAt(container?.[key], rest, leaf);
+  return copy;
+}
+
+// A registry belongs to one iframe mount and its code. Every model has one
+// factory and initialize lifetime, but may render multiple independently
+// disposed views. A module view (`payload.kind === "module"`) has one root
+// model whose initial values are `payload.state`; its entry's named `render`
+// is used when it has one, and its default AFM export otherwise.
 export function createWidgetSession(
   payload,
   {
@@ -140,14 +157,17 @@ export function createWidgetSession(
     diagnostic = (error) => console.error("Anywidget lifecycle failed", error),
   },
 ) {
+  const module = payload.kind === "module";
+  const definitions = module ? [[ROOT_MODEL_ID, {}]] : widgetDefinitions(payload.spec);
   const registry = new Map(
-    widgetDefinitions(payload.spec).map(([id, definition]) => {
+    definitions.map(([id, definition]) => {
       const lifetime = childLifetime([signal]);
       const record = {
         id,
         state: "idle",
         lifetime,
-        model: localModel(widgetState(definition, payload.assets)),
+        definition,
+        model: localModel(module ? { ...payload.state } : widgetState(definition, payload.assets)),
         task: undefined,
         widget: undefined,
         exports: undefined,
@@ -179,16 +199,26 @@ export function createWidgetSession(
     record.task = firstValueFrom(
       from(
         (async () => {
-          const module = await loadModule(record.model.get("_esm"));
+          const exported = await loadModule(
+            module ? payload.assets.entry.bytes : record.model.get("_esm"),
+          );
           record.lifetime.signal.throwIfAborted();
           const widget =
-            typeof module.default === "function" ? await module.default() : module.default;
+            module && typeof exported.render === "function"
+              ? { render: exported.render }
+              : typeof exported.default === "function"
+                ? await exported.default()
+                : exported.default;
           record.lifetime.signal.throwIfAborted();
           if (
             !widget ||
             (typeof widget.initialize !== "function" && typeof widget.render !== "function")
           )
-            throw Error("The AFM default export needs initialize or render.");
+            throw Error(
+              module
+                ? "Export render({model, el, signal}) or a default AFM object."
+                : "The AFM default export needs initialize or render.",
+            );
           record.widget = widget;
           record.state = widgetTransition(record.state, "loaded");
           const css = record.model.get("_css");
@@ -210,13 +240,17 @@ export function createWidgetSession(
           return record;
         })(),
       ).pipe(
-        timeout({
-          first: timeoutMs,
-          scheduler,
-          with: () => {
-            throw Error(`Anywidget ${record.id} initialization timed out.`);
-          },
-        }),
+        // A module view's entry may await a slow top-level import; only the
+        // host's startup limit bounds it. Anywidget models have their own.
+        module
+          ? identity
+          : timeout({
+              first: timeoutMs,
+              scheduler,
+              with: () => {
+                throw Error(`Anywidget ${record.id} initialization timed out.`);
+              },
+            }),
         takeUntil(fromEvent(record.lifetime.signal, "abort")),
       ),
     ).catch((error) => {
@@ -316,8 +350,49 @@ export function createWidgetSession(
       throw reason;
     }
   };
+  const root = registry.get(ROOT_MODEL_ID);
+  const dataKeys = new Set(module ? Object.keys(payload.state ?? {}) : []);
+  const buffers = new Set(module ? [] : bufferNames(payload.spec));
+  // [record, key, rest of path] for each model path a buffer is bound to.
+  const bufferPaths = (name) =>
+    [...registry.values()].flatMap((record) => {
+      const { buffers: bindings = [], buffer_paths: paths = [] } = record.definition;
+      return bindings.flatMap((binding, index) =>
+        binding === name ? [[record, paths[index][0], paths[index].slice(1)]] : [],
+      );
+    });
   return {
-    initialize: () => initialize(registry.get(ROOT_MODEL_ID)),
-    render: (el) => render(registry.get(ROOT_MODEL_ID), { el, signal }),
+    initialize: () => initialize(root),
+    render: (el) => render(root, { el, signal }),
+    // Whether a change to data `name` can update this session in place (see
+    // dataDecision): a module view's data key, or an anywidget buffer name.
+    dataDecision(name) {
+      if (module) return dataDecision(dataKeys.has(name) ? [root.model.listening(name)] : []);
+      if (!buffers.has(name)) return dataDecision([]);
+      return dataDecision(bufferPaths(name).map(([record, key]) => record.model.listening(key)));
+    },
+    // A module view's data key takes a new value and `change:<key>` fires.
+    // Returns false for a key the mount did not declare.
+    setValue(key, value) {
+      if (!dataKeys.has(key)) return false;
+      root.model.set(key, value);
+      return true;
+    },
+    // Each model path bound to buffer `name` takes a DataView of `bytes`.
+    // The top-level key holding a path gets a new value, so `change:<key>`
+    // fires once per key. Returns false for a name that is not a buffer.
+    setBuffer(name, bytes) {
+      if (!buffers.has(name)) return false;
+      const values = new Map();
+      for (const [record, key, rest] of bufferPaths(name)) {
+        if (!values.has(record)) values.set(record, new Map());
+        const keys = values.get(record);
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        keys.set(key, replaceAt(keys.get(key) ?? record.model.get(key), rest, view));
+      }
+      for (const [record, keys] of values)
+        for (const [key, value] of keys) record.model.set(key, value);
+      return true;
+    },
   };
 }

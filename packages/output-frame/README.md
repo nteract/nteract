@@ -21,7 +21,8 @@ const output = mountAnywidgetOutput(element, {
   frameUrl: 'https://pages.kilousercontent.com/frame/v2/',
   hostContext: { theme: 'light' },
 });
-// Changes to code or inputs create a new mount.
+// A new recording reaches the mounted model; changed code needs a new mount.
+output.setData('recording', newWavBytes);
 output.destroy();
 ```
 
@@ -55,7 +56,8 @@ cannot clear a sibling's listeners. Values remain shared across views.
 `save_changes()` is a no-op: it never writes to the embedding product or a kernel.
 `send()` throws a descriptive no-backend error. `msg:custom` listeners may be
 registered, but there is no remote peer to supply messages. Removing/reloading
-an output or changing its inputs resets it to the supplied initial state.
+an output or changing its code resets it to the supplied initial state. A data
+change that the view listens for does not (see [Data changes](#data-changes)).
 
 `buffers` and `buffer_paths` use Jupyter's parallel buffer/path convention:
 buffers name assets, while paths identify object keys and numeric array indices
@@ -110,7 +112,76 @@ the host DOM and storage; it does not make untrusted code confidential or a
 browser-wide denial-of-service sandbox. Keep credentials off the output domain
 and enforce CSRF protections on authenticated host endpoints. The embedding product decides when a mount runs and authorizes every input.
 Pages renders automatically within its viewport lifecycle and remounts when the
-module or bound inputs change; failures expose a Retry button.
+view's code changes. A changed data input reaches the mounted view through
+`setData`, and Pages remounts a view that does not listen for it; failures
+expose a Retry button.
+
+## Module views
+
+`mountModuleOutput(container, {kind: 'module', assets: {entry}, imports?}, {byteSources})`
+mounts one entry module. Its named `render({model, el, signal, host})` export is
+used when it has one; otherwise its default export is an AFM object or factory,
+run as an anywidget view's, except that the frame sets no initialization
+timeout: an entry may await a slow top-level import, and the host's startup
+limit bounds it. Both get a local model built by the same
+session code as an anywidget view: `model.get/set/on/off`, a no-op
+`save_changes()` and a `send()` that throws.
+
+`byteSources` maps up to 16 `data/<alias>` names to inputs. Each alias is a key
+on the model:
+
+- A `Uint8Array` is a whole file of at most 5 MiB. The model holds a DataView of it.
+  Pages also counts it toward the view's 32 MiB input total.
+- A `ByteSource` (`{byteLength, read(offset, length, signal)}`) is a ranged file
+  behind its own port and the view's read budget. The model holds the handle.
+
+`import f from "data/<alias>"` gives a `{byteLength, read}` handle on the input
+the view mounted with, in both cases. It is bound once: after a data change its
+reads reject as aborted, and `model.get(alias)` is the current input. A view
+that computed offsets from the old file therefore fails loudly instead of
+reading the new one at stale offsets.
+
+## Data changes
+
+`handle.setData(name, value)` offers a mounted view a new data input. The
+name must be one the mount declared: a `data/<alias>` of a module view, or a
+buffer name of an anywidget view that is not also a module or stylesheet name.
+Anything else throws. A module view takes a `Uint8Array` or a `ByteSource`; an
+anywidget buffer takes a `Uint8Array`.
+
+The parent sends one message per change on the mount's port:
+`{type: 'data', name, input}`, where `input` is `{bytes}` (a dedicated copy,
+transferred) or `{byteLength, port}` (a new port). It carries names, bytes and
+ports only. The frame checks the name against those its mount declared and
+ignores any other.
+
+- The host sends data only once the frame has rendered. Changes before that wait,
+  the latest per name, and go in order at `ready`. A failed or disposed mount
+  drops them (`dataTransition` in `src/lifecycle.mjs`).
+- Replacing a ranged file closes its old port: reads waiting in the read budget
+  are dropped and reads in flight abort. The new port shares the same budget.
+- In the frame, a module view's model key takes the new value and
+  `change:<alias>` fires. For an anywidget buffer, each model key that holds a
+  path bound to that buffer gets a copy with a new DataView at the path, and
+  `change:<key>` fires once per key. Other local values under that key are kept.
+- The frame applies a change only when the view listens for it. Listen with
+  `model.on("change:<alias>", …)` to update in place and keep the reader's
+  state. If no key the change affects has a `change:<key>` listener on its
+  model at that moment, the frame does not apply it and answers
+  `{type: 'unhandled-data', name}`. When one affected key listens and another
+  does not, every affected key takes the new value (`dataDecision` and
+  `receiveDataChange` in `src/data.mjs`).
+- The host passes an unhandled answer to the `onUnhandledData(name)` option
+  only in `ready`, only for a declared name, and only once for each data
+  message it sent for that name (`answerTransition` in `src/lifecycle.mjs`).
+  An unsolicited or repeated answer is ignored, so a view can ask for at most
+  one new mount per data change. The frame never acknowledges an applied change.
+- After `onUnhandledData`, the embedder must mount the view again. The host
+  ended the name's previous ranged input when it sent the new one, so the
+  view's reads through the old input no longer answer. Pages mounts the view
+  again from its newest inputs: a view that does not listen is remounted when
+  its data changes.
+- `model.set` on a data key by view code stays local, like any other key.
 
 ## Read budget
 

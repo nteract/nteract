@@ -14,6 +14,7 @@
     "./styles.css": "./src/styles.css",
     "./schema": "./src/schema.mjs",
     "./byte-source": "./src/byte-source.mjs",
+    "./data": "./src/data.mjs",
     "./read-budget": "./src/read-budget.mjs"
   },
   "dependencies": {
