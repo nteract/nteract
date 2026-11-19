@@ -1,14 +1,23 @@
-// A view embed's decoder for a Parquet source: Sift's WASM turns the Parquet
-// bytes into one Arrow IPC stream, in this page. The chart sends a copy of
+// A view embed's decoder for a Parquet or CSV source: Sift's WASM turns the
+// Parquet bytes into one Arrow IPC stream, in this page, and a CSV source
+// arrives as Arrow IPC already. The chart sends a copy of
 // those bytes to its Worker, which reads them through chart-arrow.mjs
 // `chartTable`, so each value converts to what a chart reads there. The bytes
 // may back several views on a Page; a chart never transfers or changes them.
 // Nothing stays in Sift's WASM store, so the bytes have nothing to dispose.
 import { parquetToArrowStream } from "@nteract/sift";
 
-/** Decode Parquet `bytes` within `limits` (sift-dataset.mjs DATAFRAME_LIMITS)
- * into Arrow IPC bytes, the dataset a chart reads. */
+/** Whether `bytes` start with Parquet's magic, as Sift's loadTableFile tells
+ * Parquet from Arrow IPC. */
+export const isParquet = (bytes) =>
+  bytes[0] === 0x50 && bytes[1] === 0x41 && bytes[2] === 0x52 && bytes[3] === 0x31;
+
+/** A source's normalized bytes (normalized-bytes.mjs) as Arrow IPC, the
+ * dataset a chart reads: Parquet decoded within `limits` (sift-dataset.mjs
+ * DATAFRAME_LIMITS), and Arrow IPC, a CSV the source store converted within
+ * the same limits, as it is. */
 export async function decodeArrow(bytes, { maxBytes, maxRows, maxColumns, maxDecodedBytes } = {}) {
+  if (!isParquet(bytes)) return bytes;
   return parquetToArrowStream(bytes, { maxBytes, maxRows, maxColumns, maxDecodedBytes });
 }
 

@@ -4,6 +4,7 @@ import {
   ESM_MEDIA_TYPE,
   CSS_MEDIA_TYPE,
   JSON_MEDIA_TYPE,
+  CSV_MEDIA_TYPE,
   OUTPUT_ASSET_TYPES,
 } from "../shared/anywidget-view.mjs";
 import { inspectOutputAsset } from "../shared/output-assets.mjs";
@@ -308,13 +309,12 @@ function checkExpected(expect, { mime_type, size }) {
 export async function persistPageAsset(bucket, { pageId, bytes, contentTypes = [], expect }) {
   if (!validPageId(pageId)) throw new HttpError(400, "Invalid image reference");
   if (bytes.byteLength > ASSET_MAX_BYTES) throw new HttpError(413, FILE_TOO_LARGE);
-  const declaredJson = contentTypes.some(
-    (type) => type?.split(";")[0].trim().toLowerCase() === JSON_MEDIA_TYPE,
-  );
-  const inspected = inspectAsset(
-    bytes,
-    expect?.content_type ?? (declaredJson ? JSON_MEDIA_TYPE : undefined),
-  );
+  // JSON and CSV have no magic bytes: a declared type says to check them as
+  // that type.
+  const declaredText = contentTypes
+    .map((type) => type?.split(";")[0].trim().toLowerCase())
+    .find((type) => type === JSON_MEDIA_TYPE || type === CSV_MEDIA_TYPE);
+  const inspected = inspectAsset(bytes, expect?.content_type ?? declaredText);
   const dataset = !IMAGE_MEDIA_TYPES.includes(inspected.mime_type);
   if (bytes.byteLength > (dataset ? DATASET_MAX_BYTES : IMAGE_MAX_BYTES))
     throw new HttpError(413, dataset ? "Datasets must be 5 MiB or smaller" : IMAGE_TOO_LARGE);

@@ -8,6 +8,7 @@ import { richContentInstructions } from "./model/rich-content-guide.mjs";
 import { MAX_SOURCE_NAME, SOURCE_ID_PATTERN, SOURCE_REVISION_PATTERN } from "./shared/sources.mjs";
 import { MAX_PAGE_TITLE } from "./shared/page-title.mjs";
 import { VIEW_FORMATS } from "./shared/views.mjs";
+import { DATAFRAME_MEDIA_TYPES } from "./shared/dataset-assets.mjs";
 import {
   RENAMED_TOOLS,
   refusalCode,
@@ -349,7 +350,7 @@ const editOperation = {
     data: {
       type: "object",
       description:
-        "Module file alias (model.get(alias) is a file: await .parquet(), .json() or .text()) or Vega-Lite dataset name → {source_id, revision?}.",
+        "Module file alias (model.get(alias) is a file: await .parquet(), .csv() for rows, .json() or .text()) or Vega-Lite dataset name (a Parquet or CSV source) → {source_id, revision?}.",
     },
     view_revision: {
       type: ["string", "null"],
@@ -379,7 +380,8 @@ const editOperation = {
           properties: {
             asset_id: {
               ...assetId,
-              description: "Parquet asset uploaded to this Page; mutually exclusive with binding.",
+              description:
+                "Parquet or CSV asset uploaded to this Page; mutually exclusive with binding.",
             },
             binding: sourceBinding,
             title: {
@@ -388,8 +390,8 @@ const editOperation = {
               description: "Caption above the table.",
             },
             media_type: {
-              ...choice("application/vnd.apache.parquet"),
-              description: "Defaults to Parquet.",
+              ...choice(...DATAFRAME_MEDIA_TYPES),
+              description: "Defaults to Parquet; text/csv for a CSV asset or source.",
             },
             view_id: { type: "string" },
           },
@@ -434,7 +436,7 @@ const editOperation = {
         binding: sourceBinding,
         asset_id: assetId,
         title: { type: ["string", "null"], maxLength: 200 },
-        media_type: { type: "string", enum: ["application/vnd.apache.parquet"] },
+        media_type: { type: "string", enum: [...DATAFRAME_MEDIA_TYPES] },
         ...Object.fromEntries(
           Object.entries(SETTABLE_ATTRS).map(([name, attr]) => [
             name,
@@ -769,7 +771,7 @@ export const tools = [
   {
     ...tool(
       ASSET_UPLOAD_OPERATION,
-      "Add a local JSON, Parquet, image, WAV, JavaScript, CSS or binary file to a Page (API key or OAuth). Recipes: /llms/assets-and-sources.txt. Returns upload_url, headers (a Pages-Upload capability; never send your own key there), expires_at (at most 10 minutes) and a curl example: POST raw bytes, not multipart or base64. Access is checked again at upload. With file, Pages fetches the file instead. The same bytes return the same asset_id. Images and Parquet return an insert operation (add alt to an image). JSON and other view inputs return insert: null. Use set_source to name the asset, then bind it in set_view. If uploads cannot leave your environment, use Insert image in the browser.",
+      "Add a local JSON, Parquet, CSV, image, WAV, JavaScript, CSS or binary file to a Page (API key or OAuth). Recipes: /llms/assets-and-sources.txt. Returns upload_url, headers (a Pages-Upload capability; never send your own key there), expires_at (at most 10 minutes) and a curl example: POST raw bytes, not multipart or base64. Access is checked again at upload. With file, Pages fetches the file instead. The same bytes return the same asset_id. Images and Parquet return an insert operation (add alt to an image). JSON and other view inputs return insert: null. Use set_source to name the asset, then bind it in set_view. If uploads cannot leave your environment, use Insert image in the browser.",
       {
         page_id: page,
         content_type: {

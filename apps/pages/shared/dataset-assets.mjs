@@ -2,18 +2,23 @@
 // store and the same /api/pages/:pageId/assets route. A Page shows one
 // through a `dataframe` node, a block with no text whose attrs name an asset
 // or a source binding and its media type. The viewer picks a renderer by media type; Parquet
-// renders as a Sift table.
+// and CSV render as a Sift table.
 import { bindingOf } from "./sources.mjs";
 import { imageAssetUrl, validAssetId } from "./image-assets.mjs";
+import { CSV_MEDIA_TYPE } from "./anywidget-view.mjs";
 
 export const PARQUET_MEDIA_TYPE = "application/vnd.apache.parquet";
+/** A comma-separated UTF-8 text file whose first row names the columns. A
+ * dataframe node, a chart and a module view read it as a table. It is also an
+ * upload type, defined beside the others in anywidget-view.mjs. */
+export { CSV_MEDIA_TYPE };
 export const DATASET_MAX_BYTES = 5 * 1024 * 1024;
 export const DATASET_ACCEPT = `.parquet,${PARQUET_MEDIA_TYPE}`;
 
 /** The block type of a dataframe node, in spans and features.json. */
 export const DATAFRAME_BLOCK = "dataframe";
 /** Media types a dataframe node can show. Each needs a viewer renderer. */
-export const DATAFRAME_MEDIA_TYPES = Object.freeze([PARQUET_MEDIA_TYPE]);
+export const DATAFRAME_MEDIA_TYPES = Object.freeze([PARQUET_MEDIA_TYPE, CSV_MEDIA_TYPE]);
 export const DATAFRAME_TITLE_MAX = 200;
 
 const PAGE_ID = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";

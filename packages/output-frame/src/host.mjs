@@ -25,8 +25,10 @@ export const MAX_WHOLE_FILE_TOTAL = 32 * 1024 * 1024;
 
 // A module view's data input is a file the embedder serves on request:
 // {mimeType, byteLength, read(offset, length, signal), bytes(signal),
-// columns?(signal)}. `columns` is present only for a file the embedder can
-// decode to a ColumnSet. An anywidget buffer is a whole file (Uint8Array).
+// columns?(format, signal)}. `columns` reads the file as a ColumnSet in a
+// table format (byte-source.mjs TABLE_FORMATS) and rejects for a format the
+// file is not in; it is absent when the embedder can decode the file in no
+// format. An anywidget buffer is a whole file (Uint8Array).
 function checkDataInput(value, module) {
   if (module) {
     if (
@@ -40,7 +42,7 @@ function checkDataInput(value, module) {
     )
       return;
     throw Error(
-      "A data input is {mimeType, byteLength, read(offset, length, signal), bytes(signal), columns?(signal)}.",
+      "A data input is {mimeType, byteLength, read(offset, length, signal), bytes(signal), columns?(format, signal)}.",
     );
   }
   if (!(value instanceof Uint8Array)) throw Error("A buffer is a Uint8Array.");

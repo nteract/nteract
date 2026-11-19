@@ -149,6 +149,27 @@ test("checkView refuses unknown sources, unheld pinned revisions and stale revis
   );
 });
 
+test("a Vega-Lite view may bind a CSV source", () => {
+  const csvId = "c".repeat(64);
+  const sourcesDoc = A.change(sourcesGenesis("33333333-3333-4333-8333-333333333333"), (draft) =>
+    setSources(
+      draft,
+      [
+        {
+          op: "set_source",
+          source_id: "usage",
+          name: "Usage",
+          asset_id: csvId,
+          source_revision: null,
+        },
+      ],
+      { mediaTypes: new Map([[csvId, "text/csv"]]), by },
+    ),
+  );
+  const doc = A.change(viewGenesis(uuid), (draft) => setView(draft, op(), { sourcesDoc, by }));
+  assert.deepEqual(readView(doc, "daily").data, { usage: { source_id: "usage" } });
+});
+
 test("a pinned revision the source's history dropped can't be bound", () => {
   // The history keeps the newest 50 states.
   const sourcesDoc = sources(52);

@@ -6,8 +6,17 @@ import {
   previewTransition,
   previewOf,
   sourcePreviewStore,
+  CSV_PREVIEW_COLUMNS,
+  CSV_PREVIEW_ROWS,
+  SOURCE_PREVIEW_TYPES,
   TEXT_PREVIEW_LIMIT,
 } from "./source-preview-store.mjs";
+import { sourceMediaLabel } from "./sources-panel-store.mjs";
+
+test("a CSV source is labelled CSV and previewed", () => {
+  assert.equal(sourceMediaLabel("text/csv"), "CSV");
+  assert.ok(SOURCE_PREVIEW_TYPES.includes("text/csv"));
+});
 const version = { asset_id: "a", revision: "1", media_type: "text/javascript" };
 const asset = (text) => ({ bytes: new TextEncoder().encode(text), mediaType: "text/javascript" });
 
@@ -64,6 +73,42 @@ test("JSON previews describe nested data while preserving the original numeric a
   assert.equal(many.fields.length, 8);
   assert.equal(many.more, 12);
   assert.ok(read(JSON.stringify("x".repeat(TEXT_PREVIEW_LIMIT))).truncated);
+});
+
+test("CSV previews show the header and first rows as text, bounded, with what is left out", () => {
+  const read = (text) => previewOf({ ...asset(text), mediaType: "text/csv" });
+  const small = read('﻿zip,"city, state"\r\n02134,"Boston, MA"\n,"two\nlines"\n');
+  assert.equal(small.kind, "csv");
+  assert.deepEqual(small.header, ["zip", "city, state"]);
+  // Values are the file's text: a leading zero and an empty field stay.
+  assert.deepEqual(small.rows, [
+    ["02134", "Boston, MA"],
+    ["", "two\nlines"],
+  ]);
+  assert.equal(small.moreRows, 0);
+  assert.equal(small.moreColumns, 0);
+  assert.equal(read("a,b\n").rows.length, 0, "a header-only file");
+  assert.equal(read("a\n\n1\n").rows.length, 1, "a blank line is no row");
+  const wide = Array.from({ length: 15 }, (_, i) => `c${i}`).join(",");
+  const many = read(
+    [wide, ...Array.from({ length: 30 }, (_, r) => Array(15).fill(r).join(","))].join("\n"),
+  );
+  assert.equal(many.header.length, CSV_PREVIEW_COLUMNS);
+  assert.equal(many.rows.length, CSV_PREVIEW_ROWS);
+  assert.ok(many.rows.every((row) => row.length === CSV_PREVIEW_COLUMNS));
+  assert.equal(many.moreRows, 10);
+  assert.equal(many.moreColumns, 3);
+  // A file that doesn't parse says why in a sentence, never as raw bytes.
+  for (const [text, reason] of [
+    ["a,b\n1\n", /row 1 has 1 fields; the header has 2/],
+    ['a\n"open\n', /quoted field .* never closes/],
+    ["", /no header row/],
+  ])
+    assert.throws(() => read(text), { message: reason });
+  assert.throws(
+    () => previewOf({ bytes: Uint8Array.of(0x61, 0x0a, 0xff), mediaType: "text/csv" }),
+    { message: "This CSV can't be previewed: it isn't UTF-8 text." },
+  );
 });
 
 test("source refresh and unmount cancel reads and discard stale results", async () => {

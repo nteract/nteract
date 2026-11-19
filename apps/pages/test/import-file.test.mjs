@@ -357,6 +357,23 @@ test("a client-attached JSON file retains its declared type and original bytes",
   assert.deepEqual(stored.bytes, bytes);
 });
 
+test("a client-attached CSV file retains its declared type and original bytes", async (t) => {
+  const bytes = new TextEncoder().encode("zip,city\n02134,Boston\n");
+  const f = setup(t, {
+    fetchImage: () =>
+      new Response(bytes, { headers: { "content-type": "application/octet-stream" } }),
+  });
+  const response = await f.run({
+    file: descriptor({ mime_type: "text/csv", file_name: "cities.csv" }),
+  });
+  assert.equal(response.status, 201);
+  const asset = await response.json();
+  assert.equal(asset.mime_type, "text/csv");
+  assert.equal(asset.insert, null);
+  const [stored] = f.env.PAGES_ASSETS.objects.values();
+  assert.deepEqual(stored.bytes, bytes);
+});
+
 test("a Parquet file imports as a dataset whose insert is a dataframe", async (t) => {
   // The smallest container the upload's check admits: PAR1, a footer, its
   // little-endian length, PAR1.

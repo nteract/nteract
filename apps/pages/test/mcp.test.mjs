@@ -1017,6 +1017,7 @@ test("MCP lists create_page_asset_upload for any client with write scope, and po
     "text/javascript",
     "text/css",
     "application/json",
+    "text/csv",
     "application/octet-stream",
     "audio/wav",
   ]);
@@ -1042,6 +1043,13 @@ test("MCP lists create_page_asset_upload for any client with write scope, and po
   const insertImage = all.find((tool) => tool.name === "edit_page").inputSchema.properties
     .operations.items;
   assert.match(insertImage.properties.asset_id.description, /create_page_asset_upload/);
+  // A dataframe node shows Parquet or CSV, in insert_node and set_node.
+  const tableTypes = ["application/vnd.apache.parquet", "text/csv"];
+  assert.deepEqual(
+    insertImage.properties.node.properties.attrs.properties.media_type.enum,
+    tableTypes,
+  );
+  assert.deepEqual(insertImage.properties.attrs.properties.media_type.enum, tableTypes);
   const initialization = await handleMcp(
     request("initialize", {
       protocolVersion: "2025-06-18",

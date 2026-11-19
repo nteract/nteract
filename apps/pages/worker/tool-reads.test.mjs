@@ -331,6 +331,47 @@ test("a sources read over its budget names source reads, not the outline", async
   }
 });
 
+test("a CSV source reads back with its media type and no column summary", async (t) => {
+  const { doc, revisions } = fixture(t);
+  const assetId = "c".repeat(64);
+  const by = authorOf({ principal: "user:one", displayName: "One", driver: "Test" });
+  const sourcesDoc = A.change(
+    A.clone(sourcesGenesis("5e0c1a4e-7d2b-4c1e-9f3a-0b1c2d3e4f51")),
+    (d) =>
+      setSources(
+        d,
+        [
+          {
+            op: "set_source",
+            source_id: "cities",
+            name: "Cities",
+            asset_id: assetId,
+            source_revision: null,
+          },
+        ],
+        { mediaTypes: new Map([[assetId, "text/csv"]]), by },
+      ),
+  );
+  t.after(() => A.free(sourcesDoc));
+  const summarized = [];
+  const { status, body } = await readTool(
+    doc,
+    "read_page",
+    { page_id: doc.page_id, source_id: "cities", sources: true },
+    {
+      revisions,
+      sourcesDoc,
+      datasetSummary: async (id) => (summarized.push(id), { columns: [] }),
+    },
+  );
+  assert.equal(status, 200, JSON.stringify(body));
+  assert.equal(body.source.media_type, "text/csv");
+  assert.equal(body.source.asset_id, assetId);
+  assert.equal(body.source.summary, null);
+  assert.deepEqual(summarized, [], "only a Parquet source is summarized");
+  assert.equal(body.sources[0].media_type, "text/csv");
+});
+
 test("a malformed widget keeps Page reads and its repair revision available", async (t) => {
   const { doc, comments, revisions } = fixture(t);
   const placed = A.change(doc, (draft) =>

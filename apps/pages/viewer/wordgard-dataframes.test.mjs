@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { JSDOM } from "jsdom";
-import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
+import { DATAFRAME_MEDIA_TYPES, PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 
 const {
   DATAFRAME_RENDERERS,
@@ -29,7 +29,9 @@ function withDocument(run) {
 }
 
 test("each dataframe media type has a lazily loaded renderer", () => {
-  assert.deepEqual(Object.keys(DATAFRAME_RENDERERS), [PARQUET_MEDIA_TYPE]);
+  // Every type a dataframe node stores, and nothing else.
+  assert.deepEqual(Object.keys(DATAFRAME_RENDERERS), [...DATAFRAME_MEDIA_TYPES]);
+  assert.deepEqual(Object.keys(DATAFRAME_RENDERERS), [PARQUET_MEDIA_TYPE, "text/csv"]);
   for (const load of Object.values(DATAFRAME_RENDERERS)) assert.equal(typeof load, "function");
 });
 
@@ -77,10 +79,14 @@ test('an untitled dataframe is named and captioned "Table", muted', () =>
 
 test("a media type this build can't render says so instead of loading", () =>
   withDocument(() => {
-    const { status, canvas, load } = dataframeFrame({ src, media_type: "text/csv", title: null });
+    const { status, canvas, load } = dataframeFrame({
+      src,
+      media_type: "application/json",
+      title: null,
+    });
     assert.equal(load, undefined);
     assert.equal(canvas.hidden, true);
-    assert.match(status.textContent, /can't show text\/csv/);
+    assert.match(status.textContent, /can't show application\/json/);
   }));
 
 const deferred = () => {

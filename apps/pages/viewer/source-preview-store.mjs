@@ -6,8 +6,14 @@ import { fetchOutputAsset } from "./output-assets.mjs";
 import { Store } from "./store.mjs";
 
 export const TEXT_PREVIEW_LIMIT = 16000;
+// A CSV preview shows the header and at most this many rows and columns.
+export const CSV_PREVIEW_ROWS = 20;
+export const CSV_PREVIEW_COLUMNS = 12;
+// A cell longer than this shows its start.
+const CSV_PREVIEW_CELL = 200;
 export const SOURCE_PREVIEW_TYPES = [
   "application/json",
+  "text/csv",
   "text/javascript",
   "text/css",
   "audio/wav",
@@ -51,6 +57,7 @@ export function previewOf({ bytes, mediaType }) {
       size: bytes.byteLength,
     };
   }
+  if (mediaType === "text/csv") return csvPreview(bytes);
   if (mediaType === "text/javascript" || mediaType === "text/css") {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     return {
@@ -66,6 +73,79 @@ export function previewOf({ bytes, mediaType }) {
     size: bytes.byteLength,
     hex: [...bytes.subarray(0, 64)].map((b) => b.toString(16).padStart(2, "0")).join(" "),
     truncated: bytes.byteLength > 64,
+  };
+}
+
+/** The header and first rows of a comma-separated UTF-8 file, as text: the
+ * values a reader sees in the file, not the types a view reads. The whole
+ * file is walked once, so a quote left open or a row with another number of
+ * fields than the header is a plain error rather than a partial table. */
+function csvPreview(bytes) {
+  const unreadable = (why) => Error(`This CSV can't be previewed: ${why}`);
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw unreadable("it isn't UTF-8 text.");
+  }
+  if (text.startsWith("﻿")) text = text.slice(1);
+  const records = [];
+  let count = 0;
+  let width = -1;
+  let fields = [];
+  let field = "";
+  let quoted = false;
+  let started = false;
+  let line = 1;
+  const endRecord = () => {
+    fields.push(field);
+    field = "";
+    if (width === -1) width = fields.length;
+    else if (fields.length !== width)
+      throw unreadable(`row ${count} has ${fields.length} fields; the header has ${width}.`);
+    if (records.length <= CSV_PREVIEW_ROWS)
+      records.push(
+        fields.slice(0, CSV_PREVIEW_COLUMNS).map((value) => value.slice(0, CSV_PREVIEW_CELL)),
+      );
+    count++;
+    fields = [];
+  };
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"' && text[i + 1] === '"') {
+        field += '"';
+        i++;
+      } else if (c === '"') quoted = false;
+      else {
+        if (c === "\n") line++;
+        field += c;
+      }
+    } else if (c === '"' && field === "") quoted = true;
+    else if (c === ",") {
+      fields.push(field);
+      field = "";
+    } else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+      line++;
+      // A blank line is no record, as the parser that views use reads it.
+      if (started) endRecord();
+      started = false;
+      continue;
+    } else field += c;
+    started = true;
+  }
+  if (quoted) throw unreadable(`a quoted field opened before line ${line} never closes.`);
+  if (started) endRecord();
+  if (!count) throw unreadable("it has no header row.");
+  const [header, ...rows] = records;
+  return {
+    kind: "csv",
+    header,
+    rows,
+    moreRows: Math.max(0, count - 1 - rows.length),
+    moreColumns: Math.max(0, width - CSV_PREVIEW_COLUMNS),
+    size: bytes.byteLength,
   };
 }
 

@@ -2143,6 +2143,38 @@ test("Arrow IPC bytes are a dataset; two views and a table over the same bytes a
     }),
   ));
 
+test("a mixed-type CSV source draws from the Arrow IPC the source store converts it to", () =>
+  withWindow((window) =>
+    countWorkers(async () => {
+      const { csvArrow } = await import("./csv-arrow.mjs");
+      const { decodeArrow } = await import("./view-arrow.mjs");
+      const { DATAFRAME_LIMITS } = await import("./sift-dataset.mjs");
+      // Text, integers, floats, booleans, dates, an empty field and a
+      // quoted comma: the CSV a person exports from a spreadsheet.
+      const csv = [
+        "tool,client,calls,share,ok,day",
+        ...calls.map(
+          ({ tool, client, calls: n }, i) =>
+            `${tool},"${client}, Inc.",${n},${(n / 550).toFixed(3)},${i % 2 === 0},2024-05-0${i + 1}`,
+        ),
+        "read_page,,,,,",
+      ].join("\n");
+      const ipc = await decodeArrow(
+        await csvArrow(new TextEncoder().encode(csv), DATAFRAME_LIMITS),
+        DATAFRAME_LIMITS,
+      );
+      assert.equal(tableFromIPC(ipc).numRows, calls.length + 1);
+      const { element } = container(window);
+      const chart = mount(element, { spec: stacked, datasets: { calls: ipc } });
+      assert.equal(await drawn(element), "rendered");
+      // One bar per (tool, client) pair; the row with no client or calls
+      // adds a sixth with no height.
+      assert.ok(bars(element).length >= 5);
+      assert.match(element.querySelector(".pages-chart-frame").textContent, /Claude, Inc\./);
+      chart.destroy();
+    }),
+  ));
+
 test("a dataset that only looks like an Arrow table is refused with one sentence", () =>
   withWindow(async (window) => {
     const table = tableFromJSON(calls);

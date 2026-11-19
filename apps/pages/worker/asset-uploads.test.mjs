@@ -1234,6 +1234,7 @@ for (const [mediaType, source] of [
   ["text/javascript", "export default { render({el}) { el.textContent = 'hello'; } }"],
   ["text/css", "button { color: red; }"],
   ["application/json", '{"items":[1,2],"label":"<b>literal</b>"}'],
+  ["text/csv", 'city,note\nOslo,"<b>literal</b>"\n'],
   ["application/octet-stream", "\u0000\u0001arbitrary binary"],
 ])
   test(`${mediaType} uploads remain private non-executable attachments`, async (t) => {
@@ -1264,8 +1265,10 @@ for (const [mediaType, source] of [
     assert.match(allowed.headers.get("content-disposition"), /^attachment;/);
     assert.equal(
       allowed.headers.get("content-type"),
-      mediaType === "application/json" ? mediaType : "application/octet-stream",
+      ["application/json", "text/csv"].includes(mediaType) ? mediaType : "application/octet-stream",
     );
+    if (mediaType === "text/csv")
+      assert.match(allowed.headers.get("content-disposition"), /\.csv"$/);
     assert.equal(allowed.headers.get("x-pages-media-type"), mediaType);
     assert.equal(await allowed.text(), new TextDecoder().decode(bytes));
   });

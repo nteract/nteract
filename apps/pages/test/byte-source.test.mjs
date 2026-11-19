@@ -306,6 +306,8 @@ test("ending the view drops waiting reads without replies or further reads", asy
 // A file input with every request kind, each held until the test finishes it.
 function heldFile({ byteLength = 64, columns = true } = {}) {
   const calls = [];
+  // The table format each columns call asked for.
+  const formats = [];
   const held = (kind, value) => (signal) =>
     new Promise((resolve, reject) => {
       calls.push({ kind, signal, finish: (result = value()) => resolve(result) });
@@ -318,13 +320,16 @@ function heldFile({ byteLength = 64, columns = true } = {}) {
       held("range", () => Uint8Array.from({ length }, (_, i) => offset + i))(signal),
     bytes: held("bytes", () => Uint8Array.from({ length: byteLength }, (_, i) => i % 256)),
     ...(columns && {
-      columns: held("columns", () => ({
-        numRows: 2,
-        columns: [{ name: "n", type: "number", values: new Float64Array([1, 2]) }],
-      })),
+      columns: (format, signal) => {
+        formats.push(format);
+        return held("columns", () => ({
+          numRows: 2,
+          columns: [{ name: "n", type: "number", values: new Float64Array([1, 2]) }],
+        }))(signal);
+      },
     }),
   };
-  return { file, calls };
+  return { file, calls, formats };
 }
 
 function rawRequest({ port }, message) {
@@ -339,25 +344,37 @@ function rawRequest({ port }, message) {
 
 test("a file port answers a whole-file read and a table read, and refuses what it cannot", async () => {
   const lifetime = new AbortController();
-  const { file, calls } = heldFile();
+  const { file, calls, formats } = heldFile();
   try {
     const exposed = exposeFile(file, lifetime.signal);
     assert.deepEqual(Object.keys(exposed).sort(), ["mimeType", "port", "size"]);
     assert.equal(exposed.size, 64);
     const frame = receiveFile(exposed, lifetime.signal);
     const whole = frame.request({ kind: "bytes" });
-    const table = frame.request({ kind: "columns" });
-    await until(() => calls.length === 2, "both requests start");
+    const table = frame.request({ kind: "columns", format: "parquet" });
+    const rows = frame.request({ kind: "columns", format: "csv" });
+    await until(() => calls.length === 3, "every request starts");
     for (const call of calls) call.finish();
     assert.equal((await whole).byteLength, 64);
     assert.deepEqual([...(await table).columns[0].values], [1, 2]);
-    // Malformed requests are refused before the budget.
-    for (const message of [null, "range", { kind: "stream" }, { kind: "range", offset: 1 }]) {
+    assert.deepEqual([...(await rows).columns[0].values], [1, 2]);
+    assert.deepEqual(formats, ["parquet", "csv"], "the embedder hears the format asked for");
+    // Malformed requests are refused before the budget, a table request
+    // without a known format among them.
+    for (const message of [
+      null,
+      "range",
+      { kind: "stream" },
+      { kind: "range", offset: 1 },
+      { kind: "columns" },
+      { kind: "columns", format: "tsv" },
+      { kind: "columns", format: "__proto__" },
+    ]) {
       const raw = rawRequest(exposed, message);
       await until(() => raw.replies.length === 1, "the refusal");
       assert.match(raw.replies[0].error, /Invalid file (request|read)\./);
     }
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 3);
   } finally {
     lifetime.abort();
   }
@@ -365,8 +382,11 @@ test("a file port answers a whole-file read and a table read, and refuses what i
   const other = new AbortController();
   try {
     const frame = receiveFile(exposeFile(plain.file, other.signal), other.signal);
-    await assert.rejects(frame.request({ kind: "columns" }), {
+    await assert.rejects(frame.request({ kind: "columns", format: "parquet" }), {
       message: "This file is not Parquet.",
+    });
+    await assert.rejects(frame.request({ kind: "columns", format: "csv" }), {
+      message: "This file is not CSV.",
     });
     assert.equal(plain.calls.length, 0);
   } finally {
@@ -387,7 +407,7 @@ test("a whole-file read past 5 MiB, a short whole file and a malformed ColumnSet
     const { file, calls } = heldFile();
     const frame = receiveFile(exposeFile(file, lifetime.signal), lifetime.signal);
     const short = frame.request({ kind: "bytes" });
-    const bad = frame.request({ kind: "columns" });
+    const bad = frame.request({ kind: "columns", format: "parquet" });
     await until(() => calls.length === 2, "both start");
     calls[0].finish(new Uint8Array(3));
     calls[1].finish({ numRows: 1, columns: [{ name: "n", type: "number", values: [1] }] });
@@ -418,7 +438,10 @@ test("the frame refuses replies of the wrong shape", async () => {
       message: "Invalid file reply.",
     });
     await assert.rejects(frame.request({ kind: "bytes" }), { message: "Invalid file reply." });
-    await assert.rejects(frame.request({ kind: "columns" }), /Invalid column set/);
+    await assert.rejects(
+      frame.request({ kind: "columns", format: "parquet" }),
+      /Invalid column set/,
+    );
   } finally {
     lifetime.abort();
     port1.close();
@@ -438,14 +461,14 @@ test("every request kind waits in the view's one budget; a cancelled whole read 
       rawRequest(fileA.exposed, { kind: "range", offset: i, length: 1 }),
     );
     const whole = rawRequest(fileA.exposed, { kind: "bytes" });
-    const table = rawRequest(fileA.exposed, { kind: "columns" });
+    const table = rawRequest(fileA.exposed, { kind: "columns", format: "parquet" });
     // Two whole reads of B queue, and a second of each kind is refused at
     // once: one whole read of each kind at a time.
-    const cancelledTable = rawRequest(fileB.exposed, { kind: "columns" });
+    const cancelledTable = rawRequest(fileB.exposed, { kind: "columns", format: "parquet" });
     const cancelledBytes = rawRequest(fileB.exposed, { kind: "bytes" });
     const twice = [
       rawRequest(fileB.exposed, { kind: "bytes" }),
-      rawRequest(fileB.exposed, { kind: "columns" }),
+      rawRequest(fileB.exposed, { kind: "columns", format: "parquet" }),
     ];
     await until(() => twice.every(({ replies }) => replies.length === 1), "refused at once");
     assert.deepEqual(
@@ -458,7 +481,7 @@ test("every request kind waits in the view's one budget; a cancelled whole read 
     cancelledBytes.cancel();
     await Promise.all([cancelledTable.closed, cancelledBytes.closed]);
     const retryBytes = rawRequest(fileB.exposed, { kind: "bytes" });
-    const retryTable = rawRequest(fileB.exposed, { kind: "columns" });
+    const retryTable = rawRequest(fileB.exposed, { kind: "columns", format: "parquet" });
     assert.deepEqual(
       a.calls.map(({ kind }) => kind),
       Array(8).fill("range"),
@@ -499,11 +522,11 @@ test("a whole read runs once at a time, is delivered once, and may be retried af
     const { file, calls } = heldFile();
     const frame = receiveFile(exposeFile(file, lifetime.signal), lifetime.signal);
     const whole = frame.request({ kind: "bytes" });
-    const table = frame.request({ kind: "columns" });
+    const table = frame.request({ kind: "columns", format: "parquet" });
     await assert.rejects(frame.request({ kind: "bytes" }), {
       message: "This file is already being read.",
     });
-    await assert.rejects(frame.request({ kind: "columns" }), {
+    await assert.rejects(frame.request({ kind: "columns", format: "parquet" }), {
       message: "This file's table is already being read.",
     });
     await until(() => calls.length === 2, "both start");
@@ -513,7 +536,7 @@ test("a whole read runs once at a time, is delivered once, and may be retried af
     await assert.rejects(frame.request({ kind: "bytes" }), {
       message: "This file was already read whole; its file object keeps it.",
     });
-    await assert.rejects(frame.request({ kind: "columns" }), {
+    await assert.rejects(frame.request({ kind: "columns", format: "parquet" }), {
       message: "This file's table was already read; its file object keeps it.",
     });
     assert.equal(calls.length, 2, "nothing served twice");
@@ -541,15 +564,49 @@ test("a whole read runs once at a time, is delivered once, and may be retried af
     // So does one cancelled in flight.
     const cancelled = heldFile();
     const exposed = exposeFile(cancelled.file, lifetime.signal);
-    const running = rawRequest(exposed, { kind: "columns" });
+    const running = rawRequest(exposed, { kind: "columns", format: "parquet" });
     await until(() => cancelled.calls.length === 1, "it starts");
     running.cancel();
     await until(() => cancelled.calls[0].signal.aborted, "the decode is aborted");
     const frame3 = receiveFile(exposed, lifetime.signal);
-    const again = frame3.request({ kind: "columns" });
+    const again = frame3.request({ kind: "columns", format: "parquet" });
     await until(() => cancelled.calls.length === 2, "the retry starts");
     cancelled.calls[1].finish();
     assert.equal((await again).numRows, 2);
+  } finally {
+    lifetime.abort();
+  }
+});
+
+test("each table format has its own share: one read at a time and one delivery per format", async () => {
+  const lifetime = new AbortController();
+  try {
+    const { file, calls, formats } = heldFile();
+    const frame = receiveFile(exposeFile(file, lifetime.signal), lifetime.signal);
+    const table = frame.request({ kind: "columns", format: "parquet" });
+    const stop = new AbortController();
+    const rows = frame.request({ kind: "columns", format: "csv" }, stop.signal);
+    await assert.rejects(frame.request({ kind: "columns", format: "csv" }), {
+      message: "This file's table is already being read.",
+    });
+    await until(() => calls.length === 2, "both formats start");
+    // A cancelled CSV read gives its share back and leaves Parquet's alone.
+    stop.abort();
+    await assert.rejects(rows, { name: "AbortError" });
+    await until(() => calls[1].signal.aborted, "the CSV read is cancelled");
+    calls[0].finish();
+    await table;
+    await assert.rejects(frame.request({ kind: "columns", format: "parquet" }), {
+      message: "This file's table was already read; its file object keeps it.",
+    });
+    const retry = frame.request({ kind: "columns", format: "csv" });
+    await until(() => calls.length === 3, "the CSV retry starts");
+    calls[2].finish();
+    assert.equal((await retry).numRows, 2);
+    await assert.rejects(frame.request({ kind: "columns", format: "csv" }), {
+      message: "This file's table was already read; its file object keeps it.",
+    });
+    assert.deepEqual(formats, ["parquet", "csv", "csv"]);
   } finally {
     lifetime.abort();
   }

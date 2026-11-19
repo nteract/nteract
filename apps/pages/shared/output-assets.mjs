@@ -2,6 +2,7 @@ import {
   ESM_MEDIA_TYPE,
   CSS_MEDIA_TYPE,
   JSON_MEDIA_TYPE,
+  CSV_MEDIA_TYPE,
   BINARY_MEDIA_TYPE,
   WAV_MEDIA_TYPE,
   OUTPUT_MAX_BYTES,
@@ -22,6 +23,15 @@ export function inspectOutputAsset(bytes, mediaType) {
     } catch {
       throw Error("Use a valid UTF-8 JSON file.");
     }
+  } else if (mediaType === CSV_MEDIA_TYPE) {
+    // The viewer parses it when a view reads it; the upload checks the text.
+    let text;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      throw Error("Use a UTF-8 CSV file.");
+    }
+    if (!text.trim() || text.includes("\0")) throw Error("Use a UTF-8 CSV file.");
   } else if (mediaType === WAV_MEDIA_TYPE) {
     const ascii = (at, n) => String.fromCharCode(...bytes.subarray(at, at + n));
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);

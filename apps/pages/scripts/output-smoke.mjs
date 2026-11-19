@@ -5,7 +5,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { build } from "esbuild";
 import { browserMermaidPlugin } from "./browser-mermaid.mjs";
-import { browserSiftPlugin, siftWasmPath } from "./browser-sift.mjs";
+import { browserSiftPlugin, siftCsvWasmPath, siftWasmPath } from "./browser-sift.mjs";
 import { chromium, firefox, webkit, expect } from "@playwright/test";
 import { prepareFrameHtml } from "./build-output.mjs";
 import { parquetFixture } from "../test/parquet-fixture.mjs";
@@ -157,6 +157,29 @@ export async function render({ model, el }) {
 }`),
     "text/javascript",
   ],
+  // A module view that draws a CSV source with Plot from
+  // await model.get(name).csv(): typed rows with a columns list.
+  csvview: [
+    Buffer.from(`import * as Plot from 'plot';
+export async function render({ model, el }) {
+  el.innerHTML = '<div id="plot"></div><p id="rows"></p>';
+  const rows = await model.get('cities').csv();
+  const plot = Plot.plot({ marks: [Plot.dot(rows, { x: 'founded', y: 'people' })] });
+  el.querySelector('#plot').replaceChildren(plot);
+  el.dataset.xScale = plot.scale('x').type;
+  el.querySelector('#rows').textContent = [
+    rows.length, rows.columns.join(' '), rows[0].city, typeof rows[0].people,
+    rows[0].founded instanceof Date, rows[1].open, rows[2].people,
+  ].join('|');
+}`),
+    "text/javascript",
+  ],
+  cities: [
+    Buffer.from(
+      'city,people,founded,open\n"Oslo, NO",709000,1040-01-01,true\nBergen,291000,1070-01-01,false\nTromsø,,1794-01-01,true\n',
+    ),
+    "text/csv",
+  ],
   // Plot as a Page-owned import, bundled below.
   plotlib: [Buffer.alloc(0), "text/javascript"],
   // A module view that reads its file once through the import and never
@@ -281,6 +304,7 @@ import { Leaf } from 'wordgard/doc';
 import { schema, Paragraph, PagesView } from './viewer/wordgard-model.mjs';
 import { wordgardViews } from './viewer/wordgard-views.mjs';
 import { mount } from './viewer/view-output.mjs';
+import { normalizedBytes } from './viewer/normalized-bytes.mjs';
 import { themeStore } from './viewer/theme.mjs';
 themeStore.setMode(${JSON.stringify(process.env.PAGES_OUTPUT_SERVE ? "system" : "light")});
 const appearance=document.querySelector('#appearance');appearance.value=themeStore.getSnapshot().mode;
@@ -292,9 +316,11 @@ const view$=new BehaviorSubject({status:'ready',view});
 let failNext=false;
 const decoded=new Map();
 const sources={pageId:'${pageId}',request:(...args)=>{if(failNext){failNext=false;return Promise.resolve(new Response('not yet',{status:503}))}return fetch(...args)},versions:()=>changes,resolve:b=>versions[b.source_id],
-  sharedResolver:decode=>({async load(v){
-    if(!decoded.has(v.asset_id))decoded.set(v.asset_id,fetch('/assets/'+v.asset_id).then(r=>r.arrayBuffer()).then(b=>decode(new Uint8Array(b),${JSON.stringify(DATAFRAME_LIMITS)})));
-    return {table:await decoded.get(v.asset_id),...v};
+  sharedResolver:(decode,{format='parquet'}={})=>({async load(v){
+    const limits=${JSON.stringify(DATAFRAME_LIMITS)};
+    const key=format+' '+v.asset_id;
+    if(!decoded.has(key))decoded.set(key,fetch('/assets/'+v.asset_id).then(r=>r.arrayBuffer()).then(async b=>decode(await normalizedBytes(v,new Uint8Array(b),limits,{asCsv:format==='csv'}),limits)));
+    return {table:await decoded.get(key),...v};
   }})};
 const handle=mount(document.querySelector('main'),{view$,sources,sourcesAnswer$:null});
 let editor; let highlight=null; const permissions=new GardState.Compartment();
@@ -335,6 +361,11 @@ window.fixture={editor(){
   const plotHandle=mount(el,{view$:plotView$,sources,sourcesAnswer$:null});
   window.fixture.movePlot=()=>{versions.activity=versions.table2;changes.next(7)};
   window.fixture.endPlotView=()=>{plotHandle.destroy();el.remove()};
+},csvView(){
+  const el=document.createElement('div');el.id='module-view5';document.body.append(el);
+  const csvView$=new BehaviorSubject({status:'ready',view:{view_id:'csv',title:'Plot from a CSV',media_type:'application/vnd.nteract.module-view.v1+json',spec:{module:{source_id:'csvview'},imports:{plot:{source_id:'plotlib'}},files:{cities:{source_id:'cities'}}},revision:'1'}});
+  const csvHandle=mount(el,{view$:csvView$,sources,sourcesAnswer$:null});
+  window.fixture.endCsvView=()=>{csvHandle.destroy();el.remove()};
 },example(){versions.code=versions.example;view$.next({status:'ready',view:{...view,spec:{module:{source_id:'code'},buffers:[{source:{source_id:'recording'},path:['recording']},{source:{source_id:'dmel'},path:['dmel']}],state:{description:${JSON.stringify(description)}}}}})},module(){
   const view=${JSON.stringify(moduleView)};
   const text=s=>new TextEncoder().encode(s);
@@ -364,6 +395,7 @@ const result = await build({
   write: false,
 });
 const siftWasm = await readFile(siftWasmPath(process.cwd()));
+const siftCsvWasm = await readFile(siftCsvWasmPath(process.cwd()));
 const server = createServer((req, res) => {
   if (req.url === "/styles.css") {
     res.setHeader("Content-Type", "text/css");
@@ -375,9 +407,9 @@ const server = createServer((req, res) => {
     res.end(result.outputFiles[0].text);
     return;
   }
-  if (req.url === "/sift.wasm") {
+  if (req.url === "/sift.wasm" || req.url === "/sift-csv.wasm") {
     res.setHeader("Content-Type", "application/wasm");
-    res.end(siftWasm);
+    res.end(req.url === "/sift.wasm" ? siftWasm : siftCsvWasm);
     return;
   }
   const asset = assets.get(req.url.split("/").at(-1));
@@ -565,6 +597,19 @@ try {
   await expect(page.locator("#module-view4 iframe")).toHaveAttribute("data-marker", "kept");
   await expect(plotView).toHaveAttribute("data-output-state", "ready");
   await page.evaluate(() => window.fixture.endPlotView());
+  // A module view draws a CSV source with Plot from model.get(name).csv():
+  // the page converts it to Arrow IPC with Sift's CSV WASM, and the frame
+  // gets typed rows with their columns.
+  await page.evaluate(() => window.fixture.csvView());
+  const csvView = page.locator("#module-view5 .pages-anywidget-view");
+  await expect.poll(async () => csvView.getAttribute("data-output-state")).toBe("ready");
+  const csvMain = page.frameLocator("#module-view5 iframe").locator("main");
+  await expect(csvMain.locator("#rows")).toHaveText(
+    "3|city people founded open|Oslo, NO|number|true|false|",
+  );
+  await expect(csvMain.locator("svg circle")).toHaveCount(2);
+  await expect(csvMain).toHaveAttribute("data-x-scale", "utc");
+  await page.evaluate(() => window.fixture.endCsvView());
   await expect(page.getByRole("button", { name: "Retry interactive view" })).toBeHidden();
   const frame = page.frameLocator("iframe");
   await expect(frame.getByRole("heading", { name: "Listen and explore" })).toBeVisible();

@@ -1,11 +1,14 @@
-// The renderer for Parquet dataframe nodes (wordgard-dataframes.mjs). Only a
-// Page that shows one loads this module, so the table code, its stylesheet
-// and its WASM stay out of the editor chunk. Sift decodes the Parquet in the
-// browser; the Worker only stores and serves the bytes.
+// The renderer for Parquet and CSV dataframe nodes (wordgard-dataframes.mjs).
+// Only a Page that shows one loads this module, so the table code, its
+// stylesheet and its WASM stay out of the editor chunk. Sift decodes the
+// normalized bytes (normalized-bytes.mjs: Parquet, or Arrow IPC for a CSV) in
+// the browser; the Worker only stores and serves the bytes.
 import { createRoot } from "react-dom/client";
 import { SiftTable, loadTableFile, setWasmUrl } from "@nteract/sift";
 import { SIFT_CSS, SIFT_WASM_URL } from "pages-sift-assets";
+import { PARQUET_MEDIA_TYPE, parseAssetPath } from "../shared/dataset-assets.mjs";
 import { assetPath } from "./dataframe-binding.mjs";
+import { normalizedBytes } from "./normalized-bytes.mjs";
 import { DATAFRAME_LIMITS, ensureSiftStyles, fetchDataset } from "./sift-dataset.mjs";
 import { followSource, markDrawnVersion } from "./source-follow.mjs";
 
@@ -26,7 +29,10 @@ export const SOURCE_MISSING = "This table's source isn't on this Page.";
  * container's `data-source-id`, `data-asset-id` and `data-source-revision`
  * say which version it drew. Without a usable binding it draws `src`.
  */
-export function mount(container, { src, pageId, binding, sources }) {
+export function mount(
+  container,
+  { src, pageId, binding, sources, media_type = PARQUET_MEDIA_TYPE },
+) {
   ensureSiftStyles(container.ownerDocument, SIFT_CSS);
   const root = createRoot(container);
   if (binding?.source_id && !sources) {
@@ -63,11 +69,16 @@ export function mount(container, { src, pageId, binding, sources }) {
   }
   const controller = new AbortController();
   const asset = assetPath(src, pageId, binding);
+  const version = { media_type, asset_id: parseAssetPath(asset)?.assetId };
   const source = {
     kind: "loader",
     load: async () =>
       loadTableFile(
-        await fetchDataset(asset, { pageId, signal: controller.signal }),
+        await normalizedBytes(
+          version,
+          await fetchDataset(asset, { pageId, signal: controller.signal, mediaType: media_type }),
+          DATAFRAME_LIMITS,
+        ),
         DATAFRAME_LIMITS,
       ),
   };

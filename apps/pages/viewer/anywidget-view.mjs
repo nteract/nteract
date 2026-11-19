@@ -33,8 +33,8 @@ import { themeStore } from "./theme.mjs";
 const sameAsset = (a, b) => a?.asset_id === b?.asset_id && a?.media_type === b?.media_type;
 const asset = (version) => ({ asset_id: version.asset_id, media_type: version.media_type });
 
-// The Parquet decoder, in a chunk of its own: only a module view that binds
-// a Parquet file loads it.
+// The table decoder, in a chunk of its own: only a module view that calls
+// parquet() or csv() loads it.
 const loadColumnDecoder = () => import("./module-parquet.mjs").then((m) => m.parquetColumns);
 
 // The frame runtime from this build (scripts/build-output.mjs writes it), in a
@@ -126,7 +126,7 @@ export function mount(
     // and anywidget assets and buffers.
     maxTotalBytes = OUTPUT_MAX_TOTAL_BYTES,
     // Resolves with the decoder `sources.sharedResolver` decodes Parquet
-    // files to ColumnSets with (parquet-columns.mjs).
+    // files and converted CSV files to ColumnSets with (parquet-columns.mjs).
     columnDecoder = loadColumnDecoder,
   },
 ) {
@@ -243,9 +243,9 @@ export function mount(
                       // A module view's file is opened for its size at
                       // mount and read only when the view asks: ranges from
                       // the asset, the whole file through fetchOutputAsset
-                      // (5 MiB), and for Parquet a ColumnSet through the
-                      // Page's shared cache, so views of one asset decode it
-                      // once. Those reads run under the mount and the
+                      // (5 MiB), and a ColumnSet from Parquet or CSV through
+                      // the Page's shared cache, so views of one asset decode
+                      // it once per format. Those reads run under the mount and the
                       // frame's request, not this load. An anywidget buffer
                       // arrives whole.
                       const loadData = async (name, version, signal) => {
@@ -266,14 +266,17 @@ export function mount(
                           bytes: async (request) =>
                             (await loadBytes(version, within(request))).bytes,
                         };
-                        if (version.media_type === PARQUET_MEDIA_TYPE)
-                          input.columns = async (request) => {
-                            const decode = await columnDecoder();
-                            const loaded = await sources
-                              .sharedResolver(decode)
-                              .load(version, { signal: within(request) });
-                            return loaded.table;
-                          };
+                        // parquet() reads a Parquet source; csv() reads any
+                        // file, converted once in the source store.
+                        input.columns = async (format, request) => {
+                          if (format === "parquet" && version.media_type !== PARQUET_MEDIA_TYPE)
+                            throw Error("This file is not Parquet.");
+                          const decode = await columnDecoder();
+                          const loaded = await sources
+                            .sharedResolver(decode, { format })
+                            .load(version, { signal: within(request) });
+                          return loaded.table;
+                        };
                         return { value: input, size: 0 };
                       };
                       // Data changes that failed to load, by name. The frame
