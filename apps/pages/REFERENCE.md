@@ -1833,8 +1833,8 @@ there is no persistent browser Parquet cache.
 
 To create a named source when uploading a non-image file, pass
 `source: {source_id, name}` to `create_page_asset_upload`. The transfer
-receipt includes `asset_id`, `source_id` and `source_revision`. For Parquet,
-its `insert` places a dataframe bound to the source. An unnamed Parquet
+receipt includes `asset_id`, `source_id` and `source_revision`. For Parquet and CSV,
+its `insert` places a dataframe bound to the source. An unnamed table
 upload returns an insertion pinned to its `asset_id`. The upload
 grant signs the source ID and name. After storage, the host checks edit
 access again and writes through the same journal as `set_source`. A
@@ -2647,7 +2647,7 @@ For agents, importing bytes and inserting content are separate operations:
      ([import-file.mjs](worker/import-file.mjs)): it requires read/write scope
      and Page edit access, accepts bounded HTTPS downloads from the hosts in
      `FILE_HOSTS`, today only `files.oaiusercontent.com`, without redirects,
-     stores an image, Parquet file or declared JSON file under the upload's checks, and returns
+     stores an image, Parquet file, or declared JSON or CSV file under the upload's checks, and returns
      `asset_id`, reference, MIME, size and an image's dimensions. With `file`
      the call takes no `content_type` or `size`. A file ID alone is not a
      download URL. Temporary source URLs are not stored in the document.
@@ -2665,6 +2665,7 @@ For agents, importing bytes and inserting content are separate operations:
    `{"op":"insert_node","node":{"type":"dataframe","attrs":{"binding":{"source_id":"<source_id>"}}}}`.
    An unnamed Parquet upload gets
    `{"op": "insert_node", "node": {"type": "dataframe", "attrs": {"asset_id": "<asset_id>"}}}`.
+   CSV uses the same named and unnamed forms with `media_type: "text/csv"` in the node attrs.
 2. Read the current Page, then call guarded `edit_page` with that `insert`
    operation: for an image, `insert_image`, `asset_id`, alt text, and optional
    `after_node_id` (omitted appends; `null` prepends). The host verifies the asset belongs to this Page and creates a

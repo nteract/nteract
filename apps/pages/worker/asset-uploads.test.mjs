@@ -1353,51 +1353,63 @@ test("a named client attachment returns a source and an identical retry replays 
   assert.deepEqual(replay.body, result.body);
 });
 
-test("named Parquet uploads return an insert that follows the new source", async (t) => {
-  const { w, pageId } = await setup(t);
-  editable(w, pageId);
-  const download_url = "https://files.oaiusercontent.com/measurements";
-  t.mock.method(globalThis, "fetch", (url, options) =>
-    String(url) === download_url
-      ? Promise.resolve(new Response(parquet, { headers: { "content-type": PARQUET_MEDIA_TYPE } }))
-      : w.auth.fetch(url, options),
-  );
-  const grant = await issued(w, {
-    page_id: pageId,
-    content_type: PARQUET_MEDIA_TYPE,
-    source: { source_id: "usage", name: "Usage" },
-  });
-  const uploaded = await upload(w, grant, { body: parquet });
-  const attached = await issue(w, "owner", {
-    page_id: pageId,
-    source: { source_id: "measurements", name: "Measurements" },
-    file: { file_id: "attached-parquet", download_url },
-  });
-  assert.equal(uploaded.status, 201, JSON.stringify(uploaded.body));
-  assert.equal(attached.status, 200, JSON.stringify(attached.body)); // Identical stored bytes.
-  for (const [receipt, source_id] of [
-    [uploaded.body, "usage"],
-    [attached.body, "measurements"],
-  ]) {
-    assert.equal(receipt.source_id, source_id);
-    assert.deepEqual(receipt.insert, {
-      op: "insert_node",
-      node: { type: "dataframe", attrs: { binding: { source_id } } },
+for (const [mediaType, bytes, tableAttrs] of [
+  [PARQUET_MEDIA_TYPE, parquet, {}],
+  ["text/csv", new TextEncoder().encode("sensor,value\na,42\n"), { media_type: "text/csv" }],
+])
+  test(`${mediaType} uploads place live named tables and asset-pinned unnamed tables`, async (t) => {
+    const { w, pageId } = await setup(t);
+    editable(w, pageId);
+    const download_url = "https://files.oaiusercontent.com/measurements";
+    t.mock.method(globalThis, "fetch", (url, options) =>
+      String(url) === download_url
+        ? Promise.resolve(new Response(bytes, { headers: { "content-type": mediaType } }))
+        : w.auth.fetch(url, options),
+    );
+    const grant = await issued(w, {
+      page_id: pageId,
+      content_type: mediaType,
+      source: { source_id: "usage", name: "Usage" },
     });
-  }
-  const { revision } = (await w.call("owner", "read_page", { page_id: pageId })).body;
-  const placed = await w.call("owner", "edit_page", {
-    page_id: pageId,
-    revision,
-    nonce: crypto.randomUUID(),
-    operations: [uploaded.body.insert, attached.body.insert],
+    const uploaded = await upload(w, grant, { body: bytes });
+    const attached = await issue(w, "owner", {
+      page_id: pageId,
+      source: { source_id: "measurements", name: "Measurements" },
+      file: { file_id: "attached-table", download_url },
+    });
+    assert.equal(uploaded.status, 201, JSON.stringify(uploaded.body));
+    assert.equal(attached.status, 200, JSON.stringify(attached.body)); // Identical stored bytes.
+    for (const [receipt, source_id] of [
+      [uploaded.body, "usage"],
+      [attached.body, "measurements"],
+    ]) {
+      assert.equal(receipt.source_id, source_id);
+      assert.deepEqual(receipt.insert, {
+        op: "insert_node",
+        node: { type: "dataframe", attrs: { binding: { source_id }, ...tableAttrs } },
+      });
+    }
+    const unnamedGrant = await issued(w, { page_id: pageId, content_type: mediaType });
+    const unnamed = await upload(w, unnamedGrant, { body: bytes });
+    assert.equal(unnamed.status, 200);
+    assert.deepEqual(unnamed.body.insert, {
+      op: "insert_node",
+      node: { type: "dataframe", attrs: { asset_id: uploaded.body.asset_id, ...tableAttrs } },
+    });
+    const { revision } = (await w.call("owner", "read_page", { page_id: pageId })).body;
+    const placed = await w.call("owner", "edit_page", {
+      page_id: pageId,
+      revision,
+      nonce: crypto.randomUUID(),
+      operations: [uploaded.body.insert, attached.body.insert, unnamed.body.insert],
+    });
+    assert.equal(placed.status, 200, JSON.stringify(placed.body));
+    assert.deepEqual(
+      placed.body.result.edits.slice(0, 2).map((edit) => edit.attrs.binding),
+      [{ source_id: "usage" }, { source_id: "measurements" }],
+    );
+    assert.equal(placed.body.result.edits[2].attrs.src, unnamed.body.asset_url);
   });
-  assert.equal(placed.status, 200, JSON.stringify(placed.body));
-  assert.deepEqual(
-    placed.body.result.edits.map((edit) => edit.attrs.binding),
-    [{ source_id: "usage" }, { source_id: "measurements" }],
-  );
-});
 
 test("source completion requires a named capability or a valid source from the caller", async (t) => {
   const { w, pageId } = await setup(t);

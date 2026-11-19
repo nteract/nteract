@@ -81,7 +81,7 @@ POST that file's raw bytes to the returned upload_url using the returned headers
 
 Supported view input types are ${OUTPUT_ASSET_TYPES.map((type) => `\`${type}\``).join(", ")}. For nested objects, lists and settings, upload UTF-8 JSON with content_type application/json and a source name. Readers can inspect the fields and original JSON in the browser’s Sources pane. For tabular records, upload Parquet, or a CSV with content_type text/csv, whose header and first rows the Sources pane shows. ${DATA_FORMAT_ADVICE} Use application/octet-stream for untyped bytes. The main guide covers image, Parquet and CSV insertion. For a client-attached image, Parquet file or file declared as application/json or text/csv, pass the attachment in file. For JavaScript, CSS, WAV or untyped bytes, request an upload_url with the matching content_type and POST the bytes.
 
-Independent files can request capabilities and upload in parallel. For Parquet, send the returned insert operation to place a table. A named upload gives you a table that follows the source on refresh. An unnamed upload gives you a table pinned to those bytes. JSON, JavaScript, CSS, WAV and binary upload receipts have insert:null: use sources and a view to display them.
+Independent files can request capabilities and upload in parallel. For Parquet or CSV, send the returned insert operation to place a table. A named upload gives you a table that follows the source on refresh. An unnamed upload gives you a table pinned to those bytes. JSON, JavaScript, CSS, WAV and binary upload receipts have insert:null: use sources and a view to display them.
 
 ## Refresh an existing source
 

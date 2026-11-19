@@ -19,7 +19,11 @@ import {
   validAssetId,
   imageAssetUrl,
 } from "../shared/image-assets.mjs";
-import { DATAFRAME_MEDIA_TYPES, DATASET_MAX_BYTES, PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
+import {
+  DATAFRAME_MEDIA_TYPES,
+  DATASET_MAX_BYTES,
+  PARQUET_MEDIA_TYPE,
+} from "../shared/dataset-assets.mjs";
 import {
   ImageValidationError,
   inspectImage as inspectImageContainer,
