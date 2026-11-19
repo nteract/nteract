@@ -319,7 +319,10 @@ test("new executable views keep the host catalog they first used", () => {
     };
     const write = (doc, operation, catalogRevision) =>
       A.change(doc, (draft) => setView(draft, operation, { sourcesDoc, by, catalogRevision }));
-    const doc = write(viewGenesis(uuid), create, first);
+    const doc = A.change(viewGenesis(uuid), (draft) => {
+      const edit = setView(draft, create, { sourcesDoc, by, catalogRevision: first });
+      assert.equal(edit.catalog_revision, first);
+    });
     assert.equal(readView(doc, "daily").catalog_revision, first);
     assert.equal(viewSummary(doc, "daily").catalog_revision, first);
     const edit = { ...create, title: "Updated", view_revision: "1" };

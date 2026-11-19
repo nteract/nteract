@@ -285,5 +285,10 @@ export function setView(
     : Object.fromEntries(Object.entries(op.data).map(([name, b]) => [name, bindingOf(b)]));
   doc.revision = revision;
   doc.producer = { kind: "edit_page", at, by: boundedWriter(by) };
-  return { op: "set_view", view_id: op.view_id, view_revision: revision };
+  return {
+    op: "set_view",
+    view_id: op.view_id,
+    view_revision: revision,
+    ...(doc.catalog_revision && { catalog_revision: doc.catalog_revision }),
+  };
 }

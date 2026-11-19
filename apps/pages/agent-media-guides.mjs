@@ -148,7 +148,7 @@ function anywidgetGuide(origin, catalogEnabled) {
 
 ## Page imports
 
-On a fresh Page, import standard libraries such as \`@observablehq/plot\` directly. The host pins its catalog on the first set_view for an executable view. Read view.catalog_revision to inspect the digest; later edits preserve it. widget_imports.available_imports lists the supplied names. A null Page catalog is normal. A pre-existing explicit Page declaration continues to supply its catalog to new views there.
+On a fresh Page, import standard libraries such as \`@observablehq/plot\` directly. The host pins its catalog on the first set_view for an executable view. The set_view edit receipt includes catalog_revision. Read view.catalog_revision to inspect the same digest later. Edits preserve it. widget_imports.available_imports lists the supplied names. A null Page catalog is normal. A pre-existing explicit Page declaration continues to supply its catalog to new views there.
 
 For a shared component, upload browser-ready text/javascript, register its source, and bind a name to its exact revision. To extend an existing declaration, use its current widget_imports.source_revision and include every module you want to keep:
 ${edit("pin-widget-component-001", [{ op: "set_widget_imports", catalog: "standard", source_revision: "<widget_imports.source_revision>", modules: [{ name: "activity-controls", source_id: "controls", revision: "1" }] }])}

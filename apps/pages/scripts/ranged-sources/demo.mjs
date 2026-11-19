@@ -32,7 +32,7 @@ try {
     await readFile(new URL("./activity.mjs", import.meta.url)),
     "text/javascript",
   );
-  await edit([
+  const saved = await edit([
     {
       op: "set_view",
       view_id: "daily",
@@ -47,6 +47,7 @@ try {
   ]);
   await edit([{ op: "insert_node", node: { type: "view", attrs: { view_id: "daily" } } }]);
   const read = await tool("read_page", { page_id, view_id: "daily" });
+  assert.equal(saved.result.edits[0].catalog_revision, read.view.catalog_revision);
   assert.match(read.view.catalog_revision, /^[a-f0-9]{64}$/);
   assert.equal(read.widget_imports.catalog, null);
   assert.equal(read.view.spec.files.activity.revision, "1");
