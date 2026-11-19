@@ -136,6 +136,8 @@ To share a component, upload its JavaScript once. Each view chooses an import na
 
 ${edit("save-shared-control", [{ ...example, view_revision: "1", imports: { "activity-controls": { source_id: "controls" } }, data: { activity: { source_id: "project-activity" } } }])}
 
+A view's modules can import${catalogEnabled ? " the names in read_page.libraries," : ""} a name bound in imports, data/<alias> for a file bound in data, or an https: URL.${catalogEnabled ? "" : " This host offers no libraries."} Names match exactly, so a subpath such as d3/array and any relative path fail. set_view reads the entry and each import and refuses the view with invalid_view when a static import can't load, naming each one. An import("…") that can't load, or a module it can't parse, is saved with a warning in the receipt. A set_source that gives a followed module new code warns for each view it breaks.
+
 ## Read part of a file
 
 The entry can \`import activity from "data/activity"\` when data binds the name activity. Its byteLength is the file size. read(offset, length, signal) returns that span as a Uint8Array. Read the Parquet source with read_page and source_id to discover its columns.${catalogEnabled ? " For a bounded preview, import {loadTableFile} from '@nteract/sift/parquet', call await loadTableFile(activity, {maxRows:28, overflow:'truncate'}), and call table.dispose() when done." : ""} Each range uses the Page's existing access checks.
@@ -152,7 +154,7 @@ Advancing a followed source updates dependent views without editing their blocks
 
 Retries of the same edit must preserve both nonce and payload. If creating the view succeeded but placement was interrupted, retry the placement with its original nonce; do not create another view. For an unknown outcome, use the receipt/retry contract rather than guessing success. If a revision is stale, reread and reconcile before issuing a new request.
 
-unknown_source means a binding names a source not registered on this Page. unknown_source_revision means its pin is not retained. invalid_view means the envelope, spec or bindings failed validation. stale_view requires a fresh view read. unknown_view on insertion means the referenced view has not been created successfully. Do not solve a refusal by removing revision guards.
+unknown_source means a binding names a source not registered on this Page. unknown_source_revision means its pin is not retained. invalid_view means the envelope, spec or bindings failed validation, or a module view's static import can't load. stale_view requires a fresh view read. unknown_view on insertion means the referenced view has not been created successfully. Do not solve a refusal by removing revision guards.
 `;
 }
 
@@ -243,7 +245,7 @@ The default ESM export is an AFM object or async factory. initialize runs before
 
 model.get/set/on/off operate locally. save_changes() is a no-op. send() throws a no-backend error. There are no Python callbacks, kernel comms, shared live widget state, or Page writeback. Source/code changes and remounts reset to the stored initial state. The resolved light/dark theme, base controls and height reporting are supplied by the host.
 
-Bundle relative imports, or use absolute HTTPS imports; Blob modules cannot resolve relative file imports. The iframe receives supplied bytes, not account credentials. Modules can access the network and transmit those bytes; isolation protects the surrounding application, not confidentiality from the module itself. Microphone capture is not currently exposed.
+Bundle relative imports, or use absolute HTTPS imports; Blob modules cannot resolve relative file imports. set_view saves a widget whose import can't load, with a warning in the receipt. The iframe receives supplied bytes, not account credentials. Modules can access the network and transmit those bytes; isolation protects the surrounding application, not confidentiality from the module itself. Microphone capture is not currently exposed.
 
 For pinning, updating and retrying, see ${link(origin, "/llms/views.txt", "Rendering and views")}.
 `;

@@ -2122,6 +2122,7 @@ Refused, creating no document, no listed view and no writer record:
 | a data name that isn't a safe key, a malformed `source_id`, or over 32 names | `400 invalid_view`, naming the key |
 | `data` names a source this Page doesn't hold | `400 unknown_source` |
 | a pinned `revision` the source's `history` doesn't hold | `400 unknown_source_revision` |
+| a module view's static import that isn't a library the view can use, one of its `imports`, `data/<alias>` for one of its files, or an `https:` URL | `400 invalid_view`, naming each import and its module |
 | `view_revision` not the stored one, or null for an existing view | `409 stale_view` |
 | a non-null `view_revision` for a view that doesn't exist | `404 view_not_found` |
 | an eleventh view | `400 view_limit`, naming the ten in `details.view_ids` |
@@ -2132,6 +2133,20 @@ Refused, creating no document, no listed view and no writer record:
 
 A pinned revision is checked against `history` because it holds the asset of
 each revision it keeps; a source keeps its newest 50.
+
+Before the slot, set_view reads the text of an executable view's modules (the
+entry and each import, or an anywidget's modules) at the versions the view
+binds and lexes their imports ([worker/view-imports.mjs](worker/view-imports.mjs),
+[shared/module-imports.mjs](shared/module-imports.mjs)). A view can use the
+catalog's libraries only when it keeps or records a `catalog_revision`. A
+module view's static import that can't load is the refusal above. An
+`import("…")` with a literal that can't load, a module the lexer can't parse,
+and every finding for an anywidget view are warnings on the edit
+(`unresolved_dynamic_import`, `module_unparsed`, `unresolved_import`), stored
+with the receipt. A module whose bytes can't be read is not checked. A
+set_source that points a source at new JavaScript checks each loaded view
+that follows it as a module or import, and puts that view's findings on the
+set_source edit as warnings.
 
 ### The Page body
 

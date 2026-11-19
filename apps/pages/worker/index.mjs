@@ -42,7 +42,9 @@ import {
   validateSourceBatch,
   readSource,
 } from "../model/sources-doc.mjs";
-import { checkView, setView, validateViewOperation } from "../model/view-doc.mjs";
+import { checkView, readView, setView, validateViewOperation } from "../model/view-doc.mjs";
+import { sourceImportWarnings, viewImportCheck } from "./view-imports.mjs";
+import { OUTPUT_MAX_BYTES } from "../shared/anywidget-view.mjs";
 import { MAX_VIEWS, validViewId } from "../shared/views.mjs";
 import { CHART_WORKER_CSP, CHUNK_PATH } from "../shared/chart-worker-csp.mjs";
 import { setResponseHeaders } from "./response-headers.mjs";
@@ -326,6 +328,7 @@ import {
   authenticateAssets,
   deleteUploadedAssets,
   handleImageAssets,
+  imageAssetKey,
   privateImageResponse,
   requireStoredDatasetAsset,
   requireStoredImageAsset,
@@ -730,6 +733,9 @@ export const sharedChildBounds = { scan: 100 };
 export const sharedCheckBounds = { concurrency: 16 };
 /** How long a Page host waits on one card object read or write. */
 const PAGE_CARD_STORE_TIMEOUT_MS = 10_000;
+/** How long set_view waits on one module's bytes before it skips the
+ * module's import check. */
+const MODULE_READ_TIMEOUT_MS = 5_000;
 /** How long a deletion waits on the card object's delete. */
 const PAGE_CARD_DELETE_TIMEOUT_MS = 2_000;
 /** How long a permanent deletion waits for its uploaded assets to go. */
@@ -7591,6 +7597,7 @@ export class Page {
     const args = body.arguments ?? {};
 
     const mediaTypes = new Map();
+    let importWarnings = [];
     // Stored on the source as its writer's agent, so the retry fingerprint
     // covers it, as a comment's does.
     const agent = agentFromProvenance(identity.clientProvenance);
@@ -7653,6 +7660,21 @@ export class Page {
               mediaTypes.set(assetId, dataset.mime_type);
             },
           );
+          // Each loaded view that follows a module this batch changes is
+          // checked against the new code; its findings are warnings.
+          importWarnings = await sourceImportWarnings({
+            operations: args.operations,
+            mediaTypes,
+            views: this.servedViews().map(([viewId]) => {
+              try {
+                return readView(this.viewDoc(viewId), viewId);
+              } catch {
+                return undefined;
+              }
+            }),
+            sourcesDoc: handle.doc(),
+            readText: (assetId) => this.moduleText(assetId),
+          });
           // Access can change while the asset records are read.
           this.policy.account(await authenticate(request, this.env), true);
           await this.sourcesEvent({ type: "create", recorded: recordNamesSources(this.metadata) });
@@ -7663,7 +7685,9 @@ export class Page {
               edits: setSources(draft, effectiveArgs.operations, {
                 mediaTypes,
                 by: authorOf(publicIdentity(identity), agent),
-              }),
+              }).map((edit, index) =>
+                importWarnings[index]?.length ? { ...edit, warnings: importWarnings[index] } : edit,
+              ),
             };
           } catch (error) {
             throw sourceRefusal(error);
@@ -7687,19 +7711,29 @@ export class Page {
    * when the Page has none under this id). Every refusal known in advance
    * comes before the slot is taken, so a write that fails after it fails
    * from I/O or a crash; its slot stays, unlisted until a write lands, and
-   * the next boot releases it if none does. Returns false, having taken
-   * nothing, when it first finished a release a boot or an earlier write
-   * left unfinished: the caller runs it again, since the release awaited
-   * storage. */
+   * the next boot releases it if none does. An executable view's modules
+   * are read and their imports checked (view-imports.mjs) after the
+   * operation and before the slot. Returns the warnings that check gives
+   * the edit, or false, having taken nothing, when it first finished a
+   * release a boot or an earlier write left unfinished: the caller runs it
+   * again, since the release awaited storage. */
   async takeViewSlot(request, identity, op, args, handle) {
     const viewId = op.view_id;
     requireSupportedSchema(this.handle.doc());
+    let warnings;
     try {
-      checkView(handle.doc(), op, { sourcesDoc: this.sourcesView() });
+      const sourcesDoc = this.sourcesView();
+      const previous = checkView(handle.doc(), op, { sourcesDoc });
+      warnings = await viewImportCheck(validateViewOperation(op), {
+        previous,
+        catalogRevision: configuredCatalogRevision(this.env),
+        sourcesDoc,
+        readText: (assetId) => this.moduleText(assetId),
+      });
     } catch (error) {
       throw viewRefusal(error);
     }
-    return this.viewSlot(async () => {
+    const taken = await this.viewSlot(async () => {
       const listed = await this.storedViewIds();
       if (!listed.includes(viewId) && listed.length >= MAX_VIEWS)
         throw Object.assign(
@@ -7745,6 +7779,30 @@ export class Page {
         this.forgetIdleView(viewId);
       }
     });
+    return taken && { warnings };
+  }
+
+  /** The text of module asset `assetId` on this Page, or null when it can't
+   * be read: no bucket, no object, over OUTPUT_MAX_BYTES, or a failed or
+   * slow read. A module that can't be read is not checked; the binding's
+   * own checks answer for a missing source. */
+  async moduleText(assetId) {
+    const bucket = this.env.PAGES_ASSETS;
+    if (typeof bucket?.get !== "function") return null;
+    try {
+      return await withTimeout(
+        (async () => {
+          const object = await bucket.get(imageAssetKey(this.metadata.pageId, assetId));
+          if (!object || !(object.size <= OUTPUT_MAX_BYTES)) return null;
+          return await object.text();
+        })(),
+        MODULE_READ_TIMEOUT_MS,
+        "View module read timed out",
+      );
+    } catch (error) {
+      logFailure(error, "view-module-read");
+      return null;
+    }
   }
 
   /**
@@ -7794,6 +7852,7 @@ export class Page {
       );
     let genesis;
     let viewRevision;
+    let warnings = [];
     const handle = {
       doc: () => this.viewDoc(viewId) ?? (genesis ??= VIEW_MODULE.derived.genesis(uuid)),
       update: (fn, options) => this.views.get(viewId).handle.update(fn, options),
@@ -7824,7 +7883,9 @@ export class Page {
           // A release this write finishes first awaits storage, so every
           // check runs again after it, from the top. A release only runs
           // from `releasing`, so the second pass takes the slot or refuses.
-          while (!(await this.takeViewSlot(request, identity, op, args, handle)));
+          let taken;
+          while (!(taken = await this.takeViewSlot(request, identity, op, args, handle)));
+          ({ warnings } = taken);
         },
         apply: (draft, effectiveArgs) => {
           try {
@@ -7834,7 +7895,8 @@ export class Page {
               by: authorOf(publicIdentity(identity), agent),
             });
             viewRevision = edit.view_revision;
-            return { edits: [edit] };
+            // The import check's findings, journaled with the receipt.
+            return { edits: [warnings.length ? { ...edit, warnings } : edit] };
           } catch (error) {
             throw viewRefusal(error);
           }

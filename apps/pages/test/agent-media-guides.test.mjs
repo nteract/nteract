@@ -110,6 +110,10 @@ test("a Page author can discover the same catalog setup through MCP and the publ
     assert.ok(guide.includes('"activity-controls"'));
     assert.equal(guide.includes("read_page.libraries"), enabled);
     assert.equal(guide.includes("view.catalog_revision"), enabled);
+    // What a view can import, and what set_view does when it can't.
+    assert.ok(guide.includes("data/<alias> for a file bound in data, or an https: URL."));
+    assert.equal(guide.includes("This host offers no libraries."), !enabled);
+    assert.ok(guide.includes("refuses the view with invalid_view when a static import can't load"));
   }
 });
 
