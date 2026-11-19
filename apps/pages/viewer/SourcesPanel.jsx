@@ -149,6 +149,32 @@ function SourceFilePreview({ session, source }) {
       </p>
     );
   const { preview } = value;
+  if (preview.kind === "json")
+    return (
+      <section className="source-file-preview source-schema" aria-label="JSON preview">
+        <h4>JSON · {preview.summary}</h4>
+        {preview.fields.length > 0 && (
+          <ul>
+            {preview.fields.map(([key, description]) => (
+              <li key={key}>
+                <strong>{key}</strong>
+                <code>{description}</code>
+              </li>
+            ))}
+          </ul>
+        )}
+        {preview.more > 0 && <small>{preview.more} more fields</small>}
+        <details open={preview.fields.length === 0}>
+          <summary>View JSON</summary>
+          <pre tabIndex={0} aria-label="JSON content">
+            <code>{preview.text}</code>
+          </pre>
+        </details>
+        <small>
+          {preview.size.toLocaleString()} bytes{preview.truncated && " · preview truncated"}
+        </small>
+      </section>
+    );
   return (
     <section
       className="source-file-preview"

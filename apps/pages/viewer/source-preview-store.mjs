@@ -7,6 +7,7 @@ import { Store } from "./store.mjs";
 
 export const TEXT_PREVIEW_LIMIT = 16000;
 export const SOURCE_PREVIEW_TYPES = [
+  "application/json",
   "text/javascript",
   "text/css",
   "audio/wav",
@@ -24,6 +25,32 @@ export function previewTransition(state, event) {
 }
 
 export function previewOf({ bytes, mediaType }) {
+  if (mediaType === "application/json") {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const value = JSON.parse(text);
+    const describe = (item) => {
+      if (Array.isArray(item)) return item.length === 1 ? "1 item" : `${item.length} items`;
+      if (item === null) return "null";
+      if (typeof item === "object") {
+        const count = Object.keys(item).length;
+        return count === 1 ? "1 field" : `${count} fields`;
+      }
+      return typeof item;
+    };
+    const keys =
+      value !== null && typeof value === "object" && !Array.isArray(value)
+        ? Object.keys(value)
+        : [];
+    return {
+      kind: "json",
+      summary: describe(value),
+      fields: keys.slice(0, 8).map((key) => [key, describe(value[key])]),
+      more: Math.max(0, keys.length - 8),
+      text: text.slice(0, TEXT_PREVIEW_LIMIT),
+      truncated: text.length > TEXT_PREVIEW_LIMIT,
+      size: bytes.byteLength,
+    };
+  }
   if (mediaType === "text/javascript" || mediaType === "text/css") {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     return {

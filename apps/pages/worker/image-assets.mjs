@@ -1,8 +1,9 @@
+import { ASSET_EXTENSIONS } from "./asset-uploads.mjs";
 import { byteRange } from "../shared/byte-range.mjs";
 import {
   ESM_MEDIA_TYPE,
   CSS_MEDIA_TYPE,
-  WAV_MEDIA_TYPE,
+  JSON_MEDIA_TYPE,
   OUTPUT_ASSET_TYPES,
 } from "../shared/anywidget-view.mjs";
 import { inspectOutputAsset } from "../shared/output-assets.mjs";
@@ -307,7 +308,13 @@ function checkExpected(expect, { mime_type, size }) {
 export async function persistPageAsset(bucket, { pageId, bytes, contentTypes = [], expect }) {
   if (!validPageId(pageId)) throw new HttpError(400, "Invalid image reference");
   if (bytes.byteLength > ASSET_MAX_BYTES) throw new HttpError(413, FILE_TOO_LARGE);
-  const inspected = inspectAsset(bytes, expect?.content_type);
+  const declaredJson = contentTypes.some(
+    (type) => type?.split(";")[0].trim().toLowerCase() === JSON_MEDIA_TYPE,
+  );
+  const inspected = inspectAsset(
+    bytes,
+    expect?.content_type ?? (declaredJson ? JSON_MEDIA_TYPE : undefined),
+  );
   const dataset = !IMAGE_MEDIA_TYPES.includes(inspected.mime_type);
   if (bytes.byteLength > (dataset ? DATASET_MAX_BYTES : IMAGE_MAX_BYTES))
     throw new HttpError(413, dataset ? "Datasets must be 5 MiB or smaller" : IMAGE_TOO_LARGE);
@@ -624,7 +631,7 @@ export async function handleImageAssets(
     // A dataset is data for the viewer to fetch, never a document to open:
     // navigating to it downloads the file.
     const disposition = !IMAGE_MEDIA_TYPES.includes(contentType)
-      ? `attachment; filename="${assetId}.${contentType === ESM_MEDIA_TYPE ? "mjs" : contentType === CSS_MEDIA_TYPE ? "css" : contentType === WAV_MEDIA_TYPE ? "wav" : contentType === PARQUET_MEDIA_TYPE ? "parquet" : "bin"}"`
+      ? `attachment; filename="${assetId}.${ASSET_EXTENSIONS[contentType]}"`
       : "inline";
     return servedAssetResponse(
       new Response(request.method === "HEAD" ? null : object.body, {

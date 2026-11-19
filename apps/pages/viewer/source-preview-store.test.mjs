@@ -44,6 +44,28 @@ test("text and binary previews are bounded; code remains literal text", () => {
   assert.throws(() => previewOf({ bytes: new Uint8Array([255]), mediaType: "text/javascript" }));
 });
 
+test("JSON previews describe nested data while preserving the original numeric and text literals", () => {
+  const read = (text) => previewOf({ ...asset(text), mediaType: "application/json" });
+  const raw = '{"pilot":[1,2],"history":{"count":93000000000000001},"label":"<b>x</b>"}';
+  const preview = read(raw);
+  assert.equal(preview.summary, "3 fields");
+  assert.deepEqual(preview.fields, [
+    ["pilot", "2 items"],
+    ["history", "1 field"],
+    ["label", "string"],
+  ]);
+  assert.equal(preview.text, raw);
+  assert.equal(read("null").summary, "null");
+  assert.equal(read("[]").summary, "0 items");
+  assert.equal(read("false").text, "false");
+  const many = read(
+    JSON.stringify(Object.fromEntries(Array.from({ length: 20 }, (_, i) => [i, null]))),
+  );
+  assert.equal(many.fields.length, 8);
+  assert.equal(many.more, 12);
+  assert.ok(read(JSON.stringify("x".repeat(TEXT_PREVIEW_LIMIT))).truncated);
+});
+
 test("source refresh and unmount cancel reads and discard stale results", async () => {
   const versions = new BehaviorSubject({ code: version });
   const calls = [];

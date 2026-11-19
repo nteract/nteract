@@ -1233,6 +1233,7 @@ test("a size-bound URL refuses another Content-Length before reading, and reads 
 for (const [mediaType, source] of [
   ["text/javascript", "export default { render({el}) { el.textContent = 'hello'; } }"],
   ["text/css", "button { color: red; }"],
+  ["application/json", '{"items":[1,2],"label":"<b>literal</b>"}'],
   ["application/octet-stream", "\u0000\u0001arbitrary binary"],
 ])
   test(`${mediaType} uploads remain private non-executable attachments`, async (t) => {
@@ -1261,7 +1262,10 @@ for (const [mediaType, source] of [
     );
     assert.equal(allowed.status, 200);
     assert.match(allowed.headers.get("content-disposition"), /^attachment;/);
-    assert.equal(allowed.headers.get("content-type"), "application/octet-stream");
+    assert.equal(
+      allowed.headers.get("content-type"),
+      mediaType === "application/json" ? mediaType : "application/octet-stream",
+    );
     assert.equal(allowed.headers.get("x-pages-media-type"), mediaType);
     assert.equal(await allowed.text(), new TextDecoder().decode(bytes));
   });

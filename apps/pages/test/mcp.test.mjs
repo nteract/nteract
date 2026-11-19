@@ -1016,6 +1016,7 @@ test("MCP lists create_page_asset_upload for any client with write scope, and po
     "application/vnd.apache.parquet",
     "text/javascript",
     "text/css",
+    "application/json",
     "application/octet-stream",
     "audio/wav",
   ]);

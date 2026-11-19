@@ -1,6 +1,7 @@
 import {
   ESM_MEDIA_TYPE,
   CSS_MEDIA_TYPE,
+  JSON_MEDIA_TYPE,
   BINARY_MEDIA_TYPE,
   WAV_MEDIA_TYPE,
   OUTPUT_ASSET_TYPES,
@@ -74,10 +75,11 @@ const PREFIX = "pu1";
  * its own cookie, and a capability can't issue another. */
 const ISSUING_KINDS = new Set(["api-key", "oauth", "kilo-token"]);
 const ARGUMENTS = new Set(["page_id", "content_type", "size"]);
-const EXTENSIONS = {
+export const ASSET_EXTENSIONS = {
   [ESM_MEDIA_TYPE]: "mjs",
   [CSS_MEDIA_TYPE]: "css",
   [BINARY_MEDIA_TYPE]: "bin",
+  [JSON_MEDIA_TYPE]: "json",
   [WAV_MEDIA_TYPE]: "wav",
   "image/png": "png",
   "image/jpeg": "jpg",
@@ -288,7 +290,7 @@ export async function issueAssetUpload(
   });
   const uploadUrl = `${origin}/api/pages/${pageId}/assets`;
   const contentType = binding.content_type ?? "application/octet-stream";
-  const file = `path/to/file${binding.content_type ? `.${EXTENSIONS[binding.content_type]}` : ""}`;
+  const file = `path/to/file${binding.content_type ? `.${ASSET_EXTENSIONS[binding.content_type]}` : ""}`;
   return {
     page_id: pageId,
     upload_url: uploadUrl,

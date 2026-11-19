@@ -9,6 +9,19 @@ import { checkViewSpec } from "../shared/view-spec.mjs";
 import { fetchOutputAsset } from "../viewer/output-assets.mjs";
 import { validateViewOperation } from "../model/view-doc.mjs";
 
+test("JSON uploads accept any JSON root and reject malformed JSON and UTF-8", () => {
+  const encode = (text) => new TextEncoder().encode(text);
+  for (const source of ["null", "false", "13", '"word"', "[]", "{}"]) {
+    assert.equal(
+      inspectOutputAsset(encode(source), "application/json").mime_type,
+      "application/json",
+    );
+  }
+  for (const bytes of [encode("{"), encode("{} extra"), Uint8Array.of(34, 255, 34)]) {
+    assert.throws(() => inspectOutputAsset(bytes, "application/json"), /valid UTF-8 JSON/);
+  }
+});
+
 test("an anywidget view references its module and paired binary inputs directly", () => {
   const spec = {
     module: { source_id: "code" },

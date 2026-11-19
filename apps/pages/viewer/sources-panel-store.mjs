@@ -30,6 +30,7 @@ export function sourceMediaLabel(type) {
       "text/javascript": "JavaScript",
       "text/css": "CSS",
       "audio/wav": "WAV audio",
+      "application/json": "JSON",
       "application/octet-stream": "Binary",
       "application/vnd.vegalite.v6+json": "Vega-Lite chart",
       [ANYWIDGET_MEDIA_TYPE]: "Anywidget",
