@@ -285,3 +285,86 @@ test("a refusal prints a spec's data names bounded and escaped, on one line", ()
   bounded(many);
   assert.match(many, /"d7" and 4 more\)/);
 });
+
+test("module authoring binds an entry, ranged files and JavaScript aliases in one view", () => {
+  const operation = {
+    op: "set_view",
+    view_id: "daily",
+    title: "Daily",
+    view_type: "module",
+    view_revision: null,
+    module: { source_id: "entry" },
+    data: { sales: { source_id: "usage" } },
+    imports: { controls: { source_id: "entry", revision: "1" } },
+  };
+  const normalized = validateViewOperation(operation);
+  assert.deepEqual(normalized.spec, {
+    module: operation.module,
+    files: operation.data,
+    imports: operation.imports,
+  });
+  for (const invalid of [
+    { imports: { react: { source_id: "entry" } } },
+    { imports: { controls: { source_id: "entry", revision: "0" } } },
+    { module: { source_id: "../outside" } },
+    { spec: {} },
+    { media_type: "text/javascript" },
+    { view_type: "__proto__" },
+  ])
+    assert.throws(() => validateViewOperation({ ...operation, ...invalid }), {
+      code: "invalid_view",
+    });
+});
+
+test("new executable views keep the host catalog they first used", () => {
+  const first = "a".repeat(64),
+    next = "b".repeat(64);
+  const js = "c".repeat(64);
+  const sourcesDoc = A.change(sources(), (draft) =>
+    setSources(
+      draft,
+      [
+        {
+          op: "set_source",
+          source_id: "entry",
+          name: "Entry",
+          source_revision: null,
+          asset_id: js,
+        },
+      ],
+      { by, mediaTypes: new Map([[js, "text/javascript"]]) },
+    ),
+  );
+  for (const media_type of [
+    "application/vnd.nteract.module-view.v1+json",
+    "application/vnd.nteract.anywidget.v2+json",
+  ]) {
+    const create = {
+      op: "set_view",
+      view_id: "daily",
+      title: "Daily",
+      media_type,
+      spec: { module: { source_id: "entry" } },
+      view_revision: null,
+    };
+    const write = (doc, operation, catalogRevision) =>
+      A.change(doc, (draft) => setView(draft, operation, { sourcesDoc, by, catalogRevision }));
+    const doc = A.change(viewGenesis(uuid), (draft) => {
+      const edit = setView(draft, create, { sourcesDoc, by, catalogRevision: first });
+      assert.equal(edit.catalog_revision, first);
+    });
+    assert.equal(readView(doc, "daily").catalog_revision, first);
+    assert.equal(viewSummary(doc, "daily").catalog_revision, first);
+    const edit = { ...create, title: "Updated", view_revision: "1" };
+    const renamed = write(doc, edit, next);
+    assert.equal(readView(renamed, "daily").catalog_revision, first);
+    assert.throws(
+      () => validateViewOperation({ ...create, catalog_revision: next }),
+      /does not take/,
+    );
+    const legacy = write(viewGenesis(uuid), create, null);
+    assert.equal(readView(write(legacy, edit, next), "daily").catalog_revision, undefined);
+    const chart = write(renamed, op({ view_revision: "2" }), next);
+    assert.equal(readView(chart, "daily").catalog_revision, undefined);
+  }
+});

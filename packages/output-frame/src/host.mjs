@@ -1,3 +1,4 @@
+import { exposeByteSource } from "./byte-source.mjs";
 import { fromEvent, Subscription, timer } from "rxjs";
 import { outputTransition } from "./lifecycle.mjs";
 import { preparePayload } from "./payload.mjs";
@@ -5,14 +6,29 @@ import { normalizeHostContext } from "./context.mjs";
 export { readHostContext, OUTPUT_STYLE_VARIABLES } from "./context.mjs";
 
 // One immutable mount, one port, one set of transferred inputs. No inbound
-// method grants asset access, document edits, navigation or kernel calls.
-export function mountAnywidgetOutput(
+// request can address a URL. Each optional file port serves one ByteSource.
+export { mountModuleOutput as mountAnywidgetOutput };
+export function mountModuleOutput(
   container,
   payload,
-  { frameUrl, hostContext, timeoutMs = 20000, scheduler, onState = () => {} } = {},
+  {
+    frameUrl,
+    hostContext,
+    byteSources = {},
+    timeoutMs = 20000,
+    scheduler,
+    onState = () => {},
+  } = {},
 ) {
   if (!frameUrl) throw Error("An output frame URL is required.");
   payload = preparePayload(payload);
+  const names = Object.keys(byteSources);
+  if (
+    names.length > 16 ||
+    names.some((name) => !/^data\/[a-z][a-z0-9_-]{0,63}$/.test(name)) ||
+    (names.length && payload.kind !== "module")
+  )
+    throw Error("A module view may bind up to 16 data/ file imports.");
   let context = normalizeHostContext(hostContext);
   const doc = container.ownerDocument;
   const url = new URL(frameUrl, doc.location.href);
@@ -31,6 +47,7 @@ export function mountAnywidgetOutput(
   frame.style.cssText = "display:block;width:100%;height:440px;border:0;visibility:hidden";
   const channel = new MessageChannel();
   const subscriptions = new Subscription();
+  const lifetime = new AbortController();
   let state = "connecting";
   const step = (event, error) => {
     const next = outputTransition(state, event);
@@ -39,6 +56,7 @@ export function mountAnywidgetOutput(
     if (state === "ready") frame.style.visibility = "visible";
     onState(state, error);
     if (state === "failed" || state === "disposed") {
+      lifetime.abort();
       subscriptions.unsubscribe();
       channel.port1.close();
       channel.port2.close();
@@ -68,10 +86,22 @@ export function mountAnywidgetOutput(
       if (!data || typeof data !== "object") return;
       if (data.type === "connected" && state === "handshaking") {
         step("connected");
-        const transfers = Object.values(payload.assets).map((asset) => asset.bytes.buffer);
+        const transfers = [
+          ...Object.values(payload.assets),
+          ...Object.values(payload.imports ?? {}),
+        ].map((asset) => asset.bytes.buffer);
         try {
           step("mount");
-          channel.port1.postMessage({ type: "mount", payload, context }, [...new Set(transfers)]);
+          const files = Object.fromEntries(
+            Object.entries(byteSources).map(([name, source]) => [
+              name,
+              exposeByteSource(source, lifetime.signal),
+            ]),
+          );
+          channel.port1.postMessage({ type: "mount", payload, context, files }, [
+            ...new Set(transfers),
+            ...Object.values(files).map((f) => f.port),
+          ]);
         } catch (error) {
           step("fail", error.message);
         }

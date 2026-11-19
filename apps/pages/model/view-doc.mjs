@@ -1,4 +1,5 @@
-import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
+import { WIDGET_IMPORTS } from "../shared/widget-imports.mjs";
+import { isExecutableView } from "../shared/anywidget-view.mjs";
 import { viewDependencies } from "../shared/view-dependencies.mjs";
 import * as A from "@automerge/automerge/slim";
 import { boundedWriter } from "./author.mjs";
@@ -27,6 +28,7 @@ import {
   VIEW_DATA_NAME_PATTERN,
   VIEW_ID_PATTERN,
   VIEW_MEDIA_TYPES,
+  VIEW_FORMATS,
   validDataName,
   validViewId,
 } from "../shared/views.mjs";
@@ -41,6 +43,7 @@ import {
  *   title: string,               // 1 to MAX_VIEW_TITLE characters
  *   media_type: string,          // one of VIEW_MEDIA_TYPES
  *   spec: Text,                  // the spec as JSON, replaced with updateText
+ *   catalog_revision?: string,  // host-selected manifest for a new executable view
  *   data: {                      // chart dataset bindings; empty for anywidget
  *     [data_name]: { source_id } | { source_id, revision },
  *   },
@@ -93,8 +96,14 @@ export function viewSummary(doc, viewId) {
   const view = readView(doc, viewId);
   if (!view) return undefined;
   const { view_id, title, media_type, revision, data } = view;
-  const summary = { view_id, title, media_type, revision };
-  if (media_type !== ANYWIDGET_MEDIA_TYPE) return { ...summary, data };
+  const summary = {
+    view_id,
+    title,
+    media_type,
+    revision,
+    ...(view.catalog_revision && { catalog_revision: view.catalog_revision }),
+  };
+  if (!isExecutableView(media_type)) return { ...summary, data };
   try {
     return {
       ...summary,
@@ -121,6 +130,26 @@ const CONTROL = /[\u0000-\u001f\u007f]/;
  * the data map, checked as bindings. */
 export function validateViewOperation(op) {
   if (!isMap(op) || op.op !== "set_view") fail("invalid_view", "Not a set_view operation");
+  if (Object.hasOwn(op, "view_type")) {
+    const { view_type, ...fields } = op;
+    if (typeof view_type !== "string" || !Object.hasOwn(VIEW_FORMATS, view_type))
+      fail("invalid_view", "Choose view_type module, anywidget or vega-lite.");
+    if (Object.hasOwn(fields, "media_type")) fail("invalid_view", "Choose one view format.");
+    if (view_type === "module") {
+      if (Object.hasOwn(fields, "spec"))
+        fail("invalid_view", "A module view takes module, data and imports.");
+      const { module, data, imports, ...rest } = fields;
+      op = {
+        ...rest,
+        media_type: VIEW_FORMATS.module,
+        spec: {
+          module,
+          ...(data !== undefined && { files: data }),
+          ...(imports !== undefined && { imports }),
+        },
+      };
+    } else op = { ...fields, media_type: VIEW_FORMATS[view_type] };
+  }
   const unknown = Object.keys(op).find((field) => !FIELDS.includes(field));
   if (unknown) fail("invalid_view", `set_view does not take ${String(unknown).slice(0, 64)}`);
   if (!validViewId(op.view_id))
@@ -130,7 +159,12 @@ export function validateViewOperation(op) {
   if (CONTROL.test(op.title))
     fail("invalid_view", "title can't hold control characters such as a newline or NUL");
   if (!VIEW_MEDIA_TYPES.includes(op.media_type))
-    fail("invalid_view", `media_type must be ${VIEW_MEDIA_TYPES.join(" or ")}`);
+    fail(
+      "invalid_view",
+      Object.hasOwn(op, "media_type")
+        ? "Unknown media_type. Choose view_type module, anywidget or vega-lite."
+        : "Choose view_type module, anywidget or vega-lite.",
+    );
   if (!(op.view_revision === null || validRevision(op.view_revision)))
     fail(
       "invalid_view",
@@ -140,11 +174,11 @@ export function validateViewOperation(op) {
   // their spec before checking the dataset names that data must bind.
   const checked = checkViewSpec(
     op.spec,
-    op.media_type === ANYWIDGET_MEDIA_TYPE ? op.data : undefined,
+    isExecutableView(op.media_type) ? op.data : undefined,
     op.media_type,
   );
   if (!checked.ok) fail("invalid_view", checked.error);
-  if (op.media_type === ANYWIDGET_MEDIA_TYPE) return op;
+  if (isExecutableView(op.media_type)) return op;
   if (!isMap(op.data) || !Object.keys(op.data).length)
     fail(
       "invalid_view",
@@ -186,7 +220,10 @@ export function validateViewOperation(op) {
  * stored view. Returns the stored view, or undefined for one it creates.
  */
 export function checkView(doc, op, { sourcesDoc } = {}) {
-  validateViewOperation(op);
+  return checkViewBindings(doc, validateViewOperation(op), sourcesDoc);
+}
+
+function checkViewBindings(doc, op, sourcesDoc) {
   for (const { source: binding, location, mediaType } of viewDependencies(op)) {
     let source;
     try {
@@ -249,22 +286,39 @@ export function checkView(doc, op, { sourcesDoc } = {}) {
  * (author.mjs authorOf), stored within WRITER_LIMITS; `at` the host's time.
  * Mints the next revision. Returns the receipt's edit.
  */
-export function setView(doc, op, { sourcesDoc, by, at = new Date().toISOString() }) {
-  const previous = checkView(doc, op, { sourcesDoc });
+export function setView(
+  doc,
+  op,
+  { sourcesDoc, by, catalogRevision, at = new Date().toISOString() },
+) {
+  op = validateViewOperation(op);
+  const previous = checkViewBindings(doc, op, sourcesDoc);
   if (!validTime(at) || !isMap(by)) throw Error("A view write needs its writer and time");
   const revision = String(previous ? Number(previous.revision) + 1 : 1);
   const title = op.title.trim();
   if (doc.title !== title) doc.title = title;
   if (doc.media_type !== op.media_type) doc.media_type = op.media_type;
+  // Existing executable views keep their original resolution mode on edits.
+  // Pages with an explicit declaration already chose their own catalog.
+  if (!isExecutableView(op.media_type)) {
+    if (doc.catalog_revision !== undefined) delete doc.catalog_revision;
+  } else if (catalogRevision && !isExecutableView(previous?.media_type)) {
+    const declaration = sourcesDoc?.sources?.[WIDGET_IMPORTS];
+    if (!declaration || declaration.deleted) doc.catalog_revision = catalogRevision;
+  }
   const spec = JSON.stringify(op.spec);
   if (typeof doc.spec !== "string") doc.spec = spec;
   else if (doc.spec !== spec) A.updateText(doc, ["spec"], spec);
   // Preserve the generic record shape; widget references live only in spec.
-  doc.data =
-    op.media_type === ANYWIDGET_MEDIA_TYPE
-      ? {}
-      : Object.fromEntries(Object.entries(op.data).map(([name, b]) => [name, bindingOf(b)]));
+  doc.data = isExecutableView(op.media_type)
+    ? {}
+    : Object.fromEntries(Object.entries(op.data).map(([name, b]) => [name, bindingOf(b)]));
   doc.revision = revision;
   doc.producer = { kind: "edit_page", at, by: boundedWriter(by) };
-  return { op: "set_view", view_id: op.view_id, view_revision: revision };
+  return {
+    op: "set_view",
+    view_id: op.view_id,
+    view_revision: revision,
+    ...(doc.catalog_revision && { catalog_revision: doc.catalog_revision }),
+  };
 }

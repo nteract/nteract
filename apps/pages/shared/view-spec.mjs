@@ -1,4 +1,5 @@
-import { ANYWIDGET_MEDIA_TYPE } from "./anywidget-view.mjs";
+import { compileModuleView } from "./module-view.mjs";
+import { ANYWIDGET_MEDIA_TYPE, MODULE_MEDIA_TYPE } from "./anywidget-view.mjs";
 import { compileAnywidgetSpec } from "./anywidget-spec.mjs";
 // Shared admission and rendering checks: charts bind dataset names through
 // data; widgets compile direct source references from spec.
@@ -53,6 +54,10 @@ export function checkViewSpec(spec, data, mediaType) {
   if (new TextEncoder().encode(json).byteLength > VIEW_SPEC_MAX_BYTES)
     return { ok: false, error: `spec must be ${VIEW_SPEC_MAX_BYTES / 1024} KiB or smaller.` };
   // Surface the media-specific refusal directly to the caller.
+  if (mediaType === MODULE_MEDIA_TYPE)
+    return data === undefined
+      ? compileModuleView(spec)
+      : { ok: false, error: "Declare module files in spec.files and omit data." };
   if (mediaType === ANYWIDGET_MEDIA_TYPE) {
     if (data !== undefined)
       return {

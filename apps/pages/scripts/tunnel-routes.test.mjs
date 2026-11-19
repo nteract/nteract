@@ -240,7 +240,7 @@ const matches = (source, pattern) => [...source.matchAll(pattern)].map((match) =
 const REGEX_LITERAL = String.raw`\/((?:\\.|\[(?:\\.|[^\]\\\n])*\]|[^/\\[\n])+)\/([dgimsuvy]*)`;
 
 test("the supported targets include the isolated Page11 experiment", () => {
-  assert.deepEqual(QUALIFIED_TARGETS, ["page10", "pages", "pages2", "page11"]);
+  assert.deepEqual(QUALIFIED_TARGETS, ["page10", "pages", "pages2", "page11", "page12"]);
 });
 
 for (const target of QUALIFIED_TARGETS)

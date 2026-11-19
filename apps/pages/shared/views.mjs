@@ -1,4 +1,4 @@
-import { ANYWIDGET_MEDIA_TYPE } from "./anywidget-view.mjs";
+import { ANYWIDGET_MEDIA_TYPE, MODULE_MEDIA_TYPE } from "./anywidget-view.mjs";
 // A Page's views: charts and anywidgets stored each in its own `pages.view` document
 // (model/view-doc.mjs), placed in the Page body by a `view` node. These are
 // the limits and names the host, the model, the tool schemas (mcp.mjs) and
@@ -11,10 +11,21 @@ export const VIEW_ID_PATTERN = "^[a-z][a-z0-9_-]{0,63}$";
 /** The longest view title, in UTF-16 code units. */
 export const MAX_VIEW_TITLE = 200;
 /** The media types a view's spec may be. */
+const VEGA_LITE_MEDIA_TYPE = "application/vnd.vegalite.v6+json";
 export const VIEW_MEDIA_TYPES = Object.freeze([
-  "application/vnd.vegalite.v6+json",
+  VEGA_LITE_MEDIA_TYPE,
   ANYWIDGET_MEDIA_TYPE,
+  MODULE_MEDIA_TYPE,
 ]);
+// Authoring names are needed by the host and MCP. The grid only reads stored media types.
+export const VIEW_FORMATS = {
+  "vega-lite": VEGA_LITE_MEDIA_TYPE,
+  anywidget: ANYWIDGET_MEDIA_TYPE,
+  module: MODULE_MEDIA_TYPE,
+};
+export function viewType(mediaType) {
+  return Object.keys(VIEW_FORMATS).find((name) => VIEW_FORMATS[name] === mediaType);
+}
 /** A view revision: decimal, minted by the host from "1". */
 export const VIEW_REVISION_PATTERN = "^[1-9][0-9]{0,15}$";
 /** A data name: a key of a view's `data` map and the name its spec reads. */

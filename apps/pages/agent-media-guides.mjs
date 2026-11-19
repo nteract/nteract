@@ -2,7 +2,7 @@ import { ANYWIDGET_MEDIA_TYPE, OUTPUT_ASSET_TYPES } from "./shared/anywidget-vie
 import { CHART_MAX_ROWS } from "./shared/chart-spec.mjs";
 import { VIEW_SPEC_MAX_BYTES } from "./shared/view-spec.mjs";
 import { SOURCE_HISTORY_LIMIT } from "./model/sources-doc.mjs";
-import { MAX_VIEWS, VIEW_MEDIA_TYPES } from "./shared/views.mjs";
+import { MAX_VIEWS } from "./shared/views.mjs";
 
 // Public, deployment-local documentation. Keep proposed schemas out of these
 // guides: examples must pass the validators shipped with the same deployment.
@@ -58,10 +58,10 @@ export function mediaGuideIndex(origin) {
   ).join("\n");
 }
 
-export function mediaGuide(path, origin) {
+export function mediaGuide(path, origin, { catalogEnabled = false } = {}) {
   const guide = MEDIA_GUIDES.find((entry) => entry.path === path);
   if (!guide) return null;
-  return `# Pages: ${guide.title}\n\nThese instructions describe the API supported by this deployment. Code examples use the HTTP tool envelope; in MCP, call the named tool with its arguments object. Replace angle-bracket placeholders with returned values. Do not send example placeholders literally.\n\n${guide.body(origin)}\n\n## Related guides\n\n${link(origin, "/llms.txt", "Pages entry point and authentication")}\n\n${mediaGuideIndex(origin)}\n`;
+  return `# Pages: ${guide.title}\n\nThese instructions describe the API supported by this deployment. Code examples use the HTTP tool envelope; in MCP, call the named tool with its arguments object. Replace angle-bracket placeholders with returned values. Do not send example placeholders literally.\n\n${guide.body(origin, catalogEnabled)}\n\n## Related guides\n\n${link(origin, "/llms.txt", "Pages entry point and authentication")}\n\n${mediaGuideIndex(origin)}\n`;
 }
 
 function assetsGuide(origin) {
@@ -99,26 +99,52 @@ Images can be inserted directly from an asset. A Parquet dataframe can use asset
 `;
 }
 
-function viewsGuide(origin) {
-  return `Use a direct asset block when it already provides the presentation you need: insert_image for an image, or insert_node with type:dataframe for Parquet. A dataframe can also follow or pin a source. You do not need a separate view record for those cases.
+function viewsGuide(origin, catalogEnabled) {
+  const example = {
+    op: "set_view",
+    view_id: "activity",
+    title: "Activity",
+    view_type: "module",
+    module: { source_id: "activity-module" },
+    view_revision: null,
+  };
+  return `For a Parquet table, use insert_node with type dataframe. For a custom JavaScript chart, control or React component, create a module view. A source names bytes. A view connects an entry module to its inputs. A view node places it on the Page.
 
-A view has its own identity, title, configuration and source bindings. A document block refers to that view by view_id. Use a view for a chart or an executable anywidget frontend. A view's media_type identifies its configuration format, while its inputs retain their own asset media types.
+## Create a JavaScript view
 
-## Choose a view format
+Upload browser-ready text/javascript, then register its asset with set_source. Give the entry a named render export. Pages supplies the DOM element and an AbortSignal; return a cleanup function if needed. React state and DOM events work inside the frame. Choose view_type anywidget for an existing widget that uses a model, or vega-lite for a declarative chart.
 
-${VIEW_MEDIA_TYPES.map((type) => `- \`${type}\``).join("\n")}
+${
+  catalogEnabled
+    ? `The host pins the standard libraries when you save a new view. read_page.libraries lists the exact names available here. Import them directly. For example:
 
-The spec field contains configuration for the selected type. For Vega-Lite, data maps the named datasets to {source_id} or {source_id, revision}. Anywidget instead carries direct source references in spec.module, spec.stylesheet and each spec.buffers entry; omit data. See ${link(origin, "/llms/anywidget.txt", "Anywidget examples")} or ${link(origin, "/llms/vega-lite.txt", "Vega-Lite examples")} for complete set_view operations. Do not place source text or URLs where a source reference is expected.
+\`\`\`js
+import * as Plot from "@observablehq/plot";
+export function render({ el }) {
+  el.append(Plot.plot({ marks: [Plot.barY([{ day: "Mon", count: 4 }], { x: "day", y: "count", title: d => d.day + ": " + d.count })] }));
+}
+\`\`\`
 
-## Create, place, and inspect
+The receipt and read_page.view.catalog_revision identify the pinned library build.`
+    : "Use a self-contained entry or bind Page-owned JavaScript sources in imports."
+}
 
-1. Upload the required files and register their sources using ${link(origin, "/llms/assets-and-sources.txt", "Assets and sources")}.
-2. Choose a Page-scoped view_id. Send set_view alone in an edit_page batch, with explicit view_revision:null to create it. An existing ID refuses creation; choose another ID or read its revision before updating.
-3. After that succeeds, place its block in a separate edit_page call:
-${edit("place-counter-001", [place("counter")])}
-Omitting after_node_id appends. null prepends; a node ID places it after that block. The author already knows the view_id. The calls are separate because each journaled batch currently writes one document: the view and body live in different documents.
-${call("read_page", { page_id: "<page_id>", view_id: "counter" })}
-Read views:true to list views (Vega-Lite includes data; anywidget includes dependencies with source, role and location); read the Page outline to locate its view blocks. A single-view read includes spec and revision; pass that revision as view_revision on the next complete set_view. A Page supports up to ${MAX_VIEWS} views. Removing a block with delete_node removes the placement, not the reusable view or sources.
+${edit("save-activity", [example])}
+${edit("place-activity", [place("activity")])}
+
+To share a component, upload its JavaScript once. Each view chooses an import name for that source. With the following definition the entry can write \`import { ChoiceGroup } from "activity-controls"\`. Omit revision to follow the source, or give a retained revision to pin it.
+
+${edit("save-shared-control", [{ ...example, view_revision: "1", imports: { "activity-controls": { source_id: "controls" } }, data: { activity: { source_id: "project-activity" } } }])}
+
+## Read part of a file
+
+The entry can \`import activity from "data/activity"\` when data binds the name activity. Its byteLength is the file size. read(offset, length, signal) returns that span as a Uint8Array. Read the Parquet source with read_page and source_id to discover its columns.${catalogEnabled ? " For a bounded preview, import {loadTableFile} from '@nteract/sift/parquet', call await loadTableFile(activity, {maxRows:28, overflow:'truncate'}), and call table.dispose() when done." : ""} Each range uses the Page's existing access checks.
+
+## Inspect and edit
+
+Read a view to get its current revision and bindings. Use that revision as view_revision when updating it. Use views:true for a list and the Page outline for placements. A Page supports up to ${MAX_VIEWS} views. Removing a node removes that placement. The view and sources can still be used elsewhere on the Page.
+
+${call("read_page", { page_id: "<page_id>", view_id: "activity" })}
 
 ## Updates and recovery
 
@@ -135,7 +161,7 @@ function anywidgetGuide(origin) {
     op: "set_view",
     view_id: "counter",
     title: "Local counter",
-    media_type: ANYWIDGET_MEDIA_TYPE,
+    view_type: "anywidget",
     spec: { module: { source_id: "counter-module" }, state: { count: 0 } },
     view_revision: null,
   };
@@ -143,7 +169,7 @@ function anywidgetGuide(origin) {
     op: "set_view",
     view_id: "audio",
     title: "Recording",
-    media_type: ANYWIDGET_MEDIA_TYPE,
+    view_type: "anywidget",
     spec: {
       module: { source_id: "audio-module" },
       stylesheet: { source_id: "audio-style" },
@@ -152,7 +178,7 @@ function anywidgetGuide(origin) {
     },
     view_revision: null,
   };
-  return `Author an [Anywidget Front-End Module](https://anywidget.dev/en/afm/). Pages supplies local model state in an isolated iframe. The Pages envelope is \`${ANYWIDGET_MEDIA_TYPE}\`; it is not a Jupyter widget-view model_id reference.
+  return `For new JavaScript views and shared components, start with ${link(origin, "/llms/views.txt", "module views")}. For an existing widget that needs a model, use an [Anywidget Front-End Module](https://anywidget.dev/en/afm/). Pages supplies local model state in an isolated iframe. The Pages envelope is \`${ANYWIDGET_MEDIA_TYPE}\`; it is not a Jupyter widget-view model_id reference.
 
 ## A complete counter
 
@@ -228,7 +254,7 @@ function vegaGuide(origin) {
     op: "set_view",
     view_id: "daily-chart",
     title: "Daily usage",
-    media_type: "application/vnd.vegalite.v6+json",
+    view_type: "vega-lite",
     spec: {
       data: { name: "usage" },
       mark: "bar",

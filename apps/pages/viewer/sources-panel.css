@@ -84,6 +84,32 @@
   margin: 0;
   overflow-wrap: anywhere;
 }
+.source-inspector h3.library-heading {
+  justify-content: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.library-revisions summary {
+  cursor: pointer;
+  list-style: none;
+}
+.library-revisions summary::-webkit-details-marker {
+  display: none;
+}
+.library-revisions[open] > summary > svg:last-child {
+  transform: rotate(90deg);
+}
+.library-revision {
+  margin: 0 1rem 0.5rem;
+}
+.library-revision > small {
+  color: var(--muted-foreground);
+  font-size: 0.73rem;
+}
+.library-revision .source-use {
+  font-size: 0.83rem;
+}
 .source-id {
   font-family: var(--font-mono, monospace);
   color: var(--muted-foreground);

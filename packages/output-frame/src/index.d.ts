@@ -32,8 +32,20 @@ export interface AnywidgetOutput {
   title?: string;
   spec: AnywidgetSpec;
   assets: Record<string, OutputAsset>;
+  imports?: Record<string, OutputAsset>;
+}
+export interface ByteSource {
+  readonly byteLength: number;
+  read(offset: number, length: number, signal?: AbortSignal): Promise<Uint8Array>;
+}
+export interface ModuleOutput {
+  kind: "module";
+  title?: string;
+  assets: { entry: OutputAsset };
+  imports?: Record<string, OutputAsset>;
 }
 export interface OutputOptions {
+  byteSources?: Record<string, ByteSource>;
   frameUrl: string;
   hostContext: OutputHostContext;
   timeoutMs?: number;
@@ -57,6 +69,12 @@ export function readHostContext(element: HTMLElement, theme: "light" | "dark"): 
 export function mountAnywidgetOutput(
   container: HTMLElement,
   payload: AnywidgetOutput,
+  options: OutputOptions,
+): OutputHandle;
+
+export function mountModuleOutput(
+  container: HTMLElement,
+  payload: AnywidgetOutput | ModuleOutput,
   options: OutputOptions,
 ): OutputHandle;
 

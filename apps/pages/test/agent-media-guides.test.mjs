@@ -4,7 +4,6 @@ import worker from "../worker/index.mjs";
 import { MEDIA_GUIDES, mediaGuide } from "../agent-media-guides.mjs";
 import { validateSourceOperation } from "../model/sources-doc.mjs";
 import { validateViewOperation } from "../model/view-doc.mjs";
-import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
 import { compileAnywidgetSpec } from "../shared/anywidget-spec.mjs";
 import { widgetState } from "@nteract/output-frame/schema";
 import { tools } from "../mcp.mjs";
@@ -67,6 +66,53 @@ test("media guides are discoverable, public, and use the configured origin", asy
   }
 });
 
+test("a Page author can discover the same catalog setup through MCP and the public guides", async () => {
+  const hosted = "https://output.example/frame/v2/";
+  const local = "http://localhost:9917";
+  const loopback = "http://127.0.0.1:9447/frame/v2/";
+  const pin = "a".repeat(64);
+  for (const [site, frame, revision, enabled] of [
+    [origin, hosted, pin, true],
+    [local, loopback, pin, true],
+    [origin, hosted, undefined, false],
+    [local, loopback, undefined, false],
+    [origin, origin + "/frame/", pin, false],
+  ]) {
+    const config = {
+      NOTEBOOK_CLOUD_PUBLIC_ORIGIN: site,
+      PAGES_OUTPUT_FRAME_URL: frame,
+      PAGES_WIDGET_CATALOG_REVISION: revision,
+    };
+    const guide = await (await worker.fetch(new Request(site + "/llms/views.txt"), config)).text();
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    const response = await worker.fetch(
+      new Request(site + "/mcp", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          "Content-Length": String(body.length),
+        },
+        body,
+      }),
+      config,
+    );
+    assert.equal(response.status, 200, await response.clone().text());
+    const catalog = (await response.json()).result.tools;
+    const editTool = catalog.find((tool) => tool.name === "edit_page");
+    const ops = editTool.inputSchema.properties.operations.items.properties.op.enum;
+    assert.ok(!ops.includes("set_widget_imports"));
+    assert.deepEqual(
+      editTool.inputSchema.properties.operations.items.properties.view_type.enum.sort(),
+      ["anywidget", "module", "vega-lite"],
+    );
+    assert.ok(guide.includes('"view_type": "module"'));
+    assert.ok(guide.includes('"activity-controls"'));
+    assert.equal(guide.includes("read_page.libraries"), enabled);
+    assert.equal(guide.includes("view.catalog_revision"), enabled);
+  }
+});
+
 test("unknown guide paths return 404 rather than an app shell or login", async () => {
   for (const path of [
     "/llms/",
@@ -108,7 +154,7 @@ test("published tool examples pass current source and view validators", () => {
         } else if (op.op === "set_view") {
           validateViewOperation(op);
           views++;
-          if (op.media_type === ANYWIDGET_MEDIA_TYPE) {
+          if (op.view_type === "anywidget") {
             const compiled = compileAnywidgetSpec(op.spec);
             const assets = Object.fromEntries(
               compiled.dependencies.map(({ name }) => [name, { bytes: new Uint8Array([1, 2, 3]) }]),

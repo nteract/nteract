@@ -1,8 +1,10 @@
+import { decodeWidgetImports } from "../shared/widget-imports.mjs";
 // Read-only previews of authenticated source bytes. Never import JavaScript or
 // attach source CSS to the Page; both are rendered as text.
 import { Observable, distinctUntilChanged, map, of, scan, switchMap } from "rxjs";
 import { sameVersion } from "./page-source-store.mjs";
 import { fetchOutputAsset } from "./output-assets.mjs";
+import { hasWidgetCatalog, widgetCatalogPin } from "./widget-imports.mjs";
 import { Store } from "./store.mjs";
 
 export const TEXT_PREVIEW_LIMIT = 16000;
@@ -23,7 +25,16 @@ export function previewTransition(state, event) {
   return state;
 }
 
-export function previewOf({ bytes, mediaType }) {
+export function previewOf({ bytes, mediaType }, catalogPin = null) {
+  if (catalogPin && bytes.byteLength <= TEXT_PREVIEW_LIMIT) {
+    const declaration = decodeWidgetImports(bytes, catalogPin);
+    return {
+      kind: "catalog",
+      imports: declaration.imports,
+      modules: declaration.modules,
+      pin: declaration.catalog_revision,
+    };
+  }
   if (mediaType === "text/javascript" || mediaType === "text/css") {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     return {
@@ -65,7 +76,10 @@ export function sourcePreviewStore(session, sourceId, read = fetchOutputAsset) {
                       subscriber.next({
                         type: "loaded",
                         assetId: version.asset_id,
-                        preview: previewOf(asset),
+                        preview: previewOf(
+                          asset,
+                          hasWidgetCatalog() ? widgetCatalogPin(version) : null,
+                        ),
                       });
                       subscriber.complete();
                     })

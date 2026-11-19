@@ -152,10 +152,18 @@ export function routesFor(target, { omit = [], use = {} } = {}) {
       paths += use[entry.name];
     } else paths += entry.paths;
   }
+  const output = profile.output
+    ? `  - hostname: ${profile.output.hostname}
+    path: ^/(health|frame/v2/|catalog[.]json|catalog/[a-f0-9]{64}/[A-Za-z0-9_-]+[.](js|css|wasm|json))$
+    service: http://${profile.output.listen}
+  - hostname: ${profile.output.hostname}
+    service: http_status:404
+`
+    : "";
   return `  - hostname: ${hostname}
     path: ^/(${paths})?$
     service: http://${listen}
   - hostname: ${hostname}
     service: http_status:404
-`;
+${output}`;
 }

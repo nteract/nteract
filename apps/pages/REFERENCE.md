@@ -1900,7 +1900,8 @@ root is:
 ```
 {
   title:      string, 1 to 200 characters; a write refuses control characters
-  media_type: "application/vnd.vegalite.v6+json" | "application/vnd.nteract.anywidget.v2+json"
+  media_type: one of the formats in shared/views.mjs
+  catalog_revision?: SHA-256 of the executable view’s standard libraries
   spec:       text, the media-specific spec as JSON
   data:       { [data_name]: { source_id } | { source_id, revision } }
   revision:   decimal string: "1", then one more per write
@@ -2080,9 +2081,7 @@ Pages and the notebook output host.
 
 ### Writes
 
-`edit_page` `set_view` writes one view: `{ op: "set_view", view_id, title,
-media_type, spec, view_revision }` (plus `data` for Vega-Lite only), alone in its batch (otherwise
-`400 invalid_arguments`). It names the Page `revision` it read, fenced like
+`edit_page` sends `set_view` alone. Every view has a `view_id`, title, `view_type` and `view_revision`. For new JavaScript use `module`. Its `module` field names the entry source, optional `data` binds ranged files, and optional `imports` binds JavaScript sources under names local to the view. Each binding follows its source unless it specifies a revision. Use `vega-lite` with a chart spec and named data, or `anywidget` with a widget spec for code that needs a model. All three use the same view node. `read_page.libraries` lists the host-provided names. It names the Page `revision` it read, fenced like
 any edit; a newer Page revision doesn't refuse it. `view_revision` is null to
 create, or the view's current `revision`. The receipt carries
 `view_revision`, the view's revision after the write, and `result.edits` of

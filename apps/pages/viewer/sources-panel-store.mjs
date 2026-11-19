@@ -13,10 +13,20 @@ import { nativeRead, readChildren, readKind } from "../model/native-read.mjs";
 import * as A from "@automerge/automerge/slim";
 import { orderedBlockIds } from "../model/order.mjs";
 import { readSource } from "../model/sources-doc.mjs";
-import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
+import {
+  isExecutableView,
+  ANYWIDGET_MEDIA_TYPE,
+  MODULE_MEDIA_TYPE,
+} from "../shared/anywidget-view.mjs";
 import { parseAssetPath } from "../shared/dataset-assets.mjs";
 import { viewDependencies } from "../shared/view-dependencies.mjs";
 import { sourcesAnswer } from "./page-source-store.mjs";
+import {
+  WIDGET_IMPORTS,
+  hasWidgetCatalog,
+  sourceDisplayName,
+  widgetCatalogPin,
+} from "./widget-imports.mjs";
 import { Store } from "./store.mjs";
 
 export function sourceMediaLabel(type) {
@@ -29,6 +39,7 @@ export function sourceMediaLabel(type) {
       "application/octet-stream": "Binary",
       "application/vnd.vegalite.v6+json": "Vega-Lite chart",
       [ANYWIDGET_MEDIA_TYPE]: "Anywidget",
+      [MODULE_MEDIA_TYPE]: "Module view",
     }[type] ??
     type ??
     "Unknown type"
@@ -37,7 +48,8 @@ export function sourceMediaLabel(type) {
 
 export function sourceMatchesQuery(source, query) {
   const titles = source.kind === "attachment" ? source.uses.map((use) => use.title).join(" ") : "";
-  return `${source.name} ${source.source_id} ${sourceMediaLabel(source.media_type)} ${titles}`
+  const type = widgetCatalogPin(source) ? "Page import map" : sourceMediaLabel(source.media_type);
+  return `${source.name} ${source.source_id} ${type} ${titles}`
     .toLocaleLowerCase()
     .includes(query.toLocaleLowerCase());
 }
@@ -94,13 +106,26 @@ export function sourcePlacements(doc, cache = new WeakMap()) {
   return { placements, unreadableBlocks };
 }
 
-export function projectSourcesPanel(doc, placements, views, answer = "known") {
+export function projectSourcesPanel(
+  doc,
+  placements,
+  views,
+  answer = "known",
+  catalogEnabled = false,
+) {
   const sources = new Map();
+  const libraryPins = [];
   let unreadableSources = 0;
   for (const id of Object.keys(doc?.sources ?? {})) {
     if (doc.sources[id]?.deleted) continue;
     try {
-      sources.set(id, { ...readSource(doc, id), uses: [], availability: "available" });
+      const source = readSource(doc, id);
+      sources.set(id, {
+        ...source,
+        name: sourceDisplayName(source),
+        uses: [],
+        availability: "available",
+      });
     } catch {
       unreadableSources++;
       sources.set(id, { source_id: id, name: id, uses: [], availability: "unreadable" });
@@ -155,6 +180,23 @@ export function projectSourcesPanel(doc, placements, views, answer = "known") {
       unresolvedViews.push({ ...placement, status: "unreadable" });
       continue;
     }
+    if (isExecutableView(view.media_type) && view.catalog_revision) {
+      libraryPins.push({
+        ...placement,
+        title: view.title || placement.viewId,
+        digest: view.catalog_revision,
+      });
+    }
+    if (
+      catalogEnabled &&
+      isExecutableView(view.media_type) &&
+      widgetCatalogPin(sources.get(WIDGET_IMPORTS))
+    ) {
+      dependencies = [
+        ...dependencies,
+        { source: { source_id: WIDGET_IMPORTS }, role: "catalog", location: "Page libraries" },
+      ];
+    }
     for (const { source, role, location } of dependencies) {
       add(source, {
         ...placement,
@@ -172,6 +214,7 @@ export function projectSourcesPanel(doc, placements, views, answer = "known") {
       (a, b) => a.name.localeCompare(b.name) || a.source_id.localeCompare(b.source_id),
     ),
     answer,
+    libraryPins,
     unresolvedViews,
     unreadableSources,
     unreadableBlocks: placements.unreadableBlocks,
@@ -181,6 +224,7 @@ export function projectSourcesPanel(doc, placements, views, answer = "known") {
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const EMPTY = {
   sources: [],
+  libraryPins: [],
   answer: "unknown",
   unresolvedViews: [],
   unreadableSources: 0,
@@ -229,6 +273,7 @@ export function sourcesPanelStore(session) {
                                   spec: state.view.spec,
                                   data: state.view.data,
                                   revision: state.view.revision,
+                                  catalog_revision: state.view.catalog_revision,
                                 },
                               }
                             : state,
@@ -260,6 +305,7 @@ export function sourcesPanelStore(session) {
               state.name === "unreadable" || state.name === "unserved"
                 ? state.name
                 : sourcesAnswer(state, sync?.link),
+              hasWidgetCatalog(),
             ),
           ),
           distinctUntilChanged(same),

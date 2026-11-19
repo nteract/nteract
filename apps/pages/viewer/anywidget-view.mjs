@@ -1,3 +1,5 @@
+import { openAssetByteSource } from "./asset-byte-source.mjs";
+import { decodeWidgetImports } from "../shared/widget-imports.mjs";
 import {
   Observable,
   combineLatest,
@@ -9,10 +11,15 @@ import {
   switchMap,
 } from "rxjs";
 import { checkViewSpec } from "../shared/view-spec.mjs";
-import { OUTPUT_MAX_TOTAL_BYTES, OUTPUT_FRAME_URL } from "../shared/anywidget-view.mjs";
+import {
+  MODULE_MEDIA_TYPE,
+  OUTPUT_MAX_TOTAL_BYTES,
+  OUTPUT_FRAME_URL,
+} from "../shared/anywidget-view.mjs";
 import { viewDependencies } from "../shared/view-dependencies.mjs";
 import { fetchOutputAsset } from "./output-assets.mjs";
-import { mountAnywidgetOutput, readHostContext } from "@nteract/output-frame";
+import { mountModuleOutput, readHostContext } from "@nteract/output-frame";
+import { WIDGET_IMPORTS, widgetCatalogPin, hasWidgetCatalog } from "./widget-imports.mjs";
 import { themeStore } from "./theme.mjs";
 
 export function anywidgetPlan(view, sources) {
@@ -38,7 +45,7 @@ export function mount(
     sourcesAnswer$ = of("known"),
     frameUrl = container.ownerDocument.querySelector('meta[name="pages-output-frame-url"]')
       ?.content ?? OUTPUT_FRAME_URL,
-    mountOutput = mountAnywidgetOutput,
+    mountOutput = mountModuleOutput,
     theme = themeStore,
   },
 ) {
@@ -51,6 +58,13 @@ export function mount(
   button.type = "button";
   button.textContent = "Retry interactive view";
   const output = root.appendChild(doc.createElement("div"));
+  const catalog$ =
+    hasWidgetCatalog(frameUrl) && sources.sources$
+      ? sources.sources$.pipe(
+          map((all) => widgetCatalogPin(all[WIDGET_IMPORTS])),
+          distinctUntilChanged(),
+        )
+      : of(null);
   const plans$ = view$.pipe(
     switchMap((projection) => {
       if (projection.status !== "ready")
@@ -62,10 +76,11 @@ export function mount(
       } catch (error) {
         return of({ error: error.message });
       }
-      return combineLatest([sources.versions(ids), sourcesAnswer$ ?? of("known")]).pipe(
-        map(() => {
+      return combineLatest([sources.versions(ids), sourcesAnswer$ ?? of("known"), catalog$]).pipe(
+        map(([, , catalog]) => {
           try {
-            return anywidgetPlan(view, sources);
+            const plan = anywidgetPlan(view, sources);
+            return { ...plan, catalog, key: JSON.stringify([plan.key, catalog]) };
           } catch (error) {
             return { error: error.message };
           }
@@ -109,7 +124,7 @@ export function mount(
                           // Sequential bounded reads cap memory independently of number of bindings.
                           const assets = {};
                           let total = 0;
-                          for (const [name, version] of Object.entries(plan.versions)) {
+                          const load = async (version) => {
                             const asset = await fetchOutputAsset(sources.pageId, version, {
                               signal: controller.signal,
                               request: sources.request,
@@ -118,17 +133,57 @@ export function mount(
                             total += asset.bytes.byteLength;
                             if (total > OUTPUT_MAX_TOTAL_BYTES)
                               throw Error("This view's inputs exceed 32 MiB.");
-                            assets[name] = asset;
+                            return asset;
+                          };
+                          const url = new URL(frameUrl);
+                          const imports = {};
+                          let catalogRevision = plan.view.catalog_revision;
+                          if (plan.catalog) {
+                            const source = await load({
+                              asset_id: plan.catalog,
+                              media_type: "application/octet-stream",
+                            });
+                            const declaration = decodeWidgetImports(source.bytes, plan.catalog);
+                            catalogRevision ??= declaration.catalog_revision;
+                            for (const module of declaration.modules)
+                              imports[module.name] = await load({
+                                asset_id: module.asset_id,
+                                media_type: "text/javascript",
+                              });
                           }
+                          if (catalogRevision) {
+                            if (!hasWidgetCatalog(frameUrl))
+                              throw Error(
+                                "This output host cannot serve the catalog pinned by this view.",
+                              );
+                            url.searchParams.set("catalog", catalogRevision);
+                          }
+                          const byteSources = {};
+                          for (const [name, version] of Object.entries(plan.versions)) {
+                            if (name.startsWith("data/"))
+                              byteSources[name] = await openAssetByteSource(
+                                sources.pageId,
+                                version,
+                                { signal: controller.signal, request: sources.request },
+                              );
+                            else if (name.startsWith("import/"))
+                              imports[name.slice(7)] = await load(version);
+                            else assets[name] = await load(version);
+                          }
+                          controller.signal.throwIfAborted();
                           outputHandle = mountOutput(
                             output,
                             {
                               title: plan.view.title,
-                              spec: plan.spec,
+                              ...(plan.view.media_type === MODULE_MEDIA_TYPE
+                                ? { kind: "module" }
+                                : { spec: plan.spec }),
                               assets,
+                              ...(Object.keys(imports).length && { imports }),
                             },
                             {
-                              ...(frameUrl && { frameUrl }),
+                              byteSources,
+                              frameUrl: url.href,
                               hostContext: readHostContext(root, theme.getSnapshot().resolved),
                               onState(state, error) {
                                 if (controller.signal.aborted) return;

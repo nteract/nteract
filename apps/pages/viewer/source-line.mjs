@@ -3,6 +3,7 @@
 // thereafter, even when a refresh points to the same asset. It is neither
 // the asset's upload time nor the date of the rows in that asset.
 import { asyncScheduler, map, timer } from "rxjs";
+import { widgetCatalogPin } from "./widget-imports.mjs";
 import { toDate } from "./relative-time.mjs";
 import { ANYWIDGET_MEDIA_TYPE, CSS_MEDIA_TYPE, ESM_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
 
@@ -60,7 +61,7 @@ export function sourceTime(value, now, { locale, timeZone } = {}) {
  * including unused ones and those that have only been added once. */
 export function sourceLine(sources, now, options = {}) {
   const ordered = Object.values(sources)
-    .filter((source) => !renderingTypes.has(source.media_type))
+    .filter((source) => !renderingTypes.has(source.media_type) && !widgetCatalogPin(source))
     .sort(
       (a, b) =>
         a.name.localeCompare(b.name, options.locale) || a.source_id.localeCompare(b.source_id),

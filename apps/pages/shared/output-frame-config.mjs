@@ -9,13 +9,21 @@ export function outputFrameUrl(value = OUTPUT_FRAME_URL, pageOrigin) {
   } catch {
     throw Error("PAGES_OUTPUT_FRAME_URL must be an absolute HTTPS URL");
   }
+  const page = new URL(pageOrigin);
+  // Local celld and its credential-free output server use distinct loopback
+  // hostnames. Cookies ignore port numbers, so a second port alone won't do.
+  const localPair =
+    page.protocol === "http:" &&
+    page.hostname === "localhost" &&
+    url.protocol === "http:" &&
+    url.hostname === "127.0.0.1";
   if (
-    url.protocol !== "https:" ||
+    (url.protocol !== "https:" && !localPair) ||
     url.username ||
     url.password ||
     url.search ||
     url.hash ||
-    url.origin === new URL(pageOrigin).origin
+    url.hostname === page.hostname
   )
     throw Error(
       "PAGES_OUTPUT_FRAME_URL must be HTTPS on a separate origin, without credentials, query or fragment",

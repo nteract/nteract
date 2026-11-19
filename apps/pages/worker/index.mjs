@@ -1,3 +1,5 @@
+import { configuredCatalogRevision, standardImports } from "../shared/widget-imports.mjs";
+
 import { hasNonce } from "../model/nonce.mjs";
 import * as A from "@automerge/automerge";
 import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
@@ -2033,6 +2035,7 @@ const gateway = {
               env.ASSETS,
               env.PAGES_OUTPUT_FRAME_URL,
               env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || url.origin,
+              { catalog: Boolean(configuredCatalogRevision(env)) },
             ),
           },
         });
@@ -7087,6 +7090,7 @@ export class Page {
           const options = {
             recovery: this.recoveryBlocked,
             historyIncomplete: incompleteHistory(this.handle.doc()),
+            libraries: configuredCatalogRevision(this.env) ? standardImports : [],
             getPresence: (doc) => this.activityState().read(doc),
             commentsDoc: this.commentsView(),
             sourcesDoc: this.sourcesView(),
@@ -7584,6 +7588,7 @@ export class Page {
    */
   async writeSources(request, identity, body) {
     const args = body.arguments ?? {};
+
     const mediaTypes = new Map();
     // Stored on the source as its writer's agent, so the retry fingerprint
     // covers it, as a comment's does.
@@ -7627,8 +7632,9 @@ export class Page {
         prepare: async () => {
           let assetIds;
           try {
-            assetIds = validateSourceBatch(args.operations);
-            checkSources(handle.doc(), args.operations);
+            const operations = args.operations;
+            assetIds = validateSourceBatch(operations);
+            checkSources(handle.doc(), operations);
           } catch (error) {
             throw sourceRefusal(error);
           }
@@ -7822,6 +7828,7 @@ export class Page {
         apply: (draft, effectiveArgs) => {
           try {
             const edit = setView(draft, effectiveArgs.operations[0], {
+              catalogRevision: configuredCatalogRevision(this.env),
               sourcesDoc: this.sourcesView(),
               by: authorOf(publicIdentity(identity), agent),
             });

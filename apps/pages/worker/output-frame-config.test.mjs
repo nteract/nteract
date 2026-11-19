@@ -43,6 +43,14 @@ test("runtime iframe URLs refuse credentials, opaque URLs, same-origin endpoints
   assert.equal(outputFrameUrl(frame, origin), frame);
 });
 
+test("local celld can use a separate loopback hostname for its catalog frame", () => {
+  const output = "http://127.0.0.1:9446/frame/v2/";
+  assert.equal(outputFrameUrl(output, "http://localhost:9916"), output);
+  for (const page of [origin, "http://127.0.0.1:9916", "https://localhost"]) {
+    assert.throws(() => outputFrameUrl(output, page), /PAGES_OUTPUT_FRAME_URL/);
+  }
+});
+
 test("a configured shell delivers one URL and matching CSP without stale validators", async () => {
   let inbound;
   const assets = outputFrameAssets(
@@ -151,4 +159,28 @@ test("configured URL dollar sequences remain literal in the meta attribute", asy
   const body = await (await assets.fetch(new Request(origin))).text();
   assert.ok(body.includes('content="https://widgets.example/$&amp;/$\'/$1/frame/v2/"'));
   assert.equal(body.match(/<body>/g).length, 1);
+});
+
+test("the configured catalog stays associated with its frame through an HTTPS proxy", async () => {
+  const { hasWidgetCatalog } = await import("../viewer/widget-imports.mjs");
+  const assets = outputFrameAssets({ fetch: async () => asset() }, frame, origin, {
+    catalog: true,
+  });
+  const html = await (await assets.fetch(new Request(origin))).text();
+  assert.ok(html.includes(`content="${frame}" data-widget-catalog="enabled"`));
+  const config = { content: frame, dataset: { widgetCatalog: "enabled" } };
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "document");
+  try {
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: { querySelector: () => config },
+    });
+    assert.equal(hasWidgetCatalog(frame), true);
+    assert.equal(hasWidgetCatalog("https://other.example/frame/v2/"), false);
+    delete config.dataset.widgetCatalog;
+    assert.equal(hasWidgetCatalog(frame), false);
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "document", previous);
+    else delete globalThis.document;
+  }
 });

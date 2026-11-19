@@ -41,7 +41,7 @@ export const NODE_OPERATIONS = Object.freeze([
   ],
   [
     "view",
-    'insert_node with node {type: "view", attrs: {view_id}} places a chart or anywidget made with set_view',
+    'insert_node with node {type: "view", attrs: {view_id}} places a view defined by set_view',
   ],
 ]);
 
@@ -150,7 +150,8 @@ Moving the line among its neighbours keeps the node's attrs but writes it as a
 new node.
 ${typedReadFields()}
 ${richEditOperations()}
-Anywidget views use media_type application/vnd.nteract.anywidget.v2+json. Author a standard anywidget frontend (https://anywidget.dev/en/afm/). Upload ESM, optional CSS and binary assets and register them with set_source. The spec fields are {module, stylesheet?, state?, buffers?, models?}. module and stylesheet are direct {source_id, revision?} references, never inline text or URLs. Example: spec: {module:{source_id:"counter-module"}, state:{count:0}}. Omit the outer data field. Each buffers entry pairs {source:{source_id, revision?}, path:[...]} and restores a DataView in state; intermediate objects and array slots must exist. Optional models maps child IDs to the same definitions; reference them as "anywidget:<id>". Interactions stay local to the viewer and reset on remount; there is no Python backend or page writeback. Place it with insert_node after set_view succeeds. Host theme, base controls and responsive layout are automatic. See /llms/anywidget.txt for complete examples.
+For new JavaScript, save a module view with set_view and place it with insert_node. Its module field is a JavaScript source, data binds ranged files, and imports names shared JavaScript sources. read_page.libraries lists standard libraries on this host. See /llms/views.txt for a working example. Existing widgets that need a model can use view_type anywidget and the frontend adapter in /llms/anywidget.txt.
+
 
 These operations keep comment anchors and untouched characters in place, so
 prefer them to replace_block_markdown for small changes.
