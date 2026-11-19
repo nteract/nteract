@@ -1,8 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { exposeByteSource, receiveByteSource } from "@nteract/output-frame/byte-source";
+import { exposeFile, receiveFile } from "@nteract/output-frame/byte-source";
+import { VirtualTimeScheduler } from "rxjs";
 import { createReadBudget, READ_WAITING_LIMIT } from "@nteract/output-frame/read-budget";
 import { openAssetByteSource } from "../viewer/asset-byte-source.mjs";
+
+// The frame's range reads on an exposed file.
+function rangeReader(descriptor, lifetime) {
+  const file = receiveFile(descriptor, lifetime);
+  return {
+    read: (offset, length, signal) => file.request({ kind: "range", offset, length }, signal),
+  };
+}
 
 test("a file capability transfers only the selected span and cancels individual reads", async () => {
   const lifetime = new AbortController();
@@ -31,7 +40,7 @@ test("a file capability transfers only the selected span and cancels individual 
     },
   };
   try {
-    const source = receiveByteSource(exposeByteSource(input, lifetime.signal), lifetime.signal);
+    const source = rangeReader(exposeFile(input, lifetime.signal), lifetime.signal);
     const controller = new AbortController();
     const pending = source.read(1, 1, controller.signal);
     await waiting;
@@ -131,7 +140,7 @@ function rawRead({ port }, offset, length) {
   const replies = [];
   port1.onmessage = ({ data }) => replies.push(data);
   const closed = new Promise((resolve) => port1.addEventListener("close", resolve, { once: true }));
-  port.postMessage({ offset, length }, [port2]);
+  port.postMessage({ kind: "range", offset, length }, [port2]);
   return { replies, closed, cancel: () => port1.postMessage("cancel"), close: () => port1.close() };
 }
 
@@ -160,7 +169,7 @@ test("a ninth concurrent read on one file waits for a slot, then completes", asy
   const lifetime = new AbortController();
   const { source, calls } = heldSource();
   try {
-    const file = receiveByteSource(exposeByteSource(source, lifetime.signal), lifetime.signal);
+    const file = rangeReader(exposeFile(source, lifetime.signal), lifetime.signal);
     const reads = Array.from({ length: 9 }, (_, i) => file.read(i * 10, 3));
     await handled(file);
     assert.equal(calls.length, 8);
@@ -183,14 +192,8 @@ test("files of one view share its read slots", async () => {
   const a = heldSource();
   const b = heldSource();
   try {
-    const fileA = receiveByteSource(
-      exposeByteSource(a.source, lifetime.signal, budget),
-      lifetime.signal,
-    );
-    const fileB = receiveByteSource(
-      exposeByteSource(b.source, lifetime.signal, budget),
-      lifetime.signal,
-    );
+    const fileA = rangeReader(exposeFile(a.source, lifetime.signal, budget), lifetime.signal);
+    const fileB = rangeReader(exposeFile(b.source, lifetime.signal, budget), lifetime.signal);
     const readsA = Array.from({ length: 8 }, (_, i) => fileA.read(i, 1));
     await handled(fileA);
     const readB = fileB.read(5, 2);
@@ -212,7 +215,7 @@ test("a waiting read cancelled by the frame is never read and gets no reply", as
   const lifetime = new AbortController();
   const { source, calls } = heldSource();
   try {
-    const file = exposeByteSource(source, lifetime.signal);
+    const file = exposeFile(source, lifetime.signal);
     const running = Array.from({ length: 8 }, (_, i) => rawRead(file, i, 1));
     const waiting = rawRead(file, 100, 1);
     await handled(file);
@@ -236,7 +239,7 @@ test("an invalid interval is refused at once while the slots are full", async ()
   const lifetime = new AbortController();
   const { source, calls } = heldSource(64);
   try {
-    const file = exposeByteSource(source, lifetime.signal);
+    const file = exposeFile(source, lifetime.signal);
     Array.from({ length: 8 }, (_, i) => rawRead(file, i, 1));
     const invalid = [rawRead(file, 60, 8), rawRead(file, -1, 1), rawRead(file, 0.5, 1)];
     await until(
@@ -255,7 +258,7 @@ test("a read that finds the waiting list full is refused", async () => {
   const lifetime = new AbortController();
   const { source, calls } = heldSource();
   try {
-    const file = exposeByteSource(source, lifetime.signal);
+    const file = exposeFile(source, lifetime.signal);
     const admitted = Array.from({ length: 8 + READ_WAITING_LIMIT }, (_, i) => rawRead(file, i, 1));
     const refused = rawRead(file, 0, 1);
     await until(() => refused.replies.length === 1, "the refused read is answered");
@@ -270,7 +273,7 @@ test("a read that finds the waiting list full is refused", async () => {
 test("ending the view drops waiting reads without replies or further reads", async () => {
   const lifetime = new AbortController();
   const { source, calls } = heldSource();
-  const file = exposeByteSource(source, lifetime.signal);
+  const file = exposeFile(source, lifetime.signal);
   const reads = Array.from({ length: 12 }, (_, i) => rawRead(file, i, 1));
   await handled(file);
   assert.equal(calls.length, 8);
@@ -281,4 +284,256 @@ test("ending the view drops waiting reads without replies or further reads", asy
   await Promise.all(reads.map((read) => read.closed));
   assert.equal(calls.length, 8);
   assert.ok(reads.every(({ replies }) => replies.length === 0));
+});
+
+// A file input with every request kind, each held until the test finishes it.
+function heldFile({ byteLength = 64, columns = true } = {}) {
+  const calls = [];
+  const held = (kind, value) => (signal) =>
+    new Promise((resolve, reject) => {
+      calls.push({ kind, signal, finish: (result = value()) => resolve(result) });
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+  const file = {
+    mimeType: "application/octet-stream",
+    byteLength,
+    read: (offset, length, signal) =>
+      held("range", () => Uint8Array.from({ length }, (_, i) => offset + i))(signal),
+    bytes: held("bytes", () => Uint8Array.from({ length: byteLength }, (_, i) => i % 256)),
+    ...(columns && {
+      columns: held("columns", () => ({
+        numRows: 2,
+        columns: [{ name: "n", type: "number", values: new Float64Array([1, 2]) }],
+      })),
+    }),
+  };
+  return { file, calls };
+}
+
+function rawRequest({ port }, message) {
+  const { port1, port2 } = new MessageChannel();
+  replyPorts.add(port1);
+  const replies = [];
+  port1.onmessage = ({ data }) => replies.push(data);
+  const closed = new Promise((resolve) => port1.addEventListener("close", resolve, { once: true }));
+  port.postMessage(message, [port2]);
+  return { replies, closed, cancel: () => port1.postMessage("cancel") };
+}
+
+test("a file port answers a whole-file read and a table read, and refuses what it cannot", async () => {
+  const lifetime = new AbortController();
+  const { file, calls } = heldFile();
+  try {
+    const exposed = exposeFile(file, lifetime.signal);
+    assert.deepEqual(Object.keys(exposed).sort(), ["mimeType", "port", "size"]);
+    assert.equal(exposed.size, 64);
+    const frame = receiveFile(exposed, lifetime.signal);
+    const whole = frame.request({ kind: "bytes" });
+    const table = frame.request({ kind: "columns" });
+    await until(() => calls.length === 2, "both requests start");
+    for (const call of calls) call.finish();
+    assert.equal((await whole).byteLength, 64);
+    assert.deepEqual([...(await table).columns[0].values], [1, 2]);
+    // Malformed requests are refused before the budget.
+    for (const message of [null, "range", { kind: "stream" }, { kind: "range", offset: 1 }]) {
+      const raw = rawRequest(exposed, message);
+      await until(() => raw.replies.length === 1, "the refusal");
+      assert.match(raw.replies[0].error, /Invalid file (request|read)\./);
+    }
+    assert.equal(calls.length, 2);
+  } finally {
+    lifetime.abort();
+  }
+  const plain = heldFile({ columns: false });
+  const other = new AbortController();
+  try {
+    const frame = receiveFile(exposeFile(plain.file, other.signal), other.signal);
+    await assert.rejects(frame.request({ kind: "columns" }), {
+      message: "This file is not Parquet.",
+    });
+    assert.equal(plain.calls.length, 0);
+  } finally {
+    other.abort();
+  }
+});
+
+test("a whole-file read past 5 MiB, a short whole file and a malformed ColumnSet are errors", async () => {
+  const lifetime = new AbortController();
+  try {
+    const big = heldFile({ byteLength: 5 * 1024 * 1024 + 1 });
+    const frameBig = receiveFile(exposeFile(big.file, lifetime.signal), lifetime.signal);
+    await assert.rejects(
+      frameBig.request({ kind: "bytes" }),
+      /larger than 5 MiB; read it in ranges/,
+    );
+    assert.equal(big.calls.length, 0);
+    const { file, calls } = heldFile();
+    const frame = receiveFile(exposeFile(file, lifetime.signal), lifetime.signal);
+    const short = frame.request({ kind: "bytes" });
+    const bad = frame.request({ kind: "columns" });
+    await until(() => calls.length === 2, "both start");
+    calls[0].finish(new Uint8Array(3));
+    calls[1].finish({ numRows: 1, columns: [{ name: "n", type: "number", values: [1] }] });
+    await assert.rejects(short, { message: "Incomplete file read." });
+    await assert.rejects(bad, /Invalid column set/);
+  } finally {
+    lifetime.abort();
+  }
+});
+
+test("the frame refuses replies of the wrong shape", async () => {
+  const lifetime = new AbortController();
+  const { port1, port2 } = new MessageChannel();
+  const replies = [
+    { bytes: new Uint8Array(2) },
+    { bytes: [1, 2, 3, 4] },
+    {},
+    { columns: { numRows: 1, columns: [{ name: "a", type: "number", values: [1] }] } },
+  ];
+  port1.onmessage = ({ ports: [reply] }) => {
+    reply.postMessage(replies.shift());
+    reply.close();
+  };
+  try {
+    const frame = receiveFile({ size: 4, port: port2 }, lifetime.signal);
+    await assert.rejects(frame.request({ kind: "bytes" }), { message: "Invalid file reply." });
+    await assert.rejects(frame.request({ kind: "range", offset: 0, length: 4 }), {
+      message: "Invalid file reply.",
+    });
+    await assert.rejects(frame.request({ kind: "bytes" }), { message: "Invalid file reply." });
+    await assert.rejects(frame.request({ kind: "columns" }), /Invalid column set/);
+  } finally {
+    lifetime.abort();
+    port1.close();
+  }
+});
+
+test("every request kind waits in the view's one budget; a cancelled whole read gives its share back", async () => {
+  const lifetime = new AbortController();
+  const scheduler = new VirtualTimeScheduler();
+  const budget = createReadBudget({ lifetime: lifetime.signal, scheduler });
+  const a = heldFile();
+  const b = heldFile();
+  const fileA = { exposed: exposeFile(a.file, lifetime.signal, budget) };
+  const fileB = { exposed: exposeFile(b.file, lifetime.signal, budget) };
+  try {
+    const ranges = Array.from({ length: 8 }, (_, i) =>
+      rawRequest(fileA.exposed, { kind: "range", offset: i, length: 1 }),
+    );
+    const whole = rawRequest(fileA.exposed, { kind: "bytes" });
+    const table = rawRequest(fileA.exposed, { kind: "columns" });
+    // Two whole reads of B queue, and a second of each kind is refused at
+    // once: one whole read of each kind at a time.
+    const cancelledTable = rawRequest(fileB.exposed, { kind: "columns" });
+    const cancelledBytes = rawRequest(fileB.exposed, { kind: "bytes" });
+    const twice = [
+      rawRequest(fileB.exposed, { kind: "bytes" }),
+      rawRequest(fileB.exposed, { kind: "columns" }),
+    ];
+    await until(() => twice.every(({ replies }) => replies.length === 1), "refused at once");
+    assert.deepEqual(
+      twice.map(({ replies }) => replies[0].error),
+      ["This file is already being read.", "This file's table is already being read."],
+    );
+    await until(() => a.calls.length === 8, "the slots fill");
+    // Cancelled while queued: never served, no reply, and the share is back.
+    cancelledTable.cancel();
+    cancelledBytes.cancel();
+    await Promise.all([cancelledTable.closed, cancelledBytes.closed]);
+    const retryBytes = rawRequest(fileB.exposed, { kind: "bytes" });
+    const retryTable = rawRequest(fileB.exposed, { kind: "columns" });
+    assert.deepEqual(
+      a.calls.map(({ kind }) => kind),
+      Array(8).fill("range"),
+      "the whole-file and table reads wait like any read",
+    );
+    a.calls[0].finish();
+    await until(() => a.calls.length === 9, "the whole-file read takes the freed slot");
+    assert.equal(a.calls[8].kind, "bytes");
+    a.calls[1].finish();
+    await until(() => a.calls.length === 10, "the table read takes the next slot");
+    assert.equal(a.calls[9].kind, "columns");
+    for (const call of a.calls.slice(2)) call.finish();
+    await until(() => b.calls.length === 2, "the retries run");
+    assert.deepEqual(
+      b.calls.map(({ kind }) => kind),
+      ["bytes", "columns"],
+      "only the retries of B ran",
+    );
+    for (const call of b.calls) call.finish();
+    await until(
+      () =>
+        [...ranges, whole, table, retryBytes, retryTable].every(
+          ({ replies }) => replies.length === 1 && !replies[0].error,
+        ),
+      "every admitted request is answered",
+    );
+    assert.deepEqual(cancelledTable.replies, []);
+    assert.deepEqual(cancelledBytes.replies, []);
+    assert.equal(a.calls.length + b.calls.length, 12, "the cancelled reads never ran");
+  } finally {
+    lifetime.abort();
+  }
+});
+
+test("a whole read runs once at a time, is delivered once, and may be retried after a failure or a cancel", async () => {
+  const lifetime = new AbortController();
+  try {
+    const { file, calls } = heldFile();
+    const frame = receiveFile(exposeFile(file, lifetime.signal), lifetime.signal);
+    const whole = frame.request({ kind: "bytes" });
+    const table = frame.request({ kind: "columns" });
+    await assert.rejects(frame.request({ kind: "bytes" }), {
+      message: "This file is already being read.",
+    });
+    await assert.rejects(frame.request({ kind: "columns" }), {
+      message: "This file's table is already being read.",
+    });
+    await until(() => calls.length === 2, "both start");
+    for (const call of calls) call.finish();
+    await whole;
+    await table;
+    await assert.rejects(frame.request({ kind: "bytes" }), {
+      message: "This file was already read whole; its file object keeps it.",
+    });
+    await assert.rejects(frame.request({ kind: "columns" }), {
+      message: "This file's table was already read; its file object keeps it.",
+    });
+    assert.equal(calls.length, 2, "nothing served twice");
+    // A range is no whole read: any number may run.
+    await Promise.all([
+      frame.request({ kind: "range", offset: 0, length: 1 }),
+      frame.request({ kind: "range", offset: 0, length: 1 }),
+      until(() => calls.length === 4, "ranges start").then(() =>
+        calls.slice(2).forEach((call) => call.finish()),
+      ),
+    ]);
+
+    // A failed whole read gives its share back.
+    const failing = heldFile();
+    const frame2 = receiveFile(exposeFile(failing.file, lifetime.signal), lifetime.signal);
+    const short = frame2.request({ kind: "bytes" });
+    await until(() => failing.calls.length === 1, "it starts");
+    failing.calls[0].finish(new Uint8Array(3));
+    await assert.rejects(short, { message: "Incomplete file read." });
+    const retry = frame2.request({ kind: "bytes" });
+    await until(() => failing.calls.length === 2, "the retry starts");
+    failing.calls[1].finish();
+    assert.equal((await retry).byteLength, 64);
+
+    // So does one cancelled in flight.
+    const cancelled = heldFile();
+    const exposed = exposeFile(cancelled.file, lifetime.signal);
+    const running = rawRequest(exposed, { kind: "columns" });
+    await until(() => cancelled.calls.length === 1, "it starts");
+    running.cancel();
+    await until(() => cancelled.calls[0].signal.aborted, "the decode is aborted");
+    const frame3 = receiveFile(exposed, lifetime.signal);
+    const again = frame3.request({ kind: "columns" });
+    await until(() => cancelled.calls.length === 2, "the retry starts");
+    cancelled.calls[1].finish();
+    assert.equal((await again).numRows, 2);
+  } finally {
+    lifetime.abort();
+  }
 });

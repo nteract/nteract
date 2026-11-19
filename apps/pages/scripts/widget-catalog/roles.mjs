@@ -26,8 +26,7 @@ function Roles({ counts }) {
 }
 
 export async function render({ el, signal }) {
-  const bytes = await activity.read(0, activity.byteLength, signal);
-  const { counts } = JSON.parse(new TextDecoder().decode(bytes));
+  const { counts } = await activity.json();
   signal.throwIfAborted();
   const root = createRoot(el);
   root.render(h(Roles, { counts }));

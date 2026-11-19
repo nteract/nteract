@@ -179,23 +179,38 @@ test("published tool examples pass current source and view validators", () => {
   assert.ok(sources > 0 && views >= 3 && placements >= 3);
 });
 
-test("the views guide leads with the model and keeps the data import as the low-level path", () => {
+test("the views guide teaches files asked with await, the table, and change listeners", () => {
   const guide = mediaGuide("/llms/views.txt", origin);
   for (const sentence of [
-    "Each name in data is a key on the model.",
-    "A Parquet source arrives as a file handle with byteLength and read(offset, length, signal).",
-    "Any other source arrives as a DataView of the whole file: at most 5 MiB, and it counts toward the view's 32 MiB input total.",
-    "A Parquet file is read in ranges and does not count.",
+    "Each name in data is a key on the model, and model.get(name) is a file: ask it with await for .parquet(), .json(), .text() or .arrayBuffer().",
+    "A table has numRows, schema.fields, getChild(name).toArray() and toArray(), and Plot takes it directly.",
+    "Listen for change:<name> to redraw in place; otherwise the view starts again with the new data.",
+    "Forgetting await passes a promise to Plot, which then draws nothing.",
+    ".parquet() rejects for a file that is not Parquet.",
+    "a 64-bit integer column is numbers when every value is a safe integer (within ±(2^53 − 1)), otherwise BigInt.",
+    ".arrayBuffer(), .text() and .json() read the whole file: at most 5 MiB, read once per file, and at most 32 MiB across one view's files.",
     'model.on("change:activity", show);',
-    "That import names the file the view was mounted with; after a change its reads fail as aborted",
+    '`await model.get("activity").slice(0, 4).arrayBuffer()` reads those four bytes',
+    "after a change its calls fail as aborted",
+    "To show part of a table, filter it in the view",
     "reaches the mounted view as a change event and keeps its local state when the view listens for that change",
-    'Listen with model.on("change:<name>", …) to update in place and keep the reader\'s state.',
-    "A view that does not listen is mounted again when its data changes.",
     "A title change relabels the view in place.",
   ])
     assert.ok(guide.includes(sentence), sentence);
   assert.ok(guide.indexOf("model.get") < guide.indexOf("## Read part of a file"));
   assert.doesNotMatch(guide, /code or input changes remount/);
+  // With the standard libraries, the example draws the table with Plot.
+  const withCatalog = mediaGuide("/llms/views.txt", origin, { catalogEnabled: true });
+  for (const sentence of [
+    'const table = await model.get("activity").parquet();\n  el.append(Plot.barY(table, { x: "day", y: "people" }).plot());',
+    'model.on("change:activity", draw);\n  await draw();',
+    'For plain rows, read (await model.get("activity").parquet()).toArray()',
+  ])
+    assert.ok(withCatalog.includes(sentence), sentence);
+  for (const text of [guide, withCatalog]) {
+    assert.doesNotMatch(text, /loadTableFile/);
+    assert.doesNotMatch(text, /read\(offset/, "the guide teaches slice, not read");
+  }
   const module = tools.find(({ name }) => name === "edit_page").inputSchema.properties.operations
     .items.properties.module;
   assert.match(module.description, /render\(\{model, el, signal\}\)/);

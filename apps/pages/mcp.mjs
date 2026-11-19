@@ -348,7 +348,8 @@ const editOperation = {
     },
     data: {
       type: "object",
-      description: "Module file alias or Vega-Lite dataset name → {source_id, revision?}.",
+      description:
+        "Module file alias (model.get(alias) is a file: await .parquet(), .json() or .text()) or Vega-Lite dataset name → {source_id, revision?}.",
     },
     view_revision: {
       type: ["string", "null"],

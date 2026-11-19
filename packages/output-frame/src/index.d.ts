@@ -44,11 +44,95 @@ export interface ModuleOutput {
   assets: { entry: OutputAsset };
   imports?: Record<string, OutputAsset>;
 }
-/** A whole file (the model holds a DataView) or a ranged file (the model holds the handle). */
-export type DataInput = Uint8Array | ByteSource;
+export type ColumnType = "number" | "bigint" | "date" | "string" | "boolean" | "other";
+/** One column of a ColumnSet (src/column-set.mjs). `nulls` is a validity mask, 1 = present. */
+export interface ColumnSetColumn {
+  name: string;
+  type: ColumnType;
+  values: Float64Array | BigInt64Array | BigUint64Array | unknown[];
+  nulls?: Uint8Array;
+}
+/** A table as it crosses the frame boundary: structured-cloneable, no class instances. */
+export interface ColumnSet {
+  numRows: number;
+  columns: ColumnSetColumn[];
+}
+/**
+ * A module view's data input: one file the embedder serves when the view
+ * asks (src/byte-source.mjs). Nothing is read at mount.
+ */
+export interface FileInput extends ByteSource {
+  readonly mimeType: string;
+  /**
+   * The whole file, for a file of at most 5 MiB. Called for one request at a
+   * time and delivered at most once per exposed file; the view's live files
+   * read whole stay within 32 MiB.
+   */
+  bytes(signal: AbortSignal): Promise<Uint8Array>;
+  /**
+   * The file as a ColumnSet, checked by the embedder when it decodes it.
+   * Called for one request at a time and delivered at most once per exposed
+   * file. Absent for a file that is not a table: `parquet()` then rejects.
+   */
+  columns?(signal: AbortSignal): Promise<ColumnSet>;
+}
+/** A span of a file, from `file.slice(start, end)`. */
+export interface FileRange {
+  readonly size: number;
+  arrayBuffer(): Promise<ArrayBuffer>;
+  text(): Promise<string>;
+}
+/**
+ * What a module view gets for each bound file, from `model.get(alias)` and
+ * from `import f from "data/<alias>"` (src/file-object.mjs). `byteLength`
+ * and `read` make it a Sift byte source.
+ */
+export interface FileObject extends ByteSource {
+  readonly name: string;
+  readonly mimeType: string;
+  readonly size: number;
+  arrayBuffer(): Promise<ArrayBuffer>;
+  text(): Promise<string>;
+  json(): Promise<unknown>;
+  parquet(): Promise<ColumnTable>;
+  slice(start?: number, end?: number): FileRange;
+}
+/** A column type as an Arrow DataType reads (typeId from apache-arrow's Type enum). */
+export interface ColumnDataType {
+  readonly typeId: number;
+  readonly unit?: number;
+  readonly bitWidth?: number;
+  readonly kind: ColumnType;
+}
+/** One row as a plain object; the view may change it. */
+type Row = Record<string, unknown>;
+/** One column of a ColumnTable, spelled as an Arrow JS vector. */
+export interface TableColumn extends Iterable<unknown> {
+  readonly length: number;
+  readonly nullCount: number;
+  readonly type: ColumnDataType;
+  get(index: number): unknown;
+  toArray(): Float64Array | BigInt64Array | BigUint64Array | readonly unknown[];
+  toJSON(): Float64Array | BigInt64Array | BigUint64Array | readonly unknown[];
+}
+/** What a module view's model holds for a Parquet file (src/table.mjs): an Arrow-style table. */
+export interface ColumnTable extends Iterable<Row> {
+  readonly numRows: number;
+  readonly numCols: number;
+  readonly schema: {
+    readonly fields: readonly { name: string; type: ColumnDataType; nullable: boolean }[];
+  };
+  getChild(name: string): TableColumn | null;
+  getChildAt(index: number): TableColumn | null;
+  get(index: number): Row | null;
+  toArray(): readonly Row[];
+  select(names: readonly string[]): ColumnTable;
+}
+/** A module view's file (the model holds a FileObject) or an anywidget buffer. */
+export type DataInput = FileInput | Uint8Array;
 export interface OutputOptions {
-  /** A module view's `data/<alias>` inputs. Each alias is also a key on its model. */
-  byteSources?: Record<string, DataInput>;
+  /** A module view's `data/<alias>` files. Each alias is also a key on its model. */
+  files?: Record<string, FileInput>;
   frameUrl: string;
   hostContext: OutputHostContext;
   timeoutMs?: number;
@@ -67,8 +151,8 @@ export interface OutputHandle {
   setHostContext(context: OutputHostContext): void;
   /**
    * Offer a mounted view a new value for one declared data input: a
-   * `data/<alias>` of a module view, or a buffer name of an anywidget view
-   * (Uint8Array only). Sent once the view has rendered; throws for an
+   * `data/<alias>` of a module view (a FileInput), or a buffer name of an
+   * anywidget view (Uint8Array only). Sent once the view has rendered; throws for an
    * undeclared name. A view with no listener for it answers through
    * `onUnhandledData`.
    */

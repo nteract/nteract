@@ -1,4 +1,4 @@
-import { receiveByteSource } from "./byte-source.mjs";
+import { fileObject } from "./file-object.mjs";
 import { widgetDefinitions } from "./schema.mjs";
 
 // A module view's data names, as `import x from "data/<alias>"` spells them.
@@ -44,59 +44,18 @@ export function receiveDataChange({ name, input }, { session, frameData, send })
   if (frameData) {
     const next = frameData.replace(name, input);
     if (!next) return "unknown";
-    session.setValue(dataAlias(name), next.value);
+    session.setValue(dataAlias(name), next);
   } else if (input?.bytes instanceof Uint8Array) session.setBuffer(name, input.bytes);
   else throw Error("Invalid data input.");
   return decision;
 }
 
-// A whole file held in the frame, read through the same interface as a
-// ranged file. Reads after `lifetime` ends reject as aborted.
-function bytesByteSource(bytes, lifetime) {
-  return Object.freeze({
-    byteLength: bytes.byteLength,
-    async read(offset, length, signal) {
-      (signal ? AbortSignal.any([signal, lifetime]) : lifetime).throwIfAborted();
-      if (
-        !Number.isSafeInteger(offset) ||
-        !Number.isSafeInteger(length) ||
-        offset < 0 ||
-        length < 0 ||
-        length > bytes.byteLength - offset
-      )
-        throw Error("Invalid file read.");
-      return bytes.slice(offset, offset + length);
-    },
-  });
-}
-
-// One received data input. `{bytes}` is a whole file: the model holds a
-// DataView of it. `{byteLength, port}` is a ranged file: the model holds the
-// same handle the import gives. Both give the import a {byteLength, read}
-// handle that ends with `lifetime`.
-export function receiveDataInput(descriptor, lifetime) {
-  if (descriptor?.bytes instanceof Uint8Array) {
-    const { bytes } = descriptor;
-    return {
-      handle: bytesByteSource(bytes, lifetime),
-      value: new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength),
-    };
-  }
-  if (
-    Number.isSafeInteger(descriptor?.byteLength) &&
-    descriptor.byteLength >= 0 &&
-    typeof descriptor.port?.postMessage === "function"
-  ) {
-    const handle = receiveByteSource(descriptor, lifetime);
-    return { handle, value: handle };
-  }
-  throw Error("Invalid data input.");
-}
-
-// The frame's data inputs for one mount, by the names the mount declared.
-// Each name holds one input at a time under its own lifetime within the
-// mount's: replacing a name ends the previous input's lifetime, so reads
-// through its handle reject as aborted and its port closes.
+// The frame's data inputs for one mount, by the names the mount declared:
+// one file object (file-object.mjs) per name, which the model and the
+// data/ import both start with. Each name holds one file at a time under its
+// own lifetime within the mount's: replacing a name ends the previous file
+// object's lifetime, so its pending and later calls reject as aborted and
+// its port closes.
 export function createFrameData(descriptors, lifetime) {
   const names = Object.keys(descriptors);
   if (names.length > MAX_DATA_NAMES || names.some((name) => !DATA_NAME.test(name)))
@@ -104,14 +63,14 @@ export function createFrameData(descriptors, lifetime) {
   const lifetimes = new Map();
   const open = (name, descriptor) => {
     const own = new AbortController();
-    const input = receiveDataInput(descriptor, AbortSignal.any([lifetime, own.signal]));
+    const file = fileObject(dataAlias(name), descriptor, AbortSignal.any([lifetime, own.signal]));
     lifetimes.get(name)?.abort();
     lifetimes.set(name, own);
-    return input;
+    return file;
   };
   return {
     initial: Object.fromEntries(names.map((name) => [name, open(name, descriptors[name])])),
-    // The new input for a declared name, or undefined for any other name.
+    // The new file object for a declared name, or undefined for any other name.
     replace(name, descriptor) {
       if (lifetime.aborted || !lifetimes.has(name)) return undefined;
       return open(name, descriptor);

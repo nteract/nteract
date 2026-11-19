@@ -114,34 +114,50 @@ function viewsGuide(origin, catalogEnabled) {
 
 Upload browser-ready text/javascript, then register its asset with set_source. Give the entry a named render export, or a default AFM export. Pages supplies a model, the DOM element and an AbortSignal; return a cleanup function if needed. React state and DOM events work inside the frame. Choose view_type anywidget for an existing widget with its own model state, or vega-lite for a declarative chart.
 
-Each name in data is a key on the model. A Parquet source arrives as a file handle with byteLength and read(offset, length, signal). Any other source arrives as a DataView of the whole file: at most 5 MiB, and it counts toward the view's 32 MiB input total. A Parquet file is read in ranges and does not count. A source that switches between Parquet and another type remounts the view. When a followed source moves to a new version, the model takes the new value and change:<name> fires. Listen with model.on("change:<name>", …) to update in place and keep the reader's state. A view that does not listen is mounted again when its data changes.
+Each name in data is a key on the model, and model.get(name) is a file: ask it with await for .parquet(), .json(), .text() or .arrayBuffer(). A table has numRows, schema.fields, getChild(name).toArray() and toArray(), and Plot takes it directly. Listen for change:<name> to redraw in place; otherwise the view starts again with the new data. Forgetting await passes a promise to Plot, which then draws nothing.
 
-\`\`\`js
-export function render({ model, el, signal }) {
-  const note = el.appendChild(document.createElement("p"));
-  const show = async () => {
-    const activity = model.get("activity");
-    const head = await activity.read(0, 4, signal);
-    note.textContent = new TextDecoder().decode(head) + ", " + activity.byteLength + " bytes";
-  };
-  model.on("change:activity", show);
-  return show();
-}
-\`\`\`
+A file also has name, mimeType and size, and nothing is read until the view asks. .parquet() rejects for a file that is not Parquet. A table holds up to 250,000 rows and 256 columns; its values are plain JavaScript: dates and timestamps are Date objects, a missing value is null, decimals are numbers, and a 64-bit integer column is numbers when every value is a safe integer (within ±(2^53 − 1)), otherwise BigInt. .arrayBuffer(), .text() and .json() read the whole file: at most 5 MiB, read once per file, and at most 32 MiB across one view's files. A source that moves to a new version, or to another file type, gives the model a new file and fires change:<name>.
 
 ${
   catalogEnabled
-    ? `The host pins the standard libraries when you save a new view. read_page.libraries lists the exact names available here. Import them directly. For example:
-
-\`\`\`js
+    ? `\`\`\`js
 import * as Plot from "@observablehq/plot";
-export function render({ el }) {
-  el.append(Plot.plot({ marks: [Plot.barY([{ day: "Mon", count: 4 }], { x: "day", y: "count", title: d => d.day + ": " + d.count })] }));
+export async function render({ model, el }) {
+  const table = await model.get("activity").parquet();
+  el.append(Plot.barY(table, { x: "day", y: "people" }).plot());
 }
 \`\`\`
 
-The receipt and read_page.view.catalog_revision identify the pinned library build.`
-    : "Use a self-contained entry or bind Page-owned JavaScript sources in imports."
+To redraw in place when the data changes, listen for it:
+
+\`\`\`js
+import * as Plot from "@observablehq/plot";
+export async function render({ model, el }) {
+  const draw = async () => {
+    const table = await model.get("activity").parquet();
+    el.replaceChildren(Plot.barY(table, { x: "day", y: "people" }).plot());
+  };
+  model.on("change:activity", draw);
+  await draw();
+}
+\`\`\`
+
+For plain rows, read (await model.get("activity").parquet()).toArray(): one object per row, such as { day, people }.
+
+The host pins the standard libraries when you save a new view. read_page.libraries lists the exact names available here. Import them directly, as this entry imports @observablehq/plot. The receipt and read_page.view.catalog_revision identify the pinned library build.`
+    : `\`\`\`js
+export async function render({ model, el }) {
+  const note = el.appendChild(document.createElement("p"));
+  const show = async () => {
+    const table = await model.get("activity").parquet();
+    note.textContent = table.numRows + " rows of " + table.schema.fields.map((f) => f.name).join(", ");
+  };
+  model.on("change:activity", show);
+  await show();
+}
+\`\`\`
+
+Use a self-contained entry or bind Page-owned JavaScript sources in imports.`
 }
 
 ${edit("save-activity", [example])}
@@ -155,7 +171,7 @@ A view's modules can import${catalogEnabled ? " the names in read_page.libraries
 
 ## Read part of a file
 
-model.get(name) is the way to read a bound file. The lower-level path is \`import activity from "data/activity"\` when data binds the name activity. That import names the file the view was mounted with; after a change its reads fail as aborted, so use model.get("activity") for the current file. Its byteLength is the file size. read(offset, length, signal) returns that span as a Uint8Array. Read the Parquet source with read_page and source_id to discover its columns.${catalogEnabled ? " For a bounded preview, import {loadTableFile} from '@nteract/sift/parquet', call await loadTableFile(model.get(\"activity\"), {maxRows:28, overflow:'truncate'}), and call table.dispose() when done." : ""} Each range uses the Page's existing access checks.
+For a large file, read only the bytes you need: \`await model.get("activity").slice(0, 4).arrayBuffer()\` reads those four bytes, and slice(start, end) counts as Blob.slice does. \`import activity from "data/activity"\` gives the same file, bound to the one the view mounted with; after a change its calls fail as aborted, so use model.get("activity") for the current file. Each range uses the Page's existing access checks. Read the Parquet source with read_page and source_id to discover its columns. To show part of a table, filter it in the view, for example table.toArray().slice(0, 28).
 
 ## Inspect and edit
 

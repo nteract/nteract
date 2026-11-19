@@ -75,3 +75,19 @@ export function answerTransition(awaiting, event) {
       return { awaiting, accept: false };
   }
 }
+
+// The frame protocol's version, named in the handshake's message type. A
+// shell answers a handshake for another version with an error that names
+// both, so a page older than its shell fails with that reason. A page newer
+// than its shell sends a type the shell does not know, gets no answer, and
+// fails at the host's startup time limit.
+export const PROTOCOL_VERSION = 3;
+export const connectMessageType = (version = PROTOCOL_VERSION) =>
+  `nteract-output-connect-v${version}`;
+// The version a handshake's message type names, or null for any other type.
+export function connectVersion(type) {
+  const match = /^nteract-output-connect-v([1-9][0-9]{0,3})$/.exec(
+    typeof type === "string" ? type : "",
+  );
+  return match ? Number(match[1]) : null;
+}

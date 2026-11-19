@@ -1,0 +1,317 @@
+// The table `await file.parquet()` gives a module view: the page decodes
+// the file to a ColumnSet (viewer/parquet-columns.mjs), and the frame wraps
+// it (@nteract/output-frame/table). The Parquet files are real: Sift's
+// writer makes them (test/parquet-fixture.mjs) and Sift's decoder reads them.
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { JSDOM } from "jsdom";
+import * as Plot from "@observablehq/plot";
+import {
+  Bool,
+  Decimal,
+  Dictionary,
+  Int32,
+  List,
+  Field,
+  Float64,
+  Table,
+  Uint64,
+  Utf8,
+  makeData,
+  makeVector,
+  tableToIPC,
+  vectorFromArray,
+} from "apache-arrow";
+import { checkColumnSet } from "@nteract/output-frame/column-set";
+import { columnTable } from "@nteract/output-frame/table";
+import { FIRST_DAY_MS, parquetFixture } from "./parquet-fixture.mjs";
+import { arrowColumns, parquetColumns } from "../viewer/parquet-columns.mjs";
+import { DATAFRAME_LIMITS } from "../viewer/sift-dataset.mjs";
+
+const DAY_MS = 86_400_000;
+const noon = (i) => new Date(FIRST_DAY_MS + i * DAY_MS + DAY_MS / 2);
+const fixture = async (options) => {
+  const parquet = parquetFixture(options);
+  return { parquet, columns: await parquetColumns(parquet, DATAFRAME_LIMITS) };
+};
+const typeOf = (set) => Object.fromEntries(set.columns.map(({ name, type }) => [name, type]));
+
+test("a Parquet file through Sift becomes typed columns: dates, numbers, strings, nulls", async () => {
+  const { columns } = await fixture({ days: 6, unsafe: true });
+  assert.equal(columns.numRows, 6);
+  assert.deepEqual(typeOf(columns), {
+    day: "date",
+    at: "date",
+    at_ms: "date",
+    people: "number",
+    name: "string",
+    score: "number",
+    big: "bigint",
+  });
+  const byName = Object.fromEntries(columns.columns.map((column) => [column.name, column]));
+  // date32 and microsecond and millisecond timestamps, in epoch milliseconds.
+  assert.deepEqual(
+    [...byName.day.values],
+    [0, 1, 2, 3, 4, 5].map((i) => FIRST_DAY_MS + i * DAY_MS),
+  );
+  assert.deepEqual(
+    [...byName.at.values],
+    [0, 1, 2, 3, 4, 5].map((i) => noon(i).getTime()),
+  );
+  assert.deepEqual([...byName.at_ms.values], [...byName.at.values]);
+  // A safe int64 column is numbers; one past 2^53 is exact BigInts.
+  assert.ok(byName.people.values instanceof Float64Array);
+  assert.deepEqual([...byName.big.values], [0n, 1n, 2n, 3n, 4n, 2n ** 60n]);
+  assert.ok(byName.big.values instanceof BigInt64Array);
+  assert.deepEqual(byName.name.values, ["day 1", null, "day 3", "day 4", "day 5", "day 6"]);
+  assert.deepEqual([...byName.name.nulls], [1, 0, 1, 1, 1, 1]);
+  assert.deepEqual([...byName.score.nulls], [1, 1, 0, 1, 1, 0]);
+  assert.equal(byName.people.nulls, undefined, "no mask without nulls");
+  assert.equal(checkColumnSet(columns), columns);
+});
+
+test("decimals, booleans, unsigned 64-bit, dictionaries and lists", () => {
+  const rows = 3;
+  // 1.25, -3.50 and 10.00 at scale 2, as 128-bit little-endian words.
+  const words = new Uint32Array(rows * 4);
+  [125, -350, 1000].forEach((value, row) => {
+    const big = BigInt.asUintN(128, BigInt(value));
+    for (let word = 0; word < 4; word++)
+      words[row * 4 + word] = Number((big >> BigInt(32 * word)) & 0xffffffffn);
+  });
+  const dictionary = vectorFromArray(
+    ["red", "blue", "red"],
+    new Dictionary(new Utf8(), new Int32()),
+  );
+  const table = new Table({
+    price: makeVector(makeData({ type: new Decimal(2, 10, 128), length: rows, data: words })),
+    ok: vectorFromArray([true, null, false], new Bool()),
+    small: makeVector(
+      makeData({ type: new Uint64(), length: rows, data: new BigUint64Array([1n, 2n, 3n]) }),
+    ),
+    huge: makeVector(
+      makeData({
+        type: new Uint64(),
+        length: rows,
+        data: new BigUint64Array([1n, 2n ** 63n + 5n, 3n]),
+      }),
+    ),
+    color: dictionary,
+    // An unsigned 64-bit dictionary takes its sign from its value type.
+    huge_codes: makeVector(
+      makeData({
+        type: new Dictionary(new Uint64(), new Int32()),
+        length: rows,
+        data: new Int32Array([0, 1, 0]),
+        dictionary: makeVector(new BigUint64Array([7n, 2n ** 63n + 9n])),
+      }),
+    ),
+    tags: vectorFromArray([[1, 2], [], [3]], new List(new Field("item", new Int32()))),
+  });
+  const set = arrowColumns(tableToIPC(table, "stream"));
+  assert.deepEqual(typeOf(set), {
+    price: "number",
+    ok: "boolean",
+    small: "number",
+    huge: "bigint",
+    color: "string",
+    huge_codes: "bigint",
+    tags: "other",
+  });
+  const byName = Object.fromEntries(set.columns.map((column) => [column.name, column]));
+  assert.deepEqual([...byName.price.values], [1.25, -3.5, 10]);
+  assert.deepEqual(byName.ok.values, [true, null, false]);
+  assert.deepEqual([...byName.small.values], [1, 2, 3]);
+  assert.ok(byName.huge.values instanceof BigUint64Array);
+  assert.equal(byName.huge.values[1], 2n ** 63n + 5n, "exact");
+  assert.deepEqual(byName.color.values, ["red", "blue", "red"]);
+  assert.ok(byName.huge_codes.values instanceof BigUint64Array);
+  assert.deepEqual([...byName.huge_codes.values], [7n, 2n ** 63n + 9n, 7n], "no wrap past 2^63");
+  assert.deepEqual(byName.tags.values, [[1, 2], [], [3]]);
+  checkColumnSet(set);
+  assert.deepEqual(structuredClone(set), set, "structured-cloneable");
+});
+
+test("a malformed ColumnSet is refused", () => {
+  const good = () => ({
+    numRows: 2,
+    columns: [
+      { name: "n", type: "number", values: new Float64Array([1, 2]) },
+      { name: "s", type: "string", values: ["a", null], nulls: new Uint8Array([1, 0]) },
+    ],
+  });
+  checkColumnSet(good());
+  const cases = [
+    null,
+    [],
+    { ...good(), numRows: -1 },
+    { ...good(), numRows: 1.5 },
+    { ...good(), columns: {} },
+    {
+      numRows: 0,
+      columns: Array.from({ length: 257 }, (_, i) => ({
+        name: "c" + i,
+        type: "string",
+        values: [],
+      })),
+    },
+  ];
+  const column = (patch, index = 0) => {
+    const set = good();
+    set.columns[index] = { ...set.columns[index], ...patch };
+    return set;
+  };
+  cases.push(
+    column({ values: new Float64Array([1]) }),
+    column({ values: [1, 2] }),
+    column({ type: "decimal" }),
+    column({ type: "bigint" }),
+    column({ name: 7 }),
+    column({ name: "" }),
+    column({ name: "x".repeat(257) }),
+    column({ name: "__proto__" }),
+    column({ name: "s" }),
+    column({ nulls: new Uint8Array([1]) }),
+    column({ nulls: new Uint8Array([1, 2]) }),
+    column({ nulls: [1, 1] }),
+    column({ values: ["a", 1], nulls: undefined }, 1),
+    column({ values: ["a", "b"] }, 1),
+    column({ type: "boolean", values: [true, "no"], nulls: undefined }, 1),
+  );
+  for (const set of cases) assert.throws(() => checkColumnSet(set), /Invalid column set/);
+});
+
+test("the table: names, rows and columns built once, nulls, Dates and BigInts; the interface is frozen, the values are the view's", async () => {
+  const { columns } = await fixture({ days: 4, unsafe: true });
+  const table = columnTable(columns);
+  assert.ok(Object.isFrozen(table));
+  assert.equal(table.numRows, 4);
+  assert.equal(table.numCols, 7);
+  assert.deepEqual(
+    table.schema.fields.map((field) => field.name),
+    ["day", "at", "at_ms", "people", "name", "score", "big"],
+  );
+  const at = table.getChild("at");
+  assert.deepEqual(at.toArray(), [0, 1, 2, 3].map(noon));
+  assert.ok(at.get(0) instanceof Date);
+  assert.deepEqual({ ...at.type }, { typeId: 10, unit: 1, kind: "date" });
+  const score = table.getChild("score");
+  assert.deepEqual(score.toJSON(), [0, 0.5, null, 1.5]);
+  assert.equal(score.nullCount, 1);
+  assert.equal(score.length, 4);
+  assert.equal(score.get(2), null);
+  assert.equal(score.get(9), null, "out of range");
+  assert.ok(table.getChild("people").toArray() instanceof Float64Array, "no nulls: typed array");
+  assert.deepEqual([...table.getChild("people")], [3, 8, 13, 7]);
+  assert.deepEqual([...table.getChild("big")], [0n, 1n, 2n, 2n ** 60n]);
+  assert.equal(score.toArray(), score.toArray(), "built once");
+  assert.ok(Object.isFrozen(score) && !Object.isFrozen(score.toArray()));
+  assert.equal(table.getChild("missing"), null);
+  assert.equal(table.getChildAt(7), null);
+  assert.equal(table.getChildAt(1), at);
+  const picked = table.select(["score", "missing", "day"]);
+  assert.equal(picked.numCols, 2, "an unknown name is skipped");
+  assert.equal(picked.getChild("score"), score, "select shares the columns");
+  for (const index of [9, -1, 1.5, "length", "0", NaN])
+    assert.equal(table.get(index), null, `get(${String(index)})`);
+  const rows = table.toArray();
+  assert.equal(table.toArray(), rows, "built once");
+  // A view may add a derived field to its rows, as with any array of objects.
+  assert.ok(!Object.isFrozen(rows) && !Object.isFrozen(rows[0]));
+  rows[0].derived = 1;
+  assert.equal(table.toArray()[0].derived, 1);
+  assert.deepEqual(rows[1], {
+    day: new Date(FIRST_DAY_MS + DAY_MS),
+    at: noon(1),
+    at_ms: noon(1),
+    people: 8,
+    name: null,
+    score: 0.5,
+    big: 1n,
+  });
+  assert.equal(table.get(1), rows[1]);
+  assert.deepEqual([...table], rows);
+  assert.throws(() =>
+    columnTable({ numRows: 1, columns: [{ name: "x", type: "date", values: [1] }] }),
+  );
+});
+
+test("an author snippet reads our table as it reads an apache-arrow table of the same data", () => {
+  const data = { x: [1, 2, null, 4], label: ["a", "b", "c", null] };
+  const ours = columnTable({
+    numRows: 4,
+    columns: [
+      {
+        name: "x",
+        type: "number",
+        values: new Float64Array([1, 2, 0, 4]),
+        nulls: new Uint8Array([1, 1, 0, 1]),
+      },
+      {
+        name: "label",
+        type: "string",
+        values: ["a", "b", "c", null],
+        nulls: new Uint8Array([1, 1, 1, 0]),
+      },
+    ],
+  });
+  const theirs = new Table({
+    x: vectorFromArray(data.x, new Float64()),
+    label: vectorFromArray(data.label, new Utf8()),
+  });
+  // What the reference says agrees: column values through toJSON and
+  // iteration, numRows, numCols, field names, select, rows as plain values.
+  const snippet = (table) => ({
+    x: table.getChild("x").toJSON(),
+    iterated: [...table.getChild("label")],
+    numRows: table.numRows,
+    rows: [...table].map((row) => ({ ...(row.toJSON?.() ?? row) })),
+    names: table.schema.fields.map((f) => f.name),
+    selected: table.select(["x"]).numCols,
+    skipped: table.select(["x", "nope"]).numCols,
+    missing: table.getChild("nope"),
+    nullCount: table.getChild("x").nullCount,
+    typeId: table.getChild("label").type.typeId,
+    row: { ...(table.get(1).toJSON?.() ?? table.get(1)) },
+  });
+  assert.deepEqual(snippet(ours), snippet(theirs));
+  assert.deepEqual(snippet(ours).x, [1, 2, null, 4]);
+});
+
+test("Plot draws the table:a string x and int64 y, a time axis, and a column with nulls", async () => {
+  const { window } = new JSDOM("<!doctype html><body></body>");
+  const { columns } = await fixture({ days: 6 });
+  const table = columnTable(columns);
+  const bars = Plot.barY(table, { x: "name", y: "people" }).plot({ document: window.document });
+  assert.equal(bars.scale("x").type, "band");
+  assert.equal(bars.querySelectorAll("g[aria-label='bar'] rect").length, 6, "a bar per row");
+  // The same chart Plot draws from plain rows, a null name included.
+  const plain = Plot.barY(
+    table.toArray().map((row) => ({ ...row })),
+    {
+      x: "name",
+      y: "people",
+    },
+  ).plot({ document: window.document });
+  assert.deepEqual(bars.scale("x").domain, plain.scale("x").domain);
+  assert.ok(bars.scale("x").domain.includes("day 6"));
+  assert.deepEqual(bars.scale("y").domain, [0, 13]);
+  const dots = Plot.plot({
+    document: window.document,
+    marks: [Plot.dot(table, { x: "at", y: "score" }), Plot.lineY(table, { x: "day", y: "score" })],
+  });
+  assert.equal(dots.scale("x").type, "utc");
+  assert.deepEqual(dots.scale("x").domain, [new Date(FIRST_DAY_MS), noon(5)]);
+  assert.equal(dots.querySelectorAll("circle").length, 4, "a dot per present score");
+  assert.ok(dots.querySelector("path"));
+  // A function channel reads rows.
+  const text = Plot.text(table, { x: "at", y: "people", text: (d) => d.name ?? "none" }).plot({
+    document: window.document,
+  });
+  assert.deepEqual(
+    [...text.querySelectorAll("text")]
+      .map((node) => node.textContent)
+      .filter((t) => /^day|none/.test(t)),
+    ["day 1", "none", "day 3", "day 4", "day 5", "day 6"],
+  );
+});

@@ -15,6 +15,10 @@
     "./schema": "./src/schema.mjs",
     "./byte-source": "./src/byte-source.mjs",
     "./data": "./src/data.mjs",
+    "./column-set": "./src/column-set.mjs",
+    "./table": "./src/table.mjs",
+    "./file-object": "./src/file-object.mjs",
+    "./whole-file-total": "./src/whole-file-total.mjs",
     "./read-budget": "./src/read-budget.mjs"
   },
   "dependencies": {

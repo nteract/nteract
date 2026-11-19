@@ -1,39 +1,51 @@
-import { exposeByteSource } from "./byte-source.mjs";
+import { exposeFile } from "./byte-source.mjs";
 import { createReadBudget } from "./read-budget.mjs";
 import { fromEvent, Subscription, timer } from "rxjs";
-import { answerTransition, dataTransition, outputTransition } from "./lifecycle.mjs";
+import {
+  answerTransition,
+  connectMessageType,
+  dataTransition,
+  outputTransition,
+} from "./lifecycle.mjs";
 import { DATA_NAME, MAX_DATA_NAMES, bufferNames } from "./data.mjs";
+import { createWholeFiles } from "./whole-file-total.mjs";
 import { preparePayload } from "./payload.mjs";
 import { normalizeHostContext } from "./context.mjs";
 export { readHostContext, OUTPUT_STYLE_VARIABLES } from "./context.mjs";
 
 const MAX_DATA_BYTES = 5 * 1024 * 1024;
+// The most bytes a module view's live files may hold read whole: each file
+// is delivered whole at most once (whole-file-total.mjs).
+export const MAX_WHOLE_FILE_TOTAL = 32 * 1024 * 1024;
 
-// A module view's data input is a whole file (Uint8Array) or a ranged file
-// (ByteSource). An anywidget buffer is always a whole file.
-function checkDataInput(value, ranged) {
-  if (value instanceof Uint8Array) {
-    if (value.byteLength > MAX_DATA_BYTES) throw Error("A data input is at most 5 MiB.");
-    return;
+// A module view's data input is a file the embedder serves on request:
+// {mimeType, byteLength, read(offset, length, signal), bytes(signal),
+// columns?(signal)}. `columns` is present only for a file the embedder can
+// decode to a ColumnSet. An anywidget buffer is a whole file (Uint8Array).
+function checkDataInput(value, module) {
+  if (module) {
+    if (
+      typeof value?.mimeType === "string" &&
+      value.mimeType.length <= 255 &&
+      Number.isSafeInteger(value.byteLength) &&
+      value.byteLength >= 0 &&
+      typeof value.read === "function" &&
+      typeof value.bytes === "function" &&
+      (value.columns === undefined || typeof value.columns === "function")
+    )
+      return;
+    throw Error(
+      "A data input is {mimeType, byteLength, read(offset, length, signal), bytes(signal), columns?(signal)}.",
+    );
   }
-  if (
-    ranged &&
-    Number.isSafeInteger(value?.byteLength) &&
-    value.byteLength >= 0 &&
-    typeof value.read === "function"
-  )
-    return;
-  throw Error(
-    ranged
-      ? "A data input is a Uint8Array or a {byteLength, read} file."
-      : "A buffer is a Uint8Array.",
-  );
+  if (!(value instanceof Uint8Array)) throw Error("A buffer is a Uint8Array.");
+  if (value.byteLength > MAX_DATA_BYTES) throw Error("A data input is at most 5 MiB.");
 }
 
 // One mount of one set of code, one port. No inbound request can address a
-// URL. Each ranged file port serves one ByteSource. Data inputs, the module
-// view's data/ files or the anywidget buffers, can change within the mount
-// through setData.
+// URL. Each file port serves one data input. Data inputs, the module view's
+// data/ files or the anywidget buffers, can change within the mount through
+// setData.
 export { mountModuleOutput as mountAnywidgetOutput };
 export function mountModuleOutput(
   container,
@@ -41,7 +53,7 @@ export function mountModuleOutput(
   {
     frameUrl,
     hostContext,
-    byteSources = {},
+    files = {},
     timeoutMs = 20000,
     scheduler,
     onState = () => {},
@@ -51,14 +63,14 @@ export function mountModuleOutput(
   if (!frameUrl) throw Error("An output frame URL is required.");
   payload = preparePayload(payload);
   const module = payload.kind === "module";
-  const names = Object.keys(byteSources);
+  const names = Object.keys(files);
   if (
     names.length > MAX_DATA_NAMES ||
     names.some((name) => !DATA_NAME.test(name)) ||
     (names.length && !module)
   )
     throw Error("A module view may bind up to 16 data/ file imports.");
-  for (const value of Object.values(byteSources)) checkDataInput(value, true);
+  for (const value of Object.values(files)) checkDataInput(value, true);
   // The names setData accepts: what the frame can also check from its mount.
   const dataNames = new Set(module ? names : bufferNames(payload.spec));
   let context = normalizeHostContext(hostContext);
@@ -81,28 +93,35 @@ export function mountModuleOutput(
   const subscriptions = new Subscription();
   const lifetime = new AbortController();
   let state = "connecting";
-  // One read budget for the view, shared by all of its ranged files,
-  // including those a data change exposes. Created at mount.
+  // One read budget for the view, shared by all of its files, including
+  // those a data change exposes. Created at mount.
   let budget;
-  // Data changes not yet sent (see dataTransition), and the lifetime of each
-  // name's exposed ranged file.
+  // Data changes not yet sent (see dataTransition).
   let pending = [];
   // Names whose sent data message the frame may still answer as unhandled
   // (see answerTransition).
   let awaiting = [];
-  const inputLifetimes = new Map();
+  // Each name's exposed file: its lifetime and its id in `wholeFiles`, the
+  // whole reads of the view's files.
+  const exposed = new Map();
+  const wholeFiles = createWholeFiles(MAX_WHOLE_FILE_TOTAL);
+  let fileIds = 0;
   // Ends `name`'s previous input and describes `value` for the frame: a
-  // dedicated copy of whole bytes, or a new port onto a ranged file.
+  // dedicated copy of whole bytes, or a new port that serves the file.
   const describe = (name, value) => {
-    inputLifetimes.get(name)?.abort();
-    inputLifetimes.delete(name);
+    const previous = exposed.get(name);
+    exposed.delete(name);
+    previous?.lifetime.abort();
+    if (previous) wholeFiles.replaced(previous.id);
     if (value instanceof Uint8Array) {
       const bytes = new Uint8Array(value);
       return [{ bytes }, [bytes.buffer]];
     }
     const own = new AbortController();
-    inputLifetimes.set(name, own);
-    const file = exposeByteSource(value, AbortSignal.any([lifetime.signal, own.signal]), budget);
+    const id = String(++fileIds);
+    exposed.set(name, { lifetime: own, id });
+    const signal = AbortSignal.any([lifetime.signal, own.signal]);
+    const file = exposeFile(value, signal, budget, wholeFiles.file(id, value.byteLength));
     return [file, [file.port]];
   };
   const deliver = (change) => {
@@ -144,7 +163,7 @@ export function mountModuleOutput(
       // Transfer to this exact WindowProxy, with a mount-specific handshake.
       step("connect");
       try {
-        frame.contentWindow.postMessage({ type: "nteract-output-connect-v2", nonce }, "*", [
+        frame.contentWindow.postMessage({ type: connectMessageType(), nonce }, "*", [
           channel.port2,
         ]);
       } catch (error) {
@@ -164,13 +183,13 @@ export function mountModuleOutput(
         try {
           step("mount");
           budget = createReadBudget({ lifetime: lifetime.signal, scheduler });
-          const files = {};
-          for (const [name, value] of Object.entries(byteSources)) {
+          const described = {};
+          for (const [name, value] of Object.entries(files)) {
             const [input, transfer] = describe(name, value);
-            files[name] = input;
+            described[name] = input;
             transfers.push(...transfer);
           }
-          channel.port1.postMessage({ type: "mount", payload, context, files }, [
+          channel.port1.postMessage({ type: "mount", payload, context, files: described }, [
             ...new Set(transfers),
           ]);
         } catch (error) {
@@ -222,7 +241,7 @@ export function mountModuleOutput(
         channel.port1.postMessage({ type: "context", context });
     },
     // A new value for a data name the mount declared: a data/ name of a
-    // module view (Uint8Array or ByteSource) or a buffer of an anywidget view
+    // module view (a file input; see checkDataInput) or a buffer of an anywidget view
     // (Uint8Array). It reaches the frame once the view has rendered; until
     // then the latest value per name waits. A failed or disposed mount drops
     // it.

@@ -6,7 +6,7 @@ import { JSDOM } from "jsdom";
 import { mountModuleOutput } from "@nteract/output-frame";
 import { VirtualTimeScheduler } from "rxjs";
 import { OUTPUT_STATES, answerTransition, dataTransition } from "@nteract/output-frame/lifecycle";
-import { receiveByteSource } from "@nteract/output-frame/byte-source";
+import { exposeFile, receiveFile } from "@nteract/output-frame/byte-source";
 import { READ_CONCURRENCY } from "@nteract/output-frame/read-budget";
 import { createFrameData, dataDecision, receiveDataChange } from "@nteract/output-frame/data";
 import { preparePayload } from "../../../packages/output-frame/src/payload.mjs";
@@ -16,6 +16,26 @@ const { createWidgetSession } = await import(
 );
 
 const text = (value) => new TextEncoder().encode(value);
+// A module view's file input over the text `value`.
+const fileOf = (value) => {
+  const bytes = text(value);
+  return {
+    mimeType: "text/plain",
+    byteLength: bytes.byteLength,
+    read: async (offset, length) => bytes.slice(offset, offset + length),
+    bytes: async () => bytes.slice(),
+  };
+};
+// The whole text of a file descriptor the frame received.
+const wholeText = async (descriptor, lifetime = new AbortController().signal) =>
+  new TextDecoder().decode(await receiveFile(descriptor, lifetime).request({ kind: "bytes" }));
+// The frame's range reads on a file descriptor.
+const rangeReader = (descriptor, lifetime) => {
+  const file = receiveFile(descriptor, lifetime);
+  return {
+    read: (offset, length, signal) => file.request({ kind: "range", offset, length }, signal),
+  };
+};
 const tick = () => new Promise((resolve) => setTimeout(resolve, 2));
 async function until(predicate, message) {
   for (let i = 0; i < 200; i++) {
@@ -100,15 +120,15 @@ const modulePayload = {
 
 test("a data change is sent only after the frame has rendered, latest per name", async (t) => {
   const { output, frame } = mountWithFakeFrame(t, modulePayload, {
-    byteSources: { "data/label": text("one"), "data/other": text("x") },
+    files: { "data/label": fileOf("one"), "data/other": fileOf("x") },
   });
-  output.setData("data/label", text("two"));
-  output.setData("data/other", text("y"));
-  output.setData("data/label", text("three"));
+  output.setData("data/label", fileOf("two"));
+  output.setData("data/other", fileOf("y"));
+  output.setData("data/label", fileOf("three"));
   await until(() => frame.messages.some((m) => m.type === "mount"), "no mount");
   const mount = frame.messages.find((m) => m.type === "mount");
   assert.deepEqual(Object.keys(mount.files), ["data/label", "data/other"]);
-  assert.equal(new TextDecoder().decode(mount.files["data/label"].bytes), "one");
+  assert.equal(await wholeText(mount.files["data/label"], frame.lifetime.signal), "one");
   frame.phase("loaded");
   frame.phase("initialized");
   await tick();
@@ -116,28 +136,32 @@ test("a data change is sent only after the frame has rendered, latest per name",
   frame.phase("rendered");
   await until(() => frame.data().length === 2, "held data was not flushed");
   assert.deepEqual(
-    frame.data().map(({ name, input }) => [name, new TextDecoder().decode(input.bytes)]),
+    await Promise.all(
+      frame
+        .data()
+        .map(async ({ name, input }) => [name, await wholeText(input, frame.lifetime.signal)]),
+    ),
     [
       ["data/other", "y"],
       ["data/label", "three"],
     ],
   );
-  output.setData("data/label", text("four"));
+  output.setData("data/label", fileOf("four"));
   await until(() => frame.data().length === 3, "a change after ready was not sent");
-  assert.equal(new TextDecoder().decode(frame.data()[2].input.bytes), "four");
+  assert.equal(await wholeText(frame.data()[2].input, frame.lifetime.signal), "four");
 });
 
 test("unknown names and invalid values are refused; changes after disposal are dropped", async (t) => {
   const { output, frame } = mountWithFakeFrame(t, modulePayload, {
-    byteSources: { "data/label": text("one") },
+    files: { "data/label": fileOf("one") },
   });
   await frame.render();
   for (const name of ["data/missing", "label", "entry", "__proto__", 7])
-    assert.throws(() => output.setData(name, text("x")), /Unknown data name/);
-  assert.throws(() => output.setData("data/label", { byteLength: 1 }), /Uint8Array/);
-  assert.throws(() => output.setData("data/label", new Uint8Array(5 * 1024 * 1024 + 1)), /5 MiB/);
+    assert.throws(() => output.setData(name, fileOf("x")), /Unknown data name/);
+  for (const bad of [{ byteLength: 1 }, text("x"), { ...fileOf("x"), bytes: undefined }])
+    assert.throws(() => output.setData("data/label", bad), /A data input is \{mimeType/);
   output.destroy();
-  output.setData("data/label", text("late"));
+  output.setData("data/label", fileOf("late"));
   await tick();
   assert.deepEqual(frame.data(), []);
 });
@@ -166,7 +190,9 @@ function heldFile(byteLength) {
   return {
     reads,
     source: {
+      mimeType: "application/octet-stream",
       byteLength,
+      bytes: async () => new Uint8Array(byteLength),
       read(offset, length, signal) {
         return new Promise((resolve, reject) => {
           const read = { offset, length, signal, release: () => resolve(new Uint8Array(length)) };
@@ -178,18 +204,18 @@ function heldFile(byteLength) {
   };
 }
 
-test("a swapped ranged file closes its old port and shares the view's read budget", async (t) => {
+test("a swapped file closes its old port and shares the view's read budget", async (t) => {
   const steady = heldFile(100);
   const before = heldFile(100);
   const after = heldFile(100);
   const { output, frame } = mountWithFakeFrame(t, modulePayload, {
-    byteSources: { "data/steady": steady.source, "data/table": before.source },
+    files: { "data/steady": steady.source, "data/table": before.source },
   });
   await frame.render();
   const mount = frame.messages.find((m) => m.type === "mount");
   const lifetime = frame.lifetime.signal;
-  const steadyFile = receiveByteSource(mount.files["data/steady"], lifetime);
-  const oldFile = receiveByteSource(mount.files["data/table"], lifetime);
+  const steadyFile = rangeReader(mount.files["data/steady"], lifetime);
+  const oldFile = rangeReader(mount.files["data/table"], lifetime);
   // Fill every slot but one on the steady file, and the last on the old table.
   for (let i = 0; i < READ_CONCURRENCY - 1; i++) void steadyFile.read(i, 1).catch(() => {});
   void oldFile.read(0, 4).catch(() => {});
@@ -200,7 +226,7 @@ test("a swapped ranged file closes its old port and shares the view's read budge
   output.setData("data/table", after.source);
   await until(() => frame.data().length === 1, "swap not sent");
   const { input } = frame.data()[0];
-  assert.equal(input.byteLength, 100);
+  assert.equal(input.size, 100);
   await until(
     () => before.reads[0].signal.aborted,
     "the old file's in-flight read was not aborted",
@@ -212,7 +238,7 @@ test("a swapped ranged file closes its old port and shares the view's read budge
   assert.equal(before.reads.length, 1);
   // The aborted read gives its slot back; a new read takes it, so the next
   // one waits on the shared budget until a steady read finishes.
-  const newFile = receiveByteSource(input, lifetime);
+  const newFile = rangeReader(input, lifetime);
   void newFile.read(0, 2).catch(() => {});
   await until(() => after.reads.length === 1, "the new file's first read did not start");
   void newFile.read(2, 2).catch(() => {});
@@ -221,46 +247,6 @@ test("a swapped ranged file closes its old port and shares the view's read budge
   assert.equal(after.reads.length, 1, "the view's budget is shared across the swap");
   steady.reads[0].release();
   await until(() => after.reads.length === 2, "the waiting read never started");
-});
-
-test("frame data: bytes become a DataView, ranged files a handle; replacing aborts the old one", async () => {
-  const mountLifetime = new AbortController();
-  const { port1, port2 } = new MessageChannel();
-  port1.onmessage = ({ data, ports: [reply] }) => {
-    reply.postMessage({ bytes: new Uint8Array(data.length).fill(7) });
-    reply.close();
-  };
-  try {
-    const frameData = createFrameData(
-      { "data/label": { bytes: text("hello") }, "data/table": { byteLength: 64, port: port2 } },
-      mountLifetime.signal,
-    );
-    const label = frameData.initial["data/label"];
-    assert.ok(label.value instanceof DataView);
-    assert.equal(new TextDecoder().decode(label.value), "hello");
-    assert.equal(new TextDecoder().decode(await label.handle.read(1, 3)), "ell");
-    await assert.rejects(label.handle.read(4, 2), /Invalid file read/);
-    const table = frameData.initial["data/table"];
-    assert.equal(table.value, table.handle, "the model and the import share one Parquet handle");
-    assert.equal(table.value.byteLength, 64);
-    assert.deepEqual([...(await table.value.read(0, 2))], [7, 7]);
-    assert.equal(frameData.replace("data/missing", { bytes: text("x") }), undefined);
-    assert.throws(() => frameData.replace("data/label", { url: "https://elsewhere.example" }));
-    const next = frameData.replace("data/label", { bytes: text("bye") });
-    assert.equal(new TextDecoder().decode(next.value), "bye");
-    await assert.rejects(label.handle.read(0, 1), { name: "AbortError" });
-    const pending = table.handle.read(0, 1);
-    frameData.replace("data/table", { bytes: text("now whole") });
-    await pending.then(
-      () => {},
-      (error) => assert.equal(error.name, "AbortError"),
-    );
-    await assert.rejects(table.handle.read(0, 1), { name: "AbortError" });
-    assert.throws(() => createFrameData({ "../x": { bytes: text("x") } }, mountLifetime.signal));
-  } finally {
-    mountLifetime.abort();
-    port1.close();
-  }
 });
 
 function sessionFixture(t, payload, loadModule) {
@@ -383,19 +369,20 @@ test("the data decision applies when any affected key listens and is unhandled w
 test("a module view applies a data change only for a key with a change listener", async (t) => {
   const lifetime = new AbortController();
   t.after(() => lifetime.abort());
+  const describe = (value) => exposeFile(fileOf(value), lifetime.signal);
   const frameData = createFrameData(
-    { "data/label": { bytes: text("first") }, "data/once": { bytes: text("read once") } },
+    { "data/label": describe("first"), "data/once": describe("read once") },
     lifetime.signal,
   );
   const state = Object.fromEntries(
-    Object.entries(frameData.initial).map(([name, input]) => [name.slice(5), input.value]),
+    Object.entries(frameData.initial).map(([name, file]) => [name.slice(5), file]),
   );
   let model;
   const fired = [];
   const { session, el } = sessionFixture(t, moduleView(state), async () => ({
     render(props) {
       model = props.model;
-      model.on("change:label", () => fired.push(new TextDecoder().decode(model.get("label"))));
+      model.on("change:label", () => fired.push(model.get("label")));
     },
   }));
   await session.initialize();
@@ -403,14 +390,15 @@ test("a module view applies a data change only for a key with a change listener"
   const sent = [];
   const send = (message) => sent.push(message);
   const receive = (name, value) =>
-    receiveDataChange({ name, input: { bytes: text(value) } }, { session, frameData, send });
+    receiveDataChange({ name, input: describe(value) }, { session, frameData, send });
 
   assert.equal(receive("data/label", "second"), "apply");
-  assert.deepEqual(fired, ["second"]);
+  assert.equal(fired.length, 1);
+  assert.equal(await fired[0].text(), "second");
   assert.deepEqual(sent, []);
 
   const before = model.get("once");
-  const oldHandle = frameData.initial["data/once"].handle;
+  const oldHandle = frameData.initial["data/once"];
   assert.equal(receive("data/once", "changed"), "unhandled");
   assert.deepEqual(sent, [{ type: "unhandled-data", name: "data/once" }]);
   assert.equal(model.get("once"), before, "nothing is applied");
@@ -472,7 +460,7 @@ test("an anywidget buffer change applies to every bound key when one of them lis
 test("the host reports unhandled data only once ready and only for declared names", async (t) => {
   const unhandled = [];
   const { output, frame } = mountWithFakeFrame(t, modulePayload, {
-    byteSources: { "data/label": text("one") },
+    files: { "data/label": fileOf("one") },
     onUnhandledData: (name) => unhandled.push(name),
   });
   await until(() => frame.messages.some((m) => m.type === "mount"), "no mount");
@@ -485,7 +473,7 @@ test("the host reports unhandled data only once ready and only for declared name
   await tick();
   await tick();
   assert.deepEqual(unhandled, [], "an unsolicited answer is ignored");
-  output.setData("data/label", text("two"));
+  output.setData("data/label", fileOf("two"));
   await until(() => frame.data().length === 1, "the change was not sent");
   for (const name of ["data/missing", "label", 7, "__proto__"])
     frame.port.postMessage({ type: "unhandled-data", name });
@@ -496,8 +484,8 @@ test("the host reports unhandled data only once ready and only for declared name
   await tick();
   assert.deepEqual(unhandled, ["data/label"], "one answer per sent message");
   // Two sends before an answer still await one answer.
-  output.setData("data/label", text("three"));
-  output.setData("data/label", text("four"));
+  output.setData("data/label", fileOf("three"));
+  output.setData("data/label", fileOf("four"));
   await until(() => frame.data().length === 3, "the changes were not sent");
   for (let i = 0; i < 3; i++)
     frame.port.postMessage({ type: "unhandled-data", name: "data/label" });

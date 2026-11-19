@@ -102,6 +102,9 @@ can meet an old shell, or the reverse. A change that breaks the frame protocol
 adds a new versioned path (`/frame/v3/`) and keeps serving the previous one for at
 least one release. The shell deploys before the host that needs it. Pages lists
 the paths its shell serves in `apps/pages/shared/output-frame-paths.mjs`.
+The handshake message names the port protocol, `nteract-output-connect-v3`
+(`PROTOCOL_VERSION` in `src/lifecycle.mjs`). A runtime that receives another
+version answers with an error asking for a reload, and does not mount.
 `preparePayload` requires exactly the referenced assets, checks module/CSS media
 types, and bounds assets to 5 MiB each / 32 MiB total. Pages also enforces spec-size
 and source authorization limits.
@@ -118,7 +121,7 @@ expose a Retry button.
 
 ## Module views
 
-`mountModuleOutput(container, {kind: 'module', assets: {entry}, imports?}, {byteSources})`
+`mountModuleOutput(container, {kind: 'module', assets: {entry}, imports?}, {files})`
 mounts one entry module. Its named `render({model, el, signal, host})` export is
 used when it has one; otherwise its default export is an AFM object or factory,
 run as an anywidget view's, except that the frame sets no initialization
@@ -127,40 +130,98 @@ limit bounds it. Both get a local model built by the same
 session code as an anywidget view: `model.get/set/on/off`, a no-op
 `save_changes()` and a `send()` that throws.
 
-`byteSources` maps up to 16 `data/<alias>` names to inputs. Each alias is a key
-on the model:
+`files` maps up to 16 `data/<alias>` names to file inputs. The embedder
+supplies one object per name and serves it when the view asks:
+`{mimeType, byteLength, read(offset, length, signal), bytes(signal),
+columns?(signal)}`. `read` answers one range, `bytes` the whole file, and
+`columns` the file's ColumnSet, checked by the embedder when it decodes it;
+leave `columns` out for a file that is not a table. Each signal ends when the
+frame cancels the request or the mount ends. The library calls `bytes` and
+`columns` for one request at a time per file, and delivers each at most once
+per file.
 
-- A `Uint8Array` is a whole file of at most 5 MiB. The model holds a DataView of it.
-  Pages also counts it toward the view's 32 MiB input total.
-- A `ByteSource` (`{byteLength, read(offset, length, signal)}`) is a ranged file
-  behind its own port and the view's read budget. The model holds the handle.
+The frame receives `{mimeType, size, port}` per name, and nothing else until
+the view asks. The model's value for each alias is a file object
+(`src/file-object.mjs`), and `import f from "data/<alias>"` gives the same
+object, bound once to the file the view mounted with:
 
-`import f from "data/<alias>"` gives a `{byteLength, read}` handle on the input
-the view mounted with, in both cases. It is bound once: after a data change its
-reads reject as aborted, and `model.get(alias)` is the current input. A view
-that computed offsets from the old file therefore fails loudly instead of
-reading the new one at stale offsets.
+- `name`, `mimeType`, `size`: known at mount;
+- `arrayBuffer()`, `text()`, `json()`: the whole file, read once per file
+  object and shared; `arrayBuffer()` gives a new copy on each call;
+- `parquet()`: an Arrow-style table (below); it rejects when the embedder
+  supplied no `columns`, and for any argument, since it takes no options yet;
+- `slice(start, end)`: a range object `{size, arrayBuffer(), text()}`, clamped
+  as `Blob.slice` clamps, that reads its span with one range request;
+- `byteLength` and `read(offset, length, signal)`: the members that make the
+  file a Sift byte source, for Sift's `loadTableFile`.
+
+`text()`, `json()` and `parquet()` return the same promise on each call
+while it is pending and after it resolves; after a rejection, the next call
+asks again. A failed read rejects that call with a plain message and never
+fails the mount. Opening a bound file is the embedder's work before it mounts,
+and can fail the mount (in Pages, a missing asset or a media type that does
+not match its source).
+
+Each file has its own port (`src/byte-source.mjs`). A request names its kind:
+`{kind: "range", offset, length}`, `{kind: "bytes"}` or `{kind: "columns"}`,
+each on its own reply port, and any message on that reply port cancels it.
+The answer is `{bytes}`, `{columns}` with its typed arrays transferred, or
+`{error}`. Both ends check every request, and the frame checks every reply,
+ColumnSets included. Every kind counts as one read in the view's read budget.
+
+`bytes` and `columns` are whole reads, with one share each per exposed file
+(`wholeFileTransition` in `src/whole-file-total.mjs`). A share is none,
+reading or delivered. A request starts only from none; while reading or once
+delivered, another request of that kind is refused with `{error}`, so the
+parent serves one at a time and delivers each at most once. A failure or a
+cancel, queued or in flight, returns a reading share to none, so a retry may
+start. A new file under the name drops both shares. A whole-file read is at
+most 5 MiB, and the `bytes` shares of the view's live files, reading or
+delivered, stay within 32 MiB, so that is a bound on the bytes the frame
+holds whole. A ColumnSet counts toward no total; the embedder's decode limits
+bound it.
+
+A ColumnSet (`src/column-set.mjs`) is `{numRows, columns: [{name, type,
+values, nulls?}]}`, structured-cloneable with no class instances. `type` is
+`number` or `date` (a `Float64Array`; a date in epoch milliseconds), `bigint` (a
+`BigInt64Array` or `BigUint64Array`), or `string`, `boolean` or `other` (an
+array). `nulls` is a `Uint8Array` validity mask, 1 where a value is present,
+and is absent when the column has no nulls. `checkColumnSet` checks lengths,
+types, value kinds, and at most 256 columns with unique names of 1 to 256
+characters. The embedder checks a ColumnSet once, when it decodes it (Pages
+does in `parquetColumns`, before its shared cache keeps it); the host copies
+it to each frame without checking it again, and the frame checks its copy.
+
+The table (`src/table.mjs`) spells its members as an Apache Arrow JS table
+does: `numRows`, `numCols`, `schema.fields`, `getChild(name)`,
+`getChildAt(index)`, `get(index)`, `toArray()`, `select(names)` and iteration
+over rows; a column has `length`, `nullCount`, `type`, `get(index)`,
+`toArray()`, `toJSON()` and iteration. Values are plain JavaScript: a `date`
+is a `Date`, a missing value `null`, and rows are plain objects a view may
+change. Nothing else on the object is part of the interface. The Pages
+reference lists where it differs from Arrow JS.
 
 ## Data changes
 
 `handle.setData(name, value)` offers a mounted view a new data input. The
 name must be one the mount declared: a `data/<alias>` of a module view, or a
 buffer name of an anywidget view that is not also a module or stylesheet name.
-Anything else throws. A module view takes a `Uint8Array` or a `ByteSource`; an
-anywidget buffer takes a `Uint8Array`.
+Anything else throws. A module view takes a file input; an anywidget buffer
+takes a `Uint8Array`.
 
 The parent sends one message per change on the mount's port:
-`{type: 'data', name, input}`, where `input` is `{bytes}` (a dedicated copy,
-transferred) or `{byteLength, port}` (a new port). It carries names, bytes and
-ports only. The frame checks the name against those its mount declared and
+`{type: 'data', name, input}`, where `input` is `{bytes}` for an anywidget
+buffer (a dedicated copy, transferred) or `{mimeType, size, port}` for a module
+view's file (a new port). It carries names, data and ports only. The frame checks the name against those its mount declared and
 ignores any other.
 
 - The host sends data only once the frame has rendered. Changes before that wait,
   the latest per name, and go in order at `ready`. A failed or disposed mount
   drops them (`dataTransition` in `src/lifecycle.mjs`).
-- Replacing a ranged file closes its old port: reads waiting in the read budget
-  are dropped and reads in flight abort. The new port shares the same budget.
-- In the frame, a module view's model key takes the new value and
+- Replacing a file closes its old port: requests waiting in the read budget
+  are dropped and requests in flight abort. The old file object's pending and
+  later calls reject as aborted. The new port shares the same budget.
+- In the frame, a module view's model key takes a new file object and
   `change:<alias>` fires. For an anywidget buffer, each model key that holds a
   path bound to that buffer gets a copy with a new DataView at the path, and
   `change:<key>` fires once per key. Other local values under that key are kept.
@@ -177,7 +238,7 @@ ignores any other.
   An unsolicited or repeated answer is ignored, so a view can ask for at most
   one new mount per data change. The frame never acknowledges an applied change.
 - After `onUnhandledData`, the embedder must mount the view again. The host
-  ended the name's previous ranged input when it sent the new one, so the
+  ended the name's previous file when it sent the new one, so the
   view's reads through the old input no longer answer. Pages mounts the view
   again from its newest inputs: a view that does not listen is remounted when
   its data changes.

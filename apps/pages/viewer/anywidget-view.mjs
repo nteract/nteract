@@ -33,10 +33,9 @@ import { themeStore } from "./theme.mjs";
 const sameAsset = (a, b) => a?.asset_id === b?.asset_id && a?.media_type === b?.media_type;
 const asset = (version) => ({ asset_id: version.asset_id, media_type: version.media_type });
 
-// A module view reads a Parquet file in ranges; every other data input,
-// including every anywidget buffer, arrives whole.
-const dataShape = (module, version) =>
-  module && version.media_type === PARQUET_MEDIA_TYPE ? "ranged" : "whole";
+// The Parquet decoder, in a chunk of its own: only a module view that binds
+// a Parquet file loads it.
+const loadColumnDecoder = () => import("./module-parquet.mjs").then((m) => m.parquetColumns);
 
 // A plan splits a view into its code identity, `key`, and its data inputs,
 // `data`: name → asset. The frame's lifetime follows `key` alone.
@@ -61,23 +60,13 @@ export function anywidgetPlan(view, sources) {
   const module = view.media_type === MODULE_MEDIA_TYPE;
   const code = {};
   const data = {};
-  // How each data name reaches the model: a ranged handle or a whole file.
-  // A listener written for one shape cannot read the other, so it is code.
-  const shapes = {};
   for (const [name, version] of Object.entries(versions)) {
     const isData = module
       ? name.startsWith("data/")
       : roles.get(name).every((role) => role === "buffer");
     (isData ? data : code)[name] = asset(version);
-    if (isData) shapes[name] = dataShape(module, version);
   }
-  const key = JSON.stringify([
-    view.media_type,
-    view.spec,
-    view.catalog_revision ?? null,
-    code,
-    shapes,
-  ]);
+  const key = JSON.stringify([view.media_type, view.spec, view.catalog_revision ?? null, code]);
   return { view, spec: checked.spec, versions, data, key };
 }
 
@@ -116,8 +105,12 @@ export function mount(
       ?.content ?? OUTPUT_FRAME_URL,
     mountOutput = mountModuleOutput,
     theme = themeStore,
-    // The most input bytes one view's frame holds at once.
+    // The most bytes one view's frame holds from mount: its entry, imports
+    // and anywidget assets and buffers.
     maxTotalBytes = OUTPUT_MAX_TOTAL_BYTES,
+    // Resolves with the decoder `sources.sharedResolver` decodes Parquet
+    // files to ColumnSets with (parquet-columns.mjs).
+    columnDecoder = loadColumnDecoder,
   },
 ) {
   const doc = container.ownerDocument;
@@ -207,9 +200,12 @@ export function mount(
                       delete root.dataset.inputError;
                       const plan = latest$.value;
                       const module = plan.view.media_type === MODULE_MEDIA_TYPE;
-                      // Bytes the frame holds, by name. Each change replaces
-                      // its name's share of the view's total.
-                      // A size is recorded only once the frame holds it.
+                      // Bytes the frame holds from mount, by name: the entry,
+                      // imports and anywidget assets and buffers. Each buffer
+                      // change replaces its name's share of the view's total.
+                      // A size is recorded only once the frame holds it. A
+                      // module view's files count nothing here; the frame
+                      // host keeps their whole-file total itself.
                       const sizes = new Map();
                       const checkTotal = (name, size) => {
                         let total = size;
@@ -227,17 +223,41 @@ export function mount(
                         signal.throwIfAborted();
                         return loaded;
                       };
+                      // A module view's file is opened for its size at
+                      // mount and read only when the view asks: ranges from
+                      // the asset, the whole file through fetchOutputAsset
+                      // (5 MiB), and for Parquet a ColumnSet through the
+                      // Page's shared cache, so views of one asset decode it
+                      // once. Those reads run under the mount and the
+                      // frame's request, not this load. An anywidget buffer
+                      // arrives whole.
                       const loadData = async (name, version, signal) => {
-                        if (dataShape(module, version) === "ranged") {
-                          const file = await openAssetByteSource(sources.pageId, version, {
-                            signal,
-                            request: sources.request,
-                          });
-                          signal.throwIfAborted();
-                          return { value: file, size: 0 };
+                        if (!module) {
+                          const { bytes } = await loadBytes(version, signal);
+                          return { value: bytes, size: bytes.byteLength };
                         }
-                        const { bytes } = await loadBytes(version, signal);
-                        return { value: bytes, size: bytes.byteLength };
+                        const file = await openAssetByteSource(sources.pageId, version, {
+                          signal,
+                          request: sources.request,
+                        });
+                        signal.throwIfAborted();
+                        const within = (request) => AbortSignal.any([controller.signal, request]);
+                        const input = {
+                          mimeType: version.media_type,
+                          byteLength: file.byteLength,
+                          read: file.read,
+                          bytes: async (request) =>
+                            (await loadBytes(version, within(request))).bytes,
+                        };
+                        if (version.media_type === PARQUET_MEDIA_TYPE)
+                          input.columns = async (request) => {
+                            const decode = await columnDecoder();
+                            const loaded = await sources
+                              .sharedResolver(decode)
+                              .load(version, { signal: within(request) });
+                            return loaded.table;
+                          };
+                        return { value: input, size: 0 };
                       };
                       // Data changes that failed to load, by name. The frame
                       // keeps the data it has for those names.
@@ -261,8 +281,8 @@ export function mount(
                         button.disabled = false;
                       };
                       // A load ends when a newer change for its name arrives
-                      // or the mount ends. Once handed to the frame, a ranged
-                      // file reads under the mount's signal, not the load's.
+                      // or the mount ends. Once handed to the frame, a file
+                      // reads under the mount's signal, not the load's.
                       const update = (name, version) =>
                         new Observable((subscriber) => {
                           const loading = new AbortController();
@@ -303,13 +323,11 @@ export function mount(
                               );
                             url.searchParams.set("catalog", catalogRevision);
                           }
-                          const byteSources = {};
+                          const files = {};
                           for (const [name, version] of Object.entries(plan.versions)) {
                             if (name.startsWith("data/")) {
                               const input = await loadData(name, version, controller.signal);
-                              checkTotal(name, input.size);
-                              sizes.set(name, input.size);
-                              byteSources[name] = input.value;
+                              files[name] = input.value;
                             } else {
                               const loaded = await loadBytes(version, controller.signal);
                               checkTotal(name, loaded.bytes.byteLength);
@@ -330,7 +348,7 @@ export function mount(
                               ...(Object.keys(imports).length && { imports }),
                             },
                             {
-                              byteSources,
+                              files,
                               frameUrl: url.href,
                               hostContext: readHostContext(root, theme.getSnapshot().resolved),
                               onState(state, error) {

@@ -1,35 +1,9 @@
-import activity from "data/activity";
-import { loadTableFile } from "@nteract/sift/parquet";
 import * as Plot from "@observablehq/plot";
 
-export async function render({ el, signal }) {
-  let reads = 0,
-    transferred = 0;
-  const table = await loadTableFile(
-    {
-      byteLength: activity.byteLength,
-      async read(offset, length) {
-        const bytes = await activity.read(offset, length, signal);
-        reads++;
-        transferred += bytes.length;
-        return bytes;
-      },
-    },
-    { format: "parquet", maxRows: 28, overflow: "truncate" },
-  );
-  let rows;
-  try {
-    const index = (name) => table.columns.findIndex((c) => c.label === name);
-    const day = index("day"),
-      people = index("active_people");
-    rows = Array.from({ length: table.rowCount }, (_, i) => ({
-      day: table.getCell(i, day),
-      people: Number(table.getCellRaw(i, people)),
-    }));
-  } finally {
-    table.dispose?.();
-  }
-  signal.throwIfAborted();
+// Daily active people in the archive's first project. `activity` is the bound
+// Parquet file; `parquet()` gives it as an Arrow-style table whose first 28
+// rows are that project's latest 28 days.
+export async function render({ model, el, signal }) {
   const chart = document.createElement("div");
   const label = document.createElement("label");
   label.textContent = "Show ";
@@ -37,15 +11,19 @@ export async function render({ el, signal }) {
   for (const n of [7, 14, 28]) select.add(new Option(n + " days", String(n), n === 14, n === 14));
   label.append(select);
   const detail = document.createElement("p");
-  detail.textContent =
-    reads +
-    " range reads · " +
-    transferred.toLocaleString("en-US") +
-    " of " +
-    activity.byteLength.toLocaleString("en-US") +
-    " file bytes";
-  detail.dataset.bytes = String(transferred);
   el.append(label, chart, detail);
+  let rows = [];
+  const read = async () => {
+    const table = await model.get("activity").parquet();
+    const project = table.getChild("project_id").toArray();
+    const day = table.getChild("day").toArray();
+    const people = table.getChild("active_people").toArray();
+    rows = [];
+    for (let i = 0; i < table.numRows && project[i] === project[0]; i++)
+      rows.push({ day: day[i], people: people[i] });
+    detail.textContent = table.numRows.toLocaleString("en-US") + " rows in the archive";
+    detail.dataset.rows = String(table.numRows);
+  };
   const draw = () => {
     const days = rows.slice(0, Number(select.value)).reverse();
     chart.replaceChildren(
@@ -72,9 +50,14 @@ export async function render({ el, signal }) {
       }),
     );
   };
+  model.on("change:activity", async () => {
+    await read();
+    draw();
+  });
   select.addEventListener("change", draw, { signal });
   const observer = new ResizeObserver(draw);
   observer.observe(el);
+  await read();
   draw();
   return () => observer.disconnect();
 }
