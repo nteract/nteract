@@ -4,6 +4,7 @@ import { secretHash, SERVER_SESSION_COOKIE } from "@nteract/session";
 import { startLocalKiloHandoff } from "../scripts/fixtures/local-kilo-handoff.mjs";
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
 import worker from "./index.mjs";
+import { browserAccountMenu } from "./browser-account.mjs";
 import { authenticate } from "./auth.mjs";
 import { KILO_MEMBERSHIP_SECONDS } from "./kilo-config.mjs";
 import { kiloOrganizations, MAX_ORGANIZATIONS } from "./kilo-exchange.mjs";
@@ -679,4 +680,35 @@ test("the private browser menu shows organization names or the signed-in person'
   assert.equal((await status(await browserSignIn(env, kilo, person([])))).accountMenu, undefined);
   assert.equal((await status(cookie)).accountMenu.organizations.length, 2);
   assert.ok(!lines.join("\n").includes(another.verifiedEmail));
+});
+
+test("only the browser session reads the account menu: a bearer credential gets neither field", async (t) => {
+  const { env, kilo } = await fixture(t);
+  const session = (headers) => worker.fetch(request("/api/auth/session", headers), env);
+  const member = { ...person([sentinel]), verifiedEmail: "member@example.test" };
+  const personal = { ...person([]), verifiedEmail: "personal@example.test" };
+  for (const account of [member, personal]) {
+    const cookie = await browserSignIn(env, kilo, account);
+    const browser = await authenticate(request("/api/auth/session", { cookie }), env);
+    const shown = await browserAccountMenu(request("/", { cookie }), env, browser);
+    assert.ok(shown.accountMenu.organizations || shown.accountMenu.email);
+    // The same person's identity under any other credential, beside the same
+    // cookie: the menu answers the credential kind, not the principal.
+    for (const credentialKind of ["oauth", "kilo-token", "api-key"])
+      assert.deepEqual(
+        await browserAccountMenu(request("/", { cookie }), env, { ...browser, credentialKind }),
+        {},
+      );
+    // Tokens scoped to the agent routes are refused before the session answer.
+    for (const token of [await oauthToken(env, account), kilo.mintToken(account, { audience })]) {
+      const authorization = `Bearer ${token}`;
+      for (const headers of [{ authorization }, { authorization, cookie }]) {
+        const response = await session(headers);
+        assert.equal(response.status, 403);
+        const text = await response.text();
+        assert.ok(!text.includes(account.verifiedEmail));
+        assert.ok(!text.includes(sentinel.name));
+      }
+    }
+  }
 });
