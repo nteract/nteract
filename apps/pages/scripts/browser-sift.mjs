@@ -27,9 +27,12 @@ export function browserSiftPlugin(app, wasmUrl = SIFT_WASM_URL, csvWasmUrl = SIF
   return {
     name: "pages-sift-assets",
     setup(b) {
-      // @nteract/sift-csv reads its WASM with node:fs/promises only under
-      // Node, for a file: URL. The viewer always sets an https URL first, so
-      // the browser build gets a stub that is never called.
+      // @nteract/sift-csv 0.3.1's one entry (lib/index.js) imports
+      // node:fs/promises to read its WASM from a file: URL under Node, and
+      // esbuild can't resolve that for the browser. This stub stands in for
+      // node:fs/promises' readFile; the viewer always sets an https WASM URL
+      // first, so it is never called. Remove it once the package's browser
+      // entry stops importing node:fs/promises.
       b.onResolve({ filter: /^node:fs\/promises$/ }, (args) =>
         /[\\/]@nteract[\\/]sift-csv[\\/]/.test(args.importer)
           ? { path: "node-fs-promises", namespace: "sift-assets" }
