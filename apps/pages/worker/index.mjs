@@ -1990,8 +1990,12 @@ const gateway = {
         const pageId = url.searchParams.get("page");
         if (!validPageId(pageId)) throw new HttpError(400, "Invalid page_id", "invalid_page_id");
         if (!["GET", "POST"].includes(request.method)) throw new HttpError(405, "Use GET or POST");
+        // This route forwards without invoke(), so it applies the same
+        // argument step invoke() does: a role of CLEAR reaches the Page as null.
         const internal = forwarded(request, "/internal/access", {
-          ...(request.method === "POST" ? await readJson(request) : {}),
+          ...(request.method === "POST"
+            ? hostArguments("manage_page_access", await readJson(request))
+            : {}),
           read: request.method === "GET",
         });
         // The original request already passed authentication/origin checks.
