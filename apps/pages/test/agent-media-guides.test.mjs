@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import worker from "../worker/index.mjs";
-import { MEDIA_GUIDES, mediaGuide } from "../agent-media-guides.mjs";
+import { readFileSync } from "node:fs";
+import { DATA_FORMAT_ADVICE, MEDIA_GUIDES, mediaGuide } from "../agent-media-guides.mjs";
+import { agentGuide } from "../agent-guide.mjs";
 import { validateSourceOperation } from "../model/sources-doc.mjs";
 import { validateViewOperation } from "../model/view-doc.mjs";
 import { compileAnywidgetSpec } from "../shared/anywidget-spec.mjs";
@@ -185,11 +187,12 @@ test("published tool examples pass current source and view validators", () => {
 test("the views guide teaches files asked with await, the table, and change listeners", () => {
   const guide = mediaGuide("/llms/views.txt", origin);
   for (const sentence of [
-    "Each name in data is a key on the model, and model.get(name) is a file: ask it with await for .parquet(), .json(), .text() or .arrayBuffer().",
+    "Each name in data is a key on the model, and model.get(name) is a file: ask it with await for .parquet(), .csv(), .json(), .text() or .arrayBuffer().",
+    ".csv() gives an array of row objects with a columns list of the names",
     "A table has numRows, schema.fields, getChild(name).toArray() and toArray(), and Plot takes it directly.",
     "Listen for change:<name> to redraw in place; otherwise the view starts again with the new data.",
     "Forgetting await passes a promise to Plot, which then draws nothing.",
-    ".parquet() rejects for a file that is not Parquet.",
+    ".parquet() rejects for a file that is not Parquet; .csv() reads a file of any type as CSV and rejects one that does not parse, saying why.",
     "a 64-bit integer column is numbers when every value is a safe integer (within ±(2^53 − 1)), otherwise BigInt.",
     ".arrayBuffer(), .text() and .json() read the whole file: at most 5 MiB, read once per file, and at most 32 MiB across one view's files.",
     '`await model.get("activity").slice(0, 4).arrayBuffer()` reads those four bytes',
@@ -215,6 +218,49 @@ test("the views guide teaches files asked with await, the table, and change list
   const module = tools.find(({ name }) => name === "edit_page").inputSchema.properties.operations
     .items.properties.module;
   assert.match(module.description, /render\(\{model, el, signal\}\)/);
+});
+
+test("every guide that describes data uploads says which format to choose, Parquet first", () => {
+  assert.match(DATA_FORMAT_ADVICE, /^Prefer Parquet when you can write it/);
+  for (const sentence of [
+    "a column of digits such as postal codes becomes numbers and loses its leading zero",
+    "the first row is always the header",
+    "only commas separate fields",
+    "the file must be UTF-8",
+    "a timestamp with no zone is read as UTC",
+    "such as 2024-02-30, fails the whole file: fix the value, or write Parquet.",
+    "JSON suits a small nested object, not a table of rows.",
+  ])
+    assert.ok(DATA_FORMAT_ADVICE.includes(sentence), sentence);
+  const views = mediaGuide("/llms/views.txt", origin);
+  const assets = mediaGuide("/llms/assets-and-sources.txt", origin);
+  const main = agentGuide({ NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin });
+  for (const [name, text] of Object.entries({ views, assets, main }))
+    assert.ok(text.includes(DATA_FORMAT_ADVICE), name);
+  const reference = readFileSync(new URL("../REFERENCE.md", import.meta.url), "utf8").replace(
+    /\s+/g,
+    " ",
+  );
+  assert.ok(
+    reference.includes(DATA_FORMAT_ADVICE.replace("CSV (text/csv)", "CSV")),
+    "REFERENCE.md",
+  );
+  // CSV is an upload type, a module view reads it with csv(), and a chart or
+  // dataframe draws it.
+  assert.match(assets, /`text\/csv`/);
+  assert.match(assets, /A Parquet or CSV dataframe can use asset_id or a source binding/);
+  assert.match(views, /For a Parquet or CSV table, use insert_node with type dataframe/);
+  assert.match(
+    mediaGuide("/llms/vega-lite.txt", origin),
+    /A chart's dataset may be a Parquet or a CSV source\./,
+  );
+  assert.match(main, /A Page can show a Parquet or CSV file as an interactive table\./);
+  assert.match(
+    tools.find(({ name }) => name === "edit_page").inputSchema.properties.operations.items
+      .properties.data.description,
+    /\.csv\(\) for rows/,
+  );
+  for (const text of [views, assets, main]) assert.doesNotMatch(text, /csv\(\) is not/i);
 });
 
 test("media tools point to scoped documentation", () => {

@@ -455,6 +455,105 @@ try {
   }
   complete("A table bound to a source redraws when an agent refreshes it; a pinned one stays");
 
+  // CSV: one table follows a CSV source, one is placed on a CSV asset. Both
+  // draw the header and a value; moving the source to a second CSV redraws
+  // the bound table only.
+  {
+    const CSV = "text/csv";
+    const listing = (await tool(owner, "list_pages")).body;
+    const made = await tool(owner, "create_page", {
+      title: "Datasets from CSV",
+      markdown: "Usage, as CSV.",
+      ...retry(listing),
+    });
+    assert.equal(made.status, 200, JSON.stringify(made.body));
+    const csvPageId = made.body.page_id;
+    created.push(csvPageId);
+    const upload = async (text) => {
+      const response = await fetch(`${origin}/api/pages/${csvPageId}/assets`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${keys.owner}`, "Content-Type": CSV },
+        body: text,
+      });
+      assert.ok([200, 201].includes(response.status), await response.clone().text());
+      const asset = await response.json();
+      assert.equal(asset.mime_type, CSV);
+      return asset;
+    };
+    const first = await upload("day,surface,events\n2026-11-01,csvbrowser,42\n2026-11-02,mcp,7\n");
+    const second = await upload("day,surface,events\n2026-11-03,csvdesktop,99\n");
+    const edit = async (operations) => {
+      const read = (await tool(owner, "read_page", { page_id: csvPageId })).body;
+      const result = await tool(owner, "edit_page", {
+        page_id: csvPageId,
+        revision: read.revision,
+        ...retry(read),
+        operations,
+      });
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      return result.body;
+    };
+    await edit([
+      {
+        op: "set_source",
+        source_id: "rows",
+        name: "Rows",
+        asset_id: first.asset_id,
+        source_revision: null,
+      },
+    ]);
+    const placed = await edit([
+      {
+        op: "insert_node",
+        node: {
+          type: "dataframe",
+          attrs: { binding: { source_id: "rows" }, title: "CSV follows" },
+        },
+      },
+      // A dataframe on an asset names its media type; Parquet is the default.
+      {
+        op: "insert_node",
+        node: {
+          type: "dataframe",
+          attrs: { asset_id: first.asset_id, media_type: CSV, title: "CSV asset" },
+        },
+      },
+    ]);
+    assert.equal(placed.result.edits.length, 2, JSON.stringify(placed.result));
+    const reader = await signIn("dev@localhost");
+    await reader.goto(`${origin}/p/${csvPageId}`);
+    await expect(tables(reader)).toHaveCount(2, { timeout: 15000 });
+    const follows = tables(reader).filter({ hasText: "CSV follows" });
+    const asset = tables(reader).filter({ hasText: "CSV asset" });
+    for (const table of [follows, asset]) {
+      await table.scrollIntoViewIfNeeded();
+      await expect(table.locator(".sift-root").first()).toBeVisible({ timeout: 20000 });
+      for (const text of ["surface", "events", "csvbrowser"])
+        await expect(table).toContainText(text, { timeout: 20000 });
+    }
+    await reader.screenshot({ path: `${output}/csv-tables-before.png`, fullPage: true });
+    await edit([
+      {
+        op: "set_source",
+        source_id: "rows",
+        name: "Rows",
+        asset_id: second.asset_id,
+        source_revision: "1",
+      },
+    ]);
+    const followsCanvas = follows.locator(".wordgard-dataframe-canvas");
+    await expect(followsCanvas).toHaveAttribute("data-source-revision", "2", { timeout: 20000 });
+    await expect(follows).toContainText("csvdesktop", { timeout: 20000 });
+    await expect(follows).not.toContainText("csvbrowser");
+    await expect(asset).toContainText("csvbrowser");
+    await reader.screenshot({ path: `${output}/csv-tables-after.png`, fullPage: true });
+    await reader.context().close();
+    people.set("dev@localhost", owner);
+  }
+  complete(
+    "CSV tables: one follows a CSV source and redraws when it moves; one placed on a CSV asset stays",
+  );
+
   const rewrite = await editPage([
     { op: "replace_block_markdown", node_id: node.node_id, markdown: "gone" },
   ]);

@@ -1,28 +1,29 @@
 // The whole reads a module view's parent serves, by exposed file. Each file
-// has two shares, one per whole-read kind:
+// has one share per whole-read kind:
 // - "bytes": the whole file, whose size counts toward the view's limit;
-// - "columns": the file's ColumnSet, which counts toward no limit.
+// - "parquet" and "csv": the file's ColumnSet read in that table format,
+//   which counts toward no limit.
 // A share is none (absent), "reading" or "delivered". The parent serves one
 // whole read of each kind per file at a time and delivers each at most once,
 // so the sizes of the "bytes" shares bound the bytes the frame holds whole
 // for its live files. Each exposed file has its own id, so a late answer for
 // a replaced file never touches its successor.
 //
-// State: a frozen object of file id → {bytes?: {phase, size}, columns?:
-// {phase}}. Events:
+// State: a frozen object of file id → {bytes?: {phase, size}, parquet?:
+// {phase}, csv?: {phase}}. Events:
 // - {type: "reserve", file, kind, size, limit}: a whole read asks to start.
 //   Refused while that share is reading or delivered, and for "bytes" when
 //   the view's shares would pass `limit`; otherwise the share is reading.
 // - {type: "delivered", file, kind}: a reading share is delivered.
 // - {type: "failed", file, kind}: the read failed or was cancelled, queued or
 //   in flight; a reading share goes back to none, so a retry may start.
-// - {type: "replaced", file}: the file's name has a new file; both shares go.
+// - {type: "replaced", file}: the file's name has a new file; its shares go.
 // An event for a share in any other phase, or for an unknown file, changes
 // nothing. Returns the next state and, for "reserve", null or why it is
 // refused.
 
 export const NO_WHOLE_FILES = Object.freeze({});
-export const WHOLE_READ_KINDS = Object.freeze(["bytes", "columns"]);
+export const WHOLE_READ_KINDS = Object.freeze(["bytes", "parquet", "csv"]);
 
 const MIB = 1024 * 1024;
 

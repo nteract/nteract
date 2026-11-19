@@ -11,7 +11,7 @@ import { readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { browserMermaidPlugin } from "./browser-mermaid.mjs";
-import { SIFT_WASM_URL, browserSiftPlugin } from "./browser-sift.mjs";
+import { SIFT_CSV_WASM_URL, SIFT_WASM_URL, browserSiftPlugin } from "./browser-sift.mjs";
 import { BROWSER_WASM_URLS, browserWasmPlugin, wasmUrlDefine } from "./browser-wasm.mjs";
 import { FAVICON_HREF } from "../shared/favicon.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
@@ -36,9 +36,11 @@ export const VIEWER_ASSETS = Object.freeze([
   "mermaid.js",
   "automerge.wasm",
   "sift.wasm",
+  "sift-csv.wasm",
 ]);
 // Staging and the tunnel ingress route admit exactly these shapes.
-const VIEWER_ASSET = /^public\/(app|theme|mermaid|automerge|sift)-([A-Z2-7]{8})\.(js|css|wasm)$/;
+const VIEWER_ASSET =
+  /^public\/(app|theme|mermaid|automerge|sift|sift-csv)-([A-Z2-7]{8})\.(js|css|wasm)$/;
 export const IMMUTABLE = "public, max-age=31536000, immutable";
 /** The viewer's Content-Security-Policy. No 'unsafe-eval': only WebAssembly
  * compiles at runtime, so Vega charts run with its expression interpreter
@@ -114,7 +116,11 @@ export function viewerBuildOptions(app, dist, define = {}, urls = {}) {
     define: { "process.env.NODE_ENV": '"production"', ...wasmUrlDefine(wasm), ...define },
     plugins: [
       browserMermaidPlugin(app, urls["mermaid.js"]),
-      browserSiftPlugin(app, urls["sift.wasm"] ?? SIFT_WASM_URL),
+      browserSiftPlugin(
+        app,
+        urls["sift.wasm"] ?? SIFT_WASM_URL,
+        urls["sift-csv.wasm"] ?? SIFT_CSV_WASM_URL,
+      ),
       browserWasmPlugin(app, wasm),
     ],
   };

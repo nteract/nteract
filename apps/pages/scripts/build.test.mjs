@@ -230,6 +230,17 @@ for (const fails of [true, false])
           );
           write("node_modules/@nteract/sift/sift.wasm", "fixture wasm");
           write(
+            "node_modules/@nteract/sift-csv/package.json",
+            JSON.stringify({
+              name: "@nteract/sift-csv",
+              exports: { "./wasm": "./lib/wasm/sift_csv_wasm_bg.wasm" },
+            }),
+          );
+          write(
+            "node_modules/@nteract/sift-csv/lib/wasm/sift_csv_wasm_bg.wasm",
+            "fixture csv wasm",
+          );
+          write(
             "viewer/index.html",
             readFileSync(new URL("../viewer/index.html", import.meta.url), "utf8"),
           );

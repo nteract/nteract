@@ -149,6 +149,53 @@ function SourceFilePreview({ session, source }) {
       </p>
     );
   const { preview } = value;
+  if (preview.kind === "csv")
+    return (
+      <section
+        className="source-file-preview source-csv-preview"
+        aria-label="CSV preview"
+        data-source-revision={value.version.revision}
+      >
+        <h4>
+          CSV · {preview.header.length + preview.moreColumns} columns ·{" "}
+          {(preview.rows.length + preview.moreRows).toLocaleString()} rows
+        </h4>
+        <div className="source-csv-scroll" tabIndex={0}>
+          <table>
+            <thead>
+              <tr>
+                {preview.header.map((name, column) => (
+                  <th key={column} scope="col">
+                    {name}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {preview.rows.map((row, index) => (
+                <tr key={index}>
+                  {row.map((cell, column) => (
+                    <td key={column}>{cell}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {(preview.moreRows > 0 || preview.moreColumns > 0) && (
+          <small>
+            {[
+              preview.moreRows > 0 && `${preview.moreRows.toLocaleString()} more rows`,
+              preview.moreColumns > 0 && `${preview.moreColumns} more columns`,
+            ]
+              .filter(Boolean)
+              .join(" · ")}{" "}
+            not shown
+          </small>
+        )}
+        <small>{preview.size.toLocaleString()} bytes</small>
+      </section>
+    );
   if (preview.kind === "json")
     return (
       <section

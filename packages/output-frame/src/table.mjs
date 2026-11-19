@@ -1,8 +1,8 @@
-// The table a module view's model holds for a Parquet data name: a frozen,
-// Arrow-style wrapper over one checked ColumnSet (column-set.mjs). It
-// spells its members as an Apache Arrow JS table does, so code written for
-// an Arrow table, and Plot, read it. This is the author interface; nothing
-// else on the object is part of it.
+// The table a file object's parquet() gives: a frozen, Arrow-style wrapper
+// over one checked ColumnSet (column-set.mjs). It spells its members as an
+// Apache Arrow JS table does, so code written for an Arrow table, and Plot,
+// read it. This is the author interface; nothing else on the object is part
+// of it. csv() gives the same values as rows (columnRows).
 //
 // Table: numRows, numCols, schema.fields ({name, type}), getChild(name),
 // getChildAt(index), get(index), toArray(), [Symbol.iterator] over rows,
@@ -44,6 +44,17 @@ export function columnTable(set) {
     numRows,
     columns.map((column) => columnOf(column, numRows)),
   );
+}
+
+/** The ColumnSet `set` as rows, the shape Observable's FileAttachment.csv
+ * gives: an array of plain row objects, one per row, with a `columns`
+ * property listing the column names in order. Values follow the table's
+ * rules. Throws for a set checkColumnSet refuses. */
+export function columnRows(set) {
+  const table = columnTable(set);
+  const rows = table.toArray();
+  rows.columns = table.schema.fields.map((field) => field.name);
+  return rows;
 }
 
 function tableOf(numRows, children) {

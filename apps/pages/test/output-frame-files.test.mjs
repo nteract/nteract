@@ -13,6 +13,7 @@ import { NO_WHOLE_FILES, wholeFileTransition } from "@nteract/output-frame/whole
 import { preparePayload } from "../../../packages/output-frame/src/payload.mjs";
 import { parquetFixture } from "./parquet-fixture.mjs";
 import { parquetColumns } from "../viewer/parquet-columns.mjs";
+import { csvArrow } from "../viewer/csv-arrow.mjs";
 import { DATAFRAME_LIMITS } from "../viewer/sift-dataset.mjs";
 
 const { createWidgetSession } = await import(
@@ -46,9 +47,9 @@ function memoryFile(bytes, { mimeType = "application/octet-stream", columns } = 
         return bytes.slice();
       },
       ...(columns && {
-        async columns() {
+        async columns(format) {
           served.columns++;
-          return columns();
+          return columns(format);
         },
       }),
     },
@@ -88,6 +89,7 @@ test("a file object knows its name, type and size and asks nothing until called"
   assert.deepEqual(Object.keys(file).sort(), [
     "arrayBuffer",
     "byteLength",
+    "csv",
     "json",
     "mimeType",
     "name",
@@ -118,6 +120,7 @@ test("a file object knows its name, type and size and asks nothing until called"
   // Not Parquet, and options refused rather than ignored.
   await assert.rejects(file.parquet(), { message: "This file is not Parquet." });
   await assert.rejects(file.parquet({ columns: ["a"] }), /takes no options yet/);
+  await assert.rejects(file.csv(), { message: "This file is not CSV." });
 });
 
 test("parquet() gives the table once, and a file object is a Sift byte source", async (t) => {
@@ -148,6 +151,141 @@ test("parquet() gives the table once, and a file object is a Sift byte source", 
   const tail = await file.read(file.byteLength - 8 - footer, footer + 8);
   const summary = parquet_footer_summary(tail, file.byteLength);
   assert.ok(summary && typeof summary === "object", "Sift reads the footer from read()");
+});
+
+// A file input over CSV `source` that decodes as the Page does: Sift's CSV
+// parser to Arrow IPC (csv-arrow.mjs), then the ColumnSet the frame reads.
+// It answers a Parquet request as the Page does for a file that is not one.
+const csvInput = (source, mimeType = "text/csv") =>
+  memoryFile(text(source), {
+    mimeType,
+    columns: async (format) => {
+      if (format !== "csv") throw Error("This file is not Parquet.");
+      return parquetColumns(await csvArrow(text(source), DATAFRAME_LIMITS), DATAFRAME_LIMITS);
+    },
+  });
+
+test("csv() gives typed rows with columns, once per file object", async (t) => {
+  const lifetime = new AbortController();
+  t.after(() => lifetime.abort());
+  const { input, served } = csvInput(
+    "city,people,share,open,day\nOslo,3,0.5,true,2024-05-01\nBergen,,1.25,FALSE,\n",
+  );
+  const { descriptor, sent } = exposed(input, lifetime.signal);
+  const file = fileObject("cities", descriptor, lifetime.signal);
+  await tick();
+  assert.deepEqual(sent, [], "nothing is asked until csv() is called");
+  const rows = file.csv();
+  assert.equal(file.csv(), rows, "the same promise while pending");
+  assert.equal(file.csv({ typed: true }), rows, "{ typed: true } is the same call");
+  assert.equal(file.csv({}), rows, "an empty options object is the same call");
+  const data = await rows;
+  assert.ok(Array.isArray(data));
+  assert.deepEqual(data.columns, ["city", "people", "share", "open", "day"]);
+  assert.deepEqual(data[0], {
+    city: "Oslo",
+    people: 3,
+    share: 0.5,
+    open: true,
+    day: new Date("2024-05-01T00:00:00Z"),
+  });
+  assert.deepEqual(data[1], { city: "Bergen", people: null, share: 1.25, open: false, day: null });
+  // Code written for Observable's FileAttachment.csv reads it as it is.
+  assert.deepEqual(
+    data.filter((row) => row.open).map((row) => row.city),
+    ["Oslo"],
+  );
+  assert.equal(file.csv(), rows, "the same promise after it resolves");
+  assert.equal(served.columns, 1);
+  assert.deepEqual(sent, [{ kind: "columns", format: "csv" }]);
+  // parquet() asks for its own format, and the Page refuses a CSV.
+  await assert.rejects(file.parquet(), { message: "This file is not Parquet." });
+});
+
+test("csv() takes {} or { typed: true } and refuses any other option, naming it", async (t) => {
+  const lifetime = new AbortController();
+  t.after(() => lifetime.abort());
+  const { input, served } = csvInput("a\n1\n");
+  const file = fileObject("a", exposed(input, lifetime.signal).descriptor, lifetime.signal);
+  for (const [options, message] of [
+    [[{ typed: false }], /typed option must be true/],
+    [[{ typed: "auto" }], /typed option must be true/],
+    [[{ typed: undefined }], /typed option must be true/],
+    [[{ array: true }], /csv\(\) has no array option/],
+    [[{ typed: true, delimiter: ";" }], /csv\(\) has no delimiter option/],
+    [[true], /takes an options object/],
+    [[[]], /takes an options object/],
+    [[{ typed: true }, {}], /takes one options object/],
+  ])
+    await assert.rejects(file.csv(...options), message, JSON.stringify(options));
+  assert.equal(served.columns, 0, "a refused call asks nothing");
+  assert.deepEqual((await file.csv(undefined)).columns, ["a"]);
+  assert.deepEqual((await file.csv({})).columns, ["a"]);
+});
+
+test("csv() reads a file of any media type, and one that does not parse rejects plainly", async (t) => {
+  const lifetime = new AbortController();
+  t.after(() => lifetime.abort());
+  const binary = csvInput("name,n\nx,1\n", "application/octet-stream");
+  const file = fileObject(
+    "old",
+    exposed(binary.input, lifetime.signal).descriptor,
+    lifetime.signal,
+  );
+  assert.deepEqual(
+    await file.csv(),
+    Object.assign([{ name: "x", n: 1 }], { columns: ["name", "n"] }),
+  );
+  const ragged = csvInput("a,b\n1\n");
+  const broken = fileObject(
+    "bad",
+    exposed(ragged.input, lifetime.signal).descriptor,
+    lifetime.signal,
+  );
+  const first = broken.csv();
+  await assert.rejects(
+    first,
+    /^Error: This file can't be read as CSV: Encountered unequal lengths/,
+  );
+  assert.notEqual(broken.csv(), first, "a rejection is dropped, so the next call asks again");
+  await assert.rejects(broken.csv(), /can't be read as CSV/);
+  assert.equal(ragged.served.columns, 2);
+  // A header a view can't tell apart says which name, not that the table
+  // failed a check.
+  for (const [source, message] of [
+    ["day,day\n1,2\n", "This file can't be read as CSV: two columns are named day."],
+    ["a,\n1,2\n", "This file can't be read as CSV: a column has no name."],
+  ]) {
+    const header = csvInput(source);
+    const unread = fileObject(
+      "header",
+      exposed(header.input, lifetime.signal).descriptor,
+      lifetime.signal,
+    );
+    await assert.rejects(unread.csv(), { message });
+  }
+});
+
+test("parquet() and csv() on one file each read their own format once", async (t) => {
+  const lifetime = new AbortController();
+  t.after(() => lifetime.abort());
+  const set = {
+    numRows: 1,
+    columns: [{ name: "n", type: "number", values: new Float64Array([7]) }],
+  };
+  const asked = [];
+  const { input } = memoryFile(text("n\n7\n"), {
+    columns: (format) => {
+      asked.push(format);
+      return set;
+    },
+  });
+  const file = fileObject("both", exposed(input, lifetime.signal).descriptor, lifetime.signal);
+  const [table, rows] = await Promise.all([file.parquet(), file.csv()]);
+  assert.equal(table.numRows, 1);
+  assert.deepEqual([...rows], [{ n: 7 }]);
+  assert.deepEqual(await Promise.all([file.parquet(), file.csv()]), [table, rows]);
+  assert.deepEqual(asked.sort(), ["csv", "parquet"]);
 });
 
 test("slice clamps as Blob.slice does and reads each range object once", async (t) => {
@@ -248,6 +386,7 @@ test("a data change aborts the old file object, sets a new one and fires change:
   await assert.rejects(pending, { name: "AbortError" });
   for (const call of [
     () => old.parquet(),
+    () => old.csv(),
     () => old.text(),
     () => old.read(0, 4),
     () => range.text(),
@@ -324,20 +463,32 @@ test("a whole read is served once at a time and delivered once per file; its sha
     `This view's files exceed ${limit / (1024 * 1024)} MiB read whole.`,
   );
   // A table share carries no bytes and has the same phases.
-  assert.equal(reserve("c", "columns", 999), null);
-  assert.equal(reserve("c", "columns"), "This file's table is already being read.");
-  step({ type: "delivered", file: "c", kind: "columns" });
+  assert.equal(reserve("c", "parquet", 999), null);
+  assert.equal(reserve("c", "parquet"), "This file's table is already being read.");
+  step({ type: "delivered", file: "c", kind: "parquet" });
   assert.equal(
-    reserve("c", "columns"),
+    reserve("c", "parquet"),
     "This file's table was already read; its file object keeps it.",
   );
-  assert.equal(reserve("a", "columns"), null, "each kind has its own share");
+  assert.equal(reserve("a", "parquet"), null, "each kind has its own share");
+  // Each table format is a share of its own: CSV reads while Parquet has
+  // been delivered, and is delivered once.
+  assert.equal(reserve("c", "csv"), null);
+  assert.equal(reserve("c", "csv"), "This file's table is already being read.");
+  step({ type: "delivered", file: "c", kind: "csv" });
+  assert.equal(
+    reserve("c", "csv"),
+    "This file's table was already read; its file object keeps it.",
+  );
+  assert.equal(phase("c", "parquet"), "delivered");
   // none: failed and delivered without a reservation change nothing.
   const before = state;
   step({ type: "failed", file: "d", kind: "bytes" });
-  step({ type: "delivered", file: "d", kind: "columns" });
+  step({ type: "delivered", file: "d", kind: "parquet" });
+  step({ type: "delivered", file: "d", kind: "csv" });
   step({ type: "delivered", file: "d", kind: "stream" });
   assert.equal(reserve("d", "stream"), null);
+  assert.equal(reserve("d", "columns"), null, "the request kind is no share");
   assert.equal(state, before, "an unknown kind or an unheld share changes nothing");
   // Replaced while reading: both shares go, and a late answer for the
   // replaced id changes nothing.
@@ -352,7 +503,9 @@ test("a whole read is served once at a time and delivered once per file; its sha
   // Replaced after delivery frees the delivered bytes.
   step({ type: "replaced", file: "a" });
   assert.equal(phase("a", "bytes"), "none");
-  assert.equal(phase("a", "columns"), "none");
+  assert.equal(phase("a", "parquet"), "none");
+  step({ type: "replaced", file: "c" });
+  assert.equal(phase("c", "csv"), "none", "a new file drops every share");
   assert.ok(Object.isFrozen(state) && Object.isFrozen(state.e) && Object.isFrozen(state.e.bytes));
 });
 

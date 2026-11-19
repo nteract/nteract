@@ -167,6 +167,38 @@ test("unknown names and invalid values are refused; changes after disposal are d
   assert.deepEqual(frame.data(), []);
 });
 
+test("a mounted file's table request names its format; each format reads once", async (t) => {
+  const asked = [];
+  const set = {
+    numRows: 1,
+    columns: [{ name: "n", type: "number", values: new Float64Array([1]) }],
+  };
+  const { frame } = mountWithFakeFrame(t, modulePayload, {
+    files: {
+      "data/table": {
+        ...fileOf("n\n1\n"),
+        columns: async (format, signal) => {
+          assert.ok(signal instanceof AbortSignal);
+          asked.push(format);
+          return set;
+        },
+      },
+    },
+  });
+  await frame.render();
+  const mount = frame.messages.find((m) => m.type === "mount");
+  const file = receiveFile(mount.files["data/table"], frame.lifetime.signal);
+  assert.equal((await file.request({ kind: "columns", format: "csv" })).numRows, 1);
+  assert.equal((await file.request({ kind: "columns", format: "parquet" })).numRows, 1);
+  assert.deepEqual(asked, ["csv", "parquet"]);
+  await assert.rejects(file.request({ kind: "columns", format: "csv" }), /already read/);
+  for (const format of [undefined, "json", "CSV"])
+    await assert.rejects(file.request({ kind: "columns", format }), {
+      message: "Invalid file request.",
+    });
+  assert.deepEqual(asked, ["csv", "parquet"], "a refused request reaches no embedder");
+});
+
 test("an anywidget view accepts bytes for its buffer names only", async (t) => {
   const payload = {
     spec: { _esm: "code", state: {}, buffers: ["clip"], buffer_paths: [["clip"]] },

@@ -22,6 +22,14 @@ test("JSON uploads accept any JSON root and reject malformed JSON and UTF-8", ()
   }
 });
 
+test("CSV uploads accept UTF-8 text and reject binary, empty and non-UTF-8 bytes", () => {
+  const encode = (text) => new TextEncoder().encode(text);
+  for (const source of ["a,b\n1,2\n", "a\n", "﻿city\nTromsø\n", 'q\n"a, b"\n'])
+    assert.equal(inspectOutputAsset(encode(source), "text/csv").mime_type, "text/csv");
+  for (const bytes of [encode("   \n"), encode("a\0b\n"), Uint8Array.of(0x61, 0x0a, 0xff)])
+    assert.throws(() => inspectOutputAsset(bytes, "text/csv"), /Use a UTF-8 CSV file/);
+});
+
 test("an anywidget view references its module and paired binary inputs directly", () => {
   const spec = {
     module: { source_id: "code" },

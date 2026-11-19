@@ -4,6 +4,7 @@ import {
   ESM_MEDIA_TYPE,
   CSS_MEDIA_TYPE,
   JSON_MEDIA_TYPE,
+  CSV_MEDIA_TYPE,
   OUTPUT_ASSET_TYPES,
 } from "../shared/anywidget-view.mjs";
 import { inspectOutputAsset } from "../shared/output-assets.mjs";
@@ -308,13 +309,12 @@ function checkExpected(expect, { mime_type, size }) {
 export async function persistPageAsset(bucket, { pageId, bytes, contentTypes = [], expect }) {
   if (!validPageId(pageId)) throw new HttpError(400, "Invalid image reference");
   if (bytes.byteLength > ASSET_MAX_BYTES) throw new HttpError(413, FILE_TOO_LARGE);
-  const declaredJson = contentTypes.some(
-    (type) => type?.split(";")[0].trim().toLowerCase() === JSON_MEDIA_TYPE,
-  );
-  const inspected = inspectAsset(
-    bytes,
-    expect?.content_type ?? (declaredJson ? JSON_MEDIA_TYPE : undefined),
-  );
+  // JSON and CSV have no magic bytes: a declared type says to check them as
+  // that type.
+  const declaredText = contentTypes
+    .map((type) => type?.split(";")[0].trim().toLowerCase())
+    .find((type) => type === JSON_MEDIA_TYPE || type === CSV_MEDIA_TYPE);
+  const inspected = inspectAsset(bytes, expect?.content_type ?? declaredText);
   const dataset = !IMAGE_MEDIA_TYPES.includes(inspected.mime_type);
   if (bytes.byteLength > (dataset ? DATASET_MAX_BYTES : IMAGE_MAX_BYTES))
     throw new HttpError(413, dataset ? "Datasets must be 5 MiB or smaller" : IMAGE_TOO_LARGE);
@@ -369,15 +369,21 @@ export async function persistPageAsset(bucket, { pageId, bytes, contentTypes = [
 /**
  * The edit_page operation that places a stored asset as the block its type
  * calls for: insert_image for a raster, an insert_node dataframe for a Parquet
- * dataset. insert_image also needs alt text, which only the caller can write,
- * so the operation leaves it out and edit_page refuses it until alt is added.
+ * dataset or a CSV, and null for any other view input. insert_image also
+ * needs alt text, which only the caller can write, so the operation leaves it
+ * out and edit_page refuses it until alt is added.
  */
 export const assetInsertOperation = ({ asset_id, mime_type }) =>
-  OUTPUT_ASSET_TYPES.includes(mime_type)
-    ? null
-    : mime_type === PARQUET_MEDIA_TYPE
-      ? { op: "insert_node", node: { type: "dataframe", attrs: { asset_id } } }
-      : { op: "insert_image", asset_id };
+  mime_type === CSV_MEDIA_TYPE
+    ? {
+        op: "insert_node",
+        node: { type: "dataframe", attrs: { asset_id, media_type: CSV_MEDIA_TYPE } },
+      }
+    : OUTPUT_ASSET_TYPES.includes(mime_type)
+      ? null
+      : mime_type === PARQUET_MEDIA_TYPE
+        ? { op: "insert_node", node: { type: "dataframe", attrs: { asset_id } } }
+        : { op: "insert_image", asset_id };
 
 /** The answer to a stored upload or copy: the asset, its URL under both names,
  * and the operation that places it. */

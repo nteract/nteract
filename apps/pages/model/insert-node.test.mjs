@@ -123,7 +123,7 @@ test("insert_node refuses malformed operations before touching the Page", () => 
     { op: "insert_node", node: { type: "image", attrs: { asset_id: assetId } } },
     { op: "insert_node", node: { type: "dataframe", attrs: {} } },
     { op: "insert_node", node: { type: "dataframe", attrs: { asset_id: "x" } } },
-    dataframe({ media_type: "text/csv" }),
+    dataframe({ media_type: "text/tab-separated-values" }),
     dataframe({ src: "https://example.com/x.parquet" }),
     dataframe({ title: "x".repeat(201) }),
     { ...dataframe(), extra: true },
@@ -141,11 +141,28 @@ test("a bad dataframe attr is refused with a message naming the attr", () => {
   for (const [attrs, message] of [
     [{ title: "x".repeat(201) }, "A dataframe's title must be 200 characters or fewer"],
     [
-      { media_type: "text/csv" },
-      "A dataframe's media_type must be one of application/vnd.apache.parquet",
+      { media_type: "application/json" },
+      "A dataframe's media_type must be one of application/vnd.apache.parquet, text/csv",
     ],
   ])
     assert.throws(() => validateNodeInsertion(dataframe(attrs)), { message });
+});
+
+test("insert_node takes a CSV dataframe, by asset or by source", () => {
+  const { doc, result } = edit(fresh(), [dataframe({ media_type: "text/csv" })]);
+  assert.equal(result.edits[0].attrs.media_type, "text/csv");
+  const [, id] = orderedBlockIds(doc);
+  validateRich(doc.blocks[id]);
+  const bound = edit(fresh(), [
+    {
+      op: "insert_node",
+      node: {
+        type: "dataframe",
+        attrs: { binding: { source_id: "cities" }, media_type: "text/csv", title: "Cities" },
+      },
+    },
+  ]);
+  assert.equal(bound.result.edits[0].attrs.media_type, "text/csv");
 });
 
 test("a stored dataframe with a foreign src fails validation", () => {
