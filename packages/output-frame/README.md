@@ -109,6 +109,25 @@ and enforce CSRF protections on authenticated host endpoints. The embedding prod
 Pages renders automatically within its viewport lifecycle and remounts when the
 module or bound inputs change; failures expose a Retry button.
 
+## Read budget
+
+A module view can bind up to 16 files, and each `read(offset, length)` becomes
+a request the embedding product serves, often an authorized range request. One
+read budget per mount, shared by all of the view's files, bounds that load
+(`src/read-budget.mjs` names the constants):
+
+- At most 8 reads are in flight at once across the view.
+- Starting a read spends a token. The view starts with 256 tokens and earns 32
+  per second, up to 256.
+- A read past either bound waits its turn, in arrival order across files.
+- At most 256 reads wait. A read that finds the waiting list full is refused
+  with `Too many file reads are waiting.`
+
+A read with an invalid interval is refused at once with `Invalid file read.`
+and never waits. Aborting a read's signal while it waits removes it without
+spending a token or reaching the source. Disposing the mount drops every
+waiting read without a reply.
+
 ## Relationship to notebook outputs
 
 `src/components/isolated/output-embed.ts` already offers a host-independent

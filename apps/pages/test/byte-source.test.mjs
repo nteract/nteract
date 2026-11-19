@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  exposeByteSource,
-  receiveByteSource,
-} from "../../../packages/output-frame/src/byte-source.mjs";
+import { exposeByteSource, receiveByteSource } from "@nteract/output-frame/byte-source";
+import { createReadBudget, READ_WAITING_LIMIT } from "@nteract/output-frame/read-budget";
 import { openAssetByteSource } from "../viewer/asset-byte-source.mjs";
 
 test("a file capability transfers only the selected span and cancels individual reads", async () => {
@@ -43,7 +41,7 @@ test("a file capability transfers only the selected span and cancels individual 
     const result = await source.read(0, 2);
     assert.equal(result.buffer.byteLength, 2);
     assert.deepEqual([...result], [2, 3]);
-    await assert.rejects(source.read(8, 2), /Invalid/);
+    await assert.rejects(source.read(8, 2), { message: "Invalid file read." });
   } finally {
     lifetime.abort();
   }
@@ -98,4 +96,163 @@ test("partial responses without Content-Length must deliver exactly the requeste
   await assert.rejects(source.read(2, 4), /Incomplete range/);
   size = 5;
   await assert.rejects(source.read(2, 4), /exceeds requested length/);
+});
+
+// A source whose reads finish only when the test says so. Each read's bytes
+// are its own offsets, so a reply shows which interval it answers.
+function heldSource(byteLength = 4096) {
+  const calls = [];
+  const source = {
+    byteLength,
+    read(offset, length, signal) {
+      return new Promise((resolve, reject) => {
+        calls.push({
+          offset,
+          finish: () => resolve(Uint8Array.from({ length }, (_, i) => (offset + i) % 256)),
+        });
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    },
+  };
+  return { source, calls };
+}
+
+// Sends one request on the raw port protocol and records every reply. Open
+// reply ports would keep the test process alive, so each test closes them.
+const replyPorts = new Set();
+test.afterEach(() => {
+  for (const port of replyPorts) port.close();
+  replyPorts.clear();
+});
+function rawRead({ port }, offset, length) {
+  const { port1, port2 } = new MessageChannel();
+  replyPorts.add(port1);
+  const replies = [];
+  port1.onmessage = ({ data }) => replies.push(data);
+  port.postMessage({ offset, length }, [port2]);
+  return { replies, cancel: () => port1.postMessage("cancel"), close: () => port1.close() };
+}
+
+const delivered = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+test("a ninth concurrent read on one file waits for a slot, then completes", async () => {
+  const lifetime = new AbortController();
+  const { source, calls } = heldSource();
+  try {
+    const file = receiveByteSource(exposeByteSource(source, lifetime.signal), lifetime.signal);
+    const reads = Array.from({ length: 9 }, (_, i) => file.read(i * 10, 3));
+    await delivered();
+    assert.equal(calls.length, 8);
+    calls[2].finish();
+    assert.deepEqual([...(await reads[2])], [20, 21, 22]);
+    await delivered();
+    assert.equal(calls.length, 9);
+    assert.equal(calls[8].offset, 80);
+    calls[8].finish();
+    assert.deepEqual([...(await reads[8])], [80, 81, 82]);
+    for (const call of calls) call.finish();
+    await Promise.all(reads);
+  } finally {
+    lifetime.abort();
+  }
+});
+
+test("files of one view share its read slots", async () => {
+  const lifetime = new AbortController();
+  const budget = createReadBudget({ lifetime: lifetime.signal });
+  const a = heldSource();
+  const b = heldSource();
+  try {
+    const fileA = receiveByteSource(
+      exposeByteSource(a.source, lifetime.signal, budget),
+      lifetime.signal,
+    );
+    const fileB = receiveByteSource(
+      exposeByteSource(b.source, lifetime.signal, budget),
+      lifetime.signal,
+    );
+    const readsA = Array.from({ length: 8 }, (_, i) => fileA.read(i, 1));
+    await delivered();
+    const readB = fileB.read(5, 2);
+    await delivered();
+    assert.equal(a.calls.length, 8);
+    assert.equal(b.calls.length, 0);
+    a.calls[0].finish();
+    await delivered();
+    assert.equal(b.calls.length, 1);
+    b.calls[0].finish();
+    assert.deepEqual([...(await readB)], [5, 6]);
+    for (const call of a.calls) call.finish();
+    await Promise.all(readsA);
+  } finally {
+    lifetime.abort();
+  }
+});
+
+test("a waiting read cancelled by the frame is never read and gets no reply", async () => {
+  const lifetime = new AbortController();
+  const { source, calls } = heldSource();
+  try {
+    const file = exposeByteSource(source, lifetime.signal);
+    const running = Array.from({ length: 8 }, (_, i) => rawRead(file, i, 1));
+    const waiting = rawRead(file, 100, 1);
+    await delivered();
+    waiting.cancel();
+    await delivered();
+    for (const call of calls) call.finish();
+    await delivered();
+    assert.equal(calls.length, 8);
+    assert.deepEqual(waiting.replies, []);
+    assert.ok(running.every(({ replies }) => replies.length === 1 && replies[0].bytes));
+    waiting.close();
+  } finally {
+    lifetime.abort();
+  }
+});
+
+test("an invalid interval is refused at once while the slots are full", async () => {
+  const lifetime = new AbortController();
+  const { source, calls } = heldSource(64);
+  try {
+    const file = exposeByteSource(source, lifetime.signal);
+    Array.from({ length: 8 }, (_, i) => rawRead(file, i, 1));
+    const invalid = [rawRead(file, 60, 8), rawRead(file, -1, 1), rawRead(file, 0.5, 1)];
+    await delivered();
+    assert.equal(calls.length, 8);
+    for (const { replies } of invalid) assert.deepEqual(replies, [{ error: "Invalid file read." }]);
+    for (const call of calls) call.finish();
+  } finally {
+    lifetime.abort();
+  }
+});
+
+test("a read that finds the waiting list full is refused", async () => {
+  const lifetime = new AbortController();
+  const { source, calls } = heldSource();
+  try {
+    const file = exposeByteSource(source, lifetime.signal);
+    const admitted = Array.from({ length: 8 + READ_WAITING_LIMIT }, (_, i) => rawRead(file, i, 1));
+    const refused = rawRead(file, 0, 1);
+    await delivered();
+    assert.equal(calls.length, 8);
+    assert.deepEqual(refused.replies, [{ error: "Too many file reads are waiting." }]);
+    assert.ok(admitted.every(({ replies }) => replies.length === 0));
+  } finally {
+    lifetime.abort();
+  }
+});
+
+test("ending the view drops waiting reads without replies or further reads", async () => {
+  const lifetime = new AbortController();
+  const { source, calls } = heldSource();
+  const file = exposeByteSource(source, lifetime.signal);
+  const reads = Array.from({ length: 12 }, (_, i) => rawRead(file, i, 1));
+  await delivered();
+  assert.equal(calls.length, 8);
+  lifetime.abort();
+  for (const call of calls) call.finish();
+  await delivered();
+  assert.equal(calls.length, 8);
+  assert.ok(reads.every(({ replies }) => replies.length === 0));
+  for (const read of reads) read.close();
 });

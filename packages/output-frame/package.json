@@ -12,7 +12,9 @@
     "./lifecycle": "./src/lifecycle.mjs",
     "./context": "./src/context.mjs",
     "./styles.css": "./src/styles.css",
-    "./schema": "./src/schema.mjs"
+    "./schema": "./src/schema.mjs",
+    "./byte-source": "./src/byte-source.mjs",
+    "./read-budget": "./src/read-budget.mjs"
   },
   "dependencies": {
     "rxjs": "^7.8.2"
