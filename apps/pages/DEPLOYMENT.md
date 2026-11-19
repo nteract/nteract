@@ -1107,8 +1107,8 @@ in a catch-all 404:
 | `/internal/` and everything under it | Durable Object host routes. The Worker and its Durable Objects call one another on these paths only; no request from outside may name one. |
 | `/dev/oidc` and everything under it | The loopback test issuer, which signs in whoever asks. The gateway mounts it only on a localhost hostname; the tunnel refuses it whatever the Worker's configuration. |
 
-cloudflared matches the decoded path, so an encoded form is refused too. A
-refused path gets the edge's own 404: empty, with no content type, which the
+The Worker's gateway is the guard for these paths as well; the tunnel rule is
+a second one. A refused path gets the edge's own 404: empty, with no content type, which the
 Worker never sees. Every other path reaches the Worker, and its gateway
 (`worker/index.mjs`) is the guard: it answers the routes it serves, serves the
 app shell and its files, and answers its own JSON 404 for any other `/api/`
@@ -1173,9 +1173,8 @@ checkout, stages the bundle this way, and uploads it as the `pages-release`
 artifact.
 
 The REST routes take a tag as one percent-encoded segment (`:` and `/` are
-sent as `%3A` and `%2F`). cloudflared matches ingress rules against the
-decoded path, so the tunnel sees `repo:org/name`; it admits it like any other
-path, and the Worker takes one raw segment and refuses a second.
+sent as `%3A` and `%2F`). The tunnel admits the path encoded or decoded, like
+any other path, and the Worker takes one raw segment and refuses a second.
 
 The OIDC client must allow `https://<hostname>/oidc` as a redirect URI before
 sign-in works on a new target. For Pages, add

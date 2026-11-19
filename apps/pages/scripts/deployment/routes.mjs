@@ -3,8 +3,8 @@ import { deploymentProfile } from "./profiles.mjs";
 // The paths the tunnel refuses on the Pages hostname, as one alternation
 // matched from the start of the path. Every other path reaches the Worker,
 // whose gateway (worker/index.mjs) answers the routes it serves and refuses
-// the rest, so a new route or asset needs no tunnel change. cloudflared
-// matches the decoded path, so an encoded form of these is refused too.
+// the rest, so a new route or asset needs no tunnel change. The gateway is
+// the guard for these paths too; this rule is a second one.
 //
 // - `internal/`: Durable Object host routes. The Worker and its Durable
 //   Objects call one another on these paths only (tunnel-routes.test.mjs

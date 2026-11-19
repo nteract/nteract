@@ -252,7 +252,6 @@ for (const target of QUALIFIED_TARGETS)
       "/internal/",
       LINK_PREVIEW_PATH,
       ...internal,
-      "/internal%2Fcreate",
       NOTEBOOK_CLOUD_LOCAL_OIDC_MOUNT_PATH,
       `${NOTEBOOK_CLOUD_LOCAL_OIDC_MOUNT_PATH}/`,
       `${NOTEBOOK_CLOUD_LOCAL_OIDC_MOUNT_PATH}/token`,

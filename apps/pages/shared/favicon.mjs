@@ -1,7 +1,6 @@
 // The nteract app icon, inlined as a data URL. Every HTML page links it as the
-// tab icon, so the browser never asks for /favicon.ico. Public ingress admits
-// only the routes in scripts/deployment/routes.mjs, and an inlined icon needs no
-// route or request.
+// tab icon, so the browser never asks for /favicon.ico. An inlined icon needs
+// no route or request.
 //
 // This string is the Pages copy of crates/notebook/icons/32x32.png. Pages CI
 // checks out only the Pages tree, so nothing here reads the desktop crate.

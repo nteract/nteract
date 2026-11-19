@@ -3811,12 +3811,14 @@ invitee. A host error or busy answer, an answer for another target, and a
 timeout (the shared-Page check's bound) answer the same, so that answer
 can't say why.
 
-On a deployment behind a tunnel, these paths reach the Worker only when the
-target's ingress admits them, `/project/<id>` forms included
-(`linkPreviewPaths` in [routes.mjs](scripts/deployment/routes.mjs); see
+On a deployment behind a tunnel, these paths reach the Worker, `/project/<id>`
+forms included: the tunnel refuses only `refusedPaths` in
+[routes.mjs](scripts/deployment/routes.mjs) (see
 [Gateway routes and the allowlist](DEPLOYMENT.md#gateway-routes-and-the-allowlist)).
-Otherwise the edge answers an empty 404 without that code, and the hover card
-reads it as a failure: "Couldn't load a preview", retried with backoff.
+An installation still on the earlier allowlist form admits them only when its
+ingress lists them; otherwise the edge answers an empty 404 without that code,
+and the hover card reads it as a failure: "Couldn't load a preview", retried
+with backoff.
 
 Every answer is `Cache-Control: private, no-store`, so a title or first
 screen never stays in the browser's disk cache after sign-out.
@@ -4720,12 +4722,14 @@ The server can't check that the pixels match the content. That is the trust of
 any image the owner inserts into the Page, and only the Page's readers see it.
 
 On a deployment behind a tunnel, `GET` and `PUT /api/pages/:id/card-image` and
-the image paths reach the Worker only when the target's ingress admits them
-(`cardImagePaths` in [routes.mjs](scripts/deployment/routes.mjs), file names
-exactly as `CARD_IMAGE_FILE` names them; see
+the image paths reach the Worker: the tunnel refuses only `refusedPaths` in
+[routes.mjs](scripts/deployment/routes.mjs), and the gateway answers file names
+exactly as `CARD_IMAGE_FILE` names them (see
 [Gateway routes and the allowlist](DEPLOYMENT.md#gateway-routes-and-the-allowlist)).
-Otherwise the edge answers an empty 404: the owner's tab stops at the stored
-hash read and uploads nothing, and the grid keeps showing JSON cards.
+An installation still on the earlier allowlist form admits them only when its
+ingress lists them (`cardImagePaths`); otherwise the edge answers an empty 404:
+the owner's tab stops at the stored hash read and uploads nothing, and the grid
+keeps showing JSON cards.
 
 ### Retry contract
 

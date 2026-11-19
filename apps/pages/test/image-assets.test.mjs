@@ -962,9 +962,8 @@ test("a copy meets the destination's limits as an upload does", async (t) => {
   assert.equal((await copyRequest(f, dataset.asset_id)).status, 403);
 });
 
-// A live target's tunnel answers these paths with an empty 404 before the
-// Worker sees them (scripts/deployment/routes.mjs admits an exact sha256
-// only); a target without a tunnel reaches this refusal.
+// Every target reaches this refusal: the live tunnels hand these paths to the
+// Worker (scripts/deployment/routes.mjs refuses only refusedPaths).
 test("an asset path that names no asset is refused as JSON with a code, for every method", async (t) => {
   const f = await fixture(t);
   const message = "An asset id is the 64 lowercase hex characters an upload returned as asset_id";
