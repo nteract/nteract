@@ -7,7 +7,7 @@ const { ListToolsRequestSchema, CallToolRequestSchema } = requirePages(
   "@modelcontextprotocol/sdk/types.js",
 );
 const [id, arm] = process.argv.slice(2);
-if (!["old", "new"].includes(arm)) throw Error("Unknown guide");
+if (!["old", "new", "module"].includes(arm)) throw Error("Unknown guide");
 const { client, tool, browser, page } = await session();
 await page.goto(origin + "/p/" + id);
 const pageTools = (await client.listTools()).tools.filter((t) =>

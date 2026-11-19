@@ -32,9 +32,10 @@ try {
     ];
     if (models.some((m) => !/^[-\w.]+\/[-\w.]+$/.test(m)) || new Set(models).size !== models.length)
       throw Error("Use distinct provider/model names for EVAL_MODELS");
+    const arms = process.env.EVAL_GUIDE === "module" ? ["module"] : ["old", "new"];
     for (let round = 1; round <= repetitions; round++) {
       const block = models.flatMap((model) =>
-        ["old", "new"].map((arm) => ({ round, model: "kilo/" + model, arm })),
+        arms.map((arm) => ({ round, model: "kilo/" + model, arm })),
       );
       for (let i = block.length - 1; i > 0; i--) {
         const j = randomInt(i + 1);
@@ -63,7 +64,12 @@ try {
         nonce: crypto.randomUUID(),
       });
       const initial = await tool("read_page", { page_id, views: true });
-      if (initial.widget_imports.catalog !== null || initial.views.length)
+      if (
+        (arm === "module"
+          ? !initial.libraries?.includes("@observablehq/plot")
+          : initial.widget_imports.catalog !== null) ||
+        initial.views.length
+      )
         throw Error("Invalid starting state");
       const config = {
         agent: {
@@ -102,7 +108,16 @@ try {
             page_id,
             question,
             guideSHA256: createHash("sha256")
-              .update(await readFile(path.join(outputDir, "guides", arm, "anywidget.txt")))
+              .update(
+                await readFile(
+                  path.join(
+                    outputDir,
+                    "guides",
+                    arm,
+                    arm === "module" ? "views.txt" : "anywidget.txt",
+                  ),
+                ),
+              )
               .digest("hex"),
           },
           null,
@@ -152,7 +167,7 @@ try {
         }
       });
       const calls = events.filter((e) => e.type === "tool_use").map((e) => e.part);
-      const final = (await tool("read_page", { page_id, views: true })).widget_imports;
+      const final = await tool("read_page", { page_id, views: true });
       const rendered = await grade(page, origin + "/p/" + page_id);
       const pinAt = calls.findIndex(
         (c) =>
@@ -180,7 +195,12 @@ try {
         buttons: calls
           .filter((c) => c.tool === "pages_inspect_widget")
           .map((c) => c.state.input.button ?? null),
-        catalog: final.catalog,
+        catalog: final.widget_imports?.catalog ?? null,
+        views: final.views?.map(({ view_id, view_type, catalog_revision }) => ({
+          view_id,
+          view_type,
+          catalog_revision,
+        })),
         pinAt,
         placeAt,
         rendered,

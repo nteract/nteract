@@ -1,6 +1,6 @@
 # Fresh-Page authoring eval
 
-Can an agent build an interactive Plot chart on a fresh Page, using only the deployment’s assets? The prompt asks for three daily counts, per-bar hover titles, a filter and a reset button. Each candidate starts with its own Page, a fresh Kilo project, a local test identity and access to the same Pages tools. A host pin makes the standard catalog available. Each Page starts with no catalog selected.
+Can an agent build an interactive Plot chart on a fresh Page, using only the deployment’s assets? The prompt asks for three daily counts, per-bar hover titles, a filter and a reset button. Each candidate starts with its own Page, a fresh Kilo project, a local test identity and access to the same Pages tools. A host pin makes the standard catalog available. In the earlier-guide comparison, each Page starts with no catalog selected. In the module experiment, the deployment pins its standard libraries when the agent saves a view.
 
 ## Run a comparison
 
@@ -73,3 +73,33 @@ DeepSeek rendered a local Plot chart in all ten trials. In the one failing revis
 Kimi read the anywidget guide in all five revised-guide trials. Across both arms it selected the catalog on three Pages (two earlier, one revised), but never placed a widget. All ten sessions hit the time limit. The traces show repeated rejected edits, including a missing `source_revision: null` on catalog creation and a missing or invalid `asset_id` on `set_source`. This points to a narrower follow-up eval: give the agent a real upload receipt and ask it to register that single source.
 
 One revised-guide Kimi session lost its host connection before a result could be saved. Its replacement used a fresh Page and the original time limit. All twenty scored Pages were then audited on the restored host.
+
+## Module authoring on a fresh Page
+
+The module experiment used the same prompt, five fresh Pages per model, Kilo 7.8.27 and the four-minute limit. The candidate host ran the module API from [PR #5148](https://github.com/nteract/nteract/pull/5148), including automatic standard library pins. The earlier and revised guide cohorts above used the earlier API. Treat this as a comparison of authoring experiences across runs. The guide and service both changed.
+
+| Model | Previous revised guide passes | Module passes | Saved module views | Median agent time |
+| --- | ---: | ---: | ---: | ---: |
+| Inkling 2 Small | 5/5 | 5/5 | 5/5 | 20.0 s |
+| Haiku 4.5 | 2/5 | 2/5 | 5/5 | 63.7 s |
+| Gemini 3.1 Flash-Lite | 5/5 | 5/5 | 5/5 | 46.8 s |
+| DeepSeek V4.1 Flash | 4/5 | 5/5 | 5/5 | 31.2 s |
+| Kimi K3.1 Pro Highspeed | 0/5 | 0/5 | 0/5 | 240 s |
+
+All twenty saved views used the deployment’s Plot code. Three Haiku charts failed the per-bar hover check. Every Kimi session read the views guide and called the upload tool. Its edit attempts repeatedly added unrelated fields to `set_source`, including `type`, `alt`, or `view_id`. All five timed out before saving a view. Four unscored setup sessions with Kilo 7.4.21 produced no tool events and were discarded before this cohort began.
+
+To repeat, build the candidate checkout’s Pages app and start its catalog from that checkout. Run the harness from this branch. Set `EVAL_PAGES_APP` to the absolute path of the candidate’s `apps/pages` when starting the host. The host copies the candidate build into a fresh directory.
+
+```sh
+PAGES_PORT=9963 PAGES_CATALOG_PORT=9447 EVAL_PAGES_APP=/path/to/candidate/apps/pages ./scripts/widget-evals/start-host.sh
+```
+
+In another terminal, select the Kilo 7.8.27 executable with `KILO_BIN`, then run the following commands.
+
+```sh
+export EVAL_PAGES_ORIGIN=http://localhost:9963 PAGES_CATALOG_PORT=9447 EVAL_GUIDE=module
+export EVAL_MODELS=thinkingmachines/inkling-2-small,anthropic/claude-haiku-4.5,google/gemini-3.1-flash-lite,deepseek/deepseek-v4.1-flash-1017,moonshotai/kimi-k3.1-pro-highspeed
+node scripts/widget-evals/guides.mjs
+node scripts/widget-evals/run.mjs module-comparison
+node scripts/widget-evals/audit.mjs module-comparison
+```

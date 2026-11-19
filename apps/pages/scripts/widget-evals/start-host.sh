@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 app="$(cd "$(dirname "$0")/../.." && pwd)"
+app="${EVAL_PAGES_APP:-$app}"
 port="${PAGES_PORT:-9938}"
 catalog_port="${PAGES_CATALOG_PORT:-9447}"
 catalog="http://127.0.0.1:$catalog_port"
