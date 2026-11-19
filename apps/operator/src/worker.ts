@@ -5,6 +5,7 @@ import {
   serverOidcCallbackFailurePage,
   serverOidcSessionStatus,
 } from "../../notebook-cloud/src/server-oidc.ts";
+import type { ExecutionContext } from "../../notebook-cloud/src/cloudflare-types.ts";
 import { AuthError } from "../../notebook-cloud/src/identity.ts";
 import { sessionKeyring } from "@nteract/session";
 import {
@@ -110,6 +111,7 @@ async function route(
   request: Request,
   env: OperatorEnvironment,
   localDevelopment: boolean,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<Response> {
   const origin = configured(env, request, localDevelopment);
   const url = new URL(request.url);
@@ -156,7 +158,12 @@ async function route(
         }),
     });
   if (url.pathname === "/api/operator/session") {
-    const refreshed = await serverOidcSessionStatus(request, env, syncIdentity);
+    const refreshed = await serverOidcSessionStatus(
+      request,
+      env,
+      syncIdentity,
+      ctx ? { hold: (work) => ctx.waitUntil(work) } : {},
+    );
     if (refreshed.status !== 200) return refreshed;
     const operator = await authorizeOperator(request, env);
     const response = Response.json(operator);
@@ -233,9 +240,13 @@ async function route(
 // The production entry point never enables the local development issuer.
 export function createOperatorHandler(localDevelopment = false) {
   return {
-    async fetch(request: Request, env: OperatorEnvironment): Promise<Response> {
+    async fetch(
+      request: Request,
+      env: OperatorEnvironment,
+      ctx?: Pick<ExecutionContext, "waitUntil">,
+    ): Promise<Response> {
       try {
-        return privateResponse(await route(request, env, localDevelopment));
+        return privateResponse(await route(request, env, localDevelopment, ctx));
       } catch (error) {
         if (!(error instanceof AuthError))
           console.warn(

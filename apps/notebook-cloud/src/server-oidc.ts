@@ -211,7 +211,17 @@ export interface ServerOidcSessionOptions extends AccountEmailOptions {
   onAuthEvent?: ServerOidcAuthEventListener;
   /** Renews sessions with this provider in place of the OIDC token endpoint. */
   provider?: ServerSessionProvider;
+  /**
+   * Keeps `work` running after the client that started it goes away, as
+   * `ctx.waitUntil` does. A renewal may claim the row's refresh lease, and
+   * whatever claims it must still save or release it: a renewal cut off with
+   * its client leaves the lease held, and the session ends once it lapses.
+   * `work` never rejects.
+   */
+  hold?: (work: Promise<unknown>) => void;
 }
+
+function noop(): void {}
 
 /** A listener never fails or changes the sign-in flow. */
 function notifyAuthEvent(
@@ -901,8 +911,13 @@ export async function serverOidcSessionStatus(
   const now = Math.floor(Date.now() / 1000);
   try {
     let row = await loadServerSession(env, request, now);
-    if (row && row.access_expires_at <= now + REFRESH_WINDOW_SECONDS)
-      row = await refreshSession(request, env, row, syncProfile, options);
+    if (row && row.access_expires_at <= now + REFRESH_WINDOW_SECONDS) {
+      // The hold starts in the same step as the renewal, so it covers the
+      // lease claim's own write as well as the provider exchange.
+      const renewal = refreshSession(request, env, row, syncProfile, options);
+      options.hold?.(renewal.then(noop, noop));
+      row = await renewal;
+    }
     const current = Math.floor(Date.now() / 1000);
     if (row) row = await touchServerSession(env, request, row, current);
     const session: CloudAppSession | null =

@@ -941,6 +941,59 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     );
   });
 
+  it("holds a renewal from its lease claim until it saves the renewed grant", async (t) => {
+    const f = await fixture(t);
+    const { sessionCookie } = await f.login();
+    const request = f.request(undefined, sessionCookie);
+    const row = () => f.db.sqlite.prepare("SELECT * FROM oidc_server_sessions").get()!;
+    const before = row();
+    f.expireAccess();
+    const gate = f.gateRefresh();
+    const held: Promise<unknown>[] = [];
+    const status = serverOidcSessionStatus(request, f.env, noopProfile, {
+      hold: (work) => held.push(work),
+    });
+    await gate.entered.promise;
+    assert.equal(held.length, 1, "the renewal is held before the provider answers");
+    const settled = { done: false };
+    void held[0]!.then(() => (settled.done = true));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled.done, false, "the hold is pending while the provider answers");
+    assert.ok(row().lease, "the renewal holds the lease while it runs");
+    gate.release.resolve();
+    assert.equal(await held[0], undefined);
+    const after = row();
+    assert.equal(after.lease, null);
+    assert.equal(after.generation, Number(before.generation) + 1);
+    assert.notEqual(after.sealed, before.sealed, "the row holds the renewed grant");
+    assert.ok(Number(after.access_expires_at) > nowSeconds() + 30);
+    assert.equal((await status).status, 200);
+    assert.equal(held.length, 1);
+  });
+
+  it("holds a failed renewal until it releases the lease, and the hold never rejects", async (t) => {
+    const f = await fixture(t);
+    const { sessionCookie } = await f.login();
+    const request = f.request(undefined, sessionCookie);
+    f.expireAccess();
+    f.setRefreshFailure("unavailable");
+    const gate = f.gateRefresh();
+    const held: Promise<unknown>[] = [];
+    const status = serverOidcSessionStatus(request, f.env, noopProfile, {
+      hold: (work) => held.push(work),
+    });
+    await gate.entered.promise;
+    assert.equal(held.length, 1);
+    gate.release.resolve();
+    assert.equal(await held[0], undefined, "a failed renewal still fulfils its hold");
+    const row = f.db.sqlite.prepare("SELECT * FROM oidc_server_sessions").get()!;
+    assert.equal(row.lease, null);
+    assert.equal(row.lease_until, 0);
+    assert.ok(Number(row.retry_after) > nowSeconds());
+    await status;
+    assert.equal(f.calls.filter((call) => call.grant === "refresh_token").length, 1);
+  });
+
   it("logout during an in-flight refresh cannot recreate the revoked session", async (t) => {
     const f = await fixture(t);
     const { sessionCookie } = await f.login();
