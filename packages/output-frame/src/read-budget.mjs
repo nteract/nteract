@@ -123,16 +123,19 @@ export function createReadBudget({ lifetime, scheduler = asyncScheduler } = {}) 
   const begin = new Map();
   const arm = (at) => {
     if (wake?.at === at) return;
-    wake?.subscription.unsubscribe();
+    wake?.subscription?.unsubscribe();
     wake = null;
     if (at === null) return;
-    const subscription = timer(Math.max(0, Math.ceil(at - scheduler.now())), scheduler).subscribe(
+    // `wake` names this timer before it is subscribed, so a scheduler that
+    // fires during subscribe clears this entry and not a later one.
+    const armed = { at, subscription: null };
+    wake = armed;
+    armed.subscription = timer(Math.max(0, Math.ceil(at - scheduler.now())), scheduler).subscribe(
       () => {
-        wake = null;
+        if (wake === armed) wake = null;
         dispatch({ type: "tick", now: scheduler.now() });
       },
     );
-    wake = { at, subscription };
   };
   // The state and the timer are settled before any read begins, so a read
   // that settles synchronously re-enters against current state.

@@ -119,6 +119,7 @@ function heldSource(byteLength = 4096) {
 
 // Sends one request on the raw port protocol and records every reply. Open
 // reply ports would keep the test process alive, so each test closes them.
+// `closed` settles when the other side closes the reply port.
 const replyPorts = new Set();
 test.afterEach(() => {
   for (const port of replyPorts) port.close();
@@ -129,11 +130,31 @@ function rawRead({ port }, offset, length) {
   replyPorts.add(port1);
   const replies = [];
   port1.onmessage = ({ data }) => replies.push(data);
+  const closed = new Promise((resolve) => port1.addEventListener("close", resolve, { once: true }));
   port.postMessage({ offset, length }, [port2]);
-  return { replies, cancel: () => port1.postMessage("cancel"), close: () => port1.close() };
+  return { replies, closed, cancel: () => port1.postMessage("cancel"), close: () => port1.close() };
 }
 
-const delivered = () => new Promise((resolve) => setTimeout(resolve, 20));
+// A port handles its requests in order, and an invalid interval is answered
+// at once without entering the budget. That answer therefore shows every
+// earlier request on the same port has been handled.
+async function handled(file) {
+  if (typeof file.read === "function") {
+    await assert.rejects(file.read(-1, 1), { message: "Invalid file read." });
+    return;
+  }
+  const probe = rawRead(file, -1, 1);
+  await until(() => probe.replies.length === 1, "the probe is answered");
+  probe.close();
+}
+
+async function until(predicate, what) {
+  const deadline = Date.now() + 5000;
+  while (!predicate()) {
+    if (Date.now() > deadline) assert.fail(`Timed out waiting until ${what}`);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
 
 test("a ninth concurrent read on one file waits for a slot, then completes", async () => {
   const lifetime = new AbortController();
@@ -141,12 +162,11 @@ test("a ninth concurrent read on one file waits for a slot, then completes", asy
   try {
     const file = receiveByteSource(exposeByteSource(source, lifetime.signal), lifetime.signal);
     const reads = Array.from({ length: 9 }, (_, i) => file.read(i * 10, 3));
-    await delivered();
+    await handled(file);
     assert.equal(calls.length, 8);
     calls[2].finish();
     assert.deepEqual([...(await reads[2])], [20, 21, 22]);
-    await delivered();
-    assert.equal(calls.length, 9);
+    await until(() => calls.length === 9, "the ninth read starts");
     assert.equal(calls[8].offset, 80);
     calls[8].finish();
     assert.deepEqual([...(await reads[8])], [80, 81, 82]);
@@ -172,14 +192,13 @@ test("files of one view share its read slots", async () => {
       lifetime.signal,
     );
     const readsA = Array.from({ length: 8 }, (_, i) => fileA.read(i, 1));
-    await delivered();
+    await handled(fileA);
     const readB = fileB.read(5, 2);
-    await delivered();
+    await handled(fileB);
     assert.equal(a.calls.length, 8);
     assert.equal(b.calls.length, 0);
     a.calls[0].finish();
-    await delivered();
-    assert.equal(b.calls.length, 1);
+    await until(() => b.calls.length === 1, "the other file's read starts");
     b.calls[0].finish();
     assert.deepEqual([...(await readB)], [5, 6]);
     for (const call of a.calls) call.finish();
@@ -196,15 +215,18 @@ test("a waiting read cancelled by the frame is never read and gets no reply", as
     const file = exposeByteSource(source, lifetime.signal);
     const running = Array.from({ length: 8 }, (_, i) => rawRead(file, i, 1));
     const waiting = rawRead(file, 100, 1);
-    await delivered();
+    await handled(file);
     waiting.cancel();
-    await delivered();
+    // The parent closes a waiting read's reply port when it drops the read.
+    await waiting.closed;
     for (const call of calls) call.finish();
-    await delivered();
+    await until(
+      () => running.every(({ replies }) => replies.length === 1),
+      "every running read is answered",
+    );
     assert.equal(calls.length, 8);
     assert.deepEqual(waiting.replies, []);
-    assert.ok(running.every(({ replies }) => replies.length === 1 && replies[0].bytes));
-    waiting.close();
+    assert.ok(running.every(({ replies }) => replies[0].bytes));
   } finally {
     lifetime.abort();
   }
@@ -217,7 +239,10 @@ test("an invalid interval is refused at once while the slots are full", async ()
     const file = exposeByteSource(source, lifetime.signal);
     Array.from({ length: 8 }, (_, i) => rawRead(file, i, 1));
     const invalid = [rawRead(file, 60, 8), rawRead(file, -1, 1), rawRead(file, 0.5, 1)];
-    await delivered();
+    await until(
+      () => invalid.every(({ replies }) => replies.length === 1),
+      "every invalid read is answered",
+    );
     assert.equal(calls.length, 8);
     for (const { replies } of invalid) assert.deepEqual(replies, [{ error: "Invalid file read." }]);
     for (const call of calls) call.finish();
@@ -233,7 +258,7 @@ test("a read that finds the waiting list full is refused", async () => {
     const file = exposeByteSource(source, lifetime.signal);
     const admitted = Array.from({ length: 8 + READ_WAITING_LIMIT }, (_, i) => rawRead(file, i, 1));
     const refused = rawRead(file, 0, 1);
-    await delivered();
+    await until(() => refused.replies.length === 1, "the refused read is answered");
     assert.equal(calls.length, 8);
     assert.deepEqual(refused.replies, [{ error: "Too many file reads are waiting." }]);
     assert.ok(admitted.every(({ replies }) => replies.length === 0));
@@ -247,12 +272,13 @@ test("ending the view drops waiting reads without replies or further reads", asy
   const { source, calls } = heldSource();
   const file = exposeByteSource(source, lifetime.signal);
   const reads = Array.from({ length: 12 }, (_, i) => rawRead(file, i, 1));
-  await delivered();
+  await handled(file);
   assert.equal(calls.length, 8);
   lifetime.abort();
   for (const call of calls) call.finish();
-  await delivered();
+  // The parent closes every reply port: at once for a waiting read, and when
+  // its source settles for a read in flight.
+  await Promise.all(reads.map((read) => read.closed));
   assert.equal(calls.length, 8);
   assert.ok(reads.every(({ replies }) => replies.length === 0));
-  for (const read of reads) read.close();
 });
