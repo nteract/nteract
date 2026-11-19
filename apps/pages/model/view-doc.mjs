@@ -28,6 +28,7 @@ import {
   VIEW_DATA_NAME_PATTERN,
   VIEW_ID_PATTERN,
   VIEW_MEDIA_TYPES,
+  VIEW_FORMATS,
   validDataName,
   validViewId,
 } from "../shared/views.mjs";
@@ -129,6 +130,26 @@ const CONTROL = /[\u0000-\u001f\u007f]/;
  * the data map, checked as bindings. */
 export function validateViewOperation(op) {
   if (!isMap(op) || op.op !== "set_view") fail("invalid_view", "Not a set_view operation");
+  if (Object.hasOwn(op, "view_type")) {
+    const { view_type, ...fields } = op;
+    if (typeof view_type !== "string" || !Object.hasOwn(VIEW_FORMATS, view_type))
+      fail("invalid_view", "Choose view_type module, anywidget or vega-lite.");
+    if (Object.hasOwn(fields, "media_type")) fail("invalid_view", "Choose one view format.");
+    if (view_type === "module") {
+      if (Object.hasOwn(fields, "spec"))
+        fail("invalid_view", "A module view takes module, data and imports.");
+      const { module, data, imports, ...rest } = fields;
+      op = {
+        ...rest,
+        media_type: VIEW_FORMATS.module,
+        spec: {
+          module,
+          ...(data !== undefined && { files: data }),
+          ...(imports !== undefined && { imports }),
+        },
+      };
+    } else op = { ...fields, media_type: VIEW_FORMATS[view_type] };
+  }
   const unknown = Object.keys(op).find((field) => !FIELDS.includes(field));
   if (unknown) fail("invalid_view", `set_view does not take ${String(unknown).slice(0, 64)}`);
   if (!validViewId(op.view_id))
@@ -138,7 +159,12 @@ export function validateViewOperation(op) {
   if (CONTROL.test(op.title))
     fail("invalid_view", "title can't hold control characters such as a newline or NUL");
   if (!VIEW_MEDIA_TYPES.includes(op.media_type))
-    fail("invalid_view", `media_type must be ${VIEW_MEDIA_TYPES.join(" or ")}`);
+    fail(
+      "invalid_view",
+      Object.hasOwn(op, "media_type")
+        ? "Unknown media_type. Choose view_type module, anywidget or vega-lite."
+        : "Choose view_type module, anywidget or vega-lite.",
+    );
   if (!(op.view_revision === null || validRevision(op.view_revision)))
     fail(
       "invalid_view",
@@ -194,7 +220,10 @@ export function validateViewOperation(op) {
  * stored view. Returns the stored view, or undefined for one it creates.
  */
 export function checkView(doc, op, { sourcesDoc } = {}) {
-  validateViewOperation(op);
+  return checkViewBindings(doc, validateViewOperation(op), sourcesDoc);
+}
+
+function checkViewBindings(doc, op, sourcesDoc) {
   for (const { source: binding, location, mediaType } of viewDependencies(op)) {
     let source;
     try {
@@ -262,7 +291,8 @@ export function setView(
   op,
   { sourcesDoc, by, catalogRevision, at = new Date().toISOString() },
 ) {
-  const previous = checkView(doc, op, { sourcesDoc });
+  op = validateViewOperation(op);
+  const previous = checkViewBindings(doc, op, sourcesDoc);
   if (!validTime(at) || !isMap(by)) throw Error("A view write needs its writer and time");
   const revision = String(previous ? Number(previous.revision) + 1 : 1);
   const title = op.title.trim();

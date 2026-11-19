@@ -15,7 +15,7 @@ uv run scripts/ranged-sources/fixture.py /tmp/pages-ranged-activity.parquet
 node scripts/ranged-sources/demo.mjs /tmp/pages-ranged-activity.parquet
 ```
 
-The demo declares a pinned module entry and one file in `spec.files`. The
+The demo declares a pinned module entry and one file alias in `data`. The
 [entry](activity.mjs) imports `data/activity` and gives its Sift-compatible
 ByteSource to the Parquet reader. Sift reads the footer and the first row
 group for a bounded preview. The chart reports transferred Parquet bytes,

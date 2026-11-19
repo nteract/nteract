@@ -234,7 +234,7 @@ test("set_view creates a view, rewrites it, refuses a stale revision, and reads 
     {
       view_id: "daily",
       title: "Daily usage",
-      media_type: VEGA_LITE,
+      view_type: "vega-lite",
       revision: "1",
       data: { usage: { source_id: "usage" } },
     },

@@ -4,7 +4,6 @@ import worker from "../worker/index.mjs";
 import { MEDIA_GUIDES, mediaGuide } from "../agent-media-guides.mjs";
 import { validateSourceOperation } from "../model/sources-doc.mjs";
 import { validateViewOperation } from "../model/view-doc.mjs";
-import { ANYWIDGET_MEDIA_TYPE } from "../shared/anywidget-view.mjs";
 import { compileAnywidgetSpec } from "../shared/anywidget-spec.mjs";
 import { widgetState } from "@nteract/output-frame/schema";
 import { tools } from "../mcp.mjs";
@@ -84,9 +83,7 @@ test("a Page author can discover the same catalog setup through MCP and the publ
       PAGES_OUTPUT_FRAME_URL: frame,
       PAGES_WIDGET_CATALOG_REVISION: revision,
     };
-    const guide = await (
-      await worker.fetch(new Request(site + "/llms/anywidget.txt"), config)
-    ).text();
+    const guide = await (await worker.fetch(new Request(site + "/llms/views.txt"), config)).text();
     const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" });
     const response = await worker.fetch(
       new Request(site + "/mcp", {
@@ -102,35 +99,17 @@ test("a Page author can discover the same catalog setup through MCP and the publ
     );
     assert.equal(response.status, 200, await response.clone().text());
     const catalog = (await response.json()).result.tools;
-    const readTool = catalog.find((tool) => tool.name === "read_page");
     const editTool = catalog.find((tool) => tool.name === "edit_page");
     const ops = editTool.inputSchema.properties.operations.items.properties.op.enum;
-    assert.equal(ops.includes("set_widget_imports"), enabled);
-    assert.equal(guide.includes("set_widget_imports"), enabled, site);
-    assert.equal(readTool.description.includes("available_imports"), enabled);
-    const views = await (await worker.fetch(new Request(site + "/llms/views.txt"), config)).text();
-    assert.equal(views.includes("standard library guide"), enabled);
-    if (enabled) {
-      const examples = [...guide.matchAll(/```json\n([\s\S]*?)\n```/g)].map((match) =>
-        JSON.parse(match[1]),
-      );
-      const setup = examples.find((example) =>
-        example.arguments.operations?.some((op) => op.op === "set_widget_imports"),
-      );
-      assert.equal(setup.operation, "edit_page");
-      assert.deepEqual(setup.arguments.operations, [
-        {
-          op: "set_widget_imports",
-          catalog: "standard",
-          source_revision: "<widget_imports.source_revision>",
-          modules: [{ name: "activity-controls", source_id: "controls", revision: "1" }],
-        },
-      ]);
-      for (const field of editTool.inputSchema.required)
-        assert.ok(Object.hasOwn(setup.arguments, field));
-      assert.match(guide, /available_imports/);
-      assert.match(guide, /view\.catalog_revision/);
-    }
+    assert.ok(!ops.includes("set_widget_imports"));
+    assert.deepEqual(
+      editTool.inputSchema.properties.operations.items.properties.view_type.enum.sort(),
+      ["anywidget", "module", "vega-lite"],
+    );
+    assert.ok(guide.includes('"view_type": "module"'));
+    assert.ok(guide.includes('"activity-controls"'));
+    assert.equal(guide.includes("read_page.libraries"), enabled);
+    assert.equal(guide.includes("view.catalog_revision"), enabled);
   }
 });
 
@@ -175,7 +154,7 @@ test("published tool examples pass current source and view validators", () => {
         } else if (op.op === "set_view") {
           validateViewOperation(op);
           views++;
-          if (op.media_type === ANYWIDGET_MEDIA_TYPE) {
+          if (op.view_type === "anywidget") {
             const compiled = compileAnywidgetSpec(op.spec);
             const assets = Object.fromEntries(
               compiled.dependencies.map(({ name }) => [name, { bytes: new Uint8Array([1, 2, 3]) }]),

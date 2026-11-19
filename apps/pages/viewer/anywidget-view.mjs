@@ -166,6 +166,8 @@ export function mount(
                                 version,
                                 { signal: controller.signal, request: sources.request },
                               );
+                            else if (name.startsWith("import/"))
+                              imports[name.slice(7)] = await load(version);
                             else assets[name] = await load(version);
                           }
                           controller.signal.throwIfAborted();

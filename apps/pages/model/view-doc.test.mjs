@@ -286,6 +286,36 @@ test("a refusal prints a spec's data names bounded and escaped, on one line", ()
   assert.match(many, /"d7" and 4 more\)/);
 });
 
+test("module authoring binds an entry, ranged files and JavaScript aliases in one view", () => {
+  const operation = {
+    op: "set_view",
+    view_id: "daily",
+    title: "Daily",
+    view_type: "module",
+    view_revision: null,
+    module: { source_id: "entry" },
+    data: { sales: { source_id: "usage" } },
+    imports: { controls: { source_id: "entry", revision: "1" } },
+  };
+  const normalized = validateViewOperation(operation);
+  assert.deepEqual(normalized.spec, {
+    module: operation.module,
+    files: operation.data,
+    imports: operation.imports,
+  });
+  for (const invalid of [
+    { imports: { react: { source_id: "entry" } } },
+    { imports: { controls: { source_id: "entry", revision: "0" } } },
+    { module: { source_id: "../outside" } },
+    { spec: {} },
+    { media_type: "text/javascript" },
+    { view_type: "__proto__" },
+  ])
+    assert.throws(() => validateViewOperation({ ...operation, ...invalid }), {
+      code: "invalid_view",
+    });
+});
+
 test("new executable views keep the host catalog they first used", () => {
   const first = "a".repeat(64),
     next = "b".repeat(64);

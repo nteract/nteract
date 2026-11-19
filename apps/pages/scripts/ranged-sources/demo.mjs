@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { chromium, expect } from "@playwright/test";
 import { localClient, pageEdits } from "../widget-catalog/local-client.mjs";
-import { MODULE_MEDIA_TYPE } from "../../shared/anywidget-view.mjs";
 import { PARQUET_MEDIA_TYPE } from "../../shared/dataset-assets.mjs";
 
 const origin = "http://localhost:" + Number(process.env.PAGES_PORT ?? 9917);
@@ -37,20 +36,18 @@ try {
       op: "set_view",
       view_id: "daily",
       title: "Daily activity",
-      media_type: MODULE_MEDIA_TYPE,
+      view_type: "module",
       view_revision: null,
-      spec: {
-        module: { source_id: "activity-chart", revision: "1" },
-        files: { activity: { source_id: "project-activity", revision: "1" } },
-      },
+      module: { source_id: "activity-chart", revision: "1" },
+      data: { activity: { source_id: "project-activity", revision: "1" } },
     },
   ]);
   await edit([{ op: "insert_node", node: { type: "view", attrs: { view_id: "daily" } } }]);
   const read = await tool("read_page", { page_id, view_id: "daily" });
   assert.equal(saved.result.edits[0].catalog_revision, read.view.catalog_revision);
   assert.match(read.view.catalog_revision, /^[a-f0-9]{64}$/);
-  assert.equal(read.widget_imports.catalog, null);
-  assert.equal(read.view.spec.files.activity.revision, "1");
+  assert.ok(read.libraries.includes("@nteract/sift/parquet"));
+  assert.equal(read.view.data.activity.revision, "1");
   await client.close();
   // Disable the browser cache so the accounting includes every file response.
   const cdp = await page.context().newCDPSession(page);

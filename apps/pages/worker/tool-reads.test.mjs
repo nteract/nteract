@@ -360,7 +360,7 @@ test("a malformed widget keeps Page reads and its repair revision available", as
     {
       view_id: "widget",
       title: "Repairable widget",
-      media_type: ANYWIDGET_MEDIA_TYPE,
+      view_type: "anywidget",
       revision: "7",
       dependencies_unavailable: true,
     },

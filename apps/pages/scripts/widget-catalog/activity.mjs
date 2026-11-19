@@ -1,3 +1,4 @@
+import activity from "data/activity";
 import { createElement as h, useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { ChoiceGroup } from "activity-controls";
@@ -61,10 +62,11 @@ function Activity({ days }) {
   );
 }
 
-export default {
-  render({ el, model }) {
-    const root = createRoot(el);
-    root.render(h(Activity, { days: model.get("days") }));
-    return () => root.unmount();
-  },
-};
+export async function render({ el, signal }) {
+  const bytes = await activity.read(0, activity.byteLength, signal);
+  const { days } = JSON.parse(new TextDecoder().decode(bytes));
+  signal.throwIfAborted();
+  const root = createRoot(el);
+  root.render(h(Activity, { days }));
+  return () => root.unmount();
+}

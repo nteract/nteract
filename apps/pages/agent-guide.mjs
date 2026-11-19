@@ -984,7 +984,8 @@ page_quota_exceeded with limit and count; tell the person rather than retrying.
   insert_node, move_block, delete_block, or delete_node operations. Every
   operation names what it acts on by node_id; see Addresses below. A batch of
   set_source operations sets the Page's named sources; see Named sources. One
-  set_view creates or rewrites a chart or anywidget; see Charts and Rich content.
+  set_view defines a reusable view. Use view_type module for new JavaScript,
+  vega-lite for a chart spec, or anywidget for an existing widget model. See /llms/views.txt.
 - manage_page_comment: add, reply, resolve, reopen, edit, or delete_message. resolve and
   reopen also take thread_ids to change up to 100 threads in one call. See Comments below.
 - create_page_asset_upload: page_id and optional content_type and size;

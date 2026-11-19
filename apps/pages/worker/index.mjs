@@ -1,5 +1,5 @@
-import { configuredCatalogRevision } from "../shared/widget-imports.mjs";
-import { declareWidgetImports, readWidgetImports } from "./widget-imports.mjs";
+import { configuredCatalogRevision, standardImports } from "../shared/widget-imports.mjs";
+
 import { hasNonce } from "../model/nonce.mjs";
 import * as A from "@automerge/automerge";
 import { generateAutomergeUrl, interpretAsDocumentId } from "@automerge/automerge-repo";
@@ -7088,9 +7088,7 @@ export class Page {
           const options = {
             recovery: this.recoveryBlocked,
             historyIncomplete: incompleteHistory(this.handle.doc()),
-            widgetImports: configuredCatalogRevision(this.env)
-              ? (doc) => readWidgetImports(this.env, this.metadata.pageId, doc)
-              : undefined,
+            libraries: configuredCatalogRevision(this.env) ? standardImports : [],
             getPresence: (doc) => this.activityState().read(doc),
             commentsDoc: this.commentsView(),
             sourcesDoc: this.sourcesView(),
@@ -7197,14 +7195,8 @@ export class Page {
         }
         // A batch with a set_source writes the sources document and nothing
         // else.
-        if (ops.some((op) => op?.op === "set_widget_imports") && ops.length !== 1)
-          throw new HttpError(
-            400,
-            "Send set_widget_imports as a single operation.",
-            "invalid_arguments",
-          );
         const sourceOps = ops.filter((op) =>
-          ["set_source", "delete_source", "set_widget_imports"].includes(op?.op),
+          ["set_source", "delete_source"].includes(op?.op),
         ).length;
         if (sourceOps && sourceOps !== ops.length)
           throw new HttpError(
@@ -7594,7 +7586,7 @@ export class Page {
    */
   async writeSources(request, identity, body) {
     const args = body.arguments ?? {};
-    let declarationOps;
+
     const mediaTypes = new Map();
     // Stored on the source as its writer's agent, so the retry fingerprint
     // covers it, as a comment's does.
@@ -7638,14 +7630,7 @@ export class Page {
         prepare: async () => {
           let assetIds;
           try {
-            if (args.operations[0]?.op === "set_widget_imports")
-              declarationOps = await declareWidgetImports(
-                this.env,
-                this.metadata.pageId,
-                handle.doc(),
-                args.operations[0],
-              );
-            const operations = declarationOps ?? args.operations;
+            const operations = args.operations;
             assetIds = validateSourceBatch(operations);
             checkSources(handle.doc(), operations);
           } catch (error) {
@@ -7672,7 +7657,7 @@ export class Page {
         apply: (draft, effectiveArgs) => {
           try {
             return {
-              edits: setSources(draft, declarationOps ?? effectiveArgs.operations, {
+              edits: setSources(draft, effectiveArgs.operations, {
                 mediaTypes,
                 by: authorOf(publicIdentity(identity), agent),
               }),

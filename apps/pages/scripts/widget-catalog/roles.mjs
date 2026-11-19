@@ -1,3 +1,4 @@
+import activity from "data/activity";
 import { createElement as h, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ChoiceGroup } from "activity-controls";
@@ -24,10 +25,11 @@ function Roles({ counts }) {
   );
 }
 
-export default {
-  render({ el, model }) {
-    const root = createRoot(el);
-    root.render(h(Roles, { counts: model.get("counts") }));
-    return () => root.unmount();
-  },
-};
+export async function render({ el, signal }) {
+  const bytes = await activity.read(0, activity.byteLength, signal);
+  const { counts } = JSON.parse(new TextDecoder().decode(bytes));
+  signal.throwIfAborted();
+  const root = createRoot(el);
+  root.render(h(Roles, { counts }));
+  return () => root.unmount();
+}

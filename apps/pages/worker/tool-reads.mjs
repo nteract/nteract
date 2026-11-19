@@ -6,7 +6,7 @@ import { documentFeatures } from "../model/schema-features.mjs";
 import { listSources, readSource } from "../model/sources-doc.mjs";
 import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 import { readView, viewSummary } from "../model/view-doc.mjs";
-import { validViewId } from "../shared/views.mjs";
+import { validViewId, viewType } from "../shared/views.mjs";
 
 export const DEFAULT_READ_BYTES = 128 * 1024;
 /** The largest max_bytes a read takes (read_page, list_page_comments,
@@ -151,6 +151,23 @@ async function withSummary(source, datasetSummary) {
 /** The views a read_page asks for: `{ views }` listing every view for
  * `views: true`, `{ view }` with its spec for `view_id`, or both. `views` is
  * the host's `{ ids(), doc(view_id) }` (worker/index.mjs viewReads). */
+function authorView(record) {
+  if (!record) return record;
+  const { media_type, ...fields } = record;
+  const view_type = viewType(media_type);
+  if (!view_type) return record;
+  if (view_type === "module" && fields.spec) {
+    const { spec, ...rest } = fields;
+    return {
+      ...rest,
+      view_type,
+      module: spec.module,
+      ...(spec.files && { data: spec.files }),
+      ...(spec.imports && { imports: spec.imports }),
+    };
+  }
+  return { ...fields, view_type };
+}
 function viewsRead(views, { views: list, view_id }) {
   const view = () => {
     if (!validViewId(view_id))
@@ -161,11 +178,11 @@ function viewsRead(views, { views: list, view_id }) {
         status: 404,
         code: "view_not_found",
       });
-    return found;
+    return authorView(found);
   };
   return {
     ...(list === true && {
-      views: (views?.ids() ?? []).map((id) => viewSummary(views.doc(id), id)),
+      views: (views?.ids() ?? []).map((id) => authorView(viewSummary(views.doc(id), id))),
     }),
     ...(view_id !== undefined && { view: view() }),
   };
@@ -196,7 +213,7 @@ export async function readTool(
     revisions,
     recovery,
     historyIncomplete,
-    widgetImports,
+    libraries,
     getPresence,
     commentsDoc,
     sourcesDoc,
@@ -312,9 +329,7 @@ export async function readTool(
     ...(sources_revision && { sources_revision }),
     // The Page's schema stamp; empty when it uses only the baseline.
     ...(operation === "read_page" && { schema_features: documentFeatures(doc) }),
-    ...(operation === "read_page" &&
-      status === 200 &&
-      widgetImports && { widget_imports: await widgetImports(sourcesDoc) }),
+    ...(operation === "read_page" && status === 200 && libraries && { libraries }),
     ...(recovery && { recovery }),
     ...(historyIncomplete && { history_incomplete: historyIncomplete }),
   };
