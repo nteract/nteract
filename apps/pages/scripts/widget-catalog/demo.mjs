@@ -136,11 +136,16 @@ try {
   await expect(chart.locator('[data-controls-revision="2"]')).toHaveCount(0);
   await client.close();
   await page.setViewportSize({ width: 1200, height: 950 });
+  await expect(page.locator(".sources-line")).toHaveCount(0);
   await page
-    .locator(".sources-line")
-    .getByRole("button", { name: /Page libraries/ })
+    .locator('summary[aria-label="Document actions"], button[aria-label="More page actions"]')
+    .click();
+  await page
+    .getByRole("button", { name: "Sources", exact: true })
+    .or(page.getByRole("menuitem", { name: "Sources", exact: true }))
     .click();
   const panel = page.getByRole("dialog", { name: "Sources", exact: true });
+  await panel.getByRole("button", { name: /Page libraries.*Page import map/ }).click();
   await expect(panel.getByRole("region", { name: "Library imports" })).toContainText(
     "activity-controls",
   );
