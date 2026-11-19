@@ -12,7 +12,9 @@
 //   first use.
 // byteLength and read(offset, length, signal) make the file a Sift byte
 // source, so a view can pass it to Sift's loadTableFile.
-// text(), json() and parquet() return the same promise on each call.
+// text(), json() and parquet() return the same promise on each call while it
+// is pending and after it resolves; after a rejection, the next call asks
+// again.
 // Nothing reaches the parent until a member is called. Once `lifetime`
 // ends, when the name gets a new file, every pending and later call rejects
 // as aborted.
@@ -54,13 +56,21 @@ export function fileObject(name, descriptor, lifetime) {
   }
   const { mimeType, size } = descriptor;
   const port = receiveFile(descriptor, lifetime);
-  // Each member runs `start` once and keeps its promise, until the file
-  // object ends; after that it rejects as aborted.
+  // Each member keeps the promise `start` gives while it is pending and once
+  // it resolves; a rejected one is dropped, so the next call asks again.
+  // Once the file object ends, every call rejects as aborted.
   const live = (start) => {
     let promise;
     return () => {
       if (lifetime.aborted) return Promise.reject(lifetime.reason);
-      return (promise ??= start());
+      if (!promise) {
+        const started = start();
+        promise = started;
+        started.catch(() => {
+          if (promise === started) promise = undefined;
+        });
+      }
+      return promise;
     };
   };
   const whole = live(() => port.request({ kind: "bytes" }));

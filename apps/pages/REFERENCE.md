@@ -2178,18 +2178,23 @@ file for its size, and the frame asks for a range, the whole file or a table
 only when the view calls a member. Every request goes through the view's one
 read budget. A data change gives the model a new file object and fires
 `change:<name>`; the old object's pending and later calls reject as aborted.
-Failures are promise rejections with plain messages; none fails the mount.
+Opening a bound file at mount can fail the mount, for a missing asset or a
+media type that does not match its source. Reading one never does: a failed
+read rejects that call with a plain message.
 
 | Members | |
 |---|---|
 | `name`, `mimeType`, `size` | the data name, the file's media type and its size in bytes, known at mount |
-| `arrayBuffer()`, `text()`, `json()` | the whole file, read once per file object; `arrayBuffer()` gives a new copy on each call. At most 5 MiB per file and 32 MiB across one view's files read whole |
+| `arrayBuffer()`, `text()`, `json()` | the whole file, read once per file object; `arrayBuffer()` gives a new copy on each call. At most 5 MiB per file, and 32 MiB across the view's current files read whole |
 | `parquet()` | the file as a table (below); rejects for a file that is not Parquet, and for any argument, since it takes no options yet |
 | `slice(start, end)` | a range object `{size, arrayBuffer(), text()}`, counted and clamped as `Blob.slice`; each range object reads its span once |
 | Sift byte source: `byteLength`, `read(offset, length, signal)` | make the file a byte source for Sift's `loadTableFile` |
 
-`text()`, `json()` and `parquet()` return the same promise on each call.
-These are Observable `FileAttachment`'s names and meanings where the two
+`text()`, `json()` and `parquet()` return the same promise on each call
+while it is pending and after it resolves. After a rejection, the next call
+asks again. The page serves one whole read and one table read of a file at a
+time, and delivers each at most once per file, so a view cannot make it read
+or copy the same file whole twice. These are Observable `FileAttachment`'s names and meanings where the two
 overlap. Nothing else on a file object is part of the interface.
 
 A table comes from the page: it fetches the file through the Page's byte
@@ -2197,8 +2202,11 @@ cache, decodes it with Sift's `parquetToArrowStream` within the limits charts
 use (250,000 rows, 256 columns, 128 MiB decoded), and turns the Arrow stream
 into a ColumnSet ([viewer/parquet-columns.mjs](viewer/parquet-columns.mjs)).
 It keeps the newest 4 per asset id, so views of one file decode it once, and
-sends each frame its own copy. The ColumnSet is defined, and checked on both
-sides, in `@nteract/output-frame` (`src/column-set.mjs`). The frame wraps it
+sends each frame its own copy. A decode failure is kept in the same cache and
+answered again, since the same bytes fail the same way; a failed fetch is not
+kept, so the next call fetches again. The ColumnSet is defined in
+`@nteract/output-frame` (`src/column-set.mjs`); the page checks it once, when
+it decodes it, and the frame checks the copy it receives. The frame wraps it
 in a table of our own (`src/table.mjs`); it loads no Arrow library and never
 loads Sift.
 
@@ -2206,8 +2214,8 @@ Column types:
 
 | Type | Values | From |
 |------|--------|------|
-| `number` | numbers | 8- to 32-bit integers, floats, decimals (as floats: a large decimal loses precision), times of day (ms since midnight), and 64-bit integers when every value fits in ±2^53 |
-| `bigint` | BigInt, exact | a 64-bit integer column with any value outside ±2^53, signed or not |
+| `number` | numbers | 8- to 32-bit integers, floats, decimals (as floats: a large decimal loses precision), times of day (ms since midnight), and 64-bit integers when every value is a safe integer (within ±(2^53 − 1)) |
+| `bigint` | BigInt, exact | a 64-bit integer column with any value that is not a safe integer, signed or not, dictionary-encoded or not |
 | `date` | `Date` | date32, date64 and timestamps of every unit |
 | `string` | strings | UTF-8 strings, dictionary-encoded or not |
 | `boolean` | booleans | booleans |

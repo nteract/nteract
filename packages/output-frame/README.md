@@ -134,8 +134,11 @@ session code as an anywidget view: `model.get/set/on/off`, a no-op
 supplies one object per name and serves it when the view asks:
 `{mimeType, byteLength, read(offset, length, signal), bytes(signal),
 columns?(signal)}`. `read` answers one range, `bytes` the whole file, and
-`columns` the file's ColumnSet; leave `columns` out for a file that is not a
-table. Each signal ends when the frame cancels the request or the mount ends.
+`columns` the file's ColumnSet, checked by the embedder when it decodes it;
+leave `columns` out for a file that is not a table. Each signal ends when the
+frame cancels the request or the mount ends. The library calls `bytes` and
+`columns` for one request at a time per file, and delivers each at most once
+per file.
 
 The frame receives `{mimeType, size, port}` per name, and nothing else until
 the view asks. The model's value for each alias is a file object
@@ -152,29 +155,42 @@ object, bound once to the file the view mounted with:
 - `byteLength` and `read(offset, length, signal)`: the members that make the
   file a Sift byte source, for Sift's `loadTableFile`.
 
-`text()`, `json()` and `parquet()` return the same promise on each call. A
-view sees every failure as a rejected promise with a plain message; none fails
-the mount.
+`text()`, `json()` and `parquet()` return the same promise on each call
+while it is pending and after it resolves; after a rejection, the next call
+asks again. A failed read rejects that call with a plain message and never
+fails the mount. Opening a bound file is the embedder's work before it mounts,
+and can fail the mount (in Pages, a missing asset or a media type that does
+not match its source).
 
 Each file has its own port (`src/byte-source.mjs`). A request names its kind:
 `{kind: "range", offset, length}`, `{kind: "bytes"}` or `{kind: "columns"}`,
 each on its own reply port, and any message on that reply port cancels it.
 The answer is `{bytes}`, `{columns}` with its typed arrays transferred, or
-`{error}`. Both ends check every request and reply. Every kind counts as one
-read in the view's read budget. A whole-file read is at most 5 MiB, and the
-host keeps the view's whole-file bytes within 32 MiB
-(`wholeFileTransition` in `src/whole-file-total.mjs`): a file's share is held
-once delivered and given back when its name gets a new file.
+`{error}`. Both ends check every request, and the frame checks every reply,
+ColumnSets included. Every kind counts as one read in the view's read budget.
+
+`bytes` and `columns` are whole reads, with one share each per exposed file
+(`wholeFileTransition` in `src/whole-file-total.mjs`). A share is none,
+reading or delivered. A request starts only from none; while reading or once
+delivered, another request of that kind is refused with `{error}`, so the
+parent serves one at a time and delivers each at most once. A failure or a
+cancel, queued or in flight, returns a reading share to none, so a retry may
+start. A new file under the name drops both shares. A whole-file read is at
+most 5 MiB, and the `bytes` shares of the view's live files, reading or
+delivered, stay within 32 MiB, so that is a bound on the bytes the frame
+holds whole. A ColumnSet counts toward no total; the embedder's decode limits
+bound it.
 
 A ColumnSet (`src/column-set.mjs`) is `{numRows, columns: [{name, type,
 values, nulls?}]}`, structured-cloneable with no class instances. `type` is
 `number` or `date` (a `Float64Array`; a date in epoch milliseconds), `bigint` (a
 `BigInt64Array` or `BigUint64Array`), or `string`, `boolean` or `other` (an
 array). `nulls` is a `Uint8Array` validity mask, 1 where a value is present,
-and is absent when the column has no nulls. The host and the frame both check
-it with `checkColumnSet`: lengths, types, value kinds, and at most 256 columns
-with unique names of 1 to 256 characters. The embedder's decode limits bound
-it, not the whole-file limits.
+and is absent when the column has no nulls. `checkColumnSet` checks lengths,
+types, value kinds, and at most 256 columns with unique names of 1 to 256
+characters. The embedder checks a ColumnSet once, when it decodes it (Pages
+does in `parquetColumns`, before its shared cache keeps it); the host copies
+it to each frame without checking it again, and the frame checks its copy.
 
 The table (`src/table.mjs`) spells its members as an Apache Arrow JS table
 does: `numRows`, `numCols`, `schema.fields`, `getChild(name)`,

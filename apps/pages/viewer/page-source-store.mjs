@@ -12,7 +12,8 @@
 //   Page's one byte cache and decodes them with `decode`: Sift's loader for a
 //   table, an Arrow decoder for a chart.
 // - `sharedResolver(decode)`: the same, for a decoded result no reader owns,
-//   decoded once per asset and shared: a module view's ColumnSet.
+//   decoded once per asset and shared: a module view's ColumnSet. A decode
+//   that fails is kept too, and answers again; a failed fetch is not.
 //
 // A version is `{ source_id?, asset_id, media_type, revision }`. `revision`
 // is the source revision it reads, or null for a pinned asset.
@@ -280,14 +281,26 @@ export class PageSourceStore {
    * the same contract as resolver(decode)'s, except that every reader of one
    * asset gets the same `table`, decoded once, and never frees, transfers or
    * changes it. Results for the newest `maxEntries` asset ids are kept,
-   * least recently used first out. One reader's abort leaves the decode
-   * running for the others; a failed decode is not kept.
+   * least recently used first out, and so is a decode that failed: the same
+   * bytes fail the same way. A failed fetch, a refused version or an abort is
+   * not kept, so the next reader tries again. One reader's abort leaves the
+   * decode running for the others.
    */
   sharedResolver(decode) {
     if (this.#destroyed) throw Error("This Page's sources are closed");
     let shared = this.#sharedResolvers.get(decode);
     if (!shared) {
-      shared = createSharedResolver(this.resolver(decode), this.maxEntries);
+      const failures = new WeakSet();
+      const marked = async (bytes, limits) => {
+        try {
+          return await decode(bytes, limits);
+        } catch (error) {
+          const failure = error instanceof Error ? error : Error(String(error));
+          failures.add(failure);
+          throw failure;
+        }
+      };
+      shared = createSharedResolver(this.resolver(marked), this.maxEntries, failures);
       this.#sharedResolvers.set(decode, shared);
     }
     return shared;
@@ -381,8 +394,10 @@ function createResolver(bytes, decode) {
 }
 
 /** `resolver`'s loads, decoded once per asset id and shared. At most
- * `maxEntries` results are kept, least recently used first out. */
-function createSharedResolver(resolver, maxEntries) {
+ * `maxEntries` results are kept, least recently used first out. A load that
+ * rejects with one of `decodeFailures` is kept like a result; any other
+ * rejection is dropped. */
+function createSharedResolver(resolver, maxEntries, decodeFailures) {
   const decoded = new Map();
   return {
     async load(version, { signal } = {}) {
@@ -392,8 +407,8 @@ function createSharedResolver(resolver, maxEntries) {
       if (pending) decoded.delete(id);
       else {
         pending = resolver.load(version);
-        pending.catch(() => {
-          if (decoded.get(id) === pending) decoded.delete(id);
+        pending.catch((error) => {
+          if (!decodeFailures.has(error) && decoded.get(id) === pending) decoded.delete(id);
         });
       }
       decoded.set(id, pending);

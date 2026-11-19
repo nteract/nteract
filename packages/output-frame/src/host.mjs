@@ -8,13 +8,14 @@ import {
   outputTransition,
 } from "./lifecycle.mjs";
 import { DATA_NAME, MAX_DATA_NAMES, bufferNames } from "./data.mjs";
-import { NO_WHOLE_FILES, wholeFileTransition } from "./whole-file-total.mjs";
+import { createWholeFiles } from "./whole-file-total.mjs";
 import { preparePayload } from "./payload.mjs";
 import { normalizeHostContext } from "./context.mjs";
 export { readHostContext, OUTPUT_STYLE_VARIABLES } from "./context.mjs";
 
 const MAX_DATA_BYTES = 5 * 1024 * 1024;
-// The most bytes a module view's files may hold read whole at once.
+// The most bytes a module view's live files may hold read whole: each file
+// is delivered whole at most once (whole-file-total.mjs).
 export const MAX_WHOLE_FILE_TOTAL = 32 * 1024 * 1024;
 
 // A module view's data input is a file the embedder serves on request:
@@ -101,22 +102,17 @@ export function mountModuleOutput(
   // (see answerTransition).
   let awaiting = [];
   // Each name's exposed file: its lifetime and its id in `wholeFiles`, the
-  // view's whole-file total (wholeFileTransition).
+  // whole reads of the view's files.
   const exposed = new Map();
-  let wholeFiles = NO_WHOLE_FILES;
+  const wholeFiles = createWholeFiles(MAX_WHOLE_FILE_TOTAL);
   let fileIds = 0;
-  const whole = (event) => {
-    const result = wholeFileTransition(wholeFiles, event);
-    wholeFiles = result.state;
-    return result.refused;
-  };
   // Ends `name`'s previous input and describes `value` for the frame: a
   // dedicated copy of whole bytes, or a new port that serves the file.
   const describe = (name, value) => {
     const previous = exposed.get(name);
     exposed.delete(name);
     previous?.lifetime.abort();
-    if (previous) whole({ type: "replaced", file: previous.id });
+    if (previous) wholeFiles.replaced(previous.id);
     if (value instanceof Uint8Array) {
       const bytes = new Uint8Array(value);
       return [{ bytes }, [bytes.buffer]];
@@ -125,12 +121,7 @@ export function mountModuleOutput(
     const id = String(++fileIds);
     exposed.set(name, { lifetime: own, id });
     const signal = AbortSignal.any([lifetime.signal, own.signal]);
-    const file = exposeFile(value, signal, budget, {
-      reserve: () =>
-        whole({ type: "reserve", file: id, size: value.byteLength, limit: MAX_WHOLE_FILE_TOTAL }),
-      delivered: () => whole({ type: "delivered", file: id }),
-      release: () => whole({ type: "failed", file: id }),
-    });
+    const file = exposeFile(value, signal, budget, wholeFiles.file(id, value.byteLength));
     return [file, [file.port]];
   };
   const deliver = (change) => {

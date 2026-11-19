@@ -63,9 +63,17 @@ export interface ColumnSet {
  */
 export interface FileInput extends ByteSource {
   readonly mimeType: string;
-  /** The whole file; read at most 5 MiB, within the view's 32 MiB whole-file total. */
+  /**
+   * The whole file, for a file of at most 5 MiB. Called for one request at a
+   * time and delivered at most once per exposed file; the view's live files
+   * read whole stay within 32 MiB.
+   */
   bytes(signal: AbortSignal): Promise<Uint8Array>;
-  /** The file as a ColumnSet. Absent for a file that is not a table: `parquet()` then rejects. */
+  /**
+   * The file as a ColumnSet, checked by the embedder when it decodes it.
+   * Called for one request at a time and delivered at most once per exposed
+   * file. Absent for a file that is not a table: `parquet()` then rejects.
+   */
   columns?(signal: AbortSignal): Promise<ColumnSet>;
 }
 /** A span of a file, from `file.slice(start, end)`. */
@@ -96,7 +104,8 @@ export interface ColumnDataType {
   readonly bitWidth?: number;
   readonly kind: ColumnType;
 }
-type Row = Readonly<Record<string, unknown>>;
+/** One row as a plain object; the view may change it. */
+type Row = Record<string, unknown>;
 /** One column of a ColumnTable, spelled as an Arrow JS vector. */
 export interface TableColumn extends Iterable<unknown> {
   readonly length: number;

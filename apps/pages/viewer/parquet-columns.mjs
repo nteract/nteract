@@ -5,8 +5,8 @@
 // that yields columns directly can replace its inside alone.
 //
 // Types, by Arrow type (a dictionary by its value type):
-// - 64-bit integers, signed or not: "number" when every value fits in
-//   ±2^53, else "bigint", exact.
+// - 64-bit integers, signed or not: "number" when every value is a safe
+//   integer (within ±(2^53 − 1)), else "bigint", exact.
 // - Other integers, floats, decimals and times of day: "number", read as a
 //   chart reads them (chart-arrow.mjs chartReader): a decimal is the nearest
 //   float, a time of day is milliseconds since midnight.
@@ -15,6 +15,7 @@
 // - Anything else: "other", each value as a chart reads it (lists, structs
 //   and maps as plain arrays and objects, binary as its own bytes).
 // A column named `__proto__` is dropped, as a chart drops it.
+import { checkColumnSet } from "@nteract/output-frame/column-set";
 import { DataType, tableFromIPC } from "apache-arrow";
 import { chartReader } from "./chart-arrow.mjs";
 import { decodeArrow } from "./view-arrow.mjs";
@@ -22,9 +23,10 @@ import { decodeArrow } from "./view-arrow.mjs";
 const SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 
 /** Decode Parquet `bytes` within `limits` (sift-dataset.mjs DATAFRAME_LIMITS)
- * into a ColumnSet. */
+ * into a ColumnSet, checked once here: the shared cache keeps it, and the
+ * parent copies it to each frame without checking it again. */
 export async function parquetColumns(bytes, limits) {
-  return arrowColumns(await decodeArrow(bytes, limits));
+  return checkColumnSet(arrowColumns(await decodeArrow(bytes, limits)));
 }
 
 /** The ColumnSet of one Arrow IPC stream. */
@@ -69,7 +71,9 @@ function arrowColumn(field, vector, numRows) {
     }
     if (safe)
       return { name: field.name, type: "number", values: Float64Array.from(raw, Number), ...nulls };
-    const Values = field.type.isSigned === false ? BigUint64Array : BigInt64Array;
+    // A dictionary's sign is its value type's.
+    const base = DataType.isDictionary(field.type) ? field.type.dictionary : field.type;
+    const Values = base.isSigned === false ? BigUint64Array : BigInt64Array;
     return { name: field.name, type: "bigint", values: Values.from(raw), ...nulls };
   }
   const read = chartReader(field.type);

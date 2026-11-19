@@ -288,7 +288,7 @@ test("a malformed file descriptor is refused and its port closes", (t) => {
   }
 });
 
-test("the whole-file total keeps delivered shares, frees failed and replaced ones", () => {
+test("a whole read is served once at a time and delivered once per file; its share counts toward the limit", () => {
   const limit = 10;
   let state = NO_WHOLE_FILES;
   const step = (event) => {
@@ -296,23 +296,102 @@ test("the whole-file total keeps delivered shares, frees failed and replaced one
     state = result.state;
     return result.refused;
   };
-  assert.equal(step({ type: "reserve", file: "a", size: 6 }), null);
-  assert.equal(step({ type: "reserve", file: "a", size: 6 }), null, "a held share is kept");
-  assert.match(step({ type: "reserve", file: "b", size: 5 }), /exceed 0?\.?0*\d* ?MiB|exceed/);
-  assert.equal(step({ type: "failed", file: "a" }), null);
-  assert.deepEqual(state, {});
-  step({ type: "reserve", file: "a", size: 6 });
-  step({ type: "delivered", file: "a" });
-  step({ type: "failed", file: "a" });
-  assert.deepEqual(state, { a: { size: 6, delivered: true } }, "a delivered share stays");
-  assert.ok(step({ type: "reserve", file: "b", size: 5 }));
+  const phase = (file, kind) => state[file]?.[kind]?.phase ?? "none";
+  const reserve = (file, kind = "bytes", size = 4) => step({ type: "reserve", file, kind, size });
+  // none → reading; a second request while reading is refused.
+  assert.equal(reserve("a"), null);
+  assert.equal(phase("a", "bytes"), "reading");
+  assert.equal(reserve("a"), "This file is already being read.");
+  // reading → none on a failure or a cancel, queued or in flight; a retry
+  // may start.
+  step({ type: "failed", file: "a", kind: "bytes" });
+  assert.equal(phase("a", "bytes"), "none");
+  assert.deepEqual(state, {}, "nothing held");
+  assert.equal(reserve("a"), null, "a retry after a failure");
+  // reading → delivered; a request after delivery is refused, and failed or
+  // delivered again change nothing.
+  step({ type: "delivered", file: "a", kind: "bytes" });
+  assert.equal(phase("a", "bytes"), "delivered");
+  assert.equal(reserve("a"), "This file was already read whole; its file object keeps it.");
+  const delivered = state;
+  step({ type: "failed", file: "a", kind: "bytes" });
+  step({ type: "delivered", file: "a", kind: "bytes" });
+  assert.equal(state, delivered);
+  // Reading and delivered shares both count toward the limit.
+  assert.equal(reserve("b", "bytes", 6), null);
+  assert.equal(
+    reserve("c", "bytes", 1),
+    `This view's files exceed ${limit / (1024 * 1024)} MiB read whole.`,
+  );
+  // A table share carries no bytes and has the same phases.
+  assert.equal(reserve("c", "columns", 999), null);
+  assert.equal(reserve("c", "columns"), "This file's table is already being read.");
+  step({ type: "delivered", file: "c", kind: "columns" });
+  assert.equal(
+    reserve("c", "columns"),
+    "This file's table was already read; its file object keeps it.",
+  );
+  assert.equal(reserve("a", "columns"), null, "each kind has its own share");
+  // none: failed and delivered without a reservation change nothing.
+  const before = state;
+  step({ type: "failed", file: "d", kind: "bytes" });
+  step({ type: "delivered", file: "d", kind: "columns" });
+  step({ type: "delivered", file: "d", kind: "stream" });
+  assert.equal(reserve("d", "stream"), null);
+  assert.equal(state, before, "an unknown kind or an unheld share changes nothing");
+  // Replaced while reading: both shares go, and a late answer for the
+  // replaced id changes nothing.
+  step({ type: "replaced", file: "b" });
+  assert.equal(phase("b", "bytes"), "none");
+  const afterReplace = state;
+  step({ type: "delivered", file: "b", kind: "bytes" });
+  step({ type: "failed", file: "b", kind: "bytes" });
+  step({ type: "replaced", file: "b" });
+  assert.equal(state, afterReplace, "a late answer for a replaced file");
+  assert.equal(reserve("e", "bytes", 6), null, "its bytes no longer count");
+  // Replaced after delivery frees the delivered bytes.
   step({ type: "replaced", file: "a" });
-  assert.equal(step({ type: "reserve", file: "b", size: 5 }), null);
-  const unchanged = state;
-  step({ type: "replaced", file: "zzz" });
-  step({ type: "delivered", file: "zzz" });
-  assert.equal(state, unchanged, "unknown files change nothing");
-  assert.ok(Object.isFrozen(state) && Object.isFrozen(state.b));
+  assert.equal(phase("a", "bytes"), "none");
+  assert.equal(phase("a", "columns"), "none");
+  assert.ok(Object.isFrozen(state) && Object.isFrozen(state.e) && Object.isFrozen(state.e.bytes));
+});
+
+test("a failed call is asked again; a pending or settled one is shared", async (t) => {
+  const lifetime = new AbortController();
+  t.after(() => lifetime.abort());
+  const { input, served } = memoryFile(text('{"n":1}'));
+  let failures = 1;
+  const bytes = input.bytes;
+  input.bytes = async (signal) => {
+    if (failures-- > 0) throw Error("Too many file reads are waiting.");
+    return bytes(signal);
+  };
+  const set = {
+    numRows: 1,
+    columns: [{ name: "n", type: "number", values: new Float64Array([1]) }],
+  };
+  let tableFailures = 1;
+  input.columns = async () => {
+    served.columns++;
+    if (tableFailures-- > 0) throw Error("busy");
+    return set;
+  };
+  const file = fileObject("n", exposed(input, lifetime.signal).descriptor, lifetime.signal);
+  const first = file.text();
+  assert.equal(file.text(), first, "the same promise while pending");
+  const viaJson = file.json();
+  await assert.rejects(first, /Too many file reads/);
+  await assert.rejects(viaJson, /Too many file reads/, "json() shared the pending read");
+  const second = file.text();
+  assert.notEqual(second, first, "a new request after a rejection");
+  assert.equal(await second, '{"n":1}');
+  assert.equal(file.text(), second, "the same promise after it resolves");
+  assert.deepEqual(await file.json(), { n: 1 });
+  await assert.rejects(file.parquet(), /busy/);
+  const table = file.parquet();
+  assert.equal((await table).numRows, 1);
+  assert.equal(file.parquet(), table);
+  assert.equal(served.columns, 2);
 });
 
 function mountWithFakeFrame(t, files) {
@@ -363,8 +442,9 @@ test("the host sends {mimeType, size, port} per file and refuses whole reads pas
   assert.deepEqual(Object.keys(files), Object.keys(inputs));
   for (let i = 0; i < 6; i++) await files[`data/f${i}`].request({ kind: "bytes" });
   await assert.rejects(files["data/f6"].request({ kind: "bytes" }), /exceed 32 MiB read whole/);
-  // A file already held reads again without counting twice.
-  await files["data/f0"].request({ kind: "bytes" });
+  // A file is delivered whole once, so a second whole read is refused and
+  // counts nothing.
+  await assert.rejects(files["data/f0"].request({ kind: "bytes" }), /already read whole/);
   // A new file under a name gives its share back.
   for (const event of ["loaded", "initialized", "rendered"])
     frame.port.postMessage({ type: "phase", event });

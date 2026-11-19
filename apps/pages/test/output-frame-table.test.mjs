@@ -97,6 +97,15 @@ test("decimals, booleans, unsigned 64-bit, dictionaries and lists", () => {
       }),
     ),
     color: dictionary,
+    // An unsigned 64-bit dictionary takes its sign from its value type.
+    huge_codes: makeVector(
+      makeData({
+        type: new Dictionary(new Uint64(), new Int32()),
+        length: rows,
+        data: new Int32Array([0, 1, 0]),
+        dictionary: makeVector(new BigUint64Array([7n, 2n ** 63n + 9n])),
+      }),
+    ),
     tags: vectorFromArray([[1, 2], [], [3]], new List(new Field("item", new Int32()))),
   });
   const set = arrowColumns(tableToIPC(table, "stream"));
@@ -106,6 +115,7 @@ test("decimals, booleans, unsigned 64-bit, dictionaries and lists", () => {
     small: "number",
     huge: "bigint",
     color: "string",
+    huge_codes: "bigint",
     tags: "other",
   });
   const byName = Object.fromEntries(set.columns.map((column) => [column.name, column]));
@@ -115,6 +125,8 @@ test("decimals, booleans, unsigned 64-bit, dictionaries and lists", () => {
   assert.ok(byName.huge.values instanceof BigUint64Array);
   assert.equal(byName.huge.values[1], 2n ** 63n + 5n, "exact");
   assert.deepEqual(byName.color.values, ["red", "blue", "red"]);
+  assert.ok(byName.huge_codes.values instanceof BigUint64Array);
+  assert.deepEqual([...byName.huge_codes.values], [7n, 2n ** 63n + 9n, 7n], "no wrap past 2^63");
   assert.deepEqual(byName.tags.values, [[1, 2], [], [3]]);
   checkColumnSet(set);
   assert.deepEqual(structuredClone(set), set, "structured-cloneable");
@@ -200,7 +212,8 @@ test("the table: names, rows and columns built once, nulls, Dates and BigInts; t
   const picked = table.select(["score", "missing", "day"]);
   assert.equal(picked.numCols, 2, "an unknown name is skipped");
   assert.equal(picked.getChild("score"), score, "select shares the columns");
-  assert.equal(table.get(9), null);
+  for (const index of [9, -1, 1.5, "length", "0", NaN])
+    assert.equal(table.get(index), null, `get(${String(index)})`);
   const rows = table.toArray();
   assert.equal(table.toArray(), rows, "built once");
   // A view may add a derived field to its rows, as with any array of objects.

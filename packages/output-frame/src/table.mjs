@@ -71,7 +71,8 @@ function tableOf(numRows, children) {
     schema: Object.freeze({ fields }),
     getChild: (name) => getChildAt(children.findIndex((child) => child.name === name)),
     getChildAt,
-    get: (index) => toArray()[index] ?? null,
+    get: (index) =>
+      Number.isInteger(index) && index >= 0 && index < numRows ? toArray()[index] : null,
     toArray,
     [Symbol.iterator]: () => toArray()[Symbol.iterator](),
     select(names) {

@@ -5,11 +5,11 @@
 // { numRows, columns: [{ name, type, values, nulls? }] }
 //
 // `type` is one of COLUMN_TYPES:
-// - "number": a Float64Array. 64-bit integers that all fit in ±2^53,
-//   other integers, floats, decimals (as floats) and times of day (ms
-//   since midnight).
+// - "number": a Float64Array. 64-bit integers that are all safe integers
+//   (within ±(2^53 − 1)), other integers, floats, decimals (as floats) and
+//   times of day (ms since midnight).
 // - "bigint": a BigInt64Array, or a BigUint64Array for unsigned values; a
-//   64-bit integer column with any value outside ±2^53, exact.
+//   64-bit integer column with any value that is not a safe integer, exact.
 // - "date": a Float64Array of milliseconds since the epoch. Dates and
 //   timestamps of every unit.
 // - "string": an array of strings.

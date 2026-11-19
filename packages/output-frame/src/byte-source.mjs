@@ -1,5 +1,6 @@
 import { checkColumnSet, copyColumnSet } from "./column-set.mjs";
 import { createReadBudget } from "./read-budget.mjs";
+import { createWholeFiles, WHOLE_READ_KINDS } from "./whole-file-total.mjs";
 
 // One port per bound file. The frame asks it for one thing per request, on a
 // dedicated reply port, and nothing crosses until it asks:
@@ -12,6 +13,8 @@ import { createReadBudget } from "./read-budget.mjs";
 // counts as one read in the view's one read budget (read-budget.mjs): a read
 // past it waits its turn, and only a read that finds the waiting list full
 // is refused. Without a budget, the file gets one of its own.
+// "bytes" and "columns" are whole reads: each runs at most once at a time
+// and is delivered at most once per exposed file (whole-file-total.mjs).
 export const REQUEST_KINDS = Object.freeze(["range", "bytes", "columns"]);
 // The largest file a whole-file request reads.
 export const WHOLE_FILE_LIMIT = 5 * 1024 * 1024;
@@ -24,16 +27,19 @@ const validRange = ({ offset, length }, size) =>
   length <= size - offset;
 
 // Why the parent refuses `request` before it reaches the budget, or null.
-function refusal(request, file, whole) {
+// A whole read that is not refused holds its share until it ends.
+function refusal(request, file, shares) {
   if (!request || typeof request !== "object" || !REQUEST_KINDS.includes(request.kind))
     return "Invalid file request.";
   if (request.kind === "range")
     return validRange(request, file.byteLength) ? null : "Invalid file read.";
   if (request.kind === "columns")
-    return typeof file.columns === "function" ? null : "This file is not Parquet.";
+    return typeof file.columns === "function"
+      ? shares.reserve("columns")
+      : "This file is not Parquet.";
   if (file.byteLength > WHOLE_FILE_LIMIT)
-    return `This file is larger than ${WHOLE_FILE_LIMIT / (1024 * 1024)} MiB; read it in ranges with read().`;
-  return whole.reserve();
+    return `This file is larger than ${WHOLE_FILE_LIMIT / (1024 * 1024)} MiB; read it in ranges with slice(start, end).`;
+  return shares.reserve("bytes");
 }
 
 // The answer to one admitted request, and the buffers to transfer with it.
@@ -55,30 +61,32 @@ async function answer(request, file, signal) {
     const own = new Uint8Array(bytes);
     return [{ bytes: own }, [own.buffer]];
   }
-  const columns = checkColumnSet(await file.columns(signal));
+  // The embedder checks a ColumnSet once, when it decodes it, and the frame
+  // checks what it receives; copying it reads only its typed arrays.
+  const columns = await file.columns(signal);
   signal.throwIfAborted();
   const [copy, transfer] = copyColumnSet(columns);
   return [{ columns: copy }, transfer];
 }
 
 /** Serve `file` ({mimeType, byteLength, read, bytes, columns?}) on a new
- * port until `lifetime` ends. `whole` holds this file's share of the view's
- * whole-file total (whole-file-total.mjs): reserve() answers null when the
- * bytes fit, or why not; delivered() and release() report that a whole-file
- * read succeeded or failed. Returns the descriptor the frame receives:
- * {mimeType, size, port}. */
+ * port until `lifetime` ends. `shares` holds this file's whole-read shares
+ * (createWholeFiles in whole-file-total.mjs): reserve(kind) answers null
+ * when a whole read may start, or why not; delivered(kind) and failed(kind)
+ * report how it ended. Without them, the file keeps shares of its own.
+ * Returns the descriptor the frame receives: {mimeType, size, port}. */
 export function exposeFile(
   file,
   lifetime,
   budget = createReadBudget({ lifetime }),
-  whole = { reserve: () => null, delivered() {}, release() {} },
+  shares = createWholeFiles(Infinity).file("file", file.byteLength),
 ) {
   const { port1, port2 } = new MessageChannel();
   lifetime.addEventListener("abort", () => port1.close(), { once: true });
   port1.onmessage = ({ data, ports }) => {
     const [reply] = ports;
     if (!reply) return;
-    const refused = refusal(data, file, whole);
+    const refused = refusal(data, file, shares);
     if (refused) {
       reply.postMessage({ error: refused });
       reply.close();
@@ -87,15 +95,32 @@ export function exposeFile(
     const controller = new AbortController();
     const signal = AbortSignal.any([lifetime, controller.signal]);
     reply.onmessage = () => controller.abort();
+    // A whole read's share ends once: delivered, or failed (refused by the
+    // budget, cancelled while queued or in flight, or an error).
+    let ended = !WHOLE_READ_KINDS.includes(data.kind);
+    const end = (delivered) => {
+      if (ended) return;
+      ended = true;
+      if (delivered) shares.delivered(data.kind);
+      else shares.failed(data.kind);
+    };
+    const failed = () => end(false);
     let started = false;
     // A request cancelled while it waits gets no reply.
-    signal.addEventListener("abort", () => started || reply.close(), { once: true });
-    const failed = () => data.kind === "bytes" && whole.release();
+    signal.addEventListener(
+      "abort",
+      () => {
+        if (started) return;
+        failed();
+        reply.close();
+      },
+      { once: true },
+    );
     const admitted = budget.schedule(signal, async (settle) => {
       started = true;
       try {
         const [message, transfer] = await answer(data, file, signal);
-        if (data.kind === "bytes") whole.delivered();
+        end(true);
         reply.postMessage(message, transfer);
       } catch (error) {
         failed();

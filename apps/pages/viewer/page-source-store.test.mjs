@@ -374,12 +374,14 @@ test("a shared resolver decodes one asset once for every reader, and keeps the n
   assert.equal(again.source_id, "usage");
   assert.deepEqual(decoded, [asset("a")], "decoded once");
   assert.equal(fetches.calls.length, 1);
-  // A failed decode is not kept: the next reader decodes again.
+  // A failed decode is kept: the next reader gets the same failure without
+  // a second fetch or decode.
   const broken = { asset_id: asset("c"), media_type: PARQUET_MEDIA_TYPE, revision: null };
   await assert.rejects(shared.load(broken), /Not a Parquet file/);
-  assert.deepEqual(shared.decoded(), [asset("a")]);
+  assert.deepEqual(shared.decoded(), [asset("a"), asset("c")]);
   await assert.rejects(shared.load(broken), /Not a Parquet file/);
-  assert.equal(decoded.filter((id) => id === asset("c")).length, 2);
+  assert.equal(decoded.filter((id) => id === asset("c")).length, 1, "decoded once");
+  assert.equal(fetches.calls.length, 2);
   // The newest two assets stay decoded.
   await shared.load({ ...broken, asset_id: asset("b") });
   await shared.load(version);
@@ -387,6 +389,33 @@ test("a shared resolver decodes one asset once for every reader, and keeps the n
   assert.deepEqual(shared.decoded(), [asset("a"), asset("d")]);
   store.destroy();
   assert.throws(() => store.sharedResolver(decode), /closed/);
+});
+
+test("a shared resolver tries a failed fetch again", async () => {
+  const host = hostDoc();
+  host.set("usage", asset("a"));
+  let calls = 0;
+  const request = async (url) => {
+    calls++;
+    if (calls === 1) return new Response("unavailable", { status: 503 });
+    return new Response(new TextEncoder().encode(url.slice(-64)), {
+      headers: { "content-type": PARQUET_MEDIA_TYPE },
+    });
+  };
+  const store = new PageSourceStore({ pageId: PAGE, doc$: new BehaviorSubject(host.doc), request });
+  let decodes = 0;
+  const shared = store.sharedResolver(async (bytes) => {
+    decodes++;
+    return new TextDecoder().decode(bytes);
+  });
+  const version = store.resolve({ source_id: "usage" });
+  await assert.rejects(shared.load(version));
+  assert.deepEqual(shared.decoded(), [], "a failed fetch is not kept");
+  assert.equal(decodes, 0);
+  const loaded = await shared.load(version);
+  assert.equal(loaded.table, asset("a"));
+  assert.equal(calls, 2);
+  store.destroy();
 });
 
 test("a destroyed store reads as a Page with no sources", () => {
