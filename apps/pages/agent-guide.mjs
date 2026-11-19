@@ -294,7 +294,8 @@ ${part.authErrorItems}
   derives for its comments, sources or a view, so that document can't be made.
   Nothing changed; report it.
 - unsupported_media_type (415): an upload or a file import got bytes that
-  do not match the declared file type. JSON requires valid UTF-8 JSON. Convert
+  do not match the declared file type, or Pages could not identify the type.
+  For JSON, declare application/json and send valid UTF-8 JSON. Correct
   the file and upload it again; the same bytes fail again. insert_image also
   returns this for a Parquet asset: show a dataset with insert_node instead.
 - request_canceled (408): a file import or upload was canceled before it
@@ -994,8 +995,9 @@ page_quota_exceeded with limit and count; tell the person rather than retrying.
   returns a 10-minute upload_url, headers and a curl example for sending a local
   file. Use application/json for structured data, or application/vnd.apache.parquet for
   tabular records. With file, a descriptor the client attached itself, it
-  stores that file and returns asset_id, asset_url and insert, the edit_page
-  operation that places it. See Images above.
+  stores the file and returns asset_id and asset_url. For images and Parquet,
+  insert gives the placement operation. For JSON, insert is null. Use set_source
+  with the returned asset_id. See Images above.
 - delete_page: page_id and nonce move a Page you own to Trash; revision is an
   optional guard. See Trash below.
 - restore_page: page_id and nonce.
@@ -1808,9 +1810,10 @@ role: viewer, commenter, editor or none to remove), revoke_invite (invite_id), a
 set_domain_view. ${companyDomainSharing} ${organizationSharing}
 A 409 requires reading access again. An uncertain request can be retried with its identical nonce and body.`,
     fileImportParagraph: `A file import requires pages:read and pages:write plus current Page edit
-access. It copies the bytes, an image or a Parquet file, into private Page
-storage and returns asset_id, asset_url, mime_type, size, width and height for
-an image, and insert, the operation that places it. It does not insert content.
+access. It does not insert content. It copies the file into private Page storage and returns asset_id,
+asset_url, mime_type and size. Images also return width and height. For an
+image or Parquet file, send the returned insert operation to place it. For a
+JSON file, insert is null. Use set_source to name the returned asset_id.
 Repeating an import of identical bytes to the same Page reuses the asset.
 No additional API key or public hosting is needed. If ChatGPT doesn't offer the
 file argument yet, refresh the connection's tool list. Newly generated images
@@ -2217,9 +2220,10 @@ viewer, commenter, editor or none to remove), revoke_invite (invite_id), and
 set_domain_view. ${companyDomainSharing} ${organizationSharing} A 409 requires reading access again. An uncertain request can be
 retried with its identical nonce and body.`,
     fileImportParagraph: `A file import requires pages:read and pages:write plus current Page edit
-access. It copies the bytes, an image or a Parquet file, into private Page
-storage and returns asset_id, asset_url, mime_type, size, width and height for
-an image, and insert, the operation that places it. It does not insert content.
+access. It does not insert content. It copies the file into private Page storage and returns asset_id,
+asset_url, mime_type and size. Images also return width and height. For an
+image or Parquet file, send the returned insert operation to place it. For a
+JSON file, insert is null. Use set_source to name the returned asset_id.
 Repeating an import of identical bytes to the same Page reuses the asset. No
 public hosting is needed. If ChatGPT doesn't offer the file argument yet,
 refresh the connection's tool list. Newly generated images must be available as

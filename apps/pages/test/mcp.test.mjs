@@ -1031,7 +1031,9 @@ test("MCP lists create_page_asset_upload for any client with write scope, and po
     /not multipart or base64/,
     /Access is checked again at upload/,
     /With file, Pages fetches the file instead/,
-    /same bytes return the same asset_id, with insert: the edit_page op that places it \(add alt to an image\)/,
+    /same bytes return the same asset_id/,
+    /Images and Parquet return an insert operation \(add alt to an image\)/,
+    /JSON and other view inputs return insert: null\. Use set_source/,
     /Insert image in the browser/,
   ])
     assert.match(descriptor.description, fact);
