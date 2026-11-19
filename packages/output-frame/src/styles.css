@@ -161,3 +161,8 @@ audio,
 canvas {
   max-width: 100%;
 }
+/* Plot sets this variable on the SVG itself. Its tips use currentColor
+   for text and this surface color behind it. */
+svg {
+  --plot-background: var(--background);
+}

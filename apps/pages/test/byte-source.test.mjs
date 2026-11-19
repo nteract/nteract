@@ -73,6 +73,35 @@ test("opening file metadata bypasses a cached GET that omitted the byte length",
   assert.equal(source.byteLength, 4096);
 });
 
+test("compressed JSON uses stored byte offsets and checks the decoded range", async () => {
+  const media = "application/json";
+  const source = await openAssetByteSource(
+    "33333333-3333-4333-8333-333333333333",
+    { asset_id: "a".repeat(64), media_type: media },
+    {
+      request: async (_, { method }) =>
+        method === "HEAD"
+          ? new Response(null, {
+              headers: {
+                "x-pages-media-type": media,
+                "x-pages-asset-size": "8",
+                "content-encoding": "br",
+              },
+            })
+          : new Response("true", {
+              status: 206,
+              headers: {
+                "content-range": "bytes 2-5/8",
+                "content-encoding": "br",
+                "content-length": "7",
+              },
+            }),
+    },
+  );
+  assert.equal(source.byteLength, 8);
+  assert.equal(new TextDecoder().decode(await source.read(2, 4)), "true");
+});
+
 test("a full response to a requested range is refused without consuming the file", async () => {
   let cancelled = false;
   const source = await openAssetByteSource(

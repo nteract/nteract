@@ -164,7 +164,7 @@ export async function render({ model, el }) {
     const table = await model.get('activity').parquet();
     const plot = Plot.plot({
       marks: [
-        Plot.dot(table, { x: 'at', y: 'people' }),
+        Plot.dot(table, { x: 'at', y: 'people', tip: true }),
         Plot.lineY(table, { x: 'at', y: 'score' }),
         Plot.text(table, { x: 'at', y: 'people', text: 'name', dy: -8 }),
       ],
@@ -641,6 +641,32 @@ try {
   await expect(plotMain.locator("svg circle")).toHaveCount(5);
   await expect(plotMain.locator("svg path[d]").first()).toBeAttached();
   await expect(plotMain.locator("svg text").filter({ hasText: "day 3" })).toHaveCount(1);
+  for (const mode of ["dark", "light"]) {
+    await page.getByLabel("Appearance").selectOption(mode);
+    await expect(plotFrame.locator("html")).toHaveAttribute("data-theme", mode);
+    const point = plotMain.locator("svg circle").nth(2);
+    await point.scrollIntoViewIfNeeded();
+    await point.evaluate((circle) => {
+      const box = circle.getBoundingClientRect();
+      circle.dispatchEvent(
+        new PointerEvent("pointermove", {
+          bubbles: true,
+          pointerType: "mouse",
+          clientX: box.x + box.width / 2,
+          clientY: box.y + box.height / 2,
+        }),
+      );
+    });
+    const tip = plotMain.locator('g[aria-label="tip"]');
+    await expect(tip.locator("text")).toBeVisible();
+    const surface = await plotFrame
+      .locator("html")
+      .evaluate((el) => getComputedStyle(el).backgroundColor);
+    await expect(tip.locator("path")).toHaveCSS("fill", surface);
+    const ink = await plotFrame.locator("html").evaluate((el) => getComputedStyle(el).color);
+    await expect(tip.locator("text")).toHaveCSS("fill", ink);
+    assert.notEqual(surface, ink);
+  }
   await expect(plotMain).toHaveAttribute("data-x-scale", "utc");
   await expect(plotFrame.locator("#head")).toHaveText(`PAR1 of ${entries.table1[0].length}`);
   await expect(plotMain).toHaveAttribute("data-same-file", "true");
@@ -874,6 +900,23 @@ try {
     "failed",
   );
   await expect.poll(async () => (await embed.boundingBox()).height).toBeLessThan(300);
+  // The browser owns a text selection inside the diagnostic even when the
+  // containing view is an atomic node in a read-only or editable document.
+  const diagnostic = embed.locator(".pages-anywidget-view > p");
+  const pasteTarget = await page.evaluateHandle(() =>
+    document.body.appendChild(document.createElement("textarea")),
+  );
+  for (const readonly of [true, false]) {
+    await page.evaluate((value) => window.fixture.readonly(value), readonly);
+    await diagnostic.click({ clickCount: 2, position: { x: readonly ? 12 : 85, y: 8 } });
+    const selected = await page.evaluate(() => getSelection().toString());
+    assert.ok(selected.trim() && (await diagnostic.innerText()).includes(selected));
+    await page.keyboard.press("ControlOrMeta+c");
+    await pasteTarget.asElement().fill("");
+    await pasteTarget.asElement().press("ControlOrMeta+v");
+    await expect.poll(() => pasteTarget.asElement().inputValue()).toBe(selected);
+  }
+  await pasteTarget.evaluate((el) => el.remove());
   await page.evaluate(() => window.fixture.unavailable());
   await expect(page.locator(".pages-anywidget-view")).toHaveAttribute(
     "data-output-state",

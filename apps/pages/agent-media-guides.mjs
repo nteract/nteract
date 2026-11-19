@@ -153,6 +153,20 @@ ${edit("save-shared-control", [{ ...example, view_revision: "1", imports: { "act
 
 A view's modules can import the names in read_page.libraries, a name bound in imports, data/<alias> for a file bound in data, or an https: URL. Names match exactly, so a subpath such as d3/array and any relative path fail. set_view reads the entry and each import and refuses the view with invalid_view when a static import can't load, naming each one. An import("…") that can't load, a module it can't parse, or a module it couldn't read is saved with a warning in the receipt. A set_source that gives a followed module new code warns for each view it breaks among the views the host has open; save a view again with set_view to check it.
 
+## Match the Page appearance
+
+Pages sends its selected light or dark theme into the frame and updates the CSS variables when the reader switches. Let labels and axes inherit currentColor. Pair surfaces with their text color, including hover details. A custom tooltip can use these frame tokens.
+
+\`\`\`css
+.chart-tip {
+  background: var(--card);
+  color: var(--card-foreground);
+  border: 1px solid var(--border);
+}
+\`\`\`
+
+Observable Plot uses --plot-background behind its tips and currentColor for their text. If you give a plot a custom background, pass a CSS string in the plot options, such as \`style: "--plot-background: var(--card); color: var(--card-foreground)"\`. Use the Page's appearance control to try Light and Dark while the chart is open. Hover a point in each mode and read its values. Check axis labels, legend entries and the selected control too.
+
 ## Read part of a file
 
 For a large file, read only the bytes you need: \`await model.get("activity").slice(0, 4).arrayBuffer()\` reads those four bytes, and slice(start, end) counts as Blob.slice does. \`import activity from "data/activity"\` gives the same file, bound to the one the view mounted with; after a change its calls fail as aborted, so use model.get("activity") for the current file. Each range uses the Page's existing access checks. Read the Parquet source with read_page and source_id to discover its columns. To show part of a table, filter it in the view, for example table.toArray().slice(0, 28).
@@ -258,7 +272,7 @@ For a JSON input, upload the file as application/json, register its source, and 
 
 The default ESM export is an AFM object or async factory. initialize runs before render; returned cleanup functions run on disposal. Both hooks receive lifetime signals. Optional models maps child IDs to the same definition shape; state may reference them as "anywidget:<id>", resolved through host.getWidget or host.getModel. There is no cross-frame model registry.
 
-model.get/set/on/off operate locally. save_changes() is a no-op. send() throws a no-backend error. There are no Python callbacks, kernel comms, shared live widget state, or Page writeback. Code changes and remounts reset to the stored initial state. A followed buffer source moving to a new version sets the model key that holds its path, and change:<key> fires. Listen with model.on("change:<key>", …) to update in place and keep local state; a widget that does not listen for any key the buffer fills is mounted again. The resolved light/dark theme, base controls and height reporting are supplied by the host.
+model.get/set/on/off operate locally. save_changes() is a no-op. send() throws a no-backend error. There are no Python callbacks, kernel comms, shared live widget state, or Page writeback. Code changes and remounts reset to the stored initial state. A followed buffer source moving to a new version sets the model key that holds its path, and change:<key> fires. Listen with model.on("change:<key>", …) to update in place and keep local state; a widget that does not listen for any key the buffer fills is mounted again. The host supplies the resolved light/dark theme, base controls and height reporting. Use the paired CSS colors and hover check in ${link(origin, "/llms/views.txt", "Match the Page appearance")}.
 
 Bundle relative imports, or use absolute HTTPS imports; Blob modules cannot resolve relative file imports. set_view saves a widget whose import can't load, with a warning in the receipt. The iframe receives supplied bytes, not account credentials. Modules can access the network and transmit those bytes; isolation protects the surrounding application, not confidentiality from the module itself. Microphone capture is not currently exposed.
 

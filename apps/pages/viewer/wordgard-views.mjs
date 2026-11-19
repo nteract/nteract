@@ -42,10 +42,12 @@ export const VIEW_NOT_HERE = "This chart isn't on this Page.";
 /** The custom property that holds an embed's remembered height. */
 export const VIEW_RESERVE_PROPERTY = "--pages-view-reserve";
 
-/** Events on the chart's own controls (Comment and Maximize) are the chart's; everything
- * else on the embed reaches Wordgard, which selects the node. */
+/** Let the browser select and copy an output diagnostic and operate the
+ * embed’s controls. Clicking the rest of the embed selects the view node. */
 export const viewEventReachesEditor = (event) =>
-  !event.target?.closest?.(".wordgard-diagram-actions");
+  !event.target?.closest?.(
+    ".wordgard-diagram-actions, .pages-anywidget-view > p, .pages-anywidget-view > button",
+  );
 
 /** The embed's frame: the canvas the chart chunk draws into, and a status
  * line for the time before it draws. `heights` (view-heights.mjs) supplies

@@ -9,7 +9,9 @@ export async function openAssetByteSource(pageId, version, { signal, request = f
   // A cached streamed GET can answer HEAD without the asset size. Ask the
   // host for metadata while leaving byte reads cacheable.
   const head = await request(url, { ...options, method: "HEAD", cache: "no-store" });
-  const size = head.headers.get("content-length");
+  // A proxy can compress JSON in transit. Content-Length then describes the
+  // encoded response (if present), while file offsets address stored bytes.
+  const size = head.headers.get("x-pages-asset-size") ?? identityLength(head);
   const byteLength = Number(size);
   if (
     !head.ok ||
@@ -39,7 +41,7 @@ export async function openAssetByteSource(pageId, version, { signal, request = f
         signal: active,
         headers: { Range: `bytes=${offset}-${end}` },
       });
-      const declaredLength = response.headers.get("content-length");
+      const declaredLength = identityLength(response);
       if (
         response.status !== 206 ||
         response.headers.get("content-range") !== `bytes ${offset}-${end}/${byteLength}` ||
@@ -69,4 +71,9 @@ export async function openAssetByteSource(pageId, version, { signal, request = f
       return bytes;
     },
   };
+}
+
+function identityLength(response) {
+  const encoding = response.headers.get("content-encoding");
+  return !encoding || encoding === "identity" ? response.headers.get("content-length") : null;
 }
