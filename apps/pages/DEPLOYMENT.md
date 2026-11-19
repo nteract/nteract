@@ -1164,7 +1164,9 @@ revision, and writing `manifest.json` last. A copy that stops part way leaves
 no manifest, so readers see the revision as absent and the next attempt puts
 the same bytes again. Each isolate checks the bucket once per revision; after
 a failed check or copy it waits a minute, doubling to at most an hour, and logs
-`library_catalog.archive_failed` with the revision and a reason. The copy
+`library_catalog.archive_failed` with the revision and a reason. A check or
+copy still running after two minutes counts as failed (reason `deadline`), so
+work the runtime dropped does not hold the revision. The copy
 makes one bucket `head`, reads each catalog file from the assets once and puts
 it once: 34 subrequests in the request that triggers it, for the 16-file
 catalog. A host without the bucket binding serves its build's catalog alone.

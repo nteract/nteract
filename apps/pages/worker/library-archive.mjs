@@ -9,9 +9,11 @@
 // page deletion lists only that prefix, so it never removes these keys.
 //
 // manifest.json is written last. A reader fetches the manifest first and
-// checks its sha256 against the revision, so a revision with no manifest in
-// the bucket is absent: a copy that stopped part way is invisible, and a
-// retry puts the same bytes again. Nothing deletes an archived revision.
+// checks its sha256 against the revision, so a reader never starts on a
+// revision with no manifest in the bucket: a copy that stopped part way
+// gives no view a library map, and a retry puts the same bytes again. The
+// files of such a copy still answer by path; each matched its digest before
+// it was put. Nothing deletes an archived revision.
 import { LIBRARY_PATH, LIBRARY_REVISION, libraryPath } from "../shared/library-catalog.mjs";
 
 export const LIBRARY_MANIFEST = "manifest.json";
@@ -23,15 +25,20 @@ export const archiveKey = (revision, name) => libraryPath(revision, name).slice(
  * archive again: one minute, doubling, at most an hour. */
 export const retryDelayMs = (attempts) => Math.min(60_000 * 2 ** (attempts - 1), 3_600_000);
 
+/** How long a check or copy may run before a later request counts it as
+ * failed. The runtime can drop work that outlives its request, and a bucket
+ * call can hang; no event arrives then. */
+export const EFFECT_DEADLINE_MS = 120_000;
+
 /**
  * One revision's archive lifecycle in this isolate.
  *
  * States:
  * - {kind: "unknown"}: nothing has been asked yet;
- * - {kind: "checking", attempts}: a head of the bucket's manifest is in
- *   flight;
- * - {kind: "copying", attempts}: the bucket lacks the manifest and the copy
+ * - {kind: "checking", attempts, deadline}: a head of the bucket's manifest
  *   is in flight;
+ * - {kind: "copying", attempts, deadline}: the bucket lacks the manifest and
+ *   the copy is in flight;
  * - {kind: "archived"}: the bucket holds the revision; terminal;
  * - {kind: "failed", attempts, retryAt}: the last check or copy failed;
  *   a request at or after `retryAt` checks again.
@@ -39,35 +46,52 @@ export const retryDelayMs = (attempts) => Math.min(60_000 * 2 ** (attempts - 1),
  * Events:
  * - {type: "request", now}: the route served the revision's manifest;
  * - {type: "present"}: the bucket holds the manifest;
- * - {type: "absent"}: the bucket lacks the manifest;
+ * - {type: "absent", now}: the bucket lacks the manifest;
  * - {type: "copied"}: every file and then the manifest are in the bucket;
  * - {type: "failed", now}: the check or copy threw or refused.
  *
  * An event a state does not expect leaves it unchanged. `attempts` counts
  * consecutive failures and sets the next wait (retryDelayMs).
+ *
+ * A check or copy still in flight at its `deadline` (EFFECT_DEADLINE_MS) is
+ * counted as a failure by the next request, so an effect that never settles
+ * cannot hold the revision. If that effect does settle later, its event is
+ * read like any other. Every order ends in the same place, because a check
+ * reads the bucket again and a copy puts the same bytes.
  */
 export function archiveTransition(state, event) {
   switch (event.type) {
-    case "request":
-      if (state.kind === "unknown") return { kind: "checking", attempts: 0 };
+    case "request": {
+      const deadline = event.now + EFFECT_DEADLINE_MS;
+      if (state.kind === "unknown") return { kind: "checking", attempts: 0, deadline };
       if (state.kind === "failed" && event.now >= state.retryAt)
-        return { kind: "checking", attempts: state.attempts };
+        return { kind: "checking", attempts: state.attempts, deadline };
+      if ((state.kind === "checking" || state.kind === "copying") && event.now >= state.deadline)
+        return failedAt(state.attempts + 1, event.now);
       return state;
+    }
     case "present":
       return state.kind === "checking" ? { kind: "archived" } : state;
     case "absent":
-      return state.kind === "checking" ? { kind: "copying", attempts: state.attempts } : state;
+      return state.kind === "checking"
+        ? { kind: "copying", attempts: state.attempts, deadline: event.now + EFFECT_DEADLINE_MS }
+        : state;
     case "copied":
       return state.kind === "copying" ? { kind: "archived" } : state;
-    case "failed": {
-      if (state.kind !== "checking" && state.kind !== "copying") return state;
-      const attempts = state.attempts + 1;
-      return { kind: "failed", attempts, retryAt: event.now + retryDelayMs(attempts) };
-    }
+    case "failed":
+      return state.kind === "checking" || state.kind === "copying"
+        ? failedAt(state.attempts + 1, event.now)
+        : state;
     default:
       return state;
   }
 }
+
+const failedAt = (attempts, now) => ({
+  kind: "failed",
+  attempts,
+  retryAt: now + retryDelayMs(attempts),
+});
 
 /** The effect a transition into `next` starts, or null. */
 const effectOf = (previous, next) =>
@@ -75,8 +99,9 @@ const effectOf = (previous, next) =>
     ? next.kind
     : null;
 
-/** Why the copy refused a revision. Its message is a fixed reason that names
- * nothing but what the log line carries. */
+/** Why the copy refused a revision, or why the archive gave up on an effect.
+ * Its message is a fixed reason that names nothing but what the log line
+ * carries. */
 class ArchiveRefusal extends Error {}
 
 const sha256Hex = async (bytes) =>
@@ -155,7 +180,7 @@ export function libraryArchive({ now = Date.now } = {}) {
       if (effect === "checking") {
         event = (await io.bucket.head(archiveKey(revision, LIBRARY_MANIFEST)))
           ? { type: "present" }
-          : { type: "absent" };
+          : { type: "absent", now: now() };
       } else {
         await copyRevision({ ...io, revision });
         event = { type: "copied" };
@@ -171,6 +196,10 @@ export function libraryArchive({ now = Date.now } = {}) {
     const previous = state(revision);
     const next = archiveTransition(previous, event);
     states.set(revision, next);
+    // A request that finds an effect past its deadline is the only step
+    // that fails without run() having logged why.
+    if (event.type === "request" && next.kind === "failed" && previous.kind !== "failed")
+      logArchiveFailure(revision, new ArchiveRefusal("deadline"));
     const effect = effectOf(previous, next);
     return effect ? run(revision, effect, io) : Promise.resolve();
   }

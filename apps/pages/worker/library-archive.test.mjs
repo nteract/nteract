@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import {
+  EFFECT_DEADLINE_MS,
   archiveKey,
   archiveTransition,
   copyRevision,
@@ -17,18 +18,19 @@ const origin = "https://pages.example";
 
 const STATES = [
   { kind: "unknown" },
-  { kind: "checking", attempts: 0 },
-  { kind: "checking", attempts: 2 },
-  { kind: "copying", attempts: 0 },
-  { kind: "copying", attempts: 2 },
+  { kind: "checking", attempts: 0, deadline: 1_000 },
+  { kind: "checking", attempts: 2, deadline: 1_000 },
+  { kind: "copying", attempts: 0, deadline: 1_000 },
+  { kind: "copying", attempts: 2, deadline: 1_000 },
   { kind: "archived" },
   { kind: "failed", attempts: 1, retryAt: 1_000 },
 ];
+// 1_000 is each in-flight state's deadline and the failed state's retry time.
 const EVENTS = [
   { type: "request", now: 999 },
   { type: "request", now: 1_000 },
   { type: "present" },
-  { type: "absent" },
+  { type: "absent", now: 700 },
   { type: "copied" },
   { type: "failed", now: 500 },
 ];
@@ -38,13 +40,29 @@ function expected(state, event) {
   const key = `${state.kind}:${event.type}`;
   switch (key) {
     case "unknown:request":
-      return { kind: "checking", attempts: 0 };
+      return { kind: "checking", attempts: 0, deadline: event.now + EFFECT_DEADLINE_MS };
     case "failed:request":
-      return event.now >= state.retryAt ? { kind: "checking", attempts: state.attempts } : state;
+      return event.now >= state.retryAt
+        ? { kind: "checking", attempts: state.attempts, deadline: event.now + EFFECT_DEADLINE_MS }
+        : state;
+    // An effect still in flight at its deadline counts as a failure.
+    case "checking:request":
+    case "copying:request":
+      return event.now >= state.deadline
+        ? {
+            kind: "failed",
+            attempts: state.attempts + 1,
+            retryAt: event.now + retryDelayMs(state.attempts + 1),
+          }
+        : state;
     case "checking:present":
       return { kind: "archived" };
     case "checking:absent":
-      return { kind: "copying", attempts: state.attempts };
+      return {
+        kind: "copying",
+        attempts: state.attempts,
+        deadline: event.now + EFFECT_DEADLINE_MS,
+      };
     case "copying:copied":
       return { kind: "archived" };
     case "checking:failed":
@@ -240,4 +258,41 @@ test("a refused copy is logged with its reason and fails without a manifest", as
   assert.equal(archive.state(fixture.revision).kind, "failed");
   assert.equal(JSON.parse(warn.mock.calls[0].arguments[0]).reason, "file_digest");
   assert.equal(bucket.objects.has(archiveKey(fixture.revision, "manifest.json")), false);
+});
+
+test("a copy that never settles fails at its deadline, is logged, and a later request archives", async (t) => {
+  const warn = t.mock.method(console, "warn", () => {});
+  const { revision, files } = catalogFixture();
+  const working = assetsBinding(files);
+  // The first copy's asset read never answers, as work dropped after its
+  // request would look from this isolate.
+  let hang = true;
+  const assets = {
+    fetch: (request) => (hang ? new Promise(() => {}) : working.fetch(request)),
+  };
+  const bucket = new Bucket();
+  let clock = 0;
+  const archive = libraryArchive({ now: () => clock });
+  const io = { revision, assets, bucket, origin };
+  archive.request(io);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(archive.state(revision).kind, "copying");
+  // Before the deadline a request starts nothing more.
+  clock = EFFECT_DEADLINE_MS - 1;
+  await archive.request(io);
+  assert.equal(archive.state(revision).kind, "copying");
+  assert.equal(warn.mock.callCount(), 0);
+  clock = EFFECT_DEADLINE_MS;
+  await archive.request(io);
+  assert.deepEqual(archive.state(revision), {
+    kind: "failed",
+    attempts: 1,
+    retryAt: EFFECT_DEADLINE_MS + 60_000,
+  });
+  assert.equal(JSON.parse(warn.mock.calls[0].arguments[0]).reason, "deadline");
+  hang = false;
+  clock += 60_000;
+  await archive.request(io);
+  assert.deepEqual(archive.state(revision), { kind: "archived" });
+  assert.ok(bucket.objects.has(archiveKey(revision, "manifest.json")));
 });
