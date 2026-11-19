@@ -57,7 +57,19 @@ Five sessions per model per guide ran in Kilo 7.8.27. The original 20 trials use
 | Haiku 4.5 | Revised | 4/5 | 2/5 | 74.7 s |
 | Gemini 3.1 Flash-Lite | Earlier | 2/5 | 2/5 | 60.9 s |
 | Gemini 3.1 Flash-Lite | Revised | 5/5 | 5/5 | 57.6 s |
+| DeepSeek V4.1 Flash | Earlier | 5/5 | 5/5 | 61.2 s |
+| DeepSeek V4.1 Flash | Revised | 5/5 | 4/5 | 36.9 s |
+| Kimi K3.1 Pro Highspeed | Earlier | 0/5 | 0/5 | 240 s |
+| Kimi K3.1 Pro Highspeed | Revised | 0/5 | 0/5 | 240 s |
 
 Haiku eventually selected the catalog in all five revised-guide runs. Three of those charts had incorrect per-bar hover labels. Under the earlier guide, two charts depended on external CDNs. All twenty agents read the anywidget guide. These samples identify failure modes and suggest a follow-up experiment that gives the agent browser tool real hover support.
 
-The ten Gemini trials used the rebased host at `a2e63d9cd`, including the Gemini-compatible tool schema from #5147. Gemini made tool calls in all ten trials. Three earlier-guide charts requested a third-party CDN and failed the local-assets audit. Compare guide versions within each model; the Gemini cohort ran with a newer MCP schema than the first two cohorts.
+The ten Gemini trials used the rebased host at `a2e63d9cd`, including the Gemini-compatible tool schema from #5147. Gemini made tool calls in all ten trials. Three earlier-guide charts requested a third-party CDN and failed the local-assets audit. Compare guide versions within each model. Gemini, DeepSeek and Kimi ran with a newer MCP schema than the first two cohorts.
+
+The DeepSeek and Kimi cohort used Kilo models `deepseek/deepseek-v4.1-flash-1017` and `moonshotai/kimi-k3.1-pro-highspeed` on the same rebased host as Gemini. Each session had four minutes. A timeout counts at the time limit in the median. The reader audit checks the saved Page even if the agent times out.
+
+DeepSeek rendered a local Plot chart in all ten trials. In the one failing revised-guide trial, “Last 2 days” kept Mon and Tue. DeepSeek accurately reported the visible bars and left the mistake in place.
+
+Kimi read the anywidget guide in all five revised-guide trials. Across both arms it selected the catalog on three Pages (two earlier, one revised), but never placed a widget. All ten sessions hit the time limit. The traces show repeated rejected edits, including a missing `source_revision: null` on catalog creation and a missing or invalid `asset_id` on `set_source`. This points to a narrower follow-up eval: give the agent a real upload receipt and ask it to register that single source.
+
+One revised-guide Kimi session lost its host connection before a result could be saved. Its replacement used a fresh Page and the original time limit. All twenty scored Pages were then audited on the restored host.
