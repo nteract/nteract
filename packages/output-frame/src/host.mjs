@@ -1,4 +1,5 @@
 import { exposeByteSource } from "./byte-source.mjs";
+import { createReadBudget } from "./read-budget.mjs";
 import { fromEvent, Subscription, timer } from "rxjs";
 import { outputTransition } from "./lifecycle.mjs";
 import { preparePayload } from "./payload.mjs";
@@ -92,10 +93,12 @@ export function mountModuleOutput(
         ].map((asset) => asset.bytes.buffer);
         try {
           step("mount");
+          // One read budget for the view, shared by all of its files.
+          const budget = createReadBudget({ lifetime: lifetime.signal, scheduler });
           const files = Object.fromEntries(
             Object.entries(byteSources).map(([name, source]) => [
               name,
-              exposeByteSource(source, lifetime.signal),
+              exposeByteSource(source, lifetime.signal, budget),
             ]),
           );
           channel.port1.postMessage({ type: "mount", payload, context, files }, [
