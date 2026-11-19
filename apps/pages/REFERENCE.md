@@ -2048,8 +2048,17 @@ revisions select their version just like data. Source history retains its newest
 
 Views render automatically within the viewport lifecycle. Pages resolves source
 revisions, fetches authorized assets, verifies types, sizes and hashes, and
-transfers only those bytes to the separate output origin. A changed spec or
-source revision destroys the frame and starts fresh from initial state. Local
+transfers only those bytes to the separate output origin. The frame's lifetime
+follows the view's code: its media type, spec, catalog revision, and the asset
+of each module, stylesheet and import. A change to any of them destroys the
+frame and starts fresh from initial state. A followed buffer source that moves
+to a new asset stays in the mounted frame: Pages loads the new bytes and sets
+the model key that holds its path, so `change:<key>` fires. A title change
+relabels the view in place, and a rewrite that changes only the view's
+revision or writer does nothing visible
+([viewer/anywidget-view.mjs](viewer/anywidget-view.mjs) `planChange`). A data
+change that fails to load leaves the frame and its earlier data in place and
+says so beside the view. Local
 interactions are neither shared nor persisted; agents cannot observe them.
 `save_changes()` is callable and local-only. `send()` throws a descriptive
 no-backend error; `msg:custom` subscriptions are accepted but receive no backend
@@ -2081,7 +2090,7 @@ Pages and the notebook output host.
 
 ### Writes
 
-`edit_page` sends `set_view` alone. Every view has a `view_id`, title, `view_type` and `view_revision`. For new JavaScript use `module`. Its `module` field names the entry source, optional `data` binds ranged files, and optional `imports` binds JavaScript sources under names local to the view. Each binding follows its source unless it specifies a revision. Use `vega-lite` with a chart spec and named data, or `anywidget` with a widget spec for code that needs a model. All three use the same view node. `read_page.libraries` lists the host-provided names. It names the Page `revision` it read, fenced like
+`edit_page` sends `set_view` alone. Every view has a `view_id`, title, `view_type` and `view_revision`. For new JavaScript use `module`. Its `module` field names the entry source, optional `data` binds files, and optional `imports` binds JavaScript sources under names local to the view. The entry exports `render({model, el, signal})`, or a default AFM object or factory. Each `data` name is a key on that model: a Parquet source as a ranged handle `{byteLength, read(offset, length, signal)}`, any other source as a DataView of the whole file. `import f from "data/<name>"` gives a handle on the file the view mounted with. A followed `data` source that moves to a new asset reaches the mounted view as `change:<name>`; the old handle's reads then fail as aborted. Changes to the entry, an import, the spec or the catalog remount the view. Each binding follows its source unless it specifies a revision. Use `vega-lite` with a chart spec and named data, or `anywidget` with a widget spec for code that needs a model. All three use the same view node. `read_page.libraries` lists the host-provided names. It names the Page `revision` it read, fenced like
 any edit; a newer Page revision doesn't refuse it. `view_revision` is null to
 create, or the view's current `revision`. The receipt carries
 `view_revision`, the view's revision after the write, and `result.edits` of

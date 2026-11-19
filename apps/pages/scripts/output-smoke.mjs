@@ -53,6 +53,7 @@ const code = `export default {
   const audio=el.querySelector('audio'); audio.src=url;
   el.querySelector('input').addEventListener('input',e=>{model.set('time',Number(e.target.value));audio.currentTime=model.get('time')},{signal});
   model.on('change:time',()=>{el.querySelector('output').textContent=model.get('time').toFixed(2)});
+  model.on('change:recording',()=>{if(model.get('recording') instanceof DataView)el.dataset.recordingChanges=String(Number(el.dataset.recordingChanges??0)+1)});
   return ()=>{audio.pause();URL.revokeObjectURL(url)};
  }
 }`;
@@ -96,7 +97,36 @@ const entries = {
     "text/javascript",
   ],
   code: [Buffer.from(code), "text/javascript"],
+  // The same widget as other code: a change to it remounts the frame.
+  code2: [Buffer.from(code + "\n// another build"), "text/javascript"],
   recording: [wav, "audio/wav"],
+  // A second recording: moving to it is a data change, not a remount.
+  recording2: [Buffer.concat([wav.subarray(0, 44), Buffer.alloc(32000)]), "audio/wav"],
+  // A module view that keeps a click count in its DOM and renders a value
+  // from a whole-file input and one from a ranged Parquet handle.
+  modview: [
+    Buffer.from(`export function render({ model, el, signal }) {
+  let count = 0;
+  el.innerHTML = '<button id="count">0</button><p id="label"></p><p id="table"></p>';
+  const button = el.querySelector('#count');
+  button.addEventListener('click', () => { button.textContent = String(++count); }, { signal });
+  const label = () => { el.querySelector('#label').textContent = new TextDecoder().decode(model.get('label')); };
+  const table = async () => {
+    const file = model.get('table');
+    const head = await file.read(0, 4, signal);
+    el.querySelector('#table').textContent = new TextDecoder().decode(head) + ' of ' + file.byteLength;
+  };
+  model.on('change:label', label);
+  model.on('change:table', () => void table());
+  label();
+  return table();
+}`),
+    "text/javascript",
+  ],
+  label1: [Buffer.from("first label"), "application/octet-stream"],
+  label2: [Buffer.from("second label"), "application/octet-stream"],
+  table1: [Buffer.from("tab1 rows PAR1"), "application/vnd.apache.parquet"],
+  table2: [Buffer.from("tab2 more rows PAR1"), "application/vnd.apache.parquet"],
   broken: [
     Buffer.from('export default {initialize(){throw Error("intentional failure")},render(){}}'),
     "text/javascript",
@@ -218,7 +248,14 @@ window.fixture={editor(){
   view$.next({status:'ready',view:{...view,
     spec:composed ? {module:{source_id:'composed'},state:{child:'anywidget:counter'},models:{counter:{module:{source_id:'counter'},stylesheet:{source_id:'counterstyle'},state:{count:42}}}} : {module:{source_id:'counter'},stylesheet:{source_id:'counterstyle'},state:{count:42}}
   }});
-},audio(){view$.next({status:'ready',view})},layout(){versions.code=versions.layout;changes.next(4)},transient(){failNext=true;versions.recording={...versions.recording,revision:'3'};changes.next(3)},example(){versions.code=versions.example;view$.next({status:'ready',view:{...view,spec:{module:{source_id:'code'},buffers:[{source:{source_id:'recording'},path:['recording']},{source:{source_id:'dmel'},path:['dmel']}],state:{description:${JSON.stringify(description)}}}}})},module(){
+},audio(){view$.next({status:'ready',view})},layout(){versions.code=versions.layout;changes.next(4)},transient(){failNext=true;versions.code=versions.code2;changes.next(3)},moduleView(){
+  const el=document.createElement('div');el.id='module-view2';document.body.append(el);
+  versions.label=versions.label1;versions.table=versions.table1;
+  const moduleView$=new BehaviorSubject({status:'ready',view:{view_id:'chart',title:'Module data',media_type:'application/vnd.nteract.module-view.v1+json',spec:{module:{source_id:'modview'},files:{label:{source_id:'label'},table:{source_id:'table'}}},revision:'1'}});
+  const moduleHandle=mount(el,{view$:moduleView$,sources,sourcesAnswer$:null});
+  window.fixture.moveData=()=>{versions.label=versions.label2;versions.table=versions.table2;changes.next(5)};
+  window.fixture.endModuleView=()=>{moduleHandle.destroy();el.remove()};
+},example(){versions.code=versions.example;view$.next({status:'ready',view:{...view,spec:{module:{source_id:'code'},buffers:[{source:{source_id:'recording'},path:['recording']},{source:{source_id:'dmel'},path:['dmel']}],state:{description:${JSON.stringify(description)}}}}})},module(){
   const view=${JSON.stringify(moduleView)};
   const text=s=>new TextEncoder().encode(s);
   const file=text(view.file);
@@ -229,7 +266,7 @@ window.fixture={editor(){
     onState:(state,error)=>{el.dataset.outputState=state;if(error)el.dataset.error=error},
   });
   window.fixture.endModule=()=>{output.destroy();el.remove()};
-},change(){versions.recording={...versions.recording,revision:'2'};changes.next(1)},fail(){versions.code=versions.broken;changes.next(2)},destroy:()=>handle.destroy()};
+},change(){versions.recording=versions.recording2;changes.next(1)},fail(){versions.code=versions.broken;changes.next(2)},destroy:()=>handle.destroy()};
 ${process.env.PAGES_OUTPUT_SERVE ? "window.fixture.example();" : ""}`;
 const result = await build({
   stdin: { contents: fixture, resolveDir: process.cwd(), sourcefile: "output-fixture.mjs" },
@@ -253,7 +290,18 @@ const server = createServer((req, res) => {
   if (asset) {
     res.setHeader("Content-Type", "application/octet-stream");
     res.setHeader("X-Pages-Media-Type", asset.media_type);
-    res.end(asset.bytes);
+    // Ranged reads, as the Page asset route serves a Parquet file.
+    const range = /^bytes=(\d+)-(\d+)$/.exec(req.headers.range ?? "");
+    if (range) {
+      const [start, end] = [Number(range[1]), Number(range[2])];
+      res.statusCode = 206;
+      res.setHeader("Content-Range", `bytes ${start}-${end}/${asset.bytes.length}`);
+      res.setHeader("Content-Length", end - start + 1);
+      res.end(asset.bytes.subarray(start, end + 1));
+      return;
+    }
+    res.setHeader("Content-Length", asset.bytes.length);
+    res.end(req.method === "HEAD" ? undefined : asset.bytes);
     return;
   }
   res.setHeader(
@@ -334,6 +382,29 @@ try {
     process.env.PAGES_OUTPUT_LIVE ? "hello frame of 17" : "HELLO FRAME of 17",
   );
   await page.evaluate(() => window.fixture.endModule());
+  // A module view through the Pages viewer: its model holds a whole file and
+  // a ranged Parquet handle. Moving both sources updates them through
+  // change: listeners in the same frame, with the view's own state intact.
+  await page.evaluate(() => window.fixture.moduleView());
+  const dataView = page.locator("#module-view2 .pages-anywidget-view");
+  await expect(dataView).toHaveAttribute("data-output-state", "ready");
+  const dataFrame = page.frameLocator("#module-view2 iframe");
+  await expect(dataFrame.locator("#label")).toHaveText("first label");
+  await expect(dataFrame.locator("#table")).toHaveText(`tab1 of ${entries.table1[0].length}`);
+  await dataFrame.locator("#count").click();
+  await dataFrame.locator("#count").click();
+  await expect(dataFrame.locator("#count")).toHaveText("2");
+  await page.locator("#module-view2 iframe").evaluate((frame) => {
+    frame.dataset.marker = "kept";
+  });
+  await page.evaluate(() => window.fixture.moveData());
+  await expect(dataFrame.locator("#label")).toHaveText("second label");
+  await expect(dataFrame.locator("#table")).toHaveText(`tab2 of ${entries.table2[0].length}`);
+  await expect(page.locator("#module-view2 iframe")).toHaveCount(1);
+  await expect(page.locator("#module-view2 iframe")).toHaveAttribute("data-marker", "kept");
+  await expect(dataFrame.locator("#count")).toHaveText("2");
+  await expect(dataView).toHaveAttribute("data-output-state", "ready");
+  await page.evaluate(() => window.fixture.endModuleView());
   await expect(page.getByRole("button", { name: "Retry interactive view" })).toBeHidden();
   const frame = page.frameLocator("iframe");
   await expect(frame.getByRole("heading", { name: "Listen and explore" })).toBeVisible();
@@ -381,10 +452,14 @@ try {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   await page.evaluate(() => window.postMessage({ type: "error", message: "forged" }, "*"));
   await expect(page.locator("section")).toHaveAttribute("data-output-state", "ready");
+  // A new recording is a buffer change: the same frame keeps its local state.
   await page.evaluate(() => window.fixture.change());
   await expect(page.locator("section")).toHaveAttribute("data-output-state", "ready");
-  assert.notEqual(await page.locator("iframe").getAttribute("src"), frameUrl);
+  await expect(frame.locator("main")).toHaveAttribute("data-recording-changes", "1");
+  assert.equal(await page.locator("iframe").getAttribute("src"), frameUrl);
+  await expect(frame.locator("output")).toHaveText("0.75");
   await expect(page.getByRole("button", { name: "Retry interactive view" })).toBeHidden();
+  // A code change remounts; its failed load can be retried.
   await page.evaluate(() => window.fixture.transient());
   await expect(page.locator("section")).toHaveAttribute("data-output-state", "failed");
   await expect(page.locator("iframe")).toHaveCount(0);
@@ -574,7 +649,9 @@ try {
           "shared controls, margin/float sizing, tall growth/shrink and explicit scroll regions",
           "resolved light/dark/system theme updates preserve widget state",
           "forged ambient message",
-          "automatic render and source-change remount",
+          "automatic render; a new recording reaches the model without a remount",
+          "code-change remount",
+          "module view model: whole-file and ranged Parquet inputs change in place through change: listeners",
           "retry after a transient input failure",
           "failure recovery",
           "Wordgard node selection preserves iframe document and local model at wide/narrow widths",

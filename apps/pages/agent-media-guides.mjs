@@ -112,7 +112,22 @@ function viewsGuide(origin, catalogEnabled) {
 
 ## Create a JavaScript view
 
-Upload browser-ready text/javascript, then register its asset with set_source. Give the entry a named render export. Pages supplies the DOM element and an AbortSignal; return a cleanup function if needed. React state and DOM events work inside the frame. Choose view_type anywidget for an existing widget that uses a model, or vega-lite for a declarative chart.
+Upload browser-ready text/javascript, then register its asset with set_source. Give the entry a named render export, or a default AFM export. Pages supplies a model, the DOM element and an AbortSignal; return a cleanup function if needed. React state and DOM events work inside the frame. Choose view_type anywidget for an existing widget with its own model state, or vega-lite for a declarative chart.
+
+Each name in data is a key on the model. A Parquet source arrives as a file handle with byteLength and read(offset, length, signal). Any other source arrives as a DataView of the whole file. When a followed source moves to a new version, the view stays mounted: the model takes the new value and change:<name> fires.
+
+\`\`\`js
+export function render({ model, el, signal }) {
+  const note = el.appendChild(document.createElement("p"));
+  const show = async () => {
+    const activity = model.get("activity");
+    const head = await activity.read(0, 4, signal);
+    note.textContent = new TextDecoder().decode(head) + ", " + activity.byteLength + " bytes";
+  };
+  model.on("change:activity", show);
+  return show();
+}
+\`\`\`
 
 ${
   catalogEnabled
@@ -140,7 +155,7 @@ A view's modules can import${catalogEnabled ? " the names in read_page.libraries
 
 ## Read part of a file
 
-The entry can \`import activity from "data/activity"\` when data binds the name activity. Its byteLength is the file size. read(offset, length, signal) returns that span as a Uint8Array. Read the Parquet source with read_page and source_id to discover its columns.${catalogEnabled ? " For a bounded preview, import {loadTableFile} from '@nteract/sift/parquet', call await loadTableFile(activity, {maxRows:28, overflow:'truncate'}), and call table.dispose() when done." : ""} Each range uses the Page's existing access checks.
+model.get(name) is the way to read a bound file. The lower-level path is \`import activity from "data/activity"\` when data binds the name activity. That import names the file the view was mounted with; after a change its reads fail as aborted, so use model.get("activity") for the current file. Its byteLength is the file size. read(offset, length, signal) returns that span as a Uint8Array. Read the Parquet source with read_page and source_id to discover its columns.${catalogEnabled ? " For a bounded preview, import {loadTableFile} from '@nteract/sift/parquet', call await loadTableFile(model.get(\"activity\"), {maxRows:28, overflow:'truncate'}), and call table.dispose() when done." : ""} Each range uses the Page's existing access checks.
 
 ## Inspect and edit
 
@@ -150,7 +165,7 @@ ${call("read_page", { page_id: "<page_id>", view_id: "activity" })}
 
 ## Updates and recovery
 
-Advancing a followed source updates dependent views without editing their blocks. Anywidget code or input changes remount the frame and reset temporary model state. Pin individual input revisions when appropriate, subject to retained source history.
+Advancing a followed source updates dependent views without editing their blocks. A data source or anywidget buffer moving to a new version reaches the mounted view as a change event and keeps its local state. A code change remounts the frame and resets temporary model state: the module, an import, a stylesheet, anywidget state or models, or the spec itself. A title change relabels the view in place. Pin individual input revisions when appropriate, subject to retained source history.
 
 Retries of the same edit must preserve both nonce and payload. If creating the view succeeded but placement was interrupted, retry the placement with its original nonce; do not create another view. For an unknown outcome, use the receipt/retry contract rather than guessing success. If a revision is stale, reread and reconcile before issuing a new request.
 
@@ -243,7 +258,7 @@ For an unused dataset input, upload bytes as application/octet-stream, register 
 
 The default ESM export is an AFM object or async factory. initialize runs before render; returned cleanup functions run on disposal. Both hooks receive lifetime signals. Optional models maps child IDs to the same definition shape; state may reference them as "anywidget:<id>", resolved through host.getWidget or host.getModel. There is no cross-frame model registry.
 
-model.get/set/on/off operate locally. save_changes() is a no-op. send() throws a no-backend error. There are no Python callbacks, kernel comms, shared live widget state, or Page writeback. Source/code changes and remounts reset to the stored initial state. The resolved light/dark theme, base controls and height reporting are supplied by the host.
+model.get/set/on/off operate locally. save_changes() is a no-op. send() throws a no-backend error. There are no Python callbacks, kernel comms, shared live widget state, or Page writeback. Code changes and remounts reset to the stored initial state. A followed buffer source moving to a new version sets the model key that holds its path, and change:<key> fires. The resolved light/dark theme, base controls and height reporting are supplied by the host.
 
 Bundle relative imports, or use absolute HTTPS imports; Blob modules cannot resolve relative file imports. set_view saves a widget whose import can't load, with a warning in the receipt. The iframe receives supplied bytes, not account credentials. Modules can access the network and transmit those bytes; isolation protects the surrounding application, not confidentiality from the module itself. Microphone capture is not currently exposed.
 

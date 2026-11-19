@@ -179,6 +179,25 @@ test("published tool examples pass current source and view validators", () => {
   assert.ok(sources > 0 && views >= 3 && placements >= 3);
 });
 
+test("the views guide leads with the model and keeps the data import as the low-level path", () => {
+  const guide = mediaGuide("/llms/views.txt", origin);
+  for (const sentence of [
+    "Each name in data is a key on the model.",
+    "A Parquet source arrives as a file handle with byteLength and read(offset, length, signal).",
+    "Any other source arrives as a DataView of the whole file.",
+    'model.on("change:activity", show);',
+    "That import names the file the view was mounted with; after a change its reads fail as aborted",
+    "reaches the mounted view as a change event and keeps its local state.",
+    "A title change relabels the view in place.",
+  ])
+    assert.ok(guide.includes(sentence), sentence);
+  assert.ok(guide.indexOf("model.get") < guide.indexOf("## Read part of a file"));
+  assert.doesNotMatch(guide, /code or input changes remount/);
+  const module = tools.find(({ name }) => name === "edit_page").inputSchema.properties.operations
+    .items.properties.module;
+  assert.match(module.description, /render\(\{model, el, signal\}\)/);
+});
+
 test("media tools point to scoped documentation", () => {
   assert.ok(tools.find(({ name }) => name === "edit_page").description.includes("/llms/views.txt"));
   assert.ok(

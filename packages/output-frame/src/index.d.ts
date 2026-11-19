@@ -44,8 +44,11 @@ export interface ModuleOutput {
   assets: { entry: OutputAsset };
   imports?: Record<string, OutputAsset>;
 }
+/** A whole file (the model holds a DataView) or a ranged file (the model holds the handle). */
+export type DataInput = Uint8Array | ByteSource;
 export interface OutputOptions {
-  byteSources?: Record<string, ByteSource>;
+  /** A module view's `data/<alias>` inputs. Each alias is also a key on its model. */
+  byteSources?: Record<string, DataInput>;
   frameUrl: string;
   hostContext: OutputHostContext;
   timeoutMs?: number;
@@ -56,6 +59,12 @@ export interface OutputHandle {
   readonly frame: HTMLIFrameElement;
   readonly state: OutputState;
   setHostContext(context: OutputHostContext): void;
+  /**
+   * Replace one declared data input without a remount: a `data/<alias>` of a
+   * module view, or a buffer name of an anywidget view (Uint8Array only).
+   * Sent once the view has rendered; throws for an undeclared name.
+   */
+  setData(name: string, value: DataInput): void;
   destroy(): void;
 }
 /** Structurally compatible with the theme/styles subset of notebook HostContext. */
