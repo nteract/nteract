@@ -28,6 +28,13 @@ const MAX_SPECIFIER = 200;
 
 const quoted = (value) => JSON.stringify(String(value).slice(0, MAX_SPECIFIER));
 
+/** At most MAX_WARNINGS of `warnings`, the ones for a module that wasn't
+ * checked first: a cut list must never read as a full check. */
+function capped(warnings) {
+  const rank = ({ code }) => (code === "module_unchecked" ? 0 : code === "module_unparsed" ? 1 : 2);
+  return [...warnings].sort((a, b) => rank(a) - rank(b)).slice(0, MAX_WARNINGS);
+}
+
 /**
  * A reader of module imports for one write's import check. `get(assetId)`
  * resolves to the asset's stored object (`{ size, text(), body? }`) or null.
@@ -57,10 +64,11 @@ export function createModuleReader({
         (async () => {
           const object = await get(assetId);
           if (!object) return { unchecked: "unread" };
-          if (!(object.size <= OUTPUT_MAX_BYTES && object.size <= room)) {
+          const late = !(until - now() > 0);
+          if (late || !(object.size <= OUTPUT_MAX_BYTES && object.size <= room)) {
             // Release the body this check won't read.
             object.body?.cancel?.()?.catch?.(() => {});
-            return { unchecked: "too_large" };
+            return { unchecked: late ? "unread" : "too_large" };
           }
           room -= object.size;
           const text = await object.text();
@@ -122,6 +130,7 @@ function importable(view, { libraries, imports, files, hostCatalog }) {
 }
 
 const UNCHECKED = {
+  unbound: "its binding names no stored version",
   unread: "its bytes couldn't be read in time",
   too_large: `the modules of one write are checked up to ${MODULE_CHECK_MAX_BYTES / (1024 * 1024)} MiB`,
 };
@@ -138,8 +147,9 @@ const UNCHECKED = {
  * `invalid_view`, its details listing every one. Otherwise, and for every
  * finding of an anywidget view, returns the warnings the edit carries, each
  * `{ code, view_id, specifier?, in, suggested_action }`. A module the reader
- * didn't lex is a `module_unchecked` warning. The first import warning says
- * what the view can import; the others don't repeat it.
+ * didn't lex, or whose binding names no stored version, is a
+ * `module_unchecked` warning. The first import warning says what the view
+ * can import; the others don't repeat it. The list is `capped`.
  *
  * A set_source that changes a module a stored view follows checks that
  * view with `refuse` false, so every finding is a warning, and `assetFor`,
@@ -180,8 +190,7 @@ export async function viewImportCheck(
     if (labelled.has(label)) continue;
     labelled.add(label);
     const assetId = assetFor(source) ?? assetOf(sourcesDoc, source);
-    if (assetId === undefined) continue;
-    const lexed = await readImports(assetId);
+    const lexed = assetId === undefined ? { unchecked: "unbound" } : await readImports(assetId);
     if (lexed.unchecked) unchecked.push({ in: label, reason: lexed.unchecked });
     else modules[label] = lexed;
   }
@@ -206,6 +215,7 @@ export async function viewImportCheck(
     );
   }
   const warnings = [];
+  let told = false;
   for (const item of found.unresolved) {
     const specifier = String(item.specifier).slice(0, MAX_SPECIFIER);
     const statement =
@@ -215,8 +225,9 @@ export async function viewImportCheck(
       view_id: op.view_id,
       specifier,
       in: item.in,
-      suggested_action: `${statement} in ${where(op, item.in)} can't load in this view's frame, so the view fails when it ${item.kind === "static" ? "loads" : "runs that import"}.${warnings.length ? "" : ` ${allowed}`} ${saved}`,
+      suggested_action: `${statement} in ${where(op, item.in)} can't load in this view's frame, so the view fails when it ${item.kind === "static" ? "loads" : "runs that import"}.${told ? "" : ` ${allowed}`} ${saved}`,
     });
+    told = true;
   }
   for (const item of found.unparsed)
     warnings.push({
@@ -232,7 +243,7 @@ export async function viewImportCheck(
       in: item.in,
       suggested_action: `Pages didn't check the imports of ${where(op, item.in)}: ${UNCHECKED[item.reason]}. ${saved}`,
     });
-  return warnings.slice(0, MAX_WARNINGS);
+  return capped(warnings);
 }
 
 /**
@@ -279,9 +290,9 @@ export async function sourceImportWarnings({
       readImports,
       assetFor: (binding) => follows(binding)?.assetId,
       refuse: false,
-      saved: "The source was saved; the view fails until the import resolves.",
+      saved: "The source was saved.",
     });
     lists[Math.min(...hits)].push(...warnings);
   }
-  return lists.map((list) => list.slice(0, MAX_WARNINGS));
+  return lists.map(capped);
 }

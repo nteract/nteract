@@ -431,11 +431,43 @@ test("a set_source checks only the views it is given", async () => {
   });
   assert.deepEqual(
     lists.map((list) => list.map(({ code, view_id, in: location }) => [code, view_id, location])),
-    [[["unresolved_import", "chart", "helper"]]],
+    [
+      [
+        ["module_unchecked", "chart", "entry"],
+        ["unresolved_import", "chart", "helper"],
+      ],
+    ],
   );
-  // The entry follows no changed source and the sources document can't name
-  // its asset here, so only the new helper is read.
+  // The sources document can't name the entry's asset here, so only the new
+  // helper is read, and the entry is reported as not checked.
   assert.deepEqual(asked, [NEXT_HELPER]);
+  assert.equal(
+    lists[0][0].suggested_action,
+    "Pages didn't check the imports of the module: its binding names no stored version. The source was saved.",
+  );
+});
+
+test("a cut list of warnings keeps the modules that weren't checked", async () => {
+  const many = Array.from({ length: 20 }, (_, index) => `import("x${index}");`).join("");
+  const warnings = await viewImportCheck(
+    checkedView({ imports: { helper: { source_id: "helper" } } }),
+    { assetFor, refuse: false, readImports: reader({ [ENTRY]: many }) },
+  );
+  assert.equal(warnings.length, 16);
+  assert.deepEqual([warnings[0].code, warnings[0].in], ["module_unchecked", "helper"]);
+  assert.match(warnings[1].suggested_action, /A view can import/);
+});
+
+test("a module reader releases a body that arrives after the deadline", async () => {
+  let clock = 0;
+  const seen = { gets: 0, texts: 0, cancelled: 0 };
+  const read = createModuleReader({
+    now: () => clock,
+    budgetMs: 5_000,
+    get: async () => ((clock = 5_000), stored("export default 1;", seen)),
+  });
+  assert.deepEqual(await read(ENTRY), { unchecked: "unread" });
+  assert.deepEqual(seen, { gets: 0, texts: 0, cancelled: 1 });
 });
 
 test("a set_source that gives a followed import new code warns for each view it breaks", async (t) => {
@@ -478,7 +510,7 @@ test("a set_source that gives a followed import new code warns for each view it 
   );
   assert.match(
     changed.body.warnings[0].suggested_action,
-    /The source was saved; the view fails until the import resolves\.$/,
+    /so the view fails when it loads\. .* The source was saved\.$/,
   );
   assert.equal(changed.body.result.edits[0].source_revision, "2");
 });

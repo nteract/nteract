@@ -2149,8 +2149,9 @@ import; the others don't repeat it.
 One write's check reads each asset once, waits 5 seconds on module bytes in
 total and reads at most 32 MiB of them, lexing each module as it arrives and
 keeping only its import list. A module it didn't lex (a missing object, a
-failed or late read, or one past the byte bound) is a `module_unchecked`
-warning on the edit.
+failed or late read, one past the byte bound, or a binding that names no
+stored version) is a `module_unchecked` warning on the edit. An edit carries
+at most 16 import warnings, the unchecked and unparsed modules first.
 
 A set_source that points a source at new JavaScript checks each view the
 host has open that follows it as a module or import, and puts that view's
