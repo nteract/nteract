@@ -18,6 +18,10 @@ export const validSourceId = (id) =>
   typeof id === "string" &&
   SOURCE_ID.test(id) &&
   !["constructor", "prototype", "__proto__"].includes(id);
+export const validSourceName = (name) =>
+  typeof name === "string" && !!name.trim() && name.trim().length <= MAX_SOURCE_NAME;
+// eslint-disable-next-line no-control-regex
+export const sourceNameHasControl = (name) => /[\u0000-\u001f\u007f]/.test(name);
 /** The same reference for tables and views; no resolved asset is stored. */
 export function bindingOf(value) {
   if (

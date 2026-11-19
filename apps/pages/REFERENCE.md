@@ -1831,7 +1831,15 @@ copies paste descriptive text; copying or rebinding sources across Pages is
 not implemented. Parquet bytes remain in the session's bounded memory cache;
 there is no persistent browser Parquet cache.
 
-Agents write it with `edit_page` `set_source` operations (`source_id`,
+To create a named source when uploading a non-image file, pass
+`source: {source_id, name}` to `create_page_asset_upload`. The transfer
+receipt includes `asset_id`, `source_id` and `source_revision`. The upload
+grant signs the source ID and name. After storage, the host checks edit
+access again and writes through the same journal as `set_source`. A
+conflicting ID returns the uploaded asset ID and current source revision.
+Retry the same transfer to recover its receipt.
+
+Agents can also write sources with `edit_page` `set_source` operations (`source_id`,
 `name`, `asset_id`, `source_revision`) or `delete_source` (`source_id`,
 `source_revision`) in a batch containing only source operations;
 a mixed batch is `400 invalid_arguments`. `source_revision` is null to
@@ -2040,7 +2048,7 @@ saving; the renderer rechecks types when following a changed source. The stored
 view accepts no `data` alias map. The AFM API and iframe transport are unchanged.
 
 Upload ESM, CSS, WAV (`audio/wav`), JSON (`application/json`), CSV (`text/csv`), arbitrary binary (`application/octet-stream`)
-or Parquet, then register each asset with `set_source`. ESM, CSS, WAV and generic
+or Parquet with a new source ID and name. Use `set_source` for an existing asset or a refresh. ESM, CSS, WAV and generic
 binary uploads require a content-type-bound capability and return `insert: null`.
 Upload JSON with `content_type: "application/json"`. Sources previews the data and a module reads it with `await model.get(name).json()`.
 Upload CSV with `content_type: "text/csv"`; the upload checks only that it is UTF-8 text, and its `insert` is the dataframe `insert_node` with `media_type: "text/csv"`. Sources shows its header and first rows, a module reads it with `await model.get(name).csv()`, and a chart or a dataframe (`media_type: "text/csv"`) draws it.

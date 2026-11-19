@@ -76,16 +76,16 @@ function assetsGuide(origin) {
 ## Upload a file
 
 Create a Page with create_page or read an existing Page with read_page. Keep its page_id and revision. Request an upload capability for each file:
-${call("create_page_asset_upload", { page_id: "<page_id>", content_type: "text/javascript" })}
-POST that file's raw bytes to the returned upload_url using the returned headers. Use the returned example command as a template. Do not send multipart or base64, and do not send your account credential to that URL. Keep the upload response's asset_id. A capability expires within ten minutes; request a new one if it expires. Identical bytes reuse the same asset ID.
+${call("create_page_asset_upload", { page_id: "<page_id>", content_type: "text/javascript", source: { source_id: "counter-module", name: "Counter module" } })}
+POST that file's raw bytes to the returned upload_url using the returned headers. Use the returned example command as a template. Do not send multipart or base64, and do not send your account credential to that URL. With source, the transfer also creates the named source and returns source_id and source_revision. Omit source to store bytes alone. A capability expires within ten minutes; request a new one if it expires. Identical bytes reuse the same asset ID.
 
-Supported view input types are ${OUTPUT_ASSET_TYPES.map((type) => `\`${type}\``).join(", ")}. For nested objects, lists and settings, upload UTF-8 JSON with content_type application/json and register it with set_source. Readers can inspect the fields and original JSON in the browser’s Sources pane. For tabular records, upload Parquet, or a CSV with content_type text/csv, whose header and first rows the Sources pane shows. ${DATA_FORMAT_ADVICE} Use application/octet-stream for untyped bytes. The main guide covers image and Parquet insertion. A client-attached file can use the upload tool's file argument instead of POST; never invent a client file descriptor.
+Supported view input types are ${OUTPUT_ASSET_TYPES.map((type) => `\`${type}\``).join(", ")}. For nested objects, lists and settings, upload UTF-8 JSON with content_type application/json and a source name. Readers can inspect the fields and original JSON in the browser’s Sources pane. For tabular records, upload Parquet, or a CSV with content_type text/csv, whose header and first rows the Sources pane shows. ${DATA_FORMAT_ADVICE} Use application/octet-stream for untyped bytes. The main guide covers image, Parquet and CSV insertion. A client-attached file can use the upload tool's file argument instead of POST; never invent a client file descriptor.
 
-Independent files can request capabilities and upload in parallel. Register sources only after their uploads succeed. JSON, CSV, JavaScript, CSS, WAV and binary upload receipts have insert:null: use sources and a view, or for a CSV a dataframe, to display them.
+Independent files can request capabilities and upload in parallel. JSON, JavaScript, CSS, WAV and binary upload receipts have insert:null: use sources and a view to display them.
 
 ## Register and update sources
 
-Source IDs are chosen by the author and scoped to this Page. Explicit source_revision:null creates only; omission is currently invalid. If the ID exists, read it before deciding whether to update or choose a different ID.
+If you already have an asset_id, use set_source to name it. Source IDs are chosen by the author and scoped to this Page. Explicit source_revision:null creates only; omission is currently invalid. If the ID exists, read it before deciding whether to update or choose a different ID.
 ${edit("register-counter-001", [source("counter-module", "Counter module")])}
 Multiple set_source operations may share one batch; source operations cannot mix with view or body edits. Each result.edits entry returns source_id and source_revision. A source starts at revision "1". Preserve the latest Page revision from reads/receipts for later body edits.
 ${call("read_page", { page_id: "<page_id>", source_id: "counter-module" })}
@@ -118,7 +118,7 @@ function viewsGuide(origin) {
 
 ## Create a JavaScript view
 
-Upload browser-ready text/javascript, then register its asset with set_source. Give the entry a named render export, or a default AFM export. Pages supplies a model, the DOM element and an AbortSignal; return a cleanup function if needed. React state and DOM events work inside the frame. Choose view_type anywidget for an existing widget with its own model state, or vega-lite for a declarative chart.
+Upload browser-ready text/javascript with a source ID and name. Give the entry a named render export, or a default AFM export. Pages supplies a model, the DOM element and an AbortSignal; return a cleanup function if needed. React state and DOM events work inside the frame. Choose view_type anywidget for an existing widget with its own model state, or vega-lite for a declarative chart.
 
 Upload JSON objects or lists with content_type application/json; upload a table as application/vnd.apache.parquet or text/csv. ${DATA_FORMAT_ADVICE} Each name in data is a key on the model, and model.get(name) is a file: ask it with await for .parquet(), .csv(), .json(), .text() or .arrayBuffer(). .csv() gives an array of row objects with a columns list of the names, as Observable's FileAttachment.csv does, typed as a table's values are. A table has numRows, schema.fields, getChild(name).toArray() and toArray(), and Plot takes it directly. Listen for change:<name> to redraw in place; otherwise the view starts again with the new data. Forgetting await passes a promise to Plot, which then draws nothing.
 

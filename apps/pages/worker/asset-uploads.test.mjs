@@ -657,7 +657,15 @@ test("access removed after issue refuses the upload, before or during the transf
 
   // Removal while the bytes are in flight: the second check refuses the result.
   await setRole("editor");
-  const during = await issued(w, { page_id: pageId }, "member");
+  const during = await issued(
+    w,
+    {
+      page_id: pageId,
+      content_type: "application/json",
+      source: { source_id: "revoked", name: "Revoked" },
+    },
+    "member",
+  );
   let release, entered;
   const gate = new Promise((resolve) => (release = resolve));
   const started = new Promise((resolve) => (entered = resolve));
@@ -667,13 +675,15 @@ test("access removed after issue refuses the upload, before or during the transf
     await gate;
     return put(...args);
   };
-  const pending = upload(w, during, { body: webp });
+  const pending = upload(w, during, { body: "{}" });
   await started;
   await setRole(null);
   release();
   const result = await pending;
   assert.equal(result.status, 403, JSON.stringify(result.body));
   assert.equal(result.body.code, "access_denied");
+  assert.equal(result.body.asset_id, undefined);
+  assert.equal(w.page(pageId).sourcesView(), undefined);
 });
 
 test("a Page in Trash refuses the upload, as the byte route does", async (t) => {
@@ -1290,3 +1300,77 @@ for (const [mediaType, source] of [
     assert.equal(head.headers.get("x-pages-asset-size"), String(bytes.length));
     assert.equal(await allowed.text(), new TextDecoder().decode(bytes));
   });
+
+test("a named upload creates a source once and preserves the other asset on conflict", async (t) => {
+  const { w, pageId } = await setup(t);
+  editable(w, pageId);
+  const source = { source_id: "settings", name: "Chart settings" };
+  const args = { page_id: pageId, content_type: "application/json", source };
+  const grant = await issued(w, args);
+  const first = await upload(w, grant, { body: '{"limit":1}' });
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  assert.equal(first.body.source_id, "settings");
+  assert.equal(first.body.source_revision, "1");
+  assert.equal(first.body.insert, null);
+  const replay = await upload(w, grant, { body: '{"limit":1}' });
+  assert.deepEqual(replay.body, first.body);
+  const competing = await issued(w, args);
+  const conflict = await upload(w, competing, { body: '{"limit":2}' });
+  assert.equal(conflict.status, 409, JSON.stringify(conflict.body));
+  assert.equal(conflict.body.code, "stale_source");
+  assert.equal(conflict.body.source_revision, "1");
+  assert.equal(conflict.body.asset_id, await sha256(new TextEncoder().encode('{"limit":2}')));
+  const read = await w.call("owner", "read_page", {
+    page_id: pageId,
+    source_id: "settings",
+    comments: "none",
+  });
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.equal(read.body.source.asset_id, first.body.asset_id);
+  assert.equal(read.body.source.name, source.name);
+});
+
+test("a named client attachment returns a source and an identical retry replays it", async (t) => {
+  const { w, pageId } = await setup(t);
+  const download_url = "https://files.oaiusercontent.com/settings";
+  t.mock.method(globalThis, "fetch", (url, options) =>
+    String(url) === download_url
+      ? Promise.resolve(Response.json({ limit: 1 }))
+      : w.auth.fetch(url, options),
+  );
+  const args = {
+    page_id: pageId,
+    source: { source_id: "settings", name: "Settings" },
+    file: { file_id: "attached-json", download_url },
+  };
+  const result = await issue(w, "owner", args);
+  assert.equal(result.status, 201, JSON.stringify(result.body));
+  assert.equal(result.body.source_revision, "1");
+  assert.equal(result.body.source_id, "settings");
+  const replay = await issue(w, "owner", args);
+  assert.equal(replay.status, 200);
+  assert.deepEqual(replay.body, result.body);
+});
+
+test("a named grant accepts only a new source ID and display name", async (t) => {
+  const { w, pageId, bucket } = await setup(t);
+  const source = { source_id: "settings", name: "Settings" };
+  for (const invalid of [
+    null,
+    { ...source, source_revision: "1" },
+    { ...source, name: "a\nb" },
+    { ...source, source_id: "constructor" },
+  ]) {
+    const result = await issue(w, "owner", { page_id: pageId, source: invalid });
+    assert.equal(result.status, 400);
+  }
+  const imageGrant = await issue(w, "owner", {
+    page_id: pageId,
+    content_type: "image/png",
+    source,
+  });
+  assert.equal(imageGrant.status, 400);
+  const grant = await issued(w, { page_id: pageId, source });
+  assert.equal((await upload(w, grant)).status, 415);
+  assert.equal(puts(bucket), 0);
+});

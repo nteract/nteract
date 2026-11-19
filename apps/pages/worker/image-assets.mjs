@@ -316,6 +316,12 @@ export async function persistPageAsset(bucket, { pageId, bytes, contentTypes = [
     .find((type) => type === JSON_MEDIA_TYPE || type === CSV_MEDIA_TYPE);
   const inspected = inspectAsset(bytes, expect?.content_type ?? declaredText);
   const dataset = !IMAGE_MEDIA_TYPES.includes(inspected.mime_type);
+  if (expect?.source && !dataset)
+    throw new HttpError(
+      415,
+      "Images cannot be named sources; place the image with insert_image",
+      "not_a_dataset",
+    );
   if (bytes.byteLength > (dataset ? DATASET_MAX_BYTES : IMAGE_MAX_BYTES))
     throw new HttpError(413, dataset ? "Datasets must be 5 MiB or smaller" : IMAGE_TOO_LARGE);
   for (const contentType of contentTypes) {
@@ -408,6 +414,25 @@ const SERVED_MEDIA_TYPES = Object.freeze([
 async function grantedExpectation(access) {
   const body = await access.json();
   return body?.upload && typeof body.upload === "object" ? body.upload : undefined;
+}
+
+/** After private storage, disclose the asset only if the host still admits
+ * the caller. A create conflict leaves the uploaded bytes available to reuse. */
+export async function uploadReceipt(asset, duplicate, access, named, fields = assetReceipt(asset)) {
+  if (!access.ok) {
+    if (named && [404, 409].includes(access.status)) {
+      const refusal = await access.clone().json();
+      if (["stale_source", "source_not_found"].includes(refusal.code))
+        return privateImageResponse(
+          Response.json({ ...refusal, asset_id: asset.asset_id }, { status: access.status }),
+        );
+    }
+    return privateImageResponse(access);
+  }
+  const source = named ? await access.json() : {};
+  return privateImageResponse(
+    Response.json({ ...fields, ...source }, { status: duplicate ? 200 : 201 }),
+  );
 }
 
 /** authenticate() for the asset route. An upload with no credential at all
@@ -597,11 +622,8 @@ export async function handleImageAssets(
         contentTypes: [request.headers.get("content-type")],
         expect,
       });
-      const current = await authorize(true);
-      if (!current.ok) return privateImageResponse(current);
-      return privateImageResponse(
-        Response.json(assetReceipt(asset), { status: duplicate ? 200 : 201 }),
-      );
+      const current = await authorize(true, expect?.source ? asset.asset_id : undefined);
+      return await uploadReceipt(asset, duplicate, current, !!expect?.source);
     }
     const key = imageAssetKey(pageId, assetId);
     const header = request.method === "GET" ? request.headers.get("Range") : null;
