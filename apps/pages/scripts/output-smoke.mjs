@@ -908,9 +908,20 @@ try {
   );
   for (const readonly of [true, false]) {
     await page.evaluate((value) => window.fixture.readonly(value), readonly);
-    await diagnostic.click({ clickCount: 2, position: { x: readonly ? 12 : 85, y: 8 } });
+    const word = readonly ? "intentional" : "failure";
+    await diagnostic.scrollIntoViewIfNeeded();
+    const point = await diagnostic.evaluate((el, word) => {
+      const text = el.firstChild;
+      const start = text.textContent.indexOf(word);
+      const range = el.ownerDocument.createRange();
+      range.setStart(text, start);
+      range.setEnd(text, start + word.length);
+      const box = range.getBoundingClientRect();
+      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    }, word);
+    await page.mouse.dblclick(point.x, point.y);
     const selected = await page.evaluate(() => getSelection().toString());
-    assert.ok(selected.trim() && (await diagnostic.innerText()).includes(selected));
+    assert.equal(selected.trim(), word);
     await page.keyboard.press("ControlOrMeta+c");
     await pasteTarget.asElement().fill("");
     await pasteTarget.asElement().press("ControlOrMeta+v");
