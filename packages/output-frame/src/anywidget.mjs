@@ -1,4 +1,4 @@
-import { firstValueFrom, from, fromEvent, takeUntil, timeout } from "rxjs";
+import { firstValueFrom, from, fromEvent, identity, takeUntil, timeout } from "rxjs";
 import { widgetDefinitions, widgetState, ROOT_MODEL_ID } from "./schema.mjs";
 import { bufferNames, dataDecision } from "./data.mjs";
 
@@ -240,13 +240,17 @@ export function createWidgetSession(
           return record;
         })(),
       ).pipe(
-        timeout({
-          first: timeoutMs,
-          scheduler,
-          with: () => {
-            throw Error(`Anywidget ${record.id} initialization timed out.`);
-          },
-        }),
+        // A module view's entry may await a slow top-level import; only the
+        // host's startup limit bounds it. Anywidget models have their own.
+        module
+          ? identity
+          : timeout({
+              first: timeoutMs,
+              scheduler,
+              with: () => {
+                throw Error(`Anywidget ${record.id} initialization timed out.`);
+              },
+            }),
         takeUntil(fromEvent(record.lifetime.signal, "abort")),
       ),
     ).catch((error) => {

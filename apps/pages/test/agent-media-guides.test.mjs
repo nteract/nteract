@@ -184,7 +184,8 @@ test("the views guide leads with the model and keeps the data import as the low-
   for (const sentence of [
     "Each name in data is a key on the model.",
     "A Parquet source arrives as a file handle with byteLength and read(offset, length, signal).",
-    "Any other source arrives as a DataView of the whole file.",
+    "Any other source arrives as a DataView of the whole file: at most 5 MiB, and it counts toward the view's 32 MiB input total.",
+    "A Parquet file is read in ranges and does not count.",
     'model.on("change:activity", show);',
     "That import names the file the view was mounted with; after a change its reads fail as aborted",
     "reaches the mounted view as a change event and keeps its local state when the view listens for that change",

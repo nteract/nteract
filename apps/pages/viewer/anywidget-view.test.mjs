@@ -181,6 +181,11 @@ const files = {
   label2: [encoder.encode("second label"), "application/octet-stream"],
   table1: [encoder.encode("PAR1 table one PAR1"), PARQUET],
   table2: [encoder.encode("PAR1 table two, longer PAR1"), PARQUET],
+  // The table source moving to a file that arrives whole.
+  tableWhole: [encoder.encode("not parquet"), "application/octet-stream"],
+  labelBig: [encoder.encode("L".repeat(20)), "application/octet-stream"],
+  note1: [encoder.encode("n"), "application/octet-stream"],
+  note2: [encoder.encode("n".repeat(10)), "application/octet-stream"],
 };
 const ids = {};
 for (const [name, [bytes, media_type]] of Object.entries(files)) {
@@ -200,6 +205,7 @@ const moveSources = (doc, operations, types = mediaTypes) =>
 const dataSources = moveSources(sourcesDoc, [
   setSource("label", ids.label1, null),
   setSource("table", ids.table1, null),
+  setSource("note", ids.note1, null),
 ]);
 
 // Writes the "chart" module view, as set_view would, and returns its record.
@@ -255,6 +261,17 @@ test("a plan change is a remount, a data change, a title change or nothing", () 
   assert.equal(planChange({ error: "e" }, { error: "e" }).kind, "none");
   assert.equal(planChange({ error: "e" }, { error: "f" }).kind, "remount");
   assert.equal(planChange({ error: "e" }, base).kind, "remount");
+  // A data name that changes shape (ranged ↔ whole) is a code change.
+  const store = new PageSourceStore({ pageId: PAGE, doc$: new BehaviorSubject(dataSources) });
+  const whole = new PageSourceStore({
+    pageId: PAGE,
+    doc$: new BehaviorSubject(moveSources(dataSources, [setSource("table", ids.tableWhole, "1")])),
+  });
+  const view = moduleViewWriter()({});
+  assert.equal(planChange(anywidgetPlan(view, store), anywidgetPlan(view, whole)).kind, "remount");
+  assert.equal(planChange(anywidgetPlan(view, whole), anywidgetPlan(view, store)).kind, "remount");
+  store.destroy();
+  whole.destroy();
 });
 
 test("a module view plan follows code for remounts and data for updates", () => {
@@ -292,10 +309,17 @@ async function until(predicate, message) {
   assert.fail(message);
 }
 
-function mountModuleView(t, { listening = true } = {}) {
+// `ready: false` leaves the fake frame starting until the test calls
+// onState; `gate` holds every asset response until it resolves; `rejectData`
+// makes the frame refuse setData for a name once.
+function mountModuleView(
+  t,
+  { listening = true, ready = true, gate, rejectData, fields = {}, maxTotalBytes } = {},
+) {
   const write = moduleViewWriter();
   const { window } = new JSDOM("<!doctype html><body></body>");
   const request = async (url, options = {}) => {
+    await gate;
     const asset = assets.get(url.split("/").at(-1));
     if (!asset) return new Response(null, { status: 404 });
     const headers = {
@@ -320,12 +344,13 @@ function mountModuleView(t, { listening = true } = {}) {
   };
   const doc$ = new BehaviorSubject(dataSources);
   const sources = new PageSourceStore({ pageId: PAGE, doc$, request });
-  const view$ = new BehaviorSubject({ status: "ready", view: write({}) });
+  const view$ = new BehaviorSubject({ status: "ready", view: write(fields) });
   const calls = { mounts: [], destroyed: 0, data: [] };
   const mounted = mount(window.document.body, {
     view$,
     sources,
     frameUrl: FRAME,
+    maxTotalBytes,
     theme: { subscribe: () => () => {}, getSnapshot: () => ({ resolved: "light" }) },
     mountOutput(_container, payload, options) {
       const handle = {
@@ -333,13 +358,17 @@ function mountModuleView(t, { listening = true } = {}) {
         destroy: () => calls.destroyed++,
         setHostContext() {},
         setData(name, value) {
+          if (rejectData === name) {
+            rejectData = undefined;
+            throw Error("The frame refused this input.");
+          }
           calls.data.push([name, value]);
           // A frame whose view has no change listener reports the change back.
           if (!listening) queueMicrotask(() => options.onUnhandledData(name));
         },
       };
       calls.mounts.push({ payload, options, handle });
-      options.onState("ready");
+      if (ready) options.onState("ready");
       return handle;
     },
   });
@@ -433,4 +462,77 @@ test("a view with no listener for a data change is mounted again with the new da
   assert.equal(calls.mounts.length, 2);
   assert.equal(calls.data.length, 1);
   assert.equal(root.dataset.outputState, "ready");
+});
+
+test("the input total counts only what the frame accepted", async (t) => {
+  const { doc$, calls, root } = mountModuleView(t, {
+    fields: {
+      data: {
+        label: { source_id: "label" },
+        table: { source_id: "table" },
+        note: { source_id: "note" },
+      },
+    },
+    // The entry, the first label (11) and the larger note (10), with 2 to spare.
+    maxTotalBytes: entry.byteLength + 11 + 10 + 2,
+    rejectData: "data/label",
+  });
+  await until(() => calls.mounts.length === 1, "the view never mounted");
+  doc$.next(moveSources(dataSources, [setSource("label", ids.labelBig, "1")]));
+  await until(() => root.dataset.inputError === "data/label", "the refusal was not shown");
+  assert.match(root.querySelector("p").textContent, /refused/);
+  // The frame still holds the 11-byte label, so the 10-byte note fits.
+  doc$.next(
+    moveSources(dataSources, [
+      setSource("label", ids.labelBig, "1"),
+      setSource("note", ids.note2, "1"),
+    ]),
+  );
+  await until(() => calls.data.some(([name]) => name === "data/note"), "the note was refused");
+  assert.equal(new TextDecoder().decode(calls.data.at(-1)[1]), "n".repeat(10));
+});
+
+test("an input failure shows only on a ready frame and never touches a failed one", async (t) => {
+  const { doc$, calls, root } = mountModuleView(t, { ready: false });
+  await until(() => calls.mounts.length === 1, "the view never mounted");
+  const { onState } = calls.mounts[0].options;
+  onState("handshaking");
+  const missing = "f".repeat(64);
+  const broken = moveSources(
+    dataSources,
+    [setSource("label", missing, "1")],
+    new Map([[missing, "application/octet-stream"]]),
+  );
+  doc$.next(broken);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(root.dataset.inputError, undefined, "not while the frame is starting");
+  assert.doesNotMatch(root.querySelector("p").textContent, /earlier data/);
+  onState("ready");
+  assert.equal(root.dataset.inputError, "data/label");
+  assert.match(root.querySelector("p").textContent, /earlier data/);
+  onState("failed", "The output failed.");
+  const button = root.querySelector("button");
+  assert.equal(button.hidden, false);
+  assert.equal(root.dataset.inputError, undefined);
+  doc$.next(moveSources(broken, [setSource("label", ids.label2, "2")]));
+  await until(() => calls.data.length === 1, "the next change did not load");
+  assert.equal(button.hidden, false, "Retry stays on a failed frame");
+  assert.equal(button.disabled, false);
+  assert.equal(root.querySelector("p").textContent, "The output failed.");
+});
+
+test("a title change while inputs load reaches the new frame's title", async (t) => {
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  const { write, view$, calls, root } = mountModuleView(t, { gate });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(calls.mounts.length, 0);
+  view$.next({ status: "ready", view: write({ title: "Renamed while loading" }) });
+  await until(
+    () => root.querySelector("h3").textContent === "Renamed while loading",
+    "label not updated",
+  );
+  release();
+  await until(() => calls.mounts.length === 1, "the view never mounted");
+  assert.equal(calls.mounts[0].handle.frame.title, "Renamed while loading");
 });

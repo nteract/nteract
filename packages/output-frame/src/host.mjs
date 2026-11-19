@@ -1,7 +1,7 @@
 import { exposeByteSource } from "./byte-source.mjs";
 import { createReadBudget } from "./read-budget.mjs";
 import { fromEvent, Subscription, timer } from "rxjs";
-import { dataTransition, outputTransition } from "./lifecycle.mjs";
+import { answerTransition, dataTransition, outputTransition } from "./lifecycle.mjs";
 import { DATA_NAME, MAX_DATA_NAMES, bufferNames } from "./data.mjs";
 import { preparePayload } from "./payload.mjs";
 import { normalizeHostContext } from "./context.mjs";
@@ -87,6 +87,9 @@ export function mountModuleOutput(
   // Data changes not yet sent (see dataTransition), and the lifetime of each
   // name's exposed ranged file.
   let pending = [];
+  // Names whose sent data message the frame may still answer as unhandled
+  // (see answerTransition).
+  let awaiting = [];
   const inputLifetimes = new Map();
   // Ends `name`'s previous input and describes `value` for the frame: a
   // dedicated copy of whole bytes, or a new port onto a ranged file.
@@ -109,6 +112,12 @@ export function mountModuleOutput(
       const [input, transfer] = describe(name, value);
       channel.port1.postMessage({ type: "data", name, input }, transfer);
     }
+    awaiting = answerTransition(
+      awaiting,
+      state === "failed" || state === "disposed"
+        ? { type: "end" }
+        : { type: "sent", names: result.send.map(([name]) => name) },
+    ).awaiting;
   };
   const step = (event, error) => {
     const next = outputTransition(state, event);
@@ -177,15 +186,14 @@ export function mountModuleOutput(
           "fail",
           typeof data.message === "string" ? data.message.slice(0, 500) : "Output failed.",
         );
-      } else if (
-        data.type === "unhandled-data" &&
-        state === "ready" &&
-        typeof data.name === "string" &&
-        dataNames.has(data.name)
-      ) {
-        // No listener in the view would show this change. The embedding
-        // product decides whether to mount the view again.
-        onUnhandledData(data.name);
+      } else if (data.type === "unhandled-data") {
+        // No listener in the view would show this change. Only an answer to
+        // a data message the host sent counts, once per message, so view
+        // code cannot ask for more mounts than there were data changes.
+        if (state !== "ready" || typeof data.name !== "string" || !dataNames.has(data.name)) return;
+        const answer = answerTransition(awaiting, { type: "unhandled", name: data.name });
+        awaiting = answer.awaiting;
+        if (answer.accept) onUnhandledData(data.name);
       } else if (data.type === "height" && state === "ready" && Number.isFinite(data.height)) {
         // A document output grows with its content. Retain an abuse bound, not
         // a normal widget-sized viewport that makes every tall view scroll twice.

@@ -121,7 +121,9 @@ expose a Retry button.
 `mountModuleOutput(container, {kind: 'module', assets: {entry}, imports?}, {byteSources})`
 mounts one entry module. Its named `render({model, el, signal, host})` export is
 used when it has one; otherwise its default export is an AFM object or factory,
-run exactly as an anywidget view's. Both get a local model built by the same
+run as an anywidget view's, except that the frame sets no initialization
+timeout: an entry may await a slow top-level import, and the host's startup
+limit bounds it. Both get a local model built by the same
 session code as an anywidget view: `model.get/set/on/off`, a no-op
 `save_changes()` and a `send()` that throws.
 
@@ -129,6 +131,7 @@ session code as an anywidget view: `model.get/set/on/off`, a no-op
 on the model:
 
 - A `Uint8Array` is a whole file of at most 5 MiB. The model holds a DataView of it.
+  Pages also counts it toward the view's 32 MiB input total.
 - A `ByteSource` (`{byteLength, read(offset, length, signal)}`) is a ranged file
   behind its own port and the view's read budget. The model holds the handle.
 
@@ -164,13 +167,20 @@ ignores any other.
 - The frame applies a change only when the view listens for it. Listen with
   `model.on("change:<alias>", …)` to update in place and keep the reader's
   state. If no key the change affects has a `change:<key>` listener on its
-  model at that moment, the frame applies nothing, leaves the view as it is and
-  answers `{type: 'unhandled-data', name}`. The host passes that to the
-  `onUnhandledData(name)` option, only in `ready` and only for a declared name.
-  Pages then mounts the view again, so a view that does not listen is remounted
-  when its data changes. When one affected key listens and another does not,
-  every affected key takes the new value (`dataDecision` and
+  model at that moment, the frame does not apply it and answers
+  `{type: 'unhandled-data', name}`. When one affected key listens and another
+  does not, every affected key takes the new value (`dataDecision` and
   `receiveDataChange` in `src/data.mjs`).
+- The host passes an unhandled answer to the `onUnhandledData(name)` option
+  only in `ready`, only for a declared name, and only once for each data
+  message it sent for that name (`answerTransition` in `src/lifecycle.mjs`).
+  An unsolicited or repeated answer is ignored, so a view can ask for at most
+  one new mount per data change. The frame never acknowledges an applied change.
+- After `onUnhandledData`, the embedder must mount the view again. The host
+  ended the name's previous ranged input when it sent the new one, so the
+  view's reads through the old input no longer answer. Pages mounts the view
+  again from its newest inputs: a view that does not listen is remounted when
+  its data changes.
 - `model.set` on a data key by view code stays local, like any other key.
 
 ## Read budget

@@ -114,7 +114,7 @@ function viewsGuide(origin, catalogEnabled) {
 
 Upload browser-ready text/javascript, then register its asset with set_source. Give the entry a named render export, or a default AFM export. Pages supplies a model, the DOM element and an AbortSignal; return a cleanup function if needed. React state and DOM events work inside the frame. Choose view_type anywidget for an existing widget with its own model state, or vega-lite for a declarative chart.
 
-Each name in data is a key on the model. A Parquet source arrives as a file handle with byteLength and read(offset, length, signal). Any other source arrives as a DataView of the whole file. When a followed source moves to a new version, the model takes the new value and change:<name> fires. Listen with model.on("change:<name>", …) to update in place and keep the reader's state. A view that does not listen is mounted again when its data changes.
+Each name in data is a key on the model. A Parquet source arrives as a file handle with byteLength and read(offset, length, signal). Any other source arrives as a DataView of the whole file: at most 5 MiB, and it counts toward the view's 32 MiB input total. A Parquet file is read in ranges and does not count. A source that switches between Parquet and another type remounts the view. When a followed source moves to a new version, the model takes the new value and change:<name> fires. Listen with model.on("change:<name>", …) to update in place and keep the reader's state. A view that does not listen is mounted again when its data changes.
 
 \`\`\`js
 export function render({ model, el, signal }) {

@@ -45,3 +45,33 @@ export function dataTransition(state, pending, change) {
   if (state === "ready") return { pending: NO_DATA, send: Object.freeze([...next]) };
   return { pending: next === pending ? pending : Object.freeze(next), send: NO_DATA };
 }
+
+// The frame's answers to data messages. `awaiting` is a frozen list of names
+// whose latest sent data message the frame may still answer as unhandled.
+// The frame answers only that way; an applied change is never acknowledged.
+// Events:
+// - {type: "sent", names}: data messages for these names went to the frame.
+//   A name already awaiting stays once: the newer message replaces the older.
+// - {type: "unhandled", name}: accepted only for an awaiting name, which
+//   then stops awaiting, so one sent message is answered at most once.
+// - {type: "end"}: the mount failed or was disposed; nothing awaits.
+// Returns the next `awaiting` and whether this event is an accepted answer.
+export function answerTransition(awaiting, event) {
+  switch (event.type) {
+    case "sent": {
+      const added = event.names.filter((name) => !awaiting.includes(name));
+      return {
+        awaiting: added.length ? Object.freeze([...awaiting, ...added]) : awaiting,
+        accept: false,
+      };
+    }
+    case "unhandled":
+      return awaiting.includes(event.name)
+        ? { awaiting: Object.freeze(awaiting.filter((name) => name !== event.name)), accept: true }
+        : { awaiting, accept: false };
+    case "end":
+      return { awaiting: NO_DATA, accept: false };
+    default:
+      return { awaiting, accept: false };
+  }
+}

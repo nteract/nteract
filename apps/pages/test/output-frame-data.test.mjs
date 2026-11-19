@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { JSDOM } from "jsdom";
 import { mountModuleOutput } from "@nteract/output-frame";
-import { OUTPUT_STATES, dataTransition } from "@nteract/output-frame/lifecycle";
+import { VirtualTimeScheduler } from "rxjs";
+import { OUTPUT_STATES, answerTransition, dataTransition } from "@nteract/output-frame/lifecycle";
 import { receiveByteSource } from "@nteract/output-frame/byte-source";
 import { READ_CONCURRENCY } from "@nteract/output-frame/read-budget";
 import { createFrameData, dataDecision, receiveDataChange } from "@nteract/output-frame/data";
@@ -479,12 +480,98 @@ test("the host reports unhandled data only once ready and only for declared name
   await tick();
   assert.deepEqual(unhandled, [], "not before ready");
   await frame.render();
+  // Unsolicited: no data message is awaiting an answer.
+  frame.port.postMessage({ type: "unhandled-data", name: "data/label" });
+  await tick();
+  await tick();
+  assert.deepEqual(unhandled, [], "an unsolicited answer is ignored");
+  output.setData("data/label", text("two"));
+  await until(() => frame.data().length === 1, "the change was not sent");
   for (const name of ["data/missing", "label", 7, "__proto__"])
     frame.port.postMessage({ type: "unhandled-data", name });
   frame.port.postMessage({ type: "unhandled-data", name: "data/label" });
+  frame.port.postMessage({ type: "unhandled-data", name: "data/label" });
   await until(() => unhandled.length > 0, "a declared name was not reported");
   await tick();
-  assert.deepEqual(unhandled, ["data/label"]);
+  await tick();
+  assert.deepEqual(unhandled, ["data/label"], "one answer per sent message");
+  // Two sends before an answer still await one answer.
+  output.setData("data/label", text("three"));
+  output.setData("data/label", text("four"));
+  await until(() => frame.data().length === 3, "the changes were not sent");
+  for (let i = 0; i < 3; i++)
+    frame.port.postMessage({ type: "unhandled-data", name: "data/label" });
+  await until(() => unhandled.length === 2, "the later send was not answerable");
+  await tick();
+  await tick();
+  assert.deepEqual(unhandled, ["data/label", "data/label"]);
   output.destroy();
-  assert.deepEqual(unhandled, ["data/label"]);
+  assert.deepEqual(unhandled, ["data/label", "data/label"]);
+});
+
+test("an answer is accepted only for a name awaiting one, once per send", () => {
+  let awaiting = [];
+  const step = (event) => {
+    const result = answerTransition(awaiting, event);
+    assert.ok(Object.isFrozen(result.awaiting) || result.awaiting === awaiting);
+    awaiting = result.awaiting;
+    return result.accept;
+  };
+  assert.equal(step({ type: "unhandled", name: "a" }), false);
+  assert.equal(step({ type: "sent", names: [] }), false);
+  assert.deepEqual(awaiting, []);
+  assert.equal(step({ type: "sent", names: ["a", "b"] }), false);
+  assert.equal(step({ type: "sent", names: ["a"] }), false);
+  assert.deepEqual(awaiting, ["a", "b"], "a newer send replaces the older one");
+  assert.equal(step({ type: "unhandled", name: "a" }), true);
+  assert.equal(step({ type: "unhandled", name: "a" }), false);
+  assert.equal(step({ type: "unhandled", name: "c" }), false);
+  assert.equal(step({ type: "end" }), false);
+  assert.deepEqual(awaiting, []);
+  assert.equal(step({ type: "unhandled", name: "b" }), false, "nothing awaits after the end");
+  assert.equal(step({ type: "unknown" }), false);
+});
+
+test("a module view's entry has no frame-side initialization timeout", async (t) => {
+  const clock = new VirtualTimeScheduler();
+  const dom = new JSDOM("<main></main>");
+  const lifetime = new AbortController();
+  t.after(() => {
+    lifetime.abort();
+    dom.window.close();
+  });
+  const start = (payload) => {
+    let release;
+    const session = createWidgetSession(payload, {
+      document: dom.window.document,
+      signal: lifetime.signal,
+      scheduler: clock,
+      diagnostic: () => {},
+      loadModule: () =>
+        new Promise((resolve) => {
+          release = () => resolve({ render() {}, default: { render() {} } });
+        }),
+    });
+    let outcome = "pending";
+    session.initialize().then(
+      () => (outcome = "initialized"),
+      (error) => (outcome = error.message),
+    );
+    return { outcome: () => outcome, release: () => release() };
+  };
+  const slowModule = start(moduleView({}));
+  const slowWidget = start(
+    preparePayload({
+      spec: { _esm: "code" },
+      assets: { code: { bytes: text("x"), mediaType: "text/javascript" } },
+    }),
+  );
+  await tick();
+  clock.flush();
+  await tick();
+  assert.match(slowWidget.outcome(), /timed out/, "an anywidget model keeps its limit");
+  assert.equal(slowModule.outcome(), "pending", "the host's startup limit is the module's bound");
+  slowModule.release();
+  await tick();
+  assert.equal(slowModule.outcome(), "initialized");
 });

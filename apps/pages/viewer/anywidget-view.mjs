@@ -33,6 +33,11 @@ import { themeStore } from "./theme.mjs";
 const sameAsset = (a, b) => a?.asset_id === b?.asset_id && a?.media_type === b?.media_type;
 const asset = (version) => ({ asset_id: version.asset_id, media_type: version.media_type });
 
+// A module view reads a Parquet file in ranges; every other data input,
+// including every anywidget buffer, arrives whole.
+const dataShape = (module, version) =>
+  module && version.media_type === PARQUET_MEDIA_TYPE ? "ranged" : "whole";
+
 // A plan splits a view into its code identity, `key`, and its data inputs,
 // `data`: name → asset. The frame's lifetime follows `key` alone.
 // - Code: the media type, the stored spec, the catalog revision, and the asset
@@ -56,13 +61,23 @@ export function anywidgetPlan(view, sources) {
   const module = view.media_type === MODULE_MEDIA_TYPE;
   const code = {};
   const data = {};
+  // How each data name reaches the model: a ranged handle or a whole file.
+  // A listener written for one shape cannot read the other, so it is code.
+  const shapes = {};
   for (const [name, version] of Object.entries(versions)) {
     const isData = module
       ? name.startsWith("data/")
       : roles.get(name).every((role) => role === "buffer");
     (isData ? data : code)[name] = asset(version);
+    if (isData) shapes[name] = dataShape(module, version);
   }
-  const key = JSON.stringify([view.media_type, view.spec, view.catalog_revision ?? null, code]);
+  const key = JSON.stringify([
+    view.media_type,
+    view.spec,
+    view.catalog_revision ?? null,
+    code,
+    shapes,
+  ]);
   return { view, spec: checked.spec, versions, data, key };
 }
 
@@ -101,6 +116,8 @@ export function mount(
       ?.content ?? OUTPUT_FRAME_URL,
     mountOutput = mountModuleOutput,
     theme = themeStore,
+    // The most input bytes one view's frame holds at once.
+    maxTotalBytes = OUTPUT_MAX_TOTAL_BYTES,
   },
 ) {
   const doc = container.ownerDocument;
@@ -192,13 +209,15 @@ export function mount(
                       const module = plan.view.media_type === MODULE_MEDIA_TYPE;
                       // Bytes the frame holds, by name. Each change replaces
                       // its name's share of the view's total.
+                      // A size is recorded only once the frame holds it.
                       const sizes = new Map();
-                      const admit = (name, size) => {
+                      const checkTotal = (name, size) => {
                         let total = size;
                         for (const [other, held] of sizes) if (other !== name) total += held;
-                        if (total > OUTPUT_MAX_TOTAL_BYTES)
-                          throw Error("This view's inputs exceed 32 MiB.");
-                        sizes.set(name, size);
+                        if (total > maxTotalBytes)
+                          throw Error(
+                            `This view's inputs exceed ${maxTotalBytes / (1024 * 1024)} MiB.`,
+                          );
                       };
                       const loadBytes = async (version, signal) => {
                         const loaded = await fetchOutputAsset(sources.pageId, version, {
@@ -208,10 +227,8 @@ export function mount(
                         signal.throwIfAborted();
                         return loaded;
                       };
-                      // A module view reads a Parquet file in ranges; every
-                      // other data input arrives whole.
                       const loadData = async (name, version, signal) => {
-                        if (module && version.media_type === PARQUET_MEDIA_TYPE) {
+                        if (dataShape(module, version) === "ranged") {
                           const file = await openAssetByteSource(sources.pageId, version, {
                             signal,
                             request: sources.request,
@@ -225,7 +242,11 @@ export function mount(
                       // Data changes that failed to load, by name. The frame
                       // keeps the data it has for those names.
                       const failures = new Map();
+                      // Shown only on a ready frame: a frame still starting
+                      // has no earlier data, and a failed one owns the
+                      // message and Retry.
                       const showFailures = () => {
+                        if (root.dataset.outputState !== "ready") return;
                         if (!failures.size) {
                           if (root.dataset.inputError === undefined) return;
                           delete root.dataset.inputError;
@@ -254,8 +275,9 @@ export function mount(
                                 AbortSignal.any([controller.signal, loading.signal]),
                               );
                               if (loading.signal.aborted) return;
-                              admit(name, input.size);
+                              checkTotal(name, input.size);
                               outputHandle.setData(name, input.value);
+                              sizes.set(name, input.size);
                               delivered = true;
                               failures.delete(name);
                             } catch (error) {
@@ -285,11 +307,13 @@ export function mount(
                           for (const [name, version] of Object.entries(plan.versions)) {
                             if (name.startsWith("data/")) {
                               const input = await loadData(name, version, controller.signal);
-                              admit(name, input.size);
+                              checkTotal(name, input.size);
+                              sizes.set(name, input.size);
                               byteSources[name] = input.value;
                             } else {
                               const loaded = await loadBytes(version, controller.signal);
-                              admit(name, loaded.bytes.byteLength);
+                              checkTotal(name, loaded.bytes.byteLength);
+                              sizes.set(name, loaded.bytes.byteLength);
                               if (name.startsWith("import/")) imports[name.slice(7)] = loaded;
                               else assets[name] = loaded;
                             }
@@ -298,7 +322,9 @@ export function mount(
                           outputHandle = mountOutput(
                             output,
                             {
-                              title: plan.view.title,
+                              // The newest title: it may have changed while
+                              // inputs loaded.
+                              title: latest$.value.view.title,
                               ...(module ? { kind: "module" } : { spec: plan.spec }),
                               assets,
                               ...(Object.keys(imports).length && { imports }),
@@ -315,6 +341,7 @@ export function mount(
                                 button.hidden = state !== "failed";
                                 button.disabled = state !== "failed";
                                 if (state === "ready") showFailures();
+                                else delete root.dataset.inputError;
                               },
                               onUnhandledData() {
                                 if (!controller.signal.aborted) remount$.next();
