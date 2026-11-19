@@ -1837,7 +1837,9 @@ receipt includes `asset_id`, `source_id` and `source_revision`. The upload
 grant signs the source ID and name. After storage, the host checks edit
 access again and writes through the same journal as `set_source`. A
 conflicting ID returns the uploaded asset ID and current source revision.
-Retry the same transfer to recover its receipt.
+A source-cap refusal also includes the stored asset ID. Retry the same transfer
+to recover the original receipt after an interrupted response. Read the source
+to check its current state after another editor changes or deletes it.
 
 Agents can also write sources with `edit_page` `set_source` operations (`source_id`,
 `name`, `asset_id`, `source_revision`) or `delete_source` (`source_id`,

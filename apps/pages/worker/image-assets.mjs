@@ -420,9 +420,14 @@ async function grantedExpectation(access) {
  * the caller. A create conflict leaves the uploaded bytes available to reuse. */
 export async function uploadReceipt(asset, duplicate, access, named, fields = assetReceipt(asset)) {
   if (!access.ok) {
-    if (named && [404, 409].includes(access.status)) {
-      const refusal = await access.clone().json();
-      if (["stale_source", "source_not_found"].includes(refusal.code))
+    if (named && [400, 404, 409].includes(access.status)) {
+      // Only source admission errors prove the host admitted this caller.
+      // Preserve a proxy's non-JSON refusal and all authorization failures.
+      const refusal = await access
+        .clone()
+        .json()
+        .catch(() => null);
+      if (["invalid_source", "stale_source", "source_not_found"].includes(refusal?.code))
         return privateImageResponse(
           Response.json({ ...refusal, asset_id: asset.asset_id }, { status: access.status }),
         );

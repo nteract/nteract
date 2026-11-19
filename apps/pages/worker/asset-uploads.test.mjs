@@ -21,7 +21,7 @@ import {
   issueAuthorizationCode,
   revokeOAuthToken,
 } from "./oauth-store.mjs";
-import { imageAssetKey, requireStoredImageAsset } from "./image-assets.mjs";
+import { imageAssetKey, requireStoredImageAsset, uploadReceipt } from "./image-assets.mjs";
 import { IMAGE_MAX_BYTES } from "../shared/image-assets.mjs";
 import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 import { newCommentsDoc } from "../model/comments-test-support.mjs";
@@ -1373,4 +1373,28 @@ test("a named grant accepts only a new source ID and display name", async (t) =>
   const grant = await issued(w, { page_id: pageId, source });
   assert.equal((await upload(w, grant)).status, 415);
   assert.equal(puts(bucket), 0);
+});
+
+test("completion preserves source-cap errors and non-JSON upstream refusals", async () => {
+  const asset = { asset_id: "a".repeat(64), mime_type: "application/json" };
+  const full = await uploadReceipt(
+    asset,
+    false,
+    Response.json({ code: "invalid_source", error: "source limit reached" }, { status: 400 }),
+    true,
+  );
+  assert.equal(full.status, 400);
+  assert.deepEqual(await full.json(), {
+    code: "invalid_source",
+    error: "source limit reached",
+    asset_id: asset.asset_id,
+  });
+  const upstream = await uploadReceipt(
+    asset,
+    false,
+    new Response("upstream conflict", { status: 409 }),
+    true,
+  );
+  assert.equal(upstream.status, 409);
+  assert.equal(await upstream.text(), "upstream conflict");
 });

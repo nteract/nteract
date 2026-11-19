@@ -85,7 +85,7 @@ Independent files can request capabilities and upload in parallel. JSON, JavaScr
 
 ## Register and update sources
 
-If you already have an asset_id, use set_source to name it. Source IDs are chosen by the author and scoped to this Page. Explicit source_revision:null creates only; omission is currently invalid. If the ID exists, read it before deciding whether to update or choose a different ID.
+If you uploaded without a name, you can submit the same bytes with source to create the name. Identical bytes reuse the asset. If you already have just the asset_id, use set_source to name it. Source IDs are chosen by the author and scoped to this Page. Explicit source_revision:null creates only; omission is currently invalid. If the ID exists, read it before deciding whether to update or choose a different ID.
 ${edit("register-counter-001", [source("counter-module", "Counter module")])}
 Multiple set_source operations may share one batch; source operations cannot mix with view or body edits. Each result.edits entry returns source_id and source_revision. A source starts at revision "1". Preserve the latest Page revision from reads/receipts for later body edits.
 ${call("read_page", { page_id: "<page_id>", source_id: "counter-module" })}
