@@ -915,6 +915,11 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     const stalledOwner = serverOidcSessionStatus(request, f.env, noopProfile);
     await gate.entered.promise;
     f.db.sqlite.prepare("UPDATE oidc_server_sessions SET lease_until = ?").run(nowSeconds() - 1);
+    const sessionId = String(f.db.sqlite.prepare("SELECT id FROM oidc_server_sessions").get()!.id);
+    const records: Record<string, unknown>[] = [];
+    t.mock.method(console, "warn", (_prefix: unknown, record: Record<string, unknown>) => {
+      records.push(record);
+    });
     const events: ServerOidcAuthEvent[] = [];
     const onAuthEvent = (event: ServerOidcAuthEvent) => events.push(event);
     await serverOidcSessionStatus(request, f.env, noopProfile, { onAuthEvent });
@@ -924,6 +929,19 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     assert.deepEqual(events, [
       { type: "session_expired", principal: "user:test:alice", reason: "lease_abandoned" },
     ]);
+    const expired = records.filter((record) => record.event === "auth.server_session.expired");
+    assert.equal(expired.length, 1);
+    const { timestamp, ...fields } = expired[0]!;
+    assert.equal(typeof timestamp, "string");
+    assert.deepEqual(fields, {
+      service: "nteract-notebook-cloud",
+      event: "auth.server_session.expired",
+      phase: "refresh",
+      kind: "lease_abandoned",
+    });
+    const logged = JSON.stringify(records);
+    for (const secret of [...f.secrets, sessionId, sessionCookie.split("=")[1]!, "alice"])
+      assert.equal(logged.includes(secret), false);
   });
 
   it("sends an already signed-in browser home when a used callback arrives again", async (t) => {

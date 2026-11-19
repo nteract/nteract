@@ -1234,6 +1234,8 @@ async function endAbandonedSession(
     .bind(row.id, row.generation, lease)
     .run();
   if (removed.meta?.changes !== 1) return false;
+  // Static fields only: no session id, principal or token.
+  cloudLog("warn", "auth.server_session.expired", { phase: "refresh", kind: "lease_abandoned" });
   notifyAuthEvent(options.onAuthEvent, {
     type: "session_expired",
     principal: sessionPrincipal(row),
