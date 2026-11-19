@@ -142,7 +142,7 @@ else replaces the screen with a Reload notice and leaves the Page unchanged.
   line or every selected line. One level is four spaces in Python and Rust, two
   elsewhere, and a tab in a block whose lines already start with tabs. Enter
   keeps the indentation of the line it leaves; three Enters, or Mod-Enter, leave
-  the block. Outside a code block Tab moves focus as usual. A word in code is an
+  the block. A word in code is an
   identifier: letters, digits and underscores, plus `$` in JavaScript and
   TypeScript and `-` in CSS. A double-click selects it whole, and Wordgard's
   word motion and word deletion move over it whole. Brackets and quotes close
@@ -400,7 +400,10 @@ else replaces the screen with a Reload notice and leaves the Page unchanged.
 - **Task lists:** use Task list or type `- [ ] ` / `- [x] `. Enter creates an
   unchecked item; an empty item returns to prose. Native list-item markers store
   checked state independently of the text, so checkbox and text edits can merge.
-  Markdown preserves nested tasks. Read-only Pages disable checkbox changes.
+  With the caret in a task label, Tab nests it under its preceding sibling and
+  Shift+Tab moves it out one level. On the checkbox itself, Space toggles it
+  and Tab moves focus. Markdown preserves nested tasks. Read-only Pages disable
+  checkbox changes.
 ## Opening, recovery, and ownership
 
 Canonical links are `/p/<page_id>`, with `#anchor` for a heading (see Heading
