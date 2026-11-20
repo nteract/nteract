@@ -820,7 +820,7 @@ itself as text, with its media_type (${INLINE_SOURCE_MEDIA_TYPES.join(", ")}):
 \`\`\`
 
 text holds up to ${INLINE_SOURCE_MAX_BYTES / 1024} KiB of UTF-8, and one batch up to
-${INLINE_SOURCE_BATCH_MAX_BYTES / (1024 * 1024)} MiB of text in all. Pages stores it as an upload
+${INLINE_SOURCE_BATCH_MAX_BYTES / 1024} KiB of text in all. Pages stores it as an upload
 of the same bytes, with the same checks: the same bytes get the same asset_id.
 For Parquet, an image, audio, binary data or text over the limit, upload the
 file and name its asset_id instead:

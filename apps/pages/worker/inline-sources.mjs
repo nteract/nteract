@@ -22,7 +22,7 @@
  * caller's Page: no inline operation names or reads another asset.
  */
 import { HttpError } from "./auth.mjs";
-import { assetIdOf, persistPageAsset } from "./image-assets.mjs";
+import { assetIdOf, imageAssetKey, persistPageAsset } from "./image-assets.mjs";
 import { inlineTextBytes, validateSourceBatch } from "../model/sources-doc.mjs";
 
 const isInline = (op) =>
@@ -52,12 +52,10 @@ export async function inlineSourceArguments(args) {
     const held = inline.get(assetId);
     if (held && held.mediaType !== mediaType)
       throw Object.assign(
-        Error("Two set_source texts hold the same bytes as different media types"),
-        {
-          status: 400,
-          code: "invalid_source",
-          details: { source_id: op.source_id },
-        },
+        Error(
+          `${op.source_id}: another set_source in this batch holds the same text as ${held.mediaType}`,
+        ),
+        { status: 400, code: "invalid_source" },
       );
     if (!held) inline.set(assetId, { bytes, mediaType, sourceId: op.source_id });
     rewritten.push({ ...rest, asset_id: assetId });
@@ -68,13 +66,24 @@ export async function inlineSourceArguments(args) {
 /**
  * Store each inline asset on `pageId` as an upload of its bytes with its
  * media type would be stored: the same checks, key, metadata and limits
- * (persistPageAsset). A content refusal names the source it came from as
- * `invalid_source`; a storage failure is thrown as it is.
+ * (persistPageAsset). A content refusal is `invalid_source`, its message
+ * opening with the source_id it came from; a storage failure is thrown as
+ * it is.
  */
 export async function storeInlineSources(bucket, pageId, inline) {
   if (!inline.size) return;
   if (!bucket) throw new HttpError(503, "Image storage is unavailable");
   for (const [assetId, { bytes, mediaType, sourceId }] of inline) {
+    // An asset id holds one media type. Bytes this Page already stores as
+    // another type are refused here, where persistPageAsset could only fail
+    // to confirm the object.
+    const held = (await bucket.head(imageAssetKey(pageId, assetId)))?.httpMetadata?.contentType;
+    if (held !== undefined && held !== mediaType)
+      throw new HttpError(
+        400,
+        `${sourceId}: this Page stores the same bytes as ${held}; send them with that media_type`,
+        "invalid_source",
+      );
     let stored;
     try {
       ({ asset: stored } = await persistPageAsset(bucket, {
@@ -85,9 +94,7 @@ export async function storeInlineSources(bucket, pageId, inline) {
       }));
     } catch (error) {
       if (error?.status !== 415) throw error;
-      throw Object.assign(new HttpError(400, `${sourceId}: ${error.message}`, "invalid_source"), {
-        details: { source_id: sourceId },
-      });
+      throw new HttpError(400, `${sourceId}: ${error.message}`, "invalid_source");
     }
     if (stored.asset_id !== assetId) throw Error("Stored inline text disagrees with its asset id");
   }

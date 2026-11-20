@@ -37,7 +37,7 @@ const textSource = (source_id, name, media_type, text, source_revision = null) =
   media_type,
   source_revision,
 });
-const INLINE_LIMITS = `text holds up to ${INLINE_SOURCE_MAX_BYTES / 1024} KiB of UTF-8, and one batch up to ${INLINE_SOURCE_BATCH_MAX_BYTES / (1024 * 1024)} MiB of text in all`;
+const INLINE_LIMITS = `text holds up to ${INLINE_SOURCE_MAX_BYTES / 1024} KiB of UTF-8, and one batch up to ${INLINE_SOURCE_BATCH_MAX_BYTES / 1024} KiB of text in all`;
 const place = (view_id, after_node_id = "<id of the block the view follows>") => ({
   op: "insert_node",
   node: { type: "view", attrs: { view_id } },
@@ -185,7 +185,7 @@ Write the entry, and any data you hold as text, in one batch. ${INLINE_LIMITS}.
 ${edit("write-activity-sources", [textSource("activity-module", "Activity chart", "text/javascript", 'import * as Plot from "@observablehq/plot";\nexport async function render({ model, el }) {\n  const rows = await model.get("activity").csv();\n  el.append(Plot.barY(rows, { x: "day", y: "people" }).plot());\n}\n'), textSource("project-activity", "Activity by day", "text/csv", "day,people\n2026-11-01,3\n2026-11-02,5\n")])}
 The receipt's result.edits gives each source's source_revision. Then save the view in its own request:
 ${edit("save-activity", [{ ...example, data: { activity: { source_id: "project-activity" } } }])}
-Then place it in a second request:
+Then place it in a third request:
 ${edit("place-activity", [place("activity")])}
 
 To share a component, write its JavaScript once as a source. Each view chooses an import name for that source. With the following definition the entry can write \`import { ChoiceGroup } from "activity-controls"\`. Omit revision to follow the source, or give a retained revision to pin it.

@@ -55,21 +55,46 @@ const parquetHead = (assetId, owner = pageId) => ({
 });
 
 /** A Page over real plain sync. `page()` starts a new host over the same
- * storage, as after eviction or a crash; `assets.head` answers asset HEADs. */
-async function sourcesHost(t, { profile } = {}) {
+ * storage, as after eviction or a crash; `assets.head` answers asset HEADs.
+ * With `store`, the asset bucket also stores puts in `assets.objects` and
+ * reads them back; a HEAD of a key it holds answers from there.
+ * `assets.put(key)` runs before each put, to fail or observe it. */
+async function sourcesHost(t, { profile, store = false } = {}) {
   const auth = await createAuthFixture();
   t.mock.method(globalThis, "fetch", auth.fetch);
   t.mock.method(console, "error", () => {});
   const storage = new PlainStorage();
-  const assets = { heads: 0, head: async (key) => parquetHead(key.slice(-64)) };
+  const assets = {
+    heads: 0,
+    puts: 0,
+    objects: new Map(),
+    head: async (key) => parquetHead(key.slice(-64)),
+    put: async () => {},
+  };
   const env = {
     ...auth.env,
     CATALOGS: { getByName: () => ({ fetch: async () => Response.json({ ok: true }) }) },
     PAGES_ASSETS: {
       head: (key) => {
         assets.heads++;
-        return assets.head(key);
+        return assets.objects.get(key) ?? assets.head(key);
       },
+      ...(store && {
+        put: async (key, bytes, options) => {
+          await assets.put(key);
+          assets.puts++;
+          if (assets.objects.has(key)) return null;
+          const object = { key, bytes: bytes.slice(), size: bytes.length, ...options };
+          assets.objects.set(key, object);
+          return object;
+        },
+        get: async (key) => {
+          const object = assets.objects.get(key);
+          return object
+            ? { ...object, text: async () => new TextDecoder().decode(object.bytes) }
+            : null;
+        },
+      }),
     },
   };
   // `profile` is the account's provider profile, which names it.
@@ -983,4 +1008,296 @@ test("ESM and WAV sources bind to an executable view through the real Page host"
   const restarted = h.page();
   const again = await h.tool(restarted, "read_page", { view_id: "audio" });
   assert.deepEqual(again.body.view.spec, saved.body.view.spec);
+});
+
+// set_source with inline text (inline-sources.mjs) ----------------------------
+
+const sha256 = async (text) =>
+  Array.from(
+    new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+const MODULE = "export function render({ el }) { el.textContent = 'hi'; }\n";
+const inlineSource = (fields = {}) => ({
+  source_id: "code",
+  name: "Code",
+  text: MODULE,
+  media_type: "text/javascript",
+  source_revision: null,
+  ...fields,
+});
+
+test("set_source with text stores the bytes as an upload would and names them", async (t) => {
+  const h = await sourcesHost(t, { store: true });
+  h.assets.head = async () => null;
+  const written = await h.setSource(h.host, [inlineSource()]);
+  assert.equal(written.status, 200, JSON.stringify(written.body));
+  assert.deepEqual(written.body.result.edits, [
+    { op: "set_source", source_id: "code", source_revision: "1" },
+  ]);
+  const assetId = await sha256(MODULE);
+  const object = h.assets.objects.get(imageAssetKey(pageId, assetId));
+  assert.equal(new TextDecoder().decode(object.bytes), MODULE);
+  assert.equal(object.httpMetadata.contentType, "text/javascript");
+  assert.deepEqual(object.customMetadata, { page_id: pageId, hash: assetId });
+  const read = await h.tool(h.host, "read_page", { source_id: "code" });
+  assert.equal(read.body.source.asset_id, assetId);
+  assert.equal(read.body.source.media_type, "text/javascript");
+  assert.equal(read.body.source.producer.kind, "upload");
+  // The journal holds the asset id, never the text.
+  const journal = JSON.stringify([...(await h.storage.list({ prefix: "host/operation/" }))]);
+  assert.equal(journal.includes("textContent"), false);
+
+  // Refresh by text with the receipt's revision; a later set_source by the
+  // stored asset_id names the same asset.
+  const next = "export function render({ el }) { el.textContent = 'bye'; }\n";
+  const refreshed = await h.setSource(h.host, [inlineSource({ text: next, source_revision: "1" })]);
+  assert.equal(refreshed.body.result.edits[0].source_revision, "2");
+  const back = await h.setSource(h.host, [
+    { source_id: "code", name: "Code", asset_id: assetId, source_revision: "2" },
+  ]);
+  assert.equal(back.status, 200, JSON.stringify(back.body));
+  const again = await h.tool(h.host, "read_page", { source_id: "code" });
+  assert.deepEqual(
+    again.body.source.history.map(({ revision, asset_id }) => [revision, asset_id]),
+    [
+      ["1", assetId],
+      ["2", await sha256(next)],
+      ["3", assetId],
+    ],
+  );
+  assert.equal(h.assets.puts, 2, "the same bytes are stored once");
+});
+
+test("set_source text is refused when malformed, before anything is stored", async (t) => {
+  const h = await sourcesHost(t, { store: true });
+  h.assets.head = async () => null;
+  for (const [bad, pattern] of [
+    [{ asset_id: first }, /asset_id or text, not both/],
+    [{ text: undefined }, /asset_id, or text with media_type/],
+    [{ text: 42 }, /text is the source's content, a string/],
+    [{ media_type: "application/vnd.apache.parquet" }, /text needs media_type/],
+    [{ media_type: "image/png" }, /text needs media_type/],
+    [{ media_type: undefined }, /text needs media_type/],
+    [{ text: "x".repeat(256 * 1024 + 1) }, /at most 262144 bytes.*create_page_asset_upload/],
+    // Bytes, not characters: 87,382 three-byte characters pass 256 KiB.
+    [{ text: "€".repeat(87_382) }, /at most 262144 bytes/],
+  ]) {
+    const op = inlineSource(bad);
+    for (const key of Object.keys(op)) if (op[key] === undefined) delete op[key];
+    const refused = await h.setSource(h.host, [op]);
+    assert.equal(refused.status, 400, JSON.stringify(refused.body));
+    assert.equal(refused.body.code, "invalid_source");
+    assert.match(refused.body.error, pattern);
+  }
+  // media_type goes only with text.
+  const typed = await h.setSource(h.host, [usage({ media_type: "text/csv" })]);
+  assert.equal(typed.status, 400);
+  assert.match(typed.body.error, /media_type goes with text/);
+  // A batch holds at most 512 KiB of text.
+  const big = "y".repeat(256 * 1024 - 1);
+  const batch = await h.setSource(
+    h.host,
+    Array.from({ length: 3 }, (_, i) => inlineSource({ source_id: `s${i}`, text: big + i })),
+  );
+  assert.equal(batch.status, 400);
+  assert.match(batch.body.error, /at most 524288 bytes of inline text/);
+  // The content checks an upload gets: JSON parses, text is UTF-8 without NUL.
+  for (const [type, text] of [
+    ["application/json", "{not json"],
+    ["text/csv", " "],
+    ["text/css", "a\u0000b"],
+    ["text/javascript", ""],
+  ]) {
+    const refused = await h.setSource(h.host, [inlineSource({ media_type: type, text })]);
+    assert.equal(refused.status, 400, type);
+    assert.equal(refused.body.code, "invalid_source", type);
+    assert.match(refused.body.error, /^code: /, type);
+  }
+  // One asset id holds one media type.
+  const twins = await h.setSource(h.host, [
+    inlineSource({ source_id: "a", text: "[1]", media_type: "application/json" }),
+    inlineSource({ source_id: "b", text: "[1]", media_type: "text/javascript" }),
+  ]);
+  assert.equal(twins.status, 400);
+  assert.equal(twins.body.code, "invalid_source");
+  assert.match(twins.body.error, /^b: another set_source in this batch holds the same text as/);
+  // Bytes this Page stores as another type keep that type.
+  h.assets.head = async (key) => ({
+    ...parquetHead(key.slice(-64)),
+    httpMetadata: { contentType: "application/json" },
+  });
+  const retyped = await h.setSource(h.host, [inlineSource({ text: "[1]" })]);
+  assert.equal(retyped.status, 400);
+  assert.equal(retyped.body.code, "invalid_source");
+  assert.equal(
+    retyped.body.error,
+    "code: this Page stores the same bytes as application/json; send them with that media_type",
+  );
+  assert.equal(h.assets.puts, 0);
+  assert.equal(h.host.sourcesView(), undefined);
+});
+
+test("an inline retry with the same nonce stores one asset and replays one revision", async (t) => {
+  const h = await sourcesHost(t, { store: true });
+  h.assets.head = async () => null;
+  const read = await h.tool(h.host, "read_page", { include_content: false });
+  const args = {
+    revision: read.body.revision,
+    nonce: "inline-once",
+    operations: [{ op: "set_source", ...inlineSource() }],
+  };
+  // The first attempt stores the bytes, then stops before its journal entry.
+  h.storage.crashes.push({ test: (name) => name.startsWith("host/operation/"), before: true });
+  const lost = await h.tool(h.host, "edit_page", args);
+  assert.equal(lost.status, 500);
+  assert.equal(h.assets.objects.size, 1);
+  assert.equal(h.host.sourcesView()?.sources?.code, undefined);
+  // The retry finds the bytes stored and writes the source once.
+  const host = h.page();
+  const written = await h.tool(host, "edit_page", args);
+  assert.equal(written.status, 200, JSON.stringify(written.body));
+  assert.equal(written.body.result.edits[0].source_revision, "1");
+  const puts = h.assets.puts;
+  h.assets.put = async () => assert.fail("A replay must not store");
+  const replayed = await h.tool(host, "edit_page", args);
+  assert.deepEqual(replayed, written);
+  assert.equal(h.assets.puts, puts);
+  assert.equal(h.assets.objects.size, 1);
+  const source = (await h.tool(host, "read_page", { source_id: "code" })).body.source;
+  assert.equal(source.source_revision, "1");
+  assert.equal(source.history.length, 1);
+});
+
+test("a failed inline store leaves the sources document untouched", async (t) => {
+  const h = await sourcesHost(t, { store: true });
+  h.assets.head = async () => null;
+  h.assets.put = async () => {
+    throw Error("Simulated object store outage");
+  };
+  const failed = await h.setSource(h.host, [inlineSource()]);
+  assert.equal(failed.status, 500);
+  assert.equal(h.host.sourcesView(), undefined, "no sources document is created");
+  assert.deepEqual(await h.sourcesStored(), []);
+  h.assets.put = async () => {};
+  assert.equal((await h.setSource(h.host, [inlineSource()])).status, 200);
+  const before = (await h.tool(h.host, "read_page", { source_id: "code" })).body;
+  h.assets.put = async () => {
+    throw Error("Simulated object store outage");
+  };
+  const refresh = await h.setSource(h.host, [
+    inlineSource({ text: "export default 2;", source_revision: "1" }),
+  ]);
+  assert.equal(refresh.status, 500);
+  const after = (await h.tool(h.host, "read_page", { source_id: "code" })).body;
+  assert.deepEqual(after.source, before.source);
+  assert.equal(after.sources_revision, before.sources_revision);
+});
+
+test("a batch stores every inline asset before its one change names any, and stays atomic", async (t) => {
+  const h = await sourcesHost(t, { store: true });
+  h.assets.head = async (key) => (key.endsWith(first) ? parquetHead(first) : null);
+  const seen = [];
+  h.assets.put = async () => seen.push(h.host.sourcesView()?.sources ?? null);
+  const batch = [
+    inlineSource({ source_id: "entry" }),
+    inlineSource({ source_id: "helper", text: "export default 1;\n" }),
+    inlineSource({ source_id: "settings", text: '{"limit":3}', media_type: "application/json" }),
+    inlineSource({ source_id: "rows", text: "day,people\n1,2\n", media_type: "text/csv" }),
+    usage({ source_id: "daily" }),
+  ];
+  const written = await h.setSource(h.host, batch);
+  assert.equal(written.status, 200, JSON.stringify(written.body));
+  assert.deepEqual(seen, [null, null, null, null], "nothing is named while assets are stored");
+  assert.deepEqual(
+    written.body.result.edits.map(({ source_id, source_revision }) => [source_id, source_revision]),
+    ["entry", "helper", "settings", "rows", "daily"].map((id) => [id, "1"]),
+  );
+  const listed = (await h.tool(h.host, "read_page", { sources: true })).body.sources;
+  assert.deepEqual(
+    Object.fromEntries(listed.map(({ source_id, media_type }) => [source_id, media_type])),
+    {
+      daily: PARQUET,
+      entry: "text/javascript",
+      helper: "text/javascript",
+      rows: "text/csv",
+      settings: "application/json",
+    },
+  );
+  // One operation the store refuses refuses the whole batch: no source moves.
+  const refused = await h.setSource(h.host, [
+    inlineSource({ source_id: "entry", text: "export default 3;", source_revision: "1" }),
+    inlineSource({
+      source_id: "settings",
+      text: "{",
+      media_type: "application/json",
+      source_revision: "1",
+    }),
+  ]);
+  assert.equal(refused.status, 400, JSON.stringify(refused.body));
+  assert.match(refused.body.error, /^settings: Use a valid UTF-8 JSON file/);
+  assert.deepEqual((await h.tool(h.host, "read_page", { sources: true })).body.sources, listed);
+});
+
+test("an inline set_source with a stale revision is stale_source, and stores nothing", async (t) => {
+  const h = await sourcesHost(t, { store: true });
+  h.assets.head = async () => null;
+  assert.equal((await h.setSource(h.host, [inlineSource()])).status, 200);
+  const second = await h.setSource(h.host, [
+    inlineSource({ text: "export default 1;", source_revision: "1" }),
+  ]);
+  assert.equal(second.status, 200);
+  const puts = h.assets.puts;
+  for (const source_revision of ["1", null]) {
+    const stale = await h.setSource(h.host, [
+      inlineSource({ text: "export default 9;", source_revision }),
+    ]);
+    assert.equal(stale.status, 409);
+    assert.equal(stale.body.code, "stale_source");
+    assert.equal(stale.body.source_id, "code");
+    assert.equal(stale.body.source_revision, "2");
+  }
+  assert.equal(h.assets.puts, puts);
+});
+
+test("a module view saved against inline sources reads their stored code", async (t) => {
+  const h = await sourcesHost(t, { store: true });
+  h.assets.head = async () => null;
+  const sources = await h.setSource(h.host, [
+    inlineSource({
+      source_id: "main",
+      text: `import helper from "helper";\nexport function render({ el }) { el.textContent = helper; }\n`,
+    }),
+    inlineSource({ source_id: "helper", text: `import "./sibling.js";\nexport default 1;\n` }),
+  ]);
+  assert.equal(sources.status, 200, JSON.stringify(sources.body));
+  const view = {
+    op: "set_view",
+    view_type: "module",
+    view_id: "chart",
+    title: "Chart",
+    module: { source_id: "main" },
+    imports: { helper: { source_id: "helper" } },
+    view_revision: null,
+  };
+  // set_view reads the helper's stored bytes and finds its relative import.
+  const refused = await h.setSource(h.host, [view]);
+  assert.equal(refused.status, 400, JSON.stringify(refused.body));
+  assert.match(refused.body.error, /"\.\/sibling\.js" in import "helper"/);
+  const fixed = await h.setSource(h.host, [
+    inlineSource({ source_id: "helper", text: "export default 1;\n", source_revision: "1" }),
+  ]);
+  assert.equal(fixed.status, 200, JSON.stringify(fixed.body));
+  const saved = await h.setSource(h.host, [view]);
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.equal(saved.body.warnings, undefined);
+  const read = await h.tool(h.host, "read_page", { views: true });
+  assert.deepEqual(
+    read.body.views[0].dependencies.map((d) => d.source.source_id),
+    ["main", "helper"],
+  );
+  const placed = await h.setSource(h.host, [
+    { op: "insert_node", node: { type: "view", attrs: { view_id: "chart" } } },
+  ]);
+  assert.equal(placed.status, 200, JSON.stringify(placed.body));
 });

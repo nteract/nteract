@@ -1942,6 +1942,30 @@ and `history_truncated`; both together return
 both. Alone they read no Page content; beside other selectors they add to
 them. Reads name `sources_revision` once the document exists.
 
+A `set_source` can carry its content inline: `text` with `media_type`
+(`text/javascript`, `text/css`, `application/json` or `text/csv`, the text
+types among a source's types) in place of `asset_id`. Exactly one of
+`asset_id` and `text` is accepted. `text` holds at most 256 KiB of UTF-8
+(`INLINE_SOURCE_MAX_BYTES` in [shared/sources.mjs](shared/sources.mjs)) and
+a batch at most 512 KiB of text in all, since the Page host reads at most
+1 MiB of JSON for one tool call; larger text is `invalid_source` and names the
+upload. The Page host turns each inline operation into the `asset_id`
+operation of its UTF-8 bytes before the journal sees the batch
+([worker/inline-sources.mjs](worker/inline-sources.mjs)), so the journal's
+fingerprint and receipt hold the asset id and never the text. The write's
+`prepare` step, which runs only for a new intent, stores the bytes with the
+upload route's `persistPageAsset` after the source revisions are checked and
+before anything is journaled: the same asset id, R2 key, metadata, content
+checks and limits as an upload of those bytes. A content refusal is
+`invalid_source`, its message opening with the source ID, and so is text
+whose bytes the Page already stores as another media type. A failed store
+journals nothing and leaves the sources document as it was. Storing is
+content-addressed, so a retry under the same nonce stores nothing new before
+the journal and replays the receipt after it. The stored source is the record
+an upload makes (`producer.kind` `upload`), so a later `set_source` by its
+`asset_id`, `read_page` and `asset_from` treat it as any uploaded asset.
+`asset_from` on an inline operation is `invalid_arguments`.
+
 `delete_source` checks the source revision, returns `{op, source_id}`, and
 leaves tables and views in place. All consumers of that source, including
 revision pins, draw empty and identify it. An asset-pinned table still reads
@@ -2130,7 +2154,7 @@ saving; the renderer rechecks types when following a changed source. The stored
 view accepts no `data` alias map. The AFM API and iframe transport are unchanged.
 
 Upload ESM, CSS, WAV (`audio/wav`), JSON (`application/json`), CSV (`text/csv`), arbitrary binary (`application/octet-stream`)
-or Parquet with a new source ID and name. Use `set_source` for an existing asset or a refresh. ESM, CSS, WAV and generic
+or Parquet with a new source ID and name, or write ESM, CSS, JSON or CSV up to 256 KiB as `set_source` `text` with its `media_type` and no upload (Sources document, above). Use `set_source` for an existing asset or a refresh. ESM, CSS, WAV and generic
 binary uploads require a content-type-bound capability and return `insert: null`.
 Upload JSON with `content_type: "application/json"`. Sources previews the data and a module reads it with `await model.get(name).json()`.
 Upload CSV with `content_type: "text/csv"`; the upload checks only that it is UTF-8 text, and its `insert` is the dataframe `insert_node` with `media_type: "text/csv"`. Sources shows its header and first rows, a module reads it with `await model.get(name).csv()`, and a chart or a dataframe (`media_type: "text/csv"`) draws it.
@@ -2781,7 +2805,9 @@ also builds the `/llms.txt` line. Optional `content_type` and `size`
 arguments bind the capability to one type and byte count; the gateway checks the bytes against
 them before storing anything (`upload_mismatch`), and a bound size refuses a
 different `Content-Length` before reading the body. A credential-less upload
-to the asset route is told to call `create_page_asset_upload`.
+to the asset route is told to call `create_page_asset_upload`. JavaScript,
+CSS, JSON and CSV up to 256 KiB need no capability: `set_source` takes them as
+inline `text` and stores them as this route would (Sources document, above).
 
 The capability is `pu1.<payload>.<mac>`, an HMAC-SHA-256 signed with the Page
 host's existing retry-token key ([operation-journal.mjs](worker/operation-journal.mjs)

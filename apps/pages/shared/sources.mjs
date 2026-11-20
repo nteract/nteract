@@ -13,9 +13,10 @@ export const INLINE_SOURCE_MEDIA_TYPES = Object.freeze(
  * typically 6 to 35 KB. Larger files take an upload. */
 export const INLINE_SOURCE_MAX_BYTES = 256 * 1024;
 /** The most inline UTF-8 bytes one edit_page batch holds, all its set_source
- * texts together. JSON escaping can grow text several times over, and the
- * MCP transport refuses a request body over 4 MiB. */
-export const INLINE_SOURCE_BATCH_MAX_BYTES = 1024 * 1024;
+ * texts together. The Page host reads at most 1 MiB of JSON for one tool
+ * call (worker/auth.mjs readJson), and JSON escaping grows text, so this
+ * leaves the request twice the text's size. */
+export const INLINE_SOURCE_BATCH_MAX_BYTES = 512 * 1024;
 
 /** The most sources a Page holds. */
 export const MAX_SOURCES = 64;
