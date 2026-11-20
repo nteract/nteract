@@ -37,26 +37,27 @@ export function pageShellSlug(request, url = new URL(request.url)) {
 }
 
 /** `html` with its title naming `slug`'s words, and the preview tags titled
- * with them. `origin` is the deployment's public origin, for the image URL. */
-export function titledShell(html, slug, origin) {
+ * with them. `origin` is the deployment's public origin and `card` its card
+ * (site-tags.mjs socialCard), for the image URL. */
+export function titledShell(html, slug, origin, card) {
   const words = pageSlugWords(slug);
   return html.replace(
     TITLE,
     () =>
       `<title>${escapeHtml(tabTitle(words))}</title>` +
-      siteTags(origin, { title: words, type: "article" }),
+      siteTags(origin, card, { title: words, type: "article" }),
   );
 }
 
 /** The app shell for a slugged Page route, from `assets` (the ASSETS
  * binding). Any answer other than a 200 HTML shell passes through. */
-export async function slugShellResponse(request, assets, slug, origin) {
+export async function slugShellResponse(request, assets, slug, origin, card) {
   const headers = new Headers(request.headers);
   for (const name of CONDITIONAL) headers.delete(name);
   const response = await assets.fetch(new Request(request.url, { method: "GET", headers }));
   const type = response.headers.get("content-type") ?? "";
   if (response.status !== 200 || !type.startsWith("text/html")) return response;
-  const body = titledShell(await response.text(), slug, origin);
+  const body = titledShell(await response.text(), slug, origin, card);
   const out = new Headers(response.headers);
   for (const name of ["etag", "last-modified", "content-length", "content-encoding"])
     out.delete(name);

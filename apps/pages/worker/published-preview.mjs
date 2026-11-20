@@ -9,7 +9,7 @@ import { validAssetId } from "../shared/image-assets.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
 import { PREVIEW_LAYOUTS } from "../shared/preview-layouts.mjs";
 import { withTimeout } from "./catalog-index.mjs";
-import { escapeHtml, renderMetaTags, socialCardTags } from "./site-tags.mjs";
+import { escapeHtml, renderMetaTags, socialCard, socialCardTags } from "./site-tags.mjs";
 
 export const PREVIEW_KEY = "host/published-preview";
 export const PREVIEW_READ = "/internal/published-preview";
@@ -210,7 +210,9 @@ export function previewDescription(preview) {
     .join(" · ");
 }
 
-export function previewTags(origin, pageId, preview) {
+/** The tags for `/p/<pageId>`. `card` is socialCard(env), shown when there
+ * is no published snapshot. */
+export function previewTags(origin, card, pageId, preview) {
   const title = preview?.title ?? PRODUCT_NAME;
   const description = previewDescription(preview);
   const tags = {
@@ -222,8 +224,8 @@ export function previewTags(origin, pageId, preview) {
     "twitter:title": title,
     "twitter:description": description,
     // Without a snapshot there is no Page image to show, and the caller may
-    // not even be able to read the Page: the product's card stands in.
-    ...(preview ? snapshotImageTags(origin, pageId, preview, title) : socialCardTags(origin)),
+    // not even be able to read the Page: the deployment's card stands in.
+    ...(preview ? snapshotImageTags(origin, pageId, preview, title) : socialCardTags(origin, card)),
   };
   return renderMetaTags(description, tags);
 }
@@ -289,7 +291,7 @@ export async function publicPreviewResponse(request, env, pageId, file, fallback
       () =>
         `<title>${preview ? `${escapeHtml(preview.title)} · ` : ""}${escapeHtml(PRODUCT_NAME)}</title>`,
     )
-    .replace("</head>", () => `${previewTags(origin, pageId, preview)}\n</head>`);
+    .replace("</head>", () => `${previewTags(origin, socialCard(env), pageId, preview)}\n</head>`);
   const outputHeaders = new Headers(shell.headers);
   for (const name of ["content-length", "content-encoding", "etag", "last-modified"])
     outputHeaders.delete(name);

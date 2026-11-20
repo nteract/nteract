@@ -5,7 +5,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import worker from "./index.mjs";
 import { titledShell } from "./page-shell.mjs";
-import { siteShellResponse, siteTags, socialCardUrl } from "./site-tags.mjs";
+import { cardBucket } from "./card-bucket-fixture.mjs";
+import {
+  COMMITTED_CARD,
+  brandCardKey,
+  siteShellResponse,
+  siteTags,
+  socialCard,
+  socialCardUrl,
+} from "./site-tags.mjs";
 import { SOCIAL_CARD_VERSION } from "../shared/social-card.mjs";
 import { withProductName } from "../scripts/viewer-chunks.mjs";
 
@@ -22,10 +30,10 @@ const SHELL = withProductName(
 const siteShell = (path) =>
   SHELL.replace(
     "</head>",
-    () => `${siteTags(origin, { url: path ? origin + path : undefined })}\n</head>`,
+    () => `${siteTags(origin, COMMITTED_CARD, { url: path ? origin + path : undefined })}\n</head>`,
   );
 
-function harness(t) {
+function harness(t, extra = {}) {
   for (const level of ["log", "info", "warn", "error"]) t.mock.method(console, level, () => {});
   t.mock.method(globalThis, "fetch", async () => {
     throw new Error("no request leaves the process");
@@ -67,6 +75,7 @@ function harness(t) {
     PAGES: pages,
     CATALOGS: host,
     PROJECTS: host,
+    ...extra,
   };
   const send = async (path, init = {}) => {
     const response = await worker.fetch(new Request(origin + path, init), env);
@@ -86,14 +95,18 @@ test("a slugged Page link's shell carries the slug's words as its title and og:t
   assert.ok(answer.body.includes("<title>My Dashboard · Pages</title>"), answer.body);
   assert.ok(answer.body.includes('<meta property="og:title" content="My Dashboard">'));
   assert.ok(answer.body.includes('<meta name="twitter:title" content="My Dashboard">'));
-  assert.ok(answer.body.includes(`<meta property="og:image" content="${socialCardUrl(origin)}">`));
+  assert.ok(
+    answer.body.includes(
+      `<meta property="og:image" content="${socialCardUrl(origin, COMMITTED_CARD)}">`,
+    ),
+  );
   assert.equal(answer.body.match(/<title>/g).length, 1);
   // Only the title and the preview tags change: the rest of the shell is the
   // asset's bytes.
-  assert.equal(answer.body, titledShell(SHELL, "My-Dashboard", origin));
+  assert.equal(answer.body, titledShell(SHELL, "My-Dashboard", origin, COMMITTED_CARD));
   assert.equal(
     answer.body.replace(
-      `<title>My Dashboard · Pages</title>${siteTags(origin, { title: "My Dashboard", type: "article" })}`,
+      `<title>My Dashboard · Pages</title>${siteTags(origin, COMMITTED_CARD, { title: "My Dashboard", type: "article" })}`,
       "",
     ),
     SHELL.replace(/<title>[^<]*<\/title>/, ""),
@@ -130,7 +143,7 @@ test("a slug's words are escaped, and its grammar admits no markup", async (t) =
   assert.ok(answer.body.includes("<title>script alert 1 · Pages</title>"));
   assert.equal(answer.body.split("<script").length, SHELL.split("<script").length);
   // titledShell escapes whatever reaches it.
-  const escaped = titledShell("<title>x</title>", `a"b<c>&d'e`, origin);
+  const escaped = titledShell("<title>x</title>", `a"b<c>&d'e`, origin, COMMITTED_CARD);
   assert.ok(escaped.startsWith("<title>a&quot;b&lt;c&gt;&amp;d&#39;e · Pages</title>"));
   assert.ok(escaped.includes(`<meta property="og:title" content="a&quot;b&lt;c&gt;&amp;d&#39;e">`));
   assert.ok(!/[<>"']/.test(escaped.match(/og:title" content="([^"]*)"/)[1]));
@@ -162,7 +175,7 @@ test("an unpublished canonical Page link carries only generic OG with no cache v
     assert.match(answer.body, /<meta property="og:title" content="Pages">/);
     assert.match(answer.body, /Sign in to check your access/);
     // No Page image: the product icon stands in.
-    assert.ok(answer.body.includes(`og:image" content="${socialCardUrl(origin)}"`));
+    assert.ok(answer.body.includes(`og:image" content="${socialCardUrl(origin, COMMITTED_CARD)}"`));
     assert.match(answer.body, /twitter:card" content="summary_large_image"/);
     assert.equal(answer.headers.etag, undefined, path);
     assert.equal(answer.headers["cache-control"], "no-store", path);
@@ -262,7 +275,7 @@ test("a response that is not the HTML shell passes through unchanged", async () 
 
 test("the product's card is served at the URL the tags name", async (t) => {
   const { send } = harness(t);
-  const url = socialCardUrl(origin);
+  const url = socialCardUrl(origin, COMMITTED_CARD);
   assert.equal(url, `${origin}/social-card.png?v=${SOCIAL_CARD_VERSION}`);
   const response = await worker.fetch(new Request(url), { NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin });
   assert.equal(response.status, 200);
@@ -276,7 +289,7 @@ test("the product's card is served at the URL the tags name", async (t) => {
   assert.equal(view.getUint32(16), 1200);
   assert.equal(view.getUint32(20), 630);
   assert.match(
-    siteTags(origin),
+    siteTags(origin, COMMITTED_CARD),
     /og:image:width" content="1200">\n.*og:image:height" content="630"/,
   );
   // Another build's URL still shows the card, but is not kept for good.
@@ -289,4 +302,35 @@ test("the product's card is served at the URL the tags name", async (t) => {
   const head = await send("/social-card.png", { method: "HEAD" });
   assert.equal(head.status, 200);
   assert.equal(head.headers["content-type"], "image/png");
+});
+
+test("a deployment's own card replaces the committed one on every shell and at its URL", async (t) => {
+  const key = brandCardKey("0123456789ab");
+  const bucket = cardBucket();
+  const bytes = new TextEncoder().encode("the deployment's own card");
+  await bucket.put(key, bytes);
+  const env = { PAGES_SOCIAL_CARD: key, PAGES_ASSETS: bucket };
+  const { send } = harness(t, env);
+  const card = socialCard(env);
+  const url = socialCardUrl(origin, card);
+  assert.equal(url, `${origin}/social-card.png?v=0123456789ab`);
+  const home = await send("/");
+  assert.equal(
+    home.body,
+    SHELL.replace("</head>", () => `${siteTags(origin, card, { url: `${origin}/` })}\n</head>`),
+  );
+  // The home shell, an app route, a slugged Page link and an unpublished Page
+  // link name the same card, and never the committed one.
+  for (const path of ["/", "/trash", `/p/${known}/My-Dashboard`, `/p/${known}`]) {
+    const answer = await send(path);
+    assert.ok(answer.body.includes(`<meta property="og:image" content="${url}">`), path);
+    assert.ok(answer.body.includes(`<meta name="twitter:image" content="${url}">`), path);
+    assert.ok(!answer.body.includes(SOCIAL_CARD_VERSION), path);
+  }
+  const image = await worker.fetch(new Request(url), {
+    NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin,
+    ...env,
+  });
+  assert.equal(image.headers.get("cache-control"), "public, max-age=31536000, immutable");
+  assert.deepEqual(new Uint8Array(await image.arrayBuffer()), bytes);
 });

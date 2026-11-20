@@ -4,7 +4,8 @@ import worker from "./index.mjs";
 import { world } from "./projects-fixture.mjs";
 import { cardBucket } from "./card-bucket-fixture.mjs";
 import { imageAssetKey } from "./image-assets.mjs";
-import { socialCardUrl } from "./site-tags.mjs";
+import { COMMITTED_CARD, brandCardKey, socialCard, socialCardUrl } from "./site-tags.mjs";
+import { SOCIAL_CARD_VERSION } from "../shared/social-card.mjs";
 import {
   PREVIEW_KEY,
   publicationTransition,
@@ -95,6 +96,31 @@ test("private Pages get generic OG; only the owner can publish an independent sn
   assert.equal(head.headers.has("etag"), false);
 });
 
+test("an unpublished Page link names the deployment's own card until a snapshot replaces it", async (t) => {
+  const { w, id, send, manage, command } = await fixture(t);
+  const key = brandCardKey("0123456789ab");
+  await w.env.PAGES_ASSETS.put(key, image);
+  w.env.PAGES_SOCIAL_CARD = key;
+  const card = socialCard(w.env);
+  const url = socialCardUrl(origin, card);
+  assert.equal(url, `${origin}/social-card.png?v=0123456789ab`);
+  for (const path of [`/p/${id}`, `/p/${id}/Some-slug`]) {
+    const html = await (await send(path)).text();
+    assert.ok(html.includes(`<meta property="og:image" content="${url}">`), path);
+    assert.ok(html.includes(`<meta name="twitter:image" content="${url}">`), path);
+    assert.ok(!html.includes(SOCIAL_CARD_VERSION), path);
+  }
+  assert.ok((await (await send(`/p/${id}`)).text()).includes(previewTags(origin, card, id, null)));
+  const served = await send(new URL(url).pathname + new URL(url).search);
+  assert.equal(served.headers.get("cache-control"), "public, max-age=31536000, immutable");
+  assert.deepEqual(new Uint8Array(await served.arrayBuffer()), image);
+  // A published snapshot shows its own image, whichever card the deployment has.
+  assert.equal((await manage(command())).status, 200);
+  const published = await (await send(`/p/${id}`)).text();
+  assert.match(published, new RegExp(`og:image" content="${origin}/p/${id}/preview\\.png\\?v=1"`));
+  assert.ok(!published.includes("social-card.png"));
+});
+
 test("snapshot updates are fenced; replay is safe; unpublishing revokes old image URLs", async (t) => {
   const { id, send, manage, command } = await fixture(t);
   const first = command();
@@ -148,7 +174,11 @@ test("approved authors reach every preview with validated dimensions, and are fe
 });
 
 test("older published previews need no author or assumed image dimensions", () => {
-  const html = previewTags(origin, "id", { title: "Older", description: "Summary", revision: 1 });
+  const html = previewTags(origin, COMMITTED_CARD, "id", {
+    title: "Older",
+    description: "Summary",
+    revision: 1,
+  });
   assert.match(html, /og:description" content="Summary"/);
   assert.doesNotMatch(html, /undefined|og:image:width|og:image:height|by /);
 });
@@ -224,8 +254,8 @@ test("publication state/event matrix and lifecycle fence", () => {
       assert.equal(publishedSnapshot({ owner: "owner", lifecycleRevision: 5 }, state), null);
     }
   // No snapshot, no Page image: the product icon stands in, never a Page's.
-  const generic = previewTags(origin, "id", null);
-  assert.ok(generic.includes(`og:image" content="${socialCardUrl(origin)}"`));
+  const generic = previewTags(origin, COMMITTED_CARD, "id", null);
+  assert.ok(generic.includes(`og:image" content="${socialCardUrl(origin, COMMITTED_CARD)}"`));
   assert.doesNotMatch(generic, /preview\.png/);
 });
 

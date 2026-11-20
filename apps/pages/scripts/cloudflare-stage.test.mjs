@@ -121,6 +121,13 @@ test("the profile supplies the deployment's name, databases, bucket and variable
   assert.equal(cloudflareConfig(profile({ account_id: account })).account_id, account);
 });
 
+test("the brand card is a deployment's own variable, never part of the package", () => {
+  const key = "brand/social-card-0123456789ab.png";
+  const config = cloudflareConfig(profile({ vars: { ...profile().vars, PAGES_SOCIAL_CARD: key } }));
+  assert.equal(config.vars.PAGES_SOCIAL_CARD, key);
+  assert.equal("PAGES_SOCIAL_CARD" in structuralConfig().vars, false);
+});
+
 const DOMAIN = { hostname: "pages.example.com", zone_name: "example.com" };
 const onDomain = (changes = {}) =>
   profile({
