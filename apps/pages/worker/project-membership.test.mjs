@@ -289,6 +289,35 @@ for (const role of ["editor", "commenter", "viewer"])
     assert.deepEqual((await w.call("member", "list_projects")).body.projects, []);
   });
 
+// Only a Project read claims a Project invitation (`/internal/space/read`).
+// The Page host resolves inherited access through `/internal/space/policy`,
+// which carries no caller, so an invitee who opens a child Page's link first
+// is refused until they open the Project or their Page list.
+test(
+  "an invitee who opens a child Page link first claims the Project invitation",
+  { todo: "a child Page open never claims its Project's invitation" },
+  async (t) => {
+    const w = await world(t);
+    const project = await w.createProject("Email Project");
+    const child = (await w.createPage({ title: "Child", project_id: project.project_id })).body;
+    const invited = await w.call("owner", "manage_project_access", {
+      project_id: project.project_id,
+      action: "invite",
+      email: "fixture@example.invalid",
+      role: "viewer",
+      expected_revision: 0,
+      nonce: w.key(),
+    });
+    assert.equal(invited.status, 200, JSON.stringify(invited.body));
+    const opened = await w.call("member", "read_page", { page_id: child.page_id });
+    assert.equal(opened.status, 200, JSON.stringify(opened.body));
+    const roster = (await w.call("owner", "get_project_access", { project_id: project.project_id }))
+      .body;
+    assert.equal(roster.invites.length, 0);
+    assert.equal(roster.members[w.member].role, "viewer");
+  },
+);
+
 test("revoked and nonmatching exact-email invites never discover or authorize Projects", async (t) => {
   const w = await world(t);
   const project = await w.createProject("Pending");
