@@ -89,14 +89,48 @@ It is disabled (404) unless the host supplies all of
 secret configuration, not source or generated artifacts. The public origin
 must be set to the deployment's HTTPS URL.
 
-In a Slack app owned by the operator:
+The operator owns the Slack app. Create it from this manifest
+(api.slack.com/apps, Create New App, From a manifest), with the deployment's
+hostname in both places:
 
-1. Enable Work Object Previews with the Content Item entity type.
-2. Request bot scopes `links:read` and `links:write` and install the app in
-   the configured workspace.
-3. Register the Pages hostname as an unfurl domain.
-4. Set the Events API request URL to the deployment's `/api/slack/events`;
-   subscribe to `link_shared` and `entity_details_requested`.
+```yaml
+display_information:
+  name: Pages
+  description: Rich previews for Page links
+features:
+  bot_user:
+    display_name: Pages
+    always_online: false
+  unfurl_domains:
+    - pages.example.com
+oauth_config:
+  scopes:
+    bot:
+      - links:read
+      - links:write
+settings:
+  event_subscriptions:
+    request_url: https://pages.example.com/api/slack/events
+    bot_events:
+      - link_shared
+      - entity_details_requested
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
+```
+
+The manifest sets the scopes, the unfurl domain and the two events. The rest
+is by hand, in this order:
+
+1. In the app's settings, open Work Object Previews, turn it on, select the
+   Content Item entity type and save. The manifest does not set this.
+2. Install the app in the workspace. A workspace that restricts apps asks an
+   admin to approve it first.
+3. Give the host its three values: the app's signing secret, the bot token
+   from the install, and the workspace's team ID. Deploy.
+4. Verify the request URL in the app's Event Subscriptions. Slack sends a
+   challenge, and the endpoint answers it only once the host has all three
+   values, so this step comes after the deploy.
 5. Publish a test Page preview, then check composer unfurls, channel unfurls,
    image expansion, detail refresh, update, and removal in that workspace.
 
