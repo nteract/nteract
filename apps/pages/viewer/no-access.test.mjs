@@ -43,12 +43,12 @@ test("a Project the account can't read is a no-access refusal", () => {
     targetId: "project-1",
     principal: PRINCIPAL,
   });
-  // The Project's content Page refused: still the Project the address named.
-  assert.deepEqual(noAccessRefusal(PAGE_DENIED, { ...OPEN_PROJECT, pageId: "content-1" }), {
-    kind: "project",
-    targetId: "project-1",
-    principal: PRINCIPAL,
-  });
+});
+
+test("a readable Project whose content Page refuses keeps its retry screen", () => {
+  // get_project answered, so the Project exists and is shared with this
+  // account. The screen's wording would be false.
+  assert.equal(noAccessRefusal(PAGE_DENIED, { ...OPEN_PROJECT, pageId: "content-1" }), null);
 });
 
 test("refusals with screens or banners of their own are not no-access", () => {

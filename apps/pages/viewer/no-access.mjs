@@ -49,14 +49,14 @@ const projectMissing = (error) => error?.status === 404 && error.code === "proje
  * the error belongs elsewhere: a format refusal (unopened-page.mjs), a Page
  * in Trash, a 401 (the sign-in prompt), a transient failure (the banner), or
  * an open that is no longer `current` because the person navigated away.
- * `projectId` is set for a Project address; its get_project answers
- * project_not_found, and its content Page answers page_access_denied. */
+ * `projectId` is set for a Project address, where only get_project's
+ * project_not_found counts. Once get_project has answered, the Project
+ * exists and this account reads it, so a refusal from its content Page keeps
+ * the banner and the Project's retry screen. */
 export function noAccessRefusal(error, { current, pageId, projectId, principal }) {
   if (!current || !principal) return null;
   if (projectId)
-    return projectMissing(error) || pageDenied(error)
-      ? { kind: "project", targetId: projectId, principal }
-      : null;
+    return projectMissing(error) ? { kind: "project", targetId: projectId, principal } : null;
   return pageId && pageDenied(error) ? { kind: "page", targetId: pageId, principal } : null;
 }
 
