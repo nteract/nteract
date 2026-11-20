@@ -89,6 +89,8 @@ import { SchemaNotice } from "./SchemaNotice.jsx";
 import { RetiredPage } from "./RetiredPage.jsx";
 import { UnopenedPage } from "./UnopenedPage.jsx";
 import { formatRefused, sessionFormatStopped, trashArguments } from "./unopened-page.mjs";
+import { NoAccess } from "./NoAccess.jsx";
+import { NO_ACCESS_INITIAL, noAccessRefusal, noAccessStep } from "./no-access.mjs";
 import { reloadGate } from "./build-freshness.mjs";
 import { EditorLoader } from "./editor-loader.mjs";
 import { editorBoot, preloadWasm } from "./wasm-preload.mjs";
@@ -242,6 +244,9 @@ function App() {
     // A Page the host refused to open for its document format, with no
     // session: { pageId, principal } for its stopped screen, or null.
     [unopened, setUnopened] = useState(null),
+    // A Page or Project open the host refused because this account can't
+    // read it (no-access.mjs): its screen, or `none`.
+    [noAccess, dispatchNoAccess] = useReducer(noAccessStep, NO_ACCESS_INITIAL),
     // list_pages' `quota` for the signed-in account, from the library's
     // latest answer, or null.
     [quota, setQuota] = useState(null),
@@ -337,7 +342,7 @@ function App() {
     titleCompositionRef = useRef(null),
     activeBlock = useRef(null),
     commentsButton = useRef(null);
-  screen.current = { index, projectOpen, trashOpen, opening, placement, unopened };
+  screen.current = { index, projectOpen, trashOpen, opening, placement, unopened, noAccess };
   // The inline comment composer. It outlives Pages; resetDocumentUI resets it,
   // and a send that settles after the reset is ignored by its key.
   const [composer] = useState(
@@ -483,6 +488,11 @@ function App() {
       return false;
     }
     bootPreview.dispatch({ type: "installed" });
+    // A session takes the screen from a refusal's. Not every install comes
+    // through open(): a new draft installs directly, and when its session
+    // leaves, the refusal must not be what is left.
+    setUnopened(null);
+    dispatchNoAccess({ type: "cleared" });
     setIndex(null);
     setPlacement(null);
     dispatchProjectDetails({ type: "reset", value: project });
@@ -639,6 +649,7 @@ function App() {
     picker.close();
     setNotice("");
     setUnopened(null);
+    dispatchNoAccess({ type: "cleared" });
     setProjectOpen(projectId);
     if (id && host.current?.pageId === id) {
       const placed = screen.current.placement;
@@ -682,11 +693,20 @@ function App() {
       } else await install(next, revision, { focus, project });
     } catch (error) {
       if (host.isCurrent(revision)) bootPreview.dispatch({ type: "refused" });
+      const principal = authentication.current?.identity?.principal;
+      // A Page or Project this account can't read gets the No access screen.
+      const refusal = noAccessRefusal(error, {
+        current: host.isCurrent(revision),
+        pageId: id,
+        projectId,
+        principal,
+      });
       // A Page in a format the host doesn't open gets its own screen, where
       // its owner can move it to Trash. Project content is left to its
       // Project.
       if (host.isCurrent(revision) && !projectId && formatRefused(error))
-        setUnopened({ pageId: id, principal: authentication.current?.identity?.principal });
+        setUnopened({ pageId: id, principal });
+      else if (refusal) dispatchNoAccess({ type: "refused", refusal });
       else if (host.isCurrent(revision) && !bannerShows(error)) showError(error);
     } finally {
       host.finishRequest(controller);
@@ -713,6 +733,7 @@ function App() {
     picker.close();
     setTrashOpen(false);
     setUnopened(null);
+    dispatchNoAccess({ type: "cleared" });
     setProjectOpen(null);
     setIndex(listingVisit("home", library));
     if (historyMode !== "none")
@@ -840,15 +861,17 @@ function App() {
       !shown.projectOpen &&
       !shown.trashOpen &&
       !shown.unopened &&
+      shown.noAccess.name === "none" &&
       isLibraryRoute(shown.index) &&
       shown.index.principal === authentication.current?.identity?.principal
     );
   }
   function followRoute() {
     const route = readPageRoute(location.href);
-    // The stopped screen belongs to the address that showed it; a Page
-    // route that still refuses shows it again from open().
+    // The stopped and No access screens belong to the address that showed
+    // them; a route that still refuses shows its screen again from open().
     setUnopened(null);
+    dispatchNoAccess({ type: "cleared" });
     // Back or Forward from one library address to another: the mounted
     // library takes the view, so a grouping alone asks for nothing and focus
     // stays put. The address keeps the canonical form.
@@ -920,8 +943,10 @@ function App() {
           host.navigate();
           // Attempts to replay belong to the account that made them.
           creations.account(result.identity?.principal ?? null);
-          // The stopped screen answered for the account that opened it.
+          // The stopped and No access screens answered for the account that
+          // opened them.
           setUnopened(null);
+          dispatchNoAccess({ type: "cleared" });
           catalogRevision.current++;
           // Rows and Projects remembered for one account never show another.
           // The tab's first answer isn't a change of account: the device
@@ -1618,12 +1643,15 @@ function App() {
   const projectPagesList = projectPagesShown
     ? projectPages.pages.filter((item) => item.project_id === placement.project_id).map(ownTitle)
     : [];
-  const accountName =
+  // The account's name as its menu shows it, or null when it has none to
+  // show and the menu reads "Your account".
+  const shownAccountName =
     menuAccount?.displayName &&
     menuAccount.displayName !== menuAccount.principal &&
     !/@|%40/i.test(menuAccount.displayName)
       ? menuAccount.displayName
-      : "Your account";
+      : null;
+  const accountName = shownAccountName ?? "Your account";
   const organizationNames = menuAccount?.organizations?.join(", ");
   const usage = quotaNotice(quota);
   const openComments = threads.filter((thread) => thread.state === "open").length;
@@ -2232,6 +2260,13 @@ function App() {
               }}
               onOpenTrash={showTrash}
               onHome={() => home(null)}
+            />
+          ) : noAccess.name === "shown" ? (
+            <NoAccess
+              key={`${noAccess.kind}:${noAccess.targetId}:${noAccess.principal}`}
+              kind={noAccess.kind}
+              accountName={shownAccountName}
+              onHome={(event) => home(event)}
             />
           ) : projectOpen ? (
             <main className="welcome">
