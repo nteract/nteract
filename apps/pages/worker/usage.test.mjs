@@ -307,6 +307,25 @@ test("MCP clientInfo from initialize is carried onto tool-call usage events", as
   assert.equal(refusedCall.kind, "tool");
   assert.match(refusedCall.error_code, /^[a-z0-9_]+$/);
 
+  // A refusal whose body has no code records the code the caller is given.
+  const missing = await post({
+    method: "tools/call",
+    params: {
+      name: "get_project",
+      arguments: { project_id: "prj_66666666-6666-4666-8666-666666666666" },
+    },
+  });
+  assert.equal(missing.status, 200);
+  const missingCall = toolCalls().at(-1);
+  assert.equal(missingCall.operation, "get_project", JSON.stringify(missingCall));
+  assert.match(missingCall.outcome, /^http_[45]/, JSON.stringify(missingCall));
+  assert.match(missingCall.error_code, /^[a-z0-9_]+$/);
+  assert.match(
+    missingCall.phases ?? "",
+    /^[a-z][a-z0-9_]*=\d+/,
+    "phases from the request's recorder",
+  );
+
   // A resource read goes through the same invoke(), recorded as a resource.
   const resource = await post({
     method: "resources/read",
@@ -330,6 +349,12 @@ test("MCP clientInfo from initialize is carried onto tool-call usage events", as
   assert.equal(failed.status, 400);
   assert.equal(failed.error_code, refusedCall.error_code);
   assert.doesNotMatch(JSON.stringify(failures), new RegExp(`${tool.principal}|${pageId}`));
+});
+
+test("a usage record keeps an error code only when it is a code-shaped token", () => {
+  for (const errorCode of ["a b", "Not Found", "user:one", "x".repeat(65), 7])
+    assert.equal(usageEvent({ action: "tool.call", errorCode }).error_code, undefined, errorCode);
+  assert.equal(usageEvent({ action: "tool.call", errorCode: "page_busy" }).error_code, "page_busy");
 });
 
 test("phasesOf keeps metric names and whole milliseconds, nothing else", () => {

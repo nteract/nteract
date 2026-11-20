@@ -541,6 +541,11 @@ test("a failed tool call also stores a failure row with no principal or Page id"
       phases: "auth=3,page=15400",
     },
   ]);
+  // A failure row is fenced like its event: a day past the cutoff or a
+  // timestamp from the future writes neither.
+  await insert(db, [failed], at + 15 * DAY);
+  await insert(db, [failed], at - DAY);
+  assert.equal(db.rows("SELECT COUNT(*) AS n FROM pages_usage_failures")[0].n, 1);
   // Failures share the raw events' 14-day retention.
   await runUsageMaintenance({ PAGES_USAGE: db }, at + 15 * DAY);
   assert.equal(db.rows("SELECT COUNT(*) AS n FROM pages_usage_failures")[0].n, 0);

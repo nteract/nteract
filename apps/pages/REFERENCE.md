@@ -659,9 +659,11 @@ Unknown labels, including email-shaped drivers and a client named by its host,
 retain the event as `other`. A row keeps the class it was written with, so rows
 older than a label's place on this list stay `other`.
 A failed tool call also writes a `pages_usage_failures` row. Its error code is
-the `code` of the answer's JSON body, kept only when it is a lowercase token, and
-its phases are the answer's `Server-Timing` metric names with whole
-milliseconds. Nothing else from the body is kept.
+the one a JSON caller is given (the body's `code`, else the code its status maps
+to), kept only when it is a lowercase token. Its phases are the request's phase
+metric names with whole milliseconds, recorded for HTTP tools, MCP and
+`list_pages`. Nothing else from the body is kept. A failure row holds no
+principal or Page id, but it shares its timestamp with the event row that does.
 Anonymous/service events and principals containing emails after percent-decoding
 are dropped. Existing console telemetry is unchanged and has its separate 30-day
 retention (DEPLOYMENT.md, Telemetry).
