@@ -33,9 +33,11 @@ import { mountModuleOutput, readHostContext } from "@nteract/output-frame";
 import { hostLibraryRevision, libraryMap$ } from "./library-catalog.mjs";
 import { themeStore } from "./theme.mjs";
 
-// How many of a view's inputs load at once while it mounts. Each is at most
-// OUTPUT_MAX_BYTES, so this bounds the bytes arriving before the total check
-// (OUTPUT_MAX_TOTAL_BYTES) counts them.
+// How many of a view's inputs load at once while it mounts. This bounds the
+// bytes arriving before the total check (OUTPUT_MAX_TOTAL_BYTES) counts
+// them: a load in flight holds at most two copies of an input of
+// OUTPUT_MAX_BYTES, its chunks and the bytes assembled from them
+// (output-assets.mjs fetchOutputAsset).
 const MOUNT_LOADS = 6;
 
 const sameAsset = (a, b) => a?.asset_id === b?.asset_id && a?.media_type === b?.media_type;
@@ -373,17 +375,17 @@ export function mount(
                                 return () => delivered || loading.abort();
                               });
                             void (async () => {
-                              // Ends the loads still running when one fails.
+                              // Ends the loads still running when this mount
+                              // fails.
                               const loads = new AbortController();
                               try {
                                 // The inputs load MOUNT_LOADS at a time, and the
-                                // frame starts only once every one is here. The
-                                // order they arrive in decides nothing: modules
-                                // evaluate in the order their imports name, and
+                                // frame starts only once every one is here.
+                                // Nothing depends on the order they arrive in:
                                 // the maps the frame gets keep the plan's order.
                                 // Each input counts toward the total as it
                                 // arrives, so the bytes held stay within the
-                                // total plus MOUNT_LOADS inputs still arriving.
+                                // total plus MOUNT_LOADS loads in flight.
                                 const signal = AbortSignal.any([controller.signal, loads.signal]);
                                 const entries = Object.entries(plan.versions);
                                 const loaded = new Map(
