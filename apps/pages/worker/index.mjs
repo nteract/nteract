@@ -5609,6 +5609,25 @@ export class Page {
     return this.projectAccessState?.snapshot ?? null;
   }
 
+  /** The record the policy enforces for `identity`: the host record with the
+   * Project snapshot that caller is decided against. */
+  enforcedMetadata(identity) {
+    const metadata = {
+      ...(this.policyMetadata ?? this.metadata),
+      projectAccess: this.projectAccessForCaller(identity),
+    };
+    return this.recoveryBlocked ? { ...metadata, recoveryBlocked: true } : metadata;
+  }
+
+  /** The Project snapshot `identity` is decided against. A caller whose own
+   * read of the Project did not finish gets none: the shared snapshot was
+   * settled for other callers and may predate this caller's removal. */
+  projectAccessForCaller(identity) {
+    return this.resolvedProjectAccess.get(identity)?.unavailable === true
+      ? null
+      : this.projectAccess;
+  }
+
   /** The Project access resolved for each identity, keyed by that identity:
    * `{ owner, pageId, snapshot, unavailable }`, the raw answer of
    * resolveProjectAccess for that owner and Page (null when it failed or
@@ -6243,14 +6262,7 @@ export class Page {
     const ctx = this.ctx;
     const commentsUuid = recordCommentsUuid(metadata);
     const policy = new DocumentPolicy({
-      metadata: () =>
-        this.recoveryBlocked
-          ? {
-              ...(this.policyMetadata ?? this.metadata),
-              projectAccess: this.projectAccess,
-              recoveryBlocked: true,
-            }
-          : { ...(this.policyMetadata ?? this.metadata), projectAccess: this.projectAccess },
+      metadata: (identity) => this.enforcedMetadata(identity),
       projectUnavailable: (identity) => this.projectUnavailable(identity),
     });
     const plain = new PlainSync({
@@ -7065,14 +7077,18 @@ export class Page {
         // fixes the time its title was observed.
         this.cacheTitle();
         return json(
-          catalogAnswer({ ...this.metadata, projectAccess: this.projectAccess }, identity, {
-            title: this.pageTitle(),
-            observed: {
-              at: this.titleProjection?.record?.observed_at,
-              keep: this.titleProjection?.record?.keep !== false,
+          catalogAnswer(
+            { ...this.metadata, projectAccess: this.projectAccessForCaller(identity) },
+            identity,
+            {
+              title: this.pageTitle(),
+              observed: {
+                at: this.titleProjection?.record?.observed_at,
+                keep: this.titleProjection?.record?.keep !== false,
+              },
+              contentUpdatedAt: this.contentActivity?.value ?? null,
             },
-            contentUpdatedAt: this.contentActivity?.value ?? null,
-          }),
+          ),
         );
       }
       if (url.pathname === "/internal/access") {

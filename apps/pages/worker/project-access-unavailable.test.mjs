@@ -144,6 +144,29 @@ test("one caller's failed Project read leaves inherited access in place for othe
   assert.equal(host.policy.account(member, true).role, "editor");
 });
 
+test("a member removed during an outage is not admitted by the snapshot from before", async (t) => {
+  const { w, project, pageId } = await projectPage(t);
+  assert.equal((await setProjectRole(w, project, "editor", 0)).status, 200);
+  assert.equal((await read(w, "member", pageId)).status, 200, "the host holds a live snapshot");
+  assert.equal((await setProjectRole(w, project, null, 1)).status, 200);
+  const outage = projectOutage(t, w);
+  outage.failing = true;
+  // The snapshot's lease has not run out, but this caller's read failed.
+  const reread = await read(w, "member", pageId);
+  assert.equal(reread.status, 503, JSON.stringify(reread.body));
+  assert.equal(codeOf(reread.body), "project_policy_unavailable");
+  const edit = await w.call("member", "edit_page", {
+    page_id: pageId,
+    revision: "r1",
+    nonce: w.key(),
+    operations: [{ op: "insert_markdown", markdown: "x" }],
+  });
+  assert.equal(edit.status, 503, JSON.stringify(edit.body));
+  outage.failing = false;
+  const refused = await read(w, "member", pageId);
+  assert.equal(refused.status, 403, JSON.stringify(refused.body));
+});
+
 test("a member removed from the Project loses access at the next read after a failed one", async (t) => {
   const { w, project, pageId } = await projectPage(t);
   assert.equal((await setProjectRole(w, project, "editor", 0)).status, 200);

@@ -65,7 +65,8 @@ export function pageTrashed(access, grant) {
 
 /** A Page's access decisions, from its host record. One ACL governs the
  * Page and its comments document. The CRDT never grants access.
- * `metadata()` is the record as the host currently enforces it.
+ * `metadata(identity)` is the record as the host currently enforces it for
+ * that caller.
  * `projectUnavailable(identity)` is true when the host could not read the
  * Page's Project for that caller: a refusal then says to try again. */
 export class DocumentPolicy {
@@ -78,12 +79,12 @@ export class DocumentPolicy {
   /** `write` is false to read, true to edit the Page, or "comment" to write
    * its comments document. */
   account(identity, write = false) {
-    const access = pageAccess(this.metadata(), identity, { now: this.now() });
+    const access = pageAccess(this.metadata(identity), identity, { now: this.now() });
     if (access.trashed && (!access.canRead || write))
-      throw pageTrashed(access, pageGrant(this.metadata(), identity?.principal));
+      throw pageTrashed(access, pageGrant(this.metadata(identity), identity?.principal));
     if (!access.canRead) throw this.readDenied(identity);
     const comment = write === "comment";
-    if (write && !comment && this.metadata()?.recoveryBlocked)
+    if (write && !comment && this.metadata(identity)?.recoveryBlocked)
       throw Object.assign(
         new Error("Page recovery is blocked; accepted content is available read-only"),
         { status: 409, code: "page_recovery_blocked" },
@@ -102,7 +103,7 @@ export class DocumentPolicy {
     if (!(Number.isFinite(identity?.expiresAt) && identity.expiresAt > this.now()))
       return credentialExpired();
     if (this.projectUnavailable(identity)) return projectPolicyUnavailable();
-    const members = this.metadata()?.acl?.members;
+    const members = this.metadata(identity)?.acl?.members;
     return withAdmissionReason(
       new PermissionDenied(),
       members && Object.hasOwn(members, identity.principal)
@@ -116,6 +117,6 @@ export class DocumentPolicy {
    * evidence) whose loss would change access. */
   leaseExpiresAt(identity) {
     this.account(identity);
-    return pageDecision(this.metadata(), identity, { now: this.now() }).valid_until;
+    return pageDecision(this.metadata(identity), identity, { now: this.now() }).valid_until;
   }
 }
