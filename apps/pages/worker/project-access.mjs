@@ -1,7 +1,9 @@
 import { projectObject } from "./authz.mjs";
+import { projectPolicyUnavailable } from "./policy.mjs";
 
 // Leases are transient and never stored in a Page record. A failed refresh
-// grants nothing inherited; direct grants remain independently effective.
+// grants nothing inherited to its caller and leaves the host's snapshot as it
+// was; direct grants remain independently effective.
 export const PROJECT_ACCESS_LEASE_MS = 15_000;
 
 export const PROJECT_ACCESS_EMPTY = Object.freeze({
@@ -30,41 +32,61 @@ export function projectAccessStep(state, { observed, owner, snapshot }) {
       : state.fence,
   };
 }
+/** The Page's Project snapshot, or null when the Page settles outside any
+ * Project the owner holds: Your items, a broken parent chain, or a Project
+ * that is gone. A read that could not finish, or a placement that changed
+ * while it was read, is no answer: it throws project_policy_unavailable, and
+ * the caller grants nothing inherited and says to try again. */
 export async function resolveProjectAccess(env, metadata, now = Date.now()) {
   if (!metadata?.owner || !env.CATALOGS || !env.PROJECTS) return null;
-  const response = await env.CATALOGS.getByName(metadata.owner).fetch(
-    new Request("https://pages.internal/internal/location", {
-      method: "POST",
-      body: JSON.stringify({ page_id: metadata.pageId }),
-    }),
-  );
-  if (!response.ok) return null;
-  const location = await response.json();
+  const location = await placement(env, metadata);
   if (!location.complete || !location.space_id) return null;
-  const policy = await env.PROJECTS.getByName(location.space_id).fetch(
-    new Request("https://pages.internal/internal/space/policy", {
-      method: "POST",
-      body: JSON.stringify({ space_id: location.space_id, owner: metadata.owner }),
-    }),
+  const policy = await read(() =>
+    env.PROJECTS.getByName(location.space_id).fetch(
+      new Request("https://pages.internal/internal/space/policy", {
+        method: "POST",
+        body: JSON.stringify({ space_id: location.space_id, owner: metadata.owner }),
+      }),
+    ),
   );
-  if (!policy.ok) return null;
+  // The Project answers 404 for one that is deleted or isn't this owner's.
+  if (policy.status === 404) return null;
+  if (!policy.ok) throw projectPolicyUnavailable();
   const record = await policy.json();
   if (record.owner !== metadata.owner) return null;
   // A move out of an empty Project can precede a new membership. Never
   // combine that old placement with the newly granted ACL.
-  const checked = await env.CATALOGS.getByName(metadata.owner).fetch(
-    new Request("https://pages.internal/internal/location", {
-      method: "POST",
-      body: JSON.stringify({ page_id: metadata.pageId }),
-    }),
-  );
-  if (!checked.ok) return null;
-  const current = await checked.json();
-  if (!current.complete || current.space_id !== location.space_id) return null;
+  const current = await placement(env, metadata);
+  if (!current.complete || current.space_id !== location.space_id) throw projectPolicyUnavailable();
   return {
     ...projectObject(record),
     location: JSON.stringify(current),
     members: record.acl?.members,
     valid_until: now + PROJECT_ACCESS_LEASE_MS,
   };
+}
+
+/** The owner Catalog's location answer for the Page. A Page the Catalog has
+ * no entry for (404) is in no Project. */
+async function placement(env, metadata) {
+  const response = await read(() =>
+    env.CATALOGS.getByName(metadata.owner).fetch(
+      new Request("https://pages.internal/internal/location", {
+        method: "POST",
+        body: JSON.stringify({ page_id: metadata.pageId }),
+      }),
+    ),
+  );
+  if (response.status === 404) return { complete: true, space_id: null };
+  if (!response.ok) throw projectPolicyUnavailable();
+  return response.json();
+}
+
+/** One internal fetch; a thrown fetch is an unfinished read. */
+async function read(fetch) {
+  try {
+    return await fetch();
+  } catch {
+    throw projectPolicyUnavailable();
+  }
 }

@@ -213,6 +213,7 @@ export async function world(
         ...(page.policyMetadata ?? page.metadata),
         projectAccess: page.projectAccess,
       }),
+      projectUnavailable: (identity) => page.projectUnavailable(identity),
     });
     pages.set(id, page);
     return page;

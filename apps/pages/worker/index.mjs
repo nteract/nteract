@@ -5398,7 +5398,11 @@ export class Page {
     if (deleted) throw deleted;
     if (pageState(metadata) === "trashed") return null;
     if (await claimInvitation(metadata, identity, this.env)) return null;
-    new DocumentPolicy({ storage, metadata: () => effective }).account(identity);
+    new DocumentPolicy({
+      storage,
+      metadata: () => effective,
+      projectUnavailable: (who) => this.projectUnavailable(who),
+    }).account(identity);
     const stored = storedTitleProjection(projection);
     return json(
       catalogAnswer(effective, identity, {
@@ -5550,13 +5554,14 @@ export class Page {
     if (identity.principal !== this.metadata?.owner) {
       const metadata = this.metadata;
       const observed = this.projectAccessState ?? PROJECT_ACCESS_EMPTY;
-      const snapshot = await resolveProjectAccess(this.env, metadata).catch(() => null);
-      this.resolvedProjectAccess.set(identity, {
-        owner: metadata?.owner,
-        pageId: metadata?.pageId,
-        snapshot,
-      });
-      if (metadata?.owner === this.metadata?.owner && metadata?.pageId === this.metadata?.pageId)
+      const { snapshot, unavailable } = await this.resolveProjectAccessFor(identity, metadata);
+      // An unfinished read is this caller's alone. Only a settled answer
+      // replaces the snapshot every caller is decided against.
+      if (
+        !unavailable &&
+        metadata?.owner === this.metadata?.owner &&
+        metadata?.pageId === this.metadata?.pageId
+      )
         this.projectAccessState = projectAccessStep(
           this.projectAccessState ?? PROJECT_ACCESS_EMPTY,
           {
@@ -5569,15 +5574,47 @@ export class Page {
     return identity;
   }
 
+  /** Resolve the Project access for `identity` on `metadata` and record it
+   * for this request: `{ owner, pageId, snapshot, unavailable }`, where
+   * `unavailable` means the Project could not be read and `snapshot` is null. */
+  async resolveProjectAccessFor(identity, metadata) {
+    let snapshot = null;
+    let unavailable = false;
+    try {
+      snapshot = await resolveProjectAccess(this.env, metadata);
+    } catch (error) {
+      if (error?.code !== "project_policy_unavailable") logFailure(error, "project-access");
+      unavailable = true;
+    }
+    const resolved = { owner: metadata?.owner, pageId: metadata?.pageId, snapshot, unavailable };
+    this.resolvedProjectAccess.set(identity, resolved);
+    return resolved;
+  }
+
+  /** Whether a refusal for `identity` should say to try again: this request
+   * could not read the Page's Project, and the last Project snapshot this
+   * host settled, expired or not, admits the caller. Anyone else is refused
+   * as for a missing Page, so an outage reveals nothing to a stranger. A
+   * host with no settled snapshot (a cold one) refuses everyone that way. */
+  projectUnavailable(identity) {
+    if (this.resolvedProjectAccess.get(identity)?.unavailable !== true) return false;
+    const known = this.projectAccessState?.snapshot;
+    if (!known) return false;
+    const metadata = this.policyMetadata ?? this.metadata;
+    return pageAccess({ ...metadata, projectAccess: { ...known, valid_until: Infinity } }, identity)
+      .canRead;
+  }
+
   get projectAccess() {
     return this.projectAccessState?.snapshot ?? null;
   }
 
-  /** The Project access `identify` resolved for each identity it returned,
-   * keyed by that identity: `{ owner, pageId, snapshot }`, the raw answer of
-   * resolveProjectAccess for that owner and Page (null when it failed),
-   * before projectAccessStep weighs it. Only the request that holds the
-   * identity can look it up, and the entry goes with the identity. */
+  /** The Project access resolved for each identity, keyed by that identity:
+   * `{ owner, pageId, snapshot, unavailable }`, the raw answer of
+   * resolveProjectAccess for that owner and Page (null when it failed or
+   * settled outside a Project), before projectAccessStep weighs it. Only the
+   * request that holds the identity can look it up, and the entry goes with
+   * the identity. */
   get resolvedProjectAccess() {
     return (this.projectAccessResolutions ??= new WeakMap());
   }
@@ -5590,7 +5627,7 @@ export class Page {
     const resolved = this.resolvedProjectAccess.get(identity);
     if (resolved && resolved.owner === metadata?.owner && resolved.pageId === metadata?.pageId)
       return resolved.snapshot;
-    return resolveProjectAccess(this.env, metadata).catch(() => null);
+    return (await this.resolveProjectAccessFor(identity, metadata)).snapshot;
   }
 
   /** Load the serving document. A trashed record whose document cannot be
@@ -6214,6 +6251,7 @@ export class Page {
               recoveryBlocked: true,
             }
           : { ...(this.policyMetadata ?? this.metadata), projectAccess: this.projectAccess },
+      projectUnavailable: (identity) => this.projectUnavailable(identity),
     });
     const plain = new PlainSync({
       storage: ctx.storage,

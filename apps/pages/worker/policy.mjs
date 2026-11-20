@@ -25,6 +25,18 @@ export function leaseExpiryError(identity, deadline) {
     : credentialExpired();
 }
 
+/** A Page's Project could not be read, so whether its members reach the Page
+ * is unknown. The caller should try again; it is not refused. */
+export function projectPolicyUnavailable() {
+  return withAdmissionReason(
+    Object.assign(new Error("Project access cannot be verified; try again"), {
+      status: 503,
+      code: "project_policy_unavailable",
+    }),
+    "project_unavailable",
+  );
+}
+
 export function credentialExpired() {
   const error = new PermissionDenied(
     "Document access denied: credential expired",
@@ -53,11 +65,14 @@ export function pageTrashed(access, grant) {
 
 /** A Page's access decisions, from its host record. One ACL governs the
  * Page and its comments document. The CRDT never grants access.
- * `metadata()` is the record as the host currently enforces it. */
+ * `metadata()` is the record as the host currently enforces it.
+ * `projectUnavailable(identity)` is true when the host could not read the
+ * Page's Project for that caller: a refusal then says to try again. */
 export class DocumentPolicy {
-  constructor({ metadata, now = Date.now }) {
+  constructor({ metadata, now = Date.now, projectUnavailable = () => false }) {
     this.metadata = metadata;
     this.now = now;
+    this.projectUnavailable = projectUnavailable;
   }
 
   /** `write` is false to read, true to edit the Page, or "comment" to write
@@ -80,11 +95,13 @@ export class DocumentPolicy {
     return access;
   }
 
-  /** Classify a read denial for logs. Expiry is the only case with a distinct
-   * client outcome; grant removal and no grant share the same response. */
+  /** Classify a read denial for logs. Expiry and an unreadable Project have
+   * distinct client outcomes; grant removal and no grant share the same
+   * response. */
   readDenied(identity) {
     if (!(Number.isFinite(identity?.expiresAt) && identity.expiresAt > this.now()))
       return credentialExpired();
+    if (this.projectUnavailable(identity)) return projectPolicyUnavailable();
     const members = this.metadata()?.acl?.members;
     return withAdmissionReason(
       new PermissionDenied(),

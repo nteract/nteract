@@ -138,7 +138,8 @@ test("a shared check from the record answers each relation as before", async (t)
   assert.equal(inherited.body.role, "commenter");
   assert.deepEqual(resolutions.counts, { catalog: 2, project: 1 });
 
-  // A failed resolution grants nothing inherited.
+  // A failed resolution grants nothing inherited. This new host has no
+  // settled snapshot to know the member by, so it refuses as for a stranger.
   resolutions.reset();
   resolutions.fail(true);
   assert.equal((await check(t, w, pageId, "member")).status, 403);

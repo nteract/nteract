@@ -52,7 +52,11 @@ for (const cleared of [false, true]) {
     assert.equal(page.projectAccess.revision, 2, "actual Project owner ACL revision");
     assert.throws(() => page.policy.account(identity));
     if (cleared) {
-      t.mock.method(w.env.PROJECTS, "getByName", () => ({ fetch: async () => Response.error() }));
+      // The Project answers that it is gone: a settled answer, so access
+      // clears for every caller. A failed read would leave it as it was.
+      t.mock.method(w.env.PROJECTS, "getByName", () => ({
+        fetch: async () => Response.json({ error: "Project not found" }, { status: 404 }),
+      }));
       await page.identify(request);
       assert.equal(page.projectAccess, null);
     }
