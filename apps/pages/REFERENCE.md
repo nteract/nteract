@@ -293,11 +293,24 @@ else replaces the screen with a Reload notice and leaves the Page unchanged.
   for 60 s, or 15 s when unavailable, a failure retries after a doubling
   backoff from 2 s, concurrent asks share a request, and at most 6 run at
   once, of both kinds. Another account, sign-out or any 401 drops them all.
-  Refs load when a card opens or a chit draws; a mounted chit asks again
-  once its answer is stale, dropped, or failed past its backoff, so a rename
-  shows within a minute. The store takes a non-urgent
-  ask so a viewport observer can drive it later. The routes are under
+  Refs load when a card opens (urgent) or a chit or labeled link draws (not
+  urgent); a drawn chit or labeled link asks again once its answer is stale,
+  dropped, or failed past its backoff, so a rename shows within a minute and
+  access granted within 15 s. Every link to one target shares its ref, so a
+  Page with N distinct targets asks N times when it draws, at most 6 at
+  once, whatever the number of links. The routes are under
   [Link previews](#link-previews).
+- **Unavailable labeled links:** a labeled link, `[label](url)`, to a Page
+  or Project this reader can't open keeps its label and stays a link, but
+  draws a lock in place of the kind's glyph, in the muted colour of an
+  unavailable chit, and has the accessible description "Page unavailable" or
+  "Project unavailable" (`markLabeledLinks` in
+  [`viewer/page-chits.mjs`](viewer/page-chits.mjs)). Only a settled
+  unavailable answer marks it; loading and a failed read draw the link as
+  usual. The marker is attributes on the drawn `<a>` and CSS, in Page blocks,
+  read-only blocks and comments, never document text, so copy and Markdown
+  keep the label and the link. Links to another host and to a heading on the
+  open Page are never marked.
 - **Bare links and chits:** a plain-text paste of exactly one absolute
   http(s) URL, into a Page block or a comment, inserts a bare link: the URL
   as text with a link mark whose href is that text and no title

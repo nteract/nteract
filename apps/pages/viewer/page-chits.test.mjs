@@ -44,8 +44,17 @@ const { GardState, GardSelection, Transaction } = await import("wordgard/state")
 const { textPath } = await import("../model/richtext.mjs");
 const { richFromSource } = await import("../model/richtext-test-support.mjs");
 const { decode, schema } = await import("./wordgard-model.mjs");
-const { bareLinkRanges, chitField, chitLabel, needsAsking, pageChits, revealedBy } =
-  await import("./page-chits.mjs");
+const {
+  bareLinkRanges,
+  chitField,
+  chitLabel,
+  needsAsking,
+  pageChits,
+  revealedBy,
+  unavailableLabel,
+} = await import("./page-chits.mjs");
+const { pagesLinkShape } = await import("./page-link-shape.mjs");
+const { linkedTarget } = await import("../shared/page-links.mjs");
 const { provideChitRefs } = await import("./chit-refs.mjs");
 const { PageRefs } = await import("./page-refs.mjs");
 
@@ -358,4 +367,203 @@ test("a block that turns read-only closes its open chit", () => {
   wg.flush?.();
   assert.equal(wg.contentDOM.querySelectorAll("a.wg-chit").length, 1);
   wg.dom.remove();
+});
+
+const OTHER_ID = "22222222-2222-4222-8222-222222222222";
+const OTHER_PATH = `/p/${OTHER_ID}/meta.json`;
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+const refused = (code) => Object.assign(Error(code), { status: 404, code });
+
+/** An editor that draws link marks as Page blocks and comments do. */
+function linkedEditor(markdown, { editable = true } = {}) {
+  const state = GardState.create({
+    doc: treeOf(markdown),
+    config: [
+      ...schema.elements.map((e) => GardState.schemaElement.of(e)),
+      GardState.readOnly.of(!editable),
+      Wordgard.editable.of(editable),
+      pagesLinkShape({ currentPageId: () => "11111111-1111-4111-8111-111111111111" }),
+      pageChits({ base: () => BASE }),
+    ],
+  });
+  return new Wordgard({ state, parent: document.body });
+}
+
+test("unavailableLabel: only a settled unavailable answer marks a labeled link", () => {
+  const page = linkedTarget(OTHER, BASE);
+  const project = linkedTarget(PROJECT, BASE);
+  assert.equal(page.kind, "page");
+  assert.equal(project.kind, "project");
+  // Loading.
+  assert.equal(unavailableLabel(page, null), null);
+  assert.equal(unavailableLabel(page, { name: "idle" }), null);
+  assert.equal(unavailableLabel(page, { name: "requested", attempts: 0, last: null }), null);
+  // Readable, fresh or stale.
+  const readable = { name: "readable", value: { title: "T" }, stale: false };
+  assert.equal(unavailableLabel(page, readable), null);
+  assert.equal(unavailableLabel(page, { ...readable, stale: true }), null);
+  // A failed read with nothing settled before it.
+  assert.equal(
+    unavailableLabel(page, { name: "failed", attempts: 1, last: null, ready: false }),
+    null,
+  );
+  // Unavailable, fresh or stale, and while a stale one is asked again.
+  assert.equal(unavailableLabel(page, { name: "unavailable", stale: false }), "Page unavailable");
+  assert.equal(unavailableLabel(page, { name: "unavailable", stale: true }), "Page unavailable");
+  assert.equal(
+    unavailableLabel(page, { name: "requested", attempts: 0, last: { name: "unavailable" } }),
+    "Page unavailable",
+  );
+  assert.equal(
+    unavailableLabel(project, { name: "unavailable", stale: false }),
+    "Project unavailable",
+  );
+  // A link to another host, or to a heading on the Page open now, names no
+  // target and is never marked.
+  const elsewhere = linkedTarget(`https://elsewhere.example/p/${OTHER_ID}`, BASE);
+  assert.equal(elsewhere, null);
+  assert.equal(unavailableLabel(elsewhere, { name: "unavailable", stale: false }), null);
+  const heading = linkedTarget(`${BASE}#plan`, BASE, {
+    currentPageId: "11111111-1111-4111-8111-111111111111",
+  });
+  assert.equal(heading, null);
+  assert.equal(unavailableLabel(heading, { name: "unavailable", stale: false }), null);
+});
+
+test("a labeled link the reader can't open is marked unavailable without a hover", async () => {
+  const { VirtualTimeScheduler } = await import("rxjs");
+  const scheduler = new VirtualTimeScheduler();
+  const asks = [];
+  let shared = false;
+  const refs = new PageRefs({
+    scheduler,
+    get: (path) => {
+      asks.push(path);
+      if (path !== OTHER_PATH) return Promise.reject(refused("project_unavailable"));
+      if (!shared) return Promise.reject(refused("page_unavailable"));
+      return Promise.resolve({ v: 1, page_id: OTHER_ID, title: "Shared now", state: "active" });
+    },
+  });
+  refs.account("dev");
+  provideChitRefs(refs);
+  try {
+    const wg = linkedEditor(
+      `See [the plan](${OTHER}), [the plan again](${OTHER}), [the project](${PROJECT}), ` +
+        `[elsewhere](https://elsewhere.example/p/${OTHER_ID}) and [a heading](${BASE}#plan)`,
+    );
+    wg.flush?.();
+    const [plan, again, project, elsewhere, heading] = wg.contentDOM.querySelectorAll("a");
+    assert.equal(plan.dataset.linkState, undefined, "loading draws the link as it is");
+    await tick();
+    assert.deepEqual(
+      asks.sort(),
+      [`/project/${encodeURIComponent(PROJECT_ID)}/meta.json`, OTHER_PATH].sort(),
+      "one ask per distinct target, none for another host or a heading",
+    );
+    for (const link of [plan, again]) {
+      assert.equal(link.dataset.linkState, "unavailable");
+      assert.equal(link.getAttribute("aria-description"), "Page unavailable");
+    }
+    assert.equal(project.dataset.linkState, "unavailable");
+    assert.equal(project.getAttribute("aria-description"), "Project unavailable");
+    assert.equal(plan.textContent, "the plan", "the label stays and nothing joins it");
+    assert.equal(plan.getAttribute("href"), OTHER, "the link stays a link");
+    for (const link of [elsewhere, heading]) {
+      assert.equal(link.dataset.linkState, undefined);
+      assert.equal(link.hasAttribute("aria-description"), false);
+    }
+    // The marker is drawn, never stored: the document keeps the label.
+    assert.match(wg.state.doc.textContent(), /^See the plan, the plan again, the project/);
+    assert.equal(wg.contentDOM.textContent, wg.state.doc.textContent());
+
+    // Access granted: once the unavailable answer goes stale, the link asks
+    // again and its marker goes away without a redraw of the block.
+    shared = true;
+    scheduler.flush();
+    await tick();
+    assert.equal(asks.filter((path) => path === OTHER_PATH).length, 2);
+    assert.equal(wg.contentDOM.querySelector("a"), plan, "the link wasn't redrawn");
+    for (const link of [plan, again]) {
+      assert.equal(link.dataset.linkState, undefined);
+      assert.equal(link.hasAttribute("aria-description"), false);
+    }
+    wg.dom.remove();
+  } finally {
+    provideChitRefs(null);
+    refs.dispose();
+  }
+});
+
+test("a failed read leaves a labeled link as it is; a read-only block is marked too", async () => {
+  let fail = true;
+  const refs = new PageRefs({
+    get: () =>
+      fail
+        ? Promise.reject(Object.assign(Error("down"), { status: 500 }))
+        : Promise.reject(refused("page_unavailable")),
+  });
+  refs.account("dev");
+  provideChitRefs(refs);
+  try {
+    const failing = linkedEditor(`[the plan](${OTHER})`);
+    failing.flush?.();
+    await tick();
+    const link = failing.contentDOM.querySelector("a");
+    assert.equal(refs.ref({ kind: "page", id: OTHER_ID }, "meta").name, "failed");
+    assert.equal(link.dataset.linkState, undefined);
+    failing.dom.remove();
+
+    refs.clear();
+    fail = false;
+    const readOnly = linkedEditor(`[the plan](${OTHER})`, { editable: false });
+    readOnly.flush?.();
+    await tick();
+    assert.equal(readOnly.contentDOM.querySelector("a").dataset.linkState, "unavailable");
+    readOnly.dom.remove();
+  } finally {
+    provideChitRefs(null);
+    refs.dispose();
+  }
+});
+
+test("an edit that redraws a labeled link keeps its marker", async () => {
+  const refs = new PageRefs({ get: () => Promise.reject(refused("page_unavailable")) });
+  refs.account("dev");
+  provideChitRefs(refs);
+  try {
+    const wg = linkedEditor(`Before [the plan](${OTHER}) after`);
+    wg.flush?.();
+    await tick();
+    const from = 1 + "Before ".length;
+    // Splitting the link draws its two halves as new <a>s.
+    wg.dispatch({ changes: { from: from + 3, insert: [Leaf.text("x")] } });
+    wg.flush?.();
+    const links = [...wg.contentDOM.querySelectorAll("a.page-link")];
+    assert.equal(links.length, 2);
+    for (const link of links) {
+      assert.equal(link.dataset.linkState, "unavailable");
+      assert.equal(link.getAttribute("aria-description"), "Page unavailable");
+    }
+    wg.dom.remove();
+  } finally {
+    provideChitRefs(null);
+    refs.dispose();
+  }
+});
+
+test("a bare link's chit is not marked as a labeled link", async () => {
+  const refs = new PageRefs({ get: () => Promise.reject(refused("page_unavailable")) });
+  refs.account("dev");
+  provideChitRefs(refs);
+  try {
+    const wg = linkedEditor(`See <${OTHER}>`);
+    wg.flush?.();
+    await tick();
+    assert.equal(wg.contentDOM.querySelector("a.wg-chit").dataset.state, "unavailable");
+    assert.equal(wg.contentDOM.querySelectorAll("[data-link-state]").length, 0);
+    wg.dom.remove();
+  } finally {
+    provideChitRefs(null);
+    refs.dispose();
+  }
 });

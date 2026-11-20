@@ -1,6 +1,7 @@
 // Links between Pages and to Projects in a real browser, against a running
 // local Wordgard fixture: the Page and Project glyphs (once per link,
-// however its text is formatted), the hover card's faces for both kinds,
+// however its text is formatted), the lock on labeled links the reader
+// can't open, the hover card's faces for both kinds,
 // crossing a formatted link, Escape, keyboard access from a comment link,
 // Open in place for a Page and a Project, the open Project's own links left
 // plain, and the caret around a glyph link in an editable block. Then
@@ -273,6 +274,40 @@ try {
   assert.notEqual(projectGlyph.mask, glyph.mask, "the Project glyph isn't the Page glyph");
   checkpoint("Project links draw the Project glyph");
 
+  stage = "unavailable labeled links";
+  {
+    // alice's Page and Project are asked for when the Page draws, with no
+    // hover, and their links say so: a lock glyph, the muted colour and an
+    // accessible description. The label, the link and the line stay.
+    const secretLink = link(page, secret.page_id);
+    const secretProjectLink = projectLink(page, secretProject.project_id);
+    await expect(secretLink).toHaveAttribute("data-link-state", "unavailable");
+    await expect(secretLink).toHaveAttribute("aria-description", "Page unavailable");
+    await expect(secretProjectLink).toHaveAttribute("data-link-state", "unavailable");
+    await expect(secretProjectLink).toHaveAttribute("aria-description", "Project unavailable");
+    await expect(secretLink).toHaveText("Alice's notes");
+    await expect(secretLink).toHaveAttribute("href", new RegExp(`/p/${secret.page_id}$`));
+    await expect(link(page, target.page_id).first()).not.toHaveAttribute("data-link-state");
+    await expect(projectLink(page, project.project_id)).not.toHaveAttribute("data-link-state");
+    const drawn = (locator) =>
+      locator.evaluate((a) => {
+        const after = getComputedStyle(a, "::after");
+        return {
+          mask: after.maskImage || after.webkitMaskImage,
+          color: getComputedStyle(a).color,
+          height: a.getBoundingClientRect().height,
+        };
+      });
+    const open = await drawn(link(page, target.page_id).first());
+    const locked = await drawn(secretLink);
+    const lockedProject = await drawn(secretProjectLink);
+    assert.notEqual(locked.mask, open.mask, "the lock replaces the Page glyph");
+    assert.equal(lockedProject.mask, locked.mask, "a Project draws the same lock");
+    assert.notEqual(locked.color, open.color, "an unavailable link is muted");
+    assert.equal(locked.height, open.height, "the marker keeps the line's height");
+  }
+  checkpoint("labeled links the reader can't open are marked unavailable without a hover");
+
   stage = "caret and copy";
   {
     // Put the caret right after each link's last letter with the keyboard
@@ -428,6 +463,12 @@ try {
     await held;
     await route.continue().catch(() => {});
   });
+  // Links ask for their targets when the Page draws, so the held answer has
+  // to be the first one this tab asks for.
+  await page.goto(sourceUrl);
+  await expect(link(page, slow.page_id)).toBeVisible({ timeout: 30000 });
+  await expect(link(page, secret.page_id)).toHaveAttribute("data-link-state", "unavailable");
+  await expect(link(page, slow.page_id)).not.toHaveAttribute("data-link-state");
   await page.mouse.move(2, 2);
   await expect(card(page)).toHaveCount(0, { timeout: 5000 });
   await link(page, slow.page_id).hover();

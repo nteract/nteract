@@ -34,11 +34,28 @@
 // the link menu in an editable block, follows the link in a read-only one,
 // and the hover card (page-link-card.mjs linkAt) treats it like any other
 // Page or Project link.
+//
+// A labeled link, `[label](url)`, to another Page or Project keeps its label
+// and draws as the link mark's own <a> (page-link-shape.mjs). When this
+// reader can't open its target, the <a> carries `data-link-state=
+// "unavailable"`, which CSS draws as a lock in place of the kind's glyph
+// with the muted colour of an unavailable chit (wordgard.css), and
+// `aria-description` "Page unavailable" or "Project unavailable". Both are
+// attributes on the rendered <a>, never document content, so copy and
+// Markdown keep the label and the link. The labeledLinkMarks plugin sets
+// them from the tab's PageRefs whenever a ref changes or the editor redraws
+// its DOM, and asks for a target's meta on the same terms as a chit
+// (needsAsking).
 import { Node } from "wordgard/doc";
 import { Decoration, Widget, Wordgard } from "wordgard/editor";
 import { GardState, Transaction } from "wordgard/state";
 import { linkedTarget } from "../shared/page-links.mjs";
-import { linkDestination, targetAttributes } from "./link-destination.mjs";
+import {
+  PAGE_LINK_CLASS,
+  PROJECT_LINK_CLASS,
+  linkDestination,
+  targetAttributes,
+} from "./link-destination.mjs";
 import { pageTarget, projectTarget, refKey, settledOf } from "./page-refs.mjs";
 import { PagesLink } from "./wordgard-model.mjs";
 import { chitRefs as tabRefs } from "./chit-refs.mjs";
@@ -198,6 +215,72 @@ export function needsAsking(ref) {
   return ref.name === "failed" && ref.ready;
 }
 
+/** The marker a labeled link to `target` draws for its meta ref: "Page
+ * unavailable" or "Project unavailable" when the reader can't open it, or
+ * null. `target` is a `{ kind }` (shared/page-links.mjs linkedTarget's
+ * answer, or a PageRefs target); null, for a link that names no other Page
+ * or Project, draws none. Loading and a failure with no settled answer draw
+ * none either; a refresh keeps the answer it refreshes, as chitLabel does. */
+export function unavailableLabel(target, ref) {
+  if (!target) return null;
+  const { text, state } = chitLabel(target.kind, ref);
+  return state === "unavailable" ? text : null;
+}
+
+/** The labeled Page and Project links drawn in an editor: the link mark's own
+ * <a>, not a chit's widget and not a chit's hidden source. */
+const LABELED_LINKS = [
+  `a.${PAGE_LINK_CLASS}[data-page-id]:not(.wg-chit)`,
+  `a.${PROJECT_LINK_CLASS}[data-project-id]:not(.wg-chit)`,
+].join(", ");
+
+/** Draw each labeled link under `root` from `refs` as they are now, and ask
+ * once for each target a chit would ask for. */
+export function markLabeledLinks(root, refs) {
+  const asks = new Map();
+  for (const link of root.querySelectorAll(LABELED_LINKS)) {
+    if (link.closest(".wg-chit-source")) continue;
+    const target = link.classList.contains(PROJECT_LINK_CLASS)
+      ? projectTarget(link.dataset.projectId)
+      : pageTarget(link.dataset.pageId);
+    const ref = refs.ref(target, "meta");
+    if (needsAsking(ref)) asks.set(refKey(target, "meta"), target);
+    const label = unavailableLabel(target, ref);
+    if (label) {
+      if (link.dataset.linkState !== "unavailable") link.dataset.linkState = "unavailable";
+      if (link.getAttribute("aria-description") !== label)
+        link.setAttribute("aria-description", label);
+    } else {
+      if (link.hasAttribute("data-link-state")) link.removeAttribute("data-link-state");
+      if (link.hasAttribute("aria-description")) link.removeAttribute("aria-description");
+    }
+  }
+  for (const target of asks.values()) refs.want(target, ["meta"]);
+}
+
+/** Keeps an editor's labeled links drawn from the tab's PageRefs: on every
+ * ref change while connected, and after every redraw of its DOM, which may
+ * have made a link's <a> anew. */
+const labeledLinkMarks = Wordgard.Plugin.define((wg) => {
+  let subscription = null;
+  const paint = () => {
+    const refs = tabRefs();
+    if (refs) markLabeledLinks(wg.contentDOM, refs);
+  };
+  return {
+    connect() {
+      const refs = tabRefs();
+      if (subscription || !refs) return;
+      subscription = refs.store.select((state) => state.refs).subscribe(paint);
+    },
+    docUpdate: paint,
+    disconnect() {
+      subscription?.unsubscribe();
+      subscription = null;
+    },
+  };
+});
+
 const mounted = new WeakMap();
 const chit = Widget.define({
   eq: (a, b) => a.href === b.href && a.kind === b.kind && a.id === b.id,
@@ -273,7 +356,8 @@ const shown = (state) => {
 };
 
 /**
- * The chit extension. `base()` is the address links resolve against (the
+ * The chit extension, with the unavailable marker of labeled links
+ * (labeledLinkMarks). `base()` is the address links resolve against (the
  * page's own, by default); `currentPageId()` and `currentProjectId()` name
  * what is open, whose own links stay plain links.
  */
@@ -285,6 +369,7 @@ export function pageChits({
   return [
     chitPlace.of({ base, currentPageId, currentProjectId }),
     chitField,
+    labeledLinkMarks.extension,
     Wordgard.domEventObserver("focusin", (_event, wg) => {
       if (!wg.state.field(chitField).focused) wg.dispatch({ effects: chitFocus.of(true) });
     }),

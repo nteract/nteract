@@ -24,10 +24,11 @@
 // ref, aborts the requests in flight and cancels the timers, as the
 // library's listing cache forgets an account (main.jsx forgetAccountData).
 //
-// Refs load on intent: `want(target, files)`. Today the hover card asks
-// (PageLinkCard.jsx) when a reader points at or focuses a link; a viewport
-// observer can ask the same way later, with `urgent: false`, so an intent
-// the reader has now goes out before ones a scroll made.
+// Refs load on intent: `want(target, files)`. The hover card asks, urgent,
+// (PageLinkCard.jsx) when a reader points at or focuses a link. Chits and
+// labeled Page and Project links ask for meta, not urgent, when an editor
+// draws them (page-chits.mjs), so an intent the reader has now goes out
+// before theirs.
 import { timer } from "rxjs";
 import { defineMachine, reject } from "../shared/machine.mjs";
 import { getJson } from "./request.mjs";
