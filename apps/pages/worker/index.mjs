@@ -735,6 +735,9 @@ export const sharedChildBounds = { scan: 100 };
  * host. The caller's Catalog queue waits on the whole listing, so its checks
  * overlap; this bounds how many requests one Catalog has out at a time. */
 export const sharedCheckBounds = { concurrency: 16 };
+/** How many Project hosts one Project listing reads at once. Each read is a
+ * request to a different object, and a cold one takes about a second. */
+export const projectReadBounds = { concurrency: 6 };
 /** How long a Page host waits on one card object read or write. */
 const PAGE_CARD_STORE_TIMEOUT_MS = 10_000;
 /** How long a deletion waits on the card object's delete. */
@@ -4405,24 +4408,32 @@ export class Catalog {
       // (project-read-memo.mjs); a reuse counts as `space_memo`. Only a 200
       // answer is kept.
       const basis = accessBasis(identity);
-      const spaces = [];
-      for (const candidate of candidates.values()) {
-        if (candidate.pending || candidate.deletion) continue;
+      // Each Project is its own host, so the reads run
+      // `projectReadBounds.concurrency` at a time: a listing waits about as
+      // long as its slowest reads, not their sum. The answers are sorted
+      // below, so the order they arrive in decides nothing. `space_read`
+      // still sums every read, so it can exceed the listing's own time.
+      const readCandidate = async (candidate) => {
+        if (candidate.pending || candidate.deletion) return null;
         const kept = this.projectReads.lookup(candidate.space_id, basis, Date.now());
         if (kept) {
           timing.count("space_memo");
-          spaces.push(kept);
-          continue;
+          return kept;
         }
         const generation = this.projectReads.begin(candidate.space_id);
         const response = await readSpace(candidate.space_id);
         if (response.ok) {
           const space = await response.json();
           this.projectReads.answered(candidate.space_id, generation, basis, space, Date.now());
-          spaces.push(space);
-        } else if (![403, 404, 409].includes(response.status))
+          return space;
+        }
+        if (![403, 404, 409].includes(response.status))
           throw new HttpError(503, "Project access is temporarily unavailable");
-      }
+        return null;
+      };
+      const spaces = (
+        await boundedMap([...candidates.values()], projectReadBounds.concurrency, readCandidate)
+      ).filter(Boolean);
       const context = {
         principal: identity.principal,
         needle: null,

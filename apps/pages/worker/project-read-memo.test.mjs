@@ -9,6 +9,7 @@ import {
 } from "./project-read-memo.mjs";
 import { invitedProjects } from "./project-invitations.mjs";
 import { world } from "./projects-fixture.mjs";
+import { projectReadBounds } from "./index.mjs";
 
 test("projectReadMemo: every state and event", () => {
   const answered = projectReadMemo(emptyProjectReads, {
@@ -161,6 +162,64 @@ test("two listings inside 30 s read a Project once, and the invitation loop stil
   t.mock.timers.tick(1);
   const third = await list();
   assert.deepEqual(third.reads, [project.project_id, project.project_id], "expired: read again");
+});
+
+test("a listing reads its Projects six at a time and returns them all, newest first", async (t) => {
+  const { w, project } = await memberWorld(t);
+  const ids = [project.project_id];
+  for (let n = 0; n < 8; n++) {
+    const made = await w.createProject(`Shared ${n}`);
+    const granted = await w.call("owner", "manage_project_access", {
+      project_id: made.project_id,
+      action: "set_role",
+      principal: w.member,
+      role: "viewer",
+      expected_revision: 0,
+      nonce: w.key(),
+    });
+    assert.equal(granted.status, 200, JSON.stringify(granted.body));
+    ids.push(made.project_id);
+  }
+  // Each read is held until the next turn of the event loop, so reads that
+  // run together are in flight together.
+  let inFlight = 0;
+  let most = 0;
+  const getByName = w.env.PROJECTS.getByName;
+  w.env.PROJECTS.getByName = (id) => {
+    const stub = getByName(id);
+    return {
+      async fetch(request, init) {
+        if (new URL(request.url).pathname !== "/internal/space/read")
+          return stub.fetch(request, init);
+        most = Math.max(most, ++inFlight);
+        try {
+          await new Promise((resolve) => setImmediate(resolve));
+          return await stub.fetch(request, init);
+        } finally {
+          inFlight--;
+        }
+      },
+    };
+  };
+  const listed = await w.call("member", "list_projects");
+  assert.equal(listed.status, 200, JSON.stringify(listed.body));
+  assert.equal(most, projectReadBounds.concurrency);
+  const got = listed.body.projects;
+  assert.deepEqual(got.map((entry) => entry.project_id).sort(), [...ids].sort());
+  assert.deepEqual(
+    got.map((entry) => entry.updated_at),
+    got
+      .map((entry) => entry.updated_at)
+      .sort()
+      .reverse(),
+  );
+  // Once the kept answers expire, one Project that fails to answer fails the
+  // listing, as before.
+  w.env.PROJECTS.getByName = (id) =>
+    id === ids[3] ? { fetch: async () => new Response("no", { status: 500 }) } : getByName(id);
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() + PROJECT_READ_TTL_MS + 1 });
+  const failed = await w.call("member", "list_projects");
+  assert.equal(failed.status, 503, JSON.stringify(failed.body));
 });
 
 test("without invitations, a second listing reads no Project host", async (t) => {
