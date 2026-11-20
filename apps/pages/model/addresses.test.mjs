@@ -437,16 +437,27 @@ test("every operation refuses an id of the wrong kind, naming what takes it", ()
       { op: "delete_block", node_id: node },
       { op: "move_block", node_id: node },
       { op: "move_block", node_id: blockAddress(doc, keys[1]), after_node_id: node },
-      { op: "insert_markdown", markdown: "x", after_node_id: node },
-      { op: "insert_node", node: dataframe, after_node_id: node },
-      { op: "insert_image", asset_id: ASSET, alt: "", after_node_id: node },
     ])
       refusedKind(doc, operation, /takes a block's id/);
   }
+  // An insert takes a block's id or a top-level node's; an inline image is
+  // neither.
+  for (const operation of [
+    { op: "insert_markdown", markdown: "x", after_node_id: image },
+    { op: "insert_node", node: dataframe, after_node_id: image },
+    { op: "insert_image", asset_id: ASSET, alt: "", after_node_id: image },
+  ])
+    refusedKind(
+      doc,
+      operation,
+      new RegExp(
+        `^This id names an image; set_image changes it; to insert after it, name the node that holds it\\. ${operation.op} takes a block's id.*, or a node's id from the outline as after_node_id\\.$`,
+      ),
+    );
   refusedKind(
     doc,
     { op: "delete_block", node_id: heading },
-    /^This id names a heading; delete_node removes it\. delete_block takes a block's id/,
+    /^This id names a heading; delete_node removes it, and an insert's after_node_id puts new content after it\. delete_block takes a block's id/,
   );
   refusedKind(
     doc,

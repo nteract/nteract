@@ -2406,7 +2406,8 @@ A `view` node is a top-level leaf with one attr, `view_id`; feature `view`
 gates it ([model/features.json](model/features.json)), so a build without it
 opens a Page with one read-only. Its DOM form is `figure[data-pages-view]`
 with `data-view-id`. `insert_node` with `{ type: "view", attrs: { view_id }
-}` places one; the view must exist on the Page (`400 unknown_view`, naming
+}` places one, in a block of its own or, after a top-level node's id, inside
+that node's block; the view must exist on the Page (`400 unknown_view`, naming
 the views it holds in the sentence and `details.view_ids`). A malformed view
 node is `400 invalid_edit_selector`, naming the field and its rule.
 `delete_node` removes the node and keeps the view. Markdown reads it as the
@@ -2746,10 +2747,13 @@ For agents, importing bytes and inserting content are separate operations:
    CSV uses the same named and unnamed forms with `media_type: "text/csv"` in the node attrs.
 2. Read the current Page, then call guarded `edit_page` with that `insert`
    operation: for an image, `insert_image`, `asset_id`, alt text, and optional
-   `after_node_id` (omitted appends; `null` prepends). The host verifies the asset belongs to this Page and creates a
-   dedicated image block. Its `result.edits` entry returns the new block's
-   `node_id`, its `nodes`, the image's id as `image`, and the asset reference;
-   the receipt adds updated heads and the Page URL. Exact retries reuse that result.
+   `after_node_id` (omitted appends; `null` prepends). The host verifies the asset belongs to this Page and writes a
+   paragraph holding the image: in a new block, or inside a node's block
+   directly after it when `after_node_id` is a top-level node's id. Its
+   `result.edits` entry returns the new block's `node_id` and its `nodes` (or,
+   inside a node's block, that block as `block` and the new node in `nodes`),
+   the image's id as `image`, and the asset reference; the receipt adds
+   updated heads and the Page URL. Exact retries reuse that result.
 3. Read back the block. Upload success alone is not insertion or proof of rendering.
 
 The MCP schema declares `_meta["openai/fileParams"]` for the client handoff. No
@@ -2761,9 +2765,10 @@ imply pixel access from a Markdown reference.
 The agent guide's Images section (`/llms.txt`, from
 [agent-guide.mjs](agent-guide.mjs)) is the agent-facing workflow: which path to
 use, sizing for the ~960 CSS px desktop column and ~350 px phone column (images
-render at natural width, capped at the column), light and dark uploads, the
-one-batch pattern that interleaves `insert_image` and `insert_markdown`, and
-verification through `summary.images`.
+render at natural width, capped at the column), light and dark uploads,
+placing an image after the paragraph it follows by that paragraph's `node_id`,
+the append-in-order batch for a new Page, and verification through
+`summary.images`.
 
 ### Upload capabilities
 
@@ -4096,7 +4101,21 @@ still replay the recorded receipt; these guards run only for new intents.
 `edit_page` supports structural operations including `insert_markdown`,
 `move_block`, and `insert_image`. Placement uses a block's `node_id` as
 `after_node_id`, `null` to prepend, or omission to append; fractional positions
-are internal. Content warnings, the ids in `result.edits`, and other receipt results are captured at
+are internal. `insert_markdown`, `insert_image` and `insert_node` also take a
+top-level node's id as `after_node_id`: the new nodes go into that node's
+block, directly after it (after a list's or quote's last item), and no block
+is created ([model/insert-in-place.mjs](model/insert-in-place.mjs)). The write
+is one `splitBlock` per marker and one `splice` per text run at the end of the
+anchor's range, after the block's markers are repaired; no existing character
+or marker is rewritten, so neighbours keep their node ids and comment anchors.
+Expanding marks at the anchor's end are taken off the inserted range, and each
+run gets exactly its encoded marks. The block is decoded afterwards: unless it
+holds the old nodes, with their ids, around exactly the new ones, the insert
+is refused with `nodes_would_join` (a list beside a list of the same kind) and
+the batch rolls back. A block holding content from a newer build refuses with
+`newer_content`. The receipt names the block as `block` and the new nodes as
+`nodes`, with no `node_id`; agent presence names the inserted text range. The
+stored form is the one the editor writes, so earlier builds read it. Content warnings, the ids in `result.edits`, and other receipt results are captured at
 the operation's actual heads and are not recomputed during retry.
 
 ### Trash and permanent deletion

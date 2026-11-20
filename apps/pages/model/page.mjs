@@ -11,7 +11,11 @@ import {
   setRichImage,
   setRichNode,
   projectedBlock,
+  markdownSpans,
+  imageSpans,
+  nodeSpans,
 } from "./richtext-page.mjs";
+import { insertInPlace } from "./insert-in-place.mjs";
 import { nodeIds } from "./node-ids.mjs";
 import { imageIds } from "./image-ids.mjs";
 import { addressIndex, blockAddress, nodeAddresses, resolveAddressFor } from "./addresses.mjs";
@@ -176,7 +180,7 @@ function nodeInsertionProblem(op) {
   if (!types.includes(node.type))
     return `node.type must be ${types.join(" or ")}, not ${quoted(node.type)}`;
   if (!afterAnchor(op.after_node_id))
-    return "after_node_id must be a block's id, or null to insert first";
+    return "after_node_id must be a block's or a top-level node's id, or null to insert first";
   return NODE_INSERTIONS[node.type].problem(node.attrs);
 }
 /** Check an insert_node operation without a Page: its shape, the node type and
@@ -302,9 +306,13 @@ export function validateEditFields(op) {
 }
 // The addresses each operation names, by field, and the kinds each field
 // takes (model/addresses.mjs). Kinds are strict: no operation acts on the
-// block that holds a node it was given. after_node_id takes a block's id;
-// omitted appends and null prepends.
+// block that holds a node it was given. An insert's after_node_id takes a
+// block's id, which puts the new content in a block of its own after it, or a
+// top-level node's id, which writes it into that node's block directly after
+// the node (model/insert-in-place.mjs); omitted appends and null prepends.
+// move_block's takes a block's id only.
 const BLOCK = ["block"];
+const PLACE = ["block", "node"];
 const ADDRESSES = new Map([
   ["replace_block_markdown", [["node_id", BLOCK]]],
   ["delete_block", [["node_id", BLOCK]]],
@@ -315,9 +323,9 @@ const ADDRESSES = new Map([
       ["after_node_id", BLOCK],
     ],
   ],
-  ["insert_markdown", [["after_node_id", BLOCK]]],
-  ["insert_image", [["after_node_id", BLOCK]]],
-  ["insert_node", [["after_node_id", BLOCK]]],
+  ["insert_markdown", [["after_node_id", PLACE]]],
+  ["insert_image", [["after_node_id", PLACE]]],
+  ["insert_node", [["after_node_id", PLACE]]],
   ["delete_node", [["node_id", ["node"]]]],
   ["set_image", [["node_id", ["image"]]]],
   ...[...PASSAGE_OPS].map((name) => [name, [["node_id", ["block", "node"]]]]),
@@ -339,6 +347,17 @@ function resolveOperation(index, doc, op) {
 const scoped = (op, target) =>
   target.kind === "node" ? { ...op, [withinNode]: { start: target.start, end: target.end } } : op;
 const afterKey = (anchor) => (anchor && typeof anchor === "object" ? anchor.key : anchor);
+/** Whether a resolved after_node_id names a top-level node, so the insert
+ * writes into that node's block. */
+const inPlace = (anchor) => anchor?.kind === "node";
+/** Write `spans` into `anchor`'s block directly after it, recording the
+ * block as touched and the inserted text range for agent presence. */
+function writeInPlace(doc, anchor, spans, op, { trace, touched }) {
+  const placed = insertInPlace(doc, anchor, spans, op);
+  touched.push(anchor.key);
+  trace?.push({ type: "text", block_id: anchor.key, start: placed.start, end: placed.end });
+  return placed;
+}
 
 /** A new block's addresses, as an insert reports them so the next request
  * can name the block and its nodes without a read. */
@@ -375,6 +394,14 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
     return;
   }
   if (op.op === "insert_markdown") {
+    if (inPlace(at.after_node_id)) {
+      const spans = markdownSpans(op.markdown);
+      const { block, nodes } = writeInPlace(doc, at.after_node_id, spans, op.op, {
+        trace,
+        touched,
+      });
+      return withListWarning({ op: "insert_markdown", block, nodes }, op.markdown);
+    }
     const key = crypto.randomUUID();
     doc.blocks[key] = block(positionForInsertion(doc, afterKey(at.after_node_id)));
     setRichMarkdown(doc, key, op.markdown);
@@ -384,16 +411,32 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
   }
   if (op.op === "insert_image") {
     validateImageInsertion(op);
-    const key = crypto.randomUUID();
     const asset_url = imageAssetUrl(doc.page_id, op.asset_id);
-    doc.blocks[key] = block(positionForInsertion(doc, afterKey(at.after_node_id)));
     const dark_src = op.dark_asset_id ? imageAssetUrl(doc.page_id, op.dark_asset_id) : null;
-    setRichImage(doc, key, { src: asset_url, dark_src, alt: op.alt, title: op.title });
-    touched.push(key);
-    trace?.push({ type: "block", block_id: key });
+    const image = { src: asset_url, dark_src, alt: op.alt, title: op.title };
+    let placed;
+    if (inPlace(at.after_node_id)) {
+      const { block, nodes, start, end } = writeInPlace(
+        doc,
+        at.after_node_id,
+        imageSpans(image),
+        op.op,
+        { trace, touched },
+      );
+      const id = imageIds(doc, at.after_node_id.key).find(
+        (entry) => entry.at >= start && entry.at < end,
+      ).id;
+      placed = { op: "insert_image", block, nodes, image: id };
+    } else {
+      const key = crypto.randomUUID();
+      doc.blocks[key] = block(positionForInsertion(doc, afterKey(at.after_node_id)));
+      setRichImage(doc, key, image);
+      touched.push(key);
+      trace?.push({ type: "block", block_id: key });
+      placed = { ...insertedBlock(doc, "insert_image", key), image: imageIds(doc, key)[0].id };
+    }
     return {
-      ...insertedBlock(doc, "insert_image", key),
-      image: imageIds(doc, key)[0].id,
+      ...placed,
       asset_id: op.asset_id,
       asset_url,
       ...(dark_src && { dark_asset_id: op.dark_asset_id, dark_src }),
@@ -403,14 +446,25 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
   }
   if (op.op === "insert_node") {
     const input = validateNodeInsertion(op);
-    const key = crypto.randomUUID();
     const attrs = NODE_INSERTIONS[op.node.type].stored(doc.page_id, input);
-    doc.blocks[key] = block(positionForInsertion(doc, afterKey(at.after_node_id)));
-    setRichNode(doc, key, { type: op.node.type, attrs });
-    touched.push(key);
-    trace?.push({ type: "block", block_id: key });
+    const node = { type: op.node.type, attrs };
+    let placed;
+    if (inPlace(at.after_node_id)) {
+      const { block, nodes } = writeInPlace(doc, at.after_node_id, nodeSpans(node), op.op, {
+        trace,
+        touched,
+      });
+      placed = { op: "insert_node", block, nodes };
+    } else {
+      const key = crypto.randomUUID();
+      doc.blocks[key] = block(positionForInsertion(doc, afterKey(at.after_node_id)));
+      setRichNode(doc, key, node);
+      touched.push(key);
+      trace?.push({ type: "block", block_id: key });
+      placed = insertedBlock(doc, "insert_node", key);
+    }
     return {
-      ...insertedBlock(doc, "insert_node", key),
+      ...placed,
       type: op.node.type,
       attrs: { ...input, ...attrs },
     };
@@ -592,6 +646,13 @@ export function applyPageOperation(doc, options) {
  * block itself, or the block holding the node or image. */
 const blockOf = (index, address) =>
   typeof address === "string" ? (index.block(address) ?? index.find(address)?.key) : undefined;
+/** The block key a node address names, or undefined for a block's address
+ * or anything else. */
+const nodeBlockOf = (index, address) =>
+  typeof address === "string" && index.block(address) === undefined
+    ? index.find(address)?.key
+    : undefined;
+const INSERTS = new Set(["insert_markdown", "insert_image", "insert_node"]);
 
 function applyOperation(doc, { operation, arguments: args = {}, trace }) {
   // Comments are written to the comments document, never the Page.
@@ -608,8 +669,15 @@ function applyOperation(doc, { operation, arguments: args = {}, trace }) {
   // are drawn with, and unmarked text gets its marker, so every node an
   // operation resolves has one. Repair changes no visible text or node, so
   // the matches and ids the caller read still hold.
+  // An in-place insert's anchor block is repaired the same way, so no
+  // unmarked text after the anchor is taken into the new nodes.
   for (const op of operations) {
-    const key = op.op === "delete_block" ? undefined : blockOf(index, op.node_id);
+    const key =
+      op.op === "delete_block"
+        ? undefined
+        : INSERTS.has(op.op)
+          ? nodeBlockOf(index, op.after_node_id)
+          : blockOf(index, op.node_id);
     if (key === undefined) continue;
     repairBlockMarkers(doc, key);
     index.forget(key);

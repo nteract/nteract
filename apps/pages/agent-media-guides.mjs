@@ -23,7 +23,7 @@ const source = (source_id, name) => ({
   asset_id: "<asset_id from this file's upload>",
   source_revision: null,
 });
-const place = (view_id, after_node_id = "<id of the block the view follows>") => ({
+const place = (view_id, after_node_id = "<node_id of the paragraph the view follows>") => ({
   op: "insert_node",
   node: { type: "view", attrs: { view_id } },
   after_node_id,
@@ -203,12 +203,11 @@ const primary = rgb(host.getContext().styles.variables["--primary"]);
 
 Each view is its own document, and one edit_page request writes one document, so a batch with set_view holds nothing else: plan one request for each view you create or change. The Page's sources are another document, so set_source and delete_source share a batch only with each other. Body edits such as insert_node, insert_markdown and replace_block_markdown share a third kind of batch.
 
-insert_node puts the view in a block of its own, directly after the block named by after_node_id. Omit after_node_id to append at the end of the Page, or pass null to put the view first. It must be a block's id: a paragraph's or heading's node id is refused with wrong_address_kind. Nothing splits a block, and create_page writes its whole Markdown as one block, so a view lands between two passages only when they are separate blocks.
+To put a view between two passages, give insert_node the node_id of the paragraph, heading, list or other top-level node it follows, from read_page's outline or a receipt's nodes. The view goes into that node's block, directly after it, and nothing else in the block changes, so comment threads stay where they are. A list or quote is one node: the view goes after its last item. An image's id is refused with wrong_address_kind; name the paragraph that holds it. A block's id puts the view in a block of its own after that block. Omit after_node_id to append at the end of the Page, or pass null to put the view first.
+${edit("place-between", [place("activity", "<node_id of the paragraph the view follows>")])}
+Each insert lands directly after the node it names, so several in one batch after the same node read in the reverse of their order in the batch. The receipt's nodes are the new nodes' ids: name one as after_node_id in the next request to continue after it.
 
 To build a new Page, create it with only the prose before the first view, and save each view with set_view. Then send one batch that alternates insert_node and insert_markdown with after_node_id omitted. Operations apply in order, and each lands after the one before it at the end of the Page. For two views: insert_node activity, insert_markdown the text between, insert_node retention.
-
-If one block already holds all the prose, split it in one batch: replace_block_markdown that block with the text before the view, then insert_markdown the rest, then insert_node the view. Give both inserts that block's id as after_node_id. Each lands directly after the block, so the view, sent last, goes ahead of the rest. replace_block_markdown resends the prose: read the whole block, not a section or search slice, and copy it exactly, since anything you leave out is deleted. The rest becomes a new block, so comment threads on it are detached; split a Page before people comment on it.
-${edit("split-intro", [{ op: "replace_block_markdown", node_id: "<the block's id>", markdown: "<the text before the view, exactly as read>" }, { op: "insert_markdown", markdown: "<the rest, exactly as read>", after_node_id: "<the block's id>" }, place("activity", "<the block's id>")])}
 
 ## Frame environment
 

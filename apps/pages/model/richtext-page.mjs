@@ -78,10 +78,29 @@ function writeMarkdownSpans(doc, id, spans) {
 // Agent-written Markdown refuses math and HTML (`parseAgentMarkdown`); pass
 // `literal: true` for stored source, which keeps them as text instead.
 export function setRichMarkdown(doc, id, source, { literal = false } = {}) {
-  const tree = literal ? parseMarkdown(source) : parseAgentMarkdown(source);
-  const spans = pageSpans(tree);
+  const spans = literal ? pageSpans(parseMarkdown(source)) : markdownSpans(source);
   updateSpansExactly(doc, textPath(id), spans, updateSpansConfig);
   stampSpans(doc, spans);
+}
+/** The encoded spans of agent-written Markdown. */
+export const markdownSpans = (source) => pageSpans(parseAgentMarkdown(source));
+/** The encoded spans of one paragraph holding one image. Alt text is
+ * content, never Markdown syntax, so the embed is built directly. */
+export function imageSpans({ src, dark_src = null, alt, title = null }) {
+  const attrs = { src, alt, title, ...(dark_src == null ? {} : { dark_src }) };
+  return pageSpans(schema.doc([Paragraph.create([PagesImage.of(attrs)])]));
+}
+/** The encoded spans of one node with no Markdown form: a dataframe or a
+ * view. */
+export function nodeSpans({ type, attrs }) {
+  const node =
+    type === DATAFRAME_BLOCK
+      ? PagesDataframe.of(dataframeAttrs(attrs))
+      : type === VIEW_BLOCK && readViewNode(attrs)
+        ? PagesView.of(readViewNode(attrs))
+        : null;
+  if (!node) throw Error(`Unsupported node type: ${type}`);
+  return pageSpans(schema.doc([node]));
 }
 /** Repair block `id`'s markers in place, inside the caller's change, so
  * the block stores what every reader draws. Two repairs, in one pass:
@@ -144,24 +163,14 @@ export function setRichEmpty(doc, id) {
   const spans = pageSpans(schema.doc([Paragraph.create([])]));
   updateSpansExactly(doc, textPath(id), spans, updateSpansConfig);
 }
-export function setRichImage(doc, id, { src, dark_src = null, alt, title = null }) {
-  // Construct the embed directly: alt text is content, never Markdown syntax.
-  const attrs = { src, alt, title, ...(dark_src == null ? {} : { dark_src }) };
-  const tree = schema.doc([Paragraph.create([PagesImage.of(attrs)])]);
-  const spans = pageSpans(tree);
+export function setRichImage(doc, id, image) {
+  const spans = imageSpans(image);
   updateSpansExactly(doc, textPath(id), spans, updateSpansConfig);
   stampSpans(doc, spans);
 }
 /** Write one node with no Markdown form as a block's whole content. */
-export function setRichNode(doc, id, { type, attrs }) {
-  const node =
-    type === DATAFRAME_BLOCK
-      ? PagesDataframe.of(dataframeAttrs(attrs))
-      : type === VIEW_BLOCK && readViewNode(attrs)
-        ? PagesView.of(readViewNode(attrs))
-        : null;
-  if (!node) throw Error(`Unsupported node type: ${type}`);
-  const spans = pageSpans(schema.doc([node]));
+export function setRichNode(doc, id, node) {
+  const spans = nodeSpans(node);
   updateSpansExactly(doc, textPath(id), spans, updateSpansConfig);
   stampSpans(doc, spans);
 }

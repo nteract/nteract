@@ -202,11 +202,15 @@ ${part.authErrorItems}
   takes, such as a heading's id for delete_block or an image's in node_ids.
   The message says what the id names and which operation takes it. Block ops
   take a block's id (the block field of its first outline entry), delete_node
-  a node's, set_image an image's (summary.images).
+  a node's, set_image an image's (summary.images), an insert's after_node_id a
+  block's or a node's.
 - nodes_would_join: delete_node would leave two lists or quotes of the same
   kind side by side, and they'd merge into one. Each delete is checked as it
   applies, so put a delete_node for one of them before this one in the batch,
-  or rewrite the block with replace_block_markdown.
+  or rewrite the block with replace_block_markdown. An insert after a node is
+  refused the same way when it would put a list beside a list of the same
+  kind: start the new content with another kind of node, insert after another
+  node, or give after_node_id the block's id.
 - stored_form_unsupported (409): part of this Page is stored in a form from an
   earlier version of Pages that this build doesn't read. Retrying doesn't
   help; tell the person, since the Page needs an operator.
@@ -646,19 +650,19 @@ ${part.uploadStep}
    prepends). For a dark-theme variant, upload the dark file to the same Page
    and pass its asset_id as dark_asset_id; that marks the Page with the
    image-theme-variants schema feature.
-4. Interleave images with text. insert_image always makes its own block, so
-   split the text into blocks in one edit_page batch: run
-   replace_block_markdown on the Page's only block (a new Page from
-   create_page has one), or its last block, with the first section, then
-   alternate insert_image and insert_markdown with after_node_id omitted.
-   Operations apply in order, and each append lands after the previous one at
-   the end of the Page. replace_block_markdown rewrites the whole block, so
-   include anything already in it that should stay; to keep a Page's existing
-   blocks untouched, skip it and start with insert_markdown. To insert after
-   any other block, give every operation
-   that block's id as after_node_id and list them in reverse order: each
-   lands directly after it, ahead of the ones listed before. A batch takes up
-   to 100 operations and applies all or none.
+4. Interleave images with text. Give insert_image the node_id of the
+   paragraph, heading or other top-level node the image follows, from
+   read_page's outline or a receipt's nodes. The image goes into that node's
+   block, directly after it, and nothing else in the block changes. Each
+   insert lands directly after the node it names, so two in one batch after
+   the same node read in reverse order; name each image's own node instead,
+   or continue in the next request after a node the receipt's nodes name.
+   A block's id puts the image in a block of its own after that block. To
+   build a new Page, you can also create it with the first section only, then
+   alternate insert_image and insert_markdown with after_node_id omitted:
+   operations apply in order, and each append lands after the previous one at
+   the end of the Page. A batch takes up to 100 operations and applies all or
+   none.
 ${part.verifyImageStep}
 
 Step 4 as one batch, with a dark variant on the first image:
@@ -671,10 +675,8 @@ Step 4 as one batch, with a dark variant on the first image:
     "revision": "<revision from read_page>",
     "nonce": "<new UUID>",
     "operations": [
-      {"op": "replace_block_markdown", "node_id": "<last block's id>", "markdown": "## Sign in\\n\\nThe first section."},
-      {"op": "insert_image", "asset_id": "<light asset_id>", "dark_asset_id": "<dark asset_id>", "alt": "Sign-in screen with an email field"},
-      {"op": "insert_markdown", "markdown": "## Settings\\n\\nThe next section."},
-      {"op": "insert_image", "asset_id": "<asset_id>", "alt": "Settings screen"}
+      {"op": "insert_image", "asset_id": "<light asset_id>", "dark_asset_id": "<dark asset_id>", "alt": "Sign-in screen with an email field", "after_node_id": "<node_id of the paragraph it follows>"},
+      {"op": "insert_image", "asset_id": "<asset_id>", "alt": "Settings screen", "after_node_id": "<node_id of another paragraph>"}
     ]
   }
 }
@@ -707,9 +709,9 @@ reads the bound file with await model.get(name).json(), or a CSV as rows with
 await model.get(name).csv(). For an image or table,
 send the upload receipt’s insert operation through edit_page using the Page
 revision from read_page. Add alt for an image. For an image it is
-insert_image with the asset_id, which creates one rich-text block containing
-the image; for a Parquet file it is the dataframe insert_node under Datasets.
-Supply descriptive alt text; after_node_id
+insert_image with the asset_id, which writes a paragraph holding the image
+after the node or block after_node_id names; for a Parquet file it is the
+dataframe insert_node under Datasets. Supply descriptive alt text; after_node_id
 is optional (omitted appends; null prepends). The asset must already exist in
 this Page's private storage; an asset from another Page must be copied first.
 
@@ -724,7 +726,7 @@ this Page's private storage; an asset from another Page must be copied first.
       "op": "insert_image",
       "asset_id": "<asset_id from import or upload>",
       "alt": "Describe what the image shows",
-      "after_node_id": "<preceding block's id from read_page>"
+      "after_node_id": "<node_id of the preceding paragraph from read_page>"
     }]
   }
 }
@@ -745,8 +747,9 @@ required. Duplicate image targets in a batch are refused. Unknown native attrs
 are preserved. Comments accept baseline images, not theme variants.
 
 The receipt's result.edits has an entry per insert_image, in operation order:
-the new block's node_id, its nodes, the image's id as image, asset_id, asset_url
-and alt, plus the new revision and the Page url. The MCP structured
+the new block's node_id and its nodes, or for an insert after a node the
+block it went into as block and the new node in nodes; then the image's id as
+image, asset_id, asset_url and alt, plus the new revision and the Page url. The MCP structured
 result matches its text receipt. Save the exact edit request and retry it after
 an uncertain result: it returns the original receipt without another block or
 file download, even if the temporary source link has expired. A fresh insertion
@@ -763,13 +766,16 @@ Show it with a dataframe node. Dataframes have no Markdown syntax; place one
 with an edit_page operation:
 
 \`\`\`json
-{"op": "insert_node", "node": {"type": "dataframe", "attrs": {"asset_id": "<asset_id>", "title": "Usage by day"}}, "after_node_id": "<block's id>"}
+{"op": "insert_node", "node": {"type": "dataframe", "attrs": {"asset_id": "<asset_id>", "title": "Usage by day"}}, "after_node_id": "<node_id of the paragraph it follows>"}
 \`\`\`
 
 asset_id is the upload's asset_id; title is optional, up to 200 characters.
 media_type defaults to application/vnd.apache.parquet, the only one today.
-The node goes in its own block. Its result.edits entry lists the block's
-node_id, its nodes, type and the stored attrs (src, media_type, title). Pages checks the
+After a node's id the dataframe goes into that node's block, and its
+result.edits entry lists the block as block and the new node in nodes; after a
+block's id, omitted or null, it goes in its own block and the entry lists the
+block's node_id and its nodes. Either way it adds type and the stored attrs
+(src, media_type, title). Pages checks the
 asset exists on this Page and is a dataset: a missing asset is
 dataset_not_found (404), an image is 415.
 
@@ -880,7 +886,7 @@ the Page's sources. Make one in three calls:
 3. Place it with insert_node:
 
 \`\`\`json
-{"op": "insert_node", "node": {"type": "view", "attrs": {"view_id": "daily"}}, "after_node_id": "<block's id>"}
+{"op": "insert_node", "node": {"type": "view", "attrs": {"view_id": "daily"}}, "after_node_id": "<node_id of the paragraph it follows>"}
 \`\`\`
 
 view_id follows the source_id rules. The spec reads data only by name,
@@ -1215,13 +1221,18 @@ stays the same while text around it changes. A block's id is its
 blocks[].node_id and the block field on its first outline entry. A node's id
 is its outline node_id. An image's is its node_id in summary.images.
 
-Each field takes one kind. replace_block_markdown, delete_block and move_block
-take a block's id as node_id, and after_node_id is always a block's id.
+Each field takes only the kinds named here. replace_block_markdown, delete_block and move_block
+take a block's id as node_id, and move_block's after_node_id is a block's id.
+An insert's after_node_id takes a top-level node's id, which writes the new
+content into that node's block directly after it, or a block's id, which puts
+it in a new block after that block.
 delete_node takes a node's id, set_image an image's. replace_match, format_match
 and set_node take a node's id to match inside that node, or a block's to match
 anywhere in the block. Another kind is refused with wrong_address_kind; an id
 that names nothing live is node_not_found. Each insert's result.edits entry
-gives the new block's node_id and its nodes, so the next request needs no read.
+gives the new block's node_id and its nodes, or, for an insert after a node,
+the block it went into as block and the new nodes' ids as nodes, so the next
+request needs no read.
 
 ### Read only what you need
 
@@ -1579,8 +1590,10 @@ Pending admitted edits remain recoverable with their original request. Never
 answer an uncertain result by resending under a new nonce; read back and
 reconcile first.
 
-For insert_markdown, insert_image, insert_node and move_block, after_node_id is
-the preceding block's id; null places the block first, and omission appends it.
+For move_block, after_node_id is the preceding block's id. For insert_markdown,
+insert_image and insert_node it is the id of the top-level node the new content
+follows, inside that node's block, or the preceding block's id for a new block.
+null places it first, and omission appends it.
 For a comment, use action add with a block's node_id and body. Add
 selected_text to anchor it to a passage in that block; a node's id instead finds
 selected_text in that node. occurrence is one-based and defaults to 1. Replies use thread_id and body;
