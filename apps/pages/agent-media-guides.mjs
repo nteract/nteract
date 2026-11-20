@@ -3,6 +3,7 @@ import { CHART_MAX_ROWS } from "./shared/chart-spec.mjs";
 import { VIEW_SPEC_MAX_BYTES } from "./shared/view-spec.mjs";
 import { SOURCE_HISTORY_LIMIT } from "./model/sources-doc.mjs";
 import { MAX_VIEWS } from "./shared/views.mjs";
+import { OUTPUT_STYLE_VARIABLES } from "@nteract/output-frame/context";
 
 // Public, deployment-local documentation. Keep proposed schemas out of these
 // guides: examples must pass the validators shipped with the same deployment.
@@ -22,7 +23,11 @@ const source = (source_id, name) => ({
   asset_id: "<asset_id from this file's upload>",
   source_revision: null,
 });
-const place = (view_id) => ({ op: "insert_node", node: { type: "view", attrs: { view_id } } });
+const place = (view_id, after_node_id = "<id of the block the view follows>") => ({
+  op: "insert_node",
+  node: { type: "view", attrs: { view_id } },
+  after_node_id,
+});
 const link = (origin, path, title) => `[${title}](${origin}${path})`;
 
 /** Which file format to upload for data, said wherever uploads and view
@@ -122,7 +127,7 @@ function viewsGuide(origin) {
 
 ## Create a JavaScript view
 
-Upload browser-ready text/javascript with a source ID and name. Give the entry a named render export, or a default AFM export. Pages supplies a model, the DOM element and an AbortSignal; return a cleanup function if needed. React state and DOM events work inside the frame. Choose view_type anywidget for an existing widget with its own model state, or vega-lite for a declarative chart.
+Upload browser-ready text/javascript with a source ID and name. Give the entry a named render export, or a default AFM export. render receives { model, el, signal, host }: the model, the element to draw in, an AbortSignal that aborts when the view is removed or mounted again, and host, described in Frame environment below. Return a cleanup function if needed. React state and DOM events work inside the frame. Choose view_type anywidget for an existing widget with its own model state, or vega-lite for a declarative chart.
 
 Upload JSON objects or lists with content_type application/json; upload a table as application/vnd.apache.parquet or text/csv. ${DATA_FORMAT_ADVICE} Each name in data is a key on the model, and model.get(name) is a file: ask it with await for .parquet(), .csv(), .json(), .text() or .arrayBuffer(). .csv() gives an array of row objects with a columns list of the names, as Observable's FileAttachment.csv does, typed as a table's values are. A table has numRows, schema.fields, getChild(name).toArray() and toArray(), and Plot takes it directly. Listen for change:<name> to redraw in place; otherwise the view starts again with the new data. Forgetting await passes a promise to Plot, which then draws nothing.
 
@@ -155,6 +160,7 @@ For plain rows, read (await model.get("activity").parquet()).toArray(), or await
 Every save of a view pins the host's current libraries. read_page.libraries lists the exact names available here. Import them directly, as this entry imports @observablehq/plot. The receipt and read_page.view.catalog_revision identify that library build. A view runs on it while this host serves it, and otherwise on the host's current libraries, so every stored view can import the names read_page.libraries lists.
 
 ${edit("save-activity", [example])}
+Then place it in a second request:
 ${edit("place-activity", [place("activity")])}
 
 To share a component, upload its JavaScript once. Each view chooses an import name for that source. With the following definition the entry can write \`import { ChoiceGroup } from "activity-controls"\`. Omit revision to follow the source, or give a retained revision to pin it.
@@ -176,6 +182,43 @@ Pages sends its selected light or dark theme into the frame and updates the CSS 
 \`\`\`
 
 Observable Plot uses --plot-background behind its tips and currentColor for their text. If you give a plot a custom background, pass a CSS string in the plot options, such as \`style: "--plot-background: var(--card); color: var(--card-foreground)"\`. Use the Page's appearance control to try Light and Dark while the chart is open. Hover a point in each mode and read its values. Check axis labels, legend entries and the selected control too.
+
+Before the view first runs, and again on every switch, the frame sets data-theme, a dark or light class and color-scheme on <html>, and sets each token there as a CSS variable. CSS that uses the variables follows the theme with no code. The tokens are ${OUTPUT_STYLE_VARIABLES.join(", ")}. Colors arrive as oklch() strings. There are no chart, success, warning or info colors: a view that needs categorical colors brings its own for both themes.
+
+host.getContext() returns { theme: "light" or "dark", styles: { variables } } with the current token values. host.onContextChange(listener) calls the listener after each switch, once the CSS has changed, and returns an unsubscribe function. A view that draws to canvas or WebGL redraws there. A library that can't parse oklch() needs each color converted first; a one-pixel canvas does it:
+
+\`\`\`js
+function rgb(color) {
+  const context = Object.assign(document.createElement("canvas"), { width: 1, height: 1 })
+    .getContext("2d", { willReadFrequently: true });
+  context.fillStyle = color;
+  context.fillRect(0, 0, 1, 1);
+  const [r, g, b, a] = context.getImageData(0, 0, 1, 1).data;
+  return \`rgb(\${r} \${g} \${b} / \${a / 255})\`;
+}
+const primary = rgb(host.getContext().styles.variables["--primary"]);
+\`\`\`
+
+## Requests and placement
+
+Each view is its own document, and one edit_page request writes one document, so a batch with set_view holds nothing else: plan one request for each view you create or change. The Page's sources are another document, so set_source and delete_source share a batch only with each other. Body edits such as insert_node, insert_markdown and replace_block_markdown share a third kind of batch.
+
+insert_node puts the view in a block of its own, directly after the block named by after_node_id. Omit after_node_id to append at the end of the Page, or pass null to put the view first. It must be a block's id: a paragraph's or heading's node id is refused with wrong_address_kind. Nothing splits a block, and create_page writes its whole Markdown as one block, so a view lands between two passages only when they are separate blocks.
+
+To build a new Page, create it with only the prose before the first view, and save each view with set_view. Then send one batch that alternates insert_node and insert_markdown with after_node_id omitted. Operations apply in order, and each lands after the one before it at the end of the Page. For two views: insert_node activity, insert_markdown the text between, insert_node retention.
+
+If one block already holds all the prose, split it in one batch: replace_block_markdown that block with the text before the view, then insert_markdown the rest, then insert_node the view. Give both inserts that block's id as after_node_id. Each lands directly after the block, so the view, sent last, goes ahead of the rest. replace_block_markdown resends the prose: copy it exactly from read_page, since anything you leave out is deleted.
+${edit("split-intro", [{ op: "replace_block_markdown", node_id: "<the block's id>", markdown: "<the text before the view, exactly as read>" }, { op: "insert_markdown", markdown: "<the rest, exactly as read>", after_node_id: "<the block's id>" }, place("activity", "<the block's id>")])}
+
+## Frame environment
+
+A view runs in a sandboxed frame with an opaque origin.
+
+- Scripts: import libraries by name through read_page.libraries and imports first. Beyond those, a script may come from any https: host, inline or a blob, so a library that ships only as a classic (UMD) bundle can load with a script element. There is no eval: eval and new Function throw. WebAssembly compiles.
+- Network: requests may go to any host. A server sees Origin: null and must allow it for a cross-origin read. Images and media load from any host; fonts from https: or data:; stylesheets from https: or inline; workers only from a blob. Nested frames are refused.
+- Layout: the frame's base styles set a 14px system font and the Page's background. Buttons and range inputs have min-height: 44px, so a compact control sets its own min-height. html clips vertical overflow, so content drawn below the body, such as a popup past the last row, is cut off.
+- Height: the frame grows to the body's height by itself, up to 100000 px. Don't set a height on the view or give the whole view an inner scroller.
+- Errors: a view that throws while it mounts shows its message to the person looking at the Page, with a Retry button. No tool returns that message to you, and set_view checks only that static imports load. Ask the person to look at the view, or keep the module small and defensive.
 
 ## Read part of a file
 

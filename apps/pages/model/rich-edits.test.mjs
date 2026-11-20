@@ -77,12 +77,17 @@ test("edit_page rejects fields from another operation", () => {
   refuses(
     doc,
     [{ op: "set_title", title: "New", markdown: "wrong field" }],
-    /set_title does not take markdown/,
+    /set_title does not take markdown; it takes title$/,
   );
   refuses(
     doc,
     [{ op: "insert_markdown", markdown: "New", match_text: "Hello" }],
-    /insert_markdown does not take match_text/,
+    /insert_markdown does not take match_text; it takes markdown and after_node_id$/,
+  );
+  refuses(
+    doc,
+    [{ op: "set_node", match_text: "Hello", level: 2 }],
+    /set_node does not take level; it takes node_id, match_text, context_before, context_after, occurrence, type and attrs$/,
   );
   refuses(doc, [{ op: "set_title", title: null }], /set_title takes title as a string/);
   // Each is a valid insert apart from the top-level type.
