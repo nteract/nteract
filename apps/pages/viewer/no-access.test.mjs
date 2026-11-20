@@ -135,12 +135,12 @@ test("unknown states and events throw", () => {
 
 test("the message never says the target exists, and names the account", () => {
   assert.equal(
-    noAccessMessage("page", "Ada"),
-    "This Page doesn't exist, or it isn't shared with your account. You're signed in as Ada.",
+    noAccessMessage("page", "Display Name"),
+    "This Page doesn't exist, or it isn't shared with your account. You're signed in as Display Name.",
   );
   assert.equal(
-    noAccessMessage("project", "Ada"),
-    "This Project doesn't exist, or it isn't shared with your account. You're signed in as Ada.",
+    noAccessMessage("project", "Display Name"),
+    "This Project doesn't exist, or it isn't shared with your account. You're signed in as Display Name.",
   );
   assert.equal(
     noAccessMessage("page", null),
@@ -176,11 +176,15 @@ const { renderToStaticMarkup } = await import("react-dom/server");
 
 test("the screen is a heading, the message and one link to the library", () => {
   const html = renderToStaticMarkup(
-    createElement(NoAccess, { kind: "project", accountName: "Ada", onHome: () => {} }),
+    createElement(NoAccess, { kind: "project", accountName: "Display Name", onHome: () => {} }),
   );
-  assert.match(html, new RegExp(`<h1 tabindex="-1">${NO_ACCESS_HEADING}</h1>`));
+  // The heading takes focus, and the message is its description.
+  const [, described] = html.match(
+    new RegExp(`<h1 tabindex="-1" aria-describedby="([^"]+)">${NO_ACCESS_HEADING}</h1>`),
+  );
+  assert.ok(html.includes(`<p id="${described}">This Project`));
   assert.ok(html.includes("This Project doesn&#x27;t exist"));
-  assert.ok(html.includes("signed in as Ada."));
+  assert.ok(html.includes("signed in as Display Name."));
   assert.equal(html.match(/<a /g).length, 1);
   assert.match(html, /<a class="primary" href="\/">Go to your Pages<\/a>/);
   assert.ok(!/<button/.test(html));

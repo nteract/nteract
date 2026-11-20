@@ -555,7 +555,8 @@ exists, since the host answers a missing target and an unreadable one alike.
 `page_trashed`, a format refusal, a 401 and transient failures keep their own
 notices. So does a readable Project whose content Page refuses: it keeps the
 banner and its retry screen. A refusal that lands after the person navigated
-away shows nothing. Navigation and a change of account clear the screen
+away shows nothing. Navigation, a session that installs and a change of account clear
+the screen
 (`noAccessRefusal` and `noAccessStep` in
 [viewer/no-access.mjs](viewer/no-access.mjs)).
 

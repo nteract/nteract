@@ -11,12 +11,14 @@
 // - none: no refusal on screen.
 // - shown: `{ kind, targetId, principal }`. `kind` is "page" or "project",
 //   `targetId` the id the address named, and `principal` the account the
-//   host refused. The driver shows it only while that account is signed in.
+//   host refused. The driver clears it when the signed-in account changes,
+//   so a refusal on screen is always the signed-in account's.
 //
 // Events:
 // - refused `{ refusal }`: noAccessRefusal's answer for a failed open. A
 //   newer refusal replaces the one on screen.
-// - cleared: a navigation started, or the signed-in account changed.
+// - cleared: a navigation started, a session installed, or the signed-in
+//   account changed.
 //
 // No effects: the screen's one action, going to the library, is a
 // navigation the driver owns.

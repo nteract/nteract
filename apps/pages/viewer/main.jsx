@@ -488,6 +488,11 @@ function App() {
       return false;
     }
     bootPreview.dispatch({ type: "installed" });
+    // A session takes the screen from a refusal's. Not every install comes
+    // through open(): a new draft installs directly, and when its session
+    // leaves, the refusal must not be what is left.
+    setUnopened(null);
+    dispatchNoAccess({ type: "cleared" });
     setIndex(null);
     setPlacement(null);
     dispatchProjectDetails({ type: "reset", value: project });
@@ -2256,7 +2261,7 @@ function App() {
               onOpenTrash={showTrash}
               onHome={() => home(null)}
             />
-          ) : noAccess.name === "shown" && noAccess.principal === account.principal ? (
+          ) : noAccess.name === "shown" ? (
             <NoAccess
               key={`${noAccess.kind}:${noAccess.targetId}:${noAccess.principal}`}
               kind={noAccess.kind}
