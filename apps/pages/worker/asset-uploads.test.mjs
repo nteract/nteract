@@ -1492,3 +1492,225 @@ test("completion preserves source-cap errors and non-JSON upstream refusals", as
   assert.equal(upstream.status, 409);
   assert.equal(await upstream.text(), "upstream conflict");
 });
+
+// set_source with inline text, against the upload path ---------------------
+
+const MODULE_TEXT = 'export function render({ el }) { el.textContent = "inline"; }\n';
+/** One edit_page set_source batch from `who`, at the Page's current revision. */
+async function setSources(w, pageId, operations, who = "owner", nonce = crypto.randomUUID()) {
+  const { revision } = (await w.call("owner", "read_page", { page_id: pageId })).body;
+  return w.call(who, "edit_page", {
+    page_id: pageId,
+    revision,
+    nonce,
+    operations: operations.map((op) => ({ op: "set_source", source_revision: null, ...op })),
+  });
+}
+/** A source's stored entry in the sources document, as plain data. */
+const storedSource = (w, pageId, sourceId) =>
+  JSON.parse(JSON.stringify(w.page(pageId).sourcesView().sources[sourceId]));
+
+test("inline text stores exactly what an upload of the same bytes stores", async (t) => {
+  const { w, pageId, bucket } = await setup(t);
+  editable(w, pageId);
+  const bytes = new TextEncoder().encode(MODULE_TEXT);
+  const assetId = await sha256(bytes);
+
+  // The upload path: a named upload, and the same bytes named by asset_id.
+  const grant = await issued(w, {
+    page_id: pageId,
+    content_type: "text/javascript",
+    source: { source_id: "uploaded", name: "Module" },
+  });
+  const uploaded = await upload(w, grant, { body: bytes });
+  assert.equal(uploaded.status, 201, JSON.stringify(uploaded.body));
+  assert.equal(uploaded.body.asset_id, assetId);
+  const stored = { ...bucket.objects.get(imageAssetKey(pageId, assetId)) };
+  const byId = await setSources(w, pageId, [
+    { source_id: "by-id", name: "Module", asset_id: assetId },
+  ]);
+  assert.equal(byId.status, 200, JSON.stringify(byId.body));
+
+  // The inline path names the same asset and stores nothing new.
+  const inline = await setSources(w, pageId, [
+    { source_id: "inline", name: "Module", text: MODULE_TEXT, media_type: "text/javascript" },
+  ]);
+  assert.equal(inline.status, 200, JSON.stringify(inline.body));
+  assert.deepEqual(inline.body.result.edits, [
+    { op: "set_source", source_id: "inline", source_revision: "1" },
+  ]);
+  assert.equal(puts(bucket), 1);
+  assert.deepEqual(bucket.objects.get(imageAssetKey(pageId, assetId)), stored);
+
+  // The stored records match field for field. by-id and inline share a
+  // writer; the named upload's writer is its capability's.
+  const at = (entry) => ({
+    ...entry,
+    producer: { ...entry.producer, at: "<at>" },
+    history: entry.history.map((state) => ({ ...state, at: "<at>" })),
+  });
+  assert.deepEqual(at(storedSource(w, pageId, "inline")), at(storedSource(w, pageId, "by-id")));
+  const named = storedSource(w, pageId, "uploaded");
+  const written = storedSource(w, pageId, "inline");
+  assert.deepEqual(written.current, named.current);
+  assert.deepEqual(written.current, { media_type: "text/javascript", asset_id: assetId });
+  assert.equal(written.producer.kind, named.producer.kind);
+  assert.deepEqual(Object.keys(written).sort(), Object.keys(named).sort());
+  assert.deepEqual(Object.keys(written.history[0]).sort(), Object.keys(named.history[0]).sort());
+
+  // Read back, served, and named again by its asset_id.
+  const read = await w.call("owner", "read_page", { page_id: pageId, source_id: "inline" });
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.equal(read.body.source.asset_id, assetId);
+  assert.equal(read.body.source.media_type, "text/javascript");
+  const served = await worker.fetch(
+    new Request(`${origin}/api/pages/${pageId}/assets/${assetId}`, {
+      headers: { authorization: `Bearer ${w.token("owner")}` },
+    }),
+    w.env,
+  );
+  assert.equal(served.status, 200);
+  assert.equal(served.headers.get("x-pages-media-type"), "text/javascript");
+  assert.equal(await served.text(), MODULE_TEXT);
+});
+
+test("inline text on a fresh Page is the stored record an upload makes", async (t) => {
+  // Inline first this time: the upload of the same bytes then finds them.
+  const { w, pageId, bucket } = await setup(t);
+  editable(w, pageId);
+  const csv = "day,people\n2026-11-01,3\n";
+  const inline = await setSources(w, pageId, [
+    { source_id: "rows", name: "Rows", text: csv, media_type: "text/csv" },
+  ]);
+  assert.equal(inline.status, 200, JSON.stringify(inline.body));
+  const assetId = await sha256(new TextEncoder().encode(csv));
+  const object = bucket.objects.get(imageAssetKey(pageId, assetId));
+  assert.deepEqual(object.httpMetadata, {
+    contentType: "text/csv",
+    cacheControl: "private, no-store",
+  });
+  assert.deepEqual(object.customMetadata, { page_id: pageId, hash: assetId });
+  const grant = await issued(w, { page_id: pageId, content_type: "text/csv" });
+  const uploaded = await upload(w, grant, { body: new TextEncoder().encode(csv) });
+  assert.equal(uploaded.status, 200, "the upload finds the bytes already stored");
+  assert.equal(uploaded.body.asset_id, assetId);
+  assert.equal(puts(bucket), 1);
+});
+
+test("only an editor sets a source from text; viewers and commenters get the host's refusal", async (t) => {
+  const { w, pageId, bucket } = await setup(t);
+  editable(w, pageId);
+  let revision = 0;
+  const setRole = async (role) => {
+    const result = await w.call("owner", "manage_page_access", {
+      page_id: pageId,
+      action: "set_role",
+      principal: w.member,
+      role,
+      expected_revision: revision,
+      nonce: w.key(),
+    });
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    revision = result.body.access?.revision ?? result.body.revision ?? revision + 1;
+  };
+  const op = { source_id: "code", name: "Code", text: MODULE_TEXT, media_type: "text/javascript" };
+  for (const role of ["viewer", "commenter"]) {
+    await setRole(role);
+    const refused = await setSources(w, pageId, [op], "member");
+    assert.equal(refused.status, 403, `${role}: ${JSON.stringify(refused.body)}`);
+    assert.equal(refused.body.code, "access_denied", role);
+  }
+  const reader = await setSources(w, pageId, [op], "reader");
+  assert.equal(reader.status, 403, JSON.stringify(reader.body));
+  const stranger = await setSources(w, pageId, [op], "stranger");
+  assert.ok([403, 404].includes(stranger.status), JSON.stringify(stranger.body));
+  assert.equal(puts(bucket), 0, "a refused caller stores nothing");
+  assert.equal(w.page(pageId).sourcesView(), undefined);
+  await setRole("editor");
+  const written = await setSources(w, pageId, [op], "member");
+  assert.equal(written.status, 200, JSON.stringify(written.body));
+  assert.equal(puts(bucket), 1);
+});
+
+test("asset_from never goes with inline text, and an inline asset is shared as an uploaded one", async (t) => {
+  const { w, pageId } = await setup(t);
+  editable(w, pageId);
+  const other = await w.createPage({ title: "Other" });
+  assert.equal(other.status, 200, JSON.stringify(other.body));
+  const otherId = other.body.page_id;
+  const refused = await setSources(w, otherId, [
+    {
+      source_id: "code",
+      name: "Code",
+      text: MODULE_TEXT,
+      media_type: "text/javascript",
+      asset_from: pageId,
+    },
+  ]);
+  assert.equal(refused.status, 400, JSON.stringify(refused.body));
+  assert.equal(refused.body.code, "invalid_arguments");
+  assert.match(refused.body.error, /a set_source with text names no other asset/);
+  // asset_from treats the inline asset as it treats any JavaScript asset:
+  // only Parquet copies.
+  assert.equal(
+    (
+      await setSources(w, pageId, [
+        { source_id: "code", name: "Code", text: MODULE_TEXT, media_type: "text/javascript" },
+      ])
+    ).status,
+    200,
+  );
+  const assetId = await sha256(new TextEncoder().encode(MODULE_TEXT));
+  const copy = await setSources(w, otherId, [
+    { source_id: "code", name: "Code", asset_id: assetId, asset_from: pageId },
+  ]);
+  assert.equal(copy.status, 415, JSON.stringify(copy.body));
+  assert.equal(copy.body.code, "not_a_dataset");
+});
+
+test("the gateway refuses inline text past its JSON cap, naming the upload, before the host's 413", async (t) => {
+  const { w, pageId, bucket } = await setup(t);
+  editable(w, pageId);
+  const { revision } = (await w.call("owner", "read_page", { page_id: pageId })).body;
+  // Inside 256 KiB of UTF-8, about 1.2 MB as JSON: past the 1 MiB the host
+  // reads for one tool call. MCP reads up to 4 MiB, so it reaches the gateway.
+  const text = "export default 1;//" + "\u0001".repeat(200_000);
+  const result = await w.mcp("owner", "edit_page", {
+    page_id: pageId,
+    revision,
+    nonce: w.key(),
+    operations: [
+      {
+        op: "set_source",
+        source_id: "code",
+        name: "Code",
+        text,
+        media_type: "text/javascript",
+        source_revision: null,
+      },
+    ],
+  });
+  assert.equal(result.isError, true);
+  assert.equal(result.body.code, "invalid_source", JSON.stringify(result.body));
+  assert.match(result.body.error, /at most 524288 bytes as JSON.*create_page_asset_upload/);
+  assert.equal(puts(bucket), 0);
+  // The fingerprint's host field is not a public argument.
+  const forged = await w.call("owner", "edit_page", {
+    page_id: pageId,
+    revision,
+    nonce: w.key(),
+    inline_text: [[0, "text/css"]],
+    operations: [
+      {
+        op: "set_source",
+        source_id: "code",
+        name: "Code",
+        text: "a{}",
+        media_type: "text/css",
+        source_revision: null,
+      },
+    ],
+  });
+  assert.equal(forged.status, 400);
+  assert.equal(forged.body.code, "invalid_arguments");
+});
