@@ -342,6 +342,9 @@ ${part.authErrorItems}
 - shared_page_unavailable (503, retryable:true): a listing met a shared Page,
   or its owner's Catalog, that did not answer. Retry the listing after
   retry_after_ms (also Retry-After), with exponential backoff if it repeats.
+- project_policy_unavailable (503, retryable:true) on a read or write: you
+  reach the Page through its Project, and the Project could not be read. It
+  is not a refusal. Retry shortly with the same request.
 - page_busy (503, retryable:true): the Page, Catalog or Project is answering
   as many requests as it can and did not run this one. Wait retry_after_ms
   (also Retry-After), then send the same request, including its nonce. Use exponential backoff if it repeats: an overloaded host asks for 2

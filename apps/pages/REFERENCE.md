@@ -4325,6 +4325,19 @@ looks missing. A Page with only a direct grant is shared as before and never
 reveals its Project. `move_page` moves Pages into, out of and between the
 owner's Projects; a Project change feed comes later.
 
+The Page host resolves inherited access on each request from anyone but the
+owner: the Page's placement from the owner's Catalog, the Project's ACL, then
+the placement again. The answer is a snapshot that grants for 15 seconds
+([project-access.mjs](worker/project-access.mjs)). A Page outside any Project,
+or in a Project that is gone, settles with no snapshot, and inherited access
+ends for every caller. A read that doesn't finish, or a placement that moves
+between the two reads, settles nothing. That caller gets nothing inherited
+from the request, and the host keeps the snapshot it had for everyone else.
+The caller's refusal is 503 `project_policy_unavailable` (retryable) when that
+snapshot, expired or not, admits them. Anyone else gets the usual 403, so an
+outage shows a stranger nothing new. A host with no snapshot yet refuses
+everyone that way.
+
 The viewer lists them on two screens. `/projects` shows every Project
 `list_projects` returns, with its description. The Pages library, at `/` and
 `/pages` (one screen, two addresses), shows the Pages `list_pages` returns,
