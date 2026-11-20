@@ -48,13 +48,18 @@
 //
 // The labeledLinkMarks plugin draws them from the tab's PageRefs, and asks
 // for a target's meta by the cause of each pass (labeledLinkAsks): when the
-// editor draws its DOM, when a ref changes, and when the reader comes back
-// to the tab (the window regains focus or the document turns visible). A
-// ref change asks only for a stale unavailable answer while the tab is
-// visible, so an open tab doesn't poll its readable targets, a dropped or
-// failing ref isn't asked again until a redraw or a return, and a wrong
-// "unavailable" from a slow host heals while the reader looks. A hover asks
-// through the card.
+// editor draws its DOM or the tab's account changes, when a ref changes, and
+// when the reader comes back to the tab (the window regains focus or the
+// document turns visible). A ref change asks, while the tab is visible, only
+// for a stale unavailable answer and for a failed recheck of one past its
+// backoff. So an open tab doesn't poll its readable targets, a dropped or
+// otherwise failing ref isn't asked again until a redraw or a return, and a
+// wrong "unavailable" from a slow host heals while the reader looks: 15 s
+// after it was answered, or, if that recheck fails, on the recheck's
+// backoff, at most a minute apart. Writing a marker is a DOM change the
+// editor observes, so each marker change is followed by one draw pass in
+// that editor. A hover asks through the card.
+import { filter, skip } from "rxjs";
 import { Node } from "wordgard/doc";
 import { Decoration, Widget, Wordgard } from "wordgard/editor";
 import { GardState, Transaction } from "wordgard/state";
@@ -227,12 +232,14 @@ export function needsAsking(ref) {
 /**
  * Whether a labeled link asks for `ref` on a pass of `cause`:
  *
- * - "draw": the editor connected or redrew its DOM. Asks a ref never asked
- *   (or dropped), and a failure past its backoff with no earlier answer.
- * - "change": a ref in the tab's store changed. Asks only a stale
- *   unavailable answer, and only while the document is `visible`, so a slow
- *   host's 404 heals while the reader looks. Never an idle ref (a 401 drops
- *   every ref, and asking again would loop), a failure or a readable answer.
+ * - "draw": the editor connected, redrew its DOM, or the tab's account
+ *   changed. Asks a ref never asked (or dropped), and a failure past its
+ *   backoff with no earlier answer.
+ * - "change": a ref in the tab's store changed. Asks, only while the
+ *   document is `visible`, a stale unavailable answer and a failed recheck
+ *   of one past its backoff, so a lock drawn from a slow host's 404 heals
+ *   while the reader looks. Never an idle ref (a 401 drops every ref, and
+ *   asking again would loop), any other failure or a readable answer.
  * - "return": the reader came back to the tab. Asks a ref never asked, any
  *   stale answer and a failure past its backoff.
  *
@@ -244,8 +251,12 @@ export function labeledLinkAsks(ref, { cause, visible = true }) {
   if (ref.name === "readable") return ref.stale && cause === "return";
   if (ref.name === "unavailable")
     return ref.stale && (cause === "return" || (cause === "change" && visible));
-  if (ref.name === "failed")
-    return ref.ready && (cause === "return" || (cause === "draw" && ref.last === null));
+  if (ref.name === "failed") {
+    if (!ref.ready) return false;
+    if (cause === "return") return true;
+    if (cause === "draw") return ref.last === null;
+    return visible && ref.last?.name === "unavailable";
+  }
   return false;
 }
 
@@ -369,10 +380,12 @@ function unmarkEditor(wg) {
 }
 
 /** Keeps an editor's labeled links drawn from the tab's PageRefs: a "draw"
- * pass when it connects and after every redraw of its DOM, which may have
- * made a link's <a> anew or changed its href, a "change" pass on every ref
- * change while connected, and a "return" pass when the reader comes back to
- * the tab. */
+ * pass when it connects, after every redraw of its DOM (which may have made
+ * a link's <a> anew or changed its href, and follows any marker write the
+ * editor observed), and when the tab signs in as another account; a
+ * "change" pass on every ref change while connected; and a "return" pass
+ * when the reader comes back to the tab. A 401 drops the refs but keeps the
+ * account, so it draws nothing. */
 const labeledLinkMarks = Wordgard.Plugin.define((wg) => {
   let subscription = null;
   const paint = (cause) => {
@@ -384,6 +397,15 @@ const labeledLinkMarks = Wordgard.Plugin.define((wg) => {
       const refs = tabRefs();
       if (subscription || !refs) return;
       subscription = refs.store.select((state) => state.refs).subscribe(() => paint("change"));
+      subscription.add(
+        refs.store
+          .select((state) => state.principal)
+          .pipe(
+            skip(1),
+            filter((principal) => principal !== null),
+          )
+          .subscribe(() => paint("draw")),
+      );
       markEditor(wg);
       paint("draw");
     },

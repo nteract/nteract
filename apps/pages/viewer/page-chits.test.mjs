@@ -514,7 +514,7 @@ test("labeledLinkAsks: each ref state by the pass's cause and the tab's visibili
   // Which states ask, per cause and visibility. Everything else asks nothing.
   const asking = {
     draw: ["missing", "idle", "failed ready"],
-    change: ["unavailable stale"],
+    change: ["unavailable stale", "failed refresh ready"],
     return: [
       "missing",
       "idle",
@@ -731,6 +731,60 @@ test("a transient unavailable answer clears 15 s later with no return", async ()
     assert.equal(wg.contentDOM.querySelector("a"), plan, "the link wasn't redrawn");
     assert.equal(plan.dataset.linkState, undefined);
     assert.equal(describedBy(plan), null);
+    wg.dom.remove();
+  } finally {
+    provideChitRefs(null);
+    refs.dispose();
+  }
+});
+
+test("a wrong lock whose recheck fails heals on the recheck's backoff", async () => {
+  const { VirtualTimeScheduler } = await import("rxjs");
+  const scheduler = new VirtualTimeScheduler();
+  const answers = { [OTHER_PATH]: "refused" };
+  const { refs, count } = scriptedRefs(answers, scheduler);
+  try {
+    const wg = linkedEditor(`See [the plan](${OTHER})`);
+    wg.flush?.();
+    await settle();
+    const plan = wg.contentDOM.querySelector("a");
+    assert.equal(plan.dataset.linkState, "unavailable");
+    // The 15 s recheck fails; the lock stays from the earlier answer.
+    answers[OTHER_PATH] = "failed";
+    scheduler.flush();
+    await settle();
+    assert.equal(count(OTHER_PATH), 2);
+    const ref = refs.ref({ kind: "page", id: OTHER_ID }, "meta");
+    assert.equal(ref.name, "failed");
+    assert.equal(ref.last?.name, "unavailable");
+    assert.equal(plan.dataset.linkState, "unavailable");
+    // The host recovers; the backoff passing asks again, with no return.
+    answers[OTHER_PATH] = "open";
+    scheduler.flush();
+    await settle();
+    assert.equal(count(OTHER_PATH), 3);
+    assert.equal(plan.dataset.linkState, undefined);
+    assert.equal(describedBy(plan), null);
+    wg.dom.remove();
+  } finally {
+    provideChitRefs(null);
+    refs.dispose();
+  }
+});
+
+test("another account asks again with no redraw; a 401's drop asks nothing", async () => {
+  const { refs, count } = scriptedRefs({ [OTHER_PATH]: "open" });
+  try {
+    const wg = linkedEditor(`See [the plan](${OTHER})`);
+    wg.flush?.();
+    await settle();
+    assert.equal(count(OTHER_PATH), 1);
+    refs.account("other");
+    await settle();
+    assert.equal(count(OTHER_PATH), 2, "the new account's answer is asked for");
+    refs.clear();
+    await settle();
+    assert.equal(count(OTHER_PATH), 2, "dropping refs with the account kept asks nothing");
     wg.dom.remove();
   } finally {
     provideChitRefs(null);

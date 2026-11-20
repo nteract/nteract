@@ -31,7 +31,8 @@
 // before theirs: N distinct targets cost N asks. A drawn chit asks again
 // whenever its answer goes stale. A labeled link asks by the cause of each
 // pass (page-chits.mjs labeledLinkAsks): after the first draw, only a stale
-// unavailable answer while the tab is visible, every 15 s; a stale answer
+// unavailable answer while the tab is visible, every 15 s (a failed recheck
+// of one on its backoff, at most a minute apart); a stale answer
 // of any kind when the reader comes back to the tab; and through the card
 // on a hover. A hidden tab asks for labeled links only when an editor draws.
 import { timer } from "rxjs";
