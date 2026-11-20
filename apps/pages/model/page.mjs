@@ -15,7 +15,7 @@ import {
   imageSpans,
   nodeSpans,
 } from "./richtext-page.mjs";
-import { insertInPlace } from "./insert-in-place.mjs";
+import { insertInPlace, spendInPlaceRead } from "./insert-in-place.mjs";
 import { nodeIds } from "./node-ids.mjs";
 import { imageIds } from "./image-ids.mjs";
 import { addressIndex, blockAddress, nodeAddresses, resolveAddressFor } from "./addresses.mjs";
@@ -352,7 +352,8 @@ const afterKey = (anchor) => (anchor && typeof anchor === "object" ? anchor.key 
 const inPlace = (anchor) => anchor?.kind === "node";
 /** Write `spans` into `anchor`'s block directly after it, recording the
  * block as touched and the inserted text range for agent presence. */
-function writeInPlace(doc, anchor, spans, op, { trace, touched }) {
+function writeInPlace(doc, anchor, spans, op, { trace, touched, budget }) {
+  spendInPlaceRead(budget, doc, anchor.key);
   const placed = insertInPlace(doc, anchor, spans, op);
   touched.push(anchor.key);
   trace?.push({ type: "text", block_id: anchor.key, start: placed.start, end: placed.end });
@@ -399,6 +400,7 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
       const { block, nodes } = writeInPlace(doc, at.after_node_id, spans, op.op, {
         trace,
         touched,
+        budget: context.budget,
       });
       return withListWarning({ op: "insert_markdown", block, nodes }, op.markdown);
     }
@@ -421,7 +423,7 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
         at.after_node_id,
         imageSpans(image),
         op.op,
-        { trace, touched },
+        { trace, touched, budget: context.budget },
       );
       const id = imageIds(doc, at.after_node_id.key).find(
         (entry) => entry.at >= start && entry.at < end,
@@ -453,6 +455,7 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
       const { block, nodes } = writeInPlace(doc, at.after_node_id, nodeSpans(node), op.op, {
         trace,
         touched,
+        budget: context.budget,
       });
       placed = { op: "insert_node", block, nodes };
     } else {

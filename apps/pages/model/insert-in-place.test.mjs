@@ -232,6 +232,50 @@ test("marks at the anchor's end don't spread into the new node, and the new runs
   assert.ok(documentFeatures(struck).includes("strike"));
 });
 
+test("text spliced at the end of a new node stays out of the anchor's mark", () => {
+  for (const [source, name] of [
+    ["*end*", "em"],
+    ["**end**", "strong"],
+    ["~~end~~", "strike"],
+    ['<mark data-color="green">end</mark>', "highlight"],
+  ]) {
+    const doc = page(`Start ${source}\n\nNext`);
+    const { doc: after } = edit(doc, [
+      { op: "insert_markdown", markdown: "Plain", after_node_id: ids(doc)[0] },
+    ]);
+    // A writer that splices without setting marks, at the new node's end.
+    const text = after.blocks[KEY].richText;
+    const typed = A.change(A.clone(after), (draft) => {
+      A.splice(draft, textPath(KEY), text.indexOf("Plain") + "Plain".length, 0, "Q");
+    });
+    assert.equal(markdown(typed), `Start ${source}\n\nPlainQ\n\nNext`, name);
+  }
+  // A mark that crosses into the node after the anchor keeps covering it.
+  const doc = page("Start **end**\n\n**Next** tail");
+  const { doc: after } = edit(doc, [
+    { op: "insert_markdown", markdown: "Plain", after_node_id: ids(doc)[0] },
+  ]);
+  assert.equal(markdown(after), "Start **end**\n\nPlain\n\n**Next** tail");
+});
+
+test("a batch's in-place inserts are bounded by the block text they read", () => {
+  const big = page(`${"word ".repeat(60_000)}\n\nEnd`);
+  const [anchor] = ids(big);
+  const op = { op: "insert_markdown", markdown: "New", after_node_id: anchor };
+  // Three inserts read under the bound; a fourth passes it and nothing is written.
+  assert.throws(
+    () => edit(big, [op, op, op, op]),
+    /inserts inside blocks too many times for their size/,
+  );
+  const small = page("One\n\nTwo");
+  const many = Array.from({ length: 100 }, () => ({
+    op: "insert_markdown",
+    markdown: "New",
+    after_node_id: ids(small)[0],
+  }));
+  assert.equal(edit(small, many).result.edits.length, 100);
+});
+
 test("a new list next to a list of the same kind is refused and the batch rolls back", () => {
   for (const [source, insert, at, pattern] of [
     ["- a\n- b\n\nEnd", "- c", 0, /would join the new bullet-list and the bullet-list it follows/],

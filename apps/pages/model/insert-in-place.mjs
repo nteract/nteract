@@ -29,6 +29,22 @@ import { nodeIds } from "./node-ids.mjs";
 import { blockAddress } from "./addresses.mjs";
 
 const width = (span) => (span.type === "text" ? span.value.length : 1);
+
+/** The most block text, in UTF-16 units, one batch's in-place inserts may
+ * read. Each insert decodes its whole block to place the new nodes and again
+ * to check them, so its cost follows the block's length, not the insert's:
+ * about 100 inserts into a 10 KB block, or 4 into a 200 KB one. */
+export const MAX_BATCH_IN_PLACE_UNITS = 1_000_000;
+/** Count block `key`'s length against the batch before an insert reads it,
+ * refusing before anything is written. */
+export function spendInPlaceRead(budget, doc, key) {
+  if (!budget) return;
+  budget.inPlace = (budget.inPlace ?? 0) + doc.blocks[key].richText.length;
+  if (budget.inPlace > MAX_BATCH_IN_PLACE_UNITS)
+    throw Error(
+      "This batch inserts inside blocks too many times for their size. Send fewer inserts per request, or put several nodes in one insert_markdown.",
+    );
+}
 const article = (kind) => `${/^[aeiou]/.test(kind) ? "an" : "a"} ${kind}`;
 // Stored attrs come back in whatever key order Automerge keeps.
 const canonical = (value) =>
@@ -100,13 +116,17 @@ export function insertInPlace(doc, target, spans, op) {
   }
   const end = at;
   // Marks that grew over the new text from the anchor's end are taken off the
-  // whole inserted range, markers included, so none ends inside it.
+  // whole inserted range, markers included, so none ends inside it. The
+  // anchor's mark still spans the range in storage, so the removal grows at
+  // its end: text a later writer splices after the last new node stays out of
+  // the anchor's mark. It doesn't grow at its start, so text typed at the
+  // anchor's end continues the anchor's mark.
   const present = new Set(
     A.marks(doc, path)
       .filter((mark) => mark.start < end && mark.end > start)
       .map((mark) => mark.name),
   );
-  for (const name of present) A.unmark(doc, path, { start, end, expand: "none" }, name);
+  for (const name of present) A.unmark(doc, path, { start, end, expand: "after" }, name);
   for (const run of runs)
     for (const name of Object.keys(run.marks))
       if (run.marks[name] !== undefined && run.marks[name] !== null)

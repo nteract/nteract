@@ -4148,11 +4148,19 @@ is one `splitBlock` per marker and one `splice` per text run at the end of the
 anchor's range, after the block's markers are repaired; no existing character
 or marker is rewritten, so neighbours keep their node ids and comment anchors.
 Expanding marks at the anchor's end are taken off the inserted range, and each
-run gets exactly its encoded marks. The block is decoded afterwards: unless it
+run gets exactly its encoded marks. The removal grows at its end and not at its
+start, so text spliced after the last new node stays unmarked and text typed at
+the anchor's end continues the anchor's mark. The block is decoded afterwards: unless it
 holds the old nodes, with their ids, around exactly the new ones, the insert
 is refused with `nodes_would_join` (a list beside a list of the same kind) and
 the batch rolls back. A block holding content from a newer build refuses with
-`newer_content`. The receipt names the block as `block` and the new nodes as
+`newer_content`. Each in-place insert decodes its whole block, so one batch's
+inserts may read at most `MAX_BATCH_IN_PLACE_UNITS` (1,000,000) UTF-16 units of
+block text, counted as the block's length per insert before anything is
+written: about 100 inserts into a 10 KB block and 4 into a 200 KB one. A check
+runs only on the write's own change, so two writers who each insert a list of
+one kind after the same node can merge into one list; no text is lost, and one
+receipt's node id then names nothing. The receipt names the block as `block` and the new nodes as
 `nodes`, with no `node_id`; agent presence names the inserted text range. The
 stored form is the one the editor writes, so earlier builds read it. Content warnings, the ids in `result.edits`, and other receipt results are captured at
 the operation's actual heads and are not recomputed during retry.
