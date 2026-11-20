@@ -63,6 +63,28 @@ image URL returns 404. Other services may retain copies they already fetched.
 Private `meta.json`, `card.json`, assets and document routes retain their access
 checks. There is no public Page mode or model-provider dependency.
 
+The product's own pages carry the same OG and Twitter tags
+([worker/site-tags.mjs](worker/site-tags.mjs)): `/connect`, the shell that
+serves `/` and every other app route, and a Page link with no published
+preview. A published preview always replaces them for its Page. The tags are
+fixed text, so they are the same bytes for every caller and name nothing about
+a Page or Project. Only `/` and `/connect` carry an `og:url`. The rewritten
+shell has no validator and answers `Cache-Control: no-cache`.
+
+Their image is the product's card, 1200x630 with `summary_large_image`, served
+at `/social-card.png?v=<version>`. The version is the start of the image's
+sha256, so a new card is a new URL to services that kept the old one.
+[scripts/social-card.mjs](scripts/social-card.mjs) draws the card with Chromium
+and writes it, as an 8-bit palette PNG, to
+[shared/social-card.mjs](shared/social-card.mjs), which the Worker inlines. It
+is run by hand and its output is committed; the build never runs it. The logo,
+the name and the product's line sit in the middle column, inside the centred
+square that Slack keeps for its thumbnail. The content of a Page runs off each
+side at a tilt, outside that square, so the thumbnail is the words alone. The
+logo and the product name are its only inputs (`--logo`, `--name`), and `--png`
+writes the image to a file instead. No deployment setting selects another
+card yet: every deployment serves the committed one.
+
 The optional single-workspace Slack adapter (`worker/slack-previews.mjs`)
 turns the same public snapshot into a Content Item Work Object, including its
 image and a full-size image preview. Both unfurls and detail panes currently
@@ -482,7 +504,7 @@ slug; nothing transliterates. A slug is 1 to 80 of
 (`isPageSlug` in [shared/routes.mjs](shared/routes.mjs)); any other segment
 after the id is not a Page route. The gateway serves such a path the app
 shell with its `<title>` set to the slug's words (`-` and `_` become spaces,
-runs collapse, the ends trim) beside the product name, and an `og:title` of
+runs collapse, the ends trim) beside the product name, and the product's OG and Twitter tags titled with
 the words alone, HTML-escaped ([worker/page-shell.mjs](worker/page-shell.mjs)).
 It looks nothing up, so the shell is the same bytes whether the Page exists or
 the caller can read it, and it answers `Cache-Control: no-store` with no

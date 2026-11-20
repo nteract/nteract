@@ -9,6 +9,7 @@ import { validAssetId } from "../shared/image-assets.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
 import { PREVIEW_LAYOUTS } from "../shared/preview-layouts.mjs";
 import { withTimeout } from "./catalog-index.mjs";
+import { escapeHtml, renderMetaTags, socialCardTags } from "./site-tags.mjs";
 
 export const PREVIEW_KEY = "host/published-preview";
 export const PREVIEW_READ = "/internal/published-preview";
@@ -202,12 +203,6 @@ export async function readPublishedPreview(env, pageId, timeoutMs = 2000) {
 
 export const previewImageUrl = (origin, pageId, revision) =>
   `${origin}/p/${pageId}/preview.png?v=${revision}`;
-const escape = (value) =>
-  String(value).replace(
-    /[&<>"']/g,
-    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
-  );
-
 export function previewDescription(preview) {
   if (!preview) return "Open this Page. Sign in to check your access.";
   return [preview.author && `by ${preview.author}`, preview.description]
@@ -224,32 +219,30 @@ export function previewTags(origin, pageId, preview) {
     "og:title": title,
     "og:description": description,
     "og:url": `${origin}/p/${pageId}`,
-    "twitter:card": preview ? "summary_large_image" : "summary",
     "twitter:title": title,
     "twitter:description": description,
-    ...(preview && {
-      "og:image": previewImageUrl(origin, pageId, preview.revision),
-      "og:image:alt": title,
-      "og:image:type": preview.mime_type,
-      ...(preview.width &&
-        preview.height && {
-          "og:image:width": preview.width,
-          "og:image:height": preview.height,
-        }),
-      "twitter:image": previewImageUrl(origin, pageId, preview.revision),
-      "twitter:image:alt": title,
-    }),
+    // Without a snapshot there is no Page image to show, and the caller may
+    // not even be able to read the Page: the product's card stands in.
+    ...(preview ? snapshotImageTags(origin, pageId, preview, title) : socialCardTags(origin)),
   };
-  return (
-    `<meta name="description" content="${escape(description)}">\n` +
-    Object.entries(tags)
-      .filter(([, value]) => value != null)
-      .map(
-        ([name, value]) =>
-          `<meta ${name.startsWith("twitter:") ? "name" : "property"}="${name}" content="${escape(value)}">`,
-      )
-      .join("\n")
-  );
+  return renderMetaTags(description, tags);
+}
+
+function snapshotImageTags(origin, pageId, preview, title) {
+  const url = previewImageUrl(origin, pageId, preview.revision);
+  return {
+    "twitter:card": "summary_large_image",
+    "og:image": url,
+    "og:image:alt": title,
+    "og:image:type": preview.mime_type,
+    ...(preview.width &&
+      preview.height && {
+        "og:image:width": preview.width,
+        "og:image:height": preview.height,
+      }),
+    "twitter:image": url,
+    "twitter:image:alt": title,
+  };
 }
 
 /** Public routes expose only the approved snapshot, even to a signed-in owner.
@@ -293,7 +286,8 @@ export async function publicPreviewResponse(request, env, pageId, file, fallback
   const html = (await shell.text())
     .replace(
       /<title>[^<]*<\/title>/,
-      () => `<title>${preview ? `${escape(preview.title)} · ` : ""}${escape(PRODUCT_NAME)}</title>`,
+      () =>
+        `<title>${preview ? `${escapeHtml(preview.title)} · ` : ""}${escapeHtml(PRODUCT_NAME)}</title>`,
     )
     .replace("</head>", () => `${previewTags(origin, pageId, preview)}\n</head>`);
   const outputHeaders = new Headers(shell.headers);

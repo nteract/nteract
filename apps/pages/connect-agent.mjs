@@ -16,6 +16,7 @@ import {
   setupPrompt,
 } from "./agent-client-setup.mjs";
 import { FAVICON_LINK } from "./shared/favicon.mjs";
+import { siteTags } from "./worker/site-tags.mjs";
 import { PRODUCT_NAME, tabTitle } from "./shared/product.mjs";
 import { STYLESHEET, THEME_SCRIPT } from "./shared/shell-assets.mjs";
 
@@ -236,17 +237,22 @@ function oauthOnlyContent(setup, provider, env) {
   };
 }
 
+const CONNECT_TITLE = "Connect an agent";
+const CONNECT_DESCRIPTION = "Let your agent read, edit, and comment on your Pages.";
+
 function connectPage(setup, provider, env) {
   const { intro, sections } = provider.apiKey
     ? apiKeyContent(setup, provider)
     : oauthOnlyContent(setup, provider, env);
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escapeHtml(tabTitle("Connect an agent"))}</title>${FAVICON_LINK}<script src="${THEME_SCRIPT}"></script><link rel="stylesheet" href="${STYLESHEET}"><link rel="describedby" type="text/plain" href="/llms.txt"></head>
+<title>${escapeHtml(tabTitle("Connect an agent"))}</title>
+${siteTags(setup.origin, { title: CONNECT_TITLE, description: CONNECT_DESCRIPTION, url: `${setup.origin}/connect` })}
+${FAVICON_LINK}<script src="${THEME_SCRIPT}"></script><link rel="stylesheet" href="${STYLESHEET}"><link rel="describedby" type="text/plain" href="/llms.txt"></head>
 <body><header class="app-header"><a class="brand" href="/">${escapeHtml(PRODUCT_NAME)}</a><a class="setup-guide-link" href="/llms.txt">Agent guide</a></header>
 <main class="agent-setup">
-  <h1>Connect an agent</h1>
-  <p class="setup-intro">Let your agent read, edit, and comment on your Pages.</p>
+  <h1>${CONNECT_TITLE}</h1>
+  <p class="setup-intro">${CONNECT_DESCRIPTION}</p>
   ${intro}
   <details class="setup-details"><summary>Give your agent the setup steps</summary>
     <pre class="setup-value setup-prose"><code id="setup-prompt">${escapeHtml(setupPrompt(setup.origin, provider))}</code></pre>
