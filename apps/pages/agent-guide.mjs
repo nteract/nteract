@@ -801,7 +801,8 @@ can change, and the asset it names now. Point a source at a new upload
 to refresh it; its source_id stays. Nothing on the Page shows a source yet.
 
 Set one with an edit_page batch of set_source operations, and nothing else in
-that batch (a mixed batch is invalid_arguments; send two requests):
+that batch (a mixed batch is invalid_arguments; send two requests). The
+sources are their own document, and one request writes one document.
 
 \`\`\`json
 {"op": "set_source", "source_id": "daily", "name": "Daily usage", "asset_id": "<asset_id>", "source_revision": null}
@@ -869,7 +870,8 @@ the Page's sources. Make one in three calls:
 
 1. Upload Parquet and name it with set_source (above).
 2. Create the view with an edit_page batch holding one set_view and nothing
-   else:
+   else. Each view is its own document, and one request writes one
+   document, so N views take N requests:
 
 \`\`\`json
 {"op": "set_view", "view_id": "daily", "title": "Daily usage", "media_type": "application/vnd.vegalite.v6+json", "spec": {"data": {"name": "usage"}, "mark": "line", "encoding": {"x": {"field": "day", "type": "temporal"}, "y": {"field": "count", "type": "quantitative"}}}, "data": {"usage": {"source_id": "daily"}}, "view_revision": null}

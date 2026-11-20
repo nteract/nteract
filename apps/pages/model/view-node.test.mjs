@@ -66,6 +66,29 @@ test("insert_node writes one view marker with its view_id and stamps the feature
   assert.deepEqual(A.getHeads(after), A.getHeads(doc));
 });
 
+// The two recipes /llms/views.txt gives for a view between two passages.
+test("a view lands between two passages when they are separate blocks", () => {
+  const markdowns = (doc) => projectPage(doc).blocks.map((block) => block.markdown);
+  // A new Page: appends apply in order.
+  const built = edit(fresh(), [view(), { op: "insert_markdown", markdown: "After" }]).doc;
+  assert.deepEqual(markdowns(built), ["Intro", line("daily"), "After"]);
+  // One block holding all the prose: rewrite it, then insert after it in
+  // reverse order, so the view lands ahead of the rest. A later block stays
+  // after both.
+  const start = A.change(A.from(createPageData({ pageId })), (draft) =>
+    initializePage(draft, "Intro\n\nAfter"),
+  );
+  const { doc } = edit(start, [{ op: "insert_markdown", markdown: "Tail" }]);
+  const [first] = orderedBlockIds(doc);
+  const block = blockAddress(doc, first);
+  const split = edit(doc, [
+    { op: "replace_block_markdown", node_id: block, markdown: "Intro" },
+    { op: "insert_markdown", markdown: "After", after_node_id: block },
+    { ...view(), after_node_id: block },
+  ]).doc;
+  assert.deepEqual(markdowns(split), ["Intro", line("daily"), "After", "Tail"]);
+});
+
 test("insert_node refuses a malformed view node, naming the attr and its rule", () => {
   const pattern = "attrs.view_id must match ^[a-z][a-z0-9_-]{0,63}$, not constructor or prototype";
   for (const [attrs, message] of [

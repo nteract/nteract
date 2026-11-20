@@ -6,8 +6,10 @@ import { DATA_FORMAT_ADVICE, MEDIA_GUIDES, mediaGuide } from "../agent-media-gui
 import { agentGuide } from "../agent-guide.mjs";
 import { validateSourceOperation } from "../model/sources-doc.mjs";
 import { validateViewOperation } from "../model/view-doc.mjs";
+import { validateEditFields, validateNodeInsertion } from "../model/page.mjs";
 import { compileAnywidgetSpec } from "../shared/anywidget-spec.mjs";
 import { widgetState } from "@nteract/output-frame/schema";
+import { OUTPUT_STYLE_VARIABLES } from "@nteract/output-frame/context";
 import { tools } from "../mcp.mjs";
 
 const origin = "https://pages.example";
@@ -172,8 +174,12 @@ test("published tool examples pass current source and view validators", () => {
             if (op.view_id === "audio") assert.ok(state.audio.bytes instanceof DataView);
             if (op.view_id === "counter") assert.equal(state.count, 0);
           }
+        } else if (op.op === "insert_markdown" || op.op === "replace_block_markdown") {
+          // The placement recipes split prose around a view.
+          validateEditFields(op);
         } else {
           assert.equal(op.op, "insert_node");
+          validateNodeInsertion(op);
           assert.equal(op.node.type, "view");
           assert.ok(op.node.attrs.view_id);
           placements++;
@@ -218,6 +224,28 @@ test("the views guide teaches files asked with await, the table, and change list
   const module = tools.find(({ name }) => name === "edit_page").inputSchema.properties.operations
     .items.properties.module;
   assert.match(module.description, /render\(\{model, el, signal\}\)/);
+});
+
+test("the views guide describes the frame, request rules and placement between passages", () => {
+  const guide = mediaGuide("/llms/views.txt", origin);
+  for (const sentence of [
+    "render receives { model, el, signal, host }",
+    `The tokens are ${OUTPUT_STYLE_VARIABLES.join(", ")}.`,
+    "There are no chart, success, warning or info colors",
+    "host.onContextChange(listener) calls the listener after each switch",
+    "Each view is its own document, and one edit_page request writes one document",
+    "a paragraph's or heading's node id is refused with wrong_address_kind",
+    "Omit after_node_id to append at the end of the Page, or pass null to put the view first.",
+    "There is no eval: eval and new Function throw. WebAssembly compiles.",
+    "A server sees Origin: null",
+    "up to 100000 px",
+    "No tool returns that message to you",
+  ])
+    assert.ok(guide.includes(sentence), sentence);
+  // Every token the frame receives is named, and nothing it doesn't.
+  for (const name of guide.match(/--[a-z][a-z-]*(?=[,.])/g) ?? [])
+    assert.ok(OUTPUT_STYLE_VARIABLES.includes(name) || name === "--plot-background", name);
+  assert.doesNotMatch(guide, /Pages supplies a model, the DOM element and an AbortSignal/);
 });
 
 test("every guide that describes data uploads says which format to choose, Parquet first", () => {

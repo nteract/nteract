@@ -29,7 +29,7 @@ import { projectComments } from "./comments.mjs";
 import { COMMENTS_FEATURE } from "./comments-doc.mjs";
 import { orderedBlockIds, positionForInsertion } from "./order.mjs";
 import { anchorOccurrence, formatMatch, replaceMatch, withinNode } from "./replace-match.mjs";
-import { setNode } from "./set-node.mjs";
+import { REFUSED_FIELDS, setNode } from "./set-node.mjs";
 import { listStartWarning } from "./list-start-warning.mjs";
 import { insertOperation, insertedTypes } from "./node-registry.mjs";
 import { RESERVED_VIEW_IDS, VIEW_BLOCK, VIEW_ID_PATTERN, validViewId } from "../shared/views.mjs";
@@ -275,16 +275,28 @@ const EDIT_FIELDS = new Map([
   ["format_match", [...LOCATOR, "all", "add", "remove"]],
   ["set_node", [...LOCATOR, "type", "attrs", "checked", "language", "heading_level", "align"]],
 ]);
-/** Refuse a field operation `op` doesn't take, and a Markdown operation
- * without a Markdown string. The flat schema marks no field required, so a
- * request that leaves `markdown` out reaches here; read as an empty string it
- * would erase the block replace_block_markdown names. An explicit empty
- * string is a stated rewrite and is written. */
+/** The fields a refusal names as the ones `name` takes: its EDIT_FIELDS
+ * entry, without the set_node shorthands it admits only to refuse later. */
+const takenFields = (name) => {
+  const fields = EDIT_FIELDS.get(name).filter(
+    (field) => name !== "set_node" || !Object.hasOwn(REFUSED_FIELDS, field),
+  );
+  return fields.join(", ");
+};
+/** Refuse a field operation `op` doesn't take, naming the fields it does
+ * take, and a Markdown operation without a Markdown string. The flat schema
+ * marks no field required, so a request that leaves `markdown` out reaches
+ * here; read as an empty string it would erase the block
+ * replace_block_markdown names. An explicit empty string is a stated rewrite
+ * and is written. */
 export function validateEditFields(op) {
   const fields = EDIT_FIELDS.get(op.op);
   if (!fields) return;
   const unexpected = Object.keys(op).find((field) => !["op", ...fields].includes(field));
-  if (unexpected) throw Error(`${op.op} does not take ${unexpected}`);
+  if (unexpected)
+    throw Error(
+      `${op.op} does not take ${String(unexpected).slice(0, 64)}; its fields are ${takenFields(op.op)}`,
+    );
   if (fields.includes("markdown") && typeof op.markdown !== "string")
     throw Error(`${op.op} requires a markdown string`);
 }
