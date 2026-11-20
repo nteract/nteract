@@ -162,12 +162,11 @@ test("configured URL dollar sequences remain literal in the meta attribute", asy
   assert.equal(body.match(/<body>/g).length, 1);
 });
 
-// The viewer bundle carries its library catalog revision
-// (shared/library-catalog.mjs), so the shell names only the frame URL.
-test("the shell names the frame URL and nothing about the library catalog", async () => {
+// The frame URL is the one host setting the shell carries. The viewer bundle
+// carries its own library catalog revision (shared/library-catalog.mjs).
+test("a configured shell is the build's HTML with one meta, the frame URL", async () => {
   const assets = outputFrameAssets({ fetch: async () => asset() }, frame, origin);
-  const html = await (await assets.fetch(new Request(origin))).text();
-  assert.ok(html.includes(`<meta name="pages-output-frame-url" content="${frame}" /></head>`));
-  assert.ok(!html.includes("pages-library-catalog"));
-  assert.ok(!html.includes("data-widget-catalog"));
+  const body = await (await assets.fetch(new Request(origin))).text();
+  const meta = `<meta name="pages-output-frame-url" content="${frame}" />`;
+  assert.equal(body, html.replace("</head>", `${meta}</head>`));
 });
