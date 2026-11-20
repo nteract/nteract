@@ -131,24 +131,9 @@ const editorRewrite = (doc, id) => {
   return A.diff(after, A.getHeads(doc), A.getHeads(after));
 };
 
-// Cases where a rewrite with identical spans still writes, by corpus id. Pages'
-// writers and the editor store the same spans; Automerge 3.5's updateSpans
-// compares each span's marks with the document's merged mark runs, so a mark
-// covering more than one span never matches and is unmarked and marked again
-// with the same value ("mark-runs"). The rewrite is invisible, but those ops
-// can win over a peer's concurrent change to the same mark
-// (`a rewrite with unchanged spans ...` below).
-const KNOWN_DISAGREEMENTS = Object.freeze({
-  "mark-boundaries": "mark-runs",
-  "link-title": "mark-runs",
-  "highlight-code-link": "mark-runs",
-  "highlight-across-strong": "mark-runs",
-  "native-strikethrough-nested": "mark-runs",
-});
-
-// Pins Automerge's mark-runs behaviour. When this fails, Automerge compares
-// merged runs: empty KNOWN_DISAGREEMENTS and delete this test.
-test("a rewrite with unchanged spans re-marks a multi-span mark over a peer's concurrent unmark", () => {
+// A rewrite with unchanged spans writes nothing, so it can't win over a
+// peer's concurrent change to a mark that covers more than one span.
+test("a rewrite with unchanged spans keeps a peer's concurrent unmark of a multi-span mark", () => {
   const path = ["t"];
   let base = A.from({ t: "" });
   base = A.change(base, (draft) =>
@@ -168,17 +153,12 @@ test("a rewrite with unchanged spans re-marks a multi-span mark over a peer's co
   const rewrite = A.change(A.clone(base, { actor: "aa" }), (draft) =>
     A.updateSpans(draft, path, A.spans(draft, path), updateSpansConfig),
   );
-  assert.notDeepEqual(A.getHeads(rewrite), A.getHeads(base));
+  assert.deepEqual(A.getHeads(rewrite), A.getHeads(base));
   const merged = A.merge(A.clone(rewrite), peer);
-  assert.deepEqual(A.spans(merged, path)[0], {
-    type: "text",
-    value: "ab",
-    marks: { strong: true },
-  });
+  assert.deepEqual(A.spans(merged, path)[0], { type: "text", value: "ab" });
 });
 
 test("an editor rewrite of any block Pages wrote from Markdown writes nothing", () => {
-  const seen = new Set();
   for (const { id: caseId, markdown } of markdownCorpus.cases) {
     // Agent writes, for the Markdown they accept, and literal imports of
     // stored source, for all of it.
@@ -197,27 +177,9 @@ test("an editor rewrite of any block Pages wrote from Markdown writes nothing", 
         continue;
       }
       const patches = editorRewrite(doc, id);
-      if (Object.hasOwn(KNOWN_DISAGREEMENTS, caseId)) {
-        if (patches.length) seen.add(caseId);
-        // Invisible: the editor tree and the agent's read are unchanged.
-        const after = rewritten(doc, id);
-        const path = textPath(id);
-        assert.ok(decode(A.spans(after, path)).doc.eq(decode(A.spans(doc, path)).doc), caseId);
-        assert.equal(
-          exportMarkdown(richDoc(after.blocks[id])),
-          exportMarkdown(richDoc(doc.blocks[id])),
-          caseId,
-        );
-        continue;
-      }
       assert.deepEqual(patches, [], `${literal ? "literal" : "agent"} ${caseId}`);
     }
   }
-  // A listed case that stops disagreeing should leave the list.
-  assert.deepEqual(
-    Object.keys(KNOWN_DISAGREEMENTS).filter((caseId) => !seen.has(caseId)),
-    [],
-  );
   // create_page goes through the same writer.
   let doc = A.from(createPageData({ pageId: "projection", title: "Projection" }));
   doc = A.change(doc, (draft) => initializePage(draft, "Intro\n\n- a\n- b"));

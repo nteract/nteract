@@ -52,6 +52,19 @@ Source layout under this directory:
 | `sync/` | Plain Automerge sync backend and comments sync |
 | `shared/` | Code shared by viewer and worker, state machines |
 | `scripts/` | Build, E2E harness, deploy, operator tools |
+| `upstream/` | `@automerge/automerge-repo` source that `setup.mjs` fetches and patches, linked as that package |
+
+`@automerge/automerge` is nteract's build, not the npm release:
+[`js/automerge-3.5.0-nteract.1`](https://github.com/nteract/automerge/releases/tag/js%2Fautomerge-3.5.0-nteract.1)
+from branch `nteract/js-3.5.0` of nteract/automerge. It is 3.5.0 plus two
+`updateSpans` fixes. Without them, every write to a block re-marked any mark
+that spans several text runs, so writes to a block that was edited often got
+slower each time. `package.json` names the tarball's URL and `package-lock.json`
+its sha512. `setup.mjs` writes the same URL into the automerge-repo copy, so
+both resolve one Automerge. Return to an npm release once one carries both
+fixes ([automerge/automerge#1664](https://github.com/automerge/automerge/pull/1664)
+and the run-merge commit on the branch); `model/span-write-cost.test.mjs`
+fails on a release without them.
 
 ### Charts
 

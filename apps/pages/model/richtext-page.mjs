@@ -67,9 +67,9 @@ function writeMarkdownSpans(doc, id, spans) {
     return JSON.stringify(key(out));
   };
   const path = textPath(id);
-  // updateSpans can re-mark an unchanged multi-span mark, defeating a peer's
-  // concurrent unmark. Only exact restored runs qualify: markers and their
-  // attrs compare as stored.
+  // A rewrite that restores the stored runs writes nothing, not even the
+  // schema stamp. Only exact restored runs qualify: markers and their attrs
+  // compare as stored.
   if (runs(A.spans(doc, path)) === runs(spans)) return;
   updateSpansExactly(doc, path, spans, updateSpansConfig);
   stampSpans(doc, spans);

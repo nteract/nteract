@@ -77,6 +77,9 @@ export function setup(
       throw new Error("Upstream source cache has local changes; refusing to overwrite them");
   }
   mkdirSync("upstream/packages", { recursive: true });
+  // automerge-repo resolves the same Automerge build Pages names, so the two
+  // share one copy.
+  const automerge = JSON.parse(readFileSync("package.json")).dependencies["@automerge/automerge"];
   for (const name of ["automerge-repo"]) {
     cpSync(`${source}/packages/${name}`, `upstream/packages/${name}`, {
       recursive: true,
@@ -85,7 +88,7 @@ export function setup(
     const pkg = JSON.parse(readFileSync(path));
     delete pkg.devDependencies;
     const catalog = {
-      "@automerge/automerge": "3.5.0",
+      "@automerge/automerge": automerge,
       "cbor-x": "1.6.4",
       debug: "4.4.3",
       eventemitter3: "5.0.4",
@@ -102,7 +105,7 @@ export function setup(
   const upstreamPatch = patchUpstream("upstream");
   writeFileSync(
     "upstream-provenance.json",
-    `${JSON.stringify({ repository: "https://github.com/automerge/automerge-repo", revision, automerge: "3.5.0", patch: upstreamPatch }, null, 2)}\n`,
+    `${JSON.stringify({ repository: "https://github.com/automerge/automerge-repo", revision, automerge, patch: upstreamPatch }, null, 2)}\n`,
   );
   execFileSync(
     "npm",
