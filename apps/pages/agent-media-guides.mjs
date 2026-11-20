@@ -185,7 +185,7 @@ Observable Plot uses --plot-background behind its tips and currentColor for thei
 
 Before the view first runs, and again on every switch, the frame sets data-theme, a dark or light class and color-scheme on <html>, and sets each token there as a CSS variable. CSS that uses the variables follows the theme with no code. The tokens are ${OUTPUT_STYLE_VARIABLES.join(", ")}. Colors arrive as oklch() strings. There are no chart, success, warning or info colors: a view that needs categorical colors brings its own for both themes.
 
-host.getContext() returns { theme: "light" or "dark", styles: { variables } } with the current token values. host.onContextChange(listener) calls the listener after each switch, once the CSS has changed, and returns an unsubscribe function. A view that draws to canvas or WebGL redraws there. A library that can't parse oklch() needs each color converted first; a one-pixel canvas does it:
+host.getContext() returns { theme: "light" or "dark", styles: { variables } } with the current token values. host.onContextChange(listener) calls the listener after each switch, once the CSS has changed, and returns an unsubscribe function. A view that draws to canvas or WebGL redraws there. A library that can't parse oklch() needs each color converted first; a one-pixel canvas does it, and gives the comma form every color parser reads:
 
 \`\`\`js
 function rgb(color) {
@@ -194,7 +194,7 @@ function rgb(color) {
   context.fillStyle = color;
   context.fillRect(0, 0, 1, 1);
   const [r, g, b, a] = context.getImageData(0, 0, 1, 1).data;
-  return \`rgb(\${r} \${g} \${b} / \${a / 255})\`;
+  return \`rgba(\${r}, \${g}, \${b}, \${a / 255})\`;
 }
 const primary = rgb(host.getContext().styles.variables["--primary"]);
 \`\`\`
