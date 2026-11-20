@@ -467,3 +467,43 @@
   background: var(--accent);
   border-color: var(--foreground);
 }
+.preview-layout {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.preview-layout label {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  font-size: 12px;
+  font-weight: 400;
+  cursor: pointer;
+}
+.preview-layout label:has(:checked) {
+  background: var(--accent);
+  border-color: var(--foreground);
+}
+.preview-layout label:has(:focus-visible) {
+  outline: 2px solid var(--foreground);
+  outline-offset: 1px;
+}
+.published-preview .preview-layout input {
+  width: auto;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--foreground);
+}
+.preview-layout:disabled label {
+  cursor: default;
+  opacity: 0.6;
+}

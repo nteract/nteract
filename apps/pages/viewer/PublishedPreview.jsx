@@ -29,6 +29,7 @@ export function PublishedPreview({ session, onBack }) {
       author: "",
       description: "",
       visual: "text",
+      layout: "caption",
     },
     value: null,
     prepared: null,
@@ -94,6 +95,7 @@ export function PublishedPreview({ session, onBack }) {
             author: state.draft.author,
             asset_id: state.asset.asset_id,
             cover: state.draft.cover ?? null,
+            layout: state.draft.cover ? (state.draft.layout ?? "caption") : "caption",
           }),
         }),
       });
@@ -292,6 +294,26 @@ export function PublishedPreview({ session, onBack }) {
                   </button>
                 )}
               </div>
+              {state.draft.visual === "upload" && (
+                <fieldset className="preview-layout" disabled={!editable}>
+                  <legend className="sr-only">Cover layout</legend>
+                  {[
+                    ["fill", "Fill the card"],
+                    ["caption", "Title below"],
+                  ].map(([layout, label]) => (
+                    <label key={layout}>
+                      <input
+                        type="radio"
+                        name={`${id}-layout`}
+                        value={layout}
+                        checked={(state.draft.layout ?? "caption") === layout}
+                        onChange={() => dispatch({ type: "choose_layout", layout })}
+                      />
+                      {label}
+                    </label>
+                  ))}
+                </fieldset>
+              )}
               {visuals.length > 0 && (
                 <div className="preview-page-visuals" role="group" aria-label="Page visuals">
                   {visuals.map((item) => (

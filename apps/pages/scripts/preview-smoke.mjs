@@ -208,8 +208,80 @@ try {
     assert.ok(dimensions.width <= 1152 && dimensions.height <= 390);
     assert.ok(dimensions.bytes < 5 * 1024 * 1024);
   }
+  // An uploaded cover fills the whole card. Its corners are a known colour; a
+  // caption card shows its own background there instead.
+  const fillColour = [192, 57, 43];
+  const coverPng = await page.evaluate(async (rgb) => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 800;
+    canvas.height = 600;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = `rgb(${rgb.join(",")})`;
+    ctx.fillRect(0, 0, 800, 600);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(300, 200, 200, 200);
+    return canvas.toDataURL("image/png").split(",")[1];
+  }, fillColour);
+  const cornerOf = (src) =>
+    page.evaluate(async (src) => {
+      const image = new Image();
+      image.src = src;
+      await image.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(image, 0, 0);
+      return {
+        width: image.naturalWidth,
+        height: image.naturalHeight,
+        corner: Array.from(ctx.getImageData(4, 4, 1, 1).data.slice(0, 3)),
+      };
+    }, src);
+  const near = (a, b) => a.every((value, i) => Math.abs(value - b[i]) <= 3);
+  await page.setViewportSize({ width: 1280, height: 1000 });
+  await page.reload();
+  await open();
+  await page.getByLabel("Cover image", { exact: true }).setInputFiles({
+    name: "full-card.png",
+    mimeType: "image/png",
+    buffer: Buffer.from(coverPng, "base64"),
+  });
+  const fillChoice = page.getByRole("radio", { name: "Fill the card", exact: true });
+  const captionChoice = page.getByRole("radio", { name: "Title below", exact: true });
+  await expect(fillChoice).toBeChecked();
+  const filled = await cornerOf(await capture("fill"));
+  assert.ok(near(filled.corner, fillColour), `fill corner ${filled.corner}`);
+  await captionChoice.check();
+  const captioned = await cornerOf(await capture("fill-as-caption"));
+  assert.ok(near(captioned.corner, [247, 248, 245]), `caption corner ${captioned.corner}`);
+  // Arrow keys move between the two choices, as in any radio group.
+  await captionChoice.focus();
+  await page.keyboard.press("ArrowUp");
+  await expect(fillChoice).toBeChecked();
+  await capture("fill-again");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await captionChoice.evaluate((input) => input.scrollIntoView({ block: "center" }));
+  await page.screenshot({ path: output + "fill-narrow.png" });
+  await page.getByRole("button", { name: "Update public preview", exact: true }).click();
+  await expect(page.getByText("Preview published.", { exact: true })).toBeVisible();
+  const fillSettings = (await api("/api/link-preview?page=" + id)).body;
+  assert.equal(fillSettings.snapshot.layout, "fill");
+  const published = (await api(`/p/${id}/preview.json`)).body;
+  const publishedImage = await cornerOf(
+    new URL(published.image_url).pathname + new URL(published.image_url).search,
+  );
+  assert.deepEqual([publishedImage.width, publishedImage.height], [1200, 630]);
+  assert.ok(near(publishedImage.corner, fillColour), `published corner ${publishedImage.corner}`);
+  const html = await (await page.request.get(origin + "/p/" + id)).text();
+  assert.match(html, /property="og:image:width" content="1200"/);
+  assert.match(html, /property="og:image:height" content="630"/);
+  assert.match(html, /property="og:title" content="Events by surface"/);
+  await page.reload();
+  await open();
+  await expect(fillChoice).toBeChecked();
   console.log(
-    "PASS: retained chart pixels through reopen and republish; private bounded sources, including a tall Page image.",
+    "PASS: retained chart pixels through reopen and republish; private bounded sources, including a tall Page image; an uploaded cover fills the published card.",
   );
 } catch (error) {
   await page.screenshot({ path: output + "failure.png", fullPage: true }).catch(() => {});
