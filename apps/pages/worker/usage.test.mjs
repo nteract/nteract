@@ -13,6 +13,7 @@ import {
   mcpSessionClient,
   mcpSessionId,
   cleanText,
+  phasesOf,
   requestClient,
   usageDropped,
   usageEvent,
@@ -304,6 +305,7 @@ test("MCP clientInfo from initialize is carried onto tool-call usage events", as
   assert.equal(refusedCall.outcome, "http_400");
   assert.equal(refusedCall.principal, tool.principal);
   assert.equal(refusedCall.kind, "tool");
+  assert.match(refusedCall.error_code, /^[a-z0-9_]+$/);
 
   // A resource read goes through the same invoke(), recorded as a resource.
   const resource = await post({
@@ -321,6 +323,24 @@ test("MCP clientInfo from initialize is carried onto tool-call usage events", as
   assert.equal(stored.filter((row) => row.action === "tool.call").length, toolCalls().length);
   assert.ok(stored.every((row) => row.principal === tool.principal));
   assert.doesNotMatch(JSON.stringify(stored), /Fixture Person|claude-opus|clientInfo/);
+  // The refused call is also a failure row, with no principal or Page id.
+  const failures = env.PAGES_USAGE.rows("SELECT * FROM pages_usage_failures");
+  assert.equal(failures.length, toolCalls().filter((call) => call.outcome !== "ok").length);
+  const failed = failures.find((row) => row.operation === "get_project");
+  assert.equal(failed.status, 400);
+  assert.equal(failed.error_code, refusedCall.error_code);
+  assert.doesNotMatch(JSON.stringify(failures), new RegExp(`${tool.principal}|${pageId}`));
+});
+
+test("phasesOf keeps metric names and whole milliseconds, nothing else", () => {
+  assert.equal(
+    phasesOf('auth;dur=12.6, cat_space_read;dur=5704;desc="x", Bad;dur=1, q;desc=y, n;dur=-1'),
+    "auth=13,cat_space_read=5704",
+  );
+  assert.equal(phasesOf(undefined), undefined);
+  assert.equal(phasesOf("nothing"), undefined);
+  const many = Array.from({ length: 30 }, (_, n) => `p${n};dur=1`).join(",");
+  assert.equal(phasesOf(many).split(",").length, 24);
 });
 
 test("a gateway response never awaits a hung or failed usage database", async (t) => {

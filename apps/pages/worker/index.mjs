@@ -1552,6 +1552,29 @@ const USAGE_OPERATIONS = new Set([
   "register_page",
 ]);
 
+/** The largest failed answer whose body is read for its error code. */
+const FAILURE_BODY_LIMIT = 64 * 1024;
+
+/** A failed tool answer's error code and phase timings, for the usage record.
+ * The code is read from a JSON body (`code` or `error.code`) no larger than
+ * FAILURE_BODY_LIMIT; usageEvent keeps it only when it is a code-shaped
+ * token. Nothing else from the body is kept. */
+async function failureDetail(response) {
+  const detail = { phases: response.headers.get("server-timing") ?? undefined };
+  const length = Number(response.headers.get("content-length"));
+  if (!(response.headers.get("content-type") ?? "").includes("json")) return detail;
+  if (Number.isFinite(length) && length > FAILURE_BODY_LIMIT) return detail;
+  try {
+    const text = await response.clone().text();
+    if (text.length > FAILURE_BODY_LIMIT) return detail;
+    const body = JSON.parse(text);
+    detail.errorCode = body?.code ?? body?.error?.code;
+  } catch {
+    // An unreadable body records the status alone.
+  }
+  return detail;
+}
+
 /** Records one usage event for a tool call (or, for MCP, a resource list or
  * read) on `surface` once its response is known. `seen` collects the identity
  * the caller authenticated. A create_page that created a Page also records
@@ -1567,6 +1590,7 @@ function toolUsage(request, surface, operation, args, kind = "tool", env) {
       try {
         const name = usageOperation(operation, USAGE_OPERATIONS);
         const length = Number(response.headers.get("content-length"));
+        const failure = response.ok ? {} : await failureDetail(response);
         const common = {
           surface,
           identity: seen.identity,
@@ -1579,7 +1603,7 @@ function toolUsage(request, surface, operation, args, kind = "tool", env) {
           outcome: response.ok ? "ok" : `http_${response.status}`,
           latencyMs: Date.now() - started,
         };
-        logUsage({ action: "tool.call", ...common, bytes: length || undefined }, env);
+        logUsage({ action: "tool.call", ...common, ...failure, bytes: length || undefined }, env);
         if (name === "create_page" && response.ok && !replayed) {
           const body = await response.clone().json();
           logUsage(
