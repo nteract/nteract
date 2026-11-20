@@ -1138,6 +1138,19 @@ test("set_source text is refused when malformed, before anything is stored", asy
     "code: this Page stores the same bytes as application/json; send them with that media_type",
   );
   assert.equal(h.assets.puts, 0);
+  // A stored type inline text can't carry is answered with the asset's id.
+  h.assets.head = async (key) => ({
+    ...parquetHead(key.slice(-64)),
+    httpMetadata: { contentType: "application/octet-stream" },
+  });
+  const opaque = await h.setSource(h.host, [inlineSource({ text: "[1]" })]);
+  assert.equal(opaque.status, 400);
+  assert.equal(opaque.body.code, "invalid_source");
+  assert.match(
+    opaque.body.error,
+    /^code: this Page stores the same bytes as application\/octet-stream; pass asset_id [a-f0-9]{64} in place of text$/,
+  );
+  assert.equal(h.assets.puts, 0);
   assert.equal(h.host.sourcesView(), undefined);
 });
 

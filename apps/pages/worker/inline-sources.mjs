@@ -28,6 +28,7 @@
 import { HttpError } from "./auth.mjs";
 import { assetIdOf, imageAssetKey, persistPageAsset } from "./image-assets.mjs";
 import { inlineTextBytes, validateSourceBatch } from "../model/sources-doc.mjs";
+import { INLINE_SOURCE_MEDIA_TYPES } from "../shared/sources.mjs";
 
 /** The edit_page argument the host adds to a batch it rewrote: `[index,
  * media_type]` for each inline operation. It exists for the journal's
@@ -78,11 +79,17 @@ export async function inlineSourceArguments(args) {
   return { args: { ...args, operations: rewritten, [INLINE_FIELD]: recorded }, inline };
 }
 
-/** The refusal for bytes this Page already stores as another media type. */
-const storedAsAnother = (sourceId, type) =>
+/** The refusal for bytes this Page already stores as another media type. It
+ * names a request that works: that media type when inline text can carry it,
+ * otherwise the stored asset's id. */
+const storedAsAnother = (sourceId, type, assetId) =>
   new HttpError(
     400,
-    `${sourceId}: this Page stores the same bytes as ${type}; send them with that media_type`,
+    `${sourceId}: this Page stores the same bytes as ${type}; ${
+      INLINE_SOURCE_MEDIA_TYPES.includes(type)
+        ? "send them with that media_type"
+        : `pass asset_id ${assetId} in place of text`
+    }`,
     "invalid_source",
   );
 
@@ -104,7 +111,7 @@ export async function storeInlineSources(bucket, pageId, inline) {
     // another type are refused here, where persistPageAsset could only fail
     // to confirm the object.
     const held = await storedType(assetId);
-    if (held !== undefined && held !== mediaType) throw storedAsAnother(sourceId, held);
+    if (held !== undefined && held !== mediaType) throw storedAsAnother(sourceId, held, assetId);
     let stored;
     try {
       ({ asset: stored } = await persistPageAsset(bucket, {
@@ -120,7 +127,8 @@ export async function storeInlineSources(bucket, pageId, inline) {
       // above and the conditional put fails persistPageAsset's confirmation.
       if (error?.status === undefined) {
         const raced = await storedType(assetId).catch(() => undefined);
-        if (raced !== undefined && raced !== mediaType) throw storedAsAnother(sourceId, raced);
+        if (raced !== undefined && raced !== mediaType)
+          throw storedAsAnother(sourceId, raced, assetId);
       }
       throw error;
     }

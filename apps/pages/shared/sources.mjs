@@ -16,9 +16,12 @@ export const INLINE_SOURCE_MAX_BYTES = 256 * 1024;
  * set_source texts together, quotes and escapes included as JSON.stringify
  * writes them (model/sources-doc.mjs inlineTextJsonBytes). The Page host
  * reads at most 1 MiB of JSON for one tool call (worker/auth.mjs readJson),
- * so a batch within this cap fits the request the gateway forwards. A client
- * that escapes more, such as every non-ASCII character, can still send a
- * request over the gateway's own 1 MiB limit first. */
+ * so a batch of source operations within this cap fits the request the
+ * gateway forwards. The cap counts inline text only: a request that also
+ * carries other large operations can pass the limit, and source operations
+ * batch only with each other. A client that escapes more, such as every
+ * non-ASCII character, can still send a request over the gateway's own 1 MiB
+ * limit first. */
 export const INLINE_SOURCE_BATCH_MAX_BYTES = 512 * 1024;
 
 /** The most sources a Page holds. */
