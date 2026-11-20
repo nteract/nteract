@@ -145,7 +145,7 @@ export function projectRemovalNote(request, value) {
     return null;
   const organization = value?.organizationAccess;
   if (!organizationEntry(organization)) return null;
-  return `They can still open this Project while they're a member of ${organization.name}.`;
+  return `If they're a member of ${organization.name}, they can still open this Project.`;
 }
 
 /**

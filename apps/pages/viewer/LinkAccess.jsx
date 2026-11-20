@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useEffect, useId, useRef } from "react";
 import { Building2 } from "lucide-react";
 import { ROLE_LABELS } from "./sharing-roles.mjs";
 
@@ -23,6 +23,17 @@ const ROLES = Object.keys(ROLE_LABELS);
  */
 export function LinkAccess({ linkAccess, resource, busy, refreshing, onChange, onRefresh }) {
   const id = useId();
+  const select = useRef(null);
+  // Set by Share with {Org}. When its grant lands the button unmounts, so
+  // focus moves to the select that now shows the organization. The select is
+  // disabled while busy and can't take focus until busy clears.
+  const sharing = useRef(false);
+  const offer = linkAccess.offer;
+  useEffect(() => {
+    if (!sharing.current || offer || busy) return;
+    sharing.current = false;
+    select.current?.focus();
+  }, [offer, busy]);
   const grant = (option, role) =>
     option.kind === "domain"
       ? { action: "set_domain_view", domain: option.value, role }
@@ -47,6 +58,7 @@ export function LinkAccess({ linkAccess, resource, busy, refreshing, onChange, o
         Link access
       </label>
       <select
+        ref={select}
         id={`${id}-select`}
         value={linkAccess.selected}
         disabled={busy}
@@ -98,17 +110,19 @@ export function LinkAccess({ linkAccess, resource, busy, refreshing, onChange, o
           `Only you and invited people can open this ${resource}.`
         )}
       </p>
-      {linkAccess.offer && (
+      {offer && (
         <button
           type="button"
           className="subtle-button page-share-organization"
+          title={`Share with ${offer.name}`}
           disabled={busy}
-          onClick={() =>
-            onChange(grant({ kind: "organization", id: linkAccess.offer.id }, "viewer"))
-          }
+          onClick={() => {
+            sharing.current = true;
+            onChange(grant({ kind: "organization", id: offer.id }, "viewer"));
+          }}
         >
           <Building2 size={16} aria-hidden="true" />
-          <span>Share with {linkAccess.offer.name}</span>
+          <span>Share with {offer.name}</span>
         </button>
       )}
       {linkAccess.expired ? (

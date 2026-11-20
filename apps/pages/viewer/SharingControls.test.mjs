@@ -513,8 +513,10 @@ test("an owner of a Restricted Page shares with their one organization in one cl
   });
   await f.toggle();
   assert.equal(shareButton(f.container).textContent, "Share with Acme Research");
+  assert.equal(shareButton(f.container).title, "Share with Acme Research");
   await act(() => shareButton(f.container).click());
   await flush();
+  assert.ok(document.activeElement === linkSelect(f.container), "focus moves to the select");
   assert.equal(posts.length, 1);
   const { action, organization_id, role } = posts[0];
   assert.deepEqual(
@@ -558,6 +560,21 @@ test("no one-click organization share with several verified organizations or no 
   );
   await g.toggle();
   assert.equal(shareButton(g.container), null);
+});
+
+test("no one-click organization share on a Page with a company domain set", async (t) => {
+  const f = await fixture(t, async () =>
+    json({
+      ...organizationLedger(null),
+      domainOptions: ["example.com"],
+      domainProof: { "example.com": "verified" },
+      domainView: { domain: "example.com", namespace: "fixture", role: "viewer" },
+      domainViewOwnerVerified: true,
+    }),
+  );
+  await f.toggle();
+  assert.equal(linkSelect(f.container).value, "example.com");
+  assert.equal(shareButton(f.container), null);
 });
 
 test("an owner who can't prove a stored company domain may only lower its role or withdraw it", async (t) => {

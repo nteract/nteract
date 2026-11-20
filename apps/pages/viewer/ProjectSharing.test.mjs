@@ -321,7 +321,7 @@ test("owner shares Project by email with revision fencing; members never fetch t
 });
 
 /** Renders the owner's Project panel against `tool` in a fresh document. */
-async function ownerPanel(t, tool) {
+async function ownerPanel(t, tool, projectId = "prj_3b160b47-6df1-4983-81eb-489ca5a26812") {
   const dom = new JSDOM("<div id='root'></div>", { url: "http://localhost" });
   const saved = new Map();
   for (const [key, value] of Object.entries({
@@ -346,7 +346,7 @@ async function ownerPanel(t, tool) {
   await act(async () =>
     root.render(
       createElement(ProjectSharing, {
-        project: { project_id: "prj_3b160b47-6df1-4983-81eb-489ca5a26812", role: "owner" },
+        project: { project_id: projectId, role: "owner" },
         tool,
         session: { identity: { principal: "owner", displayName: "Owner" } },
         open: true,
@@ -469,25 +469,31 @@ test("a Restricted Project's owner shares it with their one organization in one 
   const gate = new Promise((done) => {
     release = done;
   });
-  await ownerPanel(t, async (name, args) => {
-    calls.push([name, args]);
-    if (name === "manage_project_access") {
-      await gate;
-      current = projectLedger({ role: args.role }, { revision: current.revision + 1 });
-    }
-    return current;
-  });
+  await ownerPanel(
+    t,
+    async (name, args) => {
+      calls.push([name, args]);
+      if (name === "manage_project_access") {
+        await gate;
+        current = projectLedger({ role: args.role }, { revision: current.revision + 1 });
+      }
+      return current;
+    },
+    "prj_fixture",
+  );
   assert.equal(shareButton().textContent, "Share with Acme Research");
+  assert.equal(shareButton().title, "Share with Acme Research");
   await act(async () => shareButton().click());
   assert.equal(shareButton().disabled, true, "pending while the change saves");
   assert.match(document.body.textContent, /Updating Project access/);
   await act(async () => release());
+  assert.ok(document.activeElement === linkSelect(), "focus moves to the select");
   const [name, args] = calls.at(-1);
   assert.equal(name, "manage_project_access");
   assert.deepEqual(
     { ...args, nonce: undefined },
     {
-      project_id: "prj_3b160b47-6df1-4983-81eb-489ca5a26812",
+      project_id: "prj_fixture",
       action: "set_organization_access",
       organization_id: acme.id,
       role: "viewer",
@@ -512,7 +518,7 @@ test("a Project shared with an organization says a removed member can still open
   await act(async () => document.querySelector('button[aria-label="Remove Member"]').click());
   assert.equal(
     document.querySelector("[data-sharing-message]").textContent,
-    "Project access updated. They can still open this Project while they're a member of Acme Research.",
+    "Project access updated. If they're a member of Acme Research, they can still open this Project.",
   );
 });
 

@@ -273,6 +273,12 @@ test("one-click organization sharing is offered only to a Restricted owner with 
     },
     // No verified organization.
     { ...organizationOwner, organizationProof: { [acme.id]: "expired" } },
+    // A verified organization that isn't an option offers nothing.
+    {
+      ...organizationOwner,
+      organizationOptions: [acme],
+      organizationProof: { [acme.id]: "expired", [beta.id]: "verified" },
+    },
     { ...organizationOwner, organizationProof: {} },
     { ...organizationOwner, organizationProof: undefined },
     { ...organizationOwner, organizationOptions: [] },
@@ -302,7 +308,7 @@ test("one-click organization sharing is offered only to a Restricted owner with 
 
 test("removing a Project member while an organization grant stands names the organization", () => {
   const granted = { organizationAccess: { ...acme, role: "viewer" } };
-  const note = "They can still open this Project while they're a member of Acme Research.";
+  const note = "If they're a member of Acme Research, they can still open this Project.";
   assert.equal(
     projectRemovalNote({ action: "set_role", principal: "p", role: null }, granted),
     note,
