@@ -35,8 +35,8 @@ test("API responses, including errors, carry the build headers", async () => {
 });
 
 test("static assets pass through untouched", async () => {
-  const asset = new Response("<!doctype html>", { headers: { "content-type": "text/html" } });
-  const response = await worker.fetch(new Request(`${origin}/p/some-page`), {
+  const asset = new Response("export {}", { headers: { "content-type": "text/javascript" } });
+  const response = await worker.fetch(new Request(`${origin}/app.js`), {
     ASSETS: { fetch: async () => asset },
   });
   assert.equal(response, asset);

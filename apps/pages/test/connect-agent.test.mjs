@@ -4,6 +4,7 @@ import { JSDOM } from "jsdom";
 import worker from "../worker/index.mjs";
 import { agentConnectionSetup } from "../connect-agent.mjs";
 import { identityProvider } from "../identity-provider.mjs";
+import { socialCardUrl } from "../worker/site-tags.mjs";
 import {
   checkAccountCommand,
   claudeCodeAddCommand,
@@ -236,4 +237,17 @@ test("staging or unknown identity providers cannot direct people to create a pro
     assert.ok(html.includes("Ask the deployment owner"));
     assert.equal(html.includes("attacker.invalid"), false);
   }
+});
+
+test("/connect carries link-preview tags that name the configured origin", async () => {
+  const response = await worker.fetch(new Request("https://attacker.invalid/connect"), env);
+  const dom = new JSDOM(await response.text()).window.document;
+  const meta = (selector) => dom.head.querySelector(selector)?.getAttribute("content");
+  assert.equal(meta('meta[property="og:title"]'), "Connect an agent");
+  assert.equal(meta('meta[property="og:site_name"]'), "Pages");
+  assert.equal(meta('meta[property="og:url"]'), `${origin}/connect`);
+  assert.equal(meta('meta[property="og:image"]'), socialCardUrl(origin));
+  assert.equal(meta('meta[name="twitter:card"]'), "summary_large_image");
+  assert.equal(meta('meta[name="description"]'), meta('meta[property="og:description"]'));
+  assert.equal(dom.head.querySelectorAll('meta[name="description"]').length, 1);
 });

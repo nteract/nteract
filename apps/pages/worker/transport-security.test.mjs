@@ -145,8 +145,8 @@ test("a request without Cloudflare headers is served as before", async () => {
   assert.equal(health.headers.has("location"), false);
 
   // Local dev: assets are passed through by identity.
-  const asset = new Response("<!doctype html>", { headers: { "content-type": "text/html" } });
-  const page = await worker.fetch(new Request("http://localhost:9894/p/some-page"), {
+  const asset = new Response("export {}", { headers: { "content-type": "text/javascript" } });
+  const page = await worker.fetch(new Request("http://localhost:9894/app.js"), {
     ASSETS: { fetch: async () => asset },
   });
   assert.equal(page, asset);

@@ -4,6 +4,7 @@ import worker from "./index.mjs";
 import { world } from "./projects-fixture.mjs";
 import { cardBucket } from "./card-bucket-fixture.mjs";
 import { imageAssetKey } from "./image-assets.mjs";
+import { socialCardUrl } from "./site-tags.mjs";
 import {
   PREVIEW_KEY,
   publicationTransition,
@@ -222,7 +223,10 @@ test("publication state/event matrix and lifecycle fence", () => {
       assert.equal(state.revision, 3);
       assert.equal(publishedSnapshot({ owner: "owner", lifecycleRevision: 5 }, state), null);
     }
-  assert.doesNotMatch(previewTags(origin, "id", null), /og:image/);
+  // No snapshot, no Page image: the product icon stands in, never a Page's.
+  const generic = previewTags(origin, "id", null);
+  assert.ok(generic.includes(`og:image" content="${socialCardUrl(origin)}"`));
+  assert.doesNotMatch(generic, /preview\.png/);
 });
 
 test("source covers survive owner reads but never enter the public envelope", async (t) => {
