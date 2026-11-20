@@ -281,9 +281,7 @@ const takenFields = (name) => {
   const fields = EDIT_FIELDS.get(name).filter(
     (field) => name !== "set_node" || !Object.hasOwn(REFUSED_FIELDS, field),
   );
-  return fields.length < 2
-    ? fields.join("")
-    : `${fields.slice(0, -1).join(", ")} and ${fields.at(-1)}`;
+  return fields.join(", ");
 };
 /** Refuse a field operation `op` doesn't take, naming the fields it does
  * take, and a Markdown operation without a Markdown string. The flat schema
@@ -297,7 +295,7 @@ export function validateEditFields(op) {
   const unexpected = Object.keys(op).find((field) => !["op", ...fields].includes(field));
   if (unexpected)
     throw Error(
-      `${op.op} does not take ${String(unexpected).slice(0, 64)}; it takes ${takenFields(op.op)}`,
+      `${op.op} does not take ${String(unexpected).slice(0, 64)}; its fields are ${takenFields(op.op)}`,
     );
   if (fields.includes("markdown") && typeof op.markdown !== "string")
     throw Error(`${op.op} requires a markdown string`);

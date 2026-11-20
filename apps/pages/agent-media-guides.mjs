@@ -127,7 +127,7 @@ function viewsGuide(origin) {
 
 ## Create a JavaScript view
 
-Upload browser-ready text/javascript with a source ID and name. Give the entry a named render export, or a default AFM export. render receives { model, el, signal, host }: the model, the element to draw in, an AbortSignal that aborts when the view is removed or mounted again, and host, described in Frame environment below. Return a cleanup function if needed. React state and DOM events work inside the frame. Choose view_type anywidget for an existing widget with its own model state, or vega-lite for a declarative chart.
+Upload browser-ready text/javascript with a source ID and name. Give the entry a named render export, or a default AFM export. render receives { model, el, signal, host }: the model, the element to draw in, an AbortSignal that aborts when the view is removed or mounted again, and host, described in Match the Page appearance below. Return a cleanup function if needed. React state and DOM events work inside the frame. Choose view_type anywidget for an existing widget with its own model state, or vega-lite for a declarative chart.
 
 Upload JSON objects or lists with content_type application/json; upload a table as application/vnd.apache.parquet or text/csv. ${DATA_FORMAT_ADVICE} Each name in data is a key on the model, and model.get(name) is a file: ask it with await for .parquet(), .csv(), .json(), .text() or .arrayBuffer(). .csv() gives an array of row objects with a columns list of the names, as Observable's FileAttachment.csv does, typed as a table's values are. A table has numRows, schema.fields, getChild(name).toArray() and toArray(), and Plot takes it directly. Listen for change:<name> to redraw in place; otherwise the view starts again with the new data. Forgetting await passes a promise to Plot, which then draws nothing.
 
@@ -183,9 +183,9 @@ Pages sends its selected light or dark theme into the frame and updates the CSS 
 
 Observable Plot uses --plot-background behind its tips and currentColor for their text. If you give a plot a custom background, pass a CSS string in the plot options, such as \`style: "--plot-background: var(--card); color: var(--card-foreground)"\`. Use the Page's appearance control to try Light and Dark while the chart is open. Hover a point in each mode and read its values. Check axis labels, legend entries and the selected control too.
 
-Before the view first runs, and again on every switch, the frame sets data-theme, a dark or light class and color-scheme on <html>, and sets each token there as a CSS variable. CSS that uses the variables follows the theme with no code. The tokens are ${OUTPUT_STYLE_VARIABLES.join(", ")}. Colors arrive as oklch() strings. There are no chart, success, warning or info colors: a view that needs categorical colors brings its own for both themes.
+Before the view first runs, and again on every switch, the frame sets data-theme, a dark or light class and color-scheme on <html>, and sets each token there as a CSS variable. CSS that uses the variables follows the theme with no code. The tokens are ${OUTPUT_STYLE_VARIABLES.join(", ")}. --radius is a length and the three --output-*-font tokens are font stacks; the rest are colors, and arrive as oklch() strings. There are no chart, success, warning or info colors: a view that needs categorical colors brings its own for both themes.
 
-host.getContext() returns { theme: "light" or "dark", styles: { variables } } with the current token values. host.onContextChange(listener) calls the listener after each switch, once the CSS has changed, and returns an unsubscribe function. A view that draws to canvas or WebGL redraws there. A library that can't parse oklch() needs each color converted first; a one-pixel canvas does it, and gives the comma form every color parser reads:
+host.getContext() returns { theme: "light" or "dark", styles: { variables } } with the current token values. host.onContextChange(listener) calls the listener after each switch, once the CSS has changed, and returns an unsubscribe function. A view that draws to canvas or WebGL redraws there. A library that can't parse oklch() needs each color converted first; a one-pixel canvas does it, and gives the comma form every color parser reads. Pass it a color token only: a value a canvas can't read as a color comes back black.
 
 \`\`\`js
 function rgb(color) {
@@ -207,7 +207,7 @@ insert_node puts the view in a block of its own, directly after the block named 
 
 To build a new Page, create it with only the prose before the first view, and save each view with set_view. Then send one batch that alternates insert_node and insert_markdown with after_node_id omitted. Operations apply in order, and each lands after the one before it at the end of the Page. For two views: insert_node activity, insert_markdown the text between, insert_node retention.
 
-If one block already holds all the prose, split it in one batch: replace_block_markdown that block with the text before the view, then insert_markdown the rest, then insert_node the view. Give both inserts that block's id as after_node_id. Each lands directly after the block, so the view, sent last, goes ahead of the rest. replace_block_markdown resends the prose: copy it exactly from read_page, since anything you leave out is deleted.
+If one block already holds all the prose, split it in one batch: replace_block_markdown that block with the text before the view, then insert_markdown the rest, then insert_node the view. Give both inserts that block's id as after_node_id. Each lands directly after the block, so the view, sent last, goes ahead of the rest. replace_block_markdown resends the prose: read the whole block, not a section or search slice, and copy it exactly, since anything you leave out is deleted. The rest becomes a new block, so comment threads on it are detached; split a Page before people comment on it.
 ${edit("split-intro", [{ op: "replace_block_markdown", node_id: "<the block's id>", markdown: "<the text before the view, exactly as read>" }, { op: "insert_markdown", markdown: "<the rest, exactly as read>", after_node_id: "<the block's id>" }, place("activity", "<the block's id>")])}
 
 ## Frame environment
@@ -215,10 +215,10 @@ ${edit("split-intro", [{ op: "replace_block_markdown", node_id: "<the block's id
 A view runs in a sandboxed frame with an opaque origin.
 
 - Scripts: import libraries by name through read_page.libraries and imports first. Beyond those, a script may come from any https: host, inline or a blob, so a library that ships only as a classic (UMD) bundle can load with a script element. There is no eval: eval and new Function throw. WebAssembly compiles.
-- Network: requests may go to any host. A server sees Origin: null and must allow it for a cross-origin read. Images and media load from any host; fonts from https: or data:; stylesheets from https: or inline; workers only from a blob. Nested frames are refused.
+- Network: fetch and WebSocket may reach any host, but not a data: or blob: URL. A server sees Origin: null, so a cross-origin read needs a CORS answer that allows any origin. Images and media load from any host; fonts from https: or data:; stylesheets from https: or inline; workers only from a blob. Nested frames are refused.
 - Layout: the frame's base styles set a 14px system font and the Page's background. Buttons and range inputs have min-height: 44px, so a compact control sets its own min-height. html clips vertical overflow, so content drawn below the body, such as a popup past the last row, is cut off.
 - Height: the frame grows to the body's height by itself, up to 100000 px. Don't set a height on the view or give the whole view an inner scroller.
-- Errors: a view that throws while it mounts shows its message to the person looking at the Page, with a Retry button. No tool returns that message to you, and set_view checks only that static imports load. Ask the person to look at the view, or keep the module small and defensive.
+- Errors: a view that throws while it mounts shows its message to the person looking at the Page, with a Retry button. No tool returns that message to you: set_view checks the module's imports and reports warnings in its receipt, but never runs the view. Ask the person to look at the view, or keep the module small and defensive.
 
 ## Read part of a file
 
