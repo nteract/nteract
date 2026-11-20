@@ -28,7 +28,10 @@
 // (PageLinkCard.jsx) when a reader points at or focuses a link. Chits and
 // labeled Page and Project links ask for meta, not urgent, when an editor
 // draws them (page-chits.mjs), so an intent the reader has now goes out
-// before theirs.
+// before theirs: N distinct targets cost N asks. A drawn chit asks again
+// whenever its answer goes stale. A labeled link doesn't: its stale answer
+// is asked again only when the reader comes back to the tab, or through the
+// card on a hover.
 import { timer } from "rxjs";
 import { defineMachine, reject } from "../shared/machine.mjs";
 import { getJson } from "./request.mjs";

@@ -44,8 +44,12 @@
 // attributes on the rendered <a>, never document content, so copy and
 // Markdown keep the label and the link. The labeledLinkMarks plugin sets
 // them from the tab's PageRefs whenever a ref changes or the editor redraws
-// its DOM, and asks for a target's meta on the same terms as a chit
-// (needsAsking).
+// its DOM. A labeled link asks for its target's meta when it has no answer
+// (labeledLinkNeedsAsking), not each time an answer goes stale as a chit
+// does: an open tab doesn't poll the targets of its labeled links. Stale
+// answers are asked again when the reader comes back to the tab (the window
+// regains focus or the document turns visible) or hovers the link, whose
+// card asks for itself.
 import { Node } from "wordgard/doc";
 import { Decoration, Widget, Wordgard } from "wordgard/editor";
 import { GardState, Transaction } from "wordgard/state";
@@ -215,6 +219,18 @@ export function needsAsking(ref) {
   return ref.name === "failed" && ref.ready;
 }
 
+/** Whether a labeled link should ask for `ref`: never asked (or dropped
+ * with the account), or failed past its backoff with no settled answer. A
+ * settled answer, fresh or stale, and a failed refresh of one, are asked
+ * again only on `refresh`, when the reader comes back to the tab; even then
+ * a fresh answer or a request in flight asks nothing. */
+export function labeledLinkNeedsAsking(ref, { refresh = false } = {}) {
+  if (!ref || ref.name === "idle") return true;
+  if (ref.name === "readable" || ref.name === "unavailable") return refresh && ref.stale;
+  if (ref.name === "failed") return ref.ready && (ref.last === null || refresh);
+  return false;
+}
+
 /** The marker a labeled link to `target` draws for its meta ref: "Page
  * unavailable" or "Project unavailable" when the reader can't open it, or
  * null. `target` is a `{ kind }` (shared/page-links.mjs linkedTarget's
@@ -235,8 +251,8 @@ const LABELED_LINKS = [
 ].join(", ");
 
 /** Draw each labeled link under `root` from `refs` as they are now, and ask
- * once for each target a chit would ask for. */
-export function markLabeledLinks(root, refs) {
+ * once for each target that labeledLinkNeedsAsking names, given `refresh`. */
+export function markLabeledLinks(root, refs, { refresh = false } = {}) {
   const asks = new Map();
   for (const link of root.querySelectorAll(LABELED_LINKS)) {
     if (link.closest(".wg-chit-source")) continue;
@@ -244,7 +260,7 @@ export function markLabeledLinks(root, refs) {
       ? projectTarget(link.dataset.projectId)
       : pageTarget(link.dataset.pageId);
     const ref = refs.ref(target, "meta");
-    if (needsAsking(ref)) asks.set(refKey(target, "meta"), target);
+    if (labeledLinkNeedsAsking(ref, { refresh })) asks.set(refKey(target, "meta"), target);
     const label = unavailableLabel(target, ref);
     if (label) {
       if (link.dataset.linkState !== "unavailable") link.dataset.linkState = "unavailable";
@@ -258,9 +274,44 @@ export function markLabeledLinks(root, refs) {
   for (const target of asks.values()) refs.want(target, ["meta"]);
 }
 
+/** The connected editors whose labeled links refresh when the reader comes
+ * back to the tab. */
+const markedEditors = new Set();
+
+/** The reader came back to the tab: refresh every connected editor's stale
+ * labeled links in one pass. An ask moves its ref to requested, so a target
+ * linked from several blocks is asked once, and a return that fires both
+ * focus and visibilitychange asks once in all. */
+function refreshMarkedEditors(event) {
+  if (event.type === "visibilitychange" && globalThis.document?.visibilityState !== "visible")
+    return;
+  const refs = tabRefs();
+  if (!refs) return;
+  for (const wg of markedEditors) markLabeledLinks(wg.contentDOM, refs, { refresh: true });
+}
+
+/** One pair of listeners for the tab while any editor is connected, however
+ * many blocks the Page has. */
+function markEditor(wg) {
+  markedEditors.add(wg);
+  if (markedEditors.size !== 1) return;
+  globalThis.document?.addEventListener("visibilitychange", refreshMarkedEditors);
+  globalThis.window?.addEventListener("focus", refreshMarkedEditors);
+}
+
+function unmarkEditor(wg) {
+  if (!markedEditors.delete(wg) || markedEditors.size !== 0) return;
+  globalThis.document?.removeEventListener("visibilitychange", refreshMarkedEditors);
+  globalThis.window?.removeEventListener("focus", refreshMarkedEditors);
+}
+
+/** The number of editors the tab's return listener refreshes, for tests. */
+export const markedEditorCount = () => markedEditors.size;
+
 /** Keeps an editor's labeled links drawn from the tab's PageRefs: on every
- * ref change while connected, and after every redraw of its DOM, which may
- * have made a link's <a> anew. */
+ * ref change while connected, after every redraw of its DOM, which may have
+ * made a link's <a> anew, and with a refresh when the reader comes back to
+ * the tab. */
 const labeledLinkMarks = Wordgard.Plugin.define((wg) => {
   let subscription = null;
   const paint = () => {
@@ -272,11 +323,13 @@ const labeledLinkMarks = Wordgard.Plugin.define((wg) => {
       const refs = tabRefs();
       if (subscription || !refs) return;
       subscription = refs.store.select((state) => state.refs).subscribe(paint);
+      markEditor(wg);
     },
     docUpdate: paint,
     disconnect() {
       subscription?.unsubscribe();
       subscription = null;
+      unmarkEditor(wg);
     },
   };
 });
