@@ -459,3 +459,74 @@ test("a Project owner in no organization sees no link access row", async (t) => 
   await ownerPanel(t, async () => projectLedger(null, { proof: "missing" }));
   assert.equal(document.querySelector(".page-domain-sharing"), null);
 });
+
+const shareButton = () => document.querySelector(".page-share-organization");
+
+test("a Restricted Project's owner shares it with their one organization in one click", async (t) => {
+  const calls = [];
+  let current = projectLedger(null);
+  let release;
+  const gate = new Promise((done) => {
+    release = done;
+  });
+  await ownerPanel(t, async (name, args) => {
+    calls.push([name, args]);
+    if (name === "manage_project_access") {
+      await gate;
+      current = projectLedger({ role: args.role }, { revision: current.revision + 1 });
+    }
+    return current;
+  });
+  assert.equal(shareButton().textContent, "Share with Acme Research");
+  await act(async () => shareButton().click());
+  assert.equal(shareButton().disabled, true, "pending while the change saves");
+  assert.match(document.body.textContent, /Updating Project access/);
+  await act(async () => release());
+  const [name, args] = calls.at(-1);
+  assert.equal(name, "manage_project_access");
+  assert.deepEqual(
+    { ...args, nonce: undefined },
+    {
+      project_id: "prj_3b160b47-6df1-4983-81eb-489ca5a26812",
+      action: "set_organization_access",
+      organization_id: acme.id,
+      role: "viewer",
+      expected_revision: 1,
+      nonce: undefined,
+    },
+  );
+  assert.equal(linkSelect().value, "org:org-acme");
+  assert.equal(roleSelect().value, "viewer");
+  assert.equal(shareButton(), null, "an audience is set");
+});
+
+test("a Project shared with an organization says a removed member can still open it", async (t) => {
+  const members = { "account:member": { displayName: "Member", role: "editor" } };
+  let current = { ...projectLedger({ role: "viewer" }), members };
+  await ownerPanel(t, async (name, args) => {
+    if (name === "manage_project_access")
+      current = { ...current, revision: current.revision + 1, members: {} };
+    return current;
+  });
+  assert.equal(shareButton(), null);
+  await act(async () => document.querySelector('button[aria-label="Remove Member"]').click());
+  assert.equal(
+    document.querySelector("[data-sharing-message]").textContent,
+    "Project access updated. They can still open this Project while they're a member of Acme Research.",
+  );
+});
+
+test("a Project with no organization grant says nothing extra on removal", async (t) => {
+  const members = { "account:member": { displayName: "Member", role: "editor" } };
+  let current = { ...projectLedger(null), members };
+  await ownerPanel(t, async (name) => {
+    if (name === "manage_project_access")
+      current = { ...current, revision: current.revision + 1, members: {} };
+    return current;
+  });
+  await act(async () => document.querySelector('button[aria-label="Remove Member"]').click());
+  assert.equal(
+    document.querySelector("[data-sharing-message]").textContent,
+    "Project access updated.",
+  );
+});

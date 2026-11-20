@@ -1,4 +1,5 @@
 import { useId } from "react";
+import { Building2 } from "lucide-react";
 import { ROLE_LABELS } from "./sharing-roles.mjs";
 
 const roleLabel = (role) => ROLE_LABELS[role] ?? ROLE_LABELS.viewer;
@@ -15,6 +16,8 @@ const ROLES = Object.keys(ROLE_LABELS);
  * the stored audience, and Restricted clears whichever audience is stored.
  * When the owner can't prove a stored company domain now (`narrowOnly`), only
  * lower roles are offered, as the host allows.
+ * When `linkAccess.offer` names an organization, a "Share with {name}" button
+ * sends the same Can view grant the select sends for it.
  * `onRefresh` reads sharing again after the owner signs in again in another
  * tab.
  */
@@ -95,6 +98,19 @@ export function LinkAccess({ linkAccess, resource, busy, refreshing, onChange, o
           `Only you and invited people can open this ${resource}.`
         )}
       </p>
+      {linkAccess.offer && (
+        <button
+          type="button"
+          className="subtle-button page-share-organization"
+          disabled={busy}
+          onClick={() =>
+            onChange(grant({ kind: "organization", id: linkAccess.offer.id }, "viewer"))
+          }
+        >
+          <Building2 size={16} aria-hidden="true" />
+          <span>Share with {linkAccess.offer.name}</span>
+        </button>
+      )}
       {linkAccess.expired ? (
         <div className="page-domain-sharing-note" role="note">
           <p>

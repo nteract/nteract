@@ -497,6 +497,69 @@ test("an owner shares with an organization, sets its role, and Restricted withdr
   assert.equal(roleSelect(f.container), null);
 });
 
+const shareButton = (container) => container.querySelector(".page-share-organization");
+
+test("an owner of a Restricted Page shares with their one organization in one click", async (t) => {
+  const posts = [];
+  let current = organizationLedger(null);
+  const f = await fixture(t, async (_url, options) => {
+    if (options.method === "POST") {
+      const body = JSON.parse(options.body);
+      posts.push(body);
+      current = organizationLedger({ role: body.role }, { revision: current.access.revision + 1 });
+      return json({ ...current, receipt: { revision: current.access.revision } });
+    }
+    return json(current);
+  });
+  await f.toggle();
+  assert.equal(shareButton(f.container).textContent, "Share with Acme Research");
+  await act(() => shareButton(f.container).click());
+  await flush();
+  assert.equal(posts.length, 1);
+  const { action, organization_id, role } = posts[0];
+  assert.deepEqual(
+    { action, organization_id, role },
+    { action: "set_organization_access", organization_id: acme.id, role: "viewer" },
+  );
+  assert.equal(linkSelect(f.container).value, "org:org-acme");
+  assert.equal(roleSelect(f.container).value, "viewer");
+  assert.match(f.container.textContent, /Can view\. Members of Acme Research who sign in/);
+  assert.equal(shareButton(f.container), null, "an audience is set");
+});
+
+test("one-click organization sharing is disabled while a change is pending and shows its error", async (t) => {
+  const response = deferred();
+  const f = await fixture(t, async (_url, options) =>
+    options.method === "POST" ? response.promise : json(organizationLedger(null)),
+  );
+  await f.toggle();
+  await act(() => shareButton(f.container).click());
+  assert.equal(shareButton(f.container).disabled, true);
+  assert.equal(linkSelect(f.container).disabled, true);
+  await f.settle(response, json({ error: "Sharing is unavailable" }, 503));
+  await flush();
+  assert.match(f.container.textContent, /Sharing is unavailable/);
+});
+
+test("no one-click organization share with several verified organizations or no verified one", async (t) => {
+  const beta = { id: "org-beta", name: "Beta Lab" };
+  const f = await fixture(t, async () =>
+    json({
+      ...organizationLedger(null),
+      organizationOptions: [acme, beta],
+      organizationProof: { [acme.id]: "verified", [beta.id]: "verified" },
+    }),
+  );
+  await f.toggle();
+  assert.equal(shareButton(f.container), null);
+  assert.equal(linkSelect(f.container).options.length, 3, "the select still lists both");
+  const g = await fixture(t, async () =>
+    json(organizationLedger({ role: "commenter" }, { proof: "expired" })),
+  );
+  await g.toggle();
+  assert.equal(shareButton(g.container), null);
+});
+
 test("an owner who can't prove a stored company domain may only lower its role or withdraw it", async (t) => {
   const posts = [];
   let current = {
