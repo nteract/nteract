@@ -454,6 +454,8 @@ const result = await build({
   bundle: true,
   format: "esm",
   write: false,
+  // As scripts/build.mjs defines it: the catalog this origin serves.
+  define: { __PAGES_LIBRARY_CATALOG__: JSON.stringify(libraryRevision) },
 });
 const siftWasm = await readFile(siftWasmPath(process.cwd()));
 const siftCsvWasm = await readFile(siftCsvWasmPath(process.cwd()));
@@ -512,7 +514,7 @@ const server = createServer(async (req, res) => {
     `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; frame-src ${new URL(configuredFrameUrl).origin}`,
   );
   res.end(
-    `<!doctype html><meta name="pages-output-frame-url" content="${configuredFrameUrl}"><meta name="pages-library-catalog" content="${libraryRevision}"><meta name="viewport" content="width=device-width"><title>Audio exploration</title><link rel="stylesheet" href="/styles.css"><label style="max-width:900px;margin:20px auto">Appearance <select id="appearance"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><main style="max-width:900px;margin:30px auto;font:16px system-ui"></main><script type="module" src="/app.js"></script>`,
+    `<!doctype html><meta name="pages-output-frame-url" content="${configuredFrameUrl}"><meta name="viewport" content="width=device-width"><title>Audio exploration</title><link rel="stylesheet" href="/styles.css"><label style="max-width:900px;margin:20px auto">Appearance <select id="appearance"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><main style="max-width:900px;margin:30px auto;font:16px system-ui"></main><script type="module" src="/app.js"></script>`,
   );
 });
 await new Promise((resolve) =>
@@ -589,7 +591,7 @@ try {
     );
     await page.evaluate(() => window.fixture.endLibraryView());
     // A pin this origin does not serve: the view loads the host's current
-    // catalog, named in the shell, and still draws with its library.
+    // catalog, which its bundle carries, and still draws with its library.
     await page.evaluate(() => window.fixture.libraryView("f".repeat(64)));
     await expect
       .poll(async () =>

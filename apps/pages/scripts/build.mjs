@@ -131,6 +131,26 @@ const chartWorker = chartWorkerChunk(chartWorkerBytes);
 await mkdir(path.join(dist, "public/chunks"), { recursive: true });
 await writeFile(path.join(dist, chartWorker), chartWorkerBytes);
 
+// The view library catalog, served by the Worker from
+// public/catalog/<revision>/ (worker/library-catalog.mjs). Only this build's
+// revision stays in public/. It is built before the viewer and the Worker,
+// which both carry its revision (shared/library-catalog.mjs): the Worker
+// records it on every view save, and the viewer loads it for a view whose
+// pinned catalog this host doesn't serve.
+await rm(path.join(dist, LIBRARY_CATALOG_DIRECTORY), { recursive: true, force: true });
+const libraryCatalog = await buildLibraryCatalog(app);
+const libraryFiles = (
+  await writeLibraryCatalog(path.join(dist, LIBRARY_CATALOG_DIRECTORY), libraryCatalog)
+).map((file) => `${LIBRARY_CATALOG_DIRECTORY}/${file}`);
+{
+  let bytes = 0;
+  for (const data of libraryCatalog.files.values()) bytes += data.byteLength;
+  console.log(
+    `Library catalog ${libraryCatalog.revision}: ${libraryFiles.length} files, ${(bytes / 1024).toFixed(1)} KiB`,
+  );
+}
+const catalogDefine = { __PAGES_LIBRARY_CATALOG__: JSON.stringify(libraryCatalog.revision) };
+
 // The viewer imports the frame runtime from .output-dist and sends it to each
 // output frame, so it is written before the viewer is built.
 await writeFrameHtml(app);
@@ -138,7 +158,11 @@ const viewer = await build(
   viewerBuildOptions(
     app,
     dist,
-    { ...buildDefine, __PAGES_CHART_WORKER_URL__: JSON.stringify(publicUrl(chartWorker)) },
+    {
+      ...buildDefine,
+      ...catalogDefine,
+      __PAGES_CHART_WORKER_URL__: JSON.stringify(publicUrl(chartWorker)),
+    },
     Object.fromEntries(
       ["mermaid.js", "automerge.wasm", "sift.wasm", "sift-csv.wasm"].map((name) => [
         name,
@@ -185,22 +209,6 @@ for (const name of ["app.js", "app.css"]) {
   await rm(file);
 }
 
-// The view library catalog, served by the Worker from
-// public/catalog/<revision>/ (worker/library-catalog.mjs). Only this build's
-// revision stays in public/.
-await rm(path.join(dist, LIBRARY_CATALOG_DIRECTORY), { recursive: true, force: true });
-const libraryCatalog = await buildLibraryCatalog(app);
-const libraryFiles = (
-  await writeLibraryCatalog(path.join(dist, LIBRARY_CATALOG_DIRECTORY), libraryCatalog)
-).map((file) => `${LIBRARY_CATALOG_DIRECTORY}/${file}`);
-{
-  let bytes = 0;
-  for (const data of libraryCatalog.files.values()) bytes += data.byteLength;
-  console.log(
-    `Library catalog ${libraryCatalog.revision}: ${libraryFiles.length} files, ${(bytes / 1024).toFixed(1)} KiB`,
-  );
-}
-
 await build({
   entryPoints: [path.join(app, "worker/index.mjs")],
   bundle: true,
@@ -212,13 +220,7 @@ await build({
   external: ["node:*"],
   outfile: path.join(dist, "index.js"),
   // The Worker's own pages (/connect, OAuth) load the hashed theme and styles.
-  // It records its catalog revision on every view save
-  // (shared/library-catalog.mjs).
-  define: {
-    ...buildDefine,
-    ...shellAssetDefine(Object.values(assets)),
-    __PAGES_LIBRARY_CATALOG__: JSON.stringify(libraryCatalog.revision),
-  },
+  define: { ...buildDefine, ...catalogDefine, ...shellAssetDefine(Object.values(assets)) },
   plugins: [celldCborPlugin(), workerWasmPlugin(dist)],
 });
 // The output Worker, with the same build id: the module the release package

@@ -4,7 +4,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { JSDOM } from "jsdom";
 import { firstValueFrom } from "rxjs";
 import {
   LIBRARIES_UNREACHABLE,
@@ -14,6 +13,7 @@ import {
   libraryManifestOutcome,
   libraryMap$,
 } from "./library-catalog.mjs";
+import { UNBUILT_LIBRARY_CATALOG } from "../shared/library-catalog.mjs";
 
 const origin = "https://pages.example";
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
@@ -138,19 +138,20 @@ test("the library decision covers every pin, current revision and manifest outco
     assert.deepEqual(libraryDecision(input), expected, name);
 });
 
-test("the host's current revision is read from the app's HTML and must be a revision", () => {
-  const read = (content) =>
-    hostLibraryRevision(
-      new JSDOM(
-        content === undefined
-          ? "<!doctype html><head></head>"
-          : `<!doctype html><head><meta name="pages-library-catalog" content="${content}"></head>`,
-      ).window.document,
-    );
-  assert.equal(read(revision), revision);
-  assert.equal(read(undefined), null);
-  for (const value of ["", "latest", revision.toUpperCase(), revision.slice(1), revision + "0"])
-    assert.equal(read(value), null, value);
+test("the host's current revision is the build's own, and a run from source has none", () => {
+  assert.equal(hostLibraryRevision(revision), revision);
+  assert.equal(hostLibraryRevision(UNBUILT_LIBRARY_CATALOG), null);
+  // Unbundled, this module carries the unbuilt revision.
+  assert.equal(hostLibraryRevision(), null);
+  for (const value of [
+    null,
+    "",
+    "latest",
+    revision.toUpperCase(),
+    revision.slice(1),
+    revision + "0",
+  ])
+    assert.equal(hostLibraryRevision(value), null, String(value));
 });
 
 /** A fetch that answers from `answers` in order and records each URL. */

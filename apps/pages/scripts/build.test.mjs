@@ -218,7 +218,8 @@ for (const fails of [true, false])
           if (options.write === false) return {outputFiles: [{contents: new TextEncoder().encode('fixture bundle')}]};
           if (options.outdir) {
             mkdirSync(path.join(options.outdir, 'chunks'), {recursive: true});
-            for (const file of ['app.js', 'app.css', 'chunks/ABCDEFGH.js', 'chunks/CHARTAAA.js']) writeFileSync(path.join(options.outdir, file), 'fixture bundle');
+            for (const file of ['app.css', 'chunks/ABCDEFGH.js', 'chunks/CHARTAAA.js']) writeFileSync(path.join(options.outdir, file), 'fixture bundle');
+            writeFileSync(path.join(options.outdir, 'app.js'), 'fixture viewer ' + (options.define?.__PAGES_LIBRARY_CATALOG__ ?? ''));
             return {metafile: {outputs: {
               'public/app.js': {inputs: {}, imports: [], bytes: 14},
               'public/app.css': {inputs: {}, imports: [], bytes: 14},
@@ -329,6 +330,13 @@ for (const fails of [true, false])
           assert.equal(
             readFileSync(path.join(fixture, "dist/index.js"), "utf8"),
             `fixture worker "${"c".repeat(64)}"`,
+          );
+          // So does the viewer bundle, so every shell knows its host's
+          // catalog whether or not the Worker rewrites its HTML.
+          const appJs = options.viewerAssets.find((file) => /^public\/app-[^.]+\.js$/.test(file));
+          assert.equal(
+            readFileSync(path.join(fixture, "dist", appJs), "utf8"),
+            `fixture viewer "${"c".repeat(64)}"`,
           );
           assert.deepEqual(options.documentFormats, {
             "pages.page": [3],

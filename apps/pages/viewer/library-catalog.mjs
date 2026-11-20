@@ -6,25 +6,31 @@
 //
 // A view's catalog_revision is the catalog it was last saved against. The
 // viewer uses that catalog while this host still serves it, and otherwise the
-// host's current one, which the Worker writes into the app's HTML
-// (worker/output-frame-config.mjs). A host that serves neither has no
-// libraries: the view mounts without a map.
+// host's current one: the catalog its own build carries
+// (shared/library-catalog.mjs). A host that serves neither has no libraries:
+// the view mounts without a map.
 import { Observable, of, switchMap } from "rxjs";
-import { LIBRARY_REVISION, libraryPath } from "../shared/library-catalog.mjs";
+import {
+  LIBRARY_CATALOG_REVISION,
+  LIBRARY_REVISION,
+  UNBUILT_LIBRARY_CATALOG,
+  libraryPath,
+} from "../shared/library-catalog.mjs";
 
 export const LIBRARIES_UNREACHABLE = "This view's libraries didn't load. Retry to try again.";
-
-/** The meta element the Worker names the host's current catalog with. */
-export const LIBRARY_CATALOG_META = "pages-library-catalog";
 
 const FILE = /^[\w-]+\.js$/;
 const SHA256_HEX = /^[a-f0-9]{64}$/;
 
-/** The host's current catalog revision from `doc`'s meta, or null when the
- * document names none or names something that is not a revision. */
-export function hostLibraryRevision(doc) {
-  const value = doc?.querySelector(`meta[name="${LIBRARY_CATALOG_META}"]`)?.content;
-  return typeof value === "string" && LIBRARY_REVISION.test(value) ? value : null;
+/** The host's current catalog revision: `revision`, which defaults to the
+ * one this build carries, or null when it is not a revision or is the unbuilt
+ * one that a run from source reports and no host serves. */
+export function hostLibraryRevision(revision = LIBRARY_CATALOG_REVISION) {
+  return typeof revision === "string" &&
+    LIBRARY_REVISION.test(revision) &&
+    revision !== UNBUILT_LIBRARY_CATALOG
+    ? revision
+    : null;
 }
 
 /**

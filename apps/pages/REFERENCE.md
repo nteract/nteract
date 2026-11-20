@@ -2127,11 +2127,11 @@ headers; a file neither holds is a 404 with `Cache-Control: no-store`. The
 first request for the build's own `manifest.json` copies its revision into
 that archive after the response, manifest last, so a revision whose manifest
 is in the bucket is complete
-([worker/library-archive.mjs](worker/library-archive.mjs)). An app shell
-configured with an output frame URL also names the build's revision in
-`<meta name="pages-library-catalog">`
-([worker/output-frame-config.mjs](worker/output-frame-config.mjs)); a shell
-without one names no current revision.
+([worker/library-archive.mjs](worker/library-archive.mjs)). The viewer
+bundle carries the build's revision, as the Worker does
+([shared/library-catalog.mjs](shared/library-catalog.mjs)), and uses it as the
+host's current revision on every host, with or without an output frame URL. A
+run from source carries the unbuilt revision and has no current revision.
 A host serves its own build's catalog and the revisions in its archive. To
 mount an executable view, the viewer fetches a manifest from its own origin,
 checks its sha256, and sends the frame a library map of absolute URLs on that
