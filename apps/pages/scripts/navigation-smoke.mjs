@@ -229,7 +229,7 @@ try {
   // the Page's title, and the same bytes as for a Page that doesn't exist.
   const unfurled = await (await fetch(sluggedUrl)).text();
   assert.match(unfurled, /<title>Some Title · [^<]+<\/title>/);
-  assert.match(unfurled, /<meta property="og:title" content="Some Title" \/>/);
+  assert.match(unfurled, /<meta property="og:title" content="Some Title">/);
   assert.ok(!unfurled.includes(realTitle));
   const nobody = await (await fetch(`${origin}/p/${crypto.randomUUID()}/Some-Title`)).text();
   assert.equal(unfurled, nobody);
