@@ -282,9 +282,16 @@ try {
     const secretLink = link(page, secret.page_id);
     const secretProjectLink = projectLink(page, secretProject.project_id);
     await expect(secretLink).toHaveAttribute("data-link-state", "unavailable");
-    await expect(secretLink).toHaveAttribute("aria-description", "Page unavailable");
+    await expect(secretLink).toHaveAccessibleDescription("Page unavailable");
     await expect(secretProjectLink).toHaveAttribute("data-link-state", "unavailable");
-    await expect(secretProjectLink).toHaveAttribute("aria-description", "Project unavailable");
+    await expect(secretProjectLink).toHaveAccessibleDescription("Project unavailable");
+    await expect(link(page, target.page_id).first()).toHaveAccessibleDescription("");
+    // The descriptions live once each, hidden, outside every editor.
+    for (const id of ["pages-link-unavailable-page", "pages-link-unavailable-project"]) {
+      await expect(page.locator(`[id="${id}"]`)).toHaveCount(1);
+      await expect(page.locator(`[id="${id}"]`)).toBeHidden();
+      await expect(page.locator(`wg-content [id="${id}"]`)).toHaveCount(0);
+    }
     await expect(secretLink).toHaveText("Alice's notes");
     await expect(secretLink).toHaveAttribute("href", new RegExp(`/p/${secret.page_id}$`));
     await expect(link(page, target.page_id).first()).not.toHaveAttribute("data-link-state");

@@ -29,9 +29,11 @@
 // labeled Page and Project links ask for meta, not urgent, when an editor
 // draws them (page-chits.mjs), so an intent the reader has now goes out
 // before theirs: N distinct targets cost N asks. A drawn chit asks again
-// whenever its answer goes stale. A labeled link doesn't: its stale answer
-// is asked again only when the reader comes back to the tab, or through the
-// card on a hover.
+// whenever its answer goes stale. A labeled link asks by the cause of each
+// pass (page-chits.mjs labeledLinkAsks): after the first draw, only a stale
+// unavailable answer while the tab is visible, every 15 s; a stale answer
+// of any kind when the reader comes back to the tab; and through the card
+// on a hover. A hidden tab asks for labeled links only when an editor draws.
 import { timer } from "rxjs";
 import { defineMachine, reject } from "../shared/machine.mjs";
 import { getJson } from "./request.mjs";

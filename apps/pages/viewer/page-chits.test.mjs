@@ -52,9 +52,10 @@ const {
   pageChits,
   revealedBy,
   unavailableLabel,
-  labeledLinkNeedsAsking,
-  markedEditorCount,
+  labeledLinkAsks,
+  UNAVAILABLE_DESCRIPTION_IDS,
 } = await import("./page-chits.mjs");
+const { PagesLink } = await import("./wordgard-model.mjs");
 const { pagesLinkShape } = await import("./page-link-shape.mjs");
 const { linkedTarget } = await import("../shared/page-links.mjs");
 const { provideChitRefs } = await import("./chit-refs.mjs");
@@ -432,22 +433,113 @@ test("unavailableLabel: only a settled unavailable answer marks a labeled link",
   assert.equal(unavailableLabel(heading, { name: "unavailable", stale: false }), null);
 });
 
-test("a labeled link the reader can't open is marked unavailable without a hover", async () => {
-  const { VirtualTimeScheduler } = await import("rxjs");
-  const scheduler = new VirtualTimeScheduler();
+/** Let a promise settle and Wordgard's animation-frame flush run. */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 80));
+const PROJECT_PATH = `/project/${encodeURIComponent(PROJECT_ID)}/meta.json`;
+const PAGE_DESCRIPTION = UNAVAILABLE_DESCRIPTION_IDS.page;
+const PROJECT_DESCRIPTION = UNAVAILABLE_DESCRIPTION_IDS.project;
+
+/** A tab whose visibility a test sets; `restore()` puts jsdom's back. */
+function visibility() {
+  let state = "visible";
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+  return {
+    set(next) {
+      state = next;
+    },
+    restore() {
+      delete document.visibilityState;
+    },
+  };
+}
+
+/** Tab refs whose answers a test controls: `answers[path]` is "open",
+ * "refused", "failed" or "signed-out" (a 401). Every request is in `asks`. */
+function scriptedRefs(answers, scheduler) {
   const asks = [];
-  let shared = false;
   const refs = new PageRefs({
     scheduler,
     get: (path) => {
       asks.push(path);
-      if (path !== OTHER_PATH) return Promise.reject(refused("project_unavailable"));
-      if (!shared) return Promise.reject(refused("page_unavailable"));
-      return Promise.resolve({ v: 1, page_id: OTHER_ID, title: "Shared now", state: "active" });
+      const answer = answers[path] ?? "refused";
+      if (answer === "open") {
+        const id = decodeURIComponent(path.split("/")[2]);
+        return Promise.resolve(
+          path.startsWith("/project/")
+            ? { v: 1, kind: "project", project_id: id, title: "Open" }
+            : { v: 1, page_id: id, title: "Open", state: "active" },
+        );
+      }
+      if (answer === "failed") return Promise.reject(Object.assign(Error("down"), { status: 500 }));
+      if (answer === "signed-out")
+        return Promise.reject(Object.assign(Error("signed out"), { status: 401 }));
+      return Promise.reject(
+        refused(path.startsWith("/project/") ? "project_unavailable" : "page_unavailable"),
+      );
     },
   });
   refs.account("dev");
   provideChitRefs(refs);
+  const count = (path) => asks.filter((asked) => asked === path).length;
+  return { refs, asks, count };
+}
+
+const describedBy = (link) => link.getAttribute("aria-describedby");
+
+test("labeledLinkAsks: each ref state by the pass's cause and the tab's visibility", () => {
+  const states = {
+    missing: undefined,
+    idle: { name: "idle" },
+    requested: { name: "requested", attempts: 0, last: null },
+    "requested over unavailable": { name: "requested", attempts: 0, last: { name: "unavailable" } },
+    "readable fresh": { name: "readable", value: {}, stale: false },
+    "readable stale": { name: "readable", value: {}, stale: true },
+    "unavailable fresh": { name: "unavailable", stale: false },
+    "unavailable stale": { name: "unavailable", stale: true },
+    "failed backing off": { name: "failed", attempts: 1, last: null, ready: false },
+    "failed ready": { name: "failed", attempts: 1, last: null, ready: true },
+    "failed refresh backing off": {
+      name: "failed",
+      attempts: 1,
+      last: { name: "unavailable" },
+      ready: false,
+    },
+    "failed refresh ready": {
+      name: "failed",
+      attempts: 1,
+      last: { name: "unavailable" },
+      ready: true,
+    },
+  };
+  // Which states ask, per cause and visibility. Everything else asks nothing.
+  const asking = {
+    draw: ["missing", "idle", "failed ready"],
+    change: ["unavailable stale"],
+    return: [
+      "missing",
+      "idle",
+      "readable stale",
+      "unavailable stale",
+      "failed ready",
+      "failed refresh ready",
+    ],
+  };
+  const hiddenAsking = { ...asking, change: [] };
+  for (const [visible, expected] of [
+    [true, asking],
+    [false, hiddenAsking],
+  ])
+    for (const cause of ["draw", "change", "return"])
+      for (const [name, ref] of Object.entries(states))
+        assert.equal(
+          labeledLinkAsks(ref, { cause, visible }),
+          expected[cause].includes(name),
+          `${name} on ${cause}, ${visible ? "visible" : "hidden"}`,
+        );
+});
+
+test("a labeled link the reader can't open is marked unavailable without a hover", async () => {
+  const { refs, asks } = scriptedRefs({});
   try {
     const wg = linkedEditor(
       `See [the plan](${OTHER}), [the plan again](${OTHER}), [the project](${PROJECT}), ` +
@@ -456,42 +548,75 @@ test("a labeled link the reader can't open is marked unavailable without a hover
     wg.flush?.();
     const [plan, again, project, elsewhere, heading] = wg.contentDOM.querySelectorAll("a");
     assert.equal(plan.dataset.linkState, undefined, "loading draws the link as it is");
-    await tick();
+    await settle();
     assert.deepEqual(
       asks.sort(),
-      [`/project/${encodeURIComponent(PROJECT_ID)}/meta.json`, OTHER_PATH].sort(),
+      [PROJECT_PATH, OTHER_PATH].sort(),
       "one ask per distinct target, none for another host or a heading",
     );
     for (const link of [plan, again]) {
       assert.equal(link.dataset.linkState, "unavailable");
-      assert.equal(link.getAttribute("aria-description"), "Page unavailable");
+      assert.equal(describedBy(link), PAGE_DESCRIPTION);
     }
     assert.equal(project.dataset.linkState, "unavailable");
-    assert.equal(project.getAttribute("aria-description"), "Project unavailable");
-    assert.equal(plan.textContent, "the plan", "the label stays and nothing joins it");
-    assert.equal(plan.getAttribute("href"), OTHER, "the link stays a link");
+    assert.equal(describedBy(project), PROJECT_DESCRIPTION);
     for (const link of [elsewhere, heading]) {
       assert.equal(link.dataset.linkState, undefined);
-      assert.equal(link.hasAttribute("aria-description"), false);
+      assert.equal(describedBy(link), null);
     }
-    // The marker is drawn, never stored: the document keeps the label.
+    // The descriptions are hidden text outside every editor, once per document.
+    for (const [id, text] of [
+      [PAGE_DESCRIPTION, "Page unavailable"],
+      [PROJECT_DESCRIPTION, "Project unavailable"],
+    ]) {
+      const description = document.getElementById(id);
+      assert.equal(description.textContent, text);
+      assert.ok(description.closest("[hidden]"), "the description is hidden");
+      assert.equal(description.closest("wg-content, .wordgard-document, [contenteditable]"), null);
+      assert.equal(document.querySelectorAll(`[id="${id}"]`).length, 1);
+    }
+    const second = linkedEditor(`Also [the plan](${OTHER})`);
+    second.flush?.();
+    await settle();
+    assert.equal(describedBy(second.contentDOM.querySelector("a")), PAGE_DESCRIPTION);
+    assert.equal(document.querySelectorAll(`[id="${PAGE_DESCRIPTION}"]`).length, 1);
+    second.dom.remove();
+    // The label stays, the link stays a link, and nothing enters the document.
+    assert.equal(plan.textContent, "the plan");
+    assert.equal(plan.getAttribute("href"), OTHER);
     assert.match(wg.state.doc.textContent(), /^See the plan, the plan again, the project/);
     assert.equal(wg.contentDOM.textContent, wg.state.doc.textContent());
+    // Another description on the link, such as the hover card's, is kept.
+    plan.setAttribute("aria-describedby", `${PAGE_DESCRIPTION} card-label`);
+    refs.want({ kind: "page", id: "55555555-5555-4555-8555-555555555555" });
+    await settle();
+    assert.equal(describedBy(plan), `${PAGE_DESCRIPTION} card-label`);
+    wg.dom.remove();
+  } finally {
+    provideChitRefs(null);
+    refs.dispose();
+  }
+});
 
-    // Access granted: the stale unavailable answer isn't asked again while
-    // the tab sits open, only when the reader comes back to it. Then the
-    // marker goes away without a redraw of the block.
-    shared = true;
-    scheduler.flush();
-    await tick();
-    assert.equal(asks.filter((path) => path === OTHER_PATH).length, 1, "no polling");
-    window.dispatchEvent(new dom.window.FocusEvent("focus"));
-    await tick();
-    assert.equal(asks.filter((path) => path === OTHER_PATH).length, 2);
-    assert.equal(wg.contentDOM.querySelector("a"), plan, "the link wasn't redrawn");
-    for (const link of [plan, again]) {
-      assert.equal(link.dataset.linkState, undefined);
-      assert.equal(link.hasAttribute("aria-description"), false);
+test("a marked link whose href stops naming a Page loses its marker", async () => {
+  const { refs } = scriptedRefs({});
+  try {
+    const wg = linkedEditor(`See [the plan](${OTHER}) now`);
+    wg.flush?.();
+    await settle();
+    const from = 1 + "See ".length;
+    const range = { from, to: from + "the plan".length };
+    const marked = () => {
+      const link = wg.contentDOM.querySelector("a");
+      return [link.dataset.linkState, describedBy(link)];
+    };
+    assert.deepEqual(marked(), ["unavailable", PAGE_DESCRIPTION]);
+    for (const href of [`https://elsewhere.example/p/${OTHER_ID}`, `${BASE}#plan`]) {
+      wg.dispatch({ changes: { ...range, add: PagesLink.of({ href, title: null }) } });
+      wg.flush?.();
+      await settle();
+      assert.equal(wg.contentDOM.querySelector("a").getAttribute("href"), href);
+      assert.deepEqual(marked(), [undefined, null], href);
     }
     wg.dom.remove();
   } finally {
@@ -500,30 +625,192 @@ test("a labeled link the reader can't open is marked unavailable without a hover
   }
 });
 
-test("a failed read leaves a labeled link as it is; a read-only block is marked too", async () => {
-  let fail = true;
-  const refs = new PageRefs({
-    get: () =>
-      fail
-        ? Promise.reject(Object.assign(Error("down"), { status: 500 }))
-        : Promise.reject(refused("page_unavailable")),
-  });
-  refs.account("dev");
-  provideChitRefs(refs);
+test("a ref change after a 401 asks nothing for labeled links", async () => {
+  const { refs, count } = scriptedRefs({ [OTHER_PATH]: "signed-out" });
   try {
-    const failing = linkedEditor(`[the plan](${OTHER})`);
+    const wg = linkedEditor(`See [the plan](${OTHER})`);
+    wg.flush?.();
+    await settle();
+    // The 401 dropped every ref with the account kept; the drop is a store
+    // change, and a change never asks for an idle ref.
+    assert.equal(count(OTHER_PATH), 1);
+    assert.equal(refs.principal, "dev");
+    refs.clear();
+    await settle();
+    assert.equal(count(OTHER_PATH), 1, "no loop");
+    wg.dom.remove();
+  } finally {
+    provideChitRefs(null);
+    refs.dispose();
+  }
+});
+
+test("a failing target is asked again on a redraw or a return, not on its backoff", async () => {
+  const { VirtualTimeScheduler } = await import("rxjs");
+  const scheduler = new VirtualTimeScheduler();
+  const { refs, count } = scriptedRefs({ [OTHER_PATH]: "failed" }, scheduler);
+  try {
+    const wg = linkedEditor(`See [the plan](${OTHER}) now`);
+    wg.flush?.();
+    await settle();
+    assert.equal(count(OTHER_PATH), 1);
+    assert.equal(wg.contentDOM.querySelector("a").dataset.linkState, undefined);
+    scheduler.flush();
+    await settle();
+    assert.equal(refs.ref({ kind: "page", id: OTHER_ID }, "meta").ready, true);
+    assert.equal(count(OTHER_PATH), 1, "the backoff passing asks nothing");
+    wg.dispatch({ changes: { from: 1, insert: [Leaf.text("x")] } });
+    wg.flush?.();
+    await settle();
+    assert.equal(count(OTHER_PATH), 2, "a redraw asks");
+    scheduler.flush();
+    window.dispatchEvent(new dom.window.FocusEvent("focus"));
+    await settle();
+    assert.equal(count(OTHER_PATH), 3, "a return asks");
+    wg.dom.remove();
+  } finally {
+    provideChitRefs(null);
+    refs.dispose();
+  }
+});
+
+test("a stale unavailable answer is asked again on a ref change while visible", async () => {
+  const { VirtualTimeScheduler } = await import("rxjs");
+  const scheduler = new VirtualTimeScheduler();
+  const answers = { [OTHER_PATH]: "open", [PROJECT_PATH]: "refused" };
+  const { refs, count } = scriptedRefs(answers, scheduler);
+  const tab = visibility();
+  const both = () => [count(OTHER_PATH), count(PROJECT_PATH)];
+  try {
+    const wg = linkedEditor(`See [the plan](${OTHER}) and [the project](${PROJECT})`);
+    wg.flush?.();
+    await settle();
+    assert.deepEqual(both(), [1, 1]);
+
+    // Hidden: both answers go stale, and their expiry asks nothing.
+    tab.set("hidden");
+    scheduler.flush();
+    await settle();
+    assert.deepEqual(both(), [1, 1], "a hidden tab asks nothing");
+
+    // Visible again without a return event: the next ref change asks for the
+    // stale unavailable answer only, never the stale readable one.
+    tab.set("visible");
+    refs.want({ kind: "page", id: "55555555-5555-4555-8555-555555555555" });
+    await settle();
+    assert.deepEqual(both(), [1, 2]);
+
+    // Visible, its expiry is the change that asks: every 15 s while unavailable.
+    scheduler.flush();
+    await settle();
+    assert.deepEqual(both(), [1, 3]);
+    wg.dom.remove();
+  } finally {
+    tab.restore();
+    provideChitRefs(null);
+    refs.dispose();
+  }
+});
+
+test("a transient unavailable answer clears 15 s later with no return", async () => {
+  const { VirtualTimeScheduler } = await import("rxjs");
+  const scheduler = new VirtualTimeScheduler();
+  const answers = { [OTHER_PATH]: "refused" };
+  const { refs, count } = scriptedRefs(answers, scheduler);
+  try {
+    const wg = linkedEditor(`See [the plan](${OTHER})`);
+    wg.flush?.();
+    await settle();
+    const plan = wg.contentDOM.querySelector("a");
+    assert.equal(plan.dataset.linkState, "unavailable");
+    // The host was slow, not refusing: its next answer is the Page.
+    answers[OTHER_PATH] = "open";
+    scheduler.flush();
+    await settle();
+    assert.equal(count(OTHER_PATH), 2);
+    assert.equal(wg.contentDOM.querySelector("a"), plan, "the link wasn't redrawn");
+    assert.equal(plan.dataset.linkState, undefined);
+    assert.equal(describedBy(plan), null);
+    wg.dom.remove();
+  } finally {
+    provideChitRefs(null);
+    refs.dispose();
+  }
+});
+
+test("a return to the tab asks once per stale target across blocks", async () => {
+  const { VirtualTimeScheduler } = await import("rxjs");
+  const scheduler = new VirtualTimeScheduler();
+  const answers = { [OTHER_PATH]: "open", [PROJECT_PATH]: "refused" };
+  const { refs, count } = scriptedRefs(answers, scheduler);
+  const tab = visibility();
+  const both = () => [count(OTHER_PATH), count(PROJECT_PATH)];
+  try {
+    const blocks = [
+      linkedEditor(`See [the plan](${OTHER}) and [the project](${PROJECT})`),
+      linkedEditor(`Again: [the plan](${OTHER}) and [the project](${PROJECT})`),
+    ];
+    for (const wg of blocks) wg.flush?.();
+    await settle();
+    assert.deepEqual(both(), [1, 1]);
+
+    // Stale while hidden; a hidden visibilitychange asks nothing.
+    tab.set("hidden");
+    scheduler.flush();
+    document.dispatchEvent(new dom.window.Event("visibilitychange"));
+    await settle();
+    assert.deepEqual(both(), [1, 1]);
+
+    // Turning visible asks each stale target once across both blocks; the
+    // focus that comes with it asks nothing more.
+    tab.set("visible");
+    document.dispatchEvent(new dom.window.Event("visibilitychange"));
+    window.dispatchEvent(new dom.window.FocusEvent("focus"));
+    await settle();
+    assert.deepEqual(both(), [2, 2]);
+
+    // Access granted, then a focus once the answers are stale: the lock goes.
+    answers[PROJECT_PATH] = "open";
+    tab.set("hidden");
+    scheduler.flush();
+    tab.set("visible");
+    window.dispatchEvent(new dom.window.FocusEvent("focus"));
+    await settle();
+    assert.deepEqual(both(), [3, 3]);
+    for (const wg of blocks)
+      assert.equal(wg.contentDOM.querySelectorAll("[data-link-state]").length, 0);
+
+    // With every editor gone, the tab's listeners are too.
+    for (const wg of blocks) wg.dom.remove();
+    await settle();
+    scheduler.flush();
+    window.dispatchEvent(new dom.window.FocusEvent("focus"));
+    document.dispatchEvent(new dom.window.Event("visibilitychange"));
+    await settle();
+    assert.deepEqual(both(), [3, 3]);
+  } finally {
+    tab.restore();
+    provideChitRefs(null);
+    refs.dispose();
+  }
+});
+
+test("a failed read leaves a labeled link as it is; a read-only block is marked too", async () => {
+  const answers = { [OTHER_PATH]: "failed" };
+  const { refs } = scriptedRefs(answers);
+  try {
+    const failing = linkedEditor(`See [the plan](${OTHER})`);
     failing.flush?.();
-    await tick();
-    const link = failing.contentDOM.querySelector("a");
+    await settle();
     assert.equal(refs.ref({ kind: "page", id: OTHER_ID }, "meta").name, "failed");
-    assert.equal(link.dataset.linkState, undefined);
+    assert.equal(failing.contentDOM.querySelector("a").dataset.linkState, undefined);
     failing.dom.remove();
 
     refs.clear();
-    fail = false;
-    const readOnly = linkedEditor(`[the plan](${OTHER})`, { editable: false });
+    answers[OTHER_PATH] = "refused";
+    const readOnly = linkedEditor(`See [the plan](${OTHER})`, { editable: false });
     readOnly.flush?.();
-    await tick();
+    await settle();
     assert.equal(readOnly.contentDOM.querySelector("a").dataset.linkState, "unavailable");
     readOnly.dom.remove();
   } finally {
@@ -533,22 +820,21 @@ test("a failed read leaves a labeled link as it is; a read-only block is marked 
 });
 
 test("an edit that redraws a labeled link keeps its marker", async () => {
-  const refs = new PageRefs({ get: () => Promise.reject(refused("page_unavailable")) });
-  refs.account("dev");
-  provideChitRefs(refs);
+  const { refs } = scriptedRefs({});
   try {
     const wg = linkedEditor(`Before [the plan](${OTHER}) after`);
     wg.flush?.();
-    await tick();
+    await settle();
     const from = 1 + "Before ".length;
     // Splitting the link draws its two halves as new <a>s.
     wg.dispatch({ changes: { from: from + 3, insert: [Leaf.text("x")] } });
     wg.flush?.();
+    await settle();
     const links = [...wg.contentDOM.querySelectorAll("a.page-link")];
     assert.equal(links.length, 2);
     for (const link of links) {
       assert.equal(link.dataset.linkState, "unavailable");
-      assert.equal(link.getAttribute("aria-description"), "Page unavailable");
+      assert.equal(describedBy(link), PAGE_DESCRIPTION);
     }
     wg.dom.remove();
   } finally {
@@ -558,121 +844,15 @@ test("an edit that redraws a labeled link keeps its marker", async () => {
 });
 
 test("a bare link's chit is not marked as a labeled link", async () => {
-  const refs = new PageRefs({ get: () => Promise.reject(refused("page_unavailable")) });
-  refs.account("dev");
-  provideChitRefs(refs);
+  const { refs } = scriptedRefs({});
   try {
     const wg = linkedEditor(`See <${OTHER}>`);
     wg.flush?.();
-    await tick();
+    await settle();
     assert.equal(wg.contentDOM.querySelector("a.wg-chit").dataset.state, "unavailable");
     assert.equal(wg.contentDOM.querySelectorAll("[data-link-state]").length, 0);
     wg.dom.remove();
   } finally {
-    provideChitRefs(null);
-    refs.dispose();
-  }
-});
-
-test("labeledLinkNeedsAsking: a missing answer, or a refresh of a stale one", () => {
-  const cases = [
-    // [ref, without refresh, with refresh]
-    [undefined, true, true],
-    [{ name: "idle" }, true, true],
-    [{ name: "requested", attempts: 0, last: null }, false, false],
-    [{ name: "requested", attempts: 0, last: { name: "unavailable" } }, false, false],
-    [{ name: "readable", value: {}, stale: false }, false, false],
-    [{ name: "readable", value: {}, stale: true }, false, true],
-    [{ name: "unavailable", stale: false }, false, false],
-    [{ name: "unavailable", stale: true }, false, true],
-    [{ name: "failed", attempts: 1, last: null, ready: false }, false, false],
-    [{ name: "failed", attempts: 1, last: null, ready: true }, true, true],
-    [{ name: "failed", attempts: 1, last: { name: "unavailable" }, ready: false }, false, false],
-    [{ name: "failed", attempts: 1, last: { name: "unavailable" }, ready: true }, false, true],
-  ];
-  for (const [ref, plain, refresh] of cases) {
-    assert.equal(labeledLinkNeedsAsking(ref), plain, `${ref?.name ?? "missing"} without refresh`);
-    assert.equal(
-      labeledLinkNeedsAsking(ref, { refresh: true }),
-      refresh,
-      `${ref?.name ?? "missing"} with refresh`,
-    );
-  }
-});
-
-test("labeled links don't poll stale answers; a return to the tab asks once per target", async () => {
-  const { VirtualTimeScheduler } = await import("rxjs");
-  const scheduler = new VirtualTimeScheduler();
-  const asks = [];
-  const refs = new PageRefs({
-    scheduler,
-    get: (path) => {
-      asks.push(path);
-      if (path === OTHER_PATH)
-        return Promise.resolve({ v: 1, page_id: OTHER_ID, title: "Open", state: "active" });
-      return Promise.reject(refused("project_unavailable"));
-    },
-  });
-  refs.account("dev");
-  provideChitRefs(refs);
-  let visibility = "visible";
-  Object.defineProperty(document, "visibilityState", {
-    configurable: true,
-    get: () => visibility,
-  });
-  const count = (path) => asks.filter((asked) => asked === path).length;
-  const PROJECT_PATH = `/project/${encodeURIComponent(PROJECT_ID)}/meta.json`;
-  try {
-    // Two blocks link to the same two targets.
-    const blocks = [
-      linkedEditor(`See [the plan](${OTHER}) and [the project](${PROJECT})`),
-      linkedEditor(`Again: [the plan](${OTHER}) and [the project](${PROJECT})`),
-    ];
-    for (const wg of blocks) wg.flush?.();
-    await tick();
-    assert.equal(markedEditorCount(), 2);
-    assert.deepEqual([count(OTHER_PATH), count(PROJECT_PATH)], [1, 1]);
-
-    // Both answers go stale. A ref change and a redraw ask nothing.
-    scheduler.flush();
-    refs.want({ kind: "page", id: "44444444-4444-4444-8444-444444444444" });
-    await tick();
-    blocks[0].dispatch({ changes: { from: 1, insert: [Leaf.text("x")] } });
-    blocks[0].flush?.();
-    await tick();
-    assert.deepEqual([count(OTHER_PATH), count(PROJECT_PATH)], [1, 1], "stale isn't polled");
-
-    // A tab turning hidden asks nothing.
-    visibility = "hidden";
-    document.dispatchEvent(new dom.window.Event("visibilitychange"));
-    await tick();
-    assert.deepEqual([count(OTHER_PATH), count(PROJECT_PATH)], [1, 1]);
-
-    // Turning visible asks each stale target once, across both blocks; the
-    // focus that comes with it asks nothing more.
-    visibility = "visible";
-    document.dispatchEvent(new dom.window.Event("visibilitychange"));
-    window.dispatchEvent(new dom.window.FocusEvent("focus"));
-    await tick();
-    assert.deepEqual([count(OTHER_PATH), count(PROJECT_PATH)], [2, 2]);
-
-    // Focus alone refreshes too, once the answers are stale again.
-    scheduler.flush();
-    window.dispatchEvent(new dom.window.FocusEvent("focus"));
-    await tick();
-    assert.deepEqual([count(OTHER_PATH), count(PROJECT_PATH)], [3, 3]);
-
-    // With every editor gone, the tab's listeners are too.
-    for (const wg of blocks) wg.dom.remove();
-    await tick();
-    assert.equal(markedEditorCount(), 0);
-    scheduler.flush();
-    window.dispatchEvent(new dom.window.FocusEvent("focus"));
-    document.dispatchEvent(new dom.window.Event("visibilitychange"));
-    await tick();
-    assert.deepEqual([count(OTHER_PATH), count(PROJECT_PATH)], [3, 3]);
-  } finally {
-    delete document.visibilityState;
     provideChitRefs(null);
     refs.dispose();
   }

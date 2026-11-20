@@ -231,7 +231,8 @@
    markLabeledLinks) draws its glyph as a lock, lucide's Lock, the icon the
    hover card's unavailable face shows, in the muted colour of an
    unavailable chit. Only the glyph's mask and the colour change, so the
-   line keeps its height and the label its place. */
+   line keeps its height and the label its place. Screen readers get the
+   state from the link's aria-describedby, not from this. */
 .wordgard-document wg-content :is(a.page-link, a.project-link)[data-link-state="unavailable"] {
   --link-glyph: var(--lock-link-glyph);
   color: var(--muted-foreground);
