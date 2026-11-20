@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { outputFrameAssets } from "./output-frame-config.mjs";
-import { UNBUILT_LIBRARY_CATALOG } from "../shared/library-catalog.mjs";
 import { outputFrameUrl } from "../shared/output-frame-config.mjs";
 import { VIEWER_CSP } from "../scripts/viewer-chunks.mjs";
 import worker from "./index.mjs";
@@ -100,8 +99,6 @@ test("configuration preserves hashed assets and the unset default", async () => 
 
 test("gateway applies runtime frame configuration to root, bare and slugged Page shells", async (t) => {
   for (const level of ["log", "info", "warn", "error"]) t.mock.method(console, level, () => {});
-  // Unbundled, the Worker names the unbuilt catalog, which no host serves.
-  const catalogMeta = `<meta name="pages-library-catalog" content="${UNBUILT_LIBRARY_CATALOG}" />`;
   const env = {
     NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin,
     PAGES_OUTPUT_FRAME_URL: frame,
@@ -117,7 +114,6 @@ test("gateway applies runtime frame configuration to root, bare and slugged Page
     assert.equal(response.status, 200, path);
     const body = await response.text();
     assert.match(body, /pages-output-frame-url/, path);
-    assert.ok(body.includes(catalogMeta), path);
     assert.match(
       response.headers.get("content-security-policy"),
       /frame-src https:\/\/widgets.example/,
@@ -166,15 +162,12 @@ test("configured URL dollar sequences remain literal in the meta attribute", asy
   assert.equal(body.match(/<body>/g).length, 1);
 });
 
-test("the shell names the frame URL and this build's library catalog, and no catalog contents", async () => {
-  const revision = "c".repeat(64);
-  const assets = outputFrameAssets({ fetch: async () => asset() }, frame, origin, revision);
+// The viewer bundle carries its library catalog revision
+// (shared/library-catalog.mjs), so the shell names only the frame URL.
+test("the shell names the frame URL and nothing about the library catalog", async () => {
+  const assets = outputFrameAssets({ fetch: async () => asset() }, frame, origin);
   const html = await (await assets.fetch(new Request(origin))).text();
-  assert.ok(
-    html.includes(
-      `<meta name="pages-library-catalog" content="${revision}" />` +
-        `<meta name="pages-output-frame-url" content="${frame}" /></head>`,
-    ),
-  );
+  assert.ok(html.includes(`<meta name="pages-output-frame-url" content="${frame}" /></head>`));
+  assert.ok(!html.includes("pages-library-catalog"));
   assert.ok(!html.includes("data-widget-catalog"));
 });

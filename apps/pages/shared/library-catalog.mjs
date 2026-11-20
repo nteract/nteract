@@ -1,11 +1,12 @@
 // The view library catalog this build carries (scripts/library-catalog.mjs).
 //
 // scripts/build.mjs builds the catalog into public/catalog/<revision>/ and
-// defines __PAGES_LIBRARY_CATALOG__ as that revision in the Worker bundle,
-// beside the build id (shared/build-identity.mjs). A view that becomes or
-// stays executable records it as catalog_revision when it is saved
-// (model/view-doc.mjs setView), and the viewer loads that revision's manifest
-// from this origin (viewer/library-catalog.mjs).
+// defines __PAGES_LIBRARY_CATALOG__ as that revision in both the Worker and
+// the viewer bundle, beside the build id (shared/build-identity.mjs). A view
+// that becomes or stays executable records it as catalog_revision when it is
+// saved (model/view-doc.mjs setView). The viewer loads a view's pinned
+// revision from this origin, and this one when the host doesn't serve the pin
+// (viewer/library-catalog.mjs).
 //
 // Unbundled code (unit tests, tsx) has no catalog build. It reports
 // UNBUILT_LIBRARY_CATALOG, a well-formed revision that no host serves.

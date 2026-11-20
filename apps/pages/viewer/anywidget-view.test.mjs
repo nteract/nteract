@@ -771,9 +771,9 @@ const notFound = () => new Response("No such library file\n", { status: 404 });
 
 /** Mount `view` on a document whose host names `current` as its catalog,
  * answering manifest requests from `answers` in order. */
-function mountWithLibraries(t, view, { current, answers, html = "" }) {
+function mountWithLibraries(t, view, { current, answers }) {
   t.after(forgetLibraryMaps);
-  const { window } = new JSDOM(`<!doctype html><head>${html}</head><body></body>`, {
+  const { window } = new JSDOM(`<!doctype html><head></head><body></body>`, {
     url: ORIGIN + "/",
   });
   const sources = new PageSourceStore({
@@ -846,22 +846,16 @@ test("a view whose pinned manifest this host serves mounts with the pinned libra
 });
 
 // The save-time rule that a view imports the host's libraries holds at run
-// time for a view saved with no pin: it gets the map named in the app's HTML.
+// time for a view saved with no pin: it gets the map of the host's own build.
 test("a view with no pin that imports a library mounts with the host's current map", async (t) => {
-  const answers = [new Response(currentManifest)];
-  const asked = [];
-  t.mock.method(globalThis, "fetch", async (url, init) => {
-    asked.push({ url, credentials: init.credentials });
-    return answers.shift();
-  });
   const view = viewRecord(null, "plot");
   assert.equal(view.catalog_revision, undefined);
-  const { mounts } = mountWithLibraries(t, view, {
-    answers: [],
-    html: `<meta name="pages-library-catalog" content="${currentRevision}">`,
+  const { asked, mounts } = mountWithLibraries(t, view, {
+    current: currentRevision,
+    answers: [new Response(currentManifest)],
   });
   await until(() => mounts.length === 1, "the view never mounted");
-  assert.deepEqual(asked, [{ url: manifestUrl(currentRevision), credentials: "omit" }]);
+  assert.deepEqual(asked, [manifestUrl(currentRevision)]);
   assert.deepEqual(mounts[0].payload.libraries, d3At(currentRevision, "d3-next.js"));
 });
 

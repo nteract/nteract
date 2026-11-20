@@ -130,12 +130,11 @@ export function mount(
     columnDecoder = loadColumnDecoder,
     // Resolves a view's pin to the library map it mounts with
     // (library-catalog.mjs libraryMap$): the pinned catalog while this
-    // origin serves it, otherwise the host's current one named in this
-    // document.
+    // origin serves it, otherwise the one this build carries.
     libraryMap = (pin) =>
       libraryMap$(pin, {
         origin: container.ownerDocument.location.origin,
-        current: hostLibraryRevision(container.ownerDocument),
+        current: hostLibraryRevision(),
       }),
   },
 ) {

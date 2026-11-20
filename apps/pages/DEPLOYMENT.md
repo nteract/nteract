@@ -1184,9 +1184,9 @@ manifest whose sha256 is not the revision or whose file digests differ from the
 receipt, and refuses any other file or revision under `public/catalog`. The
 Pages Worker serves these files itself, with CORS and immutable caching, so the
 `_headers` file names none of them. The tunnel admits them like any other path
-on the Pages hostname. The Worker names the revision in the app shell
-beside the output frame URL (`<meta name="pages-library-catalog">`, on every
-target with `PAGES_OUTPUT_FRAME_URL`). A view saved against a catalog this release no
+on the Pages hostname. The build defines the revision in both the Worker and
+the viewer bundle, so every target knows its current catalog whether or not it
+sets `PAGES_OUTPUT_FRAME_URL`. A view saved against a catalog this release no
 longer serves loads that current revision instead, so a release that changes
 the catalog needs no view to be saved again.
 
