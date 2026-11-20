@@ -22,9 +22,11 @@ covers the whole 1200×630 card, centred and cropped at the edges, with no
 title, byline, description or product name drawn on it; the title and
 description still go into the page metadata and image alt text. A newly
 uploaded cover starts in `fill`, and **Fill the card** / **Title below**
-switches between the two. Text cards and visuals chosen from the Page always
-use `caption`. The layout is stored with the preview and restored on reopen; a
-preview stored without one is `caption`. The host refuses any other layout,
+switches between the two. A text card is always `caption`. A visual chosen
+from the Page is published in `caption`; publishing stores it as the cover, so
+reopening the preview offers both layouts for it, and `fill` crops it at the
+edges. The layout is stored with the preview and restored on reopen; a preview
+stored without one is `caption`. The host refuses any other layout,
 and `fill` without a cover, with a 400.
 The author is explicitly supplied for publication, never inferred from account
 or document ownership. OG, Twitter and Slack descriptions lead with that byline.

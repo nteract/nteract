@@ -275,6 +275,12 @@ test("a card layout is caption or fill, fill needs a cover, and reopening restor
   assert.equal((await (await manage()).json()).snapshot.layout, "fill");
   assert.equal((await manage(fill)).status, 200, "exact replay is idempotent");
   assert.equal((await manage({ ...fill, layout: "caption" })).status, 409, "the nonce is fenced");
+  const { layout: _fill, author: _author, ...bare } = fill;
+  assert.equal(
+    (await manage({ ...bare, author: "fill" })).status,
+    409,
+    "an author named like a layout is a different command",
+  );
   const html = await (await send(`/p/${id}`)).text();
   assert.match(html, /property="og:title" content="Approved title"/);
   assert.match(html, /property="og:description" content="Approved description"/);

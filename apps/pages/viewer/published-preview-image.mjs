@@ -126,7 +126,8 @@ export async function renderPublishedPreview(draft, visuals, signal, pageId) {
   context.fillStyle = draft.visual === "text" ? background : "#f7f8f5";
   context.fillRect(0, 0, 1200, 630);
   const textOnly = draft.visual === "text";
-  // Only an uploaded cover may fill the card; every other visual keeps its caption.
+  // Only a cover may fill the card: an upload, or a visual stored as the
+  // cover by an earlier publication. A visual read from the Page keeps its caption.
   const fill = draft.visual === "upload" && draft.layout === "fill";
   let sourceFile;
   if (!textOnly) {

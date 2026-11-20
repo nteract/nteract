@@ -46,7 +46,7 @@ export function previewEditorTransition(state, event) {
                 author: event.value.snapshot.author ?? "",
                 visual: event.value.snapshot.cover ? "upload" : "text",
                 cover: event.value.snapshot.cover,
-                // A snapshot without a layout predates the choice: caption.
+                // A snapshot with no layout, or with no cover, is caption.
                 layout:
                   event.value.snapshot.cover && event.value.snapshot.layout === "fill"
                     ? "fill"

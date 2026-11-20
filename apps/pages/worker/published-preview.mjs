@@ -46,7 +46,8 @@ export function publicationTransition(state, command, snapshot) {
     command.cover?.asset_id,
     command.cover?.name,
     ...(command.author === undefined ? [] : [command.author]),
-    ...(command.layout === undefined ? [] : [command.layout]),
+    // Named, so a layout can never read as the optional author before it.
+    ...(command.layout === undefined ? [] : [{ layout: command.layout }]),
   ]);
   if (state.receipt?.nonce === command.nonce) {
     if (state.receipt.fingerprint !== fingerprint)
