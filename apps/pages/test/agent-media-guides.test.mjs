@@ -313,7 +313,7 @@ test("edit_page and the guides state the inline text form, its types and its cap
   for (const text of [main, assets, views]) {
     assert.match(
       text.replace(/\s+/g, " "),
-      /256 KiB of UTF-8, and one batch up to 512 KiB of text in all/,
+      /256 KiB of UTF-8, and one batch up to 512 KiB of text in all, counted as JSON with its escapes/,
     );
   }
   for (const text of [main, assets])

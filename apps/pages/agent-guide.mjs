@@ -282,9 +282,12 @@ ${part.authErrorItems}
 - dataset_too_large (413): the dataset asset_from names is over 5 MiB.
 - too_many_copies (400): one batch copies up to 8 datasets with asset_from.
   Send the rest in another batch.
-- invalid_source (400): a set_source field is malformed, its text is over the
-  limit or isn't valid for its media_type, or the batch would pass the Page's
-  64 sources, or read_page's source_id is malformed.
+- invalid_source (400): a set_source field is malformed, its text is empty,
+  not well-formed Unicode, over the limit or not valid for its media_type, or
+  the batch would pass the Page's 64 sources, or read_page's source_id is
+  malformed. A request whose own JSON encoding passes 1 MiB, such as one that
+  escapes every non-ASCII character, can get 413 before that check: upload
+  the file instead.
   Fix the request.
 - source_not_found (404): no source has that source_id on this Page. To
   create it, send set_source with source_revision null.
@@ -820,7 +823,7 @@ itself as text, with its media_type (${INLINE_SOURCE_MEDIA_TYPES.join(", ")}):
 \`\`\`
 
 text holds up to ${INLINE_SOURCE_MAX_BYTES / 1024} KiB of UTF-8, and one batch up to
-${INLINE_SOURCE_BATCH_MAX_BYTES / 1024} KiB of text in all. Pages stores it as an upload
+${INLINE_SOURCE_BATCH_MAX_BYTES / 1024} KiB of text in all, counted as JSON with its escapes. Pages stores it as an upload
 of the same bytes, with the same checks: the same bytes get the same asset_id.
 For Parquet, an image, audio, binary data or text over the limit, upload the
 file and name its asset_id instead:

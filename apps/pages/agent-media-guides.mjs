@@ -37,7 +37,7 @@ const textSource = (source_id, name, media_type, text, source_revision = null) =
   media_type,
   source_revision,
 });
-const INLINE_LIMITS = `text holds up to ${INLINE_SOURCE_MAX_BYTES / 1024} KiB of UTF-8, and one batch up to ${INLINE_SOURCE_BATCH_MAX_BYTES / 1024} KiB of text in all`;
+const INLINE_LIMITS = `text holds up to ${INLINE_SOURCE_MAX_BYTES / 1024} KiB of UTF-8, and one batch up to ${INLINE_SOURCE_BATCH_MAX_BYTES / 1024} KiB of text in all, counted as JSON with its escapes (a control character takes six bytes)`;
 const place = (view_id, after_node_id = "<id of the block the view follows>") => ({
   op: "insert_node",
   node: { type: "view", attrs: { view_id } },

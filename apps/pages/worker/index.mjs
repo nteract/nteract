@@ -38,6 +38,7 @@ import { applyComment, commentsMigrated } from "../model/comments.mjs";
 import { guardCommentIntent, passageComment } from "../model/comment-guard.mjs";
 import { authorOf } from "../model/author.mjs";
 import {
+  checkInlineBatchSize,
   checkSources,
   setSources,
   validateSourceBatch,
@@ -1343,6 +1344,13 @@ async function invoke(request, env, operation, args = {}, seen, call) {
       if (operation === "edit_page") {
         let hints;
         ({ args, hints } = takeAssetHints(args));
+        // Inline set_source text past its JSON cap would pass the host's
+        // request limit; refuse it here with the cap and the upload named.
+        try {
+          checkInlineBatchSize(args.operations);
+        } catch (error) {
+          throw new HttpError(error.status, error.message, error.code);
+        }
         response = await forward(hints.size ? { asset_hints: [...hints.keys()] } : {});
         if (response.status === 409 && response.headers.get(COPY_REQUIRED_HEADER) === "required") {
           const { asset_ids } = await readResponseJson(response, signal);
@@ -7627,9 +7635,11 @@ export class Page {
    * replays it.
    *
    * A set_source with inline `text` (inline-sources.mjs) is journaled as the
-   * asset_id operation of its bytes, and `prepare` stores those bytes, as an
-   * upload of them would be stored, after the source revisions are checked
-   * and before any asset is looked up or the intent journaled.
+   * asset_id operation of its bytes, with its media type in the fingerprinted
+   * arguments, and `prepare` stores those bytes, as an upload of them would
+   * be stored, after the source revisions, the other assets and the caller's
+   * access are checked, and before its own asset is read back or the intent
+   * journaled.
    */
   async writeSources(request, identity, body) {
     let args, inline;
@@ -7692,21 +7702,29 @@ export class Page {
           } catch (error) {
             throw sourceRefusal(error);
           }
-          await storeInlineSources(this.env.PAGES_ASSETS, this.metadata.pageId, inline);
+          const checkAsset = async ({ assetId }) => {
+            const dataset = await requireStoredDatasetAsset(this.env.PAGES_ASSETS, {
+              pageId: this.metadata.pageId,
+              assetId,
+              mediaType: null, // Sources may bind any admitted non-image asset.
+            });
+            mediaTypes.set(assetId, dataset.mime_type);
+          };
           // As for a Page edit, a missing asset with an asset_from asks the
-          // gateway to copy it.
+          // gateway to copy it. Inline text names no asset until it is stored.
           await checkHintedAssets(
-            assetIds.map((assetId) => ({ assetId })),
+            assetIds.filter((assetId) => !inline.has(assetId)).map((assetId) => ({ assetId })),
             body.asset_hints,
-            async ({ assetId }) => {
-              const dataset = await requireStoredDatasetAsset(this.env.PAGES_ASSETS, {
-                pageId: this.metadata.pageId,
-                assetId,
-                mediaType: null, // Sources may bind any admitted non-image asset.
-              });
-              mediaTypes.set(assetId, dataset.mime_type);
-            },
+            checkAsset,
           );
+          if (inline.size) {
+            // Inline text is stored after every check that can refuse
+            // without it, access included, and its stored record is read
+            // back as an uploaded asset's is.
+            this.policy.account(await this.identify(request), true);
+            await storeInlineSources(this.env.PAGES_ASSETS, this.metadata.pageId, inline);
+            for (const assetId of inline.keys()) await checkAsset({ assetId });
+          }
           // Each loaded view that follows a module this batch changes is
           // checked against the new code; its findings are warnings.
           importWarnings = await sourceImportWarnings({

@@ -1076,9 +1076,12 @@ test("set_source text is refused when malformed, before anything is stored", asy
     [{ asset_id: first }, /asset_id or text, not both/],
     [{ text: undefined }, /asset_id, or text with media_type/],
     [{ text: 42 }, /text is the source's content, a string/],
-    [{ media_type: "application/vnd.apache.parquet" }, /text needs media_type/],
-    [{ media_type: "image/png" }, /text needs media_type/],
-    [{ media_type: undefined }, /text needs media_type/],
+    [{ media_type: "application/vnd.apache.parquet" }, /media_type with text is exactly one of/],
+    [{ media_type: "image/png" }, /media_type with text is exactly one of/],
+    [{ media_type: undefined }, /media_type with text is exactly one of/],
+    [{ media_type: "text/javascript; charset=utf-8" }, /media_type with text is exactly one of/],
+    [{ text: "" }, /^text is empty; a source holds at least one byte$/],
+    [{ text: "x\ud800y" }, /^text holds a lone UTF-16 surrogate/],
     [{ text: "x".repeat(256 * 1024 + 1) }, /at most 262144 bytes.*create_page_asset_upload/],
     // Bytes, not characters: 87,382 three-byte characters pass 256 KiB.
     [{ text: "€".repeat(87_382) }, /at most 262144 bytes/],
@@ -1101,13 +1104,13 @@ test("set_source text is refused when malformed, before anything is stored", asy
     Array.from({ length: 3 }, (_, i) => inlineSource({ source_id: `s${i}`, text: big + i })),
   );
   assert.equal(batch.status, 400);
-  assert.match(batch.body.error, /at most 524288 bytes of inline text/);
+  assert.match(batch.body.error, /at most 524288 bytes as JSON, escapes included/);
   // The content checks an upload gets: JSON parses, text is UTF-8 without NUL.
   for (const [type, text] of [
     ["application/json", "{not json"],
     ["text/csv", " "],
     ["text/css", "a\u0000b"],
-    ["text/javascript", ""],
+    ["text/javascript", " \n"],
   ]) {
     const refused = await h.setSource(h.host, [inlineSource({ media_type: type, text })]);
     assert.equal(refused.status, 400, type);
@@ -1134,6 +1137,106 @@ test("set_source text is refused when malformed, before anything is stored", asy
     retyped.body.error,
     "code: this Page stores the same bytes as application/json; send them with that media_type",
   );
+  assert.equal(h.assets.puts, 0);
+  assert.equal(h.host.sourcesView(), undefined);
+});
+
+test("bytes a concurrent write stores as another type between the check and the put are invalid_source", async (t) => {
+  const h = await sourcesHost(t, { store: true });
+  h.assets.head = async () => null;
+  // Another request stores the same bytes as JSON after this one's HEAD and
+  // before its conditional put, which then finds the key taken.
+  h.assets.put = async (key) => {
+    h.assets.objects.set(key, {
+      key,
+      size: 3,
+      httpMetadata: { contentType: "application/json" },
+      customMetadata: { page_id: pageId, hash: key.slice(-64) },
+    });
+  };
+  const raced = await h.setSource(h.host, [inlineSource({ text: "[1]" })]);
+  assert.equal(raced.status, 400, JSON.stringify(raced.body));
+  assert.equal(raced.body.code, "invalid_source");
+  assert.equal(
+    raced.body.error,
+    "code: this Page stores the same bytes as application/json; send them with that media_type",
+  );
+  assert.equal(h.host.sourcesView(), undefined);
+});
+
+test("JSON text with a byte order mark is accepted, as an uploaded file is", async (t) => {
+  const h = await sourcesHost(t, { store: true });
+  h.assets.head = async () => null;
+  const text = '\ufeff{"limit":3}';
+  const written = await h.setSource(h.host, [
+    inlineSource({ source_id: "settings", text, media_type: "application/json" }),
+  ]);
+  assert.equal(written.status, 200, JSON.stringify(written.body));
+  const object = h.assets.objects.get(imageAssetKey(pageId, await sha256(text)));
+  assert.deepEqual([...object.bytes.subarray(0, 3)], [0xef, 0xbb, 0xbf], "stored as sent");
+});
+
+test("a nonce names one inline request: its text and its media type", async (t) => {
+  const h = await sourcesHost(t, { store: true });
+  h.assets.head = async () => null;
+  const read = await h.tool(h.host, "read_page", { include_content: false });
+  const send = (fields) =>
+    h.tool(h.host, "edit_page", {
+      revision: read.body.revision,
+      nonce: "inline-nonce",
+      operations: [
+        {
+          op: "set_source",
+          ...inlineSource({ text: "[1]", media_type: "application/json", ...fields }),
+        },
+      ],
+    });
+  const written = await send({});
+  assert.equal(written.status, 200, JSON.stringify(written.body));
+  assert.deepEqual(await send({}), written, "the same text and type replay the receipt");
+  for (const [what, fields] of [
+    ["other text", { text: "[2]" }],
+    ["another media type", { media_type: "text/javascript" }],
+    [
+      "the same bytes by asset_id",
+      { text: undefined, media_type: undefined, asset_id: await sha256("[1]") },
+    ],
+  ]) {
+    const op = inlineSource({ text: "[1]", media_type: "application/json", ...fields });
+    for (const key of Object.keys(op)) if (op[key] === undefined) delete op[key];
+    const conflict = await h.tool(h.host, "edit_page", {
+      revision: read.body.revision,
+      nonce: "inline-nonce",
+      operations: [{ op: "set_source", ...op }],
+    });
+    assert.equal(conflict.status, 409, `${what}: ${JSON.stringify(conflict.body)}`);
+    assert.equal(conflict.body.code, "nonce_conflict", what);
+  }
+  const source = (await h.tool(h.host, "read_page", { source_id: "code" })).body.source;
+  assert.equal(source.media_type, "application/json");
+  assert.equal(source.source_revision, "1");
+});
+
+test("access revoked before the store refuses an inline write with nothing stored", async (t) => {
+  const h = await sourcesHost(t, { store: true });
+  h.assets.head = async () => null;
+  const read = await h.tool(h.host, "read_page", { include_content: false });
+  // The route's check passes; the check in prepare, before the store, finds
+  // the access gone.
+  const account = h.host.policy.account.bind(h.host.policy);
+  let checks = 0;
+  h.host.policy.account = (identity, write) => {
+    if (write && ++checks === 2)
+      throw Object.assign(Error("Page is read-only"), { status: 403, code: "access_denied" });
+    return account(identity, write);
+  };
+  const refused = await h.tool(h.host, "edit_page", {
+    revision: read.body.revision,
+    nonce: "inline-revoked",
+    operations: [{ op: "set_source", ...inlineSource() }],
+  });
+  assert.equal(refused.status, 403, JSON.stringify(refused.body));
+  assert.equal(checks, 2);
   assert.equal(h.assets.puts, 0);
   assert.equal(h.host.sourcesView(), undefined);
 });
@@ -1169,6 +1272,33 @@ test("an inline retry with the same nonce stores one asset and replays one revis
   assert.equal(source.history.length, 1);
 });
 
+test("an inline write that crashed after its journal entry replays without storing again", async (t) => {
+  const h = await sourcesHost(t, { store: true });
+  h.assets.head = async () => null;
+  const read = await h.tool(h.host, "read_page", { include_content: false });
+  const args = {
+    revision: read.body.revision,
+    nonce: "inline-journaled",
+    operations: [{ op: "set_source", ...inlineSource() }],
+  };
+  // The pending entry is durable; the process dies right after it.
+  h.storage.crashes.push({
+    test: (name, value) => name.startsWith("host/operation/") && value?.pending,
+  });
+  const lost = await h.tool(h.host, "edit_page", args);
+  assert.equal(lost.status, 500);
+  assert.equal(h.assets.puts, 1);
+  const host = h.page();
+  h.assets.put = async () => assert.fail("A journaled write must not store again");
+  h.assets.head = async () => assert.fail("A journaled write must not look up its assets");
+  const replayed = await h.tool(host, "edit_page", args);
+  assert.equal(replayed.status, 200, JSON.stringify(replayed.body));
+  assert.equal(replayed.body.result.edits[0].source_revision, "1");
+  const source = (await h.tool(host, "read_page", { source_id: "code" })).body.source;
+  assert.equal(source.asset_id, await sha256(MODULE));
+  assert.equal(source.history.length, 1);
+});
+
 test("a failed inline store leaves the sources document untouched", async (t) => {
   const h = await sourcesHost(t, { store: true });
   h.assets.head = async () => null;
@@ -1197,8 +1327,11 @@ test("a failed inline store leaves the sources document untouched", async (t) =>
 test("a batch stores every inline asset before its one change names any, and stays atomic", async (t) => {
   const h = await sourcesHost(t, { store: true });
   h.assets.head = async (key) => (key.endsWith(first) ? parquetHead(first) : null);
+  // The Page has a sources document already, so a change that named a
+  // source before its bytes were stored would show at a put.
+  assert.equal((await h.setSource(h.host, [usage({ source_id: "seed" })])).status, 200);
   const seen = [];
-  h.assets.put = async () => seen.push(h.host.sourcesView()?.sources ?? null);
+  h.assets.put = async () => seen.push(Object.keys(h.host.sourcesView().sources).sort());
   const batch = [
     inlineSource({ source_id: "entry" }),
     inlineSource({ source_id: "helper", text: "export default 1;\n" }),
@@ -1208,7 +1341,11 @@ test("a batch stores every inline asset before its one change names any, and sta
   ];
   const written = await h.setSource(h.host, batch);
   assert.equal(written.status, 200, JSON.stringify(written.body));
-  assert.deepEqual(seen, [null, null, null, null], "nothing is named while assets are stored");
+  assert.deepEqual(
+    seen,
+    [["seed"], ["seed"], ["seed"], ["seed"]],
+    "nothing is named while assets are stored",
+  );
   assert.deepEqual(
     written.body.result.edits.map(({ source_id, source_revision }) => [source_id, source_revision]),
     ["entry", "helper", "settings", "rows", "daily"].map((id) => [id, "1"]),
@@ -1218,6 +1355,7 @@ test("a batch stores every inline asset before its one change names any, and sta
     Object.fromEntries(listed.map(({ source_id, media_type }) => [source_id, media_type])),
     {
       daily: PARQUET,
+      seed: PARQUET,
       entry: "text/javascript",
       helper: "text/javascript",
       rows: "text/csv",
@@ -1300,4 +1438,17 @@ test("a module view saved against inline sources reads their stored code", async
     { op: "insert_node", node: { type: "view", attrs: { view_id: "chart" } } },
   ]);
   assert.equal(placed.status, 200, JSON.stringify(placed.body));
+});
+
+test("inline text exactly at the JSON cap fits the host's request and is stored", async (t) => {
+  const h = await sourcesHost(t, { store: true });
+  h.assets.head = async () => null;
+  // 87,381 control characters are 524,288 bytes as JSON, quotes included.
+  const text = "\u0001".repeat(87_381);
+  const written = await h.setSource(h.host, [inlineSource({ text })]);
+  assert.equal(written.status, 200, JSON.stringify(written.body).slice(0, 200));
+  const over = await h.setSource(h.host, [inlineSource({ source_id: "other", text: `${text}a` })]);
+  assert.equal(over.status, 400);
+  assert.match(over.body.error, /at most 524288 bytes as JSON.*create_page_asset_upload/);
+  assert.equal(h.assets.puts, 1);
 });

@@ -1667,3 +1667,50 @@ test("asset_from never goes with inline text, and an inline asset is shared as a
   assert.equal(copy.status, 415, JSON.stringify(copy.body));
   assert.equal(copy.body.code, "not_a_dataset");
 });
+
+test("the gateway refuses inline text past its JSON cap, naming the upload, before the host's 413", async (t) => {
+  const { w, pageId, bucket } = await setup(t);
+  editable(w, pageId);
+  const { revision } = (await w.call("owner", "read_page", { page_id: pageId })).body;
+  // Inside 256 KiB of UTF-8, about 1.2 MB as JSON: past the 1 MiB the host
+  // reads for one tool call. MCP reads up to 4 MiB, so it reaches the gateway.
+  const text = "export default 1;//" + "\u0001".repeat(200_000);
+  const result = await w.mcp("owner", "edit_page", {
+    page_id: pageId,
+    revision,
+    nonce: w.key(),
+    operations: [
+      {
+        op: "set_source",
+        source_id: "code",
+        name: "Code",
+        text,
+        media_type: "text/javascript",
+        source_revision: null,
+      },
+    ],
+  });
+  assert.equal(result.isError, true);
+  assert.equal(result.body.code, "invalid_source", JSON.stringify(result.body));
+  assert.match(result.body.error, /at most 524288 bytes as JSON.*create_page_asset_upload/);
+  assert.equal(puts(bucket), 0);
+  // The fingerprint's host field is not a public argument.
+  const forged = await w.call("owner", "edit_page", {
+    page_id: pageId,
+    revision,
+    nonce: w.key(),
+    inline_text: [[0, "text/css"]],
+    operations: [
+      {
+        op: "set_source",
+        source_id: "code",
+        name: "Code",
+        text: "a{}",
+        media_type: "text/css",
+        source_revision: null,
+      },
+    ],
+  });
+  assert.equal(forged.status, 400);
+  assert.equal(forged.body.code, "invalid_arguments");
+});

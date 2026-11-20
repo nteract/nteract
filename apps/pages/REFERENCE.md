@@ -1943,28 +1943,41 @@ both. Alone they read no Page content; beside other selectors they add to
 them. Reads name `sources_revision` once the document exists.
 
 A `set_source` can carry its content inline: `text` with `media_type`
-(`text/javascript`, `text/css`, `application/json` or `text/csv`, the text
-types among a source's types) in place of `asset_id`. Exactly one of
-`asset_id` and `text` is accepted. `text` holds at most 256 KiB of UTF-8
-(`INLINE_SOURCE_MAX_BYTES` in [shared/sources.mjs](shared/sources.mjs)) and
-a batch at most 512 KiB of text in all, since the Page host reads at most
-1 MiB of JSON for one tool call; larger text is `invalid_source` and names the
-upload. The Page host turns each inline operation into the `asset_id`
-operation of its UTF-8 bytes before the journal sees the batch
-([worker/inline-sources.mjs](worker/inline-sources.mjs)), so the journal's
-fingerprint and receipt hold the asset id and never the text. The write's
-`prepare` step, which runs only for a new intent, stores the bytes with the
-upload route's `persistPageAsset` after the source revisions are checked and
-before anything is journaled: the same asset id, R2 key, metadata, content
-checks and limits as an upload of those bytes. A content refusal is
+(exactly `text/javascript`, `text/css`, `application/json` or `text/csv`,
+with no parameters: the text types among a source's types) in place of
+`asset_id`. Exactly one of `asset_id` and `text` is accepted. `text` is a
+non-empty, well-formed string (a lone UTF-16 surrogate is refused, since
+UTF-8 would store U+FFFD in its place) of at most 256 KiB of UTF-8
+(`INLINE_SOURCE_MAX_BYTES` in [shared/sources.mjs](shared/sources.mjs)).
+A batch's texts take at most 512 KiB as JSON, measured as `JSON.stringify`
+writes them with quotes and escapes (a control character is six bytes), so
+the batch fits the 1 MiB of JSON the Page host reads for one tool call. The
+gateway and the host both check it and refuse with `invalid_source` naming
+the upload. A client whose own encoder escapes more, such as every non-ASCII
+character, can still meet the HTTP tool route's 1 MiB limit (413) first.
+
+The Page host turns each inline operation into the `asset_id` operation of
+its UTF-8 bytes before the journal sees the batch
+([worker/inline-sources.mjs](worker/inline-sources.mjs)) and records each
+inline operation's index and media type in the host-only `inline_text`
+argument, which the public tool boundary refuses. The journal's fingerprint
+covers both, so the same nonce with other text, another media type, or the
+same bytes named by `asset_id` is `nonce_conflict`, and the fingerprint and
+receipt hold the asset id and never the text. The write's `prepare` step,
+which runs only for a new intent, checks the source revisions, the batch's
+other assets and the caller's edit access, then stores the bytes with the
+upload route's `persistPageAsset` and reads the stored record back before
+anything is journaled: the same asset id, R2 key, metadata, content checks
+and limits as an upload of those bytes. A content refusal is
 `invalid_source`, its message opening with the source ID, and so is text
-whose bytes the Page already stores as another media type. A failed store
-journals nothing and leaves the sources document as it was. Storing is
-content-addressed, so a retry under the same nonce stores nothing new before
-the journal and replays the receipt after it. The stored source is the record
-an upload makes (`producer.kind` `upload`), so a later `set_source` by its
-`asset_id`, `read_page` and `asset_from` treat it as any uploaded asset.
-`asset_from` on an inline operation is `invalid_arguments`.
+whose bytes the Page already stores as another media type, including bytes
+a concurrent write stored first. A failed store journals nothing and leaves
+the sources document as it was. Storing is content-addressed, so a retry
+under the same nonce stores nothing new before the journal and replays the
+receipt after it. The stored source is the record an upload makes
+(`producer.kind` `upload`), so a later `set_source` by its `asset_id`,
+`read_page` and `asset_from` treat it as any uploaded asset. `asset_from`
+on an inline operation is `invalid_arguments`.
 
 `delete_source` checks the source revision, returns `{op, source_id}`, and
 leaves tables and views in place. All consumers of that source, including

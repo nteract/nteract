@@ -12,10 +12,13 @@ export const INLINE_SOURCE_MEDIA_TYPES = Object.freeze(
  * edit_page schema already allows a text argument. A module entry is
  * typically 6 to 35 KB. Larger files take an upload. */
 export const INLINE_SOURCE_MAX_BYTES = 256 * 1024;
-/** The most inline UTF-8 bytes one edit_page batch holds, all its set_source
- * texts together. The Page host reads at most 1 MiB of JSON for one tool
- * call (worker/auth.mjs readJson), and JSON escaping grows text, so this
- * leaves the request twice the text's size. */
+/** The most bytes one edit_page batch's inline text takes as JSON, all its
+ * set_source texts together, quotes and escapes included as JSON.stringify
+ * writes them (model/sources-doc.mjs inlineTextJsonBytes). The Page host
+ * reads at most 1 MiB of JSON for one tool call (worker/auth.mjs readJson),
+ * so a batch within this cap fits the request the gateway forwards. A client
+ * that escapes more, such as every non-ASCII character, can still send a
+ * request over the gateway's own 1 MiB limit first. */
 export const INLINE_SOURCE_BATCH_MAX_BYTES = 512 * 1024;
 
 /** The most sources a Page holds. */

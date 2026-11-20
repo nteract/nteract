@@ -285,20 +285,75 @@ export function listSources(doc) {
 /** The UTF-8 bytes of a set_source operation's inline `text`. */
 export const inlineTextBytes = (op) => new TextEncoder().encode(op.text);
 
-/** Refuse inline `text` that isn't a string, a `media_type` set_source can't
- * take inline, or text over INLINE_SOURCE_MAX_BYTES. The content checks an
- * upload of the same bytes gets come when the host stores them. */
+/** The UTF-8 length of `text`, counted without encoding it, or -1 when it
+ * holds a lone surrogate: a string TextEncoder would store as other bytes
+ * (U+FFFD) than the ones the caller wrote. */
+function utf8Length(text) {
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const unit = text.charCodeAt(i);
+    if (unit < 0x80) bytes += 1;
+    else if (unit < 0x800) bytes += 2;
+    else if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = text.charCodeAt(i + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return -1;
+      bytes += 4;
+      i++;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) return -1;
+    else bytes += 3;
+  }
+  return bytes;
+}
+
+/** The bytes `text` takes in a JSON request as JSON.stringify writes it,
+ * quotes and escapes included: a control character takes six bytes, a quote,
+ * backslash or newline two. A batch's inline text is capped in these bytes,
+ * so a batch within INLINE_SOURCE_BATCH_MAX_BYTES fits the host's 1 MiB tool
+ * request when it is sent as JSON.stringify writes it. */
+export const inlineTextJsonBytes = (text) => utf8Length(JSON.stringify(text));
+
+const UPLOAD_INSTEAD = "Upload a larger file with create_page_asset_upload and pass its asset_id.";
+
+/** Refuse inline `text` that isn't a well-formed, non-empty string within
+ * INLINE_SOURCE_MAX_BYTES of UTF-8, or a `media_type` set_source can't take
+ * inline. The content checks an upload of the same bytes gets come when the
+ * host stores them. */
 function checkInlineText(op) {
   if (typeof op.text !== "string") fail("invalid_source", "text is the source's content, a string");
   if (!INLINE_SOURCE_MEDIA_TYPES.includes(op.media_type))
     fail(
       "invalid_source",
-      `text needs media_type ${INLINE_SOURCE_MEDIA_TYPES.join(", ")}. Upload other files with create_page_asset_upload.`,
+      `media_type with text is exactly one of ${INLINE_SOURCE_MEDIA_TYPES.join(", ")}, with no parameters. Upload other files with create_page_asset_upload.`,
     );
-  if (inlineTextBytes(op).byteLength > INLINE_SOURCE_MAX_BYTES)
+  if (!op.text) fail("invalid_source", "text is empty; a source holds at least one byte");
+  const bytes = utf8Length(op.text);
+  if (bytes < 0)
     fail(
       "invalid_source",
-      `text holds at most ${INLINE_SOURCE_MAX_BYTES} bytes of UTF-8. Upload a larger file with create_page_asset_upload and pass its asset_id.`,
+      "text holds a lone UTF-16 surrogate, which UTF-8 can't store as written. Send well-formed Unicode text.",
+    );
+  if (bytes > INLINE_SOURCE_MAX_BYTES)
+    fail(
+      "invalid_source",
+      `text holds at most ${INLINE_SOURCE_MAX_BYTES} bytes of UTF-8. ${UPLOAD_INSTEAD}`,
+    );
+}
+
+/** Refuse a batch whose inline text takes more than
+ * INLINE_SOURCE_BATCH_MAX_BYTES as JSON (inlineTextJsonBytes). Operations
+ * whose text isn't a string are left to validateSourceOperation. The gateway
+ * checks this before it forwards a batch, so a batch the host would read past
+ * its request limit is refused with this message, not a bare 413. */
+export function checkInlineBatchSize(operations) {
+  if (!Array.isArray(operations)) return;
+  let bytes = 0;
+  for (const op of operations)
+    if (isMap(op) && op.op === "set_source" && typeof op.text === "string")
+      bytes += inlineTextJsonBytes(op.text);
+  if (bytes > INLINE_SOURCE_BATCH_MAX_BYTES)
+    fail(
+      "invalid_source",
+      `Inline text in one edit_page request takes at most ${INLINE_SOURCE_BATCH_MAX_BYTES} bytes as JSON, escapes included. Send fewer sources per request, or upload larger files with create_page_asset_upload and pass their asset_id.`,
     );
 }
 
@@ -347,26 +402,19 @@ export function validateSourceOperation(op) {
 }
 
 /** Validate a batch of set_source operations: each well-formed, no source
- * named twice, and inline text within INLINE_SOURCE_BATCH_MAX_BYTES in all.
+ * named twice, and inline text within INLINE_SOURCE_BATCH_MAX_BYTES as JSON.
  * Returns the asset ids the batch names by asset_id. */
 export function validateSourceBatch(operations) {
   if (!Array.isArray(operations) || !operations.length)
     fail("invalid_source", "Provide at least one set_source operation");
   const ids = new Set();
-  let inlineBytes = 0;
   for (const op of operations) {
     validateSourceOperation(op);
     if (ids.has(op.source_id))
       fail("invalid_source", "A batch cannot change the same source twice");
     ids.add(op.source_id);
-    if (op.op === "set_source" && Object.hasOwn(op, "text"))
-      inlineBytes += inlineTextBytes(op).byteLength;
   }
-  if (inlineBytes > INLINE_SOURCE_BATCH_MAX_BYTES)
-    fail(
-      "invalid_source",
-      `A batch holds at most ${INLINE_SOURCE_BATCH_MAX_BYTES} bytes of inline text. Split it into several edit_page requests, or upload the larger files.`,
-    );
+  checkInlineBatchSize(operations);
   return [
     ...new Set(
       operations
