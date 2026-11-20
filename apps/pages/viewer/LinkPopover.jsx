@@ -6,7 +6,15 @@ import { inAppLink } from "./heading-links.mjs";
 import { linkMenuOpened } from "./link-menu.mjs";
 import "./link-popover.css";
 
-export function LinkPopover({ view, target, editable, editing, onEdit, onChange, onClose }) {
+export function LinkPopover({
+  getAnchorRect,
+  target,
+  editable,
+  editing,
+  onEdit,
+  onChange,
+  onClose,
+}) {
   const element = useRef(null);
   const [href, setHref] = useState(target.attrs.href);
   const [error, setError] = useState("");
@@ -33,13 +41,13 @@ export function LinkPopover({ view, target, editable, editing, onEdit, onChange,
   }, [editing, positioned]);
   useLayoutEffect(() => {
     const place = () => {
-      if (!element.current || view.isDestroyed) return;
+      const anchor = getAnchorRect();
+      if (!element.current || !anchor) return;
       const viewport = window.visualViewport;
       const left = (viewport?.offsetLeft ?? 0) + 12;
       const top = (viewport?.offsetTop ?? 0) + 12;
       const right = left + (viewport?.width ?? innerWidth) - 24;
       const bottom = top + (viewport?.height ?? innerHeight) - 24;
-      const anchor = view.coordsAtPos(target.from);
       const bounds = element.current.getBoundingClientRect();
       setPosition({
         left: Math.max(left, Math.min(anchor.left, right - bounds.width)),
@@ -60,7 +68,7 @@ export function LinkPopover({ view, target, editable, editing, onEdit, onChange,
       window.visualViewport?.removeEventListener("resize", place);
       window.visualViewport?.removeEventListener("scroll", place);
     };
-  }, [view, target]);
+  }, [getAnchorRect]);
   useEffect(() => {
     const outside = (event) => {
       if (!element.current?.contains(event.target)) onClose(false);

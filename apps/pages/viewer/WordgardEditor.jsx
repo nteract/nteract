@@ -111,7 +111,7 @@ import { pageNodes } from "./wordgard-page-config.mjs";
 import { selectionToolbarPosition } from "./selection-toolbar.mjs";
 import { linkDestination, openInNewTab, wantsNewTab } from "./link-destination.mjs";
 import { pagesLinkShape } from "./page-link-shape.mjs";
-import { pageChits } from "./page-chits.mjs";
+import { linkAnchorRect, pageChits } from "./page-chits.mjs";
 import { registerEditor } from "./editor-focus.mjs";
 import { CurrentProject } from "./current-page.mjs";
 import { LinkPopover } from "./LinkPopover.jsx";
@@ -1643,12 +1643,7 @@ export function WordgardEditor(props) {
       </div>
       {link && view.current && (
         <LinkPopover
-          view={{
-            coordsAtPos: (position) => view.current?.coordsAtPos(position),
-            get isDestroyed() {
-              return !view.current;
-            },
-          }}
+          getAnchorRect={() => view.current && linkAnchorRect(view.current, link.from)}
           target={link}
           editable={editable}
           editing={editingLink}

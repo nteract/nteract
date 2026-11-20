@@ -533,6 +533,8 @@ try {
         `See <${targetUrl}> for tonight's list; <${origin}/p/${secret.page_id}> is Alice's.`,
         `Plans: <${origin}/project/${project.project_id}>. Docs: <https://nteract.io>.`,
         "Paste here:",
+        `[Labeled link to the same Page](${targetUrl})`,
+        ...Array.from({ length: 24 }, (_, i) => `Scroll fixture paragraph ${i + 1}.`),
       ].join("\n\n"),
     });
     const chitsRead = await tool(owner.page, "read_page", { page_id: chits.page_id });
@@ -565,12 +567,33 @@ try {
     await expect(card(page).locator(".page-link-card-title")).toHaveText(TARGET_TITLE);
     await page.mouse.move(2, 2);
     await expect(card(page)).toHaveCount(0, { timeout: 5000 });
-    await chit(page, target.page_id).click();
-    await expect(page.getByRole("dialog", { name: "Link" })).toBeVisible();
-    await expect(page.getByRole("dialog", { name: "Link" })).toContainText(targetUrl);
-    await page.keyboard.press("Escape");
-    await expect(page.getByRole("dialog", { name: "Link" })).toHaveCount(0);
-    checkpoint("a chit opens the hover card, and a click opens the link menu");
+    const menu = page.getByRole("dialog", { name: "Link" });
+    for (const anchor of [
+      chit(page, target.page_id),
+      page.getByText("Labeled link to the same Page", { exact: true }),
+    ]) {
+      await anchor.click();
+      await expect(menu).toContainText(targetUrl);
+      const assertAnchored = () =>
+        expect(async () => {
+          const linkRect = await anchor.boundingBox();
+          const menuRect = await menu.boundingBox();
+          assert.ok(Math.abs(menuRect.x - linkRect.x) < 2, "menu aligns with the link");
+          assert.ok(
+            Math.abs(menuRect.y - (linkRect.y + linkRect.height + 8)) < 4,
+            "menu opens below the link",
+          );
+        }).toPass({ timeout: 3000 });
+      await assertAnchored();
+      const before = await anchor.boundingBox();
+      await page.evaluate(() => window.scrollBy(0, 60));
+      await expect.poll(async () => Math.round(before.y - (await anchor.boundingBox()).y)).toBe(60);
+      await assertAnchored();
+      await page.keyboard.press("Escape");
+      await expect(menu).toHaveCount(0);
+      await page.evaluate(() => window.scrollTo(0, 0));
+    }
+    checkpoint("link menus follow the visible chit and the labeled link when scrolling");
 
     // The caret reveals the URL as text; leaving closes the chit again.
     const first = paragraph(page, 0);
