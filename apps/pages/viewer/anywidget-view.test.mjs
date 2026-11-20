@@ -225,6 +225,10 @@ const files = {
   citiesBinary: [encoder.encode("city,people\nTromsø,1\n"), "application/octet-stream"],
   citiesRagged: [encoder.encode("city,people\nOslo\n"), "text/csv"],
 };
+// JavaScript sources a module view imports by name.
+const LIBS = ["lib-a", "lib-b", "lib-c", "lib-d", "lib-e", "lib-f", "lib-g"];
+for (const name of LIBS)
+  files[name] = [encoder.encode(`export const name = "${name}";`), "text/javascript"];
 const ids = {};
 for (const [name, [bytes, media_type]] of Object.entries(files)) {
   ids[name] = await sha256(bytes);
@@ -244,6 +248,7 @@ const dataSources = moveSources(sourcesDoc, [
   setSource("label", ids.label1, null),
   setSource("table", ids.table1, null),
   setSource("note", ids.note1, null),
+  ...LIBS.map((name) => setSource(name, ids[name], null)),
 ]);
 
 // Writes the "chart" module view, as set_view would, and returns its record.
@@ -628,6 +633,81 @@ test("a title change while inputs load reaches the new frame's title", async (t)
   release();
   await until(() => calls.mounts.length === 1, "the view never mounted");
   assert.equal(calls.mounts[0].handle.frame.title, "Renamed while loading");
+});
+
+test("a mounting view loads six inputs at a time and hands them to the frame in plan order", async (t) => {
+  const doc$ = new BehaviorSubject(dataSources);
+  const answer = assetRequest();
+  // Whole-file requests, held until the test answers each: the entry and the
+  // imports. A module view's files are opened with HEAD and answered at once.
+  const held = [];
+  const sources = new PageSourceStore({
+    pageId: PAGE,
+    doc$,
+    csvArrow,
+    request: async (url, options = {}) => {
+      if (options.method !== "HEAD" && !options.headers?.Range)
+        await new Promise((release) => held.push({ id: url.split("/").at(-1), release }));
+      return answer(url, options);
+    },
+  });
+  t.after(() => sources.destroy());
+  const { calls } = mountModuleView(t, {
+    store: { doc$, sources },
+    fields: { imports: Object.fromEntries(LIBS.map((name) => [name, { source_id: name }])) },
+  });
+  await until(() => held.length === 6, "six inputs were not asked for together");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(held.length, 6, "a seventh input was asked for before one arrived");
+  assert.equal(calls.mounts.length, 0);
+  // Answer the newest request first, so the inputs arrive out of plan order.
+  let answered = 0;
+  while (answered < LIBS.length + 1) {
+    await until(() => held.length > 0, "an input was never asked for");
+    held.pop().release();
+    answered++;
+  }
+  await until(() => calls.mounts.length === 1, "the view never mounted");
+  const { payload } = calls.mounts[0];
+  assert.deepEqual(Object.keys(payload.imports), LIBS);
+  assert.deepEqual(
+    LIBS.map((name) => payload.imports[name].assetId),
+    LIBS.map((name) => ids[name]),
+  );
+  assert.equal(Object.values(payload.assets)[0].assetId, entryId);
+});
+
+test("an input that fails while a view mounts ends the other loads and shows Retry", async (t) => {
+  const doc$ = new BehaviorSubject(dataSources);
+  const answer = assetRequest();
+  const aborted = [];
+  const sources = new PageSourceStore({
+    pageId: PAGE,
+    doc$,
+    csvArrow,
+    request: async (url, options = {}) => {
+      const id = url.split("/").at(-1);
+      if (options.method === "HEAD") return answer(url, options);
+      if (id === ids["lib-a"]) return new Response(null, { status: 500 });
+      // Every other whole-file request waits until the mount gives it up.
+      await new Promise((_, reject) =>
+        options.signal.addEventListener("abort", () => {
+          aborted.push(id);
+          reject(options.signal.reason);
+        }),
+      );
+    },
+  });
+  t.after(() => sources.destroy());
+  const { calls, root } = mountModuleView(t, {
+    store: { doc$, sources },
+    fields: { imports: { "lib-a": { source_id: "lib-a" }, "lib-b": { source_id: "lib-b" } } },
+  });
+  await until(() => root.dataset.outputState === "failed", "the failure was not shown");
+  assert.match(root.querySelector("p").textContent, /500/);
+  assert.equal(root.querySelector("button").hidden, false);
+  assert.deepEqual(aborted.toSorted(), [entryId, ids["lib-b"]].toSorted());
+  assert.equal(calls.mounts.length, 0);
 });
 
 test("two module views over one Parquet asset decode it once", async (t) => {
