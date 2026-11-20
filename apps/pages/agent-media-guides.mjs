@@ -3,6 +3,11 @@ import { CHART_MAX_ROWS } from "./shared/chart-spec.mjs";
 import { VIEW_SPEC_MAX_BYTES } from "./shared/view-spec.mjs";
 import { SOURCE_HISTORY_LIMIT } from "./model/sources-doc.mjs";
 import { MAX_VIEWS } from "./shared/views.mjs";
+import {
+  INLINE_SOURCE_BATCH_MAX_BYTES,
+  INLINE_SOURCE_MAX_BYTES,
+  INLINE_SOURCE_MEDIA_TYPES,
+} from "./shared/sources.mjs";
 import { OUTPUT_STYLE_VARIABLES } from "@nteract/output-frame/context";
 
 // Public, deployment-local documentation. Keep proposed schemas out of these
@@ -23,6 +28,16 @@ const source = (source_id, name) => ({
   asset_id: "<asset_id from this file's upload>",
   source_revision: null,
 });
+/** A set_source that carries its content inline. */
+const textSource = (source_id, name, media_type, text, source_revision = null) => ({
+  op: "set_source",
+  source_id,
+  name,
+  text,
+  media_type,
+  source_revision,
+});
+const INLINE_LIMITS = `text holds up to ${INLINE_SOURCE_MAX_BYTES / 1024} KiB of UTF-8, and one batch up to ${INLINE_SOURCE_BATCH_MAX_BYTES / 1024} KiB of text in all, counted as JSON with its escapes (a control character takes six bytes)`;
 const place = (view_id, after_node_id = "<id of the block the view follows>") => ({
   op: "insert_node",
   node: { type: "view", attrs: { view_id } },
@@ -76,25 +91,32 @@ export function mediaGuide(path, origin) {
 }
 
 function assetsGuide(origin) {
-  return `An asset is immutable, content-addressed bytes uploaded to this Page. A source is a Page-scoped name whose revisioned record points to an asset. The host records the asset's media type on the source; set_source does not accept a second media_type. Neither uploading nor naming an asset places anything in the document.
+  const counter = 'export default { render({ el }) { el.textContent = "Count: 0"; } };';
+  return `An asset is immutable, content-addressed bytes stored on this Page. A source is a Page-scoped name whose revisioned record points to an asset, with the asset's media type. Neither storing nor naming an asset places anything in the document.
+
+## Write a text source
+
+For JavaScript, CSS, JSON or a small CSV you hold as text, send the content in set_source as text, with its media_type: ${INLINE_SOURCE_MEDIA_TYPES.map((type) => `\`${type}\``).join(", ")}. No upload is needed:
+${edit("create-counter-module", [textSource("counter-module", "Counter module", "text/javascript", counter)])}
+${INLINE_LIMITS}. Pages stores the text as it would store an upload of the same UTF-8 bytes, with the same checks: JavaScript, CSS and CSV must be non-empty UTF-8 without NUL bytes, and JSON must parse. The same bytes get the same asset_id, which read_page with source_id returns. One batch can write several sources, such as a module entry and its imports. Use an upload, below, for Parquet, images, audio, binary data and text over the limit.
 
 ## Upload a file
 
 Create a Page with create_page or read an existing Page with read_page. Keep its page_id and revision. Request an upload capability for each file:
-${call("create_page_asset_upload", { page_id: "<page_id>", content_type: "text/javascript", source: { source_id: "counter-module", name: "Counter module" } })}
+${call("create_page_asset_upload", { page_id: "<page_id>", content_type: "application/vnd.apache.parquet", source: { source_id: "daily", name: "Daily usage" } })}
 POST that file's raw bytes to the returned upload_url using the returned headers. Use the returned example command as a template. Do not send multipart or base64, and do not send your account credential to that URL. With source, the transfer also creates the named source and returns source_id and source_revision. Omit source to store bytes alone. A capability expires within ten minutes; request a new one if it expires. Identical bytes reuse the same asset ID.
 
-Supported view input types are ${OUTPUT_ASSET_TYPES.map((type) => `\`${type}\``).join(", ")}. For nested objects, lists and settings, upload UTF-8 JSON with content_type application/json and a source name. Readers can inspect the fields and original JSON in the browser’s Sources pane. For tabular records, upload Parquet, or a CSV with content_type text/csv, whose header and first rows the Sources pane shows. ${DATA_FORMAT_ADVICE} Use application/octet-stream for untyped bytes. The main guide covers image, Parquet and CSV insertion. For a client-attached image, Parquet file or file declared as application/json or text/csv, pass the attachment in file. For JavaScript, CSS, WAV or untyped bytes, request an upload_url with the matching content_type and POST the bytes.
+Supported view input types are ${OUTPUT_ASSET_TYPES.map((type) => `\`${type}\``).join(", ")}. For nested objects, lists and settings, write UTF-8 JSON as an application/json source. Readers can inspect the fields and original JSON in the browser’s Sources pane. For tabular records, upload Parquet, or write a CSV as a text/csv source, whose header and first rows the Sources pane shows. ${DATA_FORMAT_ADVICE} Use application/octet-stream for untyped bytes. The main guide covers image, Parquet and CSV insertion. For a client-attached image, Parquet file or file declared as application/json or text/csv, pass the attachment in file. For WAV, untyped bytes, or JavaScript or CSS over the text limit, request an upload_url with the matching content_type and POST the bytes.
 
 Independent files can request capabilities and upload in parallel. For Parquet or CSV, send the returned insert operation to place a table. A named upload gives you a table that follows the source on refresh. An unnamed upload gives you a table pinned to those bytes. JSON, JavaScript, CSS, WAV and binary upload receipts have insert:null: use sources and a view to display them.
 
 ## Refresh an existing source
 
-The named upload above created counter-module. To publish a new version, upload the replacement bytes without a source name and keep their asset_id. Read counter-module to get its current source_revision:
+To publish a new version of counter-module, send set_source again with the new text and the source's current source_revision. The write that created it returned source_revision "1" in result.edits; without that receipt, read the source:
 ${call("read_page", { page_id: "<page_id>", source_id: "counter-module" })}
-If the read returns source.source_revision "1", the update looks like this. Use the revision you actually read.
-${edit("refresh-counter-001", [{ ...source("counter-module", "Counter module"), source_revision: "1" }])}
-The receipt's result.edits entry gives the new source_revision. A stale_source refusal means another edit won. Read the source again and decide whether to update it. Reuse a nonce for an exact retry and choose a new nonce for a changed request.
+If that revision is "1", the refresh looks like this. Use the revision you actually have.
+${edit("refresh-counter-001", [textSource("counter-module", "Counter module", "text/javascript", counter.replace("0", "1"), "1")])}
+An uploaded source refreshes the same way, with the replacement's asset_id in place of text and media_type. The receipt's result.edits entry gives the new source_revision, so the next refresh needs no read. A stale_source refusal means another edit won: it carries the current source_revision. Read the source again and decide whether to update it. Reuse a nonce for an exact retry and choose a new nonce for a changed request.
 
 ## Name bytes you uploaded earlier
 
@@ -127,9 +149,9 @@ function viewsGuide(origin) {
 
 ## Create a JavaScript view
 
-Upload browser-ready text/javascript with a source ID and name. Give the entry a named render export, or a default AFM export. render receives { model, el, signal, host }: the model, the element to draw in, an AbortSignal that aborts when the view is removed or mounted again, and host, described in Match the Page appearance below. Return a cleanup function if needed. React state and DOM events work inside the frame. Choose view_type anywidget for an existing widget with its own model state, or vega-lite for a declarative chart.
+Write the entry as a browser-ready text/javascript source: send its code in set_source as text, as below, or upload a file over ${INLINE_SOURCE_MAX_BYTES / 1024} KiB (${link(origin, "/llms/assets-and-sources.txt", "Assets and sources")}). Give the entry a named render export, or a default AFM export. render receives { model, el, signal, host }: the model, the element to draw in, an AbortSignal that aborts when the view is removed or mounted again, and host, described in Match the Page appearance below. Return a cleanup function if needed. React state and DOM events work inside the frame. Choose view_type anywidget for an existing widget with its own model state, or vega-lite for a declarative chart.
 
-Upload JSON objects or lists with content_type application/json; upload a table as application/vnd.apache.parquet or text/csv. ${DATA_FORMAT_ADVICE} Each name in data is a key on the model, and model.get(name) is a file: ask it with await for .parquet(), .csv(), .json(), .text() or .arrayBuffer(). .csv() gives an array of row objects with a columns list of the names, as Observable's FileAttachment.csv does, typed as a table's values are. A table has numRows, schema.fields, getChild(name).toArray() and toArray(), and Plot takes it directly. Listen for change:<name> to redraw in place; otherwise the view starts again with the new data. Forgetting await passes a promise to Plot, which then draws nothing.
+Send JSON objects or lists as application/json text and a small table as text/csv text; upload larger tables, and Parquet, as files. ${DATA_FORMAT_ADVICE} Each name in data is a key on the model, and model.get(name) is a file: ask it with await for .parquet(), .csv(), .json(), .text() or .arrayBuffer(). .csv() gives an array of row objects with a columns list of the names, as Observable's FileAttachment.csv does, typed as a table's values are. A table has numRows, schema.fields, getChild(name).toArray() and toArray(), and Plot takes it directly. Listen for change:<name> to redraw in place; otherwise the view starts again with the new data. Forgetting await passes a promise to Plot, which then draws nothing.
 
 A file also has name, mimeType and size, and nothing is read until the view asks. .parquet() rejects for a file that is not Parquet; .csv() reads a file of any type as CSV and rejects one that does not parse, saying why. A table holds up to 250,000 rows and 256 columns; its values are plain JavaScript: dates and timestamps are Date objects, a missing value is null, decimals are numbers, and a 64-bit integer column is numbers when every value is a safe integer (within ±(2^53 − 1)), otherwise BigInt. .arrayBuffer(), .text() and .json() read the whole file: at most 5 MiB, read once per file, and at most 32 MiB across one view's files. A source that moves to a new version, or to another file type, gives the model a new file and fires change:<name>.
 
@@ -159,11 +181,14 @@ For plain rows, read (await model.get("activity").parquet()).toArray(), or await
 
 Every save of a view pins the host's current libraries. read_page.libraries lists the exact names available here. Import them directly, as this entry imports @observablehq/plot. The receipt and read_page.view.catalog_revision identify that library build. A view runs on it while this host serves it, and otherwise on the host's current libraries, so every stored view can import the names read_page.libraries lists.
 
-${edit("save-activity", [example])}
-Then place it in a second request:
+Write the entry, and any data you hold as text, in one batch. ${INLINE_LIMITS}.
+${edit("write-activity-sources", [textSource("activity-module", "Activity chart", "text/javascript", 'import * as Plot from "@observablehq/plot";\nexport async function render({ model, el }) {\n  const rows = await model.get("activity").csv();\n  el.append(Plot.barY(rows, { x: "day", y: "people" }).plot());\n}\n'), textSource("project-activity", "Activity by day", "text/csv", "day,people\n2026-11-01,3\n2026-11-02,5\n")])}
+The receipt's result.edits gives each source's source_revision. Then save the view in its own request:
+${edit("save-activity", [{ ...example, data: { activity: { source_id: "project-activity" } } }])}
+Then place it in a third request:
 ${edit("place-activity", [place("activity")])}
 
-To share a component, upload its JavaScript once. Each view chooses an import name for that source. With the following definition the entry can write \`import { ChoiceGroup } from "activity-controls"\`. Omit revision to follow the source, or give a retained revision to pin it.
+To share a component, write its JavaScript once as a source. Each view chooses an import name for that source. With the following definition the entry can write \`import { ChoiceGroup } from "activity-controls"\`. Omit revision to follow the source, or give a retained revision to pin it.
 
 ${edit("save-shared-control", [{ ...example, view_revision: "1", imports: { "activity-controls": { source_id: "controls" } }, data: { activity: { source_id: "project-activity" } } }])}
 
@@ -266,7 +291,7 @@ function anywidgetGuide(origin) {
 
 ## A complete counter
 
-Save this as counter.mjs and upload it as text/javascript. Its frontend needs no Pages-specific API:
+Send this as the text of a text/javascript source. Its frontend needs no Pages-specific API:
 
 \`\`\`js
 export default {
@@ -285,7 +310,7 @@ export default {
 };
 \`\`\`
 
-Create or read your Page, upload the module, and register counter-module using ${link(origin, "/llms/assets-and-sources.txt", "the upload and source recipe")}. Then create the view:
+Create or read your Page and write the module as source counter-module, with set_source text and media_type text/javascript (${link(origin, "/llms/assets-and-sources.txt", "Assets and sources")}). Then create the view:
 ${edit("create-counter-001", [counter])}
 Place it in a new request, using the latest Page revision:
 ${edit("place-counter-001", [place("counter")])}
@@ -293,7 +318,7 @@ Read back the view and Page outline. In a browser, check that the counter appear
 
 ## CSS and binary input
 
-Upload audio.mjs as text/javascript, audio.css as text/css, and a recording as audio/wav. Register audio-module, audio-style and recording with their respective asset IDs (three set_source operations in one batch). This view wires them together:
+Write audio.mjs as text/javascript and audio.css as text/css text sources, upload a recording as audio/wav, and register audio-module, audio-style and recording (three set_source operations in one batch, the recording by its asset_id). This view wires them together:
 ${edit("create-audio-001", [binary])}
 Then place view_id:audio with a separate insert_node, as above. For this example, audio.mjs can be:
 
@@ -319,7 +344,7 @@ export default {
 
 An audio.css file containing \`audio { display: block; width: 100%; }\` is sufficient. module and stylesheet directly reference JavaScript/CSS sources. The host checks source existence, retained revisions and the required media types when saving the view; the renderer checks again when a followed source changes. Each buffers entry pairs a source reference with its destination path, avoiding aliases and parallel arrays. The runtime restores a DataView at that path; intermediate objects and array slots must already exist. Object leaves may be absent. Paths cannot overlap. The outer data field is not accepted for anywidget views.
 
-For a JSON input, upload the file as application/json, register its source, and add {source:{source_id:"dataset"},path:["dataset"]} to buffers. An anywidget reads the buffer with JSON.parse(new TextDecoder().decode(model.get("dataset"))). A module view reads a JSON source with await model.get("dataset").json(). Add revision:"1" to any source reference to select a retained version; omit it to follow updates. Child definitions use the same references and may share modules/styles/data. Identical references share one byte transfer; different pins remain independent.
+For a JSON input, write it as an application/json source, and add {source:{source_id:"dataset"},path:["dataset"]} to buffers. An anywidget reads the buffer with JSON.parse(new TextDecoder().decode(model.get("dataset"))). A module view reads a JSON source with await model.get("dataset").json(). Add revision:"1" to any source reference to select a retained version; omit it to follow updates. Child definitions use the same references and may share modules/styles/data. Identical references share one byte transfer; different pins remain independent.
 
 ## State, composition and lifecycle
 

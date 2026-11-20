@@ -17,6 +17,11 @@ import {
 } from "./agent-client-setup.mjs";
 import { PRODUCT_NAME } from "./shared/product.mjs";
 import { MAX_PAGE_TITLE } from "./shared/page-title.mjs";
+import {
+  INLINE_SOURCE_BATCH_MAX_BYTES,
+  INLINE_SOURCE_MAX_BYTES,
+  INLINE_SOURCE_MEDIA_TYPES,
+} from "./shared/sources.mjs";
 import { richContentGuide, typedReadFields } from "./model/rich-content-guide.mjs";
 
 /** Public onboarding contains no account or document data. URLs come only from
@@ -277,8 +282,12 @@ ${part.authErrorItems}
 - dataset_too_large (413): the dataset asset_from names is over 5 MiB.
 - too_many_copies (400): one batch copies up to 8 datasets with asset_from.
   Send the rest in another batch.
-- invalid_source (400): a set_source field is malformed, or the batch would
-  pass the Page's 64 sources, or read_page's source_id is malformed.
+- invalid_source (400): a set_source field is malformed, its text is empty,
+  not well-formed Unicode, over the limit or not valid for its media_type, or
+  the batch would pass the Page's 64 sources, or read_page's source_id is
+  malformed. A request whose own JSON encoding passes 1 MiB, such as one that
+  escapes every non-ASCII character, can get 413 before that check: upload
+  the file instead.
   Fix the request.
 - source_not_found (404): no source has that source_id on this Page. To
   create it, send set_source with source_revision null.
@@ -702,7 +711,9 @@ To name a new JSON or other non-image source in the same upload, pass
 source: {"source_id":"settings","name":"Chart settings"} to create_page_asset_upload.
 The file transfer returns asset_id, source_id and source_revision. An existing
 source ID returns a conflict with the stored asset_id. To deliberately refresh
-it, pass that asset_id and the current source_revision to set_source. A module view
+it, pass that asset_id and the current source_revision to set_source. A
+JavaScript, CSS, JSON or small CSV source needs no upload: send its text in
+set_source (Named sources, below). A module view
 reads the bound file with await model.get(name).json(), or a CSV as rows with
 await model.get(name).csv(). For an image or table,
 send the upload receipt’s insert operation through edit_page using the Page
@@ -797,12 +808,25 @@ ${part.datasetReaderParagraph}
 ### Named sources
 
 A Page can name its datasets and widget inputs. A source is a source_id you choose, a name you
-can change, and the asset it names now. Point a source at a new upload
+can change, and the asset it names now. Point a source at new content
 to refresh it; its source_id stays. Nothing on the Page shows a source yet.
 
 Set one with an edit_page batch of set_source operations, and nothing else in
 that batch (a mixed batch is invalid_arguments; send two requests). The
 sources are their own document, and one request writes one document.
+
+For JavaScript, CSS, JSON or a small CSV you hold as text, send the content
+itself as text, with its media_type (${INLINE_SOURCE_MEDIA_TYPES.join(", ")}):
+
+\`\`\`json
+{"op": "set_source", "source_id": "settings", "name": "Chart settings", "text": "{\\"limit\\": 10}", "media_type": "application/json", "source_revision": null}
+\`\`\`
+
+text holds up to ${INLINE_SOURCE_MAX_BYTES / 1024} KiB of UTF-8, and one batch up to
+${INLINE_SOURCE_BATCH_MAX_BYTES / 1024} KiB of text in all, counted as JSON with its escapes. Pages stores it as an upload
+of the same bytes, with the same checks: the same bytes get the same asset_id.
+For Parquet, an image, audio, binary data or text over the limit, upload the
+file and name its asset_id instead:
 
 \`\`\`json
 {"op": "set_source", "source_id": "daily", "name": "Daily usage", "asset_id": "<asset_id>", "source_revision": null}
@@ -812,8 +836,8 @@ source_id is 1 to 64 lowercase letters, digits, - and _, starting with a
 letter; a few names are reserved, and their refusal lists them. name is 1 to
 200 characters with no control characters such as a newline. source_revision is null to create the source, or the source_revision
 you last read to change it; anything else is stale_source with the current
-one. Pages counts revisions per source: "1", then one more per write. The
-asset is uploaded to this Page, and Pages records its media type.
+one. Pages counts revisions per source: "1", then one more per write. An
+asset_id names an asset uploaded to this Page, and Pages records its media type.
 A Page holds up to 64 sources. The batch still names the Page revision you
 read, but a Page edit since then doesn't refuse it. The receipt names
 sources_revision (s…), and result.edits lists each source_id with its new

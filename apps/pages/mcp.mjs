@@ -5,7 +5,13 @@ import { PRODUCT_NAME } from "./shared/product.mjs";
 import { HIGHLIGHT_COLORS, MARK_NAMES, formatAddSchema } from "./model/marks.mjs";
 import { SETTABLE_ATTRS, retypeTargets } from "./model/node-registry.mjs";
 import { richContentInstructions } from "./model/rich-content-guide.mjs";
-import { MAX_SOURCE_NAME, SOURCE_ID_PATTERN, SOURCE_REVISION_PATTERN } from "./shared/sources.mjs";
+import {
+  INLINE_SOURCE_MAX_BYTES,
+  INLINE_SOURCE_MEDIA_TYPES,
+  MAX_SOURCE_NAME,
+  SOURCE_ID_PATTERN,
+  SOURCE_REVISION_PATTERN,
+} from "./shared/sources.mjs";
 import { MAX_PAGE_TITLE } from "./shared/page-title.mjs";
 import { VIEW_FORMATS } from "./shared/views.mjs";
 import { DATAFRAME_MEDIA_TYPES } from "./shared/dataset-assets.mjs";
@@ -282,7 +288,7 @@ const editOperation = {
         "set_view",
       ),
       description:
-        "Use fields for the selected op only. set_source takes source_id, name, asset_id and source_revision. Batch source edits together. Send set_view alone with view_id, title, view_type and view_revision. See /llms/views.txt for module, data and imports. insert_node places the view.",
+        "Use fields for the selected op only. set_source takes source_id, name, source_revision, and asset_id or text with media_type. Batch source edits together. Send set_view alone with view_id, title, view_type and view_revision. See /llms/views.txt for module, data and imports. insert_node places the view.",
     },
     node_id: {
       ...address,
@@ -304,6 +310,15 @@ const editOperation = {
       ...assetId,
       description:
         "Image ops and set_source: asset uploaded to this Page (create_page_asset_upload).",
+    },
+    text: {
+      ...string,
+      maxLength: INLINE_SOURCE_MAX_BYTES,
+      description: `set_source instead of asset_id: the content, up to ${INLINE_SOURCE_MAX_BYTES / 1024} KiB UTF-8. Upload larger files.`,
+    },
+    media_type: {
+      ...choice(...INLINE_SOURCE_MEDIA_TYPES),
+      description: "set_source with text: its type.",
     },
     asset_from: {
       type: "string",

@@ -5,6 +5,8 @@ import { readFileSync } from "node:fs";
 import { DATA_FORMAT_ADVICE, MEDIA_GUIDES, mediaGuide } from "../agent-media-guides.mjs";
 import { agentGuide } from "../agent-guide.mjs";
 import { validateSourceOperation } from "../model/sources-doc.mjs";
+import { inspectOutputAsset } from "../shared/output-assets.mjs";
+import { INLINE_SOURCE_MAX_BYTES, INLINE_SOURCE_MEDIA_TYPES } from "../shared/sources.mjs";
 import { validateViewOperation } from "../model/view-doc.mjs";
 import { validateEditFields, validateNodeInsertion } from "../model/page.mjs";
 import { compileAnywidgetSpec } from "../shared/anywidget-spec.mjs";
@@ -142,6 +144,7 @@ test("unknown guide paths return 404 rather than an app shell or login", async (
 
 test("published tool examples pass current source and view validators", () => {
   let sources = 0,
+    inline = 0,
     views = 0,
     placements = 0;
   for (const { path } of MEDIA_GUIDES) {
@@ -160,7 +163,13 @@ test("published tool examples pass current source and view validators", () => {
             assert.ok(
               Object.hasOwn(tool.inputSchema.properties.operations.items.properties, "asset_from"),
             );
-          validateSourceOperation({ ...hostOp, asset_id: "a".repeat(64) });
+          if (Object.hasOwn(hostOp, "text")) {
+            // Inline text: the host's checks, then the content check an
+            // upload of the same bytes gets.
+            validateSourceOperation(hostOp);
+            inspectOutputAsset(new TextEncoder().encode(hostOp.text), hostOp.media_type);
+            inline++;
+          } else validateSourceOperation({ ...hostOp, asset_id: "a".repeat(64) });
           sources++;
         } else if (op.op === "set_view") {
           validateViewOperation(op);
@@ -187,7 +196,7 @@ test("published tool examples pass current source and view validators", () => {
       }
     }
   }
-  assert.ok(sources > 0 && views >= 3 && placements >= 3);
+  assert.ok(sources > 0 && inline >= 3 && views >= 3 && placements >= 3);
 });
 
 test("the views guide teaches files asked with await, the table, and change listeners", () => {
@@ -289,6 +298,40 @@ test("every guide that describes data uploads says which format to choose, Parqu
     /\.csv\(\) for rows/,
   );
   for (const text of [views, assets, main]) assert.doesNotMatch(text, /csv\(\) is not/i);
+});
+
+test("edit_page and the guides state the inline text form, its types and its cap", () => {
+  const operation = tools.find(({ name }) => name === "edit_page").inputSchema.properties.operations
+    .items.properties;
+  assert.equal(operation.text.maxLength, INLINE_SOURCE_MAX_BYTES);
+  assert.match(operation.text.description, /256 KiB UTF-8\. Upload larger files\./);
+  assert.deepEqual(operation.media_type.enum, INLINE_SOURCE_MEDIA_TYPES);
+  assert.match(operation.op.description, /asset_id or text with media_type/);
+  const main = agentGuide({ NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin });
+  const assets = mediaGuide("/llms/assets-and-sources.txt", origin);
+  const views = mediaGuide("/llms/views.txt", origin);
+  for (const text of [main, assets, views]) {
+    assert.match(
+      text.replace(/\s+/g, " "),
+      /256 KiB of UTF-8, and one batch up to 512 KiB of text in all, counted as JSON with its escapes/,
+    );
+  }
+  for (const text of [main, assets])
+    for (const type of INLINE_SOURCE_MEDIA_TYPES) assert.ok(text.includes(type), type);
+  // The text form comes first; the upload stays for what text can't carry.
+  assert.ok(assets.indexOf("## Write a text source") < assets.indexOf("## Upload a file"));
+  assert.match(
+    assets,
+    /Use an upload, below, for Parquet, images, audio, binary data and text over the limit\./,
+  );
+  assert.ok(views.indexOf('"text": "import * as Plot') < views.indexOf('"op": "set_view"'));
+  // The main guide's inline example is a valid operation whose text an upload
+  // of the same bytes would store.
+  const [line] = main.match(/\{"op": "set_source"[^\n]*"text"[^\n]*\}/) ?? [];
+  assert.ok(line, "the main guide shows set_source with text");
+  const example = JSON.parse(line);
+  validateSourceOperation(example);
+  inspectOutputAsset(new TextEncoder().encode(example.text), example.media_type);
 });
 
 test("media tools point to scoped documentation", () => {

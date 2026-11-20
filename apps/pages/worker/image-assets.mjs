@@ -305,6 +305,13 @@ function checkExpected(expect, { mime_type, size }) {
   if (expect.size !== undefined && expect.size !== size) throw uploadMismatch("size");
 }
 
+/** The asset id of `bytes`: the lowercase hex SHA-256 the asset is stored
+ * under. */
+export async function assetIdOf(bytes) {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  return Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
 /**
  * Store only validated original bytes, a raster or a Parquet dataset;
  * authorization belongs to the caller. `expect` is an upload capability's binding ({content_type, size}, each
@@ -337,8 +344,7 @@ export async function persistPageAsset(bucket, { pageId, bytes, contentTypes = [
       );
   }
   checkExpected(expect, { mime_type: inspected.mime_type, size: bytes.byteLength });
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-  const hash = Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join("");
+  const hash = await assetIdOf(bytes);
   const key = imageAssetKey(pageId, hash);
   let stored = await bucket.head(key),
     duplicate = stored !== null;

@@ -15,7 +15,14 @@ import {
   sourcesGenesis,
   validateSourceBatch,
   checkSources,
+  checkInlineBatchSize,
+  inlineTextJsonBytes,
 } from "./sources-doc.mjs";
+import {
+  INLINE_SOURCE_BATCH_MAX_BYTES,
+  INLINE_SOURCE_MAX_BYTES,
+  INLINE_SOURCE_MEDIA_TYPES,
+} from "../shared/sources.mjs";
 
 const PARQUET = "application/vnd.apache.parquet";
 const first = "a".repeat(64),
@@ -314,6 +321,129 @@ test("every malformed field is invalid_source, before anything is written", () =
     message: "A batch cannot change the same source twice",
   });
   assert.deepEqual(validateSourceBatch([op(), op({ source_id: "b", asset_id: first })]), [first]);
+});
+
+test("set_source takes asset_id or inline text with a text media type, within the caps", () => {
+  const inline = (fields = {}) => {
+    const { asset_id: _asset, ...rest } = op();
+    const operation = { ...rest, text: "export default 1;", media_type: "text/javascript" };
+    for (const [key, value] of Object.entries(fields))
+      if (value === undefined) delete operation[key];
+      else operation[key] = value;
+    return operation;
+  };
+  const refusal = (operations) => {
+    try {
+      validateSourceBatch(operations);
+    } catch (error) {
+      assert.equal(error.code, "invalid_source");
+      assert.equal(error.status, 400);
+      return error.message;
+    }
+    assert.fail(`${JSON.stringify(operations).slice(0, 120)} was accepted`);
+  };
+  for (const media_type of INLINE_SOURCE_MEDIA_TYPES)
+    assert.deepEqual(validateSourceBatch([inline({ media_type })]), [], media_type);
+  assert.deepEqual(INLINE_SOURCE_MEDIA_TYPES, [
+    "text/javascript",
+    "text/css",
+    "application/json",
+    "text/csv",
+  ]);
+  // Exactly one of asset_id and text.
+  assert.equal(
+    refusal([inline({ asset_id: first })]),
+    "set_source takes asset_id or text, not both",
+  );
+  assert.equal(
+    refusal([inline({ text: undefined, media_type: undefined })]),
+    "set_source takes asset_id, or text with media_type",
+  );
+  assert.equal(
+    refusal([inline({ text: undefined })]),
+    "set_source takes asset_id, or text with media_type",
+  );
+  assert.match(refusal([op({ media_type: "text/csv" })]), /media_type goes with text/);
+  for (const text of [null, 7, ["a"], { a: 1 }])
+    assert.equal(refusal([inline({ text })]), "text is the source's content, a string");
+  // Exactly the four names: no parameters and no other casing, though an
+  // upload's Content-Type is normalized.
+  for (const media_type of [
+    undefined,
+    PARQUET,
+    "image/png",
+    "audio/wav",
+    "application/octet-stream",
+    "TEXT/CSV",
+    "text/javascript; charset=utf-8",
+    " text/css",
+  ])
+    assert.equal(
+      refusal([inline({ media_type })]),
+      "media_type with text is exactly one of text/javascript, text/css, application/json, text/csv, with no parameters. Upload other files with create_page_asset_upload.",
+      String(media_type),
+    );
+  assert.equal(refusal([inline({ text: "" })]), "text is empty; a source holds at least one byte");
+  // Text a UTF-8 store would rewrite is refused, not replaced with U+FFFD.
+  for (const text of ["x\ud800y", "x\udc00", "\ud83d"])
+    assert.match(
+      refusal([inline({ text })]),
+      /^text holds a lone UTF-16 surrogate/,
+      JSON.stringify(text),
+    );
+  assert.deepEqual(validateSourceBatch([inline({ text: "emoji \ud83d\ude00 ok" })]), []);
+  // The cap counts UTF-8 bytes.
+  assert.deepEqual(
+    validateSourceBatch([inline({ text: "x".repeat(INLINE_SOURCE_MAX_BYTES) })]),
+    [],
+  );
+  assert.match(
+    refusal([inline({ text: "x".repeat(INLINE_SOURCE_MAX_BYTES + 1) })]),
+    /^text holds at most 262144 bytes of UTF-8\. Upload a larger file with create_page_asset_upload/,
+  );
+  assert.match(
+    refusal([inline({ text: "é".repeat(INLINE_SOURCE_MAX_BYTES / 2 + 1) })]),
+    /at most 262144 bytes/,
+  );
+  const batchCap =
+    /^Inline text in one edit_page request takes at most 524288 bytes as JSON, escapes included\..*create_page_asset_upload/;
+  // Each text within its cap, the three over the batch's.
+  const part = "y".repeat(200_000);
+  assert.ok(3 * part.length > INLINE_SOURCE_BATCH_MAX_BYTES);
+  assert.match(
+    refusal(["a", "b", "c"].map((source_id) => inline({ source_id, text: part }))),
+    batchCap,
+  );
+  // The batch cap counts the text as JSON.stringify writes it: a control
+  // character is six bytes, so one text far inside 256 KiB can pass it.
+  // 87,381 of them plus the two quotes are exactly the cap.
+  const control = "\u0001".repeat(87_381);
+  assert.equal(inlineTextJsonBytes(control), INLINE_SOURCE_BATCH_MAX_BYTES);
+  assert.equal(
+    new TextEncoder().encode(JSON.stringify(control)).byteLength,
+    INLINE_SOURCE_BATCH_MAX_BYTES,
+  );
+  assert.deepEqual(validateSourceBatch([inline({ text: control })]), []);
+  assert.match(refusal([inline({ text: `${control}a` })]), batchCap);
+  assert.match(
+    refusal([inline({ text: "export default 1;//" + "\u0001".repeat(200_000) })]),
+    batchCap,
+  );
+  // Quotes, backslashes and newlines take two bytes, non-ASCII its UTF-8.
+  assert.equal(inlineTextJsonBytes('a"\\\n\u00e9\ud83d\ude00'), 2 + 1 + 2 + 2 + 2 + 2 + 4);
+  // The gateway runs the same check alone, before the batch is forwarded.
+  assert.throws(() => checkInlineBatchSize([inline({ text: `${control}a` })]), {
+    code: "invalid_source",
+    message: batchCap,
+  });
+  assert.doesNotThrow(() => checkInlineBatchSize([inline({ text: 7 }), { op: "set_title" }]));
+  // A batch mixes both forms; only asset_id operations name an asset.
+  assert.deepEqual(validateSourceBatch([inline(), op({ source_id: "other" })]), [first]);
+  // setSources takes only asset_id operations: the host stores text first.
+  assert.throws(
+    () => write(A.clone(sourcesGenesis(uuid)), [inline()]),
+    /A source's asset has no checked media type/,
+  );
 });
 
 test("a refusal names the rule the field broke", () => {
