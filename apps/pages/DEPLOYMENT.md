@@ -2199,7 +2199,9 @@ The tags then name `/social-card.png?v=<v>`, and that URL streams the object
 with the same headers as the built-in card, immutable for a year. A new card
 needs a new upload under its own key and a new value: never overwrite an
 object under a key that is already set, because services keep the image by
-its URL. Leave the old object in place until the new value is deployed.
+its URL. Leave the old object in place until the new value is deployed. The
+Worker trusts the key: it never hashes the object, so other bytes uploaded
+under a matching key are served as that version.
 
 A broken setting never leaves a link without an image. A value that doesn't
 match `brand/social-card-<12 lowercase hex digits>.png` selects the built-in
