@@ -43,6 +43,15 @@ import { pageTarget, projectTarget, refKey, settledOf } from "./page-refs.mjs";
 import { PagesLink } from "./wordgard-model.mjs";
 import { chitRefs as tabRefs } from "./chit-refs.mjs";
 
+/** Measure the current visual anchor even after a peer's edits redraw the link. */
+export function linkAnchorRect(editor, from) {
+  const { node } = editor.domAtPos(from, 1);
+  const element = node.nodeType === 1 ? node : node.parentElement;
+  // A closed chit's visible widget sits just before its hidden link text.
+  const chit = element?.closest(".wg-chit-source")?.previousElementSibling;
+  return chit?.matches("a.wg-chit") ? chit.getBoundingClientRect() : editor.coordsAtPos(from);
+}
+
 /** Where chits are drawn: the address the links resolve against, and what
  * is open now, whose own links stay plain. */
 const chitPlace = GardState.Facet.define({

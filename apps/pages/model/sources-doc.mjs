@@ -2,6 +2,8 @@ import * as A from "@automerge/automerge/slim";
 import { WRITER_LIMITS, boundedWriter } from "./author.mjs";
 import { validAssetId } from "../shared/image-assets.mjs";
 import {
+  validSourceName,
+  sourceNameHasControl,
   MAX_SOURCE_NAME,
   MAX_SOURCES,
   MAX_SOURCE_IDS,
@@ -78,12 +80,6 @@ const validRevision = (value) =>
 /** Whether `id` is a well-formed source id. */
 export const validSourceId = (id) =>
   typeof id === "string" && SOURCE_ID.test(id) && !RESERVED.has(id);
-const validName = (name) =>
-  typeof name === "string" && !!name.trim() && name.trim().length <= MAX_SOURCE_NAME;
-// A name a write may set. Stored names are read with validName alone, so an
-// entry a host stored before this check still reads.
-// eslint-disable-next-line no-control-regex
-const CONTROL = /[\u0000-\u001f\u007f]/;
 // The reserved ids an agent could otherwise write: the rest fail the pattern.
 const RESERVED_NAMED = [...RESERVED].filter((id) => SOURCE_ID.test(id)).join(" or ");
 
@@ -152,7 +148,7 @@ function stateOf(state) {
     !isMap(state) ||
     !Object.keys(state).every((key) => STATE_FIELDS.includes(key)) ||
     !validRevision(state.revision) ||
-    !validName(state.name) ||
+    !validSourceName(state.name) ||
     typeof state.media_type !== "string" ||
     !validAssetId(state.asset_id) ||
     !validTime(state.at) ||
@@ -205,7 +201,7 @@ function project(id, entry) {
   const producer = entry?.producer;
   if (
     !isMap(entry) ||
-    !validName(entry.name) ||
+    !validSourceName(entry.name) ||
     !validRevision(entry.revision) ||
     !isMap(current) ||
     !validAssetId(current.asset_id) ||
@@ -297,9 +293,9 @@ export function validateSourceOperation(op) {
       fail("invalid_source", "delete_source requires the source_revision you read");
     return op;
   }
-  if (!validName(op.name))
+  if (!validSourceName(op.name))
     fail("invalid_source", `name must be 1 to ${MAX_SOURCE_NAME} characters, not only spaces`);
-  if (CONTROL.test(op.name))
+  if (sourceNameHasControl(op.name))
     fail("invalid_source", "name can't hold control characters such as a newline or NUL");
   if (!validAssetId(op.asset_id))
     fail(

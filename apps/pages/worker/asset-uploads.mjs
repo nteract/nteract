@@ -20,7 +20,7 @@ import {
  * under a distinct purpose (operation-journal.mjs signCapability). It names
  * the Page, the principal, the credential kind (and an OAuth grant), its
  * issue and expiry times, the issuer's company domain lease when it held one,
- * and optionally the file's content type and size.
+ * and optionally its content type, size and create-only source declaration.
  * The upload request carries it as `Authorization: Pages-Upload
  * <token>`. The gateway never passes that header to authenticate(), so it is
  * not sent to the API-key verifier or read as an OAuth token anywhere.
@@ -46,6 +46,12 @@ import {
  * A capability holds no server state, so it has no lifecycle beyond its
  * expiry. uploadVerdict is the pure decision on a verified payload.
  */
+import {
+  validSourceId,
+  validSourceName,
+  sourceNameHasControl,
+  MAX_SOURCE_NAME,
+} from "../shared/sources.mjs";
 import { audienceEditUntil } from "./access.mjs";
 import { HttpError, withDomainAccess } from "./auth.mjs";
 import { openCapability, signCapability } from "./operation-journal.mjs";
@@ -75,7 +81,7 @@ const PREFIX = "pu1";
 /** Credentials that can issue a capability. A browser session uploads with
  * its own cookie, and a capability can't issue another. */
 const ISSUING_KINDS = new Set(["api-key", "oauth", "kilo-token"]);
-const ARGUMENTS = new Set(["page_id", "content_type", "size"]);
+const ARGUMENTS = new Set(["page_id", "content_type", "size", "source"]);
 export const ASSET_EXTENSIONS = {
   [ESM_MEDIA_TYPE]: "mjs",
   [CSS_MEDIA_TYPE]: "css",
@@ -91,6 +97,25 @@ export const ASSET_EXTENSIONS = {
 
 const invalidArguments = (message) => new HttpError(400, message, "invalid_arguments");
 
+/** Only these two fields can be delegated. The host supplies the asset and
+ * always requires a previously unused source ID. */
+export function uploadSource(source) {
+  if (source === undefined) return undefined;
+  if (
+    !source ||
+    typeof source !== "object" ||
+    Array.isArray(source) ||
+    Object.keys(source).some((key) => !["source_id", "name"].includes(key)) ||
+    !validSourceId(source.source_id) ||
+    !validSourceName(source.name) ||
+    sourceNameHasControl(source.name)
+  )
+    throw invalidArguments(
+      `source takes a valid source_id and a display name of 1 to ${MAX_SOURCE_NAME} characters without control characters`,
+    );
+  return { source_id: source.source_id, name: source.name.trim() };
+}
+
 /** The optional content type and size an upload must match. */
 export function uploadBinding(args, pageId) {
   if (
@@ -101,7 +126,7 @@ export function uploadBinding(args, pageId) {
     Object.keys(args).some((key) => !ARGUMENTS.has(key))
   )
     throw invalidArguments(
-      `${ASSET_UPLOAD_OPERATION} takes page_id (or project_id) and optional content_type and size`,
+      `${ASSET_UPLOAD_OPERATION} takes page_id (or project_id) and optional content_type, size and source`,
     );
   const binding = {};
   if (args.content_type !== undefined) {
@@ -116,6 +141,11 @@ export function uploadBinding(args, pageId) {
       throw invalidArguments(`size is the file's byte count, 1 to ${ASSET_UPLOAD_MAX_BYTES}`);
     binding.size = args.size;
   }
+  if (args.source !== undefined) {
+    binding.source = uploadSource(args.source);
+    if (IMAGE_MEDIA_TYPES.includes(binding.content_type))
+      throw invalidArguments("Images are placed with insert_image and cannot be named sources");
+  }
   return binding;
 }
 
@@ -125,6 +155,14 @@ function storedBinding(claims) {
   if (claims.content_type !== undefined) {
     if (!ASSET_UPLOAD_TYPES.includes(claims.content_type)) return null;
     binding.content_type = claims.content_type;
+  }
+  if (claims.source !== undefined) {
+    try {
+      binding.source = uploadSource(claims.source);
+    } catch {
+      return null;
+    }
+    if (!/^[0-9a-f-]{36}$/.test(claims.upload_id ?? "")) return null;
   }
   if (claims.size !== undefined) {
     if (!Number.isSafeInteger(claims.size) || claims.size < 1) return null;
@@ -270,6 +308,7 @@ export async function issueAssetUpload(
     Number.isSafeInteger(identity.domainAccess.expiresAt)
       ? identity.domainAccess
       : null;
+  const uploadId = binding.source && crypto.randomUUID();
   const claimsUntil = (exp) => ({
     page: pageId,
     principal: identity.principal,
@@ -282,6 +321,7 @@ export async function issueAssetUpload(
     iat: now,
     exp,
     ...binding,
+    ...(uploadId && { upload_id: uploadId }),
   });
   const expiresAt = Math.min(lifetime, await accessUntil(claimsUntil(lifetime)));
   if (!(expiresAt > now)) throw new HttpError(403, "Page is read-only", "access_denied");
@@ -303,7 +343,9 @@ export async function issueAssetUpload(
     accepted_types: ASSET_UPLOAD_TYPES,
     ...(Object.keys(binding).length && { bound: binding }),
     example: assetUploadCommand({ file, contentType, token, uploadUrl }),
-    next: "Send the raw file bytes as the body, not multipart or base64. The answer is JSON with asset_id, asset_url, mime_type and size, plus width and height for an image; the same bytes always return the same asset_id. Place an image with edit_page insert_image and a dataset with insert_node. The URL works for several files until expires_at; keep it out of Pages content and comments.",
+    next: binding.source
+      ? "POST raw file bytes using the returned headers. The response includes asset_id, source_id and source_revision. An existing source ID is refused. Retry the identical POST for the same receipt."
+      : "Send the raw file bytes as the body, not multipart or base64. The answer is JSON with asset_id, asset_url, mime_type and size, plus width and height for an image; the same bytes always return the same asset_id. Place an image with edit_page insert_image and a dataset with insert_node. The URL works for several files until expires_at; keep it out of Pages content and comments.",
   };
 }
 
@@ -341,6 +383,7 @@ export function uploadIdentity(claims) {
     canWrite: true,
     credentialKind: UPLOAD_CREDENTIAL,
     expiresAt: claims.exp,
+    ...(claims.source && { uploadId: claims.upload_id }),
     upload: Object.freeze(storedBinding(claims)),
   });
 }

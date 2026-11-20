@@ -6,7 +6,7 @@
 import { HttpError, errorResponse } from "./auth.mjs";
 import { validPageId } from "./registration.mjs";
 import {
-  assetInsertOperation,
+  uploadReceipt,
   persistPageAsset,
   privateImageResponse,
   readAssetBody,
@@ -129,7 +129,7 @@ async function downloadFile(request, url) {
 }
 
 /** Called only by authenticated tool dispatch. The callback rechecks grant and Page write access. */
-export async function handleFileImport(request, env, { pageId, file, authorize }) {
+export async function handleFileImport(request, env, { pageId, file, source, authorize }) {
   try {
     if (!validPageId(pageId)) throw new HttpError(400, "Invalid page_id");
     const url = fileDownloadUrl(file);
@@ -142,16 +142,18 @@ export async function handleFileImport(request, env, { pageId, file, authorize }
       pageId,
       bytes,
       contentTypes: [contentType, file.mime_type],
+      expect: { source },
     });
-    const current = await authorize(true);
-    if (!current.ok) return privateImageResponse(current);
-    const { url: asset_url, ...metadata } = asset;
-    return privateImageResponse(
-      Response.json(
-        { page_id: pageId, ...metadata, asset_url, insert: assetInsertOperation(asset) },
-        { status: duplicate ? 200 : 201 },
-      ),
+    const current = await authorize(
+      true,
+      source && { source, file_id: file.file_id, asset_id: asset.asset_id },
     );
+    const { url: asset_url, ...metadata } = asset;
+    return await uploadReceipt(asset, duplicate, current, !!source, {
+      page_id: pageId,
+      ...metadata,
+      asset_url,
+    });
   } catch (error) {
     return privateImageResponse(errorResponse(error, "import-page-file"));
   }

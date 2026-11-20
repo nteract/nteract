@@ -142,7 +142,7 @@ else replaces the screen with a Reload notice and leaves the Page unchanged.
   line or every selected line. One level is four spaces in Python and Rust, two
   elsewhere, and a tab in a block whose lines already start with tabs. Enter
   keeps the indentation of the line it leaves; three Enters, or Mod-Enter, leave
-  the block. Outside a code block Tab moves focus as usual. A word in code is an
+  the block. A word in code is an
   identifier: letters, digits and underscores, plus `$` in JavaScript and
   TypeScript and `-` in CSS. A double-click selects it whole, and Wordgard's
   word motion and word deletion move over it whole. Brackets and quotes close
@@ -400,7 +400,12 @@ else replaces the screen with a Reload notice and leaves the Page unchanged.
 - **Task lists:** use Task list or type `- [ ] ` / `- [x] `. Enter creates an
   unchecked item; an empty item returns to prose. Native list-item markers store
   checked state independently of the text, so checkbox and text edits can merge.
-  Markdown preserves nested tasks. Read-only Pages disable checkbox changes.
+  With the caret in a task label, Tab nests it under its preceding sibling and
+  Shift+Tab promotes it into its parent checklist. Shift+Tab moves focus at
+  the outermost checklist or when the parent has more content after the nested
+  list. On the checkbox itself, Space toggles it
+  and Tab moves focus. Markdown preserves nested tasks. Read-only Pages disable
+  checkbox changes.
 ## Opening, recovery, and ownership
 
 Canonical links are `/p/<page_id>`, with `#anchor` for a heading (see Heading
@@ -1831,7 +1836,19 @@ copies paste descriptive text; copying or rebinding sources across Pages is
 not implemented. Parquet bytes remain in the session's bounded memory cache;
 there is no persistent browser Parquet cache.
 
-Agents write it with `edit_page` `set_source` operations (`source_id`,
+To create a named source when uploading a non-image file, pass
+`source: {source_id, name}` to `create_page_asset_upload`. The transfer
+receipt includes `asset_id`, `source_id` and `source_revision`. For Parquet and CSV,
+its `insert` places a dataframe bound to the source. An unnamed table
+upload returns an insertion pinned to its `asset_id`. The upload
+grant signs the source ID and name. After storage, the host checks edit
+access again and writes through the same journal as `set_source`. A
+conflicting ID returns the uploaded asset ID and current source revision.
+A source-cap refusal also includes the stored asset ID. Retry the same transfer
+to recover the original receipt after an interrupted response. Read the source
+to check its current state after another editor changes or deletes it.
+
+Agents can also write sources with `edit_page` `set_source` operations (`source_id`,
 `name`, `asset_id`, `source_revision`) or `delete_source` (`source_id`,
 `source_revision`) in a batch containing only source operations;
 a mixed batch is `400 invalid_arguments`. `source_revision` is null to
@@ -2040,7 +2057,7 @@ saving; the renderer rechecks types when following a changed source. The stored
 view accepts no `data` alias map. The AFM API and iframe transport are unchanged.
 
 Upload ESM, CSS, WAV (`audio/wav`), JSON (`application/json`), CSV (`text/csv`), arbitrary binary (`application/octet-stream`)
-or Parquet, then register each asset with `set_source`. ESM, CSS, WAV and generic
+or Parquet with a new source ID and name. Use `set_source` for an existing asset or a refresh. ESM, CSS, WAV and generic
 binary uploads require a content-type-bound capability and return `insert: null`.
 Upload JSON with `content_type: "application/json"`. Sources previews the data and a module reads it with `await model.get(name).json()`.
 Upload CSV with `content_type: "text/csv"`; the upload checks only that it is UTF-8 text, and its `insert` is the dataframe `insert_node` with `media_type: "text/csv"`. Sources shows its header and first rows, a module reads it with `await model.get(name).csv()`, and a chart or a dataframe (`media_type: "text/csv"`) draws it.
@@ -2635,7 +2652,7 @@ For agents, importing bytes and inserting content are separate operations:
      ([import-file.mjs](worker/import-file.mjs)): it requires read/write scope
      and Page edit access, accepts bounded HTTPS downloads from the hosts in
      `FILE_HOSTS`, today only `files.oaiusercontent.com`, without redirects,
-     stores an image or a Parquet file under the upload's checks, and returns
+     stores an image, Parquet file, or declared JSON or CSV file under the upload's checks, and returns
      `asset_id`, reference, MIME, size and an image's dimensions. With `file`
      the call takes no `content_type` or `size`. A file ID alone is not a
      download URL. Temporary source URLs are not stored in the document.
@@ -2649,8 +2666,11 @@ For agents, importing bytes and inserting content are separate operations:
    block its type calls for (`assetInsertOperation` in
    [image-assets.mjs](worker/image-assets.mjs)). A raster gets
    `{"op": "insert_image", "asset_id": "<asset_id>"}`, and the agent adds alt text, which
-   `insert_image` requires; a Parquet dataset gets
+   `insert_image` requires. A named Parquet upload gets
+   `{"op":"insert_node","node":{"type":"dataframe","attrs":{"binding":{"source_id":"<source_id>"}}}}`.
+   An unnamed Parquet upload gets
    `{"op": "insert_node", "node": {"type": "dataframe", "attrs": {"asset_id": "<asset_id>"}}}`.
+   CSV uses the same named and unnamed forms with `media_type: "text/csv"` in the node attrs.
 2. Read the current Page, then call guarded `edit_page` with that `insert`
    operation: for an image, `insert_image`, `asset_id`, alt text, and optional
    `after_node_id` (omitted appends; `null` prepends). The host verifies the asset belongs to this Page and creates a
@@ -3875,12 +3895,14 @@ invitee. A host error or busy answer, an answer for another target, and a
 timeout (the shared-Page check's bound) answer the same, so that answer
 can't say why.
 
-On a deployment behind a tunnel, these paths reach the Worker only when the
-target's ingress admits them, `/project/<id>` forms included
-(`linkPreviewPaths` in [routes.mjs](scripts/deployment/routes.mjs); see
+On a deployment behind a tunnel, these paths reach the Worker, `/project/<id>`
+forms included: the tunnel refuses only `refusedPaths` in
+[routes.mjs](scripts/deployment/routes.mjs) (see
 [Gateway routes and the allowlist](DEPLOYMENT.md#gateway-routes-and-the-allowlist)).
-Otherwise the edge answers an empty 404 without that code, and the hover card
-reads it as a failure: "Couldn't load a preview", retried with backoff.
+An installation still on the earlier allowlist form admits them only when its
+ingress lists them; otherwise the edge answers an empty 404 without that code,
+and the hover card reads it as a failure: "Couldn't load a preview", retried
+with backoff.
 
 Every answer is `Cache-Control: private, no-store`, so a title or first
 screen never stays in the browser's disk cache after sign-out.
@@ -4784,12 +4806,14 @@ The server can't check that the pixels match the content. That is the trust of
 any image the owner inserts into the Page, and only the Page's readers see it.
 
 On a deployment behind a tunnel, `GET` and `PUT /api/pages/:id/card-image` and
-the image paths reach the Worker only when the target's ingress admits them
-(`cardImagePaths` in [routes.mjs](scripts/deployment/routes.mjs), file names
-exactly as `CARD_IMAGE_FILE` names them; see
+the image paths reach the Worker: the tunnel refuses only `refusedPaths` in
+[routes.mjs](scripts/deployment/routes.mjs), and the gateway answers file names
+exactly as `CARD_IMAGE_FILE` names them (see
 [Gateway routes and the allowlist](DEPLOYMENT.md#gateway-routes-and-the-allowlist)).
-Otherwise the edge answers an empty 404: the owner's tab stops at the stored
-hash read and uploads nothing, and the grid keeps showing JSON cards.
+An installation still on the earlier allowlist form admits them only when its
+ingress lists them (`cardImagePaths`); otherwise the edge answers an empty 404:
+the owner's tab stops at the stored hash read and uploads nothing, and the grid
+keeps showing JSON cards.
 
 ### Retry contract
 

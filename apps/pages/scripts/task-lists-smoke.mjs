@@ -165,6 +165,38 @@ try {
   await saved(a);
   checkpoint(stage);
 
+  stage = "Tab in a checked task label nests it, survives reload, and Shift+Tab restores siblings";
+  const nestedTask = (page) =>
+    content(page).locator("li li").filter({ hasText: "Share the draft" });
+  const checkNesting = async (page) => {
+    await expect(nestedTask(page)).toHaveCount(1);
+    await expect(nestedTask(page).getByRole("checkbox")).toBeChecked();
+    await expect(nestedTask(page).locator("xpath=ancestor::li[1]")).toContainText(
+      "Review with a colleague",
+    );
+  };
+  await selectText(a, "Share the draft", true);
+  await a.keyboard.press("Tab");
+  await expect(content(a)).toBeFocused();
+  for (const page of [a, b]) await checkNesting(page);
+  await saved(a);
+  await a.reload();
+  await checkNesting(a);
+  await selectText(a, "Share the draft", true);
+  await a.keyboard.press("Shift+Tab");
+  for (const page of [a, b]) {
+    await expect(nestedTask(page)).toHaveCount(0);
+    await expect(checkbox(page, "Share the draft")).toBeChecked();
+  }
+  await saved(a);
+  await a.reload();
+  await expect(checkbox(a, "Share the draft")).toBeChecked();
+  await expect(nestedTask(a)).toHaveCount(0);
+  await checkbox(a, "Write the plan").focus();
+  await a.keyboard.press("Tab");
+  await expect(checkbox(a, "Review with a colleague")).toBeFocused();
+  checkpoint(stage);
+
   stage = "simultaneous checkbox and prose edits converge, and undo retains peer text";
   await selectText(b, "Write the plan", true);
   await Promise.all([checkbox(a, "Write the plan").click(), b.keyboard.insertText(" together")]);
@@ -434,6 +466,38 @@ try {
   );
   await reader.screenshot({ path: output + "/task-lists-read-only.png", fullPage: true });
   await readerContext.close();
+  checkpoint(stage);
+
+  stage = "Shift+Tab leaves a parent note and the child's passage comment attached";
+  const commented = await create(
+    "- [ ] Parent\n  - [x] Child label\n\n  Notes belonging to Parent",
+    "Commented checklist",
+  );
+  const readCommented = () => call(a, "read_page", { page_id: commented.page_id });
+  const source = await readCommented();
+  const { result: thread } = await call(a, "manage_page_comment", {
+    page_id: commented.page_id,
+    node_id: source.blocks[0].node_id,
+    action: "add",
+    selected_text: "Child label",
+    body: "Discuss the child",
+    nonce: crypto.randomUUID(),
+    revision: source.revision,
+  });
+  const { revision: commentedRevision } = await readCommented();
+  await selectText(a, "Child label", true);
+  await a.keyboard.press("Shift+Tab");
+  await expect(content(a)).not.toBeFocused();
+  await a.reload();
+  await saved(a);
+  const after = await readCommented();
+  assert.deepEqual(after.revision, commentedRevision);
+  const passage = after.comments.find(
+    (comment) => comment.id === thread.thread_id,
+  ).selectionContext;
+  assert.equal(passage.status, "attached");
+  assert.equal(passage.text, "Child label");
+  await expect(content(a).locator("li li").getByRole("checkbox")).toBeChecked();
   checkpoint(stage);
 
   stage = "typed dash and star task shortcuts create real checkboxes";

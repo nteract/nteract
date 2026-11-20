@@ -71,8 +71,9 @@ const MEDIA_TYPES = Object.freeze(
   Object.fromEntries(Object.entries(EXTENSIONS).map(([type, ext]) => [ext, type])),
 );
 const HASH = /^[0-9a-f]{64}$/;
-/** One image's file name in its URL. The live tunnels admit exactly this
- * shape (scripts/deployment/routes.mjs cardImagePaths). */
+/** One image's file name in its URL. The gateway answers this shape only;
+ * the live tunnels hand every non-refused path to the Worker
+ * (scripts/deployment/routes.mjs refusedPaths). */
 export const CARD_IMAGE_FILE = /^([0-9a-f]{64})-(light|dark)\.(webp|png|jpg)$/;
 /** The Page host's storage key for its last card image revision. */
 export const CARD_IMAGE_REVISION_KEY = "host/card-image-revision";
