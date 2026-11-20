@@ -12,6 +12,7 @@ test("every preview state/event pair rejects invalid transitions", () => {
     edit: ["ready", "rendering", "render_failed"],
     choose_cover: ["ready", "rendering", "render_failed"],
     choose_visual: ["ready", "rendering", "render_failed"],
+    choose_layout: ["ready", "rendering", "render_failed"],
     prepare: ["ready", "render_failed"],
     prepared: ["rendering"],
     publish: ["ready"],
@@ -24,7 +25,12 @@ test("every preview state/event pair rejects invalid transitions", () => {
   };
   for (const name of PREVIEW_STATES)
     for (const type of PREVIEW_EVENTS) {
-      const state = { name, draft: { title: "Title" }, prepared: {}, value: { snapshot: {} } };
+      const state = {
+        name,
+        draft: { title: "Title", visual: "upload", layout: "caption" },
+        prepared: {},
+        value: { snapshot: {} },
+      };
       const next = step(state, {
         type,
         draft: state.draft,
@@ -33,6 +39,7 @@ test("every preview state/event pair rejects invalid transitions", () => {
         patch: {},
         file: {},
         visual: "text",
+        layout: "fill",
         nonce: "n",
         error: "Error",
       });
@@ -169,4 +176,44 @@ test("a selected visual's exact source is uploaded on approval and restored for 
     newer,
     "a stale chart capture cannot restore a removed cover",
   );
+});
+
+test("an uploaded cover starts filling the card; other visuals keep their caption", () => {
+  const start = {
+    name: "ready",
+    draft: { title: "Card", visual: "text", layout: "caption" },
+    value: { revision: 0, snapshot: null },
+  };
+  const uploaded = step(start, { type: "choose_cover", file: { name: "card.png" } });
+  assert.equal(uploaded.draft.layout, "fill", "a new upload starts in fill");
+  const prepared = step(uploaded, { type: "prepared", draft: uploaded.draft, prepared: {} });
+  const caption = step(prepared, { type: "choose_layout", layout: "caption" });
+  assert.equal(caption.name, "rendering", "the author sees the new raster before publishing");
+  assert.equal(caption.draft.layout, "caption");
+  assert.equal(caption.prepared, null, "the old approval does not survive a layout change");
+  assert.equal(step(caption, { type: "choose_layout", layout: "caption" }), caption);
+  assert.equal(step(caption, { type: "choose_layout", layout: "stretch" }), caption);
+  assert.equal(step(caption, { type: "choose_layout", layout: "fill" }).draft.layout, "fill");
+  const chart = step(uploaded, { type: "choose_visual", visual: "0" });
+  assert.equal(chart.draft.layout, "caption", "a captured visual uses caption");
+  assert.equal(
+    step(chart, { type: "choose_layout", layout: "fill" }),
+    chart,
+    "only an uploaded cover can fill the card",
+  );
+  const text = step(uploaded, { type: "choose_visual", visual: "text" });
+  assert.equal(text.draft.layout, "caption", "a text card uses caption");
+  assert.equal(step(text, { type: "choose_layout", layout: "fill" }), text);
+});
+
+test("a loaded snapshot restores its layout, and one without a layout is caption", () => {
+  const cover = { asset_id: "a".repeat(64), name: "card.png" };
+  const load = (snapshot) =>
+    step({ name: "loading", draft: {} }, { type: "loaded", value: { revision: 1, snapshot } })
+      .draft;
+  const base = { title: "Card", description: "", author: "" };
+  assert.equal(load({ ...base, cover, layout: "fill" }).layout, "fill");
+  assert.equal(load({ ...base, cover, layout: "caption" }).layout, "caption");
+  assert.equal(load({ ...base, cover }).layout, "caption", "older previews keep their look");
+  assert.equal(load({ ...base, cover: null, layout: "fill" }).layout, "caption");
 });

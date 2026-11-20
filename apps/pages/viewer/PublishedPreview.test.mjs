@@ -42,11 +42,13 @@ test("owner must prepare and approve exact image bytes; publishing and removal u
   let holdRenders = false;
   let renderError = null;
   let uploadFails = false;
+  let lastDraft = null;
   for (const [key, value] of Object.entries({
     window: dom.window,
     document: dom.window.document,
     IS_REACT_ACT_ENVIRONMENT: true,
     renderPreviewForTest: (draft, signal) => {
+      lastDraft = draft;
       if (renderError) throw Error(renderError);
       const blob = new Blob(
         [
@@ -93,6 +95,7 @@ test("owner must prepare and approve exact image bytes; publishing and removal u
           title: command.title,
           description: command.description,
           cover: command.cover,
+          layout: command.layout,
           asset_id: asset,
           published_at: "2026-11-14T12:00:00Z",
         },
@@ -153,6 +156,11 @@ test("owner must prepare and approve exact image bytes; publishing and removal u
       null,
       "a cover is optional, not a separate template",
     );
+    assert.equal(
+      document.querySelector(".preview-layout"),
+      null,
+      "a text card has no layout choice",
+    );
     await settle(() => {
       const input = document.querySelector("input[type='file']");
       Object.defineProperty(input, "files", {
@@ -171,6 +179,13 @@ test("owner must prepare and approve exact image bytes; publishing and removal u
     );
     assert.equal(button("Publish preview").disabled, false);
     assert.equal(document.querySelector(".preview-upload small").textContent, "cover.png");
+    const layoutInput = (value) =>
+      document.querySelector(`.preview-layout input[type='radio'][value='${value}']`);
+    assert.equal(document.querySelector(".preview-layout legend").textContent, "Cover layout");
+    assert.equal(layoutInput("fill").checked, true, "a new upload starts filling the card");
+    assert.equal(layoutInput("fill").closest("label").textContent, "Fill the card");
+    assert.equal(layoutInput("caption").closest("label").textContent, "Title below");
+    assert.equal(lastDraft.layout, "fill");
     const coverSrc = document.querySelector(".published-preview-image").src;
     const footerBeforeEdit = document.querySelector(".published-preview-footer").textContent;
     const renderIndicator = document.querySelector(".preview-render-indicator");
@@ -224,6 +239,14 @@ test("owner must prepare and approve exact image bytes; publishing and removal u
         .querySelector("input[type=file]")
         .dispatchEvent(new dom.window.Event("change", { bubbles: true })),
     );
+    assert.equal(layoutInput("fill").checked, true);
+    await settle(() => layoutInput("caption").click());
+    assert.equal(layoutInput("caption").checked, true);
+    assert.equal(
+      lastDraft.layout,
+      "caption",
+      "the author sees the caption raster before publishing",
+    );
     await settle(() => button("Publish preview").click());
     assert.equal(
       calls.length,
@@ -231,6 +254,7 @@ test("owner must prepare and approve exact image bytes; publishing and removal u
       "publish uploads the source cover, composed card, then the snapshot",
     );
     assert.deepEqual(server.snapshot.cover, { asset_id: coverAsset, name: "cover.png" });
+    assert.equal(server.snapshot.layout, "caption");
     await settle(() =>
       root.render(
         createElement(PublishedPreview, {
@@ -240,6 +264,7 @@ test("owner must prepare and approve exact image bytes; publishing and removal u
       ),
     );
     assert.equal(document.querySelector(".preview-upload small").textContent, "cover.png");
+    assert.equal(layoutInput("caption").checked, true, "reopening restores the stored layout");
     const reopenedDescription = document.querySelector("textarea");
     const editReopened = (value) => {
       Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value").set.call(

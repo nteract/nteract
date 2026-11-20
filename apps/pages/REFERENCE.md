@@ -15,8 +15,19 @@ characters), optional author (120 characters), and description (400 characters),
 publish a raster image. The default is a 1200×630 text card. The owner can
 instead choose a rendered image, chart or Mermaid diagram from the open Page,
 or upload a cover. The browser shows the exact bytes before uploading them;
-the host validates the raster and publishes only that Page-local asset. Visuals
-fit above a separate title and byline without cropping or dark overlays.
+the host validates the raster and publishes only that Page-local asset. The
+card has two layouts. In `caption`, the visual fits above a separate title
+and byline without cropping or dark overlays. In `fill`, an uploaded cover
+covers the whole 1200×630 card, centred and cropped at the edges, with no
+title, byline, description or product name drawn on it; the title and
+description still go into the page metadata and image alt text. A newly
+uploaded cover starts in `fill`, and **Fill the card** / **Title below**
+switches between the two. A text card is always `caption`. A visual chosen
+from the Page is published in `caption`; publishing stores it as the cover, so
+reopening the preview offers both layouts for it, and `fill` crops it at the
+edges. The layout is stored with the preview and restored on reopen; a preview
+stored without one is `caption`. The host refuses any other layout,
+and `fill` without a cover, with a 400.
 The author is explicitly supplied for publication, never inferred from account
 or document ownership. OG, Twitter and Slack descriptions lead with that byline.
 The host records the validated image dimensions for OG metadata; older previews
@@ -26,8 +37,8 @@ in its document title and explicit Twitter title, description and image alt tags
 When publishing an uploaded cover or a Page-selected image, chart or diagram,
 its uncaptioned raster also enters the existing private Page asset storage.
 For a Page-selected visual this is the exact raster used to compose the card,
-bounded to its 1152×390 visual area so large or tall sources fit upload limits. The publication record retains the cover asset ID
-and filename for owner settings; public metadata and image routes expose only
+bounded to its 1152×390 visual area so large or tall sources fit upload limits. The publication record retains the cover asset ID,
+filename and card layout for owner settings; public metadata and image routes expose only
 the composed card. Reopening the editor restores that cover so text edits can
 redraw it without needing the live visual or capturing changed chart data.
 Previews published before source retention need one reselection and publication

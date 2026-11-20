@@ -5,6 +5,7 @@ import {
   previewVisuals,
   previewVisualNode,
   previewCoverRect,
+  previewFillRect,
   previewSourceSize,
   previewCaptureScale,
   previewTextLines,
@@ -119,6 +120,79 @@ test("portrait and wide covers fit entirely above the caption without cropping o
     assert.equal(rect.y + rect.height / 2, 219);
     assert.ok(Math.abs(rect.width / rect.height - width / height) < 1e-12);
   }
+});
+
+test("a filling cover covers the whole card, centred, at its own aspect ratio", () => {
+  const cases = [
+    [[2400, 630], { x: -600, y: 0, width: 2400, height: 630 }],
+    [[1200, 630], { x: 0, y: 0, width: 1200, height: 630 }],
+    [[600, 1200], { x: 0, y: -885, width: 1200, height: 2400 }],
+    [[3, 2], { x: 0, y: -85, width: 1200, height: 800 }],
+  ];
+  for (const [[width, height], expected] of cases) {
+    const rect = previewFillRect(width, height);
+    assert.deepEqual(rect, expected, `${width}x${height}`);
+    assert.ok(rect.x <= 0 && rect.y <= 0);
+    assert.ok(rect.x + rect.width >= 1200 && rect.y + rect.height >= 630);
+    assert.equal(rect.x + rect.width / 2, 600);
+    assert.equal(rect.y + rect.height / 2, 315);
+    assert.ok(Math.abs(rect.width / rect.height - width / height) < 1e-12);
+  }
+});
+
+test("an uploaded cover filling the card draws no caption, title, byline or product name", async (t) => {
+  const paints = [],
+    text = [],
+    rects = [];
+  const context = {
+    measureText: (value) => ({ width: value.length * 20 }),
+    createLinearGradient: () => ({ addColorStop: () => {} }),
+    fillRect: (...args) => rects.push(args),
+    drawImage: (...args) => paints.push(args),
+    fillText: (value) => text.push(value),
+  };
+  const canvas = {
+    width: 0,
+    height: 0,
+    getContext: () => context,
+    toBlob: (done) => done(new Blob(["png"])),
+  };
+  const oldDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const oldBitmap = Object.getOwnPropertyDescriptor(globalThis, "createImageBitmap");
+  t.after(() => {
+    if (oldDocument) Object.defineProperty(globalThis, "document", oldDocument);
+    else delete globalThis.document;
+    if (oldBitmap) Object.defineProperty(globalThis, "createImageBitmap", oldBitmap);
+    else delete globalThis.createImageBitmap;
+  });
+  const bitmap = { width: 600, height: 1200, close: t.mock.fn() };
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: { createElement: () => canvas },
+  });
+  Object.defineProperty(globalThis, "createImageBitmap", {
+    configurable: true,
+    value: async () => bitmap,
+  });
+  const draft = {
+    title: "A finished card",
+    author: "Ada",
+    description: "Kept in metadata",
+    visual: "upload",
+    layout: "fill",
+    file: {},
+  };
+  const result = await renderPublishedPreview(draft, [], new AbortController().signal);
+  assert.ok(result.blob);
+  assert.deepEqual([canvas.width, canvas.height], [1200, 630]);
+  assert.deepEqual(paints, [[bitmap, 0, -885, 1200, 2400]]);
+  assert.deepEqual(text, [], "no text is drawn on a filled card");
+  assert.deepEqual(rects, [[0, 0, 1200, 630]], "only the background under the image");
+  assert.equal(bitmap.close.mock.callCount(), 1);
+  paints.length = 0;
+  await renderPublishedPreview({ ...draft, layout: "caption" }, [], new AbortController().signal);
+  assert.deepEqual(paints, [[bitmap, 502.5, 24, 195, 390]], "caption keeps the fitted cover");
+  assert.ok(text.includes("A finished card"));
 });
 
 test("an uploaded cover stays fully visible with a separate title and byline", async (t) => {

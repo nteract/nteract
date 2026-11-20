@@ -72,6 +72,17 @@ export function previewCoverRect(width, height) {
   };
 }
 
+/** Cover the whole 1200×630 card, centred. The canvas crops the overflow. */
+export function previewFillRect(width, height) {
+  const scale = Math.max(1200 / width, 630 / height);
+  return {
+    x: (1200 - width * scale) / 2,
+    y: (630 - height * scale) / 2,
+    width: width * scale,
+    height: height * scale,
+  };
+}
+
 /** The card has only this many visual pixels. Keep private sources within
  * that budget, including tall images whose DOM capture would exceed uploads. */
 export function previewSourceSize(width, height) {
@@ -115,6 +126,9 @@ export async function renderPublishedPreview(draft, visuals, signal, pageId) {
   context.fillStyle = draft.visual === "text" ? background : "#f7f8f5";
   context.fillRect(0, 0, 1200, 630);
   const textOnly = draft.visual === "text";
+  // Only a cover may fill the card: an upload, or a visual stored as the
+  // cover by an earlier publication. A visual read from the Page keeps its caption.
+  const fill = draft.visual === "upload" && draft.layout === "fill";
   let sourceFile;
   if (!textOnly) {
     let visual;
@@ -179,12 +193,18 @@ export async function renderPublishedPreview(draft, visuals, signal, pageId) {
     }
     try {
       signal.throwIfAborted();
-      const { x, y, width, height } = previewCoverRect(visual.width, visual.height);
+      const { x, y, width, height } = (fill ? previewFillRect : previewCoverRect)(
+        visual.width,
+        visual.height,
+      );
       context.drawImage(visual, x, y, width, height);
     } finally {
       visual.close?.();
     }
   }
+  // A filled card is the author's finished design. The title and description
+  // still reach the page metadata and image alt text.
+  if (fill) return finish(canvas, signal, sourceFile);
   // A separate caption keeps text readable without tinting or covering data.
   if (!textOnly) {
     context.fillStyle = "#ffffff";
@@ -216,6 +236,10 @@ export async function renderPublishedPreview(draft, visuals, signal, pageId) {
   context.fillStyle = "#37665c";
   context.font = "500 22px system-ui, sans-serif";
   context.fillText(PRODUCT_NAME, textOnly ? 64 : 1060, textOnly ? 62 : 600);
+  return finish(canvas, signal, sourceFile);
+}
+
+async function finish(canvas, signal, sourceFile) {
   signal.throwIfAborted();
   const blob = await pngBlob(canvas);
   signal.throwIfAborted();

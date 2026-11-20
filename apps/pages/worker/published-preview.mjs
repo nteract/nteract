@@ -7,6 +7,7 @@ import { validPageId } from "./registration.mjs";
 import { imageAssetKey, readImageBody, inspectImage } from "./image-assets.mjs";
 import { validAssetId } from "../shared/image-assets.mjs";
 import { PRODUCT_NAME } from "../shared/product.mjs";
+import { PREVIEW_LAYOUTS } from "../shared/preview-layouts.mjs";
 import { withTimeout } from "./catalog-index.mjs";
 
 export const PREVIEW_KEY = "host/published-preview";
@@ -45,6 +46,8 @@ export function publicationTransition(state, command, snapshot) {
     command.cover?.asset_id,
     command.cover?.name,
     ...(command.author === undefined ? [] : [command.author]),
+    // Named, so a layout can never read as the optional author before it.
+    ...(command.layout === undefined ? [] : [{ layout: command.layout }]),
   ]);
   if (state.receipt?.nonce === command.nonce) {
     if (state.receipt.fingerprint !== fingerprint)
@@ -86,12 +89,18 @@ export function previewFields(command) {
     (!validAssetId(cover.asset_id) || typeof cover.name !== "string" || cover.name.length > 1024)
   )
     throw new HttpError(400, "Use a Page image and filename for the cover");
+  const layout = command.layout === undefined ? "caption" : command.layout;
+  if (!PREVIEW_LAYOUTS.includes(layout))
+    throw new HttpError(400, "Use caption or fill for the card layout");
+  if (layout === "fill" && cover == null)
+    throw new HttpError(400, "Only an uploaded cover can fill the card");
   return {
     title: title.trim(),
     description: description.trim(),
     author: command.author?.trim() ?? "",
     asset_id,
     cover: cover == null ? null : { asset_id: cover.asset_id, name: cover.name },
+    layout,
   };
 }
 
@@ -140,6 +149,7 @@ export async function publicationHost(host, request) {
           author: value.snapshot.author ?? "",
           asset_id: value.snapshot.asset_id,
           cover: value.snapshot.cover ?? null,
+          layout: value.snapshot.layout ?? "caption",
           published_at: value.snapshot.published_at,
         }
       : null,

@@ -1,3 +1,5 @@
+import { PREVIEW_LAYOUTS } from "../shared/preview-layouts.mjs";
+
 export const PREVIEW_STATES = [
   "loading",
   "ready",
@@ -14,6 +16,7 @@ export const PREVIEW_EVENTS = [
   "edit",
   "choose_cover",
   "choose_visual",
+  "choose_layout",
   "prepare",
   "prepared",
   "publish",
@@ -43,6 +46,11 @@ export function previewEditorTransition(state, event) {
                 author: event.value.snapshot.author ?? "",
                 visual: event.value.snapshot.cover ? "upload" : "text",
                 cover: event.value.snapshot.cover,
+                // A snapshot with no layout, or with no cover, is caption.
+                layout:
+                  event.value.snapshot.cover && event.value.snapshot.layout === "fill"
+                    ? "fill"
+                    : "caption",
               }
             : state.draft,
         prepared: null,
@@ -69,7 +77,13 @@ export function previewEditorTransition(state, event) {
         ? {
             ...state,
             name: "rendering",
-            draft: { ...state.draft, visual: "upload", file: event.file, cover: null },
+            draft: {
+              ...state.draft,
+              visual: "upload",
+              file: event.file,
+              cover: null,
+              layout: "fill",
+            },
             prepared: null,
             edited: true,
             error: null,
@@ -82,7 +96,28 @@ export function previewEditorTransition(state, event) {
         ? {
             ...state,
             name: "rendering",
-            draft: { ...state.draft, visual: event.visual, file: undefined, cover: null },
+            draft: {
+              ...state.draft,
+              visual: event.visual,
+              file: undefined,
+              cover: null,
+              layout: "caption",
+            },
+            prepared: null,
+            edited: true,
+            error: null,
+            message: null,
+          }
+        : state;
+    case "choose_layout":
+      return ["ready", "rendering", "render_failed"].includes(state.name) &&
+        state.draft.visual === "upload" &&
+        PREVIEW_LAYOUTS.includes(event.layout) &&
+        event.layout !== (state.draft.layout ?? "caption")
+        ? {
+            ...state,
+            name: "rendering",
+            draft: { ...state.draft, layout: event.layout },
             prepared: null,
             edited: true,
             error: null,

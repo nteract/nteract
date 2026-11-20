@@ -257,3 +257,52 @@ test("source covers survive owner reads but never enter the public envelope", as
   assert.equal((await manage({ ...command(2), cover: null })).status, 200);
   assert.equal((await (await manage()).json()).snapshot.cover, null);
 });
+
+test("a card layout is caption or fill, fill needs a cover, and reopening restores it", async (t) => {
+  const { w, id, send, manage, command } = await fixture(t);
+  const cover = { asset_id: "c".repeat(64), name: "card.png" };
+  await w.env.PAGES_ASSETS.put(imageAssetKey(id, cover.asset_id), image);
+  for (const layout of [null, 1, "", "stretch", "FILL", ["fill"]])
+    assert.equal((await manage({ ...command(), cover, layout })).status, 400, String(layout));
+  const coverless = await manage({ ...command(), layout: "fill" });
+  assert.equal(coverless.status, 400);
+  assert.match((await coverless.json()).error, /cover/);
+  assert.equal((await manage()).status, 200);
+  assert.equal((await (await manage()).json()).revision, 0, "refused layouts publish nothing");
+
+  const fill = { ...command(), cover, layout: "fill" };
+  assert.equal((await manage(fill)).status, 200);
+  assert.equal((await (await manage()).json()).snapshot.layout, "fill");
+  assert.equal((await manage(fill)).status, 200, "exact replay is idempotent");
+  assert.equal((await manage({ ...fill, layout: "caption" })).status, 409, "the nonce is fenced");
+  const { layout: _fill, author: _author, ...bare } = fill;
+  assert.equal(
+    (await manage({ ...bare, author: "fill" })).status,
+    409,
+    "an author named like a layout is a different command",
+  );
+  const html = await (await send(`/p/${id}`)).text();
+  assert.match(html, /property="og:title" content="Approved title"/);
+  assert.match(html, /property="og:description" content="Approved description"/);
+  assert.match(html, /property="og:image:alt" content="Approved title"/);
+  assert.match(html, /property="og:image:width" content="3"/);
+  assert.doesNotMatch(await (await send(`/p/${id}/preview.json`)).text(), /layout|fill/);
+
+  assert.equal((await manage({ ...command(1), cover, layout: "caption" })).status, 200);
+  assert.equal((await (await manage()).json()).snapshot.layout, "caption");
+  assert.equal((await manage({ ...command(2), cover })).status, 200);
+  assert.equal(
+    (await (await manage()).json()).snapshot.layout,
+    "caption",
+    "a command without a layout is caption",
+  );
+  const storage = w.page(id).ctx.storage;
+  const stored = await storage.get(PREVIEW_KEY);
+  const { layout: _layout, ...older } = stored.snapshot;
+  await storage.put(PREVIEW_KEY, { ...stored, snapshot: older });
+  assert.equal(
+    (await (await manage()).json()).snapshot.layout,
+    "caption",
+    "a stored preview with no layout reopens as caption",
+  );
+});
