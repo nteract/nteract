@@ -484,6 +484,40 @@ function controller({ principal = "user:a", canHover = () => true, get } = {}) {
   };
 }
 
+test("no card opens while the refs are held, and a hold closes an open one", () => {
+  const c = controller();
+  try {
+    // An open card: the hold drops its answers, so it closes.
+    const a = link(other);
+    pointer("pointerover", a);
+    c.advance(PAGE_LINK_OPEN_MS);
+    assert.equal(c.state().name, "open");
+    c.refs.refused();
+    assert.equal(c.state().name, "closed");
+    // Held: pointing at a link opens nothing and asks nothing.
+    pointer("pointerout", a);
+    const before = c.wants.length;
+    pointer("pointerover", a);
+    c.advance(PAGE_LINK_OPEN_MS * 2);
+    assert.equal(c.state().name, "closed");
+    assert.equal(c.wants.length, before);
+    // Released: the next hover opens the card and asks for meta and card.
+    c.refs.session("user:a");
+    pointer("pointerout", a);
+    pointer("pointerover", a);
+    c.advance(PAGE_LINK_OPEN_MS);
+    assert.equal(c.state().name, "open");
+    assert.deepEqual(c.wants.at(-1), {
+      kind: "page",
+      id: other,
+      files: ["meta", "card"],
+      urgent: true,
+    });
+  } finally {
+    c.stop();
+  }
+});
+
 test("resting on a link opens its card after the delay and asks for meta and card", () => {
   const c = controller();
   const a = link(other);

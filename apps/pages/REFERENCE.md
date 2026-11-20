@@ -292,7 +292,19 @@ else replaces the screen with a Reload notice and leaves the Page unchanged.
   kind, id, file)` ref, so a Page and a Project never share one, is fresh
   for 60 s, or 15 s when unavailable, a failure retries after a doubling
   backoff from 2 s, concurrent asks share a request, and at most 6 run at
-  once, of both kinds. Another account, sign-out or any 401 drops them all.
+  once, of both kinds. Another account or sign-out drops them all. A 401,
+  a ref's own or a tool call's, drops them all and holds the tab: nothing
+  is asked, by a chit, a labeled link or a card, until a session answer
+  names the refs' own account. That releases the hold, and the tab's chits
+  and labeled links ask once for what they show. While held, no hover card
+  opens, and one already open closes. A session answer for another
+  account, or none, releases nothing; sign-out and the account the tab
+  shows move the refs as above. A release followed by another 401 with no
+  ref answered in between makes the next release wait 2 s, doubling to
+  60 s, so when every ref route keeps refusing a session that keeps
+  answering, it costs at most 6 requests per release: 36 over the first
+  six releases (62 s), then 6 a minute. A readable or unavailable answer
+  resets the wait.
   Refs load when a card opens (urgent) or a chit or labeled link draws (not
   urgent). Every link to one target shares its ref, so a Page with N
   distinct targets asks N times when it draws, at most 6 at once, whatever
@@ -310,7 +322,8 @@ else replaces the screen with a Reload notice and leaves the Page unchanged.
   answers it lacks. An editor draws when it opens (a Page opened in the
   background), when its DOM changes (a peer's edit), and once after each
   marker it changes, since the editor sees that write. A ref dropped by a
-  401 isn't asked again until a redraw or a return, and any other failing
+  401 isn't asked while the tab is held, and the release asks for it once;
+  any other failing
   target is asked again only on a redraw or a return, not on a timer. The
   routes are under
   [Link previews](#link-previews).

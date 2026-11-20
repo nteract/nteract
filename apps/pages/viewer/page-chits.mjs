@@ -48,17 +48,18 @@
 //
 // The labeledLinkMarks plugin draws them from the tab's PageRefs, and asks
 // for a target's meta by the cause of each pass (labeledLinkAsks): when the
-// editor draws its DOM or the tab's account changes, when a ref changes, and
-// when the reader comes back to the tab (the window regains focus or the
-// document turns visible). A ref change asks, while the tab is visible, only
-// for a stale unavailable answer and for a failed recheck of one past its
-// backoff. So an open tab doesn't poll its readable targets, a dropped or
-// otherwise failing ref isn't asked again until a redraw or a return, and a
-// wrong "unavailable" from a slow host heals while the reader looks: 15 s
-// after it was answered, or, if that recheck fails, on the recheck's
-// backoff, at most a minute apart. Writing a marker is a DOM change the
-// editor observes, so each marker change is followed by one draw pass in
-// that editor. A hover asks through the card.
+// editor draws its DOM, the tab's account changes or its refs are released
+// after a refusal (page-refs.mjs), when a ref changes, and when the reader
+// comes back to the tab (the window regains focus or the document turns
+// visible). A ref change asks, while the tab is visible, only for a stale
+// unavailable answer and for a failed recheck of one past its backoff. So
+// an open tab doesn't poll its readable targets, a failing ref isn't asked
+// again until a redraw or a return, a dropped one until a redraw, a return
+// or a release, and a wrong "unavailable" from a slow host heals while the
+// reader looks: 15 s after it was answered, or, if that recheck fails, on
+// the recheck's backoff, at most a minute apart. Writing a marker is a DOM
+// change the editor observes, so each marker change is followed by one
+// draw pass in that editor. A hover asks through the card.
 import { filter, skip } from "rxjs";
 import { Node } from "wordgard/doc";
 import { Decoration, Widget, Wordgard } from "wordgard/editor";
@@ -70,7 +71,7 @@ import {
   linkDestination,
   targetAttributes,
 } from "./link-destination.mjs";
-import { pageTarget, projectTarget, refKey, settledOf } from "./page-refs.mjs";
+import { asking, pageTarget, projectTarget, refKey, settledOf } from "./page-refs.mjs";
 import { PagesLink } from "./wordgard-model.mjs";
 import { chitRefs as tabRefs } from "./chit-refs.mjs";
 
@@ -232,14 +233,15 @@ export function needsAsking(ref) {
 /**
  * Whether a labeled link asks for `ref` on a pass of `cause`:
  *
- * - "draw": the editor connected, redrew its DOM, or the tab's account
- *   changed. Asks a ref never asked (or dropped), and a failure past its
- *   backoff with no earlier answer.
+ * - "draw": the editor connected, redrew its DOM, the tab's account
+ *   changed, or the tab's refs were released after a refusal. Asks a ref
+ *   never asked (or dropped), and a failure past its backoff with no
+ *   earlier answer.
  * - "change": a ref in the tab's store changed. Asks, only while the
  *   document is `visible`, a stale unavailable answer and a failed recheck
  *   of one past its backoff, so a lock drawn from a slow host's 404 heals
- *   while the reader looks. Never an idle ref (a 401 drops every ref, and
- *   asking again would loop), any other failure or a readable answer.
+ *   while the reader looks. Never an idle ref (every ref change would ask
+ *   for every dropped link), any other failure or a readable answer.
  * - "return": the reader came back to the tab. Asks a ref never asked, any
  *   stale answer and a failure past its backoff.
  *
@@ -382,10 +384,12 @@ function unmarkEditor(wg) {
 /** Keeps an editor's labeled links drawn from the tab's PageRefs: a "draw"
  * pass when it connects, after every redraw of its DOM (which may have made
  * a link's <a> anew or changed its href, and follows any marker write the
- * editor observed), and when the tab signs in as another account; a
- * "change" pass on every ref change while connected; and a "return" pass
- * when the reader comes back to the tab. A 401 drops the refs but keeps the
- * account, so it draws nothing. */
+ * editor observed), when the tab signs in as another account, and when the
+ * tab's refs are released after a refusal; a "change" pass on every ref
+ * change while connected; and a "return" pass when the reader comes back to
+ * the tab. A refusal drops the refs and holds them (page-refs.mjs asking)
+ * with the account kept: its "change" pass repaints, taking lock markers
+ * off the dropped refs, and asks nothing; no pass asks until the release. */
 const labeledLinkMarks = Wordgard.Plugin.define((wg) => {
   let subscription = null;
   const paint = (cause) => {
@@ -397,9 +401,10 @@ const labeledLinkMarks = Wordgard.Plugin.define((wg) => {
       const refs = tabRefs();
       if (subscription || !refs) return;
       subscription = refs.store.select((state) => state.refs).subscribe(() => paint("change"));
+      // The account the tab may ask for: null while signed out or held.
       subscription.add(
         refs.store
-          .select((state) => state.principal)
+          .select((state) => (asking(state) ? state.principal : null))
           .pipe(
             skip(1),
             filter((principal) => principal !== null),
@@ -419,6 +424,8 @@ const labeledLinkMarks = Wordgard.Plugin.define((wg) => {
 });
 
 const mounted = new WeakMap();
+/** A chit's selection while the tab's refs are held. */
+const HELD = Symbol("held");
 const chit = Widget.define({
   eq: (a, b) => a.href === b.href && a.kind === b.kind && a.id === b.id,
   render({ href, kind, id }, editor) {
@@ -452,14 +459,16 @@ const chit = Widget.define({
     if (!entry || entry.unsubscribe || !chitRefs) return;
     const target = entry.kind === "project" ? projectTarget(entry.id) : pageTarget(entry.id);
     const key = refKey(target, "meta");
-    // Ask whenever the answer is missing (never asked, or dropped with the
-    // account), stale, or a failure whose backoff has passed. Each of those
-    // moves to requested, so asking can't loop. The first emission asks for
-    // a chit that just connected.
+    // Ask whenever the answer is missing (never asked, or dropped), stale,
+    // or a failure whose backoff has passed. Each of those moves to
+    // requested, so asking can't loop. While the tab's refs are held after
+    // a refusal (page-refs.mjs asking), the selection is HELD and asks
+    // nothing; a release selects the dropped ref again, which asks once.
+    // The first emission asks for a chit that just connected.
     const subscription = chitRefs.store
-      .select((state) => state.refs.get(key))
+      .select((state) => (asking(state) ? state.refs.get(key) : HELD))
       .subscribe((ref) => {
-        if (needsAsking(ref)) chitRefs.want(target, ["meta"]);
+        if (ref !== HELD && needsAsking(ref)) chitRefs.want(target, ["meta"]);
         paint(dom);
       });
     entry.unsubscribe = () => subscription.unsubscribe();

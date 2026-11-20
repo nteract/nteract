@@ -15,6 +15,7 @@ import {
   readProjectMeta,
   refKey,
   refPath,
+  pageRefAccessMachine,
   pageRefMachine,
   pageRefPoolMachine,
   readCard,
@@ -177,6 +178,85 @@ test("page-ref-pool: every state × event", async () => {
   assert.equal(pageRefPoolMachine.initial.slots, PAGE_REF_CONCURRENCY);
 });
 
+const access = (name, strikes) => ({ name, strikes });
+const drop = [{ type: "drop" }];
+const accessRows = [
+  {
+    label: "a refusal drops every ref and holds",
+    state: access("open", 0),
+    event: { type: "refused" },
+    expect: ok(access("held", 1), drop),
+  },
+  {
+    label: "a refusal after a release with no answer between is a second strike",
+    state: access("open", 1),
+    event: { type: "refused" },
+    expect: ok(access("held", 2), drop),
+  },
+  {
+    label: "most session answers find the tab open",
+    state: access("open", 1),
+    event: { type: "confirmed" },
+    expect: no(access("open", 1), "not held"),
+  },
+  {
+    case: "forgiven",
+    label: "an answered ref clears the strikes",
+    state: access("open", 3),
+    event: { type: "answered" },
+    expect: ok(access("open", 0)),
+  },
+  {
+    case: "clean",
+    state: access("open", 0),
+    event: { type: "answered" },
+    expect: no(access("open", 0), "no strikes"),
+  },
+  {
+    label: "the shell's refusal after the ref's own changes nothing",
+    state: access("held", 1),
+    event: { type: "refused" },
+    expect: no(access("held", 1), "already held"),
+  },
+  {
+    case: "first",
+    label: "the first refusal releases with the session answer",
+    state: access("held", 1),
+    event: { type: "confirmed" },
+    expect: ok(access("open", 1)),
+  },
+  {
+    case: "repeat",
+    label: "a repeated refusal waits on the ref backoff",
+    state: access("held", 3),
+    event: { type: "confirmed" },
+    expect: ok(access("cooling", 3), [{ type: "wait", ms: backoffMs(2) }]),
+  },
+  {
+    label: "a refusal while cooling holds again and cancels the cool timer",
+    state: access("cooling", 2),
+    event: { type: "refused" },
+    expect: ok(access("held", 2), [{ type: "cancel" }]),
+  },
+  {
+    state: access("cooling", 2),
+    event: { type: "confirmed" },
+    expect: no(access("cooling", 2), "already cooling"),
+  },
+  {
+    label: "the cool timer releases, keeping the strikes",
+    state: access("cooling", 2),
+    event: { type: "cooled" },
+    expect: ok(access("open", 2)),
+  },
+];
+
+test("page-ref-access: every state × event", async () => {
+  const result = await runTable(pageRefAccessMachine, accessRows);
+  assert.equal(result.rows, accessRows.length);
+  assert.deepEqual(pageRefAccessMachine.initial, access("open", 0));
+});
+
 test("answers are read only for the Page they name", () => {
   const id = "2b160b47-6df1-4983-81eb-489ca5a26812";
   const body = {
@@ -222,8 +302,10 @@ const meta = (id, title = "Plan") => ({
   content_updated_at: null,
 });
 
-/** A loader whose requests wait until the test answers them. */
-function loader({ concurrency } = {}) {
+/** A loader whose requests wait until the test answers them. With
+ * `abortable: false`, an aborted request still waits for the test, as an
+ * answer already on its way would. */
+function loader({ concurrency, abortable = true } = {}) {
   // advance(ms) runs every action due by then and moves the scheduler's
   // clock there, even when nothing was due, so a timer armed afterwards
   // counts from the right time.
@@ -232,9 +314,16 @@ function loader({ concurrency } = {}) {
   const calls = [];
   const get = (path, { signal }) =>
     new Promise((resolve, reject) => {
-      const call = { path, signal, resolve, reject };
+      // `done` once the test answered it.
+      const call = {
+        path,
+        signal,
+        done: false,
+        resolve: (value) => ((call.done = true), resolve(value)),
+        reject: (error) => ((call.done = true), reject(error)),
+      };
       calls.push(call);
-      signal.addEventListener("abort", () => reject(signal.reason));
+      if (abortable) signal.addEventListener("abort", () => reject(signal.reason));
     });
   const refs = new PageRefs({ get, scheduler, ...(concurrency && { concurrency }) });
   const advance = (ms) => {
@@ -394,7 +483,11 @@ test("another account, sign-out or a 401 drops every ref and aborts what runs", 
   await l.settle();
   assert.equal(l.calls[3].signal.aborted, true);
   assert.equal(l.refs.store.snapshot().refs.size, 0);
-  // Sign-out.
+  assert.equal(l.refs.principal, "user:b");
+  // Sign-out ends the hold with the account.
+  l.refs.account(null);
+  assert.equal(l.refs.store.snapshot().access.name, "open");
+  l.refs.account("user:b");
   l.refs.want(page(A), ["meta"]);
   l.refs.account(null);
   assert.equal(l.refs.store.snapshot().refs.size, 0);
@@ -414,6 +507,224 @@ test("pool slots come back after a clear", async () => {
   l.calls[1].resolve(meta(B));
   await l.settle();
   assert.equal(l.refs.ref(page(B), "meta").name, "readable");
+});
+
+// ---------------------------------------------------------------------------
+// Refusals: the hold, its release and the backoff between releases.
+
+const TARGETS = Array.from(
+  { length: 10 },
+  (_, index) => `${index}c160b47-6df1-4983-81eb-489ca5a26812`,
+);
+
+/** The most eager caller: on every store change, ask for each target whose
+ * ref is idle. A chit asks less often than this. */
+function eagerAsks(refs) {
+  return refs.store.state$.subscribe(() => {
+    for (const id of TARGETS)
+      if (refs.ref(page(id), "meta").name === "idle") refs.want(page(id), ["meta"]);
+  });
+}
+
+/** Refuse the oldest unanswered request with a 401. */
+async function refuseOne(l) {
+  l.calls.find((call) => !call.signal.aborted && !call.done).reject(l.error(401, "auth_required"));
+  await l.settle();
+}
+
+test("a 401 holds every ask until a session answer, whoever asks", async () => {
+  const l = loader();
+  l.refs.account("user:a");
+  const subscription = eagerAsks(l.refs);
+  try {
+    assert.equal(l.calls.length, PAGE_REF_CONCURRENCY, "ten targets, six at once");
+    await refuseOne(l);
+    assert.equal(l.refs.store.snapshot().refs.size, 0, "every ref dropped");
+    assert.ok(
+      l.calls.every((call) => call.signal.aborted),
+      "the rest aborted",
+    );
+    assert.equal(l.refs.store.snapshot().access.name, "held");
+    // Asks of every kind, store changes and time ask nothing.
+    for (const id of TARGETS) l.refs.want(page(id), ["meta", "card"], { urgent: true });
+    l.refs.clear();
+    l.advance(PAGE_REF_BACKOFF_MAX_MS * 10);
+    await l.settle();
+    assert.equal(l.calls.length, PAGE_REF_CONCURRENCY, "nothing more until a session answer");
+  } finally {
+    subscription.unsubscribe();
+    l.refs.dispose();
+  }
+});
+
+test("a session answer for the same account releases, and the asks go through once", async () => {
+  const l = loader();
+  l.refs.account("user:a");
+  const subscription = eagerAsks(l.refs);
+  try {
+    await refuseOne(l);
+    l.refs.session("user:a");
+    assert.equal(l.refs.store.snapshot().access.name, "open");
+    assert.equal(l.calls.length, PAGE_REF_CONCURRENCY * 2, "six more go out at once");
+    // Answer every request; the four that waited go out as slots free up.
+    for (let index = PAGE_REF_CONCURRENCY; index < l.calls.length; index++) {
+      const call = l.calls[index];
+      call.resolve(meta(call.path.split("/")[2]));
+      await l.settle();
+    }
+    assert.equal(l.calls.length, PAGE_REF_CONCURRENCY + TARGETS.length);
+    for (const id of TARGETS) assert.equal(l.refs.ref(page(id), "meta").name, "readable");
+    assert.deepEqual(l.refs.store.snapshot().access, { name: "open", strikes: 0 });
+    // Another session answer, or a fresh want, asks nothing more.
+    l.refs.session("user:a");
+    for (const id of TARGETS) l.refs.want(page(id), ["meta"]);
+    assert.equal(l.calls.length, PAGE_REF_CONCURRENCY + TARGETS.length);
+  } finally {
+    subscription.unsubscribe();
+    l.refs.dispose();
+  }
+});
+
+test("refusals with no answer between them space releases on the ref backoff", async () => {
+  const l = loader();
+  l.refs.account("user:a");
+  const subscription = eagerAsks(l.refs);
+  const sent = () => l.calls.length;
+  try {
+    assert.equal(sent(), 6);
+    await refuseOne(l);
+    // The first refusal releases with the session answer.
+    l.refs.session("user:a");
+    assert.equal(sent(), 12);
+    // Each later one waits 2 s, 4 s, ... up to 60 s past the session answer,
+    // and each release sends six requests.
+    const waits = [2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000];
+    for (const [index, wait] of waits.entries()) {
+      await refuseOne(l);
+      l.refs.session("user:a");
+      assert.equal(l.refs.store.snapshot().access.name, "cooling");
+      l.refs.session("user:a");
+      l.advance(wait - 1);
+      await l.settle();
+      assert.equal(sent(), 12 + 6 * index, `release ${index + 2} still waits`);
+      l.advance(1);
+      await l.settle();
+      assert.equal(sent(), 12 + 6 * (index + 1), `release ${index + 2} after ${wait} ms`);
+    }
+    assert.equal(sent(), 54, "the first asks and eight releases, six requests each");
+    // A refusal while cooling holds again and cancels the cool timer; the
+    // next session answer starts the same wait over.
+    await refuseOne(l);
+    l.refs.session("user:a");
+    l.refs.refused();
+    assert.equal(l.refs.store.snapshot().access.name, "held");
+    l.advance(PAGE_REF_BACKOFF_MAX_MS);
+    await l.settle();
+    assert.equal(sent(), 54, "the cancelled timer releases nothing");
+    l.refs.session("user:a");
+    l.advance(PAGE_REF_BACKOFF_MAX_MS);
+    await l.settle();
+    assert.equal(sent(), 60);
+    // An answered ref clears the strikes: the next refusal releases at once.
+    const live = l.calls.find((call) => !call.signal.aborted && !call.done);
+    live.resolve(meta(live.path.split("/")[2]));
+    await l.settle();
+    assert.equal(l.refs.store.snapshot().access.strikes, 0);
+    const before = sent();
+    await refuseOne(l);
+    l.refs.session("user:a");
+    assert.equal(l.refs.store.snapshot().access.name, "open");
+    assert.ok(sent() > before, "released at once");
+  } finally {
+    subscription.unsubscribe();
+    l.refs.dispose();
+  }
+});
+
+test("a session answer for another account, or none, changes nothing", async () => {
+  // Signed out (refs at null): a session naming someone the tab doesn't
+  // show moves nothing and asks nothing.
+  const l = loader();
+  const subscription = eagerAsks(l.refs);
+  try {
+    const before = l.refs.store.snapshot();
+    l.refs.session("user:b");
+    assert.equal(l.refs.store.snapshot(), before);
+    assert.equal(l.calls.length, 0);
+
+    // At user:a, open, then held: user:b or none neither moves the account
+    // nor releases the hold.
+    l.refs.account("user:a");
+    assert.equal(l.calls.length, PAGE_REF_CONCURRENCY);
+    const open = l.refs.store.snapshot();
+    l.refs.session("user:b");
+    l.refs.session(null);
+    assert.equal(l.refs.store.snapshot(), open);
+    assert.equal(l.calls.length, PAGE_REF_CONCURRENCY);
+    await refuseOne(l);
+    const held = l.refs.store.snapshot();
+    l.refs.session("user:b");
+    l.refs.session(null);
+    l.advance(PAGE_REF_BACKOFF_MAX_MS * 10);
+    await l.settle();
+    assert.equal(l.refs.store.snapshot(), held);
+    assert.equal(l.refs.principal, "user:a");
+    assert.equal(l.calls.length, PAGE_REF_CONCURRENCY, "sent nothing");
+    // The account's own answer still releases.
+    l.refs.session("user:a");
+    assert.equal(l.calls.length, PAGE_REF_CONCURRENCY * 2);
+  } finally {
+    subscription.unsubscribe();
+    l.refs.dispose();
+  }
+});
+
+test("sign-out and another account clear through account(), hold or no hold", async () => {
+  const l = loader();
+  l.refs.account("user:a");
+  l.refs.want(page(A), ["meta"]);
+  await refuseOne(l);
+  // Another account: its refs start empty and open.
+  l.refs.account("user:b");
+  assert.equal(l.refs.principal, "user:b");
+  assert.deepEqual(l.refs.store.snapshot().access, { name: "open", strikes: 0 });
+  l.refs.want(page(A), ["meta"]);
+  assert.equal(l.calls.length, 2);
+  // A cooling hold, then signed out (main.jsx forgetAccountData): the cool
+  // timer goes with it.
+  await refuseOne(l);
+  l.refs.session("user:b");
+  l.refs.want(page(A), ["meta"]);
+  await refuseOne(l);
+  l.refs.session("user:b");
+  assert.equal(l.refs.store.snapshot().access.name, "cooling");
+  l.refs.clear(null);
+  assert.equal(l.refs.principal, null);
+  assert.deepEqual(l.refs.store.snapshot().access, { name: "open", strikes: 0 });
+  assert.equal(l.scheduler.actions.length, 0, "no cool timer left");
+  l.refs.want(page(A), ["meta"]);
+  assert.equal(l.calls.length, 3, "signed out: nothing asked");
+});
+
+test("an answer that arrives after a hold writes nothing", async () => {
+  const l = loader({ abortable: false });
+  l.refs.account("user:a");
+  l.refs.want(page(A), ["meta"]);
+  l.refs.want(page(B), ["meta"]);
+  // The shell's refusal (forgetRefusedAccountData) holds first.
+  l.refs.refused();
+  assert.ok(l.calls.every((call) => call.signal.aborted));
+  l.calls[0].resolve(meta(A));
+  l.calls[1].reject(l.error(401, "auth_required"));
+  await l.settle();
+  assert.equal(l.refs.store.snapshot().refs.size, 0);
+  assert.deepEqual(l.refs.store.snapshot().access, { name: "held", strikes: 1 });
+  // After the release, the late answers settle no pool slot and keep no ref.
+  l.refs.session("user:a");
+  l.refs.want(page(A), ["meta"]);
+  assert.equal(l.calls.length, 3);
+  assert.equal(l.refs.ref(page(A), "meta").name, "requested");
+  assert.equal(l.refs.ref(page(B), "meta").name, "idle");
 });
 
 // ---------------------------------------------------------------------------
