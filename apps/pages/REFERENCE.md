@@ -82,8 +82,17 @@ the name and the product's line sit in the middle column, inside the centred
 square that Slack keeps for its thumbnail. The content of a Page runs off each
 side at a tilt, outside that square, so the thumbnail is the words alone. The
 logo and the product name are its only inputs (`--logo`, `--name`), and `--png`
-writes the image to a file instead. No deployment setting selects another
-card yet: every deployment serves the committed one.
+writes the image to a file instead and prints the key to store it under.
+
+`PAGES_SOCIAL_CARD` selects a deployment's own card: the `PAGES_ASSETS` key
+`brand/social-card-<v>.png`, where `<v>` is the first 12 hex digits of the
+PNG's sha256. The image must be 1200x630. Every tag above then names
+`/social-card.png?v=<v>`, and that URL streams the object with the same
+headers as the committed card. Unset, or a value of any other shape, selects
+the committed card; a value of another shape is logged once per isolate. Any
+other `v`, a missing object or a failed read answers with the committed card
+and `max-age=300`, so a broken setting never leaves a link without an image.
+See [Brand card](DEPLOYMENT.md#brand-card).
 
 The optional single-workspace Slack adapter (`worker/slack-previews.mjs`)
 turns the same public snapshot into a Content Item Work Object, including its

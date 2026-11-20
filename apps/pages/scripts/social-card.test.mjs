@@ -9,9 +9,12 @@ import {
   CARD_WIDTH,
   CROP,
   cardHtml,
+  cardKey,
   cardModule,
+  cardVersion,
   encodePalettePng,
 } from "./social-card.mjs";
+import { socialCard } from "../worker/site-tags.mjs";
 import {
   SOCIAL_CARD_BASE64,
   SOCIAL_CARD_HEIGHT,
@@ -74,6 +77,16 @@ test("the committed card is a 1200x630 palette PNG whose version is its digest",
   // The module is exactly what the generator writes for these bytes.
   assert.ok(cardModule(png).includes(`SOCIAL_CARD_VERSION = "${SOCIAL_CARD_VERSION}"`));
   assert.ok(cardModule(png).includes(SOCIAL_CARD_BASE64));
+});
+
+test("the key printed for a deployment's card is the one PAGES_SOCIAL_CARD accepts", () => {
+  const png = Buffer.from(SOCIAL_CARD_BASE64, "base64");
+  assert.equal(cardVersion(png), SOCIAL_CARD_VERSION);
+  assert.equal(cardKey(png), `brand/social-card-${SOCIAL_CARD_VERSION}.png`);
+  assert.deepEqual(socialCard({ PAGES_SOCIAL_CARD: cardKey(png) }), {
+    version: SOCIAL_CARD_VERSION,
+    key: cardKey(png),
+  });
 });
 
 test("an image of few colours encodes without loss", () => {

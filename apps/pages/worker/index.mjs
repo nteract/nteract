@@ -479,7 +479,7 @@ import {
 } from "./link-previews.mjs";
 import { pageShellSlug, slugShellResponse } from "./page-shell.mjs";
 import { SOCIAL_CARD_PATH } from "../shared/social-card.mjs";
-import { siteShellResponse, socialCardResponse } from "./site-tags.mjs";
+import { siteShellResponse, socialCard, socialCardResponse } from "./site-tags.mjs";
 import { outputFrameAssets } from "./output-frame-config.mjs";
 import { libraryCatalogResponse } from "./library-catalog.mjs";
 import { titleProjection } from "./title-projection.mjs";
@@ -1680,7 +1680,7 @@ const gateway = {
         if (local) return local;
       }
       if (url.pathname === "/connect") return connectAgentResponse(request, env);
-      if (url.pathname === SOCIAL_CARD_PATH) return socialCardResponse(request);
+      if (url.pathname === SOCIAL_CARD_PATH) return await socialCardResponse(request, env);
       if (url.pathname === "/api/slack/events") return await handleSlackPreview(request, env);
       if (url.pathname === "/llms.txt" || url.pathname.startsWith("/llms/"))
         return agentGuideResponse(request, env);
@@ -2134,12 +2134,13 @@ const gateway = {
       // A Page link with a slug: the shell titled with the slug's words, for
       // link previews (page-shell.mjs).
       const publicOrigin = new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin;
+      const card = socialCard(env);
       const slug = pageShellSlug(request, url);
       if (slug)
         return await publicPreviewResponse(request, env, url.pathname.split("/")[2], null, () =>
-          slugShellResponse(request, env.ASSETS, slug, publicOrigin),
+          slugShellResponse(request, env.ASSETS, slug, publicOrigin, card),
         );
-      return await siteShellResponse(request, env.ASSETS, publicOrigin);
+      return await siteShellResponse(request, env.ASSETS, publicOrigin, card);
     } catch (error) {
       // A browser opening a sign-in route while Pages starts gets a page
       // that loads it again, not the JSON refusal.

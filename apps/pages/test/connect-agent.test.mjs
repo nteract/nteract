@@ -4,7 +4,7 @@ import { JSDOM } from "jsdom";
 import worker from "../worker/index.mjs";
 import { agentConnectionSetup } from "../connect-agent.mjs";
 import { identityProvider } from "../identity-provider.mjs";
-import { socialCardUrl } from "../worker/site-tags.mjs";
+import { COMMITTED_CARD, socialCardUrl } from "../worker/site-tags.mjs";
 import {
   checkAccountCommand,
   claudeCodeAddCommand,
@@ -246,7 +246,7 @@ test("/connect carries link-preview tags that name the configured origin", async
   assert.equal(meta('meta[property="og:title"]'), "Connect an agent");
   assert.equal(meta('meta[property="og:site_name"]'), "Pages");
   assert.equal(meta('meta[property="og:url"]'), `${origin}/connect`);
-  assert.equal(meta('meta[property="og:image"]'), socialCardUrl(origin));
+  assert.equal(meta('meta[property="og:image"]'), socialCardUrl(origin, COMMITTED_CARD));
   assert.equal(meta('meta[name="twitter:card"]'), "summary_large_image");
   assert.equal(meta('meta[name="description"]'), meta('meta[property="og:description"]'));
   assert.equal(dom.head.querySelectorAll('meta[name="description"]').length, 1);

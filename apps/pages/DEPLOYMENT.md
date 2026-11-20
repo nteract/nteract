@@ -2162,6 +2162,53 @@ the shell deploys before the viewer that mounts the new path.
 A consumer whose archive check refuses unknown top-level entries must accept
 `output/` in the same change that pins the first release carrying it.
 
+## Brand card
+
+A link to `/`, `/connect` or a Page with no published preview unfurls with the
+product's card. A deployment can show its own card instead, without a new
+build. The card is an object in the deployment's `PAGES_ASSETS` bucket, and
+`PAGES_SOCIAL_CARD` names it.
+
+The image must be a 1200x630 PNG. The tags state that size for every card,
+and services that crop to a square keep the centred 630x630 middle. Draw it
+with the card script, from `apps/pages`, with your logo and name:
+
+```sh
+node scripts/social-card.mjs --logo logo.svg --name "Example Docs" --png card.png
+```
+
+The script writes `card.png` and prints the key to upload it under,
+`brand/social-card-<v>.png`. `<v>` is the first 12 hex digits of the PNG's
+sha256. An image drawn some other way gets the same key from
+`shasum -a 256 card.png | cut -c1-12`.
+
+Upload it, set the variable, then deploy. On Cloudflare, with the bucket the
+deployment's profile names:
+
+```sh
+node_modules/.bin/wrangler r2 object put <bucket>/brand/social-card-<v>.png \
+  --file card.png --content-type image/png --remote
+```
+
+Add `"PAGES_SOCIAL_CARD": "brand/social-card-<v>.png"` to the profile's
+`vars` (or the deployment's own Wrangler file), and deploy. The variable
+belongs to the deployment: it is not one of the package's `structural_vars`,
+so a release package needs no change to carry it.
+
+The tags then name `/social-card.png?v=<v>`, and that URL streams the object
+with the same headers as the built-in card, immutable for a year. A new card
+needs a new upload under its own key and a new value: never overwrite an
+object under a key that is already set, because services keep the image by
+its URL. Leave the old object in place until the new value is deployed.
+
+A broken setting never leaves a link without an image. A value that doesn't
+match `brand/social-card-<12 lowercase hex digits>.png` selects the built-in
+card, and each Worker isolate logs `site.social_card_setting_refused` once.
+When the object is missing or can't be read, the card's URL answers with the
+built-in card for five minutes, and the isolate logs
+`site.social_card_unavailable` with the key and `missing` or `read_failed`.
+Unset the variable to go back to the built-in card.
+
 ## Copying a Project to a new target
 
 Deployment never copies data. When a new target needs a Project from an older

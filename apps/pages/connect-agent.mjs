@@ -16,7 +16,7 @@ import {
   setupPrompt,
 } from "./agent-client-setup.mjs";
 import { FAVICON_LINK } from "./shared/favicon.mjs";
-import { siteTags } from "./worker/site-tags.mjs";
+import { siteTags, socialCard } from "./worker/site-tags.mjs";
 import { PRODUCT_NAME, tabTitle } from "./shared/product.mjs";
 import { STYLESHEET, THEME_SCRIPT } from "./shared/shell-assets.mjs";
 
@@ -247,7 +247,7 @@ function connectPage(setup, provider, env) {
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(tabTitle("Connect an agent"))}</title>
-${siteTags(setup.origin, { title: CONNECT_TITLE, description: CONNECT_DESCRIPTION, url: `${setup.origin}/connect` })}
+${siteTags(setup.origin, socialCard(env), { title: CONNECT_TITLE, description: CONNECT_DESCRIPTION, url: `${setup.origin}/connect` })}
 ${FAVICON_LINK}<script src="${THEME_SCRIPT}"></script><link rel="stylesheet" href="${STYLESHEET}"><link rel="describedby" type="text/plain" href="/llms.txt"></head>
 <body><header class="app-header"><a class="brand" href="/">${escapeHtml(PRODUCT_NAME)}</a><a class="setup-guide-link" href="/llms.txt">Agent guide</a></header>
 <main class="agent-setup">

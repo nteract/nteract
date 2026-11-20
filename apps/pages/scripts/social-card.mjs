@@ -12,7 +12,8 @@
 // middle column is drawn inside that square and the Pages outside it.
 // `--logo` (a PNG, JPEG, WebP or SVG file) and `--name` are the only parts a
 // deployment changes. `--png` writes the image to a file instead of the
-// module, for a deployment that serves its own card.
+// module, for a deployment that serves its own card, and prints the
+// PAGES_ASSETS key to upload it under (DEPLOYMENT.md, "Brand card").
 //
 // It needs Chromium (`npx playwright install chromium`) and the fonts of the
 // machine it runs on, so it is run by hand and its output is committed. The
@@ -24,6 +25,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { deflateSync } from "node:zlib";
 import { PRODUCT_NAME } from "../shared/product.mjs";
+import { brandCardKey } from "../worker/site-tags.mjs";
 
 export const CARD_WIDTH = 1200;
 export const CARD_HEIGHT = 630;
@@ -350,10 +352,16 @@ async function renderCard(html) {
   }
 }
 
+/** The card's version: the first 12 hex digits of its sha256. */
+export const cardVersion = (png) => createHash("sha256").update(png).digest("hex").slice(0, 12);
+
+/** The PAGES_ASSETS key a deployment stores `png` under and names in
+ * PAGES_SOCIAL_CARD (worker/site-tags.mjs socialCard). */
+export const cardKey = (png) => brandCardKey(cardVersion(png));
+
 /** The module the Worker imports: the card's bytes, their digest for the
  * URL, and the size the tags state. */
 export function cardModule(png) {
-  const digest = createHash("sha256").update(png).digest("hex");
   return `// The link-preview card for the product's own pages: ${CARD_WIDTH}x${CARD_HEIGHT}, served at
 // SOCIAL_CARD_PATH by the Worker (worker/site-tags.mjs). Link unfurlers fetch
 // it by absolute URL, so it needs a route; inlining the bytes keeps it out of
@@ -366,7 +374,7 @@ export function cardModule(png) {
 export const SOCIAL_CARD_PATH = "/social-card.png";
 export const SOCIAL_CARD_WIDTH = ${CARD_WIDTH};
 export const SOCIAL_CARD_HEIGHT = ${CARD_HEIGHT};
-export const SOCIAL_CARD_VERSION = "${digest.slice(0, 12)}";
+export const SOCIAL_CARD_VERSION = "${cardVersion(png)}";
 export const SOCIAL_CARD_BASE64 =
   "${png.toString("base64")}";
 `;
@@ -390,6 +398,7 @@ async function main() {
   const target = options.png ?? DEFAULT_MODULE;
   writeFileSync(target, options.png ? png : cardModule(png));
   console.log(`Wrote ${path.relative(process.cwd(), target)}: ${png.length} bytes of PNG`);
+  if (options.png) console.log(`Upload it to PAGES_ASSETS as ${cardKey(png)}`);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) await main();
