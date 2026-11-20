@@ -24,10 +24,17 @@
 // ref, aborts the requests in flight and cancels the timers, as the
 // library's listing cache forgets an account (main.jsx forgetAccountData).
 //
-// Refs load on intent: `want(target, files)`. Today the hover card asks
-// (PageLinkCard.jsx) when a reader points at or focuses a link; a viewport
-// observer can ask the same way later, with `urgent: false`, so an intent
-// the reader has now goes out before ones a scroll made.
+// Refs load on intent: `want(target, files)`. The hover card asks, urgent,
+// (PageLinkCard.jsx) when a reader points at or focuses a link. Chits and
+// labeled Page and Project links ask for meta, not urgent, when an editor
+// draws them (page-chits.mjs), so an intent the reader has now goes out
+// before theirs: N distinct targets cost N asks. A drawn chit asks again
+// whenever its answer goes stale. A labeled link asks by the cause of each
+// pass (page-chits.mjs labeledLinkAsks): after the first draw, only a stale
+// unavailable answer while the tab is visible, every 15 s (a failed recheck
+// of one on its backoff, at most a minute apart); a stale answer
+// of any kind when the reader comes back to the tab; and through the card
+// on a hover. A hidden tab asks for labeled links only when an editor draws.
 import { timer } from "rxjs";
 import { defineMachine, reject } from "../shared/machine.mjs";
 import { getJson } from "./request.mjs";

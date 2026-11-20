@@ -137,11 +137,16 @@ function CardBody({ cards, refs, target, onOpen }) {
   useLayoutEffect(() => {
     const link = cards.link;
     if (!takesFocus(link) || link.closest("[contenteditable='true']")) return;
+    // Other tokens (an unavailable link's description, page-chits.mjs) may
+    // change while the card shows, so closing removes only the card's own.
     const before = link.getAttribute("aria-describedby");
     link.setAttribute("aria-describedby", [before, labelId].filter(Boolean).join(" "));
     return () => {
-      if (before === null) link.removeAttribute("aria-describedby");
-      else link.setAttribute("aria-describedby", before);
+      const rest = (link.getAttribute("aria-describedby") ?? "")
+        .split(/\s+/)
+        .filter((token) => token && token !== labelId);
+      if (rest.length) link.setAttribute("aria-describedby", rest.join(" "));
+      else link.removeAttribute("aria-describedby");
     };
   }, [cards, labelId]);
   useLayoutEffect(() => {

@@ -1,6 +1,7 @@
 // Links between Pages and to Projects in a real browser, against a running
 // local Wordgard fixture: the Page and Project glyphs (once per link,
-// however its text is formatted), the hover card's faces for both kinds,
+// however its text is formatted), the lock on labeled links the reader
+// can't open, the hover card's faces for both kinds,
 // crossing a formatted link, Escape, keyboard access from a comment link,
 // Open in place for a Page and a Project, the open Project's own links left
 // plain, and the caret around a glyph link in an editable block. Then
@@ -273,6 +274,47 @@ try {
   assert.notEqual(projectGlyph.mask, glyph.mask, "the Project glyph isn't the Page glyph");
   checkpoint("Project links draw the Project glyph");
 
+  stage = "unavailable labeled links";
+  {
+    // alice's Page and Project are asked for when the Page draws, with no
+    // hover, and their links say so: a lock glyph, the muted colour and an
+    // accessible description. The label, the link and the line stay.
+    const secretLink = link(page, secret.page_id);
+    const secretProjectLink = projectLink(page, secretProject.project_id);
+    await expect(secretLink).toHaveAttribute("data-link-state", "unavailable");
+    await expect(secretLink).toHaveAccessibleDescription("Page unavailable");
+    await expect(secretProjectLink).toHaveAttribute("data-link-state", "unavailable");
+    await expect(secretProjectLink).toHaveAccessibleDescription("Project unavailable");
+    await expect(link(page, target.page_id).first()).toHaveAccessibleDescription("");
+    // The descriptions live once each, hidden, outside every editor.
+    for (const id of ["pages-link-unavailable-page", "pages-link-unavailable-project"]) {
+      await expect(page.locator(`[id="${id}"]`)).toHaveCount(1);
+      await expect(page.locator(`[id="${id}"]`)).toBeHidden();
+      await expect(page.locator(`wg-content [id="${id}"]`)).toHaveCount(0);
+    }
+    await expect(secretLink).toHaveText("Alice's notes");
+    await expect(secretLink).toHaveAttribute("href", new RegExp(`/p/${secret.page_id}$`));
+    await expect(link(page, target.page_id).first()).not.toHaveAttribute("data-link-state");
+    await expect(projectLink(page, project.project_id)).not.toHaveAttribute("data-link-state");
+    const drawn = (locator) =>
+      locator.evaluate((a) => {
+        const after = getComputedStyle(a, "::after");
+        return {
+          mask: after.maskImage || after.webkitMaskImage,
+          color: getComputedStyle(a).color,
+          height: a.getBoundingClientRect().height,
+        };
+      });
+    const open = await drawn(link(page, target.page_id).first());
+    const locked = await drawn(secretLink);
+    const lockedProject = await drawn(secretProjectLink);
+    assert.notEqual(locked.mask, open.mask, "the lock replaces the Page glyph");
+    assert.equal(lockedProject.mask, locked.mask, "a Project draws the same lock");
+    assert.notEqual(locked.color, open.color, "an unavailable link is muted");
+    assert.equal(locked.height, open.height, "the marker keeps the line's height");
+  }
+  checkpoint("labeled links the reader can't open are marked unavailable without a hover");
+
   stage = "caret and copy";
   {
     // Put the caret right after each link's last letter with the keyboard
@@ -428,6 +470,12 @@ try {
     await held;
     await route.continue().catch(() => {});
   });
+  // Links ask for their targets when the Page draws, so the held answer has
+  // to be the first one this tab asks for.
+  await page.goto(sourceUrl);
+  await expect(link(page, slow.page_id)).toBeVisible({ timeout: 30000 });
+  await expect(link(page, secret.page_id)).toHaveAttribute("data-link-state", "unavailable");
+  await expect(link(page, slow.page_id)).not.toHaveAttribute("data-link-state");
   await page.mouse.move(2, 2);
   await expect(card(page)).toHaveCount(0, { timeout: 5000 });
   await link(page, slow.page_id).hover();
@@ -712,6 +760,182 @@ try {
         await context.close();
       }
     checkpoint(`chit screenshots in ${output}`);
+  }
+
+  stage = "typing beside a marked link";
+  {
+    // The marker is attributes the viewer writes on the editor's own <a>,
+    // which the editor observes. Typing around a marked link, and typing
+    // while the marker arrives or clears, must behave as for any link.
+    const LINE = "Before Alice's notes after.";
+    const linePage = async (label, pageId) => {
+      const made = await tool(owner.page, "create_page", {
+        title: `Typing ${label}`,
+        nonce: key(),
+        markdown: `Before [Alice's notes](/p/${pageId}) after.`,
+      });
+      return `${origin}/p/${made.page_id}`;
+    };
+    const markedUrl = await linePage("marked", secret.page_id);
+    const arrivingUrl = await linePage("arriving", secret.page_id);
+    const clearingUrl = await linePage("clearing", target.page_id);
+    const tab = async () => {
+      const opened = await owner.context.newPage();
+      opened.on("pageerror", (error) => errors.push(`typing: ${error.message}`));
+      return opened;
+    };
+    const line = (on) => on.locator("wg-content p", { hasText: "after." });
+    const frame = (on) =>
+      on.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+    /** Focus the block at its end, then move the caret to character `index`
+     * of its text with the keyboard, as a reader would. */
+    const placeCaret = async (on, index) => {
+      const p = line(on);
+      const box = await p.boundingBox();
+      await p.click({ position: { x: box.width - 2, y: box.height / 2 } });
+      await on.keyboard.press("Home");
+      for (let step = 0; step < index; step++) await on.keyboard.press("ArrowRight");
+      await frame(on);
+    };
+    /** The caret's character offset in the block's text. */
+    const caretAt = (on) =>
+      line(on).evaluate((p) => {
+        const selection = getSelection();
+        if (!selection.isCollapsed || !p.contains(selection.focusNode)) return null;
+        const range = document.createRange();
+        range.setStart(p, 0);
+        range.setEnd(selection.focusNode, selection.focusOffset);
+        return range.toString().length;
+      });
+    const lockedLink = (on) =>
+      on.locator(`wg-content a.page-link[data-page-id="${secret.page_id}"]`);
+    const expectLocked = async (on) => {
+      await expect(lockedLink(on)).toHaveAttribute("data-link-state", "unavailable");
+      await expect(lockedLink(on)).toHaveAccessibleDescription("Page unavailable");
+    };
+
+    // 1. Typing after, before and inside a link that is already marked. The
+    // link mark doesn't extend at its edges, so text typed just after or
+    // just before it is plain text; text typed inside the label is link text.
+    {
+      const on = await tab();
+      await on.goto(markedUrl);
+      await expectLocked(on);
+      // [where, caret index, typed, the line after, the link's label after]
+      const steps = [
+        [
+          "after",
+          "Before Alice's notes".length,
+          "-a1",
+          "Before Alice's notes-a1 after.",
+          "Alice's notes",
+        ],
+        ["before", "Before ".length, "b2-", "Before b2-Alice's notes-a1 after.", "Alice's notes"],
+        [
+          "inside",
+          "Before b2-Alice's".length,
+          "+c3",
+          "Before b2-Alice's+c3 notes-a1 after.",
+          "Alice's+c3 notes",
+        ],
+      ];
+      for (const [where, index, typed, expected, label] of steps) {
+        await placeCaret(on, index);
+        assert.equal(await caretAt(on), index, `caret placed ${where} the link`);
+        await on.keyboard.type(typed, { delay: 30 });
+        await expect(line(on)).toHaveText(expected);
+        assert.equal(await caretAt(on), index + typed.length, `caret after typing ${where}`);
+        await expect(lockedLink(on)).toHaveText(label);
+        await expectLocked(on);
+      }
+      await on.close();
+    }
+    checkpoint("typing after, before and inside a marked link keeps text, caret and marker");
+
+    // 2. The marker arrives while the reader types. 4. Undo then removes
+    // only typed text, and the marker's arrival is no step of its own.
+    {
+      const on = await tab();
+      let release;
+      const held = new Promise((resolve) => (release = resolve));
+      await on.route(`**/p/${secret.page_id}/meta.json`, async (route) => {
+        await held;
+        await route.continue().catch(() => {});
+      });
+      await on.goto(arrivingUrl);
+      await expect(lockedLink(on)).toBeVisible({ timeout: 30000 });
+      await expect(lockedLink(on)).not.toHaveAttribute("data-link-state");
+      await placeCaret(on, LINE.length);
+      await on.keyboard.type("Typed ", { delay: 30 });
+      release();
+      await on.keyboard.type("while marking.", { delay: 30 });
+      await expectLocked(on);
+      const typed = `${LINE}Typed while marking.`;
+      await expect(line(on)).toHaveText(typed);
+      assert.equal(await caretAt(on), typed.length, "the caret stayed at the end of typing");
+      checkpoint("the marker arriving mid-typing leaves the typed text and caret alone");
+
+      // Each undo takes back typed text from the end; the last one leaves
+      // the line as it loaded, still marked, and another undo changes nothing.
+      let text = typed;
+      for (let undo = 0; undo < 8 && text !== LINE; undo++) {
+        await on.keyboard.press("ControlOrMeta+Z");
+        await frame(on);
+        const now = await line(on).textContent();
+        assert.ok(
+          now.length < text.length && typed.startsWith(now) && now.startsWith(LINE),
+          `undo ${undo + 1} removed only typed text from the end: ${JSON.stringify(now)}`,
+        );
+        text = now;
+      }
+      assert.equal(text, LINE, "undo reached the line as loaded");
+      await expectLocked(on);
+      await on.keyboard.press("ControlOrMeta+Z");
+      await frame(on);
+      await expect(line(on)).toHaveText(LINE);
+      await expectLocked(on);
+      await on.keyboard.press("ControlOrMeta+Shift+Z");
+      await frame(on);
+      assert.ok(typed.startsWith(await line(on).textContent()), "redo restores typed text");
+      await on.close();
+    }
+    checkpoint("undo takes back only typed text; the marker's arrival isn't a step");
+
+    // 3. A transient unavailable answer clears on its recheck while the
+    // reader types. The first meta answer is the 404 a slow host gives; the
+    // recheck reaches the Page. The clock jumps past the 15 s freshness.
+    {
+      const on = await tab();
+      await on.clock.install();
+      let answered = 0;
+      await on.route(`**/p/${target.page_id}/meta.json`, async (route) => {
+        answered += 1;
+        if (answered === 1)
+          await route.fulfill({
+            status: 404,
+            contentType: "application/json",
+            body: JSON.stringify({ error: "Page unavailable", code: "page_unavailable" }),
+          });
+        else await route.continue().catch(() => {});
+      });
+      await on.goto(clearingUrl);
+      const targetLink = on.locator(`wg-content a.page-link[data-page-id="${target.page_id}"]`);
+      await expect(targetLink).toHaveAttribute("data-link-state", "unavailable", {
+        timeout: 30000,
+      });
+      await placeCaret(on, LINE.length);
+      await on.keyboard.type("Typed ", { delay: 30 });
+      await on.clock.fastForward(16_000);
+      await on.keyboard.type("while clearing.", { delay: 30 });
+      await expect(targetLink).not.toHaveAttribute("data-link-state", { timeout: 15000 });
+      await expect(targetLink).toHaveAccessibleDescription("");
+      assert.ok(answered >= 2, "the stale unavailable answer was asked again");
+      const typed = `${LINE}Typed while clearing.`;
+      await expect(line(on)).toHaveText(typed);
+      assert.equal(await caretAt(on), typed.length, "the caret stayed at the end of typing");
+      await on.close();
+    }
+    checkpoint("the marker clearing mid-typing leaves the typed text and caret alone");
   }
 
   assert.deepEqual(errors, []);

@@ -293,11 +293,44 @@ else replaces the screen with a Reload notice and leaves the Page unchanged.
   for 60 s, or 15 s when unavailable, a failure retries after a doubling
   backoff from 2 s, concurrent asks share a request, and at most 6 run at
   once, of both kinds. Another account, sign-out or any 401 drops them all.
-  Refs load when a card opens or a chit draws; a mounted chit asks again
-  once its answer is stale, dropped, or failed past its backoff, so a rename
-  shows within a minute. The store takes a non-urgent
-  ask so a viewport observer can drive it later. The routes are under
+  Refs load when a card opens (urgent) or a chit or labeled link draws (not
+  urgent). Every link to one target shares its ref, so a Page with N
+  distinct targets asks N times when it draws, at most 6 at once, whatever
+  the number of links. A drawn chit asks again once its answer is stale,
+  dropped, or failed past its backoff, so a rename shows within a minute.
+  Labeled links ask by the cause of each pass (`labeledLinkAsks`). After the
+  first draw, an open tab asks only for targets the reader can't open, each
+  every 15 s and only while the tab is visible, so an answer a slow host
+  turned into "unavailable" heals while the reader looks; if that recheck
+  fails, it is retried on its backoff, at most a minute apart. A return to
+  the tab (the window regains focus or the document turns visible) asks
+  once for each target whose answer is missing or stale, signing in as
+  another account asks again for every link, and a hover asks through the
+  card. A hidden tab asks nothing unless an editor draws, and then only for
+  answers it lacks. An editor draws when it opens (a Page opened in the
+  background), when its DOM changes (a peer's edit), and once after each
+  marker it changes, since the editor sees that write. A ref dropped by a
+  401 isn't asked again until a redraw or a return, and any other failing
+  target is asked again only on a redraw or a return, not on a timer. The
+  routes are under
   [Link previews](#link-previews).
+- **Unavailable labeled links:** a labeled link, `[label](url)`, to a Page
+  or Project this reader can't open keeps its label and stays a link, but
+  draws a lock in place of the kind's glyph, in the muted colour of an
+  unavailable chit, and is described as "Page unavailable" or "Project
+  unavailable" (`markLabeledLinks` in
+  [`viewer/page-chits.mjs`](viewer/page-chits.mjs)). The description is an
+  `aria-describedby` token naming one of two hidden elements the viewer
+  adds once to the document body, outside every editor. Only a settled
+  unavailable answer marks a link; loading and a failed read draw it as
+  usual. Once access is granted, the marker goes away without a reload
+  while the tab is visible, at its next recheck: within 15 s, or within a
+  minute when a recheck failed. It also goes when the reader comes back to
+  the tab or hovers the link. The marker is attributes on the drawn `<a>`
+  and CSS, in Page blocks, read-only blocks and comments, never document
+  text, so copy and Markdown keep the label and the link. Links to another
+  host and to a heading on the open Page are never marked, including a
+  marked link whose href is edited to one.
 - **Bare links and chits:** a plain-text paste of exactly one absolute
   http(s) URL, into a Page block or a comment, inserts a bare link: the URL
   as text with a link mark whose href is that text and no title
