@@ -1147,6 +1147,29 @@ test("a selection across a block's nodes deletes through the markers between the
   editor.binding.destroy();
 });
 
+// Wordgard 0.7.0's joinForward pairs the list's ancestors with the quote's by
+// depth, so the quote's later blocks would land directly in the list, and the
+// command throws while it builds the transaction.
+test(
+  "Delete at the end of a list joins the next quote's first paragraph and keeps the rest",
+  { todo: "Wordgard 0.7.0 joinBlocks moves a quote's later blocks into the list and throws" },
+  () => {
+    const replica = fixture("- item\n\n> first\n>\n> second"),
+      editor = editorFor(replica, "one");
+    // The end of "item", in the list's only paragraph.
+    const doc = editor.state.doc;
+    const end = [...Array(doc.length + 1).keys()].find((pos) => {
+      const at = doc.resolve(pos);
+      return String(at.nodeBefore?.param) === "item" && !at.nodeAfter;
+    });
+    editor.dispatch({ selection: { anchor: end } });
+    assert.equal(editor.run(deleteUnit, "forward"), true);
+    assertInSync(editor, replica, "one", "Delete before a quote");
+    assert.equal(blockMarkdown(replica.doc.blocks.one), "- itemfirst\n\n> second");
+    editor.binding.destroy();
+  },
+);
+
 /** Native offsets of the markers whose cursors `cursors` holds. */
 const markerOffsets = (replica, cursors) =>
   cursors.map((cursor) => A.getCursorPosition(replica.doc, textPath("one"), cursor));
