@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { DATA_FORMAT_ADVICE, MEDIA_GUIDES, mediaGuide } from "../agent-media-guides.mjs";
 import { agentGuide } from "../agent-guide.mjs";
 import { validateSourceOperation } from "../model/sources-doc.mjs";
+import { inspectOutputAsset } from "../shared/output-assets.mjs";
 import { validateViewOperation } from "../model/view-doc.mjs";
 import { validateEditFields, validateNodeInsertion } from "../model/page.mjs";
 import { compileAnywidgetSpec } from "../shared/anywidget-spec.mjs";
@@ -142,6 +143,7 @@ test("unknown guide paths return 404 rather than an app shell or login", async (
 
 test("published tool examples pass current source and view validators", () => {
   let sources = 0,
+    inline = 0,
     views = 0,
     placements = 0;
   for (const { path } of MEDIA_GUIDES) {
@@ -160,7 +162,13 @@ test("published tool examples pass current source and view validators", () => {
             assert.ok(
               Object.hasOwn(tool.inputSchema.properties.operations.items.properties, "asset_from"),
             );
-          validateSourceOperation({ ...hostOp, asset_id: "a".repeat(64) });
+          if (Object.hasOwn(hostOp, "text")) {
+            // Inline text: the host's checks, then the content check an
+            // upload of the same bytes gets.
+            validateSourceOperation(hostOp);
+            inspectOutputAsset(new TextEncoder().encode(hostOp.text), hostOp.media_type);
+            inline++;
+          } else validateSourceOperation({ ...hostOp, asset_id: "a".repeat(64) });
           sources++;
         } else if (op.op === "set_view") {
           validateViewOperation(op);
@@ -187,7 +195,7 @@ test("published tool examples pass current source and view validators", () => {
       }
     }
   }
-  assert.ok(sources > 0 && views >= 3 && placements >= 3);
+  assert.ok(sources > 0 && inline >= 3 && views >= 3 && placements >= 3);
 });
 
 test("the views guide teaches files asked with await, the table, and change listeners", () => {

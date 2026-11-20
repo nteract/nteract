@@ -45,6 +45,7 @@ import {
 } from "../model/sources-doc.mjs";
 import { checkViewBindings, readView, setView, validateViewOperation } from "../model/view-doc.mjs";
 import { createModuleReader, sourceImportWarnings, viewImportCheck } from "./view-imports.mjs";
+import { inlineSourceArguments, storeInlineSources } from "./inline-sources.mjs";
 import { MAX_VIEWS, validViewId } from "../shared/views.mjs";
 import { CHART_WORKER_CSP, CHUNK_PATH } from "../shared/chart-worker-csp.mjs";
 import { setResponseHeaders } from "./response-headers.mjs";
@@ -7622,10 +7623,21 @@ export class Page {
    * document when the Page has none (sources-lifecycle.mjs), so a refused
    * write creates nothing. Until then the journal reads the fixed genesis.
    * The receipt's `sources_revision` names the sources document after the
-   * write; an exact retry replays it.
+   * write, and each edit the source's new `source_revision`; an exact retry
+   * replays it.
+   *
+   * A set_source with inline `text` (inline-sources.mjs) is journaled as the
+   * asset_id operation of its bytes, and `prepare` stores those bytes, as an
+   * upload of them would be stored, after the source revisions are checked
+   * and before any asset is looked up or the intent journaled.
    */
   async writeSources(request, identity, body) {
-    const args = body.arguments ?? {};
+    let args, inline;
+    try {
+      ({ args, inline } = await inlineSourceArguments(body.arguments ?? {}));
+    } catch (error) {
+      throw sourceRefusal(error);
+    }
 
     const mediaTypes = new Map();
     let importWarnings = [];
@@ -7680,6 +7692,7 @@ export class Page {
           } catch (error) {
             throw sourceRefusal(error);
           }
+          await storeInlineSources(this.env.PAGES_ASSETS, this.metadata.pageId, inline);
           // As for a Page edit, a missing asset with an asset_from asks the
           // gateway to copy it.
           await checkHintedAssets(

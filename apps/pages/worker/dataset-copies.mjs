@@ -103,6 +103,9 @@ export function takeAssetHints(args) {
         : undefined;
     if (!source)
       throw invalid("asset_from is the id of the Page or Project (prj_…) the asset is on");
+    // Inline text is the caller's own bytes; it names no asset to copy.
+    if (rest.op === "set_source" && Object.hasOwn(rest, "text"))
+      throw invalid("asset_from goes with asset_id; a set_source with text names no other asset");
     const named = namedAsset(rest);
     if (!named)
       throw invalid(
