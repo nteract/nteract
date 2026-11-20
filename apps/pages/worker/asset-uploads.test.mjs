@@ -4,6 +4,7 @@ import { secretHash } from "@nteract/session";
 import worker from "./index.mjs";
 import { Storage, world } from "./projects-fixture.mjs";
 import {
+  ASSET_AUTHORIZE_PATH,
   ASSET_UPLOAD_MAX_BYTES,
   ASSET_UPLOAD_TTL_MS,
   ASSET_UPLOAD_TYPES,
@@ -21,7 +22,7 @@ import {
   issueAuthorizationCode,
   revokeOAuthToken,
 } from "./oauth-store.mjs";
-import { imageAssetKey, requireStoredImageAsset } from "./image-assets.mjs";
+import { imageAssetKey, requireStoredImageAsset, uploadReceipt } from "./image-assets.mjs";
 import { IMAGE_MAX_BYTES } from "../shared/image-assets.mjs";
 import { PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
 import { newCommentsDoc } from "../model/comments-test-support.mjs";
@@ -657,7 +658,15 @@ test("access removed after issue refuses the upload, before or during the transf
 
   // Removal while the bytes are in flight: the second check refuses the result.
   await setRole("editor");
-  const during = await issued(w, { page_id: pageId }, "member");
+  const during = await issued(
+    w,
+    {
+      page_id: pageId,
+      content_type: "application/json",
+      source: { source_id: "revoked", name: "Revoked" },
+    },
+    "member",
+  );
   let release, entered;
   const gate = new Promise((resolve) => (release = resolve));
   const started = new Promise((resolve) => (entered = resolve));
@@ -667,13 +676,15 @@ test("access removed after issue refuses the upload, before or during the transf
     await gate;
     return put(...args);
   };
-  const pending = upload(w, during, { body: webp });
+  const pending = upload(w, during, { body: "{}" });
   await started;
   await setRole(null);
   release();
   const result = await pending;
   assert.equal(result.status, 403, JSON.stringify(result.body));
   assert.equal(result.body.code, "access_denied");
+  assert.equal(result.body.asset_id, undefined);
+  assert.equal(w.page(pageId).sourcesView(), undefined);
 });
 
 test("a Page in Trash refuses the upload, as the byte route does", async (t) => {
@@ -1290,3 +1301,194 @@ for (const [mediaType, source] of [
     assert.equal(head.headers.get("x-pages-asset-size"), String(bytes.length));
     assert.equal(await allowed.text(), new TextDecoder().decode(bytes));
   });
+
+test("a named upload creates a source once and preserves the other asset on conflict", async (t) => {
+  const { w, pageId } = await setup(t);
+  editable(w, pageId);
+  const source = { source_id: "settings", name: "Chart settings" };
+  const args = { page_id: pageId, content_type: "application/json", source };
+  const grant = await issued(w, args);
+  const first = await upload(w, grant, { body: '{"limit":1}' });
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  assert.equal(first.body.source_id, "settings");
+  assert.equal(first.body.source_revision, "1");
+  assert.equal(first.body.insert, null);
+  const replay = await upload(w, grant, { body: '{"limit":1}' });
+  assert.deepEqual(replay.body, first.body);
+  const competing = await issued(w, args);
+  const conflict = await upload(w, competing, { body: '{"limit":2}' });
+  assert.equal(conflict.status, 409, JSON.stringify(conflict.body));
+  assert.equal(conflict.body.code, "stale_source");
+  assert.equal(conflict.body.source_revision, "1");
+  assert.equal(conflict.body.asset_id, await sha256(new TextEncoder().encode('{"limit":2}')));
+  const read = await w.call("owner", "read_page", {
+    page_id: pageId,
+    source_id: "settings",
+    comments: "none",
+  });
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.equal(read.body.source.asset_id, first.body.asset_id);
+  assert.equal(read.body.source.name, source.name);
+});
+
+test("a named client attachment returns a source and an identical retry replays it", async (t) => {
+  const { w, pageId } = await setup(t);
+  const download_url = "https://files.oaiusercontent.com/settings";
+  t.mock.method(globalThis, "fetch", (url, options) =>
+    String(url) === download_url
+      ? Promise.resolve(Response.json({ limit: 1 }))
+      : w.auth.fetch(url, options),
+  );
+  const args = {
+    page_id: pageId,
+    source: { source_id: "settings", name: "Settings" },
+    file: { file_id: "attached-json", download_url },
+  };
+  const result = await issue(w, "owner", args);
+  assert.equal(result.status, 201, JSON.stringify(result.body));
+  assert.equal(result.body.source_revision, "1");
+  assert.equal(result.body.source_id, "settings");
+  const replay = await issue(w, "owner", args);
+  assert.equal(replay.status, 200);
+  assert.deepEqual(replay.body, result.body);
+});
+
+for (const [mediaType, bytes, tableAttrs] of [
+  [PARQUET_MEDIA_TYPE, parquet, {}],
+  ["text/csv", new TextEncoder().encode("sensor,value\na,42\n"), { media_type: "text/csv" }],
+])
+  test(`${mediaType} uploads place live named tables and asset-pinned unnamed tables`, async (t) => {
+    const { w, pageId } = await setup(t);
+    editable(w, pageId);
+    const download_url = "https://files.oaiusercontent.com/measurements";
+    t.mock.method(globalThis, "fetch", (url, options) =>
+      String(url) === download_url
+        ? Promise.resolve(new Response(bytes, { headers: { "content-type": mediaType } }))
+        : w.auth.fetch(url, options),
+    );
+    const grant = await issued(w, {
+      page_id: pageId,
+      content_type: mediaType,
+      source: { source_id: "usage", name: "Usage" },
+    });
+    const uploaded = await upload(w, grant, { body: bytes });
+    const attached = await issue(w, "owner", {
+      page_id: pageId,
+      source: { source_id: "measurements", name: "Measurements" },
+      file: { file_id: "attached-table", download_url },
+    });
+    assert.equal(uploaded.status, 201, JSON.stringify(uploaded.body));
+    assert.equal(attached.status, 200, JSON.stringify(attached.body)); // Identical stored bytes.
+    for (const [receipt, source_id] of [
+      [uploaded.body, "usage"],
+      [attached.body, "measurements"],
+    ]) {
+      assert.equal(receipt.source_id, source_id);
+      assert.deepEqual(receipt.insert, {
+        op: "insert_node",
+        node: { type: "dataframe", attrs: { binding: { source_id }, ...tableAttrs } },
+      });
+    }
+    const unnamedGrant = await issued(w, { page_id: pageId, content_type: mediaType });
+    const unnamed = await upload(w, unnamedGrant, { body: bytes });
+    assert.equal(unnamed.status, 200);
+    assert.deepEqual(unnamed.body.insert, {
+      op: "insert_node",
+      node: { type: "dataframe", attrs: { asset_id: uploaded.body.asset_id, ...tableAttrs } },
+    });
+    const { revision } = (await w.call("owner", "read_page", { page_id: pageId })).body;
+    const placed = await w.call("owner", "edit_page", {
+      page_id: pageId,
+      revision,
+      nonce: crypto.randomUUID(),
+      operations: [uploaded.body.insert, attached.body.insert, unnamed.body.insert],
+    });
+    assert.equal(placed.status, 200, JSON.stringify(placed.body));
+    assert.deepEqual(
+      placed.body.result.edits.slice(0, 2).map((edit) => edit.attrs.binding),
+      [{ source_id: "usage" }, { source_id: "measurements" }],
+    );
+    assert.equal(placed.body.result.edits[2].attrs.src, unnamed.body.asset_url);
+  });
+
+test("source completion requires a named capability or a valid source from the caller", async (t) => {
+  const { w, pageId } = await setup(t);
+  const grant = await issued(w, { page_id: pageId, content_type: PARQUET_MEDIA_TYPE });
+  const stored = await upload(w, grant, { body: parquet });
+  assert.equal(stored.status, 201);
+  for (const [authorization, source, status, code] of [
+    [
+      grant.headers.Authorization,
+      { source_id: "usage", name: "Usage" },
+      401,
+      "upload_capability_invalid",
+    ],
+    [`Bearer ${w.auth.apiKey()}`, { name: "No source ID" }, 400, "invalid_arguments"],
+  ]) {
+    const result = await w.page(pageId).fetch(
+      new Request(origin + ASSET_AUTHORIZE_PATH, {
+        method: "POST",
+        headers: { authorization, origin, "content-type": "application/json" },
+        body: JSON.stringify({
+          page_id: pageId,
+          write: true,
+          completion: {
+            source,
+            file_id: "attached-parquet",
+            asset_id: stored.body.asset_id,
+          },
+        }),
+      }),
+    );
+    assert.equal(result.status, status);
+    assert.equal((await result.json()).code, code);
+  }
+  assert.equal(w.page(pageId).sourcesView(), undefined);
+});
+
+test("a named grant accepts only a new source ID and display name", async (t) => {
+  const { w, pageId, bucket } = await setup(t);
+  const source = { source_id: "settings", name: "Settings" };
+  for (const invalid of [
+    null,
+    { ...source, source_revision: "1" },
+    { ...source, name: "a\nb" },
+    { ...source, source_id: "constructor" },
+  ]) {
+    const result = await issue(w, "owner", { page_id: pageId, source: invalid });
+    assert.equal(result.status, 400);
+  }
+  const imageGrant = await issue(w, "owner", {
+    page_id: pageId,
+    content_type: "image/png",
+    source,
+  });
+  assert.equal(imageGrant.status, 400);
+  const grant = await issued(w, { page_id: pageId, source });
+  assert.equal((await upload(w, grant)).status, 415);
+  assert.equal(puts(bucket), 0);
+});
+
+test("completion preserves source-cap errors and non-JSON upstream refusals", async () => {
+  const asset = { asset_id: "a".repeat(64), mime_type: "application/json" };
+  const full = await uploadReceipt(
+    asset,
+    false,
+    Response.json({ code: "invalid_source", error: "source limit reached" }, { status: 400 }),
+    true,
+  );
+  assert.equal(full.status, 400);
+  assert.deepEqual(await full.json(), {
+    code: "invalid_source",
+    error: "source limit reached",
+    asset_id: asset.asset_id,
+  });
+  const upstream = await uploadReceipt(
+    asset,
+    false,
+    new Response("upstream conflict", { status: 409 }),
+    true,
+  );
+  assert.equal(upstream.status, 409);
+  assert.equal(await upstream.text(), "upstream conflict");
+});

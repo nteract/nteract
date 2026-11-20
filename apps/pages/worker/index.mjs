@@ -114,6 +114,7 @@ import {
   ASSET_UPLOAD_SCHEME,
   UPLOAD_CREDENTIAL,
   hostUploadCapability,
+  uploadSource,
   issueAssetUpload,
   openUploadCapability,
   uploadCapabilityToken,
@@ -1039,8 +1040,12 @@ function withOwnOrigin(request, env) {
   return new Request(request, { headers });
 }
 
-function authorizeImage(request, env, pageId, write) {
-  const internal = forwarded(request, "/internal/assets/authorize", { page_id: pageId, write });
+function authorizeImage(request, env, pageId, write, completion) {
+  const internal = forwarded(request, "/internal/assets/authorize", {
+    page_id: pageId,
+    write,
+    completion,
+  });
   // Only the host creates this request. Reauthenticate on every call so a grant
   // or Page permission revoked during a transfer cannot authorize its result.
   if (!internal.headers.has("origin"))
@@ -1083,7 +1088,7 @@ async function authorizeAssetSource(request, env, source, signal) {
  * request carries only the capability: no cookie, bearer credential or label
  * of the caller's. The Page host verifies it with its own key and decides
  * access for the principal it names, on each call. */
-function authorizeUpload(request, env, pageId, capability) {
+function authorizeUpload(request, env, pageId, capability, assetId) {
   const url = new URL(request.url);
   url.pathname = ASSET_AUTHORIZE_PATH;
   url.search = "";
@@ -1095,7 +1100,11 @@ function authorizeUpload(request, env, pageId, capability) {
         origin: new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ page_id: pageId, write: true }),
+      body: JSON.stringify({
+        page_id: pageId,
+        write: true,
+        ...(assetId && { completion: { asset_id: assetId } }),
+      }),
     }),
   );
 }
@@ -1293,10 +1302,10 @@ async function invoke(request, env, operation, args = {}, seen, call) {
         args = await resolveProjectContent(env, args, signal);
       }
       if (operation === ASSET_UPLOAD_OPERATION && Object.hasOwn(args, "file")) {
-        if (Object.keys(args).some((key) => !["page_id", "file"].includes(key)))
+        if (Object.keys(args).some((key) => !["page_id", "file", "source"].includes(key)))
           throw new HttpError(
             400,
-            `With file, ${ASSET_UPLOAD_OPERATION} takes page_id (or project_id) and file`,
+            `With file, ${ASSET_UPLOAD_OPERATION} takes page_id (or project_id) and file, with optional source`,
             "invalid_arguments",
           );
         // Transfer bytes at the Worker edge; access stays with the Page host.
@@ -1304,7 +1313,9 @@ async function invoke(request, env, operation, args = {}, seen, call) {
           handleFileImport(request, env, {
             pageId: args.page_id,
             file: args.file,
-            authorize: (write) => authorizeImage(request, env, args.page_id, write),
+            source: uploadSource(args.source),
+            authorize: (write, completion) =>
+              authorizeImage(request, env, args.page_id, write, completion),
           }),
           signal,
         );
@@ -1919,7 +1930,7 @@ const gateway = {
             await handleImageAssets(request, env, {
               pageId: id,
               identify: () => requireSameOrigin(request, env),
-              authorize: () => authorizeUpload(request, env, id, capability),
+              authorize: (write, assetId) => authorizeUpload(request, env, id, capability, assetId),
             }),
           );
         }
@@ -6951,6 +6962,23 @@ export class Page {
         // quota, so comment access alone doesn't open it: commenters comment
         // in text, and can't attach images until that quota exists.
         this.policy.account(identity, args.write);
+        if (args.completion) {
+          if (!args.write) throw new HttpError(400, "An upload completion requires write access");
+          const { asset_id } = args.completion;
+          const source = capability ? identity.upload.source : uploadSource(args.completion.source);
+          if (!source || !/^[0-9a-f]{64}$/.test(asset_id)) throw uploadRefusal("misused");
+          const uploadId = capability ? identity.uploadId : args.completion.file_id;
+          const nonce = await fingerprint("named_upload", { uploadId, source, asset_id }, identity);
+          const receipt = await this.writeSources(request, identity, {
+            operation: ASSET_UPLOAD_OPERATION,
+            arguments: {
+              nonce,
+              operations: [{ op: "set_source", ...source, asset_id, source_revision: null }],
+            },
+          });
+          const { source_id, source_revision } = receipt.result.edits[0];
+          return json({ source_id, source_revision });
+        }
         // A capability's binding goes back to the gateway, which checks the
         // bytes against it before storing them.
         return json({
@@ -7626,6 +7654,9 @@ export class Page {
         doc: SOURCES_DOC,
         // edit_page's nonces share one lane, whichever document a batch writes.
         lane: PAGE_DOC,
+        // A named upload is fenced by create-only source_revision. Its caller
+        // has read no Page revision. Ordinary edits keep their revision check.
+        ...(body.operation === ASSET_UPLOAD_OPERATION && { baseRevision: () => undefined }),
         pageId: this.metadata.pageId,
         operation: body.operation,
         args,
@@ -7679,7 +7710,7 @@ export class Page {
             readImports: this.moduleReader(),
           });
           // Access can change while the asset records are read.
-          this.policy.account(await authenticate(request, this.env), true);
+          this.policy.account(await this.identify(request), true);
           await this.sourcesEvent({ type: "create", recorded: recordNamesSources(this.metadata) });
         },
         apply: (draft, effectiveArgs) => {

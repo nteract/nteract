@@ -58,7 +58,7 @@ test("tool schemas use only the JSON Schema subset clients forward as written", 
 
 test("tool catalog has a deliberate size ceiling", () => {
   assert.ok(
-    JSON.stringify(tools).length <= 39653,
+    JSON.stringify(tools).length <= 40150,
     "Tool catalog grew; raise the ceiling on purpose when a tool grows",
   );
 });
@@ -1008,7 +1008,9 @@ test("MCP lists create_page_asset_upload for any client with write scope, and po
     "page_id",
     "project_id",
     "size",
+    "source",
   ]);
+  assert.deepEqual(descriptor.inputSchema.properties.source.required, ["source_id", "name"]);
   assert.deepEqual(descriptor.inputSchema.properties.content_type.enum, [
     "image/png",
     "image/jpeg",
@@ -1034,7 +1036,7 @@ test("MCP lists create_page_asset_upload for any client with write scope, and po
     /With file, Pages fetches the file instead/,
     /same bytes return the same asset_id/,
     /Images, Parquet and CSV return an insert operation \(add alt to an image\)/,
-    /JSON and other view inputs return insert: null\. Use set_source/,
+    /JSON and other view inputs return insert: null\. To create a named source/,
     /Insert image in the browser/,
   ])
     assert.match(descriptor.description, fact);

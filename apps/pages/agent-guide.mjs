@@ -698,11 +698,15 @@ image reference.
 
 ${part.fileImportParagraph}
 
-For a JSON file, register the returned asset_id with set_source. A module view
+To name a new JSON or other non-image source in the same upload, pass
+source: {"source_id":"settings","name":"Chart settings"} to create_page_asset_upload.
+The file transfer returns asset_id, source_id and source_revision. An existing
+source ID returns a conflict with the stored asset_id. To deliberately refresh
+it, pass that asset_id and the current source_revision to set_source. A module view
 reads the bound file with await model.get(name).json(), or a CSV as rows with
 await model.get(name).csv(). For an image or table,
-call read_page and send the returned insert
-operation through edit_page, with alt added for an image. For an image it is
+send the upload receipt’s insert operation through edit_page using the Page
+revision from read_page. Add alt for an image. For an image it is
 insert_image with the asset_id, which creates one rich-text block containing
 the image; for a Parquet file it is the dataframe insert_node under Datasets.
 Supply descriptive alt text; after_node_id
@@ -991,13 +995,13 @@ page_quota_exceeded with limit and count; tell the person rather than retrying.
   vega-lite for a chart spec, or anywidget for an existing widget model. See /llms/views.txt.
 - manage_page_comment: add, reply, resolve, reopen, edit, or delete_message. resolve and
   reopen also take thread_ids to change up to 100 threads in one call. See Comments below.
-- create_page_asset_upload: page_id and optional content_type and size;
+- create_page_asset_upload: page_id and optional content_type, size and source;
   returns a 10-minute upload_url, headers and a curl example for sending a local
   file. Use application/json for structured data, or application/vnd.apache.parquet for
   tabular records. With file, a descriptor the client attached itself, it
   stores the file and returns asset_id and asset_url. For images and Parquet,
-  insert gives the placement operation. For JSON, insert is null. Use set_source
-  with the returned asset_id. See Images above.
+  insert gives the placement operation. For JSON, insert is null. Pass source with source_id and name
+  to create a source during either type of upload. See Images above.
 - delete_page: page_id and nonce move a Page you own to Trash; revision is an
   optional guard. See Trash below.
 - restore_page: page_id and nonce.
@@ -1807,8 +1811,8 @@ A 409 requires reading access again. An uncertain request can be retried with it
     fileImportParagraph: `A file import requires pages:read and pages:write plus current Page edit
 access. It does not insert content. It copies the file into private Page storage and returns asset_id,
 asset_url, mime_type and size. Images also return width and height. For an
-image, Parquet or CSV file, send the returned insert operation to place it.
-For a JSON file, insert is null. Use set_source to name the returned asset_id.
+image, Parquet or CSV file, send the returned insert operation to place it. For a
+JSON file, insert is null. Pass source on upload to create its named source.
 Repeating an import of identical bytes to the same Page reuses the asset.
 No additional API key or public hosting is needed. If ChatGPT doesn't offer the
 file argument yet, refresh the connection's tool list. Newly generated images
@@ -1837,11 +1841,11 @@ get an upload URL from create_page_asset_upload (content_type
 application/vnd.apache.parquet) and POST the raw bytes there, or POST them to
 ${origin}/api/pages/<page_id>/assets with Content-Type
 application/vnd.apache.parquet and your API-key bearer header. The response
-contains asset_id, asset_url, mime_type, size and insert, the insert_node
-operation below with the asset_id filled in. In the browser, an editor can
+contains asset_id, asset_url, mime_type, size and insert. Send the returned
+insert_node operation to place the table. A named upload binds the table to
+its source. An unnamed upload pins it to the asset_id. In the browser, an editor can
 drop or paste a .parquet file into a block. A CSV uploads with content_type
-text/csv and returns an insert_node operation with attrs
-{asset_id, media_type: "text/csv"}. ${DATA_FORMAT_ADVICE}`,
+text/csv and its insert operation includes media_type: "text/csv". ${DATA_FORMAT_ADVICE}`,
     datasetReaderParagraph: `Readers see a Sift table: they can sort, filter and scroll it, and those
 changes stay in their own view. Nothing they do changes the document. Pages
 does not decode the file on the server, so read the Parquet yourself when you
@@ -2219,8 +2223,8 @@ retried with its identical nonce and body.`,
     fileImportParagraph: `A file import requires pages:read and pages:write plus current Page edit
 access. It does not insert content. It copies the file into private Page storage and returns asset_id,
 asset_url, mime_type and size. Images also return width and height. For an
-image, Parquet or CSV file, send the returned insert operation to place it.
-For a JSON file, insert is null. Use set_source to name the returned asset_id.
+image, Parquet or CSV file, send the returned insert operation to place it. For a
+JSON file, insert is null. Pass source on upload to create its named source.
 Repeating an import of identical bytes to the same Page reuses the asset. No
 public hosting is needed. If ChatGPT doesn't offer the file argument yet,
 refresh the connection's tool list. Newly generated images must be available as
@@ -2247,11 +2251,11 @@ is insufficient.`,
 Page asset like an image, up to 5 MiB, and the same upload route stores it: get
 an upload URL from create_page_asset_upload (content_type
 application/vnd.apache.parquet) and POST the raw bytes there. The response
-contains asset_id, asset_url, mime_type, size and insert, the insert_node
-operation below with the asset_id filled in. In the browser, an editor can
+contains asset_id, asset_url, mime_type, size and insert. Send the returned
+insert_node operation to place the table. A named upload binds the table to
+its source. An unnamed upload pins it to the asset_id. In the browser, an editor can
 drop or paste a .parquet file into a block. A CSV uploads with content_type
-text/csv and returns an insert_node operation with attrs
-{asset_id, media_type: "text/csv"}. ${DATA_FORMAT_ADVICE}`,
+text/csv and its insert operation includes media_type: "text/csv". ${DATA_FORMAT_ADVICE}`,
     datasetReaderParagraph: `Readers see a Sift table: they can sort, filter and scroll it, and those changes
 stay in their own view. Nothing they do changes the document. Pages does not
 decode the file on the server, so read the Parquet yourself when you need its

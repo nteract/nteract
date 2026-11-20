@@ -19,7 +19,11 @@ import {
   validAssetId,
   imageAssetUrl,
 } from "../shared/image-assets.mjs";
-import { DATASET_MAX_BYTES, PARQUET_MEDIA_TYPE } from "../shared/dataset-assets.mjs";
+import {
+  DATAFRAME_MEDIA_TYPES,
+  DATASET_MAX_BYTES,
+  PARQUET_MEDIA_TYPE,
+} from "../shared/dataset-assets.mjs";
 import {
   ImageValidationError,
   inspectImage as inspectImageContainer,
@@ -316,6 +320,12 @@ export async function persistPageAsset(bucket, { pageId, bytes, contentTypes = [
     .find((type) => type === JSON_MEDIA_TYPE || type === CSV_MEDIA_TYPE);
   const inspected = inspectAsset(bytes, expect?.content_type ?? declaredText);
   const dataset = !IMAGE_MEDIA_TYPES.includes(inspected.mime_type);
+  if (expect?.source && !dataset)
+    throw new HttpError(
+      415,
+      "Images cannot be named sources; place the image with insert_image",
+      "not_a_dataset",
+    );
   if (bytes.byteLength > (dataset ? DATASET_MAX_BYTES : IMAGE_MAX_BYTES))
     throw new HttpError(413, dataset ? "Datasets must be 5 MiB or smaller" : IMAGE_TOO_LARGE);
   for (const contentType of contentTypes) {
@@ -369,29 +379,17 @@ export async function persistPageAsset(bucket, { pageId, bytes, contentTypes = [
 /**
  * The edit_page operation that places a stored asset as the block its type
  * calls for: insert_image for a raster, an insert_node dataframe for a Parquet
- * dataset or a CSV, and null for any other view input. insert_image also
- * needs alt text, which only the caller can write, so the operation leaves it
- * out and edit_page refuses it until alt is added.
+ * dataset or CSV. A table follows its named source when the upload created one.
+ * insert_image also needs alt text, which only the caller can write.
  */
-export const assetInsertOperation = ({ asset_id, mime_type }) =>
-  mime_type === CSV_MEDIA_TYPE
-    ? {
-        op: "insert_node",
-        node: { type: "dataframe", attrs: { asset_id, media_type: CSV_MEDIA_TYPE } },
-      }
-    : OUTPUT_ASSET_TYPES.includes(mime_type)
-      ? null
-      : mime_type === PARQUET_MEDIA_TYPE
-        ? { op: "insert_node", node: { type: "dataframe", attrs: { asset_id } } }
-        : { op: "insert_image", asset_id };
-
-/** The answer to a stored upload or copy: the asset, its URL under both names,
- * and the operation that places it. */
-const assetReceipt = (asset) => ({
-  ...asset,
-  asset_url: asset.url,
-  insert: assetInsertOperation(asset),
-});
+function assetInsertOperation({ asset_id, mime_type }, sourceId) {
+  if (DATAFRAME_MEDIA_TYPES.includes(mime_type)) {
+    const attrs = sourceId ? { binding: { source_id: sourceId } } : { asset_id };
+    if (mime_type === CSV_MEDIA_TYPE) attrs.media_type = mime_type;
+    return { op: "insert_node", node: { type: "dataframe", attrs } };
+  }
+  return OUTPUT_ASSET_TYPES.includes(mime_type) ? null : { op: "insert_image", asset_id };
+}
 
 const FILE_TOO_LARGE = "Files must be 5 MiB or smaller";
 /** Read an image or dataset body under the shared asset ceiling. */
@@ -408,6 +406,39 @@ const SERVED_MEDIA_TYPES = Object.freeze([
 async function grantedExpectation(access) {
   const body = await access.json();
   return body?.upload && typeof body.upload === "object" ? body.upload : undefined;
+}
+
+/** After private storage, disclose the asset only if the host still admits
+ * the caller. A create conflict leaves the uploaded bytes available to reuse. */
+export async function uploadReceipt(
+  asset,
+  duplicate,
+  access,
+  named,
+  fields = { ...asset, asset_url: asset.url },
+) {
+  if (!access.ok) {
+    if (named && [400, 404, 409].includes(access.status)) {
+      // Only source admission errors prove the host admitted this caller.
+      // Preserve a proxy's non-JSON refusal and all authorization failures.
+      const refusal = await access
+        .clone()
+        .json()
+        .catch(() => null);
+      if (["invalid_source", "stale_source", "source_not_found"].includes(refusal?.code))
+        return privateImageResponse(
+          Response.json({ ...refusal, asset_id: asset.asset_id }, { status: access.status }),
+        );
+    }
+    return privateImageResponse(access);
+  }
+  const source = named ? await access.json() : {};
+  return privateImageResponse(
+    Response.json(
+      { ...fields, ...source, insert: assetInsertOperation(asset, source.source_id) },
+      { status: duplicate ? 200 : 201 },
+    ),
+  );
 }
 
 /** authenticate() for the asset route. An upload with no credential at all
@@ -579,10 +610,7 @@ export async function handleImageAssets(
       if (!bucket) throw new HttpError(503, "Image storage is unavailable");
       const { asset, duplicate } = await copyDatasetAsset(bucket, { pageId, assetId, sourceId });
       const current = await authorize(true);
-      if (!current.ok) return privateImageResponse(current);
-      return privateImageResponse(
-        Response.json(assetReceipt(asset), { status: duplicate ? 200 : 201 }),
-      );
+      return await uploadReceipt(asset, duplicate, current, false);
     }
     const access = await authorize(upload);
     if (!access.ok) return privateImageResponse(access);
@@ -597,11 +625,8 @@ export async function handleImageAssets(
         contentTypes: [request.headers.get("content-type")],
         expect,
       });
-      const current = await authorize(true);
-      if (!current.ok) return privateImageResponse(current);
-      return privateImageResponse(
-        Response.json(assetReceipt(asset), { status: duplicate ? 200 : 201 }),
-      );
+      const current = await authorize(true, expect?.source ? asset.asset_id : undefined);
+      return await uploadReceipt(asset, duplicate, current, !!expect?.source);
     }
     const key = imageAssetKey(pageId, assetId);
     const header = request.method === "GET" ? request.headers.get("Range") : null;
