@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import {
   ROUTE_REGISTRY,
+  refusedPaths,
   routesFor,
   strippableSlots,
   accountPaths,
@@ -24,7 +25,6 @@ import {
   libraryCatalogPaths,
   whoamiPaths,
 } from "./deployment/routes.mjs";
-import { isIndexRoute, readPageRoute } from "../shared/routes.mjs";
 import { LIBRARY_PATH, LIBRARY_ROUTE } from "../shared/library-catalog.mjs";
 import { DEPLOYMENT_TARGETS, deploymentProfile } from "./deployment/profiles.mjs";
 import {
@@ -241,11 +241,10 @@ function fixture(
     if (command === "systemd-analyze") return "";
     if (command === "/usr/bin/cloudflared") {
       if (args.includes("validate")) return "OK";
-      const pathname = new URL(args.at(-1)).pathname;
-      const contents = fs.readFileSync(local(args[1]), "utf8");
-      const pattern = new RegExp(/^    path: (.+)$/m.exec(contents)[1]);
-      // cloudflared matches a rule against the decoded path.
-      const forwarded = pattern.test(decodeURIComponent(pathname)) !== (pathname === misroutePath);
+      const url = new URL(args.at(-1));
+      const service = ingressService(fs.readFileSync(local(args[1]), "utf8"), url);
+      // A misrouted path gets the other answer.
+      const forwarded = service.startsWith("http://") !== (url.pathname === misroutePath);
       return "service: " + (forwarded ? "http://" + profile.deployment.listen : "http_status:404");
     }
     throw Error("Unexpected command " + command);
@@ -288,6 +287,22 @@ function fixture(
     local,
   };
 }
+/** The service cloudflared picks for `url` from a tunnel config: the first
+ * ingress rule whose hostname matches and whose path pattern, if any, matches
+ * the decoded path. A rule with neither is the catch-all. */
+function ingressService(config, url) {
+  const rules = config.matchAll(
+    /^ {2}- (?:hostname: (\S+)\n(?: {4}path: (.+)\n)? {4})?service: (\S+)$/gm,
+  );
+  const pathname = decodeURIComponent(url.pathname);
+  for (const [, hostname, pattern, service] of rules)
+    if (
+      (hostname === undefined || hostname === url.hostname) &&
+      (pattern === undefined || new RegExp(pattern).test(pathname))
+    )
+      return service;
+  throw Error("No catch-all ingress rule");
+}
 // The error runCommand throws for a non-zero exit: it keeps the status.
 const systemctlExit = (status, stdout) =>
   Object.assign(Error("systemctl failed (status " + status + "); inspect restricted server logs"), {
@@ -308,11 +323,19 @@ const lifecycle = (f) =>
     .map(({ args }) => args.join(" "));
 
 const digest = (text) => createHash("sha256").update(text).digest("hex");
+// A config with its Pages hostname in the earlier allowlist form: every
+// release before `admitAll` sealed one of these. The histories below start
+// from it.
+const allowlisted = (config) =>
+  DEPLOYMENT_TARGETS.reduce(
+    (text, target) => text.replace(routesFor(target), routesFor(target, { omit: ["admitAll"] })),
+    config,
+  );
 // A live target's routes without Page slugs: the route set the release before
 // them sealed.
 // Releases before the library catalog route lack it, and so does every
 // earlier route set below.
-const beforeLibraryCatalog = (config) => config.replace(libraryCatalogPaths, "");
+const beforeLibraryCatalog = (config) => allowlisted(config).replace(libraryCatalogPaths, "");
 const beforeMediaGuides = (config) => beforeLibraryCatalog(config).replace(mediaGuidePaths, "");
 const beforePublishedPreviews = (config) =>
   beforeMediaGuides(config)
@@ -331,171 +354,6 @@ function priorConfig(config) {
   return beforePreviews(config).replace(accountPaths, "").replace(whoamiPaths, "");
 }
 const configDir = (target) => "/etc/" + deploymentProfile(target).deployment.service;
-test("Page10 admits only hashed viewer files", () => {
-  const current = routesFor("page10");
-  const route = new RegExp(/^    path: (.+)$/m.exec(current)[1]);
-  for (const pathname of [
-    "/chunks/ABCDEFGH.js",
-    "/chunks/C5DM4OBS.js",
-    "/chunks/ZZZZ2222.js",
-    "/app-ABCDEFGH.js",
-    "/app-ZONXTRV2.css",
-    "/theme-PYDRB3DW.js",
-    "/mermaid-ETH6F3P4.js",
-    "/automerge-FJQTWO5F.wasm",
-    "/subduction-Y5U24H5D.wasm",
-  ])
-    assert.equal(route.test(pathname), true, pathname);
-  for (const pathname of [
-    "/chunks/",
-    "/chunks/abcdefgh.js",
-    "/chunks/ABCDEFG1.js",
-    "/chunks/ABCDEFGHI.js",
-    "/chunks/ABCDEFG.js",
-    "/chunks/ABCDEFGH.css",
-    "/chunks/ABCDEFGH.js/",
-    "/chunks/ABCDEFGH.js/private",
-    "/chunks/nested/ABCDEFGH.js",
-    "/ABCDEFGH.js",
-    "/app-abcdefgh.js",
-    "/app-ABCDEFG.js",
-    "/app-ABCDEFGHI.js",
-    "/app-ABCDEFGH.wasm",
-    "/app-ABCDEFGH.js/",
-    "/app-ABCDEFGH.js/private",
-    "/theme-ABCDEFGH.css",
-    "/mermaid-ABCDEFGH.css",
-    "/automerge-ABCDEFGH.js",
-    "/subduction-ABCDEFGH.css",
-    "/connect-ABCDEFGH.js",
-    "/index-ABCDEFGH.html",
-    "/chunks/app-ABCDEFGH.js",
-  ])
-    assert.equal(route.test(pathname), false, pathname);
-});
-
-const projectUuid = "12345678-1234-4123-8123-123456789abc";
-test("Page10 admits exact Project links", () => {
-  const current = routesFor("page10");
-  const route = new RegExp(/^    path: (.+)$/m.exec(current)[1]);
-  const admitted = [
-    `/project/prj_${projectUuid}`,
-    `/project/prj_${projectUuid}/`,
-    `/project/sp_${projectUuid}`,
-    `/s/sp_${projectUuid}`,
-    `/s/sp_${projectUuid}/`,
-    `/s/prj_${projectUuid}`,
-  ];
-  const rejected = [
-    "/project",
-    "/project/",
-    "/s/",
-    `/project/${projectUuid}`,
-    `/s/${projectUuid}`,
-    "/project/prj_not-a-project",
-    `/project/prj_${projectUuid.toUpperCase()}`,
-    `/project/prj_${projectUuid.replace("-4123-", "-1123-")}`,
-    `/project/prj_${projectUuid.replace("-8123-", "-c123-")}`,
-    `/project/prj_${projectUuid}0`,
-    `/project/pg_${projectUuid}`,
-    `/project/sp${projectUuid}`,
-    `/project/prj_${projectUuid}//`,
-    `/project/prj_${projectUuid}/private`,
-    `/project/prj_${projectUuid}/p/${projectUuid}`,
-    `/projects/prj_${projectUuid}`,
-    `/x/project/prj_${projectUuid}`,
-    `/s/sp_${projectUuid}/private`,
-    `/space/sp_${projectUuid}`,
-    `/p/prj_${projectUuid}`,
-  ];
-  for (const pathname of admitted) assert.equal(route.test(pathname), true, pathname);
-  for (const pathname of rejected) assert.equal(route.test(pathname), false, pathname);
-  // Ingress admits exactly the Project paths the viewer opens.
-  for (const pathname of [...admitted, ...rejected].filter(
-    (pathname) => !pathname.startsWith("/p/"),
-  ))
-    assert.equal(
-      route.test(pathname),
-      readPageRoute(pathname).kind === "project",
-      `viewer and ingress disagree on ${pathname}`,
-    );
-});
-
-test("Page10 admits exactly /projects and /pages", () => {
-  const current = routesFor("page10");
-  assert.equal(current.split(indexPaths).length, 2, "the index routes appear once");
-  const route = new RegExp(/^    path: (.+)$/m.exec(current)[1]);
-  const admitted = ["/projects", "/projects/", "/pages", "/pages/"];
-  const rejected = [
-    "/projects//",
-    "/pages//",
-    "/projects/private",
-    "/pages/private",
-    `/pages/${projectUuid}`,
-    `/projects/prj_${projectUuid}`,
-    "/projectsX",
-    "/pagesX",
-    "/project",
-    "/page",
-    "/Pages",
-    "/PROJECTS",
-    "/x/pages",
-    "/pages.json",
-    "/projects.txt",
-  ];
-  for (const pathname of admitted) assert.equal(route.test(pathname), true, pathname);
-  for (const pathname of rejected) assert.equal(route.test(pathname), false, pathname);
-  // Ingress admits exactly the index paths the viewer opens.
-  for (const pathname of [...admitted, ...rejected].filter(
-    (pathname) => !readPageRoute(pathname).kind.startsWith("project"),
-  ))
-    assert.equal(
-      route.test(pathname),
-      isIndexRoute(readPageRoute(pathname)),
-      `viewer and ingress disagree on ${pathname}`,
-    );
-});
-
-const whoamiRejected = ["/whoami/", "/whoami/private", "/whoamiX", "/Whoami", "/api/whoami"];
-test("every live profile admits exact whoami and nothing near it", () => {
-  for (const target of ["page10", "pages"]) {
-    assert.equal(deploymentProfile(target).whoami, true);
-    const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
-    assert.equal(route.test("/whoami"), true, target);
-    assert.equal(route.test(new URL("https://example.com/whoami?probe=1").pathname), true);
-    for (const pathname of [...whoamiRejected, "/whoami.json", "/x/whoami", "/%77hoami"])
-      assert.equal(route.test(pathname), false, `${target} ${pathname}`);
-  }
-});
-
-for (const target of ["page10", "pages"])
-  for (const misroutePath of ["/whoami", ...whoamiRejected])
-    test(`${target} refuses misrouted ${misroutePath} before connector activation`, (t) => {
-      const f = fixture(t, { target, misroutePath });
-      assert.throws(f.execute, /route validation failed/);
-      assert.deepEqual(lifecycle(f), []);
-    });
-
-test("Page10 and Pages admit exactly Sift's hashed WASM", () => {
-  for (const target of ["page10", "pages"]) {
-    const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
-    for (const pathname of ["/sift-ABCDEFGH.wasm", "/sift-EMZCXH4D.wasm"])
-      assert.equal(route.test(pathname), true, `${target} ${pathname}`);
-    for (const pathname of [
-      "/sift.wasm",
-      "/sift-abcdefgh.wasm",
-      "/sift-ABCDEFG.wasm",
-      "/sift-ABCDEFGHI.wasm",
-      "/sift-ABCDEFGH.js",
-      "/sift-ABCDEFGH.css",
-      "/sift-ABCDEFGH.wasm/",
-      "/sift-ABCDEFGH.wasm/private",
-      "/chunks/sift-ABCDEFGH.wasm",
-    ])
-      assert.equal(route.test(pathname), false, `${target} ${pathname}`);
-  }
-});
-
 test("page10 installs fresh and refuses older route sets as predecessors", (t) => {
   const f = fixture(t, { target: "page10" });
   const plan = isolatedPublicationPlan(inputFor("page10"));
@@ -522,9 +380,9 @@ test("page10 installs fresh and refuses older route sets as predecessors", (t) =
   // a predecessor of Page10's. Each one is refused,
   // under either connector layout.
   for (const prior of [
-    plan.config.replace(indexPaths, ""),
-    plan.config.replace(indexPaths, "").replace(projectPaths, ""),
-    plan.config.replace("|mermaid[.]js|", "|"),
+    allowlisted(plan.config).replace(indexPaths, ""),
+    allowlisted(plan.config).replace(indexPaths, "").replace(projectPaths, ""),
+    allowlisted(plan.config).replace("|mermaid[.]js|", "|"),
   ])
     for (const unit of [digest(plan.unit), plan.unitSha256]) {
       assert.notEqual(prior, plan.config);
@@ -615,33 +473,6 @@ test("pages installs fresh and refuses Page10's receipts", (t) => {
   );
 });
 
-test("OAuth and private images publish only exact Page10 and Pages routes", () => {
-  for (const target of ["page10", "pages"]) {
-    const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
-    for (const pathname of [
-      "/oauth/authorize",
-      "/oauth/token",
-      "/oauth/revoke",
-      "/.well-known/oauth-protected-resource",
-      "/.well-known/oauth-protected-resource/mcp",
-      "/.well-known/oauth-authorization-server",
-      "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/assets",
-      "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/assets/" + "a".repeat(64),
-    ])
-      assert.equal(route.test(pathname), true, `${target}: ${pathname}`);
-    for (const pathname of [
-      "/oauth/register",
-      "/oauth/test/callback",
-      "/oauth/token/private",
-      "/.well-known/oauth-protected-resource/private",
-      "/api/pages/arbitrary/assets",
-      "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/assets/arbitrary",
-      "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/assets/" + "a".repeat(64) + "/private",
-    ])
-      assert.equal(route.test(pathname), false, `${target}: ${pathname}`);
-  }
-});
-
 for (const target of ["page10", "pages"])
   test(`${target} publication retries leave the shared connector untouched`, (t) => {
     const { deployment, tunnelService } = deploymentProfile(target);
@@ -668,79 +499,52 @@ for (const target of ["page10", "pages"])
       ),
     );
     assert.ok(lifecycle(f).every((call) => units.includes(call.split(" ")[1])));
-    const route = new RegExp(/^    path: (.+)$/m.exec(routesFor(target))[1]);
-    for (const pathname of [
-      "/",
-      "/connect",
-      "/connect.js",
-      "/api/access",
-      "/mcp",
-      "/llms.txt",
-      "/api/sync",
-      "/oidc",
-    ])
-      assert.equal(route.test(pathname), true, pathname);
-    for (const pathname of [
-      "/state",
-      "/internal/create",
-      "/api/access/private",
-      "/connect/private",
-      "/connect.js/private",
-      "/dev/oidc/authorize",
-    ])
-      assert.equal(route.test(pathname), false, pathname);
   });
 
-const imageAssetPath = "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/assets";
-for (const target of ["page10", "pages"])
-  test(`${target} publisher verifies private image ingress before starting its connector`, (t) => {
-    const f = fixture(t, { target });
-    f.execute();
-    const start = f.calls.findIndex(
-      ({ command, args }) => command === "systemctl" && ["start", "restart"].includes(args[0]),
-    );
-    assert.ok(start >= 0);
-    const paths = f.calls
-      .slice(0, start)
-      .filter(({ command, args }) => command === "/usr/bin/cloudflared" && args.includes("rule"))
-      .map(({ args }) => new URL(args.at(-1)).pathname);
-    for (const pathname of [
-      imageAssetPath,
-      imageAssetPath + "/" + "a".repeat(64),
-      "/api/pages/arbitrary/assets",
-      imageAssetPath + "/private",
-      imageAssetPath + "/" + "a".repeat(64) + "/private",
-    ])
-      assert.ok(paths.includes(pathname), pathname);
-  });
-
+// What the publisher asks cloudflared before it starts a connector: the
+// refused paths, and an admitted path of each kind.
 const tagPath = "/api/pages/08c583e5-d29e-4f1e-b06b-333965254e94/tags";
+const PROBES = [
+  "/",
+  "/mcp",
+  "/api/sync",
+  "/api/pages?tags=status%3Adone&limit=1",
+  tagPath + "/repo%3Aorg%2Fname",
+  "/chunks/ABCDEFGH.js",
+  "/sift-ABCDEFGH.wasm",
+  "/p/08c583e5-d29e-4f1e-b06b-333965254e94/meta.json",
+  "/internal",
+  "/internal/",
+  "/internal/create",
+  "/dev/oidc",
+  "/dev/oidc/token",
+  "/.well-known/celld/health",
+  "/.well-known/oauth-authorization-server",
+];
+// Dot-segment probes, as the publisher sends them: a URL parser would
+// resolve them, so they are checked as raw arguments.
+const DOT_PROBES = [
+  "/x/../internal/create",
+  "/x/%2e%2e/internal/create",
+  "/./internal/create",
+  "/x/../dev/oidc/token",
+];
 for (const target of ["page10", "pages"])
-  test(`${target} publisher verifies REST ingress before starting its connector`, (t) => {
+  test(`${target} publisher verifies refused and admitted paths before starting its connector`, (t) => {
     const f = fixture(t, { target });
     f.execute();
     const start = f.calls.findIndex(
       ({ command, args }) => command === "systemctl" && ["start", "restart"].includes(args[0]),
     );
     assert.ok(start >= 0);
-    const paths = f.calls
+    const probes = f.calls
       .slice(0, start)
       .filter(({ command, args }) => command === "/usr/bin/cloudflared" && args.includes("rule"))
-      .map(({ args }) => new URL(args.at(-1)))
-      .map((url) => url.pathname + url.search);
-    for (const pathname of [
-      "/api/pages",
-      "/api/pages?tags=status%3Adone&limit=1",
-      tagPath + "/status",
-      tagPath + "/repo%3Aorg%2Fname",
-      "/api/pages/",
-      tagPath,
-      tagPath + "/",
-      tagPath + "/a;b",
-      "/api/pages/arbitrary/tags/status",
-      "/api/projects/prj_08c583e5-d29e-4f1e-b06b-333965254e94/tags/status",
-    ])
-      assert.ok(paths.includes(pathname), pathname);
+      .map(({ args }) => args.at(-1));
+    const paths = probes.map((url) => new URL(url)).map((url) => url.pathname + url.search);
+    for (const pathname of PROBES) assert.ok(paths.includes(pathname), pathname);
+    const host = "https://" + deploymentProfile(target).deployment.hostname;
+    for (const path of DOT_PROBES) assert.ok(probes.includes(host + path), path);
   });
 
 for (const target of ["page10", "pages"])
@@ -754,121 +558,7 @@ for (const target of ["page10", "pages"])
     );
   });
 
-for (const target of ["page10", "pages"])
-  test(`${target} publisher verifies hashed chunk and asset ingress before starting its connector`, (t) => {
-    const f = fixture(t, { target });
-    f.execute();
-    const start = f.calls.findIndex(
-      ({ command, args }) => command === "systemctl" && ["start", "restart"].includes(args[0]),
-    );
-    const paths = f.calls
-      .slice(0, start)
-      .filter(({ command, args }) => command === "/usr/bin/cloudflared" && args.includes("rule"))
-      .map(({ args }) => new URL(args.at(-1)).pathname);
-    for (const pathname of [
-      "/chunks/ABCDEFGH.js",
-      "/chunks/abcdefgh.js",
-      "/chunks/ABCDEFGH.js/private",
-      "/chunks/ABCDEFGH.css",
-      "/chunks/ABCDEFGHI.js",
-      "/chunks/",
-      "/app-ABCDEFGH.js",
-      "/app-ABCDEFGH.css",
-      "/theme-ABCDEFGH.js",
-      "/mermaid-ABCDEFGH.js",
-      "/automerge-ABCDEFGH.wasm",
-      "/subduction-ABCDEFGH.wasm",
-      "/app-abcdefgh.js",
-      "/app-ABCDEFGHI.js",
-      "/app-ABCDEFGH.wasm",
-      "/theme-ABCDEFGH.css",
-      "/automerge-ABCDEFGH.js",
-      "/connect-ABCDEFGH.js",
-      "/app-ABCDEFGH.js/private",
-    ])
-      assert.ok(paths.includes(pathname), pathname);
-  });
-
-for (const target of ["page10", "pages"])
-  test(`${target} publisher verifies Project link ingress before starting its connector`, (t) => {
-    const f = fixture(t, { target });
-    f.execute();
-    const start = f.calls.findIndex(
-      ({ command, args }) => command === "systemctl" && ["start", "restart"].includes(args[0]),
-    );
-    assert.ok(start >= 0);
-    const paths = f.calls
-      .slice(0, start)
-      .filter(({ command, args }) => command === "/usr/bin/cloudflared" && args.includes("rule"))
-      .map(({ args }) => new URL(args.at(-1)).pathname);
-    const id = "08c583e5-d29e-4f1e-b06b-333965254e94";
-    for (const pathname of [
-      `/project/prj_${id}`,
-      `/project/prj_${id}/`,
-      `/project/sp_${id}`,
-      `/s/sp_${id}`,
-      `/s/prj_${id}`,
-      `/project/${id}`,
-      "/project/prj_not-a-project",
-      `/project/prj_${id.toUpperCase()}`,
-      `/project/pg_${id}`,
-      `/project/prj_${id}/private`,
-      `/projects/prj_${id}`,
-      "/project/",
-      `/s/${id}`,
-    ])
-      assert.ok(paths.includes(pathname), pathname);
-  });
-
-for (const target of ["page10", "pages"])
-  test(`${target} publisher verifies /projects and /pages ingress before starting its connector`, (t) => {
-    const f = fixture(t, { target });
-    f.execute();
-    const start = f.calls.findIndex(
-      ({ command, args }) => command === "systemctl" && ["start", "restart"].includes(args[0]),
-    );
-    assert.ok(start >= 0);
-    const probes = f.calls
-      .slice(0, start)
-      .filter(({ command, args }) => command === "/usr/bin/cloudflared" && args.includes("rule"))
-      .map(({ args }) => new URL(args.at(-1)));
-    const paths = probes.map((url) => url.pathname + url.search);
-    for (const pathname of [
-      "/projects",
-      "/projects/",
-      "/pages",
-      "/pages/",
-      "/pages?q=roadmap",
-      "/projects//",
-      "/pages//",
-      "/projects/private",
-      "/pages/private",
-      "/pages/08c583e5-d29e-4f1e-b06b-333965254e94",
-      "/projectsX",
-      "/pagesX",
-      "/page",
-      "/Pages",
-    ])
-      assert.ok(paths.includes(pathname), pathname);
-  });
-
-for (const misroutePath of [
-  "/projects",
-  "/projects/",
-  "/pages",
-  "/pages/",
-  "/pages/private",
-  "/projectsX",
-  "/chunks/ABCDEFGH.js",
-  "/chunks/ABCDEFGH.js/private",
-  "/app-ABCDEFGH.js",
-  "/automerge-ABCDEFGH.wasm",
-  "/app-ABCDEFGH.js/private",
-  "/project/prj_08c583e5-d29e-4f1e-b06b-333965254e94",
-  "/s/sp_08c583e5-d29e-4f1e-b06b-333965254e94",
-  "/project/prj_08c583e5-d29e-4f1e-b06b-333965254e94/private",
-  "/project/08c583e5-d29e-4f1e-b06b-333965254e94",
-])
+for (const misroutePath of new Set(PROBES.map((path) => new URL(path, "https://x").pathname)))
   for (const target of ["page10", "pages"])
     test(`${target} does not activate a connector with misrouted path ${misroutePath}`, (t) => {
       const f = fixture(t, { target, misroutePath });
@@ -1697,51 +1387,14 @@ test("pages2 serves the Pages route set under its own hostname and listener", ()
 });
 
 const ACCOUNT_TARGETS = ["page10", "pages", "pages2"];
-const handle = "A".repeat(43);
-const accountAdmitted = [
-  "/api/auth/logout-all",
-  "/api/auth/grants",
-  `/api/auth/grants/${handle}/revoke`,
-  "/api/auth/grants/aZ09_-aZ09_-aZ09_-aZ09_-aZ09_-aZ09_-aZ09_-a/revoke",
-];
-const accountRejected = [
-  "/api/auth/logout-all/",
-  "/api/auth/logout-all/private",
-  "/api/auth/logoutall",
-  "/api/auth/grants/",
-  `/api/auth/grants/${handle}`,
-  `/api/auth/grants/${handle}/`,
-  `/api/auth/grants/${"A".repeat(42)}/revoke`,
-  `/api/auth/grants/${"A".repeat(44)}/revoke`,
-  `/api/auth/grants/${"A".repeat(42)}.revoke`,
-  `/api/auth/grants/${handle}/revoke/private`,
-  `/api/auth/grants/${"A".repeat(42)}%2F/revoke`,
-  "/api/auth/other",
-  "/auth/grants",
-];
 
-test("page10, pages and pages2 admit the exact account routes", () => {
-  for (const target of ACCOUNT_TARGETS) {
-    assert.equal(deploymentProfile(target).accountRoutes, true, target);
-    const current = routesFor(target);
-    assert.equal(current.split(accountPaths).length, 2, target);
-    const route = new RegExp(/^    path: (.+)$/m.exec(current)[1]);
-    for (const pathname of accountAdmitted)
-      assert.equal(route.test(pathname), true, `${target} ${pathname}`);
-    for (const pathname of accountRejected)
-      assert.equal(route.test(pathname), false, `${target} ${pathname}`);
-    // The routes that were there stay admitted.
-    for (const pathname of ["/api/auth/login", "/api/auth/logout", "/api/auth/session"])
-      assert.equal(route.test(pathname), true, `${target} ${pathname}`);
-  }
-});
-
-// An installation on slot units at the route set `from(plan.config)`:
+// An installation on slot units at the route set `from(config)`, where
+// `config` is plan.config in the earlier allowlist form:
 // sealed, or interrupted after its pending receipt with the old (pending-old)
 // or new (pending-new) config on disk.
 function slotInstall(f, from, { state = "sealed", edit = (config) => config } = {}) {
   const plan = isolatedPublicationPlan(inputFor(f.target));
-  const base = from(plan.config);
+  const base = from(allowlisted(plan.config));
   const onDisk = state === "pending-new" ? plan.config : edit(base);
   const receipt =
     state === "sealed"
@@ -1880,105 +1533,10 @@ for (const target of ACCOUNT_TARGETS) {
       assert.deepEqual(lifecycle(f), []);
     }
   });
-
-  test(`${target} refuses misrouted account paths before connector activation`, (t) => {
-    for (const misroutePath of [
-      "/api/auth/logout-all",
-      `/api/auth/grants/${handle}/revoke`,
-      "/api/auth/grants/",
-    ]) {
-      const f = fixture(t, { target, misroutePath, sharedTunnel: target !== "pages2" });
-      assert.throws(f.execute, /route validation failed/);
-      assert.deepEqual(lifecycle(f), []);
-    }
-  });
 }
 
 // Link previews, card images and Project assets: the same live targets.
 const PREVIEW_TARGETS = ACCOUNT_TARGETS;
-const previewUuid = "08c583e5-d29e-4f1e-b06b-333965254e94";
-const previewHash = "0123456789abcdef".repeat(4);
-const previewAdmitted = [
-  `/p/${previewUuid}/meta.json`,
-  `/p/${previewUuid}/card.json`,
-  `/project/prj_${previewUuid}/meta.json`,
-  `/project/sp_${previewUuid}/card.json`,
-  `/api/pages/${previewUuid}/card-image`,
-  `/api/pages/${previewUuid}/card-image/${previewHash}-light.webp`,
-  `/api/pages/${previewUuid}/card-image/${previewHash}-dark.png`,
-  `/api/pages/${previewUuid}/card-image/${previewHash}-light.jpg`,
-  `/api/projects/prj_${previewUuid}/assets`,
-  `/api/projects/sp_${previewUuid}/assets/${previewHash}`,
-];
-const previewRejected = [
-  `/p/${previewUuid}/meta.json/`,
-  `/p/${previewUuid}/other.json`,
-  `/p/${previewUuid}/meta.json/private`,
-  `/p/${previewUuid.toUpperCase()}/meta.json`,
-  `/project/${previewUuid}/meta.json`,
-  `/project/prj_${previewUuid.toUpperCase()}/meta.json`,
-  `/project/prj_${previewUuid}/card.json/`,
-  `/s/sp_${previewUuid}/meta.json`,
-  `/api/pages/${previewUuid}/card-image/`,
-  `/api/pages/${previewUuid}/card-image/${previewHash.slice(1)}-light.webp`,
-  `/api/pages/${previewUuid}/card-image/${previewHash}0-dark.webp`,
-  `/api/pages/${previewUuid}/card-image/${previewHash}-sepia.webp`,
-  `/api/pages/${previewUuid}/card-image/${previewHash}-light.gif`,
-  `/api/pages/${previewUuid}/card-image/${previewHash}-light.webp/private`,
-  `/api/pages/${previewUuid.toUpperCase()}/card-image`,
-  `/api/projects/${previewUuid}/assets`,
-  `/api/projects/prj_${previewUuid}/assets/private`,
-  `/api/projects/prj_${previewUuid}/assets/${previewHash}/private`,
-];
-
-test("page10, pages and pages2 admit link previews, card images and Project assets", () => {
-  for (const target of PREVIEW_TARGETS) {
-    const profile = deploymentProfile(target);
-    for (const flag of ["linkPreviews", "cardImages", "projectAssets"])
-      assert.equal(profile[flag], true, `${target} ${flag}`);
-    const current = routesFor(target);
-    for (const group of [linkPreviewPaths, cardImagePaths, projectAssetPaths])
-      assert.equal(current.split(group).length, 2, `${target} ${group}`);
-    const route = new RegExp(/^    path: (.+)$/m.exec(current)[1]);
-    for (const pathname of previewAdmitted)
-      assert.equal(route.test(pathname), true, `${target} ${pathname}`);
-    for (const pathname of previewRejected)
-      assert.equal(route.test(pathname), false, `${target} ${pathname}`);
-    // The viewer routes beside them stay as they were.
-    for (const pathname of [
-      `/p/${previewUuid}`,
-      `/p/${previewUuid}/`,
-      `/project/prj_${previewUuid}`,
-      `/api/pages/${previewUuid}/assets/${previewHash}`,
-    ])
-      assert.equal(route.test(pathname), true, `${target} ${pathname}`);
-  }
-});
-
-test("Page slug routes admit bounded titles and refuse extra path segments", () => {
-  for (const target of ["page10", "pages", "pages2", "page11"]) {
-    const current = routesFor(target);
-    assert.equal(current.split(pageSlugPaths).length, 2, target);
-
-    const route = new RegExp(/^    path: (.+)$/m.exec(current)[1]);
-    for (const pathname of [
-      `/p/${previewUuid}/My-Dashboard`,
-      `/p/${previewUuid}/My-Dashboard/`,
-      `/p/${previewUuid}/q3_plan-v2`,
-      `/p/${previewUuid}/${"a".repeat(80)}`,
-    ])
-      assert.equal(route.test(pathname), true, `${target} ${pathname}`);
-    for (const pathname of [
-      `/p/${previewUuid}/My.Dashboard`,
-      `/p/${previewUuid}/My%20Dashboard`,
-      `/p/${previewUuid}/${"a".repeat(81)}`,
-      `/p/${previewUuid}/My-Dashboard/more`,
-      `/p/${previewUuid}//My-Dashboard`,
-      `/p/${previewUuid.toUpperCase()}/My-Dashboard`,
-    ])
-      assert.equal(route.test(pathname), false, `${target} ${pathname}`);
-  }
-});
 
 // A set with Page slugs and without the REST routes was never published, but
 // it is one this tool generates, so it migrates like any other.
@@ -2130,23 +1688,6 @@ for (const target of PREVIEW_TARGETS) {
     assert.equal(g.execute().routesUpdated, true);
     assert.equal(installedReceipt(g), slotReceipt(plan.config, plan.unitSha256));
   });
-
-  test(`${target} refuses misrouted preview, card image and Project asset paths before connector activation`, (t) => {
-    for (const misroutePath of [
-      `/p/${previewUuid}/meta.json`,
-      `/project/sp_${previewUuid}/card.json`,
-      `/p/${previewUuid}/meta.json/`,
-      `/api/pages/${previewUuid}/card-image`,
-      `/api/pages/${previewUuid}/card-image/${"a".repeat(64)}-light.webp`,
-      `/api/pages/${previewUuid}/card-image/${"a".repeat(64)}-sepia.webp`,
-      `/api/projects/prj_${previewUuid}/assets`,
-      `/api/projects/${previewUuid}/assets`,
-    ]) {
-      const f = fixture(t, { ...shared, misroutePath });
-      assert.throws(f.execute, /route validation failed/, misroutePath);
-      assert.deepEqual(lifecycle(f), []);
-    }
-  });
 }
 
 // The installation the package release sealed, with neither the REST routes
@@ -2210,14 +1751,54 @@ test("media-guide migration refuses unrelated config edits even with a matching 
 // Every target's routes, by sha256. Update a hash only when the routes change
 // on purpose.
 const ROUTES_SHA256 = {
-  page10: "7efebc83df79d4094479514e7698cf5a30e12284d0421b7e2a3f0e8aa8e79376",
-  pages: "7309aa86cc0eeef8e238e35a794118a87b1569f7006a0699ed1979bfaa3049f1",
-  pages2: "60766b8f84e186f07a4446fc4b3fe7e6dc75ba576412c56be58ccdb184ebc78e",
-  page12: "743a2ba30b4479ee45fd887ad1330e4c8fc110ab6c556a65fffe1e9e22d3f446",
-  page11: "40019fee1b765adbb75f5c7120dd7a3845d3ae90ee55a2e5a0894f1fa3b4e505",
+  page10: "955633300859bfb60a44075a0a8a48c9846e3452d5dcd49e9a9afbcc003abe5e",
+  pages: "4950e2c903e43ff3b8d1a3a7a0c3551136abd98f54f03b01c810d8dd38882b87",
+  pages2: "1a5cb184dc12e433372f71568f651082610856f56302ac9859cfb6f56fcee34c",
+  page12: "1abfaacd807e466c58f9984d105b7b945e1005004f2f48c86b2296650a5ccb9e",
+  page11: "50a793dc36c54314ad717a555c23e021f32bbeb84a1f08bd01b796612f6f1e00",
+};
+// Every target's earlier allowlist form with no strippable group, by sha256.
+// A new strippable group leaves it unchanged.
+const EARLIER_BASE_SHA256 = {
+  page10: "a2b973dfa57ee7ea2a2ab8d6f0cfca4b7238e6ef12240dfc0a365e03daba9904",
+  pages: "4aa6f96562532f3c5739fe7ffc44728cd210432abf45a80f74fef383081e6ce5",
+  pages2: "74b3b8e3722dbd4b4a2ac1139716770cbc13a3bcf487c6f1f54fd3d239d92ea3",
+  page12: "ce0d5dd4aaee8beff2a56c9694c26892ae93d5c60a726d9bdedbfa30da1f92d8",
+  page11: "b93c2799039fc53156d085cce4000be367bb7d42e2609cd19a7dcb691598fe69",
+};
+// The routes releases before `admitAll` published, by sha256: before the
+// library catalog group, with it, then with the CSV reader's WASM group. Each stays one of the earlier form's
+// combinations, so an installation holding it is recognized.
+const INSTALLED_ROUTES_SHA256 = {
+  page10: [
+    "d66bcef8809207ba4f54db72c0ae31e73ba163efa850fe381e3c1c00ca878359",
+    "5715c9ff17e54fac23ab78937c60c1ed0680b3d3618986e92f4878a378173aff",
+    "7efebc83df79d4094479514e7698cf5a30e12284d0421b7e2a3f0e8aa8e79376",
+  ],
+  pages: [
+    "6f24e1b42da8a405ed6682ff23076930f897f8aa079227f2971eab322e53b5a7",
+    "d2434d3f4742fe056ac54b6ef4729e1038dff4f40e23bfe757178fa3a64dec82",
+    "7309aa86cc0eeef8e238e35a794118a87b1569f7006a0699ed1979bfaa3049f1",
+  ],
+  pages2: [
+    "08ce2af861a2563a4d091f4b04b937096da6a113b065ea0a3544d5a9f67e3ef0",
+    "750b25e627106b73eec033ec80a23d649961d80e741a8499362aa79795b44a3f",
+    "60766b8f84e186f07a4446fc4b3fe7e6dc75ba576412c56be58ccdb184ebc78e",
+  ],
+  page12: [
+    "571d1edb81fc1f25afd492be367b028afd4f19fca91ba92121e5d0c915d5c3f7",
+    "14e7cbfb960d91153f1d642179984f85d9c71113a4dd10e2528985f21a5b1303",
+    "743a2ba30b4479ee45fd887ad1330e4c8fc110ab6c556a65fffe1e9e22d3f446",
+  ],
+  page11: [
+    "e5882155195aea955d4e7950e36ab4da068398351a91b30b9657bd71fda47561",
+    "62b4c854ad75e11bdc75838f8f9d66bd5e14d7ecf61173257631700cb4e989f3",
+    "40019fee1b765adbb75f5c7120dd7a3845d3ae90ee55a2e5a0894f1fa3b4e505",
+  ],
 };
 // Each route group's path string, by sha256.
 const SLOT_SHA256 = {
+  admitAll: "52c691b5a99972d6abcd0cac13693fe1f57a6b1bdc93714f0d027e13a3dbd80c",
   themePaths: "10114183135a21a2e07cb9157fc1fcc2b7a8568e5be98e7607185b535276ca74",
   chunkPaths: "1387c0a673175a9a4685fd52b471f176125b11931af853d88cb37d0f4a5d060b",
   assetPaths: "3a7485ab6ba0e95b394d4565e1aef41a03daa7eeabf2a9597561a1f67214de6b",
@@ -2256,6 +1837,8 @@ const SETTLED_GROUPS = [
   "accessPaths",
   "imagePaths",
 ];
+// The strippable allowlist groups. `admitAll` is strippable too: omitting it
+// gives the earlier allowlist form.
 const STRIPPABLE_GROUPS = [
   "siftPaths",
   "siftCsvPaths",
@@ -2276,17 +1859,38 @@ const hostOptions = (target) => ({
   target,
   sharedTunnel: !["pages2", "page11"].includes(target),
 });
-// This target's config without the strippable groups `omit`.
+// This target's config in the earlier allowlist form, without the
+// strippable groups `omit`.
 const configWithout = (target, omit) =>
   isolatedPublicationPlan(inputFor(target)).config.replace(
     routesFor(target),
-    routesFor(target, { omit }),
+    routesFor(target, { omit: ["admitAll", ...omit] }),
   );
 
 test("the route registry generates every target's routes byte for byte", () => {
   assert.deepEqual(Object.keys(ROUTES_SHA256).sort(), [...DEPLOYMENT_TARGETS].sort());
-  for (const target of DEPLOYMENT_TARGETS)
+  for (const target of DEPLOYMENT_TARGETS) {
     assert.equal(digest(routesFor(target)), ROUTES_SHA256[target], target);
+    const strippable = strippableSlots(target).map((entry) => entry.name);
+    assert.equal(
+      digest(routesFor(target, { omit: strippable })),
+      EARLIER_BASE_SHA256[target],
+      `${target}'s earlier form changed: installations sealed with it would stop matching`,
+    );
+    // Every combination of the earlier form, as publication generates them.
+    const groups = strippable.filter((name) => name !== "admitAll");
+    const earlier = new Set();
+    for (let mask = 0; mask < 2 ** groups.length; mask++)
+      earlier.add(
+        digest(
+          routesFor(target, {
+            omit: ["admitAll", ...groups.filter((_, index) => mask & (1 << index))],
+          }),
+        ),
+      );
+    for (const installed of INSTALLED_ROUTES_SHA256[target])
+      assert.ok(earlier.has(installed), `${target} no longer recognizes routes ${installed}`);
+  }
 });
 
 test("route group strings are pinned", () => {
@@ -2318,12 +1922,12 @@ test("every optional route group is either strippable or explicitly settled", ()
   );
   assert.deepEqual(
     named.filter((entry) => !entry.settled).map((entry) => entry.name),
-    STRIPPABLE_GROUPS,
+    ["admitAll", ...STRIPPABLE_GROUPS],
   );
   for (const target of SLOTTED_TARGETS)
     assert.deepEqual(
       strippableSlots(target).map((entry) => entry.name),
-      STRIPPABLE_GROUPS,
+      ["admitAll", ...STRIPPABLE_GROUPS],
     );
 });
 
@@ -2331,21 +1935,35 @@ test("routesFor omits only strippable groups and uses only earlier strings", () 
   assert.throws(() => routesFor("page10", { omit: ["themePaths"] }), /Not a strippable/);
   assert.throws(() => routesFor("page10", { omit: ["nonsense"] }), /Not a strippable/);
   assert.throws(() => routesFor("page10", { use: { restPaths: "pages|" } }), /Not an earlier/);
+  assert.throws(() => routesFor("page10", { use: { admitAll: "internal/" } }), /Not an earlier/);
+  // A config sealed with an earlier refusal string regenerates with it.
+  const standIn = "^/old-refusal/";
+  const registry = ROUTE_REGISTRY.map((entry) =>
+    entry.name === "admitAll" ? { ...entry, earlier: [standIn] } : entry,
+  );
+  const current = routesFor("page10", {}, registry);
+  const sealed = routesFor("page10", { use: { admitAll: standIn } }, registry);
+  assert.match(sealed, /^ {4}path: \^\/old-refusal\/$/m);
+  assert.equal(sealed, current.replace(refusedPaths, standIn));
+  assert.notEqual(sealed, current);
+  // An allowlist group shapes only the earlier form.
+  assert.equal(routesFor("page10", { omit: ["restPaths"] }), routesFor("page10"));
   assert.equal(
-    routesFor("page10", { omit: ["restPaths"] }),
-    routesFor("page10").replace(restPaths, ""),
+    routesFor("page10", { omit: ["admitAll", "restPaths"] }),
+    routesFor("page10", { omit: ["admitAll"] }).replace(restPaths, ""),
   );
 });
 
-// The Pages hostname's ingress path pattern in `config`, as a RegExp.
+// The Pages hostname's ingress path pattern in an earlier-form `config`, as a
+// RegExp. With `admitAll`, a catalog path is admitted like any other path.
 const pagesIngress = (config) => new RegExp(/path: (\^\/\(.*\)\?\$)/.exec(config)[1]);
 
 test("the library catalog group admits exactly the Worker's catalog paths", () => {
   // The same source as the Worker route's pattern (shared/library-catalog.mjs).
   assert.equal(libraryCatalogPaths, LIBRARY_ROUTE + "|");
   const revision = "a".repeat(64);
-  const ingress = pagesIngress(routesFor("page10"));
-  const without = pagesIngress(routesFor("page10", { omit: ["libraryCatalogPaths"] }));
+  const ingress = pagesIngress(routesFor("page10", { omit: ["admitAll"] }));
+  const without = pagesIngress(routesFor("page10", { omit: ["admitAll", "libraryCatalogPaths"] }));
   for (const [path, admitted] of [
     [`/catalog/${revision}/manifest.json`, true],
     [`/catalog/${revision}/d3.js`, true],
@@ -2364,14 +1982,15 @@ test("the library catalog group admits exactly the Worker's catalog paths", () =
   }
 });
 
-test("every target that serves the viewer admits the library catalog unless omitted", () => {
+test("every target that serves the viewer has the library catalog in its earlier form unless omitted", () => {
   for (const target of DEPLOYMENT_TARGETS) {
     const served = Boolean(deploymentProfile(target).viewerAssets);
-    assert.equal(routesFor(target).includes(libraryCatalogPaths), served, target);
+    const earlier = routesFor(target, { omit: ["admitAll"] });
+    assert.equal(earlier.includes(libraryCatalogPaths), served, target);
     if (!served) continue;
     assert.equal(
-      routesFor(target, { omit: ["libraryCatalogPaths"] }),
-      routesFor(target).replace(libraryCatalogPaths, ""),
+      routesFor(target, { omit: ["admitAll", "libraryCatalogPaths"] }),
+      earlier.replace(libraryCatalogPaths, ""),
       target,
     );
   }
@@ -2381,24 +2000,49 @@ for (const target of SLOTTED_TARGETS)
   test(`${target} recognizes its installed config with and without the library catalog group`, () => {
     const plan = isolatedPublicationPlan(inputFor(target));
     const known = knownTunnelConfigs(target, tunnelId);
+    const withGroup = configWithout(target, []);
     const without = configWithout(target, ["libraryCatalogPaths"]);
-    assert.ok(plan.config.includes(libraryCatalogPaths));
+    assert.ok(withGroup.includes(libraryCatalogPaths));
     assert.ok(!without.includes(libraryCatalogPaths));
     assert.equal(known.get(digest(plan.config)), plan.config);
+    assert.equal(known.get(digest(withGroup)), withGroup);
     assert.equal(known.get(digest(without)), without);
   });
 
 // Publication refuses more than 2^16 combinations, so this fails in CI first.
-test("publication knows every combination of each target's strippable groups", () => {
+test("publication knows this release's config and every combination of the earlier form", () => {
   for (const target of SLOTTED_TARGETS) {
     const plan = isolatedPublicationPlan(inputFor(target));
     const known = knownTunnelConfigs(target, tunnelId);
-    assert.equal(known.size, 2 ** STRIPPABLE_GROUPS.length, target);
+    // Every allowlist combination, and the one config with `admitAll`.
+    assert.equal(known.size, 2 ** STRIPPABLE_GROUPS.length + 1, target);
     assert.equal(known.get(digest(plan.config)), plan.config);
-    const none = configWithout(target, STRIPPABLE_GROUPS);
-    assert.equal(known.get(digest(none)), none);
+    for (const config of [configWithout(target, []), configWithout(target, STRIPPABLE_GROUPS)])
+      assert.equal(known.get(digest(config)), config);
   }
 });
+
+for (const target of SLOTTED_TARGETS)
+  for (const state of ["sealed", "pending-old", "pending-new"])
+    test(`${target} moves the previous release's allowlist to admitAll (${state})`, (t) => {
+      const f = fixture(t, hostOptions(target));
+      // Every allowlist group present: what the release before admitAll sealed.
+      const x = slotInstall(f, (config) => config, { state });
+      assert.equal(x.base, configWithout(target, []));
+      assert.notEqual(x.base, x.plan.config);
+      if (state === "sealed") {
+        // A failed connector restores the allowlist, which stays retryable.
+        f.failNextStart();
+        assert.throws(f.execute, /injected connector startup failure/);
+        assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.base);
+        assert.equal(installedReceipt(f), slotReceipt(x.base, x.plan.unitSha256));
+      }
+      assert.equal(f.execute().routesUpdated, true);
+      assert.equal(fs.readFileSync(f.local(x.plan.configPath), "utf8"), x.plan.config);
+      assert.equal(installedReceipt(f), slotReceipt(x.plan.config, x.plan.unitSha256));
+      assertNoGap(f);
+      assert.equal(f.execute().routesUpdated, false);
+    });
 
 for (const target of SLOTTED_TARGETS)
   test(`${target} migrates an installation missing any one strippable group`, (t) => {
@@ -2429,16 +2073,19 @@ for (const target of SLOTTED_TARGETS)
       }
   });
 
-test("the CSV reader's WASM route is published by default, omitted on request, and recognized either way", () => {
+test("the CSV reader's WASM route is in the earlier form by default, omitted on request, and recognized either way", () => {
   for (const target of SLOTTED_TARGETS) {
-    assert.ok(routesFor(target).includes(siftCsvPaths), target);
-    assert.ok(!routesFor(target, { omit: ["siftCsvPaths"] }).includes(siftCsvPaths), target);
-    assert.ok(routesFor(target, { omit: ["siftCsvPaths"] }).includes(siftPaths), target);
+    const earlier = (omit = []) => routesFor(target, { omit: ["admitAll", ...omit] });
+    assert.ok(earlier().includes(siftCsvPaths), target);
+    assert.ok(!earlier(["siftCsvPaths"]).includes(siftCsvPaths), target);
+    assert.ok(earlier(["siftCsvPaths"]).includes(siftPaths), target);
     const known = knownTunnelConfigs(target, tunnelId);
     const plan = isolatedPublicationPlan(inputFor(target));
+    const withGroup = configWithout(target, []);
     const without = configWithout(target, ["siftCsvPaths"]);
-    assert.notEqual(without, plan.config);
+    assert.notEqual(without, withGroup);
     assert.equal(known.get(digest(plan.config)), plan.config, target);
+    assert.equal(known.get(digest(withGroup)), withGroup, target);
     assert.equal(known.get(digest(without)), without, target);
   }
 });
@@ -2467,7 +2114,8 @@ test("a config one character off every generated combination is refused, receipt
     subset.replace("health|", "healthy|"),
     subset.replace("health|", "healt|"),
     subset + "#",
-    plan.config.replace("mcp|", "mcP|"),
+    allowlisted(plan.config).replace("mcp|", "mcP|"),
+    plan.config.replace("internal/", "internaL/"),
   ]) {
     // The receipt forged to name the changed config.
     const f = fixture(t, { target: "page10" });
