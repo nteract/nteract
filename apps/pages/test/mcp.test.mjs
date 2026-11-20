@@ -56,10 +56,17 @@ test("tool schemas use only the JSON Schema subset clients forward as written", 
   for (const tool of tools) visit(tool.inputSchema, tool.name);
 });
 
-test("tool catalog has a deliberate size ceiling", () => {
+// Every client reads the whole catalog into its context before its first call,
+// so the catalog has a budget in characters of JSON. The budget is a round
+// number with room under it: a change that adds a sentence to a description
+// does not edit this line. Raise it only as a decision about what agents pay.
+const TOOL_CATALOG_BUDGET = 44_000;
+
+test("the tool catalog fits its budget", () => {
+  const size = JSON.stringify(tools).length;
   assert.ok(
-    JSON.stringify(tools).length <= 40150,
-    "Tool catalog grew; raise the ceiling on purpose when a tool grows",
+    size <= TOOL_CATALOG_BUDGET,
+    `The tool catalog is ${size} characters, over its budget of ${TOOL_CATALOG_BUDGET}. Shorten a description, or raise the budget on purpose.`,
   );
 });
 
