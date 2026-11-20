@@ -26,7 +26,7 @@
     "test:e2e:sharing": "node scripts/local-sharing-e2e.mjs"
   },
   "dependencies": {
-    "@automerge/automerge": "3.5.0",
+    "@automerge/automerge": "https://github.com/nteract/automerge/releases/download/js%2Fautomerge-3.5.0-nteract.1/automerge-automerge-3.5.0-nteract.1.tgz",
     "@automerge/automerge-repo": "3.0.0-experimental.1",
     "@duckdb/duckdb-wasm": "1.32.0",
     "@modelcontextprotocol/server": "2.4.0",

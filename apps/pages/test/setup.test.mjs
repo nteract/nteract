@@ -21,10 +21,14 @@ test("symlinked CLI executes setup validation instead of silently succeeding", (
   assert.match(result.stderr, /Usage: setup.mjs/);
 });
 
+const AUTOMERGE_PIN = "https://example.org/automerge-3.5.0-fixture.tgz";
+
 function fixture({ lock = true, tracked = true, changed = false, regular = true } = {}) {
   const calls = [];
+  const written = new Map();
   return {
     calls,
+    written,
     options: {
       root: "/fixture/",
       chdir() {},
@@ -42,15 +46,18 @@ function fixture({ lock = true, tracked = true, changed = false, regular = true 
         lstatSync: () => ({ isFile: () => regular }),
         mkdirSync() {},
         cpSync() {},
-        writeFileSync() {},
+        writeFileSync: (file, text) => written.set(file, text),
         readFileSync: (file) =>
           file === "package-lock.json"
             ? Buffer.from("lock")
-            : JSON.stringify({
-                dependencies: {
-                  debug: "catalog:",
-                },
-              }),
+            : file === "package.json"
+              ? JSON.stringify({ dependencies: { "@automerge/automerge": AUTOMERGE_PIN } })
+              : JSON.stringify({
+                  dependencies: {
+                    "@automerge/automerge": "catalog:",
+                    debug: "catalog:",
+                  },
+                }),
       },
       patch: () => {
         calls.push(["patch-upstream"]);
@@ -76,6 +83,14 @@ test("acquisition installs from the committed lock without executing the compile
   const fetch = f.calls.find(([, args]) => args?.includes("fetch"));
   assert.ok(fetch[1].includes("https://github.com/automerge/automerge-repo.git"));
   assert.equal(fetch[1].at(-1), revision);
+});
+
+test("setup gives automerge-repo the Automerge build Pages pins", () => {
+  const f = fixture();
+  setup(["--acquire-only"], f.options);
+  const upstream = JSON.parse(f.written.get("upstream/packages/automerge-repo/package.json"));
+  assert.equal(upstream.dependencies["@automerge/automerge"], AUTOMERGE_PIN);
+  assert.equal(JSON.parse(f.written.get("upstream-provenance.json")).automerge, AUTOMERGE_PIN);
 });
 
 test("acquisition rejects missing, uncommitted, changed or symlink locks before fetching", () => {

@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/automerge/automerge-repo",
   "revision": "afec0444191a5a662e065f24193bef58ab07122a",
-  "automerge": "3.5.0",
+  "automerge": "https://github.com/nteract/automerge/releases/download/js%2Fautomerge-3.5.0-nteract.1/automerge-automerge-3.5.0-nteract.1.tgz",
   "patch": {
     "documentDelegate": [
       {
