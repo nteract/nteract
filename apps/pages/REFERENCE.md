@@ -543,6 +543,21 @@ receipts classify a refusal in one place (`classifyRefusal` in
 [viewer/session.mjs](viewer/session.mjs)), so `page_trashed` shows the Trash
 notice whichever request sees it first.
 
+A browser that never held the Page has no copy to retire. When its open is
+refused with `403 page_access_denied`, or a Project address is refused with
+`404 project_not_found` (from `get_project`, or `page_access_denied` for its
+content Page), the viewer shows a No access screen instead of an error banner:
+"This Page doesn't exist, or it isn't shared with your account. You're signed
+in as …", with "Project" for a Project address, the name the account menu
+shows, and one link to the person's Pages. The sentence naming the account is
+left out when the menu has no name to show. The wording never says the target
+exists, since the host answers a missing target and an unreadable one alike.
+`page_trashed`, a format refusal, a 401 and transient failures keep their own
+notices, and a refusal that lands after the person navigated away shows
+nothing. Navigation and a change of account clear the screen
+(`noAccessRefusal` and `noAccessStep` in
+[viewer/no-access.mjs](viewer/no-access.mjs)).
+
 ```text
 Browser Repo + Wordgard                 Authorized HTTP / MCP operations
             | plain Automerge sync (sync/wire.mjs)  |

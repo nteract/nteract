@@ -1873,6 +1873,14 @@ span.unknown-node {
   margin: 0 0 0.75rem;
   font-size: 1.5rem;
 }
+/* No access: the heading takes focus on arrival only to be announced; it is
+   not a control, so it draws no focus ring. */
+.no-access h1:focus {
+  outline: none;
+}
+.no-access .access-notice p {
+  margin-bottom: 1rem;
+}
 .retired-notice button {
   display: inline-flex;
   align-items: center;
