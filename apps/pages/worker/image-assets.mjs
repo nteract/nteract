@@ -647,6 +647,7 @@ export async function handleImageAssets(
             ? "application/octet-stream"
             : contentType,
           "X-Pages-Media-Type": contentType,
+          ...(request.method === "HEAD" && { "X-Pages-Asset-Size": String(object.size) }),
           "Content-Security-Policy": "sandbox; default-src 'none'",
           "Accept-Ranges": "bytes",
           ...(range && {
