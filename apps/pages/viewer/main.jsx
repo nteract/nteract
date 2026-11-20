@@ -197,12 +197,14 @@ function forgetAccountData({ device = true } = {}) {
  * session check says who is signed in. The Browse picker drops its rows but
  * stays open to say why; the check's answer closes it through
  * forgetAccountData if the account changed or signed out. Nothing here starts
- * a request, so a 401 handled here can't cause another. */
+ * a request, and the link previews hold every ask until a session answer
+ * (pageRefs.refused, released in onSession), so a 401 handled here can't
+ * cause another before the session check answers. */
 function forgetRefusedAccountData() {
   listingCache.clear();
   projectList.reset();
   picker.refused();
-  pageRefs.clear();
+  pageRefs.refused();
 }
 const NO_PROJECTS = Object.freeze([]);
 // How long a new thread's passage stays emphasized after the inline composer
@@ -955,6 +957,13 @@ function App() {
           setLocalPages([]);
           setQuota(null);
           setOpening(false);
+        } else {
+          // Every session answer lands here: the signed-out recovery's check,
+          // the renewal timer, a return to the tab. The same account releases
+          // link previews held after a refusal (page-refs.mjs); an answer
+          // that didn't arrive goes to onError and releases nothing, and the
+          // renewal keeps asking, so a hold ends with the next answer.
+          pageRefs.session(result.identity?.principal ?? null);
         }
         authentication.current = result;
         setMenuAccount(result.identity && { ...result.identity, ...accountMenu });

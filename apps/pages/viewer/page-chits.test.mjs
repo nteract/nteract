@@ -625,20 +625,82 @@ test("a marked link whose href stops naming a Page loses its marker", async () =
   }
 });
 
-test("a ref change after a 401 asks nothing for labeled links", async () => {
-  const { refs, count } = scriptedRefs({ [OTHER_PATH]: "signed-out" });
+test("a 401 holds labeled links until the release, which asks once", async () => {
+  const answers = { [OTHER_PATH]: "signed-out" };
+  const { refs, count } = scriptedRefs(answers);
   try {
     const wg = linkedEditor(`See [the plan](${OTHER})`);
     wg.flush?.();
     await settle();
-    // The 401 dropped every ref with the account kept; the drop is a store
-    // change, and a change never asks for an idle ref.
+    // The 401 dropped every ref and held them with the account kept.
     assert.equal(count(OTHER_PATH), 1);
     assert.equal(refs.principal, "dev");
     refs.clear();
+    wg.dispatch({ changes: { from: 1, insert: [Leaf.text("So: ")] } });
+    wg.flush?.();
+    window.dispatchEvent(new dom.window.FocusEvent("focus"));
     await settle();
-    assert.equal(count(OTHER_PATH), 1, "no loop");
+    assert.equal(count(OTHER_PATH), 1, "a change, a redraw and a return ask nothing while held");
+    // The session answers for the same account: one draw pass asks once.
+    answers[OTHER_PATH] = "refused";
+    refs.session("dev");
+    await settle();
+    assert.equal(count(OTHER_PATH), 2);
+    assert.equal(wg.contentDOM.querySelector("a").dataset.linkState, "unavailable");
     wg.dom.remove();
+  } finally {
+    provideChitRefs(null);
+    refs.dispose();
+  }
+});
+
+test("a chit refused with a 401 asks again only after a session answer", async () => {
+  const { VirtualTimeScheduler } = await import("rxjs");
+  const scheduler = new VirtualTimeScheduler();
+  const answers = { [OTHER_PATH]: "signed-out", [PROJECT_PATH]: "signed-out" };
+  const { refs, count } = scriptedRefs(answers, scheduler);
+  const both = () => count(OTHER_PATH) + count(PROJECT_PATH);
+  try {
+    // Two editors draw the same chits, each with its own store subscription.
+    const blocks = [
+      editor(`See <${OTHER}> and <${PROJECT}>`),
+      editor(`Again <${OTHER}> and <${PROJECT}>`),
+    ];
+    for (const wg of blocks) wg.flush?.();
+    await settle();
+    // Each target was asked once; the first 401 held the tab and aborted
+    // the other request, and the drop asked nothing.
+    assert.equal(both(), 2);
+    for (let round = 0; round < 5; round++) {
+      scheduler.flush();
+      await settle();
+    }
+    assert.equal(both(), 2, "no loop while held");
+    // A release asks once per target, however many chits draw it; the 401
+    // holds again.
+    refs.session("dev");
+    await settle();
+    assert.equal(both(), 4);
+    for (let round = 0; round < 5; round++) {
+      scheduler.flush();
+      await settle();
+    }
+    assert.equal(both(), 4, "no loop after the second 401 either");
+    // The repeat waits on the backoff before its release.
+    answers[OTHER_PATH] = "open";
+    answers[PROJECT_PATH] = "open";
+    refs.session("dev");
+    await settle();
+    assert.equal(both(), 4, "cooling");
+    scheduler.flush();
+    await settle();
+    assert.equal(both(), 6, "released: each target once");
+    for (const wg of blocks) {
+      const [page, project] = wg.contentDOM.querySelectorAll("a.wg-chit");
+      assert.equal(page.textContent, "Open", "the chit got its title back without a reload");
+      assert.equal(project.textContent, "Open");
+    }
+    for (const wg of blocks) wg.dom.remove();
   } finally {
     provideChitRefs(null);
     refs.dispose();
@@ -782,6 +844,9 @@ test("another account asks again with no redraw; a 401's drop asks nothing", asy
     refs.account("other");
     await settle();
     assert.equal(count(OTHER_PATH), 2, "the new account's answer is asked for");
+    refs.refused();
+    await settle();
+    assert.equal(count(OTHER_PATH), 2, "a 401's drop asks nothing");
     refs.clear();
     await settle();
     assert.equal(count(OTHER_PATH), 2, "dropping refs with the account kept asks nothing");

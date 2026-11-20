@@ -20,9 +20,24 @@
 // PAGE_REF_UNAVAILABLE_TTL_MS, and a failure may be asked again after a
 // backoff. Concurrent asks share one request, and at most
 // PAGE_REF_CONCURRENCY requests run at once, of both kinds (the
-// page-ref-pool machine). Another account, sign-out or any 401 drops every
-// ref, aborts the requests in flight and cancels the timers, as the
-// library's listing cache forgets an account (main.jsx forgetAccountData).
+// page-ref-pool machine). Another account or sign-out drops every ref,
+// aborts the requests in flight and cancels the timers, as the library's
+// listing cache forgets an account (main.jsx forgetAccountData).
+//
+// A refusal (a ref request's own 401, or a tool call's that the shell
+// handles, main.jsx forgetRefusedAccountData) drops every ref the same way
+// and holds the tab (the page-ref-access machine): `want` asks nothing,
+// whoever calls it, until a session answer names who is signed in
+// (`session`, from main.jsx onSession). The same account releases the hold;
+// another account, or none, clears to it as `account` does. A release that
+// is followed by another refusal with no ref answered in between waits
+// before the next release, on the ref backoff (2 s doubling to 60 s). So
+// while the ref routes keep answering 401 and the session keeps answering
+// "signed in", each release sends at most PAGE_REF_CONCURRENCY (6)
+// requests, and each release after the first waits 2, 4, 8, 16, 32 and
+// then 60 s past the session answer that follows the refusal before it: at
+// most 36 requests over the first six releases (62 s), then at most 6 a
+// minute.
 //
 // Refs load on intent: `want(target, files)`. The hover card asks, urgent,
 // (PageLinkCard.jsx) when a reader points at or focuses a link. Chits and
@@ -298,6 +313,95 @@ export const pageRefPoolMachine = defineMachine({
   },
 });
 
+const strikesOf = (state, least) => {
+  if (!Number.isInteger(state.strikes) || state.strikes < least)
+    throw Error(`strikes must be a count of at least ${least}`);
+};
+
+/**
+ * Whether this tab may ask for refs.
+ *
+ * States carry `strikes`: refusals since a ref was last answered (readable
+ * or the routes' 404; either way the server knew the session).
+ * - open: `want` asks.
+ * - held: a refusal dropped every ref; `want` asks nothing until a session
+ *   answer names the same account.
+ * - cooling: the session named the same account after a refusal that
+ *   followed a release with no answer between; the release waits for the
+ *   cool timer.
+ *
+ * Events: `refused` (a 401, the refs' own or the shell's), `confirmed` (a
+ * session answer named the tab's account), `cooled` (the cool timer),
+ * `answered` (a ref request was answered). A session answer naming another
+ * account, or none, isn't an event: PageRefs clears to that account and
+ * starts this machine over.
+ *
+ * Effects: `drop` (abort the requests in flight, cancel the ref timers and
+ * empty the refs), `wait` (arm the cool timer, `ms`) and `cancel` (clear
+ * it). A release is the move to open itself: the store change is what
+ * drawn links react to.
+ */
+export const pageRefAccessMachine = defineMachine({
+  name: "page-ref-access",
+  states: ["open", "held", "cooling"],
+  events: ["refused", "confirmed", "cooled", "answered"],
+  initial: { name: "open", strikes: 0 },
+  unreachable: [
+    ["open", "cooled", "the cool timer runs only while cooling"],
+    ["held", "cooled", "a refusal while cooling cancels the cool timer"],
+    ["held", "answered", "a hold aborts every request, and want asks nothing while held"],
+    ["cooling", "answered", "cooling follows a hold, and want asks nothing while cooling"],
+  ],
+  cases: {
+    "open/answered": ["forgiven", "clean"],
+    "held/confirmed": ["first", "repeat"],
+  },
+  validate: {
+    states: {
+      open: (state) => strikesOf(state, 0),
+      held: (state) => strikesOf(state, 1),
+      cooling: (state) => strikesOf(state, 2),
+    },
+    effects: {
+      drop: () => {},
+      wait: (effect) => {
+        if (!(effect.ms > 0)) throw Error("wait needs ms");
+      },
+      cancel: () => {},
+    },
+  },
+  transition(state, event) {
+    switch (event.type) {
+      case "refused":
+        if (state.name === "held") return reject(state, "already held");
+        if (state.name === "cooling")
+          return { state: { name: "held", strikes: state.strikes }, effects: [{ type: "cancel" }] };
+        return {
+          state: { name: "held", strikes: state.strikes + 1 },
+          effects: [{ type: "drop" }],
+        };
+      case "confirmed":
+        if (state.name === "open") return reject(state, "not held");
+        if (state.name === "cooling") return reject(state, "already cooling");
+        if (state.strikes === 1) return { state: { name: "open", strikes: 1 }, effects: [] };
+        return {
+          state: { name: "cooling", strikes: state.strikes },
+          effects: [{ type: "wait", ms: backoffMs(state.strikes - 1) }],
+        };
+      case "cooled":
+        // cooling only (see unreachable).
+        return { state: { name: "open", strikes: state.strikes }, effects: [] };
+      case "answered":
+        // open only (see unreachable).
+        if (state.strikes === 0) return reject(state, "no strikes");
+        return { state: { name: "open", strikes: 0 }, effects: [] };
+    }
+  },
+});
+
+/** Whether a PageRefs store state lets `want` ask: the access is open. */
+export const asking = (state) => state.access.name === "open";
+
 /** A ref's key in the store: the target's kind and id, and the file. */
 export const refKey = (target, file) => `${target.kind}:${target.id}:${file}`;
 
@@ -360,8 +464,9 @@ export function settledOf(ref) {
  *   401 as signed out).
  * - `scheduler` runs the TTL and backoff timers; tests pass a virtual one.
  *
- * The store holds `{ principal, refs }`: the account and a Map of ref states
- * by refKey. React reads it with useStore.
+ * The store holds `{ principal, refs, access }`: the account, a Map of ref
+ * states by refKey, and the page-ref-access state (`asking` reads it). React
+ * reads it with useStore.
  */
 export class PageRefs {
   #pool = pageRefPoolMachine.initial;
@@ -370,12 +475,18 @@ export class PageRefs {
   #abort = new AbortController();
   /** The running TTL or backoff timer of each key. */
   #timers = new Map();
+  /** The cool timer, while the access is cooling. */
+  #cooling = null;
   constructor({ get = getJson, scheduler, concurrency = PAGE_REF_CONCURRENCY } = {}) {
     this.get = get;
     this.scheduler = scheduler;
     this.concurrency = concurrency;
     this.#pool = { ...pageRefPoolMachine.initial, slots: concurrency };
-    this.store = new Store({ principal: null, refs: new Map() });
+    this.store = new Store({
+      principal: null,
+      refs: new Map(),
+      access: pageRefAccessMachine.initial,
+    });
   }
 
   /** The signed-in account, or null. */
@@ -384,22 +495,38 @@ export class PageRefs {
   }
 
   /** The account this tab is signed in as now, or null. Another account
-   * drops every ref. */
+   * drops every ref and starts the access over. */
   account(principal) {
     if ((principal ?? null) === this.principal) return;
     this.clear(principal ?? null);
   }
 
+  /** A session answer named `principal` (null: signed out). The tab's own
+   * account releases a hold, at once or after the cool timer; another
+   * account, or none, clears to it as `account` does. */
+  session(principal) {
+    if ((principal ?? null) !== this.principal) return this.account(principal);
+    this.#access({ type: "confirmed" });
+  }
+
+  /** The server refused this tab's session (a 401): drop every ref and ask
+   * nothing until a session answer (`session`). */
+  refused() {
+    this.#access({ type: "refused" });
+  }
+
   /** Drop every ref: abort the requests in flight, cancel the timers and
-   * empty the queue. The account stays unless `principal` names another. */
+   * empty the queue. The account and its access stay unless `principal`
+   * names another, which starts the access over. */
   clear(principal = this.principal) {
-    this.#abort.abort();
-    this.#abort = new AbortController();
-    for (const subscription of this.#timers.values()) subscription.unsubscribe();
-    this.#timers.clear();
-    this.#queue = [];
-    this.#pool = { ...pageRefPoolMachine.initial, slots: this.concurrency };
-    this.store.update(() => ({ principal, refs: new Map() }));
+    const restart = principal !== this.principal;
+    if (restart) this.#cool(null);
+    this.#drop();
+    this.store.update((state) => ({
+      principal,
+      refs: new Map(),
+      access: restart ? pageRefAccessMachine.initial : state.access,
+    }));
   }
 
   /** The ref for `target`'s `file`. */
@@ -408,9 +535,11 @@ export class PageRefs {
   }
 
   /** Ask for `target`'s `files`. An ask already running, or a fresh answer,
-   * asks nothing; an `urgent` ask goes before the ones already waiting. */
+   * asks nothing, and so does every ask while the access is held or
+   * cooling; an `urgent` ask goes before the ones already waiting. */
   want(target, files = ["meta"], { urgent = false } = {}) {
-    if (!this.principal || !PAGE_REF_TARGETS.includes(target?.kind)) return;
+    const state = this.store.snapshot();
+    if (!state.principal || !asking(state) || !PAGE_REF_TARGETS.includes(target?.kind)) return;
     if (typeof target.id !== "string" || !target.id) return;
     const results = this.#steps(files.map((file) => [refKey(target, file), { type: "wanted" }]));
     const fetches = files.filter((_, index) => results[index].effects.length > 0);
@@ -422,7 +551,52 @@ export class PageRefs {
 
   /** Stop the timers, for tests and teardown. */
   dispose() {
+    this.#cool(null);
     this.clear();
+  }
+
+  /** Step the access machine and run its effects. A drop and the new access
+   * land in one store update, so no subscriber sees the refs empty while
+   * the access is still open. */
+  #access(event) {
+    const result = pageRefAccessMachine.step(this.store.snapshot().access, event);
+    if (result.rejected) return;
+    let dropped = false;
+    for (const effect of result.effects)
+      if (effect.type === "drop") {
+        this.#drop();
+        dropped = true;
+      } else if (effect.type === "wait") this.#cool(effect.ms);
+      else this.#cool(null);
+    this.store.update((state) => ({
+      ...state,
+      refs: dropped ? new Map() : state.refs,
+      access: result.state,
+    }));
+  }
+
+  /** Abort the requests in flight, cancel the ref timers and empty the
+   * queue and pool. The caller empties the refs in its store update. */
+  #drop() {
+    this.#abort.abort();
+    this.#abort = new AbortController();
+    for (const subscription of this.#timers.values()) subscription.unsubscribe();
+    this.#timers.clear();
+    this.#queue = [];
+    this.#pool = { ...pageRefPoolMachine.initial, slots: this.concurrency };
+  }
+
+  /** Arm the cool timer for `ms`, replacing the last one, or cancel it with
+   * null. */
+  #cool(ms) {
+    this.#cooling?.unsubscribe();
+    this.#cooling = null;
+    if (ms === null) return;
+    const subscription = timer(ms, this.scheduler).subscribe(() => {
+      this.#cooling = null;
+      this.#access({ type: "cooled" });
+    });
+    if (!subscription.closed) this.#cooling = subscription;
   }
 
   /** Step the pool and start the requests it sends. */
@@ -452,9 +626,12 @@ export class PageRefs {
       else event = { type: "answered", value: file === "meta" ? value : { card: value } };
     } catch (error) {
       if (signal.aborted) return;
-      // The shell hears about a 401 from getJson and asks who is signed in.
-      // Whatever it finds, nothing resolved under this session is kept.
-      if (error?.status === 401) return this.clear();
+      // getJson reports a 401 to the shell before it rejects, and the shell's
+      // refusal holds the access and aborts this request (returned above).
+      // Without that shell, this refusal holds it. Either way nothing
+      // resolved under this session is kept, and nothing is asked until a
+      // session answer.
+      if (error?.status === 401) return this.refused();
       // Only the kind's own refusal is unavailable; another 404 (a proxy, a
       // missing route, the other kind's refusal) is a failure.
       event =
@@ -462,6 +639,8 @@ export class PageRefs {
           ? { type: "refused" }
           : { type: "failed" };
     }
+    // A readable answer or the routes' 404: the server knew the session.
+    if (event.type !== "failed") this.#access({ type: "answered" });
     this.#steps([[key, event]]);
   }
 
