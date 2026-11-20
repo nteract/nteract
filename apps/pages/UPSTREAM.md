@@ -1,8 +1,9 @@
 # Upstream integration lane
 
 [Pages](README.md) builds the `automerge-repo` package at Repo revision
-`afec0444191a5a662e065f24193bef58ab07122a`, with Automerge `3.5.0`. It requires
-Node >=22.13, Git, and npm.
+`afec0444191a5a662e065f24193bef58ab07122a`, against the Automerge build
+`package.json` pins (nteract's 3.5.0 build; see the [README](README.md)). It
+requires Node >=22.13, Git, and npm.
 
 ```sh
 npm run setup
