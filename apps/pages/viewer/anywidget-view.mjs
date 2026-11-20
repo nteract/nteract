@@ -5,8 +5,10 @@ import {
   combineLatest,
   distinctUntilChanged,
   filter,
+  from,
   fromEvent,
   groupBy,
+  lastValueFrom,
   map,
   merge,
   mergeMap,
@@ -16,6 +18,7 @@ import {
   startWith,
   Subject,
   switchMap,
+  toArray,
 } from "rxjs";
 import { checkViewSpec } from "../shared/view-spec.mjs";
 import {
@@ -29,6 +32,13 @@ import { fetchOutputAsset } from "./output-assets.mjs";
 import { mountModuleOutput, readHostContext } from "@nteract/output-frame";
 import { hostLibraryRevision, libraryMap$ } from "./library-catalog.mjs";
 import { themeStore } from "./theme.mjs";
+
+// How many of a view's inputs load at once while it mounts. This bounds the
+// bytes arriving before the total check (OUTPUT_MAX_TOTAL_BYTES) counts
+// them: a load in flight holds at most two copies of an input of
+// OUTPUT_MAX_BYTES, its chunks and the bytes assembled from them
+// (output-assets.mjs fetchOutputAsset).
+const MOUNT_LOADS = 6;
 
 const sameAsset = (a, b) => a?.asset_id === b?.asset_id && a?.media_type === b?.media_type;
 const asset = (version) => ({ asset_id: version.asset_id, media_type: version.media_type });
@@ -365,22 +375,43 @@ export function mount(
                                 return () => delivered || loading.abort();
                               });
                             void (async () => {
+                              // Ends the loads still running when this mount
+                              // fails.
+                              const loads = new AbortController();
                               try {
-                                // Sequential bounded reads cap memory independently of number of bindings.
+                                // The inputs load MOUNT_LOADS at a time, and the
+                                // frame starts only once every one is here.
+                                // Nothing depends on the order they arrive in:
+                                // the maps the frame gets keep the plan's order.
+                                // Each input counts toward the total as it
+                                // arrives, so the bytes held stay within the
+                                // total plus MOUNT_LOADS loads in flight.
+                                const signal = AbortSignal.any([controller.signal, loads.signal]);
+                                const entries = Object.entries(plan.versions);
+                                const loaded = new Map(
+                                  await lastValueFrom(
+                                    from(entries).pipe(
+                                      mergeMap(async ([name, version]) => {
+                                        if (name.startsWith("data/"))
+                                          return [name, await loadData(name, version, signal)];
+                                        const input = await loadBytes(version, signal);
+                                        checkTotal(name, input.bytes.byteLength);
+                                        sizes.set(name, input.bytes.byteLength);
+                                        return [name, input];
+                                      }, MOUNT_LOADS),
+                                      toArray(),
+                                    ),
+                                  ),
+                                );
                                 const assets = {};
                                 const imports = {};
                                 const files = {};
-                                for (const [name, version] of Object.entries(plan.versions)) {
-                                  if (name.startsWith("data/")) {
-                                    const input = await loadData(name, version, controller.signal);
-                                    files[name] = input.value;
-                                  } else {
-                                    const loaded = await loadBytes(version, controller.signal);
-                                    checkTotal(name, loaded.bytes.byteLength);
-                                    sizes.set(name, loaded.bytes.byteLength);
-                                    if (name.startsWith("import/")) imports[name.slice(7)] = loaded;
-                                    else assets[name] = loaded;
-                                  }
+                                for (const [name] of entries) {
+                                  const input = loaded.get(name);
+                                  if (name.startsWith("data/")) files[name] = input.value;
+                                  else if (name.startsWith("import/"))
+                                    imports[name.slice(7)] = input;
+                                  else assets[name] = input;
                                 }
                                 controller.signal.throwIfAborted();
                                 outputHandle = mountOutput(
@@ -444,6 +475,7 @@ export function mount(
                                   )
                                   .subscribe();
                               } catch (error) {
+                                loads.abort();
                                 if (controller.signal.aborted) return;
                                 root.dataset.outputState = "failed";
                                 message.textContent = error.message;
