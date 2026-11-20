@@ -155,8 +155,8 @@ export function resolveAddress(index, address, field) {
 // What each kind of address is for, in a wrong_address_kind refusal.
 const KIND_USES = {
   block: "delete_block, move_block and replace_block_markdown take it",
-  node: "delete_node removes it",
-  image: "set_image changes it",
+  node: "delete_node removes it, and an insert's after_node_id puts new content after it",
+  image: "set_image changes it; to insert after it, name the node that holds it",
 };
 const WANTED = {
   block: "a block's id: the block field of the block's first outline entry",

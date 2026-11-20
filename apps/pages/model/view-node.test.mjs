@@ -67,26 +67,22 @@ test("insert_node writes one view marker with its view_id and stamps the feature
 });
 
 // The two recipes /llms/views.txt gives for a view between two passages.
-test("a view lands between two passages when they are separate blocks", () => {
+test("a view lands between two passages: after a node in its block, or appended in order", () => {
   const markdowns = (doc) => projectPage(doc).blocks.map((block) => block.markdown);
   // A new Page: appends apply in order.
   const built = edit(fresh(), [view(), { op: "insert_markdown", markdown: "After" }]).doc;
   assert.deepEqual(markdowns(built), ["Intro", line("daily"), "After"]);
-  // One block holding all the prose: rewrite it, then insert after it in
-  // reverse order, so the view lands ahead of the rest. A later block stays
-  // after both.
+  // One block holding all the prose: one insert after the paragraph the view
+  // follows writes it into that block, and a later block stays after it.
   const start = A.change(A.from(createPageData({ pageId })), (draft) =>
     initializePage(draft, "Intro\n\nAfter"),
   );
   const { doc } = edit(start, [{ op: "insert_markdown", markdown: "Tail" }]);
   const [first] = orderedBlockIds(doc);
-  const block = blockAddress(doc, first);
-  const split = edit(doc, [
-    { op: "replace_block_markdown", node_id: block, markdown: "Intro" },
-    { op: "insert_markdown", markdown: "After", after_node_id: block },
-    { ...view(), after_node_id: block },
-  ]).doc;
-  assert.deepEqual(markdowns(split), ["Intro", line("daily"), "After", "Tail"]);
+  const intro = projectReadContent(doc, {}).outline[0].node_id;
+  const placed = edit(doc, [{ ...view(), after_node_id: intro }]);
+  assert.deepEqual(markdowns(placed.doc), [`Intro\n\n${line("daily")}\n\nAfter`, "Tail"]);
+  assert.equal(placed.result.edits[0].block, blockAddress(doc, first));
 });
 
 test("insert_node refuses a malformed view node, naming the attr and its rule", () => {
@@ -123,7 +119,7 @@ test("insert_node refuses a malformed view node, naming the attr and its rule", 
     ],
     [
       { op: "insert_node", node: { type: "view", attrs: { view_id: "a" } }, after_node_id: 7 },
-      /: after_node_id must be a block's id, or null to insert first$/,
+      /: after_node_id must be a block's or a top-level node's id, or null to insert first$/,
     ],
   ])
     assert.throws(() => validateNodeInsertion(op), message, JSON.stringify(op));

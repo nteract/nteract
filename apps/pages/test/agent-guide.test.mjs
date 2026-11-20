@@ -433,14 +433,20 @@ test("the Images section teaches which path to use and the end-to-end workflow",
     /if your access is removed before you\s+upload, the upload is refused/,
     /Revoking an API key doesn't end the URLs\s+it already issued; they stop at expires_at/,
     /dark_asset_id; that marks the Page with the\s+image-theme-variants schema feature/,
-    /replace_block_markdown on the Page's only block \(a new Page from\s+create_page has one\), or its last block/,
-    /give every operation\s+that block's id as after_node_id and list them in reverse order/,
+    /Give insert_image the node_id of the\s+paragraph, heading or other top-level node the image follows/,
+    /The image goes into that node's\s+block, directly after it, and nothing else in the block changes/,
+    /two in one batch after\s+the same node read in reverse order/,
+    /alternate insert_image and insert_markdown with after_node_id omitted/,
     /summary\.images/,
     /pass outline\.next_offset\s+as outline_offset, with that read's revision as revision/,
-    /"node_id": "<last block's id>"/,
+    /"after_node_id": "<node_id of the paragraph it follows>"/,
   ])
     assert.match(images, fact);
   assert.doesNotMatch(images, /first block's id/);
+  assert.doesNotMatch(
+    images,
+    /insert_image always makes its own block|replace_block_markdown on the Page's only block/,
+  );
 });
 
 test("the guide's curl line and create_page_asset_upload's example send the same headers", async () => {

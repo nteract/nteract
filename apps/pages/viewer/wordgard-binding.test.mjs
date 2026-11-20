@@ -22,7 +22,7 @@ async function eventually(check, timeout = 4000) {
 }
 import { applyPageOperation, createPageData, initializePage, projectPage } from "../model/page.mjs";
 import { orderedBlockIds } from "../model/order.mjs";
-import { blockAddress } from "../model/addresses.mjs";
+import { blockAddress, nodeAddresses } from "../model/addresses.mjs";
 import { Leaf, Slice } from "wordgard/doc";
 import { textPath, blockMarkdown } from "../model/richtext.mjs";
 import {
@@ -65,8 +65,10 @@ import {
   wordgardListStarts,
 } from "./wordgard-binding.mjs";
 import { projectChanges } from "./wordgard-projection.mjs";
-function fixture(markdown = "hello 🌊 world") {
-  let doc = A.change(A.from({ blocks: { one: { markdown } } }), (d) => richFromSource(d, "one"));
+const fixture = (markdown = "hello 🌊 world") =>
+  replicaOf(A.change(A.from({ blocks: { one: { markdown } } }), (d) => richFromSource(d, "one")));
+/** A replica of `doc` that publishes its own and received changes. */
+function replicaOf(doc) {
   const observers = new Set();
   const publish = (before, after, remote) => {
     for (const fn of observers)
@@ -581,6 +583,47 @@ const imageSrc = `/api/pages/${"3".repeat(8)}/assets/${"a".repeat(64)}`;
 const image = PagesImage.of({ src: imageSrc, alt: "cat", title: null });
 // The browser editor's commit path: local transactions through the binding,
 // remote projections back into the editor, Backspace/Delete as deleteUnit.
+test("a remote insert inside a block reaches the open editor as a fresh decode reads it", () => {
+  for (const [source, inserted] of [
+    ["Start **end**\n\nNext", "Plain *and em*"],
+    ["- a\n- b\n\nNext", "Para\n\n> quote\n\n1. one"],
+    ["Start\n\nNext", "```js\ncode\n```\n\n---\n\n## Heading"],
+    ["Only", "- [ ] task"],
+  ]) {
+    const replica = replicaOf(
+      A.change(A.from(createPageData({ pageId: "5".repeat(8), title: "Plan" })), (d) =>
+        initializePage(d, source, "one"),
+      ),
+    );
+    const binding = createWordgardBinding(replica, "one"),
+      events = [];
+    binding.observe((event) => events.push(event));
+    const remote = A.change(A.clone(replica.doc), (d) => {
+      applyPageOperation(d, {
+        operation: "edit_page",
+        arguments: {
+          operations: [
+            {
+              op: "insert_markdown",
+              markdown: inserted,
+              after_node_id: nodeAddresses(d, "one")[0],
+            },
+          ],
+        },
+      });
+    });
+    replica.receive(remote);
+    const event = events.at(-1);
+    assert.equal(event.remote, true, source);
+    assert.ok(event.changes.apply(event.before.doc).eq(event.after.doc), source);
+    assert.ok(
+      binding.current.doc.eq(decode(A.spans(replica.doc, textPath("one"))).doc),
+      `${source}: ${binding.current.doc}`,
+    );
+    assert.match(blockMarkdown(replica.doc.blocks.one), /Para|Plain|code|task/, source);
+    binding.destroy();
+  }
+});
 function editorFor(replica, id) {
   const binding = createWordgardBinding(replica, id),
     undoHistory = wordgardHistory(),

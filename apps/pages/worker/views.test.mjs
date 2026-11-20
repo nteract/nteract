@@ -443,6 +443,47 @@ test("a Page holds ten views, each served; an eleventh is refused naming them", 
   for (const id of documentIds) assert.ok(next.documentIds().includes(id));
 });
 
+test("set_view, then insert_node after a paragraph's id, puts the view inside its block", async (t) => {
+  const h = await viewsHost(t);
+  const prose = await h.edit(h.host, [
+    {
+      op: "replace_block_markdown",
+      node_id: (await h.tool(h.host, "read_page", {})).body.blocks[0].node_id,
+      markdown: "Before the chart.\n\nAfter the chart.",
+    },
+  ]);
+  assert.equal(prose.status, 200, JSON.stringify(prose.body));
+  const [before, after] = prose.body.result.edits[0].nodes;
+  assert.equal((await h.setView(h.host)).status, 200);
+  const placed = await h.edit(h.host, [
+    {
+      op: "insert_node",
+      node: { type: "view", attrs: { view_id: "daily" } },
+      after_node_id: before,
+    },
+  ]);
+  assert.equal(placed.status, 200, JSON.stringify(placed.body));
+  const [edit] = placed.body.result.edits;
+  assert.deepEqual(Object.keys(edit).sort(), ["attrs", "block", "nodes", "op", "type"]);
+  const read = await h.tool(h.host, "read_page", { comments: "none" });
+  assert.equal(read.body.blocks.length, 1);
+  assert.equal(edit.block, read.body.blocks[0].node_id);
+  assert.equal(
+    read.body.blocks[0].markdown,
+    String.raw`Before the chart.
+
+\[View: daily\]
+
+After the chart.`,
+  );
+  assert.deepEqual(
+    read.body.outline.entries.map((entry) => entry.node_id),
+    [before, edit.nodes[0], after],
+  );
+  const entry = read.body.outline.entries[1];
+  assert.deepEqual(entry.summary, { title: "Daily usage", media_type: VEGA_LITE });
+});
+
 test("insert_node places a view the Page holds and refuses one it doesn't", async (t) => {
   const h = await viewsHost(t);
   const before = await h.tool(h.host, "read_page", { include_content: false });

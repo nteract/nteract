@@ -304,7 +304,8 @@ const editOperation = {
     after_node_id: {
       ...address,
       type: ["string", "null"],
-      description: "Inserts and move_block: after this block's id; null prepends, omitted appends.",
+      description:
+        "Inserts: after a block's id in a new block, or after a top-level node's id inside its block. move_block: a block's id. null prepends, omitted appends.",
     },
     asset_id: {
       ...assetId,
@@ -384,7 +385,7 @@ const editOperation = {
     },
     node: {
       type: "object",
-      description: "insert_node: the node to place in its own block.",
+      description: "insert_node: the node to place.",
       properties: {
         type: {
           ...choice("dataframe", "view"),

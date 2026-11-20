@@ -183,8 +183,8 @@ test("published tool examples pass current source and view validators", () => {
             if (op.view_id === "audio") assert.ok(state.audio.bytes instanceof DataView);
             if (op.view_id === "counter") assert.equal(state.count, 0);
           }
-        } else if (op.op === "insert_markdown" || op.op === "replace_block_markdown") {
-          // The placement recipes split prose around a view.
+        } else if (op.op === "insert_markdown") {
+          // The new-Page recipe appends prose between views.
           validateEditFields(op);
         } else {
           assert.equal(op.op, "insert_node");
@@ -243,7 +243,10 @@ test("the views guide describes the frame, request rules and placement between p
     "There are no chart, success, warning or info colors",
     "host.onContextChange(listener) calls the listener after each switch",
     "Each view is its own document, and one edit_page request writes one document",
-    "a paragraph's or heading's node id is refused with wrong_address_kind",
+    "give insert_node the node_id of the paragraph, heading, list or other top-level node it follows",
+    "nothing else in the block changes, so comment threads stay where they are",
+    "An image's id is refused with wrong_address_kind; name the paragraph that holds it.",
+    "A block's id puts the view in a block of its own after that block.",
     "Omit after_node_id to append at the end of the Page, or pass null to put the view first.",
     "There is no eval: eval and new Function throw. WebAssembly compiles.",
     "A server sees Origin: null",
@@ -255,6 +258,8 @@ test("the views guide describes the frame, request rules and placement between p
   for (const name of guide.match(/--[a-z][a-z-]*(?=[,.])/g) ?? [])
     assert.ok(OUTPUT_STYLE_VARIABLES.includes(name) || name === "--plot-background", name);
   assert.doesNotMatch(guide, /Pages supplies a model, the DOM element and an AbortSignal/);
+  // Placing between passages no longer splits a block.
+  assert.doesNotMatch(guide, /split it in one batch|comment threads on it are detached/);
 });
 
 test("every guide that describes data uploads says which format to choose, Parquet first", () => {
