@@ -22,6 +22,8 @@ export const ADMISSION_REASONS = Object.freeze({
   page_access_removed: "page_access_denied",
   activity_epoch_changed: "temporarily_unavailable",
   project_lease_expired: "temporarily_unavailable",
+  // The Page's Project could not be read for this request.
+  project_unavailable: "temporarily_unavailable",
   connection_capacity: "temporarily_unavailable",
   receipt_heads_missing: "temporarily_unavailable",
   // A receipt for edits SyncHost's schema gate refused: the tab's declared

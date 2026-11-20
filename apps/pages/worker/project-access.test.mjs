@@ -123,6 +123,7 @@ test("unrelated Project ACL revisions preserve existing author generation", () =
 });
 
 test("a new grant cannot combine with placement observed before a move", async () => {
+  // The move is seen between the two location reads: no snapshot, try again.
   let reads = 0;
   const env = {
     CATALOGS: {
@@ -133,7 +134,9 @@ test("a new grant cannot combine with placement observed before a move", async (
     },
     PROJECTS: { getByName: () => ({ fetch: async () => Response.json(project) }) },
   };
-  assert.equal(await resolveProjectAccess(env, metadata, now), null);
+  await assert.rejects(resolveProjectAccess(env, metadata, now), {
+    code: "project_policy_unavailable",
+  });
 });
 
 test("without a current Project snapshot, a direct viewer grant reads but can't write", () => {

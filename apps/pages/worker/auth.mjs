@@ -600,6 +600,9 @@ export const RETRYABLE_SERVER_CODES = Object.freeze([
   // A view slot's release after a failed write hasn't finished
   // (view-lifecycle.mjs `releasing`).
   "view_unavailable",
+  // A Page's Project could not be read, so inherited access is unknown
+  // (project-access.mjs).
+  "project_policy_unavailable",
 ]);
 
 const LOGGED_ERROR_TYPES = [

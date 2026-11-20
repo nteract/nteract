@@ -209,10 +209,8 @@ export async function world(
     });
     page.plain = plainStub(page.repo);
     page.policy = new DocumentPolicy({
-      metadata: () => ({
-        ...(page.policyMetadata ?? page.metadata),
-        projectAccess: page.projectAccess,
-      }),
+      metadata: (identity) => page.enforcedMetadata(identity),
+      projectUnavailable: (identity) => page.projectUnavailable(identity),
     });
     pages.set(id, page);
     return page;
