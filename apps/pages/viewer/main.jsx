@@ -958,11 +958,14 @@ function App() {
           setQuota(null);
           setOpening(false);
         } else {
-          // Every session answer lands here: the signed-out recovery's check,
-          // the renewal timer, a return to the tab. The same account releases
-          // link previews held after a refusal (page-refs.mjs); an answer
-          // that didn't arrive goes to onError and releases nothing, and the
-          // renewal keeps asking, so a hold ends with the next answer.
+          // Every session answer for the same account lands here, whatever
+          // asked: the signed-out recovery's check, the renewal timer, a
+          // return to the tab. It releases link previews held after a refusal
+          // when it names their account (page-refs.mjs); a principal the
+          // refs don't have releases nothing, and the account effect alone
+          // moves them. An answer that didn't arrive goes to onError and
+          // releases nothing, and the renewal keeps asking, so a hold ends
+          // with the next answer.
           pageRefs.session(result.identity?.principal ?? null);
         }
         authentication.current = result;

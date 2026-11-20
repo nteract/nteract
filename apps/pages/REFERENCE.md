@@ -295,13 +295,16 @@ else replaces the screen with a Reload notice and leaves the Page unchanged.
   once, of both kinds. Another account or sign-out drops them all. A 401,
   a ref's own or a tool call's, drops them all and holds the tab: nothing
   is asked, by a chit, a labeled link or a card, until a session answer
-  names who is signed in. The same account releases the hold, and the
-  tab's chits and labeled links ask once for what they show; another
-  account, or none, clears to it. A release followed by another 401 with
-  no ref answered in between makes the next release wait 2 s, doubling to
-  60 s, so routes that keep refusing a session that keeps answering cost
-  at most 6 requests per release: 36 over the first six releases (62 s),
-  then 6 a minute.
+  names the refs' own account. That releases the hold, and the tab's chits
+  and labeled links ask once for what they show. While held, no hover card
+  opens, and one already open closes. A session answer for another
+  account, or none, releases nothing; sign-out and the account the tab
+  shows move the refs as above. A release followed by another 401 with no
+  ref answered in between makes the next release wait 2 s, doubling to
+  60 s, so when every ref route keeps refusing a session that keeps
+  answering, it costs at most 6 requests per release: 36 over the first
+  six releases (62 s), then 6 a minute. A readable or unavailable answer
+  resets the wait.
   Refs load when a card opens (urgent) or a chit or labeled link draws (not
   urgent). Every link to one target shares its ref, so a Page with N
   distinct targets asks N times when it draws, at most 6 at once, whatever

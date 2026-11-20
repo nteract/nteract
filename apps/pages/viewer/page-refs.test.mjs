@@ -641,25 +641,64 @@ test("refusals with no answer between them space releases on the ref backoff", a
   }
 });
 
-test("a session answer for another account, or none, clears to it", async () => {
+test("a session answer for another account, or none, changes nothing", async () => {
+  // Signed out (refs at null): a session naming someone the tab doesn't
+  // show moves nothing and asks nothing.
+  const l = loader();
+  const subscription = eagerAsks(l.refs);
+  try {
+    const before = l.refs.store.snapshot();
+    l.refs.session("user:b");
+    assert.equal(l.refs.store.snapshot(), before);
+    assert.equal(l.calls.length, 0);
+
+    // At user:a, open, then held: user:b or none neither moves the account
+    // nor releases the hold.
+    l.refs.account("user:a");
+    assert.equal(l.calls.length, PAGE_REF_CONCURRENCY);
+    const open = l.refs.store.snapshot();
+    l.refs.session("user:b");
+    l.refs.session(null);
+    assert.equal(l.refs.store.snapshot(), open);
+    assert.equal(l.calls.length, PAGE_REF_CONCURRENCY);
+    await refuseOne(l);
+    const held = l.refs.store.snapshot();
+    l.refs.session("user:b");
+    l.refs.session(null);
+    l.advance(PAGE_REF_BACKOFF_MAX_MS * 10);
+    await l.settle();
+    assert.equal(l.refs.store.snapshot(), held);
+    assert.equal(l.refs.principal, "user:a");
+    assert.equal(l.calls.length, PAGE_REF_CONCURRENCY, "sent nothing");
+    // The account's own answer still releases.
+    l.refs.session("user:a");
+    assert.equal(l.calls.length, PAGE_REF_CONCURRENCY * 2);
+  } finally {
+    subscription.unsubscribe();
+    l.refs.dispose();
+  }
+});
+
+test("sign-out and another account clear through account(), hold or no hold", async () => {
   const l = loader();
   l.refs.account("user:a");
   l.refs.want(page(A), ["meta"]);
   await refuseOne(l);
   // Another account: its refs start empty and open.
-  l.refs.session("user:b");
+  l.refs.account("user:b");
   assert.equal(l.refs.principal, "user:b");
   assert.deepEqual(l.refs.store.snapshot().access, { name: "open", strikes: 0 });
   l.refs.want(page(A), ["meta"]);
   assert.equal(l.calls.length, 2);
-  // A cooling hold, then signed out: the cool timer goes with it.
+  // A cooling hold, then signed out (main.jsx forgetAccountData): the cool
+  // timer goes with it.
   await refuseOne(l);
   l.refs.session("user:b");
   l.refs.want(page(A), ["meta"]);
   await refuseOne(l);
   l.refs.session("user:b");
   assert.equal(l.refs.store.snapshot().access.name, "cooling");
-  l.refs.session(null);
+  l.refs.clear(null);
   assert.equal(l.refs.principal, null);
   assert.deepEqual(l.refs.store.snapshot().access, { name: "open", strikes: 0 });
   assert.equal(l.scheduler.actions.length, 0, "no cool timer left");

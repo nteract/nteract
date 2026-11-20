@@ -27,17 +27,20 @@
 // A refusal (a ref request's own 401, or a tool call's that the shell
 // handles, main.jsx forgetRefusedAccountData) drops every ref the same way
 // and holds the tab (the page-ref-access machine): `want` asks nothing,
-// whoever calls it, until a session answer names who is signed in
-// (`session`, from main.jsx onSession). The same account releases the hold;
-// another account, or none, clears to it as `account` does. A release that
-// is followed by another refusal with no ref answered in between waits
-// before the next release, on the ref backoff (2 s doubling to 60 s). So
-// while the ref routes keep answering 401 and the session keeps answering
-// "signed in", each release sends at most PAGE_REF_CONCURRENCY (6)
-// requests, and each release after the first waits 2, 4, 8, 16, 32 and
-// then 60 s past the session answer that follows the refusal before it: at
-// most 36 requests over the first six releases (62 s), then at most 6 a
-// minute.
+// whoever calls it, until a session answer names the refs' own account
+// (`session`, from main.jsx onSession), which releases the hold. A session
+// answer for another account, or none, releases nothing: the shell moves
+// the refs with `account` (sign-out or an account the tab shows), which
+// starts the access over. A release that is followed by another refusal
+// with no ref answered in between waits before the next release, on the
+// ref backoff (2 s doubling to 60 s). So while every ref route keeps
+// answering 401 and the session keeps answering "signed in", each release
+// sends at most PAGE_REF_CONCURRENCY (6) requests, and each release after
+// the first waits 2, 4, 8, 16, 32 and then 60 s past the session answer
+// that follows the refusal before it: at most 36 requests over the first
+// six releases (62 s), then at most 6 a minute. A readable or 404 answer
+// resets the count, so a host that refuses some routes and answers others
+// releases with no wait, at the pace of the session check.
 //
 // Refs load on intent: `want(target, files)`. The hover card asks, urgent,
 // (PageLinkCard.jsx) when a reader points at or focuses a link. Chits and
@@ -333,8 +336,8 @@ const strikesOf = (state, least) => {
  * Events: `refused` (a 401, the refs' own or the shell's), `confirmed` (a
  * session answer named the tab's account), `cooled` (the cool timer),
  * `answered` (a ref request was answered). A session answer naming another
- * account, or none, isn't an event: PageRefs clears to that account and
- * starts this machine over.
+ * account, or none, isn't an event; a move to another account
+ * (PageRefs.account or clear) starts this machine over.
  *
  * Effects: `drop` (abort the requests in flight, cancel the ref timers and
  * empty the refs), `wait` (arm the cool timer, `ms`) and `cancel` (clear
@@ -501,11 +504,14 @@ export class PageRefs {
     this.clear(principal ?? null);
   }
 
-  /** A session answer named `principal` (null: signed out). The tab's own
-   * account releases a hold, at once or after the cool timer; another
-   * account, or none, clears to it as `account` does. */
+  /** A session answer named `principal` (null: signed out). The refs' own
+   * account releases a hold, at once or after the cool timer. Any other
+   * principal does nothing here: the tab may keep showing an account the
+   * session no longer names (a live Page keeps its original account), and
+   * only `account`, from the account the tab shows, moves the refs to
+   * another. */
   session(principal) {
-    if ((principal ?? null) !== this.principal) return this.account(principal);
+    if ((principal ?? null) !== this.principal) return;
     this.#access({ type: "confirmed" });
   }
 

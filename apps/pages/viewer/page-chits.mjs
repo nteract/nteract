@@ -55,12 +55,11 @@
 // unavailable answer and for a failed recheck of one past its backoff. So
 // an open tab doesn't poll its readable targets, a failing ref isn't asked
 // again until a redraw or a return, a dropped one until a redraw, a return
-// or a release, and a
-// wrong "unavailable" from a slow host heals while the reader looks: 15 s
-// after it was answered, or, if that recheck fails, on the recheck's
-// backoff, at most a minute apart. Writing a marker is a DOM change the
-// editor observes, so each marker change is followed by one draw pass in
-// that editor. A hover asks through the card.
+// or a release, and a wrong "unavailable" from a slow host heals while the
+// reader looks: 15 s after it was answered, or, if that recheck fails, on
+// the recheck's backoff, at most a minute apart. Writing a marker is a DOM
+// change the editor observes, so each marker change is followed by one
+// draw pass in that editor. A hover asks through the card.
 import { filter, skip } from "rxjs";
 import { Node } from "wordgard/doc";
 import { Decoration, Widget, Wordgard } from "wordgard/editor";
@@ -389,7 +388,8 @@ function unmarkEditor(wg) {
  * tab's refs are released after a refusal; a "change" pass on every ref
  * change while connected; and a "return" pass when the reader comes back to
  * the tab. A refusal drops the refs and holds them (page-refs.mjs asking)
- * with the account kept, so it draws nothing until the release. */
+ * with the account kept: its "change" pass repaints, taking lock markers
+ * off the dropped refs, and asks nothing; no pass asks until the release. */
 const labeledLinkMarks = Wordgard.Plugin.define((wg) => {
   let subscription = null;
   const paint = (cause) => {

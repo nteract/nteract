@@ -31,7 +31,9 @@
 // The controller never opens a card while a link menu is open, while a
 // mouse button is down (a text selection), for touch or pen input, where
 // the device can't hover (`(hover: none)`), for a link inside a card
-// preview, or while this tab knows no account.
+// preview, while this tab knows no account, or while its refs are held
+// after a refusal (page-refs.mjs asking). A hold also closes an open card,
+// whose answers it drops; the next hover after the release opens it again.
 //
 // A link whose text is formatted draws as one element in the editor
 // (PagesLink's rank, model/wordgard-doc.mjs) and in the preview
@@ -44,7 +46,7 @@ import { linkedTarget } from "../shared/page-links.mjs";
 import { returnFocus } from "./editor-focus.mjs";
 import { PAGE_LINK_CLASS, PROJECT_LINK_CLASS } from "./link-destination.mjs";
 import { linkMenus } from "./link-menu.mjs";
-import { refKey, settledOf } from "./page-refs.mjs";
+import { asking, refKey, settledOf } from "./page-refs.mjs";
 import { Store } from "./store.mjs";
 
 /** How long the pointer rests on a link before its card opens. */
@@ -511,8 +513,13 @@ export class PageLinkCards {
 
   /** Whether a card may open now (see the module comment). */
   #allowed() {
+    const refs = this.refs.store.snapshot();
     return (
-      !!this.refs.principal && !this.#buttonDown && this.menus.snapshot() === 0 && this.canHover()
+      !!refs.principal &&
+      asking(refs) &&
+      !this.#buttonDown &&
+      this.menus.snapshot() === 0 &&
+      this.canHover()
     );
   }
 
@@ -579,8 +586,10 @@ export class PageLinkCards {
         .pipe(switchMap((ms) => (ms === null ? EMPTY : timer(ms, this.scheduler))))
         .subscribe(() => this.dispatch({ type: "elapsed" })),
       // A changed account closes the card; its answers belong to the old one.
+      // So does a hold after a refusal (page-refs.mjs asking), which drops
+      // the card's answers and asks nothing for it.
       this.refs.store
-        .select((state) => state.principal)
+        .select((state) => (asking(state) ? state.principal : null))
         .subscribe(() => this.dispatch({ type: "dismissed", restore: false })),
       // The link menu opening closes the card.
       this.menus

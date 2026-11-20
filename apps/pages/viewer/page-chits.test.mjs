@@ -628,8 +628,9 @@ test("a marked link whose href stops naming a Page loses its marker", async () =
 test("a 401 holds labeled links until the release, which asks once", async () => {
   const answers = { [OTHER_PATH]: "signed-out" };
   const { refs, count } = scriptedRefs(answers);
+  let wg;
   try {
-    const wg = linkedEditor(`See [the plan](${OTHER})`);
+    wg = linkedEditor(`See [the plan](${OTHER})`);
     wg.flush?.();
     await settle();
     // The 401 dropped every ref and held them with the account kept.
@@ -647,8 +648,8 @@ test("a 401 holds labeled links until the release, which asks once", async () =>
     await settle();
     assert.equal(count(OTHER_PATH), 2);
     assert.equal(wg.contentDOM.querySelector("a").dataset.linkState, "unavailable");
-    wg.dom.remove();
   } finally {
+    wg?.dom.remove();
     provideChitRefs(null);
     refs.dispose();
   }
@@ -660,12 +661,11 @@ test("a chit refused with a 401 asks again only after a session answer", async (
   const answers = { [OTHER_PATH]: "signed-out", [PROJECT_PATH]: "signed-out" };
   const { refs, count } = scriptedRefs(answers, scheduler);
   const both = () => count(OTHER_PATH) + count(PROJECT_PATH);
+  const blocks = [];
   try {
     // Two editors draw the same chits, each with its own store subscription.
-    const blocks = [
-      editor(`See <${OTHER}> and <${PROJECT}>`),
-      editor(`Again <${OTHER}> and <${PROJECT}>`),
-    ];
+    blocks.push(editor(`See <${OTHER}> and <${PROJECT}>`));
+    blocks.push(editor(`Again <${OTHER}> and <${PROJECT}>`));
     for (const wg of blocks) wg.flush?.();
     await settle();
     // Each target was asked once; the first 401 held the tab and aborted
@@ -700,8 +700,8 @@ test("a chit refused with a 401 asks again only after a session answer", async (
       assert.equal(page.textContent, "Open", "the chit got its title back without a reload");
       assert.equal(project.textContent, "Open");
     }
-    for (const wg of blocks) wg.dom.remove();
   } finally {
+    for (const wg of blocks) wg.dom.remove();
     provideChitRefs(null);
     refs.dispose();
   }
