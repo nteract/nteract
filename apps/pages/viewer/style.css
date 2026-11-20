@@ -1816,6 +1816,16 @@ span.unknown-node {
   line-height: 1.5;
   color: var(--muted-foreground);
 }
+.page-domain-sharing .page-share-organization {
+  justify-self: start;
+  max-width: 100%;
+}
+.page-share-organization span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .page-domain-sharing .page-domain-sharing-note {
   display: grid;
   gap: 6px;

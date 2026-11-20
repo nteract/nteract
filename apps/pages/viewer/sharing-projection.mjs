@@ -105,6 +105,50 @@ export function organizationSharingProjection(value) {
 }
 
 /**
+ * The organization a one-click "Share with {name}" offers, or null. It offers
+ * one only to the owner of a Restricted Page or Project (no stored
+ * organization grant and no stored company domain) when exactly one
+ * organization option has verified proof. With several, the owner picks from
+ * the Link access select; a button can't know which they mean.
+ */
+export function organizationShareOffer(value) {
+  if (!value?.access?.canManageAccess || !Array.isArray(value.organizationOptions)) return null;
+  if (value.organizationAccess || value.domainView) return null;
+  const proof =
+    value.organizationProof &&
+    typeof value.organizationProof === "object" &&
+    !Array.isArray(value.organizationProof)
+      ? value.organizationProof
+      : {};
+  const verified = [];
+  for (const option of value.organizationOptions)
+    if (
+      organizationEntry(option) &&
+      proof[option.id] === "verified" &&
+      !verified.some(({ id }) => id === option.id)
+    )
+      verified.push({ id: option.id, name: option.name });
+  return verified.length === 1 ? verified[0] : null;
+}
+
+/**
+ * The note for a Project member removal while the Project has an organization
+ * grant, or null. Projects have no removal tombstone (authz/schema.zed): a
+ * member row and the organization grant combine, so a removed person who is
+ * in the organization still reads the Project through it. Pages have a
+ * tombstone, so this applies to Projects only. `request` is the
+ * manage_project_access request that was saved, `value` the access read after
+ * it.
+ */
+export function projectRemovalNote(request, value) {
+  if (request?.action !== "set_role" || !(request.role == null || request.role === "none"))
+    return null;
+  const organization = value?.organizationAccess;
+  if (!organizationEntry(organization)) return null;
+  return `If they're a member of ${organization.name}, they can still open this Project.`;
+}
+
+/**
  * The owner's one "Link access" control: Restricted, then each organization,
  * then each company domain. A Page has one link audience at a time, so while
  * one kind is stored the other kind's options are disabled; choosing
@@ -113,7 +157,8 @@ export function organizationSharingProjection(value) {
  * audience's role (null when Restricted), and `expired` names the audience
  * whose proof a fresh sign-in restores. `narrowOnly` is true for a stored
  * company domain the owner can't prove now: the host still lets the owner
- * lower its role (or choose Restricted), never raise it.
+ * lower its role (or choose Restricted), never raise it. `offer` is the
+ * organization a one-click share offers (`organizationShareOffer`), or null.
  */
 export function linkAccessProjection(value) {
   const domain = domainSharingProjection(value);
@@ -133,6 +178,7 @@ export function linkAccessProjection(value) {
       : domain?.expired && !stored
         ? { kind: "domain", name: domain.expired }
         : null,
+    offer: organizationShareOffer(value),
     options: [
       { value: "", label: "Restricted", disabled: false },
       ...(organization?.options ?? []).map((option) => ({

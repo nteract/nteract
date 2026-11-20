@@ -4,7 +4,7 @@ import { Share2 } from "lucide-react";
 import { SharingPanel, nativePrimitives } from "../../../src/components/sharing/SharingPanel.tsx";
 import { projectPath } from "../shared/routes.mjs";
 import { ROLE_LABELS } from "./sharing-roles.mjs";
-import { linkAccessProjection } from "./sharing-projection.mjs";
+import { linkAccessProjection, projectRemovalNote } from "./sharing-projection.mjs";
 import { LinkAccess } from "./LinkAccess.jsx";
 import "./sharing-panel.css";
 
@@ -13,12 +13,14 @@ export function projectSharingTransition(state, event) {
     return { name: "loading", value: null };
   if (event.type === "save" && state.name === "ready")
     return { name: "saving", value: state.value, request: event.request };
-  if (event.type === "loaded" && ["loading", "saving"].includes(state.name))
+  if (event.type === "loaded" && ["loading", "saving"].includes(state.name)) {
+    const note = state.name === "saving" ? projectRemovalNote(state.request, event.value) : null;
     return {
       name: "ready",
       value: event.value,
-      message: state.name === "saving" ? "Project access updated." : "",
+      message: state.name === "saving" ? `Project access updated.${note ? ` ${note}` : ""}` : "",
     };
+  }
   if (event.type === "failed" && ["loading", "saving"].includes(state.name))
     return { name: "failed", value: null, error: event.error };
   return state;

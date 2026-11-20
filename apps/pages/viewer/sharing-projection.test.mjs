@@ -3,7 +3,9 @@ import test from "node:test";
 import {
   domainSharingProjection,
   linkAccessProjection,
+  organizationShareOffer,
   organizationSharingProjection,
+  projectRemovalNote,
 } from "./sharing-projection.mjs";
 
 const owner = {
@@ -242,4 +244,87 @@ test("one Link access control lists Restricted, organizations, then domains, one
     }).expired,
     { kind: "organization", name: acme.name },
   );
+});
+
+test("one-click organization sharing is offered only to a Restricted owner with one verified organization", () => {
+  assert.deepEqual(organizationShareOffer(organizationOwner), acme);
+  assert.deepEqual(linkAccessProjection(organizationOwner).offer, acme);
+  const beta = { id: "org-beta", name: "Beta Lab" };
+  // Duplicate options name one organization.
+  assert.deepEqual(
+    organizationShareOffer({ ...organizationOwner, organizationOptions: [acme, { ...acme }] }),
+    acme,
+  );
+  // One verified among several options still has one answer.
+  assert.deepEqual(
+    organizationShareOffer({
+      ...organizationOwner,
+      organizationOptions: [acme, beta],
+      organizationProof: { [acme.id]: "verified", [beta.id]: "expired" },
+    }),
+    acme,
+  );
+  for (const value of [
+    // Several verified organizations: the owner picks one in the select.
+    {
+      ...organizationOwner,
+      organizationOptions: [acme, beta],
+      organizationProof: { [acme.id]: "verified", [beta.id]: "verified" },
+    },
+    // No verified organization.
+    { ...organizationOwner, organizationProof: { [acme.id]: "expired" } },
+    // A verified organization that isn't an option offers nothing.
+    {
+      ...organizationOwner,
+      organizationOptions: [acme],
+      organizationProof: { [acme.id]: "expired", [beta.id]: "verified" },
+    },
+    { ...organizationOwner, organizationProof: {} },
+    { ...organizationOwner, organizationProof: undefined },
+    { ...organizationOwner, organizationOptions: [] },
+    { ...organizationOwner, organizationOptions: undefined },
+    // An audience is already set.
+    { ...organizationOwner, organizationAccess: { ...acme, role: "viewer" } },
+    {
+      ...organizationOwner,
+      domainOptions: ["example.com"],
+      domainView: { domain: "example.com" },
+      domainViewOwnerVerified: true,
+    },
+    // Not the owner.
+    { ...organizationOwner, access: { canManageAccess: false } },
+    undefined,
+  ])
+    assert.equal(organizationShareOffer(value), null);
+  assert.equal(
+    linkAccessProjection({
+      ...organizationOwner,
+      organizationAccess: { ...acme, role: "viewer" },
+      organizationAccessOwnerVerified: true,
+    }).offer,
+    null,
+  );
+});
+
+test("removing a Project member while an organization grant stands names the organization", () => {
+  const granted = { organizationAccess: { ...acme, role: "viewer" } };
+  const note = "If they're a member of Acme Research, they can still open this Project.";
+  assert.equal(
+    projectRemovalNote({ action: "set_role", principal: "p", role: null }, granted),
+    note,
+  );
+  assert.equal(projectRemovalNote({ action: "set_role", principal: "p" }, granted), note);
+  assert.equal(
+    projectRemovalNote({ action: "set_role", principal: "p", role: "none" }, granted),
+    note,
+  );
+  for (const [request, value] of [
+    [{ action: "set_role", principal: "p", role: null }, { organizationAccess: null }],
+    [{ action: "set_role", principal: "p", role: null }, {}],
+    [{ action: "set_role", principal: "p", role: "viewer" }, granted],
+    [{ action: "revoke_invite", invite_id: "i" }, granted],
+    [{ action: "invite", email: "person@example.com", role: "viewer" }, granted],
+    [undefined, granted],
+  ])
+    assert.equal(projectRemovalNote(request, value), null);
 });
