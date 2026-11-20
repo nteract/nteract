@@ -235,6 +235,24 @@ export function usageDropped() {
   dropped++;
 }
 
+/** The phases of a `Server-Timing` header as `name=ms` pairs joined by
+ * commas: metric names only (server-timing.mjs writes no ids or text), whole
+ * milliseconds, at most 24 phases. Undefined when none parse. */
+export function phasesOf(header) {
+  if (typeof header !== "string") return undefined;
+  const phases = [];
+  for (const entry of header.split(",")) {
+    const [name, ...params] = entry.trim().split(";");
+    if (!/^[a-z][a-z0-9_]{0,39}$/.test(name)) continue;
+    const dur = params.map((param) => param.trim()).find((param) => param.startsWith("dur="));
+    const ms = Number(dur?.slice(4));
+    if (!Number.isFinite(ms) || ms < 0) continue;
+    phases.push(`${name}=${Math.min(Math.round(ms), 9_999_999)}`);
+    if (phases.length === 24) break;
+  }
+  return phases.length ? phases.join(",") : undefined;
+}
+
 /** Build one usage record. Unknown keys are dropped; absent values omitted. */
 export function usageEvent({
   action,
@@ -248,6 +266,8 @@ export function usageEvent({
   projectId,
   outcome,
   status,
+  errorCode,
+  phases,
   latencyMs,
   bytes,
   protocolVersion,
@@ -276,6 +296,8 @@ export function usageEvent({
     project_id: projectIdOf(projectId),
     outcome: outcomeOf(outcome),
     status: Number.isSafeInteger(status) ? status : undefined,
+    error_code: outcomeOf(errorCode),
+    phases: phasesOf(phases),
     latency_ms: finite(latencyMs),
     bytes: finite(bytes),
     protocol_version: cleanLabel(protocolVersion, 32),

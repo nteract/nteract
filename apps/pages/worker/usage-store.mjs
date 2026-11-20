@@ -63,7 +63,34 @@ export const USAGE_SCHEMA = Object.freeze([
     purged_before TEXT NOT NULL
   )`,
   `INSERT OR IGNORE INTO pages_usage_maintenance (id, day, purged_before) VALUES (1, '', '')`,
+  `CREATE TABLE IF NOT EXISTS pages_usage_failures (
+    id INTEGER PRIMARY KEY,
+    day TEXT NOT NULL, ts TEXT NOT NULL, driver TEXT NOT NULL,
+    surface TEXT NOT NULL, operation TEXT NOT NULL, status INTEGER NOT NULL,
+    error_code TEXT, latency_ms INTEGER, phases TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS pages_usage_failures_day ON pages_usage_failures(day)`,
 ]);
+
+const PHASES = /^[a-z][a-z0-9_]{0,39}=\d{1,7}(,[a-z][a-z0-9_]{0,39}=\d{1,7}){0,23}$/;
+
+/** A failed tool call's row for `pages_usage_failures`: what failed and how,
+ * with no principal and no Page or Project id. Null for anything else. */
+function storedFailure(record, row) {
+  if (row.action !== "tool.call" || row.outcome === "ok") return null;
+  const status = record.status;
+  if (!Number.isSafeInteger(status) || status < 400 || status > 599) return null;
+  const token = (value) =>
+    typeof value === "string" && /^[a-z0-9_]{1,64}$/.test(value) ? value : null;
+  return {
+    operation: token(record.operation) ?? "unknown",
+    status,
+    error_code: token(record.error_code),
+    latency_ms:
+      Number.isSafeInteger(record.latency_ms) && record.latency_ms >= 0 ? record.latency_ms : null,
+    phases: typeof record.phases === "string" && PHASES.test(record.phases) ? record.phases : null,
+  };
+}
 
 /** Allowlist, not a serialized event. No free-form profile/client fields survive. */
 export function storedUsage(record) {
@@ -97,7 +124,7 @@ export function storedUsage(record) {
   if (record.action.startsWith("page.") || record.action === "comment.write") {
     if (!page_id) return null;
   }
-  return {
+  const row = {
     day: timestamp.slice(0, 10),
     ts: timestamp,
     principal,
@@ -110,6 +137,9 @@ export function storedUsage(record) {
         ? record.outcome
         : "unknown",
   };
+  const failure = storedFailure(record, row);
+  if (failure) row.failure = failure;
+  return row;
 }
 
 export async function migrateUsageStore(db) {
@@ -131,13 +161,15 @@ const usageSchema = isolateSetup((db) => migrateUsageStore(db));
 export async function writeUsageBatch(db, records, now = Date.now()) {
   await usageSchema(db);
   const cutoff = isoDay(now - USAGE_RAW_DAYS * DAY);
+  const at = new Date(now).toISOString();
+  const fence = `WHERE ? >= MAX(?,
+        (SELECT purged_before FROM pages_usage_maintenance WHERE id = 1)) AND ? <= ?`;
   await db.batch(
-    records.map((row) =>
+    records.flatMap((row) => [
       db
         .prepare(`INSERT INTO pages_usage_events
       (day, ts, principal, driver, surface, action, page_id, outcome)
-      SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE ? >= MAX(?,
-        (SELECT purged_before FROM pages_usage_maintenance WHERE id = 1)) AND ? <= ?`)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ? ${fence}`)
         .bind(
           row.day,
           row.ts,
@@ -150,9 +182,32 @@ export async function writeUsageBatch(db, records, now = Date.now()) {
           row.day,
           cutoff,
           row.ts,
-          new Date(now).toISOString(),
+          at,
         ),
-    ),
+      ...(row.failure
+        ? [
+            db
+              .prepare(`INSERT INTO pages_usage_failures
+      (day, ts, driver, surface, operation, status, error_code, latency_ms, phases)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? ${fence}`)
+              .bind(
+                row.day,
+                row.ts,
+                row.driver,
+                row.surface,
+                row.failure.operation,
+                row.failure.status,
+                row.failure.error_code,
+                row.failure.latency_ms,
+                row.failure.phases,
+                row.day,
+                cutoff,
+                row.ts,
+                at,
+              ),
+          ]
+        : []),
+    ]),
   );
 }
 
@@ -419,11 +474,13 @@ export async function runUsageMaintenance(
       )
       .bind(today, rawCutoff, today),
   ]);
-  const purge = db.prepare(`DELETE FROM pages_usage_events WHERE id IN (
-    SELECT id FROM pages_usage_events WHERE day < ${floor} LIMIT ?)`);
   const deadline = clock() + budgetMs;
-  for (;;) {
-    const result = await purge.bind(chunkRows).run();
-    if ((result?.meta?.changes ?? 0) < chunkRows || clock() >= deadline) break;
+  for (const table of ["pages_usage_events", "pages_usage_failures"]) {
+    const purge = db.prepare(`DELETE FROM ${table} WHERE id IN (
+      SELECT id FROM ${table} WHERE day < ${floor} LIMIT ?)`);
+    for (;;) {
+      const result = await purge.bind(chunkRows).run();
+      if ((result?.meta?.changes ?? 0) < chunkRows || clock() >= deadline) break;
+    }
   }
 }

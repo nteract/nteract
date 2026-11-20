@@ -658,6 +658,12 @@ name; both are labels the host assigns to a grant whose client sends none.
 Unknown labels, including email-shaped drivers and a client named by its host,
 retain the event as `other`. A row keeps the class it was written with, so rows
 older than a label's place on this list stay `other`.
+A failed tool call also writes a `pages_usage_failures` row. Its error code is
+the one a JSON caller is given (the body's `code`, else the code its status maps
+to), kept only when it is a lowercase token. Its phases are the request's phase
+metric names with whole milliseconds, recorded for HTTP tools, MCP and
+`list_pages`. Nothing else from the body is kept. A failure row holds no
+principal or Page id, but it shares its timestamp with the event row that does.
 Anonymous/service events and principals containing emails after percent-decoding
 are dropped. Existing console telemetry is unchanged and has its separate 30-day
 retention (DEPLOYMENT.md, Telemetry).
@@ -665,6 +671,7 @@ retention (DEPLOYMENT.md, Telemetry).
 | Table | Meaning | Retention |
 | --- | --- | --- |
 | `pages_usage_events` | Raw projected events | Delete days strictly before UTC today minus 14 days |
+| `pages_usage_failures` | One row per failed tool call (status 400 to 599): driver, surface, tool name, status, error code, latency and phase timings; no principal, Page or Project id | Delete days strictly before UTC today minus 14 days |
 | `pages_usage_daily` | Day x principal x surface x driver x action; `count`, `distinct_pages` | Delete days strictly before UTC today minus 90 days |
 | `pages_usage_weekly` | Monday UTC week; active people, readers, writers, agent people/actions, collaborative Pages; no principals or Page ids | Indefinite |
 

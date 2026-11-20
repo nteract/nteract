@@ -101,6 +101,7 @@ import {
   RENAMED_TOOLS,
   invalidArguments,
   invokeProjectApi,
+  refusalCode,
   unknownOperation,
   withRefusalCode,
 } from "./project-api.mjs";
@@ -1555,11 +1556,38 @@ const USAGE_OPERATIONS = new Set([
   "register_page",
 ]);
 
+/** The largest failed answer whose body is read for its error code. */
+const FAILURE_BODY_LIMIT = 64 * 1024;
+
+/** A failed tool answer's error code and phase timings, for the usage record.
+ * The code is the one a JSON caller sees: the body's own `code` (or
+ * `error.code`), else what withRefusalCode adds for its status. The body is
+ * read only when it is JSON and declares at most FAILURE_BODY_LIMIT bytes, or
+ * declares no length. usageEvent keeps the code only when it is a code-shaped
+ * token; nothing else from the body is kept. Phases come from the request's
+ * own recorder, since `Server-Timing` is set on the answer after this runs. */
+async function failureDetail(response, timing) {
+  const detail = { phases: timing.header() || undefined };
+  const length = Number(response.headers.get("content-length"));
+  if (!(response.headers.get("content-type") ?? "").includes("json")) return detail;
+  if (Number.isFinite(length) && length > FAILURE_BODY_LIMIT) return detail;
+  try {
+    const text = await response.clone().text();
+    if (text.length > FAILURE_BODY_LIMIT) return detail;
+    const body = JSON.parse(text);
+    if (!body || typeof body !== "object" || Array.isArray(body)) return detail;
+    detail.errorCode = body.code ?? body.error?.code ?? refusalCode(response.status, body);
+  } catch {
+    // An unreadable body records the status alone.
+  }
+  return detail;
+}
+
 /** Records one usage event for a tool call (or, for MCP, a resource list or
  * read) on `surface` once its response is known. `seen` collects the identity
  * the caller authenticated. A create_page that created a Page also records
  * page.create with its id; a replayed receipt records only the call. */
-function toolUsage(request, surface, operation, args, kind = "tool", env) {
+function toolUsage(request, surface, operation, args, kind = "tool", env, timing = NO_TIMING) {
   const started = Date.now();
   const seen = {};
   const labels = requestClient(request);
@@ -1570,6 +1598,7 @@ function toolUsage(request, surface, operation, args, kind = "tool", env) {
       try {
         const name = usageOperation(operation, USAGE_OPERATIONS);
         const length = Number(response.headers.get("content-length"));
+        const failure = response.ok ? {} : await failureDetail(response, timing);
         const common = {
           surface,
           identity: seen.identity,
@@ -1582,7 +1611,7 @@ function toolUsage(request, surface, operation, args, kind = "tool", env) {
           outcome: response.ok ? "ok" : `http_${response.status}`,
           latencyMs: Date.now() - started,
         };
-        logUsage({ action: "tool.call", ...common, bytes: length || undefined }, env);
+        logUsage({ action: "tool.call", ...common, ...failure, bytes: length || undefined }, env);
         if (name === "create_page" && response.ok && !replayed) {
           const body = await response.clone().json();
           logUsage(
@@ -1758,8 +1787,9 @@ const gateway = {
             // client per request, never by a session it was issued.
             const mcpRequest =
               client === undefined ? request : await withModernMcpClient(request, client);
-            const invocationRequest = withMcpAgent(mcpRequest, agent);
-            const usage = toolUsage(mcpRequest, "mcp", operation, args, kind, env);
+            const timing = serverTimingEnabled(env) ? createTiming() : NO_TIMING;
+            const invocationRequest = attachTiming(withMcpAgent(mcpRequest, agent), timing);
+            const usage = toolUsage(mcpRequest, "mcp", operation, args, kind, env, timing);
             // A refusal before invoke() authenticates still names the caller,
             // with the session the invocation request carries: for a
             // 2026-07-28 request, its client's, never a header it sent.
@@ -1855,10 +1885,18 @@ const gateway = {
         const timing = serverTimingEnabled(env) ? createTiming() : NO_TIMING;
         const endTotal = timing.start("total");
         let response;
-        let usage = toolUsage(request, "http-tools", undefined, undefined, "tool", env);
+        let usage = toolUsage(request, "http-tools", undefined, undefined, "tool", env, timing);
         try {
           const body = await readJson(request);
-          usage = toolUsage(request, "http-tools", body?.operation, body?.arguments, "tool", env);
+          usage = toolUsage(
+            request,
+            "http-tools",
+            body?.operation,
+            body?.arguments,
+            "tool",
+            env,
+            timing,
+          );
           const invocationRequest = attachTiming(withMcpAgent(request, bodyAgent(body)), timing);
           response = await invokeProjectApi(
             (internal, internalArgs) =>
@@ -1881,12 +1919,13 @@ const gateway = {
       if (url.pathname === "/api/pages") {
         // list_pages, with its query string as its arguments.
         let response;
-        let usage = toolUsage(request, "http-rest", undefined, undefined, "tool", env);
+        const timing = serverTimingEnabled(env) ? createTiming() : NO_TIMING;
+        let usage = toolUsage(request, "http-rest", undefined, undefined, "tool", env, timing);
         try {
           if (request.method !== "GET") throw new HttpError(405, "Use GET");
           const args = listArguments(url.searchParams);
-          usage = toolUsage(request, "http-rest", "list_pages", args, "tool", env);
-          const listing = withOwnOrigin(request, env);
+          usage = toolUsage(request, "http-rest", "list_pages", args, "tool", env, timing);
+          const listing = attachTiming(withOwnOrigin(request, env), timing);
           response = await invokeProjectApi(
             (internal, internalArgs) =>
               invoke(listing, env, internal, internalArgs, usage.seen, {

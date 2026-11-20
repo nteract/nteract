@@ -493,6 +493,64 @@ test("schema setup runs once per binding per isolate, again after a failed setup
   assert.equal(second.rows("SELECT COUNT(*) AS n FROM pages_usage_events")[0].n, 1);
 });
 
+test("a failed tool call also stores a failure row with no principal or Page id", async (t) => {
+  const db = sqliteD1(t).open();
+  const failed = event({
+    action: "tool.call",
+    surface: "mcp",
+    driver: "Claude",
+    operation: "edit_page",
+    status: 500,
+    outcome: "http_500",
+    error_code: "internal_error",
+    latency_ms: 15500,
+    phases: "auth=3,page=15400",
+  });
+  const row = storedUsage(failed);
+  assert.deepEqual(row.failure, {
+    operation: "edit_page",
+    status: 500,
+    error_code: "internal_error",
+    latency_ms: 15500,
+    phases: "auth=3,page=15400",
+  });
+  // Free text never reaches the failure row.
+  assert.deepEqual(
+    storedUsage({ ...failed, operation: "Edit Page", error_code: "a b", phases: "x=1;y" }).failure,
+    { operation: "unknown", status: 500, error_code: null, latency_ms: 15500, phases: null },
+  );
+  for (const ok of [
+    event({ action: "tool.call", outcome: "ok", status: 200 }),
+    event({ action: "page.read", outcome: "http_500", status: 500 }),
+    event({ action: "tool.call", outcome: "http_500" }),
+  ])
+    assert.equal(storedUsage(ok).failure, undefined);
+  await insert(db, [failed, event({ action: "tool.call", outcome: "ok", status: 200 })]);
+  assert.equal(db.rows("SELECT COUNT(*) AS n FROM pages_usage_events")[0].n, 2);
+  assert.deepEqual(db.rows("SELECT * FROM pages_usage_failures"), [
+    {
+      id: 1,
+      day: "2026-11-04",
+      ts: "2026-11-04T12:00:00.000Z",
+      driver: "Claude",
+      surface: "mcp",
+      operation: "edit_page",
+      status: 500,
+      error_code: "internal_error",
+      latency_ms: 15500,
+      phases: "auth=3,page=15400",
+    },
+  ]);
+  // A failure row is fenced like its event: a day past the cutoff or a
+  // timestamp from the future writes neither.
+  await insert(db, [failed], at + 15 * DAY);
+  await insert(db, [failed], at - DAY);
+  assert.equal(db.rows("SELECT COUNT(*) AS n FROM pages_usage_failures")[0].n, 1);
+  // Failures share the raw events' 14-day retention.
+  await runUsageMaintenance({ PAGES_USAGE: db }, at + 15 * DAY);
+  assert.equal(db.rows("SELECT COUNT(*) AS n FROM pages_usage_failures")[0].n, 0);
+});
+
 test("raw purge runs in bounded statements below the durable floor; rollups ignore rows left there", async (t) => {
   const db = sqliteD1(t).open();
   const now = Date.parse("2026-11-04T00:00:00.000Z");
