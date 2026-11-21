@@ -439,7 +439,7 @@ import {
   resolvePageQuota,
   validPageLimit,
 } from "./page-quota.mjs";
-import { serialQueue, serialQueueBounds } from "./serial-queue.mjs";
+import { AfterQueue, serialQueue, serialQueueBounds } from "./serial-queue.mjs";
 import { opensIndex } from "./account-index-machine.mjs";
 import { holdUntilSettled } from "./request-hold.mjs";
 import { CARDS_LANE, CARDS_LANE_HEADER, catalogLane } from "./catalog-lanes.mjs";
@@ -644,17 +644,6 @@ async function pageTagsDatabase(env, ctx) {
   } catch (error) {
     logFailure(error, "page-tags");
     throw tagsUnavailable();
-  }
-}
-/** What a Page's or a Catalog's `run` returns for a request whose queue work
- * is done: `work` answers the request once the queue has released it (Page
- * `enqueue`, Catalog `fetch`). */
-class AfterQueue {
-  constructor(work) {
-    this.work = work;
-  }
-  finish() {
-    return this.work();
   }
 }
 /** The error an abandoned object refuses with when its reset gave no reason. */
@@ -6794,9 +6783,11 @@ export class Page {
 
   /** Run `request` in admission order. A request that returns `AfterQueue`
    * has decided its admission in the queue and finishes its work here, after
-   * the queue has moved on, so a slow dependency can't hold later requests. */
-  enqueue(request) {
-    const next = this.tail.then(() => this.run(request));
+   * the queue has moved on, so a slow dependency can't hold later requests.
+   * `prepared` is what an earlier pass of the same request settled outside
+   * the queue (`run` says what). */
+  enqueue(request, prepared) {
+    const next = this.tail.then(() => this.run(request, prepared));
     this.tail = next.catch(() => {});
     return next.then((result) => (result instanceof AfterQueue ? result.finish() : result));
   }
@@ -6830,7 +6821,7 @@ export class Page {
     await this.ctx.storage.delete("host/signer");
   }
 
-  async run(request) {
+  async run(request, prepared) {
     const url = new URL(request.url);
     const admissionRoute = ADMISSION_ROUTES.includes(url.pathname);
     let identity;
@@ -6890,7 +6881,7 @@ export class Page {
         await this.ctx.storage.sync();
         return json({ page_id: this.metadata.pageId });
       }
-      identity = await this.identify(request);
+      identity = prepared?.identity ?? (await this.identify(request));
       // An ambiguous storage failure retains the exact proposed ACL/receipt.
       // Normal HTTP work retries that barrier before reading or changing it.
       if (this.pendingAccess && !["/api/sync", "/api/saved"].includes(url.pathname))
@@ -7159,17 +7150,29 @@ export class Page {
         );
       }
       if (url.pathname === "/internal/access") {
-        const args = await readJson(request);
+        const args = prepared?.args ?? (await readJson(request));
         if (identity.principal !== this.metadata.owner && identity.credentialKind === "oauth")
           throw new HttpError(403, "Only the Page owner can manage sharing");
         if (args.read) return json(await sharingProjection(this.metadata, identity, this.env));
         if (state === "trashed")
           throw new HttpError(409, "Restore this Page before changing access", "page_trashed");
-        // Kilo confirms a pick before the record is read for the change, so
-        // a change that lands while Kilo answers isn't overwritten.
-        const picked = (await pickNeedsResolving(this.metadata, identity, args))
-          ? await resolveOrganizationMember(this.env, identity, args)
-          : undefined;
+        // A pick the Page holds no receipt for is resolved with the
+        // organization directory after the queue releases this request, so
+        // a slow directory holds no other request on this Page. The request
+        // then queues again with the answer, and this pass checks it against
+        // the record and receipts as they are by then.
+        if (prepared?.pickError) throw prepared.pickError;
+        const picked = prepared?.picked;
+        if (!picked && (await pickNeedsResolving(this.metadata, identity, args)))
+          return new AfterQueue(async () => {
+            let pick;
+            try {
+              pick = { picked: await resolveOrganizationMember(this.env, identity, args) };
+            } catch (error) {
+              pick = { pickError: error };
+            }
+            return this.enqueue(request, { identity, args, ...pick });
+          });
         const result = await proposeSharingMutation(
           this.metadata,
           identity,

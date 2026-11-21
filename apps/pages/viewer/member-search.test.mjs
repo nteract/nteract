@@ -350,3 +350,69 @@ test("a deployment without organization search is final: typing afterwards searc
   assert.equal(calls, 1);
   assert.deepEqual(last, { name: "unavailable" });
 });
+
+test("a 429 that names a wait holds searches; typing keeps the latest query", () => {
+  const limited = memberSearchTransition(states.searching, {
+    type: "failed",
+    organizationId: org,
+    query: "jes",
+    error: { status: 429, retryAfterMs: 12_000 },
+  });
+  assert.deepEqual(limited, {
+    name: "limited",
+    organizationId: org,
+    query: "jes",
+    retryAfterMs: 12_000,
+  });
+  const typed = memberSearchTransition(limited, {
+    type: "typed",
+    organizationId: org,
+    query: " jess ",
+  });
+  assert.deepEqual(typed, { ...limited, query: "jess" });
+  assert.equal(
+    memberSearchTransition(typed, { type: "started", organizationId: org, query: "jess" }),
+    typed,
+  );
+  assert.deepEqual(memberSearchTransition(typed, { type: "resumed" }), {
+    name: "idle",
+    organizationId: org,
+    query: "jess",
+  });
+  assert.deepEqual(memberSearchTransition(typed, { type: "reset" }), {
+    ...typed,
+    organizationId: null,
+    query: "",
+  });
+  // Only a limited picker resumes.
+  assert.equal(memberSearchTransition(states.results, { type: "resumed" }), states.results);
+});
+
+test("after the host's wait the latest query searches, and not before", () => {
+  const scheduler = new TestScheduler((actual, expected) => assert.deepEqual(actual, expected));
+  const searched = [];
+  const seen = [];
+  scheduler.run(({ cold, flush }) => {
+    const search = ({ query }) => {
+      searched.push({ query, at: scheduler.now() });
+      return searched.length === 1
+        ? throwError(() => Object.assign(Error("Too many"), { status: 429, retryAfterMs: 1000 }))
+        : of({ members: [] });
+    };
+    const picker = createMemberSearch({ search, debounceMs: 25, scheduler });
+    picker.state$.subscribe((state) =>
+      seen.push(`${scheduler.now()} ${state.name}:${state.query}`),
+    );
+    cold("0ms a").subscribe(() => picker.type(org, "jes"));
+    cold("100ms a").subscribe(() => picker.type(org, "jess"));
+    flush();
+    picker.dispose();
+  });
+  assert.deepEqual(searched, [
+    { query: "jes", at: 25 },
+    { query: "jess", at: 1050 },
+  ]);
+  assert.ok(seen.includes("25 limited:jes"));
+  assert.ok(seen.includes("100 limited:jess"));
+  assert.equal(seen.at(-1), "1050 results:jess");
+});

@@ -28,7 +28,13 @@
  * The module holds no state and logs nothing. Error messages are fixed text,
  * so the proof, the secret, a query or a name can't reach a log through
  * them. */
-import { KILO_MEMBERSHIP_SECONDS, kiloClient, kiloPrincipalNamespace } from "./kilo-config.mjs";
+import {
+  KILO_MEMBERSHIP_SECONDS,
+  kiloAccountId,
+  kiloClient,
+  kiloPrincipal,
+  kiloPrincipalNamespace,
+} from "./kilo-config.mjs";
 import { KiloUnavailable, readLimited } from "./kilo-exchange.mjs";
 import {
   DirectoryProtocolError,
@@ -161,7 +167,6 @@ async function ask(fetcher, { appUrl, secret, body, timeoutMs = DEFAULT_TIMEOUT_
  * `fetch` in tests. */
 export function kiloDirectory(env, { fetcher = (...args) => fetch(...args), timeoutMs } = {}) {
   const namespace = kiloPrincipalNamespace(env);
-  const prefix = `${namespace}:`;
   /** The deployment's Kilo client, or DirectoryUnavailable when it has none
    * or a misconfigured one. */
   const client = () => {
@@ -176,15 +181,15 @@ export function kiloDirectory(env, { fetcher = (...args) => fetch(...args), time
   };
   const common = ({ principal, organizationId, credential }) => {
     const { appUrl, secret, audience } = client();
-    if (typeof principal !== "string" || !principal.startsWith(prefix))
-      throw new DirectoryProtocolError();
+    const searcherId = kiloAccountId(namespace, principal);
+    if (searcherId === null) throw new DirectoryProtocolError();
     return {
       appUrl,
       secret,
       timeoutMs,
       body: {
         audience,
-        searcher_id: decodeURIComponent(principal.slice(prefix.length)),
+        searcher_id: searcherId,
         organization_id: organizationId,
         proof: credential,
       },
@@ -201,7 +206,7 @@ export function kiloDirectory(env, { fetcher = (...args) => fetch(...args), time
         credential: account.memberSearchProof ?? null,
       };
     },
-    memberPrincipal: (memberId) => `${namespace}:${encodeURIComponent(memberId)}`,
+    memberPrincipal: (memberId) => kiloPrincipal(namespace, memberId),
     async search({ query, ...input }) {
       const call = common(input);
       return ask(fetcher, { ...call, body: { ...call.body, query } });

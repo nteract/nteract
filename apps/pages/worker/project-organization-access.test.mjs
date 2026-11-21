@@ -312,12 +312,12 @@ test("the Project leaves the member's list when the grant clears, the lease ends
   await gone("the grant cleared");
   assert.equal((await share(w, project_id, acme.id, "viewer", revision++)).status, 200);
   await open();
-  // The member's evidence ages past its lease.
-  await w.env.DB.prepare(
-    "UPDATE pages_organization_memberships SET verified_at_ms = ? WHERE principal = ?",
-  )
-    .bind(Date.now() - KILO_MEMBERSHIP_SECONDS * 1000 - 1000, w.member)
-    .run();
+  // The member's evidence ages past its lease, in both tables a read takes
+  // the newer of.
+  for (const table of ["pages_organization_memberships", "kilo_memberships"])
+    await w.env.DB.prepare(`UPDATE ${table} SET verified_at_ms = ? WHERE principal = ?`)
+      .bind(Date.now() - KILO_MEMBERSHIP_SECONDS * 1000 - 1000, w.member)
+      .run();
   resetMembershipCache();
   await gone("the lease ended");
   // A new exchange that lists the organization restores it; one that doesn't

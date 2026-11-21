@@ -697,3 +697,87 @@ test("Kilo's Retry-After on a 429 reaches the dialog", async (t) => {
   assert.equal(response.headers.get("retry-after"), "12");
   assert.equal((await response.json()).retry_after_ms, 12_000);
 });
+
+/** Holds the next member call at Kilo until `release()`, then answers that
+ * Jesse is a member. `reached` settles when Kilo has the call. */
+function heldResolve(w) {
+  let release;
+  let reached;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const arrived = new Promise((resolve) => {
+    reached = resolve;
+  });
+  w.kilo.respondMembers(async (req, res) => {
+    reached();
+    await gate;
+    res
+      .writeHead(200, { "content-type": "application/json" })
+      .end(
+        JSON.stringify({ members: [{ id: "jesse-person", name: "Jesse Doe", image_url: null }] }),
+      );
+  });
+  return { release, reached: arrived };
+}
+
+test("a pick Kilo is slow to confirm holds no other request on the Page", async (t) => {
+  const w = await pickWorld(t);
+  const { page_id } = (await w.createPage({ title: "Plans" })).body;
+  const page = pageAccess(w, page_id);
+  const held = heldResolve(w);
+  const grant = hostAccess(w, "owner", page, {
+    action: "grant_organization_member",
+    organization_id: acme.id,
+    member_id: "jesse-person",
+    role: "viewer",
+    expected_revision: 0,
+    nonce: w.key(),
+  });
+  await held.reached;
+  // The owner's other requests on this Page answer while Kilo holds the pick.
+  const read = await hostAccess(w, "owner", page, { read: true });
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.deepEqual(read.body.members, []);
+  const shared = await hostAccess(w, "owner", page, {
+    action: "set_role",
+    principal: "user:kilo:member-person",
+    role: "editor",
+    expected_revision: 0,
+    nonce: w.key(),
+  });
+  assert.equal(shared.status, 200, JSON.stringify(shared.body));
+  held.release();
+  // The pick was proposed at the revision it read; the change that landed
+  // meanwhile wins and the pick is refused, never applied over it.
+  const granted = await grant;
+  assert.equal(granted.status, 409, JSON.stringify(granted.body));
+  const after = await hostAccess(w, "owner", page, { read: true });
+  assert.deepEqual(
+    after.body.members.map(({ principal }) => principal),
+    ["user:kilo:member-person"],
+  );
+});
+
+test("a pick Kilo is slow to confirm holds no other request on the Project", async (t) => {
+  const w = await pickWorld(t);
+  const { project_id } = await w.createProject("Guild");
+  const project = projectAccess(w, project_id);
+  const held = heldResolve(w);
+  const grant = hostAccess(w, "owner", project, {
+    space_id: project_id,
+    action: "grant_organization_member",
+    organization_id: acme.id,
+    member_id: "jesse-person",
+    role: "viewer",
+    expected_revision: 0,
+    nonce: w.key(),
+  });
+  await held.reached;
+  const read = await hostAccess(w, "owner", project, { space_id: project_id, read: true });
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  held.release();
+  const granted = await grant;
+  assert.equal(granted.status, 200, JSON.stringify(granted.body));
+  assert.equal(granted.body.members["user:kilo:jesse-person"].displayName, "Jesse Doe");
+});

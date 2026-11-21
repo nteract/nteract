@@ -839,3 +839,46 @@ test("each write also lands in the legacy table, without the credential, so a ro
   assert.deepEqual(await legacy(), { organizations: "[]", verified_at_ms: at + 1000 });
   assert.deepEqual((await membershipRecord(env, "user:kilo:removed")).organizations, []);
 });
+
+test("a removal an older build records during a rollback holds after rolling forward", async (t) => {
+  const { env } = await fixture(t);
+  const principal = "user:kilo:rolled-back";
+  const at = Date.now() - 60_000;
+  const holder = { principal, namespace: "user:kilo", expiresAt: at + 3_600_000 };
+  await recordOrganizationMemberships(env, principal, [sentinel], at, "credential-1");
+  // Rolled back: the older build's exchange removes the organization in the
+  // legacy table only, with the statement that build runs.
+  await env.DB.prepare(
+    `INSERT INTO kilo_memberships (principal, organizations, verified_at_ms) VALUES (?, ?, ?)
+    ON CONFLICT (principal) DO UPDATE SET organizations = excluded.organizations,
+      verified_at_ms = excluded.verified_at_ms
+    WHERE excluded.verified_at_ms >= kilo_memberships.verified_at_ms`,
+  )
+    .bind(principal, "[]", at + 1000)
+    .run();
+  // Rolled forward: a fresh isolate reads the newer legacy answer.
+  const forward = await otherIsolate();
+  assert.deepEqual(await forward.membershipRecord(env, principal), {
+    organizations: [],
+    verifiedAtMs: at + 1000,
+  });
+  assert.deepEqual(await forward.organizationLeases(env, holder), []);
+  assert.equal(
+    await forward.directoryCredential(env, holder),
+    null,
+    "the older build's exchange carried no credential",
+  );
+  // The person's next exchange through this build is newest again.
+  await forward.recordOrganizationMemberships(
+    env,
+    principal,
+    [sentinel],
+    at + 2000,
+    "credential-2",
+  );
+  assert.deepEqual(
+    (await forward.organizationLeases(env, holder)).map(({ id }) => id),
+    [sentinel.id],
+  );
+  assert.equal(await forward.directoryCredential(env, holder), "credential-2");
+});

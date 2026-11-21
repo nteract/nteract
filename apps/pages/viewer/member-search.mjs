@@ -10,6 +10,7 @@ import {
   BehaviorSubject,
   Observable,
   Subject,
+  Subscription,
   asyncScheduler,
   catchError,
   debounceTime,
@@ -19,6 +20,7 @@ import {
   switchMap,
   take,
   tap,
+  timer,
 } from "rxjs";
 import { request } from "./request.mjs";
 
@@ -52,6 +54,9 @@ const same = (state, event) =>
  * - `failed`: this search failed; typing again searches again. `rateLimited`
  *   when the host asked to slow down, `unavailable` when the directory
  *   couldn't answer (a 503: an outage, a timeout, or rules not yet in place).
+ * - `limited`: the host asked to wait `retryAfterMs` before searching again.
+ *   Typing keeps the latest query, and that query searches once the wait
+ *   ends (`resumed`).
  * - `signin`: the owner must sign in again before searching this
  *   organization. Typing again tries again, since another tab may have.
  * - `unavailable`: this deployment has no organization search (a 404).
@@ -60,7 +65,7 @@ const same = (state, event) =>
  *
  * Events: `typed` (`organizationId`, `query`), `started`, `answered`
  * (`members`) and `failed` (`error`), each naming the search it belongs to,
- * and `reset`. An event for any search but the current one changes nothing,
+ * `resumed` when a wait ends, and `reset`. An event for any search but the current one changes nothing,
  * so a late answer can't replace a newer query's.
  */
 export function memberSearchTransition(state, event) {
@@ -68,6 +73,8 @@ export function memberSearchTransition(state, event) {
   switch (event.type) {
     case "typed": {
       const query = trimmed(event.query);
+      if (state.name === "limited")
+        return { ...state, organizationId: event.organizationId, query };
       if (!searchable(query)) return { name: "idle", organizationId: event.organizationId, query };
       if (
         same(state, { organizationId: event.organizationId, query }) &&
@@ -93,6 +100,12 @@ export function memberSearchTransition(state, event) {
       if (error?.status === 404) return { name: "unavailable" };
       const base = { organizationId: state.organizationId, query: state.query };
       if (error?.code === PROOF_REQUIRED) return { name: "signin", ...base };
+      if (
+        error?.status === 429 &&
+        Number.isSafeInteger(error.retryAfterMs) &&
+        error.retryAfterMs > 0
+      )
+        return { name: "limited", ...base, retryAfterMs: error.retryAfterMs };
       return {
         name: "failed",
         ...base,
@@ -100,7 +113,12 @@ export function memberSearchTransition(state, event) {
         unavailable: error?.code === UNAVAILABLE,
       };
     }
+    case "resumed":
+      if (state.name !== "limited") return state;
+      return { name: "idle", organizationId: state.organizationId, query: state.query };
     case "reset":
+      // A wait the host asked for outlasts a reset.
+      if (state.name === "limited") return { ...state, organizationId: null, query: "" };
       return MEMBER_SEARCH_IDLE;
     default:
       return state;
@@ -167,7 +185,8 @@ const asked = (search, input) =>
  * One picker's search. `type(organizationId, query)` feeds it; `state$`
  * holds the transition function's state. A query is searched once typing has
  * paused for `debounceMs` and only while it is still the one waiting, so
- * typing back to the query being searched keeps that search. A newer search
+ * typing back to the query being searched keeps that search. A 429 that
+ * names a wait holds searches until it ends. A newer search
  * or `dispose()` cancels the one in flight; an answer to any search but the
  * current one is ignored by the transition.
  */
@@ -178,9 +197,22 @@ export function createMemberSearch({
 } = {}) {
   const state$ = new BehaviorSubject(MEMBER_SEARCH_IDLE);
   const input$ = new Subject();
+  const waits = new Subscription();
   const dispatch = (event) => {
-    const next = memberSearchTransition(state$.value, event);
-    if (next !== state$.value) state$.next(next);
+    const previous = state$.value;
+    const next = memberSearchTransition(previous, event);
+    if (next === previous) return;
+    state$.next(next);
+    // The host's wait: when it ends, the latest query searches.
+    if (next.name === "limited" && previous.name !== "limited")
+      waits.add(
+        timer(next.retryAfterMs, scheduler).subscribe(() => {
+          dispatch({ type: "resumed" });
+          const resumed = state$.value;
+          if (resumed.name === "idle" && resumed.query)
+            input$.next({ organizationId: resumed.organizationId, query: resumed.query });
+        }),
+      );
   };
   const subscription = input$
     .pipe(
@@ -216,6 +248,7 @@ export function createMemberSearch({
     },
     dispose() {
       subscription.unsubscribe();
+      waits.unsubscribe();
       state$.complete();
     },
   };

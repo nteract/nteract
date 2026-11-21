@@ -22,7 +22,7 @@ import { HttpError, authenticate, json, readJson, requireWrite, errorResponse } 
 import { fingerprint, operationKey } from "./mutations.mjs";
 import { validPageId } from "./registration.mjs";
 import { NO_ACTOR_CHAIN, decide, heldRelation, principalOf, projectObject } from "./authz.mjs";
-import { serialQueue } from "./serial-queue.mjs";
+import { AfterQueue, serialQueue } from "./serial-queue.mjs";
 import {
   GRANT_ORGANIZATION_MEMBER,
   checkPick,
@@ -220,9 +220,17 @@ export class Space {
     // Read-only host snapshots cannot wait behind a membership operation
     // repairing a recipient's discovery hints (which may check this Project).
     if (new URL(request.url).pathname === "/internal/space/policy") return this.run(request);
-    return this.queue(() => this.run(request));
+    return this.enqueue(request);
   }
-  async run(request) {
+  /** Run `request` in the queue. A request that returns `AfterQueue` finishes
+   * its work after the queue releases it. `prepared` is what an earlier pass
+   * of the same request settled outside the queue (`run` says what). */
+  enqueue(request, prepared) {
+    return this.queue(() => this.run(request, prepared)).then((result) =>
+      result instanceof AfterQueue ? result.finish() : result,
+    );
+  }
+  async run(request, prepared) {
     try {
       const path = new URL(request.url).pathname;
       if (path === "/internal/space/content") {
@@ -263,8 +271,8 @@ export class Space {
           acl: record.acl,
         });
       }
-      const identity = await authenticate(request, this.env);
-      const args = await readJson(request);
+      const identity = prepared?.identity ?? (await authenticate(request, this.env));
+      const args = prepared?.args ?? (await readJson(request));
       requireSpaceIdArgument(args?.space_id);
       if (this.ctx.id?.name && this.ctx.id.name !== args.space_id) throw spaceNotFound();
       let record = await this.ctx.storage.get(RECORD);
@@ -409,20 +417,25 @@ export class Space {
             },
             identity,
           );
-          let previous = await this.ctx.storage.get(receiptKey(key));
-          // Kilo confirms a pick before the change is proposed. The record
-          // and the receipt are read again after Kilo answers, so a change
-          // that landed meanwhile, this one's retry included, isn't
-          // overwritten.
-          let picked;
-          if (!previous && args.action === GRANT_ORGANIZATION_MEMBER) {
+          const previous = await this.ctx.storage.get(receiptKey(key));
+          // A pick the Project holds no receipt for is resolved with the
+          // organization directory after the queue releases this request, so
+          // a slow directory holds no other request on this Project. The
+          // request then queues again with the answer, and this pass checks
+          // it against the record and receipts as they are by then.
+          if (prepared?.pickError) throw prepared.pickError;
+          const picked = prepared?.picked;
+          if (!previous && !picked && args.action === GRANT_ORGANIZATION_MEMBER) {
             checkPick(args);
-            picked = await resolveOrganizationMember(this.env, identity, args);
-            record = await this.ctx.storage.get(RECORD);
-            if (!record || record.deletion) throw spaceNotFound();
-            if (identity.principal !== record.owner)
-              throw new HttpError(403, "Only the Project owner can manage access");
-            previous = await this.ctx.storage.get(receiptKey(key));
+            return new AfterQueue(async () => {
+              let pick;
+              try {
+                pick = { picked: await resolveOrganizationMember(this.env, identity, args) };
+              } catch (error) {
+                pick = { pickError: error };
+              }
+              return this.enqueue(request, { identity, args, ...pick });
+            });
           }
           if (previous) {
             if (previous.fingerprint !== digest)

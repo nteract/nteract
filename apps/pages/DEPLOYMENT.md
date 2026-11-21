@@ -1647,11 +1647,14 @@ Pages owns this organization lens; Kilo is its first directory adapter
   into `pages_organization_memberships` as provider `kilo` without overwriting
   newer rows. Each write also mirrors organizations and `verified_at_ms` (never
   `directory_credential`) to `kilo_memberships` so rollback builds read current
-  evidence and revocations stick. An older isolate still writes only
-  `kilo_memberships`; its updates reach the new table on that person's next
-  exchange through this build (bounded by the 8-hour evidence window). Once
-  this release has run on every deployment for more than 8 hours, the following
-  release stops the dual write and drops `kilo_memberships` and
+  evidence and revocations stick. An older isolate, or a build rolled back
+  to, writes only `kilo_memberships`, so each read takes the newer of a
+  principal's two rows (the new table's wins a tie): an exchange that build
+  handled, such as a removal from an organization, still counts after rolling
+  forward. That row carries no credential, so the person can't search until
+  their next exchange through this build. Once this release has run on every
+  deployment for more than 8 hours, the following release stops the dual
+  write and the two-table read, and drops `kilo_memberships` and
   `kilo_membership_schema`; deployments jumping past this build still run the
   copy before the drop.
 - **Directory search credential (`member_search_proof`).** Kilo's exchange may
@@ -1668,7 +1671,8 @@ Pages owns this organization lens; Kilo is its first directory adapter
   keeps the picker open for the next query. Pages has no shared rate limiter of
   its own, so Kilo's per-deployment and per-searcher limits govern search (a
   heavy searcher can exhaust the deployment's share), and a 429 from Kilo
-  passes its `Retry-After` through to the browser.
+  passes its `Retry-After` through to the browser, which holds searches until
+  it ends.
 
 A sign-in whose write fails gets the retryable failure page (503,
 `membership_unrecorded`) and no session. An agent request on a token answer

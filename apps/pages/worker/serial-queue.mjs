@@ -25,6 +25,19 @@ import { holdUntilSettled } from "./request-hold.mjs";
  * (request-hold.mjs).
  */
 
+/** What a queued `run` returns for a request whose queue work is done:
+ * `work` answers the request once the queue has released it (Page
+ * `enqueue`, Catalog and Space `fetch`), so a slow dependency, such as an
+ * organization directory, can't hold the requests queued behind it. */
+export class AfterQueue {
+  constructor(work) {
+    this.work = work;
+  }
+  finish() {
+    return this.work();
+  }
+}
+
 /** Mutable so tests can shorten them. A request still running at `runMs` has
  * outlived its caller's 60 s tool deadline twice. `projectionMs` bounds how
  * long a Page waits for its owner's or a member's Catalog to apply a title
