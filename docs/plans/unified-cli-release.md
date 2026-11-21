@@ -103,17 +103,21 @@ published by this workflow. Release instructions should use the published
 `install-linux-release` asset; retiring the older script is separate cleanup.
 
 The [plugin assembly script](../../scripts/assemble-plugin-dist.sh) ships
-`nteract-mcp` and platform wrappers, not a full CLI/runtime stack. The
-[legacy MCP entry point](../../crates/nteract-mcp/src/lib.rs) still locates
-`runt` or `runt-nightly` and launches `runt mcp`; existing
-[Claude configuration](../../plugins/nteract/.mcp.json) and
-[Codex configuration](../../plugins/nteract/.codex-mcp.json) keep that contract.
-Preserve those backends in installers and app bundles. A plugin-only machine
-without a discoverable legacy CLI is a negative test, not a supported
-self-contained runtime installation. Correct any generated plugin instructions
-that imply otherwise before promoting the release. Windows wrapper resolution
-must be tested in the actual supported MCP hosts, including their `.cmd`
-resolution; wrapper compilation alone cannot prove that behavior.
+`nteract-mcp` and platform wrappers, not a full CLI/runtime stack.
+
+- **Legacy backend contract:** The
+  [legacy MCP entry point](../../crates/nteract-mcp/src/lib.rs) still locates
+  `runt` or `runt-nightly` and launches `runt mcp`. Existing
+  [Claude configuration](../../plugins/nteract/.mcp.json) and
+  [Codex configuration](../../plugins/nteract/.codex-mcp.json) keep that
+  contract. Preserve those backends in installers and app bundles.
+- **Plugin-only hosts:** A plugin-only machine without a discoverable legacy
+  CLI is a negative test, not a supported self-contained runtime installation.
+  Correct any generated plugin instructions that imply otherwise before
+  promoting the release.
+- **Windows wrapper verification:** Test Windows wrapper resolution in the
+  actual supported MCP hosts, including their `.cmd` resolution. Wrapper
+  compilation alone cannot prove that behavior.
 
 | Migration scenario | Required result |
 | --- | --- |
@@ -154,15 +158,17 @@ resolution; wrapper compilation alone cannot prove that behavior.
    completion, visible output, and empty execution queues. Reopen saved content
    and exercise MCP reconnect. Inspect active processes so an old app/runtime
    cannot masquerade as the candidate.
-5. **Gate directory launch when included.** For `nteract open <directory>`,
-   `nteract .`, and `nteract <directory>`, test both an absent Desktop
-   process and an already-running one. Verify a notebook opens with the requested
-   working directory and runtime, not merely that a process exits successfully.
-   Include relative paths, paths with spaces, notebook files, same-named command
-   directories addressed with `./`, both channels, and a CLI launched outside
-   the target directory. Check existing windows remain attached to their correct
-   runtime. Run the absent-runtime case and record the known concurrent-start
-   race separately; a single successful launch does not resolve it.
+5. **Gate directory launch when included.** Test `nteract open <directory>`,
+   `nteract .`, and `nteract <directory>` against both an absent Desktop
+   process and an already-running one:
+   - Verify a notebook opens with the requested working directory and runtime,
+     not merely that a process exits successfully.
+   - Cover relative paths, paths with spaces, notebook files, same-named
+     command directories addressed with `./`, both channels, and a CLI launched
+     outside the target directory.
+   - Check that existing windows remain attached to their correct runtime.
+   - Run the absent-runtime case and record the known concurrent-start race
+     separately; a single successful launch does not resolve it.
 6. **Promote qualified source to Stable.** After acceptance, dispatch Stable from
    the immutable qualified Nightly ref. This rebuilds and re-signs Stable; it
    does not rename the Nightly artifacts. Verify the generated Stable tag resolves
@@ -187,9 +193,9 @@ runtime behavior must be assessed against the unified CLI itself.
 Record the previous channel manifest and plugin distribution revision before
 publication. If a candidate fails qualification, stop promotion and enumerate
 which surfaces already changed. Restore a prior channel manifest only through
-an explicit release-owner recovery action; it can stop advertising the candidate
-but does not downgrade apps that already installed it. A fixed newer release is
-the normal recovery for installed users. Preserve their notebooks, settings,
+an explicit release-owner recovery action. This stops advertising the candidate,
+but it does not downgrade apps that already installed it. A fixed newer release
+is the normal recovery for installed users. Preserve their notebooks, settings,
 workstation credentials, and unrelated command aliases.
 
 PyPI files cannot be replaced under previously used filenames. A bad release
@@ -201,6 +207,7 @@ Do not attempt recovery by reusing a version or moving a qualified immutable tag
 
 Plugin distribution can be corrected with a new commit for the affected channel,
 but clients may retain cached binaries until refresh/restart. Updater manifests,
-GitHub assets, plugins, and PyPI need separate recovery verification. Repointing
-an owned public CLI to another installed channel is not a runtime/data rollback;
-do not delete runtime locks or services to bypass a compatibility problem.
+GitHub assets, plugins, and PyPI need separate recovery verification.
+Repointing an owned public CLI to another installed channel is not a
+runtime/data rollback. Do not delete runtime locks or services to bypass a
+compatibility problem.
