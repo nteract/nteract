@@ -1,7 +1,7 @@
 # Hosted Notebook Sharing and Invites
 
-**Status:** Implemented — shipped Worker routes, storage, tests. Open product
-decisions documented below.
+**Status:** Implemented (shipped Worker routes, storage, and tests). Open
+product decisions are documented below.
 
 This PRD defines the user-facing sharing requirements and the product/data path
 from "share with email" to principal-backed `notebook_acl` rows. It relies on
@@ -40,9 +40,9 @@ prototype has useful shape:
 - Public user data intentionally omits email in collaborator responses.
 
 That prototype did not need pending invites because sharing targeted an
-existing user record. For nteract cloud, we need an owner to type an email
-before the recipient has ever logged in, and we need the eventual ACL row to
-use the recipient's stable provider principal instead of the typed email.
+existing user record. For nteract cloud, an owner must be able to enter an email
+before the recipient has ever logged in. The eventual ACL row must use the
+recipient's stable provider principal instead of the typed email.
 
 ## Canonical Objects
 
@@ -119,10 +119,10 @@ CREATE INDEX notebook_invites_notebook_idx
 ```
 
 The shipped schema is in `migrations/0005_sharing_invites.sql`. Index order and
-uniqueness constraints differ from this early sketch: the pending lookup index
-puts `email_normalized` first for resolution queries, and partial unique
-indexes prevent duplicate pending invites per notebook/email/scope (split by
-provider-hint presence).
+uniqueness constraints differ from this early sketch. The pending lookup index
+puts `email_normalized` first for resolution queries. Partial unique indexes
+prevent duplicate pending invites per notebook/email/scope, split by
+provider-hint presence.
 
 `provider_hint` is normalized to lowercase provider ids. It should be
 `anaconda` for the direct Anaconda OIDC demo. It may be `NULL` only when the
@@ -153,13 +153,13 @@ Pending invites are not ACL rows and cannot authorize a socket.
 4. **Current behavior:** The API always creates or returns a `pending` invite
    row (`createPendingNotebookInvite` in `index.ts:3399`). Invites resolve to
    principal ACL rows on the recipient's first login.
-5. **Open product decision:** Should the API look for a verified
-   `principal_profiles` row with matching provider hint and normalized email,
-   and insert an immediate principal ACL row if found? This would grant access
-   without requiring the recipient to log in again, but requires deciding when
-   to prefer immediate grants vs. pending invites for auditing or notification
-   purposes. If immediate grants land, the API may still create an accepted
-   invite audit row; the ACL subject stays the resolved principal.
+5. **Open product decision:** Should the API match a verified
+   `principal_profiles` row (by provider hint and normalized email) and insert
+   an immediate principal ACL row? Immediate grants avoid waiting for the
+   recipient's next login. However, we must decide when to prefer immediate
+   grants over pending invites for auditing or notifications. If immediate
+   grants land, the API may still create an accepted invite audit row. The ACL
+   subject stays the resolved principal.
 6. The share dialog shows:
    - resolved collaborators by display name;
    - pending invites by email;
@@ -339,10 +339,11 @@ The checked-in TypeScript prototype models the core transition:
   public viewer rows into UI labels.
 
 The checked-in storage foundation creates the `principal_profiles` and
-`notebook_invites` D1 tables and exposes helpers that upsert profiles, create
-pending invites, and resolve first-login invites into principal ACL rows. The
-hosted Worker exposes the invite routes as `/api/n/:id/invites` and
-`/api/n/:id/invites/:inviteId`; public viewer access remains an explicit ACL
+`notebook_invites` D1 tables. It exposes helpers to upsert profiles, create
+pending invites, and resolve first-login invites into principal ACL rows.
+
+The hosted Worker exposes the invite routes as `/api/n/:id/invites` and
+`/api/n/:id/invites/:inviteId`. Public viewer access remains an explicit ACL
 row rather than a separate `/public-viewer` route.
 
 ## Open Questions

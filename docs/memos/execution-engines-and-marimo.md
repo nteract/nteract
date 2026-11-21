@@ -29,9 +29,13 @@ This memo specifies marimo support as the product and architecture boundary.
 The shipped integration must use a supported marimo surface or establish the
 smallest appropriate surface upstream.
 
-Several choices still need spike evidence: the supported marimo embedding
-boundary, the exact engine/executor API, the representation of reactive plans,
-restart semantics, and interactive UI-value transport.
+Several choices still need spike evidence:
+
+- the supported marimo embedding boundary,
+- the exact engine/executor API,
+- the representation of reactive plans,
+- restart semantics, and
+- interactive UI-value transport.
 
 ## Why execution engines
 
@@ -46,17 +50,16 @@ Jupyter kernel:
 
 That combination of FIFO scheduling, Jupyter I/O, runtime projection, and
 environment selection does not define all notebook execution.
-`KernelConnection` requires Jupyter ports, comms, completion, and history,
-while a reactive runtime needs the complete notebook graph and may turn one
+`KernelConnection` requires Jupyter ports, comms, completion, and history. By
+contrast, a reactive runtime needs the complete notebook graph and may turn one
 user intent into several cell executions.
 
-marimo makes the mismatch concrete. Its documented contract is reactive: when
-a cell runs or a UI value changes, dependent cells run or become stale;
-execution order follows variable dependencies rather than visual position.
-See [marimo's reactive programming
-overview](https://docs.marimo.io/#a-reactive-programming-environment). Treating
-that as a single Jupyter-style `execute(cell_id, source)` call would discard
-the notebook semantics we intend to support.
+marimo makes the mismatch concrete. Its documented contract is reactive: when a
+cell runs or a UI value changes, dependent cells run or become stale. Execution
+order follows variable dependencies rather than visual position. See
+[marimo's reactive programming overview](https://docs.marimo.io/#a-reactive-programming-environment).
+Treating that as a single Jupyter-style `execute(cell_id, source)` call would
+discard the notebook semantics we intend to support.
 
 The broader model also clarifies raw Jupyter and future reactive runtimes. A
 raw kernelspec is normally another executor beneath nteract's explicit engine,
@@ -102,9 +105,9 @@ separation rules regardless of engine.
 
 **EnvironmentProvider** resolves and prepares the process environment. Captured
 UV, Conda, or Pixi environment lifecycle mutations remain daemon-owned. An
-executor-internal policy may let an evaluator own environment state inside its
-process, but it does not grant direct mutation authority over daemon-managed
-caches or notebook dependency metadata.
+executor-internal policy may let an evaluator own in-process environment state.
+It does not grant direct mutation authority over daemon-managed caches or
+notebook dependency metadata.
 
 **RuntimeProfile** is the persisted composition of language, engine, executor,
 and environment policy. These are separate facts, not aliases.
@@ -163,13 +166,17 @@ Useful semantic capability axes include:
 ## Coordinator-authorized reactive plans
 
 Notebook reactivity changes planning, but it does not transfer durable
-execution authority. An **execution coordinator** remains the only component
-that accepts root execution intent, reads canonical source, allocates durable
-plan and execution IDs, assigns admission sequence numbers, records submitter
-provenance, and writes accepted plan and execution records. The local daemon
-fills this role for desktop notebooks; the hosted room host fills it for hosted
-notebooks. A runtime peer may advance accepted executions and publish outputs;
-it may not invent durable work.
+execution authority. An **execution coordinator** remains the sole authority
+for durable work:
+
+- accepting root execution intent and reading canonical source;
+- allocating durable plan IDs, execution IDs, and admission sequence numbers;
+- recording submitter provenance; and
+- writing accepted plan and execution records.
+
+The local daemon fills this role for desktop notebooks, and the hosted room
+host fills it for hosted notebooks. A runtime peer may advance accepted
+executions and publish outputs; it may not invent durable work.
 
 An engine-proposed dependency closure is an explicit, scoped delegation. After
 accepting a root intent, the coordinator issues a **PlannerGrant** bound to:
@@ -181,11 +188,15 @@ accepting a root intent, the coordinator issues a **PlannerGrant** bound to:
 - a bounded lifetime and extension policy.
 
 The coordinator does not reimplement marimo's dependency graph to verify every
-dependency reason. It verifies the proposal is within the grant: the engine and
-session match, referenced cells and source hashes match the authorized
-projection, the trigger policy permits the proposed closure, and an extension
-does not introduce a new root intent. This makes planner authority explicit
-without letting a runtime peer turn an unrelated engine request into execution.
+dependency reason. Instead, it checks that the proposal stays within the grant:
+
+- the engine and session match;
+- referenced cells and source hashes match the authorized projection;
+- the trigger policy permits the proposed closure; and
+- any extension introduces no new root intent.
+
+This makes planner authority explicit without letting a runtime peer turn an
+unrelated engine request into execution.
 
 The common protocol should be:
 
@@ -193,37 +204,38 @@ The common protocol should be:
    NotebookDoc code projection. The coordinator validates the caller and
    captures the submitter, cause, engine session, and trigger policy.
 2. A host-enumerated intent may proceed directly to acceptance. An
-   engine-proposed intent receives a PlannerGrant, and the engine waits until
+   engine-proposed intent receives a PlannerGrant. The engine then waits until
    its read-only NotebookDoc replica contains the grant's code projection.
-3. The engine returns a proposal ID, PlannerGrant ID, base code projection,
-   engine-session and reactive-input generations, stable cell IDs, source
-   hashes, dependency reasons, and relevant edges or ordering constraints. The
-   proposal ID is correlation only; it is not a durable plan ID.
+3. The engine returns a proposal containing a proposal ID, PlannerGrant ID,
+   base code projection, and engine-session and reactive-input generations. It
+   also includes stable cell IDs, source hashes, dependency reasons, and
+   relevant edges or ordering constraints. The proposal ID is correlation only;
+   it is not a durable plan ID.
 4. The execution coordinator validates the proposal and grant against current
    notebook state, reactive-input state, engine-session generation, active
    executions, and trigger policy.
 5. The coordinator allocates the durable plan ID and revision, reads source
-   from the authorized NotebookDoc projection, captures an immutable source
-   snapshot in each execution record, allocates one execution ID and admission
-   sequence number per cell, writes all RuntimeStateDoc entries, and stamps each
-   NotebookDoc execution pointer.
-6. The engine receives the accepted plan revision and `cell_id -> execution_id`
-   mapping plus the post-pointer NotebookDoc heads. For an engine-proposed plan,
-   it waits until its replicas contain both the accepted execution records and
-   those heads, then executes only the captured source snapshots in that
-   mapping. A later edit does not change already authorized work. The existing
-   sequential path may keep validating observed heads in the coordinator and
-   discover accepted one-member work from RuntimeStateDoc without materializing
-   a NotebookDoc replica.
+   from the authorized NotebookDoc projection, and captures an immutable source
+   snapshot in each execution record. It allocates one execution ID and
+   admission sequence number per cell, writes all RuntimeStateDoc entries, and
+   stamps each NotebookDoc execution pointer.
+6. The engine receives the accepted plan revision, the
+   `cell_id -> execution_id` mapping, and the post-pointer NotebookDoc heads.
+   For an engine-proposed plan, it waits until its replicas contain both the
+   accepted execution records and those heads, then executes only the captured
+   source snapshots. A later edit does not change already authorized work. The
+   existing sequential path may keep validating observed heads in the
+   coordinator and discover accepted one-member work from RuntimeStateDoc
+   without materializing a NotebookDoc replica.
 7. Reactive work discovered during execution requests an append-only extension
    against the same PlannerGrant, plan ID, accepted revision, and causal basis.
    It cannot introduce a new root intent. The coordinator rejects stale,
    superseded, out-of-scope, or post-seal extensions.
 8. After every member in an accepted revision is terminal and its outputs are
-   durable, the engine reports quiescence for that exact code, input, graph, and
-   engine-session basis. The coordinator then seals the revision. Sealing is
-   monotonic: a later source edit, UI interaction, or other trigger creates a
-   new plan instead of reopening a completed one.
+   durable, the engine reports quiescence for that exact code, input, graph,
+   and engine-session basis. The coordinator then seals the revision. Sealing
+   is monotonic: a later source edit, UI interaction, or other trigger creates
+   a new plan instead of reopening a completed one.
 
 The existing explicit cell path is the trivial one-member host plan. Run All is
 a host-enumerated membership set whose engine supplies any semantic dependency
@@ -238,12 +250,12 @@ they must not accidentally inherit visual order or current FIFO behavior.
 
 NotebookDoc and RuntimeStateDoc synchronize independently, so a proposal must
 carry enough causal context to reject stale work. Full NotebookDoc heads are
-correct but may reject a plan after an unrelated markdown or metadata edit. A
-deterministic fingerprint over ordered code-cell IDs, sources, and relevant
-engine metadata may be the better authorization boundary; this needs a spike.
-Reactive UI work additionally needs an engine-session-scoped input generation
-or event token so a stale value event cannot authorize work against newer
-engine state.
+correct, but they may reject a plan after an unrelated markdown or metadata
+edit. A deterministic fingerprint over ordered code-cell IDs, sources, and
+relevant engine metadata may be a better authorization boundary; this needs a
+spike. Reactive UI work also needs an engine-session-scoped input generation or
+event token so a stale value event cannot authorize work against newer engine
+state.
 
 ## marimo runtime profile
 
@@ -270,18 +282,18 @@ launching another notebook application or server.
 
 marimo supports both automatic reactivity and a lazy mode that marks affected
 cells stale. nteract should preserve that distinction rather than assume every
-source change immediately executes expensive work. Whether the initial product
-defaults to automatic reactivity, explicit cell commits followed by reactive
-closure, or lazy mode remains an open product decision.
+source change immediately runs expensive work. Defaulting to automatic
+reactivity, explicit cell commits with reactive closure, or lazy mode remains
+an open product decision.
 
 Notebook synchronization is projection-only and never authorizes work by
-itself. If automatic mode reacts to a committed source edit, the execution
-coordinator must first derive an intent carrying the editor's provenance, the
-relevant NotebookDoc projection, and the selected trigger policy. The resulting
-PlannerGrant may authorize a transitive dependency closure, but only for that
-root cause and engine session. The engine may propose and execute a plan only
-after that intent passes the same authorization path as an explicit Run Cell
-request.
+itself. When automatic mode reacts to a committed source edit, the execution
+coordinator must first derive an intent. That intent carries the editor's
+provenance, the relevant NotebookDoc projection, and the selected trigger
+policy. The resulting PlannerGrant may authorize a transitive dependency
+closure, but only for that root cause and engine session. The engine may
+propose and execute a plan only after that intent passes the same authorization
+path as an explicit Run Cell request.
 
 The first execution milestone should cover ordinary Python cells, dependency
 ordering, stdout and stderr, MIME output, structured errors, interrupt, and
@@ -317,10 +329,10 @@ Every engine must preserve these existing rules:
    release remain reliable and independent of bounded or lossy output work.
 9. **Terminal follows durable output.** Engine event projection must flush
    stream, display, and error state before publishing terminal execution state.
-10. **Terminal sealing is monotonic.** Programmatic waits resolve only after the
-    coordinator seals a revision whose members are terminal, outputs are
-    durable, and engine quiescence matches the same causal basis. A sealed plan
-    cannot be extended or reopened.
+10. **Terminal sealing is monotonic.** Programmatic waits resolve only after
+    the coordinator seals a revision. Sealing requires terminal members,
+    durable outputs, and engine quiescence on the same causal basis. A sealed
+    plan cannot be extended or reopened.
 11. **Restart does not imply replay.** Side-effectful cells are not silently
    re-executed without an explicit, user-visible recovery policy.
 
@@ -354,18 +366,23 @@ RuntimeState.engine = {
 ```
 
 This is not yet a field-name decision. During migration, existing notebooks
-without an engine selection continue to use the current sequential Jupyter
-profile, and legacy `kernel.name`, `kernel.language`, and `kernel.env_source`
-fields remain available to existing consumers.
+without an engine selection keep using the current sequential Jupyter profile.
+Legacy `kernel.name`, `kernel.language`, and `kernel.env_source` fields remain
+available to existing consumers.
 
-Plan records will likely need a coordinator-issued plan ID and revision,
-PlannerGrant reference, original cause and submitter, base code projection,
-engine-session and reactive-input generations, member ordering or dependency
-edges, extension state, and a coordinator-owned terminal seal. Individual
-execution records will likely need a plan ID, plan revision, plan index, and
-causal reason. Whether the plan is a coordinator-owned subtree of
-RuntimeStateDoc or a separate document should be decided from expected write
-cadence, retention, and authority rather than convenience alone.
+Plan records will likely need:
+
+- a coordinator-issued plan ID, revision, and PlannerGrant reference;
+- the original cause and submitter;
+- the base code projection plus engine-session and reactive-input generations;
+- member ordering or dependency edges;
+- extension state; and
+- a coordinator-owned terminal seal.
+
+Individual execution records will likely need a plan ID, plan revision, plan
+index, and causal reason. Deciding whether plans live in a coordinator-owned
+subtree of RuntimeStateDoc or in a separate document should follow expected
+write cadence, retention, and authority, not convenience alone.
 
 ## Delivery sequence
 
@@ -448,8 +465,8 @@ validate the abstraction, but neither should enlarge the first marimo milestone.
 3. What engine-selection metadata interoperates cleanly with standard Jupyter
    metadata and older nteract clients?
 4. Should plan authorization use complete NotebookDoc heads or a narrower code
-   projection fingerprint, and what reactive-input event token joins that
-   causal basis?
+   projection fingerprint? What reactive-input event token joins that causal
+   basis?
 5. Where do plan records live, and how long are grants, proposals, sealed
    revisions, and execution history retained?
 6. How should skipped, blocked, superseded, and stale cells appear in
@@ -468,7 +485,11 @@ validate the abstraction, but neither should enlarge the first marimo milestone.
 
 An ADR should follow only after the existing sequential path runs through the
 new seam and a marimo vertical slice proves the public integration surface. The
-ADR should then record the stable decisions: local RuntimeAgent versus hosted
-runtime_peer versus engine/executor ownership, scoped planner delegation,
-coordinator-owned plan identity and sealing, engine identity schema, optional
-capability model, and compatibility behavior for existing notebooks.
+ADR should then record the stable decisions:
+
+- local RuntimeAgent versus hosted runtime_peer versus engine/executor
+  ownership;
+- scoped planner delegation;
+- coordinator-owned plan identity and sealing;
+- engine identity schema and optional capability model; and
+- compatibility behavior for existing notebooks.

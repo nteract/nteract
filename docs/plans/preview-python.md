@@ -17,9 +17,12 @@ The provider offers a logical Preview Python workstation per owner/deployment an
 
 ## Boundaries
 
-A trusted supervisor owns registration, credentials, runtime-peer transport, scheduling and output validation. User Python lives in a dedicated loaded isolate with no cloud credentials, storage bindings, or ambient network access. A globals dictionary or Python object is not a tenant isolation boundary. The notebook room retains accepted source snapshots, execution IDs, session fencing and output authority checks.
-
-Use fresh warmed interpreters once: allocate to one session, retain its variables while active, then dispose. Do not sanitize and recycle a used interpreter across users. Pin interpreter/package assets and load locally. Pool size, active-session count, output size, CPU deadlines and idle TTL are bounded. Hard termination discards the interpreter and fences late results; automatic replay is forbidden. Notebook documents and accepted outputs survive interpreter expiry; Python heap persistence is not promised.
+- **Supervisor ownership:** A trusted supervisor owns registration, credentials, runtime-peer transport, scheduling, and output validation.
+- **Isolate separation:** User Python runs in a dedicated loaded isolate with no cloud credentials, storage bindings, or ambient network access. A globals dictionary or Python object is not a tenant isolation boundary.
+- **Room authority:** The notebook room retains accepted source snapshots, execution IDs, session fencing, and output authority checks.
+- **Single-use interpreters:** Use fresh warmed interpreters once. Allocate an interpreter to one session, retain its variables while active, then dispose of it. Do not sanitize and recycle a used interpreter across users.
+- **Pinned assets and resource caps:** Pin interpreter/package assets and load them locally. Bound pool size, active-session count, output size, CPU deadlines, and idle TTL.
+- **Termination and durability:** Hard termination discards the interpreter and fences late results. Automatic replay is forbidden. Notebook documents and accepted outputs survive interpreter expiry; Python heap persistence is not promised.
 
 ## Implementation sequence
 
@@ -32,6 +35,14 @@ Use fresh warmed interpreters once: allocate to one session, retain its variable
 
 ## Finish verifier
 
-A clean checkout can build and run the configured local celld provider and execute a synced notebook through the actual runtime-peer path. Verify persistent variables, stdout/stderr, expression and rich outputs, errors followed by recovery, a dataframe/plot, two-client convergence, unauthorized requests, cross-session isolation, bounded infinite-loop termination, replacement/session fencing, reconnect and idle disposal. Record cold and warm allocation-to-first-output distributions, process RSS and incremental session memory, and concurrent allocation behavior; no numerical latency claim is accepted from HTTP-only fixtures.
+A clean checkout can build and run the configured local celld provider and execute a synced notebook through the actual runtime-peer path.
+
+Verify these behaviors:
+
+- Persistent variables, stdout/stderr, expression and rich outputs, errors followed by recovery, and a dataframe/plot.
+- Two-client convergence, unauthorized requests, and cross-session isolation.
+- Bounded infinite-loop termination, replacement/session fencing, reconnect, and idle disposal.
+
+Record cold and warm allocation-to-first-output distributions, process RSS, incremental session memory, and concurrent allocation behavior. No numerical latency claim is accepted from HTTP-only fixtures.
 
 Failures retain a minimal reproduction and evidence. Diagnose and fix the next failing boundary without weakening the verifier. Do not merge, release, or alter live deployments. Deliver coherent commits and a draft PR with review/CI evidence.

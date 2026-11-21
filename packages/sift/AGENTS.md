@@ -6,13 +6,13 @@ local CSV, Parquet, and Arrow files. Demo: [rgbkrk.github.io/sift](https://rgbkr
 
 ## Stack
 
-- **Vite / vite-plus** — dev server, demo build, library build
-- **TypeScript** — the table engine is vanilla TS; React renders header charts,
+- **Vite / vite-plus**: dev server, demo build, library build
+- **TypeScript**: vanilla TS table engine; React renders header charts,
   popovers, menus, and the `SiftTable` wrapper
-- **@chenglou/pretext** — DOM-free text measurement and layout
-- **Rust / WASM** (`crates/sift-wasm`, wrapping `crates/nteract-predicate`) —
+- **@chenglou/pretext**: DOM-free text measurement and layout
+- **Rust / WASM** (`crates/sift-wasm`, wrapping `crates/nteract-predicate`):
   Parquet and Arrow IPC decoding, sort, histograms, value counts, filters, casts
-- **RxJS** — streaming dataset loads in the demo and engine
+- **RxJS**: streaming dataset loads in the demo and engine
 
 ## Commands
 
@@ -30,7 +30,7 @@ pnpm --dir packages/sift exec node scripts/test-package.mjs --browser  # + produ
 cargo test -p sift-wasm                         # native Rust tests (not in the workspace lanes)
 ```
 
-`prepack` needs `cargo-about` (`cargo binstall cargo-about`); it writes
+`prepack` needs `cargo-about` (`cargo binstall cargo-about`). It writes
 `lib/THIRD_PARTY_NOTICES.md` and refuses to pack an incomplete `lib/`.
 
 ## Architecture
@@ -43,38 +43,38 @@ Every source ends as a `TableData` the engine reads by `(row, col)`:
    `load_ipc_bounded` in WASM → `createWasmTableData`. Limits are checked from
    footer metadata and after each decoded batch.
 2. **Parquet by byte range**: `loadTableFile(byteSource)` or the `byte-source`
-   React source → `openParquetFile` (`parquet-file.ts`) → `parquet_open` from
-   the footer, then `parquet_append_row_group` per row group over host-fetched
-   ranges (`crates/sift-wasm/src/parquet_file.rs`). The `url` source's Parquet
-   branch uses the same loader over the buffered response. `overflow:
-   "truncate"` turns rows and decoded bytes into a budget: loading stops at
-   the first batch that does not fit and the table shows that prefix.
-3. **CSV/TSV**: `@nteract/sift-csv` (`crates/sift-csv-wasm`) converts text to Arrow IPC
-   bytes, which take path 1. Sift itself has no CSV parser.
+   React source calls `openParquetFile` (`parquet-file.ts`). It runs
+   `parquet_open` on the footer, then `parquet_append_row_group` per row group
+   over host-fetched ranges (`crates/sift-wasm/src/parquet_file.rs`). The `url`
+   source's Parquet branch uses the same loader over the buffered response.
+   `overflow: "truncate"` turns rows and decoded bytes into a budget: loading
+   stops at the first batch that does not fit and shows that prefix.
+3. **CSV/TSV**: `@nteract/sift-csv` (`crates/sift-csv-wasm`) converts text to
+   Arrow IPC bytes, which take path 1. Sift itself has no CSV parser.
 4. **Hosted URLs and Arrow manifests**: the `url` and `manifest` sources in
    `react.tsx`, used by the notebook renderer.
 5. **Query sessions**: a host `TableQuerySession` (`query.ts`) answers a
-   `TableQuery` with one bounded Arrow IPC stream; the `query-session` source
-   loads it through path 1 and `replaceData(…, { committedQuery })` tells the
+   `TableQuery` with one bounded Arrow IPC stream. The `query-session` source
+   loads it through path 1, and `replaceData(…, { committedQuery })` tells the
    engine not to re-filter it. `query-fake.ts` is the in-memory session for
    tests and `?dataset=query-fake`.
 6. **Windowed data (experimental)**: `createTable` over a `WindowedTableData`
-   (`windowed.ts`) asks the data side for `setQuery` / `requestWindow` /
-   `requestImage` and shows placeholders meanwhile; `viewIndices[r] === -1`
-   marks an unresolved view row. `windowed-resident.ts` adapts a `TableData`
-   (permutation logic shared through `permutation.ts`); `windowed: true` on
-   `byte-source`/`url` and `?windowed=1` in the demo mount through it.
+   (`windowed.ts`) requests `setQuery`, `requestWindow`, and `requestImage` and
+   shows placeholders meanwhile. `viewIndices[r] === -1` marks an unresolved
+   view row. `windowed-resident.ts` adapts a `TableData` (sharing permutation
+   logic via `permutation.ts`). `windowed: true` on `byte-source`/`url` and
+   `?windowed=1` in the demo mount through it.
 7. **Data worker (experimental)**: `src/worker/host.ts` runs the resident
-   adapter behind a `MessagePort` (`protocol.ts` is the versioned wire format;
-   `entry.ts` is the `@nteract/sift/worker` bundle). `client.ts` is the
-   main-thread `WindowedTableData`; `factory.ts` holds the host-registered
+   adapter behind a `MessagePort`. `protocol.ts` defines the versioned wire
+   format, and `entry.ts` is the `@nteract/sift/worker` bundle. `client.ts` is
+   the main-thread `WindowedTableData`; `factory.ts` holds the host-registered
    spawn (`setWorkerFactory`). `worker: true` on `byte-source` and `?worker=1`
    in the demo use it. A WASM trap is fatal: terminate, keep loaded rows.
 
-Column types come from the Arrow schema with data-driven refinement; summaries
-for WASM sources are computed in Rust (`wasm-summaries.ts` adapts them).
+Column types come from the Arrow schema with data-driven refinement. Rust
+computes summaries for WASM sources, and `wasm-summaries.ts` adapts them.
 Byte-range Parquet reads footer column statistics once at open
-(`parquet_file_column_stats` → `TableData.datasetStats`); `wasm-summaries.ts`
+(`parquet_file_column_stats` → `TableData.datasetStats`). `wasm-summaries.ts`
 folds them with `TableData.coverage` into each summary's per-metric `scope`.
 
 ### Rendering
@@ -97,31 +97,29 @@ const explorer = engineStateToExplorerState(engine.getState()) // → SQL, panda
 
 ### Packaging
 
-- `vite.lib.config.ts` externalizes every declared dependency and peer; only
+- `vite.lib.config.ts` externalizes every declared dependency and peer. Only
   first-party code and the private `@nteract/odometer` are inlined.
-- `@nteract/sift/wasm` is wasm-pack's glue for hosts with no DOM, such as a
-  Cloudflare Worker: `initSync({ module })` with `@nteract/sift/sift.wasm`,
-  then call sift-wasm's exports directly (`parquet_footer_summary`,
-  `write_parquet_from_sqlite`). Its functions are the crate's, so a renamed
-  or removed `#[wasm_bindgen]` export is a breaking change to the package.
-- `scripts/test-package.mjs` packs the library and tests it from outside the
-  workspace. It fails on undeclared imports and on declared dependencies that
-  nothing imports.
+- `@nteract/sift/wasm` is wasm-pack's glue for DOM-free hosts such as a
+  Cloudflare Worker. Call `initSync({ module })` with `@nteract/sift/sift.wasm`,
+  then call `sift-wasm` exports directly (`parquet_footer_summary`,
+  `write_parquet_from_sqlite`). Renaming or removing a `#[wasm_bindgen]` export
+  is a breaking change to the package.
+- `scripts/test-package.mjs` packs the library and tests it outside the
+  workspace. It fails on undeclared imports and on unused declared dependencies.
 - `scripts/third-party-notices.mjs` runs `cargo about` (`about.toml`) over a
-  WASM crate's wasm32 dependency graph and adds the Apache NOTICE files and
-  bundled C-source licenses cargo-about does not model. `@nteract/sift-csv`
-  reuses it. A crate with an unlisted license or unreviewed C sources fails
-  generation.
+  WASM crate's wasm32 dependency graph. It adds Apache NOTICE files and bundled
+  C-source licenses that cargo-about does not model, and `@nteract/sift-csv`
+  reuses it. An unlisted license or unreviewed C source fails generation.
 - `style.css` writes nothing to `:root`, `html`, or `body` and ships no reset.
-  Tokens live on `.sift-root` (`src/tokens.css`); every element Sift appends to
-  `<body>` carries that class. Hosts theme it through `--sift-color-*` inputs.
-  `build-lib-css.mjs` moves Tailwind's theme block onto `.sift-root` and fails
-  if any document-root selector survives. The demo pages add preflight through
-  `demo.css`.
+  Tokens live on `.sift-root` (`src/tokens.css`), and every element Sift
+  appends to `<body>` carries that class. Hosts theme it through
+  `--sift-color-*` inputs. `build-lib-css.mjs` moves Tailwind's theme block onto
+  `.sift-root` and fails if any document-root selector survives. The demo pages
+  add preflight through `demo.css`.
 
 ### Naming
 
-- **Sift** — the table and demo
-- **`@nteract/sift`** — the npm package
-- **`sift-wasm`** — the WASM crate (`crates/sift-wasm`)
-- **`nteract-predicate`** — the Rust compute library it wraps
+- **Sift**: the table and demo
+- **`@nteract/sift`**: the npm package
+- **`sift-wasm`**: the WASM crate (`crates/sift-wasm`)
+- **`nteract-predicate`**: the Rust compute library it wraps

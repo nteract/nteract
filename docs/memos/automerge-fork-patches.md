@@ -14,11 +14,11 @@ Authors require a separate coordinated migration and are not enabled in producti
 `nteract/automerge` revision `3fb6af5cc3af23b79f27cebfa339c8c98987e7b7`
 (Rust `0.10.0`) as `automerge-legacy`, both dev-only compatibility peers.
 No branch is selected by the git dependency. The tests cover bidirectional
-snapshots and encoded sync with representative maps, lists, rich text and
-historical actor labels, plus preservation of 0.12 Author bytes through old
-peers (`crates/automerge-store/tests/{version_compat,author_compat}.rs`). They do
-not establish compatibility for every deployed document or old nteract's
-admission/projection behavior with new opaque actors.
+snapshots and encoded sync with representative maps, lists, rich text, and
+historical actor labels. They also check preservation of 0.12 Author bytes
+through old peers (`crates/automerge-store/tests/{version_compat,author_compat}.rs`).
+They do not establish compatibility for every deployed document or old
+nteract's admission/projection behavior with new opaque actors.
 
 The [authenticated application infrastructure research](authenticated-automerge-app-substrate/README.md)
 evaluates experimental Repo 3 and Subduction policy hooks before another
@@ -66,7 +66,7 @@ below; switching production back to a fork is a separate dependency decision.
 
 ### 1. Public receiver-context parser for sync messages
 
-Why: the room-host's pre-apply validator needs the actor IDs of new changes in an inbound sync message before merging. Today `sync::Message.changes` is `ChunkList(Vec<Vec<u8>>)` of raw chunk bytes, V1 = one `Change` per chunk, V2 = potentially a whole-doc save. The V1/V2 distinction, text encoding, and bookkeeping for filtering already-known hashes are internal.
+Why: the room-host's pre-apply validator needs the actor IDs of new changes in an inbound sync message before merging. Today `sync::Message.changes` is `ChunkList(Vec<Vec<u8>>)` of raw chunk bytes (V1 = one `Change` per chunk; V2 = potentially a whole-doc save). The V1/V2 distinction, text encoding, and bookkeeping for filtering already-known hashes are internal.
 
 A `sync::Message` alone is not enough context for the robust API. V2 whole-doc chunks are reconstructed through the receiver's text encoding, and filtering duplicates is cheapest against the receiver's existing change graph. The public method should therefore live on `Automerge` and take the decoded sync message as input.
 
@@ -160,7 +160,7 @@ An upstream path-aware hook could still be useful as a lower-cost optimization o
 
 ### 4. (Speculative) Hooks for signed-change verification
 
-When keyhive's surface stabilizes, signed changes would let us verify cross-space authorship at publish import (the identity ADR's Decision 6 target is publish-time re-authoring; signed changes would let preserved history carry verified attribution instead). The shape of this depends entirely on what keyhive lands. Tracked as future-compat, not on the current fork roadmap.
+When keyhive's surface stabilizes, signed changes would let us verify cross-space authorship at publish import. The identity ADR's Decision 6 target is publish-time re-authoring; signed changes would let preserved history carry verified attribution instead. The shape of this depends entirely on what keyhive lands. Tracked as future-compat, not on the current fork roadmap.
 
 ## Coordination with upstream
 

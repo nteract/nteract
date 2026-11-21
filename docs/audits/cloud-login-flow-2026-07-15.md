@@ -11,10 +11,10 @@ The flow takes 12.9 s end to end. Main-thread blocking accounts for 0.51 s (five
 ### 1. Session ceremony: ~7.2 s across nine `/api/auth/session` calls
 
 - `POST /api/auth/session` at 0.55 s took **4.2 s**, at 8.43 s took **1.9 s**, at 7.10 s (OIDC callback) took 0.8 s, at 10.89 s took 0.3 s.
-- `DELETE /api/auth/session` (logout) took **2.8 s** to clear a cookie; the handler body is three lines, so the latency is upstream of the handler (worker scheduling or platform, needs a worker-side trace).
+- `DELETE /api/auth/session` (logout) took **2.8 s** to clear a cookie. The handler body is three lines, so the latency is upstream of the handler (worker scheduling or platform; needs a worker-side trace).
 - Four `GET /api/auth/session` calls (~170 ms each) interleave with the POSTs.
 
-Server side (`routeAppSession` in `apps/notebook-cloud/src/index.ts`): the POST path runs `authenticateRequestOrResponse`, which validates upstream against Anaconda auth on every call. The GET path already knows how to bootstrap an app session from the host session cookie (`hostSessionAppSessionCookie`). Client side, page mounts POST rather than GET: the post-OIDC reload at 8.43 s POSTs again 1.3 s after the callback page already established the session at 7.10 s.
+Server side (`routeAppSession` in `apps/notebook-cloud/src/index.ts`): the POST path runs `authenticateRequestOrResponse`, which validates upstream against Anaconda auth on every call. The GET path already knows how to bootstrap an app session from the host session cookie (`hostSessionAppSessionCookie`). Client side, page mounts POST rather than GET. The post-OIDC reload at 8.43 s POSTs again 1.3 s after the callback page already established the session at 7.10 s.
 
 Direction (the "session diet"): clients bootstrap with GET only; POST happens exactly once, at the OIDC callback; page mounts never re-validate upstream. Instrument the worker to explain the 2.8 s DELETE and the 4.2 s worst-case POST.
 

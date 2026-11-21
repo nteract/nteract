@@ -1,48 +1,46 @@
 # nteract CLI
 
 `nteract` is the public command for notebooks, workstations, and MCP. Desktop
-is optional for headless operations. This guide describes the unified CLI in
-this source tree; an older release may still expose only the compatibility
-commands.
+is optional for headless operations. Older releases may still expose only the
+compatibility commands.
 
 ## Install and select an installation
 
-The release installer accepts `--cli` (alias `--headless`) to install the
-command and its helpers without installing or starting a local daemon service:
+Install the CLI and its helpers without registering or starting a local daemon
+service. `--cli` and `--headless` are aliases:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --cli
 ```
 
-The bootstrap is maintained in the separate `nteract/install-sh` repository.
-It forwards arguments to the release installer. New CLI behavior becomes
-available when the selected release includes it; changing the bootstrap alone
-does not upgrade the release's binaries.
+- **Bootstrap script**: Maintained in the separate `nteract/install-sh`
+  repository. It forwards arguments to the release installer. New CLI behavior
+  requires a release that includes it; updating the bootstrap alone does not
+  upgrade release binaries.
+- **PATH**: The public command installs to `~/.local/bin` by default. Add it
+  if missing from your shell:
 
-The public command lives in `~/.local/bin` by default. If that directory is
-not on the current terminal's PATH, add it:
+  ```sh
+  export PATH="$HOME/.local/bin:$PATH"
+  ```
 
-```sh
-export PATH="$HOME/.local/bin:$PATH"
-```
+- **Desktop bundle**: Desktop also bundles the CLI. Use its **Install nteract
+  CLI** menu to select that installation. Existing unrelated commands are
+  preserved rather than overwritten, and the installer prints their path so you
+  can resolve conflicts.
+- **Channels**: Installing another release channel keeps the current selected
+  `nteract` command. Pass `--default-cli` to the installer to switch defaults,
+  or select a channel for one command:
 
-Desktop installation also bundles the CLI. Its **Install nteract CLI** menu can select
-that installation. Existing unrelated commands are preserved rather than
-overwritten. The installer reports their path so you can resolve the conflict.
+  ```sh
+  nteract --channel nightly --version
+  nteract --channel nightly workstation status
+  ```
 
-Installing another release channel keeps the existing selected `nteract`
-command. Use the installer's `--default-cli` option to select that installation,
-or select a channel for one command:
-
-```sh
-nteract --channel nightly --version
-nteract --channel nightly workstation status
-```
-
-An explicit channel selects a real installed backend and its configuration;
-it cannot turn a Stable binary into Nightly by changing an environment variable.
-The installer records channel targets beside the public command, including
-custom installation prefixes. Missing channels produce an installation error.
+- **Channel resolution**: `--channel` selects a real installed backend and its
+  configuration. Environment variables cannot turn a Stable binary into Nightly.
+  The installer records channel targets beside the public command, including
+  under custom prefixes. Missing channels return an installation error.
 
 ## Notebook and workstation commands
 
@@ -72,25 +70,23 @@ nteract workstation run
 nteract workstation service install --start
 ```
 
-A directory always requests a fresh untitled notebook with that directory as its
-working directory, including when Desktop is already running. It does not reopen
-a previous notebook or create an `Untitled.ipynb` file in the project. Save the
-notebook to choose its filename; normal recovery still protects untitled work.
-`nteract open .` uses the same directory behavior.
-To select a runtime, use `nteract open . --runtime deno`. On macOS this explicit
-runtime choice starts a separate Desktop process so the option is honored even
-when Desktop is already running; ordinary directory opens use its default runtime.
-
-Command names take precedence over shorthand paths. Use `nteract ./open` or
-`nteract ./nb` for paths with those names, or pass the path to `nteract open`.
-Notebook filenames and directory names are not restricted by the CLI's commands.
-Unknown bare words that do not name an existing path produce a command error;
-use an explicit path such as `./analysis` to disambiguate. Desktop reports file
-availability and notebook parsing errors.
+- **Directory targets**: Passing a directory (`nteract .` or `nteract open .`)
+  always opens a fresh untitled notebook with that directory as its working
+  directory, even when Desktop is already running. It does not reopen a
+  previous notebook or create `Untitled.ipynb`. Save the notebook to pick its
+  filename; normal recovery protects untitled work.
+- **Runtime selection**: Use `nteract open . --runtime deno` to choose a
+  runtime. On macOS, an explicit runtime starts a separate Desktop process so
+  the flag is honored even when Desktop is already running. Ordinary directory
+  opens use Desktop's default runtime.
+- **Path disambiguation**: Command names take precedence over shorthand paths.
+  Use `nteract ./open`, `nteract ./nb`, or `nteract open <path>` for matching
+  names. Unknown bare words that do not name an existing path produce a command
+  error; use an explicit path like `./analysis`. Notebook filenames and
+  directory names are unrestricted, and Desktop reports file availability and
+  parsing errors.
 
 ## Runtime management and diagnostics
-
-The unified CLI keeps the runtime operations used for troubleshooting:
 
 ```sh
 nteract doctor
@@ -103,53 +99,63 @@ nteract diagnostics
 nteract --channel nightly doctor
 ```
 
-`nteract daemon --help` lists service lifecycle and maintenance operations.
-These commands describe the selected installation, even when notebook operations
-are sharing a compatible runtime from another installation.
+Run `nteract daemon --help` for service lifecycle and maintenance operations.
+These commands describe the selected installation, even when notebook
+operations share a compatible runtime from another installation.
 
 ## Notebook operation behavior
 
-Notebook operations use the same implementation as MCP. Execution operates on
-synced cell IDs, preserving the document seen by other peers. `nb call --json`
-returns the complete MCP tool result; a failed tool result exits unsuccessfully.
-One-shot calls keep the attachment open while waiting up to 125 seconds for
-current document state, and for a running kernel when the operation executes
-code. This readiness budget is separate from the tool's execution `timeout_secs`.
-Trust requirements, failed sources, and failed kernel launches return errors;
-the wait does not approve trust or restart a kernel. Historical result lookup
-and session-control tools retain their own access rules. MCP connections still
-return progressive readiness.
+### Execution and readiness
 
-Run `--help` on a command for its argument and output contract. Observation
-commands such as status and listing do not implicitly start services.
+- Notebook operations share the same implementation as MCP. Execution runs on
+  synced cell IDs, preserving the document seen by other peers.
+- `nb call --json` returns the complete MCP tool result and exits non-zero on
+  tool failure.
+- One-shot calls keep the attachment open for up to 125 seconds while waiting
+  for current document state and (for code execution) a running kernel. This
+  readiness budget is separate from the tool's `timeout_secs`.
+- Trust requirements, failed sources, and failed kernel launches return errors.
+  The wait does not approve trust or restart a kernel.
+- Historical result lookup and session-control tools keep their own access
+  rules. MCP connections still return progressive readiness.
 
-Notebook listing and operations use the selected shared runtime. `daemon` and
-top-level `status` describe the selected installation instead. An explicit
-`--channel` constrains both to that channel.
+### Command scope
 
-`open` and MCP's `show_notebook` launch the Desktop installation that owns the
-selected runtime endpoint. Unknown custom endpoints cannot be handed to Desktop;
-continue using them through CLI or MCP operations.
-In development, Desktop handoff requires the resolved worktree's own endpoint;
-a socket override alone cannot redirect an existing Desktop process. On Linux,
-strict handoff resolves the selected installation's AppImage directly, including
-custom installer prefixes, rather than trusting a launcher name on PATH.
-On macOS, a bundled MCP/CLI opens its own absolute app bundle, even when another
-copy has the same display name. Standalone callers resolve the channel's CLI
-bundle, then known Applications locations. An incomplete selected bundle is an
-error; strict nightly handoff never falls back to stable.
+- Run `--help` on any command for its argument and output contract.
+- Observation commands such as status and listing do not implicitly start
+  services.
+- Notebook listing and operations use the selected shared runtime. `daemon` and
+  top-level `status` describe the selected installation. An explicit
+  `--channel` constrains both to that channel.
 
-macOS `--cli` installs retain the signed app bundle under the installer prefix.
-Explicit `open` or `show_notebook` requests can launch Desktop from that bundle,
-including its normal runtime startup behavior. The installer's promise not to
-register or start a service applies to installation, not a later Desktop launch.
-Use MCP `--no-show` to omit Desktop opening.
+### Desktop handoff
 
-Pairing registers a machine; serving makes it available for attachment. Neither
-means a notebook kernel is ready or a cell has executed. Workstation persistence
-currently uses Linux user systemd; macOS workstation service management remains
-separate work. Hosted examples require a configured deployment and credentials;
-they do not imply a public hosted service.
+- `open` and MCP's `show_notebook` launch the Desktop installation owning the
+  selected runtime endpoint.
+- Unknown custom endpoints cannot be handed to Desktop; continue using them
+  through CLI or MCP commands.
+- In development, Desktop handoff requires the resolved worktree's own endpoint.
+  A socket override alone cannot redirect an existing Desktop process.
+- On Linux, strict handoff resolves the selected installation's AppImage
+  directly (including custom prefixes) instead of a launcher name on `PATH`.
+- On macOS, a bundled MCP/CLI opens its own absolute app bundle, even when
+  another copy shares the display name. Standalone callers resolve the
+  channel's CLI bundle first, then known Applications locations. An incomplete
+  selected bundle errors; strict Nightly handoff never falls back to Stable.
+- macOS `--cli` installs keep the signed app bundle under the installer prefix.
+  Explicit `open` or `show_notebook` calls can launch Desktop from that bundle
+  with its normal runtime startup. The installer's promise not to register or
+  start a service applies to installation only, not a later Desktop launch. Use
+  MCP `--no-show` to omit Desktop opening.
+
+### Workstations
+
+- Pairing registers a machine; serving makes it available for attachment.
+  Neither means a notebook kernel is ready or a cell has executed.
+- Workstation persistence currently uses Linux user systemd. macOS workstation
+  service management is not yet supported.
+- Hosted examples require a configured deployment and credentials; they do not
+  imply a public hosted service.
 
 ## MCP
 
@@ -159,18 +165,14 @@ Register this stdio command with an MCP client:
 nteract mcp
 ```
 
-`--no-show` omits the Desktop-opening tool. `--socket PATH` selects an existing
-explicit local endpoint and does not authorize creating a second runtime with
-partially shared state.
-
-The command runs the existing resilient supervisor, which restarts its internal
-worker and preserves the notebook target handoff. Protocol traffic uses stdout;
-diagnostics use stderr. The hidden worker is an implementation detail, not the
-command to put in client configurations.
-
-Existing `nteract-mcp` registrations and `runt mcp` invocations remain compatible.
-The former remains supervised; the latter retains its direct-worker behavior.
-There is no need to rewrite existing integrations during installation.
+- `--no-show` omits the Desktop-opening tool.
+- `--socket PATH` selects an existing explicit local endpoint. It does not
+  authorize creating a second runtime with partially shared state.
+- `nteract mcp` runs the resilient supervisor, which restarts its internal
+  worker and preserves notebook target handoff. Protocol traffic uses stdout;
+  diagnostics use stderr. Do not configure the hidden worker directly.
+- Existing `nteract-mcp` registrations (supervised) and `runt mcp` invocations
+  (direct worker) remain compatible without rewriting client configs.
 
 ## Runtime dependency and startup
 
@@ -183,30 +185,33 @@ There is no need to rewrite existing integrations during installation.
 | `cloud open` through the Desktop-style bridge | Yes |
 | Workstation pairing or serving | No |
 
-The `runtimed` executable includes local daemon, workstation agent, and execution
-agent entry points. Needing that executable is different from needing its local
-daemon service. Local and hosted execution agents already share the same kernel
-execution loop.
+The `runtimed` executable bundles the local daemon, workstation agent, and
+execution agent entry points. Needing that executable does not mean you need
+its local daemon service. Local and hosted execution agents share the same
+kernel execution loop.
 
-Canonical notebook operations prefer sharing an existing compatible runtime.
-Explicit channel, socket, and worktree selections constrain discovery. A
-compatible response is checked using wire and semantic API versions; matching
-build hashes are not required for ordinary admission.
+### Discovery and admission
 
-For programmatic CLI and MCP connections, only a definitely absent endpoint
-permits lazy startup. Permission errors,
-timeouts, unknown protocol responses, and incompatible runtimes produce errors
-without repair, replacement, or an automatic isolation fallback. A successful
-startup process exit is not enough: the endpoint must report a compatible live
-runtime. Existing worktree isolation remains available; changing only a socket
-does not isolate notebook storage, settings, or locks.
+- Canonical notebook operations prefer an existing compatible runtime. Explicit
+  channel, socket, and worktree selections constrain discovery.
+- Compatibility checks wire and semantic API versions; matching build hashes
+  are not required for ordinary admission.
+- Programmatic CLI and MCP connections permit lazy startup only when an
+  endpoint is definitely absent. Permission errors, timeouts, unknown protocol
+  responses, and incompatible runtimes fail without repair, replacement, or
+  automatic isolation fallback.
+- A zero exit code from startup is not enough: the endpoint must report a
+  compatible live runtime.
+- Worktree isolation remains available. Changing only a socket does not isolate
+  notebook storage, settings, or locks.
 
-Desktop also checks compatibility before its initial startup decision and leaves
-an observed incompatible or uncertain endpoint alone. Its existing first-install
-path still uses service installation: a runtime appearing after the absence
-check can race with that installation. Removing that replacement race requires
-separate service-lifecycle work; this CLI change does not make Desktop bootstrap
-an atomic, non-replacing operation.
+### Desktop bootstrap caveat
 
-Explicit runtime repair remains a separate operation governed by
+Desktop checks compatibility before its initial startup decision and leaves an
+observed incompatible or uncertain endpoint alone. Its first-install path still
+uses service installation, so a runtime appearing after the absence check can
+race with that installation. Desktop bootstrap is not an atomic, non-replacing
+operation.
+
+Explicit runtime repair is governed by
 [Daemon service repair and semantic compatibility](../adr/daemon-service-repair-and-semantic-compatibility.md).
