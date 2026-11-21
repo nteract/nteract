@@ -137,7 +137,9 @@ async function askDirectory(call) {
     return await call();
   } catch (error) {
     if (error instanceof DirectoryRateLimited)
-      throw new HttpError(429, "Too many searches. Wait a moment and try again");
+      throw Object.assign(new HttpError(429, "Too many searches. Wait a moment and try again"), {
+        ...(error.retryAfterMs && { retryAfterMs: error.retryAfterMs }),
+      });
     if (error instanceof DirectoryUnavailable || error instanceof DirectoryProtocolError)
       throw unavailable();
     throw error;
@@ -180,7 +182,11 @@ export async function resolveOrganizationMember(env, identity, args, now = Date.
 }
 
 /** `POST /api/organization-members` with `{ organization_id, query }`.
- * The caller is already authenticated. */
+ * The caller is already authenticated.
+ *
+ * Pages sets no limit of its own here: it has no shared rate limiter, so
+ * Kilo's per-deployment and per-searcher limits are the only ones. One person
+ * searching hard can use up the deployment's share. */
 export async function organizationMembersRoute(request, env, identity) {
   if (request.method !== "POST") throw new HttpError(405, "Use POST");
   const args = await readJson(request);
@@ -191,5 +197,21 @@ export async function organizationMembersRoute(request, env, identity) {
     Object.keys(args).some((key) => key !== "organization_id" && key !== "query")
   )
     throw new HttpError(400, "Send organization_id and query", "invalid_arguments");
-  return json(await searchOrganizationMembers(env, identity, args));
+  try {
+    return json(await searchOrganizationMembers(env, identity, args));
+  } catch (error) {
+    // The directory's own wait, passed on, so the dialog doesn't search
+    // again before the limit resets.
+    if (error?.status !== 429 || !error.retryAfterMs) throw error;
+    return Response.json(
+      { error: error.message, retry_after_ms: error.retryAfterMs },
+      {
+        status: 429,
+        headers: {
+          "cache-control": "no-store",
+          "retry-after": String(Math.ceil(error.retryAfterMs / 1000)),
+        },
+      },
+    );
+  }
 }

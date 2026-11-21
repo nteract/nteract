@@ -641,3 +641,59 @@ test("an owner grants a Project to a colleague Kilo confirms, and it reaches the
   assert.equal(unknown.status, 404);
   assert.equal(unknown.body.code, "member_not_found");
 });
+
+test("only the owner picks: an editor's pick is refused before the directory is asked", async (t) => {
+  const w = await pickWorld(t);
+  const { page_id } = (await w.createPage({ title: "Plans" })).body;
+  const page = pageAccess(w, page_id);
+  const shared = await hostAccess(w, "owner", page, {
+    action: "set_role",
+    principal: "user:kilo:member-person",
+    role: "editor",
+    expected_revision: 0,
+    nonce: w.key(),
+  });
+  assert.equal(shared.status, 200, JSON.stringify(shared.body));
+  const refused = await hostAccess(w, "member", page, {
+    action: "grant_organization_member",
+    organization_id: acme.id,
+    member_id: "jesse-person",
+    role: "viewer",
+    expected_revision: shared.body.access.revision,
+    nonce: w.key(),
+  });
+  assert.equal(refused.status, 403);
+  assert.equal(w.kilo.memberCalls().length, 0);
+});
+
+test("Kilo's Retry-After on a 429 reaches the dialog", async (t) => {
+  const limited = kiloDirectory(directoryEnv, {
+    fetcher: async () =>
+      new Response(JSON.stringify({ error: "RATE_LIMITED" }), {
+        status: 429,
+        headers: { "retry-after": "30" },
+      }),
+  });
+  await assert.rejects(limited.search({ ...searcher, query: "jes" }), (error) => {
+    assert.ok(error instanceof DirectoryRateLimited);
+    assert.equal(error.retryAfterMs, 30_000);
+    return true;
+  });
+  const { kilo, cookie, env } = await signedIn(t);
+  kilo.respondMembers((req, res) =>
+    res
+      .writeHead(429, { "content-type": "application/json", "retry-after": "12" })
+      .end(JSON.stringify({ error: "RATE_LIMITED" })),
+  );
+  const response = await worker.fetch(
+    new Request(new URL("/api/organization-members", origin), {
+      method: "POST",
+      headers: { cookie, origin, "content-type": "application/json" },
+      body: JSON.stringify({ organization_id: acme.id, query: "jes" }),
+    }),
+    env,
+  );
+  assert.equal(response.status, 429);
+  assert.equal(response.headers.get("retry-after"), "12");
+  assert.equal((await response.json()).retry_after_ms, 12_000);
+});

@@ -1598,14 +1598,17 @@ the same evidence in `kilo_memberships` (`kilo_membership_schema`). This
 build runs that table's migrations first, so it exists in its last shape on
 every database, and the first `pages_organization_schema` migration copies its
 rows as provider `kilo`. Evidence a person holds keeps counting across the
-deploy. The copy never replaces a newer row, and an older build still
-running reads and writes only `kilo_memberships`, which the copy leaves as it
-is. A row an older isolate writes after the copy reaches the new table at that
-person's next exchange. A later build may drop `kilo_memberships` and
-`kilo_membership_schema` once every deployment has run this build for longer
-than the evidence lasts (8 hours); after that the table holds nothing that
-counts. A deployment that jumps past this build still runs the copy before
-the drop.
+deploy. The copy never replaces a newer row. Each write also goes to
+`kilo_memberships` (organizations and `verified_at_ms`, never the
+credential) under the statement earlier builds use, so a build rolled back to
+reads current evidence: someone removed from an organization stays removed.
+An older isolate still running reads and writes only `kilo_memberships`; a
+row it writes after the copy reaches the new table at that person's next
+exchange through this build, and until then the new table keeps the answer
+before it, for at most the evidence's 8 hours. The release after this one
+has run on every deployment for longer than 8 hours stops the second write
+and drops `kilo_memberships` and `kilo_membership_schema`. A deployment that
+jumps past this build still runs the copy before the drop.
 
 Kilo's answer may also carry `member_search_proof`: a token Kilo signs that
 names the person and this deployment's audience, good for 8 hours. It is the
@@ -1618,7 +1621,12 @@ counts, and the Kilo adapter sends it to Kilo's
 never reaches a response, an identity, a cache or a log line. A Kilo that
 sends no proof leaves the column empty, and the share dialog offers only email
 invitations. Kilo answers that route with 503 until its rate-limit rules
-exist; Pages reads that as search being unavailable and hides the picker.
+exist, and on its own outages; Pages answers that search with a retryable 503
+`member_search_unavailable`, and the picker stays and tries the next query.
+Pages sets no search limit of its own: it has no shared rate limiter, so
+Kilo's per-deployment and per-searcher limits are the only ones, and one
+person searching hard can use up the deployment's share. A 429 from Kilo
+reaches the browser with its `Retry-After`.
 
 A sign-in whose write fails gets the retryable failure page (503,
 `membership_unrecorded`) and no session. An agent request on a token answer

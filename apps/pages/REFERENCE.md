@@ -1479,9 +1479,9 @@ plain member row named as the directory names it: the same grant `set_role` make
 stays when the person leaves the organization. Nothing the browser sends about
 the person is granted or stored. Both calls need the owner's organization lease
 and the directory credential their newest exchange carried
-([Kilo organizations](DEPLOYMENT.md#kilo-organizations)). Without one, or
-when the directory can't answer, the picker is hidden and email invitations
-work as before. A pick the directory no longer confirms is refused with 404
+([Kilo organizations](DEPLOYMENT.md#kilo-organizations)). Without one the
+picker is hidden and email invitations work as before; when the directory
+can't answer, that search fails and the next one tries again. A pick the directory no longer confirms is refused with 404
 `member_not_found`; a search it can't run answers
 `member_search_unavailable`. The MCP sharing
 tools don't offer the picker.

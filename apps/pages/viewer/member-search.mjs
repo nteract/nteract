@@ -28,7 +28,8 @@ export const MEMBER_SEARCH_DEBOUNCE_MS = 250;
 export const MIN_MEMBER_QUERY = 2;
 export const MAX_MEMBER_QUERY = 100;
 
-/** Search can't run on this deployment now; the dialog hides the picker. */
+/** The directory couldn't answer: a 503, retryable, or a 404 where the
+ * deployment has no organization search. */
 const UNAVAILABLE = "member_search_unavailable";
 /** The owner's sign-in no longer proves the organization or carries a proof. */
 const PROOF_REQUIRED = "organization_proof_required";
@@ -49,11 +50,13 @@ const same = (state, event) =>
  * - `searching`: the host is asked about the query.
  * - `results`: `members` for the query, possibly none.
  * - `failed`: this search failed; typing again searches again. `rateLimited`
- *   when the host asked to slow down.
+ *   when the host asked to slow down, `unavailable` when the directory
+ *   couldn't answer (a 503: an outage, a timeout, or rules not yet in place).
  * - `signin`: the owner must sign in again before searching this
  *   organization. Typing again tries again, since another tab may have.
- * - `unavailable`: search can't run here. Final: the dialog hides the picker
- *   and email invites stay.
+ * - `unavailable`: this deployment has no organization search (a 404).
+ *   Final: the dialog hides the picker and email invites stay. A deployment
+ *   whose sign-in carried no directory credential never shows the picker.
  *
  * Events: `typed` (`organizationId`, `query`), `started`, `answered`
  * (`members`) and `failed` (`error`), each naming the search it belongs to,
@@ -87,10 +90,15 @@ export function memberSearchTransition(state, event) {
     case "failed": {
       if (!same(state, event) || state.name !== "searching") return state;
       const { error } = event;
-      if (error?.code === UNAVAILABLE || error?.status === 404) return { name: "unavailable" };
+      if (error?.status === 404) return { name: "unavailable" };
       const base = { organizationId: state.organizationId, query: state.query };
       if (error?.code === PROOF_REQUIRED) return { name: "signin", ...base };
-      return { name: "failed", ...base, rateLimited: error?.status === 429 };
+      return {
+        name: "failed",
+        ...base,
+        rateLimited: error?.status === 429,
+        unavailable: error?.code === UNAVAILABLE,
+      };
     }
     case "reset":
       return MEMBER_SEARCH_IDLE;

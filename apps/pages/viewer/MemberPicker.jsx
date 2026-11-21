@@ -44,7 +44,9 @@ export function memberSearchStatus(state, organizationName) {
   if (state.name === "failed")
     return state.rateLimited
       ? "Too many searches. Wait a moment, then keep typing."
-      : "Search failed. Keep typing to try again.";
+      : state.unavailable
+        ? `Searching ${organizationName} isn't available right now. Keep typing to try again, or invite by email.`
+        : "Search failed. Keep typing to try again.";
   if (state.name === "signin")
     return `Sign in again to search ${organizationName}. Then keep typing.`;
   return "";
@@ -57,10 +59,11 @@ export function memberSearchStatus(state, organizationName) {
  * organization the Page or Project is shared with) when the owner belongs to
  * it. `onGrant({ organization_id,
  * member_id, role })` sends the sharing change and resolves true once it is
- * applied; the host asks Kilo again before granting, so the name shown here
- * is never what is granted. `busy` disables picking while another change
- * runs. Renders nothing once search turns out to be unavailable, so sharing
- * by email is what remains. `search` replaces the host request in tests.
+ * applied; the host asks the directory again before granting, so the name
+ * shown here is never what is granted. `busy` disables picking while another
+ * change runs. Renders nothing once the deployment turns out to have no
+ * organization search, so sharing by email is what remains; a directory
+ * outage only fails that search. `search` replaces the host request in tests.
  */
 export function MemberPicker({ organizations, preferred, busy, onGrant, search }) {
   const id = useId();

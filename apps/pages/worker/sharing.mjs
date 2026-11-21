@@ -9,7 +9,7 @@ import { organizationLeases, organizationProof } from "./organization-membership
 import { configuredOrganizationAccess } from "./organization-access.mjs";
 import { memberSearchAvailable } from "./organization-members.mjs";
 
-/** Grants the Kilo account an organization search picked
+/** Grants the account an organization search picked
  * (organization-members.mjs): `{ organization_id, member_id, role }`. */
 export const GRANT_ORGANIZATION_MEMBER = "grant_organization_member";
 
@@ -54,7 +54,7 @@ export async function organizationSharing(metadata, identity, env, now = Date.no
     organizationOptions,
     organizationProof: proof,
     // Whether the owner can pick a member of one of organizationOptions by
-    // name now. False with a Kilo that sends no search proof.
+    // name now. False when the directory sent no credential.
     memberSearch:
       organizationOptions.length > 0 && (await memberSearchAvailable(env, identity, now)),
     organizationAccess: organization
@@ -219,10 +219,10 @@ async function organizationGrant(acl, identity, args, env, now) {
 }
 
 /** The ACL after granting `picked` the role `args` asks for. It is
- * `set_role` for the principal Kilo confirmed, plus the name Kilo sent on the
- * member row; nothing else from the pick is kept, so the grant doesn't end
- * when the person leaves the organization. Removing or changing a picked
- * member afterwards is `set_role`. */
+ * `set_role` for the principal the directory confirmed, plus the name it
+ * sent on the member row; nothing else from the pick is kept, so the grant
+ * doesn't end when the person leaves the organization. Removing or changing a
+ * picked member afterwards is `set_role`. */
 function pickGrant(metadata, identity, args, picked, now) {
   checkPick(args);
   // The host resolves every pick it hasn't recorded before it gets here.
@@ -249,24 +249,28 @@ const pageReceiptKey = async (args, identity) =>
   (await operationKey(args, identity, "page-access")).replace("host/operation/", "");
 
 /** Whether `args` grants an organization pick that `metadata` holds no receipt
- * for, so the host must resolve the pick with Kilo before proposing it. A
- * retry of a recorded grant replays its receipt without asking Kilo again. */
-export async function pickNeedsResolving(metadata, identity, args) {
+ * for, so the host must resolve the pick with the directory before proposing
+ * it. A retry of a recorded grant replays its receipt without asking again.
+ * Only the owner may pick: anyone else is refused here, before the directory
+ * is asked, as proposeSharingMutation would refuse them after. */
+export async function pickNeedsResolving(metadata, identity, args, now = Date.now()) {
   if (args?.action !== GRANT_ORGANIZATION_MEMBER) return false;
+  if (!pageAccess(metadata, identity, { now }).canManageAccess)
+    throw new HttpError(403, "Only the owner can manage sharing");
   checkPick(args);
   return !metadata.acl?.receipts?.[await pageReceiptKey(args, identity)];
 }
 
-/** Refuses a pick whose role can't be granted, before Kilo is asked. */
+/** Refuses a pick whose role can't be granted, before the directory is asked. */
 export function checkPick(args) {
   if (!roleValid(args.role)) throw new HttpError(400, "Choose Can view, Can comment or Can edit");
 }
 
 /** One sharing change to a Page or Project record. `picked`, for
- * `grant_organization_member`, is the account Kilo confirmed for the pick,
- * `{ principal, displayName }` from resolveOrganizationMember: the host
- * resolves it before reading the record it passes here, so no record is held
- * across a call to Kilo. */
+ * `grant_organization_member`, is the account the directory confirmed for
+ * the pick, `{ principal, displayName }` from resolveOrganizationMember: the
+ * host resolves it before reading the record it passes here, so no record is
+ * held across a call to the directory. */
 export async function proposeSharingMutation(
   metadata,
   identity,

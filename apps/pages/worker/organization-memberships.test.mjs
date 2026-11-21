@@ -818,3 +818,24 @@ test("only the browser session reads the account menu: a bearer credential gets 
     }
   }
 });
+
+test("each write also lands in the legacy table, without the credential, so a rollback reads current evidence", async (t) => {
+  const { env } = await fixture(t);
+  const at = Date.now() - 60_000;
+  await legacyDatabase(env, [["user:kilo:removed", [sentinel], at]]);
+  const legacy = async () => ({
+    ...(await env.DB.prepare(
+      "SELECT organizations, verified_at_ms FROM kilo_memberships WHERE principal = ?",
+    )
+      .bind("user:kilo:removed")
+      .first()),
+  });
+  // Removed from the organization: this build records [] in both tables.
+  await recordOrganizationMemberships(env, "user:kilo:removed", [], at + 1000, "credential-x");
+  assert.deepEqual(await legacy(), { organizations: "[]", verified_at_ms: at + 1000 });
+  assert.deepEqual(await columnsOf(env, "kilo_memberships"), LEGACY_COLUMNS);
+  // The same fence: an earlier answer changes neither.
+  await recordOrganizationMemberships(env, "user:kilo:removed", [sentinel], at + 500);
+  assert.deepEqual(await legacy(), { organizations: "[]", verified_at_ms: at + 1000 });
+  assert.deepEqual((await membershipRecord(env, "user:kilo:removed")).organizations, []);
+});

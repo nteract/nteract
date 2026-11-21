@@ -70,6 +70,14 @@ async function readJson(response) {
   }
 }
 
+/** Kilo's `Retry-After`, as whole seconds, in milliseconds, at most an hour;
+ * undefined for anything else. */
+function retryAfterMs(header) {
+  if (!/^\d{1,4}$/.test(header?.trim() ?? "")) return undefined;
+  const seconds = Number(header.trim());
+  return seconds > 0 ? Math.min(seconds, 3600) * 1000 : undefined;
+}
+
 function imageUrl(value) {
   if (typeof value !== "string" || !value || value.length > MAX_IMAGE_URL_LENGTH) return null;
   try {
@@ -129,7 +137,7 @@ async function ask(fetcher, { appUrl, secret, body, timeoutMs = DEFAULT_TIMEOUT_
   const { status } = response;
   if (status === 429) {
     await discard(response);
-    throw new DirectoryRateLimited();
+    throw new DirectoryRateLimited(retryAfterMs(response.headers.get("retry-after")));
   }
   if (status >= 500) {
     await discard(response);

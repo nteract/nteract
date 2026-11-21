@@ -42,8 +42,10 @@
  * took the directory's name. Its migrations still run first, so every
  * database has that table in its last shape, and the first migration here
  * copies its rows: evidence a person holds keeps counting across the deploy.
- * A later build drops it once every deployment has run this one for longer
- * than the evidence lasts.
+ * Each Kilo write also goes to that table, without the credential, so a
+ * build rolled back to reads current evidence. A later build stops that
+ * write and drops the table once every deployment has run this one for
+ * longer than the evidence lasts.
  *
  * No organization id or name, and no credential, reaches a log line from
  * here. */
@@ -95,9 +97,10 @@ const LEGACY_MIGRATIONS = Object.freeze([
 
 const MIGRATIONS = Object.freeze([
   // Every statement is safe to run again, and an older build keeps reading
-  // and writing `kilo_memberships`, which this leaves as it is. A row an
-  // older isolate writes after the copy reaches this table at that person's
-  // next exchange.
+  // and writing `kilo_memberships`, which this copies from and never
+  // rewrites. A row an older isolate writes after the copy reaches this
+  // table at that person's next exchange through this build; until then this
+  // table keeps the answer before it, for at most the evidence's lifetime.
   Object.freeze({
     version: 1,
     name: "organization_memberships",
@@ -282,6 +285,28 @@ async function write(env, principal, provider, organizations, sentAt, credential
       Math.floor(sentAt),
       typeof credential === "string" && credential ? credential : null,
     )
+    .run();
+  if (provider === "kilo") await writeLegacy(env, principal, stored, sentAt);
+}
+
+/** The same evidence, without the credential, in `kilo_memberships`, under
+ * the statement earlier builds use: a build rolled back to, or an older
+ * isolate still running, reads current evidence there, so removing someone
+ * from an organization holds across a rollback. A later build stops this
+ * write when it drops the table. */
+async function writeLegacy(env, principal, stored, sentAt) {
+  await env.DB.prepare(
+    `INSERT INTO kilo_memberships (principal, organizations, verified_at_ms) VALUES (?, ?, ?)
+    ON CONFLICT (principal) DO UPDATE SET
+      organizations = CASE
+        WHEN excluded.verified_at_ms > kilo_memberships.verified_at_ms THEN excluded.organizations
+        WHEN excluded.organizations = kilo_memberships.organizations THEN kilo_memberships.organizations
+        ELSE '[]'
+      END,
+      verified_at_ms = excluded.verified_at_ms
+    WHERE excluded.verified_at_ms >= kilo_memberships.verified_at_ms`,
+  )
+    .bind(principal, stored, Math.floor(sentAt))
     .run();
 }
 

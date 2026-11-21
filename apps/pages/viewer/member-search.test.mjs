@@ -22,7 +22,13 @@ const states = {
   waiting: { name: "waiting", organizationId: org, query: "jes" },
   searching: { name: "searching", organizationId: org, query: "jes" },
   results: { name: "results", organizationId: org, query: "jes", members: [shown] },
-  failed: { name: "failed", organizationId: org, query: "jes", rateLimited: false },
+  failed: {
+    name: "failed",
+    organizationId: org,
+    query: "jes",
+    rateLimited: false,
+    unavailable: false,
+  },
   signin: { name: "signin", organizationId: org, query: "jes" },
   unavailable: { name: "unavailable" },
 };
@@ -71,7 +77,7 @@ test("a search starts only from the query waiting, and is answered only for that
   );
 });
 
-test("a failure says whether to hide the picker, sign in again, or slow down", () => {
+test("a failure says whether to hide the picker, sign in again, slow down, or retry", () => {
   const failed = (error) =>
     memberSearchTransition(states.searching, {
       type: "failed",
@@ -79,16 +85,28 @@ test("a failure says whether to hide the picker, sign in again, or slow down", (
       query: "jes",
       error,
     });
-  assert.deepEqual(failed({ status: 503, code: "member_search_unavailable" }), {
-    name: "unavailable",
-  });
+  // No organization search on this deployment: final.
   assert.deepEqual(failed({ status: 404, code: "member_search_unavailable" }), {
     name: "unavailable",
   });
   assert.deepEqual(failed({ status: 404 }), { name: "unavailable" });
+  // A directory outage fails this search only.
+  assert.deepEqual(failed({ status: 503, code: "member_search_unavailable", retryable: true }), {
+    ...states.failed,
+    unavailable: true,
+  });
   assert.equal(failed({ status: 403, code: "organization_proof_required" }).name, "signin");
   assert.deepEqual(failed({ status: 429 }), { ...states.failed, rateLimited: true });
   assert.deepEqual(failed(new TypeError("Failed to fetch")), states.failed);
+});
+
+test("after an outage the next query searches again; after a 404 nothing does", () => {
+  const outage = { ...states.failed, unavailable: true };
+  const typed = (state, query) =>
+    memberSearchTransition(state, { type: "typed", organizationId: org, query });
+  assert.equal(typed(outage, "jes").name, "waiting", "the same query retries");
+  assert.equal(typed(outage, "jess").name, "waiting");
+  assert.equal(typed(states.unavailable, "jess"), states.unavailable);
 });
 
 test("reset clears any live state; nothing leaves unavailable", () => {
@@ -277,7 +295,41 @@ test("a failed search shows as failed, and typing again retries", () => {
   ]);
 });
 
-test("an unavailable search is final: typing afterwards searches nothing", () => {
+test("an outage fails one search and the next query recovers", () => {
+  const scheduler = new TestScheduler((actual, expected) => assert.deepEqual(actual, expected));
+  const names = [];
+  let calls = 0;
+  scheduler.run(({ cold, flush }) => {
+    const search = () =>
+      ++calls === 1
+        ? throwError(() =>
+            Object.assign(Error("unavailable"), {
+              status: 503,
+              code: "member_search_unavailable",
+              retryable: true,
+            }),
+          )
+        : of({ members: [] });
+    const picker = createMemberSearch({ search, debounceMs: 25, scheduler });
+    picker.state$.subscribe((state) => names.push(state.name));
+    cold("0ms a").subscribe(() => picker.type(org, "jes"));
+    cold("50ms a").subscribe(() => picker.type(org, "jess"));
+    flush();
+    picker.dispose();
+  });
+  assert.equal(calls, 2);
+  assert.deepEqual(names, [
+    "idle",
+    "waiting",
+    "searching",
+    "failed",
+    "waiting",
+    "searching",
+    "results",
+  ]);
+});
+
+test("a deployment without organization search is final: typing afterwards searches nothing", () => {
   const scheduler = new TestScheduler((actual, expected) => assert.deepEqual(actual, expected));
   let calls = 0;
   let last;
@@ -285,7 +337,7 @@ test("an unavailable search is final: typing afterwards searches nothing", () =>
     const search = () => {
       calls++;
       return throwError(() =>
-        Object.assign(Error("unavailable"), { status: 503, code: "member_search_unavailable" }),
+        Object.assign(Error("unavailable"), { status: 404, code: "member_search_unavailable" }),
       );
     };
     const picker = createMemberSearch({ search, debounceMs: 25, scheduler });

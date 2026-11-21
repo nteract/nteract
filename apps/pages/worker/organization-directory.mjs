@@ -41,11 +41,13 @@ export class DirectoryUnavailable extends Error {
   }
 }
 
-/** The directory is limiting this deployment's or this person's requests. */
+/** The directory is limiting this deployment's or this person's requests.
+ * `retryAfterMs` is how long it asked to wait, when it said. */
 export class DirectoryRateLimited extends Error {
-  constructor() {
+  constructor(retryAfterMs) {
     super("The organization directory is limiting requests");
     this.name = "DirectoryRateLimited";
+    if (Number.isSafeInteger(retryAfterMs) && retryAfterMs > 0) this.retryAfterMs = retryAfterMs;
   }
 }
 

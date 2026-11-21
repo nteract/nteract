@@ -746,22 +746,39 @@ test("an owner finds a colleague by name and adds them; the grant names only the
   assert.equal(pickerInput(f.container).value, "", "a grant clears the search");
 });
 
-test("a search the host can't run hides the picker and leaves email invites", async (t) => {
+test("an outage fails one search and keeps the picker; no organization search hides it", async (t) => {
+  let answer = 503;
   const f = await fixture(t, async (url) => {
     if (String(url).startsWith("/api/organization-members"))
-      return json(
-        {
-          error: "Searching your organization isn't available right now",
-          code: "member_search_unavailable",
-          retryable: true,
-        },
-        503,
-      );
+      return answer === 503
+        ? json(
+            {
+              error: "Searching your organization isn't available right now",
+              code: "member_search_unavailable",
+              retryable: true,
+            },
+            503,
+          )
+        : answer === 200
+          ? json({ members: [{ id: "jesse-person", name: "Jesse Doe", image_url: null }] })
+          : json(
+              { error: "Organization search isn't used here", code: "member_search_unavailable" },
+              404,
+            );
     return json({ ...organizationLedger(null), memberSearch: true });
   });
   await f.toggle();
   await flush();
   await typeName(f.container, "jes");
+  await afterPause();
+  assert.ok(f.container.querySelector(".member-picker"), "an outage keeps the picker");
+  assert.match(f.container.textContent, /isn't available right now\. Keep typing to try again/);
+  answer = 200;
+  await typeName(f.container, "jess");
+  await afterPause();
+  assert.equal(f.container.querySelectorAll(".member-picker-results button").length, 1);
+  answer = 404;
+  await typeName(f.container, "jesse");
   await afterPause();
   assert.equal(f.container.querySelector(".member-picker"), null);
   assert.ok(f.container.querySelector('input[type="email"]'));
