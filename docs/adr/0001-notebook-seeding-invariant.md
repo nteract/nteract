@@ -1,130 +1,51 @@
 # ADR 0001: How a fresh notebook gets its starter cell
 
-- Status: Accepted
-- Date: 2026-06-02
-- Deciders: nteract maintainers
-- Supersedes the implicit invariant introduced in #3328
+**Status:** Accepted (2026-06-02). Implemented across `notebook-doc`, `runtimed`, and `runtimed-wasm`.
 
 ## Context
 
-A brand-new notebook should arrive with exactly one starter code cell. That cell must be created **once**, by the **host authority** (daemon for daemon-hosted notebooks, the in-browser wasm room host for cloud rooms), and we must never seed a notebook that already has content or that a user deliberately emptied.
+A brand-new notebook must start with exactly one empty code cell. The host authority — the daemon for daemon-hosted notebooks, or the in-browser WASM room host for cloud rooms — creates that cell once. Neither host may re-seed a notebook that already has content or that a user deliberately emptied.
 
-Today that decision is made by reading materialized projections of the document:
+Previously, the two hosts made that decision from materialized document projections and disagreed with each other:
 
 ```rust
-// crates/runtimed/src/notebook_sync_server/load.rs:1063
+// Previous daemon check (removed) — crates/runtimed/src/notebook_sync_server/load.rs:1063
 pub fn is_uninitialized_notebook_doc(doc: &NotebookDoc) -> bool {
     doc.cell_count() == 0 && doc.get_metadata_snapshot().is_none()
 }
 ```
 
-The cloud host uses a different, weaker test:
-
 ```rust
-// crates/runtimed-wasm/src/lib.rs — seed_initial_code_cell_if_empty
+// Previous cloud host check (removed) — crates/runtimed-wasm/src/lib.rs (seed_initial_code_cell_if_empty)
 if self.doc.cell_count() > 0 { return Ok(false); }
 ```
 
-### What the document model already knows
+Using `cell_count() == 0 && metadata.is_none()` as a proxy for history caused four problems:
 
-A notebook document is not an opaque blob. It has a precise, content-addressed notion of "new" that the seeding path does not use:
+1. **Snapshot inference instead of causal history.** "Uninitialized" means no one has edited the notebook yet. In a CRDT, a point-in-time projection is not equivalent to change-graph history.
+2. **Not convergence-safe.** `cell_count() == 0` reflects only arrived changes, so a peer can observe zero cells mid-sync. Safety relied on choreography (seeding under a daemon write lock before sync handoff), not on the predicate itself.
+3. **Undocumented cross-module coupling.** `metadata.is_none()` separated pristine notebooks from user-emptied ones only because `create_empty_notebook` always wrote metadata. Changing either module silently broke classification.
+4. **Host divergence.** Daemon and cloud evaluated different predicates, violating the goal of converging both hosts on one document model.
 
-- Every notebook boots from a **byte-identical frozen genesis**, `notebook_genesis_v5.am` (`crates/notebook-doc/src/lib.rs:85`), pinned to `SCHEMA_VERSION = 5` and authored by `SCHEMA_SEED_ACTOR = "nteract:notebook-schema:v5"`.
-- The genesis change hashes are computed and cached: `NotebookDoc::canonical_schema_seed_change_hashes()` (`lib.rs:2401`).
-- Authorization already keys on them: `is_canonical_schema_seed_change(actor, hash)` (`lib.rs:2421`) lets the seed actor converge canonical root objects, but only for the exact frozen hashes.
-- A freshly constructed doc (`new_inner`, `lib.rs:989`) is exactly: the frozen genesis (authored by `SCHEMA_SEED_ACTOR`) plus three identity puts, `notebook_id`, `runtime_state_doc_id`, and `comms_doc_id`, authored by the creating actor. Nothing else.
-- The heads / change-graph API is available: `get_heads()` (`lib.rs:362`), `get_heads_hex()`.
+Meanwhile, the document model already encodes genesis as a causal concept:
 
-So "genesis" is a first-class causal concept everywhere except the one place this ADR is about.
-
-## Problem
-
-`cell_count() == 0 && metadata.is_none()` is an **observational proxy** standing in for a fact about **history**. Four concrete problems:
-
-1. **It infers intent from a snapshot.** "Uninitialized" means *no one has done anything to this notebook yet* - a statement about the change graph. We reconstruct it from a point-in-time materialized view. In a CRDT those are not the same thing.
-2. **`cell_count() == 0` is not convergence-safe.** A materialized count reflects only what has arrived. A peer can observe zero cells transiently mid-sync, before changes land. The current code is correct only because the daemon seeds under a doc write lock *before* the sync handoff. The safety lives in that choreography, not in the invariant. The boolean reads as if it were self-sufficient; it is not.
-3. **`metadata.is_none()` depends on notebook creation always writing metadata.** It distinguishes "pristine" from "user emptied it" only because `create_empty_notebook` always writes metadata. That dependency between the two modules is undocumented; changing either side can cause the check to misclassify a notebook.
-4. **The hosts disagree.** Daemon: `cell_count == 0 && metadata.is_none()`. Cloud: `cell_count > 0`. There is no single definition of "uninitialized," which is exactly the kind of cloud-vs-desktop divergence we are trying to retire.
-
-## Forces
-
-A good answer should be:
-
-- **Convergence-safe** - never misfire on a transient empty view during sync.
-- **Monotonic** - once a notebook has been touched, it is never "new" again, including after a user deletes every cell.
-- **Single definition** - daemon and cloud host evaluate the same predicate.
-- **Double-seed proof** - combined with host authority, exactly one starter cell.
-- **Low blast radius** - avoid a schema-version bump if we can.
-- **Flexible** - keep the door open to varying the starter cell by context (runtime, settings, deps) later. Today it is always one empty code cell, but baking that in is a one-way door.
-
-## Options
-
-### A. Keep the proxy, unify the two hosts
-
-Make the cloud host use `cell_count == 0 && metadata.is_none()` too, so there is one definition.
-
-- **Pros:** smallest change; removes the daemon/cloud divergence.
-- **Cons:** keeps every problem above except (4). The invariant is still a materialized proxy with metadata coupling and no convergence story of its own. This does not address the actual objection.
-
-### B. Causal pristine-check (recommended)
-
-Define "uninitialized" against history, not projections:
-
-> A notebook is **pristine** iff its change graph contains nothing beyond the canonical schema seed and the notebook-identity scaffold - i.e. no change has ever touched the `cells` or `metadata` objects.
-
-Sketch:
-
-```rust
-pub fn is_pristine_notebook_doc(doc: &NotebookDoc) -> bool {
-    // Every change is either a canonical seed change, or the identity
-    // bootstrap (puts to notebook_id / runtime_state_doc_id / comms_doc_id only).
-    // Any change that touches `cells` or `metadata` => initialized, forever.
-}
-```
-
-- **Pros:**
-  - Monotonic and convergence-safe: history only grows, the seed hashes are fixed and shared, so no transient-empty misfire.
-  - One predicate for daemon and cloud (lives in `notebook-doc`, callable from both `runtimed` and `runtimed-wasm`).
-  - Subsumes the "user emptied it" case for free: an emptied notebook carries add + delete changes on `cells`, so it is non-pristine. No metadata proxy needed.
-  - No schema bump; uses machinery that already exists (`canonical_schema_seed_change_hashes`, `get_heads`).
-  - Preserves the freedom to vary the starter cell later (seeding stays an explicit, runtime-side step).
-- **Cons:**
-  - Must pin down the identity-scaffold boundary precisely: the identity puts are authored by the creating actor, not the seed actor, so "pristine" is "seed changes + at most the identity-only change," not "heads == seed heads." This is the one subtlety to nail in the plan (now resolved - see The predicate).
-  - More than an O(1) count, but the bound is small and concrete: the walk only runs on the metadata-absent path, where a pristine doc's `get_changes(&[])` is exactly two changes - the single seed change (`canonical_schema_seed_change_is_hash_bound` asserts `hashes.len() == 1`) plus the identity batch. So it is O(number of changes), ~2 for a fresh doc, with the `metadata.is_some()` fast-path covering the common already-seeded case. This small bound is the main thing that makes B win over D's O(1).
-
-### C. Seed the starter cell into genesis
-
-Bake one code cell into `notebook_genesis_v5.am`. A "new" notebook then already has a cell on load; delete the runtime seeding path entirely.
-
-- **Pros:** conceptually cleanest - the invariant disappears because there is nothing to decide; the starter cell is part of the schema, content-addressed, identical for every peer, so no seeding race can exist.
-- **Cons (decisive):**
-  - **Schema-version bump.** Changing the genesis bytes changes `canonical_schema_seed_change_hashes()`, which feeds `is_canonical_schema_seed_change()` authorization. That is a v5 -> v6 change with a migration/compat path for every existing v5 document. Heavy and ramified.
-  - **Freezes the starter cell.** It can no longer vary by runtime/settings/deps without per-variant genesis assets. A one-way door.
-  - **Shared initial cell id** across all notebooks (doc-scoped, so not a correctness bug, but a property to reason about for templates/publishing).
-  - Removes the ability to represent a genuinely 0-cell *initial* state (a deliberately emptied notebook is still reachable by deletion).
-
-### D. Explicit `initialized` marker
-
-When the host seeds, write a marker (e.g. `ROOT.initialized = true`) in the same change as the cell. Pristine-check becomes `!initialized`.
-
-- **Pros:** O(1) read; records the fact we care about directly, instead of inferring it; convergent under host-authority single-writer.
-- **Cons:** still a stored proxy whose truth depends on a writer doing the right thing (a buggy client could set or clear it); adds a field to maintain; ignores the genesis machinery that already encodes "newness" immutably. It is a better proxy than cell-count, but it is still a proxy.
+- Every notebook boots from the frozen, byte-identical `notebook_genesis_v5.am` (`crates/notebook-doc/src/lib.rs:85`), pinned to `SCHEMA_VERSION = 5` and authored by `SCHEMA_SEED_ACTOR = "nteract:notebook-schema:v5"`.
+- `NotebookDoc::canonical_schema_seed_change_hashes()` (`lib.rs:2401`) computes and caches the genesis hash (`canonical_schema_seed_change_is_hash_bound` asserts `hashes.len() == 1`).
+- Authorization checks `is_canonical_schema_seed_change(actor, hash)` (`lib.rs:2421`) so the seed actor converges canonical root objects only for exact frozen hashes.
+- A newly created doc (`new_inner`, `lib.rs:989`) contains only the frozen genesis plus three identity puts at `ROOT` (`notebook_id`, `runtime_state_doc_id`, `comms_doc_id`) authored by the creating actor.
+- Change-graph APIs (`get_heads()` at `lib.rs:362`, `get_heads_hex()`) are already available.
 
 ## Decision
 
-**Recommended: Option B (causal pristine-check).**
+Define "uninitialized" directly from causal history in `NotebookDoc::is_pristine` inside `crates/notebook-doc`. Both `runtimed` and `runtimed-wasm` call this single predicate; `is_uninitialized_notebook_doc` and the cloud `cell_count > 0` guard are removed.
 
-It is the option that actually answers the objection - it replaces an inferred snapshot proxy with a fact derived from immutable history - while staying convergence-safe, giving daemon and cloud a single shared predicate, and avoiding a schema bump. It also keeps starter-cell flexibility open, which C forecloses.
-
-**D is the pragmatic fallback** if, during planning, the identity-scaffold boundary in B proves fussier than expected or the history walk is unwelcome on a hot path: a host-authority-written `initialized` marker is still a clear improvement over the current proxy and is convergent under single-writer seeding.
-
-**C is rejected** for now: the schema-version bump and the loss of runtime-varying starter cells outweigh its conceptual tidiness. Revisit only if we are bumping the schema for other reasons.
-
-**A is insufficient:** unifying the hosts is necessary regardless, but on its own it leaves the invariant unprincipled. Whichever of B/D we pick, the predicate moves into `notebook-doc` so both hosts share it - that absorbs A.
+> A notebook is **pristine** iff its change graph contains only the canonical schema seed and the creation scaffold — no change has ever touched `cells`, other `metadata` keys, or overwritten or deleted an identity key.
 
 ### The predicate
 
-The implementation plan resolved B's open boundary against the pinned automerge fork. A fresh document - daemon **or** cloud - is built by `NotebookDoc::new_with_actor`, which is the frozen genesis plus exactly three ROOT puts (`notebook_id`, `runtime_state_doc_id`, `comms_doc_id`); the cloud room host's "schema label" argument is the actor, not a ROOT key, so both hosts produce the identical scaffold. The daemon's untitled/ephemeral room creation additionally writes `metadata.ephemeral` before the seeding check runs, so the allowlist admits that single metadata put as creation scaffold (the export path deliberately excludes it so it does not persist). That makes the allowlist exact and host-agnostic. The op types come from the `automerge::legacy` module (that is what `change.decode().operations` yields), and the gate matches on `op.action` and `op.pred` as well as `obj`/`key`, so that a *delete* or *overwrite* of an identity key after creation - which is post-creation history, not the creation scaffold - is correctly rejected:
+Both daemon and cloud rooms construct fresh documents through `NotebookDoc::new_with_actor`. The cloud room host's schema label sets the actor, not a `ROOT` key, so both hosts produce identical identity puts (`notebook_id`, `runtime_state_doc_id`, `comms_doc_id`). For untitled or ephemeral rooms, the daemon also stamps `metadata.ephemeral` before seeding runs (export excludes it so it does not persist).
+
+Because `change.decode().operations` yields `automerge::legacy` op types, the predicate inspects `op.action`, `op.pred`, `op.obj`, and `op.key`. Requiring `OpType::Put(_)` with empty `op.pred` rejects any post-creation delete or overwrite of an identity key:
 
 ```rust
 use automerge::legacy::{Key, ObjectId, OpType}; // decode() yields legacy ops
@@ -161,27 +82,43 @@ pub fn is_pristine(&mut self) -> bool {
 }
 ```
 
-Any cell insert (op on the `cells` object), metadata write, or post-creation identity edit fails the gate, so a notebook a user emptied - which carries add + delete history - is correctly never re-seeded, with no metadata coupling.
+Any cell insert, other metadata write, or post-creation identity edit fails the check. A notebook a user emptied carries add-and-delete history on `cells`, so it is never re-seeded and needs no metadata proxy.
 
-**On the metadata fast-path:** `get_metadata_snapshot()` returns `Some` only for *populated* metadata (the genesis-created empty `metadata` Map yields `None`), so the short-circuit can never misfire on a fresh doc. But it is a pure optimization, not the soundness mechanism for the metadata case: a metadata mutation that leaves no populated snapshot is caught by the **history walk** (its op targets the `metadata` object, not a ROOT identity key), not by the fast-path. Skipping the fast-path would change no verdict, only cost.
+### Fast-path, cost, and constructor invariants
 
-**On the coupling:** B removes the unstated "`create_empty_notebook` always writes metadata" coupling, but in its place the allowlist depends on a new invariant - *every creation path writes nothing to ROOT but the identity puts*. That is true today (verified across `new`/`new_with_encoding`/`new_with_actor`/`RoomHostHandle::create_empty`), and unlike the old coupling it is local to one crate and enforced by a constructor-guard test, so a future ROOT scaffolding key trips CI instead of silently shipping a notebook that never seeds.
+- **Metadata fast-path is an optimization only.** `get_metadata_snapshot()` returns `Some` only for populated metadata (the empty genesis `metadata` map returns `None`), so it never misfires on a fresh doc. A metadata mutation that leaves no populated snapshot is still caught by the history walk. Removing the fast-path changes cost, not verdicts.
+- **Bounded walk cost.** The walk runs only on the metadata-absent path and scales as O(number of changes). A fresh doc has two changes: the single canonical seed change plus the identity batch.
+- **Local constructor invariant.** Removing the cross-module `create_empty_notebook` coupling introduces one crate-local invariant: every creation path (`new`, `new_with_encoding`, `new_with_actor`, `RoomHostHandle::create_empty`) writes only the allowed identity puts to `ROOT`. A constructor-guard unit test enforces this in CI so any new `ROOT` key fails fast instead of silently breaking seeding.
+- **Test coverage.** Unit tests cover fresh docs, metadata-stamped docs, one-cell docs, emptied-after-content docs, overwritten or deleted identity keys, and every fresh constructor. An integration test empties a notebook, reconnects, and asserts zero cells remain.
 
 ## Consequences
 
-- The pristine-check moves into `crates/notebook-doc` so `runtimed` and `runtimed-wasm` call one definition. This is the cloud-converges-on-desktop direction applied to the document model.
-- Host authority (daemon under the doc write lock; wasm room host before handoff) remains the single-writer guarantee. The new predicate makes the *decision* sound; host authority keeps the *write* singular. Both are needed.
-- `is_uninitialized_notebook_doc` and the cloud `cell_count > 0` guard are removed.
-- Existing notebooks are unaffected: any notebook with content or history is non-pristine under B, so nothing gets re-seeded on upgrade.
-- Implemented in 2026-06-02: `NotebookDoc::is_pristine` is the shared gate; `is_uninitialized_notebook_doc` and the cloud `cell_count > 0` guard are removed.
+- **One shared definition.** `runtimed` and `runtimed-wasm` call `NotebookDoc::is_pristine` directly with no reimplementation.
+- **Host authority still prevents double-seeding.** `is_pristine` makes the decision convergence-safe and monotonic; host authority (daemon under doc write lock; WASM room host before handoff) keeps the write singular.
+- **No schema bump and no migration.** Existing notebooks with content or history are non-pristine and are never re-seeded on upgrade.
+- **Starter-cell flexibility preserved.** Seeding stays a runtime-side step, so the starter cell can vary by runtime, settings, or dependencies later.
 
-## Resolved during planning
+## Rejected Alternatives
 
-1. **Exact pristine predicate** - settled: canonical seed hashes plus *initial* (`Put`, empty `pred`) identity puts to ROOT (`notebook_id`, `runtime_state_doc_id`, `comms_doc_id`) and the daemon's `ephemeral` metadata flag; any other op - including a delete or overwrite of an identity key - means initialized. See the predicate above.
-2. **Cost** - settled: O(number of changes), ~2 for a fresh doc, walked only on the metadata-absent path; the `metadata.is_some()` short-circuit is a pure optimization for the common already-seeded case, not the soundness mechanism (see The predicate).
-3. **Cloud parity** - settled: the predicate lives in `notebook-doc`; `runtimed` and `runtimed-wasm` both call `NotebookDoc::is_pristine`, no reimplementation.
-4. **Test surface** - settled: unit tests for fresh / metadata-stamped / one-cell / emptied-after-content / overwritten-or-deleted-identity-key / every-fresh-constructor, plus an integration test that empties a notebook, reconnects, and expects zero cells (the headline behavior, previously only covered indirectly).
+### A. Keep the projection proxy and unify both hosts
 
-## Still open
+Making the cloud host check `cell_count() == 0 && metadata.is_none()` removes host divergence, which the chosen design already solves in `notebook-doc`. It leaves the snapshot proxy, cross-module metadata coupling, and lack of convergence safety intact.
 
-- Whether matching *current* behavior (a metadata-stamped, zero-cell notebook is treated as initialized and not seeded) is the desired product semantics, or a latent question to reopen separately. The predicate preserves today's behavior either way.
+### C. Bake the starter cell into genesis
+
+Embedding one starter code cell in `notebook_genesis_v5.am` would remove runtime seeding and make the starter cell content-addressed for every peer. Rejected for four reasons:
+
+- **Schema-version bump.** Changing genesis bytes changes `canonical_schema_seed_change_hashes()` and `is_canonical_schema_seed_change()` authorization, forcing a `v5 -> v6` migration and compatibility path for all existing v5 notebooks.
+- **One-way door on starter cells.** Varying the initial cell by runtime, settings, or dependencies would require per-variant genesis assets.
+- **Shared initial cell ID.** Every notebook would start with the same cell ID (doc-scoped, so not a correctness bug, but extra complexity for templates and publishing).
+- **No 0-cell initial state.** A notebook could reach zero cells only by deleting the baked-in cell.
+
+Revisit only if the schema bumps for other reasons.
+
+### D. Explicit `ROOT.initialized` marker
+
+Writing `ROOT.initialized = true` in the same change as the starter cell gives an O(1) read that converges under single-writer host authority. Rejected because it remains a mutable proxy that a buggy client could set or clear, adds a schema field to maintain, and ignores immutable genesis history when the history walk costs only ~2 changes on a fresh doc.
+
+## Open Follow-ups
+
+- Decide whether a metadata-stamped, zero-cell notebook should remain treated as initialized (not seeded). `NotebookDoc::is_pristine` preserves that existing product behavior until revisited.
