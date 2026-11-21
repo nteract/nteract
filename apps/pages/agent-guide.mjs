@@ -1,3 +1,4 @@
+import { CHECK_VIEW_PATH, checkViewScript } from "./agent-check-view.mjs";
 import {
   DATA_FORMAT_ADVICE,
   VISUAL_CHOICE_ADVICE,
@@ -1733,11 +1734,24 @@ export function agentGuideResponse(request, env) {
   if (!["GET", "HEAD"].includes(request.method))
     return new Response(null, { status: 405, headers: { Allow: "GET, HEAD" } });
   const path = new URL(request.url).pathname;
+  if (path === CHECK_VIEW_PATH) {
+    return new Response(request.method === "HEAD" ? null : checkViewScript(), {
+      headers: {
+        "Content-Type": "text/javascript; charset=utf-8",
+        "Cache-Control": "public, max-age=300",
+        "X-Content-Type-Options": "nosniff",
+        Link: `<${path}>; rel="self"; type="text/javascript", </llms.txt>; rel="index"; type="text/plain"`,
+      },
+    });
+  }
   const body = path === "/llms.txt" ? agentGuide(env) : mediaGuide(path, pagesPublicOrigin(env));
   if (body === null)
     return new Response(request.method === "HEAD" ? null : "Unknown guide. Start at /llms.txt.\n", {
       status: 404,
-      headers: { "Content-Type": "text/plain; charset=utf-8", "X-Content-Type-Options": "nosniff" },
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "X-Content-Type-Options": "nosniff",
+      },
     });
   return new Response(request.method === "HEAD" ? null : body, {
     headers: {

@@ -1,3 +1,4 @@
+import { CHECK_VIEW_PATH } from "./agent-check-view.mjs";
 import { ANYWIDGET_MEDIA_TYPE, OUTPUT_ASSET_TYPES } from "./shared/anywidget-view.mjs";
 import { CHART_MAX_ROWS } from "./shared/chart-spec.mjs";
 import { VIEW_SPEC_MAX_BYTES } from "./shared/view-spec.mjs";
@@ -253,7 +254,18 @@ A view runs in a sandboxed frame with an opaque origin.
 - Network: fetch and WebSocket may reach any host, but not a data: or blob: URL. A server sees Origin: null, so a cross-origin read needs a CORS answer that allows any origin. Images and media load from any host; fonts from https: or data:; stylesheets from https: or inline; workers only from a blob. Nested frames are refused.
 - Layout: the frame's base styles set a 14px system font and the Page's background. Buttons and range inputs have min-height: 44px, so a compact control sets its own min-height. html clips vertical overflow, so content drawn below the body, such as a popup past the last row, is cut off.
 - Height: the frame grows to the body's height by itself, up to 100000 px. Don't set a height on the view or give the whole view an inner scroller.
-- Errors: a view that throws while it mounts shows its message to the person looking at the Page, with a Retry button. No tool returns that message to you: set_view checks the module's imports and reports warnings in its receipt, but never runs the view. Ask the person to look at the view, or keep the module small and defensive.
+- Errors: a view that throws while it mounts shows its message to the person looking at the Page, with a Retry button. No tool returns that message to you: set_view checks the module's imports and reports warnings in its receipt, but never runs the view. Dry-run locally with ${link(origin, CHECK_VIEW_PATH, "check-view.mjs")} before uploading, or keep the module small and defensive.
+
+## Dry-run locally
+
+With a shell and Node 20.6+, download ${link(origin, CHECK_VIEW_PATH, "check-view.mjs")} (zero npm dependencies) to dry-run a view without a browser before publishing it:
+
+\`\`\`sh
+curl -sS ${origin}${CHECK_VIEW_PATH} -o check-view.mjs
+node check-view.mjs entry.js --data activity=activity.parquet --import activity-controls=controls.js
+\`\`\`
+
+The runner enforces the frame's import-map and CSP rules, mounts \`render({ model, el, signal, host })\` against local \`--data\` files (supporting \`.arrayBuffer()\`, \`.text()\`, \`.json()\`, \`.csv()\`, \`.parquet()\`, and \`.slice()\`), steps \`requestAnimationFrame\`, fires a light/dark theme switch through \`host.onContextChange\`, and aborts \`signal\` to verify cleanup and flag leaked timers or listeners. Pass \`--anywidget\` and \`--state '{...}'\` to check an anywidget AFM export, or \`--json\` for machine-readable output. Upload the exact file you tested via \`create_page_asset_upload\` (rather than re-transcribing it inline) so stored bytes match what passed.
 
 ## Read part of a file
 
