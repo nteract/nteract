@@ -4,8 +4,8 @@
 `886a10f8b884c2dc68d30180ebc5b74d5de78922`. History window: 2026-05-14 to
 2026-09-24 (the local clone is shallow; nothing earlier was visible).
 
-This audit looks for bad patterns that are *accreting* — growing faster than
-the code around them — and for places where agent guidance is too thin, too
+This audit looks for bad patterns that are *accreting* (growing faster than
+the code around them) and for places where agent guidance is too thin, too
 thick, or wrong. It combines pattern trends at four revisions, fix-chain
 history, invariant enforcement checks, and an adversarial pass that tried to
 refute the strongest findings. It changes no code.
@@ -129,10 +129,13 @@ would change roughly the size of the new changes.
 
 Keep the ack-after-durable contract, rollback, `DegradationKind`,
 `file_checkpoint.rs`, and the checkpoint metadata (moved into the store's
-`application_state`). Delete, after migration, the `recovery.rs` record
-format and scan code, the snapshot-union merge in `durability.rs`, the
-manifest sidecar, the overflow takeover in `service_repair.rs`, and the
-`.automerge` writer (only after blob GC enumerates the store).
+`application_state`). After migration, delete:
+
+- the `recovery.rs` record format and scan code;
+- the snapshot-union merge in `durability.rs`;
+- the manifest sidecar;
+- the overflow takeover in `service_repair.rs`;
+- the `.automerge` writer (only after blob GC enumerates the store).
 
 One chunk model can plausibly back both hosts: local SQLite through
 `automerge-store`, and Durable Object `ctx.storage.sql` through a host-neutral
@@ -188,11 +191,17 @@ Sleeps stand in for synchronization in the MCP layer:
 `runt-mcp/src/tools/kernel.rs:99` (500 ms), `:115` (8 s wait for rejoin),
 and 100 ms / 50 ms polling in `tools/session.rs:263-300`.
 
-God files that grew more than 50% since 2026-05-14: `notebook_sync_server/room.rs`
-(+163%), `runtimed-wasm/src/lib.rs` (+122%), `runtime_agent.rs` (+113%),
-`runt-mcp/src/tools/session.rs` (+95%), `xtask/src/main.rs` (+78%, 97 new
-helpers, 7 new commands), `notebook_sync_server/load.rs` (+76%),
-`notebook_sync_server/tests.rs` (+71%), `runt-mcp-proxy/src/proxy.rs` (+67%).
+God files that grew more than 50% since 2026-05-14:
+
+- `notebook_sync_server/room.rs` (+163%)
+- `runtimed-wasm/src/lib.rs` (+122%)
+- `runtime_agent.rs` (+113%)
+- `runt-mcp/src/tools/session.rs` (+95%)
+- `xtask/src/main.rs` (+78%, 97 new helpers, 7 new commands)
+- `notebook_sync_server/load.rs` (+76%)
+- `notebook_sync_server/tests.rs` (+71%)
+- `runt-mcp-proxy/src/proxy.rs` (+67%)
+
 `runtimed/src/daemon.rs` is 11.4k lines with 13 fix commits in 3 months.
 
 ### TypeScript
@@ -204,7 +213,7 @@ helpers, 7 new commands), `notebook_sync_server/load.rs` (+76%),
 | `new *Subject` (RxJS) | 14 | 29 | 45 | 46 | 0.23 → 0.26 |
 | `useLayoutEffect(` | 2 | 9 | 14 | 15 | rising |
 | `useSyncExternalStore` | 64 | 89 | 92 | 95 | 1.05 → 0.53 |
-| `as any`, `: any`, state-sync effects, `console.*` | — | — | — | — | all falling |
+| `as any`, `: any`, state-sync effects, `console.*` | - | - | - | - | all falling |
 
 Swallowed promise errors concentrate in `packages/notebook-host/src/tauri/index.ts`
 (10), `apps/notebook-cloud/src/index.ts` (7), `notebook-room.ts` (5),
@@ -282,10 +291,12 @@ The longest chains:
 5. MCP session recovery (`83bb60f2c` … `8970e18b9`), including five `fix(mcp)`
    commits on 2026-09-07.
 
-Error-string coupling is growing through fixes: `d67223df8` matches
-wasm-bindgen panic text in two hosts; `c8438dad5` classifies launch failures
-by seven substrings; `c805f3a6f` emits a `notebook_not_ready:` prefix that
-`runt-mcp` matches. No guidance or review rubric forbids it.
+Error-string coupling is growing through fixes, and no guidance or review
+rubric forbids it:
+
+- `d67223df8` matches wasm-bindgen panic text in two hosts.
+- `c8438dad5` classifies launch failures by seven substrings.
+- `c805f3a6f` emits a `notebook_not_ready:` prefix that `runt-mcp` matches.
 
 ## Duplication and drift
 
