@@ -14,8 +14,6 @@ editor sockets, viewer sockets, and anonymous public viewers are document
 presence, not execution demand. A hosted runtime that has no active or queued
 execution is idle even when people are still reading the notebook.
 
-Source note: `.context/runtime-idle-ttl-lazy-launch.md`.
-
 The durable source anchors are:
 
 - `apps/notebook-cloud/src/notebook-room.ts`
@@ -153,8 +151,12 @@ tests.
 The fixed 30-minute TTL is simple and reviewable, but it cannot express
 notebook-specific or workstation-specific cost and latency preferences.
 
-## Future Work
+## Open Follow-ups
 
-- Add a force-keep-alive pin per notebook for Kyle's hosted workflows.
-- Add per-notebook and per-workstation TTL policy after v1 has usage evidence.
-- File and fix the `uses_fresh_port_retry` lazy-path banner gap as a follow-up.
+- Add a per-notebook force-keep-alive pin for hosted workflows.
+- Add per-notebook and per-workstation TTL policies once v1 has usage evidence.
+- Fix the `uses_fresh_port_retry` lazy-path banner gap. `uses_fresh_port_retry`
+  (`crates/runtimed/src/kernel_launch_failure.rs`) flags `PortBind` and
+  `RetryableStartupTransport` launch failures for coordinator retry on a fresh
+  port. On the lazy launch path, suppressing the terminal error banner can leave
+  those failures unreported when no retry runs.

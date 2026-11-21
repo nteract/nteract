@@ -115,13 +115,12 @@ registration, or notebook sync semantics.
 
 - This ADR does not change the kernel output protocol or RuntimeStateDoc shape.
 - This ADR does not define widget replay or output widget semantics.
-- This ADR does not require every rich output to be isolated separately; only
-  lane changes and Sift outputs force a frame boundary.
+- This ADR does not isolate every rich output separately. Only lane changes and
+  standalone lanes (Sift, Vega, and Plotly) force a frame boundary.
 
-## Open Questions
+## Open Follow-ups
 
-1. Whether static isolated outputs should always be one output per frame or
-   whether consecutive static outputs should continue to share one frame.
-2. Whether Sift should eventually expose a parent-controlled wheel handoff API
-   that lets it share an iframe with other outputs without losing page-scroll
-   ergonomics.
+- Decide whether consecutive static isolated outputs should keep sharing one
+  frame or use one output per frame.
+- Evaluate a parent-controlled wheel handoff API for Sift so it could share an
+  iframe with other outputs without losing page-scroll ergonomics.

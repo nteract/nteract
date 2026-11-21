@@ -5,10 +5,6 @@ room-scoped `runtime_peer` foundation tracked in
 [#3381](https://github.com/nteract/nteract/issues/3381) is shipped; focused
 follow-ups remain.
 
-This ADR records the hosted workstation architecture. Earlier API sketches,
-prototype UI notes, and landed implementation ledgers were removed to keep the
-record decision-shaped.
-
 ## Context
 
 nteract needs a provider-neutral way for users to run notebook compute on a
@@ -120,26 +116,32 @@ Implementation details live in source and tests, especially the hosted cloud
 app, `notebook-cloud-transport`, `runtime-doc`, `runtimed-wasm`, and
 `crates/runtimed/src/workstation`.
 
-## Open Boundaries
+## Boundaries
 
 - Notebook-first setup, recovery, compute-source selection, and accelerator UX
-  belong to host-owned notebook chrome; shared notebook components should
-  consume normalized host facts
-  ([#3990](https://github.com/nteract/nteract/issues/3990)).
-- Persistent pairing remains the registration bootstrap. Short-lived,
-  room- and session-scoped attachment credentials are focused security work and
-  do not change room-mediated runtime authority
-  ([#3991](https://github.com/nteract/nteract/issues/3991)).
+  belong in host-owned chrome; shared notebook components consume normalized
+  host facts.
+- Persistent pairing remains the registration bootstrap. Room- and
+  session-scoped attachment credentials must not change room-mediated runtime
+  authority.
 - Provider-specific packaging, environment selection, and validation stay
-  outside the room protocol. The Outerbounds current-Python smoke is tracked in
-  [#3992](https://github.com/nteract/nteract/issues/3992); the JupyterHub
-  kernelspec and working-directory adapter remains in
-  [#3608](https://github.com/nteract/nteract/issues/3608). Alternative Hub
-  provisioning and attachment topologies remain exploratory in the
-  [federation memo](../memos/hosted-notebook-federation.md) and do not change the
-  accepted dial-home contract.
-- Compatibility notices and safe idle self-update remain connector lifecycle
-  work and must not interrupt active execution
-  ([#3975](https://github.com/nteract/nteract/issues/3975)).
+  outside the room protocol. Alternative Hub provisioning and attachment
+  topologies in the [federation memo](../memos/hosted-notebook-federation.md)
+  do not change the accepted dial-home contract.
+- Compatibility notices and idle self-update remain connector lifecycle work
+  and must not interrupt active execution.
 - Public sharing does not imply compute access.
 - Runtime peer attachment does not imply notebook edit authority.
+
+## Open Follow-ups
+
+- Build host-owned notebook-first setup, recovery, compute-source selection,
+  and accelerator UX ([#3990](https://github.com/nteract/nteract/issues/3990)).
+- Add short-lived, room- and session-scoped attachment credentials
+  ([#3991](https://github.com/nteract/nteract/issues/3991)).
+- Complete the Outerbounds current-Python smoke test
+  ([#3992](https://github.com/nteract/nteract/issues/3992)) and the JupyterHub
+  kernelspec and working-directory adapter
+  ([#3608](https://github.com/nteract/nteract/issues/3608)).
+- Add connector compatibility notices and safe idle self-update
+  ([#3975](https://github.com/nteract/nteract/issues/3975)).

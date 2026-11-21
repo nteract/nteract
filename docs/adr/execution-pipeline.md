@@ -4,34 +4,55 @@
 
 ## Context
 
-The desktop daemon runs cells against out-of-process Jupyter kernels. Between the click in the UI and the rendered output, the request crosses five state boundaries: the WASM Automerge peer in the renderer, the Unix-socket sync stream, the daemon's per-room request worker, the runtime agent subprocess, and the kernel's ZMQ channels. Each boundary has its own queue, its own backpressure shape, and its own failure modes.
+The desktop daemon executes cells against out-of-process Jupyter kernels. Every
+run crosses five state boundaries: the renderer's WASM Automerge peer, the
+Unix-socket sync stream, the daemon's per-room request worker, the runtime agent
+subprocess, and the kernel's ZMQ channels. Each boundary has its own queue,
+backpressure behavior, and failure modes.
 
-Two facts make this pipeline unusual:
+Two properties shape this pipeline:
 
-1. **There is no separate "execution result" message.** Outputs, execution counts, and terminal status all land in `RuntimeStateDoc`, the same Automerge document that holds queue and kernel-lifecycle state. Consumers read execution outcome by syncing this document and observing the entry transition to `done` or `error`.
+1. **There is no separate "execution result" message.** Outputs, execution
+   counts, and terminal status all land in `RuntimeStateDoc`, alongside queue
+   and kernel-lifecycle state. Readers observe execution outcome by syncing
+   `RuntimeStateDoc` until the entry becomes `done` or `error`.
+2. **High-volume output traffic shares an async runtime with low-volume control
+   signals.** Stdout floods, display churn, and widget-comm replay must never
+   delay `KernelIdle` (which releases the queue) or `ExecutionDone` (which lets
+   readers consume outputs).
 
-2. **The daemon multiplexes high-volume output traffic and low-volume lifecycle signals on the same async runtime.** stdout floods, image-display churn, and widget-comm replay must not delay the `KernelIdle` that releases the queue or the `ExecutionDone` that lets a client read outputs.
-
-This ADR explains the execution and output-ordering rules in `crates/runtimed/AGENTS.md` and the `execution-pipeline` skill, including their rationale and remaining gaps.
+This ADR records the execution and output-ordering invariants behind
+`crates/runtimed/AGENTS.md` and the `execution-pipeline` skill.
 
 Neighbors:
 
-- `docs/adr/document-split.md` — why execution state lives in `RuntimeStateDoc` and not `NotebookDoc`, and why there are two writer paths into it.
-- `docs/adr/typed-frame-v4-wire-protocol.md` — the framing the pipeline rides on; `Request`/`Response` correlation, `SessionControl` readiness phases.
-- `docs/adr/blob-storage-and-content-addressing.md` — where stream and display outputs actually land once a manifest is committed.
-- `docs/adr/identity-and-trust.md` — who can `ExecuteCell`, who can read outputs.
+- `docs/adr/document-split.md` — why execution state lives in `RuntimeStateDoc`
+  and not `NotebookDoc`, and why two writer paths update it.
+- `docs/adr/0002-comms-document-split.md` — why mutable widget state lives in
+  `CommsDoc` while `RuntimeStateDoc` owns comm topology and output routing.
+- `docs/adr/typed-frame-v4-wire-protocol.md` — `Request`/`Response` correlation
+  and `SessionControl` readiness phases.
+- `docs/adr/blob-storage-and-content-addressing.md` — content-addressed storage
+  for output payloads referenced by manifests.
+- `docs/adr/identity-and-trust.md` — who may `ExecuteCell` and read outputs.
 
-Three projects shaped the design:
+Three design pressures drove these choices:
 
-- **Jupyter's IOPub model**: status messages and outputs interleave on a single pub-sub channel from the kernel. The daemon has to peel apart what's "output transport" from what's "control plane" on the way out, because no Jupyter component does that for us.
-- **automerge / automerge-repo**: state convergence is guaranteed eventually, not promptly. We can't write "execution done, here are the outputs" as one atomic message because each `transact_at_current_heads` lands as a separate Automerge change, syncs as a separate frame, and applies on the receiver in its own tick.
-- **runt-mcp**: the MCP server is an automated reader of execution results. Unlike a human who scrolls back when outputs are slow, an LLM call returns whatever was in the document the moment the poll fired. The pipeline has to make "outputs are durable and visible" a checkable condition, not a probabilistic one.
+- **Jupyter IOPub interleaving:** Status messages and outputs share one pub-sub
+  channel from the kernel, so the daemon must separate control-plane signals
+  from output transport on ingress.
+- **Automerge eventual sync:** Each `transact_at_current_heads` commits as a
+  separate Automerge change, syncs as a separate frame, and applies on its own
+  tick. Completion and final outputs cannot rely on a separate atomic signal.
+- **Automated readers (`runt-mcp`):** An LLM tool call returns whatever is in
+  the document when the poll completes, so "outputs are durable and visible"
+  must be a checkable invariant rather than a timing guess.
 
-## Decision 1: RuntimeStateDoc is the durable record; broadcasts are advisory
+## Decision 1: `RuntimeStateDoc` is the durable record; broadcasts are advisory
 
-Every execution writes to `RuntimeStateDoc.executions[execution_id]`:
+Every execution progresses through `RuntimeStateDoc.executions[execution_id]`:
 
-```
+```text
 executions["exec-abc"] = { status: "queued"        }
                        = { status: "running"       }
                        = { status: "running", outputs: [m1] }
@@ -39,31 +60,44 @@ executions["exec-abc"] = { status: "queued"        }
                        = { status: "done", success: true, outputs: [m1, m2] }
 ```
 
-The daemon writes `set_execution_done(eid, success)` **after** every output manifest for that execution is committed (`crates/runtimed/src/kernel_state.rs:150-181`, plus the stream-committer priority path described in Decision 2). Once a consumer's local Automerge replica observes `status == "done"`, the outputs in the same map are guaranteed to be in the same document, modulo one more sync tick.
+The daemon writes `set_execution_done(eid, success)` **after** every output
+manifest for that execution is committed
+(`crates/runtimed/src/kernel_state.rs:150-181`, ordered by the stream committer
+in Decision 2). Once a peer's replica sees `status == "done"`, all outputs for
+that execution are committed in the same document, at most one sync tick away.
 
-An older design routed completion through `NotebookBroadcast` runtime variants. Those variants have been removed (the surviving `NotebookBroadcast` carries only `Comm` custom messages, see `crates/notebook-protocol/src/protocol.rs:748-765`). The shared completion helper (`crates/notebook-sync/src/execution_wait.rs`) polls RuntimeStateDoc on a 50ms cadence (`TERMINAL_POLL_INTERVAL`) and only consults the document's `kernel.lifecycle` and `executions/*/status`. No broadcast is consulted.
+`NotebookBroadcast` carries only `Comm` custom messages
+(`crates/notebook-protocol/src/protocol.rs:748-765`). Completion reads
+`RuntimeStateDoc` exclusively: `crates/notebook-sync/src/execution_wait.rs`
+polls `kernel.lifecycle` and `executions/*/status` every 50ms
+(`TERMINAL_POLL_INTERVAL`) and never consults broadcasts.
 
-### Why RuntimeStateDoc and not the broadcast
+### Why `RuntimeStateDoc` instead of a broadcast
 
-A broadcast is a separate channel. By the time `ExecutionDone` arrives, the receiver's Automerge replica may still be applying the final stream-output change. Reading outputs at that moment yields fewer manifests than the durable record has. We hit this race repeatedly in early MCP work: the broadcast fired, the LLM read three of five outputs, the fourth and fifth landed 20ms later.
+Broadcasts ride a separate channel from Automerge sync. When a completion
+broadcast arrives, the receiver's Automerge replica can still be applying the
+final output change, causing automated readers like MCP tools to observe partial
+outputs.
 
-The durable-record rule has three consequences:
+Three invariants follow:
 
-1. **`set_execution_done` is the commit boundary.** Code that writes outputs after that point silently breaks reader contracts. The stream committer enforces this by routing `ExecutionDone` through the same priority queue as the final stream flush (Decision 2).
-2. **Output ordering inside an execution must match the kernel's IOPub order.** Consumers don't get to reorder; they read the array as it stands in the document.
-3. **There is a two-phase wait, not a one-phase wait.** Even after `status == "done"`, a consumer's local replica may be one sync tick behind on the outputs. `await_execution_terminal` polls for outputs at 10ms cadence for up to a 500ms grace window after terminal status. The grace is bounded so a genuinely output-free execution still returns promptly.
-
-### Counterfactual: broadcasts as truth
-
-If we let consumers trust the broadcast, an MCP tool call ordering `execute_cell` then `get_cell` would read the cell's outputs at the moment the broadcast fires. That moment is the daemon's send; the consumer's apply lags by however long it takes the typed-frame writer, the socket, and the receiver's sync task to land the final stream change. The MCP path returned partial outputs, intermittently, depending on output size. The fix wasn't tuning the broadcast latency. It was making the broadcast irrelevant.
+1. **`set_execution_done` is the commit boundary.** Writing outputs after it
+   breaks reader contracts. The stream committer enforces this by sending
+   `ExecutionDone` through the same priority queue as the final stream flush
+   (Decision 3).
+2. **Outputs preserve kernel IOPub order.** Readers consume the document array
+   as written without reordering.
+3. **Completion uses a two-phase wait.** After observing `status == "done"`,
+   `await_execution_terminal` polls for outputs every 10ms for up to a 500ms
+   grace window so late-arriving output frames settle while output-free cells
+   still return promptly.
 
 ## Decision 2: Control-plane signals do not share transport with output work
 
 Kernel-lifecycle signals (`KernelIdle`, `ExecutionDone`, `CellError`,
-`KernelDied`) ride a separate, unbounded `mpsc` from output-work commands
-(`SendCommUpdate` for widget replay). The split is enforced structurally by the
-`LifecycleSignal` / `WorkCommand` channel construction in
-`crates/runtimed/src/output_prep.rs`:
+`KernelDied`) use an unbounded `mpsc`, separate from output-work commands
+(`SendCommUpdate` for widget replay). `crates/runtimed/src/output_prep.rs`
+enforces this split at compile time:
 
 ```rust
 pub fn queue_command_channels(work_capacity: usize) -> (
@@ -73,76 +107,84 @@ pub fn queue_command_channels(work_capacity: usize) -> (
 ) { ... }
 ```
 
-The old `QueueCommand::is_lifecycle()` runtime discipline was replaced by this
-type split, so non-lifecycle work cannot compile on the lifecycle channel. The
-work sender side is structural too (EP-8): `queue_command_channels` returns a
-`NonBlockingSender<WorkCommand>` that exposes only `try_send`, so an IOPub
-handler arm cannot await queue capacity on the bounded work channel — a
-blocking `.send().await` does not compile. The remaining ordering questions
-are about when lifecycle signals are drained, not about accidentally routing
-widget replay work onto the lifecycle path or blocking the reader on it.
+Two compile-time guards prevent channel misuse:
 
-The runtime agent's `select!` loop includes separate arms for these channels
-(`crates/runtimed/src/runtime_agent.rs`):
+- Non-lifecycle work cannot compile onto `UnboundedSender<LifecycleSignal>`.
+- `queue_command_channels` wraps the work sender in
+  `NonBlockingSender<WorkCommand>`, which exposes only `try_send`. A blocking
+  `.send().await` in an IOPub handler does not compile.
 
-- The loop uses `tokio::select! { biased; ... }` so lifecycle/control work is
-  polled before the bounded output/work channel when both are ready.
-- The lifecycle arm runs whenever a lifecycle command is ready.
-- The work arm, before processing its own command, drains every pending lifecycle command via `drain_lifecycle_commands`. This prevents the work arm from being chosen while lifecycle signals sit unprocessed.
+The runtime agent's `select!` loop (`crates/runtimed/src/runtime_agent.rs`)
+prioritizes lifecycle deterministically:
 
-This is the EP-10 resolution: the loop now makes polling order deterministic
-and still keeps the work-arm drain as a second guard. The strict-priority risk
-is bounded by the lifecycle channel's cardinality (`KernelIdle`,
-`ExecutionDone`, `CellError`, `KernelDied` are rare and finite per execution),
-while the failure mode of randomly choosing output work ahead of a ready
-lifecycle signal is user-visible interrupt or queue-release latency.
+- `tokio::select! { biased; ... }` polls the lifecycle arm ahead of the bounded
+  work arm whenever both are ready.
+- Before handling any work command, the work arm drains every pending lifecycle
+  signal via `drain_lifecycle_commands`.
 
-### Why separate channels
+Strict priority is safe because lifecycle cardinality is tiny and finite per
+execution, whereas letting widget replay run ahead of `KernelIdle` causes
+multi-second interrupt and queue-release stalls.
 
-The widget-output replay (`SendCommUpdate`) can be high-volume. When a kernel runs a tight `IntProgress` loop, the daemon receives hundreds of comm updates per second and forwards each to the kernel as a `comm_msg(update)`. If lifecycle and work shared a bounded queue, an interrupt's `KernelIdle` could sit behind a backlog of widget replays, leaving the queue stuck in `Busy` until the backlog drained. The user's interrupt would *eventually* take effect, but with seconds of latency that look exactly like a hang.
+### Queue sizing and lossy bounds
 
-### Why the work channel is bounded and the lifecycle channel is unbounded
+- **Lifecycle channel (unbounded):** Fires at most a few signals per execution
+  (`KernelIdle`, `ExecutionDone`, `CellError`, `KernelDied`). None may be
+  dropped without breaking queue release.
+- **Work channel (bounded at `100`):** Set via `queue_command_channels(100)`
+  (`crates/runtimed/src/jupyter_kernel.rs:1221-1224`). When widget replay
+  outpaces shell ingest, `try_send` (`jupyter_kernel.rs:196-224`) drops excess
+  updates and logs at `debug`. Because replay is best-effort (Decision 4), a
+  later update overwrites the same widget property.
+- **Periodic stream flush queue (`STREAM_COMMITTER_QUEUE_CAPACITY = 32`):**
+  (`stream_committer.rs:25`). Drops are safe because `StreamTerminals` retains
+  full rendered text for the next flush (Decision 3).
+- **Display-update coalescing cap (`MAX_PENDING_DISPLAY_IDS = 128`):**
+  (`display_update_committer.rs:24`). Bounds distinct pending display IDs; a
+  129th distinct ID drops while updates to queued IDs coalesce (Decision 5).
 
-Lifecycle signals are rare. `KernelIdle` fires once per execution, `ExecutionDone` once per execution, `KernelDied` once ever, `CellError` zero or once per execution. The cardinality is small and we can't drop any of them without breaking queue release. Unbounded is safe.
+Whether these three lossy bounds (`100`, `32`, `128`) are sized well under
+heavy load is tracked in [Open Follow-ups](#open-follow-ups).
 
-Work signals are unbounded in the worst case (widget replay during a runaway loop). The work channel is bounded at capacity 100 (`crates/runtimed/src/jupyter_kernel.rs:1221-1224`, `queue_command_channels(100)`). If a flood of `SendCommUpdate`s outpaces the kernel's shell ingest, the sender drops via `try_send` (`jupyter_kernel.rs:196-224`) and logs. The kernel-facing comm replay is best-effort by design (Decision 4); dropping a redundant update doesn't lose state because the next update will overwrite the same widget property.
+### Rejected alternative: one bounded channel for everything
 
-Two other bounded queues sit nearby and are easy to confuse with the work channel:
-
-- `STREAM_COMMITTER_QUEUE_CAPACITY = 32` (`stream_committer.rs:25`) bounds the **periodic** `request_flush` mpsc inside the stream committer. Drops here are safe because the terminal buffer still holds the text and a later flush will publish it (see Decision 3).
-- `MAX_PENDING_DISPLAY_IDS = 128` (`display_update_committer.rs:24`) bounds the **distinct display IDs** queued for display-data coalescing. A 129th distinct ID is dropped; updates to already-queued IDs always coalesce (see Decision 5).
-
-The work channel, the periodic stream channel, and the display-update bound are three different lossy queues with three different sizes and reasons. EP-5 tracks the open question of whether these are right.
-
-### Counterfactual: one bounded channel for everything
-
-We tried this in an earlier iteration. The user-visible failure was "interrupt does nothing for 2-5 seconds when a chatty progress bar is running." The root cause was a `KernelIdle` enqueued behind buffered widget replays, each requiring a kernel round-trip; with the lifecycle and work channels merged into one bounded mpsc, the buffered work blocked the urgent signal. The fix shipped as the two-channel split documented here.
+Merging lifecycle and work into one bounded `mpsc` stalls interrupts for 2–5
+seconds during chatty progress-bar loops because `KernelIdle` queues behind
+buffered widget replays awaiting kernel round-trips.
 
 ## Decision 3: Stream output uses a priority committer for ordering boundaries
 
-stdout and stderr arrive on IOPub as `StreamContent` messages with `name: "stdout"|"stderr"` and a text chunk. Rendered terminal state lives in `StreamTerminals` (`crates/runtimed/src/stream_terminal.rs`), an in-memory ANSI-aware buffer per `(execution_id, stream_name)`. Coalesced periodic flushes commit the rendered text to RuntimeStateDoc as a stream manifest.
+Stdout and stderr arrive on IOPub as `StreamContent` chunks (`"stdout"` /
+`"stderr"`). `StreamTerminals` (`crates/runtimed/src/stream_terminal.rs`) holds
+an ANSI-aware terminal buffer per `(execution_id, stream_name)` and flushes
+rendered text to `RuntimeStateDoc` as stream manifests.
 
-The committer has two ingress paths (`crates/runtimed/src/stream_committer.rs`):
+`crates/runtimed/src/stream_committer.rs` exposes two ingress paths inside a
+`biased;` select loop where the priority arm always wins when ready:
 
 | Path | Channel | Behavior under pressure |
-|------|---------|--------------------------|
-| `request_flush` | bounded `mpsc(32)` | Drop on full. The terminal buffer holds the latest text; a later flush will publish it. |
-| `flush_for_ordering` / `flush_then_signal` | unbounded `mpsc` | Always delivered. Used at output-type boundaries and at execution completion. |
+|------|---------|-------------------------|
+| `request_flush` | bounded `mpsc(32)` | Drops on full; `StreamTerminals` retains latest text for the next flush. |
+| `flush_for_ordering` / `flush_then_signal` | unbounded `mpsc` | Always delivered; used at output-type boundaries and execution completion. |
 
-The select loop in `run_stream_committer` is `biased;` and priority-receives. The priority arm wins whenever it has anything pending.
+### Ordering boundaries
 
-### When does ordering matter
+Non-stream outputs (`DisplayData`, `ErrorOutput`) that follow stdout on IOPub
+must commit after that stdout in `RuntimeStateDoc`:
 
-A display-data or error output that follows stdout text in the kernel's IOPub stream must land in RuntimeStateDoc *after* the stream output. The reason is twofold:
+1. Consumers render outputs in document array order.
+2. `StreamTerminals` clears its buffer at every non-stream boundary so later
+   stdout starts a fresh manifest; clearing before flushing would lose text.
 
-1. Consumers render outputs in array order. A reordered display-data appearing before its preceding stdout produces visibly wrong output ordering.
-2. Stream output in RuntimeStateDoc is keyed by `(execution_id, stream_name)`. The terminal buffer is cleared at every non-stream output boundary so subsequent stdout starts a fresh manifest. If we clear the buffer before flushing the prior stream's text, that text is lost.
-
-Every output-type boundary therefore calls `stream_committer.flush_for_ordering(boundary_flushes).await` before mutating non-stream output state. This is visible at every `JupyterMessageContent::ErrorOutput` and `DisplayData` handler in `jupyter_kernel.rs`.
+Every `JupyterMessageContent::ErrorOutput` and `DisplayData` handler in
+`jupyter_kernel.rs` therefore awaits
+`stream_committer.flush_for_ordering(boundary_flushes).await` before writing
+non-stream state.
 
 ### `ExecutionDone` rides the priority path
 
-The final lifecycle signal for an execution travels through the stream committer, not the lifecycle channel directly:
+Execution completion travels through the stream committer rather than directly
+onto the lifecycle channel:
 
 ```rust
 stream_committer.flush_then_signal(
@@ -151,166 +193,236 @@ stream_committer.flush_then_signal(
 );
 ```
 
-This is the ordering glue. The committer flushes the final stream content, then sends `ExecutionDone` on the lifecycle channel. The runtime agent receives `ExecutionDone`, calls `KernelState::execution_done`, which writes `set_execution_done(eid, true)`. The durable-record invariant from Decision 1 holds: terminal status follows the final output.
+The committer commits final stream manifests, then forwards `ExecutionDone` to
+the lifecycle channel. The runtime agent calls `KernelState::execution_done`,
+writing `set_execution_done(eid, true)` strictly after the final output.
 
-`KernelIdle` rides the lifecycle channel directly (`jupyter_kernel.rs:1408-1430`). It releases the queue and is allowed to arrive before the final stream flush; what cannot arrive early is `ExecutionDone`.
+`KernelIdle` rides the lifecycle channel directly (`jupyter_kernel.rs:1408-1430`)
+so queue release never waits on stream commits; only `ExecutionDone` must wait.
 
-The no-output case now follows the same rule. When `flush_then_signal` is
-called with an empty flush list, it still enqueues an empty priority commit
-rather than sending directly on `lifecycle_tx` (`stream_committer.rs:106-124`,
-test `flush_then_signal_without_flushes_rides_priority_queue`). That keeps a
-no-output execution's `ExecutionDone` behind any earlier priority stream commit,
-so terminal runtime state remains causally after the final stream manifest.
+Even when an execution produces no stream output, `flush_then_signal` enqueues
+an empty priority commit instead of bypassing to `lifecycle_tx`
+(`stream_committer.rs:106-124`, tested by
+`flush_then_signal_without_flushes_rides_priority_queue`). That keeps
+`ExecutionDone` ordered behind any earlier priority stream commit.
 
-### Counterfactual: synchronous output writes from the IOPub reader
+### Rejected alternative: synchronous writes in the IOPub reader
 
-If the IOPub reader awaited `state.with_doc(…)` for every chunk, blob writes and Automerge mutations would block the reader from advancing. A subsequent `status: idle` would sit unread until the buffered chunk finished its blob upload. Interrupt latency would scale with output throughput. The committer pattern decouples the reader from the writes: the reader feeds the terminal buffer and triggers best-effort flushes; the committer absorbs the slow writes off the hot path.
+Awaiting `state.with_doc(...)` on every IOPub chunk blocks the reader on blob
+writes and Automerge transactions, leaving `status: idle` unread behind output
+throughput. Offloading commits to the committer keeps the IOPub reader draining.
 
 ## Decision 4: Output-widget replay is non-blocking and best-effort
 
-A Jupyter Output widget captures outputs emitted while a target cell is executing and replays them as the widget's state. The daemon's IOPub reader does both jobs: it appends the manifest to `RuntimeStateDoc.comms[comm_id].outputs` (the durable record), and it sends a `SendCommUpdate` to the kernel's shell channel so the kernel-side Output widget object stays in sync.
+A Jupyter Output widget captures outputs emitted during execution and replays
+them as widget state. On IOPub ingress, the daemon writes the manifest to
+`RuntimeStateDoc.comms[comm_id].outputs` (durable record) and sends a
+`SendCommUpdate` to the kernel shell channel via `try_send_comm_update`
+(`crates/runtimed/src/jupyter_kernel.rs:196-224`). If the work channel is full,
+the replay drops with a `debug` log while the durable record stays intact.
 
-The kernel-facing replay uses `try_send_comm_update` (`crates/runtimed/src/jupyter_kernel.rs:196-224`). If the work channel is full, the update is dropped with a `debug` log. The durable record in RuntimeStateDoc is unaffected: it was written first, on the synchronous path.
+Best-effort replay rests on two properties:
 
-### Why best-effort
+1. **`RuntimeStateDoc.comms[*].outputs` is the source of truth.** Kernel-side
+   replay only aids kernel code inspecting its own widget; later updates
+   overwrite the same comm property.
+2. **Replay floods must never block the IOPub reader.** Awaiting `work_tx`
+   stalls the IOPub reader (which holds `is_registered_execution`), delaying the
+   next queued cell for seconds even after `KernelIdle` arrives. Dropping on
+   full turns channel backpressure into safe load shedding.
 
-Two reasons.
+## Decision 5: `update_display_data` coalesces by `display_id` off the hot path
 
-1. **The durable record is the truth.** Any peer that needs Output widget state reads `RuntimeStateDoc.comms[*].outputs` directly. The kernel-side replay is convenience for kernel code that introspects its own widget. Dropping a replay does not lose state; the next state update will overwrite the same comm property.
+Progress bars (such as `tqdm`) emit hundreds of `update_display_data` messages
+per second for one `display_id`. `crates/runtimed/src/display_update_committer.rs`
+coalesces them off the IOPub reader:
 
-2. **Replay floods cannot stall lifecycle.** A `clear_output` + `display_data` + 1000 stdout chunks in a tight loop produces 1000+ comm updates. If each `await`ed the work channel, the IOPub reader would block waiting for the runtime agent's shell sender. `KernelIdle`, which would normally release the next execution, would arrive late. With `try_send`, the reader keeps draining IOPub and the queue stays responsive.
+1. Only the latest update per `display_id` matters semantically.
+2. Rewriting matching display manifests in `RuntimeStateDoc` is too slow for the
+   IOPub hot path.
+3. Terminal status must still wait for the latest pending update so readers
+   after `ExecutionDone` see the final frame.
 
-### Counterfactual: awaited replay
+The committer stores `HashMap<String, PendingDisplayUpdate>` keyed by
+`display_id`. `request_update` overwrites the map entry and calls
+`Notify::notify_one`. `Notify` is only a wake hint; the map is the queue, so
+burst arrivals do not allocate per-update permits. On wake, the committer drains
+the map through `apply_display_manifest_updates`.
 
-We tried `work_tx.send(...).await`. The symptom was that a notebook running a long loop with widget output would interrupt successfully (the control-plane `KernelIdle` worked), but the next queued cell would not start for several seconds. The blocked replay sender was holding the IOPub reader, which held the `is_registered_execution` state, which gated the next execution start. The fix was to make replay drop-on-full and treat any back-pressure on the work channel as load-shed signal.
+### Flush ordering before `ExecutionDone`
 
-## Decision 5: `update_display_data` coalesces by display_id off the hot path
-
-`update_display_data` is the Jupyter mechanism for replacing the contents of a previously-displayed output, keyed by a `display_id`. tqdm progress bars use this to rewrite the same line. A long `for` loop with `display(handle, display_id="x")` can emit hundreds of updates per second for one logical "output."
-
-The display-update committer (`crates/runtimed/src/display_update_committer.rs`) is built around three observations:
-
-1. Only the latest update per `display_id` matters semantically. Earlier updates are obsolete the moment a later one arrives.
-2. Each update requires a RuntimeStateDoc transaction (to find all outputs sharing that display_id and rewrite their data manifests). That transaction is too slow to run on the IOPub reader's hot path under load.
-3. Terminal status must still wait for the latest pending update to be durable, so consumers reading after `ExecutionDone` see the final rendered state, not the second-to-last.
-
-The committer therefore holds a `HashMap<String, PendingDisplayUpdate>` keyed by `display_id`. `request_update` inserts (overwriting any previous entry for the same id) and wakes the committer with `Notify::notify_one`. The committer drains the entire map per wake and commits each latest value through `apply_display_manifest_updates`.
-
-`Notify` is intentionally only a wake hint, not the queue. The pending map is the source of truth. This decouples "how many updates arrived" from "how many wakes we generated" and means burst arrivals don't need one permit per update.
-
-### The flush before `ExecutionDone`
-
-When `status: idle` arrives from the kernel, `jupyter_kernel.rs:1458-1479` calls:
+On `status: idle`, `jupyter_kernel.rs:1458-1479` awaits:
 
 ```rust
 display_update_committer.flush_for_ordering().await;
 ```
 
-This routes through a priority arm of the committer's select loop. The arm drains the pending map (same drain the wake arm runs), then acknowledges via oneshot. Only after that ack does the stream committer's `flush_then_signal` enqueue `ExecutionDone`.
+The committer's priority arm drains the pending map and acknowledges via a
+oneshot before `stream_committer.flush_then_signal` enqueues `ExecutionDone`.
+End-to-end completion order is therefore:
 
-The ordering is therefore: pending display updates committed → final stream output committed → `ExecutionDone` enqueued → `set_execution_done` written → consumer reads.
+`pending display updates committed -> final stream output committed -> ExecutionDone enqueued -> set_execution_done written -> consumer reads`
 
-### Counterfactual: coalesce on the IOPub hot path
+### Rejected alternatives
 
-We could maintain the pending map inside the reader and write only on a debounce. The reason we don't: every write would still touch RuntimeStateDoc from the reader's task, and the reader would still occasionally block on slow Automerge transactions during high-frequency updates. The committer pattern moves the slow path off the reader entirely.
-
-### Counterfactual: no coalescing
-
-Every `update_display_data` writes immediately. We tried this with tqdm-style loops and saw the IOPub reader fall behind by hundreds of milliseconds during heavy updates. The reader queue (`AsyncRead`) does not have unlimited buffering; falling behind means losing the back-pressure signal we need to detect a stalled kernel.
+- **Coalescing inside the IOPub reader:** Still executes slow Automerge
+  transactions on the reader task under heavy load.
+- **Writing every `update_display_data` immediately:** Causes the IOPub reader
+  (`AsyncRead`) to lag by hundreds of milliseconds during `tqdm` loops, masking
+  kernel stall backpressure.
 
 ## Decision 6: `required_heads` is a causal precondition, not a strict barrier
 
-The daemon executes against its own copy of `NotebookDoc`. The client edits cell source locally, those edits sync to the daemon as a series of Automerge changes. There is no guarantee that the daemon has applied the client's most recent source edit by the time the client's `ExecuteCell` request lands at the daemon's request worker.
-
-To close this race, the client captures the current heads of its NotebookDoc replica before sending the request:
+The daemon executes cell source from its own `NotebookDoc` replica. To prevent
+executing stale source before client edits sync, the client captures its current
+`NotebookDoc` heads and attaches them as `required_heads`:
 
 ```rust
 let required_heads = handle.current_heads_hex()?;
 let response = handle.send_request_after_heads(request, required_heads).await;
 ```
 
-The daemon's request worker calls `wait_for_required_heads` before dispatching (`crates/runtimed/src/notebook_sync_server/peer_writer.rs:222-256`). It loops on the room's `changed_tx` broadcast, checking after each notification whether every required head exists in the daemon's NotebookDoc via `get_change_by_hash`. Once all are present, the request proceeds.
+The frontend captures heads first and then invokes its flush hook
+(`packages/runtimed/src/notebook-client.ts:98-101`), ensuring the requested
+heads are already in flight on the sync stream.
 
-### Why a 10-second timeout exists
+Before dispatching, the daemon's request worker calls `wait_for_required_heads`
+(`crates/runtimed/src/notebook_sync_server/peer_writer.rs:222-256`), listening
+on `changed_tx` until `get_change_by_hash` finds every required head in
+`NotebookDoc`.
 
-If the client and daemon are healthy but the sync stream is congested, the daemon may take longer than expected to receive a head. If the client and daemon are *unhealthy* (the client disconnected, the head will never arrive), waiting forever would deadlock that request worker. The 10-second cap is the bound on how long we'll wait for a head that should already be in flight. On timeout, the daemon returns `NotebookResponse::Error { error: "Timed out waiting for required notebook heads" }` to the client (`crates/runtimed/src/notebook_sync_server/peer_writer.rs:167-181`); the request is **not** dispatched against stale state.
+### Fail-closed 10-second timeout
 
-This is fail-closed, not graceful degradation. The client sees an error response and decides whether to retry. The frontend pushes pending source edits into the sync stream before capturing heads (`packages/runtimed/src/notebook-client.ts:98-101`: heads are captured first, then the configured flush hook is invoked) so that under normal conditions every required head is already in flight by the time the request arrives at the daemon.
+Waiting indefinitely on a disconnected client would deadlock the request worker.
+After 10 seconds, the daemon returns
+`NotebookResponse::Error { error: "Timed out waiting for required notebook heads" }`
+(`crates/runtimed/src/notebook_sync_server/peer_writer.rs:167-181`) without
+running stale source. Clients decide whether to retry.
 
-### Counterfactual: pass source as a request parameter
+### Rejected alternative: passing cell source in the request
 
-Tempting and wrong. If the request carries source and a `cell_id`, the daemon now has two sources of truth: the request payload and the synced document. They can disagree (the document is the latest, the request was captured at an older state). The daemon would have to pick. Picking the request payload means the rest of the room's peers, which only see NotebookDoc changes, are blind to what just executed. Picking the document means the source parameter was pointless to begin with.
+Sending source alongside `cell_id` creates two competing truths (request payload
+vs `NotebookDoc`). Running request text makes other room peers blind to what
+executed; preferring `NotebookDoc` makes the payload redundant. Cell-ID-only
+requests gated by `required_heads` guarantee every peer can observe the exact
+source executed.
 
-The chosen model has one source: NotebookDoc, synced through Automerge, gated by `required_heads`. The cell-id-only request envelope is structurally incapable of executing source the room cannot also observe.
-
-## Decision 7: Two-document architecture for execution state
-
-Execution spans two synced Automerge documents:
+## Decision 7: Execution state splits across `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc`
 
 | Document | Purpose | Frame |
 |----------|---------|-------|
-| `NotebookDoc` | Cell source, structure, metadata | `0x00` |
-| `RuntimeStateDoc` | Execution queue, lifecycle, outputs, kernel status | `0x05` |
+| `NotebookDoc` | Cell source, structure, metadata, `cell.execution_id` pointer | `0x00` |
+| `RuntimeStateDoc` | Execution queue, lifecycle, outputs, kernel status, comm topology/routing | `0x05` |
+| `CommsDoc` | Mutable widget comm state (ADR 0002) | `0x09` |
 
-These documents stay separate for four reasons:
+Keeping execution documents separate provides four properties:
 
-1. **Different write cadence.** NotebookDoc absorbs character-level edits from human typing. RuntimeStateDoc absorbs output streams from kernels. Combining them would tie editing latency to output churn.
-2. **Different writer authority.** NotebookDoc is frontend-authoritative for source and structure. RuntimeStateDoc sync is read-only for ordinary notebook clients; validated runtime peers write runtime progress, lifecycle, outputs, and topology for accepted work, while coordinator/room-host paths own execution intent and room facts. Mutable widget values live in CommsDoc. Keeping these documents separate lets the trust gate enforce different scopes at the frame layer (see `docs/adr/identity-and-trust.md`, Decision 5).
-3. **Different persistence shapes.** NotebookDoc serializes to `.ipynb` on autosave. RuntimeStateDoc is ephemeral and recreated on daemon restart.
-4. **Different sync streams.** Both flow over the same connection but use distinct frame types and sync states. A flood on one document's stream does not stall the other.
+1. **Isolated write cadences.** Human keystrokes in `NotebookDoc` do not contend
+   with kernel output floods in `RuntimeStateDoc`.
+2. **Frame-level writer authority.** `NotebookDoc` accepts editor/owner writes;
+   `RuntimeStateDoc` sync rejects ordinary client writes and admits only
+   policy-validated runtime-peer updates while the coordinator owns execution
+   intent; `CommsDoc` carries mutable widget values (`identity-and-trust.md`
+   Decision 5).
+3. **Distinct local persistence.** `NotebookDoc` exports to `.ipynb`; local
+   `RuntimeStateDoc` is ephemeral and rebuilt on daemon restart.
+4. **Independent sync streams.** Distinct frame types and `sync::State` objects
+   prevent an output storm from stalling source edits.
 
-The `required_heads` causal gate (Decision 6) is over NotebookDoc only. Execution waiting (Decision 1) reads RuntimeStateDoc only. Both replicate concurrently and the consumer joins them at read time.
+`required_heads` (Decision 6) gates `NotebookDoc` only; terminal waits
+(Decision 1) read `RuntimeStateDoc` only. Consumers join them at read time.
 
 ## Worked examples
 
 ### Single cell, modest output
 
-1. User types `print(2+2)`. The renderer's WASM peer applies the source edit and queues an outbound NotebookDoc sync.
-2. User clicks run. The frontend calls `current_heads_hex()` (capture the new heads), then invokes the flush hook (commit the edit, pushing it onto the sync stream), then `executeCell` with those heads attached (`packages/runtimed/src/notebook-client.ts:98-101`). The capture-then-flush order is intentional: capturing first ensures the heads passed to the daemon are a strict subset of the bytes about to arrive on the sync stream.
-3. Daemon's peer-writer worker receives `ExecuteCell { cell_id, execution_id: None }` with `required_heads`. It calls `wait_for_required_heads` and observes all heads present (the sync frame arrived in the same TCP burst). Returns from the wait.
-4. Handler reads source from NotebookDoc, mints `execution_id`, writes `executions[eid] = { status: "queued", source, … }` and updates `queue`. Responds `CellQueued { execution_id, cell_id }`.
-5. Runtime agent observes the new execution via RuntimeStateDoc sync, calls `KernelState::queue_cell` then `process_next`. Status flips to `running`. ZMQ `execute_request` goes to the kernel.
-6. Kernel emits `status: busy`, `execute_input`, `stream { name: "stdout", text: "4\n" }`, `status: idle`.
-7. IOPub reader feeds the stdout chunk to `StreamTerminals` and requests a periodic flush. Flush commits a stream manifest to `executions[eid].outputs`.
-8. On `status: idle`: enqueue `KernelIdle` on lifecycle channel, then `display_update_committer.flush_for_ordering().await` (no pending updates, returns immediately), then `stream_committer.flush_then_signal(final_flushes, ExecutionDone { eid })`.
-9. Stream committer's priority arm flushes the final stream manifest, then sends `ExecutionDone` on the lifecycle channel.
-10. Runtime agent's lifecycle arm processes `KernelIdle` (status -> idle, no execution to release). Then `ExecutionDone` (status -> idle, calls `set_execution_done(eid, true)`, releases queue).
-11. Frontend's polling consumer of RuntimeStateDoc observes `status: "done"` with the stream manifest in `outputs`. UI renders.
+1. User types `print(2+2)`. The WASM peer updates `NotebookDoc` and queues sync.
+2. User clicks run. The frontend captures `current_heads_hex()`, triggers its
+   flush hook, and sends `executeCell` with `required_heads`
+   (`packages/runtimed/src/notebook-client.ts:98-101`).
+3. Daemon's request worker receives `ExecuteCell { cell_id, execution_id: None }`
+   with `required_heads`, runs `wait_for_required_heads`, and proceeds once all
+   heads are present.
+4. Handler reads source from `NotebookDoc`, mints `execution_id`, writes
+   `executions[eid] = { status: "queued", source, ... }`, updates `queue`, and
+   replies `CellQueued { execution_id, cell_id }`.
+5. Runtime agent syncs `RuntimeStateDoc`, runs `KernelState::queue_cell` and
+   `process_next`, flips status to `running`, and sends ZMQ `execute_request`.
+6. Kernel emits `status: busy`, `execute_input`,
+   `stream { name: "stdout", text: "4\n" }`, and `status: idle`.
+7. IOPub reader appends stdout to `StreamTerminals` and triggers a periodic
+   flush committing a stream manifest to `executions[eid].outputs`.
+8. On `status: idle`, the reader enqueues `KernelIdle`, awaits
+   `display_update_committer.flush_for_ordering().await`, and calls
+   `stream_committer.flush_then_signal(final_flushes, ExecutionDone { eid })`.
+9. Stream committer's priority arm commits final stream output and forwards
+   `ExecutionDone` to the lifecycle channel.
+10. Runtime agent's lifecycle arm handles `KernelIdle` (status -> idle) and then
+    `ExecutionDone` (`set_execution_done(eid, true)`, releases queue).
+11. Frontend observes `status: "done"` and renders the stream manifest.
 
 ### Cell with a tight progress-bar loop
 
-1. Cell runs `for i in range(10000): bar.update()` where `bar` is an `IntProgress` widget.
-2. Each `bar.update()` triggers a kernel-side `comm_msg(update)` carrying the widget's new `value`. IOPub delivers it as a comm update.
-3. IOPub reader writes to `RuntimeStateDoc.comms[bar_id].state.value` synchronously (durable record). Then calls `try_send_comm_update` for kernel-side replay.
-4. Work channel fills. Subsequent `try_send_comm_update` calls drop. Daemon logs at `debug`.
-5. User clicks interrupt. `RuntimeAgentRequest::InterruptExecution` arrives. Handler clears local queue, calls `mark_interrupted_executions_failed`, spawns ZMQ interrupt.
-6. Kernel emits a flurry of late IOPub including `KeyboardInterrupt` error, more comm updates, then `status: idle`.
-7. `KernelIdle` enqueued on lifecycle channel. Runtime agent's lifecycle arm runs before the work arm processes any backlogged `SendCommUpdate`. Queue releases.
-8. Pending work-channel items are processed afterward at whatever rate they drain. Each is a best-effort replay; the durable record in RuntimeStateDoc already has the correct state.
-
-If lifecycle and work shared one channel, the interrupt's `KernelIdle` would have queued behind whatever `SendCommUpdate` backlog existed and the user-visible interrupt latency would scale with the depth of that backlog.
+1. Cell runs `for i in range(10000): bar.update()` on an `IntProgress` widget.
+2. Each `bar.update()` emits IOPub `comm_msg(update)` with the new `value`.
+3. IOPub reader writes the updated value to `CommsDoc.comms[bar_id].state.value`
+   (using `RuntimeStateDoc.comms[bar_id]` for comm topology), then calls
+   `try_send_comm_update` for kernel-side replay.
+4. Work channel fills; excess `try_send_comm_update` calls drop and log at
+   `debug`.
+5. User clicks interrupt. `RuntimeAgentRequest::InterruptExecution` clears the
+   local queue, calls `mark_interrupted_executions_failed`, and sends ZMQ
+   interrupt.
+6. Kernel emits `KeyboardInterrupt`, late comm updates, and `status: idle`.
+7. `KernelIdle` enters the unbounded lifecycle channel. The `biased;` select
+   runs the lifecycle arm ahead of any backlogged `SendCommUpdate`, releasing
+   the queue immediately.
+8. Backlogged work items drain afterward as best-effort replays; `CommsDoc`
+   already holds the authoritative widget state.
 
 ### `update_display_data` storm
 
 1. Cell runs `for i in range(1000): display(Image(...), display_id="x")`.
-2. Each update arrives on IOPub as `UpdateDisplayData`. IOPub reader calls `display_update_committer.request_update(display_id, data, metadata, buffers)`. The pending map's entry for `"x"` is overwritten on each call. A single `notify_one` is posted per call (idempotent under the wake-hint semantics).
-3. The committer wakes, drains the pending map, commits the *latest* manifest for `"x"` to RuntimeStateDoc. While that transaction runs, more requests pile into the pending map; the next wake catches them.
-4. `status: idle` arrives. IOPub reader calls `display_update_committer.flush_for_ordering().await`. The committer's priority arm drains the pending map one more time, sends ack, and the reader proceeds.
-5. Stream committer flushes any final stream output, then sends `ExecutionDone`. Reader proceeds to next message.
-6. Consumers reading `executions[eid].outputs` after `status: "done"` see the latest rendered state of `"x"`, not the second-to-last.
+2. Each `UpdateDisplayData` calls
+   `display_update_committer.request_update(display_id, data, metadata, buffers)`,
+   overwriting `"x"` in the pending map and posting an idempotent `notify_one`.
+3. The committer drains the map and commits the latest manifest for `"x"` to
+   `RuntimeStateDoc` while newer updates coalesce into the map for the next
+   wake.
+4. On `status: idle`, the IOPub reader awaits
+   `display_update_committer.flush_for_ordering().await`, draining the map one
+   last time before the oneshot ack.
+5. Stream committer flushes final stream output and sends `ExecutionDone`.
+6. Readers observing `status: "done"` see the final rendered state of `"x"`.
 
+## Open Follow-ups
+
+- **Validate lossy queue bounds under load:** Review the three independent lossy
+  queue bounds — work channel capacity (`100` in `jupyter_kernel.rs`), periodic
+  stream flush queue (`STREAM_COMMITTER_QUEUE_CAPACITY = 32` in
+  `stream_committer.rs`), and pending display-ID coalescing cap
+  (`MAX_PENDING_DISPLAY_IDS = 128` in `display_update_committer.rs`) — against
+  heavy widget and display-update workloads to confirm they neither drop too
+  early nor buffer excessively.
 
 ## References
 
-- `crates/runtimed/src/stream_committer.rs` - bounded periodic + unbounded priority paths, `flush_then_signal`, `flush_for_ordering`.
-- `crates/runtimed/src/display_update_committer.rs` - coalesced display updates, priority flush ack.
-- `crates/runtimed/src/output_prep.rs:465-550` - `LifecycleSignal`, `WorkCommand`, and channel construction.
-- `crates/runtimed/src/runtime_agent.rs:592-639, 1414-1430` - lifecycle/work select arms and `drain_lifecycle_commands`.
-- `crates/runtimed/src/jupyter_kernel.rs:1394-1441, 1805-1818` - IOPub `status: idle` and `UpdateDisplayData` handling.
-- `crates/runtimed/src/kernel_state.rs:147-181` - `execution_done` and `set_execution_done`.
-- `crates/notebook-sync/src/execution_wait.rs` - two-phase terminal wait, output-sync grace.
-- `crates/runtimed/src/notebook_sync_server/peer_writer.rs:167-256` - `required_heads` gate.
-- `crates/runt-mcp/src/execution.rs` - MCP consumer pattern.
-- `.agents/skills/execution-pipeline/SKILL.md` - the agent-facing summary that this ADR expands.
-- `crates/runtimed/AGENTS.md` "Lifecycle and output ordering" - the scoped
-  summary of the rules this ADR expands.
+- `crates/runtimed/src/stream_committer.rs` — bounded periodic + unbounded
+  priority paths, `flush_then_signal`, `flush_for_ordering`.
+- `crates/runtimed/src/display_update_committer.rs` — coalesced display updates
+  and priority flush ack.
+- `crates/runtimed/src/output_prep.rs:465-550` — `LifecycleSignal`,
+  `WorkCommand`, `NonBlockingSender`, and channel construction.
+- `crates/runtimed/src/runtime_agent.rs:592-639, 1414-1430` — lifecycle/work
+  select arms and `drain_lifecycle_commands`.
+- `crates/runtimed/src/jupyter_kernel.rs:1394-1441, 1805-1818` — IOPub
+  `status: idle` and `UpdateDisplayData` handling.
+- `crates/runtimed/src/kernel_state.rs:147-181` — `execution_done` and
+  `set_execution_done`.
+- `crates/notebook-sync/src/execution_wait.rs` — two-phase terminal wait and
+  output-sync grace.
+- `crates/runtimed/src/notebook_sync_server/peer_writer.rs:167-256` —
+  `required_heads` gate.
+- `crates/runt-mcp/src/execution.rs` — MCP consumer pattern.
+- `.agents/skills/execution-pipeline/SKILL.md` — agent-facing pipeline summary.
+- `crates/runtimed/AGENTS.md` — "Lifecycle and output ordering" scoped rules.
