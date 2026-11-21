@@ -1,45 +1,43 @@
 # Embedding the hosted editor
 
-After a successful nightly or stable release, an independent workflow builds
-and attaches the browser editor as one tarball. The assets may arrive later
-than the desktop release; a failed editor build does not block desktop, wheels,
-or the existing npm publisher. A host that embeds the editor pins a release tag and a SHA-256. It does
-not check out a commit or build Rust and WASM itself.
+After a successful nightly or stable release, a separate workflow builds and
+attaches the browser editor as one tarball. These assets can arrive later than
+the desktop release; a failed editor build never blocks desktop, wheels, or npm
+publishing. Embedding hosts pin a release tag and SHA-256 instead of checking
+out source or building Rust and WASM.
 
 ## What ships
 
-Each release carries two assets, named by channel (`nightly` or `stable`):
+Each release publishes two assets per channel (`nightly` or `stable`):
 
 ```text
 notebook-cloud-assets-<channel>.tar.gz
 notebook-cloud-assets-<channel>.tar.gz.sha256
 ```
 
-The tarball holds:
+Tarball layout:
 
 | Path | Contents |
 | --- | --- |
 | `manifest.json` | Version, channel, `protocol_version`, source commit, `built_at`, and a SHA-256 for every other file |
-| `viewer/assets/` | The editor entry script and stylesheet, the OIDC callback script, hashed copies of the WASM engine, and `runtime-wasm-assets.json` naming them |
-| `viewer/plugins/` | Renderer plugin assets the editor loads from `rendererAssetsBasePath` |
+| `viewer/assets/` | Editor entry script and stylesheet, OIDC callback script, hashed WASM engine files, and `runtime-wasm-assets.json` listing them |
+| `viewer/plugins/` | Renderer plugin assets loaded from `rendererAssetsBasePath` |
 | `output-document/` | `index.html`, the frame that renders untrusted cell output |
-| `wasm/runtimed-wasm/` | The `runtimed-wasm` engine (`runtimed_wasm.js` and `runtimed_wasm_bg.wasm`) for the host's server |
+| `wasm/runtimed-wasm/` | `runtimed-wasm` engine (`runtimed_wasm.js` and `runtimed_wasm_bg.wasm`) for the host's server |
 | `LICENSE` | License text |
 
-The bundle has no host endpoints, credentials, or origins baked in. They arrive
-through the JSON config described below. One tarball serves any host.
-
-The packager fixes entry order, owners, modification times, and `built_at`
-(the timestamp encoded in the release version). This makes packaging identical
-inputs deterministic. Publication retries reuse the original packed bytes;
-rebuilding dependencies or the viewer is not a reproducibility guarantee.
-
-Every directory is build output. The tarball carries no TypeScript source, so
-a host does not depend on how packages are split in this repository.
+- **Host-agnostic**: No host endpoints, credentials, or origins are baked in.
+  Supply them through runtime JSON config so one tarball serves any host.
+- **Deterministic packing**: Entry order, owners, mtimes, and `built_at` (from
+  the release version timestamp) are fixed for identical inputs. Publication
+  retries reuse the original packed bytes; rebuilding dependencies or the
+  viewer is not a reproducibility guarantee.
+- **Build output only**: The tarball contains no TypeScript source, so hosts do
+  not depend on this repository's package layout.
 
 ## Verify
 
-Download by release tag, then check the sidecar and every manifest entry:
+Download by release tag, verify the sidecar checksum, and unpack:
 
 ```sh
 TAG=v<version>
@@ -50,15 +48,15 @@ sha256sum -c notebook-cloud-assets-stable.tar.gz.sha256
 mkdir editor && tar -xzf notebook-cloud-assets-stable.tar.gz -C editor
 ```
 
-Record the tarball SHA-256 next to the tag in your deployment config. The
-repository script `scripts/ci/notebook-cloud-assets-smoke.sh` does the sidecar
-check, the per-file manifest check, and a static serve test. It needs `tar`,
-`sha256sum`, and Node 22. It also accepts an `https://` URL, which adds `curl`.
+Record the tarball SHA-256 beside the tag in your deployment config. To run the
+sidecar check, per-file manifest check, and a static serve smoke test, run
+`scripts/ci/notebook-cloud-assets-smoke.sh` (requires `tar`, `sha256sum`, Node
+22, and `curl` when given an `https://` URL).
 
 ## Serve
 
-`viewer/` is a library build. It has no `index.html`. The host renders the
-page and the editor mounts into it:
+`viewer/` is a library build with no `index.html`. Render the host page and
+mount the editor into it:
 
 ```html
 <link rel="stylesheet" href="/assets/notebook-cloud-viewer.css" />
@@ -69,27 +67,25 @@ page and the editor mounts into it:
 ```
 
 - Serve `viewer/assets/` at `/assets/` on the editor origin.
-- Serve `viewer/plugins/` at the URL you pass as `rendererAssetsBasePath`.
-  Keep renderer assets on their own origin or route.
+- Serve `viewer/plugins/` at the URL passed as `rendererAssetsBasePath`, on its
+  own origin or route.
 - Serve `output-document/index.html` from a separate origin and pass that
   origin as `outputDocumentBaseUrl`. Output code must not share the editor's
   origin.
-- The browser loads the WASM engine from `runtimedWasmModulePath` and
-  `runtimedWasmPath`. Point them at the hashed files under `viewer/assets/`;
-  `viewer/assets/runtime-wasm-assets.json` lists their names.
-- `wasm/runtimed-wasm/` is for the host's server, which imports
-  `runtimed_wasm.js` and `runtimed_wasm_bg.wasm` from it. The browser does not
-  fetch this directory.
+- Point `runtimedWasmModulePath` and `runtimedWasmPath` at the hashed files in
+  `viewer/assets/` listed by `viewer/assets/runtime-wasm-assets.json`.
+- Import `runtimed_wasm.js` and `runtimed_wasm_bg.wasm` from
+  `wasm/runtimed-wasm/` on the host's server. The browser does not fetch this
+  directory.
 
 ## Runtime configuration
 
-Two JSON scripts carry everything the editor needs. The authoritative field
-lists live in the release tag's source: `loadConfig` in
+Authoritative field lists live in the release tag's source: `loadConfig` in
 `apps/notebook-cloud/viewer/cloud-viewer-config.ts` and
 `normalizeOidcAuthConfig` in `apps/notebook-cloud/viewer/oidc-auth.ts`.
 
-`#nteract-cloud-viewer-config` is required. The editor refuses to start when
-any of these keys is missing:
+`#nteract-cloud-viewer-config` is required. The editor refuses to start if any
+required key is missing:
 
 | Group | Keys |
 | --- | --- |
@@ -98,75 +94,78 @@ any of these keys is missing:
 | Snapshot and blob paths | `snapshotBasePath`, `runtimeSnapshotBasePath`, `commsSnapshotBasePath`, `blobBasePath` |
 | Asset paths | `rendererAssetsBasePath`, `runtimedWasmModulePath`, `runtimedWasmPath` |
 
-Optional keys include `headsHash`, `authorProfilesEndpoint`,
-`outputDocumentBaseUrl`, `hostCapabilities`, `featureFlags`, and `session`.
+Optional keys: `headsHash`, `authorProfilesEndpoint`, `outputDocumentBaseUrl`,
+`hostCapabilities`, `featureFlags`, and `session`.
 
 `#nteract-cloud-auth-config` is optional. Its `oidc` object enables OIDC
-sign-in when it carries `issuer`, `clientId`, and `redirectUri`;
-`providerLabel`, `scope`, and `flow` are optional. Without the script, or
-without those three keys, the editor runs with no sign-in.
+sign-in when `issuer`, `clientId`, and `redirectUri` are set (`providerLabel`,
+`scope`, and `flow` are optional). Without the script or those three keys, the
+editor runs without sign-in.
 
-The endpoints point at a notebook server you run. That server imports the
-engine in `wasm/runtimed-wasm/`. Cross-origin
-allow-lists, identity mapping, and credentials are that server's concern, not
-the editor's.
+All endpoints target your notebook server, which imports `wasm/runtimed-wasm/`.
+That server owns cross-origin allow-lists, identity mapping, and credentials.
 
 ## Compatibility
 
-`manifest.json` lists `protocol_version`. It matches `PROTOCOL_VERSION` in
-`crates/notebook-protocol/src/connection/handshake.rs` for that tag. The
-daemon or runtime image you connect to must report the same
-`protocol_version`. Pin both to releases from the same protocol version.
-Versions are not wire-compatible across a protocol bump.
+`manifest.json` records `protocol_version`, matching `PROTOCOL_VERSION` in
+`crates/notebook-protocol/src/connection/handshake.rs` for that tag. Pin the
+editor bundle and the daemon or runtime image to releases with the same
+`protocol_version`. Releases are not wire-compatible across a protocol bump.
 
 ## Build and publication recovery
 
-The successful release's single WASM build retains `release-wasm-<run>-<attempt>`
-for 90 days, including source/channel/version, build attempt, and per-file hashes.
-Recording/uploading this downstream copy is optional: storage failures do not
-fail the required WASM build or the original release artifact. The downstream
-builder fails explicitly when its retained input is unavailable. It selects the
-latest successful WASM job attempt first; a missing receipt for that attempt
-never falls back to an older version or different bytes.
-The optional **Build editor assets** workflow validates that successful release,
-reuses its WASM and renderer bytes, then builds the viewer once. It retains
-`editor-assets-<release-run>-<release-attempt>` for 90 days with the tarball,
-sidecar, and `candidate.json` (release/WASM/build identities and checksums).
-A release retry that reuses a successful earlier WASM build records that original
-WASM attempt separately from the successful release attempt.
+### Artifact flow
 
-**Publish editor assets** runs afterward with write permission, checks out only
-the trusted default-branch publisher, and treats downloaded artifacts as bytes.
-It verifies the successful upstream release, immutable tag/source, artifact
-origin/digest, and asset hashes before uploading. It never runs downloaded code,
-rebuilds, replaces an existing asset, or changes a rolling channel tag. Both
-uploaded assets are downloaded and hashed again before success is reported.
+1. The upstream release's WASM build retains `release-wasm-<run>-<attempt>` for
+   90 days (source, channel, version, build attempt, and per-file hashes).
+   Uploading this copy is optional so storage failures never fail the release.
+   The downstream builder selects the latest successful WASM job attempt and
+   fails closed if its receipt is missing (never falling back to an older
+   version or different bytes).
+2. **Build editor assets** validates the upstream release, reuses its WASM and
+   renderer bytes, builds the viewer once, and retains
+   `editor-assets-<release-run>-<release-attempt>` for 90 days with the
+   tarball, sidecar, and `candidate.json` (release, WASM, and build identities
+   plus checksums). If a release retry reuses an earlier WASM build, that
+   original WASM attempt is recorded separately from the release attempt.
+3. **Publish editor assets** runs with write permission from the trusted
+   default-branch checkout and treats downloaded artifacts as opaque bytes. It
+   verifies the upstream release, immutable tag/source, artifact origin/digest,
+   and asset hashes before upload. It never runs downloaded code, rebuilds,
+   replaces an existing asset, or moves a rolling channel tag. After upload, it
+   downloads and re-hashes both assets before reporting success.
 
-To recover a publication failure, dispatch **Publish editor assets** on the
-default branch with the successful editor build run ID and attempt. A partial
-upload resumes only the missing member after checking the existing member's
-bytes. GitHub can leave an incomplete `starter` asset after an interrupted
-upload; the publisher reports its asset ID and stops without deleting anything.
-Inspect/remove that incomplete upload manually, then retry the same editor
-build. Completed uploaded assets are never replaced.
+### Recover a failed publication
 
-An exact completed pair is a no-op; different bytes fail closed. Missing
-older assets are refused after a newer release in that channel exists.
+1. Dispatch **Publish editor assets** on the default branch with the successful
+   editor build run ID and attempt.
+2. Partial uploads check existing member bytes and upload only the missing
+   member. Exact completed pairs are a no-op; byte mismatches fail closed.
+3. If GitHub leaves an incomplete `starter` asset after an interrupted upload,
+   the publisher reports its asset ID and stops without deleting anything.
+   Inspect and delete the incomplete asset manually, then retry the same editor
+   build. Completed assets are never replaced.
+4. Missing assets on an older release are refused once a newer release exists
+   in that channel.
 
-To retry an initially failed build, dispatch **Build editor assets** with the
-successful release run ID and attempt. Duplicate events and whole-workflow
-reruns first find the retained completed candidate and skip all build work.
-If packed bytes exist but their build job failed, publication/build recovery
-stops for investigation. If a successful candidate's artifact expired or was
-deleted, recovery fails explicitly; use a new release candidate, never silently
-rebuild the old identity. Workflow run records must remain available to enforce
-that barrier; do not delete editor build runs while their release is supported.
+### Recover a failed build
 
-Once packing succeeds, the sealed editor receipt and successful original WASM
-job record are sufficient for publication: the large input WASM artifact may
-expire. The editor candidate artifact and run records must still be retained.
+1. Dispatch **Build editor assets** with the successful release run ID and
+   attempt. Duplicate events and whole-workflow reruns find the retained
+   completed candidate and skip build work.
+2. If packed bytes exist for a failed build job, recovery stops for
+   investigation.
+3. If a successful candidate's artifact expires or is deleted, recovery fails
+   explicitly. Cut a new release candidate instead of silently rebuilding the
+   old identity. Keep editor build workflow run records while their release is
+   supported so this barrier stays enforced.
+4. Once packing succeeds, the sealed editor receipt and original WASM job
+   record are enough for publication even if the large input WASM artifact
+   expires. The editor candidate artifact and run records must remain retained.
 
-The first supported release must include these workflows and the retained WASM
-receipt. Older releases cannot be backfilled by rebuilding their WASM. PR
-fixture/real-build smoke checks validate packing and static serving; they do
-not establish that a published release asset has been accepted by a host.
+### Prerequisites and limits
+
+- Releases must include these workflows and the retained WASM receipt. Older
+  releases cannot be backfilled by rebuilding their WASM.
+- PR fixture and real-build smoke checks verify packing and static serving;
+  they do not prove a published release asset has been accepted by a host.
