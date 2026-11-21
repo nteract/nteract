@@ -9,17 +9,17 @@ Every shell-loading bug found while hardening the cloud viewer was the same
 defect in a different organ: **a durable fact held hostage by a liveness
 signal.**
 
-- The OIDC callback spun forever because the token exchange had no deadline -
-  fixed in #3930 with library-layer timeouts and a retryable error state.
+- The OIDC callback spun forever because the token exchange had no deadline.
+  Fixed in #3930 with library-layer timeouts and a retryable error state.
 - `/n` skeletons indefinitely when app-session establishment persistently
   fails: `waitingForAppSession` in `notebook-list-view.tsx` has no timeout, no
   fallback fetch, no error exit (#3928, reproduced live).
 - The post-expiry cold load serializes OIDC refresh -> session establish ->
-  list fetch, each gating the next, with a skeleton the whole way - even though
-  the list content did not change while the cookie aged out (#3928).
-- Identity display used to be re-derived per surface, each one independently
-  deciding whether it "knew who this is yet" - unified by the cloud user store
-  (#3923, `docs/adr/cloud-user-store.md`).
+  list fetch, each gating the next, with a skeleton the whole way. The list
+  content did not even change while the cookie aged out (#3928).
+- Identity display used to be re-derived per surface, with each one
+  independently deciding whether it "knew who this is yet." Unified by the
+  cloud user store (#3923, `docs/adr/cloud-user-store.md`).
 
 Who you are, what your notebook list looks like, and what a collaborator is
 called are durable facts. Whether a token is fresh *right now* is a liveness
@@ -33,11 +33,11 @@ pixels.
    surface that has ever shown content for this principal should reopen with
    that content (marked stale if needed), not a skeleton. Skeletons are for
    "we genuinely know nothing," not "we are re-proving what we knew."
-2. **Every async gate gets three exits.** Success, deadline (fall through to
-   the next-best source: cached content, a direct fetch with existing
-   credentials), and error (visible, with a retry that actually restarts the
+2. **Every async gate gets three exits.** Provide success, deadline (fall
+   through to the next-best source: cached content or a direct fetch with
+   existing credentials), and error (visible, with a retry that restarts the
    work). A gate with only the success exit is a bug even when the happy path
-   is fast - #3930's callback and #3928's session gate both shipped that way.
+   is fast. Both #3930's callback and #3928's session gate shipped that way.
 3. **Cache validity is principal-keyed and matcher-gated.** Cached shell state
    is only paintable for the principal that produced it, using the same rules
    `cloudInstantPaintPrincipalMatcher` already encodes. A present-but-dead
@@ -46,7 +46,7 @@ pixels.
    inherits a cache.
 4. **Liveness signals gate actions, not paint.** Authorization decisions, room
    credentials, mutations, and anything that grants capability stay strictly
-   liveness-gated - no cached ACL answers, no optimistic capability. The cache
+   liveness-gated: no cached ACL answers and no optimistic capability. The cache
    only ever stands in for content the principal had already been shown.
 
 ## What this implies next (#3928 levers)
@@ -58,8 +58,8 @@ pixels.
   whatever credentials exist, then an error state with retry.
 - Race the list fetch with OIDC refresh instead of serializing behind it.
 - Server bootstrap remains the best case (cookie valid -> full content in the
-  HTML); the cache covers the window where the cookie is dead and the refresh
-  is in flight; the skeleton survives only for genuinely-new principals.
+  HTML). The cache covers the window where the cookie is dead and the refresh
+  is in flight. The skeleton survives only for genuinely-new principals.
 
 New shell surfaces (workstations, sharing ledgers, future dashboards) should be
 built against this policy from the start rather than retrofitted.

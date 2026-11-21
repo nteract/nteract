@@ -8,34 +8,38 @@ Companion to [compute-session-index.md](compute-session-index.md),
 [deployment-topology.md](../adr/deployment-topology.md).
 
 > **Current-source note (October 16, 2026):** This July memo records historical
-> observations, options and pricing assumptions; it is not a current inventory.
-> At `655b66d89a841953925d58ca38b4daa75c29ec17`,
-> [OwnerComputeIndex](../../apps/notebook-cloud/src/compute-session-index.ts)
-> has an `alarm()` that expires workstation leases,
-> [the route layer](../../apps/notebook-cloud/src/index.ts) has
-> `routeWorkstationDeregister`, and
-> [listActiveWorkstationAttachJobs](../../apps/notebook-cloud/src/storage.ts)
-> expires stale jobs during polling. These supersede the missing-alarm,
-> missing-deregistration and create-only-expiry claims below; they do not establish
-> that every historical symptom is resolved in every deployment. See the proposed
+> observations, options, and pricing assumptions; it is not a current inventory.
+> At `655b66d89a841953925d58ca38b4daa75c29ec17`:
+>
+> - [OwnerComputeIndex](../../apps/notebook-cloud/src/compute-session-index.ts)
+>   has an `alarm()` that expires workstation leases.
+> - [The route layer](../../apps/notebook-cloud/src/index.ts) has
+>   `routeWorkstationDeregister`.
+> - [listActiveWorkstationAttachJobs](../../apps/notebook-cloud/src/storage.ts)
+>   expires stale jobs during polling.
+>
+> These supersede the missing-alarm, missing-deregistration, and create-only-expiry
+> claims below. They do not establish that every historical symptom is resolved
+> in every deployment. See the proposed
 > [cloud compute admission contract](cloud-compute-admission.md) for managed
-> launch, enrolled native workstations and lifecycle boundaries.
+> launch, enrolled native workstations, and lifecycle boundaries.
 
 ## Context
 
-The workstation control plane was shaped for the Cloudflare free tier: poll on a
-60s cadence, write to durable storage only on lifecycle edges, never on
-heartbeats, and lean on lazy read-time staleness checks instead of scheduled
-sweeps. That was the right call under free-tier request and storage ceilings. It
-is no longer the constraint. Hosted is on the paid monthly plan with an overage
-allowance, and the free-tier-shaped decisions are now the thing making
+The workstation control plane was shaped for the Cloudflare free tier. It
+polled on a 60s cadence, wrote to durable storage only on lifecycle edges
+(never on heartbeats), and leaned on lazy read-time staleness checks instead of
+scheduled sweeps. That was the right call under free-tier request and storage
+ceilings, which are no longer the constraint. Hosted is on the paid monthly
+plan with an overage allowance. Those free-tier decisions are now making
 workstations feel unreliable.
 
-The open question, in the operator's words: the biggest pain point is registering
-nodes and handling them quickly. Redis is the instinct - a fast registry where
-nodes register and expire on their own. This memo takes that instinct seriously
-and lands somewhere else, because the Redis-shaped capabilities either already
-exist in this codebase or do not survive contact with the Workers runtime.
+The open question, in the operator's words: the biggest pain point is
+registering nodes and handling them quickly. Redis is the instinct (a fast
+registry where nodes register and expire on their own). This memo takes that
+instinct seriously and lands somewhere else. The Redis-shaped capabilities
+either already exist in this codebase or do not survive contact with the
+Workers runtime.
 
 ## What "online" means today: three surfaces, three consistency models
 
@@ -44,7 +48,7 @@ the same definition of "connected":
 
 - **D1 `workstations.last_seen_at` / `status`** (`apps/notebook-cloud/src/storage.ts`).
   Durable, cheap, lazy. `registerWorkstation` is a single UPSERT that always sets
-  `status='online'` and `last_seen_at=now`; re-registration *is* the heartbeat,
+  `status='online'` and `last_seen_at=now`. Re-registration *is* the heartbeat;
   there is no separate verb. The `status` column is only ever written `'online'`
   and is never actively flipped to `'offline'`. Offline is derived at read time:
   `now - last_seen_at > WORKSTATION_HEARTBEAT_STALE_MS` (3 min).
@@ -59,9 +63,9 @@ the same definition of "connected":
   D1 revision metadata). The actual fencing authority for which runtime_peer a
   room accepts, cached per-DO-instance in `NotebookRoom.selectedRuntimePeerSessions`.
 
-Nothing sweeps any of these on a schedule below the `NotebookRoom` DO, and even
-that alarm only watches room-level runtime_peer membership, not workstation
-presence, not the compute-session index, not the desktop bridge.
+Nothing sweeps any of these on a schedule below the `NotebookRoom` DO. Even
+that alarm only watches room-level runtime_peer membership. It does not watch
+workstation presence, the compute-session index, or the desktop bridge.
 
 ## This week's evidence
 
@@ -96,7 +100,7 @@ detection with no proactive liveness layer.
    `WorkingDirectory` bug left every Linux service unit in bad-setting, so
    workstations survived only as long as a manual `runt workstation run` shell.
    The lazy attach-job expiry underneath remains: a `pending` job whose peer never
-   comes online sits indefinitely from the client's view, because
+   comes online sits indefinitely from the client's view.
    `expireStaleWorkstationAttachJobs` only runs at the top of the *next*
    `createWorkstationAttachJob`, never on the poll path.
 
@@ -105,98 +109,106 @@ detection with no proactive liveness layer.
    structured `roomLink` state in the workstation panel. The desktop app's own
    connection dot is still blind to bridge health (issue #3599 remainder).
 
-7. **Silent kernel-launch failure** (observed live today, new). This is the one
-   that stuck the `yep` notebook this morning: everything queued, nothing running,
-   no logs in the browser. Root cause was not the control plane at all. The
-   workstation's "Current Python" (`uv:current_python`) resolves to system
-   `/usr/bin/python3`, which had no `ipykernel`. Launch-on-attach `LaunchKernel`
-   failed, the runtime peer stayed connected, and the UI reported "Kernel running"
-   with cells stuck at "queued" and no surfaced error. A failed launch renders as a
-   healthy running kernel. This is a runtime-state health-propagation gap adjacent
-   to the liveness theme: same class of bug as items 1 and 6, one layer up. Tracked
-   separately as a fixable product bug; see the issue linked at the end.
+7. **Silent kernel-launch failure** (observed live today, new). This stuck the
+   `yep` notebook this morning: everything queued, nothing running, no logs in
+   the browser. Root cause was not the control plane at all. The workstation's
+   "Current Python" (`uv:current_python`) resolves to system `/usr/bin/python3`,
+   which had no `ipykernel`. Launch-on-attach `LaunchKernel` failed, yet the
+   runtime peer stayed connected. The UI reported "Kernel running" with cells
+   stuck at "queued" and no surfaced error, rendering a failed launch as a
+   healthy running kernel. This runtime-state health-propagation gap is the
+   same class of bug as items 1 and 6, one layer up. Tracked separately as a
+   fixable product bug; see the issue linked at the end.
 
 ## The Redis question, answered
 
 The instinct is to reach for Redis: register nodes, let keys expire, get a fast
 sorted-set query for "who is stale." Three things make it the wrong tool at this
-scale, and they map directly to the ingress/egress worry.
+scale, and they map directly to the ingress/egress worry:
 
-**Cost is inverted here, not in Redis's favor.** At 200 workstations heartbeating
-every ~20s that is ~26M writes/month. That sits under DO-SQLite's and D1's 50M
-included row-writes/month, so it is effectively $0 marginal on infrastructure
-already paid for. The same 26M operations on Upstash pay-as-you-go is ~$52/month
-for heartbeats alone, before registry reads, before attach-job traffic, before the
-$0.03/GB bandwidth line item Cloudflare does not charge (zero egress on DO, D1,
-R2). Redis is a new recurring bill for a job the paid plan already covers inside
-its allowance.
+- **Cost is inverted here, not in Redis's favor.** At 200 workstations
+  heartbeating every ~20s, that is ~26M writes/month. That sits under
+  DO-SQLite's and D1's 50M included row-writes/month, so marginal cost is
+  effectively $0 on infrastructure already paid for. The same 26M operations on
+  Upstash pay-as-you-go is ~$52/month for heartbeats alone. That excludes
+  registry reads, attach-job traffic, and the $0.03/GB bandwidth line item
+  Cloudflare does not charge (zero egress on DO, D1, R2). Redis adds a
+  recurring bill for a job the paid plan already covers inside its allowance.
 
-**Redis's two headline features do not work cleanly from Workers.** Pub/sub needs
-a persistent `SUBSCRIBE` connection a stateless Worker invocation cannot hold;
-Upstash's own guidance is to use QStash (HTTP webhooks) for serverless push, so
-Redis pub/sub does not replace the `WorkstationEvents` push channel, it just
-leaves it unbuilt. TTL auto-expiry is passive: no callback fires on key expiry
-without keyspace notifications, which themselves need a persistent subscriber. So
-an active sweep still has to be built either way, and this codebase already has
-one: the single-earliest-alarm arm/disarm in `notebook-room.ts:2258-2314` that
-fires `RUNTIME_PEER_GONE_GRACE_MS` after a peer drops.
+- **Redis's two headline features do not work cleanly from Workers.** Pub/sub
+  needs a persistent `SUBSCRIBE` connection a stateless Worker invocation
+  cannot hold. Upstash's own guidance is to use QStash (HTTP webhooks) for
+  serverless push, so Redis pub/sub does not replace `WorkstationEvents`; it
+  just leaves push unbuilt. TTL auto-expiry is passive: no callback fires on
+  key expiry without keyspace notifications, which also need a persistent
+  subscriber. An active sweep still has to be built either way. This codebase
+  already has one: the single-earliest-alarm arm/disarm in
+  `notebook-room.ts:2258-2314` that fires `RUNTIME_PEER_GONE_GRACE_MS` after a
+  peer drops.
 
-**This is the ingress/egress concern, concretely.** `cloudflare:sockets`
-`connect()` is GA for outbound public TCP, so raw-wire Redis is technically
-reachable. But opening a socket from *inside a DO* keeps that DO resident and
-duration-billed for up to 15 minutes per connection, turning a cheap serverless
-call into a billed process. From a stateless Worker there is no pooling: a fresh
-TCP handshake per invocation, worse latency than a keep-alive REST connection for
-no gain over what DO storage gives for free. So the separate ingress/egress path
-Redis implies is not just a second network hop, it is a billing and pooling
-penalty the current architecture avoids by keeping state in the same thread as
-compute.
+- **The ingress/egress concern is concrete.** `cloudflare:sockets` `connect()`
+  is GA for outbound public TCP, so raw-wire Redis is technically reachable.
+  Opening a socket from *inside a DO* keeps that DO resident and duration-billed
+  for up to 15 minutes per connection, turning a cheap serverless call into a
+  billed process. From a stateless Worker there is no pooling: each invocation
+  pays a fresh TCP handshake, with worse latency than a keep-alive REST
+  connection and no gain over DO storage. The separate ingress/egress path
+  Redis implies is not just a second network hop. It is a billing and pooling
+  penalty the current architecture avoids by keeping state in the same thread
+  as compute.
 
 ## Options
 
 **A. All-Cloudflare, paid-tier primitives, minimal change.** Keep the three
-surfaces, add an alarm to `WorkstationEvents`. Cheapest to write. Leaves the
-D1-vs-socket split-brain in place: two surfaces keep disagreeing about "online,"
-neither swept authoritatively. Rejected as the endpoint, not because it is wrong
-but because it is incomplete.
+surfaces and add an alarm to `WorkstationEvents`. Cheapest to write, but it
+leaves the D1-vs-socket split-brain in place: two surfaces keep disagreeing
+about "online," neither swept authoritatively. Rejected as the endpoint, not
+because it is wrong, but because it is incomplete.
 
-**B. External Redis (Upstash or self-managed).** Rejected above: cost inverts at
-this scale, the headline features do not survive the Workers runtime, and it adds
-a second vendor, secret, incident surface, and pricing page for a single operator
-to carry.
+**B. External Redis (Upstash or self-managed).** Rejected above. Cost inverts
+at this scale, and the headline features do not survive the Workers runtime. It
+also adds a second vendor, secret, incident surface, and pricing page for a
+single operator to carry.
 
-**C. Consolidate to two purposeful Durable Objects.** Recommended. Fold the D1
-`last_seen_at` staleness logic and the `OwnerComputeIndex` KV cache into one
-SQLite-backed fleet-registry DO, sharded by owner (reuse the existing
-`ownerComputeIndexObjectName` convention, which bounds each object's write rate to
-one owner's machines). Store `last_seen_at` and `lease_expires_at` per workstation
-with an indexed column, and run the single-earliest-alarm pattern already shipped
-in `notebook-room.ts`. Leave `WorkstationEvents` as-is: it is a distinct concern
-(live push to attached listeners), it already works, and it costs nothing while
-hibernating. The registry DO's alarm calls the `WorkstationEvents` stub's existing
-`/notify` on lease expiry, so listeners get a real "went offline" push instead of
-inferring it from socket presence.
+**C. Consolidate to two purposeful Durable Objects.** Recommended:
+
+- Fold the D1 `last_seen_at` staleness logic and the `OwnerComputeIndex` KV
+  cache into one SQLite-backed fleet-registry DO, sharded by owner. Reuse the
+  existing `ownerComputeIndexObjectName` convention, which bounds each object's
+  write rate to one owner's machines.
+- Store `last_seen_at` and `lease_expires_at` per workstation with an indexed
+  column. Run the single-earliest-alarm pattern already shipped in
+  `notebook-room.ts`.
+- Leave `WorkstationEvents` as-is. It is a distinct concern (live push to
+  attached listeners), already works, and costs nothing while hibernating.
+- Have the registry DO's alarm call the `WorkstationEvents` stub's existing
+  `/notify` on lease expiry. Listeners get a real "went offline" push instead
+  of inferring it from socket presence.
 
 ## Recommendation
 
 Option C. For tens-to-hundreds of nodes, single-operator ops load, and a
-latency-sensitive execute path, Redis is a net cost and complexity add with no
-capability this codebase does not already have proven in-repo. The registry
-problem is not "we lack a fast key-value store," it is "liveness is smeared across
-three surfaces with no scheduled sweep." Consolidating the surfaces and applying
-the alarm pattern that already works for rooms fixes the actual problem without a
-platform bet.
+latency-sensitive execute path, Redis is a net cost and complexity add. It
+brings no capability this codebase does not already have proven in-repo. The
+registry problem is not "we lack a fast key-value store." It is "liveness is
+smeared across three surfaces with no scheduled sweep." Consolidating the
+surfaces and applying the proven room alarm pattern fixes the actual problem
+without a platform bet.
 
-This is what makes "register nodes and handle them quickly" true: a lease with an
-`alarm()`-bounded expiry gives detection an upper latency bound instead of waiting
-on Cloudflare's socket-close callback (the 4.5-minute-late 1006), and a real
-`went_offline` push replaces read-time staleness inference.
+This makes "register nodes and handle them quickly" true. A lease with an
+`alarm()`-bounded expiry gives detection an upper latency bound instead of
+waiting on Cloudflare's socket-close callback (the 4.5-minute-late 1006). A
+real `went_offline` push replaces read-time staleness inference.
 
-Constraints that must survive the rewrite, from the deployment-topology ADR: the
-room locator is not authority, ACL is not runtime attachment, execution intent
-originates only from an authorized room request and reaches the peer via CRDT
-convergence, never direct RPC. Any redesign that shortcuts `execute_cell` straight
-to the peer socket reintroduces exactly the coupling this architecture avoids.
+Constraints from the deployment-topology ADR that must survive the rewrite:
+
+- The room locator is not authority.
+- ACL is not runtime attachment.
+- Execution intent originates only from an authorized room request and reaches
+  the peer via CRDT convergence, never direct RPC.
+
+Any redesign that shortcuts `execute_cell` straight to the peer socket
+reintroduces the coupling this architecture avoids.
 
 ## Hibernation and the connection boundary
 
@@ -204,39 +216,38 @@ The failure mode to design against: an open WebSocket keeps a Durable Object
 resident in memory and duration-billed (GB-s) for as long as the connection
 lives. Get this wrong and a fleet of always-connected workstations turns a
 "cheap serverless registry" into a bank of permanently-awake, permanently-billed
-objects. The fix is not to avoid connections, it is to keep the connection-holding
-and the state-holding in separate objects.
+objects. The fix is not to avoid connections. It is to keep connection-holding
+and state-holding in separate objects.
 
-The two-DO split is exactly that boundary, and it is load-bearing, not incidental:
+The two-DO split is that load-bearing boundary:
 
-- **FleetRegistry DO holds no connections.** It holds lease rows
+- **FleetRegistry DO holds no connections.** It stores lease rows
   (`last_seen_at`, `lease_expires_at`) in SQLite plus a self-scheduling
-  `alarm()`. It is written by HTTP heartbeat POSTs and read by dashboard/rail
-  queries, both of which wake it, do their work, and let it evict. Nothing keeps
-  it resident between a heartbeat write and the next lease-expiry sweep, so it
-  hibernates by default and its duration bill is near zero.
+  `alarm()`. HTTP heartbeat POSTs write it and dashboard/rail queries read it;
+  both wake it, finish their work, and let it evict. Nothing keeps it resident
+  between a heartbeat write and the next lease-expiry sweep, so it hibernates
+  by default with a near-zero duration bill.
 
-- **WorkstationEvents DO holds the connections, and already hibernates them
+- **WorkstationEvents DO holds the connections and already hibernates them
   correctly.** It uses the Hibernatable WebSockets API: `state.acceptWebSocket`
-  with tags, and `setWebSocketAutoResponse` answers client ping/pong without
-  waking the DO at all. Cloudflare evicts it from memory while the sockets stay
-  connected, with no GB-s charged during hibernation; it wakes only to fan out an
-  actual `attach_jobs`/`went_offline` message. This is why Option C leaves it
-  untouched. The connection-holding concern is already solved where the
-  connections actually are.
+  with tags, plus `setWebSocketAutoResponse` to answer client ping/pong without
+  waking the DO. Cloudflare evicts it from memory while sockets stay connected,
+  charging no GB-s during hibernation. It wakes only to fan out an actual
+  `attach_jobs`/`went_offline` message. Option C leaves it untouched because
+  connection holding is already solved where the connections live.
 
-So the rule the redesign must not break: never fold the workstation's live socket
+The rule the redesign must not break: never fold the workstation's live socket
 into the lease-holding registry DO. A resident socket there would pin the
-registry awake and duration-billed, reintroducing precisely this problem. Keep
-FleetRegistry as state + alarm (no sockets) and WorkstationEvents as hibernatable
-sockets (no lease authority); the registry's alarm reaches the sockets by an HTTP
-`fetch()` to the events stub, not by holding them.
+registry awake and duration-billed, reintroducing this exact problem. Keep
+FleetRegistry as state + alarm (no sockets) and WorkstationEvents as
+hibernatable sockets (no lease authority). The registry's alarm reaches the
+sockets through an HTTP `fetch()` to the events stub, not by holding them.
 
-One more discipline on the alarm itself: arm/disarm it single-earliest-wins (the
-`notebook-room.ts:2258-2314` pattern), armed only when a lease is actually
-approaching expiry and disarmed when the fleet is empty, and return immediately
-after each sweep. That keeps the registry off a fixed always-on tick, so it wakes
-on the order of once per lease-expiry rather than on a constant heartbeat.
+One more discipline on the alarm itself: arm/disarm it single-earliest-wins
+(the `notebook-room.ts:2258-2314` pattern). Arm it only when a lease is
+approaching expiry, disarm it when the fleet is empty, and return immediately
+after each sweep. That keeps the registry off a fixed always-on tick, waking
+roughly once per lease-expiry instead of on a constant heartbeat.
 
 ## Concrete next step
 
@@ -260,12 +271,16 @@ and the desktop connection dot onto one durable compute-session/bridge-health fa
 
 ## When to revisit Redis
 
-If a single owner's workstation count moves from hundreds toward low thousands and
-the fleet-registry DO's single-threaded write rate becomes measurable (shardable
-further by owner-cohort before that bites), or if a non-Workers component needs
-direct registry access without going through a Cloudflare API. Neither holds
-today. That second condition is also the trigger for the broader
-[aws-rust-room-host.md](aws-rust-room-host.md) direction; if hosted ever moves the
-room engine off Workers, the registry follows it, and Redis or Postgres becomes
-the natural store at that point. This memo is the Workers-native answer for as long
+Revisit Redis under two triggers:
+
+- A single owner's workstation count moves from hundreds toward low thousands,
+  making the fleet-registry DO's single-threaded write rate measurable (though
+  we can shard further by owner-cohort before that bites).
+- A non-Workers component needs direct registry access without going through a
+  Cloudflare API.
+
+Neither holds today. That second condition is also the trigger for the broader
+[aws-rust-room-host.md](aws-rust-room-host.md) direction. If hosted ever moves
+the room engine off Workers, the registry follows it, and Redis or Postgres
+becomes the natural store. This memo is the Workers-native answer for as long
 as Workers is the platform.

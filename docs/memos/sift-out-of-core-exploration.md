@@ -39,13 +39,16 @@ Parquet crate citations are `parquet 54.3.1`, the version in `Cargo.lock`.
 
 ### The view, not the data side, is O(rowCount)
 
-`createTable` allocates two `Float64Array`s and an `Int32Array` sized to
-`rowCount` at mount (`packages/sift/src/table.ts:282-286`). `applyFilterAndSort`
-builds a JS `number[]` of every row even with no filter (`table.ts:617-631`).
-`rebuildPositions` is an O(filteredCount) prefix sum run on every frame that
-lazily prepares a row (`table.ts:472-479`, `1607-1609`). The crossfilter path
-allocates a `Uint8Array(rowCount)` mask per filter change and hands it to WASM
-(`table.ts:2392-2396`).
+The view layer allocates O(rowCount) structures across four paths:
+
+- `createTable` allocates two `Float64Array`s and an `Int32Array` sized to
+  `rowCount` at mount (`packages/sift/src/table.ts:282-286`).
+- `applyFilterAndSort` builds a JS `number[]` of every row even with no filter
+  (`table.ts:617-631`).
+- `rebuildPositions` runs an O(filteredCount) prefix sum on every frame that
+  lazily prepares a row (`table.ts:472-479`, `1607-1609`).
+- The crossfilter path allocates a `Uint8Array(rowCount)` mask per filter change
+  and hands it to WASM (`table.ts:2392-2396`).
 
 A windowed `TableData` with `rowCount = 120M` cannot mount regardless of where
 the WASM store lives. Moving the store to a worker does not make Sift
@@ -56,13 +59,13 @@ out-of-core. Sparse geometry does, and that is a view rewrite.
 `prefetchViewport` (`packages/sift/src/wasm-table-data.ts:94-129`) takes a
 batch of row ids, makes one WASM call (`store_viewport_cells`), and fills a JS
 cache that `getCell`/`getCellRaw` read synchronously. The response is a plain
-object of display strings, f64s and null flags. It is a window RPC in
+object of display strings, f64s, and null flags. It is a window RPC in
 everything but latency. The engine calls it once per frame
 (`table.ts:1569-1576`).
 
 Of the eleven `TableData` members, only `getCell`/`getCellRaw` are hot and they
-are cache reads. The four that cannot cross a thread boundary are the ones that
-move O(N) arrays: `sortColumn` (N indices), `filterRows` (match indices),
+are cache reads. Four members cannot cross a thread boundary because they move
+O(N) arrays: `sortColumn` (N indices), `filterRows` (match indices),
 `recomputeFilteredSummaries` (N-byte mask), and the implicit `rowCount`-sized
 geometry. The cut goes around those, not around `getCell`.
 
@@ -163,32 +166,33 @@ Rules:
    type or the meaning of `rowCount`.
 2. The data side owns every O(N) structure. The view sends filter specs and
    window ranges; it receives counts, summaries and cells.
-3. Two stores, not one. The analysis store stays dense so every existing
-   kernel (sort, filter, histograms, masks) works unchanged over a resident set
-   with a nameable scope ("loaded rows" or "matches in file"). The window cache
-   is a separate sparse LRU keyed by `(row_group, batch)` that serves only
-   `getCell`. Mixing them breaks `resolve_row`, sort permutations, filtered
-   masks, cast originals and image refinement (`store.rs:58-69`, `1958-1975`,
-   `1674-1802`, `2264-2358`, `259`).
+3. Two stores, not one. The analysis store stays dense, so every existing kernel
+   (sort, filter, histograms, masks) runs unchanged over a resident set with a
+   nameable scope ("loaded rows" or "matches in file"). The window cache is a
+   separate sparse LRU keyed by `(row_group, batch)` that serves only `getCell`.
+   Mixing them breaks `resolve_row`, sort permutations, filtered masks, cast
+   originals, and image refinement (`store.rs:58-69`, `1958-1975`, `1674-1802`,
+   `2264-2358`, `259`).
 4. Casts are query projections, not store mutations. A cast lives in the
    committed query, applies at decode into either store, and survives any
    replacement of the resident set.
-5. Byte acquisition, bounded materialization and query sessions are separate
+5. Byte acquisition, bounded materialization, and query sessions are separate
    concerns. `ByteSource` returns exact bytes. The Parquet scanner is a smarter
    loader above it that produces a bounded resident result. A query session
-   (ADBC, kernel) owns snapshots, cancellation and counts. Do not build a
+   (ADBC, kernel) owns snapshots, cancellation, and counts. Do not build a
    miniature database so the Parquet column of the capability table looks like
    the SQL column.
 
 ### Transport
 
-Structured clone with transfer lists. Grounds: what crosses the view boundary
-is display strings (`store_viewport_cells`), not Arrow; a window is ~100 rows ×
-columns ≈ 50 KB; typed arrays and ingest bytes transfer zero-copy.
-`SharedArrayBuffer` needs COOP/COEP, which nothing sets, which the notebook
-frame cannot set (it loads renderer assets from CDNs and runs with an opaque
-origin), which GitHub Pages cannot set, and which would buy nothing because
-sift-wasm has no threads. All six reviews reached this independently.
+Use structured clone with transfer lists. What crosses the view boundary is
+display strings (`store_viewport_cells`), not Arrow; a window is ~100 rows ×
+columns ≈ 50 KB, and typed arrays and ingest bytes transfer zero-copy.
+
+Do not use `SharedArrayBuffer`. It requires COOP/COEP, which nothing sets: the
+notebook frame cannot set it (it loads renderer assets from CDNs and runs with
+an opaque origin), and GitHub Pages cannot set it. It would also buy nothing
+because `sift-wasm` has no threads. All six reviews reached this independently.
 
 ### Spawning
 
@@ -206,11 +210,11 @@ worker for untrusted input.
 
 ### Containment and recovery
 
-Document the worker as fault containment for traps, hangs and retained memory.
-It is not a sandbox against renderer-process memory exhaustion unless capped,
-and it does nothing for the host's I/O (the `ByteSource` read runs on the host;
-`row_group_ranges` already rejects over-budget groups before fetch,
-`parquet_file.rs:337-346`).
+Document the worker as fault containment for traps, hangs, and retained memory.
+It is not a sandbox against renderer-process memory exhaustion unless capped.
+It also does nothing for host I/O: `ByteSource` reads run on the host, where
+`row_group_ranges` already rejects over-budget groups before fetch
+(`parquet_file.rs:337-346`).
 
 Three mechanisms, each for a different job:
 
@@ -223,12 +227,15 @@ Three mechanisms, each for a different job:
 3. A main-side watchdog on request latency, scaled by work, for hangs. A
    blocked worker cannot heartbeat.
 
-On `terminate()`: respawn, forward the WASM URL and fallback URL (main-realm
-state, `predicate.ts:153-179`), re-open from cached tail bytes, reload row
-groups before the failed one, quarantine the failed group, replay casts then
-sort then filters from `getState()`, show the existing "Stopped loading: … ·
-Showing loaded rows" footer. Cap respawns per source at two. Without the
-quarantine, containment becomes a crash loop.
+Recovery sequence on `terminate()` (capped at two respawns per source):
+
+1. Respawn the worker and forward the WASM URL and fallback URL (main-realm
+   state, `predicate.ts:153-179`).
+2. Re-open from cached tail bytes, reload row groups before the failed one, and
+   quarantine the failed group (without quarantine, containment becomes a crash
+   loop).
+3. Replay casts, then sort, then filters from `getState()`.
+4. Show the existing "Stopped loading: … · Showing loaded rows" footer.
 
 ## Contracts
 
@@ -306,10 +313,10 @@ Positions:
   on `COUNT(*)` or a histogram.
 - Capabilities gate controls, and `query` still validates the whole shape.
   Unsupported operations return a structured error, never a silently narrowed
-  result. There is no implicit "run it locally on loaded rows" fallback under
-  the same control state; the UI offers an explicit loaded-rows preview or
-  disables the action with the reason.
-- The host owns SQL dialect, the trusted base relation, connection, credentials
+  result. Never fall back implicitly to "run locally on loaded rows" under the
+  same control state. Offer an explicit loaded-rows preview or disable the
+  action with a reason.
+- The host owns SQL dialect, the trusted base relation, connection, credentials,
   and placement. Sift never receives SQL text from a renderer message.
 - Row identity: Parquet uses the global row ordinal (free and stable). SQL uses
   a host-declared unique key for keyset, else a snapshot-bound cursor with
@@ -318,9 +325,9 @@ Positions:
   1,000 rows and 8 MiB per page). Deeper seeks are refused, not iterated.
 - `predicateToSQL` stays a human-readable export. Driving a database needs a
   host-side compiler with typed bound parameters and a versioned semantic
-  profile. Known gaps in the current exporter: `in([])` emits `IN ()`,
-  `contains("%_")` emits an unescaped `LIKE`, timestamp brushes emit millisecond
-  integers, and category labels are display strings not source scalars.
+  profile. The current exporter has known gaps: `in([])` emits `IN ()`,
+  `contains("%_")` emits unescaped `LIKE`, timestamp brushes emit millisecond
+  integers, and category labels are display strings instead of source scalars.
 - Cancellation: `AbortSignal` at each hop bridges to `{cancel, requestId}`
   messages; the host registry calls `AdbcStatementCancel` (thread-safe under
   ADBC 1.1). Stale-result rejection by generation is mandatory even when cancel
@@ -328,11 +335,11 @@ Positions:
 
 ### Scope on every metric
 
-A single `scope` badge per summary cannot describe a loaded-row histogram with
-a whole-file range and null count, and it would mix denominators: `NumericProfile`
-derives null percentage from loaded bins plus `nullCount`
+A single `scope` badge per summary cannot describe a loaded-row histogram paired
+with a whole-file range and null count. It would also mix denominators:
+`NumericProfile` computes null percentage from loaded bins plus `nullCount`
 (`sparkline.tsx:654-671`), and `BooleanRatioBar` folds nulls into one total
-(`sparkline.tsx:1016-1065`). Scope attaches per metric:
+(`sparkline.tsx:1016-1065`). Scope therefore attaches per metric:
 
 ```ts
 type Coverage = {
@@ -353,20 +360,24 @@ type SummaryScope = {
 // all-loaded / exact / resident.
 ```
 
-Footer statistics are computed once at open (before `finish()` drops the
-metadata, `parquet-file.ts:316-322`) and kept immutable on `TableData`; the
-summary adapter merges them into `scope` on every rebuild, since
-`updateWasmSummaries` replaces the whole `columnSummaries` array on each append
-(`wasm-summaries.ts:18`). A cast hides footer stats for that column; they
-describe the original type.
+Footer statistics are computed once at open (before `finish()` drops metadata,
+`parquet-file.ts:316-322`) and kept immutable on `TableData`. Because
+`updateWasmSummaries` replaces the entire `columnSummaries` array on each append
+(`wasm-summaries.ts:18`), the summary adapter merges footer stats into `scope`
+on every rebuild. A cast hides footer stats for that column, since they describe
+the original type.
 
-Rendering rules: re-bin resident values over the dataset range rather than
-stretching loaded bins; label the distribution "Loaded rows · exact" and the
-range "0 – 100 · whole file"; render dataset nulls as a separate line with the
-dataset denominator; keep categorical bars and the filter popover loaded-scope
-("Search N loaded values…", "All loaded"); never admit unseen dataset values to
-the checkbox domain. When every metric shares one coverage, collapse to one
-caption.
+Rendering rules:
+
+- Re-bin resident values over the dataset range instead of stretching loaded
+  bins.
+- Label the distribution "Loaded rows · exact" and the range "0 – 100 · whole
+  file".
+- Render dataset nulls on a separate line with the dataset denominator.
+- Keep categorical bars and the filter popover loaded-scope ("Search N loaded
+  values…", "All loaded"). Never admit unseen dataset values to the checkbox
+  domain.
+- When every metric shares one coverage, collapse to a single caption.
 
 ### Footer states
 
@@ -393,33 +404,39 @@ scope words.
 
 Brushing stays synchronous over the resident set. After a brush commits, one
 action appears beside the filter pills, "Apply filters to whole dataset", only
-when the provider declares the capability. Apply commits the full predicate set
-as one `TableQuery` against the original snapshot and replaces the resident
-generation. It does not layer on the previous result and does not union rows.
-The pills survive; pixel brush rectangles do not. The old histogram stays
-visible, non-interactive and labeled "previous result" until the new summaries
-land with their actual coverage. Removing a filter queries the source snapshot,
-not the already-filtered result; otherwise cleared rows cannot come back.
+when the provider declares the capability.
+
+- Apply commits the full predicate set as one `TableQuery` against the original
+  snapshot and replaces the resident generation. It does not layer on the
+  previous result or union rows.
+- Filter pills survive; pixel brush rectangles do not.
+- The old histogram stays visible, non-interactive, and labeled "previous
+  result" until new summaries land with their actual coverage.
+- Removing a filter queries the source snapshot, not the already-filtered
+  result; otherwise cleared rows cannot return.
 
 ### Placeholders
 
 A placeholder is a real pooled row with one skeleton bar per cell and
 `aria-busy` on the grid. It carries no cell text: `""` already means null. The
-existing `!cache → LINE_HEIGHT + CELL_PAD_V` branch (`table.ts:357`) is the
-36 px estimate; image columns estimate 80 px. When a window resolves, run the
-existing scroll-anchor path (`markHeightsDirty(true)` → `captureScrollAnchor` →
-`restoreScrollAnchor`, `table.ts:526-571`) so the anchored row stays put as
-estimates become measurements. Window arrival must not go through
-`replaceData`, which clears caches and resets scroll (`table.ts:2205-2232`).
+existing `!cache → LINE_HEIGHT + CELL_PAD_V` branch (`table.ts:357`) gives the
+36 px estimate; image columns estimate 80 px.
+
+When a window resolves, run the existing scroll-anchor path
+(`markHeightsDirty(true)` → `captureScrollAnchor` → `restoreScrollAnchor`,
+`table.ts:526-571`). That keeps the anchored row put as estimates become
+measurements. Window arrival must not go through `replaceData`, which clears
+caches and resets scroll (`table.ts:2205-2232`).
 
 ## Staged plan
 
-The issue's order was 1 → 2 → 3 → 4 with stage 2 on the main thread and stage
-3 as one step. Four of six reviews rejected a main-thread whole-file scan (a
-synchronous `parquet_append_row_group` per row group with a `setTimeout(0)`
-between, `react.tsx:347`, over gigabytes of possibly hostile input). All six
-separated "worker" from "paging". Three put bounded ADBC before paging because
-it rides the existing result path and forces the contract to be honest.
+The issue's order was 1 → 2 → 3 → 4, with stage 2 on the main thread and stage
+3 as one step. Four of six reviews rejected a main-thread whole-file scan:
+running synchronous `parquet_append_row_group` per row group with a
+`setTimeout(0)` between (`react.tsx:347`) over gigabytes of possibly hostile
+input blocks the UI. All six separated "worker" from "paging". Three placed
+bounded ADBC before paging because it rides the existing result path and forces
+an honest contract.
 
 Every stage below is a minor release of `@nteract/sift`.
 
@@ -473,22 +490,22 @@ Per top-level column, from footer statistics only, no byte reads:
   `set` on non-string columns compares display strings
   (`store.rs:1088-1093`) and must not prune.
 - Two phases per surviving group: decode predicate columns only
-  (`ProjectionMask::roots`), evaluate into a `BooleanArray`, build a
-  `RowSelection`; if zero matches skip the group; else fetch the remaining
+  (`ProjectionMask::roots`), evaluate into a `BooleanArray`, and build a
+  `RowSelection`. Skip the group on zero matches; otherwise fetch the remaining
   leaves and decode with `with_row_selection`. On a wide table with a narrow
-  predicate this reads a few percent of the bytes. Compact Utf8View arrays
+  predicate this reads only a few percent of bytes. Compact `Utf8View` arrays
   after filtering or the ledger charges whole pages for a few matches.
 - Split `ParquetFile` (footer only) from a per-target load ledger (`usage`,
   `appended`, budget). Today all four sit on the file
-  (`parquet_file.rs:35-46`), so a file can feed one store, once; a scan that
-  reuses the head's file handle is rejected by `appended[index]`.
+  (`parquet_file.rs:35-46`), so a file can feed one store once; a scan reusing
+  the head's file handle is rejected by `appended[index]`.
 - When matches exceed the budget, stop phase B but keep phase A running in
   count-only mode. The exact match total costs predicate columns alone. Report
   "first N of M matches", never "exact" for an early stop.
 - Top-K: order groups by the sort bound, keep a K-heap over the sort column,
-  skip groups that cannot beat the Kth value. Arrow sorts NaN above +Inf and
-  the writer omits NaN from stats, so either treat NaN as null in pushed-down
-  sorts or do not prune float columns by `max`.
+  and skip groups that cannot beat the Kth value. Arrow sorts NaN above +Inf and
+  the writer omits NaN from stats. Either treat NaN as null in pushed-down sorts
+  or do not prune float columns by `max`.
 - Page index is a later optimization behind two exports
   (`parquet_page_index_range`, `parquet_load_page_index`). pyarrow does not
   write one by default; plan for row groups.

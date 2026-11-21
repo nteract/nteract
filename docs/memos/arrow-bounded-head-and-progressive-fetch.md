@@ -17,8 +17,9 @@ byte in the kernel, in the blob store, and in the browser.
 > first display is visible.
 
 The producer implemented the "emit chunks" half and skipped the budget. This
-memo records closing that gap, and separates it from the demand-driven fetch
-question that `arrow-manifest-durable-storage-design.md` lists as an open gap.
+memo records closing that gap. It also separates that fix from the
+demand-driven fetch question that `arrow-manifest-durable-storage-design.md`
+lists as an open gap.
 
 ## Reproduction
 
@@ -96,8 +97,8 @@ NteractKernelApp -> NteractKernel -> NteractShell -> NteractShellDisplayHook
 
 `NteractShellDisplayHook.finish_displayhook` (`app.py:209`) runs a hook chain
 over the fully assembled message before `session.send`. A hook at that seat can
-read `content.data`, and can stamp `content.transient.display_id`. The formatter
-does not need to mint the id; the hook does it on the formatter's behalf, using
+read `content.data` and stamp `content.transient.display_id`. The formatter
+does not need to mint the id. The hook does it on the formatter's behalf, using
 the same seat `_buffer_hook` already occupies for buffer attachment.
 
 That makes progressive display available to bare last-expression reprs, not just
@@ -143,31 +144,34 @@ rows = clamp(byte_budget / bytes_per_row, MIN_ROWS, MAX_ROWS)
 With `MIN_ROWS = 100`, `byte_budget = 16 MiB`, and `MAX_ROWS = 50_000`, images
 clamp up to 100 rows and both text and skinny clamp down to 50,000.
 
-The Hugging Face `Dataset` adapter reads a small logical Arrow probe, estimates
-the head, then widens the logical prefix geometrically and remeasures before
-each next step. This preserves selected/shuffled row order without leaping from
-eight rows straight to `MAX_ROWS` on one optimistic estimate. The final Arrow
-serializer remeasures the result, so iterative probing reduces intermediate
-materialization risk rather than replacing the existing payload ceilings. The
-growth limit is row-based: sharply non-stationary row weights can still
-overshoot the byte budget within one step, and repeated prefixes can request up
-to about 2.15 times the rows in the final prefix.
+How each bound and adapter works:
 
-`MIN_ROWS` makes the byte budget soft, so it needs a hard ceiling above it or a
-5 MB/row video dataset would send 500 MB to honor the floor. `_MAX_PAYLOAD_BYTES`
-is already declared at 90 MiB and currently unreachable; this is the job it was
-written for. When the floor exceeds it, the slice shrinks below `MIN_ROWS`.
-
-`MAX_ROWS` is not a byte concern. Sift's scroll spacer hits browser
-element-height limits on million-row tables (`arrow-native-outputs.md`), so the
-renderer should not receive unbounded rows even when they are cheap.
-
-The renderer distinguishes "still arriving" from "capped here" using
-`complete`, and surfaces the independent sampling state from `summary` in the
-footer. A terminal capped head removes the streaming runner and says "Showing
-first …" with either a known total or "total unknown." It does not call the
-rows a sample, because a head preserves source order and is not statistically
-representative. The footer also states that table tools operate on shown rows.
+- **Hugging Face `Dataset` adapter.** It reads a small logical Arrow probe,
+  estimates the head, then widens the logical prefix geometrically and
+  remeasures before each next step. This preserves selected/shuffled row order
+  without leaping from eight rows straight to `MAX_ROWS` on one optimistic
+  estimate. The final Arrow serializer remeasures the result, so iterative
+  probing reduces intermediate materialization risk rather than replacing the
+  existing payload ceilings. Because the growth limit is row-based, sharply
+  non-stationary row weights can still overshoot the byte budget within one
+  step. Repeated prefixes can request up to about 2.15 times the rows in the
+  final prefix.
+- **Hard ceiling above `MIN_ROWS`.** `MIN_ROWS` makes the byte budget soft, so
+  it needs a hard ceiling above it. Otherwise a 5 MB/row video dataset would
+  send 500 MB to honor the floor. `_MAX_PAYLOAD_BYTES` is already declared at
+  90 MiB and currently unreachable; this is the job it was written for. When the
+  floor exceeds it, the slice shrinks below `MIN_ROWS`.
+- **Upper row cap (`MAX_ROWS`).** `MAX_ROWS` is not a byte concern. Sift's
+  scroll spacer hits browser element-height limits on million-row tables
+  (`arrow-native-outputs.md`), so the renderer should not receive unbounded
+  rows even when they are cheap.
+- **Renderer footer UX.** The renderer distinguishes "still arriving" from
+  "capped here" using `complete`, and surfaces the independent sampling state
+  from `summary` in the footer. A terminal capped head removes the streaming
+  runner and says "Showing first …" with either a known total or "total
+  unknown." It does not call the rows a sample, because a head preserves source
+  order and is not statistically representative. The footer also states that
+  table tools operate on shown rows.
 
 This trades a stability win for a capability regression: previously you
 eventually got all 3000 rows, and now you get the head with no path to more.
@@ -202,10 +206,13 @@ extension: it treats "one more chunk" as "a different table".
 This removes the O(N²) behavior and is a prerequisite for step 3.
 
 Store reuse across effect runs introduced three defects, all caught in review
-and fixed: a store surviving a source switch and being appended to after
-`replaceData` freed it, a chunk-fetch error that stayed on screen after a later
-update recovered the stream, and column overrides silently dropped when they
-changed alongside manifest growth.
+and fixed:
+
+- A store surviving a source switch and being appended to after `replaceData`
+  freed it.
+- A chunk-fetch error staying on screen after a later update recovered the
+  stream.
+- Column overrides silently dropped when they changed alongside manifest growth.
 
 Step 2 remains useful for the explicit `display_arrow_stream` helper and for a
 future source-backed continuation path. Automatic reprs do not use it to push
@@ -219,45 +226,47 @@ product-safe continuation requires a session capability for the live source.
 The durable output remains the bounded preview; the capability is optional and
 expires with the kernel/output session.
 
-The transport question is answered by existing precedent. Extensions register
-custom shell messages with `NteractKernel.register_shell_handler` (`app.py`);
-the Bokeh handlers in `_bokeh_handlers.py` register `nteract_bokeh_patch_request`
-and friends this way, with a matching `nteract_bokeh_close_request` for
-teardown. A slice request would take the same form. The reserved `nteract.dx.*` comm namespace (`dx_blob_comm.rs`) is the
-alternative, and its tests already name `nteract.dx.query` and
-`nteract.dx.stream`.
+Two existing transport precedents cover slice requests:
 
-The unresolved part is what a handle's lifetime is tied to. `BokehSessionRegistry`
+- **Custom shell handlers.** Extensions register messages with
+  `NteractKernel.register_shell_handler` (`app.py`). The Bokeh handlers in
+  `_bokeh_handlers.py` register `nteract_bokeh_patch_request` and friends this
+  way, with a matching `nteract_bokeh_close_request` for teardown. A slice
+  request would take the same form.
+- **Reserved comm namespace.** `nteract.dx.*` (`dx_blob_comm.rs`) is the
+  alternative. Its tests already name `nteract.dx.query` and
+  `nteract.dx.stream`.
+
+The unresolved part is handle lifetime. `BokehSessionRegistry`
 (`_bokeh_session.py:371`) holds strong references in a plain dict and relies on
 the frontend to send an explicit close. That precedent suggests tying a table
-handle to the lifetime of the output in the UI rather than to the lifetime of
-the Python variable. Rebinding `df` would not invalidate a view the user is
-still scrolling, and closing the notebook or clearing the cell would release it.
-No user-facing pin API is implied by that model.
+handle to the output's UI lifetime rather than the Python variable's lifetime.
+Rebinding `df` would not invalidate a view the user is still scrolling. Closing
+the notebook or clearing the cell would release it, with no user-facing pin API
+implied.
 
-The genuine tension is that a pull handle is session-scoped while the manifest
-is content-addressed and durable by design. A saved notebook carries chunk
-hashes that outlive the kernel, so a reopened notebook has to degrade to the
-materialized head rather than appear broken.
+The genuine tension is durability versus liveness. A pull handle is
+session-scoped, while the manifest is content-addressed and durable by design.
+A saved notebook carries chunk hashes that outlive the kernel, so a reopened
+notebook must degrade to the materialized head rather than appear broken.
 
 There are two materially different continuation levels:
 
 1. **Bounded range continuation.** An explicit action requests the next
    byte-bounded logical range and appends it. Existing sorts, filters, and
-   summaries still describe loaded rows only. This is useful but is not
-   predicate pushdown.
+   summaries still describe loaded rows only. This is useful, not predicate
+   pushdown.
 2. **Predicate-aware exploration.** Sift sends a typed filter/sort projection
-   to the source handle; the kernel evaluates it against a stable source
+   to the source handle. The kernel evaluates it against a stable source
    snapshot and returns a bounded result window plus whatever total it can
-   compute cheaply. A predicate change may first narrow the loaded rows locally,
+   compute cheaply. A predicate change may narrow loaded rows locally first,
    then request enough matching rows to refill the viewport. Scanning a large
    source must remain cancellable and must not silently materialize all matches.
 
-The second level needs an adapter contract rather than JavaScript predicates:
-Arrow compute can cover a common subset, while pandas, Polars, Hugging Face
-Datasets, lazy frames, and single-pass readers differ in pushdown and replay
-capabilities. Until that contract exists, table tools remain explicitly scoped
-to shown rows.
+The second level needs an adapter contract rather than JavaScript predicates.
+Arrow compute can cover a common subset. Pandas, Polars, Hugging Face Datasets,
+lazy frames, and single-pass readers differ in pushdown and replay capabilities.
+Until that contract exists, table tools remain explicitly scoped to shown rows.
 
 ## Consequences
 
@@ -273,9 +282,9 @@ to shown rows.
 ## Open Questions
 
 1. The `nteract.dx.*` comm namespace predates the launcher owning this path.
-   New launcher config uses `NTERACT_ARROW_REPR_*`; whether the reserved comm
-   namespace should follow is open, and renaming it carries a compatibility
-   cost the new env vars did not.
+   New launcher config uses `NTERACT_ARROW_REPR_*`. Whether the reserved comm
+   namespace should follow is open; renaming it carries a compatibility cost
+   the new env vars did not.
 2. Step 3 handle retention, predicate vocabulary, adapter capabilities, and
    cancellation, per above.
 3. Whether `MIN_ROWS`, `byte_budget`, and `MAX_ROWS` should be configurable per
