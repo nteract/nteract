@@ -1,38 +1,43 @@
 # Pages behavior reference
 
-Behavior of the Page host, viewer and agent tools in this source revision.
-Read the code and its colocated tests for exact contracts; this file maps them.
-The protected deployed service may run an earlier revision.
+Current behavior of the Page host, browser viewer, Automerge storage and sync,
+auth and sharing, and HTTP/MCP agent tools in this source revision. Read the
+code and its colocated tests for exact contracts; this file maps them. The
+protected deployed service may run an earlier revision.
 
-The native path uses Wordgard for both reads and writes; ProseMirror is absent
-from the production graph. [DIRECTION.md](DIRECTION.md#what-changes-from-today)
-lists what the next format and tool surface change.
+All reads and writes go through Wordgard; ProseMirror is absent from the
+production graph. [DIRECTION.md](DIRECTION.md#what-changes-from-today) lists
+what the next format and tool surface change.
 
 ## Published link previews
 
-The Page owner can open **Share → Link preview**, supply a title (160
-characters), optional author (120 characters), and description (400 characters), then prepare and explicitly
-publish a raster image. The default is a 1200×630 text card. The owner can
-instead choose a rendered image, chart or Mermaid diagram from the open Page,
-or upload a cover. The browser shows the exact bytes before uploading them;
-the host validates the raster and publishes only that Page-local asset. The
-card has two layouts. In `caption`, the visual fits above a separate title
-and byline without cropping or dark overlays. In `fill`, an uploaded cover
-covers the whole 1200×630 card, centred and cropped at the edges, with no
-title, byline, description or product name drawn on it; the title and
-description still go into the page metadata and image alt text. A newly
-uploaded cover starts in `fill`, and **Fill the card** / **Title below**
-switches between the two. A text card is always `caption`. A visual chosen
-from the Page is published in `caption`; publishing stores it as the cover, so
-reopening the preview offers both layouts for it, and `fill` crops it at the
-edges. The layout is stored with the preview and restored on reopen; a preview
-stored without one is `caption`. The host refuses any other layout,
-and `fill` without a cover, with a 400.
-The author is explicitly supplied for publication, never inferred from account
-or document ownership. OG, Twitter and Slack descriptions lead with that byline.
-The host records the validated image dimensions for OG metadata; older previews
-without dimensions still work. Published HTML also carries the approved title
-in its document title and explicit Twitter title, description and image alt tags.
+The Page owner can open **Share → Link preview**, enter a title (max 160
+characters), optional author (max 120 characters), and description (max 400
+characters), then prepare and explicitly publish a 1200×630 raster card:
+
+- **Visual source:** defaults to a 1200×630 text card. The owner can instead
+  select a rendered image, chart, or Mermaid diagram from the open Page, or
+  upload a cover image. The browser previews the exact bytes before upload; the
+  host validates the raster and publishes only that Page-local asset.
+- **Card layouts:**
+  - `caption`: places the visual above a separate title and byline with no
+    cropping or dark overlays. Text cards always use `caption`. A Page-selected
+    visual publishes in `caption` and is saved as the cover, so reopening offers
+    both layouts (`fill` crops at the edges).
+  - `fill`: fills the full 1200×630 card with the cover (centered and
+    edge-cropped) with no title, byline, description, or product name drawn on
+    it; title and description still populate page metadata and image alt text.
+    Newly uploaded covers start in `fill`, with **Fill the card** / **Title
+    below** toggling between layouts.
+  - Stored layouts restore on reopen (previews stored without a layout default
+    to `caption`). The host rejects any other layout, or `fill` without a cover,
+    with `400`.
+- **Metadata & attribution:** author is explicitly supplied for publication,
+  never inferred from account or document ownership. OG, Twitter, and Slack
+  descriptions lead with that byline. The host records validated image
+  dimensions for OG metadata (older previews without dimensions still work).
+  Published HTML puts the approved title in the document title and sets explicit
+  Twitter title, description, and image alt tags.
 
 When publishing an uploaded cover or a Page-selected image, chart or diagram,
 its uncaptioned raster also enters the existing private Page asset storage.
@@ -142,33 +147,32 @@ the editor decodes the block's spans itself. A throw while drawing one block
 shows a notice in its place (`viewer/BlockBoundary.jsx`); a throw anywhere
 else replaces the screen with a Reload notice and leaves the Page unchanged.
 
-- **Comments:** select a passage and choose Comment, or press Cmd/Ctrl+Alt+M.
-  Highlighted passages and thread quotes navigate between text and discussion.
-  Draft anchors capture native object identity and text cursors; deleted or
-  replaced passages reject submission rather than moving a comment elsewhere.
-  Comments are the same rich text as a Page body: every message is stored as
-  the editor's spans, the form Wordgard's `encode` writes, through the same
-  path Page bodies use. The browser composer is a Wordgard editor that sends its
-  spans as they are, with no Markdown in between; drafts keep their spans until
-  Send and survive responsive rail/sheet changes; changing Pages clears local
-  drafts. Expand the sidebar for wider discussions. Agent comments opt in with
-  `body_format: "markdown"` on `manage_page_comment`; rich comment reads return
-  Markdown computed from the spans and the same format marker. Plain input
-  (`body_format: "plain"`, the default for a new message) is stored as spans
-  with no marks, each newline a hard break, and records `bodyFormat: "plain"`,
-  so reads return the text literally without a format marker, as plain reads
-  always have. Omitting the format when editing retains the message's current
-  kind. Thread/message IDs and passage anchors stay unchanged. A message
-  (`pages.comments` format 2) holds `richText`, `author`, `createdAt`,
-  `deletedAt` and, for plain input, `bodyFormat`. Its rich text is in the same
-  form as a block's: every node opens with its marker. No Markdown copy and no
-  per-message `format` field is stored, and the comments document's admission
-  refuses a message with any other field. If native content
-  cannot be decoded, reads return its bare text with
-  `content_error: "rich_text_unavailable"` rather than failing the entire Page.
-  A message holds at most 16,000 text characters (block markers don't count,
-  so the span form never changes a message's length) and 64 KiB of stored
-  spans. Formatting-only changes appear in `read_page_changes`.
+- **Comments:**
+  - *UI & anchoring:* select a passage and choose Comment (or press
+    Cmd/Ctrl+Alt+M). Highlighted passages and thread quotes navigate between
+    text and discussion; expand the sidebar for wider discussions. Draft anchors
+    capture native object identity and text cursors, so deleted or replaced
+    passages reject submission instead of shifting the comment. Thread/message
+    IDs and passage anchors stay unchanged across edits.
+  - *Browser composer:* comments use the same Wordgard spans as Page bodies. The
+    browser composer sends spans directly with no Markdown intermediary; drafts
+    preserve spans until Send and survive responsive rail/sheet changes;
+    switching Pages clears local drafts.
+  - *Agent comments (`manage_page_comment`):* `body_format: "plain"` (default
+    for new messages) stores unmarked spans with newlines as hard breaks and
+    records `bodyFormat: "plain"`; reads return literal text with no format
+    marker. `body_format: "markdown"` opts into rich text; reads compute
+    Markdown from spans and include the format marker. Omitting `body_format` on
+    edit retains the message's current kind. Formatting-only changes appear in
+    `read_page_changes`.
+  - *Storage & limits (`pages.comments` format 2):* each message holds only
+    `richText` (every node opens with its marker, matching body blocks),
+    `author`, `createdAt`, `deletedAt`, and (for plain input) `bodyFormat`. No
+    Markdown copy or per-message `format` field is stored; admission rejects any
+    other field. Unreadable native content falls back to bare text with
+    `content_error: "rich_text_unavailable"` rather than failing the Page.
+    Limits: 16,000 text characters (block markers excluded) and 64 KiB of stored
+    spans.
 - **Highlights:** the formatting toolbar's highlighter offers the four palette
   colors and Remove; Cmd/Ctrl+Shift+H toggles yellow. A highlight is a text mark
   (`highlight`), so it syncs, merges, and follows edit permission like bold.
@@ -234,130 +238,105 @@ else replaces the screen with a Reload notice and leaves the Page unchanged.
 - **Links:** click for Open, Edit, and Remove; Cmd/Ctrl-click opens directly and
   Cmd/Ctrl+K edits. Incoming edits update or dismiss the link control, and URL
   policy applies both to stored content and navigation.
-- **Heading links:** every heading has an anchor, a slug of its visible text
-  (lowercase, punctuation and symbols dropped, whitespace runs as one hyphen,
-  letters and digits of every script kept, at most 100 code points), numbered
-  `-1`, `-2`, … for repeats in document order; a heading with no letters or
-  digits is `section`. [`model/heading-anchors.mjs`](model/heading-anchors.mjs)
-  computes them from the stored spans each time the document is read. Nothing
-  stores them, so no schema feature or migration is involved, and renaming a
-  heading changes its anchor. The viewer and `read_page` (`anchor` on an
-  outline heading entry) read the same function. A link to `#anchor` or
-  `/p/<page_id>#anchor` is an ordinary link mark. The `#` beside a heading
-  under the pointer copies its link. A fragment in the address scrolls to its
-  heading once the Page has synced and drawn it, waiting up to 15 seconds, and
-  scrolls again while late layout above it settles; the reader scrolling,
-  typing or clicking first cancels it, from page load on, including while the
-  loading preview shows. Each history entry records its scroll position, and
-  Back and Forward return to it once the Page has drawn, or to the entry's
-  heading when it has none. A reload goes to the heading, and the browser's
-  own restoration stays on for other screens
-  ([`viewer/HeadingAnchors.jsx`](viewer/HeadingAnchors.jsx),
-  [`viewer/heading-scroll.mjs`](viewer/heading-scroll.mjs),
-  [`viewer/heading-links.mjs`](viewer/heading-links.mjs)). Links in a Page to
-  this app's Pages and Projects open in place, without a reload or new tab;
-  modified clicks still open a tab. The editor's DOM gets no ids: a heading is
-  found by its block and its ordinal among the block's headings. Touch screens
-  have no hover, so copying a heading's link there needs the address bar.
-- **Links between Pages and to Projects:** a link stores only its href; the
-  target's title is never written into the document. One test
-  ([`shared/page-links.mjs`](shared/page-links.mjs)) decides which links go to
-  this deployment's Pages and Projects: `safeUrl`, then exactly this origin
-  once resolved (so `HTTPS://Host:443/p/<id>` and a relative `/p/<id>` count,
-  and a look-alike host, user info, a trailing dot or another deployment
-  don't), then `readPageRoute` reads a Page (`/p/<uuid>`, with or without a
-  slug after it) or a Project
-  (`/project/<prj_id>`, or the older `/s/<id>`, with a `prj_` or older `sp_`
-  ID). `linkTarget` names either kind, and `linkedTarget` drops links to
-  what's open: the open Page (its links are section links) and, on a
-  Project's route, the Project itself, whose content is open; a Project link
-  inside an ordinary Page of that Project still counts. In-place navigation
-  and the glyphs use the same test, so they can't disagree. A link to
-  another Page draws with the `page-link` class, `data-page-id` and a small
-  muted Page glyph (lucide's FileText) after its text, and a link to a
-  Project with `project-link`, `data-project-id` and a Project glyph
-  (lucide's Boxes, as the library, picker and Project chip draw Projects), in
-  Page blocks, the loading preview and comments
-  ([`viewer/link-destination.mjs`](viewer/link-destination.mjs),
-  [`viewer/page-link-shape.mjs`](viewer/page-link-shape.mjs)). The open Page
-  and Project reach comments and Page blocks through `CurrentPage` and
-  `CurrentProject` ([`viewer/current-page.mjs`](viewer/current-page.mjs)).
-  CSS draws the glyphs (`::after` with a mask and empty alternative text,
-  flipped for right-to-left text), so no widget enters the editor: the caret,
-  selection, typing at the link's end and copying behave as for any link. A
-  link draws as one element however its text is formatted, so it has one
-  glyph: `PagesLink` has Wordgard's link rank and nests outside bold,
-  italic, strike, code and highlight (`model/wordgard-doc.mjs`; stored spans
-  keep their mark order), and the loading preview joins the fragments the
-  host renders (`PagePreview.jsx` `joinLinks`).
-  Resting the pointer on one for 300 ms opens a hover card
-  ([`viewer/PageLinkCard.jsx`](viewer/PageLinkCard.jsx),
-  [`viewer/page-link-card.mjs`](viewer/page-link-card.mjs)). For a Page it
-  shows the title the reader's own session resolves (two lines at most,
-  direction isolated), when the Page was edited, and its first screen as the
-  library grid draws it. For a Project it shows a small "Project" label with
-  its icon, the title, the description (at most three lines, omitted when
-  empty) and the first screen of its content document. Then Open (in place)
-  and Open in new tab; a link in a comment offers only Open in new tab, as
-  comment links always open, so a draft is never navigated away from. A
-  target the reader can't open shows a lock and "Page unavailable" or
-  "Project unavailable", nothing else: the same answer stands for a host
-  that didn't respond, so it gives no reason. Loading shows a skeleton, and
-  a failure "Couldn't load a preview". The pointer has 200 ms to cross from
-  the link into the card. Using an action closes it, and so do a keypress
-  (for a card the pointer opened) and the link menu opening. It never opens
-  while the link menu is open, while a mouse button is down, for touch or
-  pen input, where the device can't hover, or for a link inside a card.
-  Keyboard focus opens the card at once for links that take focus: in
-  read-only blocks, comments and the loading preview. In an editable block
-  focus stays on the editor, so a caret entering a link opens nothing. From a
-  focused link, Tab moves into the card's actions, Shift-Tab from the first
-  returns to the link, and Tab past the last closes the card and moves on.
-  The link is `aria-describedby` the card while it shows, and a polite live
-  region announces the answer once it loads: a Page's title or "Page
-  unavailable", "Project: <title>" or "Project unavailable". Escape closes
-  the card, marked handled so a comments panel doesn't also back out, and
-  returns focus to the link, or to the editor (keeping its selection) when
-  the link is editable content. Titles and cards live in one in-memory store
-  per tab ([`viewer/page-refs.mjs`](viewer/page-refs.mjs)): each `(account,
-  kind, id, file)` ref, so a Page and a Project never share one, is fresh
-  for 60 s, or 15 s when unavailable, a failure retries after a doubling
-  backoff from 2 s, concurrent asks share a request, and at most 6 run at
-  once, of both kinds. Another account or sign-out drops them all. A 401,
-  a ref's own or a tool call's, drops them all and holds the tab: nothing
-  is asked, by a chit, a labeled link or a card, until a session answer
-  names the refs' own account. That releases the hold, and the tab's chits
-  and labeled links ask once for what they show. While held, no hover card
-  opens, and one already open closes. A session answer for another
-  account, or none, releases nothing; sign-out and the account the tab
-  shows move the refs as above. A release followed by another 401 with no
-  ref answered in between makes the next release wait 2 s, doubling to
-  60 s, so when every ref route keeps refusing a session that keeps
-  answering, it costs at most 6 requests per release: 36 over the first
-  six releases (62 s), then 6 a minute. A readable or unavailable answer
-  resets the wait.
-  Refs load when a card opens (urgent) or a chit or labeled link draws (not
-  urgent). Every link to one target shares its ref, so a Page with N
-  distinct targets asks N times when it draws, at most 6 at once, whatever
-  the number of links. A drawn chit asks again once its answer is stale,
-  dropped, or failed past its backoff, so a rename shows within a minute.
-  Labeled links ask by the cause of each pass (`labeledLinkAsks`). After the
-  first draw, an open tab asks only for targets the reader can't open, each
-  every 15 s and only while the tab is visible, so an answer a slow host
-  turned into "unavailable" heals while the reader looks; if that recheck
-  fails, it is retried on its backoff, at most a minute apart. A return to
-  the tab (the window regains focus or the document turns visible) asks
-  once for each target whose answer is missing or stale, signing in as
-  another account asks again for every link, and a hover asks through the
-  card. A hidden tab asks nothing unless an editor draws, and then only for
-  answers it lacks. An editor draws when it opens (a Page opened in the
-  background), when its DOM changes (a peer's edit), and once after each
-  marker it changes, since the editor sees that write. A ref dropped by a
-  401 isn't asked while the tab is held, and the release asks for it once;
-  any other failing
-  target is asked again only on a redraw or a return, not on a timer. The
-  routes are under
-  [Link previews](#link-previews).
+- **Heading links:**
+  - *Anchors (`model/heading-anchors.mjs`):* computed on read from stored spans
+    (nothing is stored, so no schema feature or migration is needed, and
+    renaming a heading changes its anchor). Each slug lowercases visible text,
+    drops punctuation and symbols, collapses whitespace runs to one hyphen,
+    keeps letters and digits of every script, caps at 100 code points, and
+    numbers duplicates `-1`, `-2`, … in document order. Headings with no letters
+    or digits become `section`. The viewer and `read_page` (`anchor` on outline
+    heading entries) call the same function.
+  - *Navigation & copying:* `#anchor` and `/p/<page_id>#anchor` are ordinary
+    link marks. Hovering a heading reveals `#` to copy its link (touch screens
+    have no hover and use the address bar). Links to this app's Pages and
+    Projects open in place without a reload or new tab; modified clicks still
+    open a tab.
+  - *Scrolling & history:* a URL fragment scrolls to its heading once synced and
+    drawn (up to 15 s wait) and re-scrolls while late layout above settles;
+    reader scroll, typing, or clicks cancel it from page load on (including
+    during the loading preview). History entries record scroll position: Back
+    and Forward restore it once drawn (falling back to the entry's heading),
+    reload scrolls to the heading, and browser scroll restoration stays on for
+    other screens ([`viewer/HeadingAnchors.jsx`](viewer/HeadingAnchors.jsx),
+    [`viewer/heading-scroll.mjs`](viewer/heading-scroll.mjs),
+    [`viewer/heading-links.mjs`](viewer/heading-links.mjs)). The editor DOM has
+    no `id` attributes; headings resolve by block and ordinal.
+- **Links between Pages and to Projects:**
+  - *Target matching (`shared/page-links.mjs`):* links store only `href`; target
+    titles are never written into the document. Both in-place navigation and
+    glyphs use the same check: `safeUrl`, exact resolved origin (accepting
+    `HTTPS://Host:443/p/<id>` and relative `/p/<id>`, rejecting look-alike
+    hosts, userinfo, trailing dots, and other deployments), then
+    `readPageRoute` for a Page (`/p/<uuid>`, optional slug) or Project
+    (`/project/<prj_id>`, or legacy `/s/<id>` with a `prj_` or `sp_` ID).
+    `linkTarget` names either kind; `linkedTarget` excludes self-links (the open
+    Page, whose links are section links, and on a Project's route, that Project
+    itself; a Project link inside an ordinary Page of that Project still
+    counts).
+  - *Rendering & glyphs:* Page links get class `page-link`, `data-page-id`, and
+    a muted `FileText` glyph; Project links get `project-link`,
+    `data-project-id`, and a `Boxes` glyph (matching library, picker, and
+    Project chip), across Page blocks, loading previews, and comments
+    ([`viewer/link-destination.mjs`](viewer/link-destination.mjs),
+    [`viewer/page-link-shape.mjs`](viewer/page-link-shape.mjs)). Open
+    Page/Project context reaches blocks and comments through `CurrentPage` and
+    `CurrentProject` ([`viewer/current-page.mjs`](viewer/current-page.mjs)).
+    CSS draws glyphs (`::after` mask, empty alt, RTL-flipped), keeping widgets
+    out of the editor so caret, selection, end-typing, and copy behave normally.
+    `PagesLink` uses Wordgard's link rank and nests outside bold, italic,
+    strike, code, and highlight (`model/wordgard-doc.mjs`; stored spans keep
+    their mark order), and `PagePreview.jsx` (`joinLinks`) joins host-rendered
+    fragments so each link draws as one element with one glyph.
+  - *Hover card (`viewer/PageLinkCard.jsx`, `viewer/page-link-card.mjs`):*
+    opens after 300 ms hover, with 200 ms to cross from the link into the card.
+    Page cards show reader-resolved title (max 2 lines, direction-isolated),
+    last-edited time, first-screen library preview, plus **Open** (in place) and
+    **Open in new tab**. Project cards show a small "Project" label with icon,
+    title, description (max 3 lines, omitted when empty), content document first
+    screen, and open actions. Comment links offer **Open in new tab** only so
+    drafts are never navigated away from. Inaccessible targets and
+    non-responding hosts both show a lock and `"Page unavailable"` or
+    `"Project unavailable"` with no extra detail; loading shows a skeleton;
+    failures show `"Couldn't load a preview"`. Closes on action use, keypress
+    (for pointer-opened cards), or link menu open. Suppressed while the link
+    menu is open, while a mouse button is down, for touch or pen input, on
+    non-hover devices, and for links inside a card.
+  - *Keyboard & accessibility:* keyboard focus opens the card immediately on
+    focusable links (read-only blocks, comments, loading preview); editable
+    blocks keep focus in the editor so caret movement opens nothing. From a
+    focused link, Tab moves into card actions, Shift-Tab from the first returns
+    to the link, and Tab past the last closes the card and moves on. The link
+    sets `aria-describedby` to the card while shown; a polite live region
+    announces the resolved answer (Page title, `"Page unavailable"`,
+    `"Project: <title>"`, or `"Project unavailable"`). Escape closes the card
+    (marked handled so a comments panel doesn't close) and returns focus to the
+    link or editable selection.
+  - *Per-tab ref cache & 401 hold (`viewer/page-refs.mjs`):* one in-memory store
+    per tab keyed by `(account, kind, id, file)` so Pages and Projects never
+    collide. Refs stay fresh for 60 s (15 s when unavailable), failures retry
+    with doubling backoff from 2 s, concurrent asks share one request, and at
+    most 6 requests run concurrently across both kinds. Switching accounts or
+    signing out drops all refs. Any `401` (ref or tool call) drops all refs,
+    closes open hover cards, and holds the tab (blocking chits, labeled links,
+    and new hover cards) until a session response names the refs' own account
+    (another account or signed-out response does not release). Releasing asks
+    once for visible chits and labeled links. Another `401` with no ref answered
+    in between doubles the next release wait from 2 s up to 60 s (capping cost
+    at 6 requests/release: 36 across the first 6 releases in 62 s, then 6/min);
+    any readable or unavailable answer resets the wait.
+  - *Fetch triggers:* urgent on card open; non-urgent when a chit or labeled
+    link draws (N distinct targets = N requests, max 6 concurrent, regardless of
+    link count). Chits refetch when stale, dropped, or past failure backoff
+    (renames show within 1 min). Labeled links (`labeledLinkAsks`) poll only
+    unavailable targets every 15 s while the tab is visible (or on backoff up to
+    1 min on failure) so slow-host answers heal in place. Returning to the tab
+    (window focus or visibility) asks once for missing or stale targets; account
+    switch asks for all; hover asks via the card. Hidden tabs ask nothing unless
+    an editor draws (background open, peer DOM edit, or local marker edit), and
+    then only for missing answers. Refs dropped by a `401` ask once on release;
+    other failing targets retry only on redraw or tab return, not on a timer.
+    Routes are under [Link previews](#link-previews).
 - **Unavailable labeled links:** a labeled link, `[label](url)`, to a Page
   or Project this reader can't open keeps its label and stays a link, but
   draws a lock in place of the kind's glyph, in the muted colour of an
@@ -404,83 +383,66 @@ else replaces the screen with a Reload notice and leaves the Page unchanged.
   zoom controls get a gutter beside a shrunk diagram. Source and
   language are shared content; rendered SVG is not stored. Cmd/Ctrl+Enter
   continues in a paragraph. Pages does not execute code.
-- **Dataframes:** a `dataframe` block marker with no text. Its attrs are
-  either `src` (a Page asset path) or `binding` (`{source_id, revision?}`),
-  plus `media_type` and an optional `title`
-  ([`shared/dataset-assets.mjs`](shared/dataset-assets.mjs)). The viewer picks
-  a renderer by media type
-  ([`viewer/wordgard-dataframes.mjs`](viewer/wordgard-dataframes.mjs));
-  `application/vnd.apache.parquet` renders as a Sift table
-  ([`viewer/sift-table.jsx`](viewer/sift-table.jsx)), loaded with its
-  stylesheet and WASM only when a Page shows one, and only once that table
-  comes within 600 px of the viewport; until then it says it loads when you
-  scroll to it, in a status line laid over the canvas so nothing moves when the
-  table draws. Printing starts every table loading, but loads are async, so a
-  print made at once still shows that text for tables not yet drawn. Enter on a
-  selected table focuses its grid, and does nothing before the grid loads. A loaded table stays
-  loaded offscreen, keeping the reader's sort and filters. The lifecycle is
-  [`viewer/dataframe-table-machine.mjs`](viewer/dataframe-table-machine.mjs). Dropping or pasting a
-  `.parquet` file uploads it and inserts the node at the cursor, undoably.
-  Agents use `edit_page` `insert_node`. A dataframe has no Markdown syntax:
-  it reads as `[Dataframe: <title>](<src>)` on its own line, and Markdown
-  never creates one. In a block that holds one, `replace_block_markdown` turns
-  that exact line back into the original node, unknown attrs included, where
-  the node is stored: the top level, or inside the same kind of container. It refuses
-  (`markdownless_node`) a rewrite that drops or edits the line, moves it into or
-  out of a container or heading, repeats it beyond the block's matching nodes,
-  or adds a line reading like a dataframe the block doesn't hold. Moving the
-  line among its neighbours keeps the attrs and writes a new marker. It's gated by the `dataframe` schema
-  feature. Decode is lenient: a later build's media type or attr under the
-  same feature still decodes, draws "This build can't show…", and writes back
-  unchanged; writers (`insert_node`, upload) check strictly. Copy writes a
-  `figure[data-pages-dataframe]` with the attrs as JSON, and paste reads it
-  back when its `src` is on the same Page.
-
-  Clipboard HTML is untrusted, so a table's data moves between Pages only
-  when this browser copied it. A copy or cut holding this Page's tables
-  writes a copy record to this origin's `localStorage`
-  ([`viewer/copy-registry.mjs`](viewer/copy-registry.mjs)): a random 128-bit
-  id, the Page, its title and the asset ids. The clipboard HTML gets one empty hidden
-  `span[data-pages-copy]` holding `{"v": 1, "id": …}`; other apps paste
-  nothing from it, and Pages strips it before reading a paste. The registry
-  keeps the 20 newest copies, each for one hour: long enough to paste in
-  another tab, and short, because the id leaves the browser with the
-  clipboard. Without `localStorage` nothing is recorded and nothing copies.
-
-  A paste or drop reading HTML that holds tables from another Page looks up
-  the clipboard's copy id. A table copies only when the record exists, names
-  the Page in the table's `src` and lists its asset; no other field of the
-  clipboard element counts. A record shows that this browser copied the
-  table, not that the person means to move its data here: another site that
-  saw the clipboard can hand the id back inside its own content. So the
-  paste is held while the Page asks, in the paste's status row, whether to
-  bring the data for the tables from the Page the record names, by the
-  record's title, never the clipboard's. Bring data starts the copies;
-  Paste titles only lands the paste now with those tables as titles; Cancel
-  drops it. Nothing is requested before Bring data. An answer counts only for
-  the question it was shown with, so a late answer can't start another
-  paste's copies; answering from the keyboard puts focus back in the Page. The paste then waits
-  while the host copies each dataset onto this Page (`POST /api/pages/:pageId/assets/:sha256` with
-  `{"from_page_id": …}`), at most 8 tables a paste and 2 at a time, and
-  lands with each `src` on this Page, replacing the selection as any paste
-  does, with the caret after it. Whether it landed is the transaction's own
-  answer: the Page reports it refused only when the binding refused it. A table that didn't copy (not this browser's copy, past the limit,
-  or refused by the host) lands as its title, and the Page says why. In a
-  code block and for paste-as-plain-text, Wordgard reads the clipboard's
-  text and nothing is held. A paste made while another is held takes the
-  editor's own path: its tables from other Pages land as titles, with no
-  message of its own. The lifecycle is
-  [`viewer/dataframe-copy-machine.mjs`](viewer/dataframe-copy-machine.mjs).
-  The node never names another Page, and the table fetch refuses a `src` on
-  another Page. A dataframe whose attrs this build can't read
-  decodes as an unknown node (see above), and a Markdown rewrite of its block
-  is refused. Each block editor also sits in an error boundary
-  (`viewer/BlockBoundary.jsx`), so any other failure to draw one block can't
-  unmount the viewer. Sorting, filtering and
-  scrolling stay in each reader's view. A shared view (filters, sort, column
-  choices) is not stored yet; it belongs in its own Automerge document keyed
-  by the node, like the comments document, so view edits never touch Page
-  content or its history.
+- **Dataframes:**
+  - *Node & rendering:* a `dataframe` block marker with no text. Attrs are
+    either `src` (a Page asset path) or `binding` (`{source_id, revision?}`),
+    plus `media_type` and optional `title`
+    ([`shared/dataset-assets.mjs`](shared/dataset-assets.mjs)).
+    [`viewer/wordgard-dataframes.mjs`](viewer/wordgard-dataframes.mjs) picks a
+    renderer by media type. `application/vnd.apache.parquet` renders as a Sift
+    table ([`viewer/sift-table.jsx`](viewer/sift-table.jsx)), lazy-loading its
+    stylesheet and WASM only when a Page has one and the table comes within
+    600 px of the viewport (showing an overlaid "loads when you scroll to it"
+    status line until then so layout stays still). Printing triggers loading for
+    all tables asynchronously (an immediate print can still show placeholder text
+    for tables not yet drawn). Enter on a selected table focuses its grid once
+    loaded. Loaded tables stay loaded offscreen, preserving sort and filters.
+    Lifecycle: [`viewer/dataframe-table-machine.mjs`](viewer/dataframe-table-machine.mjs).
+  - *Insertion, Markdown & schema gating:* dropping or pasting a `.parquet` file
+    uploads and inserts it undoably; agents use `edit_page` `insert_node`.
+    Dataframes have no Markdown creation syntax; reads project
+    `[Dataframe: <title>](<src>)` on its own line. In `replace_block_markdown`,
+    leaving that exact line intact preserves the original node (unknown attrs
+    included) at top level or inside the same container kind; moving it among
+    neighbors keeps attrs and writes a new marker. Rewrites fail with
+    `markdownless_node` if they drop or edit the line, move it into or out of a
+    container or heading, repeat it past existing matching nodes, or add a
+    dataframe line the block doesn't hold. Gated by the `dataframe` schema
+    feature: decoding is lenient (unknown media types or attrs under the same
+    feature render `"This build can't show…"` and write back unchanged), while
+    writers (`insert_node`, upload) validate strictly. Dataframes with unreadable
+    attrs decode as unknown nodes and reject Markdown block rewrites. Each block
+    editor sits in `viewer/BlockBoundary.jsx`, so draw failures cannot unmount
+    the viewer.
+  - *Same-Page & cross-Page copy/paste (`viewer/copy-registry.mjs`, `viewer/dataframe-copy-machine.mjs`):*
+    copy writes `figure[data-pages-dataframe]` (attrs as JSON) and pastes back
+    directly when `src` belongs to the same Page. Because clipboard HTML is
+    untrusted, cross-Page data copies only when this browser created the copy:
+    copy/cut writes a record (`{id (128-bit random), page, title, assetIds}`) to
+    origin `localStorage` (retaining the 20 newest copies for 1 hour; without
+    `localStorage`, nothing copies across Pages) and embeds a hidden
+    `span[data-pages-copy]` (`{"v": 1, "id": …}`) that other apps ignore and
+    Pages strips before reading a paste.
+  - *Cross-Page confirmation & copy flow:* on paste or drop of HTML holding
+    tables from another Page, Pages validates the copy ID against `localStorage`
+    (matching the Page in `src` and its asset ID; no other clipboard field
+    counts). Because another site could echo a clipboard ID, Pages holds the
+    paste and prompts in the status row using the registry's Page title (never
+    the clipboard's): **Bring data** copies each dataset onto this Page via
+    `POST /api/pages/:pageId/assets/:sha256` (`{"from_page_id": …}`, max 8
+    tables per paste, 2 concurrent) and lands with Page-local `src`; **Paste
+    titles only** lands immediately with titles; **Cancel** drops the paste.
+    Nothing fetches before **Bring data**; stale answers are ignored; keyboard
+    answers return focus to the Page; landing status comes from the transaction
+    binding. Tables that fail to copy (not from this browser, past the limit, or
+    host-refused) land as titles with a reason. Code blocks, paste-as-plain-text,
+    and pastes made while another is held skip the hold (cross-Page tables land
+    as titles with no message). Nodes never reference another Page, and table
+    fetches refuse cross-Page `src`.
+  - *View state:* sorting, filtering, and scrolling stay reader-local. Shared
+    table view state is not stored yet (it belongs in a separate node-keyed
+    Automerge document like comments so view edits never touch Page content or
+    history).
 - **Tables:** native row/cell markers live in the same rich-text field as prose.
   Insert table chooses dimensions; Table options changes rows and columns. Tab
   moves between cells and appends a row at the end. The first row is the header.
@@ -754,7 +716,7 @@ Ambiguous batches are never retried. Restart can lose queued events.
 Rollback builds ignore the separate database; restoring their configuration
 also removes the cron, pausing both collection and purge without changing Pages.
 A prolonged rollback requires an operator-run purge to maintain the retention
-boundary; this PR performs no host operations.
+boundary.
 
 Query an operator-provided, consistent SQLite snapshot, never an incomplete LTX
 cache file or a writable production database. For example:
@@ -791,9 +753,11 @@ attempt of its own starts one under its own 120 s expiry, even while another
 object's runs, and never awaits another object's. Racing attempts are safe:
 each migration commits with its version row in one batch, and the loser rolls
 back and reads the winner's version. A failed or expired attempt is forgotten,
-and the next call retries. The
-[Cloudflare portability audit](https://pages.runtimed.run/p/460c48f0-dc4b-4702-af82-59910e6bebd0)
-(§7) covers why celld's single context hid this.
+and the next call retries. celld runs all Durable Objects in a single isolate
+context, so sharing an in-flight promise looked safe locally and hid this
+failure mode
+([Cloudflare portability audit](https://pages.runtimed.run/p/460c48f0-dc4b-4702-af82-59910e6bebd0),
+§7).
 
 D1 picks candidates; it never grants access. Every non-owner row returned by a
 listing is verified by its Page host with the caller's credentials, and owner rows
@@ -905,36 +869,37 @@ A shared row's times differ by source, as they always have: D1 holds the Page
 row's own creation and content times, the Catalog entry this account's discovery
 time and whatever the last title projection carried.
 
-The Page host records content activity from the `change` events on its serving
-document handle (worker/content-activity.mjs). It writes `host/content-activity`
-and reports at most once a minute: the first change after a quiet minute flushes
-at once, later changes keep only the newest time in memory, and one flush at the
-window's end writes it. A flush is one storage write, one D1 batch (the Page row
-and its owner and member access rows, only where the stored time is older) and
-one call to the owner's Catalog at `/internal/content-activity`, which sets the
-`page/` entry's `content_updated_at` without touching `updated_at`. A Catalog
-from before that route answers non-OK and the flush retries until its node runs
-this build; an earlier route would have read the title-less report as a title.
-Members' Catalogs get the time with the next title projection. Domain readers'
-rows aren't rewritten by a flush, since a domain-wide Page can have any number of
-them. The host reports a reader's row again when that reader opens the Page and
-the content time has moved past the one its last report for that reader carried;
-the host keeps those in memory, so its first open of each reader after a restart
-reports too. The reader's own reconcile pass, run by its listings at least every
-six hours, copies the time as well. Until one of those, the row sorts by its
-older time. Every write
-takes the later of the stored and reported time, so a delayed report never moves
-a content time back, and every writer drops a time more than five minutes ahead
-of its own clock, so a node whose clock runs ahead can't pin a Page to the top.
-Times have exactly `Date#toISOString`'s format, the only one whose string order
-is time order. A host evicted before its trailing flush loses at most that
-minute. A failed flush retries with backoff from one minute up to fifteen. The
-time also rides on every full row report, so a restart re-reports it. Deleting a
-Page, by a purge or a tombstone, stops its recorder for good and deletes
-`host/content-activity`, and with it the Page's card (see [Card previews](#card-previews)).
-Trash never stops it, so a restored Page keeps recording.
-A change never starts a flush itself: it queues one (`flushQueued`), and the next
-live request starts it.
+The Page host records content activity from `change` events on its serving
+document handle (`worker/content-activity.mjs`):
+
+- **Batching & flush cadence:** writes `host/content-activity` and reports at
+  most once per minute. The first change after a quiet minute flushes at once;
+  further changes keep only the newest timestamp in memory and flush at the
+  window's end. A change never starts a flush itself. It queues one
+  (`flushQueued`), and the next live request runs it. Eviction before the
+  trailing flush loses at most that minute. Failed flushes retry with backoff
+  from 1 minute up to 15 minutes. The timestamp also rides on every full row
+  report, so restarts re-report it.
+- **Flush targets:** each flush runs one storage write, one D1 batch (updating
+  the Page row and its owner/member access rows only where the stored time is
+  older), and one call to the owner's Catalog at `/internal/content-activity`
+  (setting `content_updated_at` on the `page/` entry without touching
+  `updated_at`; non-OK responses retry). Members' Catalogs receive the timestamp
+  on the next title projection.
+- **Domain readers:** flushes skip domain-reader rows because a domain-wide Page
+  can have unbounded readers. The host re-reports a reader's row when they open
+  the Page and content time has advanced past the last reported time for that
+  reader (tracked in memory, so the first open after a restart also reports),
+  and the reader's own reconcile pass copies it at least every 6 hours. Until
+  then, the row sorts by its older time.
+- **Clock & format invariants:** timestamps use `Date#toISOString` format (so
+  string order matches time order). Writers always take the later of stored and
+  reported times (delayed reports never move activity backward) and drop
+  timestamps more than 5 minutes ahead of their own clock.
+- **Lifecycle:** deleting a Page (purge or tombstone) permanently stops its
+  recorder and deletes `host/content-activity` and the Page's card (see
+  [Card previews](#card-previews)). Trash never stops recording, so restored
+  Pages keep tracking activity.
 
 The `change` listener runs on the repository's scheduler loop, in the context of
 the request that opened the document, so it starts nothing (see the celld notes
@@ -1069,25 +1034,25 @@ A D1 listing that meets such a row prunes it and marks the account dirty, so
 listings read the Catalog until a pass imports the entry again. Retrying the
 request projects it again and both sources agree.
 
-The two sources order shared rows by different times: D1 holds the Page row's own
-creation and content times, the Catalog this account's discovery time and the
-last projection's. A Page host's content flush moves D1's member rows but not the
-members' Catalog entries. So every Page listing cursor names the source that
-issued it (`index` or `catalog`, sealed into its context beside the scope), and a
-walk continues on that source whatever the account's state is by then. A walk
-that began on a ready D1 can miss only rows written while it ran, as any walk
-can. If D1 can't serve a walk that began there (the database or the pass fails,
-the scan's read fails, or the index is switched off), the next page fails with
-`invalid_cursor` rather than resume D1's order on the Catalog. The client
-restarts from the first page; the viewer's listing machine already restarts on
-`invalid_cursor`. The refusal also stores a cooldown
-(`host/index/unavailable-until`, 60 s, `indexCooldownMachine`). While it lasts,
-no listing opens D1 except a page of a walk that began there, so the restart's
-first page reads the Catalog and its walk stays there, even when D1 serves
-first pages and fails later ones. Each walk restarts at most once per cooldown;
-the pass and the Page marks wait until it ends. A walk that began on the Catalog
-never reads D1. A cursor from an earlier build names no source;
-it opens as before and continues on whichever source the account's state picks.
+Because D1 and Catalog order shared rows by different timestamps (D1 holds the
+Page row's creation and content times; Catalog holds the account's discovery
+time and last projection, and content flushes update D1 member rows without
+updating member Catalog entries), cursors pin their source:
+
+- **Source pinning:** every Page listing cursor seals its source (`index` or
+  `catalog`) beside its scope, and the walk continues on that source regardless
+  of later account-index state. A walk begun on D1 can miss only rows written
+  mid-walk; a walk begun on Catalog never reads D1. Cursors from older builds
+  without a source continue on whichever source the account state picks.
+- **D1 failure & cooldown:** if D1 cannot serve a subsequent page of an `index`
+  walk (DB/pass error, read failure, or index switched off), it returns
+  `invalid_cursor` instead of resuming D1's order on Catalog. The client
+  restarts from page 1 (which the viewer's listing machine handles). That
+  refusal sets a 60 s cooldown (`host/index/unavailable-until`,
+  `indexCooldownMachine`): while active, new listings read Catalog (existing
+  `index` walks still try D1), keeping restarts on Catalog even when D1 serves
+  page 1 and fails later pages. Each walk restarts at most once per cooldown;
+  reconcile passes and Page marks pause until cooldown ends.
 
 Title and content updates to an existing entry don't mark the account: a stale
 title or time snapshot misorders a row but doesn't drop it from an unfiltered
@@ -1096,29 +1061,31 @@ snapshot and the fallback matches the entry's title, so a rename that has reache
 one and not yet the other can hide the renamed Page from that source's search
 until its row or entry is rewritten.
 
-D1 refuses a `LIKE` pattern over 50 bytes
-([D1 limits](https://developers.cloudflare.com/d1/platform/limits/)), and
-`query` allows 200 characters. So a search binds `%…%` around the longest
-prefix of the lowercased query whose escaped form keeps the pattern within 50
-UTF-8 bytes (`likePattern`). The cut falls between code points, and `\`, `%`
-and `_` keep their escapes. A row the cut pattern matched whose title snapshot
-lacks the whole query comes back marked `unmatched`, in its place in the order.
-It counts toward the scan's `2 × limit + 16` bound and moves the scan's
-position, but never lists and never asks a Page host. So a long query whose
-prefix many titles share can return a short or empty page with a cursor, as
-stale rows can; the walk still reaches every match. Dropping those rows in the
-query instead would return a short batch, which the scan reads as the end of
-the walk. Every database binds the same pattern, so celld's SQLite, which has
-no such limit, searches the same way, and the test D1 (`test/sqlite-d1.mjs`)
-refuses longer patterns as D1 does. Without the cut, any query over about 48
-bytes failed on D1. Its first page then fell back to the Catalog and pinned
-the walk there, so the walk never restarted and no cooldown started, but every
-long search paid the fallback's full read. See the
-[Cloudflare portability audit](https://pages.runtimed.run/p/460c48f0-dc4b-4702-af82-59910e6bebd0)
-(§4).
+D1 rejects `LIKE` patterns over 50 bytes
+([D1 limits](https://developers.cloudflare.com/d1/platform/limits/)), while
+`query` accepts up to 200 characters:
+
+- **Prefix truncation (`likePattern`):** searches bind `%…%` around the longest
+  prefix of the lowercased query whose escaped form keeps the whole `%…%`
+  pattern within 50 UTF-8 bytes (`LIKE_PATTERN_MAX_BYTES`, leaving a prefix
+  budget of `LIKE_PATTERN_MAX_BYTES - 2`, or 48 bytes; split on code-point
+  boundaries, preserving `\`, `%`, and `_` escapes).
+- **Post-filtering:** rows matching the truncated pattern whose title snapshot
+  lacks the full query return marked `unmatched` in order. They count toward
+  the `2 × limit + 16` scan bound and advance the scan position, but never list
+  or trigger a Page host check. Long queries sharing a common prefix can
+  therefore return short or empty pages with a cursor (dropping them inside SQL
+  would falsely signal end-of-walk), while still reaching every match.
+- **Parity:** every backend uses the same 50-byte `%…%` pattern (including
+  celld's SQLite), and `test/sqlite-d1.mjs` enforces D1's 50-byte limit.
+  Keeping the pattern within 50 bytes prevents D1 query errors that would
+  otherwise force every long search onto the full-scan Catalog fallback
+  ([Cloudflare portability audit](https://pages.runtimed.run/p/460c48f0-dc4b-4702-af82-59910e6bebd0),
+  §4).
+
 Changing the epoch value forces an immediate pass everywhere; it is not required
 after a rollback, since the periodic pass and each Page host's first report after
-restart repair what an older build missed.
+restart repair missed rows.
 
 ### Shared-Page checks
 
@@ -1286,89 +1253,89 @@ namespaces explicitly when they represent the same account. HTTP
 authentication admits a sync socket for that account, and the host checks its
 access on every frame. Disabled editor controls are not authorization.
 
-Pages also serves OAuth for `/mcp`. Every client is public and needs PKCE S256,
-resource validation, sign-in, and consent. Two kinds are admitted
-([worker/oauth-clients.mjs](worker/oauth-clients.mjs)). The clients Pages names
-(`pages-chatgpt`, `pages-kilo`) each have one exact callback. Any other client
-names itself with a client ID metadata document: its `client_id` is an `https`
-URL on a public DNS name, with the default port, a path, and no query or
-fragment. Every such URL is admitted without an entry in a client table; known names
-only label the client. The Cloudflare package enables metadata fetching together
-with `global_fetch_strictly_public` as required deployment configuration.
-Other runtimes must establish equivalent public-only HTTPS fetching before
-setting `PAGES_OAUTH_METADATA_EGRESS=public-https`; without it, new metadata
-sign-ins return 503 for every client without fetching
-([DEPLOYMENT.md](DEPLOYMENT.md#outbound-requests)).
-Once a person has signed in, Pages fetches the URL without following
-redirects, reading at most 5 KB of JSON within five seconds, and keeps a valid
-document for its `max-age`, five minutes at most, in a 64-entry cache. The
-document's `client_id` must equal the URL, and the requested callback must be
-one it lists: `https`, or `http` on `localhost` or `127.0.0.1` where the port
-may differ. A callback on the Pages hostname is refused on every port: the
-browser would send the Pages session cookie there, because a cookie belongs to
-a hostname and not to a port. A local server meets this with a native client
-that listens on the same loopback name, and the refusal names the other one
-(`PAGES_HOST`, [Run locally](README.md#run-locally)). A callback whose path has `;`, `,` or a quote is refused, so the
-consent page's `form-action` always names the callback's origin and path. One
-request fetches a client ID at a time; another request for it waits on its own
-timer and then reads the cache ([worker/isolate-setup.mjs](worker/isolate-setup.mjs)
-says why). The consent screen names such a client by the host of its client
-ID, shows the host the browser returns to, and quotes the name the document
-gives as a claim. The token and revocation endpoints never fetch. Dynamic
-registration is disabled. Codes are
-single-use; access tokens last ten minutes, with rotating refresh tokens bounded
-by an absolute thirty-day grant. Correctly bound code replay revokes its
-family. So does refresh replay, except within 30 seconds of the token's first
-use: each use in that window gets its own tokens, so the processes of one
-client that share stored tokens can refresh at the same moment. A stolen
-refresh token used inside that window is not detected. Provider tokens stay on
-the server. Refresh does not refresh verified
-email evidence, and MCP tokens cannot authorize raw HTTP assets, sharing, or sync.
-An OAuth client uploads a local image through `create_page_asset_upload`, whose
-Page-scoped capability names its grant and stops working when the grant is
-revoked (see [Upload capabilities](#upload-capabilities)).
+Pages also serves OAuth for `/mcp`. Every client is public and requires PKCE
+S256, resource validation, sign-in, and consent
+([worker/oauth-clients.mjs](worker/oauth-clients.mjs)):
 
-A Kilo deployment also accepts a Kilo agent token as a bearer, for Kilo's agent
-harness that has a Kilo session and no browser
-([worker/kilo-token.mjs](worker/kilo-token.mjs); the contract is in
-[DEPLOYMENT.md](DEPLOYMENT.md#kilo-agent-tokens)). A bearer is one when it is a
-JWT whose unverified `aud` is `PAGES_KILO_AUDIENCE` and whose `tokenPurpose` is
-`delegated-workload`; the prefixes Pages issues (`pages_`, `pu1.`) are tested
-first, a Kilo deployment has no API keys, and a deployment without Kilo sign-in
-never reads the claims. Pages trades the token at Kilo's
-`POST /api/pages-auth/exchange` with `{token, audience}` and the deployment's
-exchange secret, the call the browser sign-in makes with a code, so the person
-is the same principal either way. It needs no settings beyond the three
-`PAGES_KILO_*` ones. The token reaches `/mcp`, `/api/tools` and `GET /whoami`
-(and the internal hops they forward to) as the person, with `credentialKind`
-`kilo-token` and the driver an API key records; other routes refuse it with
-403 before Kilo is asked. Like an API key, it meets the argument check, can't
-send `delete_page`'s browser-only `base_heads`, and keys receipts on that
-principal, so a person's browser and agent share one receipt namespace. When
-Kilo's answer carries `verified_email`, the address Kilo holds proof the
-account controls, the identity presents it as an API key does and claims
-email invitations to it for the lease; a browser session keeps it as signed
-email proof for six hours from sign-in. A value that can't be an invitation
-address is treated as absent ([worker/kilo-exchange.mjs](worker/kilo-exchange.mjs)). Kilo's refusals become 401 `invalid_kilo_token`, 403
-`account_unavailable` or 503 `sign_in_unavailable` (`retryable: true`); the
-caller never sees Kilo's body. Each isolate leases an accepted token by its
-SHA-256 until the earliest of its `exp` less 30 seconds, its whole lifetime
-after the exchange was sent, and 15 minutes
-([worker/kilo-token-lease.mjs](worker/kilo-token-lease.mjs)). One token's
-exchanges run one at a time, so concurrent requests with a token that gets a
-lease share one exchange. A token Kilo accepts without a lease authorizes its
-own request for 30 seconds and is exchanged by each request. Only Kilo's
-explicit refusal of a token (`400 invalid_token`, `403 account_unavailable`)
-answers repeats of it, for five minutes or 30 seconds; every other answer is
-a 503 and is never kept. An isolate starts no exchange while 8 are in flight,
-counting each from its start until it answers (15 seconds at most), even
-after its request gave up, and keeps 1,000 tokens, never by dropping a live
-lease: past either bound a new token gets 503 without an exchange. An account
-Kilo blocks keeps working until its lease ends. A lease can outlast the token
-by the clock difference between Pages and Kilo, never by more than the
-token's whole lifetime. An upload capability issued under the token ends at
-the earlier of that identity's validity (the lease end, or 30 seconds for an
-unleased token) and the upload's own lifetime.
+- **Named clients:** `pages-chatgpt` and `pages-kilo` each have one exact
+  callback.
+- **Client ID metadata documents:** any other client uses an `https` URL on a
+  public DNS name (default port, non-empty path, no query or fragment) as its
+  `client_id`. No client table entry is needed; known names only label the
+  client. Cloudflare deployments enable metadata fetching alongside
+  `global_fetch_strictly_public`; other runtimes must enforce equivalent
+  public-only HTTPS egress before setting
+  `PAGES_OAUTH_METADATA_EGRESS=public-https` (without it, new metadata sign-ins
+  return `503` without fetching; see
+  [DEPLOYMENT.md](DEPLOYMENT.md#outbound-requests)).
+- **Metadata fetching & callback validation:** after sign-in, Pages fetches the
+  `client_id` URL with no redirects (max 5 KB JSON, 5 s timeout) and caches
+  valid documents up to their `max-age` (max 5 minutes, 64-entry cache). One
+  request fetches a given `client_id` at a time; concurrent callers wait on
+  their own timer and read the cache
+  ([worker/isolate-setup.mjs](worker/isolate-setup.mjs)). The document's
+  `client_id` must match the URL, and the requested callback must appear in it
+  (`https`, or `http` on `localhost`/`127.0.0.1` with any port). Callbacks on
+  the Pages hostname are refused on every port so browsers never send the Pages
+  session cookie there (local servers use the alternate loopback name via
+  `PAGES_HOST`; see [Run locally](README.md#run-locally)). Paths containing `;`,
+  `,`, or quotes are refused so the consent page's `form-action` matches the
+  callback origin and path. The consent screen identifies the client by its
+  `client_id` host, shows the return host, and quotes the document's name as a
+  claim. Token and revocation endpoints never fetch; dynamic registration is
+  disabled.
+- **Tokens, replay & scope limits:** authorization codes are single-use; access
+  tokens last 10 minutes; rotating refresh tokens are bounded by an absolute
+  30-day grant. Replaying a correctly bound code revokes its family. Refresh
+  replay also revokes the grant, except within 30 seconds of a refresh token's
+  first use (each use in that window receives its own tokens so multi-process
+  clients sharing storage can refresh concurrently; a stolen refresh token used
+  inside that 30 s window is not detected). Provider tokens stay on the server.
+  Refresh does not refresh verified email evidence, and MCP tokens cannot
+  authorize raw HTTP assets, sharing, or sync. Local image uploads go through
+  `create_page_asset_upload`, whose Page-scoped capability binds to the grant
+  and stops working on revocation (see
+  [Upload capabilities](#upload-capabilities)).
+
+Kilo deployments also accept a Kilo agent token as a bearer credential for
+headless Kilo harnesses without a browser
+([worker/kilo-token.mjs](worker/kilo-token.mjs); contract in
+[DEPLOYMENT.md](DEPLOYMENT.md#kilo-agent-tokens)):
+
+- **Detection & exchange:** matched when a bearer JWT has unverified `aud` equal
+  to `PAGES_KILO_AUDIENCE` and `tokenPurpose: "delegated-workload"` (Pages's own
+  `pages_` and `pu1.` prefixes are checked first; Kilo deployments have no API
+  keys, and non-Kilo deployments never read JWT claims). Pages exchanges the
+  token at Kilo's `POST /api/pages-auth/exchange` with `{token, audience}` and
+  the deployment's exchange secret (the same endpoint browser sign-in uses,
+  yielding the same principal), requiring only the three `PAGES_KILO_*`
+  settings.
+- **Routes & behavior:** admitted on `/mcp`, `/api/tools`, and `GET /whoami`
+  (plus their forwarded internal hops) with `credentialKind: "kilo-token"` and
+  API-key driver rules; all other routes return `403` before contacting Kilo.
+  Matches API-key argument validation, disallows `delete_page`'s browser-only
+  `base_heads`, and shares the principal's receipt namespace with the person's
+  browser. If Kilo returns a valid `verified_email`, the identity presents it
+  like an API key to claim email invitations for the lease (browser sessions
+  hold signed email proof for 6 hours); invalid invitation addresses are treated
+  as absent ([worker/kilo-exchange.mjs](worker/kilo-exchange.mjs)). Kilo errors
+  map to `401 invalid_kilo_token`, `403 account_unavailable`, or `503
+  sign_in_unavailable` (`retryable: true`) without exposing Kilo's response
+  body.
+- **Leasing & bounds (`worker/kilo-token-lease.mjs`):** each isolate leases an
+  accepted token by SHA-256 until the earliest of `exp - 30 s`, its full
+  lifetime after the exchange was sent, or 15 minutes (concurrent requests for
+  one leased token share a single exchange). Tokens accepted without a lease
+  authorize only their own request for 30 s and exchange per request. Only
+  explicit Kilo refusals (`400 invalid_token`, `403 account_unavailable`) cache
+  negative answers (5 minutes or 30 seconds); other errors return `503` uncached.
+  Each isolate caps concurrent exchanges at 8 (counted until response, up to
+  15 s, even if the caller gave up) and caches at most 1,000 tokens without
+  evicting live leases; exceeding either returns `503` without an exchange.
+  Blocked accounts keep working until their lease expires, and a lease can
+  outlast the token by clock skew (never beyond the token's full lifetime).
+  Upload capabilities end at the earlier of identity validity (lease end, or
+  30 s if unleased) and the upload's own lifetime.
 
 The account menu's Connected agents dialog lists the account's live OAuth
 connections (`GET /api/auth/grants`: client name, scope, issue and expiry
@@ -1427,31 +1394,29 @@ process spent it is replay and revokes the grant. Agents can prepare non-secret 
 creates a key or authorizes the connection; a successful `list_pages` call
 verifies access.
 
-API-key recipes send `X-Pages-Driver` (the harness, such as Kilo) and an
-optional `X-Pages-Agent` session label of at most 80 characters; blank means no
-label. The Kilo recipe uses one shared entry with
-`"X-Pages-Agent": "{env:PAGES_AGENT}"`, and each worktree sets `PAGES_AGENT` in
-its `.envrc`. Both labels are self-declared descriptions shown under the
-authenticated account, not verified vendor identity or a permission grant.
-A tool client can also assert an agent name and model. `_meta.agent`
-(`{name, model, id}`, at most 80, 120 and 128 characters; no control or bidi
-characters) rides on an MCP `tools/call` in `params._meta`, or on `POST /api/tools`
-beside `operation` and `arguments`. Without it, `X-Pages-Agent` gives the name
-and `X-Pages-Model` the model. A header that disagrees with `_meta.agent` is
-refused (`invalid_arguments`). `id` is accepted and neither stored nor returned.
-`manage_page_comment` and `reply_page_comment` store the resolved `{name?, model?}`
-once, on the new message's author (`author.agent`, schema feature
-`comment-agent` on the comments document); editing the message never changes it.
-The assertion joins the request fingerprint of an add or reply, so the same
-`nonce` with other labels is `nonce_conflict` and an exact retry replays the
-original receipt. `list_page_comments`, `read_page` and `read_page_changes`
-return `author.agent` when stored. The comment thread reads "<agent name> via
-<driver> for <person>" with the model in the tooltip. These are what the client
-said about itself, shown under the authenticated account: they grant nothing and
-verify nothing. An `edit_page` call stores the resolved assertion on its
-writer ([Edit writers](#edit-writers)) but leaves it out of the request's
-fingerprint: a retry under the same `nonce` with other labels replays the
-first attempt's receipt and keeps its writer.
+Agent attribution headers and `_meta.agent` (all self-declared labels under the
+authenticated account, never verified identity or a permission grant):
+
+- **Headers:** API-key recipes send `X-Pages-Driver` (the harness, e.g., Kilo)
+  and an optional `X-Pages-Agent` session label (max 80 characters; blank means
+  none). Kilo's recipe sets `"X-Pages-Agent": "{env:PAGES_AGENT}"`, with each
+  worktree setting `PAGES_AGENT` in `.envrc`.
+- **Structured assertions (`_meta.agent`):** tool clients can assert `{name,
+  model, id}` (max 80, 120, and 128 characters; no control or bidi characters)
+  in MCP `params._meta` on `tools/call` or alongside `operation`/`arguments` on
+  `POST /api/tools`. When absent, `X-Pages-Agent` supplies `name` and
+  `X-Pages-Model` supplies `model`; headers conflicting with `_meta.agent`
+  return `invalid_arguments`. `id` is accepted and neither stored nor returned.
+- **Storage & fingerprinting:** `manage_page_comment` and `reply_page_comment`
+  store `{name?, model?}` once on `author.agent` (schema feature `comment-agent`
+  on the comments document; message edits never change it), include it in the
+  request fingerprint (changing labels under the same `nonce` returns
+  `nonce_conflict`), and expose it in `list_page_comments`, `read_page`, and
+  `read_page_changes`. Threads render `"<agent name> via <driver> for <person>"`
+  with the model in a tooltip. `edit_page` stores the assertion on its writer
+  ([Edit writers](#edit-writers)) but omits it from the fingerprint, so a retry
+  under the same `nonce` with different labels replays the original receipt and
+  keeps its writer.
 
 `Browser` is the one driver a bearer credential can't claim: viewers show a
 browser session by the person's name alone, so on a request with an API key or
@@ -1608,31 +1573,30 @@ since discovery keeps answering while the socket keeps being refused. Retry, the
 reconnect at once; a stable connection clears them too.
 [reconnect-machine.mjs](viewer/reconnect-machine.mjs) holds these transitions.
 
-A host restart is not an error the person can act on. A 502, 503 or 504 (JSON
-or a gateway's HTML page), a JSON error marked `retryable`, and a failed fetch
-are transient (`isTransientFailure` in [request.mjs](viewer/request.mjs)): the
-Page shows Offline or Saved locally and retries without a red banner. A
-session check or a connection attempt that runs past the request deadline gets
-the same treatment (`isUnansweredFailure`): the server said nothing about the
-session or the Page, so the viewer asks again. A receipt that times out still
-reports it, because it holds up saving the edit. Receipts
-retry on the same backoff. From the seventh failure in a row, about 15 to 30
-seconds in, the Page shows one sentence, "Pages can't reach the server. Your
-changes are saved on this device.", and keeps retrying; the next admitted
-connection clears it and restarts the receipt. Receipts and session checks
-are timed instead of counted (`OUTAGE_MS`, 20 s), because edits and Page
-reconnects trigger them too: receipt failures count from the first one after
-the last successful receipt, across edits, and the session-refresh machine
-tracks a run of unreachable answers, so a library screen whose renewals keep
-failing shows the same sentence until a session request succeeds. A tab with
-no account yet shows the failed check's own error instead, since the sentence
-promises saved changes it doesn't have. Both read
-one monotonic clock ([monotonic.mjs](viewer/monotonic.mjs), `performance.now()`),
-so changing the system time can't hide or hasten the notice. A renewal the
-server refuses (401 or 403) still signs the tab out, and says why: "Your
-session ended. Sign in again." or the server's 403 message, or the open
-Page's own sign-in prompt. Each screen renders its banners
-from one deduplicated list ([alerts.mjs](viewer/alerts.mjs)).
+A host restart is not an error the person can act on:
+
+- **Transient & unanswered failures:** HTTP `502`, `503`, or `504` (JSON or
+  gateway HTML), JSON errors marked `retryable`, and failed fetches are
+  transient (`isTransientFailure` in [request.mjs](viewer/request.mjs)): the
+  Page shows Offline or Saved locally and retries without a red banner. Session
+  checks and connection attempts that exceed the request deadline receive the
+  same treatment (`isUnansweredFailure`); timed-out receipts still report an
+  error because they block saving. Receipts retry on the same backoff.
+- **Outage banner:** starting on the 7th consecutive failure (about 15–30 s in),
+  the Page shows `"Pages can't reach the server. Your changes are saved on this
+  device."` and keeps retrying until an admitted connection clears it and
+  restarts the receipt. Receipts and session checks use a timer instead of a
+  count (`OUTAGE_MS`, 20 s) because edits and reconnects also trigger them:
+  receipt failures time from the first failure after the last successful receipt
+  across edits, and the session-refresh machine tracks unreachable streaks so
+  library screens show the same message until a session request succeeds (a tab
+  with no account yet shows the raw check error instead). Both use one monotonic
+  clock (`performance.now()`, [monotonic.mjs](viewer/monotonic.mjs)) so system
+  clock changes cannot hide or hasten the notice.
+- **Auth refusals & deduplication:** server-refused renewals (`401` or `403`)
+  sign the tab out and show `"Your session ended. Sign in again."`, the `403`
+  message, or the open Page's sign-in prompt. Each screen renders banners from
+  one deduplicated list ([alerts.mjs](viewer/alerts.mjs)).
 
 The status line separates syncing from saving. Every head change asks the host
 for a receipt, but only a local edit marks the replica as holding unacknowledged
@@ -1715,31 +1679,25 @@ author ([model/comment-rules.mjs](model/comment-rules.mjs)):
 | delete a thread | owners and editors, or the thread's author |
 | move an anchor | the thread's author |
 
-The rules hold at three layers: the viewer only offers what they allow, the
-tools check them in `applyComment`, and the host checks every sync change from
-a peer before it is stored ([sync/comments.mjs](sync/comments.mjs)):
-[model/comment-authority.mjs](model/comment-authority.mjs) decides the change
-for the sending principal and role. Content is checked by the same rule the
-tools and the browser apply (`validateCommentSpans` in
-[model/comment-content.mjs](model/comment-content.mjs)): non-whitespace text or
-a valid embed, so an image-only comment is content, at most 16,000 text
-characters and 64 KiB of spans. Every message a change creates or touches,
-a soft delete included, must be rich text with no field but `richText`,
-`bodyFormat`, `author`, `createdAt` and `deletedAt`. A new message, or a
-write to a message's `richText` or `bodyFormat`, must also leave its spans
-in the editor's form (`isEditorForm` in
-[model/comment-content.mjs](model/comment-content.mjs)): what the editor's
-encoder writes for what they read as, or what a merge of such writes leaves.
-The check stops a message that people and agents would read differently, or
-that carries data no reader shows: a newline stored as text in prose, marks
-on code text, attrs a marker doesn't use, forms an earlier build wrote.
-"Decode reads it without loss" isn't enough, because decode normalizes
-those quietly. Two merge results are in the form: unmarked text (a peer
-typed into a node another deleted), and a container whose marker a merge
-deleted while a node a peer added inside it survives (a quote, a list
-level, a table or row). A soft delete doesn't check the form, so a Wordgard
-release that encodes differently never blocks deleting older messages. A
-change that writes another form is refused as `outdated_form`.
+These rules hold at three layers. The viewer hides disallowed actions, tools
+enforce them in `applyComment`, and the host validates every incoming sync
+change before storing it ([sync/comments.mjs](sync/comments.mjs),
+[model/comment-authority.mjs](model/comment-authority.mjs)):
+
+- **Content & schema (`validateCommentSpans` in [model/comment-content.mjs](model/comment-content.mjs)):**
+  requires non-whitespace text or a valid embed (image-only comments are valid),
+  capped at 16,000 text characters and 64 KiB of spans. Every created or touched
+  message (soft deletes included) must be rich text containing only `richText`,
+  `bodyFormat`, `author`, `createdAt`, and `deletedAt`.
+- **Canonical editor form (`isEditorForm`):** new messages and edits to
+  `richText` or `bodyFormat` must leave spans in canonical editor-encoded form
+  (preventing hidden data or reader/agent divergence such as prose newlines as
+  text, marks on code text, unused marker attrs, or outdated encodings that
+  decode would silently normalize). Two merge outcomes remain valid: unmarked
+  text (typing into a deleted node) and a container whose marker was deleted
+  while a child survived (quote, list level, table, or row). Soft deletes skip
+  the form check so encoder updates never block deleting older messages.
+  Non-conforming writes fail with `outdated_form`.
 
 A refused change is never stored or delivered, and every other connection
 stays up. When the sender broke a rule, its principal is blocked from
@@ -1806,31 +1764,30 @@ without changing content. Readers and editors can click a name or the summary
 to open the Sources inspector, also available from the **…** menu. It shares the
 right-hand dock with Comments and opens as a modal sheet on narrow screens.
 
-The inspector lists full source names and media types, source-set times and
-writer attribution, retained revision history, and connections from placed
-tables and views. Agent labels are marked as client-provided. Selecting a
-connection locates its placement in the Page. Following and pinned bindings
-are distinguished, including pins whose revisions are no longer retained.
-Anywidget connections come from the shared direct-reference inventory: module,
-stylesheet and paired buffers, including child models. Each spec location is a
-separate connection even when several locations share one source transfer.
-The inventory includes offscreen and repeated placements; it reads view
-replicas while open and releases that demand when closed. Unreadable content
-and unavailable views explicitly leave the connection inventory incomplete.
-Direct-asset tables aren't treated as source consumers. This first inspector
-shows column names, Arrow types and row count from the host's Parquet footer
-summary when the preview area is narrower than 520px. Wider areas show Sift
-using the Page's existing asset cache and source-following renderer. The
-preview stays mounted across Connections and Revisions. JavaScript and CSS have
-read-only text previews (first 16,000 characters); WAV sources have an audio
-player; binary sources show their first 64 bytes in hexadecimal. These previews
-read authenticated assets with a 5 MiB bound and verify their digest. Code is
-never executed by the inspector. Changing sources or closing the inspector
-cancels pending reads and stops audio. The stable source identifier is labeled
-**Source ID**, separately from the editable display name. Schema reads are
-cancelled on source changes and fenced by immutable asset id. It does not create, replace or remove
-sources or execute code. Search appears when more than one source is listed.
-It inspects only the current Page's placed consumers.
+The Sources inspector is strictly read-only (it never creates, replaces, or
+removes sources or executes code, and inspects only the current Page's placed
+consumers; search appears when more than one source is listed):
+
+- **Metadata & connections:** shows full source names, media types, stable
+  **Source ID** (separate from editable display name), source-set times, writer
+  attribution (marking agent labels as client-provided), retained revision
+  history, and connections from placed tables and views. Selecting a connection
+  locates it in the Page. Distinguishes following vs. pinned bindings (including
+  pins whose revisions are no longer retained). Anywidget connections come from
+  the shared direct-reference inventory (module, stylesheet, paired buffers,
+  child models), listing each spec location separately even when sharing one
+  source transfer. Covers offscreen and repeated placements (holding view
+  replicas while open and releasing on close); unreadable content or unavailable
+  views explicitly mark the inventory incomplete. Direct-asset tables are not
+  counted as source consumers.
+- **Previews:** Parquet shows column names, Arrow types, and row count from the
+  host footer summary below 520 px width, and Sift (reusing the Page asset cache
+  and source-following renderer) at 520 px and wider; the preview stays mounted
+  across Connections and Revisions. JavaScript and CSS show read-only text
+  previews (first 16,000 characters), WAV shows an audio player, and binary
+  shows the first 64 bytes in hex. All previews fetch authenticated assets with
+  a 5 MiB bound and verify digests; changing sources or closing cancels pending
+  reads (schema reads are fenced by immutable asset ID) and stops audio.
 
 A Page's named sources live in a third Automerge document, `pages.sources`
 format 1 ([model/sources-doc.mjs](model/sources-doc.mjs)), owned by the same
@@ -2322,13 +2279,31 @@ asks again.
 
 ### Writes
 
-`edit_page` sends `set_view` alone. Every view has a `view_id`, title, `view_type` and `view_revision`. For new JavaScript use `module`. Its `module` field names the entry source, optional `data` binds files, and optional `imports` binds JavaScript sources under names local to the view. The entry exports `render({model, el, signal})`, or a default AFM object or factory. Each `data` name is a key on that model whose value is a file, read only when the view asks (see [Module view data: files and tables](#module-view-data-files-and-tables)). `import f from "data/<name>"` gives the same kind of file, bound to the one the view mounted with. A followed `data` source that moves to a new asset reaches the mounted view as `change:<name>` when the view listens with `model.on("change:<name>", …)`, and the view keeps the reader's state; the old file's calls then fail as aborted. A move to another file type is a data change like any other. A view that does not listen is mounted again when its data changes. Changes to the entry, an import, the spec or the catalog remount the view. Each binding follows its source unless it specifies a revision. Use `vega-lite` with a chart spec and named data, or `anywidget` with a widget spec for code that needs a model. All three use the same view node. `read_page.libraries` lists the host-provided names. It names the Page `revision` it read, fenced like
-any edit; a newer Page revision doesn't refuse it. `view_revision` is null to
-create, or the view's current `revision`. The receipt carries
-`view_revision`, the view's revision after the write, and `result.edits` of
-`{ op, view_id, view_revision }`; it names no revision handle for the view.
-The nonce shares `edit_page`'s lane, and the writer is recorded as for any
-edit ([Edit writers](#edit-writers)) and as `producer.by`.
+`edit_page` sends `set_view` as a solo operation. Every view carries `view_id`,
+`title`, `view_type`, and `view_revision` (all three view types share the same
+`view` node; `read_page.libraries` lists host-provided library names):
+
+- **`module` (default for new JavaScript):** names an entry source in `module`,
+  optional `data` file bindings, and optional `imports` for local JavaScript
+  source aliases. The entry exports `render({model, el, signal})` or a default
+  AFM object or factory. Each `data` key exposes a lazy file object on `model`
+  (see [Module view data: files and tables](#module-view-data-files-and-tables));
+  `import f from "data/<name>"` returns the same file object bound at mount.
+- **`vega-lite` & `anywidget`:** use `vega-lite` for chart specs with named
+  data, or `anywidget` for widget specs that need a model.
+- **Reactivity & remounting:** each binding follows its source unless pinned to
+  a `revision`. When a followed `data` source moves to a new asset (including a
+  different file type), a view listening via `model.on("change:<name>", …)`
+  receives `change:<name>` and preserves reader state (calls on the old file
+  reject as aborted); views without a listener remount. Changes to the entry
+  module, an import, the spec, or the library catalog always remount.
+- **Fencing & receipts:** `set_view` sends the observed Page `revision` (fenced
+  like any edit, though a newer Page revision does not refuse it) and
+  `view_revision` (`null` to create, or the view's current `revision`). The
+  receipt returns `view_revision` and `result.edits` (`{ op, view_id,
+  view_revision }`) with no view revision handle. Nonces share `edit_page`'s
+  lane, and the writer records both in [Edit writers](#edit-writers) and as
+  `producer.by`.
 
 The spec passes `checkViewSpec` ([shared/view-spec.mjs](shared/view-spec.mjs)):
 a JSON object of at most 64 KiB accepted by the media-specific checker.
@@ -2450,16 +2425,16 @@ loses its leading zero, the first row is always the header, only commas
 separate fields, the file must be UTF-8, and a timestamp with no zone is read
 as UTC. A value that looks like a date or timestamp but is not a real one,
 such as 2024-02-30, fails the whole file: fix the value, or write Parquet.
-JSON suits a small nested object, not a table of rows. Every limit is
-an error; nothing is truncated. CSV columns read as booleans (`true` or
-`false` in any case), 64-bit integers, floats, dates, timestamps or text, and
-an empty field is `null`. A decode failure is kept in the same cache and
-answered again, since the same bytes fail the same way; a failed fetch is not
-kept, so the next call fetches again. The ColumnSet is defined in
-`@nteract/output-frame` (`src/column-set.mjs`); the page checks it once, when
-it decodes it, and the frame checks the copy it receives. The frame wraps it
-in a table of our own (`src/table.mjs`); it loads no Arrow library and never
-loads Sift.
+JSON suits a small nested object, not a table of rows.
+
+Every limit raises an error; nothing is truncated. CSV columns read as
+booleans (`true` or `false` in any case), 64-bit integers, floats, dates,
+timestamps or text, and an empty field is `null`. Decode failures cache
+alongside decoded results (same bytes fail the same way), while failed fetches
+are never cached so the next call retries. `@nteract/output-frame` defines
+`ColumnSet` (`src/column-set.mjs`, validated once on decode in the page and
+again on receipt in the frame) and wraps it in a lightweight table
+(`src/table.mjs`) without loading Arrow JS or Sift inside the frame.
 
 Column types:
 
@@ -2499,31 +2474,30 @@ from Arrow JS on purpose:
 
 ### The Page body
 
-A `view` node is a top-level leaf with one attr, `view_id`; feature `view`
-gates it ([model/features.json](model/features.json)), so a build without it
-opens a Page with one read-only. Its DOM form is `figure[data-pages-view]`
-with `data-view-id`. `insert_node` with `{ type: "view", attrs: { view_id }
-}` places one, in a block of its own or, after a top-level node's id, inside
-that node's block; the view must exist on the Page (`400 unknown_view`, naming
-the views it holds in the sentence and `details.view_ids`). A malformed view
-node is `400 invalid_edit_selector`, naming the field and its rule.
-`delete_node` removes the node and keeps the view. Markdown reads it as the
-text `[View: <view_id>]` (brackets escaped), from the node alone, with no
-link: a view has no address of its own. `replace_block_markdown` keeps the
-node for that exact line at the view's own place: the same count of that text
-in the block, in the same container instance (a quote or list item is told
-from others of its kind by order). A paragraph whose text names no stored view
-is prose and is never refused, so a block can hold `[View: x]` as text beside a
-dataframe. Views with different ids may be reordered among the paragraphs of
-one container by reordering their lines. A view can't change container: its
-line in another quote or list item, or a quote or list item of its kind added,
-removed or moved before its own, is refused with `markdownless_node`, naming
-the node operations (`insert_node`, `move_block`, `delete_node`) to use
-instead. Identical lines make a rewrite ambiguous, so adding or removing a copy
-of a stored view's line anywhere in the block is refused too. An outline entry has
-`type: "view"`, `attrs: { view_id }`, and
-`summary: { title, media_type }` when the view exists. Comments refuse a view
-node. A view stored inside a text container reads as a notice.
+- **Node & DOM:** a `view` node is a top-level leaf with one attr, `view_id`,
+  gated by schema feature `view` ([model/features.json](model/features.json))
+  so builds without it open the Page read-only. Renders as
+  `figure[data-pages-view]` with `data-view-id`. A view stored inside a text
+  container reads as a notice.
+- **Placement & removal:** `insert_node` with `{ type: "view", attrs: {
+  view_id } }` places a view in its own block, or inside an existing block after
+  a top-level node's id. The view must exist on the Page (`400 unknown_view`,
+  listing existing views in the message and `details.view_ids`); malformed view
+  nodes return `400 invalid_edit_selector` naming the field and rule.
+  `delete_node` removes the node while keeping the view document.
+- **Markdown & `replace_block_markdown`:** Markdown reads a view as
+  `[View: <view_id>]` (brackets escaped) with no link. `replace_block_markdown`
+  preserves the node when that exact line stays at the same occurrence count
+  within the same container instance (blockquotes and list items are identified
+  by ordinal). Plain prose `[View: x]` naming no stored view is allowed alongside
+  other nodes. Views with distinct IDs can reorder among paragraphs inside one
+  container. Rewrites fail with `markdownless_node` (directing callers to
+  `insert_node`, `move_block`, and `delete_node`) if a view changes container,
+  if an earlier container of the same kind is added/removed/moved, or if a
+  stored view's line is duplicated or dropped anywhere in the block.
+- **Outline & comments:** outline entries carry `type: "view"`, `attrs: {
+  view_id }`, and `summary: { title, media_type }` when the view exists.
+  Comments refuse view nodes.
 
 ### Drawing a view
 
@@ -2600,8 +2574,9 @@ the Page. In `schema.zed`, `comment = edit + commenter` and `read` builds on
 Capabilities are named: `read`, `comment`, `edit`, `share`, `administer`,
 `trash`, `restore`, `purge`, `create_items`, `manage_members`, `move_within`,
 `move_out`. A Page never gets `manage_members`, and a project never gets
-`comment`. Nothing checks the `move_*` capabilities, because moves don't exist
-yet. Execute is out of scope for Pages.
+`comment`. `move_page` enforces ownership and Project-boundary rules in the
+Catalog (`worker/move-page.mjs`) rather than calling `decide()`'s `move_*`
+capabilities. Execute is out of scope for Pages.
 
 decide() runs three steps, in this order:
 
@@ -2638,12 +2613,9 @@ delegation, and driver labels (`x-operator`, `x-pages-driver`) are attribution
 only. An agent's API key or OAuth token authenticates as the person, and its
 scope is the credential ceiling.
 
-One timing difference from the rules decide() replaced: the Project read check
-now requires an unexpired credential, as Page checks always have.
-`authenticate()` returns an unexpired credential, but the Project then reads the
-request body and its record before it checks access against a fresh clock. A
-credential that expires during those reads is refused as `project_not_found`.
-Before, the owner was admitted.
+Project read checks require an unexpired credential against a fresh clock after
+reading the request body and record, matching Page checks. A credential that
+expires during those reads is refused as `project_not_found`.
 
 ### Schema invariants
 
@@ -2680,9 +2652,12 @@ expiry, write scope and domain proof. It also counts member inspections with a
 
 ### Proposed host integration
 
-None of this is wired. A hosting platform would implement `decide` with the
-same signature over a leased copy of its own relations, and only step 1 would
-change. The lifecycle overlay and the credential ceiling stay with nteract:
+> **Not enabled / not wired:** This section describes a future hosting-platform
+> integration. None of it is wired in this build.
+
+A hosting platform would implement `decide` with the same signature over a
+leased copy of its own relations, changing only step 1 while keeping the
+lifecycle overlay and credential ceiling in nteract:
 
 - The copy would hold the item's relations and its project's. The host's
   change feed (a watch stream) would refresh it, with pushes for quick
@@ -2722,10 +2697,12 @@ expands it; while reading, a click expands it. A comment on an image anchors to
 its embed marker the way a chart comment does, quotes `Image`, and detaches when
 the image is deleted. Clipboard
 serialization still emits one canonical image with inert preservation metadata.
-Project-transfer bundle v4 carries structured variant occurrences and both asset
-references, deduplicates uploads per destination Page, and applies variants using
-destination live IDs. Truncated occurrence reads fail rather than silently losing
-variants. Versions 1 through 3 remain importable; old importers reject v4.
+Project-transfer bundle v5 (`BUNDLE_VERSION = 5` in
+[project-transfer.mjs](scripts/project-transfer.mjs)) carries dark-image
+variant occurrences alongside both asset references, deduplicates uploads per
+destination Page, and applies variants using destination live IDs. Truncated
+occurrence reads fail rather than silently losing variants. Earlier bundle
+versions are refused with `bundle_version_unsupported`.
 
 Browser upload, screenshot paste, and file drop send PNG, JPEG, or static WebP to
 `POST /api/pages/:pageId/assets`. Only a stable Page-scoped reference and alt text
@@ -2779,34 +2756,34 @@ answer. A dataset already on the destination is `200` with no second write;
 a new copy is `201`. Upload capabilities can't copy. Images don't copy: an
 image pasted from another Page keeps its `src` there.
 
-Agents copy through `edit_page` instead
-([dataset-copies.mjs](worker/dataset-copies.mjs)). `set_source`, a
-dataframe `insert_node` and `set_node` with `attrs.asset_id` take an optional
-`asset_from`: the id of the Page or Project (`prj_…`) the dataset is on. The
-gateway takes `asset_from` off each operation and forwards the batch with the
-hinted asset ids beside its arguments, so the host validates, fingerprints
-and journals the operations exactly as without it, and nothing about the
-source is stored. For a new intent the host checks the revision, then each
-named asset on its own Page as it always does. An asset already there applies
-as today and the source is never asked: an unneeded, unreadable or
-nonexistent `asset_from` changes nothing. A hinted asset that's missing makes
-the host answer `409` with `x-pages-asset-copy: required` and the missing ids,
-before any journal entry. The gateway then refuses an image (`not_a_dataset`)
-or more than 8 copies (`too_many_copies`), asks each source for read access as
-a read of its asset would (a Project: the Project's reader check, its content
-document, then that document's host), and only then copies with
-`copyDatasetAsset`, 2 at a time, outside the host's queue. Every refusal from
-a source below 500 is `source_not_readable`, whether it exists or not. The
-gateway forwards the batch again without hints; the host checks access,
-revision and every asset again. A recorded receipt replays before any of
-this, so a retry with the same nonce never asks the source. If the second
-forward is refused (a stale revision, a stale source), the copied object stays
-on the Page unreferenced, as an interrupted upload's does. A copy's refusals
-are `dataset_not_found` (404), `not_a_dataset` (415), `dataset_too_large`
-(413), `too_many_copies` (400) and `source_not_readable` (403); a malformed
-`asset_from`, or one on an operation that names no dataset, is
-`invalid_arguments`. The destination may be Project content (`project_id`);
-its own Project id as `asset_from` names the destination itself.
+Agents copy datasets through `edit_page` instead
+([dataset-copies.mjs](worker/dataset-copies.mjs)):
+
+- **Operation syntax:** `set_source`, dataframe `insert_node`, and `set_node`
+  with `attrs.asset_id` accept an optional `asset_from` naming the source Page
+  or Project (`prj_…`). The destination can be Project content (`project_id`);
+  passing its own Project ID as `asset_from` names the destination itself.
+- **Gateway–host handoff:** the gateway strips `asset_from` from each operation
+  and forwards hinted asset IDs alongside the batch, so the host validates,
+  fingerprints, and journals operations unchanged and stores nothing about the
+  source. Recorded receipts replay before any copy runs, so retries with the
+  same nonce never contact the source. For new intents, the host checks revision
+  and Page-local assets first: assets already on the destination apply directly
+  without checking `asset_from` (even if unreadable or nonexistent).
+- **Copy execution:** if a hinted asset is missing, the host answers `409` with
+  `x-pages-asset-copy: required` and the missing IDs before journaling. The
+  gateway rejects images (`not_a_dataset`) or batches exceeding 8 copies
+  (`too_many_copies`), checks read access on each source (for a Project: Project
+  reader check, content document, then that document's host; any source refusal
+  below `500` maps to `source_not_readable` regardless of existence), copies via
+  `copyDatasetAsset` 2 at a time outside the host queue, and forwards the batch
+  again without hints for full re-validation. If the second forward fails (stale
+  revision or stale source), copied objects stay unreferenced on the Page like
+  interrupted uploads.
+- **Refusal codes:** `dataset_not_found` (`404`), `not_a_dataset` (`415`),
+  `dataset_too_large` (`413`), `too_many_copies` (`400`),
+  `source_not_readable` (`403`), and `invalid_arguments` (malformed `asset_from`
+  or placed on a non-dataset operation).
 
 For agents, importing bytes and inserting content are separate operations:
 
@@ -2987,18 +2964,15 @@ retries with backoff. The
 [Cloudflare portability audit](https://pages.runtimed.run/p/460c48f0-dc4b-4702-af82-59910e6bebd0)
 (sections 6 and 7) covers both cases.
 
-The host keeps its own holds short. A tool write flushes before it answers and
-sets no timer. Agent presence sets no timer: its entries carry `idle_at` and `expires_at`, the host
-prunes when it next reads or publishes the roster, and viewers apply the times
-on their own clocks (see Agent carets). Before this, every `edit_page`
-stayed counted for 60 s, the caret's fade and expiry, so a Page that
-was already near the limit refused every request for a minute after one edit
-([#4654](https://github.com/nteract/nteract/issues/4654)).
+The host keeps request holds short so edits don't occupy cell request slots
+after responding ([#4654](https://github.com/nteract/nteract/issues/4654)):
+tool writes flush before answering and set no timers, and agent presence carries
+`idle_at` and `expires_at` timestamps pruned lazily on roster reads/publishes
+and enforced on viewer clocks (see [Agent carets](#agent-carets)).
 [comments-scale.test.mjs](worker/comments-scale.test.mjs) builds a Page with
-200 threads and 1,000 messages and checks that an `edit_page` holds no timer,
-leaves no timer behind
-(tracking through the background work, so a timer a callback sets is seen),
-that the work settles within budget, and that reads during that window succeed.
+200 threads and 1,000 messages and verifies that `edit_page` leaves no timers
+behind (including timers scheduled from background callbacks), settles within
+budget, and allows concurrent reads to succeed.
 
 ### Outbound edits
 
@@ -3412,31 +3386,25 @@ The banner sticks below the header, and below the formatting toolbar when it's
 pinned, so it stays in view while the Page scrolls. It names the app, not
 "Pages", which is also what people call their documents.
 
-The viewer is `app.js`, which renders the shell (header, account, sign-in and
-the Page list), plus content-hashed files under `/chunks/`. The editor chunk
-waits for the WASM runtimes; the
-[editor-load machine](viewer/editor-load-machine.mjs) tracks its import, and
-`editorBoot` in [wasm-preload.mjs](viewer/wasm-preload.mjs) says whether it
-starts at boot and at what priority. A route that opens a document (a Page,
-Project content) starts it at boot. Home (`/`) starts it at boot too, since a
-Page usually opens next, but `theme.js` preloads Automerge's WASM there at
-`fetchpriority="low"`, so the library's card images keep the link. On those
-routes `theme.js` adds the WASM preload in `<head>`, beside `app.js`. The
-index routes, `/projects` and `/pages`, only list, so they render from the
-shell and its static chunks alone and load neither the editor nor the WASM.
-They start the editor import when a Page opens or a new Page is created, or a
-little earlier when a pointer goes down on a Page row; starting the import
-preloads the WASM, so the two download together. The grid's first row of card
-images (five) loads eagerly at high priority, and a hidden theme's image
-never loads. `scripts/viewer-chunks.mjs` records a ceiling on the size of
-`app.js` and its static chunks, and the build fails past it or if that graph
-reaches the editor or a WASM runtime. A
-release serves only its own chunks, so a tab still running an earlier `app.js`
-can find its editor chunk gone: the path then answers with the app's HTML and
-the import fails. The tab asks `/health` for the build and the banner offers
-Reload. The Mermaid renderer loads only when a diagram shows, and the Sift
-table chunk only when a dataframe shows; a failed import asks `/health` the
-same way.
+The viewer splits into `app.js` (shell: header, account, sign-in, Page list)
+and content-hashed chunks under `/chunks/`:
+
+- **Boot & preloading (`viewer/editor-load-machine.mjs`, `viewer/wasm-preload.mjs`):**
+  document routes (Pages, Project content) start the editor chunk and WASM
+  preload in `<head>` at boot. Home (`/`) also starts at boot, with `theme.js`
+  preloading Automerge WASM at `fetchpriority="low"` so library card images keep
+  bandwidth. Index routes (`/projects`, `/pages`) render from the shell alone
+  and defer editor and WASM loading until a Page opens, a new Page is created,
+  or pointer-down on a Page row (fetching both together). The grid's first row
+  of 5 card images loads eagerly at high priority; hidden-theme images never
+  load.
+- **On-demand feature chunks:** the Mermaid renderer loads only when a diagram
+  renders, and the Sift table chunk loads only when a dataframe renders.
+- **Size budgets & stale-chunk recovery:** `scripts/viewer-chunks.mjs` fails the
+  build if `app.js` and its static chunks exceed the size ceiling or import the
+  editor or a WASM runtime. Each release serves only its own chunks: if an older
+  tab's chunk path falls through to HTML and import fails (editor, Mermaid, or
+  Sift), the tab checks `/health` and shows the Reload banner.
 
 Every file `index.html` names carries a content hash too: `app-<hash>.js`,
 `app-<hash>.css` and `theme-<hash>.js`, plus `automerge-<hash>.wasm` from
@@ -3491,7 +3459,7 @@ it, and keeps its records as plain data. Their tables,
 [reload-gate](test/fixtures/machines/reload-gate.json), run against both
 transitions and through PageSession and ReloadGate.
 
-Deliberate differences from the earlier flag-based sessions:
+Session close and reload guarantees:
 
 - Closed means the final checkpoint settled; backend release may still be
   running. Reload waits for the release.
@@ -3608,12 +3576,14 @@ as [store.test.mjs](viewer/store.test.mjs) does for a backoff interpreter.
 
 ## MCP Events groundwork (not enabled)
 
+> **Not enabled / not wired:** Pages does not advertise the `events` capability
+> or implement `events/list`, `events/subscribe`, or `events/unsubscribe`.
+> There are no live subscriptions, durable subscription store, event outbox,
+> webhook deliveries, or event-triggered wakeups in this build.
+
 [OpenAI MCP Events](https://developers.openai.com/plugins/build/mcp-events)
-supports webhook-triggered work in ChatGPT Work and dots. Pages does **not** yet
-advertise the `events` capability or implement `events/list`, `events/subscribe`
-or `events/unsubscribe`. There are no live subscriptions, durable subscription
-store, event outbox, webhook deliveries or event-triggered wakeups in this slice.
-`read_page_changes` remains a net-diff read tool, not an event log or replay feed.
+supports webhook-triggered work in ChatGPT Work and dots. `read_page_changes`
+remains a net-diff read tool, not an event log or replay feed.
 
 `worker/mcp-events-wire.mjs` is an internal, unconnected foundation for that
 implementation: strict wire-shape parsing, principal-scoped deterministic IDs
@@ -3759,34 +3729,34 @@ Guards check the preparation snapshot; native changes can still merge during
 persistence. Tool mutations do not simulate typing or lock out peers.
 
 `replace_match` writes only the words that differ between the match and its
-replacement ([`textSplices`](model/replace-match.mjs)): a word-token diff over
-grapheme clusters (`Intl.Segmenter`), with each changed run narrowed by its
-common prefix and suffix in whole clusters, so a combining accent, a ZWJ emoji
-sequence or a flag pair is never split and never left as an anchor on its own.
-A `match_text` that starts or ends inside a cluster is refused
-(`invalid_edit_selector`), since the rest of that character would stay behind
-with any anchor on it. Shared words keep their characters, so comment anchors
-on them stay attached and a replacement equal to its match writes nothing. A word that changes
-beyond a prefix or suffix is replaced whole, so an anchor ending in it detaches
-and one starting in it shrinks to the words that remain. This is deliberately
-not the character-level LCS `replace_block_markdown` gets from `updateSpans`,
-which keeps stray letters and leaves an anchor on "table" attached to the "e"
-of "desk". The diff has a budget of 2,000 token edits; past it the texts are
-split at words unique to both sides and each piece is diffed alone, and a
-piece that is still over budget refuses the edit with
-`400 replace_match_too_large` instead of a coarse splice that would detach
-anchors on words it kept. Inserted text carries the marks shared by the whole
-match, plus any mark run that encloses its splice: a word replaced wholly
-inside a code span, a link or a bold run keeps that mark, as retyping the
-word would, and text inserted strictly inside a run continues it. Untouched
-characters keep their own marks. A pure insertion at a run's boundary, or a
-replacement that crosses a run's edge, does not spread the mark; when such a
-mark covered only part of the match, the edit's entry and the receipt's
-top-level `warnings` carry `marks_dropped` with the mark names and their
-ranges as offsets into `match_text`, capped at 32 ranges (`ranges_truncated`),
-so the caller can reapply them with `format_match`. A partial mark none of
-whose words changed still covers them and is not reported. The agent caret
-covers the changed words.
+replacement ([`textSplices`](model/replace-match.mjs)):
+
+- **Grapheme-safe word diff:** runs a word-token diff over grapheme clusters
+  (`Intl.Segmenter`), narrowing each changed run by its common prefix and suffix
+  in whole clusters so combining accents, ZWJ emoji sequences, and flag pairs
+  are never split or left as standalone anchors. A `match_text` starting or
+  ending inside a cluster is refused (`invalid_edit_selector`).
+- **Anchor preservation:** shared words keep their characters so comment anchors
+  stay attached, and an identical replacement writes nothing. Words changed
+  beyond a prefix/suffix are replaced whole (anchors ending in the word detach;
+  anchors starting in it shrink to the remaining words). Unlike
+  `replace_block_markdown`'s character-level LCS (`updateSpans`), this avoids
+  leaving stray letters such as an anchor on `"table"` stuck to the `"e"` of
+  `"desk"`. The agent caret covers the changed words.
+- **Diff budget:** capped at 2,000 token edits. Beyond that, the texts split at
+  words unique to both sides and diff each piece independently; any piece still
+  over budget fails with `400 replace_match_too_large` rather than falling back
+  to a coarse splice that detaches anchors.
+- **Marks & `marks_dropped`:** inserted text inherits marks covering the whole
+  match plus any mark run enclosing its splice (replacing a word inside a code
+  span, link, or bold run keeps the mark, and inserting strictly inside a run
+  continues it). Untouched characters keep their marks. Pure insertions at a
+  run boundary, or replacements crossing a run edge, do not spread the mark; if
+  such a mark covered only part of the match, both the edit entry and top-level
+  receipt `warnings` include `marks_dropped` with mark names and offsets into
+  `match_text` (capped at 32 ranges, `ranges_truncated`) so the caller can
+  reapply them via `format_match`. Partial marks on untouched words stay intact
+  and produce no warning.
 
 `replace_match` can take `replacement_markdown` instead of `replacement`: one
 line of inline Markdown ([`parseInlineMarkdown`](model/markdown-import.mjs)). The
@@ -3885,31 +3855,26 @@ the readable mark brings nothing back.
 
 `decode` reports two reasons a block can't be drawn as stored, apart:
 
-- `newer`: content from a newer build. A node, container or embed name this
-  build doesn't know, or a marker whose own values it can't read or must
-  not render (`unreadableMarker`): a value or attrs that aren't a map, an
-  image whose src is missing or unsafe, a heading level, table alignment or
-  task state outside what this build writes, a dataframe it can't show.
-  Every reader draws such a marker as the notice for a node it doesn't
-  know; an unsafe src is never rendered or written as a URL, and encode
-  writes the marker back as stored. An unknown container
-  draws nothing in the editor and a notice in the agent read; where that
-  makes the agent read's top-level nodes differ from the stored ones,
-  `read_page` gives those nodes no `node_id`, so only the block's id
-  addresses them. Nothing rewrites such a block, and the editor refuses a person's
-  edit to one it draws only in part ("This block holds content from a newer
-  version of Pages"). An owner removes such a node with `delete_node`
-  when `read_page` gives it a `node_id`. When it reports none (an unknown
-  node or unreadable dataframe followed by text that has no marker of its
-  own), `delete_block` with the block's `node_id` removes the whole block;
-  it works on any block. A
-  marker with values this build can't read on a known node with a Markdown
-  form (a heading level, an image) is also recovered by
-  `replace_block_markdown`, which rewrites the block whole. That tool
-  refuses a block holding an unknown node, an aside or a dataframe it
-  can't keep, and its refusal names both recoveries. Editing text around
-  such a node with `replace_match`, `format_match` or `set_node` works;
-  text in the node itself answers `newer_content`.
+- `newer`: content from a newer build. This covers an unknown node, container,
+  or embed name, or an unreadable/unsafe marker (`unreadableMarker`: non-map
+  value/attrs, missing/unsafe image `src`, out-of-range heading level/table
+  alignment/task state, or unrenderable dataframe).
+  - *Rendering & round-trip:* readers render a notice for unknown nodes (unsafe
+    `src` is never rendered or written as a URL) and encode writes markers back
+    unchanged. Unknown containers render nothing in the editor and a notice in
+    agent reads (where top-level nodes diverge from stored nodes, `read_page`
+    omits `node_id` so only the block ID addresses them). The editor blocks
+    edits to partially drawn blocks (`"This block holds content from a newer
+    version of Pages"`).
+  - *Recovery & edits:* owners remove such nodes via `delete_node` when
+    `read_page` provides a `node_id`, or `delete_block` (using the block's
+    `node_id`) when none is reported (such as an unknown node or unreadable
+    dataframe followed by unmarked text). Known nodes with a Markdown form
+    (e.g., invalid heading level or image) can also be recovered by rewriting
+    the whole block via `replace_block_markdown` (which refuses blocks holding
+    unknown nodes, asides, or unkeepable dataframes and names both recoveries).
+    `replace_match`, `format_match`, and `set_node` work on surrounding text;
+    text inside the newer node itself returns `newer_content`.
 - `adjusted`: every name is known, but `nestIn` re-homed a node or dropped
   or skipped a parent. Every reader draws one tree for the block, and
   `moved` lists each node marker whose drawn parents differ from its stored
@@ -4096,34 +4061,33 @@ follow-up before viewport loading raises the request volume.
 
 ### Refusal codes and tool hints
 
-Every MCP refusal carries a stable `code`, in `structuredContent` and in the JSON
-text, so agents never branch on message text. The Worker codes specific refusals
-where they're raised: a stale exact-revision guard is `409 stale_revision`, a
-malformed revision handle is `400 invalid_revision`, a missing `revision` and
-an edit batch that can't apply (zero or multiple matches, an
-unknown block, operation or mark) are `400 invalid_edit_selector`, a
-`replace_match` whose change is past the diff budget with nothing to split it
-on is `400 replace_match_too_large`, and a comment
-action on a missing thread, message or block is `400 invalid_comment_selector`
-(a `thread_ids` batch adds `not_found_thread_ids`). A full account is
-`409 page_quota_exceeded` and a full Trash `409 trash_capacity`; both carry
-`limit` and `count` (see Page quotas).
-A Page at celld's per-cell request limit, or one Cloudflare reports overloaded,
-is `503 page_busy` with `retryable: true` and `retry_after_ms`. A transient
-Cloudflare failure between the gateway and an object is
-`503 page_transient_failure`, retryable when the request is safe to repeat.
-A listing that meets an unavailable shared Page is `503 shared_page_unavailable`
-(see Request limits).
-An MCP result has no HTTP status, so [mcp.mjs](mcp.mjs) names any refusal the
-Worker left uncoded by its status (`access_denied`, `not_found`, `conflict` and
-so on). It adds `retryable: true` to `stale_revision`, whose retry is a new request
-built from a fresh read. The HTTP API keeps `retryable` for transient failures
-only, because the browser treats those as an outage. A tool call that gets no
-answer returns `read_failed` or `outcome_unknown`. `outcome_unknown` is
-`retryable: true` only when the write carried a valid `nonce`, whose receipt
-replays while it is kept; any other write gets `retryable: false` and is told to
-read back and reconcile. The `/llms.txt`
-guide lists the codes agents act on.
+Every MCP refusal carries a stable `code` in both `structuredContent` and JSON
+text so agents never branch on message text. The Worker emits specific codes at
+the point of refusal:
+
+| HTTP & code | Condition |
+| --- | --- |
+| `409 stale_revision` | Exact-revision guard failed (MCP adds `retryable: true`, meaning build a new request from a fresh read) |
+| `400 invalid_revision` | Malformed revision handle |
+| `400 invalid_edit_selector` | Missing `revision`, or unapplicable edit batch (zero/multiple matches, unknown block/op/mark) |
+| `400 replace_match_too_large` | `replace_match` change exceeds diff budget with no unique-word split point |
+| `400 invalid_comment_selector` | Comment action on missing thread, message, or block (`thread_ids` batch adds `not_found_thread_ids`) |
+| `409 page_quota_exceeded` / `409 trash_capacity` | Account or Trash at capacity; both carry `limit` and `count` (see [Page quotas](#page-quotas)) |
+| `503 page_busy` | Page hit celld's per-cell request limit or Cloudflare overload (`retryable: true`, `retry_after_ms`) |
+| `503 page_transient_failure` | Transient Cloudflare error between gateway and object (retryable when request is safe to repeat) |
+| `503 shared_page_unavailable` | Listing hit an unavailable shared Page (see [Request limits](#request-limits)) |
+
+MCP vs. HTTP error mapping:
+
+- Because MCP has no HTTP status, [mcp.mjs](mcp.mjs) maps any uncoded Worker
+  refusal from its HTTP status (`access_denied`, `not_found`, `conflict`, etc.).
+- HTTP reserves `retryable` for transient failures only (browsers treat those as
+  an outage).
+- Unanswered tool calls return `read_failed` or `outcome_unknown`.
+  `outcome_unknown` sets `retryable: true` only when the write carried a valid
+  `nonce` (whose receipt replays while retained); otherwise `retryable: false`
+  and callers must read back and reconcile. `/llms.txt` lists the codes agents
+  act on.
 
 Every tool declares all four MCP annotation hints, and `tool()` refuses one that
 doesn't, because clients read an absent hint as destructive and open-world.
@@ -4147,33 +4111,31 @@ block an operation inserted, moved or replaced. A `read_page` by section, search
 `node_ids` shows a reading bar; a search with one to three hits also
 fills each hit. Whole-page and outline reads show nothing.
 
-Targets are Automerge cursors captured inside the change, so they follow
-concurrent typing. They travel in the `page-activity` snapshot and are never
-written to the document, a receipt or the journal; a replayed receipt publishes
-nothing. A caret is active for 15 s after a write, then fades, and disappears 60 s
-after the agent's last call; a reading marker lasts 10 s. Each published entry
-carries those times as `idle_at` and `expires_at`, and the browser applies them
-on its own clock. The host prunes when it next reads or publishes the roster and
-sets no timer for it: under celld a timer belongs to the request that set it and
-keeps that request counted against the Page's per-cell request limit until it
-fires (see [Request limits](#request-limits)). Only API credentials
-(an API key or MCP OAuth) get presence: a browser sign-in session publishes
-nothing, since that person's editor shows their own caret. A caret reads
-"Kyle's Kilo · release agent": the account, the `x-pages-driver` harness and an
-optional `x-pages-agent` session label. Labels sit under the authenticated
-account and are trusted as such. Records key by account, harness and session
-label, so two sessions of one account keep separate carets. MCP `initialize`
-responses also carry an `Mcp-Session-Id`, and clients echo it; the transport
-stays stateless. The worker turns the id into an account-scoped SHA-256 tag
-(`identity.session`), so two unlabeled sessions on one credential still get two
-carets and two colors, and the raw id never leaves the worker. MCP revision
-2026-07-28 has no sessions: the worker ignores a client's `Mcp-Session-Id` and
-builds the tag from the clientInfo each request declares in `_meta`
-(`withModernMcpClient` in [usage.mjs](worker/usage.mjs)), so one account's
-requests from one client name and version share a caret. A reading marker's
-targets are captured on the revision the read returned.
-Each participant's color comes from nteract's cursor palette, keyed by
-principal and driver.
+- **Cursors & lifetimes:** targets are Automerge cursors captured inside the
+  change (or on the revision returned by a read for reading markers), so they
+  follow concurrent typing. They travel only in the `page-activity` snapshot
+  and never enter the document, receipts, or journal; replayed receipts publish
+  nothing. Write carets stay active for 15 s, then fade, and disappear 60 s
+  after the agent's last call; reading markers last 10 s.
+- **Timerless pruning:** each entry carries `idle_at` and `expires_at` for
+  browser-side enforcement. The host prunes lazily on roster reads/publishes and
+  sets no timers (under celld, timers keep their originating request counted
+  against the per-cell request limit; see [Request limits](#request-limits)).
+- **Eligibility & identity:** only API credentials (API key or MCP OAuth)
+  publish agent presence; browser sign-ins show the user's own editor caret.
+  Carets format as `"Kyle's Kilo · release agent"` (account, `x-pages-driver`,
+  and optional `x-pages-agent`, trusted under the authenticated account) and key
+  by account, harness, and session label so concurrent sessions keep separate
+  carets. Colors come from nteract's cursor palette, keyed by principal and
+  driver.
+- **Stateless session tagging:** MCP `initialize` returns an `Mcp-Session-Id`
+  that clients echo while transport stays stateless; the worker hashes it into
+  an account-scoped SHA-256 tag (`identity.session`, never exposing the raw ID)
+  so two unlabeled sessions on one credential get distinct carets and colors.
+  MCP revision `2026-07-28` has no sessions: the worker ignores
+  `Mcp-Session-Id` and builds the tag from `clientInfo` in `_meta`
+  (`withModernMcpClient` in [usage.mjs](worker/usage.mjs)) so requests sharing
+  client name and version share one caret.
 
 Comment and progress anchors are native cursors, so they skip the exact-revision
 guard. Comments are written to the comments document, so a comment never
@@ -4198,32 +4160,37 @@ targets follow the same rule with `revision`, failing with
 still replay the recorded receipt; these guards run only for new intents.
 
 `edit_page` supports structural operations including `insert_markdown`,
-`move_block`, and `insert_image`. Placement uses a block's `node_id` as
-`after_node_id`, `null` to prepend, or omission to append; fractional positions
-are internal. `insert_markdown`, `insert_image` and `insert_node` also take a
-top-level node's id as `after_node_id`: the new nodes go into that node's
-block, directly after it (after a list's or quote's last item), and no block
-is created ([model/insert-in-place.mjs](model/insert-in-place.mjs)). The write
-is one `splitBlock` per marker and one `splice` per text run at the end of the
-anchor's range, after the block's markers are repaired; no existing character
-or marker is rewritten, so neighbours keep their node ids and comment anchors.
-Expanding marks at the anchor's end are taken off the inserted range, and each
-run gets exactly its encoded marks. The removal grows at its end and not at its
-start, so text spliced after the last new node stays unmarked and text typed at
-the anchor's end continues the anchor's mark. The block is decoded afterwards: unless it
-holds the old nodes, with their ids, around exactly the new ones, the insert
-is refused with `nodes_would_join` (a list beside a list of the same kind) and
-the batch rolls back. A block holding content from a newer build refuses with
-`newer_content`. Each in-place insert decodes its whole block, so one batch's
-inserts may read at most `MAX_BATCH_IN_PLACE_UNITS` (1,000,000) UTF-16 units of
-block text, counted as the block's length per insert before anything is
-written: about 100 inserts into a 10 KB block and 4 into a 200 KB one. A check
-runs only on the write's own change, so two writers who each insert a list of
-one kind after the same node can merge into one list; no text is lost, and one
-receipt's node id then names nothing. The receipt names the block as `block` and the new nodes as
-`nodes`, with no `node_id`; agent presence names the inserted text range. The
-stored form is the one the editor writes, so earlier builds read it. Content warnings, the ids in `result.edits`, and other receipt results are captured at
-the operation's actual heads and are not recomputed during retry.
+`move_block`, and `insert_image`:
+
+- **Block vs. in-place placement:** `after_node_id` accepts a block's `node_id`,
+  `null` (prepend), or omission (append); fractional positions are internal.
+  `insert_markdown`, `insert_image`, and `insert_node` also accept a top-level
+  node's `node_id` to insert directly after it inside the same block (after a
+  list's or quote's last item) without creating a new block
+  ([model/insert-in-place.mjs](model/insert-in-place.mjs)).
+- **Splice & mark preservation:** in-place inserts repair block markers, then
+  run one `splitBlock` per marker and one `splice` per text run at the end of
+  the anchor's range without rewriting existing characters or markers, keeping
+  neighbor node IDs and comment anchors intact. Expanding marks at the anchor's
+  end are stripped from the inserted range (growing at the end, not the start,
+  so later splices stay unmarked while typing at the anchor's end continues its
+  mark) and each run receives its own encoded marks. The stored form matches
+  editor output.
+- **Validation & batch limits:** post-insert decode checks that the block holds
+  all old nodes (with original IDs) around exactly the new ones; otherwise it
+  refuses with `nodes_would_join` (for example, adjacent lists of the same kind)
+  and rolls back the batch. Blocks with newer-build content refuse with
+  `newer_content`. Because each in-place insert decodes its whole block, a
+  batch caps total decoded block length at `MAX_BATCH_IN_PLACE_UNITS`
+  (1,000,000 UTF-16 units, checked upfront; about 100 inserts into a 10 KB block
+  or 4 into a 200 KB block).
+- **Concurrency & receipts:** validation runs only on the write's own change, so
+  two concurrent writers inserting same-kind lists after one node can merge into
+  one list (no text is lost, though one receipt's node ID becomes obsolete).
+  In-place receipts report `block` and `nodes` (no `node_id`), and agent
+  presence marks the inserted text range. Content warnings, `result.edits` IDs,
+  and other receipt fields are captured at the operation's heads and replayed
+  unchanged on retry.
 
 ### Trash and permanent deletion
 
@@ -4247,33 +4214,31 @@ The owner's catalog moves the entry from `page/` to
 quota (see Page quotas).
 `list_pages({in_trash:true})` lists them.
 
-Each transition increments the record's `lifecycleRevision`. The Catalog
-records the revision it last observed when it reserves a lifecycle request and
-sends it as `expected_revision`; the Page applies the request only at that
-revision. A retry of an older request returns its stored receipt, or
-`{superseded: true, applied: false, state}` once that receipt has been pruned,
-and never applies again. A superseded result was not applied; callers read the
-current state before acting. The Page keeps its newest 256 receipts, each
-stamped with the journal time; before it prunes older ones it raises the
-receipt horizon to the newest pruned time, so a `delete_page` that names a
-`revision` whose receipt is gone meets the fence. A guarded Trash whose
-revision the host doesn't hold, or holds at or before the horizon, is
-`409 resync_required`; one whose revision is known but not current is
-`409 stale_revision`. A browser's Move to Trash sends the Automerge heads it
-shows as `base_heads` in place of a revision, and a peer's edit since then
-is `409 stale_revision`. Only a browser session (cookie) may send
-`base_heads`; from any other credential it is `400 invalid_arguments`
-([tool-arguments.mjs](worker/tool-arguments.mjs)). A
-transition is committed with its receipt in one write and installed in memory
-only after `sync()`; if that barrier fails, the next request finishes the
-transition before doing anything else, so a receipt never replays for an
-unfinished transition. If a newly reserved request is
-superseded because the Catalog's index was stale, the Catalog retargets it once
-at the Page's current revision. A Trash runs the leaf guard again first,
-whatever the revision: the Page can have been trashed, restored and given a
-child since the request was reserved. A refused or unsettled guard releases the
-request, which the Page never recorded. The Catalog always projects the Page's
-current state, not the replayed receipt.
+Lifecycle fencing and receipts:
+
+- **Revision guard & retries:** each transition increments `lifecycleRevision`.
+  The Catalog reserves a request with its last observed revision as
+  `expected_revision`, and the Page applies it only at that revision. Retrying
+  an older request replays its stored receipt, or returns `{superseded: true,
+  applied: false, state}` once pruned (never re-applying; callers must read
+  current state before acting).
+- **Receipt horizon & guarded Trash:** the Page retains its newest 256 receipts
+  stamped with journal time, raising the receipt horizon to the newest pruned
+  time before pruning. A guarded `delete_page` naming a `revision` unknown to
+  the host, or at/before the horizon, returns `409 resync_required`; a known
+  but non-current revision returns `409 stale_revision`. Browser Move to Trash
+  sends Automerge heads as `base_heads` instead (peer edits return `409
+  stale_revision`); non-cookie credentials sending `base_heads` get `400
+  invalid_arguments` ([tool-arguments.mjs](worker/tool-arguments.mjs)).
+- **Durability & Catalog retargeting:** each transition commits with its receipt
+  in one write and installs in memory only after `sync()`; if the barrier fails,
+  the next request finishes the transition first so receipts never replay for
+  unfinished work. If a new reservation is superseded due to a stale Catalog
+  index, the Catalog retargets once at the Page's current revision, always
+  re-running the leaf guard before Trash (a restored Page may have gained a
+  child). Refused or unsettled guards release the unrecorded request. The
+  Catalog always projects the Page's current state rather than a replayed
+  receipt.
 
 The Page's side is one transition in
 [page-lifecycle.mjs](worker/page-lifecycle.mjs), with its table in
@@ -4332,7 +4297,8 @@ upload authorized before Trash that lands later, stay unreferenced, and no
 deleted Page serves them.
 
 Trash has no automatic expiry. Pages stay there until the owner restores or
-purges them, up to 100 per account. Each trash record identifies its root Page.
+purges them, up to the account's Page limit ([Page quotas](#page-quotas), 250
+by default). Each trash record identifies its root Page.
 This implementation trashes and restores individual Pages.
 
 ### Projects
@@ -4414,262 +4380,52 @@ reload, Back and a shared link reproduce it
 | `project` | a Project ID | `project_id`; implies `show=owned`, dropped with `show=shared` (which `list_pages` refuses) |
 | `group` | `project`, `date` | group sections over the loaded rows; `date` needs Last activity |
 
-A choice pushes a history entry; typing a search replaces it; choosing what
-already shows does nothing. `/` and `/pages` replace an address that isn't
-canonical. Back and Forward between two library addresses hand the mounted
-library its new view, so a grouping alone sends nothing and focus stays put.
-Groups are a presentation over loaded rows
-([library-groups.mjs](viewer/library-groups.mjs)): by Project (each Project,
-Your items, Shared with you; the Source column goes, since the heading names
-it) or by last activity (Today, Yesterday, Previous 7 days, Previous 30 days,
-each month of the last year, then each year), in the order their first row
-appears. Last activity is `content_updated_at`, else `updated_at`: the key the
-Last activity sort orders by, so date groups follow the rows
-([listing.mjs](viewer/listing.mjs) `activityAt`). Each group heading is a
-disclosure button that folds its rows and keeps its count; Fold all and
-Unfold all sit in the Group menu. Folds are this browser's, kept per account
-and grouping by group key, so a Project folds by its ID and a rename keeps it
-folded; Load more and rows that join a group later leave it folded
-([library-folds.mjs](viewer/library-folds.mjs), at most 4 accounts and 100
-folds each in `localStorage["nteract.pages.folds"]`). A heading's accent (a
-bar, a faint tint and the label's color) comes from `groupAccent`: a Project
-hashes its ID to one of six, Shared with you and On this device keep their
-own, and date groups share one neutral accent whose bar fades with age. Each
-accent reads at 4.5:1 or more in both themes, and the label still names the
-group. The heading row, tabs and menus never move with the results: loading,
-empty and failed views share one box in a body with a fixed floor, a new
-request runs a bar along the control row and dims the rows it will replace,
-and the page keeps its scrollbar's room. The Last activity column
-shows the same time, and screen readers hear "Last active 2 days ago, …".
-Drafts this browser hasn't synced show first, as "On this device", on All and
-Your items when there is no Project filter. The server can't search them, so a
-search keeps the drafts whose title holds it. A local copy of a Page someone
-else owns shows only where the server lists it, even with unconfirmed edits:
-once the account loses access the server stops listing it, so its title stays
-out of the library and the Page picker. Each local checkpoint records
-`owned` from the last grant that named a role (`owner`, or a member role); a
-refusal (`none`) keeps it. An entry without it answers from the grant it
-stored, and one with neither lists like the account's own until the Page is
-opened again. A draft that never reached the server, and an owned copy past
-the server's first page, still show. A Page moved to Trash from this browser
-leaves them: once the host answers that the Page is in the account's Trash,
-the local copy's entry records it and stays for restore, unconfirmed edits
-included (a Page whose format this build doesn't open never syncs them). The
-host gives a Page already in Trash the same answer, so moving it again clears a
-copy an earlier move left. A later checkpoint from another tab that still holds
-the Page can drop that record and list the copy again. When the listing fails,
-local copies show there too, whoever owns them, except those in Trash. A `project` that `list_pages` refuses with
-`project_not_found` reads "Unknown Project", with a button that clears the
-filter; the account's Projects alone can't say so, since a Project created a
-moment ago may not be in them yet. Load more follows
-`next_cursor`; a cursor that has expired (`invalid_cursor`) starts the listing
-over from its first page. The List/Grid toggle is always available. List is
-the default, and this browser remembers the choice in `nteract.pages.view`.
-Each grid card shows a preview of its Page's first content (see
-[Card previews](#card-previews)). The `?grid=1` shortcut opens the tab on the
-grid and remembers that choice; the library drops the query from its address,
-and a reload keeps the chosen view. No `pages.grid` flag is needed.
+Library navigation, grouping, drafts, and view modes:
 
-### Card previews
-
-A grid card shows a scaled, read-only rendering of the Page's first screen.
-The Page host builds a `card.v1` bundle from its document
-([page-card.mjs](model/page-card.mjs)): `{ v, card_hash, content_updated_at,
-title, blocks, truncated, rich }`. `blocks` is
-[page-preview.mjs](model/page-preview.mjs)'s JSON from its own `renderNode`,
-never HTML, cut at 8 KiB serialized and 64 top-level nodes. A node that
-doesn't fit is clipped to its leading children and text (a table keeps whole
-rows), and the card ends there. A top-level node that shows nothing (no text, no
-placeholder, rule or checkbox) is dropped, so an emptied Page has no blocks and
-keeps the grid's icon. Images become a placeholder with their alt text, never
-bytes or a URL; a dataframe becomes a placeholder with its title; links lose
-their `href`; a code block names its language, so Mermaid stays code.
-`card_hash` hashes `CARD_BUILDER_VERSION` and exactly the title, blocks and
-`truncated`, so an edit below the fold changes nothing, and bumping the version
-for a builder change rewrites each card on its Page's next flush. `rich` says
-the card holds Mermaid, a dataframe or an image, which the JSON can only stand
-in for; nothing reads it yet.
-
-The card is written beside each content-activity flush and nowhere else
-([page-card-writer.mjs](worker/page-card-writer.mjs)). A flush runs from a live
-request on a booted host with its document loaded, at most once a minute, so
-cards cost no new trigger, timer or alarm. The host stores the last written
-hash under `host/card` and puts `pages/<page_id>/card.json` in the Page assets
-bucket only when the hash changed; the stored hash follows the object, so a
-crash between them writes the same card again. A failed write is logged and
-retried by the next flush; it never fails the flush or the edit. A Page that
-hasn't changed since cards shipped has none until its next edit, and the grid
-keeps its icon.
-
-Writes to the object are ordered by its etag. Its `customMetadata` holds the
-card's `card_hash` and `content_updated_at`, and the card image record that
-uploads write ([Card images](#card-images)). Every put first reads the
-metadata (`head()`) and carries `onlyIf` with the etag it read (none: only
-while no object exists). It compares the built card with the object, not
-`host/card`, so a stale card left by an older host is rewritten, and it copies
-the image record unchanged. Only a flush whose card matches the hash the host
-last wrote or read skips the read, since it puts nothing. A retiring host's put
-that lands late carries an etag a newer write replaced, and the bucket refuses
-it. A refused put reads the object again and retries once, unless the host
-stopped during that read or the object's `content_updated_at` is later than
-the built card's: then a newer host wrote it, and this host puts nothing, logs
-`page_card.superseded`, and reads the object again on its next write. A write
-whose first read finds a later card skips its put the same way. An object time
-more than 5 minutes (`CONTENT_ACTIVITY_MAX_SKEW_MS`) ahead of the host's clock
-counts as missing,
-as content activity drops it, so a card from a node whose clock ran fast never
-blocks the writes after it. Equal times with different hashes still put, and
-the later put wins: that is the same content built by two builder versions.
-
-Two cases are left open. The order between live hosts comes from their clocks,
-so it holds only within that 5-minute limit: an old host that is still live, on
-a clock fast by less than that, can overwrite a newer card once. The newer
-host's writes then skip until its own content times pass the old one's, so the
-stale card can last until the next content change after that, however long
-that takes, not just for the skew window. And a late
-put can land after the next host's first write skipped an unchanged card: it
-holds a card the Page had moments before, until the next change to its first
-screen.
-
-A purge or tombstone deletes the object, its card images and `host/card` with
-the content time, waiting at most 2 seconds on the bucket; a missed delete leaves an object
-`page_cards` never serves, since a deleted Page admits no one. A write still
-running then deletes the object again when it ends, whether its put landed or
-timed out. A host that retires without a deletion (an abandoned boot, a storage
-migration) stops its writer and leaves the object and `host/card`, which the
-next host, plain or native, compares against. Trash keeps the card on purpose:
-`page_cards` answers `null` while the Page is trashed, and a restore shows the
-card at once rather than after the next edit.
-
-`page_cards` (`/api/tools` only) takes up to 24 `page_ids`
-([page-cards.mjs](worker/page-cards.mjs)). The caller's Catalog decides access
-with `list_pages`' rules: an owned ID needs a settled `page/<id>` entry (so a
-trashed Page has none), and a shared ID needs a `shared/<id>` entry and a fresh
-`verifyShared` by its Page host, the metadata check that doesn't boot the
-document, finding the Page active. D1 is never read. That step reads and never
-writes the Catalog, so it runs outside the Catalog's serial queue: the gateway
-marks its own forward with an internal lane header, which `forwarded()` never
-copies from a client, and the Catalog refuses any other operation in that lane
-([catalog-lanes.mjs](worker/catalog-lanes.mjs)). It records no `cat_queue`
-phase. A library's card and card-image requests therefore never wait behind its
-listings or each other in the queue. A queued write may be partway through
-while the step reads. That can't show a card to anyone who must not see it: a
-`page/` entry in this Catalog is always a Page this account owns, and only this
-account's own credential reaches its Catalog, so a partway state at most shows
-or hides the owner's own card for one call. A pending creation or reservation
-slot never counts. A shared ID is allowed only by its Page host's answer, which
-no Catalog state replaces. The Catalog answers only the allowed IDs, and the gateway reads
-their objects all at once under one 1.2-second deadline, so a slow bucket never
-holds the account's listings, creates or reports. Each card is one `get`: the
-object's body is the card and its metadata holds the image record, so 20 cards
-cost 20 reads. A legacy object, written before the record moved into it, also
-reads the image pointer ([Card images](#card-images)). Only allowed IDs reach
-the bucket, and no object URL leaves the Worker.
-Every other ID, unknown, refused, unchecked in time, read too late or without a
-card, answers `null`, so a caller can't tell "no access" from "no card". The
-answer names its `principal`. It isn't an MCP tool: an agent can read the Page
-itself, and a card is a drawing aid shaped for the grid, not a reading surface
-worth a stable contract.
-
-In grid mode each card asks for its card when it comes within 400px of the
-viewport ([page-cards.mjs](viewer/page-cards.mjs)). The grid's first request
-goes out as soon as the cards in view on the first paint have asked, with no
-gather window. After that, a card that asks waits at
-most 200 ms for others to share its request, counted from the first card
-waiting, and 24 waiting cards go out at once, so a steady scroll keeps loading
-while it runs: with a 150 ms round trip, every card shows within 350 ms of
-coming into view. At most two requests run at once, and a request takes the
-latest cards to come into view first. A card that leaves the viewport, or
-unmounts, before its request goes out stops waiting and goes back to idle, so a
-request never carries a card that left view before it went out. A request with room fills toward 24
-with the next cards in the grid's order that haven't asked, so a slow scroll
-down a 100-card grid sends 5 requests, not one per row. Each card follows a small
-machine, `idle → requested → shown | empty | failed`, keyed by Page ID and the
-row's `content_updated_at`, so a Page edited since the grid asked asks again; a
-failed card asks again when it scrolls back in. One answer is one store update.
-The machines live as long as the mounted grid. A card the library device cache
-kept (below) starts `stale`: it draws at once, asks again when it comes into
-view (`revalidating`, still drawn), and the answer replaces it; `null` drops
-it, and a failed request keeps it drawn. A grid that doesn't know its account
-asks for nothing and draws no kept card, and an answer naming another account
-is ignored.
-
-The library's default view (All, Last activity, no search, no Project) also
-paints from this browser's device cache
-([library-device-cache.mjs](viewer/library-device-cache.mjs)): IndexedDB
-`pages-library-cache`, one record per account under `library/v1/<principal>`,
-holding the first page `list_pages` last returned to that account here (at
-most 50 rows) and the `page_cards` answers for those rows (each at most
-12 KiB, with the image routes, so the browser's HTTP cache serves the image
-bytes). It is a rebuildable device cache, never normative; the local Page
-catalog is a separate database it never reads. An owned row keeps its title,
-times and Project; a row shared with the account keeps only its place (Page
-ID and times), drawn as an empty, inert slot until the server lists it, so a
-revoked share's title never outlives the 5-minute in-tab rule. Once the
-session names the account, the library sends `list_pages` and reads the
-record together; rows from the record paint if they land first
-([listing-machine.mjs](viewer/listing-machine.mjs) `revalidating`), and the
-answer replaces them in place, keyed by Page ID: a row no longer listed
-disappears, a stale title or time updates. A read that fails, stalls or lands
-late changes nothing. A failed first page over device rows keeps the
-account's own rows with Try again (`kept`). The record is written only under
-the account that answered and the cache revision its request began under,
-patched by Trash and renames, and removed for every account on sign-out,
-Sign out everywhere and an account change. A record paints for 14 days after
-`saved_at`, the time the server last listed its rows to that account here;
-only a fresh first page sets it, so card answers, Trash and renames never
-extend it. A record past the limit, or with a `saved_at` that is missing, not
-a number, or more than 5 minutes ahead of the clock, reads as nothing and the
-read removes it. The version is in the key: a new format reads nothing old. [PageCardPreview.jsx](viewer/PageCardPreview.jsx) draws the
-card through PagePreview's allowlist in its inert mode (no links, controls or
-images), laid out at a reading width and scaled with `transform: scale()`,
-`aria-hidden` with pointer events off: the card's link carries the title.
-
-A library visit sends one `list_pages`, for its view. `list_projects` is one
-request per account shared by the Project filter, the Browse picker, Move to…
-and the first page of `/projects`; a request made while one is in flight joins
-it ([project-list.mjs](viewer/project-list.mjs)), and an answer that names
-another account (`principal`) never shows as this one's and rechecks the
-session, as a library or picker answer for another account does; one that names no
-account, from an older API, shows but isn't kept past a failed refresh, just
-as the listing cache never stores a page that names no account. The first page of each view
-this tab has shown stays in memory, keyed by account and request
-([listing-cache.mjs](viewer/listing-cache.mjs)), so a return visit, Back from
-a Page included, paints it while the listing asks again. A page is kept only
-under the account that answered it (`list_pages` returns its `principal`),
-and paints for 5 minutes after it was shown: after that, shared titles wait
-for their Page hosts again and the view shows Loading…. A refresh that fails
-lists nothing rather than the remembered rows. The cache and Projects are
-cleared on sign-out, account change and any tool call refused with a 401.
-A 401 also starts a recovery
-([signed-out-recovery.mjs](viewer/signed-out-recovery.mjs)): it rechecks the
-session and, if the same account answers, asks for its Projects again. An
-answer for another account starts the same recovery without forgetting
-anything. One recovery runs at a time; a 401 or another account's answer
-during it runs it once more when it settles, at most twice in a row, so a
-server that keeps refusing, or keeps answering for someone else, can't loop
-the tab. The cache overlays a rename this tab saw, forgets a Page
-moved to Trash or hidden by its host, drops the views of the account's own
-Pages after a create, move or restore, and lives in memory only (the device
-cache above is a separate, narrower copy of the default view). Each patch
-moves the cache's revision, and a reply whose request began under an older
-one isn't written back, so a listing in flight across a create can't restore
-what it dropped. The Browse picker
-([picker-walk.mjs](viewer/picker-walk.mjs)) walks every Page (`list_pages`
-cursors, at most ten requests) afresh each time it opens, for the signed-in
-account only. Closing it aborts the request in flight, whose answer, a 401
-included, then counts for nothing. A sign-out or account change closes it; a
-401 drops its rows and leaves it open saying why, until the session check
-closes it or the person reopens it. Neither walks again, so a 401 can't start
-another walk. A walk answered for another account, or whose pages name
-different accounts, rechecks the session; when that recovery ends with the
-same account, the picker says to reopen it and try again.
-A Project's content, read with `project_id`, lists its Project. An open Page
-asks `read_page` where it is until it is found: it asks again each time a Page
-created in this tab registers or the session reconnects, and a transient
-failure also retries after 2, 4 and 8 seconds. Once found, it stops asking.
-Move to… hides on a Project's content, asks when chosen otherwise, and on a
-draft that hasn't registered says to wait for it to sync.
+- **URL & history:** selecting a view pushes a history entry; typing a search
+  replaces it; re-selecting the active view is a no-op. `/` and `/pages` replace
+  non-canonical addresses. Back and Forward between library URLs update the
+  mounted library directly (changing grouping alone sends no network request and
+  preserves focus).
+- **Grouping & folding (`viewer/library-groups.mjs`, `viewer/library-folds.mjs`):**
+  groups organize loaded rows by Project (each Project, Your items, Shared with
+  you; hides the Source column) or by last activity (Today, Yesterday, Previous
+  7 days, Previous 30 days, each month of the last year, then each year, in
+  order of first appearance, using `activityAt` = `content_updated_at ??
+  updated_at` from [listing.mjs](viewer/listing.mjs)). Each group heading is a
+  disclosure button showing row count, with **Fold all** / **Unfold all** in the
+  Group menu. Folds persist per browser/account/grouping by group key in
+  `localStorage["nteract.pages.folds"]` (max 4 accounts, 100 folds each), so
+  renamed Projects and newly loaded rows keep their fold state. `groupAccent`
+  assigns headings a bar, tint, and label color (one of six hashed by Project
+  ID, distinct accents for Shared with you and On this device, and a neutral
+  age-fading accent for date groups; all ≥ 4.5:1 contrast in both themes).
+- **Layout stability & screen readers:** heading row, tabs, and menus stay fixed
+  across loading, empty, and error states (shared box with fixed floor, reserved
+  scrollbar gutter, progress bar along the control row dimming replaced rows).
+  The Last activity column announces `"Last active 2 days ago, …"` to screen
+  readers.
+- **Local drafts & copies ("On this device"):** unsynced browser drafts appear
+  first on All and Your items when no Project filter is set (client-side title
+  matching filters them during search). Local copies of Pages owned by someone
+  else show only when listed by the server (even with unconfirmed edits), so
+  revoked titles disappear from library and picker. Each checkpoint stores
+  `owned` from its last role grant (`owner` or member role; `none` keeps the
+  existing value; missing `owned` falls back to the stored grant, or treats as
+  owned until reopened). Unsynced drafts and owned copies past page 1 still
+  show. Moving a Page to Trash from this browser marks its local copy trashed
+  (keeping it for restore with unconfirmed edits, though unreadable-format Pages
+  never sync them); repeating Trash on an already-trashed Page clears stale
+  copies, while a later checkpoint from another open tab can re-list it. When a
+  listing fails, all non-trashed local copies appear regardless of owner.
+- **Errors, pagination & List/Grid toggle:** a `project` filter rejected with
+  `project_not_found` renders `"Unknown Project"` with a clear-filter button
+  (client Project lists can lag a brand-new Project). **Load more** follows
+  `next_cursor` and restarts from page 1 on `invalid_cursor`. The List/Grid
+  toggle is always available (List default, persisted in `nteract.pages.view`,
+  no `pages.grid` flag needed). `?grid=1` switches to Grid, persists it, and
+  strips the query param. Grid cards show first-screen previews (see
+  [Card previews](#card-previews)).
 
 | Tool | Arguments | Result |
 | --- | --- | --- |
@@ -4687,10 +4443,10 @@ Every Project and item operation goes through the caller's own Catalog, which
 calls the Project and Pages with the caller's credentials. A Project never calls a
 Catalog or a Page. `create_project` reserves a journal intent with the Project ID
 and content document ID first, then creates the Project record and the content
-document; both steps are idempotent, so retrying the same token, key and
-payload after a crash or lost response, within the token's window, finishes the
-same Project. A retry without the token is best-effort. Until then `get_project`
-answers `project_pending` and `list_projects` omits it. The content holds
+document; both steps are idempotent, so retrying the same `nonce` and arguments
+after a crash or lost response while the Catalog holds the intent or receipt
+finishes or replays the same Project (see [Retry contract](#retry-contract)).
+Until then `get_project` answers `project_pending` and `list_projects` omits it. The content holds
 orientation and guidance for people and agents. It is ordinary, untrusted
 document content, edited with the Page tools by `project_id`; it is not a Page in
 the tree, so `move_page`, `delete_page`, `restore_page` and `purge_page` refuse it
@@ -4716,35 +4472,32 @@ have different shapes, so a swapped ID is a structural error
 (`project_id_as_page_id`, `page_id_as_project_id`) that names the right tool and
 argument and reveals nothing about either resource.
 
-Listing by Project or parent reads the Catalog's entries, not D1: a Project
-lists every descendant of its roots, and a parent lists its direct children.
-Children of a parent shared with the caller come from the parent owner's
-Catalog, and each is verified by its Page host with the caller's access. One
-request checks at most 100 of them. Past that, a sealed cursor continues from
-the last child checked, even on a short page, so the caller can learn only that
-the parent has more than 100 children.
-`list_projects` takes candidates from `pages_catalog_spaces` and confirms each
-against the owner's `space/<id>` Catalog entry; cursors are sealed to the
-listing's filters. An account with member or opened hints instead reads every
-candidate Project's host with the caller's credentials. The Catalog keeps each
-successful answer in memory for 30 seconds, keyed by Project and by the
-credential's access basis (write permission and organization and email-domain
-evidence), and counts a reuse as `cat_space_memo`
-([project-read-memo.mjs](worker/project-read-memo.mjs)). A refusal, server
-error or thrown read is never kept. A Project's answers are dropped when this
-Catalog gets a discovery message adding or removing its hint, and when it
-handles `create_project`, `update_project`, `delete_project`, `get_project` or
-`manage_project_access` for it. So a member removed some other way, or a
-Project renamed by its owner, can keep its old list entry for up to 30 seconds;
-opening it is still checked by the Project. Invited Projects are read on every
-listing, since that read may claim the invitation. `list_projects` stays in the
-Catalog's queue: with the account index on, it writes the index's sync marks to
-the Catalog. `read_page` breadcrumbs are computed in the gateway with one
-call to the owner's Catalog, a host-only `/internal/location` route that answers
-ancestor IDs and the root's Project and nothing else. Each ancestor and the
-Project then answer with the caller's credentials, so the trail stops at the
-first Page the caller cannot open and `project_id` appears only when the
-Project is readable.
+Project/parent listings, `list_projects` caching, and breadcrumbs:
+
+- **Project & parent listings:** read Catalog entries rather than D1. A Project
+  lists all descendants of its roots, and a parent lists its direct children.
+  Children of a shared parent come from the parent owner's Catalog and verify
+  against each Page host with the caller's credentials (max 100 checked per
+  request; beyond 100, a sealed cursor continues even on a short page, revealing
+  only that more than 100 children exist).
+- **`list_projects` & 30 s read memo (`worker/project-read-memo.mjs`):**
+  draws candidates from `pages_catalog_spaces`, confirms each against the
+  owner's `space/<id>` entry (cursors seal filters), and stays in the Catalog's
+  queue (writing index sync marks when the account index is on). Accounts with
+  member or opened hints read each candidate Project host with the caller's
+  credentials, caching successful answers in memory for 30 s keyed by Project
+  and credential access basis (write scope, org, email-domain proof; reuse
+  counts as `cat_space_memo`). Refusals and errors are never cached; invited
+  Projects always read live to claim invitations. Discovery updates and
+  `create_project`, `update_project`, `delete_project`, `get_project`, or
+  `manage_project_access` invalidate that Project's cached entry (external
+  removals or renames can lag up to 30 s in lists, while opening still checks
+  live).
+- **`read_page` breadcrumbs:** computed in the gateway via one host-only
+  `/internal/location` call to the owner's Catalog (returning ancestor IDs and
+  root Project only), then checked against each ancestor and the Project with
+  the caller's credentials so the trail stops at the first unreadable Page and
+  omits `project_id` unless the Project is readable.
 
 Every listing and every `/internal/location` read needs the owner's location
 scan: all of its `page/` and `trash/` entries
@@ -4795,28 +4548,29 @@ Trash returns `parent_unavailable`, including a resumed creation, which checks
 its parent again before it reaches the Page.
 
 Placement decisions never trust a Catalog entry with an unsettled Trash or
-restore reservation: a lost response or failed barrier can hide a transition the
-Page already applied. Restore reservations record the Project and parent the Page
-returns to. Before the leaf check or a restore placement reads such an entry,
-the Catalog asks the Page for its lifecycle (`/internal/lifecycle-state`) and
-projects an applied transition. A child whose restore applied counts as a child.
-A parent with any Trash entry, or a pending Trash reservation, is unavailable,
-so a restored child goes to the top level even if that trash has not applied
-yet. When the Page can't answer, the request is refused with
-`lifecycle_unsettled` (retryable) rather than decided on a guess. Every Catalog
-request shares one queue, so these reads are bounded: each read (fetch and body)
-gets 2 s, one pass gets 5 s with no read starting after its deadline, and an
-exhausted budget also returns `lifecycle_unsettled`. Reads are shared across
-passes: a pass reuses the read in flight for the same Page, and at most four
-underlying reads run at once, counted until they settle rather than until a
-caller stops waiting. Each read is aborted at 2 s; celld 0.6.3 honors an
-AbortSignal on a Durable Object stub fetch, and the body is read through a
-reader the abort cancels, since an abort after the headers does not interrupt
-a body read. A resumed trash that lost its reservation never applied,
-so before it re-acquires one it asks the Page: if the Page's lifecycle has not
-moved, the leaf guard runs again and a child created meanwhile refuses it; if it
-has, forwarding replays a recorded receipt or comes back superseded, and a
-superseded Trash meets the guard again before it may retarget.
+restore reservation (a lost response or failed barrier can hide an applied
+transition):
+
+- **Live lifecycle verification:** restore reservations record the target
+  Project and parent. Before a leaf check or restore placement reads an
+  unsettled entry, the Catalog queries the Page's `/internal/lifecycle-state`
+  and projects any applied transition. A child whose restore applied counts as a
+  child; a parent with any Trash entry or pending Trash reservation is treated
+  as unavailable (so a restored child lands at the top level even before that
+  trash applies). Unanswered checks refuse with retryable `lifecycle_unsettled`
+  rather than guessing.
+- **Queue bounds & aborts:** because Catalog requests share one queue, each
+  lifecycle read (fetch + body) gets 2 s, and one pass gets 5 s (no new reads
+  start after the deadline; exhausting the budget returns
+  `lifecycle_unsettled`). Passes share in-flight reads for the same Page, capped
+  at 4 concurrent underlying reads (counted until they settle). Reads abort at
+  2 s via `AbortSignal` on stub fetch (honored by celld 0.6.3) plus a
+  cancelable body reader.
+- **Resumed Trash guard:** a resumed Trash that lost its reservation queries the
+  Page before re-acquiring one. If lifecycle state has not advanced, the leaf
+  guard re-runs (blocking if a child was created); if it has, forwarding replays
+  the recorded receipt or returns superseded (and a superseded Trash must pass
+  the leaf guard again before retargeting).
 
 Catalog and Space objects each run one request at a time through
 [serial-queue.mjs](worker/serial-queue.mjs). Not every await inside a request
@@ -4927,6 +4681,183 @@ While a deletion is unfinished, the owner's listings and reads already treat
 the Project as missing, and a preview with a new key is `project_not_found`;
 only a retry of the same request finishes it.
 
+### Card previews
+
+A grid card shows a scaled, read-only rendering of the Page's first screen.
+The Page host builds a `card.v1` bundle from its document
+([page-card.mjs](model/page-card.mjs)): `{ v, card_hash, content_updated_at,
+title, blocks, truncated, rich }`. `blocks` is
+[page-preview.mjs](model/page-preview.mjs)'s JSON from its own `renderNode`,
+never HTML, cut at 8 KiB serialized and 64 top-level nodes. A node that
+doesn't fit is clipped to its leading children and text (a table keeps whole
+rows), and the card ends there. A top-level node that shows nothing (no text, no
+placeholder, rule or checkbox) is dropped, so an emptied Page has no blocks and
+keeps the grid's icon. Images become a placeholder with their alt text, never
+bytes or a URL; a dataframe becomes a placeholder with its title; links lose
+their `href`; a code block names its language, so Mermaid stays code.
+`card_hash` hashes `CARD_BUILDER_VERSION` and exactly the title, blocks and
+`truncated`, so an edit below the fold changes nothing, and bumping the version
+for a builder change rewrites each card on its Page's next flush. `rich` says
+the card holds Mermaid, a dataframe or an image, which the JSON can only stand
+in for; nothing reads it yet.
+
+The card is written beside each content-activity flush and nowhere else
+([page-card-writer.mjs](worker/page-card-writer.mjs)). A flush runs from a live
+request on a booted host with its document loaded, at most once a minute, so
+cards cost no new trigger, timer or alarm. The host stores the last written
+hash under `host/card` and puts `pages/<page_id>/card.json` in the Page assets
+bucket only when the hash changed; the stored hash follows the object, so a
+crash between them writes the same card again. A failed write is logged and
+retried by the next flush; it never fails the flush or the edit. A Page that
+hasn't changed since cards shipped has none until its next edit, and the grid
+keeps its icon.
+
+Writes to the object are ordered by its etag. Its `customMetadata` holds the
+card's `card_hash` and `content_updated_at`, and the card image record that
+uploads write ([Card images](#card-images)). Every put first reads the
+metadata (`head()`) and carries `onlyIf` with the etag it read (none: only
+while no object exists). It compares the built card with the object, not
+`host/card`, so a stale card left by an older host is rewritten, and it copies
+the image record unchanged. Only a flush whose card matches the hash the host
+last wrote or read skips the read, since it puts nothing. A retiring host's put
+that lands late carries an etag a newer write replaced, and the bucket refuses
+it. A refused put reads the object again and retries once, unless the host
+stopped during that read or the object's `content_updated_at` is later than
+the built card's: then a newer host wrote it, and this host puts nothing, logs
+`page_card.superseded`, and reads the object again on its next write. A write
+whose first read finds a later card skips its put the same way. An object time
+more than 5 minutes (`CONTENT_ACTIVITY_MAX_SKEW_MS`) ahead of the host's clock
+counts as missing,
+as content activity drops it, so a card from a node whose clock ran fast never
+blocks the writes after it. Equal times with different hashes still put, and
+the later put wins: that is the same content built by two builder versions.
+
+Two cases are left open. The order between live hosts comes from their clocks,
+so it holds only within that 5-minute limit: an old host that is still live, on
+a clock fast by less than that, can overwrite a newer card once. The newer
+host's writes then skip until its own content times pass the old one's, so the
+stale card can last until the next content change after that, however long
+that takes, not just for the skew window. And a late
+put can land after the next host's first write skipped an unchanged card: it
+holds a card the Page had moments before, until the next change to its first
+screen.
+
+A purge or tombstone deletes the object, its card images and `host/card` with
+the content time, waiting at most 2 seconds on the bucket; a missed delete leaves an object
+`page_cards` never serves, since a deleted Page admits no one. A write still
+running then deletes the object again when it ends, whether its put landed or
+timed out. A host that retires without a deletion (an abandoned boot, a storage
+migration) stops its writer and leaves the object and `host/card`, which the
+next host, plain or native, compares against. Trash keeps the card on purpose:
+`page_cards` answers `null` while the Page is trashed, and a restore shows the
+card at once rather than after the next edit.
+
+`page_cards` (`/api/tools` only, not an MCP tool; agents read Pages directly)
+fetches up to 24 `page_ids` ([page-cards.mjs](worker/page-cards.mjs)):
+
+- **Access & lane bypass:** the caller's Catalog authorizes IDs using
+  `list_pages` rules without reading D1: owned IDs need a settled `page/<id>`
+  entry (excluding Trash and pending creation/reservation slots); shared IDs
+  need a `shared/<id>` entry plus a fresh metadata-only `verifyShared` check
+  from the Page host confirming the Page is active. Because this step is
+  read-only, the gateway marks the forward with an internal lane header (never
+  copied from clients by `forwarded()`; Catalog rejects other operations in this
+  lane via [catalog-lanes.mjs](worker/catalog-lanes.mjs)) so card requests
+  bypass the Catalog's serial queue (`cat_queue` is not recorded). A queued
+  owner write partway through can at most show or hide the owner's own card for
+  one call; shared IDs always require the Page host's live answer.
+- **Bucket fetch & response:** the gateway reads all allowed objects in parallel
+  under a single 1.2 s deadline so a slow bucket never blocks Catalog
+  operations. Each card is one `get` (body + metadata holding the image record;
+  20 cards = 20 reads; objects lacking `image_revision` also read the
+  `card/latest` pointer, see [Card images](#card-images)). Only allowed IDs reach
+  the bucket, and no object URL leaves the Worker. Unknown, refused, timed-out,
+  or missing cards all return `null` so callers cannot distinguish "no access"
+  from "no card". The response carries `principal`.
+
+In grid mode, cards fetch lazily as they approach the viewport
+([page-cards.mjs](viewer/page-cards.mjs)):
+
+- **Batching & prioritization:** cards request within 400 px of the viewport.
+  The initial paint dispatches immediately with no gather window; subsequent
+  requests wait up to 200 ms from the first waiting card and flush at 24 cards
+  (with a 150 ms RTT, cards appear within ~350 ms). At most 2 requests run
+  concurrently, prioritizing the most recently visible cards and backfilling
+  remaining slots up to 24 with upcoming grid cards (a 100-card scroll takes ~5
+  requests). Cards that scroll out or unmount before dispatch return to `idle`
+  without being fetched.
+- **Per-card state machine & account guard:** each card runs
+  `idle → requested → shown | empty | failed` keyed by `(page_id,
+  content_updated_at)`, so edited Pages refetch and failed cards retry when
+  scrolled back into view (one answer = one store update; machines live with the
+  mounted grid). Cached device cards start `stale` (rendered immediately),
+  transition to `revalidating` in view, update on answer (`null` drops them),
+  and stay drawn on failure. A grid with no known account fetches and paints
+  nothing; answers naming a different account are ignored.
+
+The default library view (All, Last activity, no search, no Project) also paints
+from a browser-local device cache
+([library-device-cache.mjs](viewer/library-device-cache.mjs)):
+
+- **Storage & privacy:** stored in IndexedDB `pages-library-cache` at
+  `library/v1/<principal>` (versioned key so format changes read nothing old).
+  It is a rebuildable cache, never normative, and separate from the local Page
+  catalog. Holds up to 50 first-page `list_pages` rows plus their `page_cards`
+  answers (max 12 KiB each, storing image routes so the browser HTTP cache
+  serves bytes). Owned rows keep title, timestamps, and Project; shared rows
+  keep only Page ID and timestamps (rendered as empty inert slots until
+  confirmed by the server, keeping revoked titles within the 5-minute in-tab
+  bound).
+- **Paint, revalidation & expiry:** once the session names the account, the
+  library reads the cache alongside `list_pages`. If cached rows arrive first
+  ([listing-machine.mjs](viewer/listing-machine.mjs) `revalidating`), the live
+  answer replaces them in place by Page ID (dropping unlisted rows and updating
+  titles/times). Failed, stalled, or late cache reads change nothing; a failed
+  first-page fetch over cached rows keeps owned rows with **Try again**
+  (`kept`). Writes require matching account and cache revision, patch on Trash
+  and renames, and clear across all accounts on sign-out, Sign out everywhere,
+  or account switch. Records stay valid for 14 days from `saved_at` (set only by
+  fresh first-page responses, never extended by card answers, Trash, or renames);
+  expired, missing, non-numeric, or > 5-minute-future `saved_at` records are
+  discarded on read.
+- **Card rendering:** [PageCardPreview.jsx](viewer/PageCardPreview.jsx) renders
+  through PagePreview's inert allowlist (no links, controls, or images) at
+  reading width, scaled with `transform: scale()`, `aria-hidden`, and pointer
+  events disabled (the card's link carries the title).
+
+In-tab caches, picker walks, and `401` recovery:
+
+- **Shared `list_projects` & in-memory listing cache (`viewer/project-list.mjs`, `viewer/listing-cache.mjs`):**
+  a library visit sends one `list_pages` for its view. `list_projects` shares
+  one in-flight request per account across the Project filter, Browse picker,
+  Move to…, and `/projects` page 1. The first page of each viewed library filter
+  stays in memory (keyed by account and request, 5-minute TTL) so Back/return
+  paints immediately while revalidating; after 5 minutes, shared titles wait for
+  Page hosts and show `Loading…`. Failed refreshes clear remembered rows.
+  Answers naming a different `principal` never display and trigger a session
+  recheck; answers with no `principal` display but are never cached. The cache
+  patches local renames, drops trashed/hidden Pages, invalidates owned views on
+  create/move/restore, and guards write-backs with a cache revision so in-flight
+  listings cannot restore dropped rows.
+- **`401` & cross-account recovery (`viewer/signed-out-recovery.mjs`):**
+  sign-out, account switch, and any `401` clear the listing cache and Projects.
+  A `401` rechecks the session and, if the same account answers, refetches
+  Projects; a wrong-account answer runs the same recovery without clearing
+  state. Recoveries serialize and retry at most twice consecutively on repeated
+  `401` or wrong-account answers to prevent loops.
+- **Browse picker (`viewer/picker-walk.mjs`):** walks all Pages via `list_pages`
+  cursors (max 10 requests) fresh on each open for the signed-in account.
+  Closing aborts in-flight requests (ignoring their replies, including `401`).
+  Sign-out or account change closes the picker; a `401` clears rows and keeps it
+  open with an explanation without restarting the walk; cross-account answers
+  trigger session recovery and ask the user to reopen if the same account
+  remains active.
+- **Open Page location & Move to…:** Project content (`project_id`) knows its
+  Project immediately. An open Page polls `read_page` for its location until
+  found (retrying on local Page registration, session reconnect, and at 2 s /
+  4 s / 8 s on transient failure), then stops. **Move to…** is hidden on Project
+  content and tells unsynced drafts to wait for sync.
+
 ### Card images
 
 The JSON card can't draw a diagram, a table's rows or highlighted code. The
@@ -4970,52 +4901,48 @@ read) ends that Page's turn until the next visit to the library; nothing
 retries on a timer. Each upload wakes that Page's host, which loads its
 document to check the hash.
 
-`PUT /api/pages/:id/card-image?hash=&theme=` admits only the Page owner, by the
-Page host's own policy ([card-images.mjs](worker/card-images.mjs)). The bytes
-must be a static WebP, PNG or JPEG of at most 300 KB, never SVG. `hash` must be
-the `card_hash` of the host's loaded document, and each theme uploads at most
-once a minute. The host numbers each admitted upload from its durable storage.
-The images live at `pages/<id>/card/<hash>-<theme>.<ext>`. The image record
-lives in `card.json`'s `customMetadata`, beside the card writer's fields:
-`image_hash`, `image_revision` and each theme's extension (`light`, `dark`).
-It names the current hash and the highest revision it has seen. An upload
-reads `card.json`, body and metadata, and puts the same body and card fields
-with the new record, fenced on the etag it read; a refused put reads again, up
-to three times. The card writer copies the record the same way, so a card
-write racing an upload keeps both. An upload for a Page with no `card.json`
-creates it with the body `null`, which reads as no card. A swap to another hash
-with a lower revision is refused as stale, so an upload for an older first
-screen that lands late can't replace a newer one. A re-upload of the same
-hash and theme overwrites its key when the extension matches, and the record
-keeps that key; with another extension (a PNG redrawn as WebP), the record
-names the new key and the old one is deleted.
-The record references at most one image per theme, not a bound on stored bytes.
-A stale upload retains its image key because a newer accepted upload may already
-reuse that hash/theme key. Rejected uploads and failed writes or deletes can leave
-orphaned bytes. Successful swaps still attempt to delete old images; that separate,
-unfenced cleanup can race with newer uploads reusing those keys.
-`page_cards` adds `image: { card_hash, light, dark }` only when the record's
-hash is the stored JSON card's and both themes exist.
+`PUT /api/pages/:id/card-image?hash=&theme=` stores rasterized cards
+([card-images.mjs](worker/card-images.mjs)):
 
-Builds before the record moved into `card.json` kept it in an empty
-`card/latest` pointer object. A `card.json` without `image_revision` is that
-legacy shape. `page_cards`, `/p/<id>/card.json` and the stored-hash route then
-also read the pointer, so a picture stored that way still shows. The next card
-write or upload of the Page copies the pointer's record into `card.json`; an
-upload starts from its hash, revision and themes. Nothing writes the pointer,
-and nothing reads it once `card.json` holds a record. A Page never edited or
-captured again keeps the legacy shape and its second read. The image route decides
-access as `page_cards` does, on every request: the caller's own Catalog entry
-for an owned Page, or its shared entry plus the Page host's record-only check.
-A grid of image cards boots no Page document, and a revoked grant fails on
-the next fetch. Its responses are `private, immutable`
-and carry `nosniff`. Purge and tombstone delete `card.json`, the legacy pointer
-and the images either record names, plus orphans found in at most four
-prefix-listing pages.
-An upload whose recheck finds the Page purged deletes the same set.
-That bounded cleanup may leave orphaned bytes beyond the listing limit.
-The server can't check that the pixels match the content. That is the trust of
-any image the owner inserts into the Page, and only the Page's readers see it.
+- **Admission & validation:** admits only the Page owner under the Page host's
+  policy. Body must be static WebP, PNG, or JPEG ≤ 300 KB (never SVG). `hash`
+  must match the loaded document's `card_hash`, rate-limited to one upload per
+  theme per minute. The host numbers each admitted upload from durable storage.
+- **Storage & etag fencing:** images live at
+  `pages/<id>/card/<hash>-<theme>.<ext>`. The image record (`image_hash`,
+  `image_revision`, `light`, `dark` extensions) lives in `card.json`'s
+  `customMetadata` alongside card-writer fields. Uploads read `card.json` and
+  put the same body + card fields with the updated record fenced on etag
+  (retrying up to 3 times on etag mismatch); the card writer preserves the image
+  record the same way. If `card.json` does not exist yet, upload creates it with
+  body `null` (which reads as no card). Swapping to another hash with a lower
+  revision is rejected as stale. Re-uploading the same hash/theme overwrites in
+  place when the extension matches, or updates the record and deletes the old
+  key when the extension changes (e.g., PNG → WebP). `page_cards` includes
+  `image: { card_hash, light, dark }` only when the record's hash matches the
+  stored JSON card and both themes exist.
+- **Orphans & cleanup:** the record tracks at most one image per theme (not a
+  bound on stored bytes). Stale uploads keep their key (a newer upload may reuse
+  it), rejected/failed writes can leave orphaned bytes, and post-swap cleanup of
+  old images is unfenced and can race with key reuse.
+
+Card image reads, fallback pointer, and deletion:
+
+- **Pointer fallback (`card/latest`):** a `card.json` lacking `image_revision`
+  falls back to reading the separate `card/latest` pointer object (`page_cards`,
+  `/p/<id>/card.json`, and stored-hash reads). The next card write or upload
+  migrates that record into `card.json` (nothing writes `card/latest` anymore,
+  and nothing reads it once `card.json` carries `image_revision`).
+- **Access & headers:** image reads enforce the same access check as
+  `page_cards` on every request (owner Catalog entry, or shared entry + Page
+  host record-only check), booting no Page document and failing immediately on
+  revocation. Responses carry `Cache-Control: private, immutable` and
+  `X-Content-Type-Options: nosniff`. The server does not verify that pixels
+  match document content. Cards share the same owner-trust boundary as inserted
+  images and are visible only to Page readers.
+- **Purge & tombstone:** deletes `card.json`, `card/latest`, referenced images,
+  and up to 4 prefix-listing pages of orphans (uploads whose post-check finds
+  the Page purged delete the same set; orphans past 4 pages may remain).
 
 On a deployment behind a tunnel, `GET` and `PUT /api/pages/:id/card-image` and
 the image paths reach the Worker: the tunnel refuses only `refusedPaths` in
@@ -5134,36 +5061,27 @@ table `page_tags` (`page_id`, `tag`, `added_by`, `added_at`; primary key
 list (`PAGE_TAGS_MIGRATIONS`), recorded in its own version table, `page_tags_schema`.
 They are not in the Page's Automerge document, so changing them never moves its revision, and a document restore or export does not carry them.
 
-**Source of truth.** `page_tags` is the single normative record of a Page's
-tags. It is not an index and not a projection. No Durable Object, Page host
-record, Catalog entry or document holds a copy, so there is nothing to rebuild
-it from, and there is no Durable Object for tags and none planned: tags have no
-real-time part, and a REST-style write plus a searchable read is all they need.
-D1 is the only place that can search tags across Pages, so it is also where they
-live. This differs from the `pages_catalog_*` tables, which project each
-account's Catalog and Page host Durable Objects into D1 for listing
-([Catalog index](#catalog-index)) and can be cleared and rebuilt. The table
-shares D1's database with them, but not their migration chain or their rules: its
-schema versions live in `page_tags_schema`, apart from `pages_catalog_schema`, so a
-change to the catalog's migrations can't reset or renumber it.
-Nothing clears or rebuilds `page_tags`: not reconciliation, not a cooled index,
-not a migration that resets `pages_catalog_accounts`. Only a Page's permanent
-deletion deletes its rows, and the Page host does that itself
-(`deletePageTags`, after the catalog tombstone is written), whether or not
-`PAGES_CATALOG_INDEX` is set: the tombstone is a projection and never touches
-the table. If D1 fails the delete, the purge step fails and the lifecycle repeats
-it. Trash keeps them, hidden with the Page; restore brings them back. The Page host decides who may edit and
-holds no tag state. The read and write code is in
-[page-tags-store.mjs](worker/page-tags-store.mjs); the projection supplies only
-candidate Pages, and the table decides which candidates match. On a celld target
-D1 and each Page's storage sit under the same versioned fleet prefix, so the
-restore points in [DEPLOYMENT.md](DEPLOYMENT.md#restore-points) cover both for 14
-days. Past that, nothing can rebuild tags. See
-[Where state lives](DEPLOYMENT.md#where-state-lives).
-Tags need D1: with `PAGES_CATALOG_INDEX` unset (that variable also turns on the
-D1 binding, though tags are not part of the index) or D1 not answering, a tag
-write or a listing with `tags` answers 503 `tags_unavailable` (retryable) and
-never falls back to the Catalog entries, which hold no tags.
+**Source of truth.** `page_tags` is normative in D1: the single copy of a Page's
+tags, with no backing Durable Object or rebuild path (see
+[Where state lives](DEPLOYMENT.md#where-state-lives) for the distinction from
+the rebuildable `pages_catalog_*` projections). All reads and writes go through
+[page-tags-store.mjs](worker/page-tags-store.mjs); the Page host authorizes
+edits and holds no tag state, and catalog projections supply only candidate
+Pages:
+
+- **Schema isolation:** `page_tags_schema` versions `page_tags` separately from
+  `pages_catalog_schema`, so catalog migrations, reconciliation, index
+  cooldowns, and `pages_catalog_accounts` resets never clear or touch tag rows.
+- **Lifecycle & recovery:** Trash keeps tags hidden with the Page and restore
+  brings them back. Only permanent deletion removes rows via `deletePageTags` in
+  the Page host (after the catalog tombstone is written, whether or not
+  `PAGES_CATALOG_INDEX` is set); if D1 fails the delete, the purge step fails
+  and retries. On celld targets, 14-day
+  [restore points](DEPLOYMENT.md#restore-points) cover D1 and Page storage under
+  the same fleet prefix; past that, tags cannot be rebuilt.
+- **D1 availability:** if `PAGES_CATALOG_INDEX` is unset (which also gates the
+  D1 binding) or D1 is unreachable, tag writes and `tags`-filtered listings
+  return `503 tags_unavailable` (retryable) with no Catalog fallback.
 
 **Alphabet.** A tag is trimmed and lowercased, then must match
 `[a-z0-9][a-z0-9._:/-]{0,63}`: lowercase letters, digits and `. _ : / -`,

@@ -142,11 +142,14 @@ The migration path is to add parity first, then de-emphasize read-only `get_*`
 tools in descriptions or hide them behind compatibility only after clients use
 resources reliably. Mutating and control-plane tools remain tools.
 
-## Decision 6: Subscriptions are feasible but separate
+## Decision 6: Subscriptions use notify-then-read
 
 `rmcp` supports `resources/subscribe`, `resources/unsubscribe`, and
-`notifications/resources/updated`. Implementing subscriptions is feasible, but
-it should be a separate PR because it needs server and proxy state:
+`notifications/resources/updated`. Subscription support has shipped under the
+attachment-lease lifecycle defined in
+[Explicit notebook attachments in MCP](mcp-explicit-notebook-attachments.md).
+
+The subscription contract requires server and proxy state to:
 
 1. advertise `resources.subscribe`;
 2. validate subscribed URIs with the same parser as `read_resource`;
@@ -155,17 +158,20 @@ it should be a separate PR because it needs server and proxy state:
 5. coalesce updates and send `notifications/resources/updated` with only the
    resource URI;
 6. rely on the client to call `resources/read` after notification;
-7. remove subscriptions when a session disconnects, parks, evicts, or the MCP
+7. remove subscriptions when a session disconnects, expires, evicts, or the MCP
    child restarts.
 
-Subscriptions should start with coarse resources:
+`subscribe` accepts a connected notebook's cells, single cell, or comments
+resource in both notebook-ID and session-handle forms:
 
-- `nteract://notebooks`
-- `nteract://notebooks/{notebook_id}/cells`
-- `nteract://notebooks/{notebook_id}/cells/{cell_id}`
+- `nteract://notebooks/{notebook_id}/cells` and `nteract://sessions/{notebook_handle}/cells`
+- `nteract://notebooks/{notebook_id}/cells/{cell_id}` and `nteract://sessions/{notebook_handle}/cells/{cell_id}`
+- `nteract://notebooks/{notebook_id}/comments` and `nteract://sessions/{notebook_handle}/comments`
 
-Output subscriptions should wait until output resource paths exist. Otherwise
-the server would be notifying about resources that clients cannot read.
+Subscribing to `nteract://notebooks` is rejected with `invalid_params`.
+
+Output subscriptions wait until output resource paths exist so the server never
+notifies about unreadable URIs.
 
 ## Non-Goals
 
@@ -173,14 +179,22 @@ the server would be notifying about resources that clients cannot read.
 - Encoding authorization, provider identity, or runtime attachment in resource
   paths.
 - Streaming output bytes through resource notifications.
-- Removing read-only `get_*` tools in the same change that introduces resource
-  addressing.
+- Removing read-only `get_*` tools before resource parity is complete.
+
+## Open Follow-ups
+
+- Implement execution-aware output resource paths
+  (`nteract://notebooks/{notebook_id}/executions/{execution_id}/outputs/{output_id}`,
+  `nteract://notebooks/{notebook_id}/cells/{cell_id}/outputs/{output_id}`, and
+  their collection URIs) and decide whether they expose resolved structured
+  content, raw runtime manifests, or both via suffixes.
+- Close the output-resolution parity gap between `get_cell(full_output=true)` /
+  `get_results` and resource reads before de-emphasizing read-only `get_*`
+  tools.
+- Decide whether subscribed cell resources notify on output-only changes or
+  wait for dedicated output collection resources.
 
 ## Open Questions
 
-1. Whether output resources should expose resolved structured content, raw
-   runtime manifests, or both through separate suffixes.
-2. Whether clients need a resource for historical executions independent of
+1. Whether clients need a resource for historical executions independent of
    cells.
-3. Whether subscribed cell resources should notify for output-only changes, or
-   whether that should wait for output collection resources.

@@ -66,9 +66,9 @@ snapshot keyed by its heads and removes only source chunks represented by that
 snapshot. An adapter without a shared transaction must commit the new snapshot
 before a separate prune. A crash may leave extra chunks, but it must not leave
 the document without a complete recovery path.
-Compaction is deferred while Automerge reports missing dependencies so the
-incremental chunks carrying queued out-of-order changes cannot be collapsed
-into a snapshot key that represents only the applied frontier.
+Compaction waits whenever Automerge reports missing dependencies. Otherwise,
+incremental chunks carrying queued out-of-order changes could collapse into a
+snapshot key that covers only the applied frontier.
 
 The storage adapter is SQLite initially. `runtimed` already ships SQLite, and a
 transaction gives the daemon one explicit commit boundary for document chunks,
@@ -137,11 +137,12 @@ may preserve a document handle, but a new connection receives fresh sync state
 and passes current authorization again.
 
 The current Automerge sync API does not expose queued out-of-order changes as
-inspectable `Change` values. A network or runtime-agent frame that still has
-missing dependencies after isolated preview is therefore rejected before live
-application: nteract neither actor-admits nor acknowledges bytes it cannot bind
-to the durable batch. A future upstream API may allow those changes to cross the
-same typed admission boundary and use the store's retained-chunk behavior.
+inspectable `Change` values. If a network or runtime-agent frame still has
+missing dependencies after isolated preview, nteract rejects it before live
+application. The daemon neither admits the changes nor acknowledges
+bytes it cannot bind to the durable batch. A future upstream API may allow
+those changes to cross the same typed admission boundary and use the store's
+retained-chunk behavior.
 
 ## Decision 4: File projection recovery is separate metadata
 
@@ -204,7 +205,10 @@ Migration is read-through and idempotent:
 3. Only when the repository is absent, migrate the latest valid primary recovery
    journal. Preserve notebook UUID, schema version, source fingerprint,
    `exported_heads`, `durable_heads`, pending checkpoint intent, and `Match`
-   conflict state. A JSON sidecar is diagnostic evidence, never authority.
+   conflict state. Here `Match` (`RecoveryLoadOutcome::Match`) records that
+   on-disk `.ipynb` bytes match the journal's fingerprint or pending checkpoint,
+   distinct from `SourceConflict` when they diverge. A JSON sidecar is
+   diagnostic evidence, never authority.
 4. Only when both repository and journal are absent, consider the legacy
    `.automerge` mirror for a supported non-ephemeral untitled notebook UUID. A
    mirror is never the authority for a file-backed source.
@@ -230,9 +234,10 @@ documents. Removing the mirror without moving that root scan could collect
 blobs still referenced by a closed notebook.
 
 Repository activation also moves exact-head durability barriers to the store.
-Mirror enqueue and flush, kernel-teardown emergency save, and eviction-time
-mirror persistence remain until repository-backed restart, eviction, shutdown,
-promotion, and garbage-collection cases cover their recovery responsibilities.
+Mirror enqueue/flush, kernel-teardown emergency save, and eviction-time mirror
+persistence stay in place for now. Remove them only after repository-backed
+restart, eviction, shutdown, promotion, and garbage-collection tests cover
+their recovery responsibilities.
 
 ## Invariants
 

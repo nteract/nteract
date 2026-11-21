@@ -1,133 +1,129 @@
 # Captured Environment Lifecycle
 
 **Status:** Accepted, 2026-05-24. Typed disk state (`Missing`, `Partial`,
-`Usable`) and captured repair routing landed. Manual rebuild, explicit refresh,
-and launch-retry remain open follow-ups.
+`Usable`) and captured repair routing landed. Launch retry, manual rebuild,
+and workspace-default refresh remain open follow-ups.
 
 ## Related ADRs
 
-- `docs/adr/kernel-env-trust.md` - dependency trust decides whether the daemon may install or launch declared packages. This ADR starts after that gate: how a captured environment is identified, reused, repaired, and manually reset.
-- `docs/adr/execution-pipeline.md` - launch retry must preserve the lifecycle ordering guarantees around kernel startup and terminal error publication.
-- `docs/adr/document-split.md` - NotebookDoc carries dependency declarations; RuntimeStateDoc carries launch/progress/error state.
+- `docs/adr/kernel-env-trust.md`: dependency trust gates whether the daemon may install or launch declared packages. This ADR starts after that gate: identifying, reusing, repairing, and resetting captured environments.
+- `docs/adr/execution-pipeline.md`: launch retry must preserve lifecycle ordering around kernel startup and terminal error publication.
+- `docs/adr/document-split.md`: `NotebookDoc` carries dependency declarations; `RuntimeStateDoc` carries launch, progress, and error state.
 
 ## Context
 
-Captured environments make notebooks self-describing. On first launch from a prewarmed UV or Conda pool, the daemon strips base packages, records the user's dependency intent in `metadata.runt.{uv,conda}`, assigns `metadata.runt.env_id`, and renames the claimed environment into the unified content-addressed cache. Later launches recompute the unified hash from metadata and `env_id` and try to reuse the same interpreter.
+Captured environments make notebooks self-describing. On first launch from a prewarmed UV or Conda pool, the daemon strips base packages and records dependency intent in `metadata.runt.{uv,conda}`. It then assigns `metadata.runt.env_id` and renames the claimed environment into the unified content-addressed cache. Later launches recompute the unified hash from metadata and `env_id` to reuse the same interpreter.
 
-That gives users fast reopen and per-notebook isolation, but it also creates a lifecycle responsibility. If the on-disk environment is incomplete or later becomes unable to launch, users should not need to edit `metadata.runt.env_id`, know the unified hash, or delete cache directories by hand. The daemon owns those lifecycle mutations.
+This gives fast reopen and per-notebook isolation, while placing lifecycle ownership on the daemon. When an on-disk environment is incomplete or fails to launch, users must not edit `metadata.runt.env_id`, compute unified hashes, or delete cache directories by hand.
 
-Issues #1969 and #1968 are two layers of the same design:
+This ADR defines the shared invariants for two capabilities:
 
-- #1969: automatic repair when a captured environment is incomplete or fails during the kernel launch handshake.
-- #1968: manual controls for rebuilding a captured environment or refreshing captured dependencies from current workspace defaults.
-
-This ADR covers the invariants both features must share.
+- **Automatic captured-environment repair:** recover incomplete directories and kernel launch-handshake failures without manual intervention.
+- **Manual rebuild and dependency-refresh controls:** let users rebuild a captured environment or replace captured dependencies with current workspace defaults.
 
 ## Decision 1: Captured identity is metadata intent plus `env_id`
 
-A captured environment's identity is not the cache path. It is:
+A captured environment's identity is not its cache path. Identity consists of three parts:
 
-1. the runtime family (UV or Conda),
-2. the full resolver-affecting dependency intent stored in notebook metadata, and
+1. The runtime family (UV or Conda).
+2. The full resolver-affecting dependency intent in notebook metadata.
 3. `metadata.runt.env_id`.
 
-The full dependency intent matters. For UV, `dependencies`, `requires-python`, and `prerelease` all feed the unified hash. For Conda, `dependencies`, `channels`, `python`, and the conditional GIL-enforcement ABI marker all feed the unified hash. `compute_unified_env_hash()` is authoritative for the exact field list. Dropping resolver fields would silently point a notebook at a different cache path after metadata edits.
+Every resolver-affecting field feeds the hash:
 
-Cache paths are derived from this identity:
+- **UV:** `dependencies`, `requires-python`, and `prerelease`.
+- **Conda:** `dependencies`, `channels`, `python`, and the conditional GIL-enforcement ABI marker.
+
+`compute_unified_env_hash()` is authoritative for the exact field list. Dropping a resolver field would silently point a notebook at a different cache path after metadata edits.
+
+Cache paths derive from this identity:
 
 ```text
 hash = hex(sha256(sorted_deps + resolver_fields + env_id))[..16] // 16 hex chars
 env_path = backend_cache_dir / hash
 ```
 
-The path is not authoritative state. Any daemon action that deletes, repairs, or rebuilds a captured environment must derive the expected path from the current captured identity and backend cache root.
+The path is never authoritative state. Every daemon action that deletes, repairs, or rebuilds a captured environment derives the expected path from the current captured identity and backend cache root.
 
-Automatic repair keeps `env_id` stable. A stable `env_id` means the daemon repairs the notebook's existing captured identity instead of silently assigning a new one. Manual rebuilds may later choose to rotate `env_id`, but that is a separate API decision that must shut down the active kernel and mutate metadata under a guard.
+Automatic repair keeps `env_id` stable, repairing the existing captured identity rather than assigning a new one. Manual rebuilds may later rotate `env_id`, but doing so requires shutting down the active kernel and mutating metadata under a guard.
 
 ## Decision 2: Disk state is typed, not boolean
 
-The old question was "does `unified_env_on_disk()` return a Python path?" That boolean loses important information. Captured disk state has three states:
+The legacy boolean check (`unified_env_on_disk()` returning a Python path) lost critical state. Captured disk state is a three-state enum:
 
 | State | Meaning | Routing |
 |---|---|---|
-| `Missing` | Expected unified env dir is absent. | Do not route as captured. Missing can mean GC, cache cleanup, or a fresh inline-dep notebook with metadata but no captured env yet. |
-| `Partial` | Env dir exists but the expected Python executable is absent. | Route to captured repair. The directory's presence proves the notebook once owned this derived hash. |
-| `Usable` | Env dir exists and expected Python executable exists. | Route as captured cache-hit candidate. |
+| `Missing` | Expected unified env dir is absent. | Do not route as captured. Absence can mean GC, cache cleanup, or a fresh inline-dep notebook with no captured env yet. |
+| `Partial` | Env dir exists, but expected Python executable is absent. | Route to captured repair. Directory presence proves this notebook once owned the derived hash. |
+| `Usable` | Env dir and expected Python executable both exist. | Route as captured cache-hit candidate. |
 
-A missing directory is ambiguous and must preserve the existing fallback
-behavior. A partial directory means this notebook's captured environment is
-broken and should be rebuilt through the captured path.
+`Missing` preserves existing fallback behavior. `Partial` means the notebook's captured environment is broken and must rebuild through the captured path.
 
-The resolution helper must therefore be typed. A plan that detects `Partial`
-only inside `acquire_prewarmed_env_with_capture()` is insufficient if the
-source-resolution layer never routes partial dirs to `uv:prewarmed` or
-`conda:prewarmed`.
+Source resolution must classify disk state before backend dispatch and route both `Partial` and `Usable` directories to `uv:prewarmed` or `conda:prewarmed`. Detecting `Partial` only inside `acquire_prewarmed_env_with_capture()` is insufficient because partial directories would never reach that layer.
 
-Implemented: `CapturedEnvDiskState::{Missing, Partial, Usable}` (defined at
-`crates/runtimed/src/notebook_sync_server/metadata.rs`) and
-`captured_env_disk_state()` classify disk state by environment backend; both
-`Partial` and `Usable` route as captured cache-hit candidates, and
-`prepare_environment_unified()` rebuilds partial dirs before handoff.
+**Landed:** `CapturedEnvDiskState::{Missing, Partial, Usable}` (`crates/runtimed/src/notebook_sync_server/metadata.rs`) and `captured_env_disk_state()` classify disk state per backend. Both `Partial` and `Usable` route as captured cache-hit candidates, and `prepare_environment_unified()` rebuilds partial directories before handoff.
 
 ## Decision 3: The happy path stays cheap
 
-Cached launch is the hot path. It should not spawn Python just to prove the environment is healthy. The daemon should not run `diagnose_ipykernel()` or similar subprocess probes on every captured cache hit.
+Cached launch is the hot path. The daemon must not spawn Python, run `diagnose_ipykernel()`, or execute subprocess probes on every captured cache hit.
 
-The cheap disk predicate is Python path existence. That does not prove every package is importable, but it distinguishes the common interrupted-install shape without paying subprocess cost on every reopen. If Python exists but `site-packages` is corrupt, the launch handshake is the stronger health signal and the one-shot retry path handles it.
+Checking Python executable existence is the cheap disk predicate. It catches interrupted installs without subprocess overhead on every reopen. When Python exists but `site-packages` is corrupt, the launch handshake detects the fault and the one-shot retry path (open follow-up) handles repair.
 
-Captured repair also does not require a new `.captured-ok` marker in the first pass. The repository already has several environment sidecars (`.warmed`, `.last-used`, `.runt-pool-packages.sha256`, Conda `.lock.json`). Adding another marker creates another coherence surface during capture, eviction, dependency sync, rebuild, and manual reset. The current first pass uses existing signals:
+No `.captured-ok` marker is added. The repository already maintains multiple sidecars (`.warmed`, `.last-used`, `.runt-pool-packages.sha256`, Conda `.lock.json`), and another marker would add coherence risk across capture, eviction, dependency sync, rebuild, and manual reset. Existing signals suffice:
 
-- missing Python executable means `Partial`;
-- `prepare_environment_unified()` handles partial dirs and rebuilds;
-- launch handshake failure on a captured env can trigger one controlled rebuild/relaunch.
+- Missing Python executable classifies as `Partial` (landed).
+- `prepare_environment_unified()` repairs partial directories (landed).
+- Launch handshake failure on a captured env triggers one controlled rebuild and relaunch (open follow-up).
 
-UV currently removes a partial unified env dir before rebuilding. Conda has an extra lock-file path and may attempt a lock-based rebuild before a full remove/recreate. The lifecycle decision is not "always delete first"; it is "route partial captured dirs into the backend's existing unified-env repair path."
-
-Revisit a captured health marker only if telemetry or repeated bug reports show that "Python exists but env cannot launch" is common enough that the first failed launch/retry delay is unacceptable.
+Repair behavior stays backend-specific. UV removes a partial unified env dir before rebuilding; Conda may try a lock-file rebuild before full removal and recreation. The invariant is routing partial captured dirs into the backend's unified-env repair path, not unconditionally deleting first.
 
 ## Decision 4: Repair is daemon-owned and scoped
 
-The frontend must not delete cache directories, rotate `env_id`, or rewrite captured dependency metadata directly. It can request lifecycle actions and show previews; the daemon owns the final mutation.
+The frontend never deletes cache directories, rotates `env_id`, or rewrites captured dependency metadata directly. It requests lifecycle actions and renders previews; the daemon executes every mutation.
 
-For automatic repair:
+Automatic repair enforces strict scoping:
 
-- `Partial` dirs rebuild through `prepare_environment_unified()`, using the backend's existing partial-dir handling.
-- Post-launch failure invalidation is allowed only after a captured env fails during an infrastructure launch phase.
-- Invalidation may remove only the derived unified-hash path under the expected backend cache root.
-- The daemon must not delete arbitrary `runtime_agent` paths or caller-supplied paths.
+- `Partial` dirs rebuild through `prepare_environment_unified()` using the backend's partial-dir handling (landed).
+- Post-launch failure invalidation runs only after a captured env fails in an infrastructure launch phase (open follow-up).
+- Invalidation deletes only the derived unified-hash path under the expected backend cache root.
+- The daemon never deletes arbitrary `runtime_agent` paths or caller-supplied paths.
 
-The cache root is user-owned local state, but path safety still matters. Implementations should canonicalize the cache root when practical, compare against the derived hash path, reject paths outside the expected root, and avoid following arbitrary user-controlled path input. The derived path should come from `CapturedEnv`, not from frontend payloads.
+Even though the cache root is user-owned local state, path validation is mandatory. The daemon derives the target path from `CapturedEnv`, never from frontend payloads. It canonicalizes the cache root where practical, compares against the derived hash path, rejects paths outside that root, and ignores arbitrary user-controlled paths.
 
-`env_id` makes captured hashes per notebook. That invariant prevents one notebook's repair from deleting another notebook's captured env. If a future feature intentionally shares captured envs across notebooks, it must revisit this ADR.
+`env_id` makes captured hashes per notebook, preventing one notebook's repair from deleting another notebook's environment. Any future feature that shares captured envs across notebooks must revisit this ADR.
 
 ## Decision 5: Launch retry is one-shot and internal
 
-Automatic retry exists to recover infrastructure failures in the captured environment, not user-code failures.
+*Status: Open follow-up.*
 
-The retry is internal to a single launch request:
+Automatic retry recovers infrastructure failures in captured environments, never user-code failures.
+
+The retry runs internally within a single launch request:
 
 1. The launch request passes the normal trust gate.
-2. Source resolution chooses a captured UV/Conda environment.
+2. Source resolution selects a captured UV or Conda environment.
 3. The daemon resolves a concrete `CapturedEnv` snapshot and launch config.
 4. The runtime agent attempts kernel launch.
-5. If launch fails with a retryable infrastructure hint, the coordinator repairs the already-resolved captured env and launches once more.
+5. On a retryable infrastructure hint, the coordinator repairs the resolved captured env and launches once more.
 6. If the second launch fails, the daemon surfaces the original failure with a note that automatic rebuild was attempted.
 
-The retry must not publish an intermediate `Error` lifecycle before it retries. RuntimeStateDoc should remain in a progressing state until the retry succeeds or the final error is known. Otherwise the UI can see `Launching -> Error -> Launching -> Error`, and a concurrent launch request can mistake the intermediate error as permission to start a second repair.
+Invariants for the retry path:
 
-The retry uses the dependency snapshot from the original resolution. It must not re-read mutable NotebookDoc metadata between first failure and repair. If another peer edits dependencies during the handshake window, that edit is handled by a later trust/resolution cycle; it does not change the in-flight repair.
-
-The retry also relies on the existing launch lifecycle gate: a launch request claims the room while resolving/launching, and the automatic retry must remain inside that same claim. If that gate changes, this ADR's concurrency assumptions need to be revisited.
+- **No intermediate `Error` state:** `RuntimeStateDoc` stays in a progressing state until retry succeeds or final failure is known. Publishing an intermediate error would flash `Launching -> Error -> Launching -> Error` in the UI and let a concurrent launch request start a second repair.
+- **Frozen dependency snapshot:** Retry uses the originally resolved snapshot and must not re-read mutable `NotebookDoc` metadata between first failure and repair. Concurrent peer edits take effect on a later trust and resolution cycle.
+- **Single room claim:** Retry stays inside the launch request's existing room claim. Changing that launch lifecycle gate requires revisiting these concurrency assumptions.
 
 ## Decision 6: Launch failure hints cross the runtime-agent boundary
 
-The runtime agent sees the raw `anyhow::Error` from `JupyterKernel::launch()`. The coordinator currently sees a string wrapped as `Failed to launch kernel: ...`. Classifying retryable failures after this wrapping is brittle.
+*Status: Open follow-up.*
 
-Classification should happen inside `runtime_agent.rs` before formatting the user-facing error string. The response to the coordinator should carry the original error string plus a structured retry hint. The hint can remain internal to the runtime-agent/coordinator protocol; it does not need to become frontend UX.
+The runtime agent receives the raw `anyhow::Error` from `JupyterKernel::launch()`, while the coordinator currently receives a formatted string (`Failed to launch kernel: ...`). Retry policy must not parse double-wrapped display strings.
 
-Because the runtime agent and coordinator communicate through `notebook-protocol`, the hint type may need to live in that shared crate. If so, mark it as protocol-internal with a doc comment or `#[doc(hidden)]`; it is serialized infrastructure state, not a stable client-facing UX contract.
+Classification belongs inside `runtime_agent.rs` before formatting the user-facing error. The response to the coordinator carries the original error string plus a structured retry hint. The hint stays internal to the runtime-agent/coordinator protocol and does not become frontend UX.
 
-One compatible shape is:
+When the hint type lives in the shared `notebook-protocol` crate, mark it protocol-internal with a doc comment or `#[doc(hidden)]`; it is serialized infrastructure state, not a client-facing contract.
+
+Compatible wire shape:
 
 ```rust
 RuntimeAgentResponse::Error {
@@ -136,21 +132,23 @@ RuntimeAgentResponse::Error {
 }
 ```
 
-Every non-launch error can omit the hint. If enum-match churn makes an optional field awkward, a launch-specific failure variant is also acceptable. The important decision is that retry policy should not parse double-wrapped display strings.
+Non-launch errors omit the hint. A dedicated launch-failure variant is also acceptable if an optional field creates excessive enum-match churn.
 
-Retryable hints are infrastructure failures such as:
+Retryable hints cover infrastructure failures only:
 
-- kernel process exits before `kernel_info_reply`;
-- kernel info request times out;
-- kernel info request send fails;
-- Python executable cannot start;
+- Kernel process exits before `kernel_info_reply`.
+- Kernel info request times out.
+- Kernel info request send fails.
+- Python executable cannot start.
 - `ipykernel` is missing.
 
-## Decision 7: Manual controls are a later lifecycle API
+## Decision 7: Manual controls build on daemon-owned lifecycle primitives
 
-#1968 should build on #1969's daemon-owned lifecycle primitives. It should not be implemented as frontend metadata editing plus filesystem deletion.
+*Status: Open follow-up.*
 
-The likely request shape is:
+Manual rebuild and dependency-refresh controls build on the same daemon-owned lifecycle primitives as automatic repair. Do not implement them as frontend metadata edits plus filesystem deletion.
+
+Target request shape:
 
 ```rust
 ResetNotebookEnvironment {
@@ -159,21 +157,18 @@ ResetNotebookEnvironment {
 }
 ```
 
-`RebuildSame` keeps the notebook's declared dependency intent and invalidates/rebuilds only the matching captured env identity. The final choice between stable `env_id` and rotated `env_id` belongs to the request design. If it rotates `env_id`, it must shut down the active kernel and mutate NotebookDoc under a guard.
+- **`RebuildSame`:** keeps declared dependency intent and invalidates/rebuilds only the matching captured env identity. If the API design chooses rotated `env_id` over stable `env_id`, it must shut down the active kernel and mutate `NotebookDoc` under a guard.
+- **`RefreshDefaults`:** rewrites dependency metadata using workspace defaults snapshotted by the daemon at apply time (frontend settings can drift while a confirmation dialog is open). Normal trust derivation governs the rewritten declaration; resetting never bypasses the trust model.
 
-`RefreshDefaults` is a metadata rewrite. The daemon must snapshot current default packages at apply time, because frontend settings can drift while a dialog is open. After the rewrite, normal trust derivation decides whether the new dependency declaration is trusted. New default dependencies should not bypass the trust model just because the user clicked a reset button.
+Frontend placement uses an "Environment actions" menu or compact secondary row in the dependency panel, shown only for captured UV or Conda notebooks. Copy avoids internal field names and uses "declared dependencies" rather than "saved dependencies" (which is ambiguous between `.ipynb` on disk and live Automerge state):
 
-Frontend placement should be an "Environment actions" menu or compact secondary row in the dependency panel, gated to captured UV/Conda notebooks. The product language should avoid internal fields:
-
-- Automatic repair: "The notebook environment looked broken, so nteract rebuilt it from this notebook's declared dependencies."
-- Manual rebuild: "Rebuild this notebook's environment from its declared dependencies."
-- Refresh defaults: "Replace this notebook's declared dependencies with your current workspace defaults."
-
-Use "declared dependencies", not "saved dependencies"; saved can mean either the `.ipynb` on disk or the live Automerge document.
+- **Automatic repair:** "The notebook environment looked broken, so nteract rebuilt it from this notebook's declared dependencies."
+- **Manual rebuild:** "Rebuild this notebook's environment from its declared dependencies."
+- **Refresh defaults:** "Replace this notebook's declared dependencies with your current workspace defaults."
 
 ## Worked Examples
 
-### Partial captured UV dir
+### Partial captured UV dir *(landed)*
 
 1. Notebook metadata declares `metadata.runt.env_id = "abc"` and `metadata.runt.uv.dependencies = ["pandas"]`.
 2. The derived unified env dir exists, but `{hash}/bin/python` does not.
@@ -182,49 +177,36 @@ Use "declared dependencies", not "saved dependencies"; saved can mean either the
 5. `prepare_environment_unified()` removes the partial dir and rebuilds the same hash.
 6. Launch proceeds against the repaired env.
 
-### GC'd captured dir
+### GC'd captured dir *(landed)*
 
-1. Notebook metadata still has `env_id` and declared UV deps.
+1. Notebook metadata still declares `env_id` and UV deps.
 2. The derived unified env dir does not exist.
 3. Disk state is `Missing`.
-4. Source resolution does not route as captured, preserving the existing fallback behavior.
-5. The daemon may rebuild through the normal inline/pool path according to the surrounding environment-resolution rules.
-6. That fallback does not preserve per-notebook `env_id` cache isolation for the rebuild; it may share an inline cache entry with another notebook that declares identical deps. This is the tradeoff for not treating every deps-plus-`env_id` metadata snapshot as captured when no derived env exists on disk.
+4. Source resolution skips captured routing and preserves existing fallback behavior.
+5. The daemon rebuilds through the normal inline/pool path per surrounding environment-resolution rules.
+6. Fallback trades away per-notebook `env_id` cache isolation and may share an inline cache entry with another notebook declaring identical deps. That is the deliberate tradeoff for not treating every metadata snapshot with `env_id` as captured when no env exists on disk.
 
-### Corrupt but Python-present env
+### Corrupt but Python-present env *(open follow-up)*
 
 1. Disk state is `Usable` because Python exists.
-2. The first launch attempt fails before `kernel_info_reply` due to missing `ipykernel` or broken packages.
+2. First launch fails before `kernel_info_reply` due to missing `ipykernel` or broken packages.
 3. Runtime agent classifies the failure before wrapping the error string and returns a retry hint.
-4. Coordinator repairs the already-resolved captured env once and relaunches.
-5. If relaunch fails, the final user-visible error includes that automatic rebuild was attempted.
+4. Coordinator repairs the resolved captured env once and relaunches.
+5. If relaunch fails, the user-visible error notes that automatic rebuild was attempted.
 
-### Refresh defaults
+### Refresh defaults *(open follow-up)*
 
 1. User opens the dependency panel for a captured notebook.
-2. The frontend previews "current declared deps" versus "current workspace defaults".
+2. Frontend previews current declared dependencies against current workspace defaults.
 3. User confirms.
-4. The daemon snapshots defaults, rewrites dependency metadata under a guard, and invalidates the old captured env identity.
-5. RuntimeStateDoc trust updates through the normal dependency-trust flow.
-6. The next launch installs only after trust allows it.
-
-## Deferred Decisions
-
-1. **Captured health marker.** Revisit `.captured-ok` only with evidence that the current disk-state plus launch-handshake signals are not enough.
-2. **Retry suppression window.** The first implementation can retry once per launch request. If users repeatedly click run during network/package-index failures, add a short per-room suppression window.
-3. **Full typed launch-error model.** If optional retry hints are too weak or leak into other protocol surfaces, introduce a richer internal launch-error type.
-4. **Manual rebuild `env_id` policy.** Automatic repair keeps `env_id` stable. Manual rebuild can revisit stable versus rotated `env_id` with UI and concurrency constraints in view.
+4. Daemon snapshots defaults, rewrites dependency metadata under a guard, and invalidates the old captured env identity.
+5. `RuntimeStateDoc` trust updates through normal dependency-trust derivation.
+6. Next launch installs only after trust permits it.
 
 ## Open Follow-ups
 
-1. **Launch retry on captured-env handshake failure.** Automatic one-shot repair
-   with coordinator-scoped retry suppression. Requires typed launch-error model
-   with optional retry hints.
-2. **Manual rebuild API.** Explicit user-triggered "rebuild this captured
-   environment" without mutating `env_id` or dependency metadata.
-3. **Refresh workspace defaults.** Update a captured notebook's dependency
-   metadata to match current workspace defaults, invalidating the old captured
-   identity.
-4. **Retry suppression window.** If the one-shot retry proves insufficient
-   under intermittent network/package-index failures, add a short per-room
-   suppression window.
+1. **Launch retry on captured-env handshake failure.** Implement one-shot internal repair using structured runtime-agent retry hints (`RuntimeAgentLaunchFailureHint`). Upgrade to a fuller internal launch-error type only if optional hints prove too weak or leak into other protocol surfaces.
+2. **Manual rebuild API (`RebuildSame`).** Add explicit user-triggered captured-environment rebuild without mutating dependency metadata. Settle stable vs. rotated `env_id` policy against UI and concurrency constraints.
+3. **Refresh workspace defaults (`RefreshDefaults`).** Add daemon-owned metadata rewrite from snapshotted workspace defaults, invalidating the prior captured identity and re-running trust derivation.
+4. **Retry suppression window.** Add a short per-room suppression window if repeated manual Run clicks during network or package-index outages make one-shot retry too noisy.
+5. **Captured health marker.** Revisit a `.captured-ok` sidecar only if telemetry or bug reports show Python-present corrupt environments occur often enough that the first-launch retry delay is unacceptable.

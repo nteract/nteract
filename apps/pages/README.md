@@ -68,89 +68,59 @@ fails on a release without them.
 
 ### Charts
 
-`viewer/vega-chart.mjs` draws a Vega-Lite spec over datasets the caller
-supplies (rows, Arrow IPC bytes or an Arrow table), in the Page's own
-document. The editor draws each `view` node with it
-([viewer/wordgard-views.mjs](viewer/wordgard-views.mjs)): the node names a
-view, the host's `pages.view` document holds its spec and data bindings, and
-each binding reads one of the Page's sources. The chart code is its own chunk
-(`viewer/view-chart.mjs`), loaded only when a view nears the viewport; cards
-and previews draw a view as the node's figure and never load it.
+`viewer/vega-chart.mjs` renders Vega-Lite specs over caller-supplied datasets
+(rows, Arrow IPC bytes, or an Arrow table). Each `view` node references a
+`pages.view` entry containing the spec and source bindings
+([viewer/wordgard-views.mjs](viewer/wordgard-views.mjs)). The chart chunk
+(`viewer/view-chart.mjs`) lazy-loads near the viewport; cards and previews
+render a static figure without loading it.
 
-Vega runs in a Worker (`viewer/chart-worker.mjs`): it compiles the spec, runs
-the dataflow and posts the finished scenegraph back, and the page draws it
-with Vega's SVG renderer and keeps the hover tooltip. The charts on a Page
-share one Worker (`viewer/chart-pool.mjs`), which runs one draw at a time,
-first draws ahead of redraws. The page never runs the dataflow itself: a
-Worker that can't start fails its charts. Before Vega loads, the Worker
-removes every global and prototype member it doesn't read, navigator
-included, keeping an allowlist (`viewer/chart-lockdown.mjs`), and the Pages
-Worker serves it under its own
-`Content-Security-Policy: default-src 'none'`
-(`shared/chart-worker-csp.mjs`).
+- **Worker isolation:** All charts on a Page share one Worker
+  (`viewer/chart-pool.mjs`) that runs draws serially (first draws ahead of
+  redraws) and posts the finished scenegraph back for SVG rendering. The page
+  never runs the Vega dataflow directly. Before Vega loads, the Worker strips
+  non-allowlisted globals and prototypes, including `navigator`
+  (`viewer/chart-lockdown.mjs`), and runs under
+  `Content-Security-Policy: default-src 'none'` (`shared/chart-worker-csp.mjs`).
+- **Static charts only:** Marks, axes, legends, and Vega's hover tooltip are
+  supported. Selections, bindings, `param` predicates, hover encodings, and
+  event streams are rejected.
+- **Comments on charts:** Readers with comment access can use **Comment on
+  chart** (beside Maximize) to open existing threads from the count or start a
+  new thread from the comment icon. Threads anchor to the chart node's
+  Automerge marker, survive source refreshes, and detach if the node is
+  deleted. Charts stay untinted, and comments target the whole chart rather
+  than a point or data revision.
+- **Untrusted specs and data:** `shared/chart-spec.mjs` allowlists named
+  datasets, marks (excluding `image`), encoding types, bounded transforms,
+  expression functions, keyword cursors, and rejects CSS `url()` in strings.
+  Numbers must be `0` or have magnitude in `[1e-150, 1e150]` to prevent Vega
+  bin-loop underflow; smaller data values clamp to `0`, and larger or
+  non-finite values become `null`. The Worker rejects compiled dataflows with
+  event streams, bindings, or unlisted operators, interprets expressions via
+  Vega's interpreter, and denies external loads. The page also rebuilds the
+  returned scenegraph from allowlisted mark types and sanitized styles
+  (`viewer/chart-scene.mjs`).
+- **Budgets and timeouts:** Datasets cap at 100,000 rows and 2,000,000 cells
+  (nested values included), with runtime range checks on bin, kde, and
+  regression transforms. A draw running past 8 seconds fails with
+  `This chart took too long to draw.`, replaces the Worker, and stays skipped
+  until its spec or data changes. Hidden tabs pause draws and terminate active
+  Workers. A maximum-size chart (100,000 points) draws in ~2 seconds in
+  Chromium, Firefox, and WebKit.
 
-A chart is static: marks, axes, legends and Vega's hover tooltip. Selections,
-bindings, `param` predicates, hover encodings and every other event stream are
-refused, because each review of the interactive surface found another way
-through it.
+### Sources inspector
 
-People with comment access can use **Comment on chart**, beside Maximize, to
-open the normal Pages composer below that button. One pill groups a count on
-the left and a plain comment icon on the right. The count opens an existing
-discussion, while the icon always starts a new thread.
-Resolving a thread updates the count; comments leave the chart untinted. The thread anchors to
-that chart node's Automerge marker using the existing selection cursors. It stays with the chart
-when its source refreshes and becomes detached if that node is deleted. This
-is a comment on the whole chart, not a saved point, interval or data revision.
-The action is supplied by Pages; chart specs cannot define it or enable Vega
-event streams.
-
-The spec and the rows are both untrusted. `shared/chart-spec.mjs` checks a
-spec against allowlists: data by name only, Vega-Lite's marks (not `image`)
-and encoding types, transforms and their parameters
-with ranged numbers, expression functions, keyword cursors, and no CSS `url()`
-in any string. Every number, in the spec and in the data, is 0 or between
-1e-150 and 1e150 in size, since Vega's bin loop never ends once its step
-underflows to 0; the Worker turns a smaller number in the data into 0 and a
-larger or non-finite one into null. The Worker refuses a compiled Vega
-dataflow, root or subflow, with any event stream, binding or unlisted
-operator, checks every compiled expression again, runs expressions through
-Vega's interpreter and denies every load. The page treats the scene a Worker
-returns as untrusted too: it rebuilds it from known mark types and keys within
-mark and nesting bounds (`viewer/chart-scene.mjs`), and cleans each paint,
-font and cursor before it writes them.
-
-A dataset may hold at most 100,000 rows and 2,000,000 cells, nested values
-included. Vega's bin, kde and regression transforms check the values they read
-at run time, since a formula, an aggregate or a window can compute a number
-the spec check never sees.
-
-A spec that passes every check can still fail to terminate: the guards cover
-the cases reviews have found, and Vega's and d3's numeric loops aren't proven
-to end. A draw that runs longer than 8 seconds in its Worker shows `This chart
-took too long to draw.`; that Worker is replaced, and the other charts draw on
-the replacement. The page hands the Worker one job at a time and times each
-from its post, data decoding included, so waiting behind other charts
-doesn't count against it. A chart that timed out isn't
-drawn again until its spec or data changes, so ten hung charts on one Page cost
-at most 80 seconds of Worker time, once. The page keeps painting meanwhile. While the Page is hidden, draws wait and a Worker running
-one is terminated. The largest chart the budgets admit, 100,000 points from
-2,000,000 cells, draws in about 2 seconds in Chromium, Firefox and WebKit.
-Drawing that many SVG marks still costs the page's own thread time.
+The **Sources** item in the **…** menu and source names under a Page's title
+open a read-only source inspector (sharing the comments dock on desktop, or a
+sheet on phones). Selecting a source shows a preview (schema from footer
+metadata in a narrow pane, or a Sift table when wider), live metadata, retained
+revisions, and placed tables or views (including anywidget inputs) with jumps
+to each placement. The preview stays visible when switching between Connections
+and Revisions, and search appears when a Page has multiple sources. Run
+`npm run e2e -- sources-panel` to verify it against a local host.
 
 ## Run locally
-
-The **Sources** entry in the **…** menu and source names beneath a Page's title open
-the source inspector. It opens to the source list; each drilldown shows a
-preview, live metadata, retained revisions, and the
-placed tables and views that follow or pin each source, including anywidget
-inputs. Connections locate their placements in the document. The inspector
-shares the comments dock and becomes a sheet on phones. This first version
-is read-only. Parquet sources show a schema from footer metadata in a narrow
-pane and a Sift table preview when there is room. The preview stays visible
-when switching between Connections and Revisions. It does not
-replace, rebind, or remove sources. Search appears for multiple sources.
-Run `npm run e2e -- sources-panel` for its real-host browser check.
 
 Use Node 22.13 or newer, Git, npm, and `celld` 0.6.3 on `PATH`. From
 `apps/pages`:
@@ -248,22 +218,22 @@ build-update check.
 | Trash, restore, and permanent deletion | `node scripts/local-sharing-e2e.mjs --trash` | Starts an isolated fixture |
 | Removed access hides the local copy across a reload, with its download | `node scripts/local-sharing-e2e.mjs --revocation` | Starts an isolated fixture |
 | A commenter comments but can't edit; a forged sync edit of another author's message is refused | `node scripts/local-sharing-e2e.mjs --commenter` | Starts an isolated fixture |
-| Projects over MCP and in the browser, `/projects` and `/pages` on a phone-sized screen, the Pages library's tabs, Project filter, sort and groups as an account with shared Pages, breadcrumbs, Trash and restore in a Project | `node scripts/local-sharing-e2e.mjs --projects` | Starts an isolated fixture |
-| `list_pages` reports `content_updated_at` after an MCP edit and after typing in a tab, each well after the Page's creation | `node scripts/local-sharing-e2e.mjs --content-activity` | Starts an isolated fixture |
-| Grid cards show each edited Page's first content in light, dark and phone layouts; a shared card shows for its member and `page_cards` answers null on the call after removal | `node scripts/local-sharing-e2e.mjs --cards` | Starts an isolated fixture |
-| `/` starts the editor at boot with Automerge's WASM preloaded at low priority beside `app.js`; `/pages` loads neither until a row opens a Page; a direct Page load preloads the WASM once from `<head>` (records request start times) | `node scripts/local-sharing-e2e.mjs --home-boot` | Starts an isolated fixture |
-| The library grid's LCP on Fast 4G with 24 Pages whose card images the owner's tab captured: LCP and its element, first and first-screen card image ends, the first-screen images' bytes, editor chunk and WASM start and end, and in a second load the time from a click on the first card at LCP until the Page's editor content shows (records timings, gates on nothing; `PAGES_LCP_RUNS`, `PAGES_LCP_PAGES`, `PAGES_LCP_HTTP=1.1`; `PAGES_LCP_OPEN=page` opens a Page's address directly and records when its editor content shows) | `node scripts/local-sharing-e2e.mjs --library-lcp` | Starts an isolated fixture behind an HTTP/2 brotli proxy (needs `openssl`); writes `report.json` |
-| Cold first open of a 300-paragraph Page with images on Fast 3G and 4x CPU, phase by phase (records timings, gates on nothing) | `node scripts/local-sharing-e2e.mjs --cold-open` | Starts an isolated fixture behind a brotli proxy; writes `report.json` |
-| Vega-Lite chart renderer with no Page: a stacked bar chart from a fixture under the viewer CSP, Vega's tooltip on hover, light and dark screenshots, Maximize, phone width, the renderer chunk's and Worker's sizes; charts with `url()` in every style position, in the spec and in the data, hovered with no request leaving the fixture; charts that never finish, in a Worker with every check off, ending as an error within the timer while the page keeps painting; the largest admitted chart's time through the Worker (`PAGES_CHART_ENGINES=chromium,firefox,webkit` for more engines) | `node scripts/chart-smoke.mjs` | Builds and serves its own fixture page; no celld |
+| Projects over MCP and browser, `/projects` and `/pages` mobile layouts, library tabs/filters/sort/groups, breadcrumbs, Project Trash/restore | `node scripts/local-sharing-e2e.mjs --projects` | Starts an isolated fixture |
+| `list_pages` `content_updated_at` after MCP and browser edits | `node scripts/local-sharing-e2e.mjs --content-activity` | Starts an isolated fixture |
+| Library grid cards in light/dark/phone layouts, shared visibility, and null removal | `node scripts/local-sharing-e2e.mjs --cards` | Starts an isolated fixture |
+| Boot preload timing for `/`, `/pages`, and direct Page loads (WASM and editor chunks) | `node scripts/local-sharing-e2e.mjs --home-boot` | Starts an isolated fixture |
+| Library grid LCP on Fast 4G (24 Pages, card images, first-click editor open; non-gating; env: `PAGES_LCP_RUNS`, `PAGES_LCP_PAGES`, `PAGES_LCP_HTTP=1.1`, `PAGES_LCP_OPEN=page`) | `node scripts/local-sharing-e2e.mjs --library-lcp` | Starts an isolated fixture behind an HTTP/2 brotli proxy (needs `openssl`); writes `report.json` |
+| Cold first open of a 300-paragraph Page on Fast 3G and 4x CPU (non-gating) | `node scripts/local-sharing-e2e.mjs --cold-open` | Starts an isolated fixture behind a brotli proxy; writes `report.json` |
+| Standalone Vega-Lite chart renderer: CSP, tooltips, light/dark/phone, Maximize, `url()` blocking, hung-chart timeout, max-size timing (`PAGES_CHART_ENGINES=chromium,firefox,webkit`) | `node scripts/chart-smoke.mjs` | Builds and serves its own fixture page; no celld |
 | Rich comment tables and drafts | `PAGES_ORIGIN=http://localhost:9894 node scripts/rich-comments-smoke.mjs` | Uses the running Wordgard fixture |
 | Comments panel placement at 1920/1440/1100/800px | `PAGES_ORIGIN=http://localhost:9894 node scripts/comments-layout-smoke.mjs` | Uses the running Wordgard fixture |
-| Comment review at 1440/800px: whole messages through J and Resolve and next, the Page behind holds still under wheel and touch and keeps its scroll after Exit review, Resolve and next hovers green in light and dark | `PAGES_ORIGIN=http://localhost:9894 node scripts/comments-review-smoke.mjs` | Uses the running Wordgard fixture |
-| Schema-feature gate: a Page stamped with an unknown feature opens read-only and refuses tool writes | `PAGES_ORIGIN=http://localhost:9894 node scripts/schema-features-smoke.mjs` | Uses the running Wordgard fixture |
+| Comment review mode at 1440/800px: `J` navigation, Resolve and next, scroll lock and restore | `PAGES_ORIGIN=http://localhost:9894 node scripts/comments-review-smoke.mjs` | Uses the running Wordgard fixture |
+| Schema-feature gate: unknown feature opens read-only and refuses tool writes | `PAGES_ORIGIN=http://localhost:9894 node scripts/schema-features-smoke.mjs` | Uses the running Wordgard fixture |
 | Native table editing | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:tables` | Uses the running Wordgard fixture |
 | Passage edits and revision deltas | `PAGES_ORIGIN=http://localhost:9894 node scripts/passages-changes-smoke.mjs` | Uses the running Wordgard fixture |
 | Reload banner placement, browser presence labels, leaving a final code block, checkbox indent | `PAGES_ORIGIN=http://localhost:9894 node scripts/editor-chrome-smoke.mjs` | Uses the running Wordgard fixture |
-| Heading links: a fragment scrolls to its heading on a cold load, a warm reload and in a fresh context, and holds it while an image above draws late; `#notes-1` picks the second Notes; an unknown anchor stays at the top; table cell links go there read-only and through Go to section; the # copies the link `read_page` names; another Page's heading opens in place; Back and Forward restore each entry's position on the same Page and across Pages; scrolling during the settle, or scrolling the preview while sync is held, stops it | `PAGES_ORIGIN=http://localhost:9894 node scripts/heading-anchors-smoke.mjs` | Uses the running Wordgard fixture |
-| Links between Pages and to Projects: the Page glyph only on links to other Pages and the Project glyph on Project links, once per link however its text is formatted, the lock and accessible description on labeled links the reader can't open, typing and copying around it, the hover card's readable, unavailable and loading faces for Pages and Projects, crossing a formatted link without closing, Escape, Tab into a comment link's card and back, Open in place, chits for bare links (titles, unavailable, hover card, link menu, reveal on caret, paste, undo, paste as plain text, copy, comments), and screenshots light and dark at 1280 and 390 px | `PAGES_ORIGIN=http://localhost:9894 node scripts/page-links-smoke.mjs` | Uses the running Wordgard fixture |
+| Heading links: cold/warm scroll stability, late images, duplicate `#notes-1`, table links, copy `#`, cross-Page anchors, Back/Forward, and user-scroll cancel | `PAGES_ORIGIN=http://localhost:9894 node scripts/heading-anchors-smoke.mjs` | Uses the running Wordgard fixture |
+| Page and Project links: glyphs, locked inaccessible links, hover cards, bare-link chits, keyboard/paste/copy/undo flows, and light/dark screenshots at 1280 and 390 px | `PAGES_ORIGIN=http://localhost:9894 node scripts/page-links-smoke.mjs` | Uses the running Wordgard fixture |
 | Local creation and navigation | `PAGES_ORIGIN=http://localhost:9894 node scripts/navigation-smoke.mjs` | Uses the running Wordgard fixture |
 | Editing, comments, links, diagrams, and recovery | `PAGES_ORIGIN=http://localhost:9894 npm run smoke:editor` | Uses the running Wordgard fixture |
 | History growth and typing latency | `PAGES_ORIGIN=http://localhost:9894 node scripts/latency-smoke.mjs` | Uses the running Wordgard fixture |

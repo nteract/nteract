@@ -5,87 +5,63 @@
 
 ## Context
 
-`NotebookDoc`, `RuntimeStateDoc`, `CommsDoc`, and `CommentsDoc` sync between
-peers via typed-frame v4 over a Unix socket today, with same-UID trust covering
-attribution. We want to
-extend the same protocol to hosted multi-user rooms (Anaconda hosted,
-JupyterHub-backed compute, future deployments) without forking the wire format,
-and we want every change in the document to carry verifiable authorship.
+`NotebookDoc`, `RuntimeStateDoc`, `CommsDoc`, and `CommentsDoc` sync between local peers over a Unix socket using typed-frame v4 and same-UID trust. Extending that protocol to hosted multi-user rooms (Anaconda hosted, JupyterHub-backed compute, and future deployments) requires verifiable authorship without forking the wire format.
 
-The identity design is highly guided by these projects:
+Three existing systems shape this design:
 
-- **[`runtimed/intheloop`](https://github.com/runtimed/intheloop)** validates an OIDC bearer JWT via JWKS at WebSocket open. The validated `sub` claim becomes the actor identifier. No per-message re-validation.
-- **[`runtimed/anaconda`](https://github.com/runtimed/anaconda)** validates bearer tokens against Anaconda's userinfo endpoint and maps Anaconda scopes to runtimed scopes.
-- **JupyterHub** stamps spawned single-user servers via environment variables at launch, and the spawned server validates user identity by calling back to `/hub/api/user`. No `X-Forwarded-User` header is trusted.
+- **[`runtimed/intheloop`](https://github.com/runtimed/intheloop):** validates an OIDC bearer JWT via JWKS at WebSocket open. The validated `sub` claim becomes the actor identifier, with no per-message re-validation.
+- **[`runtimed/anaconda`](https://github.com/runtimed/anaconda):** validates bearer tokens against Anaconda's userinfo endpoint and maps Anaconda scopes to runtimed scopes.
+- **JupyterHub:** stamps spawned single-user servers via environment variables at launch. The server validates user identity by calling `/hub/api/user` and never trusts an `X-Forwarded-User` header.
 
-As a result, our rule is to never trust a locally-stamped identity claim. We validate against the upstream authority that issued the credential. The other modern concern is that nteract is very agent centric. A human user has many operators acting under their principal: the desktop app, a TUI, Agents enabled via MCP, the runtimed bindings for bespoke agent usage, and scheduled notebook jobs. All of those actors are legitimately authoring edits as that principal. Since, token wise, they operate as the user, attribution must distinguish operators while the trust gate enforces the user.
+Our core rule follows directly: never trust a locally stamped identity claim. Always validate credentials against the issuing upstream authority.
+
+nteract is also agent-centric. One human user often runs several operators under the same principal: Desktop, a TUI, MCP agents, `runtimed` bindings, and scheduled notebook jobs. All of them legitimately author edits as that user. Attribution must separate operators while the trust gate enforces the user principal.
 
 ## Decision 1: Two-layer actor labels
 
-Every Automerge actor label is a string of the form:
+Every Automerge actor label uses the format:
 
-```
+```text
 <principal>/<operator>
 ```
 
-- **Principal**: the authenticated entity. Format: `<scheme>:<scheme-specific-id>`. Examples: `local:quill`, `user:anaconda:550e8400-e29b-41d4-a716-446655440000`, `hub:hub.2i2c.mybinder.org:rgbkrk-notebooks-i28hqg97`, `system`.
-- **Operator**: connection- or import-scoped attribution for what acted under
-  the principal. Self-declared by the initiating client. Convention:
-  `<kind>[:<declared-label>]:<nonce>`. The optional label is opaque and may
-  describe an application, agent, model family, harness, runtime, or other
-  operator; it is not a closed product taxonomy. Examples: `desktop:7f3a`,
-  `tui:9d2b`, `agent:claude:s1`, `agent:codex:s2`,
-  `runtime:python:s4`.
+- **Principal:** the authenticated entity, formatted as `<scheme>:<scheme-specific-id>` (or the reserved literal `system`). Examples: `local:quill`, `user:anaconda:550e8400-e29b-41d4-a716-446655440000`, `hub:hub.2i2c.mybinder.org:rgbkrk-notebooks-i28hqg97`, `system`.
+- **Operator:** connection- or import-scoped attribution declared by the initiating client. Convention: `<kind>[:<declared-label>]:<nonce>`. Examples: `desktop:7f3a`, `tui:9d2b`, `agent:claude:s1`, `agent:codex:s2`, `runtime:python:s4`. The optional label is opaque and may name an application, agent, model family, harness, or runtime; it is not a closed taxonomy.
 
-Slash is the delimiter, taken on the first occurrence. If a principal ever contains a literal `/` it is percent-encoded; in practice this does not arise (UUIDs, hostnames, and usernames don't contain slashes).
+The first `/` is the delimiter. Any literal `/` inside a principal is percent-encoded; in practice, UUIDs, hostnames, and usernames do not contain slashes.
 
-An `ActorLabel` newtype with `principal()` and `operator()` accessors shall live in the new `nteract-identity` crate. Existing code that treats the label as an opaque string keeps working; code that wants the breakdown adopts the newtype.
+The `ActorLabel` newtype (with `principal()` and `operator()` accessors) lives in the `nteract-identity` crate. Code that treats labels as opaque strings keeps working, while code needing the breakdown adopts the newtype.
 
-The principal is the security boundary. It is verified by the room host's
-configured identity provider, namespace-qualified by that provider, and matched
-against the room ACL. The operator is connection-scoped attribution. The host
-may syntax-check it and may constrain accepted operator kinds for a credential
-class, but an operator string is not proof that the process is really Desktop,
-Codex, Claude, Python, or any other runtime. UI can display operator kind as an
-attribution hint; authorization must use the authenticated principal and scope.
+The principal is the security boundary. The room host's configured identity provider verifies it, qualifies it by namespace, and matches it against the room ACL.
 
-`agent` is an open operator kind, not a product-specific identity class. Any
-agent product, model-serving client, orchestration harness, MCP client, or
-bespoke integration may supply an agent operator descriptor under the same
-contract. Its declared label may identify whichever agent, model family,
-harness, or product is useful for attribution. Exact model ids, providers,
-versions, and richer provenance may remain separate non-authorizing
-audit/display metadata. Those claims are client-declared and advisory unless
-independently attested. None of those details becomes the principal or creates a
-special connection topology.
+The operator is connection-scoped attribution, not authentication. The host may syntax-check it and restrict allowed operator kinds per credential class, but an operator string never proves the process is truly Desktop, Codex, Claude, or Python. UIs may render operator kind as an attribution hint; authorization must use the authenticated principal and scope.
 
-Worked examples are at the end of this document.
+`agent` is an open operator kind, not a product-specific identity class:
+
+- Any agent product, model-serving client, orchestration harness, MCP client, or custom integration uses the same contract.
+- Its declared label names whichever agent, model family, harness, or product helps attribution.
+- Exact model IDs, providers, versions, and richer provenance stay in separate non-authorizing audit or display metadata. Those claims are advisory unless independently attested.
+- None of those fields becomes the principal or creates a special connection topology.
+
+See [Worked examples](#worked-examples) at the end of this document.
 
 ### Why two layers
 
-The principal is what the trust gate enforces. The operator is what attribution distinguishes. Conflating them, as today's `agent:claude:abc123` does, makes "Claude on quill's machine" indistinguishable from "Claude on someone else's machine" and forces the trust gate into either case-by-case rules or implicit trust of operator names.
+The principal drives the trust gate; the operator drives attribution. Legacy operator-only labels like `agent:claude:abc123` conflated the two, making "Claude on quill's machine" indistinguishable from "Claude on someone else's machine" and forcing case-by-case trust rules.
 
-This is also how Unix works. Operators are processes and principals are accounts.
-
-This also lends us to better audit logging.
+The split mirrors Unix: principals are accounts, and operators are processes. It also gives audit logs a clean security-vs-attribution boundary.
 
 ## Decision 2: Rooms are entities; access is a per-room ACL
 
-A notebook room is an entity in its own right, addressed by a room locator:
+A notebook room is an independent entity addressed by a room locator:
 
-- `local-daemon:<uuid>` or `local-daemon:<path>` for rooms served by the local
-  daemon.
+- `local-daemon:<uuid>` or `local-daemon:<path>` for rooms served by the local daemon.
 - `runtimed.com/n/<uuid>` (or similar) for Anaconda-hosted rooms.
-- `hub.example.com/<user>/n/<uuid>` only when that Hub deployment explicitly
-  runs the room host. A JupyterHub runtime sidecar attached to an
-  Anaconda-hosted room is not encoded in the room locator.
+- `hub.example.com/<user>/n/<uuid>` only when that Hub deployment explicitly runs the room host. A JupyterHub runtime sidecar attached to an Anaconda-hosted room is not encoded in the locator.
 
-The locator says *where to reach the room host*, not *who can access it*, where
-compute runs, or which blob store backs output bytes. The room host is the live
-document authority for `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc`. Access
-is governed by a **per-room ACL** that maps principals to scopes.
+The locator states *where to reach the room host*, not *who can access it*, where compute runs, or which blob store holds outputs. The room host is the live document authority for `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc`. A **per-room ACL** maps principals to scopes:
 
-```
+```yaml
 room: runtimed.com/n/9f3a...
 acl:
   - principal: user:anaconda:550e...           scope: owner
@@ -93,119 +69,101 @@ acl:
   - principal: hub:hub.2i2c.org:rgbkrk         scope: viewer
 ```
 
-The ACL can reference principals from any identity provider the host is configured to validate against. v1 deployments will typically use a single IdP per host (Anaconda hosted only validates Anaconda credentials, etc.), but that is convention, not a protocol constraint. Cross-provider federation means the room host validates each credential with its configured upstream provider and produces a namespace-qualified principal in the same ACL space. It does not mean Desktop or a browser translates local display identity into a remote principal on its own.
+An ACL can reference principals from any identity provider (IdP) the host validates against. v1 deployments typically use one IdP per host by convention, not protocol constraint. Cross-provider federation means the room host validates each credential against its configured upstream provider and produces a namespace-qualified principal in the same ACL space. Desktop and browsers never translate local display identity into a remote principal on their own.
 
-Three properties fall out:
+Three properties follow:
 
-1. **Room locators are stable across ownership changes.** Changing the owner
-   principal mutates the ACL, not the locator. Existing links keep working.
-2. **Rooms can mix principals from multiple IdPs** when the host is configured to validate more than one. Cross-IdP collaboration (e.g., an Anaconda-hosted room shared with a JupyterHub user) is a deployment decision, not a protocol invention.
-3. **Future organizational principals** (`org:acme:engineering`, group memberships, etc.) slot into the ACL as additional principal kinds without changing the wire or the validator.
+1. **Locators survive ownership changes.** Changing the owner mutates the ACL, not the locator, so existing links keep working.
+2. **Rooms can mix principals across IdPs.** Cross-IdP collaboration (for example, sharing an Anaconda-hosted room with a JupyterHub user) is a deployment choice, not a protocol change.
+3. **Organizational principals fit cleanly later.** Groups or orgs (such as `org:acme:engineering`) slot into the ACL as new principal kinds without wire or validator changes.
 
 ### How authentication interacts with the ACL
 
-1. Connection opens. Listener extracts a credential; the IdP validates it and yields a principal.
-2. Room-host looks up the principal in the ACL.
-3. If the principal is in the ACL, the connection inherits the ACL-stated scope. If not, the connection is rejected. An unauthenticated request may receive anonymous `viewer` scope when the room has a public-read ACL entry.
-4. The connection's `AuthenticatedConnection` carries that principal and scope for the life of the socket.
+1. A connection opens. The listener extracts a credential; the IdP validates it and yields a principal.
+2. The room host looks up that principal in the room ACL.
+3. If present, the connection inherits the ACL scope; otherwise it is rejected. Unauthenticated requests may receive anonymous `viewer` scope only when the room has a public-read ACL entry.
+4. `AuthenticatedConnection` carries that principal and scope for the socket's lifetime.
 
-What this changes from the older framing: rooms are no longer implicitly scoped to one IdP's principal space. They authenticate principals from whatever IdPs the host validates against, and the per-room ACL is the source of truth for who can do what. v1 enforces per-frame actor labels with a clone-preview validator before applying inbound `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc` sync frames. The Automerge fork patch tracked in `docs/memos/automerge-fork-patches.md` remains the intended lower-cost replacement for that validator.
+Rooms are no longer scoped to one IdP's principal space; the per-room ACL is the single source of truth. In v1, the host enforces per-frame actor labels with a clone-preview validator before applying inbound `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc` sync frames. The Automerge fork patch in `docs/memos/automerge-fork-patches.md` is the planned lower-cost replacement.
 
 ### Federated principal display
 
-The principal identifier is stable, namespace-qualified, and verified. Display
-metadata is separate and advisory. A local Desktop room might project
-`local:kylekelley` with display label `Kyle Kelley`; an Anaconda-hosted room
-might project `user:anaconda:550e...` with the same display label. Those are
-different principals unless a future account-linking layer explicitly relates
-them.
+The principal ID is stable, namespace-qualified, and verified. Display metadata is separate and advisory. A local Desktop room may project `local:kylekelley` as `Kyle Kelley`, while an Anaconda-hosted room projects `user:anaconda:550e...` with the same display name. Those remain distinct principals unless a future account-linking layer explicitly joins them.
 
-Desktop remote rooms consume the remote room host's stamped identity projection.
-The local daemon/socket identity proves that the Desktop process can talk to the
-local runtime, but the remote room principal comes from the remote service
-credential, such as an API key, OIDC token, or hosted service session. Shared UI
-must therefore render the host-projected principal, provider namespace, and
-display label without assuming cloud browser auth is the only remote identity
-model.
+Desktop remote rooms consume the remote host's stamped identity projection. Local daemon credentials prove Desktop can reach the local runtime, while the remote principal comes from the remote service credential (API key, OIDC token, or hosted session). Shared UI must render the host-projected principal, provider namespace, and display label without assuming browser cloud auth is the only remote identity model.
 
 ### ACL mechanics
 
-The minimum v1 ACL is a flat set of rows keyed by `(room, subject_kind, subject, scope)`. The hosted Worker prototype persists those rows in D1 as `notebook_acl`. Owner-scoped HTTP requests can inspect, grant, and revoke individual rows; anonymous public read is represented as a normal row with `subject_kind = public`, `subject = anonymous`, and `scope = viewer`. Public rows cannot grant write scopes, and the prototype rejects removal of the final owner row.
+The v1 ACL is a flat table keyed by `(room, subject_kind, subject, scope)`. The hosted Worker prototype persists these rows in D1 as `notebook_acl`:
 
-The protocol shape locked here is: rooms have ACLs, ACLs reference principals or explicit public-read subjects, principals authenticate against the host's configured IdPs, and the room ACL is the source of truth for the connection scope. Inheritance from a containing org, group expansion, owner-transfer workflow, audit events, and Zanzibar/Authzed-style relationship evaluation are future layers on top of the flat ACL.
+- Owner-scoped HTTP requests inspect, grant, and revoke individual rows.
+- Anonymous public read uses a normal row: `subject_kind = public`, `subject = anonymous`, `scope = viewer`.
+- Public rows cannot grant write scopes.
+- Removing the final owner row is rejected.
+
+The locked protocol shape is: rooms own ACLs, ACLs reference principals or explicit public-read subjects, hosts validate principals against configured IdPs, and the ACL governs connection scope. Org inheritance, group expansion, owner transfer, audit events, and Zanzibar/Authzed-style relationship evaluation are future layers.
 
 ## Decision 3: Authentication at connect, scope checks per frame
 
-Authentication is connection-scoped. The IdP (Identity Provider) is consulted at WebSocket open, never on the sync hot path.
+Authentication is connection-scoped. The IdP is consulted at WebSocket open, never on the sync hot path.
 
-1. Connection opens. Listener extracts the credential (bearer JWT for OIDC/Anaconda, cookie/OAuth token for JupyterHub, peer creds for Unix socket).
-2. Identity provider validates the credential. One round-trip (JWKS fetch for OIDC is cached; `/hub/api/user` for JupyterHub; userinfo for Anaconda).
-3. Room-host looks the validated principal up in the room's ACL. If present, the connection inherits the ACL scope; if absent, the connection is rejected. Unauthenticated requests may receive anonymous `viewer` scope when the room has a public-read ACL entry, such as the D1 public-read row defined in `hosted-room-authorization.md` for hosted rooms.
-4. Validation yields an `AuthenticatedConnection { principal, scope, allowed_operator_kinds }` in server memory, scoped to this socket.
-5. Handshake response includes the assembled actor label so the client knows what to author as.
-6. Every subsequent frame is checked against `AuthenticatedConnection.scope` for **scope-level legality** at the frame layer (frame type and emptiness of `Message.changes`). Inbound frames that carry changes are also applied to a cloned document first so the room-host can extract new change actors and reject principal forgery before mutating the real room document.
+1. A connection opens. The listener extracts the credential (bearer JWT for OIDC/Anaconda, cookie or OAuth token for JupyterHub, peer credentials for a Unix socket).
+2. The IdP validates the credential in one round-trip (cached JWKS for OIDC, `/hub/api/user` for JupyterHub, userinfo for Anaconda).
+3. The room host checks the validated principal against the room ACL. Unauthenticated requests get anonymous `viewer` scope only if a public-read entry exists (such as the D1 public-read row in `hosted-room-authorization.md`).
+4. Validation yields an in-memory `AuthenticatedConnection { principal, scope, allowed_operator_kinds }` scoped to that socket.
+5. The handshake response returns the assembled actor label so the client knows what to author as.
+6. Every subsequent frame is checked against `AuthenticatedConnection.scope` for frame type and `Message.changes` emptiness. Non-empty inbound change frames also pass through the clone-preview validator to reject principal forgery before mutating the real document.
 
-If the credential expires while connected, the connection stays open. Revocation is future work: a server-pushed `SESSION_CONTROL` close frame ends affected connections when an out-of-band signal (admin revoke, plan downgrade, sign-out) arrives. v1 assumes that anyone who authenticated continues to have access for the connection's lifetime.
+If a credential expires mid-connection, the socket stays open in v1. Out-of-band revocation (admin revoke, plan downgrade, sign-out) is future work via a server-pushed `SESSION_CONTROL` close frame.
 
 ### What `AuthenticatedConnection` is and is not
 
-`AuthenticatedConnection` is **server-side in-memory state**, owned by the room-host, scoped to exactly one WebSocket (or Unix-socket) connection. It is not a token. It is not transferable. It cannot be presented by a client. It is created when a socket completes authentication and dropped when that socket closes.
+`AuthenticatedConnection` is **server-side in-memory state**, owned by the room host and bound to one WebSocket or Unix-socket connection. It is neither a token nor transferable, and clients cannot present it. It is created when auth succeeds and dropped on socket close.
 
-Bearer-token replay is a separate, well-known property of bearer auth: if a user's JWT is stolen, the thief can open a new socket and obtain their own `AuthenticatedConnection`. The mitigation is at the credential layer, not the connection layer (e.g., DPoP / proof-of-possession tokens, short token lifetimes, mTLS for system-to-system). v1 inherits the bearer-token threat model; tightening it is future work.
+Bearer-token replay is a separate, known property of bearer auth: a stolen JWT lets an attacker open a new socket and obtain their own `AuthenticatedConnection`. Mitigating replay belongs to the credential layer (DPoP / proof-of-possession tokens, short lifetimes, or mTLS for system-to-system links). v1 inherits the standard bearer-token threat model.
 
 ### Per-frame sync checks
 
-The room-host enforces scope at frame ingress by inspecting frame type and emptiness:
+The room host enforces scope at frame ingress using frame type and change emptiness:
 
-- **viewer** scope: any inbound document sync frame (`0x00`, `0x05`, `0x09`, or `0x0a`) with non-empty `Message.changes` is rejected. Empty negotiation frames (heads/have/need with `ChunkList::empty()`) pass.
-- **runtime_peer** scope: any inbound `0x00` (NotebookDoc) frame with non-empty changes is rejected. `RuntimeStateDoc` writes are allowed only for runtime progress/output over already accepted execution entries, lifecycle state, comm topology, and output routing; trust, environment, path, save metadata, and project context remain room-host/daemon-owned. Execution intent creation still goes through `ExecuteCell`/`RunAllCells`. In the hosted prototype, runtime authorship uses a `RuntimeStatePeerHandle` surface separate from the browser `NotebookHandle`, so a runtime peer can publish execution progress/output state without acquiring notebook editing APIs.
-- **editor** scope: `0x00` NotebookDoc edits are allowed only within the room host's current document-write policy. `0x09` CommsDoc edits are allowed for mutable widget comm state, with kernel forwarding gated by RuntimeStateDoc comm topology. `0x0a` CommentsDoc edits are allowed; ingress validates change actor labels against the connection principal. `0x05` RuntimeStateDoc edits are rejected for editor scope; execution, queue, kernel, environment, output, comm topology, and schema/root changes are runtime-owned.
-- **owner** scope: same frame-level document rules as `editor`, plus ACL-mutation requests are honored. Owner does not imply arbitrary RuntimeStateDoc authorship; runtime lifecycle, execution progress, and output state still require `runtime_peer`, while execution intent still requires the request API.
+- **`viewer`:** rejects any inbound document sync frame (`0x00`, `0x05`, `0x09`, or `0x0a`) with non-empty `Message.changes`. Empty negotiation frames (`ChunkList::empty()`) pass.
+- **`runtime_peer`:** rejects non-empty `0x00` (`NotebookDoc`) frames. Allows `RuntimeStateDoc` writes only for runtime progress and output on already accepted executions, lifecycle state, comm topology, and output routing. Trust, environment, path, save metadata, and project context stay room-host/daemon-owned, and execution intent still goes through `ExecuteCell`/`RunAllCells`. In the hosted prototype, runtime peers use `RuntimeStatePeerHandle` rather than the browser `NotebookHandle`, keeping notebook editing APIs separate.
+- **`editor`:** allows `0x00` (`NotebookDoc`) edits within the host's document-write policy, `0x09` (`CommsDoc`) edits for mutable widget comm state (with kernel forwarding gated by `RuntimeStateDoc` comm topology), and `0x0a` (`CommentsDoc`) edits (validating change actors against the connection principal). Rejects `0x05` (`RuntimeStateDoc`) edits; execution, queue, kernel, environment, output, comm topology, and schema/root changes remain runtime-owned.
+- **`owner`:** same frame-level document rules as `editor`, plus ACL-mutation requests. Owner scope does not grant arbitrary `RuntimeStateDoc` authorship; runtime progress/output still requires `runtime_peer`, and execution intent still requires the request API.
 
-For non-empty `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc` sync messages, the room-host also performs a v1 clone-preview validator: clone the current Automerge doc and sync state, apply the incoming message to the clone, extract the actors in the newly applied changes, and reject the frame if any new change's principal differs from the connection's authenticated principal. The real room document is mutated only after this preview succeeds.
+For every non-empty `NotebookDoc`, `RuntimeStateDoc`, or `CommsDoc` sync message, v1 runs a clone-preview validator:
 
-This closes live principal forgery for v1, but it is intentionally a stopgap. It deep-clones the document and applies each non-empty inbound message twice, which is most expensive on the high-churn `RuntimeStateDoc` path. `docs/memos/automerge-fork-patches.md` Patch 1 (`sync_message_new_changes`) is the planned v2 replacement: inspect the new changes from a sync message without cloning or applying to a throwaway document.
+1. Clone the current Automerge document and sync state.
+2. Apply the inbound sync message to the clone.
+3. Extract actor labels from the newly applied changes.
+4. Reject the frame if any new change's principal differs from `AuthenticatedConnection.principal`.
+5. Mutate the real room document only after validation passes.
+
+This stopgap closes live principal forgery in v1 at the cost of cloning and double-applying every non-empty inbound message, most noticeable on high-churn `RuntimeStateDoc` traffic. Patch 1 (`sync_message_new_changes`) in `docs/memos/automerge-fork-patches.md` is the planned v2 replacement that inspects incoming changes without cloning.
 
 ### Schema-seed actors are canonical, with principal-prefixed labels as target
 
-The frozen genesis actors today are canonical seed labels, but they are not yet
-principal-prefixed:
+The current frozen genesis actors are canonical seed labels, not yet principal-prefixed:
 
 - `nteract:notebook-schema:v5` (`crates/notebook-doc/src/lib.rs`)
 - `nteract:runtime-state-schema:v2` (`crates/runtime-doc/src/doc.rs`)
 - `nteract:comms-doc-schema:v1` (`crates/runtime-doc/src/comms.rs`)
 
-Those seed labels are hash-pinned into the genesis bytes, so changing them is a
-schema/genesis decision rather than a display-only rename. The target actor
-language for future schema bumps remains `system/schema:notebook:vN` and
-`system/schema:runtime-state:vN`, so schema-authored changes become first-class
-within the principal model. Existing notebooks keep historical labels in the
-immutable DAG; new seed actor labels require new genesis bytes from day one.
+Because genesis bytes hash-pin these labels, changing them requires a schema/genesis bump rather than a display-only rename. Future schema bumps target `system/schema:notebook:vN` and `system/schema:runtime-state:vN` so schema-authored changes fit natively in the principal model. Existing notebooks keep historical seed labels in their immutable DAGs; new seed labels apply only from fresh genesis bytes.
 
 ### Presence rewrite and actor projection
 
-Presence frames carry `peer_id`, `peer_label`, and `actor_label` (the last two optional, per `crates/notebook-doc/src/presence.rs:161, 200`). Legacy clients may present all three, but the room host is the authority on the peer ID and principal projection. On ingress:
+Current presence frames carry `peer_id`, optional `peer_label`, and optional `actor_label` (`crates/notebook-doc/src/presence.rs`). The room host is the authority on peer ID and principal projection. On ingress:
 
-- **`actor_label` present**: overwrite the principal prefix with the connection's authenticated principal. The operator suffix passes through unchanged.
-- **`actor_label` missing**: synthesize one from the connection's authenticated principal plus the connection-level operator declared at handshake (or, if the client never declared one, a synthetic operator built from the listener's connection id, e.g., `unknown:<connection-uuid>`). The synthesized label always has the correct principal.
-- **`actor_label` malformed** (no `/`, principal-only, or unrecognized shape): treat as missing. Synthesize as above.
-- **`peer_label` (display name)**: may be passed through, sanitized, or replaced
-  by the host with a display label derived from authenticated profile metadata.
-  It is UI text, not authority.
-- **`peer_id`**: replaced or confirmed by the room host's transport-scoped peer
-  ID before broadcast. It is connection identity, not a user identity.
+- **`actor_label` present:** overwrite the principal prefix with the connection's authenticated principal; keep the operator suffix.
+- **`actor_label` missing:** synthesize one from the authenticated principal plus the handshake-declared operator (or a fallback such as `unknown:<connection-uuid>` built from the listener connection ID).
+- **`actor_label` malformed** (no `/`, principal-only, or unrecognized shape): treat as missing and synthesize as above.
+- **`peer_label` (display name):** pass through, sanitize, or replace with a display label from authenticated profile metadata. It is UI text, not authority.
+- **`peer_id`:** replace or confirm with the room host's transport-scoped peer ID before broadcast. It identifies the connection, not the user.
 
-The principal prefix is always server-controlled; no presence ingress path lets a client choose what principal it appears as. Operator and display name are client-declared unless the host replaces them with connection-derived defaults.
+No presence ingress path lets a client choose its displayed principal. While the wire carries only those three fields, the room host still rewrites them on ingress and shared UI derives a temporary projection from `actor_label`.
 
-The current presence protocol carries only `peer_id`, optional `peer_label`,
-and optional `actor_label`. The room host still stamps or rewrites those fields
-on ingress, and shared UI can derive a temporary projection from the durable
-label while the wire shape catches up.
-
-The target presence protocol keeps `actor_label` as the stable attribution key
-and adds a compact, host-stamped actor projection to presence `Update` and
-`Snapshot` messages so shared UI does not parse raw labels as its primary
-identity source:
+The target presence protocol keeps `actor_label` as the stable attribution key and adds a compact host-stamped actor projection to `Update` and `Snapshot` messages so UIs stop parsing raw strings as their primary identity source:
 
 ```ts
 interface PresenceActorProjection {
@@ -228,49 +186,24 @@ interface PresenceActorProjection {
 }
 ```
 
-`actorLabel` remains the exact `<principal>/<operator>` label used for CRDT
-attribution and color matching. The nested `principal` is verified host state.
-The nested `operator` is accepted attribution for this connection. Display text
-such as "Codex for Kyle Kelley" is one rendering of a generic agent operator
-plus a principal. It does not require a separate `on_behalf_of` field unless a
-future feature models delegation chains between multiple principals.
+`actorLabel` remains the exact `<principal>/<operator>` key for CRDT attribution and color matching. `principal` is verified host state; `operator` is accepted connection attribution. Display strings like `"Codex for Kyle Kelley"` render an agent operator plus a principal without needing an `on_behalf_of` field unless a future feature models multi-principal delegation chains.
 
-Projection scope does not make a viewer less of a sync participant. A `viewer`
-or read-only peer still receives room changes, sends empty sync negotiation
-frames, publishes presence, and consumes the same structured actor projection as
-editors and owners. Scope only constrains writes and mutating requests at the
-server boundary.
+Scope does not exclude a viewer from syncing. Authenticated `viewer` peers still receive room updates, send empty negotiation frames, publish presence, and consume the structured actor projection; scope only blocks writes and mutating requests.
 
-The current hosted public-read policy has one important product exception:
-anonymous public viewers are local or aggregate presence only. Authenticated
-read-only viewers remain full sync and presence participants, but anonymous
-public viewer cursor/selection frames are acknowledged locally and not
-broadcast as named collaborators unless a future product decision changes that
-policy.
+One product exception applies to hosted public read: anonymous public viewers have local or aggregate presence only. Their cursor and selection frames are acknowledged locally and are not broadcast as named collaborators unless product policy changes.
 
-`principal.source.provider` names the principal authority used for federation
-and display. It is not the credential transport. For example, a browser OAuth
-session, OIDC bearer token, or API key that authenticates an Anaconda user all
-project as provider `anaconda`; the OAuth/API-key detail belongs to the
-credential layer described below.
-
-Do not confuse this with the hosted prototype's `identity_provider` field on
-`cloud_room_ready`: that field is current auth-validator metadata and may say
-`anaconda-api-key`. Shared UI should derive principal authority from the actor
-principal namespace, or from a future explicit principal-authority field, rather
-than treating credential transport metadata as `NotebookActorSourceProvider`.
+`principal.source.provider` names the principal authority for federation and display, never the credential transport. A browser OAuth session, OIDC bearer token, and API key for an Anaconda user all project provider `anaconda`; transport details belong to the credential layer. Do not confuse this with the hosted prototype's `identity_provider` field on `cloud_room_ready`, which reports auth-validator metadata such as `anaconda-api-key`. Shared UI should derive `NotebookActorSourceProvider` from the principal namespace (or a future explicit authority field), not credential-transport metadata.
 
 ## Decision 4: Credentials and identity providers are separate concerns
 
-Two concepts, two surfaces:
+Two concepts live on separate surfaces:
 
-- **Identity providers** are server-side. One closed enum in the `nteract-identity` crate. They accept a normalized `Credential` and return an `AuthenticatedUser`.
-- **Credentials** are everything else: the client-side keyring that stores them and the listener-side extractor that pulls them out of the upgrade request. Both sit outside the providers.
+- **Identity providers (server-side):** one closed enum in `nteract-identity` that accepts a normalized `Credential` and returns an `AuthenticatedUser`.
+- **Credentials (client- and listener-side):** the client keyring that stores credentials and the listener extractor that pulls them from upgrade requests. Both sit outside the providers.
 
+### Server-side enum dispatch (`nteract-identity`)
 
-**Server-side: enum dispatch** (in `nteract-identity`)
-
-In order to make this easy to work with we'll have a fixed set of providers: Local, OIDC, and JupyterHub. OIDC covers a broad collection of issuers (Anaconda, Clerk, Auth0, Okta, WorkOS, generic OIDC) through configuration alone. The enum makes "which providers this build knows about" explicit in the type system, costs nothing at runtime, and avoids the `dyn`-incompatibility of Return-Position-`impl Trait`-in-Traits.
+`nteract-identity` ships a fixed set of providers: `Local`, `Oidc`, and `JupyterHub`. `Oidc` covers Anaconda, Clerk, Auth0, Okta, WorkOS, and generic OIDC via configuration alone. Enum dispatch makes supported providers explicit in the type system, avoids runtime overhead, and avoids `dyn`-incompatibility with Return-Position `impl Trait` in Traits (RPITIT):
 
 ```rust
 pub enum IdentityProvider {
@@ -295,25 +228,21 @@ impl IdentityProvider {
 }
 ```
 
-Each variant's inner provider exposes its own `authenticate` as RPITIT (Return-Position impl Trait In Traits) with `+ Send`, matching the repo's existing convention (`crates/runtimed/src/kernel_connection.rs:80-98`). No `async_trait` boxing.
+Each inner provider exposes `authenticate` using RPITIT with `+ Send`, matching the repository convention (`crates/runtimed/src/kernel_connection.rs`) with no `async_trait` boxing.
 
-**Everything lives in one crate, `nteract-identity`.** Providers are modules, not separate crates:
+Providers live as modules inside the single `nteract-identity` crate:
 
-```
-nteract-identity/
-+-- lib.rs            # ActorLabel, Principal, AuthenticatedUser, AuthError, Credential, IdentityProvider enum
-+-- local.rs          # LocalProvider (peer creds)
+```text
+crates/nteract-identity/src/
++-- lib.rs            # ActorLabel, Principal, AuthenticatedUser, AuthError, Credential, IdentityProvider
++-- local.rs          # LocalProvider (peer credentials)
 +-- oidc.rs           # OidcProvider (JWKS bearer; configurable for Anaconda, Clerk, Auth0, Okta, WorkOS, generic OIDC)
-\-- jupyterhub.rs     # JupyterHubProvider placeholder, pending /hub/api/user validation
+\-- jupyterhub.rs     # JupyterHubProvider placeholder (pending /hub/api/user validation)
 ```
 
-Multi-crate decomposition (`nteract-identity-local`, `-oidc`, `-jupyterhub`) would put `Credential`, `AuthenticatedUser`, and `AuthError` in `nteract-identity` while the implementor crates also need those types; the enum then has to depend back on its implementors, producing a Cargo cycle. One crate avoids it.
+Splitting providers into separate crates (`nteract-identity-local`, `-oidc`, `-jupyterhub`) would create a Cargo cycle: each implementor needs `Credential`, `AuthenticatedUser`, and `AuthError` from `nteract-identity`, while `IdentityProvider` depends back on every implementor. Keeping them in one crate avoids the cycle.
 
-Provider-specific dependencies are gated by Cargo features so a build that only
-needs `LocalProvider` does not pull them in. The current crate uses
-`jsonwebtoken` for OIDC/JWKS validation. `JupyterHubProvider` is feature-gated
-and present in the dispatch enum, but still returns
-`ProviderUnavailable("jupyterhub")` until the Hub API validation path lands:
+Cargo features gate provider-specific dependencies so builds needing only `LocalProvider` stay lean. `OidcProvider` uses `jsonwebtoken` for JWKS validation. `JupyterHubProvider` is feature-gated in the enum and currently returns `AuthError::ProviderUnavailable("jupyterhub")` until Hub API validation lands:
 
 ```toml
 [features]
@@ -323,39 +252,32 @@ oidc = ["dep:jsonwebtoken"]
 jupyterhub = []
 ```
 
-Implemented provider modules are testable in isolation against fixture
-credentials and fake IdP material. The crate has no dependency on `runtimed`,
-`kernel-env`, or any daemon internals.
+Each implemented provider tests in isolation against fixture credentials and fake IdP material. `nteract-identity` has no dependency on `runtimed`, `kernel-env`, or daemon internals.
 
-**Client-side: `Credential` keyring**
+### Client-side `Credential` keyring (planned target state)
 
-A small client-side keyring (proposed crate: `nteract-credentials`) holds per-host credentials. Stored encrypted at rest, looked up by room host when the daemon (or any client) needs to authenticate into a remote room. Separate from the IdP because the IdP doesn't care where the credential came from; the keyring doesn't care how it's validated.
+A dedicated client-side keyring crate (planned as `nteract-credentials`, not yet implemented) will store per-host credentials encrypted at rest and look them up by room host when the daemon or another client authenticates to a remote room. Keeping it separate ensures providers never care where credentials originate, and the keyring never cares how they are validated.
 
-The desktop daemon's keyring grows entries like:
+Target daemon keyring entries:
 
-```
+```text
 runtimed.com           -> AnacondaApiKey { token: "..." }
 hub.example.com        -> JupyterHubToken { token: "...", expires_at: ... }
 local-socket           -> (none, peer creds used)
 ```
 
-A user adds an entry once (paste a key, OAuth flow, JupyterHub session forward) and any subsequent room-open against that host uses it.
+A user configures a host once (pasted key, OAuth flow, or JupyterHub session forward), and subsequent room opens against that host reuse it.
 
 ### Credential presentation on the WebSocket upgrade
 
-Browsers cannot set custom request headers on `new WebSocket(url, subprotocols)`. The credential has to arrive via one of these mechanisms. Parsing each of them is a **listener-side concern**, not a provider concern: the listener (Cloudflare Worker, Unix socket, etc.) inspects the upgrade request and produces a normalized `Credential` that the provider then validates.
+Browsers cannot attach custom headers to `new WebSocket(url, subprotocols)`. Credentials therefore arrive via one of four transports. Parsing them is a **listener-side concern**: the listener (Cloudflare Worker, Unix socket, etc.) reads the upgrade request and passes a normalized `Credential` to the provider.
 
-`docs/adr/hosted-credential-transport.md` is the deployment-level ADR
-for choosing among these transports. This section only records the base
-credential vocabulary.
+`docs/adr/hosted-credential-transport.md` governs deployment-level transport selection; this section records the base vocabulary:
 
-1. **Subprotocol smuggling** (the Kubernetes pattern). Client opens `new WebSocket(url, ["nteract-bearer.<base64url-token>", "nteract.v4"])`. Server reads `Sec-WebSocket-Protocol`, peels off the credential element, validates the decoded token, and echoes back only `nteract.v4` as the selected subprotocol. The token is not in the URL, not in the referer, not in server access logs. The token is still visible to any JS in the browser that can construct a WebSocket, which is the same trust boundary every other credential mechanism shares.
-
-2. **One-time ticket**. Client POSTs `/api/session-tickets` with the real bearer (header-set, normal CORS). Server returns a short-lived (~10s, single-use) ticket. Client opens `wss://host/n/<id>?ticket=<one-time>`. Server validates the ticket, consumes it, and the connection is authenticated as the original user. The real bearer never appears in the WebSocket URL. Costs one extra round trip; the server tracks outstanding tickets in memory or D1.
-
-3. **Cookie**. Browsers send cookies automatically on the WS upgrade when same-site. This is deployment-specific for providers such as JupyterHub because provider cookies also bring CSRF and origin handling.
-
-4. **`Authorization` header** (system-to-system only). Native clients (desktop daemon, agents, CLI) set `Authorization: Bearer ...` directly on the upgrade request. Browsers cannot. This is the trivial path for the desktop daemon connecting to an Anaconda-hosted or JupyterHub-hosted room on the user's behalf.
+1. **Subprotocol smuggling (Kubernetes pattern):** the client opens `new WebSocket(url, ["nteract-bearer.<base64url-token>", "nteract.v4"])`. The server strips and validates the bearer element and echoes only `nteract.v4`. The token stays out of URLs, referers, and access logs, though browser JS shares the same trust boundary as any browser-held credential.
+2. **One-time ticket:** the client POSTs `/api/session-tickets` with a header-set bearer token over normal CORS and receives a short-lived (~10 s, single-use) ticket, then connects to `wss://host/n/<id>?ticket=<one-time>`. The server validates and consumes the ticket; the real bearer never enters the WebSocket URL. Costs one extra round-trip and requires server-side tracking (in memory or D1).
+3. **Cookie:** browsers send same-site cookies automatically on upgrade. This is deployment-specific (such as JupyterHub) because cookie auth requires explicit CSRF and origin handling.
+4. **`Authorization` header (system-to-system only):** native clients (desktop daemon, agents, CLI) send `Authorization: Bearer ...` directly on the upgrade request. Browsers cannot use this path.
 
 Base options by provider:
 
@@ -365,320 +287,202 @@ Base options by provider:
 | `JupyterHub` | Hub-issued token via subprotocol or ticket; cookie only when the deployment owns CSRF/origin policy | `Authorization` header with Hub-issued token |
 | `Local` | N/A (no WS) | Unix peer creds |
 
-The Worker DO extracts the credential at upgrade time, validates via the configured `IdentityProvider`, and rejects the upgrade with HTTP 401 (or closes immediately with a typed close code) if validation fails. After upgrade, the WebSocket carries no further auth; per-frame validation runs against the in-memory `AuthenticatedConnection`.
+At upgrade time, the Worker Durable Object extracts the credential, validates it through `IdentityProvider`, and rejects failures with HTTP 401 (or an immediate typed close code). After upgrade, per-frame checks run solely against the in-memory `AuthenticatedConnection`.
 
-The `Credential` enum therefore covers all of these. The current
-implementation names local peer credentials explicitly and includes a
-`OneTimeTicket` variant for listener-side ticket consumption:
+`nteract-identity` models all four transports in `Credential`:
 
 ```rust
 pub enum Credential {
-    BearerToken(String),     // from subprotocol, ticket exchange, or Authorization header
-    Cookie(String),          // from upgrade-request cookies
-    OneTimeTicket(String),   // short-lived ticket issued by the listener/host
+    BearerToken(String),            // from subprotocol, ticket exchange, or Authorization header
+    Cookie(String),                 // from upgrade-request cookies
+    OneTimeTicket(String),          // short-lived ticket issued by the listener/host
     LocalPeer(LocalPeerCredential), // listener-verified local peer credentials
 }
 ```
 
-The extraction logic (parse subprotocol header, look up ticket, read cookie, query peer creds) is listener-side concerns; it does not belong in the providers themselves. A `CredentialExtractor` trait sits on the listener implementation and feeds the provider a normalized `Credential`.
+Extraction (parsing subprotocols, consuming tickets, reading cookies, querying peer creds) belongs to a listener-side `CredentialExtractor` trait, not the identity providers.
 
 ## Decision 5: Four scopes
 
-A connection carries exactly one scope, determined at authentication time. The four scopes are:
+Every connection carries exactly one scope set at authentication time:
 
-- `viewer` - read-only. May send and receive sync, presence, and session-control frames, **but inbound sync frames must carry no changes**. Automerge sync is bidirectional even when the client never authors: a read-only consumer still negotiates heads/have/need with the server, applies incoming changes from the server, and produces reply frames through the normal `notebook-sync` task loop. The trust gate rejects any inbound `0x00`, `0x05`, `0x09`, or `0x0a` frame from a viewer connection whose `Message.changes` is non-empty; empty negotiation frames pass. Request frames are limited to read-only operations. The server's outbound to the viewer is unrestricted.
-  - Note on the upstream Automerge `read_only` API: `State::new_read_only()` and `MessageFlags::READ_ONLY` are **not** the client-side viewer primitive. Upstream `read_only` means "the holder of this state will not apply incoming changes but will still send its own" (publish-only semantics; see `rust/automerge/src/sync.rs:408` and `rust/automerge/src/sync/state.rs:65-67`). A viewer client that uses `State::new_read_only()` will not apply live room updates. Hosted room hosts may still use `State::new_read_only()` for their per-viewer peer state as an optimization and protocol hint: the host will not apply that peer's changes while still sending room changes to the peer. That is not the authorization boundary; the server must still reject any viewer `Message.changes` explicitly.
-- `editor` - live edit on `NotebookDoc` within the room host's document-write policy, plus write access to `CommsDoc` for mutable widget comm state. RuntimeStateDoc comm topology remains the membership authority for kernel forwarding. Editor `RuntimeStateDoc` writes are rejected. Editors cannot create executions, manipulate queue/kernel/environment state, rewrite output routing, create/remove comm topology, or add hidden RuntimeStateDoc root keys.
-- `runtime_peer` - permitted to write `RuntimeStateDoc` execution progress, output, lifecycle, and comm topology state for already accepted executions. It cannot create execution intent or edit `NotebookDoc`. Used by future remote-runtime services and by JupyterHub-spawned runtime sidecars/services when they connect a kernel. The hosted Worker prototype exercises this as direct `0x05` sync from a runtime authoring handle; it still does not host kernels inside the Durable Object.
-- `owner` - editor plus publish-revisions and manage-ACL requests.
+- **`viewer`:** read-only sync participant.
+  - May send and receive sync, presence, and session-control frames, **but inbound sync frames must carry no changes**.
+  - Automerge sync stays bidirectional: a read-only peer negotiates heads/have/need, applies server updates, and replies through the normal `notebook-sync` loop.
+  - The trust gate rejects any inbound `0x00`, `0x05`, `0x09`, or `0x0a` frame with non-empty `Message.changes`; empty negotiation frames pass. Request frames are restricted to read-only operations. Server outbound traffic is unrestricted.
+  - **Upstream Automerge `read_only` caveat:** `State::new_read_only()` and `MessageFlags::READ_ONLY` are *not* client-side viewer primitives. In upstream Automerge (`rust/automerge/src/sync.rs` and `state.rs`), `read_only` means publish-only: the holder ignores incoming changes while still sending its own, so a viewer client using it will stop applying live updates. A room host *may* use `State::new_read_only()` on its server-side per-viewer peer state as an optimization and protocol hint, but it must still explicitly reject any viewer `Message.changes` as the authorization boundary.
+- **`editor`:** live edits to `NotebookDoc` within the host's document-write policy, plus mutable widget state in `CommsDoc` (with `RuntimeStateDoc` comm topology governing kernel forwarding). Rejects all `RuntimeStateDoc` writes: editors cannot create executions, mutate queue/kernel/environment state, alter output routing, modify comm topology, or add hidden root keys.
+- **`runtime_peer`:** writes `RuntimeStateDoc` execution progress, output, lifecycle, and comm topology for already accepted executions. Cannot create execution intent or edit `NotebookDoc`. Used by remote-runtime services and JupyterHub-spawned runtime sidecars. The hosted Worker prototype exercises this via direct `0x05` sync from a runtime handle without running kernels inside the Durable Object.
+- **`owner`:** all `editor` permissions plus publish-revision and ACL-management requests.
 
 ### Where scope comes from
 
-The target model is an effective scope derived from the credential's validated
-authority and the room ACL. The narrower result wins: a principal whose
-credential can ask for editor but whose room ACL grants viewer is a viewer in
-that room. A principal not present in the ACL is rejected at connection time.
-Anonymous viewer access is only considered for unauthenticated requests when
-the room contains a public-read entry.
+In the target model, effective scope is the intersection (narrower wins) of the credential's validated authority and the room ACL. A credential asking for `editor` against a `viewer` ACL entry yields `viewer`. Principals absent from the ACL are rejected at connect; anonymous `viewer` access applies only to unauthenticated requests on rooms with a public-read entry.
 
-Current Cloud Worker semantics are more concrete: the request presents a desired
-scope through `x-scope` or query parameters, provider-specific validation can
-cap that request, and the room host authorizes or downgrades it against the ACL.
-The resulting `connection_scope` is the server-authorized effective scope the UI
-may render.
+In the current Cloud Worker, requests pass a desired scope via `x-scope` or query parameters, provider validation may cap it, and the room host authorizes or downgrades it against the ACL. The resulting `connection_scope` is the server-authorized effective scope for UI rendering.
 
 ### Scope enforcement points
 
-Scope is enforced server-side at three points in the target architecture, each
-with a clear boundary:
+Target architecture enforces scope server-side at three explicit boundaries:
 
-1. **Frame ingress** (in `peer_notebook_sync.rs::handle_notebook_doc_frame`, `peer_runtime_sync.rs`, `peer_comms_sync.rs`, `peer_comments_sync.rs`, and the hosted WASM room host): the validator consults `AuthenticatedConnection.scope` and rejects frames that exceed the scope: viewer with non-empty changes on any doc, `runtime_peer` sending changes to `NotebookDoc`, editor/owner `RuntimeStateDoc` changes, unauthorized `CommsDoc` changes, or `CommentsDoc` changes from scopes without comment authority. The hosted Worker and daemon share the same RuntimeStateDoc policy helper so this is no longer a hosted-only TODO.
-2. **Request dispatch**: each `NotebookRequest` variant declares its minimum required scope via an annotation or registry lookup. The request handler rejects with a typed `Unauthorized` response before any side effect. New scope-gated requests declare their requirement at the definition site; no scattered `if scope == ...` checks elsewhere.
-3. **ACL mutations** are owner-only. The hosted Worker prototype exposes owner-only HTTP ACL management for individual D1 rows. No in-band Automerge ACL change is honored from a non-owner connection.
+1. **Frame ingress** (`peer_notebook_sync.rs::handle_notebook_doc_frame`, `peer_runtime_sync.rs`, `peer_comms_sync.rs`, `peer_comments_sync.rs`, and the hosted WASM room host): checks `AuthenticatedConnection.scope` and rejects out-of-scope document frames. The hosted Worker and local daemon share the same `RuntimeStateDoc` policy helper.
+2. **Request dispatch:** each `NotebookRequest` variant declares its minimum scope via annotation or registry lookup and rejects violations with a typed `Unauthorized` response before side effects, without scattered `if scope == ...` checks.
+3. **ACL mutations:** owner-only. The hosted Worker exposes owner-only HTTP endpoints for D1 ACL rows; in-band Automerge ACL changes from non-owners are never honored.
 
 ### Adding new scope-gated functionality
 
-Every new request variant or frame type must specify its required scope at the definition site. A CI lint (or a small `#[derive]` macro) verifies that every variant has a scope annotation. This makes scope creep visible in code review and prevents the "wrong layer for enforcing it" failure mode.
+Target rule: every new request variant or frame type declares its required scope at the definition site, verified by a CI lint or `#[derive]` macro so scope creep surfaces in review.
 
-Current implementation status is intentionally narrower: frame-level scope
-gating and runtime-doc policy validation are active in the hosted room path,
-while full semantic request-scope dispatch is still the desired shape for
-future execution-intent and hosted mutation APIs.
+Current shipped status is narrower: frame-level scope gating and `RuntimeStateDoc` policy validation are active on the hosted room path, while full semantic request-scope dispatch remains target state for future execution-intent and hosted mutation APIs.
 
 ### What does and does not appear on the wire
 
-The post-handshake capability payload includes `actor_label` and
-`connection_scope` so UIs can render current-actor and read-only/runtime-peer
-state without inferring scope from request failures. Remote/cloud hosts should
-always send the server-authorized effective scope. Local daemon paths still have
-legacy and compatibility cases where the field is absent; desktop treats that
-absence as local owner capability.
+The post-handshake capability payload includes `actor_label` and `connection_scope` so UIs render read-only or `runtime_peer` state without inferring permissions from failed requests. Remote hosts should always emit `connection_scope`; local daemon compatibility paths may omit it, and Desktop treats omission as local `owner` capability.
 
-The client may consume this payload to choose UI capabilities, but it is
-informational from the server's trust perspective. The server remains the only
-authority and still enforces scope at frame ingress, request dispatch, and ACL
-mutation boundaries. A `viewer` connection remains a full sync, presence, and
-projection peer; only its changes and mutating requests are denied.
+This payload is strictly informational to the server. The server remains the sole authority and enforces scope at frame ingress, request dispatch, and ACL mutation boundaries.
 
 ## Decision 6: Publish re-authenticates and re-authors at the destination boundary
 
-**Current implementation gap:** Publish uploads the saved source Automerge
-document bytes directly. Historical actor labels from the source space are
-preserved in the destination room. The destination records who published the
-snapshot (via ACL enforcement and catalog metadata), but the ingested
-`NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc` carry the source documents'
-full Automerge change histories and actor labels, including any `local:*`
-actors from a desktop source.
+**Shipped gap:** Current publish uploads saved Automerge bytes directly (`crates/runt-publish/src/lib.rs` uploads `source_snapshot.snapshot.notebook_bytes`, `runtime_state_bytes`, and `comms_doc_bytes`; `apps/notebook-cloud/src/index.ts` stores those bodies before inserting a catalog revision row). Destination ACLs and catalog metadata record the publisher, but the stored `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc` retain full source change histories and actor labels, including `local:*` actors.
 
-Concretely: `crates/runt-publish/src/lib.rs` uploads
-`source_snapshot.snapshot.notebook_bytes` and
-`source_snapshot.snapshot.runtime_state_bytes` and
-`source_snapshot.snapshot.comms_doc_bytes` as raw Automerge save payloads.
-`apps/notebook-cloud/src/index.ts` stores those uploaded bodies before creating
-a catalog revision row.
+Publishing across identity spaces must be an authenticated import, not a history migration. Automerge actor labels are self-attested; accepting historical `local:quill/desktop:abc` changes makes the destination vouch for authorship it cannot verify, since anyone can fabricate a local document with arbitrary actor strings.
 
-Publishing between identity spaces is an authenticated import, not an
-actor-history migration. Actor labels in Automerge are self-attested; if a host
-accepts `local:quill/desktop:abc` historical changes, it appears to vouch for
-authorship it cannot verify. Anyone can fabricate a local document claiming any
-attribution and publish it.
+Local OS identity has authority only in the local space. At publish time, the destination validates the publish credential against its IdP and derives an immutable, namespace-qualified destination principal. Neither Desktop nor an agent may assert that `local:kylekelley` maps to a hosted account. Emails or usernames like `rgbkrk@gmail.com` are display metadata; the actor label uses the stable hosted principal.
 
-The local filesystem/OS identity provider establishes authority only in the
-source space. At publish time, the destination validates the presented
-credential with its configured identity provider and derives the immutable,
-namespace-qualified destination principal. Neither Desktop nor an agent may
-assert that `local:kylekelley` maps to a particular hosted account. A hosted
-email or username such as `rgbkrk@gmail.com` is display metadata; the actor
-label uses the host's stable principal identifier.
+The publish request declares an initiating operator descriptor separately from source history (such as `desktop` or `agent:<declared-label>`):
 
-The publish request declares an initiating operator descriptor separately from
-the source history, such as `desktop` or `agent:<declared-label>`. The protocol
-does not decide whether that label names an agent, model family, harness, or
-product. Codex, Claude, OpenCode, and bespoke agents are illustrative values
-under the same open contract, not separate publish paths. The descriptor does
-not preserve a source session identifier. Exact model, provider, or version
-details may accompany it as non-authorizing audit metadata; those claims are
-client-declared and advisory unless independently attested. The destination may
-syntax-check the descriptor and constrain accepted operator kinds as described
-in Decision 1, but the operator remains attribution metadata rather than an
-authentication claim. The destination combines the verified principal, the
-descriptor, and a fresh per-publish nonce. For example:
+- Codex, Claude, OpenCode, and custom agents share the same open contract; none has a separate publish path.
+- Source session IDs are not preserved.
+- Model, provider, and version details may accompany the request as advisory, non-authorizing audit metadata.
+- The destination syntax-checks the descriptor, enforces accepted operator kinds (Decision 1), and combines the verified principal, descriptor, and a fresh destination-minted publish nonce:
 
 ```text
 user:anaconda:550e.../desktop:<fresh-publish-uuid>
 user:anaconda:550e.../agent:<declared-label>:<fresh-publish-uuid>
 ```
 
-The fresh nonce belongs to the destination import. It is not copied from a
-source session or inferred from a source actor label.
+Target publish flow:
 
-The publish flow is:
+1. **Capture rendered content projection:** the publisher captures cells, metadata, completed outputs, published widget state, and blob references from `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc`. Source structural document IDs are excluded. Untrusted identity-bearing fields inside the projection (such as `RuntimeStateDoc.executions[*].submitted_by_actor_label`) are dropped rather than copied or relabeled. Any future identity-bearing field requires an explicit, destination-verifiable import rule to survive.
+2. **Authenticate and mint destination IDs:** the destination validates the credential, derives the hosted principal, validates the operator descriptor, and mints fresh destination notebook, runtime-state, and comms document IDs plus a fresh import actor before creating a discoverable room.
+3. **Author fresh documents:** the destination initializes fresh Automerge documents in its own identity space. Canonical schema-seed actors establish schemas; the fresh import actor authors the imported state. Non-canonical source history is neither copied nor relabeled; matching canonical genesis changes are established independently at the destination.
+4. **Verify blob closure:** blob references keep their SHA-256 hashes; the destination verifies and stores the transitive closure of referenced bytes.
+5. **Register catalog and audit rows:** after documents and blobs validate, the destination registers the room and initial revision. Durable revision, ACL, and audit attribution uses either the destination-minted import actor or separate typed fields (`principal`, validated operator descriptor, destination import ID) that reconstruct it exactly. It never persists a client-supplied source actor or source session suffix.
+6. **Continue under destination identity:** subsequent edits author under normal destination principals and operators. No source user/operator actor (including `local:*`) or non-canonical source change exists in destination documents.
 
-1. The publisher captures a content projection of the current rendered state
-   of `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc`: cells, metadata,
-   completed outputs, published widget state, and blob references. Source
-   structural document ids are not content and are excluded. Identity-bearing
-   values inside the projection are also untrusted source claims: for example,
-   `RuntimeStateDoc.executions[*].submitted_by_actor_label` is dropped rather
-   than copied or relabeled. Any future identity-bearing field needs an explicit
-   import rule backed by destination-verifiable evidence before it can survive
-   this boundary.
-2. The destination authenticates the publish credential, derives the hosted
-   principal, validates the declared initiating operator descriptor, mints a
-   fresh destination notebook id and its corresponding runtime-state and comms
-   document ids, and mints a fresh import actor before creating a discoverable
-   room.
-3. The destination creates fresh Automerge documents with those destination
-   structural ids in its own identity space. Canonical schema-seed actors
-   establish the schemas; the fresh import actor authors the imported state.
-   Non-canonical source history is neither copied nor relabeled actor by actor;
-   matching canonical genesis changes are independently established in the
-   destination.
-4. Blob references retain their SHA-256 identities. The destination verifies
-   and stores the transitive closure of referenced blob bytes.
-5. After the imported documents and blob closure validate, the destination
-   registers the room and its initial revision in the catalog. Durable revision,
-   ACL, and audit attribution either uses the same destination-minted import
-   actor or stores the authenticated principal, validated operator descriptor,
-   and destination import id in separate typed fields that reconstruct that
-   actor exactly; it never persists a client-supplied source actor or source
-   session suffix as destination truth.
-6. Future edits author under normal destination-space principals and operators.
-   No source-space user/operator actor, including any `local:*` actor, or
-   non-canonical source-history change remains in the destination documents.
+The import actor records *who published and how*, not authorship of every prior edit. UIs may render `"published by rgbkrk@gmail.com via Desktop"` or `"<agent label> on behalf of rgbkrk@gmail.com"` (for example, `"Codex on behalf of rgbkrk@gmail.com"`). The source notebook and its history remain untouched.
 
-The import actor describes who performed the publish operation and how; it does
-not claim authorship of each historical edit. UI may therefore render
-"published by rgbkrk@gmail.com via Desktop" or generically "<agent label> on
-behalf of rgbkrk@gmail.com"; "Codex on behalf of rgbkrk@gmail.com" is one
-example. The durable actor label remains the verified hosted principal plus
-operator. The original source notebook and its history remain unchanged.
-
-When Automerge gains signed-change support (keyhive direction; see
-`https://www.inkandswitch.com/keyhive/notebook/`), historical authorship could
-be carried across publish if every change is signed by its claimed author.
-
-## Open Follow-ups
-
-- **Publish-time destination authentication and re-authoring
-  ([#3900](https://github.com/nteract/nteract/issues/3900)):** Replace raw source
-  save-byte upload with import into fresh destination documents. Tests must
-  prove that the destination principal came from destination authentication,
-  the import actor retains the initiating operator descriptor with a fresh
-  destination-controlled nonce, no source-space user/operator actors or
-  non-canonical source-history changes remain, and the rendered state plus blob
-  closure preserve the publish contract. Coverage must include a malicious
-  embedded `local:*` submitter label that is removed, two publishes of the same
-  source producing distinct and internally consistent notebook/runtime/comms
-  ids, and catalog/revision/ACL audit rows bound to destination-authenticated
-  import attribution. If audit attribution is decomposed into typed fields, a
-  reconstruction test must prove equality with the destination import actor,
-  including its fresh import id. Independently established canonical schema
-  genesis is the only shared history exception. An unknown future operator label
-  must round-trip through import attribution without changing the authenticated
-  principal, effective scope, or authorization result.
+If Automerge later gains signed changes (see the [Keyhive notebook](https://www.inkandswitch.com/keyhive/notebook/)), cryptographically verified historical authorship could optionally travel across publish boundaries.
 
 ## Limitations
 
-v1 enforces the trust gate at room ingress: bearer auth and ACL membership at connect, scope-based frame rejection per frame, and actor-principal validation for newly received Automerge changes. The v1 validator is intentionally conservative: it clone-previews non-empty sync messages before applying them to the real `NotebookDoc`, `RuntimeStateDoc`, or `CommsDoc`.
+v1 enforces the trust gate at room ingress: bearer auth and ACL membership at connect, scope-based frame rejection per frame, and clone-preview actor validation before applying non-empty `NotebookDoc`, `RuntimeStateDoc`, or `CommsDoc` sync frames.
 
-The threat surface this leaves:
+### Threat surface
 
 | Attack | Mitigated by | Status |
 |--------|--------------|--------|
 | Unauthorized read | ACL check at connect | closed |
 | Unauthorized write at all | Bearer auth + ACL at connect | closed |
-| Scope escalation (viewer authoring, runtime_peer editing NotebookDoc) | Scope-based frame rejection | closed |
-| Import-time cross-IdP forgery (publishing a doc with historical foreign actor labels) | Destination authentication plus fresh-document re-authoring under a verified principal and fresh initiating-operator actor (Decision 6) | open — current publish copies source Automerge history |
-| **Live actor-principal spoofing** (an authenticated peer authors a new change under a different principal) | Clone-preview actor validation before apply | closed in v1 |
+| Scope escalation (viewer authoring, `runtime_peer` editing `NotebookDoc`) | Scope-based frame rejection | closed |
+| Import-time cross-IdP forgery (publishing historical foreign actor labels) | Destination auth + fresh-document re-authoring (Decision 6) | open (current publish copies source history) |
+| **Live actor-principal spoofing** (authenticated peer authors under another principal) | Clone-preview actor validation before apply | closed in v1 |
 | Bearer-token replay (stolen JWT opens a new socket) | DPoP / mTLS / short token lifetimes | deferred |
-| Clone-preview validator cost on large/high-churn docs | `sync_message_new_changes` Automerge fork patch | deferred performance hardening |
+| Clone-preview validator cost on large or high-churn docs | `sync_message_new_changes` Automerge fork patch | deferred performance hardening |
 
-The v1 clone-preview validator closes principal forgery without new Automerge APIs by using the existing post-apply actor extraction primitive against a cloned document. The deferred work is performance, not correctness: parsing `automerge::sync::Message.changes` (`ChunkList(Vec<Vec<u8>>)` of raw chunks; V1 = one `Change` per chunk; V2 = potentially a whole-doc save) without cloning is what the companion [Automerge fork patches memo](../memos/automerge-fork-patches.md) proposes adding to our Automerge fork.
+### Deliberate v1 boundaries and orthogonal primitives
 
-The upstream `filters` work (`origin/filters` branch on `automerge/automerge`, post-peer-review, `rust/automerge/src/filter.rs`) gives us a complementary subduction primitive once it lands in main: `Filter::Allow / AllowUpTo { heads } / Deny` per-actor or per-author. Filters do not reject changes pre-storage (rejected changes still ingest and sync) but they hide them from rendering, which is the right primitive for runtime revocation and post-hoc audit hiding. When filters lands, pairing them with a pre-apply validator becomes the natural next step. Keyhive ([inkandswitch/keyhive notebook](https://www.inkandswitch.com/keyhive/notebook/)) is orthogonal: change-level capability tokens with signed changes; composable later if needed.
+- **Host-to-host federation is out of scope for v1.** One notebook host trusting another host's identity claims (such as JupyterHub-to-Anaconda interop) is deferred beyond v1.
+- **Clone-preview performance is a known v1 trade-off.** `automerge::sync::Message.changes` holds raw `ChunkList(Vec<Vec<u8>>)` bytes (V1: one `Change` per chunk; V2: potentially a full-document save). v1 validates correctness via post-apply actor extraction on a cloned document without requiring fork patches yet.
+- **Automerge `filters` complement, rather than replace, ingress validation.** Upstream's `origin/filters` branch (`rust/automerge/src/filter.rs`) adds per-actor/per-author `Filter::Allow / AllowUpTo { heads } / Deny`. Filters hide changes at render time rather than rejecting them pre-storage, making them the right primitive for post-hoc revocation hiding rather than ingress blocking.
+- **Keyhive signed changes are orthogonal.** Change-level capability tokens and signed history ([inkandswitch/keyhive](https://www.inkandswitch.com/keyhive/notebook/)) compose cleanly on top of this connection-level trust model later if needed.
+
+## Open Follow-ups
+
+- **Publish-time destination authentication and re-authoring ([#3900](https://github.com/nteract/nteract/issues/3900)):** replace raw Automerge save-byte uploads with fresh-document import per Decision 6. Required test coverage:
+  - Destination principal derives solely from destination auth; import actor keeps the initiating operator descriptor with a fresh destination-controlled nonce.
+  - No source-space user/operator actors or non-canonical source history survive; independently established canonical schema genesis is the only shared history exception.
+  - Rendered state and transitive blob closure preserve the publish contract.
+  - A malicious embedded `local:*` submitter label is stripped.
+  - Publishing the same source twice produces distinct, internally consistent notebook, runtime-state, and comms IDs.
+  - Catalog, revision, and ACL audit rows bind to destination-authenticated import attribution; if decomposed into typed fields, a test proves exact reconstruction of the import actor including its fresh import ID.
+  - Unknown future operator labels round-trip through import attribution without altering principal, effective scope, or authorization.
+- **Lower-cost actor-label validator:** replace v1 clone-preview validation with parse-only inspection of V1 and V2 `automerge::sync::Message.changes` chunks before merge (`sync_message_new_changes`, drafted in `docs/memos/automerge-fork-patches.md`), landing alongside room-host extraction.
+- **Revocation signal and historical-change subduction:** specify the `SESSION_CONTROL` close frame and channel for admin revokes and plan downgrades. Once upstream Automerge `filters` lands in `main`, pair hard disconnects with `Filter::with_author(revoked, Rule::AllowUpTo { heads: validated })` to hide post-revocation edits while preserving causal integrity.
+- **JupyterHub provider implementation:** implement `/hub/api/user` validation in `crates/nteract-identity/src/jupyterhub.rs` to replace the current `AuthError::ProviderUnavailable("jupyterhub")` placeholder.
+- **Semantic request-scope dispatch:** enforce definition-site scope annotations on `NotebookRequest` variants (backed by a CI lint or `#[derive]` macro) for execution-intent and hosted mutation APIs.
+- **Room-host crate extraction:** extract `runtimed::notebook_sync_server::room` behind pluggable `Listener` and `SnapshotStore` traits (tracked in a separate ADR).
+- **Anaconda hosted v1 OIDC and credential transport:** finalize direct Anaconda SSO OIDC (staging against the retired `preview.runt.run` lane from `runtimed/intheloop` with Anaconda stage OIDC and `/oidc` callback) and principal-namespace rules in `docs/adr/hosted-credential-transport.md`.
+- **Public viewer presence visibility:** decide whether anonymous public viewers (`anonymous:<session>/browser:<session>`) see each other, see aggregate counts, or remain local-only.
+- **`runtime_peer` production connection topology:** decide whether production kernel sidecars connect directly to hosted rooms with a `runtime_peer` credential (as in the current hosted prototype) or relay writes through a separate runtime-coordination protocol.
+- **Deployment topology and keyring placement:** finalize browser-direct WebSocket vs daemon proxy, kernel placement, TLS/CORS, and the planned `nteract-credentials` client keyring in `docs/adr/deployment-topology.md`.
+- **ACL mechanics beyond flat D1 rows:** design owner transfer UX, group/org expansion, inherited ACLs, audit event retention, and Zanzibar/Authzed-style relationship evaluation.
+- **Bearer-token replay hardening:** evaluate DPoP / proof-of-possession tokens, mTLS for system-to-system links, and short token lifetimes.
 
 ## Migration
 
-The repo currently persists `.automerge` only for untitled ephemeral notebooks. No production-shipped notebook has long-lived Automerge actor labels in the legacy format. The new `<principal>/<operator>` format is adopted from day one of the change. Old in-memory actor labels in current sessions get replaced on next daemon restart; nothing on disk to migrate.
-
-## Open Questions
-
-These follow-up ADRs and design decisions are tracked but not decided here:
-
-1. **Room-host crate extraction.** Pulling `runtimed::notebook_sync_server::room` into `nteract-room-host` with pluggable `Listener` and `SnapshotStore` traits. Tracked in a separate ADR.
-2. **Identity provider selection for Anaconda hosted v1.** Direct OIDC against Anaconda's existing SSO is the first browser session layer for the hosted Worker. The staging target is the retired `preview.runt.run` lane from `runtimed/intheloop`, using Anaconda stage OIDC and a `/oidc` callback. `docs/adr/hosted-credential-transport.md` tracks the exact credential transport and principal-namespace decision.
-3. **Public viewer presence visibility.** Public-read URLs use explicit ACL-backed anonymous viewer access under an `anonymous:<session>/browser:<session>` actor. Still open: whether public viewers should see each other in presence, only see aggregate counts, or remain fully local-only.
-4. **Revocation signal and historical-change subduction.** Two parts. First, the wire signal: the exact `SESSION_CONTROL` close frame and the channel for admin revokes / plan downgrades. Second, what happens to changes a revoked principal already authored. The Automerge `filters` work (`origin/filters` branch, `rust/automerge/src/filter.rs`) is the natural primitive: install a `Filter::with_author(revoked, Rule::AllowUpTo { heads: validated })` to subduct edits authored after revocation while keeping causal integrity intact. Wait for `filters` to land in main before depending on it; until then, revocation is a hard connection close with no post-hoc audit hiding.
-5. **Federation.** A notebook host trusting another notebook host's identity claims (e.g., JupyterHub Anaconda interop). Not v1.
-6. **`runtime_peer` connection topology.** The hosted prototype now supports direct `runtime_peer` `RuntimeStateDoc` ingress into the room. Still open: whether the production kernel sidecar connects to the room directly with its own `runtime_peer` scope credential, or whether a separate runtime-coordination protocol relays writes. Tied to the future remote-runtime work.
-7. **Deployment topology.** How clients reach rooms (browser-direct WebSocket, local-daemon proxy, native client), where kernels run, TLS/CORS, credential keyring placement. Drafted in `docs/adr/deployment-topology.md`.
-8. **ACL mechanics beyond the Cloudflare v1 shape.** The hosted prototype covers flat D1 rows, public-read rows, and owner-only row mutation. Still open: owner transfer UX, group/org expansion, inherited ACLs, audit event retention, Zanzibar/Authzed-style evaluation, and product policy for anonymous public presence.
-9. **Signed-change authorship across publish.** When Automerge gains signed changes (keyhive direction), publish flows could carry historical authorship across identity spaces with cryptographic verification. This remains a possible future alternative. Current publish behavior and the accepted fresh-document target are recorded separately in Decision 6.
-10. **Bearer-token replay mitigation.** DPoP / proof-of-possession tokens, mTLS for system-to-system, short token lifetimes. v1 inherits the bearer-token threat model; tightening it is future work.
-11. **Lower-cost actor-label validator.** Replace the v1 clone-preview validator with parsing of `automerge::sync::Message.changes` chunks (V1 and V2) before merge to reject changes whose actor's principal doesn't match the connection's authenticated principal. Deferred until we land a patch on our Automerge fork as part of the room-host crate extraction. Drafted in `docs/memos/automerge-fork-patches.md`. Pairs with the filters work above for full attribution integrity once both are in.
+At adoption, `.automerge` files were persisted only for untitled ephemeral notebooks, so no production notebook held long-lived legacy actor labels on disk. New `<principal>/<operator>` labels apply from day one; old in-memory labels clear on daemon restart with no disk migration required.
 
 ## Worked examples
 
 ### quill editing a local untitled notebook
 
-- Unix socket connect. Listener reads `SO_PEERCRED`, finds OS user `quill`. `IdentityProvider::Local(...)` returns principal `local:quill`, scope `owner`.
-- Desktop UI opens the notebook via the daemon. Daemon stands up a WASM peer with actor `local:quill/desktop:7f3a`.
-- Claude (via MCP) joins the same room from the same machine. Claude's MCP process connects on the same Unix socket; its principal is also `local:quill`. It picks operator `agent:claude:s1`. Actor label `local:quill/agent:claude:s1`.
-- Both connections write changes. The room-host enforces scope at frame ingress: both are `owner` scope, so both can write allowed `NotebookDoc` edits and mutable widget state in `CommsDoc`. Runtime lifecycle/progress/output state still requires `runtime_peer`, and execution intent still requires the request API. Clone-preview validation rejects each newly received change whose author principal is not `local:quill`, including peer-authored `system` changes.
-- Presence shows two operators under one principal. UI can render "quill (Desktop)" and "quill (Claude)" by reading the operator suffix.
+1. Desktop connects over the Unix socket. The listener reads `SO_PEERCRED` for OS user `quill`; `IdentityProvider::Local` returns principal `local:quill` with scope `owner`.
+2. The daemon stands up a WASM peer with actor `local:quill/desktop:7f3a`.
+3. Claude joins the same room over the Unix socket via MCP. Its principal is also `local:quill`, with operator `agent:claude:s1`, yielding `local:quill/agent:claude:s1`.
+4. Both connections hold `owner` scope and may write allowed `NotebookDoc` edits and mutable `CommsDoc` widget state. Runtime lifecycle/progress/output still requires `runtime_peer`, and execution intent still requires the request API. Clone-preview validation rejects any incoming change whose author principal is not `local:quill`, including peer-authored `system` changes.
+5. Presence shows two operators under one principal; UI renders `"quill (Desktop)"` and `"quill (Claude)"`.
 
 ### quill editing an Anaconda-hosted notebook
 
-- quill's client opens an authenticated connection to the Anaconda-hosted room. The transport (browser-direct WebSocket, local-daemon proxy, native client, etc.) is a deployment-topology concern, separate from identity.
-- Anaconda's room-host validates the credential. Returns principal `user:anaconda:550e...`. Looks the principal up in the room's ACL, finds scope `editor`.
-- The client stands up a WASM peer in the hosted room with actor `user:anaconda:550e.../desktop:7f3a`.
-- Edits flow over the established connection. Scope-level frame checks pass for allowed `NotebookDoc` edits and mutable widget state in `CommsDoc`, while runtime lifecycle/progress/output state remains `runtime_peer`-owned and execution intent remains request-owned. Clone-preview actor validation rejects any newly received change whose principal is not `user:anaconda:550e...`, including peer-authored `system` changes.
-- The same process may simultaneously have an untitled local notebook open in a separate connection. That connection authenticates as `local:quill` against the local daemon. Two rooms, two ACLs, two separately authenticated connections.
+1. quill's client opens an authenticated connection to the Anaconda-hosted room (transport choice belongs to deployment topology).
+2. The room host validates the credential, returning principal `user:anaconda:550e...`, and finds `editor` scope in the room ACL.
+3. The client stands up a WASM peer with actor `user:anaconda:550e.../desktop:7f3a`.
+4. Allowed `NotebookDoc` and `CommsDoc` edits flow through; `RuntimeStateDoc` stays `runtime_peer`-owned and execution intent stays request-owned. Clone-preview validation rejects any incoming change whose principal is not `user:anaconda:550e...`, including peer-authored `system` changes.
+5. The same Desktop process may concurrently open a local untitled notebook as `local:quill` against the local daemon: two rooms, two ACLs, two independent authenticated connections.
 
 ### Claude editing the Anaconda-hosted notebook on quill's behalf
 
-- quill's Claude (running locally) connects to the hosted room.
-- Claude's MCP process authenticates against Anaconda using a credential quill made available to it (re-using quill's session, an Anaconda API key scoped for agents, or similar; the exact credential-delegation mechanic is out of scope here).
-- Anaconda validates, returns principal `user:anaconda:550e...` (same as quill), scope `editor` (as the ACL permits).
-- Claude's actor is `user:anaconda:550e.../agent:claude:s1`. Same principal as quill's desktop session, different operator. Attribution shows both clearly; the trust gate sees them as the same principal and authorizes both.
+1. quill's local Claude MCP process connects to the hosted room using a credential quill made available (session reuse, agent-scoped Anaconda API key, or similar; delegation mechanics are out of scope here).
+2. Anaconda validates the credential, returning principal `user:anaconda:550e...` and ACL scope `editor`.
+3. Claude authors as `user:anaconda:550e.../agent:claude:s1` (same principal as quill's Desktop session, distinct operator). Attribution separates them while the trust gate authorizes both under the same principal.
 
 ### Target: publishing a local notebook to Anaconda
 
-Current publish still uploads the source Automerge document bytes. The target
-flow is:
+Current publish still uploads source Automerge save bytes. The target flow is:
 
-- quill triggers "publish to Anaconda" from Desktop. The local daemon knows
-  quill as `local:quill`, but that principal has no authority at Anaconda.
-- Anaconda validates the publish credential and derives the stable principal
-  `user:anaconda:550e...`. It may project `rgbkrk@gmail.com` as display metadata;
-  it does not trust a client assertion that `local:quill` maps to that account.
-- Desktop captures the current rendered state of the local `NotebookDoc`,
-  `RuntimeStateDoc`, and `CommsDoc`: cells, metadata, outputs, published widget
-  state, and blob references.
-- The destination creates fresh Automerge documents. A Desktop publish imports
-  state under `user:anaconda:550e.../desktop:<fresh-publish-uuid>`; any
-  agent-capable client or harness uses the same
-  `user:anaconda:550e.../agent:<declared-label>:<fresh-publish-uuid>` shape.
-  Codex is one example and may display as "Codex on behalf of
-  rgbkrk@gmail.com."
-- The source change DAGs are not copied. Output blobs retain their SHA-256
-  hashes, and the imported state preserves the publish contract.
-- A new room appears at `runtimed.com/n/<id>` with the hosted principal as
-  owner. New edits author under `user:anaconda:550e.../*`; the destination
-  documents contain no `local:*` actors.
-- The original local notebook is unchanged. Pre-publish authorship history
-  lives only in the source space.
+1. quill triggers "publish to Anaconda" from Desktop. The local principal `local:quill` has no authority at Anaconda.
+2. Anaconda validates the publish credential and derives `user:anaconda:550e...`. It may project `rgbkrk@gmail.com` as display metadata, but rejects any client claim mapping `local:quill` to that account.
+3. Desktop captures the rendered state of `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc` (cells, metadata, outputs, published widget state, and blob references).
+4. The destination creates fresh Automerge documents and imports state under `user:anaconda:550e.../desktop:<fresh-publish-uuid>` (or `user:anaconda:550e.../agent:<declared-label>:<fresh-publish-uuid>` for an agent, such as `"Codex on behalf of rgbkrk@gmail.com"`).
+5. Source change DAGs are not copied; output blobs keep their SHA-256 hashes and preserve the publish contract.
+6. A new room opens at `runtimed.com/n/<id>` owned by the hosted principal. New edits author under `user:anaconda:550e.../*`, with no `local:*` actors in the destination documents.
+7. The local notebook and its pre-publish history remain untouched.
 
 ## Compatibility with Automerge semantics
 
-This section records the audit against Automerge and automerge-repo so the trust model does not surprise us downstream.
+Audit against Automerge and `automerge-repo` confirming no downstream conflicts:
 
-**Actor IDs are self-attested in Automerge.** An Automerge `Change` carries an `actor_id` set by the author at write time. Automerge does not cryptographically bind the actor to anything; it uses the actor only for change ordering and conflict resolution. Two clients must not use the same actor concurrently or `(actor_id, seq)` collisions break CRDT correctness. The `<principal>/<operator>` format includes a `<session-uuid>` in the operator suffix, so uniqueness is preserved when a single user runs multiple operators in parallel. Compatible.
-
-**Actor-label validation is v1 clone-preview, v2 parse-only.** `automerge::sync::Message.changes` is `ChunkList(Vec<Vec<u8>>)`, raw chunk bytes that are not pre-parsed `Change`s. v1 applies non-empty inbound sync messages to a cloned `NotebookDoc`, `RuntimeStateDoc`, or `CommsDoc`, extracts actors from the new heads on that clone, validates principals, then applies the same message to the real document only after validation passes. This is correct but costs a clone and duplicate apply per non-empty inbound frame. The planned Automerge fork patch (`sync_message_new_changes`) replaces the clone-preview with a parse-only pre-apply hook.
-
-**Hash-pinned history is immutable.** Each `Change` references its parents by hash. A peer cannot rewrite history without changing every downstream hash, which then fails the room's existing heads check. The validator only needs to guard *new* changes; historical changes are protected by hash chaining. Compatible.
-
-**automerge-repo's transport-layer trust model matches ours.** automerge-repo network adapters (WebSocket, BroadcastChannel, etc.) treat identity as a transport concern; the document layer assumes peers handed up by the adapter are legitimate. Per-room identity, connect-time auth, and per-frame actor validation slot in at the adapter/listener boundary. Compatible.
-
-**Ephemeral messages stay separate.** automerge-repo's ephemeral messages (presence-like) are out-of-band from doc state. Our presence frames (`0x04`) follow the same shape. The per-ingress rewrite of the principal prefix in presence is a server-side policy, not a CRDT operation; it does not enter the Automerge DAG. Compatible.
-
-**`set_actor` mid-session is allowed by Automerge but discouraged by us.** Automerge supports calling `set_actor` to change the actor used for subsequent changes. The trust model treats actor labels as a per-connection invariant: the operator suffix is fixed at WASM-peer construction time and not changed for the connection's life. Clients that want to write under a new operator open a new connection. This is a discipline, not an Automerge limitation.
-
-**One place where Automerge defaults differ from ours.** Out of the box, Automerge generates a random `ActorId` per `AutoCommit`. Our code overrides this with a human-readable label (`crates/notebook-doc/src/lib.rs:486-505`). The trust model continues that override and extends the label format. No change to Automerge's wire shape.
+- **Self-attested actor IDs (compatible):** Automerge sets `actor_id` at write time for ordering and conflict resolution without cryptographic binding. Concurrent writers must never reuse an actor or `(actor_id, seq)` collisions corrupt CRDT state. The `<nonce>` suffix in `<principal>/<operator>` guarantees uniqueness across parallel operators for one user.
+- **v1 clone-preview, v2 parse-only validation (compatible):** `automerge::sync::Message.changes` stores raw `ChunkList(Vec<Vec<u8>>)` chunks. v1 validates principals on a cloned doc before applying to the real room doc; the planned `sync_message_new_changes` fork patch replaces cloning with parse-only pre-apply inspection.
+- **Hash-pinned history is immutable (compatible):** every `Change` hashes its parent heads, so rewriting history invalidates downstream hashes and fails room head checks. The validator only needs to inspect *new* changes.
+- **Transport-layer trust matches `automerge-repo` (compatible):** `automerge-repo` network adapters handle identity at the transport layer and assume peers passed upward are legitimate. Connect-time auth and per-frame checks sit at the listener/adapter boundary.
+- **Ephemeral messages stay out-of-band (compatible):** presence frames (`0x04`) never enter the Automerge DAG, matching `automerge-repo` ephemeral messages. Rewriting the principal prefix on ingress is a pure server policy.
+- **`set_actor` mid-session is discouraged (discipline, not limitation):** Automerge permits `set_actor`, but this trust model fixes `<principal>/<operator>` at peer construction for the connection's lifetime. Switching operators requires a new connection.
+- **Human-readable actor override (compatible):** Automerge defaults to random `ActorId`s per `AutoCommit`, which nteract already overrides with readable labels (`crates/notebook-doc/src/lib.rs`). This model extends that string format with no Automerge wire change.
 
 ## References
 
+- `crates/nteract-identity/src/` - shipped `ActorLabel`, `Principal`, `Credential`, `IdentityProvider`, and provider modules.
 - `crates/notebook-wire/AGENTS.md` - frame types and v4 wire details.
 - `crates/notebook-protocol/src/connection/handshake.rs` - handshake shape.
-- `crates/runtimed/src/notebook_sync_server/peer_notebook_sync.rs` - where the per-frame validator hooks in.
-- `crates/notebook-doc/src/diff.rs:439` - `extract_change_actors`, the post-apply attribution primitive used by both `TextAttribution` and the v1 clone-preview actor validator.
-- `automerge::sync::Message` (rust/automerge/src/sync.rs:516-588) - the `ChunkList` wire shape backing per-frame validation.
+- `crates/runtimed/src/notebook_sync_server/peer_notebook_sync.rs` - per-frame validator hook.
+- `crates/notebook-doc/src/diff.rs` - `extract_change_actors`, used by both `TextAttribution` and the v1 clone-preview actor validator.
+- `automerge::sync::Message` (`rust/automerge/src/sync.rs`) - `ChunkList` wire shape backing per-frame validation.
 - `crates/notebook-doc/src/presence.rs` - presence frame shape.
-- [`runtimed/intheloop`](https://github.com/runtimed/intheloop) `backend/auth.ts`, `backend/sync.ts` - bearer-JWT validation + connection-time auth model.
-- [`runtimed/anaconda`](https://github.com/runtimed/anaconda) `api_key.ts` - Anaconda userinfo validation + scope mapping.
-- JupyterHub `jupyterhub/services/auth.py` - Hub cookie/token validation, no `X-Forwarded-User`.
-- Automerge `filters` branch (`origin/filters` on `automerge/automerge`), specifically `rust/automerge/src/filter.rs` - the subduction primitive that complements (but does not replace) our pre-apply gate, and the natural home for runtime revocation.
-- automerge-repo `DocSynchronizer.receiveSyncMessage` and `NetworkAdapterInterface` - confirms there is no built-in per-message authorization hook; any gate has to sit above the synchronizer.
-- Keyhive notebook: https://www.inkandswitch.com/keyhive/notebook/ - capability + E2EE; orthogonal to connection-level trust, composable later.
+- [`runtimed/intheloop`](https://github.com/runtimed/intheloop) (`backend/auth.ts`, `backend/sync.ts`) - bearer-JWT validation and connection-time auth model.
+- [`runtimed/anaconda`](https://github.com/runtimed/anaconda) (`api_key.ts`) - Anaconda userinfo validation and scope mapping.
+- JupyterHub (`jupyterhub/services/auth.py`) - Hub cookie/token validation without `X-Forwarded-User`.
+- Automerge `filters` branch (`origin/filters` on `automerge/automerge`, `rust/automerge/src/filter.rs`) - post-hoc subduction primitive for runtime revocation.
+- `automerge-repo` (`DocSynchronizer.receiveSyncMessage`, `NetworkAdapterInterface`) - confirms no built-in per-message authorization hook exists inside the synchronizer.
+- Keyhive notebook: https://www.inkandswitch.com/keyhive/notebook/ - change-level capability tokens and signed history.

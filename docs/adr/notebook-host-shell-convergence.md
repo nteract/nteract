@@ -73,49 +73,9 @@ desktop host adapter -> shared shell <- cloud host adapter
 elements fixture host -> shared shell
 ```
 
-The shell must stay free of platform side effects. It should not import Tauri,
+The shell must stay free of platform side effects. It must not import Tauri,
 Cloudflare, OIDC, generated WASM transport, room-host APIs, local filesystem
 commands, or catalog routing. Those remain host adapters.
-
-## Application-Level Notebook Catalogs
-
-A notebook catalog exists before a notebook document is selected, so it is not
-part of `NotebookDocumentShell`, its rail, or its toolbar. Local notebook
-discovery, hosted catalog queries, cloud host configuration, credentials, and
-the choice of where to open a hosted locator are application-level host chrome.
-
-Desktop may eventually expose a separate singleton window, provisionally
-called Notebook Home, that composes local recent or open-notebook facts with
-hosted catalog rows grouped by configured account or deployment. The exact
-product name, filesystem discovery model, layout, discoverability, and default
-open action remain product decisions. In particular, this ADR does not imply a
-filesystem-wide notebook index or choose whether a Notebook Home action opens a
-hosted notebook on the web or in a Desktop notebook window.
-
-Desktop already has a hidden hosted-open primitive: `@nteract/notebook-host`
-can request a hosted window, the daemon uses an explicit hosted open mode and
-deterministic window reuse, and session restore stores the hosted locator
-separately from a local path or environment id. That primitive is not yet the
-account and catalog product model. A daemon-owned account/catalog capability
-may land headlessly before Notebook Home, with typed host-adapter operations to
-list configured accounts, list notebooks for one selected account, and invoke
-the existing hosted-open path without adding a visible page or menu entry.
-
-Hosted source identity must remain explicit in window context, deterministic
-labels, deduplication, daemon bridges, reconnect state, and session restore. The
-origin-scoped V1 registry may use `(normalized origin, notebook id)` only while
-it enforces one account per origin. Before multiple accounts can share an
-origin, these boundaries must use the account-qualified
-`(account_id, provider_resource_id)` identity described in the hosted notebook
-federation memo; a notebook id or origin-plus-id is not a durable federated key.
-
-The hosted browser `/n` page and a future Desktop Notebook Home are separate
-host adapters over common catalog concepts. Desktop must not depend on the
-browser page's routing, cookies, `localStorage`, `window.location`, or
-module-singleton stores. The two hosts may share typed DTOs, pure projections,
-and host-neutral presentation components. Catalog, authentication, routing,
-and host-configuration facts remain host-owned API state, not Automerge
-document state or notebook-shell state.
 
 The shared view model owns host-neutral projections:
 
@@ -123,9 +83,9 @@ The shared view model owns host-neutral projections:
 - outline items and selected outline state;
 - canonical cell anchors based on `notebookCellAnchorId`;
 - traceback navigation targets;
-- package/runtime status projections once those are extracted.
+- package/runtime status projections once extracted.
 
-The shared component surface should be the preferred place for:
+The shared component surface is the default home for:
 
 - notebook rail and outline behavior;
 - document header layout and capability-scoped control slots;
@@ -137,6 +97,44 @@ The shared component surface should be the preferred place for:
 - package and runtime controls;
 - presence display primitives;
 - auth and capability affordances that are not tied to a specific provider.
+
+## Application-Level Notebook Catalogs
+
+A notebook catalog exists before a notebook document is selected, so it is not
+part of `NotebookDocumentShell`, its rail, or its toolbar. Local notebook
+discovery, hosted catalog queries, cloud host configuration, credentials, and
+the choice of where to open a hosted locator are application-level host chrome.
+
+Desktop may expose a separate singleton window (provisionally called Notebook
+Home) that combines local recent/open notebooks with hosted catalog rows grouped
+by configured account or deployment. Its product name, filesystem discovery
+model, layout, discoverability, and default open action remain product
+decisions. This ADR does not imply a filesystem-wide notebook index or choose
+whether a Notebook Home action opens a hosted notebook on the web or in Desktop.
+
+Desktop already has a hidden hosted-open primitive: `@nteract/notebook-host`
+can request a hosted window, the daemon uses an explicit hosted open mode with
+deterministic window reuse, and session restore stores the hosted locator
+separately from a local path or environment id. A daemon-owned account/catalog
+capability may land headlessly before Notebook Home: listing configured accounts,
+listing notebooks for a selected account, and invoking the hosted-open path
+without adding a visible page or menu entry.
+
+Hosted source identity must stay explicit across window context, deterministic
+labels, deduplication, daemon bridges, reconnect state, and session restore. The
+origin-scoped V1 registry may use `(normalized origin, notebook id)` only while
+it enforces one account per origin. Multi-account origins require the
+account-qualified `(account_id, provider_resource_id)` identity from the hosted
+notebook federation memo; a notebook id or origin-plus-id is not a durable
+federated key.
+
+The hosted browser `/n` page and a future Desktop Notebook Home are separate
+host adapters over common catalog concepts. Desktop must not depend on the
+browser page's routing, cookies, `localStorage`, `window.location`, or
+module-singleton stores. Both hosts may share typed DTOs, pure projections, and
+host-neutral presentation components. Catalog, authentication, routing, and
+host-configuration facts remain host-owned API state, not Automerge document
+state or notebook-shell state.
 
 ## Capability Semantics
 
@@ -201,32 +199,13 @@ whether cloud should receive the same typed projection and provide different
 callbacks. Divergence is justified for authority and side effects, not for
 duplicating notebook chrome.
 
-### Case study: outline interaction wiring (2026-06)
+### Shared interaction wiring
 
-The 2026-06 outline iteration (#3553–#3564) showed a subtler divergence mode
-than duplicated components: **shared components, unshared wiring.** The outline
-data model, rail panel, and rail wrapper were all shared and both hosts shipped
-the new rendering — but the *interaction* layer (scroll-synced active item,
-outline↔focused-cell selection coupling, execution status labels via
-`getOutlineStatusLabel`) lived as ~150 lines of hooks and callbacks inside
-`apps/notebook/src/App.tsx`. Cloud rendered the same rail with a thinner prop
-set and read as "the old outline," even though its deployed bundle contained
-all the new shared code.
+A shared component whose behavior depends on host-side hooks is only half-shared. For example, an earlier outline pass shared the data model and rail components, but kept scroll-sync, outline-to-cell selection coupling, and `getOutlineStatusLabel` inside `apps/notebook/src/App.tsx`. Cloud rendered the same rail with fewer props and appeared to show an older outline despite shipping the same components.
 
-The lesson extends the decision above: a shared component whose behavior
-depends on host-side hooks is only half-shared. When iterating on a shared
-surface, interaction state machines (scroll observers, selection coupling,
-status projection) belong next to the component — as shared hooks with
-host-neutral inputs — not in a host shell. Optional props on a shared
-component (`activeOutlineItemId?`, `outlineCellIds?`) are a divergence smell:
-each optional interaction prop is a behavior one host will silently lack.
+Interaction state machines (scroll observers, selection coupling, status projections) belong next to the shared component as host-neutral hooks, not inside a host shell. Optional interaction props (`activeOutlineItemId?`, `outlineCellIds?`) are a divergence smell because one host will silently drop the behavior.
 
-Intentional asymmetries still exist and should be recorded rather than
-"fixed": e.g. desktop currently does not render the workstations rail panel
-while remote-compute UX evolves on hosted first (`workstationsPanel` stays an
-optional slot by design). The test for "is this divergence intentional?" is
-whether someone can point to a product reason, not whether the code happens
-to compile on both hosts.
+Record intentional asymmetries rather than working around them. For example, desktop omits the workstations rail panel while remote-compute UX evolves on hosted first (`workstationsPanel` stays an optional slot by design). A divergence is intentional only when backed by a clear product reason.
 
 ## Anchor And Navigation Contract
 

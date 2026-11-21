@@ -268,7 +268,13 @@ Detection and the dialog summary are parse-only. Project-backed launches do not 
 
 Both release `AwaitingProjectTrust` to `NotStarted`; the client launches afterwards, as with `ApproveTrust`. Daemon-bridged hosted rooms reject both.
 
-Requests resolve the manifest from the current room context, or from the detection path captured by the daemon for its pending launch. This preserves the `LaunchKernel.notebook_path` override without changing the notebook's file binding. The approval request's `directory` never drives project discovery. Save As, a working-directory change, or a replacement launch invalidates the previous launch context. An old prompt cannot approve dependencies outside the chosen directory scope; approving an ancestor intentionally covers its descendants. Package reconciliation still uses the actual notebook binding and checks that its current manifest is the one evaluated for approval.
+Manifest resolution and scope invariants:
+
+- Requests resolve the manifest from the current room context or the detection path captured for the pending launch. This preserves `LaunchKernel.notebook_path` without changing the notebook's file binding.
+- The approval request's `directory` never drives project discovery.
+- Save As, a working-directory change, or a replacement launch invalidates the previous launch context.
+- An old prompt cannot approve dependencies outside the chosen directory scope. Approving an ancestor intentionally covers its descendants.
+- Package reconciliation still uses the actual notebook binding and checks that its current manifest matches the one evaluated for approval.
 
 The client retains pending Run Cell or Run All actions across approval and replays them with their original observed-head guards. Changed content is rejected. Dismissing the prompt cancels the pending action, including while approval, trust checking, or startup is in flight. A kernel that has already started need not be stopped, but the cancelled action is not replayed.
 
@@ -345,15 +351,17 @@ If Claude later asks `manage_dependencies(add=["requests"])`, the same MCP-level
 2. If the folder is untrusted, the gate parks in `AwaitingProjectTrust`. The summary's `environment_to_build` shows the `conda env create` command the daemon will run.
 3. Once the folder is trusted, launch builds the env and starts the kernel. There is no second prompt.
 
+## Open Follow-ups
+
+- **Source attribution for PyPI (`--index-url`).** Conda channels have their own trust identity, but `extract_trust_info` does not track custom PyPI indexes. A notebook pulling an approved name from a custom index still passes name checks. Add a `pypi-index` ecosystem alongside `conda-channel` and `pixi-channel`.
+- **Channel ordering.** `conda_channels` is currently checked as an unordered set, so `[conda-forge, defaults]` matches `[defaults, conda-forge]`. Channel priority changes which package wins and is a separate supply-chain decision.
+- **Escapes from a trusted directory (`outside_directory`).** A `path =` source, workspace member, or activation script can point outside the trusted folder. The dialog summary flags these in `outside_directory`, but the gate does not refuse them because monorepos use them. Revisit if the flag proves too quiet.
+- **Revocation UI for packages and directories.** v1 has no UI for removing allowlist rows from `trusted_packages` or `trusted_directories`. Untrusting a package or folder such as `~/Downloads` currently requires editing SQLite manually; add a management surface under settings.
+
 ## Open Questions
 
-1. **Per-version approval.** Today the allowlist is keyed by package *name*. Approving `pandas` covers every version, including future malicious releases. Pinning approval to a version range or a wheel hash is a stronger model but adds significant UX cost (every minor bump re-prompts). Tracked but not decided.
-2. **Revocation surface.** v1 has no UI for removing rows from the allowlist. "Untrust this package" requires editing SQLite manually. A management surface (probably under settings) remains an open follow-up.
-3. **Source attribution for PyPI.** Conda channels are tracked as their own identity; PyPI does not have an equivalent in `extract_trust_info`. If a user starts publishing notebooks that pull from a custom PyPI index (`--index-url`), today the index is not part of the trust identity. The deps would still be name-checked, but the index switch would be invisible. Probably wants a `pypi-index` ecosystem alongside `conda-channel` and `pixi-channel`.
-4. **Cross-machine trust sync.** A power-user setup (laptop + desktop + cloud workspace) wants to share an allowlist across machines. The natural shape is a synced settings entry: "trusted packages" as a user-scoped synced doc, with the local SQLite as a cache. Out of scope for v1; tracked.
-5. **Identity-scoped trust.** This ADR treats trust as a per-machine question. A future overlay could scope trust to identity: "I have approved `pandas` for myself, but not for an MCP agent acting on my behalf." Pairs with the operator suffix in the identity model. Not v1.
-6. **Lockfile-based trust.** A `uv.lock` or `conda-lock.yml` is a stronger statement than a raw dep list: every transitive package and version is pinned. Trust against a lockfile hash (rather than dep names) would close the "approved pandas but pandas pulled a malicious transitive" gap. Open question how to surface that in the dialog without overwhelming the user.
-7. **Pre-resolution preview.** The user approves names, but the daemon resolves and installs full transitive trees. Showing the resolved tree before install (so the dialog can warn about surprise transitives) is a UX direction that needs solver cooperation.
-8. **Channel ordering.** `conda_channels` is treated as a set today: approving `[conda-forge, defaults]` is the same as `[defaults, conda-forge]`. Channel order affects which copy of a package wins, which is a separate supply-chain decision the current model does not capture.
-9. **Escapes from a trusted directory.** A `path =` source, workspace member, or activation script can point outside the folder the user trusted. The summary flags these in `outside_directory`; the gate does not refuse them, because legitimate monorepos do this. Revisit if the flag proves too quiet.
-10. **Directory revocation.** Like package rows, directory rows have no management surface yet. "Untrust ~/Downloads" is a real need.
+1. **Per-version approval.** Today the allowlist is keyed by package *name*, so approving `pandas` covers future releases too. Pinning approval to a version range or wheel hash is stronger, but re-prompting on minor bumps carries high UX cost.
+2. **Cross-machine trust sync.** Multi-machine users (laptop, desktop, cloud workspace) may want a user-scoped synced allowlist with local SQLite as a cache. Out of scope for v1.
+3. **Identity-scoped trust.** A future overlay could scope approvals to identity (for example, approving `pandas` for the user but not an MCP agent), pairing with the operator suffix in the identity model.
+4. **Lockfile-based trust.** Trusting a `uv.lock` or `conda-lock.yml` hash would pin transitive dependencies too. Surfacing lockfile trust without overwhelming the dialog remains open.
+5. **Pre-resolution preview.** Showing the resolved transitive tree before install would expose surprise transitives, but needs solver cooperation in the approval dialog.

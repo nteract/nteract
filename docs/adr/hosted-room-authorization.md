@@ -1,76 +1,76 @@
 # Hosted Room Authorization and Cloud Room Host
 
-**Status:** Draft, 2026-05-23.
+**Status:** Draft, 2026-05-23. Core room ACL, materializer checkpoint precedence,
+semantic editor diff validation, and staged blob-upload policy have shipped;
+private blob reads, OIDC/Hub capability mapping, and live revocation remain
+open.
 
 ## Context
 
-`apps/notebook-cloud` now proves three important hosted pieces:
+`apps/notebook-cloud` establishes three core hosted pieces:
 
-- published notebook viewers load a persisted snapshot bundle (`NotebookDoc`,
+- Published notebook viewers load a snapshot bundle (`NotebookDoc`,
   `RuntimeStateDoc`, and optional `CommsDoc`) from R2 and materialize it with
-  `runtimed-wasm`;
-- renderer sidecars can live on a separate asset origin while notebook blobs
-  remain behind the notebook host's blob resolver;
-- the Durable Object can accept typed-frame v4 WebSockets, rewrite CBOR
-  presence, enforce frame-size caps, and reject obvious read-only violations.
+  `runtimed-wasm`.
+- Renderer sidecars run on a separate asset origin while notebook blobs stay
+  behind the notebook host's blob resolver.
+- The Durable Object accepts typed-frame v4 WebSockets, rewrites CBOR presence,
+  enforces frame-size caps, and rejects read-only violations.
 
-The materialized Durable Object room host unifies those pieces. A published
-read-only notebook, an authenticated editor, a future runtime peer, and an
-anonymous public viewer all connect to the same room abstraction with different
-scopes. The Worker authenticates the connection. D1 decides what that principal
-can do in this room. The Durable Object hosts the live document and persists
-snapshots.
+The materialized Durable Object room host unifies these pieces. Published
+read-only notebooks, authenticated editors, runtime peers, and anonymous public
+viewers connect to one room abstraction with different scopes. The Worker
+authenticates the connection, D1 authorizes what that principal can do in the
+room, and the Durable Object hosts the live document and persists snapshots.
 
 Neighbors:
 
-- `docs/adr/identity-and-trust.md` - principal/operator labels,
-  connection scopes, provider validation, and actor-principal enforcement.
-- `docs/adr/hosted-credential-transport.md` - direct OIDC, JupyterHub,
-  browser WebSocket credential transports, and origin policy.
-- `docs/adr/hosted-notebook-artifacts.md` - R2 snapshot bundle and
-  render-cache layout.
-- `docs/adr/blob-storage-and-content-addressing.md` - BlobResolver
-  and renderer asset origin separation.
-- `docs/adr/frontend-sync-bridge.md` - why hosted editing should reuse
-  the same WASM/sync/viewer surfaces rather than introduce a second notebook UI
-  stack.
+- `docs/adr/identity-and-trust.md`: principal/operator labels, connection
+  scopes, provider validation, and actor-principal enforcement.
+- `docs/adr/hosted-credential-transport.md`: direct OIDC, JupyterHub, browser
+  WebSocket credential transports, and origin policy.
+- `docs/adr/hosted-notebook-artifacts.md`: R2 snapshot bundle and render-cache
+  layout.
+- `docs/adr/blob-storage-and-content-addressing.md`: `BlobResolver` and
+  renderer asset origin separation.
+- `docs/adr/frontend-sync-bridge.md`: why hosted editing reuses the same
+  WASM/sync/viewer surfaces instead of adding a second UI stack.
 
 ## Decision 1: Room access is an ACL, not a credential claim
 
-Authentication answers "who is this connection?" Authorization answers "what
-can this principal do in this notebook room?" The Worker keeps those as two
+Authentication answers "who is this connection?" Authorization answers "what can
+this principal do in this notebook room?" The Worker keeps those as separate
 steps:
 
-1. Extract and validate a credential. This yields an authenticated principal,
-   an operator, and provider-side capability bounds.
+1. Extract and validate a credential to get an authenticated principal, an
+   operator, and provider-side capability bounds.
 2. Look up the notebook room ACL in D1.
 3. Derive the connection scope from the ACL row and provider bounds.
 4. Stamp trusted headers for the Durable Object.
 
-Dev auth follows the same shape. It identifies a principal and operator, but it
-does not get to self-assert final deployed scope. The requested `scope` query or
-header remains local-only bootstrap/test convenience. In deployed environments,
-scope comes from the room ACL.
+Dev auth follows the same flow. It identifies a principal and operator, never
+final deployed scope. The requested `scope` query parameter or header is a
+local-only bootstrap convenience; deployed scope always comes from the room ACL.
 
-The existing `notebooks.owner_principal` column becomes catalog metadata. It is
-useful for listing and provenance, but it is not the authorization source of
-truth. The owner permission is an ACL row with `scope = 'owner'`.
+`notebooks.owner_principal` is catalog metadata for listing and provenance, not
+authorization truth. Owner permission is an explicit ACL row with
+`scope = 'owner'`.
 
-This keeps the hosted authority split explicit:
+This keeps hosted authority boundaries explicit:
 
-- The room URL addresses a room host; it does not grant access.
-- The Durable Object is document authority; it materializes and validates live
-  `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc` state for the room.
-- The ACL is access authority; it decides whether a validated principal may
+- **Room URL**: addresses a room host; grants no access.
+- **Durable Object**: document authority; materializes and validates live
+  `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc` state.
+- **Room ACL**: access authority; decides whether a validated principal may
   connect as `viewer`, `editor`, `runtime_peer`, or `owner`.
-- JupyterHub and other compute providers authorize their own compute resources,
-  then attach as scoped runtime peers when the room ACL permits it.
-- Blob uploads are subordinate to the connection scope and the later document
-  path that references the uploaded hash.
+- **Compute providers** (JupyterHub and others): authorize their own compute
+  resources, then attach as scoped runtime peers when the room ACL allows it.
+- **Blob uploads**: subordinate to connection scope and the later document
+  mutation that references the uploaded hash.
 
 ## Decision 2: ACL rows are explicit D1 records
 
-The next schema migration adds `notebook_acl`:
+Room ACLs live in the D1 `notebook_acl` table:
 
 ```sql
 CREATE TABLE notebook_acl (
@@ -90,350 +90,323 @@ CREATE INDEX notebook_acl_subject_idx
   ON notebook_acl(subject_kind, subject, notebook_id);
 ```
 
-`subject_kind = 'principal'` means `subject` is a validated `Principal` string
+When `subject_kind = 'principal'`, `subject` is a validated `Principal` string
 from `nteract-identity`, such as `user:anaconda:...`,
 `hub:hub.example.com:alice`, or `local:quill`.
 
-`subject_kind = 'public'` with `subject = 'anonymous'` is the public-read entry.
-It grants anonymous connections `viewer` scope for that room. Public access is
-not inferred from the existence of a render cache or a snapshot object.
+When `subject_kind = 'public'` and `subject = 'anonymous'`, anonymous
+connections receive `viewer` scope for that room. Public access is never
+inferred from a render cache or snapshot object.
 
-The primary key includes `scope` so one principal can hold more than one role in
-the same room. This matters because `editor` and `runtime_peer` are orthogonal:
-a local daemon bridge may need one connection as editor and a separate
-connection as runtime peer, both under the same principal but with distinct
-operators. The principal is not forced to become `owner` just to get both write
-surfaces.
+The primary key includes `scope` so one principal can hold multiple orthogonal
+roles in the same room. A local daemon bridge, for example, may need one
+`editor` connection and one `runtime_peer` connection under the same principal
+with distinct operators, without being promoted to `owner`.
 
-This deliberately avoids wildcard principal strings such as `anonymous:*`.
-Wildcard matching is authorization logic, not principal syntax.
+This schema deliberately avoids wildcard principals like `anonymous:*`. Wildcard
+matching is authorization logic, not principal syntax.
 
-D1 does not provide MySQL-style `ON UPDATE` timestamps. All ACL writes must go
-through a storage helper that sets `updated_at = strftime(...)` explicitly on
-every upsert and replacement. Bare `UPDATE notebook_acl ...` statements are
-forbidden; tests should assert the helper refreshes `updated_at` when mutating
-ACL rows.
+D1 has no MySQL-style `ON UPDATE` timestamps. Every ACL write must go through a
+storage helper that sets `updated_at = strftime(...)` explicitly on upserts and
+replacements. Bare `UPDATE notebook_acl ...` statements are forbidden, and tests
+must verify `updated_at` refreshes on mutation.
 
-The same helper is also responsible for orphan-room protection: it must reject
-any deletion or replacement that would leave a notebook with no `owner` ACL row.
-A hosted room always has at least one owner principal. Redundant rows are
-allowed: a principal may hold both `owner` and `editor`, but orphan-room
-protection counts only rows with `scope = 'owner'`, not total ACL rows for that
-principal.
+The same helper enforces orphan-room protection: it rejects any deletion or
+replacement that leaves a notebook with zero `scope = 'owner'` rows. A principal
+may hold redundant rows such as `owner` and `editor`, so the guard counts only
+rows where `scope = 'owner'`.
 
 ## Decision 3: Scope derivation is capability intersection
 
-The four scopes are not a clean total order because `editor` and `runtime_peer`
-grant different write surfaces. Treat them as capability sets:
+The four scopes do not form a total order because `editor` and `runtime_peer`
+grant disjoint write surfaces. Treat them as capability sets:
 
 | Scope | Capabilities |
 |-------|--------------|
-| `viewer` | read room state, receive sync, send empty sync negotiation, send presence; anonymous viewer presence may be connection-local |
-| `editor` | viewer + write allowed `NotebookDoc` fields + mutable widget comm state in `CommsDoc` |
-| `runtime_peer` | viewer + write kernel lifecycle, comm topology, output routing, and progress/output state for accepted executions + upload output blobs; cannot create execution intent or rewrite trust/environment/path/project metadata |
-| `owner` | editor + publish revisions + mutate ACLs; may hold separate `runtime_peer` capability through an explicit ACL row when it needs runtime progress authorship |
+| `viewer` | Read room state, receive sync, send empty sync negotiation, send presence (anonymous presence may be connection-local) |
+| `editor` | `viewer` + write allowed `NotebookDoc` fields + mutable widget comm state in `CommsDoc` |
+| `runtime_peer` | `viewer` + write kernel lifecycle, comm topology, output routing, and progress/output state for accepted executions + upload output blobs; cannot create execution intent or rewrite trust/environment/path/project metadata |
+| `owner` | `editor` + publish revisions + mutate ACLs; holds `runtime_peer` separately via an explicit ACL row when runtime progress authorship is needed |
 
-Execution intent is a separate authority from runtime-state authorship. A
-runtime peer may consume queued executions and write lifecycle/output state, but
-it must not create new execution intent. In the current browser-hosted
-implementation, the cloud viewer surfaces run controls only when:
+Execution intent is separate from runtime-state authorship. A runtime peer
+consumes queued executions and reports lifecycle and outputs, but never creates
+new execution intent. In the browser cloud viewer, run controls appear only
+when:
 
 1. a live `runtime_peer` is attached to the room; and
-2. the browser connection is scoped as `owner`.
+2. the browser connection holds `owner` scope.
 
-This is the current product policy. `editor` means notebook-editing authority,
-not compute authority. Edit mode in the UI and an `editor` ACL row must not
-imply that the principal can spend hosted compute or create execution intent.
-The long-term model can add an explicit execute capability/scope so a non-owner
-principal can be granted compute deliberately, but that capability is separate
-from document editing, `runtime_peer`, and owner ACL management. Local-only
-kernels should continue to author runtime state under a local principal; when a
-local kernel is promoted into a hosted room, it should adopt the authenticated
-room principal/operator it uses for that connection.
+`editor` grants document-editing authority, not compute authority. Edit mode and
+an `editor` ACL row never let a principal spend hosted compute or enqueue runs.
+A future explicit execute scope can grant compute to non-owners separately from
+document editing, `runtime_peer`, and `owner` ACL management. Local-only kernels
+author runtime state under a local principal; when promoted into a hosted room,
+they adopt the authenticated room principal and operator for that connection.
 
-Blob upload authority is staged. The audit in
+Blob upload authority is staged (HCA-3). The audit in
 `../audits/runtime-peer-and-blob-authority-audit.md` allows editor uploads only
-as precursors to authorized references; until server-side reference-path
-validation exists, hosted rooms deny editor uploads entirely. That is the
-shipped policy: `allowsBlobUpload` permits only `runtime_peer` and `owner`,
+as precursors to authorized document references. Until server-side
+reference-path validation exists, hosted rooms deny editor uploads. Under the
+shipped policy, `allowsBlobUpload` permits only `runtime_peer` and `owner`,
 enforced at both the `PUT_BLOB` frame prefilter and the HTTP upload route.
-Editor upload and reference-path validation ship together in one change set,
-or not at all. Tracked as `HCA-3` in the "Open Follow-ups" section below.
+Editor uploads and reference-path validation must ship together; see
+[Open Follow-ups](#open-follow-ups).
 
-The provider gives a maximum capability set for the credential. The ACL gives
-one or more room grants. A connection also has a requested role. Anonymous
-browser viewers may omit the role and default to `viewer`. Authenticated native
-and system clients must request the role they intend to use so a missing
-parameter fails early instead of connecting as `viewer` and failing on first
-write.
+Each request has a provider maximum capability set, room ACL grants, and a
+requested role. Anonymous browser viewers may omit the role and default to
+`viewer`. Authenticated native and system clients must specify their intended
+role so a missing parameter fails early rather than failing on the first write.
 
-The authorization algorithm is deliberately rejection-oriented:
+Authorization is rejection-oriented:
 
-1. Authenticate the request. If a credential is present, this yields a principal
-   and provider capabilities. If no credential is present, this yields an
-   unauthenticated request.
-2. If the request authenticated successfully, load ACL rows for
-   `(notebook_id, principal)`.
-3. If the request has no credential, load only the public-read ACL row for the
-   notebook. If present, the connection becomes an anonymous viewer. If absent,
-   reject.
+1. Authenticate the request. A valid credential yields a principal and provider
+   capabilities; no credential yields an unauthenticated request.
+2. If authenticated, load ACL rows for `(notebook_id, principal)`.
+3. If unauthenticated, load only the public-read ACL row. If present, grant
+   anonymous `viewer`; otherwise reject.
 4. Compute the union of ACL-granted capabilities.
-5. Check that the requested role's capabilities are a subset of both provider
+5. Verify that the requested role's capabilities are a subset of both provider
    capabilities and ACL capabilities. Anonymous public reads have provider
    capabilities of exactly `viewer`.
-6. If the check passes, the connection scope is exactly the requested role.
-   If it fails, reject the connection instead of silently downgrading, except
-   for the browser live-room public-read case below.
+6. If the check passes, stamp the connection scope as the requested role. If it
+   fails, reject rather than silently downgrading, except for the browser
+   public-read case below.
 
-This keeps a WebSocket connection's scope scalar (`viewer`, `editor`,
-`runtime_peer`, or `owner`) while still allowing one principal to open multiple
-connections with different operators and roles. A principal that has both
-`editor` and `runtime_peer` ACL rows may open one editor connection and one
-runtime-peer connection. It does not receive ACL mutation or publish capability
-unless it also has an `owner` row.
+Each WebSocket holds a single scalar scope (`viewer`, `editor`, `runtime_peer`,
+or `owner`). A principal holding both `editor` and `runtime_peer` rows opens two
+connections with distinct operators and roles. It never gets publish or ACL
+mutation rights without an `owner` row.
 
-For the first implementation pass, dev credentials can use an implicit provider
-maximum of `owner` when the request is local-loopback or carries the deployed dev
-token. Real OIDC/JupyterHub providers should map credential claims to provider
-maximum capabilities before the ACL lookup.
+Dev credentials currently receive an implicit provider maximum of `owner` on
+local loopback or with the deployed dev token. Real OIDC and JupyterHub
+providers must map credential claims to explicit provider maximum capabilities
+before the ACL lookup.
 
-Browser notebook pages get one public-read compatibility path: if an
-authenticated user asks the live room for `editor` but has no editor ACL row,
-and the notebook has an explicit public `viewer` ACL row, the Worker may stamp
-the connection as `viewer`. This is allowed only for the same-origin live-room
-WebSocket path so stale tabs and over-eager UI defaults do not block signed-in
-users from reading public notebooks. HTTP mutation routes, publish routes, blob
-uploads, and system/native clients still fail rather than downgrade.
+Browser notebook pages get one compatibility fallback on public rooms: if an
+authenticated user requests `editor` without an editor ACL row, and the notebook
+has an explicit public `viewer` ACL row, the Worker may stamp the connection as
+`viewer`. This applies only to same-origin live-room WebSockets so stale tabs do
+not block signed-in users from viewing public notebooks. HTTP mutations, publish
+routes, blob uploads, and native/system clients still reject instead of
+downgrading.
 
 ## Decision 4: Public viewers are authorized, not fallback guests
 
-Requests with no authenticated credential become anonymous principals only
-after the room ACL allows public read:
+Unauthenticated requests become anonymous principals only after the room ACL
+permits public read:
 
 ```text
 anonymous:<session>/browser:<session>
 ```
 
-If a room has no public ACL row, an unauthenticated WebSocket upgrade or render
-API read gets `401`/`403`, not an implicit viewer session. A signed-in user who
-lacks a principal ACL row can still read through that public row when they
-request `viewer`, and browser live-room connections may use the public-read
-downgrade described above. Local Wrangler demo routes may seed a public-read
-ACL for the demo notebook, but deployed behavior must be explicit.
+Without a public ACL row, unauthenticated WebSocket upgrades and render API
+reads return `401`/`403`, never an implicit viewer session. A signed-in user
+without a principal ACL row can read through the public row by requesting
+`viewer` (or via the browser live-room fallback above). Local Wrangler demo
+routes may seed a public-read ACL for demo notebooks, but deployed rooms require
+explicit rows.
 
-Anonymous viewers are always read-only. They may receive room state and send
-presence. They may not send non-empty `NotebookDoc`, `RuntimeStateDoc`, or
-`CommsDoc` sync, request side effects, blob uploads, pool-state writes, publish
-requests, or ACL mutations.
+Anonymous viewers are strictly read-only. They may receive room state and send
+presence, but may not send non-empty `NotebookDoc`, `RuntimeStateDoc`, or
+`CommsDoc` sync, request side effects, upload blobs, write pool state, publish,
+or mutate ACLs.
 
-Public viewer presence is a product policy layered on top of this ACL. The
-minimum hosted-room behavior keeps anonymous public presence connection-local,
-matching the current prototype: the server acknowledges the frame to the sender
-but does not broadcast it to other peers. Authenticated viewers can use normal
-live broadcast presence. Room frames are not persisted as a separate activity
+Anonymous public presence stays connection-local: the server acknowledges the
+frame to the sender without broadcasting it to other peers. Authenticated viewers
+receive live broadcast presence. Room frames are not persisted as an activity
 log; the materialized `NotebookDoc`/`RuntimeStateDoc`/`CommsDoc` checkpoint path
-is the durable recovery boundary. If product later wants public viewer presence,
-that change should be explicit and should define whether anonymous users appear
-as aggregate document presence or full cursor/cell presence.
+is the durable recovery boundary. Any future broadcast of anonymous presence
+must explicitly choose between aggregate room presence and full cursor/cell
+presence.
 
 ## Decision 5: Room creation is a privileged operation
 
 Opening `/n/:id/sync` must not mint a notebook row for an arbitrary principal.
-Notebook rows and their first owner ACL row are created by one of:
+Notebook rows and their initial `owner` ACL row are created only by:
 
-1. publish/import, authenticated as a principal with permission to create a
-   hosted notebook;
-2. explicit owner-only room creation API;
-3. local-only test/bootstrap helper.
+1. authenticated publish/import for a principal permitted to create hosted
+   notebooks;
+2. an explicit owner-only room creation API; or
+3. a local-only test/bootstrap helper.
 
-The current `ensureNotebook()` helper can remain as a low-level storage
-primitive, but call sites should move to explicit operations:
+`ensureNotebook()` may remain as a low-level storage primitive, but call sites
+must use explicit operations:
 
-- `createNotebookWithOwnerAcl(...)` for publish/import/bootstrap;
-- `touchNotebook(...)` for updating `updated_at` on existing rooms;
+- `createNotebookWithOwnerAcl(...)` for publish, import, and bootstrap;
+- `touchNotebook(...)` to update `updated_at` on existing rooms;
 - `authorizeNotebookAccess(...)` for read/write route gates.
 
-This closes the class of bugs where a dev-authenticated viewer or editor can
-create catalog state by connecting to a guessed id.
+This prevents a dev-authenticated viewer or editor from creating catalog state
+by connecting to a guessed ID.
 
-## Decision 6: The DO becomes the live document host
+## Decision 6: The Durable Object is the live document host
 
-The Durable Object should evolve from a bounded frame relay into the hosted
-room host:
+The Durable Object hosts the live room rather than relaying raw frames:
 
 1. On first connection, load the latest revision from D1 and R2.
-2. Call the room materializer to load notebook, runtime-state, and optional
-   comms bytes.
-3. Keep the handle resident while the room has active peers.
+2. Materialize `NotebookDoc`, `RuntimeStateDoc`, and optional `CommsDoc` bytes
+   through the room materializer.
+3. Keep the WASM handle resident while peers are connected.
 4. Route inbound typed-frame v4 bytes through the WASM handle.
-5. Enforce scope and actor-principal validation before mutating the live
-   room state.
+5. Enforce scope and actor-principal validation before mutating live state.
 6. Emit sync replies and broadcasts to connected peers.
-7. Debounce persistence of `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc`
-   snapshots back to R2 and record a revision/checkpoint row in D1.
+7. Debounce snapshot persistence for `NotebookDoc`, `RuntimeStateDoc`, and
+   `CommsDoc` to R2 and record a revision/checkpoint row in D1.
 
-The DO does not host kernels in this phase. Kernel execution enters later as a
-`runtime_peer` connection that reports lifecycle, comm topology, output routing,
-and progress/output for room-accepted executions and uploads output blobs. The
-DO hosts documents, presence, auth context, snapshots, scope enforcement, and
-the request path that creates execution intent.
+The Durable Object does not run kernels. Compute connects as a `runtime_peer`
+that publishes lifecycle, comm topology, output routing, progress, outputs, and
+output blobs for room-accepted executions. The DO owns documents, presence, auth
+context, snapshots, scope enforcement, and the execution-intent request path.
 
-Durable Object storage is not the source of truth for notebook content. It may
-hold hibernation metadata and a recovery cache for the currently materialized
-room, but R2 snapshot bundles and D1 catalog/ACL/revision rows are the durable
-long-term truth. A future implementation may use DO storage to survive
-hibernation or short disconnect windows, but readers must not treat that cache
-as the published revision record or the portability boundary.
+Durable Object storage is a hibernation and recovery cache, never the durable
+source of truth. R2 snapshot bundles and D1 catalog, ACL, and revision rows are
+durable truth. Readers must not treat DO cache state as a published revision or
+portability boundary.
 
-For a connected browser page, the materialized live room is the active source
-of truth. A render cache or `/api/n/:id/render` response may warm-start first
-paint, but it must not become a separate read lane once the live room
-materializes. Read-only viewers and editors consume the same live
-`NotebookDoc`/`RuntimeStateDoc`; scope only limits what each connection may
-author.
+For a connected browser page, the materialized live room is the active source of
+truth. A render cache or `/api/n/:id/render` response may warm-start first
+paint, but it must not remain a separate read lane after live materialization.
+Viewers and editors consume the same live `NotebookDoc` and `RuntimeStateDoc`;
+scope limits only what each connection may author.
 
 ### Checkpoint precedence
 
-The live-room materializer uses Durable Object checkpoint storage exactly as
-this decision requires: a recovery/hibernation cache, never the durable
-revision record. The precedence rules are part of the decision
-(`apps/notebook-cloud/src/room-materializer.ts`):
+The live-room materializer (`apps/notebook-cloud/src/room-materializer.ts`) uses
+DO checkpoint storage strictly as a recovery cache with three precedence rules:
 
-1. A checkpoint is loaded only when its recorded `published_revision_id`
-   matches the latest published revision for the notebook.
-2. On revision mismatch, the checkpoint is kept only when its document heads
-   differ from the published baseline recorded in the checkpoint metadata,
-   meaning the cache carries unpublished live-room changes. Otherwise the room
-   loads from the published R2 snapshot pair.
-3. Failure recovery clears the checkpoint and reloads the published snapshot
-   pair, discarding cache state rather than serving a possibly corrupt cache.
+1. Load a checkpoint only when its `published_revision_id` matches the
+   notebook's latest published revision.
+2. On revision mismatch, keep the checkpoint only if its document heads differ
+   from its recorded published baseline, meaning it holds unpublished live
+   changes. Otherwise load the published R2 snapshot pair.
+3. On failure recovery, clear the checkpoint and reload the published snapshot
+   pair rather than serving potentially corrupt cache state.
 
-The checkpoint metadata stores the correlated
+Checkpoint metadata stores the correlated
 `(notebook_heads, runtime_state_heads, comms_doc_heads)` triplet for both the
-current cache and its published baseline; that pairing is what makes rule 2
-decidable. How often the DO checkpoints remains an open tuning question
-(Open Questions, item 3); the authority question is settled.
+current cache and its published baseline so rule 2 is decidable. Checkpoint
+cadence remains an open tuning question; authority precedence is settled.
 
 ## Decision 7: Editor collaboration is full cell editing behind a semantic gate
 
 Editor-scope collaborators get the full collaborative cell surface: add, delete,
-reorder, and edit cells of any type (markdown, code, raw source). Creating cells
-with a collaborator is the baseline expectation for an editable notebook, so the
-editor write surface is not restricted to markdown. Everything else at the
-document root stays owner-authored: notebook metadata (kernelspec, trust,
-environment, path, project) and the document-identity roots `schema_version`,
-`notebook_id`, `runtime_state_doc_id`, and `comms_doc_id`.
+reorder, and edit markdown, code, and raw cells. Everything else at the document
+root stays owner-authored: notebook metadata (`kernelspec`, trust, environment,
+path, project) and the identity roots `schema_version`, `notebook_id`,
+`runtime_state_doc_id`, and `comms_doc_id`.
 
-UI-only hiding is not an authorization boundary. A malicious browser can send
-arbitrary `NotebookDoc` sync frames, so the room host enforces the editor
-surface server-side with a semantic diff validator: it clone-previews the
-incoming `NotebookDoc` message, diffs it against the heads before the change,
-and accepts it only if every patch lands inside the `cells` map. The policy is
-an allowlist, not a metadata denylist: any other root write — notebook
-metadata, `schema_version`, `notebook_id`, `runtime_state_doc_id`,
-`comms_doc_id`, or a root-level replace/delete of the `cells` map itself — is
-rejected. Owners skip
-the validator (they may write all notebook changes). This is
-`validate_editor_notebook_changes` in `runtimed-wasm`, reached from
-`receive_notebook_sync` whenever `can_write_all_notebook_changes` is false. The
-diff-validator path stays close to the desktop sync model and preserves
-client-local editing; "only the cloud UI exposes editing" is never sufficient.
+UI-only hiding is not a security boundary because a malicious browser can send
+arbitrary `NotebookDoc` sync frames. The room host enforces the editor surface
+server-side with a semantic diff validator:
 
-Cell-level `execution_count` and `execution_id` live under `cells/{id}`, so the
-allowlist accepts editor writes to them. This is intentional. They are the
-legacy nbformat persisted fallback and a pointer into RuntimeStateDoc; the live
-execution authority is RuntimeStateDoc, which is separately gated, so a
-non-owner editor cannot fabricate live execution state. A cell's
-`execution_count` is also written as part of normal cell creation, so carving
-these fields out would mean special-casing creation. The residual exposure is a
-fabricated persisted count surfacing on `.ipynb` export, which is out of the
-current threat model. Revisit if export fidelity from a malicious editor ever
-enters scope.
+- `validate_editor_notebook_changes` in `runtimed-wasm` runs from
+  `receive_notebook_sync` whenever `can_write_all_notebook_changes` is false.
+- It clone-previews the incoming `NotebookDoc` message, diffs it against prior
+  heads, and accepts the frame only if every patch lands inside the `cells` map.
+- The policy is an allowlist, not a metadata denylist. Root writes to metadata,
+  `schema_version`, `notebook_id`, `runtime_state_doc_id`, `comms_doc_id`, or a
+  root replace/delete of `cells` are rejected.
+- Owners skip the validator and may write any notebook change.
 
-Execution is a separate axis from the document write surface. Hosted execution
-controls require owner request authority plus runtime availability for now.
-When a kernel provider is attached, execution requests go through the room host
-and are consumed by an authorized `runtime_peer`; they are not granted by
-widening the editor document surface.
+This validator preserves client-local editing and stays aligned with the desktop
+sync model without relying on UI restrictions.
 
-The editor `RuntimeStateDoc` write surface is closed by the shared runtime-doc
-policy used by the hosted room host and daemon. Editor and owner scopes write
-mutable widget state through `CommsDoc`; runtime peers may write only
-policy-allowed lifecycle, execution status, comm topology, output routing, and
-output updates for accepted work. Execution intent/provenance plus room-host
-facts stay outside the runtime-peer write surface. In a multi-user room, an
-editor sending arbitrary `RuntimeStateDoc` sync changes would be privilege
-escalation into runtime lifecycle, execution status, or fabricated outputs, so
-frames that touch those fields are rejected before the real room document
-mutates.
+Cell-level `execution_count` and `execution_id` sit under `cells/{id}`, so the
+allowlist permits editor writes to them. This is intentional: `execution_count`
+is written during normal cell creation and serves as the legacy nbformat
+fallback, while `execution_id` points into `RuntimeStateDoc`. Because
+`RuntimeStateDoc` is separately gated, an editor cannot fabricate live
+execution state. The residual exposure is a forged persisted count on `.ipynb`
+export, which is out of the current threat model.
 
-Locking the surface down further is a future owner capability, not the baseline:
-an owner-only "freeze structure" or metadata-edit grant can narrow what editors
-may do, but collaborative cell editing is on by default.
+Execution remains a separate axis from document editing. Hosted run controls
+require owner request authority plus runtime availability. Execution requests go
+through the room host to an authorized `runtime_peer`; widening editor cell
+writes does not grant execution.
 
-## Decision 8: Runtime peers are just another scoped connection
+The shared runtime-doc policy closes the editor `RuntimeStateDoc` write surface
+in both the hosted room host and the daemon:
 
-`runtime_peer` is the shape for a future remote runtime service, local daemon
-bridge, or JupyterHub sidecar. A runtime peer:
+- Editors and owners write mutable widget state through `CommsDoc`.
+- Runtime peers write only policy-allowed lifecycle, execution status, comm
+  topology, output routing, and outputs for accepted executions.
+- Execution intent, provenance, and room-host facts stay outside the
+  runtime-peer surface.
+- Disallowed `RuntimeStateDoc` frames are rejected before the room document
+  mutates, preventing editors from escalating into runtime lifecycle or
+  fabricating outputs.
 
-- can send `RuntimeStateDoc` sync frames;
-- can upload blobs referenced by runtime output manifests;
-- can author kernel lifecycle/progress through policy-validated
-  `RuntimeStateDoc` sync;
+Narrowing collaborative editing further (for example, an owner-only "freeze
+structure" mode or a scoped metadata-edit grant) is a future owner control, not
+the baseline.
+
+## Decision 8: Runtime peers are scoped connections
+
+`runtime_peer` is the uniform connection shape for a remote runtime service,
+local daemon bridge, or JupyterHub sidecar. A runtime peer:
+
+- sends policy-validated `RuntimeStateDoc` sync frames for kernel lifecycle,
+  progress, comm topology, and outputs;
+- uploads blobs referenced by runtime output manifests;
 - cannot edit `NotebookDoc`;
-- cannot mutate ACLs or publish revisions unless it also has owner capability.
+- cannot mutate ACLs or publish revisions unless it also holds an `owner` row.
 
-This keeps kernel attachment separate from document editing. A hosted room can
-exist without a runtime peer and still render/persist notebook state.
-It also keeps JupyterHub out of the document-authority path for the preferred
-Anaconda-hosted topology: Hub grants access to compute, while the room ACL
-grants `runtime_peer` access to the room.
+Separating kernel attachment from document editing lets a hosted room render and
+persist without compute attached. In the preferred Anaconda-hosted topology,
+JupyterHub authorizes compute while the room ACL authorizes `runtime_peer`
+access to the room.
 
 ## Decision 9: Blob and plugin origins stay separate
 
-The authorization work does not change renderer hardening:
+Room authorization leaves renderer hardening intact:
 
-- renderer sidecars remain static assets, preferably on the dedicated renderer
-  asset Worker/origin with explicit CORS for sandboxed `srcdoc` iframes;
-- notebook output blobs remain behind the notebook host's BlobResolver path or
-  a future signed output origin;
-- shared renderer code must not reconstruct cloud route shapes from
-  `notebookId`, `/api/n`, or any other app-specific URL convention;
-- iframe CSP/sandbox permissions must not be loosened to make plugin loading
-  easier.
+- Renderer sidecars stay static assets, preferably on the dedicated renderer
+  asset Worker/origin with explicit CORS for sandboxed `srcdoc` iframes.
+- Notebook output blobs stay behind the notebook host's `BlobResolver` path or a
+  future signed output origin.
+- Shared renderer code must not reconstruct cloud URLs from `notebookId`,
+  `/api/n`, or other app-specific route shapes.
+- Iframe CSP and sandbox permissions must not be loosened for plugin loading.
 
-The room ACL gates access to notebook state. Blob reads can remain public for
-published demo notebooks only when the room has public-read ACL. Private
-notebooks need viewer-or-better auth, signed URLs, or an output origin that can
-enforce equivalent access.
+Blob reads may remain public for published demo notebooks only when the room has
+a public-read ACL row. Private notebooks require viewer-or-better auth, signed
+URLs, or an output origin enforcing equivalent access.
 
+## Open Follow-ups
 
-## Prototype-only behavior to remove
-
-- Scope requested by query/header on deployed dev credentials.
-- Implicit anonymous viewer access to every notebook id.
-- WebSocket connect creating a notebook row as a side effect.
-- Durable Object relay behavior that stores frame metadata but does not own a
-  materialized notebook/runtime/comms document bundle.
-- Public snapshot/blob reads that bypass the room ACL for private notebooks.
+- **Editor blob uploads and reference-path validation (HCA-3):** Ship editor blob
+  uploads together with server-side reference-path validation in one change set.
+  Until then, `allowsBlobUpload` stays restricted to `runtime_peer` and `owner`
+  at both the `PUT_BLOB` frame prefilter and the HTTP upload route.
+- **Private hosted blob read capabilities (HCA-6):** Write and land the "Hosted Private
+  Blob Read Capabilities" ADR (resolving `hosted-output-origin-isolation.md`
+  open question 2) before private sharing ships, choosing between Worker auth
+  on `/api/n/:id/blobs/:hash`, signed R2 URLs, or a separate output origin with
+  short-lived tokens.
+- **Remove prototype-only shortcuts:** Eliminate remaining prototype behavior on
+  deployed paths:
+  - deployed dev credentials selecting scope by query parameter or header;
+  - implicit anonymous viewer access to arbitrary notebook IDs;
+  - WebSocket connect creating a notebook catalog row as a side effect;
+  - Durable Object relay paths that store frame metadata without owning a
+    materialized notebook/runtime/comms bundle;
+  - public snapshot or blob reads that bypass the room ACL on private notebooks.
 
 ## Open Questions
 
-1. Whether anonymous public viewers should broadcast full cursor/cell presence
-   or only document-level aggregate presence.
-2. Whether editors should eventually get a scoped notebook-metadata grant
-   (kernelspec, language) or whether metadata stays owner-only.
-3. How often the DO should checkpoint live room snapshots to R2 and whether
-   checkpoint rows are visible as user-facing revisions or internal autosaves.
-4. Whether provider capability bounds should be represented as a set in
-   TypeScript immediately, or kept as a `ConnectionScope` plus helper until
-   OIDC/JupyterHub providers land.
-5. How private hosted blob reads should be enforced: Worker auth check on
-   `/api/n/:id/blobs/:hash`, signed R2 URLs, or a separate output origin with
-   short-lived tokens. This decision gets its own ADR ("Hosted Private Blob
-   Read Capabilities"), resolving `hosted-output-origin-isolation.md` open
-   question 2 before private sharing ships. Tracked as `HCA-6`.
-6. Whether ACL row deletion by an owner should evict live connections
-   immediately through a `SESSION_CONTROL` close frame or only take effect on
-   the next connection attempt. `identity-and-trust.md` defers general
-   revocation, but hosted ACL mutation makes the decision visible earlier.
+1. **Anonymous viewer presence granularity:** Should public viewers ever
+   broadcast full cursor/cell presence, or only document-level aggregate
+   presence?
+2. **Scoped editor metadata grants:** Should editors eventually get a scoped
+   grant for notebook metadata (`kernelspec`, language), or should metadata stay
+   owner-only?
+3. **DO checkpoint cadence and visibility:** How often should the DO checkpoint
+   live room snapshots to R2, and should checkpoints appear as user-facing
+   revisions or internal autosaves?
+4. **Provider capability set representation:** Should provider capability bounds
+   use a capability set in TypeScript immediately, or stay as a
+   `ConnectionScope` plus helper until OIDC and JupyterHub providers land?
+5. **Immediate eviction on ACL deletion:** Should deleting an ACL row evict live
+   connections immediately via a `SESSION_CONTROL` close frame, or take effect
+   on reconnect? `identity-and-trust.md` defers general revocation, but hosted
+   ACL mutation surfaces this earlier.
