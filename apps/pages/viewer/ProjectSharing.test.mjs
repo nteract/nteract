@@ -459,3 +459,58 @@ test("a Project owner in no organization sees no link access row", async (t) => 
   await ownerPanel(t, async () => projectLedger(null, { proof: "missing" }));
   assert.equal(document.querySelector(".page-domain-sharing"), null);
 });
+
+test("a Project's owner adds a colleague found by name; the grant names only the picked id", async (t) => {
+  const searches = [];
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    searches.push([String(url), JSON.parse(options.body)]);
+    return Response.json({
+      members: [{ id: "jesse-person", name: "Jesse Doe", image_url: null }],
+    });
+  });
+  const calls = [];
+  let current = { ...projectLedger(null), memberSearch: true };
+  await ownerPanel(t, async (name, args) => {
+    calls.push([name, args]);
+    if (name === "manage_project_access")
+      current = {
+        ...current,
+        revision: current.revision + 1,
+        members: { "user:kilo:jesse-person": { role: args.role, displayName: "Jesse Doe" } },
+      };
+    return current;
+  });
+  const input = document.querySelector(".member-picker input");
+  assert.ok(input, "the picker shows");
+  // React DOM loaded before this test's DOM existed and doesn't see input
+  // events here, so the change goes to the field's handler directly.
+  const props = Object.entries(input).find(([key]) => key.startsWith("__reactProps$"))[1];
+  await act(async () => props.onChange({ target: { value: "jes" } }));
+  await act(() => new Promise((resolve) => setTimeout(resolve, 320)));
+  assert.deepEqual(searches, [
+    ["/api/organization-members", { organization_id: acme.id, query: "jes" }],
+  ]);
+  await act(async () => document.querySelector(".member-picker-results button").click());
+  await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+  const [name, args] = calls.at(-1);
+  assert.equal(name, "manage_project_access");
+  assert.deepEqual(
+    { ...args, nonce: undefined },
+    {
+      project_id: "prj_3b160b47-6df1-4983-81eb-489ca5a26812",
+      action: "grant_organization_member",
+      organization_id: acme.id,
+      member_id: "jesse-person",
+      role: "viewer",
+      expected_revision: 1,
+      nonce: undefined,
+    },
+  );
+  assert.match(document.body.textContent, /Jesse Doe/);
+  assert.equal(document.querySelector(".member-picker input").value, "");
+});
+
+test("a Project owner without member search sees no picker", async (t) => {
+  await ownerPanel(t, async () => ({ ...projectLedger(null), memberSearch: false }));
+  assert.equal(document.querySelector(".member-picker"), null);
+});

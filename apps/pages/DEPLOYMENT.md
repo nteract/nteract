@@ -48,7 +48,7 @@ state, find out which kind it is.
 | Normative, in a Durable Object | Page host, per-account Catalog, Project (`Space`) objects | The Page's host record, access list, lifecycle, receipts and its documents; each account's `page/<id>`, `shared/<id>`, `trash/<id>` and `space/<id>` entries | Restore point only ([Restore points](#restore-points)) |
 | Projection, in D1 | `pages_catalog_pages`, `pages_catalog_access`, `pages_catalog_spaces`, `pages_catalog_accounts` | A copy of the Durable Object state above, written from it for listing and search | Rebuild: reconciliation regenerates the rows from the Durable Objects. Never edit by hand |
 | Normative, in D1 only | `page_tags` | Every Page's tags | Restore point only. Nothing can rebuild it |
-| Normative, in D1 only | `pages_quota_rules`, `kilo_memberships`, `pages_project_invitations`, and the session and `pages_oauth_*` tables | Quota overrides, Kilo organization evidence, invitations, sign-in sessions and OAuth grants | Restore point. Sessions, grants and memberships also renew when the person signs in again; deleting session or grant rows signs people out or revokes agents |
+| Normative, in D1 only | `pages_quota_rules`, `pages_organization_memberships`, `pages_project_invitations`, and the session and `pages_oauth_*` tables | Quota overrides, organization evidence, invitations, sign-in sessions and OAuth grants | Restore point. Sessions, grants and memberships also renew when the person signs in again; deleting session or grant rows signs people out or revokes agents |
 
 For the first two rows the Durable Object is the source of truth and D1 is kept
 in sync with it as a projection; D1 chooses listing candidates and never grants
@@ -1620,22 +1620,55 @@ an answer without a usable list counts as no organizations and never fails a
 sign-in ([worker/kilo-exchange.mjs](worker/kilo-exchange.mjs)).
 
 Every successful exchange writes the principal's membership record to D1
-(`kilo_memberships`, migrated through `kilo_membership_schema`,
-[worker/kilo-membership.mjs](worker/kilo-membership.mjs)):
+(`pages_organization_memberships`, migrated through
+`pages_organization_schema`,
+[worker/organization-memberships.mjs](worker/organization-memberships.mjs)):
 
-- **Row shape and ordering.** Each row stores the organizations and
-  `verified_at_ms` (when Pages sent the exchange, in milliseconds by its own
-  clock). One statement orders writes against the stored row so the newest
-  answer wins across isolates and `verified_at_ms` never moves backward.
+- **Row shape and ordering.** Each row stores the organization directory's
+  `provider` (`kilo`), the organizations, `verified_at_ms` (when Pages sent the
+  exchange, in milliseconds by its own clock), and the directory's opaque
+  `directory_credential`. One statement orders writes against the stored row so
+  the newest answer wins across isolates and `verified_at_ms` never moves
+  backward. A record written by another provider does not count as evidence.
 - **Same-millisecond ties.** An answer with identical stored text changes
   nothing; any differing answer in the same millisecond clears organizations
   until the next exchange so an unorderable tie never grants access.
 - **Write volume.** One D1 write per browser sign-in, and at least one per
   agent-token exchange in each isolate (concurrent requests arriving at lease
   start write the same answer harmlessly).
-- **Schema v2.** Version 2 drops the table and recreates it with
-  `verified_at_ms`; v1 rows were timed in seconds and could not be ordered by
-  the millisecond, so each principal's next exchange writes a fresh row.
+
+Pages owns this organization lens; Kilo is its first directory adapter
+([worker/organization-directory.mjs](worker/organization-directory.mjs),
+[worker/kilo-directory.mjs](worker/kilo-directory.mjs)):
+
+- **Transition from `kilo_memberships`.** Earlier builds stored this evidence
+  in `kilo_memberships` (`kilo_membership_schema`). This build runs those
+  migrations first so the table exists in its latest shape, then copies rows
+  into `pages_organization_memberships` as provider `kilo` without overwriting
+  newer rows. Each write also mirrors organizations and `verified_at_ms` (never
+  `directory_credential`) to `kilo_memberships` so rollback builds read current
+  evidence and revocations stick. An older isolate still writes only
+  `kilo_memberships`; its updates reach the new table on that person's next
+  exchange through this build (bounded by the 8-hour evidence window). Once
+  this release has run on every deployment for more than 8 hours, the following
+  release stops the dual write and drops `kilo_memberships` and
+  `kilo_membership_schema`; deployments jumping past this build still run the
+  copy before the drop.
+- **Directory search credential (`member_search_proof`).** Kilo's exchange may
+  return a signed 8-hour `member_search_proof` scoped to the person and this
+  deployment's audience. Pages stores it in `directory_credential` under the
+  same timestamp ordering (a later answer replaces or clears it; a
+  same-millisecond tie keeps whichever is set). Only organization member search
+  reads it from D1 while the record is live, sending it to Kilo's
+  `POST /api/pages-auth/organization-members` with the deployment secret; it
+  never enters a response, identity, cache, or log line.
+- **Fallback and rate limits.** Without a proof, the share dialog shows email
+  invitations only. Kilo returns 503 until its rate-limit rules exist and on
+  outages; Pages replies with retryable 503 `member_search_unavailable` and
+  keeps the picker open for the next query. Pages has no shared rate limiter of
+  its own, so Kilo's per-deployment and per-searcher limits govern search (a
+  heavy searcher can exhaust the deployment's share), and a 429 from Kilo
+  passes its `Retry-After` through to the browser.
 
 A sign-in whose write fails gets the retryable failure page (503,
 `membership_unrecorded`) and no session. An agent request on a token answer

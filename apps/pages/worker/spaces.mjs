@@ -23,7 +23,14 @@ import { fingerprint, operationKey } from "./mutations.mjs";
 import { validPageId } from "./registration.mjs";
 import { NO_ACTOR_CHAIN, decide, heldRelation, principalOf, projectObject } from "./authz.mjs";
 import { serialQueue } from "./serial-queue.mjs";
-import { claimInvitation, organizationSharing, proposeSharingMutation } from "./sharing.mjs";
+import {
+  GRANT_ORGANIZATION_MEMBER,
+  checkPick,
+  claimInvitation,
+  organizationSharing,
+  proposeSharingMutation,
+} from "./sharing.mjs";
+import { resolveOrganizationMember } from "./organization-members.mjs";
 import { indexProjectInvitations, pruneProjectInvitations } from "./project-invitations.mjs";
 import { logAuthEvent } from "./auth-events.mjs";
 import {
@@ -355,13 +362,17 @@ export class Space {
         if (!args.read) {
           requireWrite(identity);
           if (
-            !["set_role", "invite", "revoke_invite", "set_organization_access"].includes(
-              args.action,
-            )
+            ![
+              "set_role",
+              "invite",
+              "revoke_invite",
+              "set_organization_access",
+              GRANT_ORGANIZATION_MEMBER,
+            ].includes(args.action)
           )
             throw new HttpError(
               400,
-              "Choose invite, set_role, revoke_invite or set_organization_access",
+              "Choose invite, set_role, revoke_invite, set_organization_access or grant_organization_member",
             );
           if (
             Object.keys(args).some(
@@ -374,6 +385,7 @@ export class Space {
                   "email",
                   "invite_id",
                   "organization_id",
+                  "member_id",
                   "role",
                   "expected_revision",
                   "nonce",
@@ -391,12 +403,27 @@ export class Space {
               email: args.email,
               invite_id: args.invite_id,
               organization_id: args.organization_id,
+              member_id: args.member_id,
               role: args.role,
               expected_revision: args.expected_revision,
             },
             identity,
           );
-          const previous = await this.ctx.storage.get(receiptKey(key));
+          let previous = await this.ctx.storage.get(receiptKey(key));
+          // Kilo confirms a pick before the change is proposed. The record
+          // and the receipt are read again after Kilo answers, so a change
+          // that landed meanwhile, this one's retry included, isn't
+          // overwritten.
+          let picked;
+          if (!previous && args.action === GRANT_ORGANIZATION_MEMBER) {
+            checkPick(args);
+            picked = await resolveOrganizationMember(this.env, identity, args);
+            record = await this.ctx.storage.get(RECORD);
+            if (!record || record.deletion) throw spaceNotFound();
+            if (identity.principal !== record.owner)
+              throw new HttpError(403, "Only the Project owner can manage access");
+            previous = await this.ctx.storage.get(receiptKey(key));
+          }
           if (previous) {
             if (previous.fingerprint !== digest)
               throw new HttpError(
@@ -415,14 +442,21 @@ export class Space {
             args,
             Date.now(),
             this.env,
+            { picked },
           );
           const next = { ...record, acl: proposed.metadata.acl };
           const receipt = publicProjectAccess(next);
           // Discovery is only a candidate hint. Publish before the atomic ACL
           // and receipt; a failed grant may leave a hint but never access.
           if (args.action === "invite") await indexProjectInvitations(this.env, next);
-          if (args.action === "set_role" && args.role !== null) {
-            const discovered = await this.env.CATALOGS.getByName(args.principal).fetch(
+          const granted =
+            args.action === GRANT_ORGANIZATION_MEMBER
+              ? picked.principal
+              : args.action === "set_role" && args.role !== null
+                ? args.principal
+                : null;
+          if (granted) {
+            const discovered = await this.env.CATALOGS.getByName(granted).fetch(
               new Request("https://pages.internal/internal/project-discovery", {
                 method: "POST",
                 body: JSON.stringify({ space_id: record.space_id, owner: record.owner }),

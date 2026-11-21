@@ -14,9 +14,9 @@ import {
   membershipRecord,
   organizationLeases,
   organizationProof,
-  recordKiloMembership,
+  recordOrganizationMemberships,
   resetMembershipCache,
-} from "./kilo-membership.mjs";
+} from "./organization-memberships.mjs";
 import { exchangeAuthorizationCode, issueAuthorizationCode } from "./oauth-store.mjs";
 import { invitationMatches } from "./sharing.mjs";
 
@@ -167,51 +167,134 @@ test("the evidence record is replaced only by a report sent later", async (t) =>
   const { env } = await fixture(t);
   const principal = "user:kilo:fenced";
   const at = Date.now();
-  await recordKiloMembership(env, principal, [sentinel], at);
+  await recordOrganizationMemberships(env, principal, [sentinel], at);
   // A slow exchange sent earlier lands later: it changes nothing.
-  await recordKiloMembership(env, principal, [], at - 60_000);
+  await recordOrganizationMemberships(env, principal, [], at - 60_000);
   assert.deepEqual(await membershipRecord(env, principal), {
     organizations: [sentinel],
     verifiedAtMs: at,
   });
   // Another isolate's newer report wins over this isolate's older answer.
-  await env.DB.prepare("UPDATE kilo_memberships SET organizations = ?, verified_at_ms = ?")
+  await env.DB.prepare(
+    "UPDATE pages_organization_memberships SET organizations = ?, verified_at_ms = ?",
+  )
     .bind(JSON.stringify([second]), at + 120_000)
     .run();
-  await recordKiloMembership(env, principal, [], at + 60_000);
+  await recordOrganizationMemberships(env, principal, [], at + 60_000);
   assert.deepEqual((await membershipRecord(env, principal)).organizations, [second]);
   // A later report with other organizations always lands.
-  await recordKiloMembership(env, principal, [sentinel, second], at + 180_000);
+  await recordOrganizationMemberships(env, principal, [sentinel, second], at + 180_000);
   assert.deepEqual(await membershipRecord(env, principal), {
     organizations: [sentinel, second],
     verifiedAtMs: at + 180_000,
   });
 });
 
-const columns = async (env) =>
-  (await env.DB.prepare("SELECT name FROM pragma_table_info('kilo_memberships')").all()).results
+const columnsOf = async (env, table) =>
+  (await env.DB.prepare(`SELECT name FROM pragma_table_info('${table}')`).all()).results
     .map(({ name }) => name)
     .sort();
-const versions = async (env) =>
-  (
-    await env.DB.prepare("SELECT version FROM kilo_membership_schema ORDER BY version").all()
-  ).results.map(({ version }) => version);
+const versionsOf = async (env, table) =>
+  (await env.DB.prepare(`SELECT version FROM ${table} ORDER BY version`).all()).results.map(
+    ({ version }) => version,
+  );
+const EVIDENCE_COLUMNS = [
+  "directory_credential",
+  "organizations",
+  "principal",
+  "provider",
+  "verified_at_ms",
+];
+const LEGACY_COLUMNS = ["organizations", "principal", "verified_at_ms"];
 
-test("a fresh database gets the millisecond evidence table", async (t) => {
+test("a fresh database gets the organization memberships table beside the legacy one", async (t) => {
   const { env } = await fixture(t);
   const at = Date.now();
-  await recordKiloMembership(env, "user:kilo:fresh", [sentinel], at);
-  assert.deepEqual(await versions(env), [1, 2]);
-  assert.deepEqual(await columns(env), ["organizations", "principal", "verified_at_ms"]);
+  await recordOrganizationMemberships(env, "user:kilo:fresh", [sentinel], at);
+  assert.deepEqual(await versionsOf(env, "pages_organization_schema"), [1]);
+  assert.deepEqual(await columnsOf(env, "pages_organization_memberships"), EVIDENCE_COLUMNS);
+  // The legacy table, in its last shape, so the copy always has a source.
+  assert.deepEqual(await versionsOf(env, "kilo_membership_schema"), [1, 2]);
+  assert.deepEqual(await columnsOf(env, "kilo_memberships"), LEGACY_COLUMNS);
   assert.deepEqual(await membershipRecord(env, "user:kilo:fresh"), {
     organizations: [sentinel],
     verifiedAtMs: at,
   });
+  const row = await env.DB.prepare(
+    "SELECT provider FROM pages_organization_memberships WHERE principal = ?",
+  )
+    .bind("user:kilo:fresh")
+    .first();
+  assert.equal(row.provider, "kilo");
 });
 
-test("a database that ran the seconds table drops its rows and takes millisecond evidence", async (t) => {
+/** `pages_organization_memberships` as the build before this one leaves it. */
+async function legacyDatabase(env, rows) {
+  for (const sql of [
+    `CREATE TABLE kilo_membership_schema (
+      version INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      applied_at TEXT NOT NULL
+    )`,
+    `CREATE TABLE kilo_memberships (
+      principal TEXT PRIMARY KEY,
+      organizations TEXT NOT NULL,
+      verified_at_ms INTEGER NOT NULL
+    )`,
+    `INSERT INTO kilo_membership_schema VALUES (1, 'memberships', '2026-11-11T00:00:00.000Z')`,
+    `INSERT INTO kilo_membership_schema VALUES (2, 'memberships_by_millisecond', '2026-11-12T00:00:00.000Z')`,
+  ])
+    await env.DB.prepare(sql).run();
+  for (const [principal, organizations, at] of rows)
+    await env.DB.prepare("INSERT INTO kilo_memberships VALUES (?, ?, ?)")
+      .bind(principal, JSON.stringify(organizations), at)
+      .run();
+}
+
+test("evidence in the legacy table keeps counting after the deploy, and the copy runs once", async (t) => {
   const { env } = await fixture(t);
-  // The first migration as it shipped, with one row written under it.
+  const at = Date.now() - 60_000;
+  await legacyDatabase(env, [
+    ["user:kilo:carried", [sentinel], at],
+    ["user:kilo:empty", [], at],
+  ]);
+  const carried = {
+    principal: "user:kilo:carried",
+    namespace: "user:kilo",
+    expiresAt: at + 3_600_000,
+  };
+  assert.deepEqual(await membershipRecord(env, "user:kilo:carried"), {
+    organizations: [sentinel],
+    verifiedAtMs: at,
+  });
+  assert.deepEqual(
+    (await organizationLeases(env, carried)).map(({ id }) => id),
+    [sentinel.id],
+    "a person holds their organization across the deploy",
+  );
+  assert.deepEqual(await membershipRecord(env, "user:kilo:empty"), {
+    organizations: [],
+    verifiedAtMs: at,
+  });
+  assert.deepEqual(await versionsOf(env, "pages_organization_schema"), [1]);
+  assert.deepEqual(await versionsOf(env, "kilo_membership_schema"), [1, 2]);
+  // An older build still running writes the legacy table only; this build's
+  // newer evidence isn't replaced by the copy running again elsewhere.
+  await recordOrganizationMemberships(env, "user:kilo:carried", [second], at + 1000);
+  await env.DB.prepare("UPDATE kilo_memberships SET organizations = ? WHERE principal = ?")
+    .bind(JSON.stringify([]), "user:kilo:carried")
+    .run();
+  const again = await otherIsolate();
+  await again.recordOrganizationMemberships(env, "user:kilo:other", [], at + 2000);
+  assert.deepEqual((await again.membershipRecord(env, "user:kilo:carried")).organizations, [
+    second,
+  ]);
+  assert.deepEqual(await stored(env, "user:kilo:carried"), [second]);
+});
+
+test("a database that ran only the seconds table drops its rows and takes millisecond evidence", async (t) => {
+  const { env } = await fixture(t);
+  // The first legacy migration as it shipped, with one row written under it.
   for (const sql of [
     `CREATE TABLE kilo_membership_schema (
       version INTEGER PRIMARY KEY,
@@ -234,20 +317,36 @@ test("a database that ran the seconds table drops its rows and takes millisecond
     null,
     "a seconds row is not evidence",
   );
-  assert.deepEqual(await versions(env), [1, 2]);
-  assert.deepEqual(await columns(env), ["organizations", "principal", "verified_at_ms"]);
+  assert.deepEqual(await versionsOf(env, "kilo_membership_schema"), [1, 2]);
+  assert.deepEqual(await columnsOf(env, "kilo_memberships"), LEGACY_COLUMNS);
+  assert.deepEqual(await columnsOf(env, "pages_organization_memberships"), EVIDENCE_COLUMNS);
   const at = Date.now();
-  await recordKiloMembership(env, "user:kilo:upgraded", [sentinel], at);
+  await recordOrganizationMemberships(env, "user:kilo:upgraded", [sentinel], at);
   assert.deepEqual(await membershipRecord(env, "user:kilo:upgraded"), {
     organizations: [sentinel],
     verifiedAtMs: at,
   });
 });
 
+test("a row another directory wrote is not evidence here", async (t) => {
+  const { env } = await fixture(t);
+  const at = Date.now();
+  await recordOrganizationMemberships(env, "user:kilo:elsewhere", [sentinel], at);
+  await env.DB.prepare(
+    "UPDATE pages_organization_memberships SET provider = 'other' WHERE principal = ?",
+  )
+    .bind("user:kilo:elsewhere")
+    .run();
+  const fresh = await otherIsolate();
+  assert.equal(await fresh.membershipRecord(env, "user:kilo:elsewhere"), null);
+});
+
 /** A second isolate: its own copy of the module, so its own cache. */
-const otherIsolate = () => import(`./kilo-membership.mjs?isolate=${Math.random()}`);
+const otherIsolate = () => import(`./organization-memberships.mjs?isolate=${Math.random()}`);
 const stored = async (env, principal) => {
-  const row = await env.DB.prepare("SELECT organizations FROM kilo_memberships WHERE principal = ?")
+  const row = await env.DB.prepare(
+    "SELECT organizations FROM pages_organization_memberships WHERE principal = ?",
+  )
     .bind(principal)
     .first();
   return JSON.parse(row.organizations);
@@ -260,16 +359,16 @@ test("a newer exchange's empty answer wins over another isolate's listing, whate
   const b = await otherIsolate();
   const at = Date.now();
   // A caches an empty set; B records an exchange that lists the organization.
-  await a.recordKiloMembership(env, principal, [], at);
+  await a.recordOrganizationMemberships(env, principal, [], at);
   assert.deepEqual((await a.membershipRecord(env, principal)).organizations, []);
-  await b.recordKiloMembership(env, principal, [sentinel], at + 1000);
+  await b.recordOrganizationMemberships(env, principal, [sentinel], at + 1000);
   // A newer exchange reaches A and lists none: it must be written.
-  await a.recordKiloMembership(env, principal, [], at + 2000);
+  await a.recordOrganizationMemberships(env, principal, [], at + 2000);
   assert.deepEqual(await stored(env, principal), []);
   a.resetMembershipCache();
   assert.deepEqual((await a.membershipRecord(env, principal)).organizations, []);
   // An exchange sent between the two but delivered last changes nothing.
-  await b.recordKiloMembership(env, principal, [sentinel], at + 1500);
+  await b.recordOrganizationMemberships(env, principal, [sentinel], at + 1500);
   b.resetMembershipCache();
   assert.deepEqual((await b.membershipRecord(env, principal)).organizations, []);
 });
@@ -278,25 +377,30 @@ test("the fence orders exchanges by the millisecond, and a tie never adds an org
   const { env } = await fixture(t);
   const principal = "user:kilo:subsecond";
   const second0 = Math.floor(Date.now() / 1000) * 1000;
-  await recordKiloMembership(env, principal, [sentinel], second0 + 100);
-  await recordKiloMembership(env, principal, [], second0 + 800);
+  await recordOrganizationMemberships(env, principal, [sentinel], second0 + 100);
+  await recordOrganizationMemberships(env, principal, [], second0 + 800);
   assert.deepEqual(await stored(env, principal), [], "a later answer in the same second wins");
   const tie = second0 + 5000;
-  await recordKiloMembership(env, principal, [sentinel, second], tie);
-  await recordKiloMembership(env, principal, [sentinel, second], tie);
+  await recordOrganizationMemberships(env, principal, [sentinel, second], tie);
+  await recordOrganizationMemberships(env, principal, [sentinel, second], tie);
   assert.deepEqual(
     await stored(env, principal),
     [sentinel, second],
     "the same answer written twice changes nothing",
   );
-  await recordKiloMembership(env, principal, [second, { id: "org-third", name: "Third" }], tie);
+  await recordOrganizationMemberships(
+    env,
+    principal,
+    [second, { id: "org-third", name: "Third" }],
+    tie,
+  );
   assert.deepEqual(await stored(env, principal), [], "two answers in one millisecond: none");
   resetMembershipCache();
   assert.deepEqual(await membershipRecord(env, principal), {
     organizations: [],
     verifiedAtMs: tie,
   });
-  await recordKiloMembership(env, principal, [second], tie + 1);
+  await recordOrganizationMemberships(env, principal, [second], tie + 1);
   assert.deepEqual(await stored(env, principal), [second], "the next exchange sets it again");
 });
 
@@ -304,9 +408,9 @@ test("one answer is stored as one text, whatever its key order; another order is
   const { env } = await fixture(t);
   const principal = "user:kilo:serialized";
   const at = Date.now();
-  await recordKiloMembership(env, principal, [sentinel, second], at);
+  await recordOrganizationMemberships(env, principal, [sentinel, second], at);
   // Kilo's entries carry other keys, in any order. Only id then name is kept.
-  await recordKiloMembership(
+  await recordOrganizationMemberships(
     env,
     principal,
     [
@@ -316,7 +420,7 @@ test("one answer is stored as one text, whatever its key order; another order is
     at,
   );
   assert.deepEqual(await stored(env, principal), [sentinel, second], "the same text: no change");
-  await recordKiloMembership(env, principal, [second, sentinel], at);
+  await recordOrganizationMemberships(env, principal, [second, sentinel], at);
   assert.deepEqual(
     await stored(env, principal),
     [],
@@ -336,22 +440,24 @@ test("a stored value the reader can't use counts as no organizations on a tie, a
   for (const [label, value] of Object.entries(unusable)) {
     const principal = `user:kilo:${encodeURIComponent(label)}`;
     const corrupt = () =>
-      env.DB.prepare("UPDATE kilo_memberships SET organizations = ? WHERE principal = ?")
+      env.DB.prepare(
+        "UPDATE pages_organization_memberships SET organizations = ? WHERE principal = ?",
+      )
         .bind(value, principal)
         .run();
-    await recordKiloMembership(env, principal, [sentinel], at);
+    await recordOrganizationMemberships(env, principal, [sentinel], at);
     await corrupt();
     assert.equal(await membershipRecord(env, principal), null, `${label}: the reader skips it`);
     // The answer lists the organization the unusable value names, but its
     // text differs from the stored text, so the tie holds none.
-    await recordKiloMembership(env, principal, [sentinel], at);
+    await recordOrganizationMemberships(env, principal, [sentinel], at);
     assert.deepEqual(
       await membershipRecord(env, principal),
       { organizations: [], verifiedAtMs: at },
       `${label}: a tie drops every organization and doesn't throw`,
     );
     await corrupt();
-    await recordKiloMembership(env, principal, [sentinel], at + 1);
+    await recordOrganizationMemberships(env, principal, [sentinel], at + 1);
     assert.deepEqual(
       await membershipRecord(env, principal),
       { organizations: [sentinel], verifiedAtMs: at + 1 },
@@ -366,11 +472,11 @@ test("every exchange writes, even with an unchanged answer", async (t) => {
   const writes = t.mock.method(env.DB, "prepare");
   const inserts = () =>
     writes.mock.calls.filter(({ arguments: [sql] }) =>
-      sql.startsWith("INSERT INTO kilo_memberships "),
+      sql.startsWith("INSERT INTO pages_organization_memberships "),
     ).length;
   const at = Date.now();
   for (const offset of [0, 1000, 2000])
-    await recordKiloMembership(env, principal, [sentinel], at + offset);
+    await recordOrganizationMemberships(env, principal, [sentinel], at + offset);
   assert.equal(inserts(), 3);
 });
 
@@ -379,7 +485,7 @@ test("a leased agent token writes its exchange's evidence once, not once per req
   const writes = t.mock.method(env.DB, "prepare");
   const inserts = () =>
     writes.mock.calls.filter(({ arguments: [sql] }) =>
-      sql.startsWith("INSERT INTO kilo_memberships "),
+      sql.startsWith("INSERT INTO pages_organization_memberships "),
     ).length;
   const account = person([sentinel]);
   const token = kilo.mintToken(account, { audience });
@@ -398,7 +504,7 @@ function failEvidenceWrites(t, env, count) {
   let failures = count;
   let attempts = 0;
   t.mock.method(env.DB, "prepare", (sql) => {
-    if (!sql.startsWith("INSERT INTO kilo_memberships ")) return prepare(sql);
+    if (!sql.startsWith("INSERT INTO pages_organization_memberships ")) return prepare(sql);
     attempts++;
     if (failures-- > 0)
       return {
@@ -418,7 +524,7 @@ test("a read that overlapped a write in this isolate is not cached", async (t) =
   const { env } = await fixture(t);
   const principal = "user:kilo:overlapped";
   const at = Date.now();
-  await recordKiloMembership(env, principal, [sentinel, second], at - 1000);
+  await recordOrganizationMemberships(env, principal, [sentinel, second], at - 1000);
   resetMembershipCache();
   // The next read takes the row as it is now and returns it only on release,
   // as a D1 read that started before a write and answers after it would.
@@ -443,7 +549,7 @@ test("a read that overlapped a write in this isolate is not cached", async (t) =
   const before = membershipRecord(env, principal);
   // Let the read reach D1 before the write starts.
   await new Promise((resolve) => setTimeout(resolve, 10));
-  await recordKiloMembership(env, principal, [sentinel], at);
+  await recordOrganizationMemberships(env, principal, [sentinel], at);
   release();
   assert.deepEqual((await before).organizations, [sentinel, second], "it answers as it read");
   assert.deepEqual(
@@ -467,7 +573,7 @@ test("each request on a leased answer writes for itself until one write succeeds
   const { env, kilo } = await fixture(t);
   const account = person([sentinel]);
   // An older exchange listed an organization the new answer leaves out.
-  await recordKiloMembership(env, principalOf(account), [second], Date.now() - 5000);
+  await recordOrganizationMemberships(env, principalOf(account), [second], Date.now() - 5000);
   // Each evidence write waits for the test to settle it: the first fails, the
   // ones after it run against D1.
   const prepare = env.DB.prepare.bind(env.DB);
@@ -475,7 +581,7 @@ test("each request on a leased answer writes for itself until one write succeeds
   let inFlight = 0;
   let mostInFlight = 0;
   t.mock.method(env.DB, "prepare", (sql) => {
-    if (!sql.startsWith("INSERT INTO kilo_memberships ")) return prepare(sql);
+    if (!sql.startsWith("INSERT INTO pages_organization_memberships ")) return prepare(sql);
     const statement = prepare(sql);
     return {
       bind: (...values) => ({
@@ -569,7 +675,7 @@ test("an OAuth agent loses its person's organizations when the evidence ages out
   const account = person([sentinel]);
   // The person's last exchange was nearly eight hours ago.
   const sentAt = clock - KILO_MEMBERSHIP_SECONDS * 1000 + 5000;
-  await recordKiloMembership(env, principalOf(account), account.organizations, sentAt);
+  await recordOrganizationMemberships(env, principalOf(account), account.organizations, sentAt);
   const access = await oauthToken(env, account);
   const fresh = await authenticate(bearer(access), env);
   assert.deepEqual(named(fresh), [sentinel]);
@@ -598,7 +704,7 @@ test("only a Kilo identity on a deployment that reports organizations holds a le
   const { env } = await fixture(t);
   const principal = "user:kilo:leases";
   const now = Date.now();
-  await recordKiloMembership(env, principal, [sentinel], now);
+  await recordOrganizationMemberships(env, principal, [sentinel], now);
   const identity = { principal, namespace: "user:kilo", expiresAt: now + 60_000 };
   assert.deepEqual(await organizationLeases(env, identity, now), [
     { ...sentinel, namespace: "user:kilo", expiresAt: now + 60_000 },
@@ -711,4 +817,25 @@ test("only the browser session reads the account menu: a bearer credential gets 
       }
     }
   }
+});
+
+test("each write also lands in the legacy table, without the credential, so a rollback reads current evidence", async (t) => {
+  const { env } = await fixture(t);
+  const at = Date.now() - 60_000;
+  await legacyDatabase(env, [["user:kilo:removed", [sentinel], at]]);
+  const legacy = async () => ({
+    ...(await env.DB.prepare(
+      "SELECT organizations, verified_at_ms FROM kilo_memberships WHERE principal = ?",
+    )
+      .bind("user:kilo:removed")
+      .first()),
+  });
+  // Removed from the organization: this build records [] in both tables.
+  await recordOrganizationMemberships(env, "user:kilo:removed", [], at + 1000, "credential-x");
+  assert.deepEqual(await legacy(), { organizations: "[]", verified_at_ms: at + 1000 });
+  assert.deepEqual(await columnsOf(env, "kilo_memberships"), LEGACY_COLUMNS);
+  // The same fence: an earlier answer changes neither.
+  await recordOrganizationMemberships(env, "user:kilo:removed", [sentinel], at + 500);
+  assert.deepEqual(await legacy(), { organizations: "[]", verified_at_ms: at + 1000 });
+  assert.deepEqual((await membershipRecord(env, "user:kilo:removed")).organizations, []);
 });

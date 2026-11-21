@@ -8,8 +8,13 @@ export const SHARING_FRESH_MS = 30_000;
 export const COMPANY_PROOF_REQUIRED = "company_email_proof_required";
 export const ORGANIZATION_PROOF_REQUIRED = "organization_proof_required";
 const PROOF_REQUIRED = [COMPANY_PROOF_REQUIRED, ORGANIZATION_PROOF_REQUIRED];
+// A picked colleague Kilo no longer lists, or a search Kilo can't run, refuses
+// one pick (worker/organization-members.mjs); the Page's access is unchanged.
+const PICK_REFUSED = ["member_not_found", "member_search_unavailable"];
 const accessError = (error) =>
-  [401, 403, 404].includes(error?.status) && !PROOF_REQUIRED.includes(error?.code);
+  [401, 403, 404].includes(error?.status) &&
+  !PROOF_REQUIRED.includes(error?.code) &&
+  !PICK_REFUSED.includes(error?.code);
 
 export function sharingAvailable(session) {
   return (

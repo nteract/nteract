@@ -20,8 +20,12 @@
  * never locks a person out. The one exception is size: an answer over
  * `MAX_BODY_BYTES` (16 KiB) is refused before any field is read, whatever
  * makes it large. `organizations` is read the same way: entries Pages can't
- * use are dropped and never fail a sign-in (`kiloOrganizations`). The rest of
- * the answer is not read.
+ * use are dropped and never fail a sign-in (`kiloOrganizations`).
+ * `member_search_proof` is optional too: Kilo's signed statement that this
+ * person signed in to this deployment, which Pages keeps server-side and sends
+ * back to search the person's organizations (kilo-directory.mjs). Without
+ * a usable one the sign-in goes ahead and search is off. The rest of the
+ * answer is not read.
  *
  * The module holds no state and logs nothing. Error messages are fixed text,
  * so a code, a secret, an address or a response body can't reach a log
@@ -39,6 +43,8 @@ const MAX_BODY_BYTES = 16 * 1024;
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_ID_LENGTH = 255;
 const MAX_NAME_LENGTH = 200;
+/** The longest member search proof Pages keeps, as long as Kilo accepts. */
+export const MAX_PROOF_LENGTH = 4096;
 /** The most organizations Pages keeps from one answer, in Kilo's order. */
 export const MAX_ORGANIZATIONS = 50;
 
@@ -68,7 +74,11 @@ export function kiloEnterUrl(appUrl, { audience, state }) {
   return url.href;
 }
 
-async function readLimited(response) {
+/** The body of `response`, refused with `KiloProtocolError` past
+ * `MAX_BODY_BYTES` and read as `KiloUnavailable` when the stream breaks off.
+ * Shared with kilo-directory.mjs, which reads Kilo's answers the same
+ * way. */
+export async function readLimited(response) {
   if (!response.body) return new Uint8Array();
   const reader = response.body.getReader();
   const chunks = [];
@@ -114,10 +124,11 @@ const discard = async (response) => {
  * `state` must be the ones the sign-in started with: Kilo's code is good only
  * for them, which is what makes a code copied out of a browser useless.
  *
- * Returns `{ id, name, verifiedEmail, organizations }`, with `name` null
- * when the account has none, `verifiedEmail`, normalized as an invitation
- * stores it, left out when Kilo sent no usable address, and `organizations`
- * as `kiloOrganizations` reads them; or `{ refused }` when Kilo turned the
+ * Returns `{ id, name, verifiedEmail, organizations, memberSearchProof }`,
+ * with `name` null when the account has none, `verifiedEmail`, normalized as
+ * an invitation stores it, left out when Kilo sent no usable address,
+ * `organizations` as `kiloOrganizations` reads them, and `memberSearchProof`
+ * left out when Kilo sent none; or `{ refused }` when Kilo turned the
  * call down: `"client"` for a 401, which
  * means it didn't accept this deployment's secret or audience; `"account"` for
  * a 403, which means the account is gone or blocked; and `"code"` for any
@@ -248,10 +259,16 @@ async function exchange(fetcher, { appUrl, secret, body, timeoutMs }, credential
   // Optional: a value that isn't a usable invitation address reads as no
   // address, never as a malformed answer.
   const verifiedEmail = inviteEmail(user.verified_email);
+  const proof = answer?.member_search_proof;
+  const memberSearchProof =
+    typeof proof === "string" && proof && proof.length <= MAX_PROOF_LENGTH && !/\s/.test(proof)
+      ? proof
+      : null;
   return {
     id,
     name: name || null,
     ...(verifiedEmail && { verifiedEmail }),
     organizations: kiloOrganizations(answer?.organizations),
+    ...(memberSearchProof && { memberSearchProof }),
   };
 }

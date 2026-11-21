@@ -10,7 +10,11 @@ import { clientProvenance } from "./client-provenance.mjs";
 import { REVISION_PATTERN } from "./revisions.mjs";
 import { kiloIdentity } from "./kilo-config.mjs";
 import { kiloToken, kiloTokenAccount } from "./kilo-token.mjs";
-import { organizationLeases, recordKiloMembership } from "./kilo-membership.mjs";
+import {
+  organizationDirectory,
+  organizationLeases,
+  recordOrganizationMemberships,
+} from "./organization-memberships.mjs";
 import { rememberedServerAppSession } from "./session-memo.mjs";
 import { timingFor } from "./server-timing.mjs";
 
@@ -216,7 +220,14 @@ const recordedAnswers = new WeakSet();
 async function recordExchange(env, principal, account) {
   if (recordedAnswers.has(account)) return;
   try {
-    await recordKiloMembership(env, principal, account.organizations, account.verifiedAt);
+    const { organizations, credential } = organizationDirectory(env).memberships(account);
+    await recordOrganizationMemberships(
+      env,
+      principal,
+      organizations,
+      account.verifiedAt,
+      credential,
+    );
   } catch (cause) {
     throw withAdmissionReason(
       Object.assign(new Error("Kilo sign-in is unavailable. Retry the request."), {
@@ -587,6 +598,9 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "invalid_tag",
   "tag_limit_exceeded",
   "invalid_agent_label",
+  // Organization member search and picks (organization-members.mjs).
+  "member_search_unavailable",
+  "member_not_found",
 ]);
 
 export const RETRYABLE_SERVER_CODES = Object.freeze([
@@ -603,6 +617,9 @@ export const RETRYABLE_SERVER_CODES = Object.freeze([
   // A Page's Project could not be read, so inherited access is unknown
   // (project-access.mjs).
   "project_policy_unavailable",
+  // Kilo couldn't search or confirm organization members
+  // (organization-members.mjs).
+  "member_search_unavailable",
 ]);
 
 const LOGGED_ERROR_TYPES = [
