@@ -8,13 +8,14 @@ import { Refusal, SyncHost } from "../sync/host.mjs";
 import { socketTransport } from "../sync/wire.mjs";
 import {
   admissionCloseCode,
+  admissionCloseReason,
   admissionCode,
   logAdmissionDenied,
   withAdmissionReason,
 } from "./admission-reasons.mjs";
 import { PAGE_FAMILY_MODULES, modulesByKind } from "./document-modules.mjs";
 import { ROUNDS_EMPTY, roundsStep } from "./plain-sync-log.mjs";
-import { PermissionDenied, credentialExpired } from "./policy.mjs";
+import { PermissionDenied, leaseExpiryError } from "./policy.mjs";
 
 // The Page host's sync: plain Automerge sync, `recordStorage: "automerge"`.
 // Browsers connect to a SyncHost (sync/host.mjs). The
@@ -148,7 +149,7 @@ export function plainSessionReplaced() {
 function refusalFrom(error, code = admissionCode(error)) {
   return new Refusal(code, error.message, {
     fatal: true,
-    close: { code: admissionCloseCode(error), reason: admissionCode(error) },
+    close: { code: admissionCloseCode(error), reason: admissionCloseReason(error) },
   });
 }
 
@@ -373,6 +374,61 @@ export class PlainSync {
     }
   }
 
+  /** Re-evaluate every browser connection after a Project access refresh.
+   * Already-expired sockets fail closed; connections whose access changed
+   * close with `access_changed`; unchanged connections advance their lease
+   * deadline so each socket's own expiry timer re-arms in its own context. */
+  extendLeases() {
+    const now = this.now();
+    let extended = 0;
+    let closed = 0;
+    for (const conn of this.host.connections()) {
+      if (conn.trusted || conn.closed) continue;
+      if (conn.expiresAt !== undefined && conn.expiresAt <= now) {
+        const denied = refusalFrom(leaseExpiryError(conn.identity, conn.expiresAt));
+        conn.transport.close(denied.close.code, denied.close.reason);
+        closed++;
+        continue;
+      }
+      let access;
+      try {
+        access = accessShape(this.policy.account(conn.identity));
+      } catch {
+        access = null;
+      }
+      if (!access || Object.keys(access).some((key) => access[key] !== conn.access[key])) {
+        const denied = refusalFrom(
+          new PermissionDenied("Page access changed during connection", "native_access_changed"),
+        );
+        conn.transport.close(denied.close.code, denied.close.reason);
+        closed++;
+        continue;
+      }
+      let nextDeadline;
+      try {
+        nextDeadline = this.policy.leaseExpiresAt(conn.identity);
+      } catch {
+        const denied = refusalFrom(
+          new PermissionDenied("Page access changed during connection", "native_access_changed"),
+        );
+        conn.transport.close(denied.close.code, denied.close.reason);
+        closed++;
+        continue;
+      }
+      if (nextDeadline <= now) {
+        const denied = refusalFrom(leaseExpiryError(conn.identity, nextDeadline));
+        conn.transport.close(denied.close.code, denied.close.reason);
+        closed++;
+        continue;
+      }
+      if (nextDeadline !== conn.expiresAt) {
+        conn.expiresAt = nextDeadline;
+        extended++;
+      }
+    }
+    return { extended, closed };
+  }
+
   /** `senderId → profile` for connected browsers, for presence labels. */
   profiles() {
     const now = this.now();
@@ -431,7 +487,7 @@ export class PlainSync {
   #denied(conn, now) {
     if (conn.trusted) return null;
     if (conn.expiresAt !== undefined && conn.expiresAt <= now)
-      return refusalFrom(credentialExpired());
+      return refusalFrom(leaseExpiryError(conn.identity, conn.expiresAt));
     // Any change to what this connection may do (losing
     // access, trash, a role or generation change, recovery) ends it with
     // access_changed, and the browser's rediscovery reports the new state.

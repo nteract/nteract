@@ -144,6 +144,24 @@ test("a lost usage record is counted on the next one and never throws", (t) => {
   assert.equal(next.dropped, 2);
   assert.equal(lines.at(-1).dropped, 2);
   assert.equal(logUsage({ action: "sync.close", surface: "browser-sync" }).dropped, undefined);
+  const closed = usageEvent({
+    action: "sync.close",
+    surface: "browser-sync",
+    closeCode: 4409,
+    closeReason: "access_changed",
+    outcome: "access_changed",
+  });
+  assert.equal(closed.close_code, 4409);
+  assert.equal(closed.close_reason, "access_changed");
+  assert.equal(closed.outcome, "access_changed");
+  const badClose = usageEvent({
+    action: "sync.close",
+    surface: "browser-sync",
+    closeCode: 999,
+    closeReason: "Untrusted text!",
+  });
+  assert.equal(badClose.close_code, undefined);
+  assert.equal(badClose.close_reason, undefined);
   t.mock.method(console, "info", () => {
     throw new Error("sink unavailable");
   });

@@ -1510,10 +1510,15 @@ Browser sessions renew while open and on return to the tab. A return to the tab
 or an explicit check that lands while a session request is in flight queues one
 fresh request after it, and only the fresh answer applies (the
 [session-refresh machine](viewer/session-refresh-machine.mjs)). Sync sockets retain
-the expiry observed on admission and reconnect with current credentials. API-key
-sockets renew bounded leases through provider verification; caching means provider
-revocation is not instantaneous. A pending or late check cannot revive an expired,
-disconnected, or changed grant. Page ACL enforcement is independent of sign-in renewal.
+the credential expiry observed on admission and reconnect with current credentials.
+Project-inherited leases renew in place per Page host through
+[project-lease.mjs](worker/project-lease.mjs): one Project lookup ahead of
+`valid_until` extends unchanged sockets, closes revoked or downgraded sockets with
+`access_changed`, and leaves deadlines untouched to fail closed with `4503
+project_lease_expired` if the Project stays unavailable. API-key sockets renew
+bounded leases through provider verification; caching means provider revocation is
+not instantaneous. A pending or late check cannot revive an expired, disconnected,
+or changed grant. Page ACL enforcement is independent of sign-in renewal.
 
 Every refusal on `/api/connect`, `/api/sync` and `/api/saved` logs one `admission.denied` JSON line with a reason from the closed set in
 [admission-reasons.mjs](worker/admission-reasons.mjs). celld exports it as the

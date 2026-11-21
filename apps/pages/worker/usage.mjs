@@ -253,6 +253,9 @@ export function phasesOf(header) {
   return phases.length ? phases.join(",") : undefined;
 }
 
+const closeCodeOf = (value) =>
+  Number.isSafeInteger(value) && value >= 1000 && value <= 4999 ? value : undefined;
+
 /** Build one usage record. Unknown keys are dropped; absent values omitted. */
 export function usageEvent({
   action,
@@ -267,6 +270,8 @@ export function usageEvent({
   outcome,
   status,
   errorCode,
+  closeCode,
+  closeReason,
   phases,
   latencyMs,
   bytes,
@@ -297,6 +302,8 @@ export function usageEvent({
     outcome: outcomeOf(outcome),
     status: Number.isSafeInteger(status) ? status : undefined,
     error_code: outcomeOf(errorCode),
+    close_code: closeCodeOf(closeCode),
+    close_reason: outcomeOf(closeReason),
     phases: phasesOf(phases),
     latency_ms: finite(latencyMs),
     bytes: finite(bytes),
