@@ -21,9 +21,9 @@ import { Page } from "./index.mjs";
 import { KILO_MEMBERSHIP_SECONDS } from "./kilo-config.mjs";
 import {
   organizationLeases,
-  recordKiloMembership,
+  recordOrganizationMemberships,
   resetMembershipCache,
-} from "./kilo-membership.mjs";
+} from "./organization-memberships.mjs";
 import { identityAudienceKeys, organizationAudienceKey } from "./organization-access.mjs";
 import { projectObject } from "./authz.mjs";
 import { PROJECT_ACCESS_LEASE_MS } from "./project-access.mjs";
@@ -113,7 +113,7 @@ test("an owner without membership evidence is offered no organization and cannot
   assert.equal(restricted.metadata.acl.organizationAccess, null);
   assert.equal(restricted.receipt.revision, 2);
   // A deployment whose provider reports no organizations shows nothing new.
-  await recordKiloMembership(env, owner.principal, [acme], now);
+  await recordOrganizationMemberships(env, owner.principal, [acme], now);
   const anaconda = { DB: env.DB };
   const plain = await sharingProjection(page(), owner, anaconda, now);
   assert.deepEqual(plain.organizationOptions, []);
@@ -127,7 +127,7 @@ test("an owner without membership evidence is offered no organization and cannot
 
 test("an owner with current membership can share at each role, and only the owner can", async (t) => {
   const env = kiloEnv(t);
-  await recordKiloMembership(env, owner.principal, [acme, other], now);
+  await recordOrganizationMemberships(env, owner.principal, [acme, other], now);
   const offered = await sharingProjection(page(), owner, env, now);
   assert.deepEqual(offered.organizationOptions, [acme, other]);
   assert.deepEqual(offered.organizationProof, { [acme.id]: "verified", [other.id]: "verified" });
@@ -196,7 +196,7 @@ test("an owner with current membership can share at each role, and only the owne
 
 test("stale evidence reports expired, refuses choosing or changing the role, and still withdraws", async (t) => {
   const env = kiloEnv(t);
-  await recordKiloMembership(env, owner.principal, [acme], now);
+  await recordOrganizationMemberships(env, owner.principal, [acme], now);
   const later = now + KILO_MEMBERSHIP_SECONDS * 1000 + 1000;
   const aged = { ...owner, expiresAt: later + 60_000 };
   const shared = page(grant("commenter"));
@@ -221,7 +221,7 @@ test("stale evidence reports expired, refuses choosing or changing the role, and
   const withdrawn = await proposeSharingMutation(shared, aged, setArgs(null), later, env);
   assert.equal(withdrawn.metadata.acl.organizationAccess, null);
   // A fresh exchange restores the proof.
-  await recordKiloMembership(env, owner.principal, [acme], later);
+  await recordOrganizationMemberships(env, owner.principal, [acme], later);
   assert.deepEqual((await sharingProjection(shared, aged, env, later)).organizationProof, {
     [acme.id]: "verified",
   });
@@ -231,7 +231,7 @@ test("stale evidence reports expired, refuses choosing or changing the role, and
 
 test("a Page has one link audience: neither kind replaces the other", async (t) => {
   const env = kiloEnv(t);
-  await recordKiloMembership(env, owner.principal, [acme], now);
+  await recordOrganizationMemberships(env, owner.principal, [acme], now);
   const companyShared = page();
   companyShared.acl.domainView = { domain: "example.com", namespace };
   await rejectsWith(
@@ -364,7 +364,7 @@ test("while a change commits, readers hold only what both grants allow", () => {
 test("withdrawal, a downgrade, the lease's end and a new exchange each end access", async (t) => {
   for (const change of ["withdraw", "downgrade", "lease", "exchange"]) {
     const env = kiloEnv(t);
-    await recordKiloMembership(env, reader.principal, [acme], now);
+    await recordOrganizationMemberships(env, reader.principal, [acme], now);
     let identity = { ...reader, organizations: await organizationLeases(env, reader, now) };
     let metadata = page(grant("editor")),
       clock = now;
@@ -380,7 +380,7 @@ test("withdrawal, a downgrade, the lease's end and a new exchange each end acces
       identity = short;
       clock = now + 1000;
     } else {
-      await recordKiloMembership(env, reader.principal, [other], now + 1000);
+      await recordOrganizationMemberships(env, reader.principal, [other], now + 1000);
       identity = { ...reader, organizations: await organizationLeases(env, reader, now + 1000) };
     }
     assert.throws(() => policy.account(identity, true), /read-only|denied/i, change);
@@ -538,7 +538,7 @@ test("permanent deletion names the organization audience beside the company one"
 
 test("an organization editor's upload capability carries its namespace, so the upload holds the same lease", async (t) => {
   const env = kiloEnv(t);
-  await recordKiloMembership(env, reader.principal, [acme], now);
+  await recordOrganizationMemberships(env, reader.principal, [acme], now);
   const storage = new Storage();
   const pageId = "org-upload-page";
   const issued = await issueAssetUpload(storage, {
@@ -575,7 +575,7 @@ test("an organization editor's upload URL expires when its membership evidence d
   t.mock.method(Date, "now", () => clock);
   const env = kiloEnv(t);
   // Evidence that ends two minutes from now.
-  await recordKiloMembership(
+  await recordOrganizationMemberships(
     env,
     reader.principal,
     [acme],
@@ -661,7 +661,7 @@ test("a Project organization editor's upload URL on a Page in the Project ends w
   };
   // Evidence that ends in two minutes: the URL ends then, long after the
   // fifteen-second Project lease the host renews on every request.
-  await recordKiloMembership(
+  await recordOrganizationMemberships(
     env,
     reader.principal,
     [acme],
@@ -670,6 +670,6 @@ test("a Project organization editor's upload URL on a Page in the Project ends w
   assert.equal((await issue()).expires_at, new Date(now + 120_000).toISOString());
   // Fresh evidence: the full ten minutes.
   resetMembershipCache();
-  await recordKiloMembership(env, reader.principal, [acme], now + 1);
+  await recordOrganizationMemberships(env, reader.principal, [acme], now + 1);
   assert.equal((await issue()).expires_at, new Date(now + ASSET_UPLOAD_TTL_MS).toISOString());
 });

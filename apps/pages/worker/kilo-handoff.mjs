@@ -23,9 +23,10 @@
  * Pages is given an account id, a name, the account's primary email address
  * when Kilo holds proof the account controls it, and the account's
  * organizations, which it records as membership evidence
- * (kilo-membership.mjs). It holds no Kilo token, so a session has nothing to
- * renew with. It ends after `SESSION_SECONDS` and the browser signs in again; that is also how long a
- * person Kilo has blocked can keep a session here.
+ * (organization-memberships.mjs). It holds no Kilo token, so a session has
+ * nothing to renew with. It ends after `SESSION_SECONDS` and the browser
+ * signs in again; that is also how long a person Kilo has blocked can keep a
+ * session here.
  *
  * The session keeps signed email proof for invitations and a separately sealed
  * address for the browser account menu (app-session.ts). The proof is good for
@@ -43,7 +44,10 @@ import { recordOidcEvent } from "./auth-events.mjs";
 import { migrateSchema } from "./catalog-index.mjs";
 import { isolateSetup } from "./isolate-setup.mjs";
 import { kiloIdentity, kiloSignIn } from "./kilo-config.mjs";
-import { recordKiloMembership } from "./kilo-membership.mjs";
+import {
+  organizationDirectory,
+  recordOrganizationMemberships,
+} from "./organization-memberships.mjs";
 import {
   exchangeKiloCode,
   KILO_CALLBACK_PATH,
@@ -242,13 +246,8 @@ async function completeHandoff(request, env, config) {
   // write would read an older listing, one this answer may have removed
   // organizations from.
   try {
-    await recordKiloMembership(
-      env,
-      identity.principal,
-      account.organizations,
-      sentAt,
-      account.memberSearchProof ?? null,
-    );
+    const { organizations, credential } = organizationDirectory(env).memberships(account);
+    await recordOrganizationMemberships(env, identity.principal, organizations, sentAt, credential);
   } catch {
     return signInFailed(503, "membership_unrecorded", returnTo);
   }

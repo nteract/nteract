@@ -10,7 +10,11 @@ import { clientProvenance } from "./client-provenance.mjs";
 import { REVISION_PATTERN } from "./revisions.mjs";
 import { kiloIdentity } from "./kilo-config.mjs";
 import { kiloToken, kiloTokenAccount } from "./kilo-token.mjs";
-import { organizationLeases, recordKiloMembership } from "./kilo-membership.mjs";
+import {
+  organizationDirectory,
+  organizationLeases,
+  recordOrganizationMemberships,
+} from "./organization-memberships.mjs";
 import { rememberedServerAppSession } from "./session-memo.mjs";
 import { timingFor } from "./server-timing.mjs";
 
@@ -216,12 +220,13 @@ const recordedAnswers = new WeakSet();
 async function recordExchange(env, principal, account) {
   if (recordedAnswers.has(account)) return;
   try {
-    await recordKiloMembership(
+    const { organizations, credential } = organizationDirectory(env).memberships(account);
+    await recordOrganizationMemberships(
       env,
       principal,
-      account.organizations,
+      organizations,
       account.verifiedAt,
-      account.memberSearchProof ?? null,
+      credential,
     );
   } catch (cause) {
     throw withAdmissionReason(

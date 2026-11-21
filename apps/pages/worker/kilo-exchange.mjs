@@ -23,7 +23,7 @@
  * use are dropped and never fail a sign-in (`kiloOrganizations`).
  * `member_search_proof` is optional too: Kilo's signed statement that this
  * person signed in to this deployment, which Pages keeps server-side and sends
- * back to search the person's organizations (kilo-member-search.mjs). Without
+ * back to search the person's organizations (kilo-directory.mjs). Without
  * a usable one the sign-in goes ahead and search is off. The rest of the
  * answer is not read.
  *
@@ -76,7 +76,7 @@ export function kiloEnterUrl(appUrl, { audience, state }) {
 
 /** The body of `response`, refused with `KiloProtocolError` past
  * `MAX_BODY_BYTES` and read as `KiloUnavailable` when the stream breaks off.
- * Shared with kilo-member-search.mjs, which reads Kilo's answers the same
+ * Shared with kilo-directory.mjs, which reads Kilo's answers the same
  * way. */
 export async function readLimited(response) {
   if (!response.body) return new Uint8Array();

@@ -5,26 +5,20 @@ import { startLocalKiloHandoff } from "../scripts/fixtures/local-kilo-handoff.mj
 import { sqliteD1 } from "../test/sqlite-d1.mjs";
 import worker from "./index.mjs";
 import { KILO_MEMBERSHIP_SECONDS } from "./kilo-config.mjs";
-import {
-  KiloProtocolError,
-  KiloUnavailable,
-  MAX_PROOF_LENGTH,
-  exchangeKiloCode,
-} from "./kilo-exchange.mjs";
+import { KILO_MEMBER_SEARCH_PATH, kiloDirectory, kiloMembers } from "./kilo-directory.mjs";
+import { MAX_PROOF_LENGTH, exchangeKiloCode } from "./kilo-exchange.mjs";
 import { handleKiloSignIn } from "./kilo-handoff.mjs";
 import {
-  KILO_MEMBER_SEARCH_PATH,
-  KiloRateLimited,
-  kiloMembers,
-  resolveKiloMember,
-  searchKiloMembers,
-} from "./kilo-member-search.mjs";
+  DirectoryProtocolError,
+  DirectoryRateLimited,
+  DirectoryUnavailable,
+} from "./organization-directory.mjs";
 import {
-  memberSearchProof,
+  directoryCredential,
   membershipRecord,
-  recordKiloMembership,
+  recordOrganizationMemberships,
   resetMembershipCache,
-} from "./kilo-membership.mjs";
+} from "./organization-memberships.mjs";
 import { world } from "./projects-fixture.mjs";
 
 const acme = Object.freeze({ id: "org-acme-5d1e", name: "Acme Research" });
@@ -32,32 +26,44 @@ const other = Object.freeze({ id: "org-other-8b20", name: "Other Guild" });
 // Distinctive, so a log line or a response that carried one would be found.
 const PROOF = "proof-sentinel-3c9a.signature";
 
-// --- The Kilo client -------------------------------------------------------
+// --- Kilo as the organization directory ------------------------------------
 
 const client = {
   appUrl: "https://kilo.example",
   secret: "deployment-secret-0123456789-0123456789",
   audience: "pages-test",
-  searcherId: "searcher-1",
+};
+const directoryEnv = {
+  PAGES_KILO_APP_URL: client.appUrl,
+  PAGES_KILO_AUDIENCE: client.audience,
+  PAGES_KILO_EXCHANGE_SECRET: client.secret,
+};
+const searcher = {
+  principal: "user:kilo:searcher%2F1",
   organizationId: acme.id,
-  proof: PROOF,
+  credential: PROOF,
 };
 
-/** A fetcher that answers `status` with `body` and records each call. */
+/** Kilo as a directory whose fetch answers `status` with `body`, recording
+ * each call. */
 function answering(status, body) {
   const calls = [];
   const fetcher = async (url, init) => {
     calls.push({ url: String(url), init, body: JSON.parse(init.body) });
     return new Response(body === undefined ? null : JSON.stringify(body), { status });
   };
-  return { fetcher, calls };
+  return { directory: kiloDirectory(directoryEnv, { fetcher }), fetcher, calls };
 }
 
 test("a search posts the searcher's proof and query to Kilo on the deployment secret", async () => {
-  const { fetcher, calls } = answering(200, {
+  const { directory, calls } = answering(200, {
     members: [{ id: "jes-1", name: "Jesse Doe", image_url: "https://avatars.example/j.png" }],
   });
-  const answer = await searchKiloMembers(fetcher, { ...client, query: "jes" });
+  assert.equal(directory.provider, "kilo");
+  assert.equal(directory.namespace, "user:kilo");
+  assert.equal(directory.evidenceSeconds, KILO_MEMBERSHIP_SECONDS);
+  assert.equal(directory.memberPrincipal("a/b"), "user:kilo:a%2Fb");
+  const answer = await directory.search({ ...searcher, query: "jes" });
   assert.deepEqual(answer, {
     members: [{ id: "jes-1", name: "Jesse Doe", imageUrl: "https://avatars.example/j.png" }],
   });
@@ -68,10 +74,22 @@ test("a search posts the searcher's proof and query to Kilo on the deployment se
   assert.equal(calls[0].init.headers.authorization, `Bearer ${client.secret}`);
   assert.deepEqual(calls[0].body, {
     audience: "pages-test",
-    searcher_id: "searcher-1",
+    searcher_id: "searcher/1",
     organization_id: acme.id,
     proof: PROOF,
     query: "jes",
+  });
+});
+
+test("the directory reads what an exchange reported, credential included", () => {
+  const { directory } = answering(200, {});
+  assert.deepEqual(directory.memberships({ organizations: [acme], memberSearchProof: PROOF }), {
+    organizations: [acme],
+    credential: PROOF,
+  });
+  assert.deepEqual(directory.memberships({ organizations: [] }), {
+    organizations: [],
+    credential: null,
   });
 });
 
@@ -91,7 +109,7 @@ test("members Pages can't show, or that could show an address, are dropped", () 
       { id: "b", name: "" },
       { id: "c", name: "   " },
       { id: "d", name: "someone@example.test" },
-      { id: "e", name: "someone＠example.test" },
+      { id: "e", name: "someone\uFF20example.test" },
       { id: "f", name: "Grace Hopper", image_url: "http://avatars.example/g.png" },
       { id: "g", name: "Alan Turing", image_url: "javascript:alert(1)" },
       { id: "h", name: "Edsger Dijkstra", image_url: "https://user:pass@avatars.example/e.png" },
@@ -104,22 +122,19 @@ test("members Pages can't show, or that could show an address, are dropped", () 
       { id: "h", name: "Edsger Dijkstra", imageUrl: null },
     ],
   );
-  assert.throws(() => kiloMembers(undefined), KiloProtocolError);
-  assert.throws(() => kiloMembers({}), KiloProtocolError);
+  assert.throws(() => kiloMembers(undefined), DirectoryProtocolError);
+  assert.throws(() => kiloMembers({}), DirectoryProtocolError);
 });
 
-test("Kilo's refusals are named by status and error; anything else is a protocol error", async () => {
-  const refusals = [
+test("Kilo's refusals and failures become the directory's", async () => {
+  const search = (status, body) =>
+    answering(status, body).directory.search({ ...searcher, query: "jes" });
+  for (const [status, error, refused] of [
     [400, "invalid_request", "request"],
-    [401, "invalid_client", "client"],
-    [401, "invalid_proof", "proof"],
-    [403, "not_a_member", "not_a_member"],
-  ];
-  for (const [status, error, refused] of refusals)
-    assert.deepEqual(
-      await searchKiloMembers(answering(status, { error }).fetcher, { ...client, query: "jes" }),
-      { refused },
-    );
+    [401, "invalid_proof", "credential"],
+    [403, "not_a_member", "membership"],
+  ])
+    assert.deepEqual(await search(status, { error }), { refused });
   for (const [status, body] of [
     [401, { error: "invalid_token" }],
     [403, { error: "account_unavailable" }],
@@ -127,54 +142,47 @@ test("Kilo's refusals are named by status and error; anything else is a protocol
     [302, undefined],
     [200, { users: [] }],
   ])
-    await assert.rejects(
-      searchKiloMembers(answering(status, body).fetcher, { ...client, query: "jes" }),
-      KiloProtocolError,
-      String(status),
-    );
+    await assert.rejects(search(status, body), DirectoryProtocolError, String(status));
+  await assert.rejects(search(429, { error: "RATE_LIMITED" }), DirectoryRateLimited);
+  for (const [status, body] of [
+    [401, { error: "invalid_client" }],
+    [500, {}],
+    [503, { error: "RATE_LIMIT_UNAVAILABLE" }],
+  ])
+    await assert.rejects(search(status, body), DirectoryUnavailable, String(status));
+  const unreachable = kiloDirectory(directoryEnv, {
+    fetcher: async () => {
+      throw new TypeError("network");
+    },
+  });
+  await assert.rejects(unreachable.search({ ...searcher, query: "jes" }), DirectoryUnavailable);
+  // A deployment without Kilo's settings can't ask at all.
   await assert.rejects(
-    searchKiloMembers(answering(429, { error: "RATE_LIMITED" }).fetcher, { ...client, query: "x" }),
-    KiloRateLimited,
-  );
-  for (const status of [500, 503])
-    await assert.rejects(
-      searchKiloMembers(answering(status, { error: "RATE_LIMIT_UNAVAILABLE" }).fetcher, {
-        ...client,
-        query: "jes",
-      }),
-      KiloUnavailable,
-    );
-  await assert.rejects(
-    searchKiloMembers(
-      async () => {
-        throw new TypeError("network");
-      },
-      { ...client, query: "jes" },
-    ),
-    KiloUnavailable,
+    kiloDirectory({}, { fetcher: answering(200, {}).fetcher }).search({
+      ...searcher,
+      query: "jes",
+    }),
+    DirectoryUnavailable,
   );
 });
 
 test("a resolve answers the one member asked for or nobody, and nothing else", async () => {
   const one = answering(200, { members: [{ id: "jes-1", name: "Jesse Doe", image_url: null }] });
-  assert.deepEqual(await resolveKiloMember(one.fetcher, { ...client, memberId: "jes-1" }), {
+  assert.deepEqual(await one.directory.resolve({ ...searcher, memberId: "jes-1" }), {
     member: { id: "jes-1", name: "Jesse Doe", imageUrl: null },
   });
   assert.equal(one.calls[0].body.member_id, "jes-1");
   assert.equal("query" in one.calls[0].body, false);
   assert.deepEqual(
-    await resolveKiloMember(answering(200, { members: [] }).fetcher, {
-      ...client,
-      memberId: "jes-1",
-    }),
+    await answering(200, { members: [] }).directory.resolve({ ...searcher, memberId: "jes-1" }),
     { member: null },
   );
   assert.deepEqual(
-    await resolveKiloMember(answering(401, { error: "invalid_proof" }).fetcher, {
-      ...client,
+    await answering(401, { error: "invalid_proof" }).directory.resolve({
+      ...searcher,
       memberId: "jes-1",
     }),
-    { refused: "proof" },
+    { refused: "credential" },
   );
   for (const members of [
     [{ id: "someone-else", name: "Someone Else" }],
@@ -184,8 +192,8 @@ test("a resolve answers the one member asked for or nobody, and nothing else", a
     ],
   ])
     await assert.rejects(
-      resolveKiloMember(answering(200, { members }).fetcher, { ...client, memberId: "jes-1" }),
-      KiloProtocolError,
+      answering(200, { members }).directory.resolve({ ...searcher, memberId: "jes-1" }),
+      DirectoryProtocolError,
     );
 });
 
@@ -215,7 +223,7 @@ test("the exchange keeps a usable proof and signs in without one it can't use", 
   }
 });
 
-// --- The proof, kept with the membership row --------------------------------
+// --- The credential, kept with the membership record ------------------------
 
 const kiloEnv = (t) => ({
   DB: sqliteD1(t).open(),
@@ -229,14 +237,14 @@ const kiloIdentity = (principal, now) => ({
   expiresAt: now + 60_000,
 });
 
-test("the newest exchange's proof is kept, a newer exchange without one clears it, and it ages out with the evidence", async (t) => {
+test("the newest exchange's credential is kept, a newer exchange without one clears it, and it ages out with the evidence", async (t) => {
   const env = kiloEnv(t);
   resetMembershipCache();
   const principal = "user:kilo:proof-holder";
   const at = Date.now();
   const who = kiloIdentity(principal, at);
-  await recordKiloMembership(env, principal, [acme], at, PROOF);
-  assert.equal(await memberSearchProof(env, who, at), PROOF);
+  await recordOrganizationMemberships(env, principal, [acme], at, PROOF);
+  assert.equal(await directoryCredential(env, who, at), PROOF);
   // The record every identity reads doesn't carry it.
   assert.deepEqual(Object.keys(await membershipRecord(env, principal, at)).sort(), [
     "organizations",
@@ -244,23 +252,23 @@ test("the newest exchange's proof is kept, a newer exchange without one clears i
   ]);
   // An older exchange changes nothing; one in the same millisecond keeps the
   // proof it doesn't replace.
-  await recordKiloMembership(env, principal, [acme], at - 1, "older-proof");
-  await recordKiloMembership(env, principal, [acme], at, null);
-  assert.equal(await memberSearchProof(env, who, at), PROOF);
-  await recordKiloMembership(env, principal, [acme], at + 1, null);
-  assert.equal(await memberSearchProof(env, who, at + 1), null, "a newer exchange without one");
-  await recordKiloMembership(env, principal, [acme], at + 2, "newer-proof");
-  assert.equal(await memberSearchProof(env, who, at + 2), "newer-proof");
+  await recordOrganizationMemberships(env, principal, [acme], at - 1, "older-proof");
+  await recordOrganizationMemberships(env, principal, [acme], at, null);
+  assert.equal(await directoryCredential(env, who, at), PROOF);
+  await recordOrganizationMemberships(env, principal, [acme], at + 1, null);
+  assert.equal(await directoryCredential(env, who, at + 1), null, "a newer exchange without one");
+  await recordOrganizationMemberships(env, principal, [acme], at + 2, "newer-proof");
+  assert.equal(await directoryCredential(env, who, at + 2), "newer-proof");
   const end = at + 2 + KILO_MEMBERSHIP_SECONDS * 1000;
   assert.equal(
-    await memberSearchProof(env, { ...who, expiresAt: end + 1 }, end - 1),
+    await directoryCredential(env, { ...who, expiresAt: end + 1 }, end - 1),
     "newer-proof",
   );
-  assert.equal(await memberSearchProof(env, { ...who, expiresAt: end + 1 }, end), null);
+  assert.equal(await directoryCredential(env, { ...who, expiresAt: end + 1 }, end), null);
   // Only a live Kilo identity reads one.
-  assert.equal(await memberSearchProof(env, { ...who, expiresAt: at }, at + 2), null);
+  assert.equal(await directoryCredential(env, { ...who, expiresAt: at }, at + 2), null);
   assert.equal(
-    await memberSearchProof(
+    await directoryCredential(
       env,
       { ...who, principal: "user:other:x", namespace: "user:other" },
       at,

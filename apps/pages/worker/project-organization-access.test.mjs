@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { NO_ACTOR_CHAIN, decide, pageObject, principalOf, projectObject } from "./authz.mjs";
 import { KILO_MEMBERSHIP_SECONDS } from "./kilo-config.mjs";
-import { resetMembershipCache } from "./kilo-membership.mjs";
+import { resetMembershipCache } from "./organization-memberships.mjs";
 import { PROJECT_ACCESS_LEASE_MS } from "./project-access.mjs";
 import { OPENED_PROJECT_HINTS } from "./project-opened.mjs";
 import { PROJECT_READ_TTL_MS } from "./project-read-memo.mjs";
@@ -313,7 +313,9 @@ test("the Project leaves the member's list when the grant clears, the lease ends
   assert.equal((await share(w, project_id, acme.id, "viewer", revision++)).status, 200);
   await open();
   // The member's evidence ages past its lease.
-  await w.env.DB.prepare("UPDATE kilo_memberships SET verified_at_ms = ? WHERE principal = ?")
+  await w.env.DB.prepare(
+    "UPDATE pages_organization_memberships SET verified_at_ms = ? WHERE principal = ?",
+  )
     .bind(Date.now() - KILO_MEMBERSHIP_SECONDS * 1000 - 1000, w.member)
     .run();
   resetMembershipCache();

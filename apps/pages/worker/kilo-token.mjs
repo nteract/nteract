@@ -175,7 +175,7 @@ export async function kiloTokenAccount({ config, claims }, token) {
       name: answer.name,
       ...(answer.verifiedEmail && { verifiedEmail: answer.verifiedEmail }),
       // What the exchange said about the account's organizations, and when
-      // it was sent: the evidence auth.mjs records (kilo-membership.mjs).
+      // it was sent: the evidence auth.mjs records (organization-memberships.mjs).
       organizations: answer.organizations,
       // Recorded beside them and never read from here again.
       ...(answer.memberSearchProof && { memberSearchProof: answer.memberSearchProof }),

@@ -1,23 +1,27 @@
-/** What Kilo last said about the organizations an account belongs to, and the
- * short-lived organization leases a Kilo identity carries from it.
+/** What a deployment's organization directory last said about the
+ * organizations an account belongs to, and the short-lived organization leases
+ * an identity carries from it. The directory is an adapter
+ * (organization-directory.mjs); `organizationDirectory` picks it.
  *
- * Every successful Kilo exchange, the browser code exchange and the agent
- * token exchange alike, reports the account's organizations
- * (kilo-exchange.mjs). The host keeps the newest report per principal as one
- * D1 row: the organizations and `verified_at_ms`, when Pages sent the exchange
- * that reported them, in milliseconds by Pages' clock. Every successful
- * exchange writes, in one statement (`recordKiloMembership`), so the row
+ * Every successful sign-in exchange, the browser code exchange and the agent
+ * token exchange alike, reports the account's organizations through the
+ * directory's `memberships`. The host keeps the newest report per principal
+ * as one D1 row of `pages_organization_memberships`: the directory's
+ * `provider`, the organizations, `verified_at_ms` (when Pages sent the
+ * exchange that reported them, in milliseconds by Pages' clock) and the
+ * directory's opaque `directory_credential`. Every successful exchange
+ * writes, in one statement (`recordOrganizationMemberships`), so the row
  * always holds the newest answer any isolate received, and a slow exchange
  * can't undo a newer one. That costs one D1 write per browser sign-in, and
  * for an agent token at least one per exchange in each isolate: requests that
  * arrive together at the start of a lease each write the same answer.
  *
- * `authenticate` (auth.mjs) reads the row by principal for every Kilo
+ * `authenticate` (auth.mjs) reads the row by principal for every directory
  * identity, whichever credential it arrived with: a browser cookie, a Pages
- * OAuth access token or a Kilo agent token. Nothing is copied into a session,
- * an OAuth grant or a token lease, so an agent connected by OAuth holds its
+ * OAuth access token or an agent token. Nothing is copied into a session, an
+ * OAuth grant or a token lease, so an agent connected by OAuth holds its
  * person's organizations while the person's evidence is fresh and loses them
- * `KILO_MEMBERSHIP_SECONDS` after the person's last exchange.
+ * the directory's `evidenceSeconds` after the person's last exchange.
  *
  * Every host a request crosses authenticates it again, so reads go through a
  * small per-isolate cache. An entry answers for at most `CACHE_MS` from its
@@ -30,25 +34,40 @@
  * settled values are cached, never a pending read (isolate-setup.mjs says
  * why).
  *
- * The row also keeps the exchange's member search proof, when Kilo sent one
- * (`member_search_proof`, kilo-exchange.mjs): Kilo's signed statement that
- * this person signed in to this deployment. It is read only by
- * `memberSearchProof`, never cached, and never joins the record above, so it
- * stays on the server and out of every identity. A newer exchange without one
- * clears it, so a deployment whose Kilo stops sending it stops searching.
+ * The directory credential is read only by `directoryCredential`, never
+ * cached, and never joins the record the cache holds, so it stays on the
+ * server and out of every identity. A newer exchange without one clears it.
  *
- * No organization id or name, and no proof, reaches a log line from here. */
+ * Kilo deployments kept this evidence in `kilo_memberships` before the table
+ * took the directory's name. Its migrations still run first, so every
+ * database has that table in its last shape, and the first migration here
+ * copies its rows: evidence a person holds keeps counting across the deploy.
+ * A later build drops it once every deployment has run this one for longer
+ * than the evidence lasts.
+ *
+ * No organization id or name, and no credential, reaches a log line from
+ * here. */
 import { identityProvider } from "../identity-provider.mjs";
 import { migrateSchema } from "./d1-schema.mjs";
 import { isolateSetup } from "./isolate-setup.mjs";
-import { KILO_MEMBERSHIP_SECONDS, kiloPrincipalNamespace } from "./kilo-config.mjs";
+import { kiloDirectory } from "./kilo-directory.mjs";
 
 /** How long one read answers for in this isolate. */
 export const CACHE_MS = 30_000;
 /** How many principals one isolate remembers. */
 export const MAX_CACHED = 1000;
 
-const MIGRATIONS = Object.freeze([
+/** This deployment's organization directory, or null when its sign-in
+ * reports no organizations. */
+export function organizationDirectory(env) {
+  const provider = identityProvider(env);
+  if (!provider.organizations) return null;
+  return provider.id === "kilo" ? kiloDirectory(env) : null;
+}
+
+/** `kilo_memberships` as Kilo deployments built it, kept so the copy below
+ * always reads it in its last shape. Statements as they shipped. */
+const LEGACY_MIGRATIONS = Object.freeze([
   Object.freeze({
     version: 1,
     name: "memberships",
@@ -60,9 +79,6 @@ const MIGRATIONS = Object.freeze([
       )`,
     ]),
   }),
-  // The fence compares send times by the millisecond. A row timed in seconds
-  // can't be ordered against one, so its evidence is dropped; every
-  // principal's next exchange writes it again.
   Object.freeze({
     version: 2,
     name: "memberships_by_millisecond",
@@ -75,15 +91,35 @@ const MIGRATIONS = Object.freeze([
       )`,
     ]),
   }),
+]);
+
+const MIGRATIONS = Object.freeze([
+  // Every statement is safe to run again, and an older build keeps reading
+  // and writing `kilo_memberships`, which this leaves as it is. A row an
+  // older isolate writes after the copy reaches this table at that person's
+  // next exchange.
   Object.freeze({
-    version: 3,
-    name: "member_search_proof",
-    statements: Object.freeze(["ALTER TABLE kilo_memberships ADD COLUMN member_search_proof TEXT"]),
+    version: 1,
+    name: "organization_memberships",
+    statements: Object.freeze([
+      `CREATE TABLE IF NOT EXISTS pages_organization_memberships (
+        principal TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        organizations TEXT NOT NULL,
+        verified_at_ms INTEGER NOT NULL,
+        directory_credential TEXT
+      )`,
+      `INSERT INTO pages_organization_memberships
+        (principal, provider, organizations, verified_at_ms)
+      SELECT principal, 'kilo', organizations, verified_at_ms FROM kilo_memberships WHERE true
+      ON CONFLICT (principal) DO NOTHING`,
+    ]),
   }),
 ]);
-const ready = isolateSetup((db) =>
-  migrateSchema(db, { table: "kilo_membership_schema", migrations: MIGRATIONS }),
-);
+const ready = isolateSetup(async (db) => {
+  await migrateSchema(db, { table: "kilo_membership_schema", migrations: LEGACY_MIGRATIONS });
+  await migrateSchema(db, { table: "pages_organization_schema", migrations: MIGRATIONS });
+});
 
 /** principal -> { record, readAt }, oldest first. `record` is
  * `{ organizations, verifiedAtMs }` or null when the principal has none. */
@@ -101,7 +137,7 @@ const cache = new Map();
 let writes = 0;
 
 /** When `record`'s evidence stops counting, in milliseconds. */
-const evidenceEnd = (record) => record.verifiedAtMs + KILO_MEMBERSHIP_SECONDS * 1000;
+const evidenceEnd = (record, directory) => record.verifiedAtMs + directory.evidenceSeconds * 1000;
 
 function remember(principal, record, now) {
   cache.delete(principal);
@@ -109,21 +145,23 @@ function remember(principal, record, now) {
   while (cache.size > MAX_CACHED) cache.delete(cache.keys().next().value);
 }
 
-function cached(principal, now) {
+function cached(principal, now, directory) {
   const entry = cache.get(principal);
   if (!entry) return undefined;
   const until = Math.min(
     entry.readAt + CACHE_MS,
-    entry.record ? evidenceEnd(entry.record) : Infinity,
+    entry.record ? evidenceEnd(entry.record, directory) : Infinity,
   );
   if (now < until) return entry;
   cache.delete(principal);
   return undefined;
 }
 
-/** A stored row, or null for one that isn't the shape this module writes. */
-function parseRecord(row) {
-  if (!row || !Number.isSafeInteger(row.verified_at_ms)) return null;
+/** A stored row, or null for one that isn't the shape this module writes or
+ * that another directory wrote. */
+function parseRecord(row, directory) {
+  if (!row || row.provider !== directory.provider || !Number.isSafeInteger(row.verified_at_ms))
+    return null;
   let organizations;
   try {
     organizations = JSON.parse(row.organizations);
@@ -146,16 +184,20 @@ function parseRecord(row) {
 /** The principal's membership record, `{ organizations, verifiedAtMs }`, or
  * null. Reads D1 unless this isolate read or wrote it within `CACHE_MS`. */
 export async function membershipRecord(env, principal, now = Date.now()) {
-  const hit = cached(principal, now);
+  const directory = organizationDirectory(env);
+  if (!directory) return null;
+  const hit = cached(principal, now, directory);
   if (hit) return hit.record;
   const writesBefore = writes;
   await ready(env.DB);
   const record = parseRecord(
     await env.DB.prepare(
-      "SELECT organizations, verified_at_ms FROM kilo_memberships WHERE principal = ?",
+      `SELECT provider, organizations, verified_at_ms
+      FROM pages_organization_memberships WHERE principal = ?`,
     )
       .bind(principal)
       .first(),
+    directory,
   );
   if (writes === writesBefore) remember(principal, record, now);
   return record;
@@ -177,15 +219,23 @@ export async function membershipRecord(env, principal, now = Date.now()) {
  * The row's `verified_at_ms` never moves back. Every exchange writes, equal
  * answer or not, so that time always reaches the newest exchange seen.
  *
- * `proof` is the exchange's member search proof, or null. It follows the
- * same order: a later exchange replaces it, null included, and one in the
- * same millisecond keeps whichever is set. Two proofs that close name the
- * same person on the same deployment, so either serves.
+ * `credential` is the directory credential the exchange carried, or null. It
+ * follows the same order: a later exchange replaces it, null included, and
+ * one in the same millisecond keeps whichever is set. Two credentials that
+ * close name the same person on the same deployment, so either serves.
  */
-export async function recordKiloMembership(env, principal, organizations, sentAt, proof = null) {
+export async function recordOrganizationMemberships(
+  env,
+  principal,
+  organizations,
+  sentAt,
+  credential = null,
+) {
+  const directory = organizationDirectory(env);
+  if (!directory) throw new Error("This deployment's sign-in reports no organizations");
   writes++;
   try {
-    await write(env, principal, organizations, sentAt, proof);
+    await write(env, principal, directory.provider, organizations, sentAt, credential);
   } finally {
     writes++;
     // The row may now differ from both this answer and this isolate's view,
@@ -203,67 +253,79 @@ export async function recordKiloMembership(env, principal, organizations, sentAt
 const storedOrganizations = (organizations) =>
   JSON.stringify(organizations.map(({ id, name }) => ({ id, name })));
 
-async function write(env, principal, organizations, sentAt, proof) {
+async function write(env, principal, provider, organizations, sentAt, credential) {
   await ready(env.DB);
   const stored = storedOrganizations(organizations);
+  const table = "pages_organization_memberships";
   await env.DB.prepare(
-    `INSERT INTO kilo_memberships (principal, organizations, verified_at_ms, member_search_proof)
-    VALUES (?, ?, ?, ?)
+    `INSERT INTO ${table} (principal, provider, organizations, verified_at_ms, directory_credential)
+    VALUES (?, ?, ?, ?, ?)
     ON CONFLICT (principal) DO UPDATE SET
+      provider = excluded.provider,
       organizations = CASE
-        WHEN excluded.verified_at_ms > kilo_memberships.verified_at_ms THEN excluded.organizations
-        WHEN excluded.organizations = kilo_memberships.organizations THEN kilo_memberships.organizations
+        WHEN excluded.verified_at_ms > ${table}.verified_at_ms THEN excluded.organizations
+        WHEN excluded.organizations = ${table}.organizations THEN ${table}.organizations
         ELSE '[]'
       END,
-      member_search_proof = CASE
-        WHEN excluded.verified_at_ms > kilo_memberships.verified_at_ms
-          THEN excluded.member_search_proof
-        ELSE COALESCE(excluded.member_search_proof, kilo_memberships.member_search_proof)
+      directory_credential = CASE
+        WHEN excluded.verified_at_ms > ${table}.verified_at_ms
+          THEN excluded.directory_credential
+        ELSE COALESCE(excluded.directory_credential, ${table}.directory_credential)
       END,
       verified_at_ms = excluded.verified_at_ms
-    WHERE excluded.verified_at_ms >= kilo_memberships.verified_at_ms`,
+    WHERE excluded.verified_at_ms >= ${table}.verified_at_ms`,
   )
-    .bind(principal, stored, Math.floor(sentAt), typeof proof === "string" && proof ? proof : null)
+    .bind(
+      principal,
+      provider,
+      stored,
+      Math.floor(sentAt),
+      typeof credential === "string" && credential ? credential : null,
+    )
     .run();
 }
 
-/** The member search proof `identity`'s newest exchange carried, or null when
- * it carried none, the evidence it came with no longer counts, or `identity`
- * isn't a Kilo account. Kilo minted the proof just after Pages sent that
- * exchange and honors it for as long as Pages trusts the evidence, so a proof
- * this returns is one Kilo still accepts, clocks aside. Reads D1 every time:
- * the proof is never cached. */
-export async function memberSearchProof(env, identity, now = Date.now()) {
-  if (!kiloAccount(env, identity, now)) return null;
+/** The directory credential `identity`'s newest exchange carried, or null
+ * when it carried none, the evidence it came with no longer counts, or
+ * `identity` isn't an account of this deployment's directory. A directory
+ * issues its credential with the exchange and honors it for as long as Pages
+ * trusts the evidence, so a credential this returns is one the directory
+ * still accepts, clocks aside. Reads D1 every time: it is never cached. */
+export async function directoryCredential(env, identity, now = Date.now()) {
+  const directory = directoryAccount(env, identity, now);
+  if (!directory) return null;
   await ready(env.DB);
   const row = await env.DB.prepare(
-    "SELECT verified_at_ms, member_search_proof FROM kilo_memberships WHERE principal = ?",
+    `SELECT provider, verified_at_ms, directory_credential
+    FROM pages_organization_memberships WHERE principal = ?`,
   )
     .bind(identity.principal)
     .first();
   if (
     !row ||
+    row.provider !== directory.provider ||
     !Number.isSafeInteger(row.verified_at_ms) ||
-    typeof row.member_search_proof !== "string" ||
-    !row.member_search_proof ||
-    evidenceEnd({ verifiedAtMs: row.verified_at_ms }) <= now
+    typeof row.directory_credential !== "string" ||
+    !row.directory_credential ||
+    evidenceEnd({ verifiedAtMs: row.verified_at_ms }, directory) <= now
   )
     return null;
-  return row.member_search_proof;
+  return row.directory_credential;
 }
 
-/** Whether `identity` is a Kilo account on this deployment, the only kind of
- * identity organization evidence can name. */
-function kiloAccount(env, identity, now) {
-  if (!identityProvider(env).organizations) return null;
-  const namespace = kiloPrincipalNamespace(env);
+/** This deployment's directory when `identity` is one of its accounts, the
+ * only kind of identity organization evidence can name; else null. */
+function directoryAccount(env, identity, now) {
+  const directory = organizationDirectory(env);
+  if (!directory) return null;
+  const { namespace } = directory;
   return identity &&
     identity.namespace === namespace &&
     typeof identity.principal === "string" &&
     identity.principal.startsWith(`${namespace}:`) &&
     Number.isFinite(identity.expiresAt) &&
     identity.expiresAt > now
-    ? namespace
+    ? directory
     : null;
 }
 
@@ -271,14 +333,16 @@ function kiloAccount(env, identity, now) {
  * The organization leases `identity` holds now, `[{ id, name, namespace,
  * expiresAt }]`: one per organization the principal's fresh evidence names,
  * each ending when the identity does or the evidence stops counting,
- * whichever is first. Empty for any identity that isn't a Kilo account.
+ * whichever is first. Empty for any identity that isn't an account of this
+ * deployment's directory.
  */
 export async function organizationLeases(env, identity, now = Date.now()) {
-  const namespace = kiloAccount(env, identity, now);
-  if (!namespace) return [];
+  const directory = directoryAccount(env, identity, now);
+  if (!directory) return [];
+  const { namespace } = directory;
   const record = await membershipRecord(env, identity.principal, now);
   if (!record) return [];
-  const expiresAt = Math.min(identity.expiresAt, evidenceEnd(record));
+  const expiresAt = Math.min(identity.expiresAt, evidenceEnd(record, directory));
   if (expiresAt <= now) return [];
   return record.organizations.map(({ id, name }) =>
     Object.freeze({ id, name, namespace, expiresAt }),
@@ -292,9 +356,9 @@ export async function organizationLeases(env, identity, now = Date.now()) {
  * "missing" otherwise. Only "verified" authorizes anything.
  */
 export async function organizationProof(env, identity, ids, now = Date.now()) {
-  const namespace = kiloAccount(env, identity, now);
-  const record = namespace ? await membershipRecord(env, identity.principal, now) : null;
-  const fresh = !!record && Math.min(identity.expiresAt, evidenceEnd(record)) > now;
+  const directory = directoryAccount(env, identity, now);
+  const record = directory ? await membershipRecord(env, identity.principal, now) : null;
+  const fresh = !!record && Math.min(identity.expiresAt, evidenceEnd(record, directory)) > now;
   const named = new Set(record?.organizations.map(({ id }) => id));
   const proof = {};
   for (const id of ids) proof[id] = !named.has(id) ? "missing" : fresh ? "verified" : "expired";

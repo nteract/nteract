@@ -5,7 +5,7 @@ import { domainViewRole } from "./authz.mjs";
 import { inviteEmail } from "./invite-email.mjs";
 import { fingerprint, operationKey } from "./mutations.mjs";
 import { companyDomainProof, companyViewDomains, configuredDomainView } from "./domain-access.mjs";
-import { organizationLeases, organizationProof } from "./kilo-membership.mjs";
+import { organizationLeases, organizationProof } from "./organization-memberships.mjs";
 import { configuredOrganizationAccess } from "./organization-access.mjs";
 import { memberSearchAvailable } from "./organization-members.mjs";
 

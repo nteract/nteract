@@ -1,47 +1,53 @@
-/** Picking a colleague from one of your Kilo organizations by name.
+/** Picking a colleague from one of your organizations by name.
  *
  * A person who shares a Page or a Project types part of a name; Pages asks
- * Kilo for that organization's members (kilo-member-search.mjs) and shows
- * names and avatars, never an address. Granting a pick asks Kilo again by id
- * (`resolveOrganizationMember`), and the grant names the Kilo account Kilo
- * confirms, with the name Kilo sent. Nothing the browser sends about a member
- * is granted or stored.
+ * the deployment's organization directory (organization-directory.mjs) for
+ * that organization's members and shows names and avatars, never an address.
+ * Granting a pick asks the directory again by id
+ * (`resolveOrganizationMember`), and the grant names the account the
+ * directory confirms, with the name it sent. Nothing the browser sends about
+ * a member is granted or stored.
  *
  * Both calls need three things now, checked in this order:
  *
- * 1. This deployment signs in with Kilo.
- * 2. The caller holds a lease for the organization (kilo-membership.mjs): its
- *    newest exchange named it and still counts.
- * 3. That exchange carried a member search proof. Kilo sends one from the
- *    release that added this route; with an older Kilo there is none, search
- *    is off, and sharing by email works as before.
+ * 1. This deployment's sign-in has an organization directory.
+ * 2. The caller holds a lease for the organization
+ *    (organization-memberships.mjs): its newest exchange named it and still
+ *    counts.
+ * 3. That exchange carried a directory credential. Kilo sends one from the
+ *    release that added member search; with an older Kilo there is none,
+ *    search is off, and sharing by email works as before.
  *
- * Kilo still checks the caller's membership live on each call. The proof
- * travels only from D1 to Kilo: it never reaches a response, an identity or a
- * log line. */
+ * The directory still checks the caller's membership live on each call. The
+ * credential travels only from D1 to the directory: it never reaches a
+ * response, an identity or a log line. */
 import { HttpError, json, readJson } from "./auth.mjs";
-import { kiloClient } from "./kilo-config.mjs";
-import { KiloProtocolError, KiloUnavailable } from "./kilo-exchange.mjs";
 import {
-  KiloRateLimited,
-  MAX_QUERY_LENGTH,
-  MIN_QUERY_LENGTH,
-  resolveKiloMember,
-  searchKiloMembers,
-} from "./kilo-member-search.mjs";
-import { memberSearchProof, organizationProof } from "./kilo-membership.mjs";
+  DirectoryProtocolError,
+  DirectoryRateLimited,
+  DirectoryUnavailable,
+} from "./organization-directory.mjs";
+import {
+  directoryCredential,
+  organizationDirectory,
+  organizationProof,
+} from "./organization-memberships.mjs";
+
+/** A query's length after trimming. */
+export const MIN_QUERY_LENGTH = 2;
+export const MAX_QUERY_LENGTH = 100;
 
 /** The route the share dialog searches through. */
 export const ORGANIZATION_MEMBERS_PATH = "/api/organization-members";
 
-/** Search can't run here now: this deployment doesn't use Kilo, Kilo refused
- * this deployment, or Kilo didn't answer. The dialog hides the picker. */
+/** Search can't run here now: this deployment has no organization directory,
+ * or its directory can't answer. The dialog hides the picker. */
 export const MEMBER_SEARCH_UNAVAILABLE = "member_search_unavailable";
-/** Kilo lists nobody by that id in that organization now. */
+/** The directory lists nobody by that id in that organization now. */
 export const MEMBER_NOT_FOUND = "member_not_found";
 /** The caller can't search this organization now: no lease for it, or no
- * proof Kilo still accepts. Signing in again renews both, as it does for
- * sharing with the organization. */
+ * credential the directory still accepts. Signing in again renews both, as it
+ * does for sharing with the organization. */
 const PROOF_REQUIRED = "organization_proof_required";
 
 const MAX_ID_LENGTH = 255;
@@ -64,7 +70,7 @@ function checkedId(value, what) {
   return value;
 }
 
-/** The query as Kilo takes it: trimmed, 2 to 100 characters. */
+/** The query as Pages takes it: trimmed, 2 to 100 characters. */
 export function checkedQuery(value) {
   const query = typeof value === "string" ? value.trim() : "";
   if (query.length < MIN_QUERY_LENGTH || query.length > MAX_QUERY_LENGTH)
@@ -76,25 +82,19 @@ export function checkedQuery(value) {
   return query;
 }
 
-/** Whether `identity` can search its organizations now: this deployment uses
- * Kilo and its newest exchange carried a proof that still counts. The share
- * dialog shows the picker only then. */
+/** Whether `identity` can search its organizations now: this deployment has
+ * an organization directory and its newest exchange carried a credential that
+ * still counts. The share dialog shows the picker only then. */
 export async function memberSearchAvailable(env, identity, now = Date.now()) {
-  let client;
-  try {
-    client = kiloClient(env);
-  } catch {
-    return false;
-  }
-  if (!client || !identity) return false;
-  return (await memberSearchProof(env, identity, now)) !== null;
+  if (!identity || !organizationDirectory(env)) return false;
+  return (await directoryCredential(env, identity, now)) !== null;
 }
 
-/** What one call to Kilo needs for `identity` in `organizationId`, after the
- * three checks in the header. Throws a coded HttpError for each. */
+/** What one directory call needs for `identity` in `organizationId`, after
+ * the three checks in the header. Throws a coded HttpError for each. */
 async function searchContext(env, identity, organizationId, now) {
-  const client = kiloClient(env);
-  if (!client)
+  const directory = organizationDirectory(env);
+  if (!directory)
     throw new HttpError(404, "Organization search isn't used here", MEMBER_SEARCH_UNAVAILABLE);
   if (identity?.credentialKind === "oauth" && !identity.canShare)
     throw new HttpError(403, "Pages sharing permission is required", "oauth_insufficient_scope");
@@ -108,38 +108,38 @@ async function searchContext(env, identity, organizationId, now) {
         : "Search only an organization you belong to",
       PROOF_REQUIRED,
     );
-  const proof = await memberSearchProof(env, identity, now);
-  if (!proof) throw proofRequired();
-  const prefix = `${client.namespace}:`;
+  const credential = await directoryCredential(env, identity, now);
+  if (!credential) throw proofRequired();
   return {
-    ...client,
-    proof,
-    organizationId: id,
-    searcherId: decodeURIComponent(identity.principal.slice(prefix.length)),
+    directory,
+    input: { principal: identity.principal, organizationId: id, credential },
   };
 }
 
-/** Kilo's refusal or failure as the coded HttpError Pages answers with. */
-function kiloRefusal(refused) {
-  if (refused === "proof") return proofRequired();
-  if (refused === "not_a_member")
+/** The directory's refusal as the coded HttpError Pages answers with. */
+function directoryRefusal(refused) {
+  if (refused === "credential") return proofRequired();
+  if (refused === "membership")
     return new HttpError(
       403,
-      "Kilo no longer lists you in this organization. Sign in again to refresh your organizations",
+      "Your organization no longer lists you. Sign in again to refresh your organizations",
       PROOF_REQUIRED,
     );
-  if (refused === "request")
-    return new HttpError(400, "Kilo did not accept this search", "invalid_arguments");
-  return unavailable();
+  return new HttpError(
+    400,
+    "The organization directory did not accept this search",
+    "invalid_arguments",
+  );
 }
 
-async function askKilo(call) {
+async function askDirectory(call) {
   try {
     return await call();
   } catch (error) {
-    if (error instanceof KiloRateLimited)
+    if (error instanceof DirectoryRateLimited)
       throw new HttpError(429, "Too many searches. Wait a moment and try again");
-    if (error instanceof KiloUnavailable || error instanceof KiloProtocolError) throw unavailable();
+    if (error instanceof DirectoryUnavailable || error instanceof DirectoryProtocolError)
+      throw unavailable();
     throw error;
   }
 }
@@ -149,24 +149,24 @@ async function askKilo(call) {
  * caller's own account is left out: an owner can't share with themself. */
 export async function searchOrganizationMembers(env, identity, args, now = Date.now()) {
   const query = checkedQuery(args?.query);
-  const context = await searchContext(env, identity, args?.organization_id, now);
-  const answer = await askKilo(() => searchKiloMembers(fetch, { ...context, query }));
-  if (answer.refused) throw kiloRefusal(answer.refused);
+  const { directory, input } = await searchContext(env, identity, args?.organization_id, now);
+  const answer = await askDirectory(() => directory.search({ ...input, query }));
+  if (answer.refused) throw directoryRefusal(answer.refused);
   return {
     members: answer.members
-      .filter(({ id }) => id !== context.searcherId)
+      .filter(({ id }) => directory.memberPrincipal(id) !== identity.principal)
       .map(({ id, name, imageUrl }) => ({ id, name, image_url: imageUrl })),
   };
 }
 
-/** The account to grant for a pick, `{ principal, displayName }`, once Kilo
- * confirms `member_id` is a member of `organization_id` now. Throws 404
- * `member_not_found` when Kilo lists nobody by that id there. */
+/** The account to grant for a pick, `{ principal, displayName }`, once the
+ * directory confirms `member_id` is a member of `organization_id` now.
+ * Throws 404 `member_not_found` when it lists nobody by that id there. */
 export async function resolveOrganizationMember(env, identity, args, now = Date.now()) {
   const memberId = checkedId(args?.member_id, "a person");
-  const context = await searchContext(env, identity, args?.organization_id, now);
-  const answer = await askKilo(() => resolveKiloMember(fetch, { ...context, memberId }));
-  if (answer.refused) throw kiloRefusal(answer.refused);
+  const { directory, input } = await searchContext(env, identity, args?.organization_id, now);
+  const answer = await askDirectory(() => directory.resolve({ ...input, memberId }));
+  if (answer.refused) throw directoryRefusal(answer.refused);
   if (!answer.member)
     throw new HttpError(
       404,
@@ -174,7 +174,7 @@ export async function resolveOrganizationMember(env, identity, args, now = Date.
       MEMBER_NOT_FOUND,
     );
   return {
-    principal: `${context.namespace}:${encodeURIComponent(answer.member.id)}`,
+    principal: directory.memberPrincipal(answer.member.id),
     displayName: answer.member.name,
   };
 }

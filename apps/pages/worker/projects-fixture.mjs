@@ -12,7 +12,7 @@ import { plainStub } from "./plain-stub.mjs";
 import { operationKey } from "./mutations.mjs";
 import { LOCATION_SHAPE_KEY, shapeState } from "./location-shape.mjs";
 import { startLocalKiloHandoff } from "../scripts/fixtures/local-kilo-handoff.mjs";
-import { resetMembershipCache } from "./kilo-membership.mjs";
+import { resetMembershipCache } from "./organization-memberships.mjs";
 
 const KILO_AUDIENCE = "pages-projects-test";
 const KILO_SECRET = "kilo-projects-fixture-secret-0123456789";
