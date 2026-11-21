@@ -7,54 +7,63 @@ with a room-independent environment type and an explicit terminal identity rejec
 for applications that restrict membership. There is no second token verifier or
 session protocol. Transient profile-storage failures remain retryable.
 
-This is application source, **not an installed deployment**. The existing metrics
-collector remains owned by `nteract/preview-infra`; this app does not collect host
-state, read journals, enumerate raw Durable Object identities, or call a model.
-It shows host CPU/memory history, Durable Object class history, observed room
-presence, current memory/disk, separate application / output / renderer fleets,
-queue/pressure gauges, sockets, restart/OOM counts and process/deployment events.
-Current deployments appear first; stopped previews are collapsed with their saved
-state and revisions. Available-history boundaries distinguish the first retained
-capture from collection outages. Missing values stay unknown; partial sources
-retain numeric measurements that are present. Collection and refresh run once per
-minute. Presence is application-reported per half hour, not simultaneous occupancy
-or unique people; absent reports do not establish zero users.
+This is application source, **not an installed deployment**. `nteract/preview-infra`
+owns the metrics collector; this app does not collect host state, read journals,
+enumerate raw Durable Object identities, or call a model.
 
-The collector may also supply metric ID `app` for the original `app.runt.run`
-fleet. It is labeled as observed outside the preview lifecycle, with no deployment
-controls or invented revision. The UI remains compatible with older readers that
-omit coverage, presence or process-change fields and describes unavailable panels.
+- **Metrics displayed:** Host CPU/memory history, Durable Object class history,
+  observed room presence, current memory/disk, separate application / output /
+  renderer fleets, queue/pressure gauges, sockets, restart/OOM counts, and
+  process/deployment events.
+- **Deployment order:** Current deployments appear first; stopped previews are
+  collapsed with their saved state and revisions.
+- **Collection and gaps:** Collection and refresh run once per minute.
+  Available-history boundaries distinguish the first retained capture from
+  collection outages. Missing values stay unknown; partial sources retain
+  numeric measurements that are present.
+- **Presence semantics:** Presence is application-reported per half hour, not
+  simultaneous occupancy or unique people; absent reports do not establish zero
+  users.
+- **Standalone fleet:** The collector may also supply metric ID `app` for the
+  `app.runt.run` fleet. It is labeled as observed outside the preview lifecycle,
+  with no deployment controls or invented revision. The UI stays compatible with
+  older readers that omit coverage, presence, or process-change fields and
+  describes unavailable panels.
 
 ## Authentication and read boundary
 
 - Authorization-code PKCE, state and nonce checks, token validation, encrypted
-  server-side provider credentials, revocable D1-backed sessions and secure
+  server-side provider credentials, revocable D1-backed sessions, and secure
   HttpOnly cookies come from the existing server-login implementation.
 - The operator's D1 binding runs on **celld**, with a dedicated stable database
   identity and session secret. It does not use Cloudflare's hosted D1 service.
-- `OPERATOR_ALLOWED_EMAILS` is an exact email safelist. The template uses synthetic
-  addresses; supply the approved identities through private runtime configuration.
-  A verified email is
-  required at login and refresh. Each data request rechecks the fresh session's
-  verified email binding against the current safelist, so removing an email takes
-  effect without waiting for session expiry. Domains, profile display names,
-  Cloudflare headers, API keys and provider bearer tokens confer no access.
-- `/api/operator/session` renews the server session; DELETE signs out and requires
-  the configured same-origin browser Origin. Login/logout are the only user state
-  changes. There are no deployment controls.
-- The Worker forwards fixed GET queries to `http://127.0.0.1:9464`. It sends no user
-  cookies or credentials upstream. Only 1/6/24/168/336-hour windows and exact
-  `app` / `main` / `pr-N` filters are accepted. JSON and CSV exports use the same gate.
-  Unknown upstream routes, arbitrary URLs, SQL, redirects and deployment API
-  forwarding are absent. `OPERATOR_METRICS_SERVICE_TOKEN` supplies a dedicated
-  32-byte random credential encoded as 64 lowercase hex characters in the fixed
-  outbound Authorization header. Missing/invalid configuration fails closed.
-  The reader validates this credential on every route, including health. It is
-  private runtime configuration, never a browser login credential or build input.
-  The operator's OS identity, configuration, storage and celld control listener
-  must be isolated from preview Workers; a loopback bind alone is insufficient.
-- The sign-in shell and static UI code are public; fleet data and exports require
-  an allowed session. Every response is no-store and carries a restrictive CSP.
+- `OPERATOR_ALLOWED_EMAILS` is an exact email safelist. The template uses
+  synthetic addresses; supply the approved identities through private runtime
+  configuration. A verified email is required at login and refresh. Each data
+  request rechecks the fresh session's verified email binding against the
+  current safelist, so removing an email takes effect without waiting for
+  session expiry. Domains, profile display names, Cloudflare headers, API keys,
+  and provider bearer tokens confer no access.
+- `/api/operator/session` renews the server session; DELETE signs out and
+  requires the configured same-origin browser Origin. Login/logout are the only
+  user state changes. There are no deployment controls.
+- **Fixed upstream forwarding:** The Worker forwards fixed GET queries to
+  `http://127.0.0.1:9464` and sends no user cookies or credentials upstream.
+  Only 1/6/24/168/336-hour windows and exact `app` / `main` / `pr-N` filters are
+  accepted. JSON and CSV exports use the same gate. Unknown upstream routes,
+  arbitrary URLs, SQL, redirects, and deployment API forwarding are absent.
+- **Service authentication:** `OPERATOR_METRICS_SERVICE_TOKEN` supplies a
+  dedicated 32-byte random credential encoded as 64 lowercase hex characters in
+  the fixed outbound `Authorization` header. Missing or invalid configuration
+  fails closed. The reader validates this credential on every route, including
+  health. It is private runtime configuration, never a browser login credential
+  or build input.
+- **Host isolation:** Isolate the operator's OS identity, configuration,
+  storage, and celld control listener from preview Workers; a loopback bind
+  alone is insufficient.
+- The sign-in shell and static UI code are public; fleet data and exports
+  require an allowed session. Every response is no-store and carries a
+  restrictive CSP.
 
 Cloudflare Access is not involved. Existing DNS/tunnel ingress can remain in use;
 an alternative reverse proxy can route the same paths without changing auth or
@@ -91,10 +100,10 @@ identity provider. These checks do not qualify a production OAuth client.
 
 Run preview-infra's existing metrics demo or read service on loopback port 9464
 to supply measurements, using the same private credential file. Its raw browser
-dashboard now also requires service authentication; use the operator UI for
-ordinary browser access. Synthetic captures remain labeled by their provenance.
-Without that service the app shows an explicit unavailable state. `pnpm dev`
-provides UI hot reload but does not supply login or metrics by itself.
+dashboard requires service authentication; use the operator UI for ordinary
+browser access. Synthetic captures remain labeled by their provenance. Without
+that service the app shows an explicit unavailable state. `pnpm dev` provides UI
+hot reload but does not supply login or metrics by itself.
 
 ## Production handoff
 
@@ -121,14 +130,17 @@ provides UI hot reload but does not supply login or metrics by itself.
    requested accounts yield verified email claims. The Anaconda profile in the
    example follows current preview defaults; it is not evidence that a Gmail
    account has been admitted. Do not change to a domain-wide grant to solve this.
-5. Route only `/`, `/operator`, `/operator/`, generated `/operator/assets/*.js`
-   and `*.css` filenames, `/api/operator/metrics`,
-   `/api/operator/export.json`, `/api/operator/export.csv`,
-   `/api/operator/session`, `/api/auth/oidc/login` and `/oidc` to this app. Keep
-   `/authorize`, `/deploy`, `/status`, `/deployments/*` and `/health` on the existing
-   GitHub-OIDC deployment controller. Preserve its `https://deploy.runtimed.run`
-   token audience. Never expose the celld listener wholesale (`/state` and peer
-   endpoints are private). Ingress remains owned by preview-infra.
+5. Split ingress routing strictly between the operator app and the existing
+   GitHub-OIDC deployment controller:
+
+   | Destination | Routes |
+   | --- | --- |
+   | Operator app | `/`, `/operator`, `/operator/`, generated `/operator/assets/*.js` and `*.css` filenames, `/api/operator/metrics`, `/api/operator/export.json`, `/api/operator/export.csv`, `/api/operator/session`, `/api/auth/oidc/login`, `/oidc` |
+   | GitHub-OIDC deployment controller | `/authorize`, `/deploy`, `/status`, `/deployments/*`, `/health` |
+
+   Preserve the controller's `https://deploy.runtimed.run` token audience. Never
+   expose the celld listener wholesale (`/state` and peer endpoints are private).
+   Ingress remains owned by `preview-infra`.
 6. Before publication, qualify allowed/denied browser login, refresh, logout,
    direct unauthenticated JSON/CSV rejection, fresh and unavailable metrics,
    signed-in narrow layouts, persistence through restart, and the existing

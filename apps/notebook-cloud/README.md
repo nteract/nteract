@@ -7,11 +7,10 @@ connections; authorizes the principal through the D1 room ACL; stamps a trusted
 `<principal>/<operator>` actor label; and routes `/n/:notebookId/sync` to a
 Durable Object keyed by notebook id. Shipped surfaces include app sessions,
 OIDC login, notebook list/dashboard, workstations, invites, access requests,
-author profiles, runtime repair, OG images, snapshots, blobs, and live sync
-(commits 0745eeab daemon-mediated rooms, 81f8117e list-scale presence,
-1c9023df/739fad72 OG/pinned revision work, 8a0105a3 snapshot metadata,
-49e46666/6febe0d2/48dae8fb dashboard). Experimental APIs and preview deployment
-resources retain explicit "prototype" or "preview" labels.
+author profiles, runtime repair, OG images, pinned revisions, snapshot metadata,
+snapshots, blobs, list-scale presence, daemon-mediated rooms, and live sync.
+Experimental APIs and preview deployment resources retain explicit "prototype"
+or "preview" labels.
 
 For deployment, start with [DEPLOY.md](DEPLOY.md#choose-the-deployment-path).
 Wrangler and the local celld exporter include this app's bindings. Managed
@@ -20,14 +19,50 @@ hosted capabilities can require a companion controller change. Local development
 does not require that private repository.
 
 The current Durable Object does not host kernels. It owns a `runtimed-wasm`
-room host for the notebook's `NotebookDoc` + `RuntimeStateDoc` + `CommsDoc` +
-`CommentsDoc` (sidecar, commit 778fc53e), syncs peers with typed-frame v4,
-rejects unauthorized Automerge changes before mutating the room, checkpoints
-the materialized document set in Durable Object storage, rewrites canonical
-CBOR presence through the shared helper, and keeps in-memory frame-budget
-telemetry for live sync traffic. Viewer-scope peers use the normal sync exchange so they can materialize live room updates, while the room host uses read-only peer state as a protocol hint and still rejects any viewer-authored changes explicitly. No-op read-only sync control frames are acknowledged and delivered as protocol traffic, but they are not persisted as room-event history. Editor-scope live `NotebookDoc` writes cover the allowed cell surface, while notebook identity and metadata remain owner-only. Widget state writes live in `CommsDoc`; `RuntimeStateDoc` remains runtime-peer/room-host owned. Runtime peers can sync kernel lifecycle, widget comm topology, output routing, and progress/output state for room-accepted executions into `RuntimeStateDoc`, but they cannot create execution intent, edit `NotebookDoc`, rewrite trust/environment/path/project metadata, or acquire the frontend notebook editing API.
+room host for each notebook's document set:
 
-`/n/:notebookId/:vanityName` is a hosted notebook page backed by `/n/:id/sync`. Latest notebook views do not fetch a separate materialized render document; viewers join the live Automerge room as read-only peers and editor+ connections use the same synced document for permitted edits. `/n/:id/r/:headsHash` is an immutable pinned viewer that loads the persisted `NotebookDoc` + `RuntimeStateDoc` + `CommsDoc` Automerge snapshot set directly through `/api/n/:id/snapshots/:headsHash`, `/api/n/:id/runtime-snapshots/:runtimeHeadsHash`, `/api/n/:id/comms-snapshots/:commsHeadsHash`, and catalog revision metadata. Snapshot publishes validate that the documents can be loaded and that referenced output/widget blobs exist before recording the catalog revision, so missing runtime or comm snapshots, corrupt snapshot bytes, or missing blobs fail the publish request instead of advertising a broken revision. Output blob refs stay host-neutral and are mapped to `/api/n/:id/blobs/:hash` through the shared `BlobResolver` surface. The browser viewer bundle uses the shared notebook display components (`CellContainer`, `OutputArea`, `ReadOnlyCodeMirror`, `MediaProvider`) so published source, markdown, stdout/stderr, rich display data, widgets, and blob-backed renderer manifests go through the same isolated output renderer path as the desktop notebook.
+- **Sync and persistence:** Hosts `NotebookDoc`, `RuntimeStateDoc`, `CommsDoc`,
+  and `CommentsDoc` (sidecar), syncs peers with typed-frame v4, rejects
+  unauthorized Automerge changes before mutating the room, checkpoints the
+  materialized document set in Durable Object storage, rewrites canonical CBOR
+  presence through the shared helper, and tracks in-memory frame-budget
+  telemetry for live sync traffic.
+- **Viewers:** Use the normal sync exchange to materialize live room updates.
+  The room host treats read-only peer state as a protocol hint and still rejects
+  viewer-authored changes explicitly. No-op read-only sync control frames are
+  acknowledged and delivered as protocol traffic, not persisted as room-event
+  history.
+- **Editors:** Write to the allowed `NotebookDoc` cell surface while notebook
+  identity and metadata remain owner-only. Widget state writes live in
+  `CommsDoc`; `RuntimeStateDoc` remains runtime-peer and room-host owned.
+- **Runtime peers:** Sync kernel lifecycle, widget comm topology, output
+  routing, and progress/output state for room-accepted executions into
+  `RuntimeStateDoc`. They cannot create execution intent, edit `NotebookDoc`,
+  rewrite trust/environment/path/project metadata, or acquire the frontend
+  notebook editing API.
+
+Hosted notebook URLs, snapshots, and publishing follow these contracts:
+
+- **Latest views (`/n/:notebookId/:vanityName`):** Backed by `/n/:id/sync`
+  rather than a separate materialized render document. Viewers join the live
+  Automerge room as read-only peers, and editor+ connections use the same synced
+  document for permitted edits.
+- **Pinned revisions (`/n/:id/r/:headsHash`):** Immutable viewer that loads the
+  persisted `NotebookDoc` + `RuntimeStateDoc` + `CommsDoc` Automerge snapshot
+  set directly through `/api/n/:id/snapshots/:headsHash`,
+  `/api/n/:id/runtime-snapshots/:runtimeHeadsHash`,
+  `/api/n/:id/comms-snapshots/:commsHeadsHash`, and catalog revision metadata.
+- **Snapshot publishes:** Validate that the documents load and that referenced
+  output and widget blobs exist before recording the catalog revision. Missing
+  runtime or comm snapshots, corrupt snapshot bytes, or missing blobs fail the
+  publish request instead of advertising a broken revision.
+- **Blobs and rendering:** Output blob refs stay host-neutral and map to
+  `/api/n/:id/blobs/:hash` through the shared `BlobResolver` surface. The
+  browser viewer bundle uses the shared notebook display components
+  (`CellContainer`, `OutputArea`, `ReadOnlyCodeMirror`, `MediaProvider`), so
+  published source, markdown, stdout/stderr, rich display data, widgets, and
+  blob-backed renderer manifests go through the same isolated output renderer
+  path as the desktop notebook.
 
 ## Live notebook listing
 
@@ -91,6 +126,17 @@ existing smoke commands. Use
 `NOTEBOOK_CLOUD_WRANGLER_INSPECTOR_PORT` only when you need an explicit local
 override.
 
+Local routes:
+
+- `/` serves the sign-in shell; open notebooks through `/n/{id}/{vanityName}`.
+- Browser harness: `http://127.0.0.1:<worktree-port>/n/demo/debug`
+- Notebook viewer: `http://127.0.0.1:<worktree-port>/n/{generated-ulid}/demo`
+
+When a local test needs Worker secrets, copy
+`apps/notebook-cloud/.dev.vars.example` to `apps/notebook-cloud/.dev.vars`.
+That file is gitignored; keep real tokens and API keys there or in your shell
+environment, not in scripts or docs.
+
 ### Running on celld instead of Wrangler
 
 [celld](https://github.com/denoland/celld) hosts this Worker's Durable Objects,
@@ -115,6 +161,8 @@ allow-list includes it. `celld-local.mjs export` sets it from
 The script header documents the celld constraints it works around (JSON config,
 project-relative `main`/assets, one deployment per store, static WASM import).
 Smoke and publish scripts target it with `NOTEBOOK_CLOUD_URL=http://127.0.0.1:9876`.
+
+### Browser UI dev (`dev:browser`)
 
 For Browser-driven UI polish, use the wrapper that prints a local auth bootstrap
 URL:
@@ -142,6 +190,15 @@ build, pass `--rebuild`; to reuse the current assets, pass `--skip-build`:
 pnpm --dir apps/notebook-cloud dev:browser --rebuild
 pnpm --dir apps/notebook-cloud dev:browser --skip-build
 ```
+
+The local bootstrap token is synthetic and useful only because the Worker
+accepts dev credentials from `localhost`, `127.0.0.1`, and `::1` without an
+extra shared secret. Do not use `/local-auth` for deployed prototype
+credentials. For deployed preview smokes, keep using environment variables such
+as `NTERACT_API_KEY` and `NOTEBOOK_CLOUD_DEV_TOKEN`; those values stay out of
+URLs and browser-visible HTML.
+
+### Startup profiling (`profile:startup`)
 
 To measure creation through the first editable code cell, run this against a
 built, running local Worker:
@@ -174,19 +231,9 @@ Worker or browser process between samples. Create-to-editable adds API duration
 to navigation timing; it excludes dashboard input and scheduling overhead.
 The local catalog retains the timestamped probe notebooks.
 
-The local bootstrap token is synthetic and useful only because the Worker
-accepts dev credentials from `localhost`, `127.0.0.1`, and `::1` without an
-extra shared secret. Do not use `/local-auth` for deployed prototype
-credentials. For deployed preview smokes, keep using environment variables such
-as `NTERACT_API_KEY` and `NOTEBOOK_CLOUD_DEV_TOKEN`; those values stay out of
-URLs and browser-visible HTML.
+### Protocol and WASM roundtrip smokes (`smoke`, `wasm:roundtrip`)
 
-When a local test needs Worker secrets, copy
-`apps/notebook-cloud/.dev.vars.example` to `apps/notebook-cloud/.dev.vars`.
-That file is gitignored; keep real tokens and API keys there or in your shell
-environment, not in scripts or docs.
-
-The smoke script proves:
+The `smoke` script proves:
 
 - WebSocket upgrade on `/n/:notebookId/sync`.
 - Durable Object room routing by notebook id.
@@ -215,19 +262,12 @@ Rebuild the volatile package with:
 cargo xtask wasm runtimed --skip-renderer-plugins
 ```
 
-The browser harness is available at:
+`wasm:roundtrip` refuses to target a deployed Worker without
+`NOTEBOOK_CLOUD_DEV_TOKEN` because deployed dev credentials must never travel in
+URLs. Its JSON result includes `timings_ms` for owner seeding, ACL grants, peer
+connection, and both Alice/Bob/anonymous convergence directions.
 
-```text
-http://127.0.0.1:<worktree-port>/n/demo/debug
-```
-
-The notebook viewer is available at:
-
-```text
-http://127.0.0.1:<worktree-port>/n/{generated-ulid}/demo
-```
-
-`/` serves the sign-in shell; open notebooks through `/n/{id}/{vanityName}`.
+### Publishing fixtures, live rooms, and notebooks (`publish:fixture`, `publish:live`, `runt publish`)
 
 `publish:fixture` defaults to `packages/runtimed/tests/fixtures/output_streaming`
 and publishes a notebook revision with real `RuntimeStateDoc` output manifests:
@@ -242,6 +282,40 @@ notebook id is provided, `publish:demo`, `publish:fixture`, and `publish:live`
 generate a fresh ULID-shaped `NotebookDoc` id. The readable path segment is a
 vanity name derived from the notebook title or filename stem when available,
 and can be overridden with `NOTEBOOK_CLOUD_VANITY_NAME`.
+
+`publish:live` exports a real synced notebook session through `@runtimed/node`,
+uploads its `NotebookDoc` + `RuntimeStateDoc` + `CommsDoc` snapshot set, walks
+the exported output and widget manifests for blob refs, uploads the matching
+local daemon blobs, and verifies the catalog revision. By default it creates and
+executes a small `ShadenA/MathNet` Polars notebook. Set
+`NOTEBOOK_CLOUD_SOURCE_NOTEBOOK_ID=<id>` to publish an already-open live
+notebook room instead.
+
+The hidden `runt publish` CLI follows the same source-room idea but lets the
+cloud allocate the hosted notebook id. It first posts the requested vanity name
+and local source identity to `/api/n`, then uploads blobs and snapshot bytes to
+the returned target:
+
+```bash
+runt publish --source-notebook-id <local-room-uuid> --vanity-name markdown-harness
+```
+
+For local `.ipynb` files, pass the path as `SOURCE`; the CLI opens it through
+the daemon, derives the default vanity segment from the filename, and still lets
+the cloud allocate the hosted id:
+
+```bash
+runt publish ./examples/markdown-harness.ipynb
+```
+
+Hosted publishing uses `NTERACT_CLOUD_URL` for the cloud origin and
+`NTERACT_API_KEY` for bearer auth. `NTERACT_PUBLISH_URL`,
+`NOTEBOOK_CLOUD_URL`, and `NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN` remain accepted
+aliases while the alpha publishing surface is settling. `NOTEBOOK_CLOUD_NOTEBOOK_ID`
+only applies to the local npm publish scripts above; `runt publish` always asks
+the cloud to allocate the hosted notebook id.
+
+### Hosted render smokes (`smoke:hosted`, `smoke:hosted:live`, `smoke:hosted:source-room`)
 
 `smoke:hosted` runs a headless Chromium check against the deployed
 `preview.runt.run` topic-viz notebook by default:
@@ -292,6 +366,40 @@ catalog check to a specific exported snapshot set. Set
 `NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM=0` when the target notebook does not include a
 Sift output.
 
+`smoke:hosted:live` composes `publish:live` and `smoke:hosted`: it runs
+`publish:live`, reads the returned viewer URL and exported notebook/runtime
+heads, then runs `smoke:hosted` against that exact notebook while asserting the
+catalog latest revision still points at those heads. Use
+`NTERACT_CLOUD_URL=https://preview.runt.run` and `NOTEBOOK_CLOUD_DEV_TOKEN=...`
+only for the deployed smoke run, or leave the defaults to target local Wrangler.
+
+`smoke:hosted:source-room` covers the already-open room path. It creates and
+executes the same live MathNet notebook first, then calls `smoke:hosted:live`
+with `NOTEBOOK_CLOUD_SOURCE_NOTEBOOK_ID=<created-room-id>` so `publish:live`
+must reopen and export that existing room instead of creating its own preset
+session.
+
+### Preview credential health (`auth:preview:health`)
+
+Before running credentialed preview smokes from lab2, check local credential
+health:
+
+```bash
+pnpm --dir apps/notebook-cloud auth:preview:health
+```
+
+The command checks the `preview-oidc-refresh.timer`/service state, token cache
+freshness, `${PREVIEW_RUNT_ENV:-$HOME/preview.runt.run/.env}`, and a harmless
+API-key request to `/api/n?limit=1`. It writes a non-secret status summary to
+`${NTERACT_PREVIEW_AUTH_HEALTH_PATH:-$HOME/.cache/nteract/preview-auth-health.json}`.
+The summary records only statuses, expiry timing, and response codes/counts; it
+must not include token strings, API keys, emails, or OIDC subject values. Use
+`pnpm --silent --dir apps/notebook-cloud auth:preview:health --json` for
+machine-readable stdout and `--no-network` when only checking the token/timer
+state.
+
+### Live-room smokes (`smoke:hosted:live-room`, `smoke:hosted:live-rooms`)
+
 To verify the live-room path for an already-published notebook, seed Chromium
 with the OIDC token cache so the first-party viewer shell can refresh/mint its
 app-session cookie, then require that the authenticated sync socket stays open
@@ -312,26 +420,11 @@ errors, failed notebook blob responses, missing cells, or a closed final room
 socket. Sandboxed output frames must not read localStorage; the smoke tracks
 that denial as a benign iframe error because only the first-party viewer shell
 uses the transitional OIDC cache to acquire its cookie. Browser live sync uses
-the first-party app-session cookie directly (`index.ts:720-778`), with trusted
-`Origin` checks and `nteract.v4` as the non-sensitive subprotocol. No
-intermediate sync ticket is generated for browser sessions.
-
-Before running credentialed preview smokes from lab2, check local credential
-health:
-
-```bash
-pnpm --dir apps/notebook-cloud auth:preview:health
-```
-
-The command checks the `preview-oidc-refresh.timer`/service state, token cache
-freshness, `${PREVIEW_RUNT_ENV:-$HOME/preview.runt.run/.env}`, and a harmless
-API-key request to `/api/n?limit=1`. It writes a non-secret status summary to
-`${NTERACT_PREVIEW_AUTH_HEALTH_PATH:-$HOME/.cache/nteract/preview-auth-health.json}`.
-The summary records only statuses, expiry timing, and response codes/counts; it
-must not include token strings, API keys, emails, or OIDC subject values. Use
-`pnpm --silent --dir apps/notebook-cloud auth:preview:health --json` for
-machine-readable stdout and `--no-network` when only checking the token/timer
-state.
+the first-party app-session cookie directly (`routeRoomSync` and
+`appSessionIdentityFromWebSocketRequest` in `src/index.ts`, serving
+`/n/:notebookId/sync`), with trusted `Origin` checks and `nteract.v4` as the
+non-sensitive subprotocol. No intermediate sync ticket is generated for browser
+sessions.
 
 For public/read-only notebooks, run the same live-room smoke without browser
 credentials:
@@ -388,63 +481,26 @@ NOTEBOOK_CLOUD_LIVE_ROOM_MATRIX_URLS='[
 ]' pnpm --dir apps/notebook-cloud smoke:hosted:live-rooms
 ```
 
-`publish:live` exports a real synced notebook session through `@runtimed/node`,
-uploads its `NotebookDoc` + `RuntimeStateDoc` + `CommsDoc` snapshot set, walks
-the exported output and widget manifests for blob refs, uploads the matching
-local daemon blobs, and verifies the catalog revision. By default it creates and
-executes a small `ShadenA/MathNet` Polars notebook. Set
-`NOTEBOOK_CLOUD_SOURCE_NOTEBOOK_ID=<id>` to publish an already-open live
-notebook room instead.
+### Hosted collaboration smoke (`smoke:hosted:collab`)
 
-The hidden `runt publish` CLI follows the same source-room idea but lets the
-cloud allocate the hosted notebook id. It first posts the requested vanity name
-and local source identity to `/api/n`, then uploads blobs and snapshot bytes to
-the returned target:
+`smoke:hosted:collab` covers the deployed browser collaboration path, building
+on `wasm:roundtrip`. By default it seeds a throwaway markdown room through
+`wasm:roundtrip`, then opens four isolated Chromium contexts: Alice (`owner`),
+Bob (`editor`), anonymous viewer, and ungranted Charlie (`editor`). Alice and
+Bob get the dev token only through the same browser localStorage keys as the
+viewer's prototype collaborator menu, matching the production viewer path where
+the WebSocket sends the token as a subprotocol instead of a URL parameter. The
+smoke verifies that Alice edits reach Bob and anonymous without reload, Bob
+edits reach Alice and anonymous without reload, Charlie is denied editor access,
+and no request URL contains the dev token.
 
-```bash
-runt publish --source-notebook-id <local-room-uuid> --vanity-name markdown-harness
-```
-
-For local `.ipynb` files, pass the path as `SOURCE`; the CLI opens it through
-the daemon, derives the default vanity segment from the filename, and still lets
-the cloud allocate the hosted id:
-
-```bash
-runt publish ./examples/markdown-harness.ipynb
-```
-
-Hosted publishing uses `NTERACT_CLOUD_URL` for the cloud origin and
-`NTERACT_API_KEY` for bearer auth. `NTERACT_PUBLISH_URL`,
-`NOTEBOOK_CLOUD_URL`, and `NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN` remain accepted
-aliases while the alpha publishing surface is settling. `NOTEBOOK_CLOUD_NOTEBOOK_ID`
-only applies to the local npm publish scripts above; `runt publish` always asks
-the cloud to allocate the hosted notebook id.
-
-`smoke:hosted:live` composes the two live checks: it runs `publish:live`, reads
-the returned viewer URL and exported notebook/runtime heads, then runs
-`smoke:hosted` against that exact notebook while asserting the catalog latest
-revision still points at those heads. Use `NTERACT_CLOUD_URL=https://preview.runt.run`
-and `NOTEBOOK_CLOUD_DEV_TOKEN=...` only for the deployed smoke run, or leave the
-defaults to target local Wrangler.
-
-`smoke:hosted:source-room` covers the already-open room path. It creates and
-executes the same live MathNet notebook first, then calls `smoke:hosted:live`
-with `NOTEBOOK_CLOUD_SOURCE_NOTEBOOK_ID=<created-room-id>` so `publish:live`
-must reopen and export that existing room instead of creating its own preset
-session.
-
-`smoke:hosted:collab` covers the deployed browser collaboration path. By
-default it seeds a throwaway markdown room through `wasm:roundtrip`, then opens
-four isolated Chromium contexts: Alice (`owner`), Bob (`editor`), anonymous
-viewer, and ungranted Charlie (`editor`). Alice and Bob get the dev token only
-through the same browser localStorage keys as the viewer's prototype
-collaborator menu, matching the production viewer path where the WebSocket
-sends the token as a subprotocol instead of a URL parameter. The smoke verifies
-that Alice edits reach Bob and anonymous without reload, Bob edits reach Alice
-and anonymous without reload, Charlie is denied editor access, and no request
-URL contains the dev token. Pass
-`NOTEBOOK_CLOUD_COLLAB_VIEWER_URL=https://.../n/<id>/<vanity-name>` to reuse an existing room
-instead of seeding a new one.
+Its JSON result includes the throwaway `viewerUrl`, the room id, and per-step
+timings for browser open, connection, Alice/Bob edit propagation, anonymous live
+updates, and Charlie's denied editor session. Pass
+`NOTEBOOK_CLOUD_COLLAB_VIEWER_URL=https://.../n/<id>/<vanity-name>` to reuse an
+existing room instead of seeding a new one. Set
+`NOTEBOOK_CLOUD_COLLAB_ROUNDS=<n>` to increase the default Alice/Bob ping-pong
+markdown edit convergence loop when chasing intermittent editor divergence.
 
 ## Dev auth
 
@@ -864,7 +920,11 @@ Useful events while debugging collaboration:
 - `authz.denied`, `acl.grant.completed`, and `acl.revoke.completed` - ACL
   decisions and owner mutations.
 
-Quick deployed smoke runbook:
+### Deployed smoke runbook
+
+Run the prototype diagnostic smokes against `preview.runt.run` with
+`NOTEBOOK_CLOUD_DEV_TOKEN` (see [Local dev](#local-dev) for full script
+documentation and options):
 
 ```bash
 NTERACT_CLOUD_URL=https://preview.runt.run \
@@ -888,37 +948,29 @@ NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM=0 \
 pnpm --dir apps/notebook-cloud smoke:hosted
 ```
 
-These smoke commands use `NOTEBOOK_CLOUD_DEV_TOKEN` as a prototype diagnostic
-credential. `wasm:roundtrip` refuses to target a deployed Worker without that
-environment variable because deployed dev credentials must never travel in
-URLs. Its JSON result includes `timings_ms` for owner
-seeding, ACL grants, peer connection, and both Alice/Bob/anonymous convergence
-directions; use those values with `room.peer_sync.completed` and
-`room.materialized_frame.applied` logs to separate WebSocket latency from room
-materialization cost.
+Correlate `wasm:roundtrip`'s `timings_ms` output with
+`room.peer_sync.completed` and `room.materialized_frame.applied` logs to
+separate WebSocket latency from room materialization cost.
 
-`smoke:hosted:collab` builds on that protocol roundtrip with a browser-level
-check. Its JSON result includes the throwaway `viewerUrl`, the room id, and
-per-step timings for browser open, connection, Alice/Bob edit propagation,
-anonymous live updates, and Charlie's denied editor session. Set
-`NOTEBOOK_CLOUD_COLLAB_ROUNDS=<n>` to increase the default Alice/Bob ping-pong
-markdown edit convergence loop when chasing intermittent editor divergence.
+Use `GET /api/n/{id}/acl` with an owner credential to confirm editor and viewer
+grants. In a healthy throwaway collaboration run:
 
-Use `GET /api/n/{id}/acl` with an owner credential to confirm editor/viewer
-grants. A healthy throwaway collaboration run should show editor
-`room.materialized_frame.applied` records with `changed=true` when Alice/Bob
-change the document, viewer `room.peer_sync.completed` records, no unexpected
-`room.frame.rejected` records for Alice/Bob, and anonymous viewer presence
-logged only as `room.presence.local_only`. Read-only viewer sync acks/needs may
-emit `room.materialized_frame.applied` with `changed=false`; they should not
-checkpoint document bytes or create stored room-event history. If the browser
-shows `Offline`, open the key menu first: placeholder or stale dev tokens are
-surfaced there, and the Worker logs token/auth failures as `auth.failed` without
-recording raw token material. The copied browser diagnostic should include the
-requested principal/scope, connected actor/scope when available, and the last
-WebSocket connection error, but never the stored token value.
+- Alice/Bob edits emit `room.materialized_frame.applied` with `changed=true`
+  and no unexpected `room.frame.rejected` records.
+- Viewers emit `room.peer_sync.completed`; anonymous viewer presence logs only
+  as `room.presence.local_only`.
+- Read-only viewer sync acks/needs may emit `room.materialized_frame.applied`
+  with `changed=false`, but they do not checkpoint document bytes or create
+  stored room-event history.
+- If the browser shows `Offline`, open the key menu first: placeholder or stale
+  dev tokens surface there, and the Worker logs auth failures as `auth.failed`
+  without recording raw token material. The copied browser diagnostic includes
+  requested principal/scope, connected actor/scope when available, and the last
+  WebSocket connection error, never the stored token value.
 
-Live runtime-peer smoke with preview API-key credentials:
+### Runtime-peer and workstation smokes
+
+#### Live runtime-peer smoke (`smoke:hosted:runtime-peer`)
 
 ```bash
 cargo xtask artifacts ensure sift,renderer
@@ -951,7 +1003,7 @@ old `--timeout` flag in smoke scripts. Rooms created with the API-key path are
 private; anonymous hosted render smokes may return a catalog 404 unless the
 browser context has a credential for the owning principal.
 
-Runtime smokes against a loopback Worker (dev auth):
+#### Loopback dev-auth runtime smokes
 
 The runtime-peer, runtime-browser-execute, browser-execute, workstation-agent,
 and workstation-toolbar smokes all accept
@@ -990,7 +1042,7 @@ also falls back to `dev` on its own when the OIDC token cache file is missing an
 `anaconda-key` for the peer/agent smokes and the OIDC token cache for the
 browser smokes.
 
-Hosted workstation agent smoke:
+#### Hosted workstation agent smoke (`smoke:hosted:workstation-agent`)
 
 ```bash
 cargo build --release -p runtimed
@@ -1001,39 +1053,40 @@ NOTEBOOK_CLOUD_WORKSTATION_CWD="$PWD" \
 pnpm --dir apps/notebook-cloud smoke:hosted:workstation-agent
 ```
 
-The workstation agent reads `NTERACT_API_KEY` from the environment and also
-loads `${PREVIEW_RUNT_ENV:-$HOME/preview.runt.run/.env}` when present. It
-registers and heartbeats the current machine through `POST /api/workstations`,
-keeps a hibernatable WebSocket open at
-`GET /api/workstations/:workstationId/events` for attach-job wakeups, and
-spawns `runtimed cloud-runtime-agent` for pending attach jobs. Low-frequency
-`GET /api/workstations/:workstationId/attach-jobs` polling is still the
-recovery path for missed events, older servers, and jobs that predate agent
-startup. The event socket carries idle online presence without burning a
-Worker/D1 request per workstation per heartbeat interval, and it uses
-Cloudflare's hibernatable WebSocket path so idle sockets do not keep the
-WorkstationEvents Durable Object active. The socket does not replay events;
-attach jobs are durable D1 rows, so reconnect recovery polls the queue rather
-than replaying transient wakeup events. API-key auth is the default
-(`NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=anaconda-key`); set
-`NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=oidc` when `NTERACT_API_KEY` carries a
-short-lived OIDC bearer token, or `NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=dev`
-with `NOTEBOOK_CLOUD_DEV_TOKEN` and `NOTEBOOK_CLOUD_DEV_USER` against a
-loopback Worker (see the dev-auth section above). Prefer API-key auth for
-long-lived tmux/systemd workstations; browser OIDC token refresh depends on an
-active browser session.
-The credential is passed to the runtime peer through `RUNT_CLOUD_TOKEN`, not
-through argv; `runtimed` removes cloud environment variables again before
-launching the Python kernel. When the hosted service returns a rate-limit or
-maintenance response (`429`/`503`), the runner honors `Retry-After` when
-present and otherwise backs off with a capped exponential cooldown before
-heartbeating, reconnecting the event socket, or polling again. Run this helper
-inside tmux for preview/manual testing so the workstation agent stays alive
-while the browser attaches
-workstations. The first registered workstation becomes the account default
-automatically; use the Workstations rail or
-`PATCH /api/workstations/default` only when switching to another machine. In a
-private owner room, the toolbar can then request attachment directly.
+- **Credentials and auth modes:** Reads `NTERACT_API_KEY` from the environment
+  and loads `${PREVIEW_RUNT_ENV:-$HOME/preview.runt.run/.env}` when present.
+  API-key auth is the default (`NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=anaconda-key`);
+  prefer it for long-lived tmux/systemd workstations because browser OIDC token
+  refresh depends on an active browser session. Set
+  `NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=oidc` when `NTERACT_API_KEY` carries a
+  short-lived OIDC bearer token, or `NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=dev`
+  with `NOTEBOOK_CLOUD_DEV_TOKEN` and `NOTEBOOK_CLOUD_DEV_USER` against a
+  loopback Worker (see the loopback dev-auth section above). The credential is
+  passed to the runtime peer through `RUNT_CLOUD_TOKEN`, never through argv,
+  and `runtimed` removes cloud environment variables before launching the
+  Python kernel.
+- **Registration, wakeups, and recovery:** Registers and heartbeats the current
+  machine through `POST /api/workstations`, keeps a hibernatable WebSocket open
+  at `GET /api/workstations/:workstationId/events` for attach-job wakeups, and
+  spawns `runtimed cloud-runtime-agent` for pending attach jobs. The event
+  socket carries idle online presence without burning a Worker/D1 request per
+  workstation per heartbeat interval, and uses Cloudflare's hibernatable
+  WebSocket path so idle sockets do not keep the `WorkstationEvents` Durable
+  Object active. Because the socket does not replay transient wakeup events and
+  attach jobs are durable D1 rows, low-frequency
+  `GET /api/workstations/:workstationId/attach-jobs` polling handles reconnect
+  recovery, missed events, older servers, and jobs that predate agent startup.
+- **Backoff, lifecycle, and default selection:** On rate-limit or maintenance
+  responses (`429`/`503`), honors `Retry-After` when present and otherwise
+  backs off with a capped exponential cooldown before heartbeating,
+  reconnecting the event socket, or polling again. Run inside tmux for
+  preview/manual testing so the agent stays alive while the browser attaches
+  workstations. The first registered workstation becomes the account default
+  automatically; use the Workstations rail or `PATCH /api/workstations/default`
+  only when switching to another machine. In a private owner room, the toolbar
+  can then request attachment directly.
+
+#### Workstation toolbar and browser execution smokes
 
 With the workstation agent already running, use the toolbar smoke to exercise
 the hosted browser path end to end. It verifies the registered workstation is
@@ -1093,6 +1146,8 @@ asserts that notebook blob fetches return 2xx. When
 blob must also render as a normal `<img src="/api/n/.../blobs/:hash">` image.
 Use `NOTEBOOK_CLOUD_BROWSER_EXECUTE_SCOPE=editor` when verifying editor execute
 permissions.
+
+### Manual snapshot and blob requests
 
 Snapshot and blob stubs:
 
