@@ -2394,26 +2394,25 @@ decoded, 5 MiB of input). The Arrow stream becomes a ColumnSet
 newest 4 per asset id and format, so views of one file decode it once, and
 sends each frame its own copy.
 
-Format guidance and caching:
+Prefer Parquet when you can write it: it stores each column's type, so
+dates, integers, decimals and text arrive exactly as written, and a module
+view can hand the file to Sift to read only the parts it needs. CSV is
+accepted for convenience, and its types are inferred when it is read, so
+check the result: a column of digits such as postal codes becomes numbers and
+loses its leading zero, the first row is always the header, only commas
+separate fields, the file must be UTF-8, and a timestamp with no zone is read
+as UTC. A value that looks like a date or timestamp but is not a real one,
+such as 2024-02-30, fails the whole file: fix the value, or write Parquet.
+JSON suits a small nested object, not a table of rows.
 
-- **Parquet (preferred):** preserves exact column types (dates, integers,
-  decimals, text) and lets module views pass the file to Sift to read only
-  needed byte ranges.
-- **CSV:** accepted for convenience, with types inferred on read (booleans
-  `true`/`false` case-insensitive, 64-bit integers, floats, dates, timestamps,
-  or text; empty fields become `null`). Check inferred output: digit strings
-  such as postal codes become numbers and lose leading zeros; row 1 is always
-  the header; only commas separate fields; input must be UTF-8; naive timestamps
-  parse as UTC; invalid date-like values (such as `2024-02-30`) fail the whole
-  file (fix the value or write Parquet).
-- **JSON:** suited for small nested objects, not row tables. Every limit raises
-  an error; nothing is truncated.
-- **Caching & frame wrapper:** decode failures cache alongside decoded results
-  (same bytes fail the same way), while failed fetches are never cached so the
-  next call retries. `@nteract/output-frame` defines `ColumnSet`
-  (`src/column-set.mjs`, validated once on decode in the page and again on
-  receipt in the frame) and wraps it in a lightweight table (`src/table.mjs`)
-  without loading Arrow JS or Sift inside the frame.
+Every limit raises an error; nothing is truncated. CSV columns read as
+booleans (`true` or `false` in any case), 64-bit integers, floats, dates,
+timestamps or text, and an empty field is `null`. Decode failures cache
+alongside decoded results (same bytes fail the same way), while failed fetches
+are never cached so the next call retries. `@nteract/output-frame` defines
+`ColumnSet` (`src/column-set.mjs`, validated once on decode in the page and
+again on receipt in the frame) and wraps it in a lightweight table
+(`src/table.mjs`) without loading Arrow JS or Sift inside the frame.
 
 Column types:
 
