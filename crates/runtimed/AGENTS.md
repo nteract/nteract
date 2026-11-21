@@ -16,7 +16,7 @@ Scope: `crates/runtimed/**`, `crates/runt/**`, `crates/runtimed-client/**`, `cra
 
 6. **Daemon manages runtime resources.** Clients request kernel launch; they never spawn kernels directly. Environment selection, tool availability, and lifecycle are the daemon's responsibility.
 
-7. **Process-isolated kernel execution.** Every kernel runs in a separate runtime agent subprocess (`runtimed runtime-agent`) connecting back as an Automerge peer. Execution is CRDT-driven — the coordinator writes execution entries (source + sequence number) to RuntimeStateDoc; the runtime agent discovers them via sync and executes in order. RPC handles lifecycle (`LaunchKernel`, `RestartKernel`, `ShutdownKernel`), interrupts, environment hot-sync (`SyncEnvironment`), completion/history queries, and ephemeral comm traffic (`SendComm`).
+7. **Process-isolated kernel execution.** Every kernel runs in a separate runtime agent subprocess (`runtimed runtime-agent`) connecting back as an Automerge peer. Execution is CRDT-driven. The coordinator writes execution entries (source + sequence number) to `RuntimeStateDoc`; the runtime agent discovers them via sync and executes in order. RPC handles lifecycle (`LaunchKernel`, `RestartKernel`, `ShutdownKernel`), interrupts, environment hot-sync (`SyncEnvironment`), completion/history queries, and ephemeral comm traffic (`SendComm`).
 
 ## Lifecycle and output ordering
 
@@ -46,7 +46,7 @@ Scope: `crates/runtimed/**`, `crates/runt/**`, `crates/runtimed-client/**`, `cra
 
 **Rule of thumb:** Frame bytes, caps, and connection-local readiness shapes → `notebook-wire`. Document schema or cell operations → `notebook-doc`. New request/response/broadcast type → `notebook-protocol`. Python client sync behavior → `notebook-sync`.
 
-The Tauri app crate (`crates/notebook/`) is glue — it wires Tauri commands to daemon requests and manages the socket relay. It does not own protocol types or document operations.
+The Tauri app crate (`crates/notebook/`) is glue: it wires Tauri commands to daemon requests and manages the socket relay. It does not own protocol types or document operations.
 
 Local and hosted runtime ingress share the policy in `runtime-doc::policy`.
 Preserve that shared validation when refactoring write paths. Proposed internal
@@ -61,15 +61,15 @@ API work is described in `docs/memos/runtime-writer-decomposition.md`.
 | Notebook metadata (deps, runtime) | Frontend WASM | User edits deps, runtime picker |
 | Cell outputs (inline manifests) | Local daemon / runtime peer | Kernel IOPub → blob store → inline manifest Maps in RuntimeStateDoc |
 | Execution count | Local daemon / runtime peer | Set on `execute_input` from kernel |
-| Widget state | Daemon/runtime agent + frontend comm deltas | RuntimeStateDoc holds comm topology; CommsDoc holds mutable comm state; the runtime agent gates state by topology, suppresses echoes, and forwards accepted frontend deltas to the kernel |
+| Widget state | Daemon/runtime agent + frontend comm deltas | RuntimeStateDoc holds comm topology; CommsDoc holds mutable comm state. The runtime agent gates state by topology, suppresses echoes, and forwards accepted frontend deltas to the kernel. |
 | RuntimeStateDoc (kernel status, queue, executions, env, trust) | Local daemon / room host / runtime peer, policy-scoped | Separate per-notebook Automerge doc synced via frame `0x05`; regular clients read it but do not author it |
 | CommsDoc (widget state) | Daemon/runtime agent + frontend comm deltas | Separate per-notebook Automerge doc synced via frame `0x09` |
-| Keyed documents (`kind`, `id`, `epoch`) | Runtime agent (producer) + validated editor/owner writes | Small per-kind Automerge docs synced via frame `0x0b`; the room's `KeyedDocHub` routes only kinds registered in `keyed_doc::room_kinds` (none on hosted-bridged rooms), peers subscribe with their first frame, and refused writes get `DocResync`. The coordinator lists routed kinds to the runtime agent in `RuntimeAgentCapabilities` and the agent sends `0x0b` only for those kinds |
-| CommentsDoc (notebook comments) | Frontend WASM + daemon | Durable sidecar per-notebook Automerge doc synced via frame `0x0a`; daemon persists to disk and validates change actor labels at ingress, stripping writes from scopes without comment authority |
+| Keyed documents (`kind`, `id`, `epoch`) | Runtime agent (producer) + validated editor/owner writes | Small per-kind Automerge docs synced via frame `0x0b`. The room's `KeyedDocHub` routes only kinds registered in `keyed_doc::room_kinds` (none on hosted-bridged rooms). Peers subscribe with their first frame, and refused writes get `DocResync`. The coordinator lists routed kinds to the runtime agent in `RuntimeAgentCapabilities`, and the agent sends `0x0b` only for those kinds. |
+| CommentsDoc (notebook comments) | Frontend WASM + daemon | Durable sidecar per-notebook Automerge doc synced via frame `0x0a`. The daemon persists it to disk and validates change actor labels at ingress, stripping writes from scopes without comment authority. |
 
 ## RuntimeStateDoc
 
-Each notebook room has a runtime-authoritative **RuntimeStateDoc** — a separate Automerge document (frame type `0x05`). It tracks:
+Each notebook room has a runtime-authoritative **RuntimeStateDoc**, a separate Automerge document (frame type `0x05`). It tracks:
 
 - **Kernel state**: status, starting phase, name, language, env_source
 - **Execution queue**: `executing_execution_id` plus ordered `queued_execution_ids`; notebook cells point at executions from `NotebookDoc`
@@ -77,12 +77,12 @@ Each notebook room has a runtime-authoritative **RuntimeStateDoc** — a separat
 - **Environment drift**: in_sync flag, added/removed packages
 - **Trust state**: status and needs_approval flag
 
-Regular notebook clients read RuntimeStateDoc via sync but do not author it. In
+Regular notebook clients read RuntimeStateDoc via sync and do not author it. In
 local rooms, the daemon writes runtime state. In hosted/runtime-agent paths,
 runtime peers may write policy-allowed lifecycle, queue/progress, output, and
-comm-topology updates for accepted work, while the room host/local daemon owns
+comm-topology updates for accepted work. The room host and local daemon own
 environment, trust, path/save, workstation, and schema/root facts. Widget values
-live in the paired CommsDoc; the runtime agent gates CommsDoc deltas by
+live in the paired CommsDoc. The runtime agent gates CommsDoc deltas by
 RuntimeStateDoc topology and filters out kernel-authored echoes before
 forwarding foreign deltas to the kernel.
 
@@ -95,7 +95,7 @@ Jupyter kernels send binary data as base64-encoded strings on the wire. The daem
 - Resolved via `read_to_string()` / `response.text()`
 
 **Binary MIME types** (`image/png`, `image/jpeg`, `audio/*`, `video/*`, most `application/*`):
-- Base64-decoded before storage — blob contains raw bytes
+- Base64-decoded before storage (blob contains raw bytes)
 - Always stored as blobs (never inlined, regardless of size)
 - Frontend resolves to `http://` blob URLs
 - Python resolver reads raw bytes → `Output.data` is `bytes`
@@ -104,7 +104,7 @@ Jupyter kernels send binary data as base64-encoded strings on the wire. The daem
 
 ### The `is_binary_mime` contract
 
-One canonical Rust implementation in `notebook-doc::mime` is the single source of truth. All Rust crates use this module. WASM resolves `ContentRef`s to `Inline`/`Url`/`Blob` variants directly — the frontend never classifies MIMEs itself.
+One canonical Rust implementation in `notebook-doc::mime` is the single source of truth. All Rust crates use this module. WASM resolves `ContentRef`s to `Inline`/`Url`/`Blob` variants directly. The frontend never classifies MIMEs itself.
 
 | Location | Function |
 |----------|----------|
@@ -133,7 +133,7 @@ removes unreferenced blobs older than the configured grace period (default
 30 days). Blobs explicitly marked ephemeral can be deleted when superseded.
 See `src/blob_store.rs` and `blob_gc_grace` in `src/daemon.rs`.
 
-Manifests are inline Automerge Maps in RuntimeStateDoc. Each contains `ContentRef` entries per MIME type: `{"inline": "<data>"}` for ≤1KB text, `{"blob": "<hash>", "size": N}` for content >1KB or any binary. MIME types and sizes are readable directly from the CRDT — no blob fetch needed for metadata.
+Manifests are inline Automerge Maps in RuntimeStateDoc. Each contains `ContentRef` entries per MIME type: `{"inline": "<data>"}` for ≤1KB text, `{"blob": "<hash>", "size": N}` for content >1KB or any binary. MIME types and sizes are readable directly from the CRDT. Reading metadata requires no blob fetch.
 
 HTTP server at `127.0.0.1:<dynamic-port>` serves `GET /blob/{hash}` with correct `Content-Type` and `Cache-Control: immutable`.
 
@@ -158,11 +158,12 @@ HTTP server at `127.0.0.1:<dynamic-port>` serves `GET /blob/{hash}` with correct
 
 ## Settings sync
 
-Settings sync via a separate Automerge document on the same Unix socket. `settings.json` is the durable source of truth; the `SettingsDoc` is a live sync projection. External `settings.json` edits are authoritative — the file watcher applies them to the in-memory projection. Any window can write settings; all others receive changes via CRDT sync.
+Settings sync via a separate Automerge document on the same Unix socket. `settings.json` is the durable source of truth, and `SettingsDoc` is a live sync projection. External `settings.json` edits are authoritative: the file watcher applies them to the in-memory projection. Any window can write settings, and all others receive changes via CRDT sync.
 
 ## Widget state
 
 Widget topology lives in **RuntimeStateDoc** (`doc.comms/` entries without mutable state). Widget values live in **CommsDoc**:
+
 - **Daemon/runtime agent:** Writes kernel-authored comm state from IOPub. State updates coalesce in a 16ms batch writer and use kernel actors so self-echoes can be filtered.
 - **Frontend inbound:** `WidgetStore` in `widget-store.ts` has per-model subscriptions. `SyncEngine.commChanges$` merges RuntimeStateDoc topology with CommsDoc state, resolves blobs, and drives the store.
 - **Frontend → Kernel:** State updates go through `WidgetUpdateManager` into CommsDoc. The runtime agent diffs foreign CommsDoc state for comm ids that still have RuntimeStateDoc topology, suppresses echoes, and forwards accepted deltas to the kernel. Custom messages and `comm_close` stay on the `SendComm` shell path because they are ephemeral events.
@@ -171,7 +172,7 @@ New clients receive widget topology via RuntimeStateDoc sync and widget state vi
 
 ### Reserved comm namespace: `nteract.dx.*`
 
-The `nteract.dx.*` prefix is reserved for nteract's own kernel-side protocols. `comm_open` / `comm_msg` / `comm_close` traffic for this namespace is filtered out of runtime comm topology/state and `NotebookBroadcast::Comm`, so it never reaches `WidgetStore`. v1 has no live `nteract.dx.blob` handler; reserved messages are dropped with a warning, and current kernel-emitted output blobs ride IOPub rich-output buffers (`display_data`, `execute_result`, or `update_display_data`) through `preflight_ref_buffers`.
+The `nteract.dx.*` prefix is reserved for nteract's own kernel-side protocols. `comm_open` / `comm_msg` / `comm_close` traffic for this namespace is filtered out of runtime comm topology/state and `NotebookBroadcast::Comm`, so it never reaches `WidgetStore`. v1 has no live `nteract.dx.blob` handler, so reserved messages are dropped with a warning. Kernel-emitted output blobs ride IOPub rich-output buffers (`display_data`, `execute_result`, or `update_display_data`) through `preflight_ref_buffers`.
 
 ## Development workflow
 
@@ -240,7 +241,7 @@ nteract notebooks              # List open notebooks
 
 ### Cloud workstation attach
 
-Remote machines offer compute to hosted notebook rooms via `runtimed cloud-runtime-agent`. The agent dials out over WebSocket — no inbound ports required. See `docs/runbooks/remote-workstation.md` for the operator path and `docs/adr/remote-workstation-doc-agents.md` for design context.
+Remote machines offer compute to hosted notebook rooms via `runtimed cloud-runtime-agent`. The agent dials out over WebSocket, so no inbound ports are required. See `docs/runbooks/remote-workstation.md` for the operator path and `docs/adr/remote-workstation-doc-agents.md` for design context.
 
 ```bash
 RUNT_CLOUD_TOKEN=<token> runtimed cloud-runtime-agent \

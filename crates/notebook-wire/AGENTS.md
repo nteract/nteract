@@ -6,18 +6,18 @@ Scope: `crates/notebook-wire/`, `crates/notebook-doc/`, `crates/notebook-protoco
 
 ## Crate boundaries
 
-- `notebook-wire` — frame bytes, preamble constants, frame caps, typed-frame enum, session-control status shapes.
-- `notebook-protocol` — handshakes and JSON wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`, runtime-agent envelopes.
-- `notebook-doc` — `NotebookDoc` Automerge schema. `SCHEMA_VERSION` bumps only with a migration that preserves real user data.
-- `runtime-doc` — `RuntimeStateDoc` and `CommsDoc` schemas. RuntimeStateDoc is read-only to regular clients; the local daemon / room host own coordinator facts, and runtime peers may write policy-allowed lifecycle, progress, output, and comm topology for accepted work. CommsDoc carries mutable widget state written by editor/owner clients and runtime peers.
+- `notebook-wire`: frame bytes, preamble constants, frame caps, typed-frame enum, session-control status shapes.
+- `notebook-protocol`: handshakes and JSON wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`, runtime-agent envelopes.
+- `notebook-doc`: `NotebookDoc` Automerge schema. `SCHEMA_VERSION` bumps only with a migration that preserves real user data.
+- `runtime-doc`: `RuntimeStateDoc` and `CommsDoc` schemas. `RuntimeStateDoc` is read-only to regular clients. The local daemon / room host own coordinator facts. Runtime peers may write policy-allowed lifecycle, progress, output, and comm topology for accepted work. `CommsDoc` carries mutable widget state written by editor/owner clients and runtime peers.
 
 ## Versioning
 
 Three independent integers, separate from the artifact version:
 
-- **`PROTOCOL_VERSION`** (`connection/handshake.rs`, currently `4`) governs wire compatibility. Bump for framing, handshake, or serialization changes. Every connection starts with a 5-byte preamble (`0xC0DE01AC` + version byte). `Pool` stays version-tolerant so older stable apps can probe during upgrade; other channels require `MIN_PROTOCOL_VERSION..=PROTOCOL_VERSION`. Protocol v4 dropped legacy environment-sync request/response variants.
+- **`PROTOCOL_VERSION`** (`connection/handshake.rs`, currently `4`) governs wire compatibility. Bump for framing, handshake, or serialization changes. Every connection starts with a 5-byte preamble (`0xC0DE01AC` + version byte). `Pool` stays version-tolerant so older stable apps can probe during upgrade; other channels require `MIN_PROTOCOL_VERSION..=PROTOCOL_VERSION`.
 - **`DAEMON_API_VERSION`** (`runtimed-client/src/protocol.rs`, currently `3`) governs semantic Pool/daemon behavior required by clients when the existing wire format remains readable. `GetDaemonInfo` reports it with a missing-field default of zero. Bump it when a new client cannot safely use older daemon behavior; do not use a build hash as a substitute.
-- **`SCHEMA_VERSION`** (`notebook-doc/src/lib.rs`, currently `5`) governs Automerge doc compatibility. Stored at the doc root as `schema_version`. Cells live in a fractional-indexed `Map`; `NotebookDoc` also carries `runtime_state_doc_id` so outputs and runtime lifecycle can live in the paired `RuntimeStateDoc`. Any future bump ships `migrate_vN_to_v(N+1)` that preserves user data.
+- **`SCHEMA_VERSION`** (`notebook-doc/src/lib.rs`, currently `5`) governs Automerge doc compatibility. Stored at the doc root as `schema_version`. Cells live in a fractional-indexed `Map`. `NotebookDoc` also carries `runtime_state_doc_id` so outputs and runtime lifecycle live in the paired `RuntimeStateDoc`. Any future bump ships `migrate_vN_to_v(N+1)` that preserves user data.
 
 Artifact versions follow standard semver. Protocol or schema bumps don't automatically force a major version bump.
 
@@ -25,13 +25,13 @@ Artifact versions follow standard semver. Protocol or schema bumps don't automat
 
 Normal desktop admission uses the supported wire range and daemon API range,
 not git commit equality. During an explicit install/repair transaction, the new
-sidecar still requires the resulting daemon to match its own exact build; that
-is a replacement postcondition rather than a connection-compatibility rule.
+sidecar still requires the resulting daemon to match its own exact build. That
+check is a replacement postcondition rather than a connection-compatibility rule.
 See `docs/adr/daemon-service-repair-and-semantic-compatibility.md`.
 
 ## Connection topology
 
-The frontend talks to the Tauri relay through `invoke()` calls, a generation-scoped frame channel, and connection-status Tauri events. The relay is a transparent byte pipe to the runtimed socket for Automerge sync, request, runtime-state, pool-state, and presence frames; it holds no document replica of its own. Broadcasts, responses, presence, and session-control frames arrive through the unified inbound frame stream.
+The frontend talks to the Tauri relay through `invoke()` calls, a generation-scoped frame channel, and connection-status Tauri events. The relay is a transparent byte pipe to the runtimed socket for Automerge sync, request, runtime-state, pool-state, and presence frames. It holds no document replica of its own. Broadcasts, responses, presence, and session-control frames arrive through the unified inbound frame stream.
 
 ## Connection lifecycle
 
@@ -42,7 +42,11 @@ The frontend talks to the Tauri relay through `invoke()` calls, a generation-sco
    { "channel": "notebook_sync", "notebook_id": "/path/to/notebook.ipynb", "protocol": "v4" }
    ```
 
-   `Handshake` uses `#[serde(tag = "channel", rename_all = "snake_case")]`, so the wire form is flat. Optional fields (`working_dir`, `initial_metadata`) omit when `None`. Other variants: `Pool`, `SettingsSync`, `OpenNotebook { path }`, `CreateNotebook { runtime, … }`, `OpenHostedNotebook { url, … }`, `RuntimeAgent { … }`. `OpenNotebook` / `CreateNotebook` are the desktop paths; `NotebookSync` is used by programmatic clients (Python bindings); `OpenHostedNotebook` is used by daemon-mediated hosted cloud notebook bridges. Blob uploads ride the `NotebookSync` channel as `PUT_BLOB` (`0x08`) frames; the localhost blob HTTP port is a separate server on a different socket, not a handshake channel.
+   `Handshake` uses `#[serde(tag = "channel", rename_all = "snake_case")]`, so the wire form is flat. Optional fields (`working_dir`, `initial_metadata`) omit when `None`.
+
+   - Other variants: `Pool`, `SettingsSync`, `OpenNotebook { path }`, `CreateNotebook { runtime, … }`, `OpenHostedNotebook { url, … }`, `RuntimeAgent { … }`.
+   - `OpenNotebook` / `CreateNotebook` are the desktop paths. Programmatic clients (Python bindings) use `NotebookSync`. Daemon-mediated hosted cloud notebook bridges use `OpenHostedNotebook`.
+   - Blob uploads ride the `NotebookSync` channel as `PUT_BLOB` (`0x08`) frames. The localhost blob HTTP port is a separate server on a different socket, not a handshake channel.
 
    The daemon responds with `NotebookConnectionInfo`:
 
@@ -50,9 +54,9 @@ The frontend talks to the Tauri relay through `invoke()` calls, a generation-sco
    { "protocol": "v4", "notebook_id": "derived-id", "cell_count": 5, "needs_trust_approval": false }
    ```
 
-   `protocol_version`, `daemon_version`, and `error` are `Option` with `skip_serializing_if` — they appear only when populated.
+   `protocol_version`, `daemon_version`, and `error` are `Option` with `skip_serializing_if`. They appear only when populated.
 3. **Initial Automerge sync.** Both sides exchange sync messages until documents converge. The frontend starts empty; all state comes from the daemon. Protocol v4 clients also receive `SessionControl::SyncStatus` frames as the daemon advances notebook-doc, runtime-state, and initial-load readiness.
-4. **Steady state.** All frame classes interleave: Automerge sync for edits, request/response for explicit actions, `RuntimeStateDoc` / `CommsDoc` / `PoolDoc` sync, presence, broadcasts, session-control. Confirmation waits register target-head waiters; request waits register id-keyed pending entries; command handlers return to the main frame loop after writing any immediate outbound frame. A blocking `recv()` inside a command path backpressures the socket and gets the peer dropped.
+4. **Steady state.** All frame classes interleave: Automerge sync for edits, request/response for explicit actions, `RuntimeStateDoc` / `CommsDoc` / `PoolDoc` sync, presence, broadcasts, and session-control. Confirmation waits register target-head waiters. Request waits register id-keyed pending entries. Command handlers return to the main frame loop after writing any immediate outbound frame. A blocking `recv()` inside a command path backpressures the socket and gets the peer dropped.
 5. **Disconnection.** When the broadcast stream ends, the relay emits `daemon:disconnected`. A generation counter stops stale callbacks from an earlier connection from processing events after reconnection.
 
 ### Socket authority
@@ -126,16 +130,16 @@ After the handshake, frames carry a leading type byte:
 | Discriminant lists + exhaustiveness checks | `packages/runtimed/src/protocol-contract.ts` |
 | Rust ↔ TS contract test | `crates/notebook-protocol/src/protocol.rs` |
 
-Adding or renaming a request, response, frame type, or session-control phase: update the Rust protocol and the `packages/runtimed` contract in the same patch, then run `cargo test -p notebook-protocol` and the focused package tests.
+When adding or renaming a request, response, frame type, or session-control phase, update the Rust protocol and the `packages/runtimed` contract in the same patch. Then run `cargo test -p notebook-protocol` and the focused package tests.
 
 ## Automerge sync
 
 The notebook document is a CRDT shared between two peers:
 
-- **Frontend (WASM)** — `NotebookHandle` in `crates/runtimed-wasm/`. Cell mutations apply instantly to the local WASM doc.
-- **Daemon** — `NotebookDoc` in `crates/notebook-doc/`. Canonical document used for execution, output writing, and persistence.
+- **Frontend (WASM):** `NotebookHandle` in `crates/runtimed-wasm/`. Cell mutations apply instantly to the local WASM doc.
+- **Daemon:** `NotebookDoc` in `crates/notebook-doc/`. Canonical document used for execution, output writing, and persistence.
 
-Both sides use the workspace `automerge` dependency pinned to the same crates.io release. The frontend does **not** use the JS `@automerge/automerge` package for notebook state — its CRDT/string types and release cadence are a separate compatibility surface. Keeping live peers on one exact Rust crate is the primary compatibility contract; `automerge-store` also tests saved snapshots and encoded sync messages bidirectionally against the legacy nteract fork revision used by 2.7 releases.
+Both sides use the workspace `automerge` dependency pinned to the same crates.io release. The frontend does **not** use the JS `@automerge/automerge` package for notebook state. Its CRDT/string types and release cadence are a separate compatibility surface. Keeping live peers on one exact Rust crate is the primary compatibility contract. `automerge-store` also tests saved snapshots and encoded sync messages bidirectionally against the legacy nteract fork revision used by 2.7 releases.
 
 ### Sync flow
 
@@ -164,11 +168,11 @@ user types in cell
 
 After each sync, WASM computes a structural diff by walking `doc.diff(before, after)` patches (`notebook-doc/src/diff.rs`):
 
-- `changed` — cells present before and after, with per-field flags (`source`, `outputs`, `execution_count`, `metadata`, `position`, `cell_type`, `resolved_assets`).
-- `added` / `removed` — new / deleted cell IDs.
-- `order_changed` — true if any position shifted or cells were added/removed.
+- `changed`: cells present before and after, with per-field flags (`source`, `outputs`, `execution_count`, `metadata`, `position`, `cell_type`, `resolved_assets`).
+- `added` / `removed`: new / deleted cell IDs.
+- `order_changed`: true if any position shifted or cells were added/removed.
 
-Cost is O(delta), not O(doc). `mergeChangesets()` unions field flags and dedups added/removed across a throttle window. This is the primitive that keeps the sync pipeline incremental — the frontend knows exactly which cells changed and which fields.
+Cost is O(delta), not O(doc). `mergeChangesets()` unions field flags and dedups added/removed across a throttle window. This primitive keeps the sync pipeline incremental: the frontend knows exactly which cells changed and which fields.
 
 ## Request / response
 
@@ -204,7 +208,7 @@ One-shot JSON messages from client to daemon, one response each.
 | `KernelAlreadyRunning { env_source, … }` | Existing kernel reused |
 | `CellQueued` / `AllCellsQueued { queued }` | Queued (single / all runnable code cells) |
 | `NotebookSaved { path }` / `SaveError { error }` | File written / structured save error |
-| `GuardRejected { reason }` | Guarded action rejected — observed state changed |
+| `GuardRejected { reason }` | Guarded action rejected: observed state changed |
 | `NotebookCloned { notebook_id, working_dir }` | Ephemeral fork created |
 | `SyncEnvironmentComplete` / `SyncEnvironmentFailed` | Hot-sync result |
 | `DocBytes { bytes }` | Canonical Automerge bytes |
@@ -235,7 +239,7 @@ Daemon-initiated messages pushed to all connected clients; not replies to reques
 | `Comm { msg_type, content, buffers }` | Jupyter comm message (widget custom one-shot events). Widget state itself syncs via `CommsDoc`. |
 | `EnvProgress { env_type, phase }` | Environment setup progress (`phase` flattened as `EnvProgressPhase`). `RuntimeStateDoc` is authoritative for durable env state. |
 
-State-carrying broadcast variants (`CommSync`, kernel state, execution lifecycle, queue, outputs/display, path/autosave, env sync) were removed once Automerge docs became authoritative. The `Comm` variant is limited to custom messages (`method != "update"`) — widget state updates flow through `CommsDoc`.
+Durable state (kernel state, execution lifecycle, queue, outputs/display, path/autosave, env sync) lives in Automerge docs rather than broadcast variants. There is no `CommSync` broadcast. The `Comm` variant handles only custom messages (`method != "update"`), while widget state updates flow through `CommsDoc`.
 
 ### Output sync flow
 
@@ -256,9 +260,9 @@ Kernel produces output
 |--------|-----------|---------|---------|
 | Frame channel | Relay → Frontend | typed frame bytes | All daemon frames via unified pipe |
 | `daemon:ready` event | Relay → Frontend | `DaemonReadyPayload` | Connection established, ready to bootstrap |
-| `daemon:disconnected` event | Relay → Frontend | — | Connection lost |
+| `daemon:disconnected` event | Relay → Frontend | (none) | Connection lost |
 
-Outgoing frames use `sendFrame(frameType, payload)` where `payload` is `Uint8Array` via `tauri::ipc::Request`. Relays (Tauri and `notebook-sync` `relay_task`, which also serves `@runtimed/node`) refuse the daemon-originated `0x02`, `0x03`, `0x07` (`notebook_wire::is_daemon_originated_frame`) and forward every other type byte opaquely, bounded by `MAX_FRAME_SIZE`; the daemon decides which client types it accepts.
+Outgoing frames use `sendFrame(frameType, payload)` with a `Uint8Array` payload via `tauri::ipc::Request`. Relays (Tauri and `notebook-sync` `relay_task`, which also serves `@runtimed/node`) refuse daemon-originated types `0x02`, `0x03`, and `0x07` (`notebook_wire::is_daemon_originated_frame`). They forward every other type byte opaquely up to `MAX_FRAME_SIZE`, and the daemon decides which client types it accepts.
 
 ### In-memory frame bus
 
@@ -298,7 +302,7 @@ Stream outputs (stdout/stderr) are special: text is fed through a terminal emula
 
 ### RuntimeStateDoc
 
-State-carrying broadcasts (kernel status, env sync diff, queue) were replaced because they suffered from silent drops, no initial state for late joiners, and ordering races between windows. `RuntimeStateDoc` is a runtime-authoritative per-notebook Automerge document synced via frame `0x05` on the existing notebook connection.
+`RuntimeStateDoc` is a runtime-authoritative per-notebook Automerge document synced via frame `0x05` on the existing notebook connection. Using CRDT sync for kernel status, env sync diff, and queue prevents silent drops, gives late joiners initial state, and avoids ordering races between windows.
 
 Regular clients receive RuntimeStateDoc fields via normal Automerge sync, with
 unexpected client changes stripped. The local daemon and hosted room host own
@@ -310,7 +314,9 @@ project runtime stores.
 
 ### Widget comm state
 
-Widget topology lives in `doc.comms/` in RuntimeStateDoc; mutable widget values live in CommsDoc. The daemon/runtime agent writes kernel-authored entries from IOPub, and new clients get widget topology and state through CRDT sync frames `0x05` and `0x09`. `CommSync` broadcast was removed. The `Comm` broadcast variant is limited to custom messages (ephemeral events like button clicks). Frontend-originated widget state updates write to CommsDoc, and the runtime agent diffs CommsDoc state for comm ids with RuntimeStateDoc topology before forwarding deltas to the kernel. See `src/components/widgets/AGENTS.md` for the widget-side data flow.
+Widget topology lives in `doc.comms/` in RuntimeStateDoc, and mutable widget values live in CommsDoc. The daemon/runtime agent writes kernel-authored entries from IOPub. New clients receive widget topology and state through CRDT sync frames `0x05` and `0x09`.
+
+The `Comm` broadcast variant handles only custom messages (ephemeral events like button clicks), not widget state sync. Frontend-originated widget state updates write to CommsDoc. The runtime agent diffs CommsDoc state for comm ids present in RuntimeStateDoc topology before forwarding deltas to the kernel. See `src/components/widgets/AGENTS.md` for the widget-side data flow.
 
 ## Runtime agent subprotocol
 
@@ -326,12 +332,12 @@ Runtime agents are same-socket peers that connect with `Handshake::RuntimeAgent`
 
 Coordinator-to-agent RPC covers kernel lifecycle and query-style operations: launch, restart, shutdown, completion, history, comm sends, interrupts, and hot environment sync. Cell execution is CRDT-driven: the coordinator writes execution entries into `RuntimeStateDoc`, and the runtime agent discovers and executes queued entries via `RuntimeStateDoc` sync.
 
-Because the daemon socket is same-UID trusted, treat the runtime-agent handshake as a powerful attach operation. Design authority explicitly — don't rely on "only the desktop app can reach the socket."
+Because the daemon socket is same-UID trusted, treat the runtime-agent handshake as a powerful attach operation. Design authority explicitly. Don't rely on "only the desktop app can reach the socket."
 
 ## Invariants
 
 - Update Rust protocol types and generated `packages/runtimed` TypeScript surfaces in the same patch.
 - Run `cargo test -p notebook-protocol` for protocol-surface changes; add focused package tests when TypeScript transport or generated contracts move.
-- Runtime state, outputs, queue, kernel lifecycle, trust, env drift, env progress snapshots, path, save state, and widget topology belong in `RuntimeStateDoc`; widget values belong in `CommsDoc`. Broadcasts are for ephemeral comm messages and high-frequency env progress events.
+- Runtime state, outputs, queue, kernel lifecycle, trust, env drift, env progress snapshots, path, save state, and widget topology belong in `RuntimeStateDoc`. Widget values belong in `CommsDoc`. Broadcasts are for ephemeral comm messages and high-frequency env progress events.
 - Steady-state frame readers must keep draining. Register waiters/pending requests instead of blocking inside command paths.
 - The runtimed socket is same-UID trusted, not app-private. New handshake variants must account for any same-user process holding the socket path.

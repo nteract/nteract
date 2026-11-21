@@ -1,6 +1,6 @@
-# notebook-doc — CRDT mutations
+# notebook-doc: CRDT mutations
 
-The Automerge CRDT is the source of truth. The cell store (`notebook-cells.ts`) is a read-only projection — a materialized view that components subscribe to. If it ever disagrees with the CRDT, that's a bug.
+The Automerge CRDT is the source of truth. The cell store (`notebook-cells.ts`) is a read-only projection: a materialized view that components subscribe to. If it ever disagrees with the CRDT, that's a bug.
 
 Scope: `crates/notebook-doc/`, `crates/runtimed-wasm/`, `apps/notebook/src/hooks/useAutomergeNotebook*`, `apps/notebook/src/lib/{materialize,notebook-cells}*`.
 
@@ -8,10 +8,10 @@ Scope: `crates/notebook-doc/`, `crates/runtimed-wasm/`, `apps/notebook/src/hooks
 
 | Data | Writer | Frontend role |
 |------|--------|---------------|
-| Cell source text | Frontend (CodeMirror bridge) | Author — `splice_source` |
-| Cell structure (add/delete/move) | Frontend (`commitMutation`) | Author — `add_cell`, `delete_cell`, `move_cell` |
-| Cell metadata (tags, visibility) | Frontend | Author — `set_cell_source_hidden`, `set_cell_tags`, … |
-| Notebook metadata (deps, runtime) | Frontend or MCP agent | Author — `add_uv_dependency`, `set_metadata`, … |
+| Cell source text | Frontend (CodeMirror bridge) | Author: `splice_source` |
+| Cell structure (add/delete/move) | Frontend (`commitMutation`) | Author: `add_cell`, `delete_cell`, `move_cell` |
+| Cell metadata (tags, visibility) | Frontend | Author: `set_cell_source_hidden`, `set_cell_tags`, … |
+| Notebook metadata (deps, runtime) | Frontend or MCP agent | Author: `add_uv_dependency`, `set_metadata`, … |
 | `runtime_state_doc_id` | Daemon/schema migration | Reader; associates notebook cells with runtime/output state |
 | `comms_doc_id` | Daemon/schema migration | Reader; associates notebook cells with CommsDoc widget state |
 | Execution count | Daemon/runtime via `RuntimeStateDoc` | Read from runtime-state projection; notebook field is legacy export/import fallback |
@@ -31,9 +31,9 @@ user action → WASM handle mutation → scheduleFlush() → daemon
 **Daemon/runtime projections.** Daemon writes `NotebookDoc` for notebook-owned
 state and `RuntimeStateDoc` for runtime/output state → sync frame →
 `receive_frame` → materialization updates the store. Session-control and
-broadcast frames may still carry transient readiness or notification state, but
-outputs, execution lifecycle, queue, kernel, trust, and environment state are
-durable runtime-state projections.
+broadcast frames carry only transient readiness or notification state. Outputs,
+execution lifecycle, queue, kernel, trust, and environment state are durable
+runtime-state projections.
 
 ```
 daemon/runtime CRDT write → sync frame → receive_frame → materializeFromBatch → store
@@ -52,7 +52,7 @@ the notebook dirty.
 | `*Local` | User-initiated. Writes CRDT + store, triggers sync. |
 | `*FromDaemon` / `apply*FromDaemon` | Daemon-initiated. Store-only projection. No CRDT write, no sync, no dirty flag. |
 
-Example: `applyExecutionCountFromDaemon(cellId, count)` — daemon broadcast, store only.
+Example: `applyExecutionCountFromDaemon(cellId, count)`: daemon broadcast, store only.
 
 ## CodeMirror bridge (source text)
 
@@ -67,20 +67,20 @@ inbound:  receive_frame → text attributions → subscribeBroadcast
           → bridge.applyRemoteChanges() → CM dispatch (externalChangeAnnotation)
 ```
 
-Route all UI-side source edits through `splice_source`. Inbound changes carry `externalChangeAnnotation` so the outbound path skips them and avoids echo. Reserve `update_source` (Myers diff) for daemon code paths — from the UI it would conflict with the bridge's splice tracking.
+Route all UI-side source edits through `splice_source`. Inbound changes carry `externalChangeAnnotation` so the outbound path skips them and avoids echo. Reserve `update_source` (Myers diff) for daemon code paths. Using it from the UI conflicts with the bridge's splice tracking.
 
 ## Invariants
 
 1. **Write the CRDT first; let the store follow.** The store is a projection. A store-only change gets overwritten on the next materialization. Use `updateCellById` for instant visual feedback *after* a CRDT write, or inside `*FromDaemon` projections.
 
-2. **Exactly one peer creates document structure.** Top-level Maps/Lists like `cells` and `metadata` are created by the daemon in `new_inner()`; other peers receive them via sync. Two `put_object(ROOT, "cells", Map)` from different actors create *two distinct* Map objects at the same key — one wins, the loser's children go invisible. That's why `NotebookDoc::bootstrap()` only seeds `schema_version` (a scalar).
+2. **Exactly one peer creates document structure.** The daemon creates top-level Maps/Lists like `cells` and `metadata` in `new_inner()`. Other peers receive them via sync. Two `put_object(ROOT, "cells", Map)` calls from different actors create *two distinct* Map objects at the same key: one wins, and the loser's children go invisible. That is why `NotebookDoc::bootstrap()` only seeds `schema_version` (a scalar).
 
    Sidecar document pointers follow the same rule. `runtime_state_doc_id` and
    `comms_doc_id` are deterministic root pointers stamped by constructors and
    load/migration repair paths. When adding any new root identity pointer,
    update pristine-seeding allowlists and constructor guards in the same change.
 
-3. **Reconcile across `.await`.** When daemon code reads the CRDT, awaits something, and writes back, compose the write against the baseline view from before the await — otherwise concurrent edits during the gap are silently overwritten. See the next section.
+3. **Reconcile across `.await`.** When daemon code reads the CRDT, awaits something, and writes back, compose the write against the baseline view from before the await. Otherwise concurrent edits during the gap are silently overwritten. See the next section.
 
 ## Async mutations (daemon side)
 
@@ -125,28 +125,18 @@ let mut doc = room.doc.write().await;
 doc.merge_recovering(&mut fork, "external-worker-merge").ok();
 ```
 
-Reserve `fork_at(heads)` for views and diagnostics — it builds a separate historical document with its own actor stream, so don't use it as the historical write primitive.
+Reserve `fork_at(heads)` for views and diagnostics. It builds a separate historical document with its own actor stream, so don't use it as the historical write primitive.
 
-As of 2026-10-09, production and WASM use crates.io Automerge exactly `0.12.0`
-(`Cargo.toml`). The upgrade preserves existing actor-label attribution and
-presence; upstream Authors are not enabled in production. The old MissingOps
-regression remains in `crates/automerge-recovery/src/lib.rs`; its "desktop patch"
-test name records history, not the current dependency source. `automerge-store`
-retains crates.io `0.11.0` and the legacy `nteract/automerge` revision
-`3fb6af5cc3af23b79f27cebfa339c8c98987e7b7` (Rust `0.10.0`) as dev-only
-snapshot and encoded-sync compatibility peers (`crates/automerge-store/Cargo.toml`).
+Production and WASM pin crates.io Automerge to `0.12.0` (`Cargo.toml`). Actor-label attribution and presence remain active; upstream Authors are not enabled in production.
 
-`transact_at_heads_recovering` is our wrapper around upstream `set_actor`,
-`isolate`, and `integrate`, not a fork-only API. Actor restoration and
-panic-triggered rebuild stay in `crates/notebook-doc/src/lib.rs:438`.
-This differs from sync recovery: `receive_sync_message_recovering` retries once
-after `PatchLogMismatch`, resetting peer state and rebuilding, but returns
-panics without rebuild or retry (`crates/notebook-doc/src/lib.rs:2479`,
-`crates/automerge-recovery/src/lib.rs:159–201`).
+- `crates/automerge-recovery/src/lib.rs` retains the MissingOps regression test (its "desktop patch" test name is historical, not the current dependency source).
+- `crates/automerge-store/Cargo.toml` retains crates.io `0.11.0` and the legacy `nteract/automerge` revision `3fb6af5cc3af23b79f27cebfa339c8c98987e7b7` (Rust `0.10.0`) as dev-only snapshot and encoded-sync compatibility peers.
+
+`transact_at_heads_recovering` wraps upstream `set_actor`, `isolate`, and `integrate` rather than a fork-only API. Actor restoration and panic-triggered rebuild stay in `crates/notebook-doc/src/lib.rs:438`. Sync recovery differs: `receive_sync_message_recovering` retries once after `PatchLogMismatch` by resetting peer state and rebuilding, but it returns panics without rebuild or retry (`crates/notebook-doc/src/lib.rs:2479`, `crates/automerge-recovery/src/lib.rs:159–201`).
 
 ### Synchronous blocks
 
-For mutation blocks with no `.await`, call typed methods on the live doc while holding the lock, or use a document-owned transaction helper when you need actor restoration. `fork_and_merge(|fork| { … })` remains for existing isolated-draft call sites; it's not the preferred shape for new daemon mutations.
+For mutation blocks with no `.await`, call typed methods on the live doc while holding the lock. Use a document-owned transaction helper when you need actor restoration. `fork_and_merge(|fork| { … })` remains for existing isolated-draft call sites; it's not the preferred shape for new daemon mutations.
 
 ```rust
 doc.fork_and_merge(|fork| {
@@ -166,13 +156,13 @@ doc.fork_and_merge(|fork| {
 | `UpdateDisplayData` IOPub | Collect targets, await blob work outside the doc lock, apply via `RuntimeStateHandle::transact_at_current_heads` |
 | `process_markdown_assets` | `transact_at_heads_recovering` against captured metadata heads |
 | Env metadata capture / hot-sync flush | `transact_at_heads_recovering` under the `runtimed:metadata` actor |
-| `handle_sync_environment` | Fresh read — no CRDT write, only in-memory state |
+| `handle_sync_environment` | Fresh read: no CRDT write, only in-memory state |
 
 ## Direction of travel
 
 - Execution lifecycle states (queued, executing, done) are projected from
   `RuntimeStateDoc`, with session-control/broadcast frames reserved for
   transient coordination and notifications.
-- The cell store is moving toward fully derived: every field comes from
+- The cell store is moving toward fully derived state. Every field comes from
   NotebookDoc/RuntimeStateDoc materialization or explicit transient frame
   handling, with no direct store writes outside the local/daemon paths above.

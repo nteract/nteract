@@ -19,11 +19,16 @@ Put host, transport, sync, and lifecycle mechanisms in packages such as `@nterac
 
 Put code in `apps/notebook/src/` when it owns notebook app policy: stores, routes, layout, UI state, materialization choices, and closures that connect package mechanisms to app-specific state.
 
-When iterating on a shared surface (rail, outline, toolbar, cells), keep the *interaction* layer shared too: scroll observers, selection coupling, and status projections belong as hooks colocated with the shared component, not as hooks inside `App.tsx`. Interaction logic written here reaches only desktop — the cloud viewer renders the same component with whatever props it knows about and silently lacks the new behavior. If you add an optional interaction prop to a shared component, also wire it in `apps/notebook-cloud/viewer/` or record why not (see the outline case study in `docs/adr/notebook-host-shell-convergence.md`). Known intentional asymmetry: desktop omits the workstations panel while remote compute matures on hosted.
+When iterating on a shared surface (rail, outline, toolbar, cells), keep the *interaction* layer shared too:
 
-## NotebookHost — platform abstraction
+- Colocate scroll observers, selection coupling, and status projections as hooks with the shared component, not inside `App.tsx`.
+- Interaction logic written in `apps/notebook/src/` reaches desktop only. The cloud viewer renders the same component with whatever props it knows about and silently lacks the new behavior.
+- If you add an optional interaction prop to a shared component, also wire it in `apps/notebook-cloud/viewer/` or record why not. See the outline case study in `docs/adr/notebook-host-shell-convergence.md`.
+- Known intentional asymmetry: desktop omits the workstations panel while remote compute matures on hosted.
 
-Host-platform side effects (Tauri IPC, plugin calls, window chrome) flow through `@nteract/notebook-host`. React code uses `const host = useNotebookHost()`. Import `@tauri-apps/*` only inside the Tauri host implementation and narrow relay glue — the notebook frontend stays host-agnostic.
+## NotebookHost: platform abstraction
+
+Host-platform side effects (Tauri IPC, plugin calls, window chrome) flow through `@nteract/notebook-host`. React code uses `const host = useNotebookHost()`. Import `@tauri-apps/*` only inside the Tauri host implementation and narrow relay glue. The notebook frontend stays host-agnostic.
 
 | Namespace | Purpose |
 |-----------|---------|
@@ -31,7 +36,7 @@ Host-platform side effects (Tauri IPC, plugin calls, window chrome) flow through
 | `host.daemon` | `isConnected`, `reconnect`, `getInfo`, `getReadyInfo`, optional `autoReconnect` (backoff + terminal failed-load latch) |
 | `host.daemonEvents` | `onReady` / `onProgress` / `onDisconnected` / `onUnavailable` |
 | `host.relay` | `notifySyncReady()` outbound signal |
-| `host.blobs` | `port()` — daemon blob-server HTTP port |
+| `host.blobs` | `port()`: daemon blob-server HTTP port |
 | `host.trust` | `verify()` / `approve()` |
 | `host.deps` | Dependency validation (`checkTyposquats`) |
 | `host.notebook` | `applyPathChanged`, `getDefaultSaveDirectory`, `saveAs`, `openInNewWindow`, `cloneToEphemeral` |
@@ -43,11 +48,11 @@ Host-platform side effects (Tauri IPC, plugin calls, window chrome) flow through
 | `host.commands` | Typed command bus (menus + keyboard + future palette) |
 | `host.log` | `debug/info/warn/error` |
 
-Module-level helpers (no hooks) — called once from `main.tsx` after `createTauriHost()`:
-- `setLoggerHost(host)` — `src/lib/logger.ts`
-- `setBlobPortHost(host)` — `blob-port.ts`
-- `setOpenUrlHost(host)` — `src/lib/open-url.ts`
-- `setMetadataTransport(host.transport)` — `notebook-metadata.ts`
+Module-level helpers (no hooks), called once from `main.tsx` after `createTauriHost()`:
+- `setLoggerHost(host)`: `src/lib/logger.ts`
+- `setBlobPortHost(host)`: `blob-port.ts`
+- `setOpenUrlHost(host)`: `src/lib/open-url.ts`
+- `setMetadataTransport(host.transport)`: `notebook-metadata.ts`
 
 **Canonical surface**: `packages/notebook-host/src/types.ts`.
 **Tauri implementation**: `packages/notebook-host/src/tauri/index.ts`.
@@ -90,22 +95,22 @@ Tauri relay ── frame channel ──► useNotebook
 
 ### Incremental sync pipeline
 
-1. **useNotebook** — Single frame ingress. Demuxes via WASM `receive_frame()`, applies sync locally. Returns a `CellChangeset` with field-level granularity. Broadcasts and presence dispatch via in-memory frame bus. The current implementation lives in `useAutomergeNotebook.ts` during the controller extraction.
+1. **useNotebook**: Single frame ingress. Demuxes via WASM `receive_frame()` and applies sync locally. Returns a `CellChangeset` with field-level granularity. Broadcasts and presence dispatch via in-memory frame bus. The current implementation lives in `useAutomergeNotebook.ts` during the controller extraction.
 
-2. **scheduleMaterialize** — Coalesces sync frames within a 32ms window via `mergeChangesets()`:
+2. **scheduleMaterialize**: Coalesces sync frames within a 32ms window via `mergeChangesets()`:
    - **Structural changes** (cells added/removed/reordered) → full `cellSnapshotsToNotebookCells()`
    - **Output changes** → per-cell cache-aware resolution via `materializeCellFromWasm()`
    - **Source/metadata only** → per-cell O(1) WASM accessors
 
-3. **Split cell store** (`notebook-cells.ts`) — `Map<id, NotebookCell>` + ordered ID list:
-   - `useCell(id)` — re-renders only when that cell changes
-   - `useCellIds()` — re-renders only on structural changes
-   - `updateCellById()` — O(1) map update, notifies one subscriber
-   - `replaceNotebookCells()` — full replacement with `cellsEqual()` diffing
+3. **Split cell store** (`notebook-cells.ts`). Holds `Map<id, NotebookCell>` + ordered ID list:
+   - `useCell(id)`: re-renders only when that cell changes
+   - `useCellIds()`: re-renders only on structural changes
+   - `updateCellById()`: O(1) map update, notifies one subscriber
+   - `replaceNotebookCells()`: full replacement with `cellsEqual()` diffing
 
-4. **Runtime state projection** — Persistent kernel/env state from RuntimeStateDoc through `runtime-state.ts` and `project-runtime-stores.ts`. Ephemeral events via broadcast frame bus.
+4. **Runtime state projection**: Persistent kernel/env state from RuntimeStateDoc through `runtime-state.ts` and `project-runtime-stores.ts`. Ephemeral events via broadcast frame bus.
 
-5. **cursor-registry.ts** — Independent frame bus subscriber. Dispatches `setRemoteCursors()`/`setRemoteSelections()` as CodeMirror `StateEffect`s directly — bypasses React for low-latency cursor rendering.
+5. **cursor-registry.ts**: Independent frame bus subscriber. Dispatches `setRemoteCursors()`/`setRemoteSelections()` as CodeMirror `StateEffect`s directly. This bypasses React for low-latency cursor rendering.
 
 ### Mutation flow
 
@@ -116,9 +121,9 @@ Execution requests use `NotebookClient` on `host.transport`. The daemon reads ce
 ### CellChangeset
 
 Shape originates in Rust (`notebook-doc/src/diff.rs`). TypeScript source of truth: `packages/runtimed/src/cell-changeset.ts`. App re-exports through `apps/notebook/src/lib/cell-changeset.ts` and `frame-pipeline.ts`:
-- `CellChangeset` — `{ changed, added, removed, order_changed }`
-- `ChangedCell` — `{ cell_id, fields }` with boolean flags per field
-- `mergeChangesets()` — union semantics for coalescing window
+- `CellChangeset`: `{ changed, added, removed, order_changed }`
+- `ChangedCell`: `{ cell_id, fields }` with boolean flags per field
+- `mergeChangesets()`: union semantics for coalescing window
 
 ## Invariants
 

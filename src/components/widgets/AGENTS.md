@@ -1,14 +1,14 @@
-# Widget system — state, bridge, renderers
+# Widget system: state, bridge, renderers
 
-Widgets run inside the isolated iframe. Widget topology lives in `RuntimeStateDoc`; mutable widget state lives in the paired `CommsDoc`, not in Jupyter comm frames. The daemon/runtime agent writes kernel-authored comm state, editors write state deltas through the CRDT comm writer, and `SyncEngine` merges the two docs before forwarding `ResolvedComm` events through `CommBridgeManager` to the iframe over JSON-RPC. The iframe fetches blob URLs and installs `DataView`s at each `bufferPath` before the anywidget model observes state.
+Widgets run inside the isolated iframe. Widget topology lives in `RuntimeStateDoc`, while mutable widget state lives in the paired `CommsDoc`, not in Jupyter comm frames. The daemon/runtime agent writes kernel-authored comm state, and editors write state deltas through the CRDT comm writer. `SyncEngine` merges both docs before forwarding `ResolvedComm` events through `CommBridgeManager` to the iframe over JSON-RPC. The iframe fetches blob URLs and installs `DataView`s at each `bufferPath` before the anywidget model observes state.
 
-Scope: `src/components/widgets/**`. The JSON-RPC transport and iframe lifecycle live alongside in `src/components/isolated/**` — see `src/components/isolated/AGENTS.md` for sandbox and postMessage details.
+Scope: `src/components/widgets/**`. The JSON-RPC transport and iframe lifecycle live alongside in `src/components/isolated/**`. See `src/components/isolated/AGENTS.md` for sandbox and postMessage details.
 
 ## Data flow
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│ Daemon — kernel + blob store + RuntimeStateDoc + CommsDoc        │
+│ Daemon: kernel + blob store + RuntimeStateDoc + CommsDoc         │
 │   comm_open / comm_msg / binary buffers                          │
 │   → blob-store + ContentRef in CRDT                              │
 └──────────────────────────────────┬───────────────────────────────┘
@@ -30,15 +30,15 @@ Scope: `src/components/widgets/**`. The JSON-RPC transport and iframe lifecycle 
 
 ## CRDT-driven inbound, outbound through the store
 
-- **Daemon/runtime agent** writes comm topology to `RuntimeStateDoc` and comm state to `CommsDoc` on `comm_open` / `comm_msg(update)` / `comm_close` from kernel IOPub, through a 16 ms coalescing writer so CRDT sync isn't overwhelmed.
-- **Large values** (>1 KB JSON) and **binary buffers** from the ipywidgets binary-traitlet protocol (`Image.value`, `BinaryWidget.data`, …) are stored in the blob store as `ContentRef { blob, size, media_type }`. The daemon sets `media_type` per key — `_esm` → `text/javascript`, `_css` → `text/css`, binary buffers → `application/octet-stream`, else `text/plain`. See `crates/runtimed/src/output_prep.rs`.
-- **WASM resolver** `resolve_comm_state` in `crates/runtimed-wasm/` walks the state and rewrites each `ContentRef` to a blob-server URL. It reports each path in one of three buckets:
-  - `buffer_paths` — binary MIME (or missing `media_type`). Iframe fetches and installs a `DataView` (the ipywidgets binary-traitlet contract).
-  - `text_paths` — text MIME. `SyncEngine` fetches and inlines the decoded string before it reaches widget code.
-  - **Neither** — anywidget-reserved keys `_esm` / `_css`. The URL stays as a string so `loadESM` can `import(url)` and `injectCSS` can `<link rel="stylesheet">`. Leave these out of `buffer_paths` or the iframe resolver will turn them into `DataView`s and break both loaders.
-- **Frontend inbound**: `SyncEngine.commChanges$` (`packages/runtimed/src/sync-engine.ts`) emits `ResolvedComm { state, bufferPaths, … }`. `App.tsx` drives `WidgetStore` from those events. `useCommRouter` is **outbound-only** — the old `handleMessage` / `applyBufferPaths` path was dropped when SyncEngine became authoritative (`fix/widget-binary-buffers`). If you want to re-add an inbound path, extend SyncEngine.
-- **Frontend → kernel**: built-in widgets write state to `CommsDoc` via `getCrdtCommWriter()`. The runtime agent gates those deltas by `RuntimeStateDoc` topology, suppresses kernel echoes, and forwards accepted foreign deltas to the kernel. Custom `model.send(..., buffers)` messages still use the daemon shell channel — they're ephemeral events, not CRDT state.
-- **New clients** get widget topology through `RuntimeStateDoc` sync (frame `0x05`) and widget state through `CommsDoc` sync (frame `0x09`). Ephemeral custom messages ride `NotebookBroadcast::Comm`.
+- **Daemon/runtime agent**: Writes comm topology to `RuntimeStateDoc` and comm state to `CommsDoc` on `comm_open` / `comm_msg(update)` / `comm_close` from kernel IOPub. A 16 ms coalescing writer batches updates so CRDT sync isn't overwhelmed.
+- **Large values (>1 KB JSON) and binary buffers**: Stored in the blob store as `ContentRef { blob, size, media_type }`. Binary buffers come from the ipywidgets binary-traitlet protocol (`Image.value`, `BinaryWidget.data`, …). The daemon sets `media_type` per key: `_esm` → `text/javascript`, `_css` → `text/css`, binary buffers → `application/octet-stream`, else `text/plain`. See `crates/runtimed/src/output_prep.rs`.
+- **WASM resolver**: `resolve_comm_state` in `crates/runtimed-wasm/` walks the state and rewrites each `ContentRef` to a blob-server URL. It reports each path in one of three buckets:
+  - `buffer_paths`: binary MIME (or missing `media_type`). Iframe fetches and installs a `DataView` (the ipywidgets binary-traitlet contract).
+  - `text_paths`: text MIME. `SyncEngine` fetches and inlines the decoded string before it reaches widget code.
+  - **Neither**: anywidget-reserved keys `_esm` / `_css`. The URL stays as a string so `loadESM` can `import(url)` and `injectCSS` can `<link rel="stylesheet">`. Leave these out of `buffer_paths` or the iframe resolver will turn them into `DataView`s and break both loaders.
+- **Frontend inbound**: `SyncEngine.commChanges$` (`packages/runtimed/src/sync-engine.ts`) emits `ResolvedComm { state, bufferPaths, … }`. `App.tsx` drives `WidgetStore` from those events. `useCommRouter` is **outbound-only**. The old `handleMessage` / `applyBufferPaths` path was dropped when SyncEngine became authoritative (`fix/widget-binary-buffers`). If you want to re-add an inbound path, extend SyncEngine.
+- **Frontend → kernel**: Built-in widgets write state to `CommsDoc` via `getCrdtCommWriter()`. The runtime agent gates those deltas by `RuntimeStateDoc` topology, suppresses kernel echoes, and forwards accepted foreign deltas to the kernel. Custom `model.send(..., buffers)` messages still use the daemon shell channel. They're ephemeral events, not CRDT state.
+- **New clients**: Receive widget topology through `RuntimeStateDoc` sync (frame `0x05`) and widget state through `CommsDoc` sync (frame `0x09`). Ephemeral custom messages ride `NotebookBroadcast::Comm`.
 
 ## Reserved comm namespace: `nteract.dx.*`
 
@@ -73,7 +73,7 @@ interface WidgetStore {
 
 `buffers` on `emitCustomMessage` / `subscribeToCustomMessage` is a separate channel for transient event payloads (ipycanvas draw commands, quak row batches) that shouldn't live in CRDT state.
 
-Use `useWidgetModelValue(modelId, "key")` from `widget-store-context.tsx` in components — it calls `useSyncExternalStore` with `subscribeToKey` + `getModel`.
+Use `useWidgetModelValue(modelId, "key")` from `widget-store-context.tsx` in components. It calls `useSyncExternalStore` with `subscribeToKey` + `getModel`.
 
 ## Comm bridge protocol
 
@@ -87,7 +87,7 @@ Use `useWidgetModelValue(modelId, "key")` from `widget-store-context.tsx` in com
 
 `bufferPaths` applies only to `open` / `update`. `buffers` applies only to `custom`. The two don't share a channel. Exact payload shapes live in `CommOpenMessage`, `CommMsgMessage`, and `WidgetSnapshotMessage` in `src/components/isolated/frame-bridge.ts`.
 
-`CommBridgeManager` subscribes to `WidgetStore`, forwards model updates (state + `bufferPaths`) to the iframe as JSON-RPC notifications, and routes iframe-originated `widget_comm_msg` / `widget_comm_close` messages to the kernel (`sendUpdate` / `sendCustom` / `closeComm`) and the parent store.
+`CommBridgeManager` subscribes to `WidgetStore` and forwards model updates (state + `bufferPaths`) to the iframe as JSON-RPC notifications. It routes iframe-originated `widget_comm_msg` / `widget_comm_close` messages to the kernel (`sendUpdate` / `sendCustom` / `closeComm`) and the parent store.
 
 ## Adding a built-in widget
 
@@ -139,11 +139,11 @@ Anywidgets load ESM modules at runtime. `anywidget-view.tsx` detects `_esm` in m
 
 ### Binary traitlets
 
-When a widget defines `traitlets.Bytes(sync=True)`, ipywidgets' `_remove_buffers()` extracts the raw bytes before sending the comm message. The daemon blob-stores each buffer with `media_type: application/octet-stream` and replaces the state placeholder with a `ContentRef`. The WASM resolver rewrites to a blob URL, lists the path in `buffer_paths`, the iframe fetches and installs a `DataView` — which is exactly what anywidget consumers expect (`model.get("data").byteLength`, …).
+When a widget defines `traitlets.Bytes(sync=True)`, ipywidgets' `_remove_buffers()` extracts the raw bytes before sending the comm message. The daemon blob-stores each buffer with `media_type: application/octet-stream` and replaces the state placeholder with a `ContentRef`. The WASM resolver rewrites it to a blob URL and lists the path in `buffer_paths`. The iframe then fetches the URL and installs a `DataView`, matching what anywidget consumers expect (`model.get("data").byteLength`, …).
 
 `_esm` / `_css` stay out of `buffer_paths` on purpose (see the Data flow section).
 
-`buildMediaSrc` in `buffer-utils.ts` accepts `DataView` in addition to `ArrayBuffer` / `Uint8Array` / URL string, so the resolved `DataView` turns into a valid `data:` URL for `<img>` / `<audio>` / `<video>` `src`.
+`buildMediaSrc` in `buffer-utils.ts` accepts `DataView`, `ArrayBuffer`, `Uint8Array`, or URL strings. The resolved `DataView` becomes a valid `data:` URL for `<img>` / `<audio>` / `<video>` `src`.
 
 ## Testing and debugging
 
