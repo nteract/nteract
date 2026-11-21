@@ -139,7 +139,7 @@ and passes current authorization again.
 The current Automerge sync API does not expose queued out-of-order changes as
 inspectable `Change` values. If a network or runtime-agent frame still has
 missing dependencies after isolated preview, nteract rejects it before live
-application. The daemon neither validates its change actors nor acknowledges
+application. The daemon neither admits the changes nor acknowledges
 bytes it cannot bind to the durable batch. A future upstream API may allow
 those changes to cross the same typed admission boundary and use the store's
 retained-chunk behavior.

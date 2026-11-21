@@ -716,7 +716,7 @@ Ambiguous batches are never retried. Restart can lose queued events.
 Rollback builds ignore the separate database; restoring their configuration
 also removes the cron, pausing both collection and purge without changing Pages.
 A prolonged rollback requires an operator-run purge to maintain the retention
-boundary; this PR performs no host operations.
+boundary.
 
 Query an operator-provided, consistent SQLite snapshot, never an incomplete LTX
 cache file or a writable production database. For example:
@@ -1066,18 +1066,20 @@ D1 rejects `LIKE` patterns over 50 bytes
 `query` accepts up to 200 characters:
 
 - **Prefix truncation (`likePattern`):** searches bind `%…%` around the longest
-  prefix of the lowercased query whose escaped form fits in 50 UTF-8 bytes
-  (split on code-point boundaries, preserving `\`, `%`, and `_` escapes).
+  prefix of the lowercased query whose escaped form keeps the whole `%…%`
+  pattern within 50 UTF-8 bytes (`LIKE_PATTERN_MAX_BYTES`, leaving a prefix
+  budget of `LIKE_PATTERN_MAX_BYTES - 2`, or 48 bytes; split on code-point
+  boundaries, preserving `\`, `%`, and `_` escapes).
 - **Post-filtering:** rows matching the truncated pattern whose title snapshot
   lacks the full query return marked `unmatched` in order. They count toward
   the `2 × limit + 16` scan bound and advance the scan position, but never list
   or trigger a Page host check. Long queries sharing a common prefix can
   therefore return short or empty pages with a cursor (dropping them inside SQL
   would falsely signal end-of-walk), while still reaching every match.
-- **Parity:** every backend uses the same 50-byte prefix (including celld's
-  SQLite), and `test/sqlite-d1.mjs` enforces D1's 50-byte limit. Cutting to 50
-  bytes prevents D1 query errors that would otherwise force every long search
-  onto the full-scan Catalog fallback
+- **Parity:** every backend uses the same 50-byte `%…%` pattern (including
+  celld's SQLite), and `test/sqlite-d1.mjs` enforces D1's 50-byte limit.
+  Keeping the pattern within 50 bytes prevents D1 query errors that would
+  otherwise force every long search onto the full-scan Catalog fallback
   ([Cloudflare portability audit](https://pages.runtimed.run/p/460c48f0-dc4b-4702-af82-59910e6bebd0),
   §4).
 
@@ -2551,8 +2553,9 @@ the Page. In `schema.zed`, `comment = edit + commenter` and `read` builds on
 Capabilities are named: `read`, `comment`, `edit`, `share`, `administer`,
 `trash`, `restore`, `purge`, `create_items`, `manage_members`, `move_within`,
 `move_out`. A Page never gets `manage_members`, and a project never gets
-`comment`. Nothing checks the `move_*` capabilities, because moves don't exist
-yet. Execute is out of scope for Pages.
+`comment`. `move_page` enforces ownership and Project-boundary rules in the
+Catalog (`worker/move-page.mjs`) rather than calling `decide()`'s `move_*`
+capabilities. Execute is out of scope for Pages.
 
 decide() runs three steps, in this order:
 
@@ -2673,10 +2676,12 @@ expands it; while reading, a click expands it. A comment on an image anchors to
 its embed marker the way a chart comment does, quotes `Image`, and detaches when
 the image is deleted. Clipboard
 serialization still emits one canonical image with inert preservation metadata.
-Project-transfer bundle v4 carries structured variant occurrences and both asset
-references, deduplicates uploads per destination Page, and applies variants using
-destination live IDs. Truncated occurrence reads fail rather than silently losing
-variants. Versions 1 through 3 remain importable; old importers reject v4.
+Project-transfer bundle v5 (`BUNDLE_VERSION = 5` in
+[project-transfer.mjs](scripts/project-transfer.mjs)) carries dark-image
+variant occurrences alongside both asset references, deduplicates uploads per
+destination Page, and applies variants using destination live IDs. Truncated
+occurrence reads fail rather than silently losing variants. Earlier bundle
+versions are refused with `bundle_version_unsupported`.
 
 Browser upload, screenshot paste, and file drop send PNG, JPEG, or static WebP to
 `POST /api/pages/:pageId/assets`. Only a stable Page-scoped reference and alt text
@@ -4271,7 +4276,8 @@ upload authorized before Trash that lands later, stay unreferenced, and no
 deleted Page serves them.
 
 Trash has no automatic expiry. Pages stay there until the owner restores or
-purges them, up to 100 per account. Each trash record identifies its root Page.
+purges them, up to the account's Page limit ([Page quotas](#page-quotas), 250
+by default). Each trash record identifies its root Page.
 This implementation trashes and restores individual Pages.
 
 ### Projects
@@ -4400,183 +4406,6 @@ Library navigation, grouping, drafts, and view modes:
   strips the query param. Grid cards show first-screen previews (see
   [Card previews](#card-previews)).
 
-### Card previews
-
-A grid card shows a scaled, read-only rendering of the Page's first screen.
-The Page host builds a `card.v1` bundle from its document
-([page-card.mjs](model/page-card.mjs)): `{ v, card_hash, content_updated_at,
-title, blocks, truncated, rich }`. `blocks` is
-[page-preview.mjs](model/page-preview.mjs)'s JSON from its own `renderNode`,
-never HTML, cut at 8 KiB serialized and 64 top-level nodes. A node that
-doesn't fit is clipped to its leading children and text (a table keeps whole
-rows), and the card ends there. A top-level node that shows nothing (no text, no
-placeholder, rule or checkbox) is dropped, so an emptied Page has no blocks and
-keeps the grid's icon. Images become a placeholder with their alt text, never
-bytes or a URL; a dataframe becomes a placeholder with its title; links lose
-their `href`; a code block names its language, so Mermaid stays code.
-`card_hash` hashes `CARD_BUILDER_VERSION` and exactly the title, blocks and
-`truncated`, so an edit below the fold changes nothing, and bumping the version
-for a builder change rewrites each card on its Page's next flush. `rich` says
-the card holds Mermaid, a dataframe or an image, which the JSON can only stand
-in for; nothing reads it yet.
-
-The card is written beside each content-activity flush and nowhere else
-([page-card-writer.mjs](worker/page-card-writer.mjs)). A flush runs from a live
-request on a booted host with its document loaded, at most once a minute, so
-cards cost no new trigger, timer or alarm. The host stores the last written
-hash under `host/card` and puts `pages/<page_id>/card.json` in the Page assets
-bucket only when the hash changed; the stored hash follows the object, so a
-crash between them writes the same card again. A failed write is logged and
-retried by the next flush; it never fails the flush or the edit. A Page that
-hasn't changed since cards shipped has none until its next edit, and the grid
-keeps its icon.
-
-Writes to the object are ordered by its etag. Its `customMetadata` holds the
-card's `card_hash` and `content_updated_at`, and the card image record that
-uploads write ([Card images](#card-images)). Every put first reads the
-metadata (`head()`) and carries `onlyIf` with the etag it read (none: only
-while no object exists). It compares the built card with the object, not
-`host/card`, so a stale card left by an older host is rewritten, and it copies
-the image record unchanged. Only a flush whose card matches the hash the host
-last wrote or read skips the read, since it puts nothing. A retiring host's put
-that lands late carries an etag a newer write replaced, and the bucket refuses
-it. A refused put reads the object again and retries once, unless the host
-stopped during that read or the object's `content_updated_at` is later than
-the built card's: then a newer host wrote it, and this host puts nothing, logs
-`page_card.superseded`, and reads the object again on its next write. A write
-whose first read finds a later card skips its put the same way. An object time
-more than 5 minutes (`CONTENT_ACTIVITY_MAX_SKEW_MS`) ahead of the host's clock
-counts as missing,
-as content activity drops it, so a card from a node whose clock ran fast never
-blocks the writes after it. Equal times with different hashes still put, and
-the later put wins: that is the same content built by two builder versions.
-
-Two cases are left open. The order between live hosts comes from their clocks,
-so it holds only within that 5-minute limit: an old host that is still live, on
-a clock fast by less than that, can overwrite a newer card once. The newer
-host's writes then skip until its own content times pass the old one's, so the
-stale card can last until the next content change after that, however long
-that takes, not just for the skew window. And a late
-put can land after the next host's first write skipped an unchanged card: it
-holds a card the Page had moments before, until the next change to its first
-screen.
-
-A purge or tombstone deletes the object, its card images and `host/card` with
-the content time, waiting at most 2 seconds on the bucket; a missed delete leaves an object
-`page_cards` never serves, since a deleted Page admits no one. A write still
-running then deletes the object again when it ends, whether its put landed or
-timed out. A host that retires without a deletion (an abandoned boot, a storage
-migration) stops its writer and leaves the object and `host/card`, which the
-next host, plain or native, compares against. Trash keeps the card on purpose:
-`page_cards` answers `null` while the Page is trashed, and a restore shows the
-card at once rather than after the next edit.
-
-`page_cards` (`/api/tools` only, not an MCP tool; agents read Pages directly)
-fetches up to 24 `page_ids` ([page-cards.mjs](worker/page-cards.mjs)):
-
-- **Access & lane bypass:** the caller's Catalog authorizes IDs using
-  `list_pages` rules without reading D1: owned IDs need a settled `page/<id>`
-  entry (excluding Trash and pending creation/reservation slots); shared IDs
-  need a `shared/<id>` entry plus a fresh metadata-only `verifyShared` check
-  from the Page host confirming the Page is active. Because this step is
-  read-only, the gateway marks the forward with an internal lane header (never
-  copied from clients by `forwarded()`; Catalog rejects other operations in this
-  lane via [catalog-lanes.mjs](worker/catalog-lanes.mjs)) so card requests
-  bypass the Catalog's serial queue (`cat_queue` is not recorded). A queued
-  owner write partway through can at most show or hide the owner's own card for
-  one call; shared IDs always require the Page host's live answer.
-- **Bucket fetch & response:** the gateway reads all allowed objects in parallel
-  under a single 1.2 s deadline so a slow bucket never blocks Catalog
-  operations. Each card is one `get` (body + metadata holding the image record;
-  20 cards = 20 reads; objects lacking `image_revision` also read the
-  `card/latest` pointer, see [Card images](#card-images)). Only allowed IDs reach
-  the bucket, and no object URL leaves the Worker. Unknown, refused, timed-out,
-  or missing cards all return `null` so callers cannot distinguish "no access"
-  from "no card". The response carries `principal`.
-
-In grid mode, cards fetch lazily as they approach the viewport
-([page-cards.mjs](viewer/page-cards.mjs)):
-
-- **Batching & prioritization:** cards request within 400 px of the viewport.
-  The initial paint dispatches immediately with no gather window; subsequent
-  requests wait up to 200 ms from the first waiting card and flush at 24 cards
-  (with a 150 ms RTT, cards appear within ~350 ms). At most 2 requests run
-  concurrently, prioritizing the most recently visible cards and backfilling
-  remaining slots up to 24 with upcoming grid cards (a 100-card scroll takes ~5
-  requests). Cards that scroll out or unmount before dispatch return to `idle`
-  without being fetched.
-- **Per-card state machine & account guard:** each card runs
-  `idle → requested → shown | empty | failed` keyed by `(page_id,
-  content_updated_at)`, so edited Pages refetch and failed cards retry when
-  scrolled back into view (one answer = one store update; machines live with the
-  mounted grid). Cached device cards start `stale` (rendered immediately),
-  transition to `revalidating` in view, update on answer (`null` drops them),
-  and stay drawn on failure. A grid with no known account fetches and paints
-  nothing; answers naming a different account are ignored.
-
-The default library view (All, Last activity, no search, no Project) also paints
-from a browser-local device cache
-([library-device-cache.mjs](viewer/library-device-cache.mjs)):
-
-- **Storage & privacy:** stored in IndexedDB `pages-library-cache` at
-  `library/v1/<principal>` (versioned key so format changes read nothing old).
-  It is a rebuildable cache, never normative, and separate from the local Page
-  catalog. Holds up to 50 first-page `list_pages` rows plus their `page_cards`
-  answers (max 12 KiB each, storing image routes so the browser HTTP cache
-  serves bytes). Owned rows keep title, timestamps, and Project; shared rows
-  keep only Page ID and timestamps (rendered as empty inert slots until
-  confirmed by the server, keeping revoked titles within the 5-minute in-tab
-  bound).
-- **Paint, revalidation & expiry:** once the session names the account, the
-  library reads the cache alongside `list_pages`. If cached rows arrive first
-  ([listing-machine.mjs](viewer/listing-machine.mjs) `revalidating`), the live
-  answer replaces them in place by Page ID (dropping unlisted rows and updating
-  titles/times). Failed, stalled, or late cache reads change nothing; a failed
-  first-page fetch over cached rows keeps owned rows with **Try again**
-  (`kept`). Writes require matching account and cache revision, patch on Trash
-  and renames, and clear across all accounts on sign-out, Sign out everywhere,
-  or account switch. Records stay valid for 14 days from `saved_at` (set only by
-  fresh first-page responses, never extended by card answers, Trash, or renames);
-  expired, missing, non-numeric, or > 5-minute-future `saved_at` records are
-  discarded on read.
-- **Card rendering:** [PageCardPreview.jsx](viewer/PageCardPreview.jsx) renders
-  through PagePreview's inert allowlist (no links, controls, or images) at
-  reading width, scaled with `transform: scale()`, `aria-hidden`, and pointer
-  events disabled (the card's link carries the title).
-
-In-tab caches, picker walks, and `401` recovery:
-
-- **Shared `list_projects` & in-memory listing cache (`viewer/project-list.mjs`, `viewer/listing-cache.mjs`):**
-  a library visit sends one `list_pages` for its view. `list_projects` shares
-  one in-flight request per account across the Project filter, Browse picker,
-  Move to…, and `/projects` page 1. The first page of each viewed library filter
-  stays in memory (keyed by account and request, 5-minute TTL) so Back/return
-  paints immediately while revalidating; after 5 minutes, shared titles wait for
-  Page hosts and show `Loading…`. Failed refreshes clear remembered rows.
-  Answers naming a different `principal` never display and trigger a session
-  recheck; answers with no `principal` display but are never cached. The cache
-  patches local renames, drops trashed/hidden Pages, invalidates owned views on
-  create/move/restore, and guards write-backs with a cache revision so in-flight
-  listings cannot restore dropped rows.
-- **`401` & cross-account recovery (`viewer/signed-out-recovery.mjs`):**
-  sign-out, account switch, and any `401` clear the listing cache and Projects.
-  A `401` rechecks the session and, if the same account answers, refetches
-  Projects; a wrong-account answer runs the same recovery without clearing
-  state. Recoveries serialize and retry at most twice consecutively on repeated
-  `401` or wrong-account answers to prevent loops.
-- **Browse picker (`viewer/picker-walk.mjs`):** walks all Pages via `list_pages`
-  cursors (max 10 requests) fresh on each open for the signed-in account.
-  Closing aborts in-flight requests (ignoring their replies, including `401`).
-  Sign-out or account change closes the picker; a `401` clears rows and keeps it
-  open with an explanation without restarting the walk; cross-account answers
-  trigger session recovery and ask the user to reopen if the same account
-  remains active.
-- **Open Page location & Move to…:** Project content (`project_id`) knows its
-  Project immediately. An open Page polls `read_page` for its location until
-  found (retrying on local Page registration, session reconnect, and at 2 s /
-  4 s / 8 s on transient failure), then stops. **Move to…** is hidden on Project
-  content and tells unsynced drafts to wait for sync.
-
 | Tool | Arguments | Result |
 | --- | --- | --- |
 | `create_project` | `title`, `description?`, `nonce` | `project_id`, `title`, `description`, `revision`, `role`, `owner`, `url`, `document_id` |
@@ -4593,10 +4422,10 @@ Every Project and item operation goes through the caller's own Catalog, which
 calls the Project and Pages with the caller's credentials. A Project never calls a
 Catalog or a Page. `create_project` reserves a journal intent with the Project ID
 and content document ID first, then creates the Project record and the content
-document; both steps are idempotent, so retrying the same token, key and
-payload after a crash or lost response, within the token's window, finishes the
-same Project. A retry without the token is best-effort. Until then `get_project`
-answers `project_pending` and `list_projects` omits it. The content holds
+document; both steps are idempotent, so retrying the same `nonce` and arguments
+after a crash or lost response while the Catalog holds the intent or receipt
+finishes or replays the same Project (see [Retry contract](#retry-contract)).
+Until then `get_project` answers `project_pending` and `list_projects` omits it. The content holds
 orientation and guidance for people and agents. It is ordinary, untrusted
 document content, edited with the Page tools by `project_id`; it is not a Page in
 the tree, so `move_page`, `delete_page`, `restore_page` and `purge_page` refuse it
@@ -4830,6 +4659,183 @@ token always binds that revision too.
 While a deletion is unfinished, the owner's listings and reads already treat
 the Project as missing, and a preview with a new key is `project_not_found`;
 only a retry of the same request finishes it.
+
+### Card previews
+
+A grid card shows a scaled, read-only rendering of the Page's first screen.
+The Page host builds a `card.v1` bundle from its document
+([page-card.mjs](model/page-card.mjs)): `{ v, card_hash, content_updated_at,
+title, blocks, truncated, rich }`. `blocks` is
+[page-preview.mjs](model/page-preview.mjs)'s JSON from its own `renderNode`,
+never HTML, cut at 8 KiB serialized and 64 top-level nodes. A node that
+doesn't fit is clipped to its leading children and text (a table keeps whole
+rows), and the card ends there. A top-level node that shows nothing (no text, no
+placeholder, rule or checkbox) is dropped, so an emptied Page has no blocks and
+keeps the grid's icon. Images become a placeholder with their alt text, never
+bytes or a URL; a dataframe becomes a placeholder with its title; links lose
+their `href`; a code block names its language, so Mermaid stays code.
+`card_hash` hashes `CARD_BUILDER_VERSION` and exactly the title, blocks and
+`truncated`, so an edit below the fold changes nothing, and bumping the version
+for a builder change rewrites each card on its Page's next flush. `rich` says
+the card holds Mermaid, a dataframe or an image, which the JSON can only stand
+in for; nothing reads it yet.
+
+The card is written beside each content-activity flush and nowhere else
+([page-card-writer.mjs](worker/page-card-writer.mjs)). A flush runs from a live
+request on a booted host with its document loaded, at most once a minute, so
+cards cost no new trigger, timer or alarm. The host stores the last written
+hash under `host/card` and puts `pages/<page_id>/card.json` in the Page assets
+bucket only when the hash changed; the stored hash follows the object, so a
+crash between them writes the same card again. A failed write is logged and
+retried by the next flush; it never fails the flush or the edit. A Page that
+hasn't changed since cards shipped has none until its next edit, and the grid
+keeps its icon.
+
+Writes to the object are ordered by its etag. Its `customMetadata` holds the
+card's `card_hash` and `content_updated_at`, and the card image record that
+uploads write ([Card images](#card-images)). Every put first reads the
+metadata (`head()`) and carries `onlyIf` with the etag it read (none: only
+while no object exists). It compares the built card with the object, not
+`host/card`, so a stale card left by an older host is rewritten, and it copies
+the image record unchanged. Only a flush whose card matches the hash the host
+last wrote or read skips the read, since it puts nothing. A retiring host's put
+that lands late carries an etag a newer write replaced, and the bucket refuses
+it. A refused put reads the object again and retries once, unless the host
+stopped during that read or the object's `content_updated_at` is later than
+the built card's: then a newer host wrote it, and this host puts nothing, logs
+`page_card.superseded`, and reads the object again on its next write. A write
+whose first read finds a later card skips its put the same way. An object time
+more than 5 minutes (`CONTENT_ACTIVITY_MAX_SKEW_MS`) ahead of the host's clock
+counts as missing,
+as content activity drops it, so a card from a node whose clock ran fast never
+blocks the writes after it. Equal times with different hashes still put, and
+the later put wins: that is the same content built by two builder versions.
+
+Two cases are left open. The order between live hosts comes from their clocks,
+so it holds only within that 5-minute limit: an old host that is still live, on
+a clock fast by less than that, can overwrite a newer card once. The newer
+host's writes then skip until its own content times pass the old one's, so the
+stale card can last until the next content change after that, however long
+that takes, not just for the skew window. And a late
+put can land after the next host's first write skipped an unchanged card: it
+holds a card the Page had moments before, until the next change to its first
+screen.
+
+A purge or tombstone deletes the object, its card images and `host/card` with
+the content time, waiting at most 2 seconds on the bucket; a missed delete leaves an object
+`page_cards` never serves, since a deleted Page admits no one. A write still
+running then deletes the object again when it ends, whether its put landed or
+timed out. A host that retires without a deletion (an abandoned boot, a storage
+migration) stops its writer and leaves the object and `host/card`, which the
+next host, plain or native, compares against. Trash keeps the card on purpose:
+`page_cards` answers `null` while the Page is trashed, and a restore shows the
+card at once rather than after the next edit.
+
+`page_cards` (`/api/tools` only, not an MCP tool; agents read Pages directly)
+fetches up to 24 `page_ids` ([page-cards.mjs](worker/page-cards.mjs)):
+
+- **Access & lane bypass:** the caller's Catalog authorizes IDs using
+  `list_pages` rules without reading D1: owned IDs need a settled `page/<id>`
+  entry (excluding Trash and pending creation/reservation slots); shared IDs
+  need a `shared/<id>` entry plus a fresh metadata-only `verifyShared` check
+  from the Page host confirming the Page is active. Because this step is
+  read-only, the gateway marks the forward with an internal lane header (never
+  copied from clients by `forwarded()`; Catalog rejects other operations in this
+  lane via [catalog-lanes.mjs](worker/catalog-lanes.mjs)) so card requests
+  bypass the Catalog's serial queue (`cat_queue` is not recorded). A queued
+  owner write partway through can at most show or hide the owner's own card for
+  one call; shared IDs always require the Page host's live answer.
+- **Bucket fetch & response:** the gateway reads all allowed objects in parallel
+  under a single 1.2 s deadline so a slow bucket never blocks Catalog
+  operations. Each card is one `get` (body + metadata holding the image record;
+  20 cards = 20 reads; objects lacking `image_revision` also read the
+  `card/latest` pointer, see [Card images](#card-images)). Only allowed IDs reach
+  the bucket, and no object URL leaves the Worker. Unknown, refused, timed-out,
+  or missing cards all return `null` so callers cannot distinguish "no access"
+  from "no card". The response carries `principal`.
+
+In grid mode, cards fetch lazily as they approach the viewport
+([page-cards.mjs](viewer/page-cards.mjs)):
+
+- **Batching & prioritization:** cards request within 400 px of the viewport.
+  The initial paint dispatches immediately with no gather window; subsequent
+  requests wait up to 200 ms from the first waiting card and flush at 24 cards
+  (with a 150 ms RTT, cards appear within ~350 ms). At most 2 requests run
+  concurrently, prioritizing the most recently visible cards and backfilling
+  remaining slots up to 24 with upcoming grid cards (a 100-card scroll takes ~5
+  requests). Cards that scroll out or unmount before dispatch return to `idle`
+  without being fetched.
+- **Per-card state machine & account guard:** each card runs
+  `idle → requested → shown | empty | failed` keyed by `(page_id,
+  content_updated_at)`, so edited Pages refetch and failed cards retry when
+  scrolled back into view (one answer = one store update; machines live with the
+  mounted grid). Cached device cards start `stale` (rendered immediately),
+  transition to `revalidating` in view, update on answer (`null` drops them),
+  and stay drawn on failure. A grid with no known account fetches and paints
+  nothing; answers naming a different account are ignored.
+
+The default library view (All, Last activity, no search, no Project) also paints
+from a browser-local device cache
+([library-device-cache.mjs](viewer/library-device-cache.mjs)):
+
+- **Storage & privacy:** stored in IndexedDB `pages-library-cache` at
+  `library/v1/<principal>` (versioned key so format changes read nothing old).
+  It is a rebuildable cache, never normative, and separate from the local Page
+  catalog. Holds up to 50 first-page `list_pages` rows plus their `page_cards`
+  answers (max 12 KiB each, storing image routes so the browser HTTP cache
+  serves bytes). Owned rows keep title, timestamps, and Project; shared rows
+  keep only Page ID and timestamps (rendered as empty inert slots until
+  confirmed by the server, keeping revoked titles within the 5-minute in-tab
+  bound).
+- **Paint, revalidation & expiry:** once the session names the account, the
+  library reads the cache alongside `list_pages`. If cached rows arrive first
+  ([listing-machine.mjs](viewer/listing-machine.mjs) `revalidating`), the live
+  answer replaces them in place by Page ID (dropping unlisted rows and updating
+  titles/times). Failed, stalled, or late cache reads change nothing; a failed
+  first-page fetch over cached rows keeps owned rows with **Try again**
+  (`kept`). Writes require matching account and cache revision, patch on Trash
+  and renames, and clear across all accounts on sign-out, Sign out everywhere,
+  or account switch. Records stay valid for 14 days from `saved_at` (set only by
+  fresh first-page responses, never extended by card answers, Trash, or renames);
+  expired, missing, non-numeric, or > 5-minute-future `saved_at` records are
+  discarded on read.
+- **Card rendering:** [PageCardPreview.jsx](viewer/PageCardPreview.jsx) renders
+  through PagePreview's inert allowlist (no links, controls, or images) at
+  reading width, scaled with `transform: scale()`, `aria-hidden`, and pointer
+  events disabled (the card's link carries the title).
+
+In-tab caches, picker walks, and `401` recovery:
+
+- **Shared `list_projects` & in-memory listing cache (`viewer/project-list.mjs`, `viewer/listing-cache.mjs`):**
+  a library visit sends one `list_pages` for its view. `list_projects` shares
+  one in-flight request per account across the Project filter, Browse picker,
+  Move to…, and `/projects` page 1. The first page of each viewed library filter
+  stays in memory (keyed by account and request, 5-minute TTL) so Back/return
+  paints immediately while revalidating; after 5 minutes, shared titles wait for
+  Page hosts and show `Loading…`. Failed refreshes clear remembered rows.
+  Answers naming a different `principal` never display and trigger a session
+  recheck; answers with no `principal` display but are never cached. The cache
+  patches local renames, drops trashed/hidden Pages, invalidates owned views on
+  create/move/restore, and guards write-backs with a cache revision so in-flight
+  listings cannot restore dropped rows.
+- **`401` & cross-account recovery (`viewer/signed-out-recovery.mjs`):**
+  sign-out, account switch, and any `401` clear the listing cache and Projects.
+  A `401` rechecks the session and, if the same account answers, refetches
+  Projects; a wrong-account answer runs the same recovery without clearing
+  state. Recoveries serialize and retry at most twice consecutively on repeated
+  `401` or wrong-account answers to prevent loops.
+- **Browse picker (`viewer/picker-walk.mjs`):** walks all Pages via `list_pages`
+  cursors (max 10 requests) fresh on each open for the signed-in account.
+  Closing aborts in-flight requests (ignoring their replies, including `401`).
+  Sign-out or account change closes the picker; a `401` clears rows and keeps it
+  open with an explanation without restarting the walk; cross-account answers
+  trigger session recovery and ask the user to reopen if the same account
+  remains active.
+- **Open Page location & Move to…:** Project content (`project_id`) knows its
+  Project immediately. An open Page polls `read_page` for its location until
+  found (retrying on local Page registration, session reconnect, and at 2 s /
+  4 s / 8 s on transient failure), then stops. **Move to…** is hidden on Project
+  content and tells unsynced drafts to wait for sync.
 
 ### Card images
 

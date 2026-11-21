@@ -439,8 +439,14 @@ responsibility (covered explicitly by the R2 layout in
 
 ### Anywidget pushes a 12 MiB Arrow buffer via comm
 
-1. Kernel calls `update_display_data` with binary buffers attached.
-2. Runtime agent calls `BlobStore::put_with_durability(bytes, "application/vnd.apache.arrow.stream", Ephemeral)`.
+1. Frontend widget uploads a 12 MiB Arrow buffer with `PUT_BLOB` requesting
+   `BlobDurability::Ephemeral` and sends the comm update through the
+   `set_comm_state_batch` / `SendComm` path (`crates/runtimed/src/requests/send_comm.rs`).
+   (Kernel-originated `comm_msg` buffers instead flow through
+   `store_widget_buffers` in `crates/runtimed/src/output_prep.rs`, which stores
+   them as `Durable` by default.)
+2. Daemon stores the uploaded bytes with
+   `BlobStore::put_with_durability(bytes, "application/vnd.apache.arrow.stream", Ephemeral)`.
 3. Comm-state delta is rewritten with `{ "blob": "<hash>", "size": 12582912, "media_type": "..." }`
    at the buffer paths; the bytes themselves are not re-sent on subsequent
    merges of the same value.

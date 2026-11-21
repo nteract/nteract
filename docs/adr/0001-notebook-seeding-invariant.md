@@ -9,7 +9,7 @@ A brand-new notebook must start with exactly one empty code cell. The host autho
 Previously, the two hosts made that decision from materialized document projections and disagreed with each other:
 
 ```rust
-// Previous daemon check (removed) — crates/runtimed/src/notebook_sync_server/load.rs:1063
+// Previous daemon check (removed) - crates/runtimed/src/notebook_sync_server/load.rs (is_uninitialized_notebook_doc)
 pub fn is_uninitialized_notebook_doc(doc: &NotebookDoc) -> bool {
     doc.cell_count() == 0 && doc.get_metadata_snapshot().is_none()
 }
@@ -29,11 +29,11 @@ Using `cell_count() == 0 && metadata.is_none()` as a proxy for history caused fo
 
 Meanwhile, the document model already encodes genesis as a causal concept:
 
-- Every notebook boots from the frozen, byte-identical `notebook_genesis_v5.am` (`crates/notebook-doc/src/lib.rs:85`), pinned to `SCHEMA_VERSION = 5` and authored by `SCHEMA_SEED_ACTOR = "nteract:notebook-schema:v5"`.
-- `NotebookDoc::canonical_schema_seed_change_hashes()` (`lib.rs:2401`) computes and caches the genesis hash (`canonical_schema_seed_change_is_hash_bound` asserts `hashes.len() == 1`).
-- Authorization checks `is_canonical_schema_seed_change(actor, hash)` (`lib.rs:2421`) so the seed actor converges canonical root objects only for exact frozen hashes.
-- A newly created doc (`new_inner`, `lib.rs:989`) contains only the frozen genesis plus three identity puts at `ROOT` (`notebook_id`, `runtime_state_doc_id`, `comms_doc_id`) authored by the creating actor.
-- Change-graph APIs (`get_heads()` at `lib.rs:362`, `get_heads_hex()`) are already available.
+- Every notebook boots from the frozen, byte-identical `notebook_genesis_v5.am` (`NOTEBOOK_GENESIS_V5_BYTES` in `crates/notebook-doc/src/lib.rs`), pinned to `SCHEMA_VERSION = 5` and authored by `SCHEMA_SEED_ACTOR = "nteract:notebook-schema:v5"`.
+- `NotebookDoc::canonical_schema_seed_change_hashes()` (in `crates/notebook-doc/src/lib.rs`) computes and caches the genesis hash (`canonical_schema_seed_change_is_hash_bound` asserts `hashes.len() == 1`).
+- Authorization checks `is_canonical_schema_seed_change(actor, hash)` (in `crates/notebook-doc/src/lib.rs`) so the seed actor converges canonical root objects only for exact frozen hashes.
+- A newly created doc (`NotebookDoc::new_inner` in `crates/notebook-doc/src/lib.rs`) contains only the frozen genesis plus three identity puts at `ROOT` (`notebook_id`, `runtime_state_doc_id`, `comms_doc_id`) authored by the creating actor.
+- Change-graph APIs (`NotebookDoc::get_heads()` and `NotebookDoc::get_heads_hex()` in `crates/notebook-doc/src/lib.rs`) are already available.
 
 ## Decision
 

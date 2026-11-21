@@ -161,11 +161,14 @@ The subscription contract requires server and proxy state to:
 7. remove subscriptions when a session disconnects, expires, evicts, or the MCP
    child restarts.
 
-Subscriptions cover coarse resources first:
+`subscribe` accepts a connected notebook's cells, single cell, or comments
+resource in both notebook-ID and session-handle forms:
 
-- `nteract://notebooks`
-- `nteract://notebooks/{notebook_id}/cells`
-- `nteract://notebooks/{notebook_id}/cells/{cell_id}`
+- `nteract://notebooks/{notebook_id}/cells` and `nteract://sessions/{notebook_handle}/cells`
+- `nteract://notebooks/{notebook_id}/cells/{cell_id}` and `nteract://sessions/{notebook_handle}/cells/{cell_id}`
+- `nteract://notebooks/{notebook_id}/comments` and `nteract://sessions/{notebook_handle}/comments`
+
+Subscribing to `nteract://notebooks` is rejected with `invalid_params`.
 
 Output subscriptions wait until output resource paths exist so the server never
 notifies about unreadable URIs.

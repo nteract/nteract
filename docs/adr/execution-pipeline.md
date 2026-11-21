@@ -62,12 +62,13 @@ executions["exec-abc"] = { status: "queued"        }
 
 The daemon writes `set_execution_done(eid, success)` **after** every output
 manifest for that execution is committed
-(`crates/runtimed/src/kernel_state.rs:150-181`, ordered by the stream committer
-in Decision 2). Once a peer's replica sees `status == "done"`, all outputs for
-that execution are committed in the same document, at most one sync tick away.
+(`KernelState::execution_done` in `crates/runtimed/src/kernel_state.rs`,
+ordered by the stream committer in Decision 3). Once a peer's replica sees
+`status == "done"`, all outputs for that execution are committed in the same
+document, at most one sync tick away.
 
 `NotebookBroadcast` carries only `Comm` custom messages
-(`crates/notebook-protocol/src/protocol.rs:748-765`). Completion reads
+(`crates/notebook-protocol/src/protocol.rs`). Completion reads
 `RuntimeStateDoc` exclusively: `crates/notebook-sync/src/execution_wait.rs`
 polls `kernel.lifecycle` and `executions/*/status` every 50ms
 (`TERMINAL_POLL_INTERVAL`) and never consults broadcasts.
@@ -111,14 +112,14 @@ Two compile-time guards prevent channel misuse:
 
 - Non-lifecycle work cannot compile onto `UnboundedSender<LifecycleSignal>`.
 - `queue_command_channels` wraps the work sender in
-  `NonBlockingSender<WorkCommand>`, which exposes only `try_send`. A blocking
-  `.send().await` in an IOPub handler does not compile.
+  `NonBlockingSender<WorkCommand>`, which exposes only `try_send` (EP-8). A
+  blocking `.send().await` in an IOPub handler does not compile.
 
 The runtime agent's `select!` loop (`crates/runtimed/src/runtime_agent.rs`)
 prioritizes lifecycle deterministically:
 
 - `tokio::select! { biased; ... }` polls the lifecycle arm ahead of the bounded
-  work arm whenever both are ready.
+  work arm whenever both are ready (EP-10).
 - Before handling any work command, the work arm drains every pending lifecycle
   signal via `drain_lifecycle_commands`.
 
@@ -132,16 +133,17 @@ multi-second interrupt and queue-release stalls.
   (`KernelIdle`, `ExecutionDone`, `CellError`, `KernelDied`). None may be
   dropped without breaking queue release.
 - **Work channel (bounded at `100`):** Set via `queue_command_channels(100)`
-  (`crates/runtimed/src/jupyter_kernel.rs:1221-1224`). When widget replay
-  outpaces shell ingest, `try_send` (`jupyter_kernel.rs:196-224`) drops excess
-  updates and logs at `debug`. Because replay is best-effort (Decision 4), a
-  later update overwrites the same widget property.
+  (`crates/runtimed/src/jupyter_kernel.rs`). When widget replay outpaces shell
+  ingest, `try_send_comm_update` (`crates/runtimed/src/jupyter_kernel.rs`) drops
+  excess updates and logs at `debug`. Because replay is best-effort
+  (Decision 4), a later update overwrites the same widget property.
 - **Periodic stream flush queue (`STREAM_COMMITTER_QUEUE_CAPACITY = 32`):**
-  (`stream_committer.rs:25`). Drops are safe because `StreamTerminals` retains
-  full rendered text for the next flush (Decision 3).
+  (`crates/runtimed/src/stream_committer.rs`). Drops are safe because
+  `StreamTerminals` retains full rendered text for the next flush (Decision 3).
 - **Display-update coalescing cap (`MAX_PENDING_DISPLAY_IDS = 128`):**
-  (`display_update_committer.rs:24`). Bounds distinct pending display IDs; a
-  129th distinct ID drops while updates to queued IDs coalesce (Decision 5).
+  (`crates/runtimed/src/display_update_committer.rs`). Bounds distinct pending
+  display IDs; a 129th distinct ID drops while updates to queued IDs coalesce
+  (Decision 5).
 
 Whether these three lossy bounds (`100`, `32`, `128`) are sized well under
 heavy load is tracked in [Open Follow-ups](#open-follow-ups).
@@ -197,12 +199,12 @@ The committer commits final stream manifests, then forwards `ExecutionDone` to
 the lifecycle channel. The runtime agent calls `KernelState::execution_done`,
 writing `set_execution_done(eid, true)` strictly after the final output.
 
-`KernelIdle` rides the lifecycle channel directly (`jupyter_kernel.rs:1408-1430`)
+`KernelIdle` rides the lifecycle channel directly (`crates/runtimed/src/jupyter_kernel.rs`)
 so queue release never waits on stream commits; only `ExecutionDone` must wait.
 
 Even when an execution produces no stream output, `flush_then_signal` enqueues
 an empty priority commit instead of bypassing to `lifecycle_tx`
-(`stream_committer.rs:106-124`, tested by
+(`crates/runtimed/src/stream_committer.rs`, tested by
 `flush_then_signal_without_flushes_rides_priority_queue`). That keeps
 `ExecutionDone` ordered behind any earlier priority stream commit.
 
@@ -218,7 +220,7 @@ A Jupyter Output widget captures outputs emitted during execution and replays
 them as widget state. On IOPub ingress, the daemon writes the manifest to
 `RuntimeStateDoc.comms[comm_id].outputs` (durable record) and sends a
 `SendCommUpdate` to the kernel shell channel via `try_send_comm_update`
-(`crates/runtimed/src/jupyter_kernel.rs:196-224`). If the work channel is full,
+(`crates/runtimed/src/jupyter_kernel.rs`). If the work channel is full,
 the replay drops with a `debug` log while the durable record stays intact.
 
 Best-effort replay rests on two properties:
@@ -251,7 +253,7 @@ the map through `apply_display_manifest_updates`.
 
 ### Flush ordering before `ExecutionDone`
 
-On `status: idle`, `jupyter_kernel.rs:1458-1479` awaits:
+On `status: idle`, `crates/runtimed/src/jupyter_kernel.rs` awaits:
 
 ```rust
 display_update_committer.flush_for_ordering().await;
@@ -283,11 +285,11 @@ let response = handle.send_request_after_heads(request, required_heads).await;
 ```
 
 The frontend captures heads first and then invokes its flush hook
-(`packages/runtimed/src/notebook-client.ts:98-101`), ensuring the requested
-heads are already in flight on the sync stream.
+(`NotebookClient.requiredHeadsOptions` in `packages/runtimed/src/notebook-client.ts`),
+ensuring the requested heads are already in flight on the sync stream.
 
 Before dispatching, the daemon's request worker calls `wait_for_required_heads`
-(`crates/runtimed/src/notebook_sync_server/peer_writer.rs:222-256`), listening
+(`crates/runtimed/src/notebook_sync_server/peer_writer.rs`), listening
 on `changed_tx` until `get_change_by_hash` finds every required head in
 `NotebookDoc`.
 
@@ -296,8 +298,8 @@ on `changed_tx` until `get_change_by_hash` finds every required head in
 Waiting indefinitely on a disconnected client would deadlock the request worker.
 After 10 seconds, the daemon returns
 `NotebookResponse::Error { error: "Timed out waiting for required notebook heads" }`
-(`crates/runtimed/src/notebook_sync_server/peer_writer.rs:167-181`) without
-running stale source. Clients decide whether to retry.
+(`wait_for_required_heads` in `crates/runtimed/src/notebook_sync_server/peer_writer.rs`)
+without running stale source. Clients decide whether to retry.
 
 ### Rejected alternative: passing cell source in the request
 
@@ -339,7 +341,7 @@ Keeping execution documents separate provides four properties:
 1. User types `print(2+2)`. The WASM peer updates `NotebookDoc` and queues sync.
 2. User clicks run. The frontend captures `current_heads_hex()`, triggers its
    flush hook, and sends `executeCell` with `required_heads`
-   (`packages/runtimed/src/notebook-client.ts:98-101`).
+   (`NotebookClient.requiredHeadsOptions` in `packages/runtimed/src/notebook-client.ts`).
 3. Daemon's request worker receives `ExecuteCell { cell_id, execution_id: None }`
    with `required_heads`, runs `wait_for_required_heads`, and proceeds once all
    heads are present.
@@ -365,20 +367,25 @@ Keeping execution documents separate provides four properties:
 
 1. Cell runs `for i in range(10000): bar.update()` on an `IntProgress` widget.
 2. Each `bar.update()` emits IOPub `comm_msg(update)` with the new `value`.
-3. IOPub reader writes the updated value to `CommsDoc.comms[bar_id].state.value`
-   (using `RuntimeStateDoc.comms[bar_id]` for comm topology), then calls
-   `try_send_comm_update` for kernel-side replay.
-4. Work channel fills; excess `try_send_comm_update` calls drop and log at
-   `debug`.
+3. IOPub reader sends `CommCoalesceMessage::StateDelta { comm_id: bar_id, delta }`
+   to the background coalescing writer over `comm_coalesce_tx` instead of writing
+   directly on the IOPub hot path (`RuntimeStateDoc.comms[bar_id]` holds comm
+   topology; Output-widget `try_send_comm_update` replay is separate).
+4. The coalescing writer merges repeated `value` updates per `comm_id` in memory
+   and flushes the batch every 16ms via `CommsDoc::merge_comm_state_delta`,
+   updating `CommsDoc.comms[bar_id]` (the state map directly, with no `.state`
+   sub-map) in one Automerge transaction.
 5. User clicks interrupt. `RuntimeAgentRequest::InterruptExecution` clears the
    local queue, calls `mark_interrupted_executions_failed`, and sends ZMQ
    interrupt.
 6. Kernel emits `KeyboardInterrupt`, late comm updates, and `status: idle`.
-7. `KernelIdle` enters the unbounded lifecycle channel. The `biased;` select
-   runs the lifecycle arm ahead of any backlogged `SendCommUpdate`, releasing
-   the queue immediately.
-8. Backlogged work items drain afterward as best-effort replays; `CommsDoc`
-   already holds the authoritative widget state.
+7. `KernelIdle` enters the unbounded lifecycle channel. Because the IOPub reader
+   offloaded comm commits to the coalescing writer, `status: idle` is read
+   promptly, and the `biased;` select runs the lifecycle arm ahead of any
+   pending bounded work commands, releasing the queue immediately.
+8. On its next 16ms tick, the coalescing writer commits the final merged delta
+   to `CommsDoc.comms[bar_id]`, so `CommsDoc` holds the authoritative latest
+   widget state without delaying interrupt or queue release.
 
 ### `update_display_data` storm
 
@@ -397,7 +404,7 @@ Keeping execution documents separate provides four properties:
 
 ## Open Follow-ups
 
-- **Validate lossy queue bounds under load:** Review the three independent lossy
+- **Validate lossy queue bounds under load (EP-5):** Review the three independent lossy
   queue bounds against heavy widget and display-update workloads to confirm they
   neither drop too early nor buffer excessively: work channel capacity (`100` in
   `jupyter_kernel.rs`), periodic stream flush queue
@@ -411,18 +418,19 @@ Keeping execution documents separate provides four properties:
   priority paths, `flush_then_signal`, `flush_for_ordering`.
 - `crates/runtimed/src/display_update_committer.rs`: coalesced display updates
   and priority flush ack.
-- `crates/runtimed/src/output_prep.rs:465-550`: `LifecycleSignal`,
-  `WorkCommand`, `NonBlockingSender`, and channel construction.
-- `crates/runtimed/src/runtime_agent.rs:592-639, 1414-1430`: lifecycle/work
-  select arms and `drain_lifecycle_commands`.
-- `crates/runtimed/src/jupyter_kernel.rs:1394-1441, 1805-1818`: IOPub
-  `status: idle` and `UpdateDisplayData` handling.
-- `crates/runtimed/src/kernel_state.rs:147-181`: `execution_done` and
+- `crates/runtimed/src/output_prep.rs`: `LifecycleSignal`, `WorkCommand`,
+  `NonBlockingSender`, and `queue_command_channels`.
+- `crates/runtimed/src/runtime_agent.rs`: lifecycle/work `biased;` select arms
+  and `drain_lifecycle_commands`.
+- `crates/runtimed/src/jupyter_kernel.rs`: IOPub `status: idle`,
+  `UpdateDisplayData`, `try_send_comm_update`, and `CommCoalesceMessage`
+  handling.
+- `crates/runtimed/src/kernel_state.rs`: `execution_done` and
   `set_execution_done`.
 - `crates/notebook-sync/src/execution_wait.rs`: two-phase terminal wait and
   output-sync grace.
-- `crates/runtimed/src/notebook_sync_server/peer_writer.rs:167-256`:
-  `required_heads` gate.
+- `crates/runtimed/src/notebook_sync_server/peer_writer.rs`:
+  `wait_for_required_heads` gate.
 - `crates/runt-mcp/src/execution.rs`: MCP consumer pattern.
 - `.agents/skills/execution-pipeline/SKILL.md`: agent-facing pipeline summary.
 - `crates/runtimed/AGENTS.md`: "Lifecycle and output ordering" scoped rules.

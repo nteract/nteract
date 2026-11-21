@@ -920,7 +920,7 @@ Useful events while debugging collaboration:
 - `authz.denied`, `acl.grant.completed`, and `acl.revoke.completed` - ACL
   decisions and owner mutations.
 
-### Deployed smoke runbook
+## Deployed smoke runbooks
 
 Run the prototype diagnostic smokes against `preview.runt.run` with
 `NOTEBOOK_CLOUD_DEV_TOKEN` (see [Local dev](#local-dev) for full script

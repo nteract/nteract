@@ -10,25 +10,25 @@ recovery landed; existing-room reconciliation remains open.
 - `docs/adr/runtime-state-document-identity.md`: `RuntimeStateDoc` id ownership by `NotebookDoc`; the same stable-id separation applies to file paths.
 - `docs/prd/notebook-identity-environment-surfaces.md` and `docs/audits/notebook-identity-environment-surface-audit.md`: product surfaces and audit motivating end-to-end notebook identity.
 
-## Done / Next
+## Done
 
-**Done:**
 - Daemon-local persistent `path <-> id` SQLite registry (`crates/runtimed/src/notebook_registry.rs`), wired into both open-by-path sites in `daemon.rs` and save/save-as in `save_notebook.rs`.
 - Untitled (non-ephemeral) notebook recovery across daemon restarts, backed by daemon-authoritative, attach-only `NotebookSync` rejoin.
 - Session path backfill and proxy rejoin-target propagation for file-backed notebooks (`crates/runt-mcp/src/tools/session.rs`, `crates/runt-mcp-proxy/src/session.rs`).
 - Cross-channel file claim leases at `~/.cache/runt-shared/file-claims/` (`runt_workspace::file_claims`).
 
-**Next:**
+## Next
+
 - Reconciliation design for a file that already has an in-memory room under a fresh UUID when the registry is introduced.
 
 ## Context
 
 A notebook's identity must survive daemon restarts. Originally, it did not.
 
-When a room opened, the daemon minted a fresh UUID (`crates/runtimed/src/notebook_sync_server/room.rs`, `Uuid::parse_str(notebook_id).unwrap_or_else(Uuid::new_v4)`). It persisted the document under `docs_dir/<derived-from-notebook_id>`, with different roles by kind (`room.rs:859`):
+When a room opened, the daemon minted a fresh UUID (`crates/runtimed/src/notebook_sync_server/room.rs`, `Uuid::parse_str(notebook_id).unwrap_or_else(Uuid::new_v4)`). It persisted the document under `docs_dir/<derived-from-notebook_id>`, with different roles by kind:
 
 - **Untitled notebooks:** the id-keyed doc is the sole content record and reloads on restart.
-- **File-backed notebooks:** the `.ipynb` file is authoritative, so the daemon deletes the stale id-keyed doc on load and re-imports from disk.
+- **File-backed notebooks:** the `.ipynb` file is the external checkpoint, while a recovery journal retains unexported Automerge heads. On open, clean rooms re-import from disk when no unexported recovery journal exists, whereas a diverged journal enters `Degraded` (`source_conflict`) reconciliation rather than silently discarding local state (see `docs/adr/room-source-lifecycle-and-file-recovery.md`).
 
 Content survived restarts only if clients resolved back to the same id (untitled) or file (file-backed). Because the path-to-room binding lived only in memory (`RoomRegistry`, `set_bound_path`, `bind_existing`, `promote_after_save`), a new daemon minted a new UUID for the same `.ipynb`.
 
@@ -80,7 +80,7 @@ Explicit path transitions keep identities distinct:
 
 Out-of-band file replacement at the same path (`rm x.ipynb && cp other.ipynb x.ipynb`, `git checkout`, or an editor's atomic write) leaves the registry pointing at the prior id. Reopening reuses that id. We accept this tradeoff for two reasons:
 
-1. **Small blast radius:** file-backed rooms delete the id-keyed Automerge doc on open and reload from the `.ipynb` (`room.rs:859`), and package trust keys on package content, not notebook id. No stale content leaks.
+1. **Small blast radius:** when no unexported recovery journal exists, a file-backed room reloads cleanly from the replacement `.ipynb`; when dirty local state exists, the room enters `Degraded` (`source_conflict`) reconciliation instead of overwriting either side (see `docs/adr/room-source-lifecycle-and-file-recovery.md` and Decision 6), and package trust keys on package content, not notebook id. No stale content silently leaks.
 2. **No reliable signal:** inode, mtime, birth time, and content hash all change on ordinary edits and atomic saves. Keying on them would churn notebook ids on every save.
 
 File-backed identity therefore binds to the canonical path (`fs::canonicalize`, resolving symlinks and normalizing trailing slashes). An explicit "claim a fresh id for the file at this path" action may be added later if needed, never as the default.

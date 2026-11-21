@@ -143,7 +143,7 @@ document editing, `runtime_peer`, and `owner` ACL management. Local-only kernels
 author runtime state under a local principal; when promoted into a hosted room,
 they adopt the authenticated room principal and operator for that connection.
 
-Blob upload authority is staged. The audit in
+Blob upload authority is staged (HCA-3). The audit in
 `../audits/runtime-peer-and-blob-authority-audit.md` allows editor uploads only
 as precursors to authorized document references. Until server-side
 reference-path validation exists, hosted rooms deny editor uploads. Under the
@@ -374,11 +374,11 @@ URLs, or an output origin enforcing equivalent access.
 
 ## Open Follow-ups
 
-- **Editor blob uploads and reference-path validation:** Ship editor blob
+- **Editor blob uploads and reference-path validation (HCA-3):** Ship editor blob
   uploads together with server-side reference-path validation in one change set.
   Until then, `allowsBlobUpload` stays restricted to `runtime_peer` and `owner`
   at both the `PUT_BLOB` frame prefilter and the HTTP upload route.
-- **Private hosted blob read capabilities:** Write and land the "Hosted Private
+- **Private hosted blob read capabilities (HCA-6):** Write and land the "Hosted Private
   Blob Read Capabilities" ADR (resolving `hosted-output-origin-isolation.md`
   open question 2) before private sharing ships, choosing between Worker auth
   on `/api/n/:id/blobs/:hash`, signed R2 URLs, or a separate output origin with

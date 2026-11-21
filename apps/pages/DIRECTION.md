@@ -209,6 +209,7 @@ records the node addresses agents use.
   | `page10` | lab1 | Preview. Deployed from `main` automatically. Reset freely |
   | `pages2` (`page2.runtimed.run`) | lab2 | Demo. Reset freely |
   | `page11` | lab2 | Profile in source only; nothing is deployed |
+  | `page12` (`page12.runtimed.run`) | lab2 | Demo. Format 3 / 2 (`pages.page` 3, `pages.comments` 2). Reset freely |
 - **A deployment from the release package belongs to its operator.** It is not
   in the list above, it takes builds of `main`, and it can hold documents
   people use. Do not reset it or delete from it. A change on `main` that stops

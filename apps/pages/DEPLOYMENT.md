@@ -1,13 +1,14 @@
 # Pages deployment
 
-The deployment helpers know four isolated celld targets: **Pages**
+The deployment helpers know five isolated celld targets: **Pages**
 (`pages.runtimed.run`), **Page10**, **Pages2** (`page2.runtimed.run`, on its
-own host, lab2) and **Page11** (`page11.runtimed.run`, also on lab2).
+own host, lab2), **Page11** (`page11.runtimed.run`, also on lab2), and
+**Page12** (`page12.runtimed.run`, also on lab2).
 [profiles.mjs](scripts/deployment/profiles.mjs) lists the profiles, and the
 deployment helpers reject any other target name.
 
 A build of `main` reads `pages.page` format 3 and `pages.comments` format 2,
-and only Page10 takes it ([Document formats](#document-formats)). Pages, Pages2 and Page11 hold format 1
+and only Page10 and Page12 take it ([Document formats](#document-formats)). Pages, Pages2 and Page11 hold format 1
 documents. They take a build of the maintenance branch cut from the
 `pages-format-1` tag.
 
@@ -17,7 +18,7 @@ carrying compatibility code. Deployment never copies data between targets.
 | Target | Rule ([DIRECTION.md](DIRECTION.md#rules-for-the-work)) |
 | --- | --- |
 | pages | Holds documents people use. No reset and no migration from it. A format 1 release is built from the maintenance branch and promoted by hand; a build of `main` never deploys here |
-| pages2, page10 | Demos. Reset freely; confirm the target a command addresses first |
+| pages2, page10, page12 | Demos. Reset freely; confirm the target a command addresses first |
 
 These are the targets the helpers deploy. A deployment an operator makes from
 the [release package](#deployment-neutral-release-package) is not one of them
@@ -556,7 +557,7 @@ To restore from a manifest:
    newer local state.
 5. Start the nodes.
 
-### Celld binary verification and QA
+## Celld binary verification and QA
 
 The runtime must match the official celld 0.6.3 Linux x86_64 executable at
 `/usr/local/bin/celld-v0.6.3`, including the SHA-256 in `CELLD_RELEASE`.
@@ -575,10 +576,10 @@ After publication, verify:
   does not prove power-loss or object-store failover recovery.
 - Preservation of existing documents, sessions, ACLs, and assets.
 
-Copying documents or assets between targets is separate from deployment;
-publishing never migrates another environment's data.
+Copying a document or its assets between targets is separate from deployment;
+publishing does not migrate another environment's data.
 
-### Reload banners and compatibility
+## Reload banners and compatibility
 
 Open tabs from an earlier build show a reload banner after publication and keep
 working until the person reloads. A release that raises `MIN_VIEWER_PROTOCOL`
@@ -589,7 +590,7 @@ rollback publishes a different build id too, so open tabs see the banner again.
 Any rollback build must open plain Automerge Pages; see [Rollback and Page
 record storage](#rollback-and-page-record-storage).
 
-### D1 projection and rollback rules
+## D1 projection and rollback rules
 
 - **`PAGES_CATALOG_INDEX` gate.** Every profile sets `PAGES_CATALOG_INDEX=1`.
   Changing this epoch label starts account reconciliation on the next listing
@@ -622,7 +623,7 @@ record storage](#rollback-and-page-record-storage).
   access writes apply only from a revision at least as new as the row's, so a
   delayed trash retirement cannot undo a restore.
 
-### Trash and Project rollback rules
+## Trash and Project rollback rules
 
 **Trash behavior on older builds.** Trashed Pages keep `deleted: true` in the
 Page record.
@@ -676,16 +677,18 @@ document, not a Page in the tree:
 
 **Rollback floor.**
 
-- Never roll back to a location-shape-1 build (builds that stored Project
-  content as a `home: true` root Page with `space/<id>.home_page_id`, or
-  predate D1 schema 8). An older location pass mistakes shape 2 for shape 1,
-  moves root Pages back under the content document, and fails D1 Space upserts
-  against schema 8.
+- Never roll back to a build before #4853 (location shape 1: builds that stored
+  Project content as a `home: true` root Page with `space/<id>.home_page_id`, or
+  predate D1 schema 8). Nothing in this build reads or checks for that shape.
+  The one-shot migration moved every Catalog to location shape 2 (production
+  converted 2026-11-05; page10 already converted). An older location pass
+  mistakes shape 2 for shape 1, moves root Pages back under the content
+  document, and fails D1 Space upserts against schema 8.
 - Any future rewrite of location entries must bump `LOCATION_SHAPE_VERSION`
   (to 3) and check for the retired shape before stamping a Catalog.
-- Builds predating `parent_id: null` `move_page` receipt support cannot replay
-  those receipts. Because the move already landed, a client hitting that
-  condition should read or list the Page instead of retrying.
+- Builds before #4712 (predating `parent_id: null` `move_page` receipt support)
+  cannot replay those receipts. Because the move already landed, a client
+  hitting that condition should read or list the Page instead of retrying.
 
 ## Rollback and Page record storage
 
@@ -789,8 +792,8 @@ no idempotency key is consumed. The old tool names answer
 same for the other three). A `space_id` argument answers
 `` `space_id` is now `project_id` `` (`argument_renamed`).
 
-Rolling back to 3548b9750 is not supported: it predates location shape 2 (see
-[Trash and Project rollback rules](#trash-and-project-rollback-rules)).
+Rolling back to 3548b9750 is not supported: it predates #4853 and location shape
+2 (see [Trash and Project rollback rules](#trash-and-project-rollback-rules)).
 
 ## Creation intent conflicts
 
@@ -836,10 +839,11 @@ There is no repair tool. To repair a Page:
 ## Document formats
 
 A **document format** is the per-document-type schema number (`pages.page` 3 /
-`pages.comments` 2 on `page10`, versus 1 / 1 on `pages`, `pages2`, and
-`page11`), whereas a **stored form** ([below](#stored-forms-and-rollback-rules))
+`pages.comments` 2 on `page10` and `page12`, versus 1 / 1 on `pages`, `pages2`,
+and `page11`), whereas a **stored form** ([below](#stored-forms-and-rollback-rules))
 is the storage layout around those documents (`v1`: rich-text blocks, separate
-comments document, and plain Automerge sync, versus retired `v0` forms).
+comments document, and plain Automerge sync, versus earlier stored forms (see
+[archive/DEPLOYMENT-stored-form-migrations.md](archive/DEPLOYMENT-stored-form-migrations.md))).
 
 `TARGET_DOCUMENT_FORMATS` in [profiles.mjs](scripts/deployment/profiles.mjs)
 names the format of each document type that a target holds. Install and
@@ -848,11 +852,11 @@ rollback refuse a release whose build receipt does not list that format under
 
 | Target | `pages.page` | `pages.comments` |
 | --- | --- | --- |
-| page10 | 3 | 2 |
+| page10, page12 | 3 | 2 |
 | pages, pages2, page11 | 1 | 1 |
 
 A build of `main` reads `pages.page` format 3 and `pages.comments` format 2
-only, so only page10 accepts it. The controller checks out the commit it
+only, so only `page10` and `page12` accept it. The controller checks out the commit it
 deploys and reads this table from it, so a commit that changes page10's
 formats installs on page10 with no change on the host. The same check stops a
 revert to a build that reads earlier formats.
@@ -878,9 +882,8 @@ target.
 Unlike the per-type document format numbers above, **stored form** describes
 the host storage layout: `pages` and `page10` hold only the `v1` stored form
 (rich-text blocks, comments in their own document, `comments_doc` on every live
-or trashed host record, and plain Automerge sync), replacing retired `v0`
-forms. The migrations that got them there are in
-[archive/DEPLOYMENT-stored-form-migrations.md](archive/DEPLOYMENT-stored-form-migrations.md).
+or trashed host record, and plain Automerge sync), replacing earlier stored
+forms (see [archive/DEPLOYMENT-stored-form-migrations.md](archive/DEPLOYMENT-stored-form-migrations.md)).
 
 | Rule | Why |
 | --- | --- |
@@ -1763,9 +1766,10 @@ The variable records the package's runtime contract; it does not itself make
 fetch safe. Keep the flag and variable together when deploying by another
 path. The flag affects all global fetches, including identity-provider calls;
 private services need explicit bindings instead of implicit origin routing.
-D1, R2 and Durable Object bindings keep their existing paths. This source
-change does not qualify a live deployment: after updating the pages-dev pin,
-check a fresh metadata-client authorization through sign-in and consent.
+D1, R2 and Durable Object bindings keep their existing paths. Package
+configuration alone does not qualify a live deployment: after updating the
+pages-dev pin, check a fresh metadata-client authorization through sign-in and
+consent.
 
 ### Native celld and other runtimes
 
@@ -1778,12 +1782,13 @@ IPv4/IPv6 destinations, proxies and destination translation. Setting the
 variable without that boundary is unsafe. There is no unrestricted fallback
 or exception for a familiar product name.
 
-This changes new metadata sign-ins on unqualified native deployments,
-including disposable page10; existing grants still refresh and revoke, and
-fixed `pages-kilo` and `pages-chatgpt` clients do not fetch metadata. Local
-sign-in and fixed-client tests continue working. `pages.runtimed.run` stays
-on `pages-format-1` and does not receive this change. No native host firewall
-or private HTTPS storage/identity-provider traffic is changed by this patch.
+On unqualified native deployments (including disposable page10), new
+metadata-based sign-ins return 503 while existing grants still refresh and
+revoke, and fixed `pages-kilo` and `pages-chatgpt` clients do not fetch
+metadata. Local sign-in and fixed-client paths do not require metadata egress.
+`pages.runtimed.run` runs `pages-format-1` and does not use this egress gate.
+Native host firewalls and private HTTPS storage or identity-provider traffic
+are unaffected.
 
 Across runtimes, the Worker fetches only after sign-in, sends no cookies or
 authorization, requires port 443, never follows redirects, and bounds time,

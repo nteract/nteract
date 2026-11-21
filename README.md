@@ -131,14 +131,14 @@ If tools are missing or notebook calls fail after an app update, follow [Upgrade
 
 ### Upgrade the Codex plugin
 
-The desktop app and Codex plugin update independently (for example, plugin 0.6.6 and desktop 2.8.6 are compatible). An older plugin can reject a newer app's notebook routing with `unsupported_notebook_target` and a misleading child-upgrade message:
+The desktop app and Codex plugin update independently (for example, plugin 0.6.6 and desktop 2.8.6 are compatible). An older plugin can block notebook creation as well as calls using a notebook ID or handle, returning `unsupported_notebook_target` with a misleading child-upgrade message:
 
 ```text
 This child does not advertise required notebook_handle routing;
 upgrade the child before using notebook tools
 ```
 
-This usually means the **plugin proxy needs updating**, even when the desktop app is current. Save any notebook work, refresh the marketplace, and reinstall your channel:
+This can mean the **plugin proxy needs updating**, even when the desktop app is current. Save any notebook work, refresh the marketplace, and reinstall your channel (reinstall only after marketplace registration succeeds):
 
 Stable:
 
@@ -163,11 +163,11 @@ codex plugin marketplace remove nteract-plugins &&
 codex plugin marketplace add nteract/agent-plugins --ref main
 ```
 
-Restart Codex and start a fresh session so it loads the updated proxy. The MCP `reconnect` tool only restarts the worker behind the proxy and does not upgrade the proxy itself. Verify by checking the plugin version in Codex settings and running a cell containing `1 + 1` (confirming it returns `2`). If it still fails, file an issue with the error, plugin version/channel, and `nteract --version`.
+Restart Codex and start a fresh session so it loads the updated proxy. Restarting Codex without updating the cached plugin can still launch the old binary, and the MCP `reconnect` tool only restarts the worker behind the proxy rather than upgrading the proxy itself. Verify by checking the plugin version in Codex settings and running a cell containing `1 + 1` (confirming it returns `2`); seeing a skill or server in `codex mcp list` alone does not verify notebook execution. If it still fails, file an issue with the error, plugin version/channel, and `nteract --version`.
 
 #### If the marketplace refresh times out
 
-If `marketplace upgrade` times out (`timed out after 30s` or `fatal: early EOF`), stop before removing the plugin. Retry once; if it still fails, clone shallowly outside Codex's deadline and register the local directory (skip `marketplace remove` if you already removed it):
+If `marketplace upgrade` times out (`timed out after 30s` or `fatal: early EOF`), stop before removing the plugin. Retry the refresh; if it still fails, clone shallowly into a new directory outside Codex's deadline and register that local directory (skip `marketplace remove` if you already removed it):
 
 ```sh
 mkdir -p "$HOME/.local/share/nteract" &&

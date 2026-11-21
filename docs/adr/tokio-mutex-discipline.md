@@ -154,7 +154,7 @@ What it does **not** check:
 
 The lint reached zero violations on 2026-04-08 (`runtimed/tests/tokio_mutex_lint.rs:8-12`) and CI keeps it there. New violations fail the test.
 
-**Scope.** The lint recurses through all of `crates/runtimed/src/` (covering `notebook_sync_server/`, `runtime_agent/`, and `requests/`) and also scans `crates/runtimed-py/src/`. Hosting the `runtimed-py` source scan inside `runtimed`'s test target keeps the discipline enforced on pre-merge CI even though `runtimed-py` builds on a post-merge lane; no compilation of `runtimed-py` is involved.
+**Scope.** The lint recurses through all of `crates/runtimed/src/`, covering `notebook_sync_server/`, `runtime_agent/`, and `requests/` (TMD-1), and also scans `crates/runtimed-py/src/` (TMD-2). Hosting the `runtimed-py` source scan inside `runtimed`'s test target keeps the discipline enforced on pre-merge CI even though `runtimed-py` builds on a post-merge lane; no compilation of `runtimed-py` is involved.
 
 Alternatives we considered:
 

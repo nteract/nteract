@@ -1,6 +1,6 @@
 # Cloud User Store: one principal → display resolution for every surface
 
-**Status:** Proposed, 2026-07-06.
+**Status:** Draft, 2026-07-06.
 
 ## Context
 

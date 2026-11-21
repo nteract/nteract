@@ -4,7 +4,7 @@
 
 ## Context
 
-Every peer in the nteract desktop world speaks the same byte protocol over a Unix socket: the Tauri relay inside the desktop app, the daemon (`runtimed`), the runtime-agent subprocess, the `runt-mcp` proxy, the Python bindings, and hosted-room WebSocket bridges (see `docs/adr/identity-and-trust.md`). The protocol is `notebook-wire` v4 typed frames on top of a 5-byte preamble.
+Every peer in the nteract desktop world speaks the same byte protocol over a Unix socket (or a WebSocket for hosted-room bridges): the Tauri relay inside the desktop app, the daemon (`runtimed`), the runtime-agent subprocess, the `runt-mcp` proxy, the Python bindings, and hosted-room bridges (see `docs/adr/identity-and-trust.md`). The protocol is `notebook-wire` v4 typed frames on top of a 5-byte preamble.
 
 The wire crate (`crates/notebook-wire/src/lib.rs`) is intentionally tiny: magic bytes, protocol-version constant, the `NotebookFrameType` enum, per-type size limits, and the `SessionControlMessage` shapes. Framing itself lives one crate up (`crates/notebook-protocol/src/connection/framing.rs`). Everything heavier (Automerge sync, JSON request/response, CBOR presence, blob uploads) is layered on top.
 
