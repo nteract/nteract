@@ -52,7 +52,7 @@ The mutex itself never deadlocks. It is functioning correctly. The bug is that A
 
 The problem is easy to miss at the call site: code that reads as "lock, do some work, return" may work under low load, then block other callers when an operation yields while holding the lock.
 
-### The block-scope rule and why `drop()` doesn't satisfy the lint
+### Why the repo prefers block scopes over `drop()`
 
 The lint accepts three patterns as "the guard is gone before this `.await`":
 
@@ -60,7 +60,7 @@ The lint accepts three patterns as "the guard is gone before this `.await`":
 2. The guard's name is shadowed by another `let` before the await.
 3. `drop(guard)` appears as a statement before the await.
 
-The repo's discipline strongly prefers pattern 1. The reason is reviewability, not lint mechanics: a block boundary tells the reader exactly when the guard ends, and Rust's borrow checker enforces it. `drop()` is a runtime call that can be missed in review and is easy to delete by accident. The lint accepts it because the rule engine has no way to require "block-scoped" syntactically, but the rule for humans is "use a block." See `crates/notebook-sync/src/handle.rs:206-229`, where `with_doc` takes the closure inside a scoped lock and returns before the next sync notification fires.
+Project discipline prefers pattern 1 for reviewability, not lint mechanics. A block boundary shows exactly where the guard ends and lets the borrow checker enforce it. `drop()` is a runtime call that is easy to miss in review or delete by accident. See `crates/notebook-sync/src/handle.rs:206-229`, where `with_doc` runs a closure inside a scoped lock and returns before the next sync notification fires.
 
 The lint is also conservative on shadowing: it accepts `let guard = ...;` as killing the previous binding named `guard`. That can mask intent. Project style is to prefer fresh names so the lint is doing structural matching, not name-equality reasoning.
 
@@ -154,7 +154,7 @@ What it does **not** check:
 
 The lint reached zero violations on 2026-04-08 (`runtimed/tests/tokio_mutex_lint.rs:8-12`) and CI keeps it there. New violations fail the test.
 
-**Scope.** The lint recurses through all of `crates/runtimed/src/` (TMD-1), so the `notebook_sync_server/` tree, `runtime_agent/`, and `requests/` are covered. It also scans `crates/runtimed-py/src/` as a sibling source root (TMD-2): `runtimed-py` builds on a post-merge-only CI lane, so hosting that scan in runtimed's test target is what keeps the discipline on the pre-merge lane. The scan is source-level only; no compilation of `runtimed-py` is involved.
+**Scope.** The lint recurses through all of `crates/runtimed/src/` (covering `notebook_sync_server/`, `runtime_agent/`, and `requests/`) and also scans `crates/runtimed-py/src/`. Hosting the `runtimed-py` source scan inside `runtimed`'s test target keeps the discipline enforced on pre-merge CI even though `runtimed-py` builds on a post-merge lane; no compilation of `runtimed-py` is involved.
 
 Alternatives we considered:
 
@@ -198,28 +198,19 @@ Open gaps:
 - **The std-sync side of mixed-lock ordering.** No lint covers "sync lock taken first, async lock acquired second, sync lock still held." The cost is OS-thread blocking. Review catches it; convention documents it at use sites.
 - **`std::sync::Mutex` held across `.await` in async code.** Clippy's `await_holding_lock` covers this, but we have not turned it on as a workspace deny. The pattern is rare in practice because Rust's `MutexGuard` is `!Send`, but `parking_lot::MutexGuard` *is* `Send` and would compile. If `parking_lot` ever lands in the daemon, the lint surface should expand.
 
-## Migration
+## Adoption Rule
 
-The lint reached zero violations on 2026-04-08 after a multi-PR burndown:
+The lint runs with zero violations in CI; new violations fail the test. When fixing a violation, prefer structural extraction—move the locked work into a short block or helper that returns owned data, or move loop state into local variables (Decision 3)—rather than sprinkling `drop(guard)` calls.
 
-- #1614, #1637, #1638: initial fixes and lint expansion (raw count: 58 → 19)
-- #1642: Phase 1 mechanical burndown
-- #1647: kernel actor pattern conversion (19 → 14)
-- Dead code removal plus IOPub scoping (14 → 0)
+Any new crate that adopts `tokio::sync::Mutex` or `RwLock` must register its source root in `tokio_mutex_lint.rs` before adding a second async-lock site.
 
-The path from 58 violations to 0 was not "add `drop(guard)` calls." Most were structural: extract the locked region into a helper that returns owned data, then let the helper drop the guard at return. The kernel actor pattern (#1647) replaced a shared `Arc<tokio::sync::Mutex<KernelState>>` with the owned-state-in-`select!` pattern documented in Decision 3.
+## Open Follow-ups
 
-New code follows the discipline by convention plus lint. New crates that adopt `tokio::sync::Mutex` or `RwLock` should add themselves to the lint's source roots before the second async-lock site is added.
-
-## Open Questions
-
-These follow-ups are tracked but not decided here:
-
-1. **Lint coverage expansion to additional crates.** Mechanical; do it when the second async-lock site lands outside `runtimed/`.
-2. **Cross-function guard liveness.** A type-level encoding (e.g., a marker type that cannot escape a closure) would be the right fix. None of the existing async-Rust lint crates offer it. Continue to forbid by convention.
-3. **`std::sync::Mutex` across `.await` via `parking_lot`.** If `parking_lot` is introduced, turn on `clippy::await_holding_lock` workspace-wide. Until then, the absence of `parking_lot` is itself the mitigation.
-4. **Loom coverage for the runtime agent's `select!` loop.** Loom would not catch the convoy pattern (it requires actual contention), but it would catch the rare two-lock deadlock case if it ever arose. Low priority; the loop's owned-state design makes the two-lock case structurally hard to introduce.
-5. **`async fn`-trait migration.** When stable Rust supports `async fn` in traits with `Send` bounds without RPITIT boilerplate, revisit the lint's coverage of trait method bodies. The current RPITIT pattern is already lint-friendly; migrating should not regress.
+1. **Lint coverage expansion to additional crates.** Add any new crate using `tokio::sync::Mutex`/`RwLock` outside `runtimed/` to `tokio_mutex_lint.rs`.
+2. **Cross-function guard liveness.** Continue forbidding guards as function parameters by convention until a type-level closure boundary or lint supports it.
+3. **`std::sync::Mutex` across `.await` via `parking_lot`.** Enable `clippy::await_holding_lock` workspace-wide if `parking_lot` is ever introduced.
+4. **Loom coverage for the runtime agent's `select!` loop.** Low priority; the owned-state design makes two-lock deadlocks structurally hard to introduce.
+5. **`async fn`-trait migration.** Verify lint coverage of trait method bodies before migrating off RPITIT.
 
 ## References
 

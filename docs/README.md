@@ -7,40 +7,56 @@ nteract notebooks, Pages, and shared libraries and services.
 For product orientation, start with the [repository README](../README.md#products).
 Notebooks bring code, execution, and outputs together. Pages brings rich writing,
 visuals, data, and discussion together, with people and agents editing the same
-document. Pages has its own model and host; its source still lives under the
-infrastructure research directory where it began.
+document. Pages has its own model and host under [`apps/pages/`](../apps/pages/README.md).
 
 ## Start Here
 
 Start here to understand a subsystem. This is not a complete inventory.
 
+### Notebooks and runtime
+
 | Topic | Start with |
 |-------|------------|
 | Local-first notebook state and recovery | [`adr/local-first-notebook-state.md`](adr/local-first-notebook-state.md), [`adr/room-source-lifecycle-and-file-recovery.md`](adr/room-source-lifecycle-and-file-recovery.md), [`adr/automerge-document-storage.md`](adr/automerge-document-storage.md), [`adr/document-split.md`](adr/document-split.md), [`adr/runtime-state-document-identity.md`](adr/runtime-state-document-identity.md) |
+| Execution and output transport | [`adr/execution-pipeline.md`](adr/execution-pipeline.md), [`memos/execution-engines-and-marimo.md`](memos/execution-engines-and-marimo.md), [`adr/typed-frame-v4-wire-protocol.md`](adr/typed-frame-v4-wire-protocol.md), [`adr/daemon-service-repair-and-semantic-compatibility.md`](adr/daemon-service-repair-and-semantic-compatibility.md), [`adr/blob-ref-and-chunk-manifest-protocol.md`](adr/blob-ref-and-chunk-manifest-protocol.md), [`memos/arrow-bounded-head-and-progressive-fetch.md`](memos/arrow-bounded-head-and-progressive-fetch.md) |
+| Runtime write ownership (proposal) | [`memos/runtime-writer-decomposition.md`](memos/runtime-writer-decomposition.md), [`plans/runtime-writer-decomposition.md`](plans/runtime-writer-decomposition.md) |
+| Output frame security boundaries | [`adr/output-frame-security.md`](adr/output-frame-security.md) |
+| Notebook shell, frontend convergence, and RxJS stores | [`adr/notebook-host-shell-convergence.md`](adr/notebook-host-shell-convergence.md), [`memos/electron-notebook-host-adapter.md`](memos/electron-notebook-host-adapter.md), [`adr/frontend-sync-bridge.md`](adr/frontend-sync-bridge.md), [`memos/shared-store-projection-convergence.md`](memos/shared-store-projection-convergence.md), [`adr/output-rendering-segmentation.md`](adr/output-rendering-segmentation.md) |
+| MCP notebook connections | [`adr/mcp-explicit-notebook-attachments.md`](adr/mcp-explicit-notebook-attachments.md), [`adr/mcp-session-lifecycle.md`](adr/mcp-session-lifecycle.md), [`adr/room-source-lifecycle-and-file-recovery.md`](adr/room-source-lifecycle-and-file-recovery.md), [`adr/notebook-identity-and-path-binding.md`](adr/notebook-identity-and-path-binding.md), [`memos/mcp-connect-initial-projection.md`](memos/mcp-connect-initial-projection.md) |
+| MCP realtime collaboration (proposal) | [`memos/mcp-realtime-collaboration.md`](memos/mcp-realtime-collaboration.md) |
+
+### Pages and Sift
+
+| Topic | Start with |
+|-------|------------|
 | Pages: product, editor, Projects, comments, and agent tools | [Pages guide](../apps/pages/README.md), [direction](../apps/pages/DIRECTION.md), [behavior reference](../apps/pages/REFERENCE.md), [contributor instructions](../apps/pages/AGENTS.md), [deployment](../apps/pages/DEPLOYMENT.md) |
 | Sift: data exploration and table rendering | [Package guide](../packages/sift/README.md) |
-| Authenticated Automerge applications (research) | [`memos/authenticated-automerge-app-substrate/README.md`](memos/authenticated-automerge-app-substrate/README.md), [`memos/extensible-automerge-document-contracts.md`](memos/extensible-automerge-document-contracts.md) |
-| Runtime write ownership (proposal) | [`memos/runtime-writer-decomposition.md`](memos/runtime-writer-decomposition.md), [`plans/runtime-writer-decomposition.md`](plans/runtime-writer-decomposition.md) |
-| Hosted document checkpoint measurements and proposal | [`memos/celld-document-persistence.md`](memos/celld-document-persistence.md) |
-| Execution and output transport | [`adr/execution-pipeline.md`](adr/execution-pipeline.md), [`memos/execution-engines-and-marimo.md`](memos/execution-engines-and-marimo.md), [`adr/typed-frame-v4-wire-protocol.md`](adr/typed-frame-v4-wire-protocol.md), [`adr/daemon-service-repair-and-semantic-compatibility.md`](adr/daemon-service-repair-and-semantic-compatibility.md), [`adr/blob-ref-and-chunk-manifest-protocol.md`](adr/blob-ref-and-chunk-manifest-protocol.md), [`memos/arrow-bounded-head-and-progressive-fetch.md`](memos/arrow-bounded-head-and-progressive-fetch.md) |
 | Sift out-of-core tables, worker data side, pushdown queries (proposal) | [`memos/sift-out-of-core-exploration.md`](memos/sift-out-of-core-exploration.md), [`memos/arrow-bounded-head-and-progressive-fetch.md`](memos/arrow-bounded-head-and-progressive-fetch.md) |
-| MCP realtime collaboration (proposal) | [`memos/mcp-realtime-collaboration.md`](memos/mcp-realtime-collaboration.md) |
-| Output frame security boundaries | [`adr/output-frame-security.md`](adr/output-frame-security.md) |
-| MCP notebook connections | [`adr/mcp-explicit-notebook-attachments.md`](adr/mcp-explicit-notebook-attachments.md), [`adr/mcp-session-lifecycle.md`](adr/mcp-session-lifecycle.md), [`adr/room-source-lifecycle-and-file-recovery.md`](adr/room-source-lifecycle-and-file-recovery.md), [`adr/notebook-identity-and-path-binding.md`](adr/notebook-identity-and-path-binding.md), [`memos/mcp-connect-initial-projection.md`](memos/mcp-connect-initial-projection.md) |
-| Notebook shell, frontend convergence, and RxJS stores | [`adr/notebook-host-shell-convergence.md`](adr/notebook-host-shell-convergence.md), [`memos/electron-notebook-host-adapter.md`](memos/electron-notebook-host-adapter.md), [`adr/frontend-sync-bridge.md`](adr/frontend-sync-bridge.md), [`memos/shared-store-projection-convergence.md`](memos/shared-store-projection-convergence.md), [`adr/output-rendering-segmentation.md`](adr/output-rendering-segmentation.md) |
-| Hosted accounts, Notebook Home, and compute federation | [`adr/cloud-connected-local-mcp.md`](adr/cloud-connected-local-mcp.md), [`memos/hosted-notebook-federation.md`](memos/hosted-notebook-federation.md), [`memos/desktop-cloud-daemon-bridge.md`](memos/desktop-cloud-daemon-bridge.md), [`adr/remote-workstation-doc-agents.md`](adr/remote-workstation-doc-agents.md) |
+| Authenticated Automerge applications (research) | [`memos/authenticated-automerge-app-substrate/README.md`](memos/authenticated-automerge-app-substrate/README.md), [`memos/extensible-automerge-document-contracts.md`](memos/extensible-automerge-document-contracts.md) |
+
+### Hosted rooms, identity, and remote compute
+
+| Topic | Start with |
+|-------|------------|
 | Identity, trust, and hosted rooms | [`adr/identity-and-trust.md`](adr/identity-and-trust.md), [`adr/hosted-room-authorization.md`](adr/hosted-room-authorization.md), [`adr/deployment-topology.md`](adr/deployment-topology.md), [`memos/aws-rust-room-host.md`](memos/aws-rust-room-host.md), [`memos/celld-hosted-room-substrate.md`](memos/celld-hosted-room-substrate.md) |
+| Hosted document checkpoint measurements and proposal | [`memos/celld-document-persistence.md`](memos/celld-document-persistence.md) |
+| Hosted accounts, Notebook Home, and compute federation | [`adr/cloud-connected-local-mcp.md`](adr/cloud-connected-local-mcp.md), [`memos/hosted-notebook-federation.md`](memos/hosted-notebook-federation.md), [`memos/desktop-cloud-daemon-bridge.md`](memos/desktop-cloud-daemon-bridge.md), [`adr/remote-workstation-doc-agents.md`](adr/remote-workstation-doc-agents.md) |
 | Managed compute admission (proposal) | [`memos/cloud-compute-admission.md`](memos/cloud-compute-admission.md) |
 | Remote compute and workstations | [`adr/remote-workstation-doc-agents.md`](adr/remote-workstation-doc-agents.md), [`adr/runtime-principal-promotion.md`](adr/runtime-principal-promotion.md), [`memos/python-runtime-boundaries.md`](memos/python-runtime-boundaries.md), [`runbooks/remote-workstation.md`](runbooks/remote-workstation.md) |
+| Embedding the hosted editor | [`runbooks/embedding-the-hosted-editor.md`](runbooks/embedding-the-hosted-editor.md) |
+
+### Product, operations, and audits
+
+| Topic | Start with |
+|-------|------------|
 | Product requirements | [`prd/notebook-identity-environment-surfaces.md`](prd/notebook-identity-environment-surfaces.md), [`prd/hosted-sharing-invites.md`](prd/hosted-sharing-invites.md) |
-| MCP, cloud embedding, and Automerge audit | [`audits/mcp-cloud-automerge-audit.md`](audits/mcp-cloud-automerge-audit.md) |
-| Accreting patterns, enforcement gaps, and agent guidance | [`audits/codebase-accretion-audit.md`](audits/codebase-accretion-audit.md) |
-| Evidence and measurements | [`audits/`](audits/), [`measurements/`](measurements/) |
 | CLI and installation | [`runbooks/cli.md`](runbooks/cli.md), [`plans/unified-cli-release.md`](plans/unified-cli-release.md) |
 | Conda Python versions and Anaconda channels | [`runbooks/conda-environments.md`](runbooks/conda-environments.md) |
 | Python toolchain trust and existing-environment remediation | [`runbooks/python-toolchain-security.md`](runbooks/python-toolchain-security.md) |
 | Operational setup | [`runbooks/macos-setup.md`](runbooks/macos-setup.md), [`runbooks/hosted-direct-oidc-demo-runbook.md`](runbooks/hosted-direct-oidc-demo-runbook.md), [`runbooks/npm-publishing.md`](runbooks/npm-publishing.md) |
-| Embedding the hosted editor | [`runbooks/embedding-the-hosted-editor.md`](runbooks/embedding-the-hosted-editor.md) |
+| MCP, cloud embedding, and Automerge audit | [`audits/mcp-cloud-automerge-audit.md`](audits/mcp-cloud-automerge-audit.md) |
+| Accreting patterns, enforcement gaps, and agent guidance | [`audits/codebase-accretion-audit.md`](audits/codebase-accretion-audit.md) |
+| Evidence and measurements | [`audits/`](audits/), [`measurements/`](measurements/) |
 
 For the architecture decision register's status vocabulary and maintenance
 rules, start with [`adr/README.md`](adr/README.md).

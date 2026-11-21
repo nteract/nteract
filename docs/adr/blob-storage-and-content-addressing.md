@@ -169,7 +169,7 @@ back to OS-assigned. The server exposes:
 
 The renderer is told which base URL to use for plugin assets via
 `NteractEmbedHostContext.nteract.rendererAssetsBaseUrl`
-(`src/components/isolated/host-context.ts`, added in #2812). Desktop leaves it
+(`src/components/isolated/host-context.ts`). Desktop leaves it
 unset and falls back to the daemon's HTTP origin; hosted viewers point it at a
 cloud-served asset prefix.
 
@@ -218,10 +218,9 @@ PUT_BLOB payload = u32_be header_len | JSON header | raw blob bytes
 The JSON header is one of two `PutBlobHeader` variants
 (`crates/notebook-protocol/src/protocol.rs:313`):
 
-- `op: "put"` - one-shot. Carries `id`, `media_type`, `size`, `sha256`,
-  `durability?`, `purpose?`. Used when the caller chooses to upload in one
-  frame; the daemon does not refuse one-shot uploads above a size threshold,
-  it refuses one-shot uploads above the 32 MiB per-frame cap.
+- `op: "put"` - one-shot upload. Carries `id`, `media_type`, `size`, `sha256`,
+  `durability?`, and `purpose?`. The daemon has no separate one-shot size
+  threshold; it accepts any single-frame upload up to the 32 MiB per-frame cap.
 - `op: "part"` - multipart part. Carries `id`, `upload_id`, `part_number`,
   `size`, `sha256` of the part. Used after a `CreateBlobUpload` request opens
   an upload session.
@@ -320,21 +319,20 @@ Garbage collection is a daemon-level mark-and-sweep that runs every 30 minutes
 (`daemon.rs::ghost_room_reaper_loop` adjacent loop, search for
 `sweep_orphaned_blobs`):
 
-1. **Mark phase.** Walk every active notebook room: `RuntimeStateDoc`
-   executions and comms (outputs + comm state), `NotebookDoc` resolved assets
-   and attachments. Then walk persisted `notebook_docs_dir/*.automerge` for
-   closed-but-saved notebooks to protect their refs through the close/reopen
-   window. Also walk the durable execution-store records **within** their
-   retention window via `collect_execution_store_refs_for_gc`
-   (`crates/runtimed/src/daemon.rs:3935-3939`). Arrow stream manifests get a
-   second-pass walk that pulls referenced data blobs out of the manifest body
-   (`daemon.rs:4227, 4531-4532`). The mark produces a `GcMarkSet` with
-   per-ref provenance (BS-7): each ref shape lands under its own category
-   (execution-outputs, comm-outputs, comm-state, arrow-manifest-children,
-   resolved-assets, attachments, persisted-doc, execution-store), the GC
-   loop logs per-category counts after every walk — a category that should
-   have refs reporting zero is the inventory bug made visible — and each
-   sweep deletion is logged at debug with its hash.
+1. **Mark phase.** Walk every active notebook room (`RuntimeStateDoc`
+   executions and comms, plus `NotebookDoc` resolved assets and attachments),
+   persisted `notebook_docs_dir/*.automerge` files for closed notebooks, and
+   durable execution-store records within their retention window
+   (`collect_execution_store_refs_for_gc` in `crates/runtimed/src/daemon.rs`).
+   Run a second pass over Arrow stream manifests to collect their referenced
+   data blobs.
+
+   The mark phase builds a `GcMarkSet` grouped by reference source
+   (`execution-outputs`, `comm-outputs`, `comm-state`,
+   `arrow-manifest-children`, `resolved-assets`, `attachments`,
+   `persisted-doc`, and `execution-store`). After each walk, GC logs the count
+   per category so a broken root scanner shows up immediately as an unexpected
+   zero. Each deleted blob hash is logged at debug level during the sweep.
 2. **Skip guard.** If there are zero rooms loaded **and** no room has ever
    been loaded since daemon start, the sweep skips. That guard exists because
    "zero refs" is ambiguous in the post-restart window (we genuinely don't
@@ -351,48 +349,28 @@ should not come back to broken outputs.
 
 ## Decision 7: Cross-document references and the BlobResolver indirection
 
-Blob hashes live in three documents the daemon owns:
+Blob hashes live in three sites across the daemon's documents:
 
 - **`RuntimeStateDoc` executions.** Each `OutputManifest` variant
   (`Stream`, `DisplayData`, `ExecuteResult`, `Error`, `UpdateDisplayData`)
   carries `ContentRef` fields for its text/data/traceback/rich slots
   (`runtimed/src/output_store.rs`).
-- **`RuntimeStateDoc` comms.** `comm.state` is a JSON tree with embedded
-  `{ "blob": ..., "size": ... }` refs at arbitrary depth, plus
+- **`RuntimeStateDoc` / `CommsDoc` comms.** `comm.state` is a JSON tree with
+  embedded `{ "blob": ..., "size": ... }` refs at arbitrary depth, plus
   `comm.outputs` (same shape as execution outputs).
 - **`NotebookDoc` cells.** `cell.resolved_assets` (markdown image hashes by
   alt key) and `cell.attachments` (nbformat attachments by name; each carries
   a `blob_hash`).
 
-The two docs reference the same blob store. They never reference each other:
+These documents reference the same blob store without referencing each other:
 `NotebookDoc` does not cache execution output blob hashes, and
-`RuntimeStateDoc` does not cache attachment hashes. Each doc walks its own
+`RuntimeStateDoc` does not cache attachment hashes. Each document walks its own
 subtree during GC mark, and the union of marked hashes is the protected set.
 
 The frontend never sees a daemon-local HTTP URL embedded in a doc. WASM
 narrowing yields `ResolvedContentRef::Url` only when `set_blob_port(port)`
 has been called and the MIME is binary; text and inline refs stay structured
 and travel through `BlobResolver`. That indirection earns three things:
-
-`BlobResolver` and `rendererAssetsBaseUrl` are deliberately **two separate
-host contracts**, not one. Output blob bytes (the content of executions,
-attachments, comm buffers) flow through `BlobResolver` and may eventually
-ride a signed-URL or per-room origin in hosted deployments. Renderer plugin
-sidecar assets (Sift's WASM binary, future renderer JS/CSS) flow through
-`rendererAssetsBaseUrl` (Decision 4) and behave like static CDN assets.
-Generic renderer code should only read whichever host context applies to it;
-it should never reconstruct a cloud route shape from `notebookId` or any
-other doc-level value. On the desktop, both default to the daemon's local
-HTTP origin and the same port, but the contracts can move independently.
-
-The resolver chooses a transport, but does not itself authorize local HTTP
-reads. `BlobBackend` stores bytes; the local `BlobResolver` constructs URLs
-that any reachable client knowing the hash can request. Hosted resolvers must
-use a serving layer that enforces the required read policy. `PutBlob` and
-multipart upload transfer bytes without mutating room state or proving that a
-peer may reference a hash from a particular document path. Hosted room hosts
-must authorize both uploads and the later `NotebookDoc` / `RuntimeStateDoc`
-references, separately from read access.
 
 1. **Port-change tolerance.** Daemon restart with a new port is one refresh
    on the resolver, not a doc rewrite.
@@ -410,6 +388,28 @@ references, separately from read access.
    truth. Hosts may still build derived JSON render caches at publish/request
    time, but those caches are regenerable validation artifacts, not a second
    notebook format.
+
+### Host contract boundaries
+
+`BlobResolver` and `rendererAssetsBaseUrl` are two separate host contracts:
+
+- **Output bytes (`BlobResolver`)** carry execution outputs, attachments, and
+  comm buffers. Hosted deployments can serve them through a signed URL or a
+  per-room origin.
+- **Renderer sidecars (`rendererAssetsBaseUrl`)** carry static plugin assets
+  such as Sift's WASM binary and renderer JS/CSS (Decision 4).
+
+Generic renderer code reads whichever host context applies and never
+reconstructs cloud route paths from `notebookId` or other document values. On
+desktop both default to the daemon's local HTTP origin and port, but either
+contract can move independently.
+
+`BlobResolver` chooses a transport; it does not enforce HTTP read
+authorization. Local `BlobResolver` builds URLs that any reachable client with
+the hash can fetch, so hosted resolvers must sit behind a serving layer that
+enforces read policy. Likewise, `PutBlob` and multipart uploads transfer bytes
+without mutating room state or authorizing document references—hosted room
+hosts must authorize uploads, document references, and reads separately.
 
 The snapshot bundle invariant: a saved `RuntimeStateDoc` or `CommsDoc` is only
 renderable if every `ContentRef::Blob` it carries is reachable through the

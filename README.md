@@ -131,16 +131,14 @@ If tools are missing or notebook calls fail after an app update, follow [Upgrade
 
 ### Upgrade the Codex plugin
 
-The desktop app and the Codex plugin update separately. An older plugin can reject a newer app's notebook routing with `unsupported_notebook_target`, including this misleading message:
+The desktop app and Codex plugin update independently (for example, plugin 0.6.6 and desktop 2.8.6 are compatible). An older plugin can reject a newer app's notebook routing with `unsupported_notebook_target` and a misleading child-upgrade message:
 
 ```text
 This child does not advertise required notebook_handle routing;
 upgrade the child before using notebook tools
 ```
 
-This can mean the **plugin proxy needs updating**, even when the desktop app is current. It can block notebook creation as well as calls using a notebook ID or handle. Plugin 0.6.6 and desktop 2.8.6 are a verified compatible pairing; their version numbers are independent.
-
-Save any notebook work before restarting your agent. Refresh the marketplace, then reinstall only the channel you use. Run these commands in a terminal. The `&&` operators stop the sequence if a step fails.
+This usually means the **plugin proxy needs updating**, even when the desktop app is current. Save any notebook work, refresh the marketplace, and reinstall your channel:
 
 Stable:
 
@@ -158,22 +156,18 @@ codex plugin remove nightly@nteract-plugins &&
 codex plugin add nightly@nteract-plugins
 ```
 
-If you registered the marketplace at an older release with `--ref`, refreshing keeps that pin. To move to current `main`, replace the marketplace registration before reinstalling:
+If you registered the marketplace with a pinned `--ref`, replace the registration with `main` before reinstalling:
 
 ```sh
 codex plugin marketplace remove nteract-plugins &&
 codex plugin marketplace add nteract/agent-plugins --ref main
 ```
 
-Only reinstall the plugin after registration succeeds. If cloning fails, use the local checkout fallback below.
-
-Restart Codex and start a fresh session so it loads the updated proxy and tool catalog. The MCP `reconnect` tool restarts the worker behind the proxy; it does not upgrade the plugin proxy. Restarting Codex without updating the cached plugin can still launch the old binary.
-
-Check the installed plugin version in Codex's plugin settings, then ask the agent to create a notebook and run a cell containing `1 + 1`. Confirm that the cell returns `2`. Seeing a skill or a server in `codex mcp list` alone does not verify notebook execution. If it still fails, include the exact error, plugin version and channel, and `nteract --version` when [reporting an issue](https://github.com/nteract/nteract/issues).
+Restart Codex and start a fresh session so it loads the updated proxy. The MCP `reconnect` tool only restarts the worker behind the proxy and does not upgrade the proxy itself. Verify by checking the plugin version in Codex settings and running a cell containing `1 + 1` (confirming it returns `2`). If it still fails, file an issue with the error, plugin version/channel, and `nteract --version`.
 
 #### If the marketplace refresh times out
 
-If `marketplace upgrade` reports `git clone marketplace source timed out after 30s` or `fatal: early EOF`, stop before removing the installed plugin. The replacement marketplace has not finished downloading. Retry the refresh; if it continues to fail, clone a shallow checkout outside Codex's clone deadline and register that local directory. On macOS or Linux, for an existing `nteract-plugins` registration:
+If `marketplace upgrade` times out (`timed out after 30s` or `fatal: early EOF`), stop before removing the plugin. Retry once; if it still fails, clone shallowly outside Codex's deadline and register the local directory (skip `marketplace remove` if you already removed it):
 
 ```sh
 mkdir -p "$HOME/.local/share/nteract" &&
@@ -184,9 +178,7 @@ codex plugin marketplace remove nteract-plugins &&
 codex plugin marketplace add "$HOME/.local/share/nteract/agent-plugins"
 ```
 
-Use a new directory for the clone. The chain finishes downloading before removing the old marketplace registration. Codex requires that removal when changing sources under the same name; `marketplace remove` is separate from uninstalling the plugin with `plugin remove`. If you already removed the marketplace registration, skip that removal command.
-
-Only after registration succeeds, run the selected channel's `plugin remove` and `plugin add` commands above, then restart Codex. Keep the checkout: it is now the registered marketplace source. For future updates, run `git -C "$HOME/.local/share/nteract/agent-plugins" pull --ff-only` successfully before reinstalling the plugin; `marketplace upgrade` refreshes Git sources, not local directories. To return to a Git-managed marketplace later, use the remove-and-add registration commands above.
+After registration succeeds, run the `plugin remove` and `plugin add` commands above and restart Codex. Keep the local checkout; pull updates with `git -C "$HOME/.local/share/nteract/agent-plugins" pull --ff-only` before future reinstalls (`marketplace upgrade` refreshes Git sources only).
 
 ### Install the Claude Code plugin
 
@@ -262,23 +254,35 @@ nteract/nteract
 │   └── styles/            # Global stylesheets
 ├── apps/                   # App entry points
 │   ├── notebook/          # Desktop notebook Tauri app
-│   ├── notebook-cloud/    # Hosted notebook worker (Cloudflare)
-│   ├── elements/          # Elements design system catalog
+│   ├── notebook-cloud/    # Hosted notebook worker (celld / Cloudflare)
 │   ├── pages/             # Pages: collaborative documents (npm, own lockfile)
+│   ├── preview-python/    # Managed Python worker runtime for hosted notebooks
+│   ├── operator/          # Fleet operator console
+│   ├── elements/          # Elements design system catalog
 │   ├── mcp-app/           # MCP widget dev app
-│   └── renderer-test/     # Isolated renderer test harness
-├── packages/               # Client and UI libraries
-│   ├── notebook-host/     # Notebook host shell
+│   ├── renderer-test/     # Isolated renderer test harness
+│   └── sift-electron-harness/ # Electron verification harness for Sift
+├── packages/               # Shared libraries and UI packages
+│   ├── contract/          # Generated runtime/wire contract types (@runtimed/contract)
+│   ├── identity/          # Shared scopes, actor colors, invite normalization (@nteract/identity)
+│   ├── session/           # Browser sign-in sessions and keyring (@nteract/session)
+│   ├── local-oidc/        # Loopback OIDC issuer for local dev
+│   ├── notebook-host/     # Shared notebook host shell
+│   ├── output-frame/      # Isolated output frame contract and host
+│   ├── pyodide-runtime/   # Browser Pyodide kernel adapter
 │   ├── runtimed/          # TypeScript notebook client and state stores
 │   ├── runtimed-node/     # Node bindings for daemon
+│   ├── runtimed-wasm/     # JS wrapper for runtimed-wasm bindings
 │   ├── sift/              # Standalone data explorer and embeddable table UI
+│   ├── sift-csv/          # CSV loader for Sift
 │   └── odometer/          # Odometer component
-├── crates/                 # Rust code
+├── crates/                 # Rust workspace (key crates)
 │   ├── runt/              # Shared CLI; nteract-cli and legacy runt entrypoints
 │   ├── runtimed/          # Background daemon
 │   ├── runtimed-py/       # Python bindings for the daemon
 │   ├── runtimed-wasm/     # WASM Automerge bindings for frontend
 │   ├── notebook/          # Notebook Tauri app crate
+│   ├── notebook-wire/     # Wire frame bytes, preamble, and size caps
 │   ├── notebook-doc/      # Automerge document operations
 │   ├── notebook-protocol/ # Notebook wire protocol types
 │   ├── notebook-sync/     # Notebook sync layer

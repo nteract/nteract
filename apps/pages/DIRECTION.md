@@ -40,26 +40,25 @@ Comments live in their own document and anchor to the Page with cursors.
 
 ## What changes from today
 
-1. **Format 3 for `pages.page`, format 2 for `pages.comments`.** In place.
-   A block stores `position` and `richText` only, and a response block is
-   `id`, `position` and `markdown`, the projection of `richText`
-   ([model/page.mjs](model/page.mjs)). Every node a writer writes opens with
-   its marker, a block's first paragraph included, so every written node has
-   a `node_id`: the cursor on its marker. A comment message holds the same
-   rich text and no `format` field.
-   A merge can leave content that no marker opens, for example when one
-   person deletes a paragraph while another types or puts an image into it.
-   That is unmarked text, an image or line break included. The stored
-   format allows it and every reader reads it by one rule: content continues the node before it in its scope
-   when that node can hold it, and otherwise opens a paragraph (in a table,
-   a row and cell) with no marker. A code block holds text and line breaks;
-   every other textblock holds every inline node; a leaf (a rule, a
-   dataframe) holds nothing. Such a paragraph has `node_id` null. The next
-   host write to the block marks it, and the editor marks it when a person
-   types or formats inside it. A merge can also delete a container's marker
-   while a node a peer added inside it survives. Readers draw the container
-   from that node's `parents` and name it by that node's marker, and no
-   writer restores the container's marker.
+1. **Format 3 for `pages.page`, format 2 for `pages.comments` (in place).**
+   - A block stores `position` and `richText` only; response blocks project
+     `id`, `position`, and `markdown` ([model/page.mjs](model/page.mjs)).
+   - Every written node opens with its marker (including a block's first
+     paragraph), so every written node has a `node_id` equal to the cursor on
+     its marker. Comment messages store the same rich text with no `format`
+     field.
+   - **Unmarked text from concurrent merges:** Deleting a paragraph while
+     another peer types or inserts an image can leave unmarked content. Every
+     reader follows one rule: unmarked content continues the preceding node in
+     scope when that node can hold it (code blocks hold text and line breaks;
+     other textblocks hold all inline nodes; leaves such as rules and
+     dataframes hold nothing). Otherwise it opens an unmarked paragraph (or a
+     table row and cell) with `node_id: null`. The next host write or user
+     edit inside that paragraph marks it.
+   - **Deleted container markers:** If a merge deletes a container's marker
+     while a child survives, readers reconstruct the container from the
+     child's `parents`, name it by that child's marker, and never restore the
+     deleted marker.
 2. **Sync without `automerge-repo`.** Pages uses the Repo package for CBOR,
    document ID helpers, record sizing, the Sedimentree backend interface in
    [sync/backend.mjs](sync/backend.mjs), and one `Repo` in the browser
@@ -141,7 +140,9 @@ Comments live in their own document and anchor to the Page with cursors.
      build does not write, or a record without the stamp, while its owner
      can still delete the Page. `TARGET_DOCUMENT_FORMATS` stays the release
      gate. A missed reset is refused Page by Page.
-5. **Agent tools on format 2.**
+5. **Agent tools on the current format.** Done on `main`: agent tools run on
+   format 3 with `node_id` addressing, unified `edit_page`, revision handles,
+   and nonces (item 5 above).
 6. **A second document type**, once Pages runs on the type boundary. The
    host runs on it: plain sync asks each document's type module for its
    write access, feature gates, admission and revision handles
@@ -179,18 +180,16 @@ records the node addresses agents use.
   additive under a schema feature, or it follows the structural rule below:
   a new format number and a new document for each Page, written from the old
   one.
-- **From the format after 3, an older Page stays readable and its owner
-  upgrades it.** A Page in an older format opens read-only: people can read
-  and copy it, and nobody edits it in that format. Its owner upgrades it in
-  place with one action, which writes the new document from the old one
-  under the same Page. The service doesn't refuse an older Page outright,
-  and nobody has to delete it to keep using Pages. What exists: the host
-  record stamps each document's format (`documentFormats`, order of work,
-  step 4), and when the host refuses a Page's format the viewer keeps
-  its cached copy readable and copyable, read-only
-  ([viewer/format-gate.mjs](viewer/format-gate.mjs)). What's
-  missing: the host serving an older format for reading (today it refuses a
-  record in a format the build doesn't write), and the upgrade action.
+- **After format 3, older Pages stay readable and owners upgrade them in
+  place.** An older-format Page opens read-only (readable and copyable, not
+  editable), and its owner upgrades it with one action that writes the new
+  document from the old one under the same Page—no outright refusal or forced
+  deletion.
+  - *In place:* host records stamp `documentFormats` (order of work, step 4),
+    and the viewer keeps cached copies readable and copyable when the host
+    refuses a Page's format ([viewer/format-gate.mjs](viewer/format-gate.mjs)).
+  - *Remaining:* host read-only serving for older formats (currently refused)
+    and the in-place upgrade action.
 - **A Project moves by copy, through the agent edge.**
   `scripts/project-transfer.mjs` reads a Project from one target's `/mcp`
   and writes it to another's, so it needs no code in the host and works
