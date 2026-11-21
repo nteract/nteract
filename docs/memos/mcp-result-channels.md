@@ -6,7 +6,7 @@ Status: doctrine, adopted 2026-07-15. Companion changes: #4049 (priority text re
 
 Every output-bearing MCP tool result serves two consumers with opposite cost functions:
 
-- **Content blocks are the agent channel.** Optimize for minimal token consumption, maximal contextual understanding, and navigability: the agent gets summarized text inline, knows that humans see richer rendered forms, and gets pointers (resource URIs, blob URLs with sizes) to pull more only when needed.
+- **Content blocks are the agent channel.** Optimize for minimal token consumption, maximal contextual understanding, and navigability. The agent gets summarized text inline and knows that humans see richer rendered forms. Pointers (resource URIs, blob URLs with sizes) let it pull more only when needed.
 - **structuredContent is the human render contract.** It is literally structured content for our own rendering purposes: the MCP App renderer (output.html) hydrates tables, charts, and images from it. It must stay complete and URL-rich. Never token-optimize this channel; its shape belongs to the renderer.
 
 A blob URL in the agent channel is a fallback for content nothing resolved, never a substitute for text the resolver already holds. A summary in the render channel is a bonus for blob-less clients, never a replacement for the hydration URLs.

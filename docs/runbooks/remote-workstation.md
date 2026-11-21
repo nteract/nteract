@@ -1,158 +1,141 @@
 # Remote workstations: offer a machine's compute to hosted notebooks
 
-A *workstation* is any machine that offers compute to hosted nteract notebook
-rooms: an Outerbounds workstation, a JupyterHub single-user server, a beefy box
-under your desk. A runtime agent attaches to a room as a `runtime_peer` over an
-outbound WebSocket, launches kernels locally, and syncs outputs back through the
-room. You don't need inbound ports or a reverse proxy.
+A *workstation* is any machine offering compute to hosted nteract notebook
+rooms (an Outerbounds workstation, a JupyterHub single-user server, or a box
+under your desk). A runtime agent attaches as a `runtime_peer` over an outbound
+WebSocket, launches kernels locally, and syncs outputs back through the room.
+No inbound ports or reverse proxy are required.
 
-For the architecture, see `docs/adr/remote-workstation-doc-agents.md` and
-`docs/adr/deployment-topology.md`. The workstation implementation is in
+Architecture: `docs/adr/remote-workstation-doc-agents.md` and
+`docs/adr/deployment-topology.md`. Implementation:
 `crates/runtimed/src/workstation/`.
 
 ## Install (one-liner)
 
-On fresh Debian/Ubuntu images, install `curl` first. `tmux` is optional, but
-useful when you serve attach requests from an SSH session instead of a user
-service.
+On fresh Debian/Ubuntu images, install `curl` first (`tmux` is optional, useful
+when serving from an SSH session instead of a user service):
 
 ```bash
 sudo apt update && sudo apt install -y curl tmux
 ```
 
-On a Linux (x64 or ARM64) or macOS (Apple silicon / Intel) machine:
+On Linux (x64 or ARM64) or macOS (Apple silicon or Intel):
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --cli
 ```
 
-`--cli` (also accepted as `--headless`) installs the CLI and its runtime/MCP
-helpers without configuring or starting the local daemon service. On macOS,
-the signed bundle is retained under the installation prefix without adding a
-Desktop app to Applications. Everything is per-user; re-run to upgrade.
+- `--cli` (alias `--headless`) installs the CLI and runtime/MCP helpers without
+  configuring or starting a local daemon service. On macOS, the signed bundle
+  stays under the install prefix without adding a Desktop app to Applications.
+  Installs are per-user; re-run to upgrade.
+- The public command is `nteract`. The runtime helper contains the workstation
+  and execution modes and does not require a running local notebook daemon. See
+  the [CLI guide](cli.md) for the dependency table.
+- In a fresh shell, add `~/.local/bin` to `PATH` before pairing:
 
-The public command is `nteract`. The runtime helper executable still contains
-the workstation agent and execution modes; these do not need a running local
-notebook daemon. See the [CLI guide](cli.md) for the dependency table.
+  ```bash
+  export PATH="$HOME/.local/bin:$PATH"
+  ```
 
-If this is a fresh shell, make the installed CLI available before running the
-pairing commands:
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-The public command keeps its selected installation when another channel is
-installed. For a Nightly workstation, use `nteract --channel nightly workstation
-...` throughout pairing, serving, and recovery. This selects the actual Nightly
-installation and its credential namespace; it does not reinterpret Stable
-credentials. Pass `--default-cli` to the installer to explicitly change the
-selected command. Legacy channel-specific commands remain compatible.
-
-For air-gapped installs, download the release assets yourself and use
-`--from-dir`.
+- **Nightly workstations**: Installing another channel preserves the current
+  default `nteract` command. Use `nteract --channel nightly workstation ...`
+  throughout pairing, serving, and recovery to target the Nightly installation
+  and its credential namespace. This flag does not reinterpret Stable
+  credentials. Pass `--default-cli` to the installer to change the default
+  command. Legacy channel-specific commands remain compatible.
+- **Air-gapped installs**: Download the release assets separately and pass
+  `--from-dir` to the installer.
 
 ## Pair and serve (recommended)
 
-The pairing flow needs no externally issued credential
-(`docs/adr/hosted-credential-transport.md`, Decision 9):
+Pairing requires no externally issued credential
+(`docs/adr/hosted-credential-transport.md`, Decision 9).
 
-1. In the hosted workstation panel, mint a pairing code. Codes look like
-   `XXXX-XXXX-XXXX`, live 10 minutes, and are single use. The panel's
-   "Connect a machine" dialog shows these commands with the correct cloud host
-   filled in - prefer copying from there.
-2. On the workstation, using the cloud host you signed in to (currently
+1. **Mint a pairing code** in the hosted workstation panel. Codes look like
+   `XXXX-XXXX-XXXX`, expire in 10 minutes, and are single use. Prefer copying
+   the pre-filled commands from the panel's "Connect a machine" dialog.
+2. **Pair the workstation** against the cloud host you signed in to (currently
    `https://preview.runt.run`):
 
-```bash
-nteract workstation connect https://<cloud-host> --code XXXX-XXXX-XXXX
-```
+   ```bash
+   nteract workstation connect https://<cloud-host> --code XXXX-XXXX-XXXX
+   ```
 
-   (Omit `--code` to be prompted.) This redeems the code for a long-lived
-   workstation credential scoped to the workstation surface only, stores it
-   at `~/.config/nteract/workstation.json` (mode 0600), and registers the
-   workstation so it appears in the panel immediately. `--id` / `--name`
-   override the default `ws-<hostname>` identity. If the code is rejected,
-   mint a fresh one from the panel. Codes expire and cannot be reused.
+   Omit `--code` to be prompted. This redeems the code for a long-lived
+   workstation-only credential, saves it at `~/.config/nteract/workstation.json`
+   (mode `0600`), and registers the workstation in the panel immediately. Use
+   `--id` and `--name` to override the default `ws-<hostname>` identity. If a
+   code is rejected, mint a fresh one; codes expire and cannot be reused.
+3. **Start serving**:
+   - **Linux (user systemd, no root required)**:
 
-3. On Linux, keep the workstation available with user systemd:
+     ```bash
+     nteract workstation service install --start
+     ```
 
-```bash
-nteract workstation service install --start
-```
+     This writes and enables a user systemd unit running `nteract workstation run`
+     with the stored credential. Pass `--python-path /path/to/python` to use a
+     project or virtualenv interpreter instead of the first `python3`/`python`
+     on `PATH`, and `--working-directory /path/to/project` to advertise and
+     launch runtime peers from a specific directory.
+   - **macOS or Linux without user systemd (foreground)**:
 
-   On Linux this writes and enables a user systemd unit that runs
-   `nteract workstation run` with the stored credential. It does not require
-   root. Use `--python-path /path/to/python` when the workstation should
-   launch kernels from a project or virtual environment interpreter instead
-   of the first `python3`/`python` on `PATH`. Use
-   `--working-directory /path/to/project` when the service should advertise
-   and launch runtime peers from a specific project directory.
+     ```bash
+     nteract workstation run
+     ```
 
-   On macOS or Linux hosts without a usable user systemd session, use the
-   foreground fallback instead:
+   - **Interpreter requirement**: The `current_python` policy runs the chosen
+     interpreter as-is and never installs packages into it. If `ipykernel` is
+     missing, startup warns without refusing to serve; install it and restart:
 
-```bash
-nteract workstation run
-```
+     ```bash
+     /usr/bin/python3 -m pip install ipykernel
+     ```
 
-   The workstation's `current_python` policy launches kernels against that
-   interpreter as-is and never installs packages into it, so the interpreter
-   must already have `ipykernel`. Startup probes it and warns without refusing
-   to serve; install it on the workstation and restart the agent:
+4. **Verify registration and service health**:
 
-```bash
-/usr/bin/python3 -m pip install ipykernel
-```
+   ```bash
+   nteract workstation status          # workstations, status, last-seen, default
+   nteract workstation status --json
+   nteract workstation service status  # Linux user systemd service state
+   ```
 
-4. Check what the credential sees:
+### Agent and room lifecycle
 
-```bash
-nteract workstation status          # workstations, status, last-seen, default
-nteract workstation status --json
-nteract workstation service status  # Linux user systemd service state
-```
-
-The service launches `runtimed workstation-agent`, which heartbeats the
-registration, keeps a hibernatable workstation event WebSocket open for
-attach-job wakeups, and spawns one `runtimed cloud-runtime-agent` runtime peer
-per job (pending → accepted → running → completed/failed). The event WebSocket
-is the fast path; low-frequency attach-job polling remains as recovery for
-missed wakeup events and jobs that existed before the agent started. The socket
-is deliberately only a wakeup signal, not a replay log: attach jobs are durable
-in the hosted database, so reconnect recovery polls the queue. The credential
-is passed through the environment (`RUNT_CLOUD_TOKEN`), never argv.
-`RUNT_CLOUD_TOKEN` / `RUNT_CLOUD_URL` environment variables override the stored
-credential for foreground `nteract workstation run`; the service path uses the
-stored credential file written by `connect`.
-
-In the hosted notebook, an owner attaching compute to a workstation dispatches
-an attach job; the agent accepts it and the runtime peer attaches to the room as
-`runtime_peer` over an outbound WebSocket. The peer reconnects with backoff
-across recoverable room evictions and network blips, retaining the kernel.
-Ordinary transport closes are recoverable, but an intentional room stop is not.
-
-**Current lifecycle, 2026-09-04:** after 30 minutes without queued or active
-execution, the room stops idle compute, even if viewers remain connected. Its
-`runtime idle timeout` close uses code 1000 but is treated as a terminal,
-graceful shutdown. Replacement, restart, and policy-rejection closes are also
-terminal for the old peer, not instructions to reconnect it. Owner execution
-can resume an eligible previously selected workstation as described below.
-
-If the workstation agent restarts, it adopts its runtime peers that are still
-alive using per-job pid + log files under the daemon cache, and reports the
-ones that are gone. This is recovery of nteract runtime-peer processes, not
-adoption of arbitrary existing Jupyter kernels.
+- **Job dispatch**: The service runs `runtimed workstation-agent`, which
+  heartbeats registration, holds a hibernatable event WebSocket for attach-job
+  wakeups, and spawns one `runtimed cloud-runtime-agent` per job
+  (`pending → accepted → running → completed/failed`).
+- **Wakeup vs. polling**: The event WebSocket is a wakeup signal only, not a
+  replay log. Attach jobs are durable in the hosted database, so low-frequency
+  polling recovers missed wakeups and pre-existing jobs on reconnect.
+- **Credential passing**: Credentials pass via `RUNT_CLOUD_TOKEN`, never argv.
+  `RUNT_CLOUD_TOKEN` and `RUNT_CLOUD_URL` override the stored file for
+  foreground `nteract workstation run`; the systemd service always uses the
+  stored credential file written by `connect`.
+- **Reconnects**: On owner attach, the runtime peer joins the room as
+  `runtime_peer` over an outbound WebSocket and reconnects with backoff across
+  recoverable room evictions and network blips while keeping the kernel alive.
+- **Idle timeout and terminal closes**: Current lifecycle, 2026-09-04: after 30
+  minutes with no queued or active execution, the room stops idle compute even
+  if viewers stay connected. Ordinary transport closes are recoverable, but an
+  intentional room stop is not. Its `runtime idle timeout` close uses code 1000
+  and is treated as a terminal, graceful shutdown, not instructions to reconnect
+  it. Replacement, restart, and policy-rejection closes are also terminal for
+  the old peer. Owner execution can resume an eligible workstation (see
+  [What the workstation offers](#what-the-workstation-offers)).
+- **Agent restart recovery**: On restart, the workstation agent adopts live
+  nteract runtime peers via per-job pid and log files in the daemon cache and
+  reports dead ones. It does not adopt arbitrary existing Jupyter kernels.
 
 ## Run it as a service
 
-Workstation availability uses its own user service. CLI-only installation
-does not create a local daemon service. An existing local notebook daemon
-does not make this machine available as a workstation: pairing and the
-workstation agent establish that connection.
+Workstation availability uses its own user service. CLI-only installs do not
+create a local daemon service, and an existing local notebook daemon does not
+expose this machine as a workstation.
 
-Install or update the workstation service after a one-time
-`nteract workstation connect`:
+Install or update the service after running `nteract workstation connect`:
 
 ```bash
 nteract workstation service install --start \
@@ -160,7 +143,7 @@ nteract workstation service install --start \
   --working-directory "$PWD"
 ```
 
-Manage it with:
+Manage the service:
 
 ```bash
 nteract workstation service status
@@ -170,69 +153,66 @@ nteract workstation service start
 nteract workstation service uninstall
 ```
 
-The service command detects missing user systemd sessions and prints the
-foreground fallback. If the workstation must stay available after SSH logout,
-the Linux account may also need lingering enabled by an administrator:
-`loginctl enable-linger $USER`.
+- Missing user systemd sessions are detected automatically, printing the
+  foreground fallback command.
+- To keep the workstation online after SSH logout on Linux, an administrator
+  may need to enable lingering: `loginctl enable-linger $USER`.
+- For manual testing or `tmux`, run in the foreground:
 
-For preview/manual testing, the foreground path still works unchanged and is
-useful inside tmux:
-
-```bash
-nteract workstation run --python-path "$PWD/.venv/bin/python" --working-directory "$PWD"
-```
+  ```bash
+  nteract workstation run --python-path "$PWD/.venv/bin/python" --working-directory "$PWD"
+  ```
 
 ## Attach a single room directly (legacy / dev)
 
-Before the pairing flow, the operator path was a per-notebook agent with an
-externally issued bearer. It still works and remains useful for dev and for
-deployments that issue their own credentials:
+Per-notebook attachment with an externally issued bearer remains supported for
+development and deployments issuing their own credentials:
 
-1. In the hosted notebook, grant the workstation principal an explicit
-   `runtime_peer` ACL row. Ownership alone is not sufficient: compute access is
-   never derived from human roles.
-2. On the workstation:
+1. Grant the workstation principal an explicit `runtime_peer` ACL row in the
+   hosted notebook. Ownership alone is not enough; compute access is never
+   derived from human roles.
+2. Start the runtime peer on the workstation (pass tokens via env, never argv):
 
-```bash
-RUNT_CLOUD_TOKEN=<token> runtimed cloud-runtime-agent \
-  --cloud-url https://<cloud-host> \
-  --notebook-id <id> \
-  --python-path "$(command -v python3)"
-```
+   ```bash
+   RUNT_CLOUD_TOKEN=<token> runtimed cloud-runtime-agent \
+     --cloud-url https://<cloud-host> \
+     --notebook-id <id> \
+     --python-path "$(command -v python3)"
+   ```
 
-The credential is always passed through the environment, never argv. Defaults: scope
-`runtime_peer`, auth kind `oidc` (use `--auth-kind anaconda-key` for Anaconda
-API keys, `--auth-kind workstation` for a pairing-flow credential,
-`--auth-kind dev` for a loopback Worker's dev credentials). Blob root
-defaults under the daemon's standard cache. `--python-path` launches a kernel
-in that interpreter immediately on attach (launch-on-attach); omit it to
-attach idle and wait for the room to dispatch work. `--workstation-id` /
-`--workstation-display-name` set the non-secret identity shown in the
-notebook's workstation panel.
+Options and auth modes:
 
-`--auth-kind dev` reads `RUNT_CLOUD_TOKEN` plus `RUNT_CLOUD_DEV_USER` and sends
-`X-Notebook-Cloud-Dev-Token` / `X-User` / `X-Scope` on the upgrade; the Worker
-maps that to `user:dev:<user>`. The Worker only honors dev credentials on
-loopback requests, so this kind is for Wrangler dev or a local celld launcher,
-never a deployed host.
+- **Defaults**: Scope `runtime_peer`, `--auth-kind oidc`, blob root under the
+  daemon's standard cache.
+- **`--auth-kind`**: `oidc` (default), `anaconda-key` (Anaconda API keys),
+  `workstation` (pairing credential), or `dev` (Worker dev auth).
+- **`--python-path`**: Launches a kernel immediately on attach. Omit it to
+  attach idle and wait for dispatched work.
+- **Display metadata**: `--workstation-id` and `--workstation-display-name` set
+  the non-secret label shown in the notebook's workstation panel.
+- **Dev auth (`--auth-kind dev`)**: Reads `RUNT_CLOUD_TOKEN` and
+  `RUNT_CLOUD_DEV_USER`, sending `X-Notebook-Cloud-Dev-Token`, `X-User`, and
+  `X-Scope` on upgrade (mapped to `user:dev:<user>`). Workers accept dev
+  credentials unauthenticated on loopback (Wrangler dev or local `celld`), and
+  on deployed hosts only when `NOTEBOOK_CLOUD_DEV_TOKEN` is configured (leave
+  unset in production). Only `hosted-workstation-agent.mjs` refuses non-loopback
+  URLs client-side.
+- **Node dev connector**: `apps/notebook-cloud/scripts/hosted-workstation-agent.mjs`
+  mirrors `runtimed workstation-agent` against the attach-job API using
+  `NTERACT_API_KEY` or `NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN`. Against a
+  loopback Worker, set `NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=dev`,
+  `NOTEBOOK_CLOUD_DEV_TOKEN`, and `NOTEBOOK_CLOUD_DEV_USER` (refused for any
+  non-loopback `NOTEBOOK_CLOUD_URL`). See `apps/notebook-cloud` README for
+  smoke commands.
 
-The Node connector (`apps/notebook-cloud/scripts/hosted-workstation-agent.mjs`)
-is the dev-loop equivalent of `runtimed workstation-agent` and keeps working
-against the same attach-job surface with `NTERACT_API_KEY` or
-`NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN`. Against a loopback Worker, set
-`NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=dev` with `NOTEBOOK_CLOUD_DEV_TOKEN` and
-`NOTEBOOK_CLOUD_DEV_USER`; the connector refuses `dev` for any non-loopback
-`NOTEBOOK_CLOUD_URL`. The `apps/notebook-cloud` README covers the matching
-runtime smoke commands.
+### OIDC token refresh
 
-For OIDC peers whose token expires, `cloud-runtime-agent --auth-kind oidc`
-can renew it from a refresh-token cache (see
-`crates/runtimed/src/workstation/oidc_refresh.rs`). It checks the cached
-expiry before each room connect/reconnect and each output blob upload, and
-exchanges the refresh token when needed. Both paths use the same token.
+`cloud-runtime-agent --auth-kind oidc` can renew expiring tokens from a
+refresh-token cache (`crates/runtimed/src/workstation/oidc_refresh.rs`). It
+checks expiry before each room connect/reconnect and output blob upload,
+sharing one renewed token across both paths.
 
-Seed a cache once by passing the refresh token through the environment,
-never argv:
+Seed the cache once via environment variables (never argv):
 
 ```bash
 RUNT_CLOUD_TOKEN=<access-token> RUNT_CLOUD_REFRESH_TOKEN=<refresh-token> \
@@ -243,87 +223,76 @@ RUNT_CLOUD_TOKEN=<access-token> RUNT_CLOUD_REFRESH_TOKEN=<refresh-token> \
   --oidc-client-id <public-client-id>
 ```
 
-- Refresh is opt-in on every start. Later runs pass the same `--oidc-issuer`
-  and `--oidc-client-id` (or `--oidc-refresh-cache`) to reuse the cache.
-  Without an `--oidc-*` flag or a seed, the agent ignores any cache.
-- The cache is a `0600` file per cloud origin in the runtimed config
-  directory; `--oidc-refresh-cache` picks another path.
-- It is bound to the cloud origin, issuer, client id, and (for JWTs) the
-  account. The agent refuses a cache or `RUNT_CLOUD_TOKEN` that doesn't match.
-- An existing cache wins over `RUNT_CLOUD_REFRESH_TOKEN`. Delete the cache to
-  re-seed.
-- Issuers must use `https`. A local dev issuer on `http://localhost` also needs
-  `--oidc-allow-loopback-http`.
-- Discovery must name the issuer exactly, and the token endpoint must be on
-  the issuer's origin. Redirects are not followed.
-- Agents sharing a cache refresh one at a time, so rotating refresh tokens
-  are not spent twice (unix). Seeding never overwrites a cache another agent
-  created first.
-- A failed refresh is not retried for 5 seconds. While the cached token has
-  not actually expired, the agent keeps using it.
-- In the last minute before expiry, a connect or upload waits at most 2
-  seconds for a refresh, then uses the still-valid cached token while the
-  refresh finishes in the background. If the token expires during that wait,
-  it waits for the refresh instead. Refresh failures are logged locally.
-
-The cache is readable by anything running as the same OS user, including the
-kernel. `RUNT_CLOUD_REFRESH_TOKEN` is removed from the kernel environment, but
-that is hygiene, not isolation. Without a seed or an `--oidc-*` flag, the
-agent keeps the static `RUNT_CLOUD_TOKEN`.
+- **Opt-in reuse**: Pass `--oidc-issuer` and `--oidc-client-id` (or
+  `--oidc-refresh-cache`) on subsequent starts to reuse the cache. Without an
+  `--oidc-*` flag or seed, the agent ignores any cache and uses the static
+  `RUNT_CLOUD_TOKEN`.
+- **Cache binding**: The cache is a `0600` file per cloud origin in the
+  `runtimed` config directory (override with `--oidc-refresh-cache`). It is
+  bound to cloud origin, issuer, client ID, and (for JWTs) account; mismatched
+  caches or `RUNT_CLOUD_TOKEN` values are refused. An existing cache wins over
+  `RUNT_CLOUD_REFRESH_TOKEN`; delete the cache to re-seed.
+- **Discovery security**: Issuers require `https` (use
+  `--oidc-allow-loopback-http` for `http://localhost` in dev). Discovery must
+  match the issuer exactly, the token endpoint must share the issuer's origin,
+  and redirects are not followed.
+- **Concurrency and backoff**: On Unix, agents sharing a cache refresh one at a
+  time so rotating refresh tokens are not spent twice. Cache seeding never
+  overwrites a cache created by another agent. Failed refreshes back off for 5
+  seconds while keeping any unexpired cached token in use. In the final minute
+  before expiry, connects and uploads wait up to 2 seconds for refresh, then
+  use the still-valid token while refresh finishes in the background (or wait
+  for refresh if the token expires during those 2 seconds). Refresh failures are
+  logged locally.
+- **Local isolation note**: Any process running as the same OS user, including
+  the kernel, can read the cache file. `RUNT_CLOUD_REFRESH_TOKEN` is stripped
+  from the kernel environment for hygiene, not isolation.
 
 ## JupyterHub
 
-Run the install one-liner in the single-user image (or bake the three binaries
-in), then start the agent from a Hub-managed service or the user's notebook
-environment. The agent's outbound-WS model fits Hub deployments where inbound
-routes are owned by the Hub proxy: nothing needs to be exposed. The
-`nteract-identity` crate has a feature-gated JupyterHub provider surface for
-Hub-token validation; until that lands, use OIDC bearer or Anaconda API-key
-auth against the hosted deployment.
+Run the install one-liner in the single-user image (or bake in the three
+binaries), then start the agent from a Hub-managed service or the user's
+notebook environment. Because the agent uses outbound WebSockets, nothing needs
+to be exposed through the Hub proxy. Until the feature-gated JupyterHub
+provider in `nteract-identity` lands for Hub-token validation, authenticate
+against the hosted deployment with an OIDC bearer or Anaconda API key.
 
 This is the currently supported workstation path, not the only intended Hub
-topology. Direct attachment to an existing Jupyter Server, an nteract server
-extension, and Hub-service provisioning are explored in
+topology. Other Hub topologies (direct Jupyter Server attachment, an nteract
+server extension, and Hub-service provisioning) are explored in
 [Hosted Notebook Accounts and Compute Federation](../memos/hosted-notebook-federation.md).
 
 ## Outerbounds
 
-Outerbounds workstations are Linux x64 with a per-user home. The defaults
-above apply unchanged. Use the workstation's task environment Python as
-`--python-path` so notebook execution sees the same dependencies as your
-flows.
+Outerbounds workstations run Linux x64 with a per-user home, so the default
+setup applies unchanged. Pass the task environment's Python to `--python-path`
+so notebooks see the same dependencies as your flows.
 
-### The runtime-peer image
+## The runtime-peer image
 
-The runtime-peer container image bundles everything a workstation
-needs: the `runtimed` daemon, the pairing CLI, and a Python 3.12 environment
-with the kernel base packages already installed (`ipykernel`, `ipywidgets`,
-`anywidget`, `nbformat`, `pyarrow>=14`, `uv` — the same set the daemon
-installs into environments it manages). With this image there is no manual
-`pip install ipykernel` step, which is the failure mode behind the silent
-"Kernel running" traceback on machines whose system Python lacks `ipykernel`.
+The `runtime-peer` container image bundles `runtimed`, the pairing CLI, and a
+Python 3.12 environment preloaded with kernel base packages (`ipykernel`,
+`ipywidgets`, `anywidget`, `nbformat`, `pyarrow>=14`, `uv`; the same set the
+daemon installs into managed environments). This avoids manual
+`pip install ipykernel` steps and the silent "Kernel running" traceback when
+system Python lacks `ipykernel`.
 
-- **Registry and tags**: `ghcr.io/nteract/runtime-peer`, tagged with
-  the release version (`:<version>`), the channel (`:nightly` / `:stable`),
-  and `:latest` (stable only). The release pipeline produces these tags; the
-  image's `runtimed --version` matches the release it was built from. Pulls
-  are anonymous. See [publication](../../images/runtime-peer/README.md#publication)
-  for the permission model.
-- **Entrypoint**: `runtimed` (no default subcommand). Run it as
-  `cloud-runtime-agent` / `workstation-agent`, or pair interactively first
-  (below).
-- **User and paths**: runs as non-root user `runt` (uid 1000);
-  `python3` is at `/usr/local/bin/python3` — pass it as `--python-path`.
-- **Writable volume**: one requirement — a writable `$HOME`
-  (`/home/runt`). The daemon keeps its launcher cache, blob store, and socket
-  under the home directory; mounting a per-user home (the Outerbounds
-  pattern) satisfies this.
-- **Network**: outbound only. The agent dials home; kernel ports bind
-  loopback inside the container. Nothing to expose.
+- **Registry and tags**: `ghcr.io/nteract/runtime-peer`, tagged `:<version>`,
+  `:nightly` / `:stable`, and `:latest` (stable only). `runtimed --version`
+  matches the release tag. Pulls are anonymous; see
+  [publication](../../images/runtime-peer/README.md#publication) for the
+  permission model.
+- **Entrypoint**: `runtimed` (no default subcommand). Invoke
+  `cloud-runtime-agent`, `workstation-agent`, or pair interactively first.
+- **User and paths**: Non-root user `runt` (uid 1000). `python3` lives at
+  `/usr/local/bin/python3`; pass it to `--python-path`.
+- **Writable volume**: Requires a writable `$HOME` (`/home/runt`) for the
+  launcher cache, blob store, and socket. Mounting a per-user home (as in
+  Outerbounds) satisfies this.
+- **Network**: Outbound only. Kernel ports bind loopback inside the container.
 
-Pairing inside the container uses the bundled CLI (a first-run onboarding
-wizard in the image is planned as a follow-up; today you pair manually).
-Build `nteract-runtime-peer:dev` locally using the instructions above first:
+Pair manually inside the container (build `nteract-runtime-peer:dev` locally
+first, or substitute a published tag):
 
 ```bash
 docker run -it --entrypoint bash nteract-runtime-peer:dev
@@ -331,44 +300,39 @@ nteract workstation connect https://<cloud-host> --code XXXX-XXXX-XXXX
 nteract workstation run --python-path "$(command -v python3)"
 ```
 
-The pairing code is minted from the hosted workstation panel and redeemed
-once; the resulting credential is stored with `0600` permissions in the
-container's home (mount durable storage there if the container restarts
-should keep its identity). Credentials ride in the environment
-(`RUNT_CLOUD_TOKEN`), never argv.
+Mint the single-use pairing code in the hosted workstation panel. The redeemed
+credential saves with mode `0600` in the container's home directory; mount
+durable storage there to keep identity across container restarts. Credentials
+pass via `RUNT_CLOUD_TOKEN`, never argv.
 
 ## What the workstation offers
 
-As of 2026-09-04, the shipped workstation agent advertises **Current Python**:
-its configured interpreter, working directory, and `launch_current_python`
-capability. It launches kernels in that interpreter without installing
-packages. The hosted workstation panel surfaces registration and attachment
-state, not a catalog of every daemon-managed environment.
+As of 2026-09-04:
 
-`runtimed` also maintains prewarmed environment pools (uv/conda/pixi) and
-per-notebook environments. The `list_environments` helper in
-`crates/runtimed/src/workstation/environments.rs` projects pool state, but it is
-not wired into the hosted workstation registration/catalog path. Hosted pool
-selection and captured-environment discovery remain follow-up work.
-
-Hosted attachment and execution requests are owner-only; editing a notebook
-does not grant permission to spend compute. If an owner executes with no active
-runtime peer, an attachment already connecting can accept queued work. A
-previously selected registered workstation whose attachment is `ready`,
-`disconnected`, or `idle` can receive a resume attach job when it belongs to
-the notebook owner and passes the room's online/lease/heartbeat checks. The room rejects execution
-when no eligible attachment can connect or resume. It does not select compute
-from the room URL or fall back to an unrelated workstation.
-
-Hosted runtime controls use the workstation contract rather than browser-owned
-kernel launch state. Interrupt requests are forwarded to the active runtime
-peer for the current attachment. Restart requests replace the active
-workstation attachment: the room publishes a fresh pending attachment in the
-RuntimeStateDoc, closes the previous runtime peer, and waits for the selected
-workstation to claim the new job and launch a new runtime peer. Direct
-browser-authored `launch_kernel` / `shutdown_kernel` frames remain unsupported
-for hosted rooms because the workstation owns the Python path, working
-directory, and environment policy.
+- **Advertised capability**: The workstation agent advertises **Current
+  Python** (its configured interpreter, working directory, and
+  `launch_current_python` capability) and launches kernels in that interpreter
+  without installing packages. The hosted panel shows registration and
+  attachment state, not a catalog of daemon-managed environments.
+- **Prewarmed pools**: `runtimed` maintains local uv/conda/pixi pools and
+  per-notebook environments (`list_environments` in
+  `crates/runtimed/src/workstation/environments.rs`), but hosted pool selection
+  and captured-environment discovery are not wired into the hosted catalog yet.
+- **Owner-only execution and resume**: Attachment and execution are owner-only;
+  editor access does not grant compute spend. If an owner executes with no
+  active peer, a connecting attachment can accept queued work. A previously
+  selected workstation owned by the notebook owner in state `ready`,
+  `disconnected`, or `idle` can receive a resume attach job if it passes
+  online/lease/heartbeat checks. If no eligible attachment can connect or
+  resume, execution is rejected (rooms never pick compute from the URL or fall
+  back to an unrelated workstation).
+- **Interrupt and restart**: Interrupt forwards to the active runtime peer.
+  Restart replaces the attachment: the room publishes a fresh pending
+  attachment in `RuntimeStateDoc`, closes the old peer, and waits for the
+  workstation to claim the new job and launch a new peer. Direct
+  browser-authored `launch_kernel` and `shutdown_kernel` frames remain
+  unsupported for hosted rooms because the workstation owns the Python path,
+  working directory, and environment policy.
 
 ## Diagnostics
 
@@ -380,5 +344,5 @@ nteract diagnostics            # bundle logs + system info into an archive
 journalctl --user -u nteract-workstation      # agent service logs
 ```
 
-Per-job runtime peer logs land under the daemon cache
-(`~/.cache/runt*/workstation-agent/<job>/runtime-peer.log`).
+Per-job runtime peer logs live under the daemon cache:
+`~/.cache/runt*/workstation-agent/<job>/runtime-peer.log`.

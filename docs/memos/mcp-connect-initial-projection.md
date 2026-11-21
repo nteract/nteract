@@ -8,8 +8,8 @@ for [issue #3907](https://github.com/nteract/nteract/issues/3907).
 This memo preserves the investigation, benchmark, and original API sketch. The
 ADRs are authoritative where the original recommendation assumed a disposable
 file-backed Automerge mirror, rollback after partial loading, or one combined
-readiness state. The design sections below preserve the original recommendation;
-they are not an exact description of today's response schema or a claim that
+readiness state. The design sections below preserve the original recommendation.
+They are not an exact description of today's response schema, nor a claim that
 every proposed diagnostic and acceptance scenario has shipped.
 
 Current request targeting follows
@@ -43,38 +43,42 @@ content. The sketch's `sync` object and top-level `availability` are not the
 current connect response. See `add_progressive_session_fields` and
 `notebook_session_response` at `tools/session.rs:583`, `:808`.
 
-Readiness remains operation-specific. `get_all_cells` can return retained,
-bounded projection data before interactivity; full NotebookDoc/resource reads
-and mutations require an interactive document. Runtime reads require a
-connected, ready RuntimeStateDoc; execution additionally requires an
-interactive document and ready runtime. Kernel control need not wait for an
-already running kernel. Retained projection data never authorizes cached-source
-mutation or execution. See `crates/runt-mcp/src/session.rs:485`, `:595`,
-`crates/runt-mcp/src/tools/cell_read.rs:229`, and
-`crates/runt-mcp/src/resources.rs:285`.
+Readiness remains operation-specific (`crates/runt-mcp/src/session.rs:485`,
+`:595`, `crates/runt-mcp/src/tools/cell_read.rs:229`, and
+`crates/runt-mcp/src/resources.rs:285`):
+
+- `get_all_cells` can return retained, bounded projection data before
+  interactivity.
+- Full NotebookDoc/resource reads and mutations require an interactive document.
+- Runtime reads require a connected, ready RuntimeStateDoc.
+- Execution requires both an interactive document and a ready runtime.
+- Kernel control does not wait for an already running kernel.
+- Retained projection data never authorizes cached-source mutation or execution.
 
 Same-target callers share the current activation result. A different target
 supersedes pending work, while a failed replacement leaves the installed session
-usable. Publication and later active-session access are generation-guarded;
-this is not transaction isolation for arbitrary concurrent tool calls. See
+usable. Publication and later active-session access are generation-guarded; this
+is not transaction isolation for arbitrary concurrent tool calls. See
 `crates/runt-mcp/src/session_activation.rs:76`, `:225`, `:442` and
 `crates/runt-mcp/src/lib.rs:273`.
 
-Do not extend the early-return contract to `create_notebook` or background
-local rejoin: both still await session readiness (`tools/session.rs:1648`,
+Do not extend the early-return contract to `create_notebook` or background local
+rejoin: both still await session readiness (`tools/session.rs:1648`,
 `crates/runt-mcp/src/daemon_watch.rs:517`). Hosted readiness also remains a
 separate path, not the local retained-projection contract (`session.rs:415`).
 Readiness failures use codes such as `notebook_not_ready`, `runtime_not_ready`,
 and `sync_failed`; other connection failures can still be text tool errors.
 
 The current harness includes shared-generation/projection and peer-count checks
-at `scripts/mcp-connect-harness.py:1099` and a stalled-peer scenario at `:1367`.
-These source-backed capabilities do not update the measurements below. The
-2026-07-10 timings and two-peer observation remain historical, not a new
-benchmark or current concurrency result. Protocol compatibility is separately
-covered by the [lifecycle ADR](../adr/mcp-session-lifecycle.md#mcp-protocol-checkpoint)
-and [source audit](../audits/mcp-cloud-automerge-audit.md); this checkpoint does
-not claim conformance with upstream MCP `2026-07-28`.
+at `scripts/mcp-connect-harness.py:1099`, plus a stalled-peer scenario at
+`:1367`. These source-backed capabilities do not update the measurements below.
+The 2026-07-10 timings and two-peer observation remain historical, not a new
+benchmark or current concurrency result.
+
+Protocol compatibility is covered separately by the
+[lifecycle ADR](../adr/mcp-session-lifecycle.md#mcp-protocol-checkpoint) and
+[source audit](../audits/mcp-cloud-automerge-audit.md). This checkpoint does not
+claim conformance with upstream MCP `2026-07-28`.
 
 ## Summary
 
@@ -112,9 +116,9 @@ the response. `SyncStatus::session_ready()` in
 - `RuntimeStatePhase::Ready`;
 - initial load `NotNeeded` or `Ready`.
 
-Only the first and third conditions are relevant to obtaining the notebook's
-initial cells, and even `NotebookDocPhase::Interactive` describes the MCP
-peer's replica rather than the daemon room's ability to answer a read.
+Only the first and third conditions matter for obtaining initial cells. Even
+`NotebookDocPhase::Interactive` describes the MCP peer's replica rather than the
+daemon room's ability to answer a read.
 
 The daemon already demonstrates the cheaper read in two places:
 
@@ -124,11 +128,10 @@ The daemon already demonstrates the cheaper read in two places:
   for viewer-scoped connections.
 
 Neither is the right final response shape. `InspectNotebook` is a daemon-wide
-diagnostic API and `GetDocBytes` sends a full Automerge document over the same
-peer transport as NotebookDoc sync. They show that no separate cache is needed
-and that the room can own a compact projection API. The existing daemon control
-connection is the safer transport because it does not share the MCP peer's
-Automerge failure boundary.
+diagnostic API, and `GetDocBytes` sends a full Automerge document over the
+NotebookDoc sync transport. Still, they show no separate cache is needed and the
+room can own a compact projection API. The existing daemon control connection is
+the safer transport because it avoids the MCP peer's Automerge failure boundary.
 
 ## Proposed phases
 
@@ -227,17 +230,20 @@ hashes, and the matching projection are durable. The projection may describe
 the staged target heads while source state remains `Publishing`; local
 operations wait until the room and MCP peer cover those required heads.
 
-The daemon room, not the first attaching peer, owns the cold load. A room is not
-published in a non-terminal source state until a task lease owns that
-generation; cancellation or panic publishes `Failed` and wakes waiters. The
-task prepares parsing and fallible asset work before live publication, authors
-an immutable staged Automerge change stream from canonical genesis, persists
-its hashes, and applies those exact changes in bounded batches. A peer send or
-sync failure ends only that peer session. A source failure preserves any
-durable partial publication and concurrent peer changes in a degraded room;
-retry resumes recorded change hashes instead of rolling the document back.
-This separation lets a cold room become projection-ready even when the peer
-that initiated the open disconnects during bootstrap.
+The daemon room, not the first attaching peer, owns the cold load:
+
+- A room enters a non-terminal source state only after a task lease owns that
+  generation. Cancellation or panic publishes `Failed` and wakes waiters.
+- The task runs parsing and fallible asset work before live publication. It
+  authors an immutable staged Automerge change stream from canonical genesis,
+  persists its hashes, and applies those exact changes in bounded batches.
+- A peer send or sync failure ends only that peer session.
+- A source failure preserves any durable partial publication and concurrent peer
+  changes in a degraded room. Retry resumes recorded change hashes instead of
+  rolling the document back.
+
+This separation lets a cold room become projection-ready even if the initiating
+peer disconnects during bootstrap.
 
 Do not route this request through `DocHandle` or `NotebookFrameType::Request`.
 Those requests are owned by the same notebook sync task that closes and
@@ -336,15 +342,18 @@ Record and surface:
 - Automerge recovery attempts and whether the sync state was reset;
 - a terminal local sync state with its reason when the sync task exits.
 
-If room projection fails, `connect_notebook` fails because it cannot honor the
-one-call stable-ID contract. If a durable projection exists while source or
-local Automerge sync is degraded, the MCP session remains available with only
-the capabilities its availability reports, even if its live `DocHandle`
-disconnects. The retained connect projection is still useful, fresh
-daemon-projection reads may continue over the control connection, and
-local-replica writes fail quickly with the explicit source, conflict, or sync
-reason. A retry starts a fresh activation or sync exchange rather than waiting
-out another opaque 120 seconds.
+Degraded failure behavior splits by milestone:
+
+- If room projection fails, `connect_notebook` fails because it cannot honor the
+  one-call stable-ID contract.
+- If a durable projection exists while source or local Automerge sync is
+  degraded, the MCP session stays available with only the capabilities its
+  availability reports, even if its live `DocHandle` disconnects.
+- The retained connect projection stays usable, and fresh daemon-projection
+  reads may continue over the control connection.
+- Local-replica writes fail quickly with the explicit source, conflict, or sync
+  reason. Retry starts a fresh activation or sync exchange instead of waiting
+  out another opaque 120 seconds.
 
 The `InvalidChanges(MissingOps)` diagnostic belongs in this second category.
 It should close or reset the broken local sync task, mark NotebookDoc sync as
@@ -365,9 +374,9 @@ python3 scripts/mcp-connect-harness.py target/debug/runt \
 ```
 
 The harness measures MCP initialization, `connect_notebook`, and an immediate
-`get_all_cells`, verifies every stable fixture ID appears in the connect
-response, and records active-room peer counts and MCP stderr for duplicate-sync
-or Automerge warnings.
+`get_all_cells`, verifying every stable fixture ID appears in the connect
+response. It also records active-room peer counts and MCP stderr for
+duplicate-sync or Automerge warnings.
 
 ### Baseline from 2026-07-10
 
@@ -381,15 +390,15 @@ produced:
 | Warm path open 2 | 535.3 ms | 4.8 ms | 64 of 64 |
 
 The ordinary path was correct in this run, which did not reproduce `MissingOps`.
-The roughly 100x difference between the connect and immediate-read timings was
-consistent with connect waiting on broader peer readiness rather than the cost
-of formatting the initial projection.
+Connect took roughly 100x longer than the immediate read. That gap matched
+waiting on broader peer readiness rather than the cost of formatting the initial
+projection.
 
 With two concurrent same-path connects in one MCP process, the harness observed
-`active_peers = 2` for the target room before the calls completed and the room
-settled back to one peer. Both calls returned the same notebook ID and all 64
-cell IDs. In that baseline, duplicate connects multiplied peer and
-sync-bootstrap work even though the final session state looked correct.
+`active_peers = 2` before the calls completed and the room settled back to one
+peer. Both calls returned the same notebook ID and all 64 cell IDs. In that
+baseline, duplicate connects multiplied peer and sync-bootstrap work even though
+the final session state looked correct.
 
 The original acceptance criteria were:
 

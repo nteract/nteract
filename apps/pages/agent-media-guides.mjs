@@ -51,6 +51,11 @@ const link = (origin, path, title) => `[${title}](${origin}${path})`;
 export const DATA_FORMAT_ADVICE =
   "Prefer Parquet when you can write it: it stores each column's type, so dates, integers, decimals and text arrive exactly as written, and a module view can hand the file to Sift to read only the parts it needs. CSV (text/csv) is accepted for convenience, and its types are inferred when it is read, so check the result: a column of digits such as postal codes becomes numbers and loses its leading zero, the first row is always the header, only commas separate fields, the file must be UTF-8, and a timestamp with no zone is read as UTC. A value that looks like a date or timestamp but is not a real one, such as 2024-02-30, fails the whole file: fix the value, or write Parquet. JSON suits a small nested object, not a table of rows.";
 
+/** When to render a visual as a view or Mermaid versus a raster image, and how
+ * generated images blend with the Page's light and dark themes. */
+export const VISUAL_CHOICE_ADVICE =
+  "Prefer a view or Mermaid over an image for charts, tables, flow diagrams and UI mockups: views inherit the Page's live light and dark themes, fonts and width. Reserve images for photos, screenshots of external software and raster artwork. When you generate a diagram or illustration as an image, export it on a transparent background with neutral translucent surfaces rather than an opaque page color, and pair light and dark files with dark_asset_id. Do not embed a dark-themed third-party chart screenshot on a Page when you have the data: plot the numbers in a view and link the source.";
+
 export const MEDIA_GUIDES = Object.freeze([
   {
     path: "/llms/assets-and-sources.txt",
@@ -132,6 +137,10 @@ Pages copies the dataset to your Page under the same asset_id first. You need re
 
 A binding {"source_id":"counter-module"} follows current bytes. Adding "revision":"1" selects that retained source version. History holds the newest ${SOURCE_HISTORY_LIMIT} states: a pin is not a permanent archive. For a dataframe that must name immutable data directly, use its asset_id form.
 
+## Images and theme matching
+
+${VISUAL_CHOICE_ADVICE}
+
 Images can be inserted directly from an asset. A Parquet or CSV dataframe can use asset_id or a source binding; give a CSV one media_type text/csv. There is no generic render-any-media block or direct WAV player block. For custom combinations, follow ${link(origin, "/llms/views.txt", "Rendering and views")}.
 `;
 }
@@ -146,6 +155,8 @@ function viewsGuide(origin) {
     view_revision: null,
   };
   return `For a Parquet or CSV table, use insert_node with type dataframe. For a custom JavaScript chart, control or React component, create a module view. A source names bytes. A view connects an entry module to its inputs. A view node places it on the Page.
+
+${VISUAL_CHOICE_ADVICE}
 
 ## Create a JavaScript view
 

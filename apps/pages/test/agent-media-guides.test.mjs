@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import worker from "../worker/index.mjs";
 import { readFileSync } from "node:fs";
-import { DATA_FORMAT_ADVICE, MEDIA_GUIDES, mediaGuide } from "../agent-media-guides.mjs";
+import {
+  DATA_FORMAT_ADVICE,
+  MEDIA_GUIDES,
+  VISUAL_CHOICE_ADVICE,
+  mediaGuide,
+} from "../agent-media-guides.mjs";
 import { agentGuide } from "../agent-guide.mjs";
 import { validateSourceOperation } from "../model/sources-doc.mjs";
 import { inspectOutputAsset } from "../shared/output-assets.mjs";
@@ -346,4 +351,26 @@ test("media tools point to scoped documentation", () => {
       .find(({ name }) => name === "create_page_asset_upload")
       .description.includes("/llms/assets-and-sources.txt"),
   );
+});
+
+test("guides and MCP tool descriptions steer charts and mockups to views and generated images to transparent backgrounds", () => {
+  for (const phrase of [
+    "Prefer a view or Mermaid over an image for charts, tables, flow diagrams and UI mockups",
+    "Reserve images for photos, screenshots of external software and raster artwork.",
+    "transparent background with neutral translucent surfaces",
+    "pair light and dark files with dark_asset_id",
+    "Do not embed a dark-themed third-party chart screenshot",
+  ])
+    assert.ok(VISUAL_CHOICE_ADVICE.includes(phrase), phrase);
+  const views = mediaGuide("/llms/views.txt", origin);
+  const assets = mediaGuide("/llms/assets-and-sources.txt", origin);
+  const main = agentGuide({ NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin });
+  for (const [name, text] of Object.entries({ views, assets, main }))
+    assert.ok(text.includes(VISUAL_CHOICE_ADVICE), name);
+  const uploadDesc = tools.find(({ name }) => name === "create_page_asset_upload").description;
+  assert.match(uploadDesc, /Prefer a view \(\/llms\/views\.txt\) or Mermaid over an image/);
+  assert.match(uploadDesc, /transparent background with dark_asset_id/);
+  const darkAssetDesc = tools.find(({ name }) => name === "edit_page").inputSchema.properties
+    .operations.items.properties.dark_asset_id.description;
+  assert.match(darkAssetDesc, /transparent backgrounds on generated diagrams/);
 });

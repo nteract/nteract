@@ -44,14 +44,13 @@ local runtime/kernel <-> daemon <-> hosted cloud room (policy TBD, later slice)
 
 ## Implemented Design: the bridge is another peer of the daemon room
 
-A hosted daemon session creates an **ephemeral, hosted-flagged
-`NotebookRoom`** keyed by the hosted locator, and attaches a **bridge task**
-that is one more peer of that room — except its transport is the cloud
-WebSocket instead of a Unix socket
+A hosted daemon session creates an **ephemeral, hosted-flagged `NotebookRoom`**
+keyed by the hosted locator. It attaches a **bridge task** as one more peer of
+that room, using the cloud WebSocket instead of a Unix socket
 (`crates/runtimed/src/notebook_sync_server/hosted_bridge.rs`).
 
-Echo suppression falls out of the design: the daemon room holds exactly one
-`NotebookDoc` instance; the cloud connection is one automerge `sync::State`
+Echo suppression falls out of the design. The daemon room holds one
+`NotebookDoc` instance, the cloud connection is one Automerge `sync::State`
 against that doc, and each local peer is another. The sync protocol guarantees
 changes are not replayed to the peer they came from.
 
@@ -94,9 +93,9 @@ user:anaconda:<sub>/operator:desktop:<session>
 user:anaconda:<sub>/operator:codex:<session>
 ```
 
-- The bridge never rewrites changes; attribution rides the actor label end to
+- The bridge never rewrites changes. Attribution rides the actor label end to
   end, so cloud-side history shows which local operator made each change while
-  authorization stays anchored to the one authenticated principal.
+  authorization stays anchored to the authenticated principal.
 - Actor uniqueness: the bridge mints a fresh `:<nonce>` per cloud connect
   (automerge duplicate-seq rule), and local peers get per-connection labels
   from the room host.
@@ -123,9 +122,9 @@ New connection handshake channel (`crates/notebook-protocol/src/connection/hands
 ```
 
 The daemon resolves the URL against the registry, creates or joins the
-hosted-bridged room, spawns the bridge if needed, and serves the connection
-like a normal `notebook_sync` peer (typed bootstrap, `NotebookConnectionInfo`
-with the daemon-local room id).
+hosted-bridged room, and spawns the bridge if needed. It then serves the
+connection like a normal `notebook_sync` peer: typed bootstrap plus
+`NotebookConnectionInfo` with the daemon-local room id.
 
 **Current implementation, 2026-09-04:** the bridge publishes connecting,
 connected, reconnecting, authentication-failed, and terminal-error status.

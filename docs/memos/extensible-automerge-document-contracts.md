@@ -46,7 +46,7 @@ notebook capabilities:
 | Reader | Permit authorized reads and sync negotiation; deny durable mutations; presence publication is a separate explicit policy |
 | Writer | Reader rights plus content writes admitted under the document's profile; no implied sharing administration or execution authority |
 
-Apply grants to discovery, fetch, sync, semantic operations, and presence—not
+Apply grants to discovery, fetch, sync, semantic operations, and presence, not
 only UI controls or initial connection setup. The host derives grants from the
 verified principal, provider bounds, and resource ACL. Existing notebook
 `editor`, `runtime_peer`, and `owner` roles are not a total order and must not be
