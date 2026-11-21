@@ -1,6 +1,6 @@
 # Cloud User Store: one principal → display resolution for every surface
 
-**Status:** Proposed, 2026-07-06.
+**Status:** Draft, 2026-07-06.
 
 ## Context
 
@@ -16,78 +16,80 @@ consumer reinvents the connection.
 
 **The shared display layer.**
 `resolveActorDisplay({actorLabel, peers, source})` in
-`packages/runtimed/src/notebook-actor-display.ts` turns an opaque actor label
-into an `ActorDisplay`: `{displayName, principalId, kind, isAgent, onBehalfOf,
-agentSlug, color, initials, imageUrl}`. It parses the label
-(`notebook-actor-projection.ts`), hashes a deterministic color
-(`packages/identity/src/notebook-actor-color.ts`, shared with Pages through
-`@nteract/identity`), computes initials, and overlays a caller-supplied
-`peers: ReadonlyArray<ActorDisplayPeer>` directory (`{participantKey, label,
-imageUrl}`) to replace the parsed fallback with a real name and avatar. It does
-no I/O (its projection helpers keep module-level caches, but nothing fetches). It
-is exported from `packages/runtimed/src/index.ts` and is framework agnostic.
-Color is a pure hash of the identity key, so it is globally consistent.
-Resolution only has to solve **name and avatar**.
+`packages/runtimed/src/notebook-actor-display.ts` (exported from
+`packages/runtimed/src/index.ts`) turns an opaque actor label into an
+`ActorDisplay`: `{displayName, principalId, kind, isAgent, onBehalfOf,
+agentSlug, color, initials, imageUrl}`. It is pure and framework-agnostic (no
+I/O; module-level caches only):
 
-The two halves of an actor label have different trust meanings. The host-issued,
-authenticated principal is authoritative for attribution and for the
-"on behalf of" identity. The operator and its `agentSlug` are client-declared
-presentation metadata: they may select a familiar product mark, but the mark is
-not proof that a particular vendor produced or authenticated the client.
+- Parses the label (`notebook-actor-projection.ts`) and computes initials.
+- Hashes a deterministic color from the identity key
+  (`packages/identity/src/notebook-actor-color.ts`, shared with Pages via
+  `@nteract/identity`).
+- Overlays a caller-supplied `peers: ReadonlyArray<ActorDisplayPeer>` directory
+  (`{participantKey, label, imageUrl}`) for real names and avatars.
 
-**The host source of truth.** The Worker runs a D1 table
-`principal_profiles` (`apps/notebook-cloud/src/storage.ts`): `principal` (PK),
-`provider`, `provider_subject`, `email_normalized`, `email_verified`,
-`display_name`, `avatar_url`, `first_seen_at`, `last_seen_at`, `raw_claims_json`.
-A companion table `principal_account_links` maps a transport principal to a
-canonical `account:<ns>:email:<sha256>` principal on verified email, so the same
-human arriving through different providers converges on one row. Rows are read in
-batch through `getPrincipalProfiles(env, principals[])`
-(`apps/notebook-cloud/src/sharing-storage.ts`, `PRINCIPAL_PROFILE_LOOKUP_BATCH_SIZE
-= 50` per query). Rows are written on authenticated OIDC / Anaconda requests at
-login and on app-session re-sync, through `syncAuthenticatedProfile` /
-`syncStoredAppSessionProfile` → `resolveNotebookInvitesForLogin` →
-`upsertPrincipalProfileWithAccount`, gated to `provider === 'oidc' ||
-'anaconda-api-key'`. Dev-auth and anonymous principals are never written.
+Color is already globally consistent. Resolution only needs to solve **name and
+avatar**.
+
+The two label halves carry different trust levels. The host-issued authenticated
+principal is authoritative for attribution and "on behalf of." The operator and
+`agentSlug` are client-declared presentation metadata; a product mark is not
+vendor attestation.
+
+**The host source of truth.** The Worker owns two D1 tables
+(`apps/notebook-cloud/src/storage.ts`):
+
+- `principal_profiles`: `principal` (PK), `provider`, `provider_subject`,
+  `email_normalized`, `email_verified`, `display_name`, `avatar_url`,
+  `first_seen_at`, `last_seen_at`, `raw_claims_json`.
+- `principal_account_links`: maps a transport principal to a canonical
+  `account:<ns>:email:<sha256>` principal on verified email so multi-provider
+  logins converge on one row.
+
+`getPrincipalProfiles(env, principals[])`
+(`apps/notebook-cloud/src/sharing-storage.ts`) reads rows in batches of
+`PRINCIPAL_PROFILE_LOOKUP_BATCH_SIZE = 50`. Login and app-session re-sync write
+rows via `syncAuthenticatedProfile` / `syncStoredAppSessionProfile` →
+`resolveNotebookInvitesForLogin` → `upsertPrincipalProfileWithAccount`, gated to
+`provider === 'oidc' || 'anaconda-api-key'`. Dev-auth and anonymous principals
+are never written.
 
 **Why the dashboard leaks.** Two failures compound:
 
-1. **Coverage is auth-gated.** A dev-auth principal, an anonymous principal, or a
-   real user who has not yet authenticated at least once has no
-   `principal_profiles` row. `getPrincipalProfiles` returns nothing for them,
-   permanently, not transiently.
-2. **The fallback derives from the identifier.** When the `/api/n` list handler's
-   `listNotebookPrincipalDisplays` (`apps/notebook-cloud/src/index.ts`) finds no
-   row it drops `owner_display`. The client
-   (`cloudNotebookOwnerLabel` / `cloudNotebookOwnerInitials` in
+1. **Auth-gated coverage.** Dev-auth, anonymous, and not-yet-authenticated users
+   permanently lack `principal_profiles` rows. `getPrincipalProfiles` returns
+   nothing for them.
+2. **Identifier-derived fallback.** When `listNotebookPrincipalDisplays`
+   (`apps/notebook-cloud/src/index.ts`) finds no row, `/api/n` drops
+   `owner_display`. The client (`cloudNotebookOwnerLabel` /
+   `cloudNotebookOwnerInitials` in
    `apps/notebook-cloud/viewer/notebook-dashboard.ts`, rendered by
-   `cloud-notebook-dashboard-view.tsx`) then derives a label from the raw
-   principal: trim, take an email local-part, else split on `:` and use the tail
-   or the whole string. For an opaque subject like `b0204af7084b`, this yields
-   the identifier itself, shown as both name and initials.
+   `cloud-notebook-dashboard-view.tsx`) then derives text from the raw
+   principal: email local-part, `:` tail, or the full string. An opaque subject
+   like `b0204af7084b` renders directly as name and initials.
 
-**"Never show a raw principal" is not yet a property any surface has.** The
-comments path only partly avoids it: `friendlyUserPrincipalLabel`
-(`notebook-actor-projection.ts`) hides `user:anaconda` UUID subjects behind a
-generic label, but other opaque subjects are still humanized straight from the
-principal, and the shared `NotebookCommentsPanel` with no resolver injected falls
-back to the raw actor label. So the never-raw guarantee is new work this store
-centralizes, not something to copy.
+**"Never show a raw principal" does not exist yet.**
+`friendlyUserPrincipalLabel` (`notebook-actor-projection.ts`) hides
+`user:anaconda` UUIDs behind a generic label, but other opaque subjects still
+humanize from the raw principal. `NotebookCommentsPanel` without an injected
+resolver also falls back to raw actor labels.
 
-**Resolution is duplicated.** The same principal is resolved several
-different ways server-side: `owner_display` and `current_user_display` strings on
-`/api/n`, the `ShareTargetDisplay` union on `/acl` and `/access-requests`,
-`{principal, label, image_url}` on `/api/n/:notebookId/author-profiles`, and
-`display_name` on presence control frames. Clients assemble these per surface:
-comments merge a fetched author-profiles batch with live presence peers; presence
-(`cloud-presence-status.tsx`) shows initials-only avatars because the room roster
-protocol carries no image; self-identity flows through a separate `identityLabel`
-/ `identityImageUrl` side channel (`apps/notebook-cloud/viewer/shell-capabilities.ts`).
-`avatar_url` is plumbed end to end and `upsertPrincipalProfile` will store it, but
-no production caller supplies one (the OIDC `picture` claim stays browser-side),
-so in practice the viewer's own badge is the only avatar that ever renders. The
-comment-author image path exists but resolves to null. So the same person can
-render with a different name, and no avatar, depending on which surface is asking.
+**Resolution is duplicated and avatars stay empty.** Four server paths return
+divergent shapes: `owner_display` / `current_user_display` on `/api/n`,
+`ShareTargetDisplay` on `/acl` and `/access-requests`, `{principal, label,
+image_url}` on `/api/n/:notebookId/author-profiles`, and `display_name` on
+presence frames. Each client surface merges them differently:
+
+- Comments merge fetched author profiles with live presence peers.
+- Presence (`cloud-presence-status.tsx`) shows initials only because the room
+  roster carries no image.
+- Self-identity uses a separate `identityLabel` / `identityImageUrl` channel
+  (`apps/notebook-cloud/viewer/shell-capabilities.ts`).
+
+`avatar_url` is plumbed end to end in `upsertPrincipalProfile`, but no
+production caller populates it because OIDC `picture` stays browser-side. Only
+the viewer's own badge renders an avatar; comment-author images resolve to null.
 
 ### Neighbors
 
@@ -239,9 +241,9 @@ the caller already holds.
   principal to `resolved: false` (the client shows kind-label fallbacks), never a
   500 that blanks the list.
 
-Honor `docs/adr/hosted-room-authorization.md` and `identity-and-trust.md`. This
-gate gets an explicit human security review before it ships; it is the one part
-of this ADR that is summoned, not self-merged.
+The relationship gate must honor `docs/adr/hosted-room-authorization.md` and
+`docs/adr/identity-and-trust.md`. Security review of this gate is required
+before enabling the generalized endpoint.
 
 ## Decision 4: Populate `avatar_url`
 
@@ -294,29 +296,28 @@ yet" formatter.
 
 ## Rollout
 
-Delivered as one implementation PR after this ADR merges, staged internally as
-ordered commits so review can follow the progression. Cross-model review
-(implementer and reviewer from different model families); the Decision 3 auth gate
-gets a human security review before merge, not self-merge.
+Rollout follows four ordered stages so every step stays independently reversible
+and never exposes raw principals during migration:
 
-- **Stage 0: stop the leak.** The first commit removes visible raw-principal
-  fallback *anywhere*: the dashboard owner fallback (`notebook-dashboard.ts`) and
-  the sharing ACL / access-request fallback labels (`sharing-client.ts`) adopt
-  the never-raw policy. An unresolved principal shows a generic kind label, never
-  the raw id. No store, no endpoint.
-- **Stage 1: server.** One shared projector for owner / current-user / ACL /
-  access-request / author-profile displays; OIDC `picture` avatar capture
-  (Decision 4); `avatar_url` and a `resolved` flag on the list projection; the
-  generalized notebook-scoped resolver with its relationship gate (Decision 3).
-  Ships with the auth-gate review.
-- **Stage 2: the store.** `cloud-user-store.ts` with `useSyncExternalStore`
-  binding, self + presence seeding, batched backfill, epoch stale-write guard, and
-  virtual-time tests (Decision 2). No consumer changes yet; land it green behind
-  the existing paths.
-- **Stage 3: converge.** Move consumers onto the store one surface at a time
-  (comments, presence, self, `/n` owners, sharing UI), deleting the duplicated
-  fetch-merge-fallback code (including `sharing-client.ts` and the comment-author
-  fetch/merge) as each moves (Decision 5).
+- **Stage 0: Stop raw-principal fallback (independent, immediately safe).**
+  Enforce the never-raw policy in `notebook-dashboard.ts` and
+  `sharing-client.ts` so unresolved principals render a generic kind label. No
+  store or endpoint changes are required.
+- **Stage 1: Server projector and relationship gate (security-review gate).**
+  Land the shared display projector, OIDC `picture` capture into `avatar_url`
+  (Decision 4), `avatar_url` + `resolved` on `/api/n`, and the generalized
+  notebook-scoped resolver (Decision 3). Keep existing response fields backward
+  compatible until Stage 3 completes.
+- **Stage 2: Additive store rollout (rollback-safe).** Land
+  `cloud-user-store.ts` with `useSyncExternalStore` bindings, self + presence
+  seeding, batched backfill, epoch stale-write guards, and virtual-time tests
+  (Decision 2) without switching any consumer yet.
+- **Stage 3: Consumer cutover and cleanup.** Migrate surfaces one by one
+  (comments, presence, self-identity, `/n` owners, sharing UI) onto the store.
+  Delete duplicated fetch-merge-fallback paths (`comment-author-profiles.ts`
+  fetch/merge, `cloudNotebookOwnerLabel`, `cloudNotebookOwnerInitials`,
+  `sharing-client.ts` fallback formatting) only after each consumer switches
+  (Decision 5).
 
 ## Boundaries and non-goals
 

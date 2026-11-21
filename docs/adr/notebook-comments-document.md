@@ -3,11 +3,7 @@
 **Status:** In progress, 2026-09-17. Core `CommentsDoc`, sync, desktop and
 hosted panels, and MCP comment tools have landed. Remaining work is desktop
 polish and the publish opt-in, tracked in
-[comments rollout](../plans/comments-rollout.md). Trimmed 2026-06-29.
-
-This ADR records the durable architecture for notebook comments. Historical
-phase plans and file-by-file implementation checklists were removed once the
-core `CommentsDoc` path landed.
+[comments rollout](../plans/comments-rollout.md).
 
 ## Decision
 
@@ -105,3 +101,23 @@ comment stores.
 - Treating runtime output or widget replay as the comment record.
 - Deriving trusted authorship from document fields.
 - Publishing private review comments by default.
+
+## Done
+
+- `crates/comments-doc` owns the `CommentsDoc` schema, identity, projection,
+  and attribution model.
+- `COMMENTS_DOC_SYNC` syncs over the typed-frame protocol across the local
+  daemon, `runtimed-wasm`, and the TypeScript sync engine.
+- Hosted room ingress rejects comment writes from scopes without comment
+  authority (`RoomHost.receive_peer_frame` in `crates/runtimed-wasm/src/lib.rs`).
+- Desktop and hosted viewers project comments and render the comments panel;
+  Elements provides comment UI fixtures.
+- MCP comment tools create, reply to, resolve, and reopen threads.
+
+## Next
+
+- Finish desktop rail/panel flows, stale-anchor display, and source/rendered
+  selection repair against live `CommentsDoc` projections.
+- Add an explicit publish opt-in policy while keeping private review comments
+  excluded from public artifacts by default.
+- Rollout tracking lives in [comments rollout](../plans/comments-rollout.md).
