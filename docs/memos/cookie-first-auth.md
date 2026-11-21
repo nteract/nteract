@@ -1,11 +1,18 @@
 # Cookie-first auth: getting the browser out of the token business
 
-Status: memo. Proposes moving all browser auth material out of `localStorage`
-into HttpOnly cookies with server-side code exchange and server-owned refresh
-custody. That change enables authenticated SSR and collapses the dual-authority
-auth states. Prompted by Kyle (2026-07-08): "Can we get off localStorage at all
-to enable us to go all in on cookies? I'm hoping we can do some SSR at some
-point."
+Status: memo (partially implemented). Proposes moving all browser auth material
+out of `localStorage` into HttpOnly cookies with server-side code exchange and
+server-owned refresh custody. That change enables authenticated SSR and
+collapses the dual-authority auth states. Prompted by Kyle (2026-07-08): "Can we
+get off localStorage at all to enable us to go all in on cookies? I'm hoping we
+can do some SSR at some point."
+
+Implementation update: opt-in server-managed OAuth shipped behind
+`NOTEBOOK_CLOUD_OIDC_FLOW=server` (`apps/notebook-cloud/src/server-oidc.ts`,
+migration `0009_server_oidc.sql`, 6-hour idle and 7-day absolute session TTLs;
+see `apps/notebook-cloud/README.md`). Remaining work is default cutover to
+server mode, retiring legacy client-PKCE mode, and revising
+`docs/adr/hosted-credential-transport.md` Decision 2 to match.
 
 Companion memo: `instant-paint-validity-ssr.md` identified the SSR opening that
 the app-session cookie creates and the presence-vs-validity gap in
@@ -95,11 +102,15 @@ reach JavaScript.
 2. Refresh-token storage shape: an encrypted blob inside the session cookie
    (stateless, size-bounded) vs a server-side record in D1/DO (revocable,
    list-able, enables "sign out everywhere"). Recommendation: server-side
-   record. We already have D1, and revocability is worth the row.
+   record. We already have D1, and revocability is worth the row. (Shipped in
+   `NOTEBOOK_CLOUD_OIDC_FLOW=server` via `src/server-oidc.ts` and migration
+   `0009_server_oidc.sql`.)
 3. CSRF posture: `__Host-` + `SameSite=Lax` covers navigation. Mutating API
    routes should get origin-check or token-header enforcement as part of the
    cutover (cheap in the Worker middleware).
-4. Session TTL + sliding renewal policy (today's TTL: census pending).
+4. Session TTL + sliding renewal policy (shipped for
+   `NOTEBOOK_CLOUD_OIDC_FLOW=server` at 6-hour idle and 7-day absolute TTLs; see
+   `apps/notebook-cloud/README.md`).
 
 ## Migration stages
 
@@ -108,7 +119,14 @@ Each stage ships independently; the system works at every point.
 - **Stage 0 (done, incidentally):** the app-session cookie exists, server
   bootstrap injects `initialSession`, and most API routes already accept the
   cookie.
-- **Stage 1: server-side callback, behind a flag.**
+- **Stage 1: server-side callback, behind a flag (opt-in implementation
+  shipped).**
+  - `NOTEBOOK_CLOUD_OIDC_FLOW=server` now implements Worker-side `/oidc`
+    exchange, encrypted D1 login transactions and refresh custody
+    (`src/server-oidc.ts`, migration `0009_server_oidc.sql`), and 6-hour idle /
+    7-day absolute session TTLs (`apps/notebook-cloud/README.md`). Remaining work
+    here is default cutover, retiring legacy client-PKCE mode, and revising
+    `docs/adr/hosted-credential-transport.md` Decision 2.
   - Add Worker-side `/oidc` exchange with flow-cookie PKCE.
   - Never materialize a `localStorage` token for sessions minted this way; the
     Worker must not re-expose tokens to JS, so there is deliberately NO
@@ -132,7 +150,7 @@ Each stage ships independently; the system works at every point.
   `oidc-token`/`oidc-request` key handling. Add a migration note for stale keys
   (one-time `removeItem` on boot).
 
-## Current-state census (verified against code, 2026-07-08)
+## Historical baseline census (verified against code, 2026-07-08)
 
 Key facts from the full reader/writer census (file:line citations live in the
 census output; highlights below).

@@ -203,18 +203,18 @@ boundary that Markdown documents should reuse:
   live-room recovery/cache.
 - `apps/notebook-cloud/AGENTS.md:66` requires explicit public viewer state via a
   D1 public ACL row.
-- `docs/adr/hosted-notebook-artifacts.md:35` defines durable published artifacts
-  as snapshot bundles.
-- `docs/adr/hosted-notebook-artifacts.md:169` keeps the cloud viewer a static
-  bundle, not a forked notebook UI.
-- `docs/adr/document-split.md:308` says cross-document head correlation belongs
-  at the publish boundary, not in live docs.
+- `docs/adr/hosted-notebook-artifacts.md` (Decision 1) defines durable published
+  artifacts as snapshot bundles.
+- `docs/adr/hosted-notebook-artifacts.md` (Decision 5) keeps the cloud viewer a
+  static bundle, not a forked notebook UI.
+- `docs/adr/document-split.md` (Open Question 4) says cross-document head
+  correlation belongs at the publish boundary, not in live docs.
 - `docs/adr/hosted-room-authorization.md:97` defines explicit public read ACLs.
-- `docs/adr/hosted-room-authorization.md:230` keeps anonymous public presence a
-  product policy layered over ACLs.
-- `docs/adr/identity-and-trust.md:431` states that publish/import boundaries
-  cannot trust historical local Automerge attribution; hosted rooms record the
-  publisher/importer identity they can vouch for.
+- `docs/adr/hosted-room-authorization.md` (Decision 4) keeps anonymous public
+  presence a product policy layered over ACLs.
+- `docs/adr/identity-and-trust.md` (Decision 6) states that publish/import
+  boundaries cannot trust historical local Automerge attribution; hosted rooms
+  record the publisher/importer identity they can vouch for.
 
 ## External Check, 2026-06-12
 
@@ -449,8 +449,8 @@ The pragmatic product route is:
 The first product question is where documents belong: under `/m`, under a
 combined dashboard/home route, or under a kind-aware hosted catalog. The
 prototype showed a new route works technically. Still, navigation, creation,
-sharing, recency, and naming belong with the notebook home rather than beside
-it.
+sharing, recency, and naming should probably be solved alongside the notebook
+home rather than as an isolated `/m` route.
 
 Suggested Cloud API shape:
 

@@ -72,7 +72,7 @@ source regions it bundles together, and here it picked a lucide module.
   23 in the entry's first-load closure). Per-icon tree-shaking or chunk hints
   would not move first-load bytes.
 
-An earlier draft of this memo called this "the always-loaded icons chunk, the
+An earlier draft of this measurement called this "the always-loaded icons chunk, the
 single biggest lever left". That was reading the chunk's name, not its
 contents.
 

@@ -159,9 +159,10 @@ are confirmed. Deprecate the placeholder after the first stable release.
 
 ### Concurrency and queue limits
 
-- The publisher serializes runs with GitHub's `queue: max` and queries the
-  public registry before each publish so a newer nightly does not cancel a
-  waiting stable publish.
+- The publisher serializes runs with GitHub's `queue: max`, which preserves
+  pending runs so a newer nightly does not replace a waiting stable publish.
+- Before each publication, the workflow queries the public registry as a
+  preflight check on existing versions and dist-tags.
 - GitHub's [queue limit](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
   is 100 pending runs. If a run is canceled by that limit or a maintainer,
   recover it with its upstream run ID and successful attempt.

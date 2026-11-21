@@ -49,16 +49,17 @@ The OIDC work added a first-party app-session cookie, which makes server
 bootstrap of app-owned routes viable. On the first request, the Worker can read
 the app-session, confirm it against the session store, and return correct
 content (or a clean gate) for app-shell routes like `/n`. Existing host-shell
-boundaries stay intact: room WebSocket credentials stay explicit/ticketed, and
-output frames stay on the isolated origin. Only the app-owned shell HTML moves
-server-side.
+boundaries stay intact: room WebSocket upgrades stay origin-checked and
+cookie-first with explicit bearer fallback
+(`docs/adr/hosted-credential-transport.md` Decision 2), and output frames stay
+on the isolated origin. Only the app-owned shell HTML moves server-side.
 
-Server-rendering (or server-bootstrapping) the app shell dissolves the
-present-vs-valid gap for those routes in one move. The server gates on a
+Server-rendering (or server-bootstrapping) the app shell would dissolve the
+present-vs-valid gap for those routes in one move. The server would gate on a
 validated session, so no client window paints ahead of validity. Instant paint
-remains the mechanism for the live notebook room (which is inherently a client
-handshake), while the dashboard and other app-owned surfaces no longer need to
-guess.
+would remain the mechanism for the live notebook room (which is inherently a
+client handshake), while the dashboard and other app-owned surfaces would not
+need to guess.
 
 ## Open questions
 

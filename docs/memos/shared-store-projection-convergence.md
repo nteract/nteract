@@ -21,8 +21,8 @@ cross-host.
 
 The goal of this line of work is twofold. Stop forcing React to hold notebook
 state that belongs in a shared store, and let Desktop and Cloud share as much as
-they genuinely can. The hosts differ only as *hosts* (transport, runtime, app
-shell). That boundary is real and must not be over-converged.
+they can. The hosts differ only as *hosts* (transport, runtime, app shell). That
+boundary is real and must not be over-converged.
 
 ## Convergence template
 
@@ -152,25 +152,26 @@ output focus, reconnect) before merge.
 
 ## Keep host-specific (do not converge)
 
-- **Daemon lifecycle** (`daemonStatus`, reconnect, ready timeouts): Tauri/daemon
-  bootstrap with no Cloud analog.
-- **Environment/pool/trust** (`useDependencies`, `usePoolState`, `useTrust`,
-  `runtime-state.ts` Pool/RuntimeStateDoc): Desktop has direct filesystem and
-  package-manager access; Cloud delegates to remote workstations.
-- **OIDC/app-session/room-sync and hosted sharing source facts**
-  (`collaborator-auth`, `use-cloud-auth`, `cloud-viewer-session` connect/sync,
-  D1 ACL rows, public-link rows, invites, and access requests): host transport
-  and product-policy boundary. Project only their *results* (scope, actor, peer
-  id, effective access/share state) into stores when a shared or cloud-local
-  consumer needs them.
+- **Daemon lifecycle:** `daemonStatus`, reconnect, and ready timeouts are
+  Tauri/daemon bootstrap with no Cloud analog.
+- **Environment/pool/trust:** `useDependencies`, `usePoolState`, `useTrust`, and
+  `runtime-state.ts` Pool/RuntimeStateDoc stay host-specific; Desktop has direct
+  filesystem and package-manager access, while Cloud delegates to remote
+  workstations.
+- **OIDC/app-session/room-sync and hosted sharing source facts:**
+  `collaborator-auth`, `use-cloud-auth`, `cloud-viewer-session` connect/sync,
+  D1 ACL rows, public-link rows, invites, and access requests form the host
+  transport and product-policy boundary. Project only their *results* (scope,
+  actor, peer id, effective access/share state) into stores when a shared or
+  cloud-local consumer needs them.
 - **Presence:** Cloud room peers/cursors vs Desktop Automerge presence, already
   bridged through the shared `PresenceContext`. Keep the implementations split.
-- **Shell-capabilities *input derivation***: `desktop-shell-capabilities.ts` vs
+- **Shell-capabilities *input derivation*:** `desktop-shell-capabilities.ts` vs
   `use-cloud-shell-capabilities.ts`. The shared convergence point is the
   `NotebookShellCapabilities` type they both produce; the derivation must
   differ.
-- **NotebookView display placeholders** (`notebook-view-execution:<cellId>`) vs
-  RuntimeStateDoc changeset projection: the placeholder path is shared, but
+- **NotebookView display placeholders:** `notebook-view-execution:<cellId>` vs
+  RuntimeStateDoc changeset projection. The placeholder path is shared, but
   runtime-authored snapshots stay authoritative and release placeholder
   ownership when they arrive.
 

@@ -8,10 +8,10 @@ fix would take. Code is a follow-up after review.
 
 Neighbors:
 
-- `docs/adr/execution-pipeline.md`: the seven invariants behind cell execution.
+- `docs/adr/execution-pipeline.md`: the seven invariants behind cell execution
+  (investigation originally opened as EP-3).
 - `docs/adr/document-split.md`: `RuntimeStateDoc` as the durable record.
 - `docs/adr/identity-and-trust.md`: who is allowed to interrupt or restart.
-- `docs/adr/execution-pipeline.md`: EP-3 in its tracked follow-ups links here.
 
 ## Context
 
@@ -82,11 +82,11 @@ A *diverged* execution looks like one of:
 - ✅ Heartbeat alive, ✅ IOPub idle status received, ✅ committer queues drained, ❌ `set_execution_done` never called. (The bug EP-3 was originally trying to catch: a panic or task drop in the daemon's own runtime agent between final output flush and terminal status write.)
 - ❌ Kernel process gone (Unix `wait_for_pid_exit` returns), ❌ but `KernelDied` not yet propagated. (Race between IOPub disconnect and the heartbeat task's pid check.)
 
-The first three are not catastrophes the daemon should "fix" by
-force-completing. They are observability signals. The third one (the
+The first two and the fourth are observability signals, not catastrophes the
+daemon should "fix" by force-completing. The third (the
 panic-between-flush-and-`set_execution_done` case) is the only one where the
-daemon really lost track and the queue needs releasing. It has a clean
-signature distinct from a real busy kernel.
+daemon lost track and the queue needs releasing. It has a clean signature
+distinct from a real busy kernel.
 
 ## What we have today
 
@@ -193,7 +193,7 @@ those and decides "diverged or not" is a small addition.
 5. **Auto-recovery, eventually?** With enough telemetry on the daemon-side bug
    signature (running + idle IOPub + drained committers + no shell reply), we
    may safely auto-emit `CellError` and release the queue. This is the only
-   signature where the kernel genuinely has nothing more to say.
+   signature where the kernel has nothing more to say.
 
 6. **Interaction with reconnect.** When the desktop window reconnects to a
    long-running cell, what divergence indicators should the frontend see?

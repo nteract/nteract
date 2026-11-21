@@ -197,8 +197,9 @@ Each is its own item, ranked by payoff per effort.
      must map the new `Err` to skip-and-degrade, not a new failure mode); and
    - the outputs-by-cell-id shape adaptation preserving
      only-insert-when-non-empty.
-   - Write characterization tests over malformed fixtures first, then delete the
-     serde parser.
+
+   Write characterization tests over malformed fixtures first, then delete the
+   serde parser.
 
 3. **Retire the `cfg(test)` legacy loader** [L, ~245 LOC]. Sequence this after
    the parser collapse; migrating tests earlier silently changes which parser
@@ -244,8 +245,9 @@ Each is its own item, ranked by payoff per effort.
    - move legacy-persisted-doc fabrication to `NotebookDoc::save` directly;
    - move reload round-trip coverage to `new_fresh`'s untitled branch (the
      production analog).
-   - Mind the semantics gap: `load_or_create("test-nb")` fabricates a bogus file
-     binding. Migrated tests must pick the shape they mean.
+
+   Mind the semantics gap: `load_or_create("test-nb")` fabricates a bogus file
+   binding. Migrated tests must pick the shape they mean.
 
 9. **Delete the loading reset wrappers** [M, ~28 LOC].
    `try_start_loading`/`finish_loading`/`reset_loading_for_test` force-reset
@@ -291,8 +293,8 @@ Each is its own item, ranked by payoff per effort.
       discovery, with a test asserting a reaped room with a journal but no
       `.automerge` reloads by UUID.
     - Step 2 (only after step 1): make the Step 2 flush best-effort
-      post-barrier. Then the journal genuinely is the single durable-acceptance
-      boundary the ADR claims.
+      post-barrier. Then the journal is the single durable-acceptance boundary
+      the ADR claims.
 
 ### Dropped, with reasons
 
@@ -405,10 +407,9 @@ plans missed) are folded in.
    - **Guards:** false-source-conflict lockout (room bricked on every restart)
      and the crash-window regenerate-over-saved-file path.
    - **Scope:** existing coverage is four tests (two unit, two integration), not
-     two. Target the genuinely uncovered cells: abort-write-failed,
-     commit-append-failed after visible replace, file-missing-at-restart,
-     reconciliation intent with `source_generation`, and idempotent
-     double-resolve.
+     two. Target the uncovered cells: abort-write-failed, commit-append-failed
+     after visible replace, file-missing-at-restart, reconciliation intent with
+     `source_generation`, and idempotent double-resolve.
    - **Property:** `resolve_recovered_file_checkpoint` returns exactly the
      trichotomy table (intended ⇒ `Committed` with advanced heads; previous ⇒
      pending cleared, no advance; third ⇒ `SourceConflict` with pending

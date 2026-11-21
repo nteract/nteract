@@ -41,9 +41,9 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --cli
 - **Nightly workstations**: Installing another channel preserves the current
   default `nteract` command. Use `nteract --channel nightly workstation ...`
   throughout pairing, serving, and recovery to target the Nightly installation
-  and its credential namespace (it does not reinterpret Stable credentials).
-  Pass `--default-cli` to the installer to change the default command. Legacy
-  channel-specific commands remain compatible.
+  and its credential namespace. This flag does not reinterpret Stable
+  credentials. Pass `--default-cli` to the installer to change the default
+  command. Legacy channel-specific commands remain compatible.
 - **Air-gapped installs**: Download the release assets separately and pass
   `--from-dir` to the installer.
 
@@ -66,7 +66,7 @@ Pairing requires no externally issued credential
    workstation-only credential, saves it at `~/.config/nteract/workstation.json`
    (mode `0600`), and registers the workstation in the panel immediately. Use
    `--id` and `--name` to override the default `ws-<hostname>` identity. If a
-   code is rejected, mint a fresh one; expired codes cannot be reused.
+   code is rejected, mint a fresh one; codes expire and cannot be reused.
 3. **Start serving**:
    - **Linux (user systemd, no root required)**:
 
@@ -74,7 +74,7 @@ Pairing requires no externally issued credential
      nteract workstation service install --start
      ```
 
-     Writes and enables a user systemd unit running `nteract workstation run`
+     This writes and enables a user systemd unit running `nteract workstation run`
      with the stored credential. Pass `--python-path /path/to/python` to use a
      project or virtualenv interpreter instead of the first `python3`/`python`
      on `PATH`, and `--working-directory /path/to/project` to advertise and
@@ -117,12 +117,14 @@ Pairing requires no externally issued credential
 - **Reconnects**: On owner attach, the runtime peer joins the room as
   `runtime_peer` over an outbound WebSocket and reconnects with backoff across
   recoverable room evictions and network blips while keeping the kernel alive.
-- **Idle timeout and terminal closes**: After 30 minutes with no queued or
-  active execution, the room stops idle compute even if viewers stay connected.
-  Its `runtime idle timeout` close uses code 1000 and is treated as a terminal,
-  graceful shutdown. Replacement, restart, and policy-rejection closes are also
-  terminal for the old peer. Owner execution can resume an eligible workstation
-  (see [What the workstation offers](#what-the-workstation-offers)).
+- **Idle timeout and terminal closes**: Current lifecycle, 2026-09-04: after 30
+  minutes with no queued or active execution, the room stops idle compute even
+  if viewers stay connected. Ordinary transport closes are recoverable, but an
+  intentional room stop is not. Its `runtime idle timeout` close uses code 1000
+  and is treated as a terminal, graceful shutdown, not instructions to reconnect
+  it. Replacement, restart, and policy-rejection closes are also terminal for
+  the old peer. Owner execution can resume an eligible workstation (see
+  [What the workstation offers](#what-the-workstation-offers)).
 - **Agent restart recovery**: On restart, the workstation agent adopts live
   nteract runtime peers via per-job pid and log files in the daemon cache and
   reports dead ones. It does not adopt arbitrary existing Jupyter kernels.
@@ -183,7 +185,7 @@ Options and auth modes:
 - **Defaults**: Scope `runtime_peer`, `--auth-kind oidc`, blob root under the
   daemon's standard cache.
 - **`--auth-kind`**: `oidc` (default), `anaconda-key` (Anaconda API keys),
-  `workstation` (pairing credential), or `dev` (loopback Worker dev auth).
+  `workstation` (pairing credential), or `dev` (Worker dev auth).
 - **`--python-path`**: Launches a kernel immediately on attach. Omit it to
   attach idle and wait for dispatched work.
 - **Display metadata**: `--workstation-id` and `--workstation-display-name` set
@@ -191,8 +193,10 @@ Options and auth modes:
 - **Dev auth (`--auth-kind dev`)**: Reads `RUNT_CLOUD_TOKEN` and
   `RUNT_CLOUD_DEV_USER`, sending `X-Notebook-Cloud-Dev-Token`, `X-User`, and
   `X-Scope` on upgrade (mapped to `user:dev:<user>`). Workers accept dev
-  credentials on loopback only (Wrangler dev or local `celld`), never on a
-  deployed host.
+  credentials unauthenticated on loopback (Wrangler dev or local `celld`), and
+  on deployed hosts only when `NOTEBOOK_CLOUD_DEV_TOKEN` is configured (leave
+  unset in production). Only `hosted-workstation-agent.mjs` refuses non-loopback
+  URLs client-side.
 - **Node dev connector**: `apps/notebook-cloud/scripts/hosted-workstation-agent.mjs`
   mirrors `runtimed workstation-agent` against the attach-job API using
   `NTERACT_API_KEY` or `NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN`. Against a
@@ -223,23 +227,23 @@ RUNT_CLOUD_TOKEN=<access-token> RUNT_CLOUD_REFRESH_TOKEN=<refresh-token> \
   `--oidc-refresh-cache`) on subsequent starts to reuse the cache. Without an
   `--oidc-*` flag or seed, the agent ignores any cache and uses the static
   `RUNT_CLOUD_TOKEN`.
-- **Cache binding**: Stored as a `0600` file per cloud origin in the `runtimed`
-  config directory (override with `--oidc-refresh-cache`). Bound to cloud
-  origin, issuer, client ID, and (for JWTs) account; mismatched caches or
-  `RUNT_CLOUD_TOKEN` values are refused. An existing cache wins over
+- **Cache binding**: The cache is a `0600` file per cloud origin in the
+  `runtimed` config directory (override with `--oidc-refresh-cache`). It is
+  bound to cloud origin, issuer, client ID, and (for JWTs) account; mismatched
+  caches or `RUNT_CLOUD_TOKEN` values are refused. An existing cache wins over
   `RUNT_CLOUD_REFRESH_TOKEN`; delete the cache to re-seed.
 - **Discovery security**: Issuers require `https` (use
   `--oidc-allow-loopback-http` for `http://localhost` in dev). Discovery must
   match the issuer exactly, the token endpoint must share the issuer's origin,
   and redirects are not followed.
 - **Concurrency and backoff**: On Unix, agents sharing a cache refresh one at a
-  time so rotating refresh tokens are not spent twice, and seeding never
+  time so rotating refresh tokens are not spent twice. Cache seeding never
   overwrites a cache created by another agent. Failed refreshes back off for 5
   seconds while keeping any unexpired cached token in use. In the final minute
   before expiry, connects and uploads wait up to 2 seconds for refresh, then
   use the still-valid token while refresh finishes in the background (or wait
-  for refresh if the token expires during those 2 seconds). Failures log
-  locally.
+  for refresh if the token expires during those 2 seconds). Refresh failures are
+  logged locally.
 - **Local isolation note**: Any process running as the same OS user, including
   the kernel, can read the cache file. `RUNT_CLOUD_REFRESH_TOKEN` is stripped
   from the kernel environment for hygiene, not isolation.
@@ -253,8 +257,9 @@ to be exposed through the Hub proxy. Until the feature-gated JupyterHub
 provider in `nteract-identity` lands for Hub-token validation, authenticate
 against the hosted deployment with an OIDC bearer or Anaconda API key.
 
-Other Hub topologies (direct Jupyter Server attachment, an nteract server
-extension, and Hub-service provisioning) are covered in
+This is the currently supported workstation path, not the only intended Hub
+topology. Other Hub topologies (direct Jupyter Server attachment, an nteract
+server extension, and Hub-service provisioning) are explored in
 [Hosted Notebook Accounts and Compute Federation](../memos/hosted-notebook-federation.md).
 
 ## Outerbounds
@@ -263,7 +268,7 @@ Outerbounds workstations run Linux x64 with a per-user home, so the default
 setup applies unchanged. Pass the task environment's Python to `--python-path`
 so notebooks see the same dependencies as your flows.
 
-### The runtime-peer image
+## The runtime-peer image
 
 The `runtime-peer` container image bundles `runtimed`, the pairing CLI, and a
 Python 3.12 environment preloaded with kernel base packages (`ipykernel`,
@@ -301,6 +306,8 @@ durable storage there to keep identity across container restarts. Credentials
 pass via `RUNT_CLOUD_TOKEN`, never argv.
 
 ## What the workstation offers
+
+As of 2026-09-04:
 
 - **Advertised capability**: The workstation agent advertises **Current
   Python** (its configured interpreter, working directory, and

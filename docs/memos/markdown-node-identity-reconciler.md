@@ -17,7 +17,7 @@ fn node_id(kind: NodeKind, span: &SourceSpan) -> String {
 Anchors, isolated regions, and inline runs all clone that id, so any edit above
 or inside a block renames it and every node after it. A consumer keyed on the
 id sees the whole tail of the document turn over on a one-character edit. This
-memo proposes replacing offset-derived identity with stable ids that carry across
+design replaces offset-derived identity with stable ids that carry across
 reparses. A sequence-alignment reconciler assigns them using the previous plan
 as input.
 

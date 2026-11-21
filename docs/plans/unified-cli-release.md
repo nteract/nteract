@@ -60,7 +60,7 @@ resolved commit against the run's `head_sha` and embedded build identity.
 | --- | --- | --- |
 | Linux x64 and ARM64 | `nteract-cli-linux-<arch>` or `nteract-cli-nightly-linux-<arch>`; existing `runt`, `runtimed`, and `nteract-mcp` channel assets; `nteract-<channel>-linux-<arch>.AppImage` and updater signature, for `<arch>` `x64` and `arm64` | All names present for both architectures; downloaded CLI reports expected version/channel/revision; installed backend is `<prefix>/bin/nteract-cli`. No DEB/RPM release is implied. |
 | macOS arm64 and x64 | `nteract-<channel>-darwin-<arch>.dmg`, signed/notarized `.app.tar.gz`, updater signature; app includes `runt`, `runtimed`, `nteract-cli`, `nteract-mcp` | Validate app signature/notarization and all bundled executables after installation. Canonical CLI comes from the signed bundle; no standalone canonical macOS CLI asset is promised. Raw legacy CLI/daemon assets remain compatibility artifacts. |
-| Windows x64 | Signed `nteract-<channel>-windows-x64.exe` NSIS installer and updater signature; four bundled sidecars with `.exe` suffix | Native installation, first launch, menu installation, coexistence, upgrade, and uninstall tests. Canonical shim must invoke `nteract-cli.exe`, not Desktop's `notebook.exe`. No standalone canonical Windows CLI asset is promised. |
+| Windows x64 and ARM64 | Signed `nteract-<channel>-windows-x64.exe` and `nteract-<channel>-windows-arm64.exe` NSIS installers and `.sig` updater signatures; four bundled sidecars with `.exe` suffix | Native installation, first launch, menu installation, coexistence, upgrade, and uninstall tests. Canonical shim must invoke `nteract-cli.exe`, not Desktop's `notebook.exe`. No standalone canonical Windows CLI asset is promised. |
 | Shell installer | Release asset `install-linux-release`, despite its historical Linux-only name | Its stamped `DEFAULT_CHANNEL` and `DEFAULT_TAG` match that release. Install from that immutable asset; compare installed executables with its release's binaries. |
 | Updaters | Immutable release `latest.json` and the channel's `stable-latest` or `nightly-latest` manifest | Byte equality; platform URLs resolve to the intended immutable release; all signatures exist and installed updater succeeds. |
 | Python | Six `runtimed` wheels: macOS arm64/x64, Linux x64/ARM64, Windows x64/ARM64 | Wheel metadata and PyPI files match the intended stamp and platform matrix; isolated install, notebook execution, and shutdown pass. This workflow does not publish the separate Python `nteract` package. |
@@ -73,11 +73,11 @@ Nightly. With the proposed 2.8.0 base, Desktop Nightly would be
 `2.8.0`. Preserve this existing policy unless a separate decision changes it;
 check wheel metadata rather than assuming identical full version strings.
 
-Publication is not atomic. `publish-plugin` depends on Desktop build jobs but
-does not wait for the release publication job. The latter publishes Python
-wheels before creating the GitHub Release and then updates the rolling updater
-manifest. A failed run can therefore already have changed plugins, PyPI, or
-GitHub assets. A green subset of jobs is not a completed release.
+Publication is not atomic. `prerelease` creates the GitHub Release first, then
+publishes `runtimed` wheels to PyPI, then updates the rolling updater channel.
+`publish-plugin` runs after `prerelease` (`needs: [compute-version, prerelease]`).
+A failed run can therefore already have changed GitHub assets, PyPI, the rolling
+updater channel, or plugins. A green subset of jobs is not a completed release.
 
 ## Installer and plugin migration
 

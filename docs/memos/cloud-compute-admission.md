@@ -119,9 +119,11 @@ Termination rules:
   reconciler retries the provider's idempotent stop/reconcile operation until it
   acknowledges the required stopped state. The provider controller still owns
   resource mutation. The reconciler must resume from storage after service
-  restart, and the UI displays cleanup pending if confirmation is unavailable.
+  restart. Display cleanup pending if confirmation is unavailable.
 - **Imported compute detach.** Complete detach without invoking resource
-  stop/delete. Keep this policy separate from disconnect detection.
+  stop/delete.
+
+Keep this policy separate from disconnect detection.
 
 Reconnect and replacement rules:
 

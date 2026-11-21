@@ -35,7 +35,7 @@ The provider offers a logical Preview Python workstation per owner/deployment an
 
 ## Finish verifier
 
-A clean checkout must build and run the configured local celld provider and execute a synced notebook through the actual runtime-peer path.
+A clean checkout can build and run the configured local celld provider and execute a synced notebook through the actual runtime-peer path.
 
 Verify these behaviors:
 

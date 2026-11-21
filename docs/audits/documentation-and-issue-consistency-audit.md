@@ -314,14 +314,14 @@ status). Artifacts judged fully current (64) are omitted.
 - `.context/plans/001-cap-snapshot-blob-ref-validation.md` (**misfiled**): Landed plan remains as an executor checklist in .context.
 - `.context/plans/002-preserve-actor-across-loads-and-rebuilds.md` (**misfiled**): Landed plan remains as an executor checklist in .context.
 - `.context/plans/003-share-outline-interaction-wiring.md` (**misfiled**): Landed plan remains as an executor checklist in .context.
-- `AGENTS.md` (**needs-update**): mostly accurate, but the load-bearing invariants intro says two invariants while four are listed
-- `apps/notebook-cloud/AGENTS.md` (**needs-update**): mostly accurate on cloud authority and worker/viewer split, but CommentsDoc is now implemented rather than proposed
-- `crates/kernel-env/AGENTS.md` (**needs-update**): mostly accurate, but Deno bootstrap provenance is stale
-- `crates/notebook-sync/AGENTS.md` (**needs-update**): mostly accurate, but omits CommentsDocSync handling added to the frame boundary
-- `crates/notebook-wire/AGENTS.md` (**needs-update**): core protocol model is right, but frame tables and lifecycle text omit CommentsDocSync and OpenHostedNotebook
-- `crates/runtimed/AGENTS.md` (**needs-update**): runtime guidance is broadly accurate but omits daemon-side CommentsDoc persistence/sync responsibilities
-- `src/components/isolated/AGENTS.md` (**needs-update**): security guidance is current, but renderer plugin inventory and plugin mapping instructions are stale
-- `src/components/ui/AGENTS.md` (**needs-update**): shared UI guidance is broadly useful but hard-coded structure/counts are stale
+- `AGENTS.md` (**needs-update**): Mostly accurate, but the load-bearing invariants intro says two invariants while four are listed.
+- `apps/notebook-cloud/AGENTS.md` (**needs-update**): Mostly accurate on cloud authority and worker/viewer split, but CommentsDoc is now implemented rather than proposed.
+- `crates/kernel-env/AGENTS.md` (**needs-update**): Mostly accurate, but Deno bootstrap provenance is stale.
+- `crates/notebook-sync/AGENTS.md` (**needs-update**): Mostly accurate, but omits CommentsDocSync handling added to the frame boundary.
+- `crates/notebook-wire/AGENTS.md` (**needs-update**): Core protocol model is right, but frame tables and lifecycle text omit CommentsDocSync and OpenHostedNotebook.
+- `crates/runtimed/AGENTS.md` (**needs-update**): Runtime guidance is broadly accurate but omits daemon-side CommentsDoc persistence/sync responsibilities.
+- `src/components/isolated/AGENTS.md` (**needs-update**): Security guidance is current, but renderer plugin inventory and plugin mapping instructions are stale.
+- `src/components/ui/AGENTS.md` (**needs-update**): Shared UI guidance is broadly useful but hard-coded structure/counts are stale.
 - `CLAUDE.md` (**needs-update**): Update nteract-dev tool availability/count guidance for attach mode and current proxied tool surface.
 - `.claude/rules/logging.md` (**needs-update**): Replace stale attachConsole dev-mirror wording with attachLogger/original-console behavior.
 - `.claude/rules/mcp-servers.md` (**needs-update**): Clarify owner/isolated versus Codex attach-mode tool availability.
@@ -331,15 +331,15 @@ status). Artifacts judged fully current (64) are omitted.
 - `#3600` (**needs-update**): Update for #3884: desktop-hosted room lifecycle is now mapped, but local-first persistence is still not wired.
 - `#3599` (**needs-update**): Update the implementation source from runtime-agent-only to the new HostedBridgeHandle/hosted bridge path for desktop-hosted rooms.
 - `#3598` (**needs-update**): Update dependency wording: #3595 chunked store/meta has landed; durable pending-local-edit marker remains open.
-- `#3381` (**in-flight**): hosted workstation registration, pairing, attach jobs, current-python runtime peer, and dispatch have landed; catalog projection, provider smokes, kernelspec/cwd selection, and final ticket hardening remain
-- `#3015` (**stale**): one-line Ventura crash report for 2.5.1 is no longer actionable without logs or a repro on current 2.6.2 builds
-- `#2285` (**needs-update**): silent overwrite and in-place write details were mitigated by #3544, but the owner lock/heartbeat cross-daemon coordination gap remains
-- `#1969` (**needs-update**): typed captured-env disk state and partial repair routing landed, and the ADR rejects .captured-ok for the first pass; launch-handshake retry still remains
-- `#1968` (**needs-update**): manual rebuild/refresh controls are still absent, but the implementation sketch must use daemon-owned lifecycle APIs rather than frontend cache deletion and env_id rewriting
-- `#1391` (**misfiled**): generic Julia/R kernels remain unsupported, but the actionable kernelspec/JupyterHub work is now captured in #3608
-- `#1307` (**needs-update**): runtime-agent spawning remains unsandboxed, but recent sandbox work is scoped to Python env builds and should be separated from runtime process isolation
-- `#681` (**needs-update**): raw-cell YAML/frontmatter detection exists; native Document Settings UI and metadata sync remain open
-- `#662` (**needs-update**): the content-fetch/deep-link idea remains plausible, but nteract:// is now the MCP resource namespace and is explicitly not a connect target
+- `#3381` (**in-flight**): Hosted workstation registration, pairing, attach jobs, current-python runtime peer, and dispatch have landed; catalog projection, provider smokes, kernelspec/cwd selection, and final ticket hardening remain.
+- `#3015` (**stale**): One-line Ventura crash report for 2.5.1 is no longer actionable without logs or a repro on current 2.6.2 builds.
+- `#2285` (**needs-update**): Silent overwrite and in-place write details were mitigated by #3544, but the owner lock/heartbeat cross-daemon coordination gap remains.
+- `#1969` (**needs-update**): Typed captured-env disk state and partial repair routing landed, and the ADR rejects .captured-ok for the first pass; launch-handshake retry still remains.
+- `#1968` (**needs-update**): Manual rebuild/refresh controls are still absent, but the implementation sketch must use daemon-owned lifecycle APIs rather than frontend cache deletion and env_id rewriting.
+- `#1391` (**misfiled**): Generic Julia/R kernels remain unsupported, but the actionable kernelspec/JupyterHub work is now captured in #3608.
+- `#1307` (**needs-update**): Runtime-agent spawning remains unsandboxed, but recent sandbox work is scoped to Python env builds and should be separated from runtime process isolation.
+- `#681` (**needs-update**): Raw-cell YAML/frontmatter detection exists; native Document Settings UI and metadata sync remain open.
+- `#662` (**needs-update**): The content-fetch/deep-link idea remains plausible, but nteract:// is now the MCP resource namespace and is explicitly not a connect target.
 - `apps/elements/content/docs/index.mdx` (**needs-update**): Catalog links resolve and recent dashboard/comment/output surfaces are represented, but the routing page does not surface the shipped shared-primitives/Sift native-look decision from #3872.
 - `apps/elements/content/docs/editor-surfaces.mdx` (**needs-update**): Mostly accurate, but one phrase implies a package boundary that does not exist.
 - `apps/elements/content/docs/compute-placement.mdx` (**in-flight**): Accurately describes the partially landed compute placement model: local desktop, cloud workstations, SSH/direct candidates, selected room target, and environment/runtime separation.
@@ -354,4 +354,4 @@ status). Artifacts judged fully current (64) are omitted.
 - `DESIGN.md` (**needs-update**): Design intent remains useful, but the token spec is behind the unified semantic token implementation and the doc belongs under the durable docs/Elements taxonomy.
 - `RELEASING.md` (**needs-update**): Release streams are broadly right, but Windows signing, artifact inventory, and unpublished crate inventory are stale or incomplete.
 - `python/README.md` (**needs-update**): Workspace/package inventory is current, but the python/nteract package description no longer matches its launcher-only implementation.
-- `apps/notebook-cloud/README.md` (**needs-update**): Mostly load-bearing, but several sections lag shipped cloud auth, room-summary presence, sharing APIs, CommentsDoc handling, and snapshot command requirements. 'prototype' should be scoped to preview/dev-token deployment rather than the whole system.
+- `apps/notebook-cloud/README.md` (**needs-update**): Mostly load-bearing, but several sections lag shipped cloud auth, room-summary presence, sharing APIs, CommentsDoc handling, and snapshot command requirements. The 'prototype' label should be scoped to preview/dev-token deployment rather than the whole system.

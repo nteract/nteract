@@ -87,9 +87,9 @@ UserInfo disabled for the current Anaconda flow.
   `userinfo_endpoint` with the bearer token. The response `sub` must match the
   signed `sub` exactly. The endpoint must share the issuer's HTTPS origin
   unless you trust another origin via `NOTEBOOK_CLOUD_OIDC_USERINFO_ORIGIN`
-  (origin only, no path; loopback HTTP allowed in local dev). Requests reject
-  redirects, cap JSON at 16 KiB, and enforce a 5-second total deadline for
-  headers and body.
+  (origin only, no path). Same-origin loopback HTTP remains available for local
+  development. Requests reject redirects, cap JSON at 16 KiB, and enforce a
+  5-second total deadline for headers and body.
 - **Profile retention and cache**: Only validated profile fields are kept.
   Email account linking and pending invitations require `email_verified: true`;
   an unverified UserInfo email cannot inherit verification from a different JWT
@@ -124,14 +124,17 @@ UserInfo disabled for the current Anaconda flow.
 
 ### Local dev token
 
-`NOTEBOOK_CLOUD_DEV_TOKEN` is for local-only smoke tests and emergency
-prototype diagnostics. It is never a browser auth path or hosted publishing
-credential.
+Loopback local development needs no dev token. On deployed prototype Workers,
+`NOTEBOOK_CLOUD_DEV_TOKEN` gates dev credentials (including deployed smoke
+tests and the prototype browser toolbar's `nteract-dev-token.<base64url-token>`
+WebSocket subprotocol). Leave it unset in production; it is not a production
+browser auth path or hosted publishing credential.
 
 ## API-key Publishing
 
-Non-browser publishing agents use a bearer token with write capability plus an
-explicit provider header (`Authorization: Bearer` with):
+Browser sessions use direct OIDC. Non-browser publishing agents should use a
+publish bearer token with write capability, presented as `Authorization: Bearer`
+plus an explicit provider header:
 
 ```text
 X-Notebook-Cloud-Auth-Provider: anaconda-api-key
@@ -239,16 +242,18 @@ object:
     "oidc": {
       "status": "configured",
       "jwks": "remote",
-      "audience": "client_id",
+      "audience": "explicit",
       "principal_namespace": "configured"
     }
   }
 }
 ```
 
-The response intentionally omits issuer, client ID, audience values, and
-principal namespace names. Never expose client secrets, access tokens, refresh
-tokens, or raw JWT claims.
+`audience` reports `"explicit"` when `NOTEBOOK_CLOUD_OIDC_AUDIENCE` is set, and
+`"client_id"` only when `NOTEBOOK_CLOUD_OIDC_AUDIENCE` is unset. The response
+intentionally omits issuer, client ID, audience values, and principal namespace
+names. Never expose client secrets, access tokens, refresh tokens, or raw JWT
+claims.
 
 ## Avoid Edge-Only Login
 

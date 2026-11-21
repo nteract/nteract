@@ -307,7 +307,7 @@ interface NotebookEnvironmentSurface {
 
 - **Adapter migration:** Short-term code can still derive display-friendly
   `NotebookActorIdentity` objects and `NotebookEnvironmentSummary` cards from
-  these surfaces. New host adapter work must avoid adding page-local strings
+  these surfaces. New host adapter work should avoid adding page-local strings
   that cannot map into the structured projection.
 - **Derived categories:** Presentation helpers can derive actor categories
   (agent, runtime, system, public, or human) from the principal source and

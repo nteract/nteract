@@ -192,15 +192,15 @@ authority-synced, and file-saved outcomes; a successful edit receipt must not
 imply a disk checkpoint.
 
 Execution always references synced cells. Required heads establish containment,
-not a global lock or a guarantee to execute the exact source the model last saw. Return exact execution IDs and authoritative source snapshots
-where available. Optional guarded editing or execution can reject an outdated
-observed source. A local guard validates and applies atomically, but cannot
-prevent an unarrived concurrent remote change. Same-cell collaboration remains
-allowed.
+not a global lock or a guarantee to execute the exact source the model last saw.
+Return exact execution IDs and authoritative source snapshots where available.
+Optional guarded editing or execution can reject an outdated observed source. A
+local guard must validate and apply atomically, but cannot prevent an unarrived
+concurrent remote change. Same-cell collaboration remains allowed.
 
 Responses should consistently identify notebook/authority, cell and execution
-IDs, known outcome, relevant revision/heads, and next readable resource. Keep
-model-visible text and structured results small. Keep full renderer hydration
+IDs, known outcome, relevant revision/heads, and next readable resource. Use
+small model-visible text and structured results. Keep full renderer hydration
 separately versioned and complete; do not silently truncate its current
 contract.
 
@@ -218,12 +218,12 @@ The current daemon couples ordinary-peer membership to two runtime policies:
   (`crates/runtimed/src/notebook_sync_server/peer_connection.rs:340`).
 - The last peer leaving schedules idle teardown. Teardown rechecks peer count
   and connection generation before its shutdown RPC.
-- Runtime-agent connections use a separate handler and do not increment ordinary
-  peer count.
-- This is a daemon idle policy, not an effect of choosing another notebook. See
-  `crates/runtimed/src/runtime_agent.rs:1`,
-  `crates/runtimed/src/notebook_sync_server/peer_runtime_agent.rs:177`, and
-  `crates/runtimed/src/notebook_sync_server/peer_eviction.rs:130`.
+
+Runtime-agent connections use a separate handler and do not increment ordinary
+peer count. This is a daemon idle policy, not an effect of choosing another
+notebook. See `crates/runtimed/src/runtime_agent.rs:1`,
+`crates/runtimed/src/notebook_sync_server/peer_runtime_agent.rs:177`, and
+`crates/runtimed/src/notebook_sync_server/peer_eviction.rs:130`.
 
 Preserve independent MCP attachment ownership during migration. New ID
 operations borrow internal peers without minting a permanent logical attachment

@@ -352,7 +352,7 @@ Linux GNU compatibility baseline:
 - Applies to builds with the Linux compatibility fix, including nightlies; published 0.6.0 Linux packages require glibc 2.39.
 - A “Cannot find native binding” error can wrap a libc or shared-library load failure; inspect its `cause` chain before assuming a missing optional dependency.
 
-### Shared execution state
+## Shared execution state
 
 Each `Session` owns `session.executions`, the same synchronous execution store used by the React frontend.
 Native execution changesets update this store before `executionViewChanges$` emits.
@@ -377,7 +377,7 @@ Store guarantees and implementation:
 - **Shutdown**: `close()` disposes native subscriptions and completes RxJS streams; owners must still release store subscriptions. The last state remains readable.
 - **Build and adapters**: source lives in `packages/runtimed/src/execution-store.ts`. `build:stores` generates this package's CommonJS module and declarations, and `check:stores` verifies freshness before packing (no published dependency on the private workspace package). `packages/runtimed/examples/execution-readable.ts` shows a framework-neutral Svelte readable adapter over the same instance (cells, output content, and a Svelte shell are separate follow-ups).
 
-### Session status
+## Session status
 
 `session.sessionStatus$` forwards the native `SyncStatus` JSON unchanged (`close()` completes the stream).
 Subscribe to detect connection loss and bootstrap failures:
@@ -392,7 +392,7 @@ Subscribe to detect connection loss and bootstrap failures:
 These native values differ from the session-control wire representation.
 Callers using earlier lowercase declarations or `initial_load.phase` must update their comparisons; runtime serialization is unchanged.
 
-### Native session verification
+## Native session verification
 
 Build the native binding and daemon, then run the callback and shared-store
 contract against an isolated daemon without a Python kernel:

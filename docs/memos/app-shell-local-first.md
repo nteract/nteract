@@ -59,7 +59,7 @@ pixels.
 - Race the list fetch with OIDC refresh instead of serializing behind it.
 - Server bootstrap remains the best case (cookie valid -> full content in the
   HTML). The cache covers the window where the cookie is dead and the refresh
-  is in flight. The skeleton survives only for genuinely-new principals.
+  is in flight. The skeleton survives only for new principals.
 
 New shell surfaces (workstations, sharing ledgers, future dashboards) should be
 built against this policy from the start rather than retrofitted.

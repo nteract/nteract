@@ -12,7 +12,7 @@ Vercel's [AI Elements](https://elements.ai-sdk.dev) is a shadcn-compatible regis
 
 - **Install:** `npx shadcn@latest add @ai-elements/<name>` (or `npx ai-elements@latest add <name>`). Registry served from `elements.ai-sdk.dev/api/registry/`.
 - **Integration model:** shadcn-style vendoring. The CLI copies component *source* into the repo (default `components/ai-elements/<name>.tsx`) and pulls its `registryDependencies` (other shadcn primitives) the same way. It also adds runtime `dependencies` (streamdown, ai-sdk, lucide-react) to `package.json`. This is the same "copied code, not a black-box dep" model as our `src/components/ui`.
-- **Theming:** rides entirely on shadcn's existing CSS variables (`--background`, `--primary`, `--popover`, ...). No parallel token namespace. It inherits our already-synced Elements/Claude Design tokens for free, which is a genuine structural fit.
+- **Theming:** Components ride entirely on shadcn's existing CSS variables (`--background`, `--primary`, `--popover`, ...) with no parallel token namespace. They inherit our already-synced Elements/Claude Design tokens for free.
 - **License:** Apache-2.0. **Prereq:** Tailwind v4 (we are on v4).
 
 ## Why not run the CLI straight into `src/components/ui`

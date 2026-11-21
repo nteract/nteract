@@ -20,7 +20,7 @@ rendered text) and cross between them at inconsistent granularity. A
 rich/WYSIWYG editor needs the exact same crossing: map a rendered caret or edit
 back to a source offset, mutate the Automerge document, and re-project. Getting
 correspondence right for comments builds the editing primitive too. This memo
-names the model and the one contract change that makes it robust.
+names the model and the one contract change that makes it correct.
 
 ## The asymmetry
 
@@ -93,9 +93,8 @@ assumption. The projector does **not** fold delimiters into styled runs:
   behave the same way: source spans the full reference, while `renderedText` is
   just the label. There is no interior correspondence.
 
-For genuinely character-faithful cases (plain text, strong, emphasis, delete,
-inline code, and inline links of the `[label]` + `(url)` form), each run is
-**transparent**. Its rendered text equals its source slice one to one, so the
+For character-faithful cases (plain text, strong, emphasis, delete, inline code,
+and inline links of the `[label]` + `(url)` form), each run is **transparent**. Its rendered text equals its source slice one to one, so the
 host can sub-slice by character with no projector change. Math, images,
 reference links, and runs decoding entities or escapes are not transparent and
 must be handled as atomic or piecewise. Consumers need to respect that split,

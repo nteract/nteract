@@ -29,7 +29,8 @@ output.destroy();
 
 ## Bootstrap and runtime
 
-The output host serves one fixed bootstrap document (`@nteract/output-frame/bootstrap`: `BOOTSTRAP_HTML`) from a separate HTTPS origin.
+The output host serves one fixed bootstrap document (`@nteract/output-frame/bootstrap`: `BOOTSTRAP_HTML`).
+Serve it from a separate HTTPS origin.
 The embedding page supplies everything else by building the runtime from this package and passing its text as `runtime` (a string or async resolver).
 Host and runtime then always come from the same build, regardless of how the output host is deployed or shared.
 A runtime or port protocol change needs no output host deploy; only a bootstrap change needs a new frame path.
@@ -65,7 +66,7 @@ Because the frame has an opaque origin, it loads library modules in CORS mode:
 - The output host's CSP must allow the embedder's origin in `script-src` (`https:` covers any HTTPS embedder).
 - A local HTTP embedder must add its origin to its local frame server's CSP and serve that frame on a loopback address. Chromium blocks a public-origin frame from loading loopback resources.
 
-### Handshake, lifecycle, and isolation
+## Handshake, lifecycle, and isolation
 
 The bootstrap runs code only from its embedding parent.
 The parent already supplies view code, and the frame stays an opaque-origin `sandbox="allow-scripts"` iframe (without `allow-same-origin`), credential-free, under the output host's CSP.
@@ -84,6 +85,8 @@ Startup timeouts (`outputTransition` in `src/lifecycle.mjs`):
 - **`booting` state**: spans from sending the boot message to the runtime's first port reply. Sending waits for both iframe `load` and resolved `runtime` text (a slow resolver counts only against the startup limit).
 - **`bootTimeoutMs` (default 10s)**: bounds `booting`. On expiry, reports `"The output frame did not start. The output host may need an update."`
 - **`timeoutMs` (default 20s)**: bounds the whole mount. On expiry, reports the boot error if still `booting`, or `"The output took too long to start."` otherwise.
+
+## Anywidget views
 
 ### Anywidget lifecycle and local model
 
@@ -111,7 +114,7 @@ Local model behavior:
 - **CSS and imports**: CSS injects once per initialized model and is removed on disposal. `_esm` and `_css` traits hold the supplied source text. Relative ESM imports do not work in Blob modules; use bundled code or absolute HTTPS imports. Module/CSS updates require a new mount, not `model.set`.
 - **Non-goals**: arbitrary ipywidget managers, Python callbacks, kernel comms, and custom Python serializers are not provided. Use standard AFM types and framework bridges; Pages theme helpers are optional extensions.
 
-### Pages authoring, deployment, and security boundaries
+## Pages authoring, deployment, and security boundaries
 
 - **Pages authoring format**: Pages authors use `application/vnd.nteract.anywidget.v2+json` with `module: {source_id, revision?}`, optional `stylesheet`, and paired `buffers: [{source: {source_id, revision?}, path: [...]}]` (child models use the same shape). This is a Pages format, not an upstream MIME type. See [the Pages spec](../../apps/pages/REFERENCE.md#anywidget-outputs).
 - **Adapter boundary**: the Pages adapter validates and resolves references into the named-byte envelope above. This library has no source IDs, revision lookup, or authorization logic; AFM code sees the same model values. The authoring format version is independent of the frame path and port protocol.

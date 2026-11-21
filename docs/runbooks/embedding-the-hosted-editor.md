@@ -37,7 +37,8 @@ Tarball layout:
 
 ## Verify
 
-Download by release tag, verify the sidecar checksum, and unpack:
+Download by release tag, verify the sidecar checksum, unpack, and check every
+`manifest.json` entry:
 
 ```sh
 TAG=v<version>

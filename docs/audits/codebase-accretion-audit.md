@@ -54,13 +54,13 @@ incremental chunks and snapshots in SQLite, with compaction. Nothing outside
 the crate uses it (only `xtask/src/bump.rs`). Its ADR,
 [`automerge-document-storage.md`](../adr/automerge-document-storage.md), is
 "In progress" and says the slice "changes no authorization policy, save,
-eviction, or legacy-authority behavior" (`:290`).
+eviction, or legacy-authority behavior" (`## Done`).
 
 The two storage ADRs disagree.
 [`room-source-lifecycle-and-file-recovery.md`](../adr/room-source-lifecycle-and-file-recovery.md)
 Decision 3 makes the journal the durable acceptance boundary.
-`automerge-document-storage.md:266` rejects keeping full snapshots in an
-append-only journal.
+`automerge-document-storage.md` (`## Rejected alternatives`) rejects keeping
+full snapshots in an append-only journal.
 
 ### Desktop (local `runtimed`)
 
@@ -105,11 +105,14 @@ The phase machine needs its own simplification.
 
 ### Cloud (celld)
 
-Hosted rooms run on [celld](https://celld.dev), self-hosted on AWS with S3.
-Each Durable Object cell has its own SQLite database, one epoch-fenced writer,
-and LTX replication to the bucket. The cost is EC2 nodes, S3 requests and
-bytes, and maintainer time for the platform. There is no per-request provider
-bill.
+Celld-hosted deployments (`main.runtimed.run`, PR previews, and Pages) run on
+[celld](https://github.com/denoland/celld), self-hosted on AWS with S3,
+alongside Cloudflare (`preview.runt.run`, see
+[`deployment-topology.md`](../adr/deployment-topology.md) Decision 1). On
+celld, each Durable Object cell has its own SQLite database, one epoch-fenced
+writer, and LTX replication to the bucket. The cost there is EC2 nodes, S3
+requests and bytes, and maintainer time for the platform, with no per-request
+provider bill.
 
 The cloud path does not use the journal. It has the opposite shape:
 

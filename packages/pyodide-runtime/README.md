@@ -2,7 +2,7 @@
 
 The jailed Python machine used by nteract's managed cloud runtime peer.
 It owns pinned Pyodide/scientific assets, IPython execution, and a celld loader adapter.
-It accepts source with a cell ID and execution ID, then returns bounded notebook outputs.
+It receives room-accepted source with a cell ID and execution ID, then returns bounded notebook outputs.
 It cannot connect to notebook rooms or author Automerge changes.
 
 `apps/preview-python` owns the service: session admission, clean standbys, owner quotas, deduplication, and the nteract runtime peer.

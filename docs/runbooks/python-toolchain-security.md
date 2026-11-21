@@ -5,7 +5,7 @@ candidate:
 
 | Tool | Pinned fallback | Minimum system floor | Notes |
 | --- | --- | --- | --- |
-| `uv` | **0.13.5** | **0.13.5** | Updates managed Python builds; includes `rustls-webpki 0.103.16` and `webpki-root-certs 1.0.10`. Earlier `0.13.4` updated roots only and did not reject alternate cross-signed chains. |
+| `uv` | **0.13.5** | **0.13.5** | Updates managed Python builds; includes `rustls-webpki 0.103.16` and `webpki-root-certs 1.0.10`. Earlier `0.13.4` is the advisory's floor, but does not establish the stronger alternate cross-signed chain rejection that `0.13.5` verifies. |
 | `Pixi` | **0.82.1** | **0.82.1** | Includes `rustls-webpki 0.103.16` and `webpki-root-certs 1.0.10`. |
 | `Deno` | **2.9.8** | **2.9.8** | Rejects affected intermediate keys; CI primary and fallback installs use the same version. |
 | `Node` | **22.23.4** (image builder) | n/a | Rejects affected intermediate keys in image builds. |
@@ -103,10 +103,10 @@ protection does not prove daemon, updater, or package-client protection.
 - Release and PR-validation workflows pull fresh base images (`pull: true`) and
   disable layer reuse (`no-cache: true`) for `runtime-peer`.
 - Both Docker stages bootstrap `pip 26.2.2` from the advisory's hash-pinned
-  wheel before package installation, require `certifi >=2026.10.19` and
-  `uv >=0.13.5`, and refresh/enforce Debian Bookworm `ca-certificates`
-  `20250419~deb12u2`
-  ([DLA-4845-1](https://security-tracker.debian.org/tracker/DLA-4845-1)).
+  wheel before package installation and refresh/enforce the Debian Bookworm
+  `ca-certificates` floor (`20250419~deb12u2`,
+  [DLA-4845-1](https://security-tracker.debian.org/tracker/DLA-4845-1)); the
+  runtime stage also requires `certifi >=2026.10.19` and `uv >=0.13.5`.
 - The image smoke test enforces these package floors, but versions alone do not
   prove OpenSSL rejects every affected chain, and source guards do not prove an
   image was rebuilt or deployed. Retain the build result, resolved base digest,

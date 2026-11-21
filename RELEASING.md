@@ -65,19 +65,20 @@ Linux users can also install the released AppImage with:
 curl -fsSL https://sh.nteract.io | bash
 ```
 
-### Attribution handoff for embedders
+## Attribution handoff for embedders
 
 Releases ship verified notices and a full dependency inventory with explicit exceptions, rather than withholding every artifact over incomplete upstream material. Missing notice evidence does not mean redistribution is prohibited. The shipped notices and SBOM disclose known gaps; neither claims complete attribution or legal approval.
 
-#### Generated files and toolchain
+### Generated files and toolchain
 
 - **Notebook UI archive:** Includes `LICENSE.nteract`, `THIRD_PARTY_NOTICES.txt`, and `sbom.cdx.json`. Its schema-1 manifest adds `license`, `notices`, and `sbom` paths.
 - **Standalone daemon targets:** Publish the same three files as adjacent sidecars: `<binary asset>.LICENSE.nteract`, `<binary asset>.THIRD_PARTY_NOTICES.txt`, and `<binary asset>.sbom.cdx.json`. Keep `.exe` before these suffixes on Windows. Nightly daemon names include `runtimed-nightly`; stable names remain `runtimed`.
 - **Native `@runtimed/node` tarballs:** Generated from the same release checkout and default-feature `runtimed-node` build as the `.node` file. The three files ship inside each platform tarball, not as external release sidecars. Packing verifies the source commit, npm version, target, and binary hash after installation. Historical sources without attribution support fail explicitly. Publish a new qualified release instead of attaching a newer dependency graph to an older binary; changing a version number alone does not retrofit old binaries.
 - **Generation and SBOM scope:** Release jobs generate these files after building, using `cargo-about 0.9.2`, locked target-specific Cargo graphs, and installed pnpm dependencies. Missing or invalid attribution stops packaging. The CycloneDX SBOM is a conservative dependency inventory, not proof of exact linkage or a substitute for license texts and copyright notices.
 - **MPL-2.0 (`option-ext@0.2.0`):** Checked native Cargo graphs select `option-ext@0.2.0` under MPL-2.0. Generated notices identify its exact source archive; preserve that source-access information in the host's legal screen or resources. Using an unchanged MPL dependency does not make the host's independent files MPL-licensed, but modifications to covered files require separate attention.
+- **ZeroMQ / `win_uds` provenance:** Commit `90bd83bdfe62ff702c10413daa851dea58abcd51` upgraded `jupyter-zmq-client` to 3.0.1 and `zeromq` to 0.7.0, removing the `win_uds` dependency with its Unlicense declaration (already present in Kilo's inspected source pin `cea400364a391f6aee5753bf2a5ef6ea79d2991d`). Partners still need a new qualified artifact release for attribution files; changing a version number alone does not retrofit old binaries.
 
-#### Notice exceptions and upstream supplements
+### Notice exceptions and upstream supplements
 
 Four MIT-declared Plotly dependencies have reviewed, exact-version, digest-bound exceptions: `draw-svg-path@1.0.0`, `array-normalize@1.1.4`, `color-alpha@1.0.4`, and `jison-lex@0.3.4`.
 
@@ -85,20 +86,20 @@ Four MIT-declared Plotly dependencies have reviewed, exact-version, digest-bound
 - **Maintenance rules:** Obtain upstream clarification covering the released sources or qualify a newer bundle. Do not invent copyright holders from npm author fields. New gaps, changed package versions, and changed artifact hashes require review. Native Node attribution uses a separate Cargo-only graph and does not depend on Plotly.
 - **Supplemental notices (`scripts/licenses/`):** Bind reviewed package versions, payloads, and license text with SHA-256. Upgrades that change those inputs require a new review; do not replace a failed digest without checking the upstream license. KaTeX font notices are separate from its JavaScript MIT license, and Vega-Lite adapted utility functions carry their own MIT notices.
 - **Maintainer preparation scripts:**
-  - `node scripts/prepare-npm-license-supplements.mjs --check` verifies ordinary npm supplements offline after a frozen install. Omit `--check` to fetch pinned upstream texts.
+  - `node scripts/prepare-npm-license-supplements.mjs --check` verifies ordinary npm supplements offline after a frozen install and runs in CI under **Release validation**. Omit `--check` to fetch pinned upstream texts.
   - `node scripts/prepare-plotly-attribution.mjs` audits pinned Plotly, Mapbox, and MapLibre source locks, verifies public package archive integrity, and prepares the reviewed supplement.
-  - Both scripts are maintainer steps, not release-time network fallbacks. Every gap needs verified material or an explicit reviewed exception; arbitrary missing material fails. Unit tests do not replace a real attribution run.
+  - Fetching and preparation modes in both scripts are maintainer steps, not release-time network fallbacks. Every gap needs verified material or an explicit reviewed exception; arbitrary missing material fails. Unit tests do not replace a real attribution run.
 
-#### Windows MSVC and SDK terms
+### Windows MSVC and SDK terms
 
 Windows MSVC builds statically link Microsoft runtime code. Build and attribution must run in the same activated Visual Studio developer environment, and Windows producer discovery and final packaging require native CI verification.
 
 - **Recorded evidence:** Attribution records producer edition, toolset, SDK, compiler, and static-library hashes. It preserves the Visual Studio and Windows SDK redistribution terms, plus installed `Redist.txt` and `ThirdPartyNotices.txt` as supplemental evidence only (never substitutes for the full grant).
 - **Checked-in MSVC terms (`scripts/licenses/msvc*`):** Retain original DOCX files and extracted text with SHA-256 provenance for Visual Studio 2022 Enterprise/Professional 17.14 (MSVC 14.44) and Visual Studio 2026 Enterprise/Professional 18.x (MSVC 14.51). The [published VS2026 terms](https://visualstudio.microsoft.com/license-terms/vs2026-ga-pro-enterprise/) explicitly cover updates and revisions unless different terms apply. Preview builds and other toolset families require review; an edition name alone does not prove a full-use license.
-- **SDK fallback (26100 family):** Covers installed product `10.1.26100.*`, library directory `10.0.26100.0`, and x64/arm64 static UCRT. Preserved Microsoft SDK package metadata links to the retained SDK terms, which cover updates unless other terms accompany them. Metadata establishes license applicability, not the origin of installed library bytes. Exact servicing versions and static-library hashes remain in the evidence, so a monthly servicing change alone does not require a new grant.
+- **SDK fallback (26100 family):** Covers installed product `10.1.26100.*`, library directory `10.0.26100.0`, and x64/arm64 static UCRT. Preserved Microsoft SDK package metadata links to the retained SDK terms, which cover updates unless other terms accompany them. Metadata establishes license applicability, not the origin of installed library bytes. Exact servicing versions and static-library hashes remain in the evidence, so a monthly servicing change alone does not require a new grant. The observed CI runner image manifests report SDK `10.1.26100.9457` ([Windows x64 image](https://github.com/actions/runner-images/blob/win25-vs2026/20261030.294/images/windows/Windows2025-VS2026-Readme.md) and [Windows ARM64 image](https://github.com/actions/runner-images/blob/win11-vs2026-arm64/20261101.203/images/windows/Windows11-VS2026-Arm64-Readme.md)); those come from runner documentation rather than registry observations from failed jobs.
 - **Precedence and overrides:** Installed terms take precedence. Maintainers must review changed or separately supplied terms (including current published VS2026 terms) before release. Other SDK families require review or matching installed terms. If automatic discovery cannot locate the terms, set `NTERACT_MSVC_LICENSE_FILE` and `NTERACT_WINDOWS_SDK_LICENSE_FILE` to the plain-text terms files. Missing evidence stops Windows attribution. The Microsoft runtime is not BSD-licensed, and preserving these files does not replace reviewing the applicable Microsoft terms and REDIST lists.
 
-#### Embedder obligations
+### Embedder obligations
 
 Embedding partners must:
 
@@ -107,7 +108,7 @@ Embedding partners must:
 - Make corresponding MPL-2.0-covered source (including changes to covered files) available to recipients and explain how to obtain it. Retain exact source versions and review supplied source references before distribution.
 - Review their own additions and distribution obligations separately. Downloaded kernels and tools are outside this artifact scope. `@runtimed/node` platform tarballs carry separate binding-specific attribution; daemon notices do not cover the binding. These materials do not establish complete product compliance.
 
-### Crate publishing
+## Crate publishing
 
 Many crates are **not published to crates.io** (`publish = false`), including
 `runt`, `runtimed-py`, `mcp-supervisor`, `runt-mcp`, `runt-mcp-proxy`,

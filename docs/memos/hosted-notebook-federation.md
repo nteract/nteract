@@ -293,10 +293,10 @@ bridge. It requests `runtime_peer` scope and is fenced by the current runtime
 attachment session.
 
 This is the least deployment-specific experiment for "compute is already stood
-up," though not the smallest implementation change because nteract does not yet
+up." It is not the smallest implementation change, because nteract does not yet
 have a remote Jupyter Server REST/kernel-WebSocket adapter.
 
-- **Advantages:** requires no nteract process inside the Hub and no
+- **Advantages:** It requires no nteract process inside the Hub and no
   Hub-to-nteract egress; the user's Hub credential stays on the local machine.
 - **Costs:** Desktop must remain online, the daemon must implement the remote
   adapter, and Hub access is often coarse at the user-server boundary.

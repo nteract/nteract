@@ -139,10 +139,11 @@ document path that later references the content hash.
 - Hosted publish now validates reachability: a snapshot revision is rejected
   with `424 missing_blobs` when any materialized render ref is missing from
   the destination blob store, before any D1 revision row is recorded.
-- Blob reads are unauthenticated on the local loopback HTTP origin and rely on
-  same-machine isolation plus hash unguessability; that surface is now
-  declared permanently single-user (`../adr/blob-storage-and-content-addressing.md`
-  open question 3). Hosted reads ride the viewer-authorized
+- Local `/blob/{hash}` reads on the loopback HTTP server are unauthenticated
+  for origin separation and do not provide same-machine or cross-origin
+  confidentiality (`../adr/blob-storage-and-content-addressing.md` Decision 4;
+  `../adr/output-frame-security.md`, `Loopback HTTP surface` and
+  `Blob confidentiality`). Hosted reads ride the viewer-authorized
   `/api/n/:id/blobs/:hash` route; private sharing still needs the capability
   mechanism tracked as HCA-6.
 
