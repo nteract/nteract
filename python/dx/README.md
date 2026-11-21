@@ -2,7 +2,7 @@
 
 **Smart DataFrame display for Jupyter, built for [nteract](https://nteract.io).**
 
-`dx` upgrades Arrow-stream-capable DataFrames in a notebook. Instead of serializing megabytes of HTML into your output cells, dx hands Arrow IPC data to nteract's content-addressed blob store and renders it through a fast grid. Your `.ipynb` stays tiny, the cell stays snappy, and AI agents reading the notebook get a compact per-column summary — dtypes, ranges, distinct/top values, null counts — instead of raw bytes.
+`dx` upgrades Arrow-stream-capable DataFrames in a notebook. Instead of serializing megabytes of HTML into output cells, `dx` sends Arrow IPC data to nteract's content-addressed blob store and renders a fast grid. Your `.ipynb` stays tiny and cells stay snappy. AI agents reading the notebook get a compact per-column summary (dtypes, ranges, distinct/top values, null counts) instead of raw bytes.
 
 ## Install
 
@@ -17,7 +17,9 @@ pip install --pre "dx[polars]"
 pip install --pre "dx[pandas,polars]"
 ```
 
-Python 3.10+. Only pre-release wheels are being published while the library surface settles — the stable channel is frozen. See [#2217](https://github.com/nteract/nteract/issues/2217). Most nteract users don't install `dx` directly: the kernel launcher calls `dx.install()` during bootstrap, so DataFrames render through the blob store inside the nteract desktop app automatically.
+Requires Python 3.10+. Only pre-release wheels are published while the library surface settles; the stable channel is frozen. See [#2217](https://github.com/nteract/nteract/issues/2217).
+
+Most nteract users do not install `dx` directly. The kernel launcher calls `dx.install()` during bootstrap, so DataFrames render through the blob store inside the nteract desktop app automatically.
 
 ## Use
 
@@ -27,7 +29,7 @@ dx.install()
 
 import pandas as pd
 df = pd.read_parquet("large-dataset.parquet")
-df  # rendered via nteract's sift grid — no base64 in your .ipynb
+df  # rendered via nteract's sift grid (no base64 in your .ipynb)
 ```
 
 That's it. `dx.install()` is idempotent and automatically called by nteract's kernel bootstrap, so most nteract users never touch it directly. Calling it yourself is fine when you want the behavior in an environment nteract didn't configure for you (a standalone kernel, a test harness, etc.).
@@ -35,10 +37,10 @@ That's it. `dx.install()` is idempotent and automatically called by nteract's ke
 ## What you get
 
 - **Fast rendering.** Large DataFrames stream through the blob store; the `.ipynb` payload stays small.
-- **AI-friendly summaries.** Every DataFrame ships a `text/llm+plain` column summary — dtypes, numeric ranges, string distinct/top values, null counts — so agents reason about the shape without materializing the whole table.
-- **Visualization integration.** [Altair](https://altair-viz.github.io) and [Plotly](https://plotly.com/python/) are automatically switched to their nteract renderers for interactive output that works inside nteract's isolated iframe sandbox.
+- **AI-friendly summaries.** Every DataFrame ships a `text/llm+plain` column summary (dtypes, numeric ranges, string distinct/top values, null counts). Agents reason about the table shape without materializing the whole table.
+- **Visualization integration.** [Altair](https://altair-viz.github.io) and [Plotly](https://plotly.com/python/) are automatically switched to their nteract renderers for interactive output inside nteract's isolated iframe sandbox.
 - **Arrow protocol first.** pandas, polars, pyarrow, [narwhals](https://narwhals-dev.github.io/narwhals/), and other producers that expose `__arrow_c_stream__()` use the same Arrow IPC path.
-- **Safe outside nteract.** When no nteract runtime is reachable, `dx.install()` is a no-op. `import dx` is safe from plain Python, vanilla Jupyter, scripts, CI.
+- **Safe outside nteract.** When no nteract runtime is reachable, `dx.install()` is a no-op. `import dx` is safe from plain Python, vanilla Jupyter, scripts, and CI.
 
 ## Links
 

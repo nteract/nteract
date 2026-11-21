@@ -1,14 +1,8 @@
 # nteract runtime-peer image
 
-A Linux (amd64) container image combining the `runtimed` daemon with a Python
-environment at `UV_BASE_PACKAGES` parity, so provider-hosted compute
-(Outerbounds workstations, JupyterHub containers) can launch kernels through
-the `current_python` policy with **zero manual package installation**.
+A Linux (amd64) container image combining `runtimed` with a Python environment at `UV_BASE_PACKAGES` parity. Provider-hosted compute (Outerbounds workstations, JupyterHub containers) can launch kernels through the `current_python` policy with **zero manual package installation**.
 
-Design decisions and the kernel-launch mechanics this image relies on live in
-`docs/adr/remote-workstation-doc-agents.md`,
-`docs/adr/kernel-env-trust.md`, and `crates/kernel-env/src/uv.rs`
-(`UV_BASE_PACKAGES` — the single source of truth for the base package set).
+Design decisions and kernel-launch mechanics live in `docs/adr/remote-workstation-doc-agents.md`, `docs/adr/kernel-env-trust.md`, and `crates/kernel-env/src/uv.rs` (`UV_BASE_PACKAGES` is the single source of truth for the base package set).
 
 ## What's inside
 
@@ -17,12 +11,10 @@ Design decisions and the kernel-launch mechanics this image relies on live in
 | `runtimed` | `cargo build --release -p runtimed` | daemon + `workstation-agent` / `cloud-runtime-agent` |
 | `runt`, `nteract-cli` (`nteract` symlink) | `cargo build --release -p runt` | pairing CLI: `workstation connect` / `workstation run` (FR-009) |
 | Python 3.12 | `python:3.12-slim-bookworm` | `python3` on `PATH`; pass as `--python-path` |
-| `ipykernel`, `ipywidgets`, `anywidget`, `nbformat`, `pyarrow>=14`, `uv` | pip | `UV_BASE_PACKAGES` parity (`crates/kernel-env/src/uv.rs:73-87`); UV-only — no conda (Clarifications 2026-10-01) |
+| `ipykernel`, `ipywidgets`, `anywidget`, `nbformat`, `pyarrow>=14`, `uv` | pip | `UV_BASE_PACKAGES` parity (`crates/kernel-env/src/uv.rs:73-87`); UV-only, no conda (Clarifications 2026-10-01) |
 | `runtimed` Python bindings | maturin wheel built in-stage | used by the smoke test; also handy for agents |
 
-The `nteract_kernel_launcher` is **not** preinstalled — the runtime agent
-vendors it at launch time via `PYTHONPATH` from its launcher cache
-(`crates/runtimed/src/launcher_cache.rs`).
+`nteract_kernel_launcher` is **not** preinstalled. The runtime agent vendors it at launch time via `PYTHONPATH` from its launcher cache (`crates/runtimed/src/launcher_cache.rs`).
 
 ## Build
 
@@ -31,37 +23,29 @@ git lfs pull   # stable renderer bundles (plotly/vega/leaflet) are LFS-tracked
 docker build -t nteract-runtime-peer:dev -f images/runtime-peer/Dockerfile .
 ```
 
-The builder stage generates and verifies the runtime WASM, Sift, renderer
-plugins, and MCP output widget with
-`cargo xtask artifacts ensure runtime,sift,renderer,mcp-widget` followed by
-`cargo xtask artifacts verify runtime,sift,renderer,mcp-widget`.
-`runtimed` embeds the runtime and renderer assets; `runt` also depends on
-`runt-mcp`, whose release build requires the real `assets/_output.html` widget.
-Artifact verification checks freshness and rejects the debug widget placeholder.
+The builder stage generates and verifies the runtime WASM, Sift, renderer plugins, and MCP output widget:
+
+- `cargo xtask artifacts ensure runtime,sift,renderer,mcp-widget`
+- `cargo xtask artifacts verify runtime,sift,renderer,mcp-widget`
+
+`runtimed` embeds the runtime and renderer assets. `runt` also depends on `runt-mcp`, whose release build requires the real `assets/_output.html` widget. Artifact verification checks freshness and rejects the debug widget placeholder.
 
 ## Validate
 
-The Release validation PR workflow builds this Dockerfile and runs the same
-full smoke test below on a GitHub-hosted Linux runner, without publishing an
-image. Changes to the image recipe or smoke scripts trigger that workflow.
-The daemon execution tier logs the Python interpreter, binding version and
-native-extension checksum, enables Python fault traces, and requires a clean
-interpreter exit before reporting success. A fault after the coroutine returns
-still fails the smoke test and blocks the staging push. A bounded exit probe
-then requires 20 fresh Python processes to ping the running daemon and exit
-cleanly; the first failed ping or exit stops the smoke. The launch-shape tier
-uses the standalone daemon launcher cache, so it does not add a pooled
-environment's packages to the image interpreter's import path.
+The Release validation PR workflow builds this Dockerfile and runs the smoke test below on a GitHub-hosted Linux runner without publishing an image. Changes to the image recipe or smoke scripts trigger this workflow.
 
-PR CI also runs a separate GDB probe in an unpushed diagnostic derivative.
-It verifies interpreter, libpython and native-extension bytes match the ordinary
-image and records package and linked-library differences. The ordinary image
-smoke remains the release gate: diagnostic success cannot erase its failure.
-A tracing-policy error or first failed debugger sample also fails the PR job;
-the job preserves its diagnostic logs and exact native ELF without relaxing
-container permissions. A breakpoint records the caller before a CPython thread
-exit, then continues to the first signal or normal exit. A stopped process stays
-stopped while GDB records registers, mappings, stacks and caller disassembly.
+Smoke test tiers:
+
+- **Daemon execution tier:** logs the Python interpreter, binding version, and native-extension checksum. Enables Python fault traces and requires a clean interpreter exit. A fault after the coroutine returns still fails the smoke test and blocks the staging push.
+- **Bounded exit probe:** requires 20 fresh Python processes to ping the running daemon and exit cleanly. The first failed ping or exit stops the smoke test.
+- **Launch-shape tier:** uses the standalone daemon launcher cache. It does not add a pooled environment's packages to the image interpreter's import path.
+
+PR CI also runs a separate GDB probe in an unpushed diagnostic derivative:
+
+- Verifies that the interpreter, libpython, and native-extension bytes match the ordinary image, and records package and linked-library differences.
+- Leaves the ordinary image smoke test as the release gate. Diagnostic success cannot erase a smoke failure.
+- Fails the PR job on a tracing-policy error or first failed debugger sample. Preserves diagnostic logs and the exact native ELF without relaxing container permissions.
+- Sets a breakpoint to record the caller before a CPython thread exit, then continues to the first signal or normal exit. A stopped process stays stopped while GDB records registers, mappings, stacks, and caller disassembly.
 
 ```bash
 # Full in-container smoke (contract prechecks + daemon execution + launch shape)
@@ -89,62 +73,29 @@ docker run --rm --env-file runt.env nteract-runtime-peer:<tag> \
 
 Container contract summary:
 
-- Runs as non-root user `runt` (uid 1000), `HOME=/home/runt` writable — the
-  daemon base dir (launcher cache, blobs, socket) lives there; that is the one
-  volume requirement.
+- Runs as non-root user `runt` (uid 1000) with writable `HOME=/home/runt`. The daemon base dir (launcher cache, blobs, socket) lives there and is the one volume requirement.
 - `ENTRYPOINT ["runtimed"]`, no default subcommand.
-- Outbound network only; no `EXPOSE`d ports (kernel ports bind loopback
-  in-container).
+- Outbound network only; no `EXPOSE`d ports (kernel ports bind loopback in-container).
 
 ## Publication
 
-The release train (`.github/workflows/release-common.yml`, jobs
-`image-runtime-peer-build` and `image-runtime-peer-publish`) publishes to
-`ghcr.io/nteract/runtime-peer` with `:<version>`, `:<channel>`
-(`nightly`/`stable`), and `:latest` (stable only) tags. The build job loads the
-image locally, runs the smoke script, then pushes one channel-qualified staging
-tag (`build-<channel>-<sha>`) and records its digest. The publish job runs only
-after the GitHub release exists and promotes that exact digest with
-`docker buildx imagetools create`. A stable tag push and the nightly cron can
-build the same commit concurrently; the channel in the staging tag and the
-digest handoff keep one channel from publishing the other's image.
+The release train (`.github/workflows/release-common.yml`, jobs `image-runtime-peer-build` and `image-runtime-peer-publish`) publishes to `ghcr.io/nteract/runtime-peer`. It pushes `:<version>`, `:<channel>` (`nightly`/`stable`), and `:latest` (stable only) tags.
 
-Authentication is the job's `GITHUB_TOKEN` with `packages: write`, which can
-write only to the repository owner's GHCR namespace. That is why the image lives
-under `ghcr.io/nteract/` and not under another org. The reusable workflow's
-callers (`release-nightly.yml`, `release-stable.yml`) must grant
-`packages: write` in their ceiling or GitHub rejects the whole release at
-validation time; every other job in the shared workflow declares
-`contents: read` so the scope stays with the two image jobs.
+- **Build job:** loads the image locally, runs the smoke script, pushes one channel-qualified staging tag (`build-<channel>-<sha>`), and records its digest.
+- **Publish job:** runs only after the GitHub release exists and promotes that exact digest with `docker buildx imagetools create`.
+- **Concurrency guard:** a stable tag push and the nightly cron can build the same commit concurrently. The channel in the staging tag and the digest handoff keep one channel from publishing the other's image.
 
-First publish creates the package private. An org admin sets it public once in
-the GHCR package settings; until then the publish job's anonymous-pull check
-fails. Confirm the package links to `nteract/nteract` (set from the
-`org.opencontainers.image.source` label). Pulls need no credentials afterward.
+Authentication uses the job's `GITHUB_TOKEN` with `packages: write`, which can write only to the repository owner's GHCR namespace. That is why the image lives under `ghcr.io/nteract/` and not another org. The reusable workflow callers (`release-nightly.yml`, `release-stable.yml`) must grant `packages: write` in their ceiling, or GitHub rejects the release at validation time. Every other job in the shared workflow declares `contents: read` so the scope stays with the two image jobs.
 
-Nightly tags accumulate; GHCR has no retention policy. Pruning old `build-*`
-and nightly version tags is a follow-up. Local builds work without any registry.
+First publish creates a private package. An org admin sets it public once in the GHCR package settings; until then, the publish job's anonymous-pull check fails. Confirm the package links to `nteract/nteract` (set from the `org.opencontainers.image.source` label). Pulls need no credentials afterward.
+
+Nightly tags accumulate because GHCR has no retention policy. Pruning old `build-*` and nightly version tags is a follow-up. Local builds work without any registry.
 
 ## Known limitations (v1)
 
-- The publication setup targets linux/amd64 only; local builds follow the host platform (the
-  Dockerfile is arch-aware via `TARGETARCH`, so an Apple Silicon daemon
-  produces an arm64 image). arm64 publication is a follow-up.
-- The runtime base package list is derived from `UV_BASE_PACKAGES` at build
-  time, so it floats within the ranges the constant declares (e.g.
-  `pyarrow>=14`) — deliberate, so the image always matches daemon-managed
-  environments. Build tooling is pinned AND integrity-checked: Node
-  `22.23.4`, `pnpm@11.9.0`, `maturin==1.11.5` (matching the release
-  workflow's maturin-action), wasm-pack `0.15.0`; the Node and wasm-pack
-  tarballs verify against hard-coded SHA256 digests before extraction.
-- The BuildKit cache mounts only warm steps within one build (and local
-  rebuilds on the same worker); on a fresh CI runner the compile steps still
-  cold-pay because cache-mount contents are not exported by
-  `--cache-to type=gha`. Wiring sccache (the mechanism `build-linux` and
-  `build-python-wheels` use) into the container build is the follow-up that
-  removes the ~8-10 min of cold Rust compilation per release.
-- In-image first-run onboarding (pairing wizard) is a deferred follow-up —
-  operators pair manually with the bundled CLI per the runbook.
-- The smoke test's daemon-execution tier lets the local daemon build a uv
-  environment, which downloads packages from PyPI (no *cloud* dependency, but
-  not airgapped).
+- Publication targets linux/amd64 only. Local builds follow the host platform (the Dockerfile is arch-aware via `TARGETARCH`, so an Apple Silicon daemon produces an arm64 image). arm64 publication is a follow-up.
+- The runtime base package list is derived from `UV_BASE_PACKAGES` at build time, so it floats within declared ranges (e.g. `pyarrow>=14`). This is deliberate so the image matches daemon-managed environments.
+- Build tooling is pinned AND integrity-checked: Node `22.23.4`, `pnpm@11.9.0`, `maturin==1.11.5` (matching the release workflow's maturin-action), and wasm-pack `0.15.0`. The Node and wasm-pack tarballs verify against hard-coded SHA256 digests before extraction.
+- BuildKit cache mounts warm steps only within one build (and local rebuilds on the same worker). On a fresh CI runner, compile steps still cold-pay because `--cache-to type=gha` does not export cache-mount contents. Wiring sccache (used by `build-linux` and `build-python-wheels`) into the container build is a follow-up to remove the ~8-10 min of cold Rust compilation per release.
+- In-image first-run onboarding (pairing wizard) is a deferred follow-up. Operators pair manually with the bundled CLI per the runbook.
+- The smoke test's daemon-execution tier lets the local daemon build a uv environment, which downloads packages from PyPI. There is no *cloud* dependency, but it is not airgapped.

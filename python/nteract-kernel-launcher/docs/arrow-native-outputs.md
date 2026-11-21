@@ -4,8 +4,8 @@ Issue: https://github.com/nteract/nteract/issues/1816
 
 This plan updates the post-#2629/#2630/#2632 architecture direction. The short
 version: Arrow IPC stream should become the canonical rich table output for
-notebooks. Parquet should remain a supported input/rendering format and a
-backward-compatibility path for already-saved notebooks, but new pandas, polars,
+notebooks. Parquet remains a supported input/rendering format and
+backward-compatibility path for already-saved notebooks. New pandas, polars,
 pyarrow, narwhals, and Hugging Face table outputs should converge on Arrow IPC.
 The phases below are intended as targeted commits in this PR, not separate PRs.
 
@@ -168,8 +168,8 @@ fallback or row-limiting glue, not the default serialization model.
 Treat the imported `RecordBatchReader` as a potentially single-use source. For
 the current one-shot path, it is fine to drain the reader into one complete IPC
 stream. For the progressive path, the chunk writer should drain the same reader
-incrementally and publish chunks as batches arrive; it should not first build a
-complete IPC stream and then split the serialized bytes.
+incrementally and publish chunks as batches arrive. Do not build a complete IPC
+stream first and split its serialized bytes afterward.
 
 For older pandas versions that do not expose `__arrow_c_stream__`, convert
 through PyArrow and write Arrow IPC stream bytes:
@@ -275,9 +275,9 @@ inside the manifest.
 The precompute boundary is the Python launcher. Do not expand runtime Python or
 Node consumer APIs just to recover this text. Automatic dataframe/table
 formatters and the explicit progressive Arrow display helper publish bounded
-summary text as sibling `text/llm+plain`, so MCP, runtimed-py, runtimed-node,
-and frontend renderers can read the producer-authored text instead of
-calculating it independently.
+summary text as sibling `text/llm+plain`. MCP, runtimed-py, runtimed-node, and
+frontend renderers then read that producer-authored text instead of recomputing
+it.
 
 ## Chunked Arrow Over CAS
 
@@ -808,8 +808,8 @@ Changes:
 Acceptance:
 
 - A large Arrow table displays first rows before the whole table is serialized.
-- For a table where full serialization takes more than 1 second, the first rows
-  render within 200 ms after the dataframe/source object is available when a
+- For tables taking over 1 second to serialize, the first rows render within
+  200 ms once the dataframe/source object is available. This applies whenever a
   bounded head can be produced without forcing full conversion.
 - Final manifest is complete and durable.
 - Vanilla notebook fallback remains simple and stable.
@@ -888,9 +888,9 @@ Acceptance:
 ## Backward Compatibility
 
 Desktop client and runtime daemon ship together. There is no supported
-configuration where a release-N client talks to a release-M daemon, so the
-manifest MIME, blob-ref shape, attached-buffer protocol, and output store
-schema can change in a single release without compatibility shims. The only
+configuration where a release-N client talks to a release-M daemon. The manifest
+MIME, blob-ref shape, attached-buffer protocol, and output store schema can
+therefore change in a single release without compatibility shims. The only
 durable compatibility surface is saved `.ipynb` files on disk and the old
 parquet/Arrow IPC blob payloads users may still have in CAS.
 

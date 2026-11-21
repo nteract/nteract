@@ -2,7 +2,7 @@
 
 Autonomous notebook agent powered by Claude. Spawns the **nteract MCP server** as a subprocess and lets Claude interact with a live notebook over stdio. Designed to run alongside humans and other gremlins for stress testing and API evaluation.
 
-Internal tool — not published.
+Internal tool (not published).
 
 ## How it works
 

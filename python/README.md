@@ -12,19 +12,16 @@ Development home for nteract Python packages. The UV workspace root (`pyproject.
 | `python/gremlin/` | Autonomous notebook agent for stress testing |
 | `python/safari-timeline/` | Safari Web Inspector timeline unpacking utilities |
 
-The root project keeps install metadata empty. Workspace-local packages live in
-the default `dev` dependency group so plain `pip install .` does not try to
-resolve unpublished packages from PyPI. `nteract-kernel-launcher` is especially
-important here: the packaged daemon embeds its sources and vendors them into
-kernel environments, so use explicit `uv --package nteract-kernel-launcher`
-commands when working on or testing that package directly.
+The root project keeps install metadata empty. Workspace-local packages live in the default `dev` dependency group so plain `pip install .` does not try to resolve unpublished packages from PyPI.
+
+`nteract-kernel-launcher` needs explicit targeting because the packaged daemon embeds its sources and vendors them into kernel environments. Use `uv --package nteract-kernel-launcher` commands when working on or testing that package directly.
 
 ## Dev Setup
 
 The virtual environment lives at the repo root (`.venv`), not inside `python/`.
 
 ```bash
-# From the repo root — creates .venv and installs the default dev workspace
+# From the repo root: creates .venv and installs the default dev workspace
 uv sync
 ```
 

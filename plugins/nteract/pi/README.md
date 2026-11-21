@@ -6,13 +6,10 @@ Run Python in a real IPython runtime. State (variables, imports, matplotlib figu
 
 ## What you get
 
-- **`python_repl`** — Execute Python in your persistent REPL. Backed by a real IPython runtime. Variables, imports, and state stick around between calls. The last expression is the result; use `print()` or `display()` for intermediate output. Images (matplotlib, PIL, widgets) are returned inline.
-  
-- **`python_add_dependencies`** — Install packages mid-session without restarting the kernel. Or pass `dependencies` on the first `python_repl` call to pre-install before kernel start.
-
-- **`python_save_notebook`** — Save your session as an `.ipynb` file you can open in Jupyter or nteract.
-
-- **`/python-reset`** — Start fresh: new kernel, clean slate.
+- **`python_repl`**: execute Python in your persistent REPL, backed by a real IPython runtime. Variables, imports, and state persist between calls. The last expression is the result; use `print()` or `display()` for intermediate output. Images (matplotlib, PIL, widgets) are returned inline.
+- **`python_add_dependencies`**: install packages mid-session without restarting the kernel. Pass `dependencies` on the first `python_repl` call to pre-install before kernel start.
+- **`python_save_notebook`**: save your session as an `.ipynb` file you can open in Jupyter or nteract.
+- **`/python-reset`**: start fresh with a new kernel and clean slate.
 
 ## Install
 

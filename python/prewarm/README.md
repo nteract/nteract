@@ -1,8 +1,6 @@
 # prewarm
 
-Warm up Python environments by importing packages and triggering their
-one-time side effects — font caches, C extension loading, BLAS discovery,
-and more.
+Warm up Python environments by importing packages and triggering their one-time side effects: font caches, C extension loading, BLAS discovery, and more.
 
 ## Usage
 
@@ -31,12 +29,6 @@ warm(["matplotlib", "pandas"], ipython=False)
 
 ## Why?
 
-First imports of heavy packages like matplotlib and pandas are slow — they
-build font caches, load C extensions, discover BLAS libraries, etc.
-Running `prewarm` in a fresh environment triggers all of these one-time
-costs up front so subsequent imports are fast.
+First imports of heavy packages like matplotlib and pandas are slow. They build font caches, load C extensions, and discover BLAS libraries. Running `prewarm` in a fresh environment triggers these one-time costs up front so subsequent imports are fast.
 
-When run with IPython (the default), it also warms IPython's startup path:
-traitlets configuration, magic commands, tab completion, and the display
-system. This is especially useful for Jupyter kernels where IPython boot
-time is part of the perceived startup latency.
+When run with IPython (the default), it also warms IPython's startup path: traitlets configuration, magic commands, tab completion, and the display system. This is especially useful for Jupyter kernels where IPython boot time is part of perceived startup latency.

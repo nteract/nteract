@@ -12,8 +12,8 @@ same bucket using standard Debian repository layout.
 
 | File | Purpose |
 |------|---------|
-| `Dockerfile` | Publisher image — builds the APT index and uploads to R2 |
-| `Dockerfile.test` | Test image — configured to install from the live R2 repo |
+| `Dockerfile` | Publisher image: builds the APT index and uploads to R2 |
+| `Dockerfile.test` | Test image: configured to install from the live R2 repo |
 | `publish-apt.sh` | Main publish script, runs inside the publisher container |
 | `prune-packages.py` | Python helper that prunes old nightly versions from the Packages index |
 | `docker-compose.yml` | Defines `publisher` and `test` services |
@@ -28,7 +28,7 @@ same bucket using standard Debian repository layout.
 
 The publisher signs the APT index with a GPG key. You can use an existing key or generate a dedicated one.
 
-**Option A — use your existing key:**
+**Option A: use your existing key**
 
 ```bash
 # Find your fingerprint
@@ -47,7 +47,7 @@ passwd
 # enter current passphrase, leave new passphrase blank
 ```
 
-**Option B — generate a dedicated key (no passphrase):**
+**Option B: generate a dedicated key (no passphrase)**
 
 ```bash
 gpg --batch --gen-key <<EOF
@@ -85,7 +85,7 @@ GPG_KEY_ID=YOUR_FINGERPRINT
 GPG_PRIVATE_KEY=<output of the base64 export command above>
 ```
 
-`R2_ENDPOINT` is derived automatically inside the script as `https://${CF_ACCOUNT_ID}.r2.cloudflarestorage.com` — do not set it manually.
+`R2_ENDPOINT` is derived automatically inside the script as `https://${CF_ACCOUNT_ID}.r2.cloudflarestorage.com`. Do not set it manually.
 
 ### 3. Copy the `.deb` into the debs folder
 
@@ -119,7 +119,7 @@ docker compose -f scripts/apt/docker-compose.yml run --rm publisher \
   --channel nightly --keep-last 5 /workspace/nteract-nightly-linux-x64.deb
 ```
 
-Stable builds are never pruned — all versions are retained.
+Stable builds are never pruned. All versions are retained.
 
 ---
 
@@ -146,7 +146,7 @@ apt install nteract-nightly
 apt install nteract
 ```
 
-Note: the app requires a display (GTK) and will crash with a GTK error if you try to run it inside the container — that's expected. A clean `apt install` with no errors is sufficient to confirm the repository is working.
+Note: the app requires a display (GTK) and crashes with a GTK error if you try to run it inside the container. That is expected. A clean `apt install` with no errors confirms the repository is working.
 
 ## User install commands
 
