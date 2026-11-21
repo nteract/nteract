@@ -248,7 +248,7 @@ bytes. Before writing anything, `prepare --from-artifact` queries
   receipt's `files` plus `build-receipt.json`, every file must match its
   sha256, and the receipt must name the run's SHA and a clean tree.
 
-These checks mirror the lab1 controller's provenance and archive checks—change
+These checks mirror the lab1 controller's provenance and archive checks. Change
 both together. The controller also enforces allowlisted GitHub actors; here,
 the operator picking the run replaces that check.
 
@@ -2421,9 +2421,9 @@ runs in this order:
      multi-block Pages, images, dataframes, and internal links.
    - Rewrites source links (`/p/<document_id>`, `/p/<id>`, `/?page=<id>`,
      `/project/<id>`, `/s/<id>`, and root-relative `](/p/<id>`) to the new
-     IDs. Links are parsed as whole tokens—CommonMark link destinations
+     IDs. Links are parsed as whole tokens: CommonMark link destinations
      `](...)` (balanced parentheses, backslash escapes, or `<...>`), autolinks
-     `<...>`, or bare URLs to whitespace—and rewritten only when the whole
+     `<...>`, or bare URLs to whitespace. They are rewritten only when the whole
      token is a source URL (leaving longer IDs and nested URLs untouched).
      Paths, queries, and fragments after the ID are preserved; trailing
      sentence punctuation stays outside bare URLs; root-relative `/p/<id>`

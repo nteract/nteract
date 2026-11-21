@@ -70,7 +70,7 @@ The [native control plane](../../crates/runtimed/src/daemon.rs) is separate from
 
 ## Blob confidentiality
 
-The [store](../../crates/runtimed/src/blob_store.rs) hashes bytes with unsalted `SHA256(data)` — no secret, salt, or room key. Hash validation checks 64 hexadecimal characters. The shared store holds outputs, streams, tracebacks, attachments, images, HTML, JSON, widget buffers, and imported notebook data, any of which may be sensitive.
+The [store](../../crates/runtimed/src/blob_store.rs) hashes bytes with unsalted `SHA256(data)` (no secret, salt, or room key). Hash validation checks 64 hexadecimal characters. The shared store holds outputs, streams, tracebacks, attachments, images, HTML, JSON, widget buffers, and imported notebook data, any of which may be sensitive.
 
 [Redaction](../../crates/runtimed/src/output_redaction.rs) scrubs selected launch-environment values on a best-effort basis. It can be disabled, skips binary payloads, and does not run on the [manifest path used for imports](../../crates/runtimed/src/output_store.rs).
 

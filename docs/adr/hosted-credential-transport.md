@@ -165,8 +165,8 @@ the underlying credential on the upgrade request:
 3. Browser opens `wss://.../n/<id>/sync?ticket=<opaque-ticket>`.
 4. Listener atomically consumes the ticket before accepting the upgrade.
 
-Ticket consumption must be atomic — for example, a single D1
-`DELETE ... RETURNING`, compare-and-swap, or serialized Durable Object gate. A
+Ticket consumption must be atomic (for example, a single D1
+`DELETE ... RETURNING`, compare-and-swap, or serialized Durable Object gate). A
 read-then-delete check is unsafe against concurrent upgrades. Because query
 strings can still reach CDN, WAF, or Worker analytics before consumption,
 tickets remain a narrow fallback behind non-echoed subprotocols or
@@ -337,16 +337,16 @@ registration provider-neutral and least-privilege.
 
 ## References
 
-- `docs/adr/identity-and-trust.md` — principals, operators, providers, actor
+- `docs/adr/identity-and-trust.md`: principals, operators, providers, actor
   validation, and base credential vocabulary.
-- `docs/adr/hosted-room-authorization.md` — room ACLs and scope derivation.
-- `docs/runbooks/hosted-direct-oidc-demo-runbook.md` — direct OIDC Anaconda demo
+- `docs/adr/hosted-room-authorization.md`: room ACLs and scope derivation.
+- `docs/runbooks/hosted-direct-oidc-demo-runbook.md`: direct OIDC Anaconda demo
   deployment and smoke steps.
-- `docs/prd/hosted-sharing-invites.md` — email invite to principal ACL
+- `docs/prd/hosted-sharing-invites.md`: email invite to principal ACL
   resolution.
-- `docs/adr/hosted-output-origin-isolation.md` — output document, renderer
+- `docs/adr/hosted-output-origin-isolation.md`: output document, renderer
   asset, and blob-origin separation.
-- `apps/notebook-cloud/src/identity.ts` — OIDC and dev-token credential
+- `apps/notebook-cloud/src/identity.ts`: OIDC and dev-token credential
   extraction.
 - Cloudflare WebSockets docs:
   `https://developers.cloudflare.com/network/websockets/`

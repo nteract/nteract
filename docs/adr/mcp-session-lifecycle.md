@@ -101,7 +101,7 @@ Before explicit attachment handles landed, the child held one active slot (`sess
 
 ### Attachment handles and resource URIs
 
-Connect and create responses return an opaque `notebook_handle` identifying the exact attachment. Handle-qualified URIs—`nteract://sessions/{notebook_handle}/cells`, `/cells/{cell_id}`, and `/comments`—remain readable for retained attachments. Replacing or releasing an attachment invalidates its handle. A reconnect must issue a fresh handle; an old handle never silently rebinds to a new peer. Legacy notebook-ID resource URIs remain readable, but ambiguous IDs require an explicit handle.
+Connect and create responses return an opaque `notebook_handle` identifying the exact attachment. Handle-qualified URIs (`nteract://sessions/{notebook_handle}/cells`, `/cells/{cell_id}`, and `/comments`) remain readable for retained attachments. Replacing or releasing an attachment invalidates its handle. A reconnect must issue a fresh handle; an old handle never silently rebinds to a new peer. Legacy notebook-ID resource URIs remain readable, but ambiguous IDs require an explicit handle.
 
 ### Snapshot observers and change journal
 
@@ -190,7 +190,7 @@ Failed-query deferral and lagged-event observation are covered by unit tests in 
 
 ## Decision 6: A same-incarnation heartbeat is structurally a no-op
 
-`DaemonEvent::Connected` fires on routine liveness refreshes. When the queried incarnation matches existing local bindings, reconciliation does nothing—no `was_disconnected` latch is needed. An installed healthy session clears obsolete recovery targets. Because even a same-version daemon restart produces a new `pid + started_at`, reconciliation reliably drops stale local handles and recovers against the new incarnation.
+`DaemonEvent::Connected` fires on routine liveness refreshes. When the queried incarnation matches existing local bindings, reconciliation does nothing. No `was_disconnected` latch is needed. An installed healthy session clears obsolete recovery targets. Because even a same-version daemon restart produces a new `pid + started_at`, reconciliation reliably drops stale local handles and recovers against the new incarnation.
 
 Heartbeat no-op and same-version replacement tests live in `crates/runt-mcp/src/daemon_watch.rs`.
 
@@ -297,9 +297,9 @@ The installed `nteract-mcp` wrapper differs at startup: it serves cached tools i
 
 1. The user upgrades Desktop; the installed daemon restarts as version `2.1.3` (previously `2.1.2`).
 2. `DaemonConnection` emits `DaemonEvent::Upgraded { previous: 2.1.2, current: 2.1.3 }`.
-3. The watcher queries live daemon info, detects a mismatch against its startup version baseline, and exits with `EX_TEMPFAIL` (`75`)—even if the event itself was missed.
+3. The watcher queries live daemon info, detects a mismatch against its startup version baseline, and exits with `EX_TEMPFAIL` (`75`), even if the event itself was missed.
 4. `McpProxy` classifies exit `75` as an intentional upgrade handoff, re-resolves the child binary, seeds `NTERACT_MCP_REJOIN_NOTEBOOK` if a preferred target is tracked, and spawns the new child.
-5. The supervisor detects the version change by comparing old vs new `ServerInfo.server_info.title` and prepends `Daemon upgraded (2.1.2 -> 2.1.3), session reconnect requested` to the next tool result—reporting the request rather than claiming async rejoin already succeeded.
+5. The supervisor detects the version change by comparing old vs new `ServerInfo.server_info.title` and prepends `Daemon upgraded (2.1.2 -> 2.1.3), session reconnect requested` to the next tool result, reporting the request rather than claiming async rejoin already succeeded.
 6. Under explicit attachments, clients obtain a fresh `notebook_handle` after child replacement; old handles never silently rebind.
 
 ### Last peer leaves, comes back during teardown
@@ -321,7 +321,7 @@ The installed `nteract-mcp` wrapper differs at startup: it serves cached tools i
 
 1. Claude Code starts in `owner` mode, spawns the worktree daemon, and connects to a notebook.
 2. Codex starts with `NTERACT_DEV_MODE=attach`, verifies the daemon socket exists, and spawns its own child without managing the daemon.
-3. Both children connect to the same room (`active_peers` rises from `1` to `2`). Each holds independent attachment state and derives its own display label and `agent:<slug>:<session>` operator from upstream MCP identity—stable across child restarts (`crates/runt-mcp/src/lib.rs`, `crates/runt-mcp-proxy/src/proxy.rs`). Same-user attribution does not create separate authorization boundaries.
+3. Both children connect to the same room (`active_peers` rises from `1` to `2`). Each holds independent attachment state and derives its own display label and `agent:<slug>:<session>` operator from upstream MCP identity, which stays stable across child restarts (`crates/runt-mcp/src/lib.rs`, `crates/runt-mcp-proxy/src/proxy.rs`). Same-user attribution does not create separate authorization boundaries.
 4. When one calls `execute_cell`, the other observes shared runtime updates. Disconnecting one peer leaves `active_peers = 1` and does not schedule kernel teardown, though stopping the daemon via its owner affects both clients.
 
 ## MCP protocol checkpoint

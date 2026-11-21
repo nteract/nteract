@@ -34,15 +34,15 @@ without a React renderer and eliminates RxJS cleanup races on unmount.
 
 Neighbors:
 
-- `docs/adr/typed-frame-v4-wire-protocol.md` — bytes arriving at `frameIn$`
+- `docs/adr/typed-frame-v4-wire-protocol.md`: bytes arriving at `frameIn$`
   before WASM decoding.
-- `docs/adr/document-split.md` — `NotebookDoc` vs `RuntimeStateDoc` vs
+- `docs/adr/document-split.md`: `NotebookDoc` vs `RuntimeStateDoc` vs
   `BlobMap`, and why they feed React on separate paths.
-- `docs/adr/execution-pipeline.md` — the `flushSync` -> `get_heads_hex()` ->
+- `docs/adr/execution-pipeline.md`: the `flushSync` -> `get_heads_hex()` ->
   `required_heads` handshake this layer honors.
-- `docs/adr/blob-storage-and-content-addressing.md` — manifests resolved through
+- `docs/adr/blob-storage-and-content-addressing.md`: manifests resolved through
   `blob-port.ts` during cell materialization.
-- `docs/adr/identity-and-trust.md` — actor labels held by the WASM handle.
+- `docs/adr/identity-and-trust.md`: actor labels held by the WASM handle.
 
 Three constraints shape every decision below:
 
@@ -151,8 +151,8 @@ paints in CSS `order`.
 
 Iterating `cellIds` directly makes React call `insertBefore` on reorder. Moving
 an iframe in the DOM forces a full reload, wiping its React output tree,
-ipywidgets state, plugin cache, theme, and local user input — causing a visible
-white flash and lost state.
+ipywidgets state, plugin cache, theme, and local user input. The result is a
+visible white flash and lost state.
 
 Stable DOM order keeps every cell's iframe pinned to the same DOM node for its
 lifetime. Drag-and-drop animations (`dnd-kit` `transform`/`transition`), visual
@@ -235,8 +235,8 @@ land without changing bus wiring while keeping WASM payloads authoritative.
 
 `notebook-cells.ts` separates list order from cell records:
 
-- `_cellIds: string[]` — ordered cell IDs driving visual layout.
-- `_cellMap: Map<string, NotebookCell>` — cell data keyed by ID.
+- `_cellIds: string[]`: ordered cell IDs driving visual layout.
+- `_cellMap: Map<string, NotebookCell>`: cell data keyed by ID.
 
 `useCellIds()` and `useCell(id)` subscribe independently:
 
@@ -302,8 +302,8 @@ the cell store asynchronously afterward.
 
 ## Decision 8: Non-CRDT source state rides the same bridge pattern
 
-Cloud viewer async sources — OIDC/app-session auth, access requests, notebook
-catalog, and workstation registry/pairing — use the same three-layer pattern
+Cloud viewer async sources (OIDC/app-session auth, access requests, notebook
+catalog, and workstation registry/pairing) use the same three-layer pattern
 instead of per-component `useEffect` lifecycles, ad-hoc `setTimeout` polls, and
 manual ref mirrors (`authStateRef`, `appSessionStatusRef`):
 
@@ -356,7 +356,7 @@ boot (skipped on the OIDC callback route, which uses no store hooks).
 
 Module singletons own boot and instant paint: drivers activate them once at
 viewer boot, and `instant-paint.ts` reads `authSnapshot` before React mounts.
-React context provides a consumption override only — never an activation
+React context provides a consumption override only, never an activation
 override:
 
 - `cloud-auth-context.ts` defaults to `cloudAuthStore`, read via
@@ -482,25 +482,25 @@ fetch/mutation machinery.
 
 ## References
 
-- `apps/notebook/src/lib/notebook-sync-store-bridge.ts` — the bridge module.
-- `apps/notebook/src/lib/frame-pipeline.ts` — `materializeChangeset` and its
+- `apps/notebook/src/lib/notebook-sync-store-bridge.ts`: the bridge module.
+- `apps/notebook/src/lib/frame-pipeline.ts`: `materializeChangeset` and its
   planner.
-- `apps/notebook/src/components/NotebookView.tsx:519` — `stableDomOrder` memo
+- `apps/notebook/src/components/NotebookView.tsx:519`: `stableDomOrder` memo
   and Decision 2 invariant.
-- `apps/notebook/src/components/NotebookView.tsx:307` — `order: index` style.
-- `apps/notebook/src/hooks/useAutomergeNotebook.ts` — WASM handle owner and
+- `apps/notebook/src/components/NotebookView.tsx:307`: `order: index` style.
+- `apps/notebook/src/hooks/useAutomergeNotebook.ts`: WASM handle owner and
   bridge caller.
-- `src/components/notebook/crdt-bridge.tsx` — CodeMirror-to-CRDT React bridge.
-- `src/components/notebook/crdt-editor-bridge.ts` — `splice_source` and remote
+- `src/components/notebook/crdt-bridge.tsx`: CodeMirror-to-CRDT React bridge.
+- `src/components/notebook/crdt-editor-bridge.ts`: `splice_source` and remote
   change application.
-- `src/components/notebook/state/notebook-frame-bus.ts` — module-level pub/sub
+- `src/components/notebook/state/notebook-frame-bus.ts`: module-level pub/sub
   for broadcasts and presence.
-- `apps/notebook/src/lib/notebook-cells.ts` — split cell store (`useCell`,
+- `apps/notebook/src/lib/notebook-cells.ts`: split cell store (`useCell`,
   `useCellIds`).
-- `apps/notebook/src/lib/runtime-state.ts` — runtime-state store and
+- `apps/notebook/src/lib/runtime-state.ts`: runtime-state store and
   `isRuntimeStateLoaded`.
-- `apps/notebook/src/lib/project-runtime-stores.ts` — execution-view projection.
-- `packages/runtimed/src/sync-engine.ts` — `flushAndWait`, `scheduleFlush`, and
+- `apps/notebook/src/lib/project-runtime-stores.ts`: execution-view projection.
+- `packages/runtimed/src/sync-engine.ts`: `flushAndWait`, `scheduleFlush`, and
   all `*$` Observables.
-- `apps/notebook/src/AGENTS.md` — frontend data-flow map and stable DOM-order
+- `apps/notebook/src/AGENTS.md`: frontend data-flow map and stable DOM-order
   rule.

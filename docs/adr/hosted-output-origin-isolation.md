@@ -25,7 +25,7 @@ The older `runtimed/intheloop` deployment established a useful origin-separation
 | Separate iframe-output deploy script | Dedicated output-document Worker deploy |
 | Cloudflare Worker assets for iframe shell | Renderer and output shell assets |
 
-This map is prior art, not a compatibility contract. Keep the core security property — untrusted output never shares ambient application authority — while choosing modern Cloudflare, OIDC, browser, and operational patterns instead of copying old domains, env vars, or auth shortcuts.
+This map is prior art, not a compatibility contract. Keep the core security property (untrusted output never shares ambient application authority) while choosing modern Cloudflare, OIDC, browser, and operational patterns instead of copying old domains, env vars, or auth shortcuts.
 
 Related docs:
 
@@ -43,7 +43,7 @@ Production hosted deployments separate at least three origin classes:
 
 1. **Notebook application origin.** Serves the authenticated UI, HTTP APIs, and typed-frame room WebSockets. Protected by the configured identity provider, it owns browser auth material, enforces WebSocket `Origin` policy, and stamps trusted room identity headers.
 2. **Renderer asset origin.** Serves public build-time renderer sidecars (Sift WASM, plugin CSS, renderer chunks). It holds no notebook identity, room APIs, authenticated WebSockets, or user blobs. It sets `Access-Control-Allow-Origin: *` so sandboxed opaque-origin frames and parent viewers can load immutable sidecars.
-3. **Output document origin.** Serves the document shell executing untrusted output JavaScript. It uses a separate host — ideally a separate registrable domain such as `*.nteractusercontent.com` — so no cookie scope or `localStorage` namespace overlaps with the app origin.
+3. **Output document origin.** Serves the document shell executing untrusted output JavaScript. It uses a separate host (ideally a separate registrable domain such as `*.nteractusercontent.com`) so no cookie scope or `localStorage` namespace overlaps with the app origin.
 
 The `notebook-cloud` Worker may keep `/renderer-assets/` for local and demo convenience. Production deployments must point renderer assets and output documents at dedicated origins. Shared renderer code must never infer cloud paths from app-specific routes such as `/api/n/:id`.
 

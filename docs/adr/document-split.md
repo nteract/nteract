@@ -20,22 +20,22 @@ scopes:
 
 Current document set:
 
-- **`NotebookDoc`** (`crates/notebook-doc/src/lib.rs`) — one per room. Cells,
+- **`NotebookDoc`** (`crates/notebook-doc/src/lib.rs`): one per room. Cells,
   source text, notebook metadata, and attachments. Schema v5. Wire frame `0x00`
   (`AutomergeSync`).
-- **`RuntimeStateDoc`** (`crates/runtime-doc/src/doc.rs`) — one per room. Kernel
+- **`RuntimeStateDoc`** (`crates/runtime-doc/src/doc.rs`): one per room. Kernel
   lifecycle, execution queue, executions and outputs, env-sync, trust, project
   context, and widget comm topology/routing. Schema v2. Wire frame `0x05`
   (`RuntimeStateSync`).
-- **`CommsDoc`** (`crates/runtime-doc/src/comms.rs`) — one per room. Mutable
+- **`CommsDoc`** (`crates/runtime-doc/src/comms.rs`): one per room. Mutable
   widget comm state keyed by comm ID; `RuntimeStateDoc` remains topology and
   membership truth. Schema v1. Wire frame `0x09` (`CommsDocSync`).
-- **`CommentsDoc`** (`crates/comments-doc/src/lib.rs`) — one per room. Durable
+- **`CommentsDoc`** (`crates/comments-doc/src/lib.rs`): one per room. Durable
   collaboration comments sidecar persisted separately from the notebook. Clients
   render optimistic edits; ingress validates actor labels and scope with no
   daemon finalization step, projecting attribution from admitted change actors.
   Schema v1. Wire frame `0x0a` (`CommentsDocSync`).
-- **`PoolDoc`** (`crates/notebook-doc/src/pool_state.rs`) — one per daemon. UV,
+- **`PoolDoc`** (`crates/notebook-doc/src/pool_state.rs`): one per daemon. UV,
   Conda, and Pixi prewarm pool counters, errors, and retry timers. No schema
   version. Wire frame `0x06` (`PoolStateSync`).
 
@@ -54,19 +54,19 @@ persistence differ.
 
 Neighbors:
 
-- `docs/adr/0002-comms-document-split.md` — extraction of mutable widget state
+- `docs/adr/0002-comms-document-split.md`: extraction of mutable widget state
   into `CommsDoc`.
-- `docs/adr/typed-frame-v4-wire-protocol.md` — byte framing carrying each
+- `docs/adr/typed-frame-v4-wire-protocol.md`: byte framing carrying each
   document's sync stream.
-- `docs/adr/runtime-state-document-identity.md` — `NotebookDoc` pointer to its
+- `docs/adr/runtime-state-document-identity.md`: `NotebookDoc` pointer to its
   associated `RuntimeStateDoc`.
-- `docs/adr/execution-pipeline.md` — how `RuntimeStateDoc` is written during
+- `docs/adr/execution-pipeline.md`: how `RuntimeStateDoc` is written during
   cell execution.
-- `docs/adr/blob-storage-and-content-addressing.md` — out-of-band storage for
+- `docs/adr/blob-storage-and-content-addressing.md`: out-of-band storage for
   output payloads.
-- `docs/adr/identity-and-trust.md` — connection scopes that this split makes
+- `docs/adr/identity-and-trust.md`: connection scopes that this split makes
   expressible.
-- `docs/memos/runtime-writer-decomposition.md` — internal write APIs within
+- `docs/memos/runtime-writer-decomposition.md`: internal write APIs within
   these document boundaries.
 
 ## Decision 1: Separate documents, separate sync streams, separate frame types
@@ -123,7 +123,7 @@ Five properties require physical wire separation:
    JSON-IPC instead.
 5. **Different traffic shapes (secondary).** Write cadences differ, but
    projection efficiency comes from changesets, narrow stores, and independent
-   streams — not from splitting documents as a rendering workaround.
+   streams, not from splitting documents as a rendering workaround.
 
 The split is not bandwidth optimization. It makes the trust model expressible at
 the frame layer without path-level Automerge ACLs, which Automerge does not
@@ -142,7 +142,7 @@ follows the same durable-vs-execution boundary.)
   string), `source` (Automerge Text), `metadata`, `resolved_assets`,
   `attachments`, `execution_count` (legacy JSON-encoded string for nbformat
   round-trip).
-- `cells/{cell_id}/execution_id`: pointer stamped by the daemon at queue time —
+- `cells/{cell_id}/execution_id`: pointer stamped by the daemon at queue time,
   the only runtime-state pointer inside `NotebookDoc`.
 - `metadata/`: `runtime`, `kernelspec`, `language_info`, `runt` (deps, trust,
   cell-execution metadata), legacy `notebook_metadata` JSON string.
@@ -442,28 +442,28 @@ Because hosted cloud rooms run multi-user rather than single-UID desktop:
 
 ## References
 
-- `crates/notebook-doc/src/lib.rs` — `NotebookDoc` schema v5.
-- `crates/notebook-doc/AGENTS.md` — mutation rules for `NotebookDoc`.
-- `crates/runtime-doc/src/doc.rs` — `RuntimeStateDoc` schema v2.
-- `crates/runtime-doc/src/comms.rs` — `CommsDoc` schema v1.
-- `crates/notebook-doc/src/pool_state.rs:8-39, :110-153, :234-251` — `PoolDoc`
+- `crates/notebook-doc/src/lib.rs`: `NotebookDoc` schema v5.
+- `crates/notebook-doc/AGENTS.md`: mutation rules for `NotebookDoc`.
+- `crates/runtime-doc/src/doc.rs`: `RuntimeStateDoc` schema v2.
+- `crates/runtime-doc/src/comms.rs`: `CommsDoc` schema v1.
+- `crates/notebook-doc/src/pool_state.rs:8-39, :110-153, :234-251`: `PoolDoc`
   schema (`uv`, `conda`, `pixi` counters and per-pool errors including
   `failed_package`).
-- `crates/notebook-wire/src/lib.rs:9-44` — frame type constants and per-type
+- `crates/notebook-wire/src/lib.rs:9-44`: frame type constants and per-type
   caps.
-- `crates/notebook-wire/AGENTS.md` — wire protocol overview.
-- `crates/runtimed/src/notebook_sync_server/peer_loop.rs` — sync select loop
+- `crates/notebook-wire/AGENTS.md`: wire protocol overview.
+- `crates/runtimed/src/notebook_sync_server/peer_loop.rs`: sync select loop
   holding per-document peer-state objects.
-- `crates/runtimed/src/notebook_sync_server/peer_notebook_sync.rs` —
+- `crates/runtimed/src/notebook_sync_server/peer_notebook_sync.rs`:
   `NotebookDoc` ingress validator.
-- `crates/runtimed/src/notebook_sync_server/peer_runtime_sync.rs:80-107` —
+- `crates/runtimed/src/notebook_sync_server/peer_runtime_sync.rs:80-107`:
   `RuntimeStateDoc` clone-preview validator and save-fingerprint comparison.
-- `crates/runtimed/src/notebook_sync_server/peer_pool_sync.rs` — `PoolDoc`
+- `crates/runtimed/src/notebook_sync_server/peer_pool_sync.rs`: `PoolDoc`
   fan-out across connected peers.
-- `crates/runtimed/src/notebook_sync_server/persist.rs` — `NotebookDoc`
+- `crates/runtimed/src/notebook_sync_server/persist.rs`: `NotebookDoc`
   `.automerge` debouncer.
-- `crates/runtimed/src/notebook_sync_server/recovery.rs` — recovery journal
+- `crates/runtimed/src/notebook_sync_server/recovery.rs`: recovery journal
   implementation.
-- `apps/notebook-cloud/src/room-materializer.ts` — hosted checkpoints for all
+- `apps/notebook-cloud/src/room-materializer.ts`: hosted checkpoints for all
   four room documents.
-- `docs/adr/identity-and-trust.md` — trust scopes backed by the document split.
+- `docs/adr/identity-and-trust.md`: trust scopes backed by the document split.

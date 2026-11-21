@@ -6,9 +6,9 @@ and workspace-default refresh remain open follow-ups.
 
 ## Related ADRs
 
-- `docs/adr/kernel-env-trust.md` — dependency trust gates whether the daemon may install or launch declared packages. This ADR starts after that gate: identifying, reusing, repairing, and resetting captured environments.
-- `docs/adr/execution-pipeline.md` — launch retry must preserve lifecycle ordering around kernel startup and terminal error publication.
-- `docs/adr/document-split.md` — `NotebookDoc` carries dependency declarations; `RuntimeStateDoc` carries launch, progress, and error state.
+- `docs/adr/kernel-env-trust.md`: dependency trust gates whether the daemon may install or launch declared packages. This ADR starts after that gate: identifying, reusing, repairing, and resetting captured environments.
+- `docs/adr/execution-pipeline.md`: launch retry must preserve lifecycle ordering around kernel startup and terminal error publication.
+- `docs/adr/document-split.md`: `NotebookDoc` carries dependency declarations; `RuntimeStateDoc` carries launch, progress, and error state.
 
 ## Context
 

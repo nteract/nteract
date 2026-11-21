@@ -139,7 +139,7 @@ For every non-empty `NotebookDoc`, `RuntimeStateDoc`, or `CommsDoc` sync message
 4. Reject the frame if any new change's principal differs from `AuthenticatedConnection.principal`.
 5. Mutate the real room document only after validation passes.
 
-This stopgap closes live principal forgery in v1 at the cost of cloning and double-applying every non-empty inbound message—most noticeable on high-churn `RuntimeStateDoc` traffic. Patch 1 (`sync_message_new_changes`) in `docs/memos/automerge-fork-patches.md` is the planned v2 replacement that inspects incoming changes without cloning.
+This stopgap closes live principal forgery in v1 at the cost of cloning and double-applying every non-empty inbound message, most noticeable on high-churn `RuntimeStateDoc` traffic. Patch 1 (`sync_message_new_changes`) in `docs/memos/automerge-fork-patches.md` is the planned v2 replacement that inspects incoming changes without cloning.
 
 ### Schema-seed actors are canonical, with principal-prefixed labels as target
 
@@ -326,7 +326,7 @@ In the current Cloud Worker, requests pass a desired scope via `x-scope` or quer
 Target architecture enforces scope server-side at three explicit boundaries:
 
 1. **Frame ingress** (`peer_notebook_sync.rs::handle_notebook_doc_frame`, `peer_runtime_sync.rs`, `peer_comms_sync.rs`, `peer_comments_sync.rs`, and the hosted WASM room host): checks `AuthenticatedConnection.scope` and rejects out-of-scope document frames. The hosted Worker and local daemon share the same `RuntimeStateDoc` policy helper.
-2. **Request dispatch:** each `NotebookRequest` variant declares its minimum scope via annotation or registry lookup and rejects violations with a typed `Unauthorized` response before side effects—no scattered `if scope == ...` checks.
+2. **Request dispatch:** each `NotebookRequest` variant declares its minimum scope via annotation or registry lookup and rejects violations with a typed `Unauthorized` response before side effects, without scattered `if scope == ...` checks.
 3. **ACL mutations:** owner-only. The hosted Worker exposes owner-only HTTP endpoints for D1 ACL rows; in-band Automerge ACL changes from non-owners are never honored.
 
 ### Adding new scope-gated functionality
@@ -343,7 +343,7 @@ This payload is strictly informational to the server. The server remains the sol
 
 ## Decision 6: Publish re-authenticates and re-authors at the destination boundary
 
-**Shipped gap:** Current publish uploads saved Automerge bytes directly (`crates/runt-publish/src/lib.rs` uploads `source_snapshot.snapshot.notebook_bytes`, `runtime_state_bytes`, and `comms_doc_bytes`; `apps/notebook-cloud/src/index.ts` stores those bodies before inserting a catalog revision row). Destination ACLs and catalog metadata record the publisher, but the stored `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc` retain full source change histories and actor labels—including `local:*` actors.
+**Shipped gap:** Current publish uploads saved Automerge bytes directly (`crates/runt-publish/src/lib.rs` uploads `source_snapshot.snapshot.notebook_bytes`, `runtime_state_bytes`, and `comms_doc_bytes`; `apps/notebook-cloud/src/index.ts` stores those bodies before inserting a catalog revision row). Destination ACLs and catalog metadata record the publisher, but the stored `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc` retain full source change histories and actor labels, including `local:*` actors.
 
 Publishing across identity spaces must be an authenticated import, not a history migration. Automerge actor labels are self-attested; accepting historical `local:quill/desktop:abc` changes makes the destination vouch for authorship it cannot verify, since anyone can fabricate a local document with arbitrary actor strings.
 
@@ -363,11 +363,11 @@ user:anaconda:550e.../agent:<declared-label>:<fresh-publish-uuid>
 
 Target publish flow:
 
-1. **Capture rendered content projection:** the publisher captures cells, metadata, completed outputs, published widget state, and blob references from `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc`. Source structural document IDs are excluded. Untrusted identity-bearing fields inside the projection—such as `RuntimeStateDoc.executions[*].submitted_by_actor_label`—are dropped rather than copied or relabeled. Any future identity-bearing field requires an explicit, destination-verifiable import rule to survive.
+1. **Capture rendered content projection:** the publisher captures cells, metadata, completed outputs, published widget state, and blob references from `NotebookDoc`, `RuntimeStateDoc`, and `CommsDoc`. Source structural document IDs are excluded. Untrusted identity-bearing fields inside the projection (such as `RuntimeStateDoc.executions[*].submitted_by_actor_label`) are dropped rather than copied or relabeled. Any future identity-bearing field requires an explicit, destination-verifiable import rule to survive.
 2. **Authenticate and mint destination IDs:** the destination validates the credential, derives the hosted principal, validates the operator descriptor, and mints fresh destination notebook, runtime-state, and comms document IDs plus a fresh import actor before creating a discoverable room.
 3. **Author fresh documents:** the destination initializes fresh Automerge documents in its own identity space. Canonical schema-seed actors establish schemas; the fresh import actor authors the imported state. Non-canonical source history is neither copied nor relabeled; matching canonical genesis changes are established independently at the destination.
 4. **Verify blob closure:** blob references keep their SHA-256 hashes; the destination verifies and stores the transitive closure of referenced bytes.
-5. **Register catalog and audit rows:** after documents and blobs validate, the destination registers the room and initial revision. Durable revision, ACL, and audit attribution uses either the destination-minted import actor or separate typed fields (`principal`, validated operator descriptor, destination import ID) that reconstruct it exactly—never persisting a client-supplied source actor or source session suffix.
+5. **Register catalog and audit rows:** after documents and blobs validate, the destination registers the room and initial revision. Durable revision, ACL, and audit attribution uses either the destination-minted import actor or separate typed fields (`principal`, validated operator descriptor, destination import ID) that reconstruct it exactly. It never persists a client-supplied source actor or source session suffix.
 6. **Continue under destination identity:** subsequent edits author under normal destination principals and operators. No source user/operator actor (including `local:*`) or non-canonical source change exists in destination documents.
 
 The import actor records *who published and how*, not authorship of every prior edit. UIs may render `"published by rgbkrk@gmail.com via Desktop"` or `"<agent label> on behalf of rgbkrk@gmail.com"` (for example, `"Codex on behalf of rgbkrk@gmail.com"`). The source notebook and its history remain untouched.
@@ -385,7 +385,7 @@ v1 enforces the trust gate at room ingress: bearer auth and ACL membership at co
 | Unauthorized read | ACL check at connect | closed |
 | Unauthorized write at all | Bearer auth + ACL at connect | closed |
 | Scope escalation (viewer authoring, `runtime_peer` editing `NotebookDoc`) | Scope-based frame rejection | closed |
-| Import-time cross-IdP forgery (publishing historical foreign actor labels) | Destination auth + fresh-document re-authoring (Decision 6) | open — current publish copies source history |
+| Import-time cross-IdP forgery (publishing historical foreign actor labels) | Destination auth + fresh-document re-authoring (Decision 6) | open (current publish copies source history) |
 | **Live actor-principal spoofing** (authenticated peer authors under another principal) | Clone-preview actor validation before apply | closed in v1 |
 | Bearer-token replay (stolen JWT opens a new socket) | DPoP / mTLS / short token lifetimes | deferred |
 | Clone-preview validator cost on large or high-churn docs | `sync_message_new_changes` Automerge fork patch | deferred performance hardening |
@@ -445,7 +445,7 @@ At adoption, `.automerge` files were persisted only for untitled ephemeral noteb
 
 1. quill's local Claude MCP process connects to the hosted room using a credential quill made available (session reuse, agent-scoped Anaconda API key, or similar; delegation mechanics are out of scope here).
 2. Anaconda validates the credential, returning principal `user:anaconda:550e...` and ACL scope `editor`.
-3. Claude authors as `user:anaconda:550e.../agent:claude:s1`—same principal as quill's Desktop session, distinct operator. Attribution separates them while the trust gate authorizes both under the same principal.
+3. Claude authors as `user:anaconda:550e.../agent:claude:s1` (same principal as quill's Desktop session, distinct operator). Attribution separates them while the trust gate authorizes both under the same principal.
 
 ### Target: publishing a local notebook to Anaconda
 

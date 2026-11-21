@@ -4,7 +4,7 @@
 
 ## Context
 
-A brand-new notebook must start with exactly one empty code cell. The host authority — the daemon for daemon-hosted notebooks, or the in-browser WASM room host for cloud rooms — creates that cell once. Neither host may re-seed a notebook that already has content or that a user deliberately emptied.
+A brand-new notebook must start with exactly one empty code cell. The host authority (the daemon for daemon-hosted notebooks, or the in-browser WASM room host for cloud rooms) creates that cell once. Neither host may re-seed a notebook that already has content or that a user deliberately emptied.
 
 Previously, the two hosts made that decision from materialized document projections and disagreed with each other:
 
@@ -39,7 +39,7 @@ Meanwhile, the document model already encodes genesis as a causal concept:
 
 Define "uninitialized" directly from causal history in `NotebookDoc::is_pristine` inside `crates/notebook-doc`. Both `runtimed` and `runtimed-wasm` call this single predicate; `is_uninitialized_notebook_doc` and the cloud `cell_count > 0` guard are removed.
 
-> A notebook is **pristine** iff its change graph contains only the canonical schema seed and the creation scaffold — no change has ever touched `cells`, other `metadata` keys, or overwritten or deleted an identity key.
+> A notebook is **pristine** iff its change graph contains only the canonical schema seed and the creation scaffold: no change has ever touched `cells`, other `metadata` keys, or overwritten or deleted an identity key.
 
 ### The predicate
 

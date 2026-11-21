@@ -183,8 +183,8 @@ records the node addresses agents use.
 - **After format 3, older Pages stay readable and owners upgrade them in
   place.** An older-format Page opens read-only (readable and copyable, not
   editable), and its owner upgrades it with one action that writes the new
-  document from the old one under the same Page—no outright refusal or forced
-  deletion.
+  document from the old one under the same Page, with no outright refusal or
+  forced deletion.
   - *In place:* host records stamp `documentFormats` (order of work, step 4),
     and the viewer keeps cached copies readable and copyable when the host
     refuses a Page's format ([viewer/format-gate.mjs](viewer/format-gate.mjs)).

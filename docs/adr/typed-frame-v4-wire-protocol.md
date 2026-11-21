@@ -10,10 +10,10 @@ The wire crate (`crates/notebook-wire/src/lib.rs`) is intentionally tiny: magic 
 
 This ADR pins down what every peer must agree on so the format does not silently drift between Rust, the `packages/runtimed` TypeScript surface, the Python client, and any future browser transport. The semantic neighbors:
 
-- `docs/adr/identity-and-trust.md` — who is allowed to send which frame.
-- `docs/adr/document-split.md` — what `AutomergeSync` / `RuntimeStateSync` / `CommsDocSync` / `PoolStateSync` actually carry.
-- `docs/adr/execution-pipeline.md` — how `Request` / `Response` / `SessionControl` thread through cell execution.
-- `docs/adr/blob-storage-and-content-addressing.md` — what `PUT_BLOB` is moving and where it lands.
+- `docs/adr/identity-and-trust.md`: who is allowed to send which frame.
+- `docs/adr/document-split.md`: what `AutomergeSync` / `RuntimeStateSync` / `CommsDocSync` / `PoolStateSync` actually carry.
+- `docs/adr/execution-pipeline.md`: how `Request` / `Response` / `SessionControl` thread through cell execution.
+- `docs/adr/blob-storage-and-content-addressing.md`: what `PUT_BLOB` is moving and where it lands.
 
 This document is the framing layer underneath all of them.
 
@@ -199,13 +199,13 @@ The capability handshake (`ProtocolCapabilities::put_blob`) advertises `single_f
 
 After the handshake, the daemon sends a `ProtocolCapabilities` (for `NotebookSync`) or `NotebookConnectionInfo` (for `OpenNotebook` / `CreateNotebook`) struct. Both flatten `ProtocolCapabilities`. The fields that matter for the wire layer:
 
-- `protocol: "v4"` — string for backward-compatible string matching.
-- `protocol_version: 4` — numeric for explicit comparison.
-- `daemon_version` — e.g. `"2.0.0+abc123"`, useful for crash reports.
-- `put_blob.single_frame_max` — defaults to `frame_size_limits(PUT_BLOB).cap`. A future daemon could narrow this without breaking older clients.
-- `put_blob.multipart` — whether `Part` headers are supported. Always `true` today.
-- `put_blob.ephemeral_supported` — whether `durability = "ephemeral"` is honored. Always `true` today.
-- `actor_label` / `connection_scope` — populated from the identity layer (see Decision 3 of the identity ADR).
+- `protocol: "v4"`: string for backward-compatible string matching.
+- `protocol_version: 4`: numeric for explicit comparison.
+- `daemon_version`: e.g. `"2.0.0+abc123"`, useful for crash reports.
+- `put_blob.single_frame_max`: defaults to `frame_size_limits(PUT_BLOB).cap`. A future daemon could narrow this without breaking older clients.
+- `put_blob.multipart`: whether `Part` headers are supported. Always `true` today.
+- `put_blob.ephemeral_supported`: whether `durability = "ephemeral"` is honored. Always `true` today.
+- `actor_label` / `connection_scope`: populated from the identity layer (see Decision 3 of the identity ADR).
 
 ## Decision 7: Handshake variants pick the channel, not the framing
 

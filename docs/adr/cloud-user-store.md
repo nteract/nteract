@@ -299,20 +299,20 @@ yet" formatter.
 Rollout follows four ordered stages so every step stays independently reversible
 and never exposes raw principals during migration:
 
-- **Stage 0 — Stop raw-principal fallback (independent, immediately safe).**
+- **Stage 0: Stop raw-principal fallback (independent, immediately safe).**
   Enforce the never-raw policy in `notebook-dashboard.ts` and
   `sharing-client.ts` so unresolved principals render a generic kind label. No
   store or endpoint changes are required.
-- **Stage 1 — Server projector and relationship gate (security-review gate).**
+- **Stage 1: Server projector and relationship gate (security-review gate).**
   Land the shared display projector, OIDC `picture` capture into `avatar_url`
   (Decision 4), `avatar_url` + `resolved` on `/api/n`, and the generalized
   notebook-scoped resolver (Decision 3). Keep existing response fields backward
   compatible until Stage 3 completes.
-- **Stage 2 — Additive store rollout (rollback-safe).** Land
+- **Stage 2: Additive store rollout (rollback-safe).** Land
   `cloud-user-store.ts` with `useSyncExternalStore` bindings, self + presence
   seeding, batched backfill, epoch stale-write guards, and virtual-time tests
   (Decision 2) without switching any consumer yet.
-- **Stage 3 — Consumer cutover and cleanup.** Migrate surfaces one by one
+- **Stage 3: Consumer cutover and cleanup.** Migrate surfaces one by one
   (comments, presence, self-identity, `/n` owners, sharing UI) onto the store.
   Delete duplicated fetch-merge-fallback paths (`comment-author-profiles.ts`
   fetch/merge, `cloudNotebookOwnerLabel`, `cloudNotebookOwnerInitials`,

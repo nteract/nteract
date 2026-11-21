@@ -37,7 +37,7 @@ Four safeguards landed to prevent a repeat:
 
 Sync exchanges Automerge ops keyed by `ObjId`, not typed notebook structs. A peer that ignores a key still stores and forwards its ops. Additive data from a newer peer lands in an older peer's document and survives intact.
 
-That forward compatibility — *preserve what you do not understand* — holds only while both peers share the frozen root and write to new locations. Once two versions write different shapes to the same location, the merge corrupts the document.
+That forward compatibility (*preserve what you do not understand*) holds only while both peers share the frozen root and write to new locations. Once two versions write different shapes to the same location, the merge corrupts the document.
 
 ## The forward-tolerant reader
 

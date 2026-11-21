@@ -34,10 +34,10 @@ This ADR defines the addressing and configuration model across settings, MCP ses
 
 ## Vocabulary
 
-- **Room locator:** an address that reaches a notebook room host—a local file path, a local room ID, or `https://notebooks.example.com/n/<id>/<slug>`.
+- **Room locator:** an address that reaches a notebook room host (a local file path, a local room ID, or `https://notebooks.example.com/n/<id>/<slug>`).
 - **MCP resource URI:** a local resource name exposed by an MCP server, such as `nteract://notebooks/<id>/cells`. Never a room locator.
 - **Cloud domain registry:** the origin-scoped V1 machine-local configuration mapping hosted origins (such as `https://notebooks.example.com`) to credential references and an optional fallback operator for headless clients. Holds zero, one, or many origins with an optional default; cannot represent two accounts at the same origin.
-- **Hosted notebook account:** a planned stable, opaque, machine-local account ID binding a deployment, credential reference, principal projection, auth state, and capabilities. Account identity—not origin alone—is the durable namespace for federated catalogs and sessions.
+- **Hosted notebook account:** a planned stable, opaque, machine-local account ID binding a deployment, credential reference, principal projection, auth state, and capabilities. Account identity, not origin alone, is the durable namespace for federated catalogs and sessions.
 - **Principal:** the authenticated entity proven by a credential, such as a user account or service account.
 - **Operator:** the initiating application, agent, model family, harness, or runtime acting under that principal. Labels are open-ended (`agent:codex:lab2` and `agent:opencode:mbp` are examples, not closed protocol categories).
 
@@ -91,7 +91,7 @@ The current `CloudRegistry` rejects duplicate normalized origins. That is an int
 Registry invariants:
 
 - Holds zero, one, or many normalized hosted origins; a missing file or empty registry means no cloud hosts are configured.
-- Starts empty on stable Desktop and MCP installs—clients never synthesize a host or default (specifically never an implicit `preview.runt.run` entry).
+- Starts empty on stable Desktop and MCP installs. Clients never synthesize a host or default (specifically never an implicit `preview.runt.run` entry).
 - Requires `https` for all non-loopback origins; cleartext `http` is restricted to explicitly recognized loopback development origins and never used as a silent fallback.
 - `default_domain` is optional, must match a configured entry, and applies only after the caller explicitly chooses a cloud operation (never reinterpreting a bare notebook ID as remote).
 - Stores non-secret routing and domain metadata only. Bearer values are read from environment references today; OS keychain and secret-helper integration remain future work, and `runt config` must never persist plaintext bearer values.
@@ -132,7 +132,7 @@ Hosted attachments survive local daemon replacement. Logical handle retention st
 Two hosted-room connection paths coexist:
 
 - **Daemon-mediated bridge (`hosted_bridge.rs`, PR #3884):** the product default for Desktop hosted windows. The daemon dials the hosted room over `CloudWsFrameTransport` and attaches it as a sync peer on a local ephemeral `NotebookRoom`. Desktop windows and local clients connect to that daemon room like any local notebook, giving structural echo suppression (one `NotebookDoc`, one `sync::State` per peer) while keeping the hosted room authoritative for `RuntimeStateDoc`.
-  - *Shipped limitations:* The bridge is currently a hidden, editor-oriented primitive rather than a general catalog opener. It requests `editor` scope and does not yet project the server-authorized `connection_scope` from `cloud_room_ready`. Execution forwarding handlers exist, but the local request gate rejects editor execution before reaching them and the hosted room requires owner scope—so execution does not work through this opener. Before Desktop portals open viewer, editor, and owner catalog rows, the handshake and session restore must preserve both requested access and effective (possibly downgraded) scope.
+  - *Shipped limitations:* The bridge is currently a hidden, editor-oriented primitive rather than a general catalog opener. It requests `editor` scope and does not yet project the server-authorized `connection_scope` from `cloud_room_ready`. Execution forwarding handlers exist, but the local request gate rejects editor execution before reaching them and the hosted room requires owner scope, so execution does not work through this opener. Before Desktop portals open viewer, editor, and owner catalog rows, the handshake and session restore must preserve both requested access and effective (possibly downgraded) scope.
 - **Direct MCP connector (`crates/runt-mcp/src/cloud.rs`):** `runt mcp` opens the typed-frame v4 WebSocket directly to the hosted room without a daemon bridge.
 
 When to use each path:
@@ -167,7 +167,7 @@ Because independent Automerge document instances must never reuse an actor concu
 <principal>/<operator>:<nonce>
 ```
 
-That prevents duplicate sequence collisions across concurrent processes. Retained hosted attachments sharing one live connection inside an MCP process keep the same actor label. Reconnecting after the hosted socket drops must mint a fresh nonce unless a persisted actor store enforces a single-writer lease—reusing an actor across restarts is unsafe if the prior connection could still be alive.
+That prevents duplicate sequence collisions across concurrent processes. Retained hosted attachments sharing one live connection inside an MCP process keep the same actor label. Reconnecting after the hosted socket drops must mint a fresh nonce unless a persisted actor store enforces a single-writer lease. Reusing an actor across restarts is unsafe if the prior connection could still be alive.
 
 **Shipped state:** Desktop passes an explicit per-window operator through its daemon open handshake, whereas the direct `runt mcp` connector does not yet accept a per-connection operator and falls back to the registry operator or a generic MCP label. Generic agent-on-behalf-of-principal attribution across both direct and daemon-mediated paths remains an open follow-up.
 
@@ -219,7 +219,7 @@ This preserves the authority split in `remote-workstation-doc-agents.md`: docume
 
 Hosted sessions follow the same user-initiated-intent-wins rule as local daemon sessions. If a background hosted reconnect races a new user-initiated `connect_notebook`, the new target wins and the stale reconnect result is dropped. Hosted reconnect may reset transport sync state because the hosted room preserves document truth.
 
-Remote rejoin state must persist the full room locator—not a bare room ID—because IDs are only unique within an origin. Once account-aware registries land, rejoin state must also carry the stable `account_id` so two principals at the same origin never collide in a bridge or restored session.
+Remote rejoin state must persist the full room locator, not a bare room ID, because IDs are only unique within an origin. Once account-aware registries land, rejoin state must also carry the stable `account_id` so two principals at the same origin never collide in a bridge or restored session.
 
 Origin-scoped V1 rejoin encodings:
 

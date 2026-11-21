@@ -46,7 +46,7 @@ Every lane split must preserve five invariants:
 
 ## Decision
 
-Split peer egress inside a single writer actor in stages. Do not jump to "one queue per frame type with biased select" — that can violate the `SessionControl` barrier above.
+Split peer egress inside a single writer actor in stages. Do not jump to "one queue per frame type with biased select": that can violate the `SessionControl` barrier above.
 
 Isolate ephemeral traffic first without changing reliable ordering. Keep per-lane FIFO order in every stage: the scheduler may choose between lanes, never reorder within a lane. Add reserved control capacity only alongside explicit barrier tracking, and treat `RuntimeStateSync` overflow as a resync event rather than silent frame loss.
 

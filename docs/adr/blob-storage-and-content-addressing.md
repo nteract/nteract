@@ -30,14 +30,14 @@ upload protocol.
 
 Neighbors:
 
-- `docs/adr/typed-frame-v4-wire-protocol.md` — the `PUT_BLOB` frame
+- `docs/adr/typed-frame-v4-wire-protocol.md`: the `PUT_BLOB` frame
   shape and the per-type cap.
-- `docs/adr/document-split.md` — which document each blob ref
+- `docs/adr/document-split.md`: which document each blob ref
   comes from (`RuntimeStateDoc` executions / comms, `NotebookDoc` assets /
   attachments).
-- `docs/adr/execution-pipeline.md` — when the daemon decides to
+- `docs/adr/execution-pipeline.md`: when the daemon decides to
   blob an output vs. inline it.
-- `docs/adr/hosted-notebook-artifacts.md` — how snapshot bundles and
+- `docs/adr/hosted-notebook-artifacts.md`: how snapshot bundles and
   R2 blob storage reuse the same hash addressing.
 - `docs/adr/identity-and-trust.md` - the room-level auth gate for sync and
   upload control. Local blob HTTP reads do not use this gate.
@@ -408,7 +408,7 @@ contract can move independently.
 authorization. Local `BlobResolver` builds URLs that any reachable client with
 the hash can fetch, so hosted resolvers must sit behind a serving layer that
 enforces read policy. Likewise, `PutBlob` and multipart uploads transfer bytes
-without mutating room state or authorizing document references—hosted room
+without mutating room state or authorizing document references. Hosted room
 hosts must authorize uploads, document references, and reads separately.
 
 The snapshot bundle invariant: a saved `RuntimeStateDoc` or `CommsDoc` is only

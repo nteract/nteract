@@ -26,15 +26,15 @@ This ADR records the execution and output-ordering invariants behind
 
 Neighbors:
 
-- `docs/adr/document-split.md` — why execution state lives in `RuntimeStateDoc`
+- `docs/adr/document-split.md`: why execution state lives in `RuntimeStateDoc`
   and not `NotebookDoc`, and why two writer paths update it.
-- `docs/adr/0002-comms-document-split.md` — why mutable widget state lives in
+- `docs/adr/0002-comms-document-split.md`: why mutable widget state lives in
   `CommsDoc` while `RuntimeStateDoc` owns comm topology and output routing.
-- `docs/adr/typed-frame-v4-wire-protocol.md` — `Request`/`Response` correlation
+- `docs/adr/typed-frame-v4-wire-protocol.md`: `Request`/`Response` correlation
   and `SessionControl` readiness phases.
-- `docs/adr/blob-storage-and-content-addressing.md` — content-addressed storage
+- `docs/adr/blob-storage-and-content-addressing.md`: content-addressed storage
   for output payloads referenced by manifests.
-- `docs/adr/identity-and-trust.md` — who may `ExecuteCell` and read outputs.
+- `docs/adr/identity-and-trust.md`: who may `ExecuteCell` and read outputs.
 
 Three design pressures drove these choices:
 
@@ -398,31 +398,31 @@ Keeping execution documents separate provides four properties:
 ## Open Follow-ups
 
 - **Validate lossy queue bounds under load:** Review the three independent lossy
-  queue bounds — work channel capacity (`100` in `jupyter_kernel.rs`), periodic
-  stream flush queue (`STREAM_COMMITTER_QUEUE_CAPACITY = 32` in
-  `stream_committer.rs`), and pending display-ID coalescing cap
-  (`MAX_PENDING_DISPLAY_IDS = 128` in `display_update_committer.rs`) — against
-  heavy widget and display-update workloads to confirm they neither drop too
-  early nor buffer excessively.
+  queue bounds against heavy widget and display-update workloads to confirm they
+  neither drop too early nor buffer excessively: work channel capacity (`100` in
+  `jupyter_kernel.rs`), periodic stream flush queue
+  (`STREAM_COMMITTER_QUEUE_CAPACITY = 32` in `stream_committer.rs`), and pending
+  display-ID coalescing cap (`MAX_PENDING_DISPLAY_IDS = 128` in
+  `display_update_committer.rs`).
 
 ## References
 
-- `crates/runtimed/src/stream_committer.rs` — bounded periodic + unbounded
+- `crates/runtimed/src/stream_committer.rs`: bounded periodic + unbounded
   priority paths, `flush_then_signal`, `flush_for_ordering`.
-- `crates/runtimed/src/display_update_committer.rs` — coalesced display updates
+- `crates/runtimed/src/display_update_committer.rs`: coalesced display updates
   and priority flush ack.
-- `crates/runtimed/src/output_prep.rs:465-550` — `LifecycleSignal`,
+- `crates/runtimed/src/output_prep.rs:465-550`: `LifecycleSignal`,
   `WorkCommand`, `NonBlockingSender`, and channel construction.
-- `crates/runtimed/src/runtime_agent.rs:592-639, 1414-1430` — lifecycle/work
+- `crates/runtimed/src/runtime_agent.rs:592-639, 1414-1430`: lifecycle/work
   select arms and `drain_lifecycle_commands`.
-- `crates/runtimed/src/jupyter_kernel.rs:1394-1441, 1805-1818` — IOPub
+- `crates/runtimed/src/jupyter_kernel.rs:1394-1441, 1805-1818`: IOPub
   `status: idle` and `UpdateDisplayData` handling.
-- `crates/runtimed/src/kernel_state.rs:147-181` — `execution_done` and
+- `crates/runtimed/src/kernel_state.rs:147-181`: `execution_done` and
   `set_execution_done`.
-- `crates/notebook-sync/src/execution_wait.rs` — two-phase terminal wait and
+- `crates/notebook-sync/src/execution_wait.rs`: two-phase terminal wait and
   output-sync grace.
-- `crates/runtimed/src/notebook_sync_server/peer_writer.rs:167-256` —
+- `crates/runtimed/src/notebook_sync_server/peer_writer.rs:167-256`:
   `required_heads` gate.
-- `crates/runt-mcp/src/execution.rs` — MCP consumer pattern.
-- `.agents/skills/execution-pipeline/SKILL.md` — agent-facing pipeline summary.
-- `crates/runtimed/AGENTS.md` — "Lifecycle and output ordering" scoped rules.
+- `crates/runt-mcp/src/execution.rs`: MCP consumer pattern.
+- `.agents/skills/execution-pipeline/SKILL.md`: agent-facing pipeline summary.
+- `crates/runtimed/AGENTS.md`: "Lifecycle and output ordering" scoped rules.

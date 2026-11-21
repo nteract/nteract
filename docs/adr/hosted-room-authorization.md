@@ -25,15 +25,15 @@ room, and the Durable Object hosts the live document and persists snapshots.
 
 Neighbors:
 
-- `docs/adr/identity-and-trust.md` — principal/operator labels, connection
+- `docs/adr/identity-and-trust.md`: principal/operator labels, connection
   scopes, provider validation, and actor-principal enforcement.
-- `docs/adr/hosted-credential-transport.md` — direct OIDC, JupyterHub, browser
+- `docs/adr/hosted-credential-transport.md`: direct OIDC, JupyterHub, browser
   WebSocket credential transports, and origin policy.
-- `docs/adr/hosted-notebook-artifacts.md` — R2 snapshot bundle and render-cache
+- `docs/adr/hosted-notebook-artifacts.md`: R2 snapshot bundle and render-cache
   layout.
-- `docs/adr/blob-storage-and-content-addressing.md` — `BlobResolver` and
+- `docs/adr/blob-storage-and-content-addressing.md`: `BlobResolver` and
   renderer asset origin separation.
-- `docs/adr/frontend-sync-bridge.md` — why hosted editing reuses the same
+- `docs/adr/frontend-sync-bridge.md`: why hosted editing reuses the same
   WASM/sync/viewer surfaces instead of adding a second UI stack.
 
 ## Decision 1: Room access is an ACL, not a credential claim
@@ -380,7 +380,7 @@ URLs, or an output origin enforcing equivalent access.
   at both the `PUT_BLOB` frame prefilter and the HTTP upload route.
 - **Private hosted blob read capabilities:** Write and land the "Hosted Private
   Blob Read Capabilities" ADR (resolving `hosted-output-origin-isolation.md`
-  open question 2) before private sharing ships — choosing between Worker auth
+  open question 2) before private sharing ships, choosing between Worker auth
   on `/api/n/:id/blobs/:hash`, signed R2 URLs, or a separate output origin with
   short-lived tokens.
 - **Remove prototype-only shortcuts:** Eliminate remaining prototype behavior on

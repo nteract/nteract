@@ -47,19 +47,19 @@ Core nouns and authority boundaries:
 
 Neighbors:
 
-- `docs/adr/identity-and-trust.md` — principals, operators, connection scopes,
+- `docs/adr/identity-and-trust.md`: principals, operators, connection scopes,
   and per-frame actor validation.
-- `docs/adr/hosted-room-authorization.md` — hosted room ACLs and Durable Object
+- `docs/adr/hosted-room-authorization.md`: hosted room ACLs and Durable Object
   room host.
-- `docs/adr/hosted-credential-transport.md` — direct OIDC, JupyterHub, browser
+- `docs/adr/hosted-credential-transport.md`: direct OIDC, JupyterHub, browser
   WebSockets, and native credential transports.
-- `docs/adr/hosted-notebook-artifacts.md` — durable snapshot bundle and blob
+- `docs/adr/hosted-notebook-artifacts.md`: durable snapshot bundle and blob
   layout.
-- `docs/adr/hosted-output-origin-isolation.md` — separation of authenticated app
+- `docs/adr/hosted-output-origin-isolation.md`: separation of authenticated app
   origins, renderer asset origins, and untrusted output origins.
-- `docs/audits/runtime-peer-and-blob-authority-audit.md` — `runtime_peer` role
+- `docs/audits/runtime-peer-and-blob-authority-audit.md`: `runtime_peer` role
   vs local `RuntimeAgent` machinery and `PutBlob` transfer semantics.
-- `docs/adr/remote-workstation-doc-agents.md` — dial-home workstation and doc
+- `docs/adr/remote-workstation-doc-agents.md`: dial-home workstation and doc
   agent path for JupyterHub, Outerbounds Workstations, and `preview.runt.run`.
 
 ## Decision 1: Cloudflare is the hosted document engine
@@ -157,7 +157,7 @@ supported:
   separate actor spaces and ACLs.
 
 When bridging to a hosted room, the local daemon is an authenticated operator on
-a remote room — never the room owner.
+a remote room, never the room owner.
 
 ## Decision 4: Browser WebSocket origin policy is mandatory
 

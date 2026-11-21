@@ -116,7 +116,7 @@ Desktop already has a hidden hosted-open primitive: `@nteract/notebook-host`
 can request a hosted window, the daemon uses an explicit hosted open mode with
 deterministic window reuse, and session restore stores the hosted locator
 separately from a local path or environment id. A daemon-owned account/catalog
-capability may land headlessly before Notebook Home—listing configured accounts,
+capability may land headlessly before Notebook Home: listing configured accounts,
 listing notebooks for a selected account, and invoking the hosted-open path
 without adding a visible page or menu entry.
 
@@ -205,7 +205,7 @@ A shared component whose behavior depends on host-side hooks is only half-shared
 
 Interaction state machines (scroll observers, selection coupling, status projections) belong next to the shared component as host-neutral hooks, not inside a host shell. Optional interaction props (`activeOutlineItemId?`, `outlineCellIds?`) are a divergence smell because one host will silently drop the behavior.
 
-Record intentional asymmetries rather than working around them—for example, desktop omits the workstations rail panel while remote-compute UX evolves on hosted first (`workstationsPanel` stays an optional slot by design). A divergence is intentional only when backed by a clear product reason.
+Record intentional asymmetries rather than working around them. For example, desktop omits the workstations rail panel while remote-compute UX evolves on hosted first (`workstationsPanel` stays an optional slot by design). A divergence is intentional only when backed by a clear product reason.
 
 ## Anchor And Navigation Contract
 

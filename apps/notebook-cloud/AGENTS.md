@@ -69,7 +69,7 @@ stores, not from using document boundaries as a rerender workaround.
   UI semantics.
 - **Wiring parity, not just component parity.** When desktop iterates on a
   shared surface (rail, outline, toolbar, cells), check that the viewer passes
-  the same interaction props and hooks — a shared component rendered with a
+  the same interaction props and hooks. A shared component rendered with a
   thinner prop set silently lacks the new behavior even though the shared code
   ships in the bundle. Optional interaction props on shared components are the
   smell; prefer shared hooks colocated with the component (see the outline
@@ -116,7 +116,7 @@ section and `docs/adr/frontend-sync-bridge.md` Decision 8 before editing
     the epoch; a transient `loading` gate is a recoverable dip and keeps
     in-flight work alive.
   - **Typed comparators:** write named field-by-field comparators with a
-    colocated completeness manifest — never deep-equal or JSON serialization.
+    colocated completeness manifest, never deep-equal or JSON serialization.
     Missing fields fail `pnpm --dir apps/notebook-cloud typecheck` (the node
     `test` script will not catch them).
 
@@ -125,7 +125,7 @@ section and `docs/adr/frontend-sync-bridge.md` Decision 8 before editing
 Cloud chrome is flat and foreground-driven: rely on crisp typography and
 high-contrast ink over the base background rather than heavy fills or elevation.
 State tints are single solid `color-mix(...)` values. Do not use decorative
-gradients — including when mirroring existing atoms into new surfaces, where
+gradients, including when mirroring existing atoms into new surfaces, where
 they tend to propagate. The only allowed gradient is the `.cloud-startup-line`
 skeleton shimmer, which communicates loading motion rather than surface styling.
 Use `border-top`/`border-right` hairlines with subtle tinted washes as

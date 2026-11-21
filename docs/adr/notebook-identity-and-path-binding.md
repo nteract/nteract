@@ -4,11 +4,11 @@
 recovery landed; existing-room reconciliation remains open.
 
 **Neighbors:**
-- `docs/adr/mcp-session-lifecycle.md` — Decision 8 keys file-backed rejoin on the path; this ADR explains why and where that key comes from.
-- `docs/adr/local-first-notebook-state.md` — persistence and reconnect direction for local handles; this registry provides the durable store.
-- `docs/adr/identity-and-trust.md` — principal/operator *actor* identity (who connects), separate from *document* identity (which notebook). They do not share an id space.
-- `docs/adr/runtime-state-document-identity.md` — `RuntimeStateDoc` id ownership by `NotebookDoc`; the same stable-id separation applies to file paths.
-- `docs/prd/notebook-identity-environment-surfaces.md` and `docs/audits/notebook-identity-environment-surface-audit.md` — product surfaces and audit motivating end-to-end notebook identity.
+- `docs/adr/mcp-session-lifecycle.md`: Decision 8 keys file-backed rejoin on the path; this ADR explains why and where that key comes from.
+- `docs/adr/local-first-notebook-state.md`: persistence and reconnect direction for local handles; this registry provides the durable store.
+- `docs/adr/identity-and-trust.md`: principal/operator *actor* identity (who connects), separate from *document* identity (which notebook). They do not share an id space.
+- `docs/adr/runtime-state-document-identity.md`: `RuntimeStateDoc` id ownership by `NotebookDoc`; the same stable-id separation applies to file paths.
+- `docs/prd/notebook-identity-environment-surfaces.md` and `docs/audits/notebook-identity-environment-surface-audit.md`: product surfaces and audit motivating end-to-end notebook identity.
 
 ## Done / Next
 
@@ -61,7 +61,7 @@ A daemon-local SQLite `path <-> id` registry (`crates/runtimed/src/notebook_regi
 
 A file now resolves to the same id across daemon restarts whether opened directly, saved from untitled, or saved-as.
 
-Untitled (non-ephemeral) notebooks also recover across restarts. Their docs persist by id in `docs_dir`, and the daemon reloads them on connect-by-id. `NotebookSync` is daemon-authoritative and attach-only: it attaches to a resident or recoverable room and refuses a gone one without creating a phantom. MCP rejoin therefore drops its `list_rooms` pre-check heuristic—which could not tell `Evicted` rooms from dormant recoverable ones—and trusts the daemon. Truly ephemeral notebooks (no persisted doc) still disappear on restart by design. See `docs/adr/mcp-session-lifecycle.md` Decision 8.
+Untitled (non-ephemeral) notebooks also recover across restarts. Their docs persist by id in `docs_dir`, and the daemon reloads them on connect-by-id. `NotebookSync` is daemon-authoritative and attach-only: it attaches to a resident or recoverable room and refuses a gone one without creating a phantom. MCP rejoin therefore drops its `list_rooms` pre-check heuristic (which could not tell `Evicted` rooms from dormant recoverable ones) and trusts the daemon. Truly ephemeral notebooks (no persisted doc) still disappear on restart by design. See `docs/adr/mcp-session-lifecycle.md` Decision 8.
 
 ## Decision 3: The cloud id is the only globally meaningful identity, and the only one that may be embedded
 
@@ -101,7 +101,7 @@ Because each daemon's registry is local, a second daemon (another release channe
 
 **Claim gate:**
 - Every handshake attaching a peer to a path-bound room passes a single claim gate.
-- The gate acquires the canonical path—recording channel, socket path, room id, and pid—or fails with a structured `file_active_elsewhere` error naming the owning channel and socket.
+- The gate acquires the canonical path (recording channel, socket path, room id, and pid) or fails with a structured `file_active_elsewhere` error naming the owning channel and socket.
 - The error surfaces verbatim through the handshake error field MCP clients already read.
 
 **Activity-driven lifetime (not room residency):**
@@ -133,10 +133,10 @@ Because each daemon's registry is local, a second daemon (another release channe
 
 ## References
 
-- `crates/runtimed/src/notebook_registry.rs` — daemon-local SQLite `path <-> id` registry.
-- `crates/runtimed/src/notebook_sync_server/room.rs` — `load_or_create`, UUID assignment, `RoomRegistry`, path binding (`bind_existing`, `promote_after_save`, `rebind_after_save_as`).
-- `crates/runt-mcp/src/tools/session.rs` — `connect_notebook`, `resolve_room_notebook_path`, session path backfill.
-- `crates/runt-mcp/src/daemon_watch.rs` — `rejoin`, the path-vs-UUID fork.
-- `crates/runt-mcp-proxy/src/session.rs` — `extract_session_id`, rejoin-target selection.
-- `crates/runtimed/src/lib.rs` — `trusted-packages.sqlite` precedent for daemon-local SQLite stores.
-- `docs/adr/mcp-session-lifecycle.md` — Decision 8, the rejoin invariant this ADR backs.
+- `crates/runtimed/src/notebook_registry.rs`: daemon-local SQLite `path <-> id` registry.
+- `crates/runtimed/src/notebook_sync_server/room.rs`: `load_or_create`, UUID assignment, `RoomRegistry`, path binding (`bind_existing`, `promote_after_save`, `rebind_after_save_as`).
+- `crates/runt-mcp/src/tools/session.rs`: `connect_notebook`, `resolve_room_notebook_path`, session path backfill.
+- `crates/runt-mcp/src/daemon_watch.rs`: `rejoin`, the path-vs-UUID fork.
+- `crates/runt-mcp-proxy/src/session.rs`: `extract_session_id`, rejoin-target selection.
+- `crates/runtimed/src/lib.rs`: `trusted-packages.sqlite` precedent for daemon-local SQLite stores.
+- `docs/adr/mcp-session-lifecycle.md`: Decision 8, the rejoin invariant this ADR backs.

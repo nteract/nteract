@@ -200,7 +200,7 @@ Open gaps:
 
 ## Adoption Rule
 
-The lint runs with zero violations in CI; new violations fail the test. When fixing a violation, prefer structural extraction—move the locked work into a short block or helper that returns owned data, or move loop state into local variables (Decision 3)—rather than sprinkling `drop(guard)` calls.
+The lint runs with zero violations in CI; new violations fail the test. When fixing a violation, prefer structural extraction over `drop(guard)` calls. Move the locked work into a short block or helper that returns owned data, or keep loop state in local variables (Decision 3).
 
 Any new crate that adopts `tokio::sync::Mutex` or `RwLock` must register its source root in `tokio_mutex_lint.rs` before adding a second async-lock site.
 

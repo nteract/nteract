@@ -875,7 +875,7 @@ document handle (`worker/content-activity.mjs`):
 - **Batching & flush cadence:** writes `host/content-activity` and reports at
   most once per minute. The first change after a quiet minute flushes at once;
   further changes keep only the newest timestamp in memory and flush at the
-  window's end. A change never starts a flush itself—it queues one
+  window's end. A change never starts a flush itself. It queues one
   (`flushQueued`), and the next live request runs it. Eviction before the
   trailing flush loses at most that minute. Failed flushes retry with backoff
   from 1 minute up to 15 minutes. The timestamp also rides on every full row
@@ -1393,7 +1393,7 @@ creates a key or authorizes the connection; a successful `list_pages` call
 verifies access.
 
 Agent attribution headers and `_meta.agent` (all self-declared labels under the
-authenticated account—never verified identity or a permission grant):
+authenticated account, never verified identity or a permission grant):
 
 - **Headers:** API-key recipes send `X-Pages-Driver` (the harness, e.g., Kilo)
   and an optional `X-Pages-Agent` session label (max 80 characters; blank means
@@ -1655,7 +1655,7 @@ author ([model/comment-rules.mjs](model/comment-rules.mjs)):
 | delete a thread | owners and editors, or the thread's author |
 | move an anchor | the thread's author |
 
-These rules hold at three layers—the viewer hides disallowed actions, tools
+These rules hold at three layers. The viewer hides disallowed actions, tools
 enforce them in `applyComment`, and the host validates every incoming sync
 change before storing it ([sync/comments.mjs](sync/comments.mjs),
 [model/comment-authority.mjs](model/comment-authority.mjs)):
@@ -3829,10 +3829,10 @@ the readable mark brings nothing back.
 
 `decode` reports two reasons a block can't be drawn as stored, apart:
 
-- `newer`: content from a newer build—an unknown node, container, or embed name,
-  or an unreadable/unsafe marker (`unreadableMarker`: non-map value/attrs,
-  missing/unsafe image `src`, out-of-range heading level/table alignment/task
-  state, or unrenderable dataframe).
+- `newer`: content from a newer build. This covers an unknown node, container,
+  or embed name, or an unreadable/unsafe marker (`unreadableMarker`: non-map
+  value/attrs, missing/unsafe image `src`, out-of-range heading level/table
+  alignment/task state, or unrenderable dataframe).
   - *Rendering & round-trip:* readers render a notice for unknown nodes (unsafe
     `src` is never rendered or written as a URL) and encode writes markers back
     unchanged. Unknown containers render nothing in the editor and a notice in
@@ -4156,7 +4156,7 @@ still replay the recorded receipt; these guards run only for new intents.
   and rolls back the batch. Blocks with newer-build content refuse with
   `newer_content`. Because each in-place insert decodes its whole block, a
   batch caps total decoded block length at `MAX_BATCH_IN_PLACE_UNITS`
-  (1,000,000 UTF-16 units, checked upfront—about 100 inserts into a 10 KB block
+  (1,000,000 UTF-16 units, checked upfront; about 100 inserts into a 10 KB block
   or 4 into a 200 KB block).
 - **Concurrency & receipts:** validation runs only on the write's own change, so
   two concurrent writers inserting same-kind lists after one node can merge into
@@ -4208,7 +4208,7 @@ Lifecycle fencing and receipts:
   in one write and installs in memory only after `sync()`; if the barrier fails,
   the next request finishes the transition first so receipts never replay for
   unfinished work. If a new reservation is superseded due to a stale Catalog
-  index, the Catalog retargets once at the Page's current revision—always
+  index, the Catalog retargets once at the Page's current revision, always
   re-running the leaf guard before Trash (a restored Page may have gained a
   child). Refused or unsettled guards release the unrecorded request. The
   Catalog always projects the Page's current state rather than a replayed
@@ -4381,7 +4381,7 @@ Library navigation, grouping, drafts, and view modes:
 - **Local drafts & copies ("On this device"):** unsynced browser drafts appear
   first on All and Your items when no Project filter is set (client-side title
   matching filters them during search). Local copies of Pages owned by someone
-  else show only when listed by the server—even with unconfirmed edits—so
+  else show only when listed by the server (even with unconfirmed edits), so
   revoked titles disappear from library and picker. Each checkpoint stores
   `owned` from its last role grant (`owner` or member role; `none` keeps the
   existing value; missing `owned` falls back to the stored grant, or treats as
@@ -4471,7 +4471,7 @@ next host, plain or native, compares against. Trash keeps the card on purpose:
 `page_cards` answers `null` while the Page is trashed, and a restore shows the
 card at once rather than after the next edit.
 
-`page_cards` (`/api/tools` only, not an MCP tool—agents read Pages directly)
+`page_cards` (`/api/tools` only, not an MCP tool; agents read Pages directly)
 fetches up to 24 `page_ids` ([page-cards.mjs](worker/page-cards.mjs)):
 
 - **Access & lane bypass:** the caller's Catalog authorizes IDs using
@@ -4489,7 +4489,7 @@ fetches up to 24 `page_ids` ([page-cards.mjs](worker/page-cards.mjs)):
   under a single 1.2 s deadline so a slow bucket never blocks Catalog
   operations. Each card is one `get` (body + metadata holding the image record;
   20 cards = 20 reads; objects lacking `image_revision` also read the
-  `card/latest` pointer—see [Card images](#card-images)). Only allowed IDs reach
+  `card/latest` pointer, see [Card images](#card-images)). Only allowed IDs reach
   the bucket, and no object URL leaves the Worker. Unknown, refused, timed-out,
   or missing cards all return `null` so callers cannot distinguish "no access"
   from "no card". The response carries `principal`.
@@ -4536,7 +4536,7 @@ from a browser-local device cache
   (`kept`). Writes require matching account and cache revision, patch on Trash
   and renames, and clear across all accounts on sign-out, Sign out everywhere,
   or account switch. Records stay valid for 14 days from `saved_at` (set only by
-  fresh first-page responses—never extended by card answers, Trash, or renames);
+  fresh first-page responses, never extended by card answers, Trash, or renames);
   expired, missing, non-numeric, or > 5-minute-future `saved_at` records are
   discarded on read.
 - **Card rendering:** [PageCardPreview.jsx](viewer/PageCardPreview.jsx) renders
@@ -4624,7 +4624,7 @@ argument and reveals nothing about either resource.
 
 Project/parent listings, `list_projects` caching, and breadcrumbs:
 
-- **Project & parent listings:** read Catalog entries rather than D1—a Project
+- **Project & parent listings:** read Catalog entries rather than D1. A Project
   lists all descendants of its roots, and a parent lists its direct children.
   Children of a shared parent come from the parent owner's Catalog and verify
   against each Page host with the caller's credentials (max 100 checked per
@@ -4717,7 +4717,7 @@ transition):
   2 s via `AbortSignal` on stub fetch (honored by celld 0.6.3) plus a
   cancelable body reader.
 - **Resumed Trash guard:** a resumed Trash that lost its reservation queries the
-  Page before re-acquiring one—if lifecycle state has not advanced, the leaf
+  Page before re-acquiring one. If lifecycle state has not advanced, the leaf
   guard re-runs (blocking if a child was created); if it has, forwarding replays
   the recorded receipt or returns superseded (and a superseded Trash must pass
   the leaf guard again before retargeting).
@@ -4911,7 +4911,7 @@ Card image reads, fallback pointer, and deletion:
   host record-only check), booting no Page document and failing immediately on
   revocation. Responses carry `Cache-Control: private, immutable` and
   `X-Content-Type-Options: nosniff`. The server does not verify that pixels
-  match document content—cards share the same owner-trust boundary as inserted
+  match document content. Cards share the same owner-trust boundary as inserted
   images and are visible only to Page readers.
 - **Purge & tombstone:** deletes `card.json`, `card/latest`, referenced images,
   and up to 4 prefix-listing pages of orphans (uploads whose post-check finds
@@ -5034,7 +5034,7 @@ table `page_tags` (`page_id`, `tag`, `added_by`, `added_at`; primary key
 list (`PAGE_TAGS_MIGRATIONS`), recorded in its own version table, `page_tags_schema`.
 They are not in the Page's Automerge document, so changing them never moves its revision, and a document restore or export does not carry them.
 
-**Source of truth.** `page_tags` is normative in D1—the single copy of a Page's
+**Source of truth.** `page_tags` is normative in D1: the single copy of a Page's
 tags, with no backing Durable Object or rebuild path (see
 [Where state lives](DEPLOYMENT.md#where-state-lives) for the distinction from
 the rebuildable `pages_catalog_*` projections). All reads and writes go through
