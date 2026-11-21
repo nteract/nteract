@@ -219,7 +219,17 @@ import {
   requireHeads,
 } from "./mutations.mjs";
 
-import { claimInvitation, proposeSharingMutation, sharingProjection } from "./sharing.mjs";
+import {
+  claimInvitation,
+  pickNeedsResolving,
+  proposeSharingMutation,
+  sharingProjection,
+} from "./sharing.mjs";
+import {
+  ORGANIZATION_MEMBERS_PATH,
+  organizationMembersRoute,
+  resolveOrganizationMember,
+} from "./organization-members.mjs";
 import { identityAudienceKeys, openedAudienceKey } from "./organization-access.mjs";
 import { pageAccess, pageRelation, pageState, restrictAccessDuringCommit } from "./access.mjs";
 import {
@@ -2065,6 +2075,8 @@ const gateway = {
           );
         return env.PAGES.getByName(pageId).fetch(internal);
       }
+      if (url.pathname === ORGANIZATION_MEMBERS_PATH)
+        return await organizationMembersRoute(request, env, await authenticate(request, env));
       if (url.pathname === "/api/access") {
         await authenticate(request, env);
         const pageId = url.searchParams.get("page");
@@ -7153,12 +7165,18 @@ export class Page {
         if (args.read) return json(await sharingProjection(this.metadata, identity, this.env));
         if (state === "trashed")
           throw new HttpError(409, "Restore this Page before changing access", "page_trashed");
+        // Kilo confirms a pick before the record is read for the change, so
+        // a change that lands while Kilo answers isn't overwritten.
+        const picked = (await pickNeedsResolving(this.metadata, identity, args))
+          ? await resolveOrganizationMember(this.env, identity, args)
+          : undefined;
         const result = await proposeSharingMutation(
           this.metadata,
           identity,
           args,
           Date.now(),
           this.env,
+          { picked },
         );
         // Replays repeat persistence: an earlier barrier may have failed after
         // installing the in-memory ACL and receipt.

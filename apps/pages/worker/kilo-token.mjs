@@ -124,13 +124,14 @@ async function digest(text) {
 }
 
 /** The Kilo account `token` names, as `{ id, name, verifiedEmail,
- * organizations, verifiedAt, until }`, with `verifiedEmail` only when Kilo
- * sent a usable one, `verifiedAt` when the exchange was sent, and `until`
- * when this request's identity stops being valid: the end of the isolate's
- * lease, or `UNLEASED_VALIDITY_MS` after Kilo answered when there is no
- * lease. Throws a coded error when Kilo
- * refuses it (401 `invalid_kilo_token`, 403 `account_unavailable`) or can't
- * answer (503 `sign_in_unavailable`, retryable). */
+ * organizations, memberSearchProof, verifiedAt, until }`, with
+ * `verifiedEmail` and `memberSearchProof` only when Kilo sent usable ones,
+ * `verifiedAt` when the exchange was sent, and `until` when this request's
+ * identity stops being valid: the end of the isolate's lease, or
+ * `UNLEASED_VALIDITY_MS` after Kilo answered when there is no lease. Throws
+ * a coded error when Kilo refuses it (401 `invalid_kilo_token`, 403
+ * `account_unavailable`) or can't answer (503 `sign_in_unavailable`,
+ * retryable). */
 export async function kiloTokenAccount({ config, claims }, token) {
   const key = await digest(`${config.appUrl}\u0000${config.audience}\u0000${token}`);
   return lease.resolve(key, async () => {
@@ -176,6 +177,8 @@ export async function kiloTokenAccount({ config, claims }, token) {
       // What the exchange said about the account's organizations, and when
       // it was sent: the evidence auth.mjs records (kilo-membership.mjs).
       organizations: answer.organizations,
+      // Recorded beside them and never read from here again.
+      ...(answer.memberSearchProof && { memberSearchProof: answer.memberSearchProof }),
       verifiedAt: sentAt,
       until: until ?? settledAt + UNLEASED_VALIDITY_MS,
     });

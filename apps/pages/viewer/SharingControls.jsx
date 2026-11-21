@@ -23,6 +23,7 @@ import "./sharing-panel.css";
 import { createSharingAccess, sharingAvailable, SHARING_FRESH_MS } from "./sharing-access.mjs";
 import { linkAccessProjection } from "./sharing-projection.mjs";
 import { LinkAccess } from "./LinkAccess.jsx";
+import { MemberPicker } from "./MemberPicker.jsx";
 import { pageMarkdown } from "../model/markdown-export.mjs";
 import { copyLinkPath, readPageRoute } from "../shared/routes.mjs";
 import { sessionTitle } from "./address-slug.mjs";
@@ -215,6 +216,22 @@ function PageSharing({
       // The resource retains the error and invalidates/reloads stale access.
     }
   }
+  /** Grants a colleague picked from an organization search. Resolves true
+   * once the host applied it; the resource keeps any refusal as its error. */
+  async function pick(change) {
+    if (busy || !manage) return false;
+    const revision = epoch.current;
+    setCopyError("");
+    setMessage("");
+    try {
+      const result = await cache.mutate({ action: "grant_organization_member", ...change }, "pick");
+      if (!result || revision !== epoch.current) return false;
+      setMessage("Access updated. Copy the link to share it.");
+      return true;
+    } catch {
+      return false;
+    }
+  }
   async function copyMarkdown() {
     const revision = epoch.current;
     setCopyMessage("");
@@ -342,6 +359,14 @@ function PageSharing({
                 primitives={primitives}
                 concealEmails
               />
+              {manage && value?.memberSearch && value.organizationOptions?.length > 0 && (
+                <MemberPicker
+                  organizations={value.organizationOptions}
+                  preferred={value.organizationAccess?.id}
+                  busy={!!busy}
+                  onGrant={pick}
+                />
+              )}
               {manage && (
                 <button
                   type="button"

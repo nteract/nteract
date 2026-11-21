@@ -201,8 +201,13 @@ test("a fresh database gets the millisecond evidence table", async (t) => {
   const { env } = await fixture(t);
   const at = Date.now();
   await recordKiloMembership(env, "user:kilo:fresh", [sentinel], at);
-  assert.deepEqual(await versions(env), [1, 2]);
-  assert.deepEqual(await columns(env), ["organizations", "principal", "verified_at_ms"]);
+  assert.deepEqual(await versions(env), [1, 2, 3]);
+  assert.deepEqual(await columns(env), [
+    "member_search_proof",
+    "organizations",
+    "principal",
+    "verified_at_ms",
+  ]);
   assert.deepEqual(await membershipRecord(env, "user:kilo:fresh"), {
     organizations: [sentinel],
     verifiedAtMs: at,
@@ -234,8 +239,13 @@ test("a database that ran the seconds table drops its rows and takes millisecond
     null,
     "a seconds row is not evidence",
   );
-  assert.deepEqual(await versions(env), [1, 2]);
-  assert.deepEqual(await columns(env), ["organizations", "principal", "verified_at_ms"]);
+  assert.deepEqual(await versions(env), [1, 2, 3]);
+  assert.deepEqual(await columns(env), [
+    "member_search_proof",
+    "organizations",
+    "principal",
+    "verified_at_ms",
+  ]);
   const at = Date.now();
   await recordKiloMembership(env, "user:kilo:upgraded", [sentinel], at);
   assert.deepEqual(await membershipRecord(env, "user:kilo:upgraded"), {

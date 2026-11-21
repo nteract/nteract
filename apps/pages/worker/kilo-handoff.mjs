@@ -242,7 +242,13 @@ async function completeHandoff(request, env, config) {
   // write would read an older listing, one this answer may have removed
   // organizations from.
   try {
-    await recordKiloMembership(env, identity.principal, account.organizations, sentAt);
+    await recordKiloMembership(
+      env,
+      identity.principal,
+      account.organizations,
+      sentAt,
+      account.memberSearchProof ?? null,
+    );
   } catch {
     return signInFailed(503, "membership_unrecorded", returnTo);
   }

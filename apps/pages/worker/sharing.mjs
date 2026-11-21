@@ -7,6 +7,11 @@ import { fingerprint, operationKey } from "./mutations.mjs";
 import { companyDomainProof, companyViewDomains, configuredDomainView } from "./domain-access.mjs";
 import { organizationLeases, organizationProof } from "./kilo-membership.mjs";
 import { configuredOrganizationAccess } from "./organization-access.mjs";
+import { memberSearchAvailable } from "./organization-members.mjs";
+
+/** Grants the Kilo account an organization search picked
+ * (organization-members.mjs): `{ organization_id, member_id, role }`. */
+export const GRANT_ORGANIZATION_MEMBER = "grant_organization_member";
 
 const lifetime = 7 * 24 * 60 * 60 * 1000;
 const roleValid = (role) => MEMBER_ROLES.includes(role);
@@ -48,6 +53,10 @@ export async function organizationSharing(metadata, identity, env, now = Date.no
   return {
     organizationOptions,
     organizationProof: proof,
+    // Whether the owner can pick a member of one of organizationOptions by
+    // name now. False with a Kilo that sends no search proof.
+    memberSearch:
+      organizationOptions.length > 0 && (await memberSearchAvailable(env, identity, now)),
     organizationAccess: organization
       ? { id: organization.id, name: organization.name, role: organization.role }
       : null,
@@ -209,10 +218,66 @@ async function organizationGrant(acl, identity, args, env, now) {
   return { id, name: lease.name, namespace: lease.namespace, role: args.role };
 }
 
-export async function proposeSharingMutation(metadata, identity, args, now = Date.now(), env = {}) {
+/** The ACL after granting `picked` the role `args` asks for. It is
+ * `set_role` for the principal Kilo confirmed, plus the name Kilo sent on the
+ * member row; nothing else from the pick is kept, so the grant doesn't end
+ * when the person leaves the organization. Removing or changing a picked
+ * member afterwards is `set_role`. */
+function pickGrant(metadata, identity, args, picked, now) {
+  checkPick(args);
+  // The host resolves every pick it hasn't recorded before it gets here.
+  if (typeof picked?.principal !== "string")
+    throw new HttpError(409, "Sharing changed; reload access before editing");
+  const update = proposeAccessUpdate(
+    metadata,
+    identity,
+    { principal: picked.principal, role: args.role, expected_revision: args.expected_revision },
+    { now },
+  );
+  const acl = structuredClone(update.acl);
+  if (!update.changed) acl.revision++;
+  acl.members[picked.principal] = {
+    ...acl.members[picked.principal],
+    ...(update.changed ? {} : { changedAtRevision: acl.revision }),
+    ...(picked.displayName && { displayName: picked.displayName }),
+  };
+  return acl;
+}
+
+/** The receipt key `args` records under on a Page. */
+const pageReceiptKey = async (args, identity) =>
+  (await operationKey(args, identity, "page-access")).replace("host/operation/", "");
+
+/** Whether `args` grants an organization pick that `metadata` holds no receipt
+ * for, so the host must resolve the pick with Kilo before proposing it. A
+ * retry of a recorded grant replays its receipt without asking Kilo again. */
+export async function pickNeedsResolving(metadata, identity, args) {
+  if (args?.action !== GRANT_ORGANIZATION_MEMBER) return false;
+  checkPick(args);
+  return !metadata.acl?.receipts?.[await pageReceiptKey(args, identity)];
+}
+
+/** Refuses a pick whose role can't be granted, before Kilo is asked. */
+export function checkPick(args) {
+  if (!roleValid(args.role)) throw new HttpError(400, "Choose Can view, Can comment or Can edit");
+}
+
+/** One sharing change to a Page or Project record. `picked`, for
+ * `grant_organization_member`, is the account Kilo confirmed for the pick,
+ * `{ principal, displayName }` from resolveOrganizationMember: the host
+ * resolves it before reading the record it passes here, so no record is held
+ * across a call to Kilo. */
+export async function proposeSharingMutation(
+  metadata,
+  identity,
+  args,
+  now = Date.now(),
+  env = {},
+  { picked } = {},
+) {
   if (!pageAccess(metadata, identity, { now }).canManageAccess)
     throw new HttpError(403, "Only the owner can manage sharing");
-  const key = (await operationKey(args, identity, "page-access")).replace("host/operation/", "");
+  const key = await pageReceiptKey(args, identity);
   const digest = await fingerprint("page_access", args, identity);
   const previous = metadata.acl?.receipts?.[key];
   if (previous) {
@@ -252,6 +317,8 @@ export async function proposeSharingMutation(metadata, identity, args, now = Dat
       for (const [id, invite] of Object.entries(acl.invites ?? {}))
         if (email && invite.email === email) delete acl.invites[id];
     }
+  } else if (args.action === GRANT_ORGANIZATION_MEMBER) {
+    acl = pickGrant(metadata, identity, args, picked, now);
   } else if (args.action === "invite") {
     const email = checkedEmail(args.email);
     if (!roleValid(args.role)) throw new HttpError(400, "Choose Can view, Can comment or Can edit");

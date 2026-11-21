@@ -26,6 +26,18 @@ export const kiloPrincipalNamespace = (env) =>
  * unusable value, or a missing audience or secret, throws, so a misconfigured
  * deployment fails loudly and never falls back to another sign-in. */
 export function kiloSignIn(env, request) {
+  const client = kiloClient(env);
+  if (!client) return null;
+  return {
+    ...client,
+    origin: new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin,
+  };
+}
+
+/** What a server-to-server call to Kilo needs, `{ appUrl, audience, secret,
+ * namespace }`, or null when this deployment doesn't use Kilo. The same
+ * checks as `kiloSignIn`, without the sign-in's own origin. */
+export function kiloClient(env) {
   const configured = env?.PAGES_KILO_APP_URL;
   if (!configured) return null;
   let app;
@@ -54,7 +66,6 @@ export function kiloSignIn(env, request) {
   return {
     appUrl: app.origin,
     audience,
-    origin: new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url).origin,
     namespace: kiloPrincipalNamespace(env),
     secret,
   };

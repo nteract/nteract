@@ -656,3 +656,167 @@ test("Copy link keeps the slug the address shows for this Page, and adds none", 
     await f.toggle();
   }
 });
+
+const pickerInput = (container) => container.querySelector(".member-picker input");
+async function typeName(container, value) {
+  await act(() => {
+    const input = pickerInput(container);
+    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(
+      input,
+      value,
+    );
+    input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  });
+}
+/** Past the picker's pause before a search, and the answer after it. */
+const afterPause = () => act(() => new Promise((resolve) => setTimeout(resolve, 320)));
+
+test("without member search from the host there is no picker, and email invites stay", async (t) => {
+  const f = await fixture(t, async () =>
+    json({ ...organizationLedger(null), memberSearch: false }),
+  );
+  await f.toggle();
+  await flush();
+  assert.equal(f.container.querySelector(".member-picker"), null);
+  assert.ok(f.container.querySelector('input[type="email"]'));
+});
+
+test("an owner finds a colleague by name and adds them; the grant names only the picked id", async (t) => {
+  const searches = [];
+  const posts = [];
+  let current = { ...organizationLedger(null), memberSearch: true };
+  const f = await fixture(t, async (url, options) => {
+    if (String(url).startsWith("/api/organization-members")) {
+      searches.push(JSON.parse(options.body));
+      return json({
+        members: [
+          { id: "jesse-person", name: "Jesse Doe", image_url: "https://avatars.example/j.png" },
+          { id: "jessica-person", name: "Jessica Roe", image_url: null },
+        ],
+      });
+    }
+    if (options.method === "POST") {
+      const body = JSON.parse(options.body);
+      posts.push(body);
+      current = {
+        ...current,
+        access: { ...current.access, revision: current.access.revision + 1 },
+        members: [
+          { principal: "user:kilo:jesse-person", role: body.role, displayName: "Jesse Doe" },
+        ],
+      };
+      return json({ ...current, receipt: { revision: current.access.revision } });
+    }
+    return json(current);
+  });
+  await f.toggle();
+  await flush();
+  assert.ok(pickerInput(f.container), "the picker shows");
+  await typeName(f.container, "j");
+  await afterPause();
+  assert.equal(searches.length, 0, "one letter searches nothing");
+  await typeName(f.container, "jes");
+  await afterPause();
+  assert.deepEqual(searches, [{ organization_id: acme.id, query: "jes" }]);
+  const results = [...f.container.querySelectorAll(".member-picker-results button")];
+  assert.deepEqual(
+    results.map((button) => button.querySelector(".member-picker-name").textContent),
+    ["Jesse Doe", "Jessica Roe"],
+  );
+  const avatar = results[0].querySelector("img");
+  assert.equal(avatar.getAttribute("referrerpolicy"), "no-referrer");
+  assert.equal(avatar.getAttribute("alt"), "");
+  assert.equal(results[1].querySelector("img"), null);
+  assert.equal(results[1].querySelector(".member-picker-initials").textContent, "JR");
+  await choose(f.container.querySelector('.member-picker select[aria-label^="Access"]'), "editor");
+  await act(() => results[0].click());
+  await flush();
+  assert.equal(posts.length, 1);
+  const { nonce, ...grant } = posts[0];
+  assert.ok(nonce);
+  assert.deepEqual(grant, {
+    action: "grant_organization_member",
+    organization_id: acme.id,
+    member_id: "jesse-person",
+    role: "editor",
+    expected_revision: 1,
+  });
+  assert.match(f.container.textContent, /Access updated/);
+  assert.match(f.container.textContent, /Jesse Doe/);
+  assert.equal(pickerInput(f.container).value, "", "a grant clears the search");
+});
+
+test("a search the host can't run hides the picker and leaves email invites", async (t) => {
+  const f = await fixture(t, async (url) => {
+    if (String(url).startsWith("/api/organization-members"))
+      return json(
+        {
+          error: "Searching your organization isn't available right now",
+          code: "member_search_unavailable",
+          retryable: true,
+        },
+        503,
+      );
+    return json({ ...organizationLedger(null), memberSearch: true });
+  });
+  await f.toggle();
+  await flush();
+  await typeName(f.container, "jes");
+  await afterPause();
+  assert.equal(f.container.querySelector(".member-picker"), null);
+  assert.ok(f.container.querySelector('input[type="email"]'));
+});
+
+test("a pick Kilo no longer confirms shows its refusal and keeps the Page's sharing", async (t) => {
+  let current = { ...organizationLedger(null), memberSearch: true };
+  const f = await fixture(t, async (url, options) => {
+    if (String(url).startsWith("/api/organization-members"))
+      return json({ members: [{ id: "gone-person", name: "Gone Person", image_url: null }] });
+    if (options.method === "POST")
+      return json(
+        { error: "That person isn't a member of this organization now", code: "member_not_found" },
+        404,
+      );
+    return json(current);
+  });
+  await f.toggle();
+  await flush();
+  await typeName(f.container, "gone");
+  await afterPause();
+  await act(() => f.container.querySelector(".member-picker-results button").click());
+  await flush();
+  assert.match(f.container.textContent, /isn't a member of this organization now/);
+  assert.ok(f.container.querySelector(".member-picker"), "the owner's sharing stays loaded");
+  assert.equal(pickerInput(f.container).value, "gone", "the search stays for another pick");
+});
+
+test("with several organizations the picker starts at the one the Page is shared with", async (t) => {
+  const guild = { id: "org-guild", name: "Guild" };
+  const searches = [];
+  const f = await fixture(t, async (url, options) => {
+    if (String(url).startsWith("/api/organization-members")) {
+      searches.push(JSON.parse(options.body));
+      return json({ members: [] });
+    }
+    return json({
+      ...organizationLedger({ role: "viewer" }),
+      organizationOptions: [acme, guild],
+      organizationProof: { [acme.id]: "verified", [guild.id]: "verified" },
+      organizationAccess: { ...guild, role: "viewer" },
+      organizationAccessOwnerVerified: true,
+      memberSearch: true,
+    });
+  });
+  await f.toggle();
+  await flush();
+  const organizations = f.container.querySelector(
+    '.member-picker select[aria-label^="Organization"]',
+  );
+  assert.equal(organizations.value, guild.id);
+  await typeName(f.container, "jes");
+  await afterPause();
+  assert.deepEqual(searches, [{ organization_id: guild.id, query: "jes" }]);
+  await choose(organizations, acme.id);
+  await afterPause();
+  assert.deepEqual(searches.at(-1), { organization_id: acme.id, query: "jes" });
+});

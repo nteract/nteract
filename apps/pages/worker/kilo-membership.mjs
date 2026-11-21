@@ -30,7 +30,14 @@
  * settled values are cached, never a pending read (isolate-setup.mjs says
  * why).
  *
- * No organization id or name reaches a log line from here. */
+ * The row also keeps the exchange's member search proof, when Kilo sent one
+ * (`member_search_proof`, kilo-exchange.mjs): Kilo's signed statement that
+ * this person signed in to this deployment. It is read only by
+ * `memberSearchProof`, never cached, and never joins the record above, so it
+ * stays on the server and out of every identity. A newer exchange without one
+ * clears it, so a deployment whose Kilo stops sending it stops searching.
+ *
+ * No organization id or name, and no proof, reaches a log line from here. */
 import { identityProvider } from "../identity-provider.mjs";
 import { migrateSchema } from "./d1-schema.mjs";
 import { isolateSetup } from "./isolate-setup.mjs";
@@ -67,6 +74,11 @@ const MIGRATIONS = Object.freeze([
         verified_at_ms INTEGER NOT NULL
       )`,
     ]),
+  }),
+  Object.freeze({
+    version: 3,
+    name: "member_search_proof",
+    statements: Object.freeze(["ALTER TABLE kilo_memberships ADD COLUMN member_search_proof TEXT"]),
   }),
 ]);
 const ready = isolateSetup((db) =>
@@ -164,11 +176,16 @@ export async function membershipRecord(env, principal, now = Date.now()) {
  *
  * The row's `verified_at_ms` never moves back. Every exchange writes, equal
  * answer or not, so that time always reaches the newest exchange seen.
+ *
+ * `proof` is the exchange's member search proof, or null. It follows the
+ * same order: a later exchange replaces it, null included, and one in the
+ * same millisecond keeps whichever is set. Two proofs that close name the
+ * same person on the same deployment, so either serves.
  */
-export async function recordKiloMembership(env, principal, organizations, sentAt) {
+export async function recordKiloMembership(env, principal, organizations, sentAt, proof = null) {
   writes++;
   try {
-    await write(env, principal, organizations, sentAt);
+    await write(env, principal, organizations, sentAt, proof);
   } finally {
     writes++;
     // The row may now differ from both this answer and this isolate's view,
@@ -186,22 +203,53 @@ export async function recordKiloMembership(env, principal, organizations, sentAt
 const storedOrganizations = (organizations) =>
   JSON.stringify(organizations.map(({ id, name }) => ({ id, name })));
 
-async function write(env, principal, organizations, sentAt) {
+async function write(env, principal, organizations, sentAt, proof) {
   await ready(env.DB);
   const stored = storedOrganizations(organizations);
   await env.DB.prepare(
-    `INSERT INTO kilo_memberships (principal, organizations, verified_at_ms) VALUES (?, ?, ?)
+    `INSERT INTO kilo_memberships (principal, organizations, verified_at_ms, member_search_proof)
+    VALUES (?, ?, ?, ?)
     ON CONFLICT (principal) DO UPDATE SET
       organizations = CASE
         WHEN excluded.verified_at_ms > kilo_memberships.verified_at_ms THEN excluded.organizations
         WHEN excluded.organizations = kilo_memberships.organizations THEN kilo_memberships.organizations
         ELSE '[]'
       END,
+      member_search_proof = CASE
+        WHEN excluded.verified_at_ms > kilo_memberships.verified_at_ms
+          THEN excluded.member_search_proof
+        ELSE COALESCE(excluded.member_search_proof, kilo_memberships.member_search_proof)
+      END,
       verified_at_ms = excluded.verified_at_ms
     WHERE excluded.verified_at_ms >= kilo_memberships.verified_at_ms`,
   )
-    .bind(principal, stored, Math.floor(sentAt))
+    .bind(principal, stored, Math.floor(sentAt), typeof proof === "string" && proof ? proof : null)
     .run();
+}
+
+/** The member search proof `identity`'s newest exchange carried, or null when
+ * it carried none, the evidence it came with no longer counts, or `identity`
+ * isn't a Kilo account. Kilo minted the proof just after Pages sent that
+ * exchange and honors it for as long as Pages trusts the evidence, so a proof
+ * this returns is one Kilo still accepts, clocks aside. Reads D1 every time:
+ * the proof is never cached. */
+export async function memberSearchProof(env, identity, now = Date.now()) {
+  if (!kiloAccount(env, identity, now)) return null;
+  await ready(env.DB);
+  const row = await env.DB.prepare(
+    "SELECT verified_at_ms, member_search_proof FROM kilo_memberships WHERE principal = ?",
+  )
+    .bind(identity.principal)
+    .first();
+  if (
+    !row ||
+    !Number.isSafeInteger(row.verified_at_ms) ||
+    typeof row.member_search_proof !== "string" ||
+    !row.member_search_proof ||
+    evidenceEnd({ verifiedAtMs: row.verified_at_ms }) <= now
+  )
+    return null;
+  return row.member_search_proof;
 }
 
 /** Whether `identity` is a Kilo account on this deployment, the only kind of

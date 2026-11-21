@@ -1591,6 +1591,20 @@ drops the table and creates it again with `verified_at_ms`: a version 1 row
 was timed in seconds and can't be ordered by the millisecond, so it is gone
 and that principal's next exchange writes a new one.
 
+Kilo's answer may also carry `member_search_proof`: a token Kilo signs that
+names the person and this deployment's audience, good for 8 hours. Schema
+version 3 adds the record's `member_search_proof` column, and each exchange
+writes it beside the organizations under the same ordering: a later answer
+replaces it, a later answer without one clears it, and one in the same
+millisecond keeps whichever is set. Only the organization member search reads
+it, from D1 each time and while the record's evidence counts, and sends it to
+Kilo's `POST /api/pages-auth/organization-members` with the deployment secret
+([worker/kilo-member-search.mjs](worker/kilo-member-search.mjs)). It never
+reaches a response, an identity, a cache or a log line. A Kilo that sends no
+proof leaves the column empty, and the share dialog offers only email
+invitations. Kilo answers that route with 503 until its rate-limit rules
+exist; Pages reads that as search being unavailable and hides the picker.
+
 A sign-in whose write fails gets the retryable failure page (503,
 `membership_unrecorded`) and no session. An agent request on a token answer
 not yet recorded in its isolate writes it itself; no request waits on
