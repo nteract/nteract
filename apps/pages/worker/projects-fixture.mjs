@@ -12,7 +12,7 @@ import { plainStub } from "./plain-stub.mjs";
 import { operationKey } from "./mutations.mjs";
 import { LOCATION_SHAPE_KEY, shapeState } from "./location-shape.mjs";
 import { startLocalKiloHandoff } from "../scripts/fixtures/local-kilo-handoff.mjs";
-import { resetMembershipCache } from "./kilo-membership.mjs";
+import { resetMembershipCache } from "./organization-memberships.mjs";
 
 const KILO_AUDIENCE = "pages-projects-test";
 const KILO_SECRET = "kilo-projects-fixture-secret-0123456789";
@@ -63,16 +63,23 @@ export class Storage {
  * owner, member and stranger call with Kilo agent tokens. `kilo` maps each of
  * them to the organizations (`[{ id, name }]`) Kilo reports for them;
  * `organizations(who, list)` changes that list and mints a new token, so the
- * next call makes a new exchange. */
+ * next call makes a new exchange. With `memberSearch` too, the fake Kilo sends
+ * a member search proof and answers member searches. */
 export async function world(
   t,
-  { index = "1", storage: newStorage = () => new Storage(), kilo: kiloPeople } = {},
+  {
+    index = "1",
+    storage: newStorage = () => new Storage(),
+    kilo: kiloPeople,
+    memberSearch = false,
+  } = {},
 ) {
   const auth = await createAuthFixture();
   const kilo = kiloPeople
     ? await startLocalKiloHandoff({
         deployments: { [KILO_AUDIENCE]: "https://pages.invalid" },
         secret: KILO_SECRET,
+        memberSearch,
       })
     : null;
   if (kilo) {
@@ -323,6 +330,8 @@ export async function world(
   return {
     settle,
     auth,
+    /** The fake Kilo, with `kilo`. */
+    kilo,
     /** The bearer token each role sends, for a test's own requests. */
     token: (who) => tokens[who],
     organizations,

@@ -6,6 +6,7 @@ import { projectPath } from "../shared/routes.mjs";
 import { ROLE_LABELS } from "./sharing-roles.mjs";
 import { linkAccessProjection } from "./sharing-projection.mjs";
 import { LinkAccess } from "./LinkAccess.jsx";
+import { MemberPicker } from "./MemberPicker.jsx";
 import "./sharing-panel.css";
 
 export function projectSharingTransition(state, event) {
@@ -166,6 +167,20 @@ export function ProjectSharing({
       document.removeEventListener("keydown", key);
     };
   }, [open]);
+  // The member picker's pending grant: resolved true when the save it
+  // started is applied, false when it fails.
+  const picking = useRef(null);
+  useEffect(() => {
+    if (!picking.current || !["ready", "failed"].includes(state.name)) return;
+    picking.current(state.name === "ready");
+    picking.current = null;
+  }, [state.name]);
+  const pick = (change) =>
+    new Promise((resolve) => {
+      if (state.name !== "ready") return resolve(false);
+      picking.current = resolve;
+      save({ action: "grant_organization_member", ...change });
+    });
   const save = (change) => {
     setCopyStatus("");
     dispatch({
@@ -303,6 +318,17 @@ export function ProjectSharing({
             primitives={primitives}
             concealEmails
           />
+          {owner &&
+            !failed &&
+            state.value?.memberSearch &&
+            state.value.organizationOptions?.length > 0 && (
+              <MemberPicker
+                organizations={state.value.organizationOptions}
+                preferred={state.value.organizationAccess?.id}
+                busy={state.name !== "ready"}
+                onGrant={pick}
+              />
+            )}
           {linkAccess && !failed && (
             <LinkAccess
               linkAccess={linkAccess}

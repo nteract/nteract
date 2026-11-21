@@ -335,6 +335,11 @@ ${part.authErrorItems}
   verified email at that domain. Sign in again with it.
 - organization_proof_required (403): sharing with an organization needs your
   own current membership in it. Sign in again with the same account.
+- member_search_unavailable (404, or 503 with retryable:true): searching an
+  organization's members isn't available on this deployment, or its sign-in
+  service didn't answer. Share by email instead.
+- member_not_found (404): the person picked from an organization search is no
+  longer a member of it. Search again.
 - link_audience_set (409): a Page has one link audience. Set the current one
   (company domain or organization) to null first.
 - page_recovery_blocked: a pending edit exceeds the Page's history capacity;

@@ -6,7 +6,7 @@
  * (viewer, commenter or editor). `name` is the organization's name when the
  * owner chose it, kept for display once the owner can no longer prove
  * membership. Nobody becomes a member through it: a reader's access comes
- * from a membership lease (kilo-membership.mjs) matching `id` in the same
+ * from a membership lease (organization-memberships.mjs) matching `id` in the same
  * `namespace`, and ends with that lease.
  *
  * A Page has at most one link audience: a company domain (`acl.domainView`)

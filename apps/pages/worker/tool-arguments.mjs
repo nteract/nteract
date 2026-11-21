@@ -49,6 +49,9 @@ export const API_ARGUMENTS = Object.freeze({
   delete_page: ["expected_principal", BROWSER_TRASH_GUARD],
   restore_page: ["expected_principal"],
   purge_page: ["expected_principal"],
+  // The share dialog's organization member picker (grant_organization_member,
+  // organization-members.mjs). The MCP tool doesn't offer it yet.
+  manage_project_access: ["member_id"],
 });
 
 /** Arguments of the operations only the REST routes call. */

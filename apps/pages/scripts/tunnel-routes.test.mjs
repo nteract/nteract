@@ -82,6 +82,7 @@ const GATEWAY = [
     `/api/pages/${U}/card-image/${HASH}-${theme}.webp`,
   ]),
   ["access", "GET", `/api/access?page=${U}`],
+  ["organization member search", "POST", "/api/organization-members"],
   ["published preview", "GET", `/api/link-preview?page=${U}`],
   ["published preview", "GET", `/p/${U}/preview.json`],
   ["published preview", "GET", `/p/${U}/preview.png?v=1`],

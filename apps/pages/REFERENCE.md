@@ -1464,6 +1464,28 @@ principal grants only after verified provider email admission, and do not send
 email. Pending invitations cannot authorize sockets or override a newer role.
 There is no public/anonymous access, guest commenting, or ownership transfer.
 
+When the deployment's sign-in has an organization directory (Kilo's today,
+[worker/organization-directory.mjs](worker/organization-directory.mjs)), the
+owner can also add a colleague by name, without an email. The share dialog for a Page or a Project searches one of the owner's
+organizations through `POST /api/organization-members`
+(`{ organization_id, query }`, 2 to 100 characters) and shows up to ten names
+and avatars, never an address
+([worker/organization-members.mjs](worker/organization-members.mjs)). Avatars
+load with `referrerpolicy="no-referrer"`. Picking one sends
+`grant_organization_member` (`organization_id`, `member_id`, `role`) to the
+same sharing route. The host asks the directory again whether that id is a
+member of that organization now, and grants the account it confirms as a
+plain member row named as the directory names it: the same grant `set_role` makes, which
+stays when the person leaves the organization. Nothing the browser sends about
+the person is granted or stored. Both calls need the owner's organization lease
+and the directory credential their newest exchange carried
+([Kilo organizations](DEPLOYMENT.md#kilo-organizations)). Without one the
+picker is hidden and email invitations work as before; when the directory
+can't answer, that search fails and the next one tries again. A pick the directory no longer confirms is refused with 404
+`member_not_found`; a search it can't run answers
+`member_search_unavailable`. The MCP sharing
+tools don't offer the picker.
+
 Company-domain sharing is optional. Deployment configuration and the owner's Page
 setting must both allow it; only `anaconda.com` is currently recognized
 ([Company domains](DEPLOYMENT.md#company-domains)). The owner picks the
