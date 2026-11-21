@@ -16,7 +16,7 @@ Keep the sandbox to exactly these flags:
 allow-scripts allow-downloads allow-forms allow-pointer-lock
 ```
 
-Fullscreen (sift maximize, maps, 3D) comes from the iframe `allow="fullscreen *"` Permissions Policy attribute, not a sandbox token. `allow-same-origin` stays off. Adding it restores the document URL's origin (or the inherited parent origin for `srcDoc`), rather than always giving the frame the parent's origin. A CI test in `src/components/isolated/__tests__/isolated-frame.test.ts` asserts the sandbox list. Leave `allow-popups` and `allow-modals` out.
+Fullscreen (sift maximize, maps, 3D) comes from the iframe `allow="fullscreen *"` Permissions Policy attribute, not a sandbox token. `allow-same-origin` stays off. Adding it restores the document URL's origin (or the inherited parent origin for `srcDoc`), rather than always giving the frame the parent's origin. A CI test in `src/components/isolated/__tests__/isolated-frame.test.ts` asserts `allow-scripts` and the excluded tokens. Leave `allow-popups` and `allow-modals` out.
 
 ### Custom URI scheme + sandbox-induced opaque origin
 
@@ -152,7 +152,7 @@ Outputs backed by a live session (Bokeh document sessions) use extension methods
 
 - **Iframe→host whitelist**: A plugin's `hostMethods` list defines allowed iframe→host requests. `OutputArea` passes registered plugins' methods to `IsolatedFrame` as `extensionMethods`.
 - **Runtime enforcement**: The runtime registers a request handler only for those methods. Any other request gets JSON-RPC "method not found".
-- **Host→iframe updates**: Sent through `IsolatedFrameHandle.notifyExtension`.
+- **Host→iframe updates** go through `IsolatedFrameHandle.notifyExtension`.
 - **Ownership**: Method constants and payload types live with the plugin (e.g. `bokeh-session-rpc.ts`). The app installs the plugin and provides its runtime through `OutputSessionRuntimeContext`.
 
 ### Widget sync flow
@@ -173,7 +173,7 @@ Outputs backed by a live session (Bokeh document sessions) use extension methods
 
 Review these carefully on every change:
 
-1. **Sandbox configuration**: `isolated-frame.tsx` / `SANDBOX_ATTRS`.
+1. **Sandbox configuration**: `frame-config.ts` / `ISOLATED_FRAME_SANDBOX_ATTRS` and `ISOLATED_FRAME_ALLOW_ATTR` (applied in `isolated-frame.tsx` and `output-embed.ts`).
 2. **Source validation**: `frame.html` / `event.source !== window.parent`.
 3. **Custom message forwarding**: `comm-bridge-manager.ts` / `subscribeToModelCustomMessages` (required for anywidgets like quak).
 4. **Type-guard whitelist**: `frame-bridge.ts` / `isIframeMessage` covers legacy frame-bridge types, and JSON-RPC methods live in `rpc-methods.ts`. Output-session requests are whitelisted by each plugin's `hostMethods` in `src/components/outputs/output-session-plugins.ts`. `isolated-frame-runtime.ts` / `registerTransportHandlers` registers a request handler only for those methods (`getExtensionMethods`).

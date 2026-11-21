@@ -31,9 +31,9 @@ user action → WASM handle mutation → scheduleFlush() → daemon
 **Daemon/runtime projections.** Daemon writes `NotebookDoc` for notebook-owned
 state and `RuntimeStateDoc` for runtime/output state → sync frame →
 `receive_frame` → materialization updates the store. Session-control and
-broadcast frames carry only transient readiness or notification state. Outputs,
-execution lifecycle, queue, kernel, trust, and environment state are durable
-runtime-state projections.
+broadcast frames may still carry transient readiness or notification state,
+but outputs, execution lifecycle, queue, kernel, trust, and environment state
+are durable runtime-state projections.
 
 ```
 daemon/runtime CRDT write → sync frame → receive_frame → materializeFromBatch → store
@@ -73,7 +73,7 @@ Route all UI-side source edits through `splice_source`. Inbound changes carry `e
 
 1. **Write the CRDT first; let the store follow.** The store is a projection. A store-only change gets overwritten on the next materialization. Use `updateCellById` for instant visual feedback *after* a CRDT write, or inside `*FromDaemon` projections.
 
-2. **Exactly one peer creates document structure.** The daemon creates top-level Maps/Lists like `cells` and `metadata` in `new_inner()`. Other peers receive them via sync. Two `put_object(ROOT, "cells", Map)` calls from different actors create *two distinct* Map objects at the same key: one wins, and the loser's children go invisible. That is why `NotebookDoc::bootstrap()` only seeds `schema_version` (a scalar).
+2. **Exactly one peer creates document structure.** Two `put_object(ROOT, "cells", Map)` calls from different actors create *two distinct* Map objects at the same key: one wins, and the loser's children go invisible. Both `new_inner()` and `bootstrap()` therefore load the shared frozen `notebook_genesis_v5.am` seed (which creates `schema_version`, `cells`, and `metadata`), while `new_inner()` stamps only the three root identity scalars (`notebook_id`, `runtime_state_doc_id`, `comms_doc_id`).
 
    Sidecar document pointers follow the same rule. `runtime_state_doc_id` and
    `comms_doc_id` are deterministic root pointers stamped by constructors and
@@ -111,7 +111,7 @@ doc.transact_at_heads_recovering(
 
 The live document owns the actor sequence, so repeated transactions share one stable actor without producing duplicate `(actor, seq)` changes. Panic capture and rebuild stay inside the document boundary.
 
-Use `fork_with_actor(...)` + `merge_recovering(...)` only when the async worker genuinely needs an editable fork across the await. Pick an actor name that cannot collide with another concurrent fork of the same parent.
+Use `fork_with_actor(...)` + `merge_recovering(...)` only when the async worker needs an editable fork across the await. Pick an actor name that cannot collide with another concurrent fork of the same parent.
 
 ```rust
 let fork = {
@@ -132,9 +132,9 @@ Production and WASM pin crates.io Automerge to `0.12.0` (`Cargo.toml`). Actor-la
 - `crates/automerge-recovery/src/lib.rs` retains the MissingOps regression test (its "desktop patch" test name is historical, not the current dependency source).
 - `crates/automerge-store/Cargo.toml` retains crates.io `0.11.0` and the legacy `nteract/automerge` revision `3fb6af5cc3af23b79f27cebfa339c8c98987e7b7` (Rust `0.10.0`) as dev-only snapshot and encoded-sync compatibility peers.
 
-`transact_at_heads_recovering` wraps upstream `set_actor`, `isolate`, and `integrate` rather than a fork-only API. Actor restoration and panic-triggered rebuild stay in `crates/notebook-doc/src/lib.rs:438`. Sync recovery differs: `receive_sync_message_recovering` retries once after `PatchLogMismatch` by resetting peer state and rebuilding, but it returns panics without rebuild or retry (`crates/notebook-doc/src/lib.rs:2479`, `crates/automerge-recovery/src/lib.rs:159–201`).
+`transact_at_heads_recovering` wraps upstream `set_actor`, `isolate`, and `integrate`; it is not a fork-only API. Actor restoration and panic-triggered rebuild stay in `crates/notebook-doc/src/lib.rs:438`. Sync recovery differs: `receive_sync_message_recovering` in `crates/notebook-doc/src/lib.rs` retries once after `PatchLogMismatch` by resetting peer state and rebuilding, but it returns panics without rebuild or retry (`crates/automerge-recovery/src/lib.rs:159–201`).
 
-### Synchronous blocks
+## Synchronous blocks (daemon side)
 
 For mutation blocks with no `.await`, call typed methods on the live doc while holding the lock. Use a document-owned transaction helper when you need actor restoration. `fork_and_merge(|fork| { … })` remains for existing isolated-draft call sites; it's not the preferred shape for new daemon mutations.
 

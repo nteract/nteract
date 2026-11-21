@@ -7,7 +7,7 @@ AI-collaborative Jupyter notebooks. The MCP server ships with the [nteract deskt
 In Claude Code:
 
 ```
-/plugin marketplace add nteract/claude-plugin
+/plugin marketplace add nteract/agent-plugins
 /plugin install nteract@nteract
 ```
 
@@ -23,7 +23,7 @@ claude mcp add nteract -- uvx --prerelease allow nteract
 
 That runs this PyPI package, which locates `runt mcp` from your nteract desktop install and execs it.
 
-Only pre-release wheels are published while the library surface settles; the stable channel is frozen. See [#2217](https://github.com/nteract/nteract/issues/2217).
+This PyPI wrapper is frozen at the last published pre-release; no new pre-release or stable wheels are published. See [#2217](https://github.com/nteract/nteract/issues/2217).
 
 ## What you get
 

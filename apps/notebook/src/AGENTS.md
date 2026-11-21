@@ -72,12 +72,13 @@ Tauri relay ── frame channel ──► useNotebook
                   sync_applied ────────┘          │         │
                   + CellChangeset                 │         │
                          ▼                        │         │
-                  scheduleMaterialize    emitBroadcast  emitPresence
-                  (32ms coalesce)        (frame bus)    (frame bus)
-                         │                    │              │
-                  ┌──────┴──────┐             ▼              ▼
-                  │ structural? │      useDaemonKernel   usePresence
-                  └──┬──────┬───┘      useEnvProgress
+                  SyncEngine             emitBroadcast  emitPresence
+                  (COALESCE_MS = 32)     (frame bus)    (frame bus)
+                         ▼                    │              │
+                  frame-pipeline.ts           ▼              ▼
+                  ┌──────┴──────┐      useDaemonKernel   usePresence
+                  │ structural? │      useEnvProgress
+                  └──┬──────┬───┘
             full ◄───┘      └───► per-cell
          materialize-     materialize-
          Cells()          CellFromWasm
@@ -97,12 +98,12 @@ Tauri relay ── frame channel ──► useNotebook
 
 1. **useNotebook**: Single frame ingress. Demuxes via WASM `receive_frame()` and applies sync locally. Returns a `CellChangeset` with field-level granularity. Broadcasts and presence dispatch via in-memory frame bus. The current implementation lives in `useAutomergeNotebook.ts` during the controller extraction.
 
-2. **scheduleMaterialize**: Coalesces sync frames within a 32ms window via `mergeChangesets()`:
+2. **SyncEngine + `frame-pipeline.ts`**: `SyncEngine` (`COALESCE_MS = 32` in `packages/runtimed/src/sync-engine.ts`) coalesces sync frames via `mergeChangesets()`, and `frame-pipeline.ts` (`materializeCells`) materializes them into the app store:
    - **Structural changes** (cells added/removed/reordered) → full `cellSnapshotsToNotebookCells()`
    - **Output changes** → per-cell cache-aware resolution via `materializeCellFromWasm()`
    - **Source/metadata only** → per-cell O(1) WASM accessors
 
-3. **Split cell store** (`notebook-cells.ts`). Holds `Map<id, NotebookCell>` + ordered ID list:
+3. **Split cell store** (`notebook-cells.ts`): `Map<id, NotebookCell>` + ordered ID list:
    - `useCell(id)`: re-renders only when that cell changes
    - `useCellIds()`: re-renders only on structural changes
    - `updateCellById()`: O(1) map update, notifies one subscriber

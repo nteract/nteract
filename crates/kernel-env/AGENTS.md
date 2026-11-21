@@ -33,7 +33,7 @@ The notebook's kernelspec takes priority over project files. A Deno notebook in 
 | 4 | PEP 723 script block | `notebook_doc::pep723` + default/scoped package manager | Cached env or `pixi exec` |
 | 5 | User preference | Prewarmed env from pool | Shared pool env |
 
-Project files win over inline deps because inline deps are promoted into the project file at sync/launch time. Once present, the project file is the source of truth. Walk-up checks `pyproject.toml`, `pixi.toml`, `environment.yml`/`.yaml` at each directory level. Closest wins. Same-directory tiebreaker: pyproject > pixi > environment.yml. A `pyproject.toml` with `[tool.pixi]` is treated as a Pixi project. Stops at `.git` boundaries and user's home directory.
+Project files win over inline deps because inline deps are promoted into the project file at sync/launch time. Once present, the project file is the source of truth. Walk-up checks `pyproject.toml`, `pixi.toml`, `environment.yml`/`.yaml` at each directory level. Closest wins. Same-directory tiebreaker: pyproject > pixi > environment.yml. A `pyproject.toml` with `[tool.pixi]` is treated as a Pixi project. The walk-up stops at `.git` boundaries and the user's home directory.
 
 | Project file | Backend | Environment |
 |-------------|---------|-------------|
@@ -94,7 +94,7 @@ Managed cache paths use `runt_workspace::managed_cache_dir` (stable → `nteract
 - **Dev worktrees:** retain the legacy channel's `runt[-nightly]/worktrees/{hash}/` layout so cache and state cleanup stay together.
 - **Existing cache reuse:** an existing cache directory under `runt/` or `runt-nightly/` is reused in place, even if the new path also exists. This compatibility fallback does not copy, merge, or delete caches.
 - **Process stability:** each process keeps its first selection for each cache, and filesystem changes do not redirect live environments. Do not move environments: they can contain absolute paths.
-- **Unchanged roots:** daemon state, socket/lock, shared file-claim paths, and Rattler's shared package download cache stay unchanged (persistent data and coordination, not disposable caches).
+- **Unchanged roots:** daemon state, socket/lock, and shared file-claim paths stay unchanged (persistent data and coordination, not disposable caches). Rattler's shared package download cache is also unchanged.
 - **Downgrades:** downgrading to a release without the new paths can create a legacy cache, which upgraded clients then reuse. No automatic consolidation of both trees is performed.
 
 Cache hit check: verify `{hash}/bin/python` (Unix) or `{hash}/Scripts/python.exe` (Windows).
@@ -105,13 +105,13 @@ Pool warmer and capture step strip a base set so captured metadata records only 
 
 | Constant | Value |
 |----------|-------|
-| `kernel_env::uv::UV_BASE_PACKAGES` | `[ipykernel, ipywidgets, anywidget, nbformat, pyarrow>=14, uv]` |
+| `kernel_env::uv::UV_BASE_PACKAGES` | `[ipykernel, ipywidgets, anywidget, nbformat, pyarrow>=14, uv>=0.13.5]` |
 | `kernel_env::conda::CONDA_BASE_PACKAGES` | `[ipykernel, ipywidgets, anywidget, pip, nbformat, pyarrow>=14]` |
 
 `conda::sync_dependencies` takes an `EnvOwnership`:
 
-- **Daemon-owned prefixes:** get the full base set, and the solve is the env's complete desired state.
-- **User-managed `environment.yml` prefixes** (`prefix:` or an existing named env): get only `ipykernel` and `pyarrow>=14`, each skipped when pip already owns it. Every installed Conda package stays in the solve, so the installer removes nothing.
+- **Daemon-owned prefixes** get the full base set, and the solve is the env's complete desired state.
+- **User-managed `environment.yml` prefixes** (`prefix:` or an existing named env) get only `ipykernel` and `pyarrow>=14`, each skipped when pip already owns it. Every installed Conda package stays in the solve, so the installer removes nothing.
 - **Pip-owned packages:** a requested package installed by pip is left to pip (its dist-info directory appears in no Conda record's file list).
 - **Ownership transitions:** a named env created by the daemon counts as user-managed from its next launch. Hot-sync applies the user rules to every `conda:env_yml` kernel, because its launched config does not record ownership.
 
@@ -227,7 +227,7 @@ identity is present in the local trusted-package store.
   keyed by `(ecosystem, normalized_name)` and populated by user approval
   via the trust dialog or by daemon-initiated approval flows.
 - **Identity:**
-  - Plain registry specs (name, extras, version constraints, markers) share a normalized-name identity.
+  - Only plain registry specs (name, extras, version constraints, markers) share a normalized-name identity.
   - Any spec that selects its own source is keyed by exact text in a separate `pypi-exact` / `conda-exact` ecosystem so legacy name keys cannot approve sources. Source-selecting specs include PEP 508 direct references, VCS/path/URL specs, bare archive filenames, installer options, conda URLs, and bracketed conda channels.
   - A `channel::name` conda spec needs both the name and the channel approved.
   - Conda specs with comments or a `defaults::` qualifier require exact approval because installer parsing differs from ordinary channel-list identity.

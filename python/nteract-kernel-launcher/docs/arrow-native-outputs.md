@@ -314,7 +314,7 @@ Shape:
       "size": 98304,
       "row_count": 4096,
       "record_batch_count": 4,
-      "encoding": "arrow-ipc-stream-fragment"
+      "encoding": "arrow-ipc-stream"
     }
   ],
   "complete": true,
@@ -580,11 +580,6 @@ Frontend responsibilities:
 - mark the table complete only when `complete: true`
 - keep `text/plain` fallback available when the plugin fails
 
-## Phased Implementation
-
-Each phase below should land as an individual commit in this PR so the work can
-be reviewed and tested incrementally.
-
 ## Implementation Progress
 
 Keep this section current as the PR evolves. It is the durable working memory
@@ -713,6 +708,11 @@ for the staged implementation.
     MIME for incomplete and completion-only manifest updates.
   - richer structured `TABLE_REPR v1` hints remain a follow-on PR; this pass
     only makes the current compact text available early and consistently.
+
+## Phased Implementation
+
+Each phase below should land as an individual commit in this PR so the work can
+be reviewed and tested incrementally.
 
 ### Phase 1: Canonical Arrow For DataFrames
 
@@ -887,19 +887,23 @@ Acceptance:
 
 ## Backward Compatibility
 
-Desktop client and runtime daemon ship together. There is no supported
-configuration where a release-N client talks to a release-M daemon. The manifest
-MIME, blob-ref shape, attached-buffer protocol, and output store schema can
-therefore change in a single release without compatibility shims. The only
-durable compatibility surface is saved `.ipynb` files on disk and the old
-parquet/Arrow IPC blob payloads users may still have in CAS.
+Desktop client and runtime daemon compatibility is gated by `PROTOCOL_VERSION`
+and `DAEMON_API_VERSION` range admission (see
+`docs/adr/daemon-service-repair-and-semantic-compatibility.md`), not strict
+same-release equality. Wire-breaking changes bump `PROTOCOL_VERSION`, and
+required semantic changes to the manifest MIME, blob-ref shape, attached-buffer
+protocol, or output store schema bump `DAEMON_API_VERSION` when an older daemon
+within the admitted range would behave unsafely or incorrectly. The durable
+on-disk compatibility surface is saved `.ipynb` files and the old parquet/Arrow
+IPC blob payloads users may still have in CAS.
 
 - Existing `.ipynb` files with parquet blob refs continue to load and render.
 - Existing `.ipynb` files with direct Arrow IPC blob refs continue to load and
   render.
 - New manifest outputs save as ordinary JSON plus nteract blob refs (chunks
-  and schema, plus coalesced artifacts when present), with `text/plain` /
-  `text/html` fallbacks for non-nteract frontends.
+  and coalesced artifacts when present; `schema.hash` remains a plain
+  fingerprint), with `text/plain` / `text/html` fallbacks for non-nteract
+  frontends.
 - The old parquet MIME stays in Sift and MIME priority for old fixtures, but
   new launcher producers do not choose it.
 - `update_display_data` without a matching display id keeps current behavior:

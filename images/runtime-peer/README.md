@@ -11,7 +11,7 @@ Design decisions and kernel-launch mechanics live in `docs/adr/remote-workstatio
 | `runtimed` | `cargo build --release -p runtimed` | daemon + `workstation-agent` / `cloud-runtime-agent` |
 | `runt`, `nteract-cli` (`nteract` symlink) | `cargo build --release -p runt` | pairing CLI: `workstation connect` / `workstation run` (FR-009) |
 | Python 3.12 | `python:3.12-slim-bookworm` | `python3` on `PATH`; pass as `--python-path` |
-| `ipykernel`, `ipywidgets`, `anywidget`, `nbformat`, `pyarrow>=14`, `uv` | pip | `UV_BASE_PACKAGES` parity (`crates/kernel-env/src/uv.rs:73-87`); UV-only, no conda (Clarifications 2026-10-01) |
+| `ipykernel`, `ipywidgets`, `anywidget`, `nbformat`, `pyarrow>=14`, `uv>=0.13.5` | pip | `UV_BASE_PACKAGES` parity (`crates/kernel-env/src/uv.rs:73-87`); UV-only, no conda (Clarifications 2026-10-01); `smoke.sh` enforces `pip 26.2.2`, `certifi>=2026.10.19`, and `ca-certificates` TLS floors |
 | `runtimed` Python bindings | maturin wheel built in-stage | used by the smoke test; also handy for agents |
 
 `nteract_kernel_launcher` is **not** preinstalled. The runtime agent vendors it at launch time via `PYTHONPATH` from its launcher cache (`crates/runtimed/src/launcher_cache.rs`).
@@ -36,16 +36,16 @@ The Release validation PR workflow builds this Dockerfile and runs the smoke tes
 
 Smoke test tiers:
 
-- **Daemon execution tier:** logs the Python interpreter, binding version, and native-extension checksum. Enables Python fault traces and requires a clean interpreter exit. A fault after the coroutine returns still fails the smoke test and blocks the staging push.
+- **Daemon execution tier:** logs the Python interpreter, binding version, and native-extension checksum. It also enables Python fault traces and requires a clean interpreter exit. A fault after the coroutine returns still fails the smoke test and blocks the staging push.
 - **Bounded exit probe:** requires 20 fresh Python processes to ping the running daemon and exit cleanly. The first failed ping or exit stops the smoke test.
 - **Launch-shape tier:** uses the standalone daemon launcher cache. It does not add a pooled environment's packages to the image interpreter's import path.
 
 PR CI also runs a separate GDB probe in an unpushed diagnostic derivative:
 
-- Verifies that the interpreter, libpython, and native-extension bytes match the ordinary image, and records package and linked-library differences.
-- Leaves the ordinary image smoke test as the release gate. Diagnostic success cannot erase a smoke failure.
-- Fails the PR job on a tracing-policy error or first failed debugger sample. Preserves diagnostic logs and the exact native ELF without relaxing container permissions.
-- Sets a breakpoint to record the caller before a CPython thread exit, then continues to the first signal or normal exit. A stopped process stays stopped while GDB records registers, mappings, stacks, and caller disassembly.
+- The probe verifies that the interpreter, libpython, and native-extension bytes match the ordinary image, and records package and linked-library differences.
+- The probe leaves the ordinary image smoke test as the release gate. Diagnostic success cannot erase a smoke failure.
+- The PR job fails on a tracing-policy error or first failed debugger sample. The PR job preserves diagnostic logs and the exact native ELF without relaxing container permissions.
+- The probe sets a breakpoint to record the caller before a CPython thread exit, then continues to the first signal or normal exit. A stopped process stays stopped while GDB records registers, mappings, stacks, and caller disassembly.
 
 ```bash
 # Full in-container smoke (contract prechecks + daemon execution + launch shape)
@@ -64,11 +64,12 @@ nteract workstation connect https://<cloud-host> --code XXXX-XXXX-XXXX
 nteract workstation run --python-path "$(command -v python3)"
 
 # Or directly as the agent entrypoint (token via environment, never argv:
-# keep it out of shell history and process lists with an env file)
+# keep it out of shell history and process lists with an env file;
+# --auth-kind defaults to oidc, and also accepts workstation or anaconda-key)
 echo "RUNT_CLOUD_TOKEN=<token>" > runt.env   # chmod 600; delete after use
 docker run --rm --env-file runt.env nteract-runtime-peer:<tag> \
   cloud-runtime-agent --cloud-url https://app.runt.run --notebook-id <id> \
-  --python-path /usr/local/bin/python3
+  --python-path /usr/local/bin/python3 --auth-kind oidc
 ```
 
 Container contract summary:

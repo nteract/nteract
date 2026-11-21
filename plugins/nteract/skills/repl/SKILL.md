@@ -9,7 +9,7 @@ Use a notebook-backed REPL for multi-step Python work when nteract notebook tool
 
 Prefer the direct pi tools when present:
 
-- `python`: execute code in the persistent notebook session.
+- `python_repl`: execute code in the persistent notebook session.
 - `python_add_dependencies`: batch-add packages and hot-sync the environment.
 - `python_save_notebook`: save the backing notebook.
 
@@ -17,7 +17,7 @@ If only MCP tools are available, use `create_notebook`, `create_cell`, `execute_
 
 ## If the notebook tools aren't appearing
 
-If you loaded this skill but neither direct pi tools (`python`, `python_add_dependencies`) nor MCP notebook tools appear, do not fall back to `python3 -c`. Ask the user to verify that the nteract plugin is installed and enabled in Codex. Then have them restart Codex after any plugin or marketplace changes. The most common cause is installing or updating the plugin after the current Codex session started.
+If you loaded this skill but neither direct pi tools (`python_repl`, `python_add_dependencies`) nor MCP notebook tools appear, do not fall back to `python3 -c`. Ask the user to verify that the nteract plugin is installed and enabled in Codex. Then have them restart Codex after any plugin or marketplace changes. The most common cause is installing or updating the plugin after the current Codex session started.
 
 If Codex reports the plugin is installed but tools still do not appear, ask the user to refresh and reinstall it to clear stale cache:
 
@@ -54,13 +54,13 @@ To recover:
 ## Quick Start (direct pi tools)
 
 ```json
-python({
+python_repl({
   "code": "import numpy as np\nnp.arange(3)",
   "dependencies": ["numpy"]
 })
 ```
 
-Pass `dependencies` on the first `python` call when imports may be missing. The pi REPL records them before kernel startup when possible; later dependency additions use hot-sync.
+Pass `dependencies` on the first `python_repl` call when imports may be missing. The pi REPL records them before kernel startup when possible; later dependency additions use hot-sync.
 
 ## Quick Start (MCP tools)
 
@@ -94,22 +94,22 @@ create_cell(notebook_id=n, source="import numpy as np\nnp.arange(3)", cell_type=
 - Use `inspect_notebook(notebook_id=n)` for bounded cells, source previews, readiness, and resource links.
 - Select bounded chunks with `cell_ids`, `start`/`count`, and `full_source` with `source_start`/`source_chars`. Pagination reads live state; compare cursors before combining pages after edits.
 - Resource-aware hosts should use the returned resources and subscriptions for ongoing observation. Tool-only hosts can call inspect with `after=cursor, timeout_secs=25`; without a cursor it returns an immediate baseline.
-- `execute_cell` and `and_run` already wait for an initial result. If a run is still active, continue with `get_results(notebook_id=n, execution_id=e, timeout_secs=25)`. Executing again starts another run.
+- `execute_cell` and `and_run` already wait for an initial result. If a run is still active, continue with `get_results(notebook_id=n, execution_id=e, timeout_secs=25)`. This waits for the same run; executing again starts another run.
 - Get-results and inspect waits default to zero and allow up to 50 seconds. Canceling observation does not interrupt computation.
 - `wait_for_notebook_change` remains callable for compatibility but is not advertised.
 
 ## Core Workflow
 
 1. **Start or reuse a notebook-backed REPL:**
-   - Direct: call `python(...)`; the session is created lazily and state persists.
+   - Direct: call `python_repl(...)`; the session is created lazily and state persists.
    - MCP: call `create_notebook(...)` or `connect_notebook(...)` and retain its `notebook_id` as `n` and release handle as `h`.
 
 2. **Declare dependencies before import-heavy code:**
-   - Direct: pass `dependencies` to `python` or call `python_add_dependencies`.
+   - Direct: pass `dependencies` to `python_repl` or call `python_add_dependencies`.
    - MCP: pass `dependencies` to `create_notebook` or use `manage_dependencies(notebook_id=n, ...)`.
 
 3. **Run and iterate:**
-   - Direct: call `python` repeatedly; variables/imports persist.
+   - Direct: call `python_repl` repeatedly; variables/imports persist.
    - MCP: edit with `set_cell(notebook_id=n, ...)` and rerun with `execute_cell(notebook_id=n, cell_id=...)`.
 
 4. **Check your work:**

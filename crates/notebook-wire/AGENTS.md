@@ -237,22 +237,9 @@ Daemon-initiated messages pushed to all connected clients; not replies to reques
 | Broadcast | Purpose |
 |-----------|---------|
 | `Comm { msg_type, content, buffers }` | Jupyter comm message (widget custom one-shot events). Widget state itself syncs via `CommsDoc`. |
-| `EnvProgress { env_type, phase }` | Environment setup progress (`phase` flattened as `EnvProgressPhase`). `RuntimeStateDoc` is authoritative for durable env state. |
+| `BokehSessionEvents { events }` | Bokeh data events and Python messages from the kernel. Environment progress syncs via `RuntimeStateDoc`, not broadcasts. |
 
 Durable state (kernel state, execution lifecycle, queue, outputs/display, path/autosave, env sync) lives in Automerge docs rather than broadcast variants. There is no `CommSync` broadcast. The `Comm` variant handles only custom messages (`method != "update"`), while widget state updates flow through `CommsDoc`.
-
-### Output sync flow
-
-```
-Kernel produces output
-  → Daemon intercepts Jupyter IOPub
-  → Daemon writes output manifest to RuntimeStateDoc
-  → RuntimeStateDoc sync produces frame 0x05
-  → Relay sends over the frame channel
-  → WASM handle.receive_frame() → RuntimeStateDoc merge
-  → frame-pipeline.ts plans output materialization
-  → UI updates
-```
 
 ## Tauri channel bridge and frame bus
 
@@ -291,11 +278,24 @@ Manifests are structured Maps with compact `ContentRef` entries. MIME metadata i
 
 Stream outputs (stdout/stderr) are special: text is fed through a terminal emulator (`stream_terminals`) for carriage-return and ANSI-escape handling before manifest creation. `upsert_stream_output` updates in place when consecutive stream outputs arrive.
 
+### Output sync flow
+
+```
+Kernel produces output
+  → Daemon intercepts Jupyter IOPub
+  → Daemon writes output manifest to RuntimeStateDoc
+  → RuntimeStateDoc sync produces frame 0x05
+  → Relay sends over the frame channel
+  → WASM handle.receive_frame() → RuntimeStateDoc merge
+  → frame-pipeline.ts plans output materialization
+  → UI updates
+```
+
 ## Notebook lifecycle
 
 - **Autosave.** Daemon autosaves `.ipynb` on a debounce (2 s quiet, 10 s max). Explicit save (⌘S) additionally formats cells. Frontend dirty state is derived from sync/save confirmations, not a room broadcast.
 - **UUID-stable rooms.** Room keys are always UUIDs. Saving an untitled notebook updates a secondary `path_index` map and the daemon-authored room state so peers can update local path tracking. The UUID never changes.
-- **Crash recovery.** Untitled notebooks persist their Automerge doc to `notebook-docs/{hash}.automerge`. Before overwriting on reopen, the daemon snapshots to `notebook-docs/snapshots/`. Outputs are ephemeral (`RuntimeStateDoc`, not persisted), so snapshots hold source and metadata only.
+- **Crash recovery.** Unsaved notebooks persist incremental `.recovery` journals in `notebook-docs/` (with `.automerge` files read only as a legacy migration fallback). Durable execution-result storage preserves completed outputs separately across crashes.
 - **Multi-window.** Multiple windows join the same room as separate Automerge peers. Each gets sync frames and broadcasts independently. The daemon tracks `active_peers` per room for eviction.
 
 ## Runtime state
@@ -338,6 +338,6 @@ Because the daemon socket is same-UID trusted, treat the runtime-agent handshake
 
 - Update Rust protocol types and generated `packages/runtimed` TypeScript surfaces in the same patch.
 - Run `cargo test -p notebook-protocol` for protocol-surface changes; add focused package tests when TypeScript transport or generated contracts move.
-- Runtime state, outputs, queue, kernel lifecycle, trust, env drift, env progress snapshots, path, save state, and widget topology belong in `RuntimeStateDoc`. Widget values belong in `CommsDoc`. Broadcasts are for ephemeral comm messages and high-frequency env progress events.
+- Runtime state, outputs, queue, kernel lifecycle, trust, env drift, env progress, path, save state, and widget topology belong in `RuntimeStateDoc`. Widget values belong in `CommsDoc`. Broadcasts are for ephemeral comm messages and `BokehSessionEvents`.
 - Steady-state frame readers must keep draining. Register waiters/pending requests instead of blocking inside command paths.
 - The runtimed socket is same-UID trusted, not app-private. New handshake variants must account for any same-user process holding the socket path.

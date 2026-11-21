@@ -189,9 +189,16 @@ The status indicator turns into a warning mark whose tooltip names the failure,
 and `onLoadError` still fires for host logging.
 
 A failure before mount shows the error box as usual. Check whether the
-`engine-mounted` milestone arrived to tell the two apart. Loading the next
-source clears the notice. A Parquet `url` streams through the same loader and
-behaves the same way.
+`engine-mounted` milestone arrived for this load to tell the two apart. Loading
+the next source clears the notice. A Parquet `url` streams through the same
+loader and behaves the same way.
+
+Only Parquet can be read this way. A `ByteSource` with `format: 'arrow-ipc'` is
+read whole and goes through the bytes path with its `maxBytes` check.
+
+`onLoadError` fires for `loader`, `url`, `byte-source`, and manifest sources
+when a load fails, with the same `Error` Sift shows. For streaming Parquet it
+may arrive after rows mounted; see above.
 
 ### Bounded previews
 
@@ -288,13 +295,6 @@ reach that budget, then pauses so the user can ask for more.
 - Unmounting or changing the source while paused closes the footer and aborts a
   resume in flight, as for any streaming load.
 
-Only Parquet can be read this way. A `ByteSource` with `format: 'arrow-ipc'` is
-read whole and goes through the bytes path with its `maxBytes` check.
-
-`onLoadError` fires for `loader`, `url`, `byte-source`, and manifest sources
-when a load fails, with the same `Error` Sift shows. For streaming Parquet it
-may arrive after rows mounted; see above.
-
 ### What the numbers cover
 
 A table loaded from a file carries three pieces of provenance:
@@ -306,10 +306,11 @@ A table loaded from a file carries three pieces of provenance:
   `data.coverage.truncated` to learn the result was cut. Absent means every row
   is resident.
 - `TableData.datasetStats` holds one `ColumnFileStats` per column, read once
-  from the Parquet footer at open. Each entry carries a whole-file null count
-  (when every row group recorded one) and min/max bounds (when every row group
-  had usable bounds). It also flags inexact (truncated string) bounds and
-  infinite values. Columns without usable footer statistics are `null`.
+  from the Parquet footer at open and never changed. Each entry carries a
+  whole-file null count (when every row group recorded one) and min/max bounds
+  (when every row group had usable bounds). It also flags inexact (truncated
+  string) bounds and infinite values. Columns without usable footer statistics
+  are `null`.
 - Each non-null `ColumnSummary` has `scope`, which labels every metric
   separately. `scope.distribution` covers the histogram bins, category bars,
   and true/false counts; it is always computed over loaded rows and says
@@ -399,7 +400,7 @@ What the user sees:
   - Estimated or lower bound: "≈N whole-dataset matches · Estimated · K rows
     shown" or "≥N …"
   - Pending: "Counting whole-dataset matches… · K rows shown"
-  - Unfiltered: replaces "matches" with "rows in whole dataset"
+  - Unfiltered: "N rows in whole dataset · K rows shown"
 - Committed filters render as pills with `.sift-filter-pill--committed` and the
   title "Applied to the whole dataset". Clearing one does not touch the resident
   rows; it runs the reduced query against the source. Removing a filter must
@@ -513,8 +514,9 @@ setWorkerFactory(
 Without a factory, the source fails at validation with a visible error. Sift
 never falls back to the main thread, because a file needing worker containment
 must not run without it. If a factory throws (such as a CSP or sandbox
-`SecurityError`), Sift treats it like any other load error. It shows "Worker
-factory threw: …", fires `onLoadError`, and does not reach your error boundary.
+`SecurityError`), Sift treats it like any other load error. Sift shows "Worker
+factory threw: …" and fires `onLoadError`. The error does not reach your error
+boundary.
 
 The notebook output frame has an opaque origin and cannot load a same-origin
 module worker. A blob-URL worker build for that host is a follow-up, so it is
@@ -588,9 +590,9 @@ watching, dirty-file conflict handling, and loading/error messages remain host
 responsibilities. Parquet can use a view-only mode.
 
 For hosted data, `<SiftTable url="/data.arrow" />` and
-`<SiftTable url="/data.parquet" />` remain available, with their own loading
-behavior. A Parquet URL downloads whole, then streams row groups through the
-same loader, budget, and preview footer as `byte-source`.
+`<SiftTable url="/data.parquet" />` remain available. The URL and manifest paths
+have their own loading behavior. A Parquet URL downloads whole, then streams row
+groups through the same loader, budget, and preview footer as `byte-source`.
 
 Parquet URLs default to `URL_PARQUET_LIMITS` (1,000,000 rows, 512 MiB of
 decoded memory, 256 columns) and `overflow: 'truncate'`. Files past the budget
@@ -685,8 +687,8 @@ the nteract repository.
 
 The worker path (see "Running the data side in a worker") has been verified in
 Electron 45 under Kilo Desktop's renderer policy. That setup registers a custom
-standard scheme as `secure` with fetch and CORS privileges. It runs
-`script-src 'self' 'wasm-unsafe-eval'` without `worker-src`, reading Parquet
+standard scheme as `secure` with fetch and CORS privileges. Its CSP is
+`script-src 'self' 'wasm-unsafe-eval'` with no `worker-src`. Parquet is read
 over a ranged IPC `ByteSource`. Key details for embedders:
 
 - `new Worker(new URL('@nteract/sift/worker', import.meta.url), { type: 'module' })`

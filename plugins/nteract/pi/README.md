@@ -7,7 +7,7 @@ Run Python in a real IPython runtime. State (variables, imports, matplotlib figu
 ## What you get
 
 - **`python_repl`**: execute Python in your persistent REPL, backed by a real IPython runtime. Variables, imports, and state persist between calls. The last expression is the result; use `print()` or `display()` for intermediate output. Images (matplotlib, PIL, widgets) are returned inline.
-- **`python_add_dependencies`**: install packages mid-session without restarting the kernel. Pass `dependencies` on the first `python_repl` call to pre-install before kernel start.
+- **`python_add_dependencies`**: install packages mid-session without restarting the kernel. Alternatively, pass `dependencies` on the first `python_repl` call to pre-install before kernel start.
 - **`python_save_notebook`**: save your session as an `.ipynb` file you can open in Jupyter or nteract.
 - **`/python-reset`**: start fresh with a new kernel and clean slate.
 
@@ -25,9 +25,9 @@ This extension uses **`@runtimed/node`**, the Node.js bindings for the nteract d
 
 This extension is a starting point. Want more control? Build your own Pi extensions using `@runtimed/node`.
 
-See [`packages/runtimed-node/README.md`](../../packages/runtimed-node/README.md) for the full API. The source for this extension ([`extensions/repl.ts`](./extensions/repl.ts)) shows how to wire it up to Pi's tool registration.
+See [`packages/runtimed-node/README.md`](../../../packages/runtimed-node/README.md) for the full API. The source for this extension ([`extensions/repl.ts`](./extensions/repl.ts)) shows how to wire it up to Pi's tool registration.
 
-### Inspecting and managing sessions
+## Inspecting and managing sessions
 
 The daemon is controlled by the `nteract` CLI (installed with nteract). Use it to inspect active sessions, open notebooks in the desktop app, or troubleshoot:
 
